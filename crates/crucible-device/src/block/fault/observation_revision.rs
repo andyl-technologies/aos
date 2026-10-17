@@ -599,10 +599,10 @@ impl BlockFaultState {
     /// entry; exhaustion refuses before any phase or external payload effect.
     pub(in crate::block) fn dispose_retired_transport_request_if_needed(
         &mut self,
-        identity: BlockRequestIdentity,
+        request: &BlockRequest,
     ) -> Result<Option<Response>, DeviceError> {
         self.with_observation_mutation(|state| {
-            state.dispose_retired_transport_request_if_needed_untracked(identity)
+            state.dispose_retired_transport_request_if_needed_untracked(request)
         })
     }
 

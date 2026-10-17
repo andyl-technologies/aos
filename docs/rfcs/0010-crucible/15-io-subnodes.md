@@ -229,23 +229,24 @@ consult the overlay first and fall back to the base image page by page:
 Block requests and responses ride the SPSC frame rings of
 [`13-shmem-abi.md`](13-shmem-abi.md) §13.3.3 between the VM's slot and
 `SLOT_BLK_IO`; the wire payload is carried in a `FrameEntry`'s `data` field
-(sized so a 4 KiB read response plus its header fits without truncation,
-`MAX_FRAME_DATA = 4608`, [SHM-13]). The on-wire layout is a versioned ABI:
+(sized so a 4 KiB read response or write request plus its header fits without
+truncation, `MAX_FRAME_DATA = 4608`, [SHM-13]). The on-wire layout is a versioned ABI:
 
 ```text
-BlockRequest  (VM slot -> SLOT_BLK_IO)
+BlockRequest  (VM slot -> SLOT_BLK_IO), header = 36 bytes
   u8   type        -- 0=read, 1=write, 2=flush, 3=get_length, 4=discard
-  u8   version     -- block wire ABI version (= 4)
+  u8   version     -- block request ABI version (= 5)
   u16  _reserved   -- zero
   u64  epoch       -- transport generation
   u32  request_id  -- correlates response within the epoch
   u64  offset      -- byte offset (read/write/discard)
   u32  count       -- byte count (read/write/discard)
+  u64  oldest_live_epoch -- oldest epoch the frontend may still submit ([IO-35])
   [count bytes]    -- payload, write only
 
-BlockResponse (SLOT_BLK_IO -> VM slot)
+BlockResponse (SLOT_BLK_IO -> VM slot), header = 20 bytes
   u8   status      -- 0=ok, 1=error, 2=reset, 3/4=duplicate, 5/6/7=disposition
-  u8   version     -- block wire ABI version (= 4)
+  u8   version     -- block response ABI version (= 4)
   u16  _reserved   -- zero
   u64  epoch       -- echoes the transport generation
   u32  request_id  -- echoes the epoch-local request ID
@@ -253,17 +254,19 @@ BlockResponse (SLOT_BLK_IO -> VM slot)
   [count bytes]    -- success data; exactly one typed-result byte on error
 ```
 
-Version 4 defines epoch-scoped identities, the closed error payload used by
+Requests and responses carry independent version bytes. Version 4 of both
+messages defined epoch-scoped identities, the closed error payload used by
 signal-driven storage faults, payload-free discard, reset events, and reset
-dispositions. The one-byte error values and their
+dispositions. Request version 5 appends `oldest_live_epoch`. The response
+layout is unchanged at version 4, which QEMU's reset-event decoder also reads. The one-byte error values and their
 guest-visible errno mapping are listed in
 [`14-block-typed-errors.md`](../0014-signal-driven-fault-model/14-qemu-fault-patches/14-block-typed-errors.md),
 and discard is specified in
 [`15-block-discard.md`](../0014-signal-driven-fault-model/14-qemu-fault-patches/15-block-discard.md).
 Reset transport is specified in
 [`16-block-transport-reset.md`](../0014-signal-driven-fault-model/14-qemu-fault-patches/16-block-transport-reset.md).
-Every noncurrent version is rejected; there is no alternate decode or silent
-downgrade path.
+Every noncurrent version of either message is rejected; there is no alternate
+decode or silent downgrade path.
 
 - **[IO-8]** The block request/response wire format MUST be a **versioned
   boundary ABI** ([G-8]): every message MUST carry an ABI version byte and a
@@ -283,6 +286,25 @@ downgrade path.
   so deliverability is decided by `delivery_icount <= consumer.current_icount`
   ([SHM-33]). *Gate:* `gate:layer1-injection`, `gate:abi-conformance`. *Spec:*
   §15.2.2; cross-ref 13 §13.9.
+
+- **[IO-35]** Every block request MUST carry `oldest_live_epoch`: the oldest
+  transport epoch that any request the frontend may still submit can carry,
+  including the request itself. The QEMU plugin computes it over requests
+  awaiting a response and identities answered with `retry_preserve_id`, which
+  are the only identities other than the allocator's next one that its submit
+  callback accepts. The value MUST NOT exceed the request's epoch and MUST NOT
+  decrease in ring order; a decoder rejects the first condition as malformed,
+  and the block sub-node fails closed on a floor that regresses or exceeds its
+  transport epoch. On admission the sub-node records the floor and discards the
+  retired reset policy and preserve-ID authorizations of every lower epoch, so
+  retained transport state spans only the frontend's live epochs instead of
+  every reset in the run. An identity QEMU abandons after a `retry_preserve_id`
+  disposition, because recovery admission later fails, remains in the plugin's
+  retry set and keeps the floor low. That is conservative rather than unsafe and
+  is bounded by the retained-epoch hard limit, so no separate abandon
+  notification is needed. *Gate:* `gate:abi-conformance`. *Spec:* §15.2.2;
+  cross-ref
+  [`16-block-transport-reset.md`](../0014-signal-driven-fault-model/14-qemu-fault-patches/16-block-transport-reset.md).
 
 ### 15.2.3 The deterministic completion model
 

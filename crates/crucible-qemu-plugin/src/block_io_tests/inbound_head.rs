@@ -322,6 +322,7 @@ fn block_head_current_refuses_a_replacement_token_with_the_same_transport_identi
             70,
             &BlockRequest::read(0, 4),
             token.identity(),
+            None,
         )
         .unwrap_or_else(|error| panic!("retry fixture should publish: {error}"))
         .into_token();

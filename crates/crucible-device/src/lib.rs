@@ -82,11 +82,11 @@ pub mod subnode;
 
 pub use backpressure::{BackpressureState, BoundedQueue, PushError};
 pub use block::{
-    BLOCK_ABI_VERSION, BaseImage, BlockCodecError, BlockDevice, BlockErrorCode, BlockLatency,
-    BlockOp, BlockRequest, BlockRequestIdentity, BlockResponse, BlockSnapshot,
-    BlockSnapshotCodecError, BlockStatus, BlockTransportPending, BlockTransportRequestIds,
-    BlockTransportReset, BlockTransportResolved, BlockTransportUnadmitted,
-    BlockTransportUndelivered, CowOverlay, OverlayDelta, PAGE_SIZE,
+    BLOCK_REQUEST_ABI_VERSION, BLOCK_RESPONSE_ABI_VERSION, BaseImage, BlockCodecError, BlockDevice,
+    BlockErrorCode, BlockLatency, BlockOp, BlockRequest, BlockRequestIdentity, BlockResponse,
+    BlockSnapshot, BlockSnapshotCodecError, BlockStatus, BlockTransportPending,
+    BlockTransportRequestIds, BlockTransportReset, BlockTransportResolved,
+    BlockTransportUnadmitted, BlockTransportUndelivered, CowOverlay, OverlayDelta, PAGE_SIZE,
     install_cross_device_misdirected_persistence,
 };
 pub use clock::{VirtualClock, ns_to_tick};

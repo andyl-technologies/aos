@@ -24,9 +24,7 @@ impl BlockDevice {
         request: &BlockRequest,
     ) -> Result<(), DeviceError> {
         let mut next_faults = self.storage_faults.clone();
-        if let Some(response) =
-            next_faults.dispose_retired_transport_request_if_needed(request.identity())?
-        {
+        if let Some(response) = next_faults.dispose_retired_transport_request_if_needed(request)? {
             let mut next_core = self.core.clone();
             next_core.schedule_response_now(response)?;
             self.storage_faults = next_faults;
@@ -111,7 +109,7 @@ impl BlockDevice {
             let request = BlockRequest::decode(payload).map_err(DeviceError::Codec)?;
             let mut next_faults = self.storage_faults.clone();
             if let Some(response) =
-                next_faults.dispose_retired_transport_request_if_needed(request.identity())?
+                next_faults.dispose_retired_transport_request_if_needed(&request)?
             {
                 let mut next_core = self.core.clone();
                 next_core.schedule_response_now(response)?;

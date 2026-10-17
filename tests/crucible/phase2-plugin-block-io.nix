@@ -163,7 +163,7 @@
       }
       {
         label = "wire version";
-        needle = "BLOCK_WIRE_VERSION";
+        needle = "BLOCK_REQUEST_WIRE_VERSION";
       }
       {
         label = "little-endian request encoding";

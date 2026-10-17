@@ -166,7 +166,7 @@ impl BlockResponse {
         })?;
         let mut out = Vec::with_capacity(RESPONSE_HEADER_LEN + self.data.len());
         out.push(self.status.to_wire());
-        out.push(BLOCK_ABI_VERSION);
+        out.push(BLOCK_RESPONSE_ABI_VERSION);
         out.extend_from_slice(&0u16.to_le_bytes());
         out.extend_from_slice(&self.epoch.to_le_bytes());
         out.extend_from_slice(&self.request_id.to_le_bytes());
@@ -185,7 +185,7 @@ impl BlockResponse {
     ///   [`RESPONSE_HEADER_LEN`].
     /// - [`BlockCodecError::UnknownStatus`] when the status byte is undefined.
     /// - [`BlockCodecError::VersionMismatch`] when the version byte is not
-    ///   [`BLOCK_ABI_VERSION`].
+    ///   [`BLOCK_RESPONSE_ABI_VERSION`].
     /// - [`BlockCodecError::NonZeroReserved`] when the reserved header field is
     ///   nonzero.
     /// - [`BlockCodecError::CountExceedsPayload`] when the declared `count`
@@ -199,9 +199,9 @@ impl BlockResponse {
             })?;
         let status = BlockStatus::from_wire(header[0])?;
         let version = header[1];
-        if version != BLOCK_ABI_VERSION {
+        if version != BLOCK_RESPONSE_ABI_VERSION {
             return Err(BlockCodecError::VersionMismatch {
-                expected: BLOCK_ABI_VERSION,
+                expected: BLOCK_RESPONSE_ABI_VERSION,
                 found: version,
             });
         }

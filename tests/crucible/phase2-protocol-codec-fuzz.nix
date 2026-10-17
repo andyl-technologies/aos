@@ -173,11 +173,11 @@
     ++ failuresFor "crates/crucible-qemu-plugin/src/block_io.rs" pluginBlockIo [
       {
         label = "block request encoder public";
-        needle = "pub fn encode(&self, identity: BlockRequestIdentity)";
+        needle = "pub fn encode(&self, stamp: BlockRequestStamp)";
       }
       {
         label = "block request decoder";
-        needle = "pub fn decode(payload: &[u8]) -> Result<(BlockRequestIdentity, Self), BlockWireError>";
+        needle = "pub fn decode(payload: &[u8]) -> Result<(BlockRequestStamp, Self), BlockWireError>";
       }
       {
         label = "block operation typed rejection";
