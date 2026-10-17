@@ -1809,7 +1809,9 @@ Primary crates: `crucible-cas` and `crucible-api` lifecycle/checkpoint code.
   missing-object transfer, and offline maintenance transfer. Do not implement
   demand paging or worker fanout. Archive planning and inspection stream their
   closure, reachability, child, and page sets through private scratch storage
-  ([CSTORE-30]).
+  ([CSTORE-30]). Transfer journal records page the retained inventory in
+  canonical 4,096-entry pages behind a header written last, and GC streams
+  them page by page ([CSTORE-31]).
 
 The admitted graph checkpoint currently provides bounded acyclic validation,
 exact kind routing, logical verification, ordered tiers and promotion,

@@ -324,7 +324,8 @@ fn require_transfer_corruption(
 
 #[derive(Debug, PartialEq, Eq)]
 struct JournalInventory {
-    records: BTreeMap<String, Vec<u8>>,
+    /// Each record directory's files by name, keyed by operation ID.
+    records: BTreeMap<String, BTreeMap<String, Vec<u8>>>,
     roots: BTreeMap<ContentId, u64>,
 }
 
@@ -341,13 +342,25 @@ fn journal_inventory(fixture: &FlightFixture) -> Result<JournalInventory, Box<dy
     let mut records = BTreeMap::new();
     for entry in fs::read_dir(root.join("records"))? {
         let entry = entry?;
-        assert!(entry.file_type()?.is_file());
+        assert!(entry.file_type()?.is_dir());
         let name = entry
             .file_name()
             .into_string()
             .map_err(|_| "non-UTF8 transfer record")?;
-        assert!(name.ends_with(".transfer"));
-        assert!(records.insert(name, fs::read(entry.path())?).is_none());
+        assert!(name.len() == 64 && name.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        let mut files = BTreeMap::new();
+        for file in fs::read_dir(entry.path())? {
+            let file = file?;
+            assert!(file.file_type()?.is_file());
+            let file_name = file
+                .file_name()
+                .into_string()
+                .map_err(|_| "non-UTF8 transfer record file")?;
+            assert!(file_name == "header" || file_name.starts_with("page-"));
+            assert!(files.insert(file_name, fs::read(file.path())?).is_none());
+        }
+        assert!(files.contains_key("header"));
+        assert!(records.insert(name, files).is_none());
     }
     assert_eq!(summary.records(), records.len() as u64);
     assert_eq!(summary.roots(), roots.len() as u64);

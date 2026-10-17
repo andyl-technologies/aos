@@ -179,7 +179,7 @@ crucible.campaign.attach-runtime-response	1	crucible-daemon::campaign_runtime_co
 crucible.campaign.debug-session-request	1	crucible-daemon::campaign_debug_control	component-message	gate:campaign-component-contract
 crucible.campaign.debug-session-response	1	crucible-daemon::campaign_debug_control	component-message	gate:campaign-component-contract
 crucible.campaign.debug-session-inventory	1	crucible-daemon::campaign_debug_inventory	operational-record	gate:campaign-component-contract
-crucible.campaign.transfer-journal	1	crucible-daemon::campaign_transfer	operational-record	gate:campaign-store-composition
+crucible.campaign.transfer-journal	2	crucible-daemon::campaign_transfer	operational-record	gate:campaign-store-composition
 crucible.campaign-local-policy	1	crucible-daemon::campaign_policy	deployment-config	gate:campaign-component-contract
 aos.crucible.campaign-runtime	1	modules::services::crucible-campaign	deployment-config	gate:license-boundary
 crucible.campaign-component-authorities	1	crucible-daemon::campaign_bootstrap	deployment-secret	gate:campaign-component-contract

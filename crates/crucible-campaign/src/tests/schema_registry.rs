@@ -470,7 +470,7 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
         ),
         (
             "crucible.campaign.transfer-journal",
-            "1",
+            "2",
             "crucible-daemon::campaign_transfer",
             "operational-record",
         ),

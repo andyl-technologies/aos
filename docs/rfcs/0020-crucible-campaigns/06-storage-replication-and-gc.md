@@ -1746,6 +1746,20 @@ spilled source closure for executable archives, proves every selected child
 declared by an anti-join against a spilled child set, and computes debug
 reachability over spilled selected edges.
 
+Before copying starts, the source and destination each record the archive's
+direct object inventory in a durable campaign transfer journal
+(`crucible.campaign.transfer-journal` v2), and campaign GC treats every
+recorded object as a direct root until the operation completes. A record is a
+directory named by the operation ID that holds 4,096-entry canonical page
+files and a header naming the operation, role, manifest, page and object
+counts, and a digest over the page checksums. Pages are synced before the
+header, which becomes visible last by rename and directory sync; opening the
+journal removes a record directory that has no header. Repeating `begin`
+re-encodes and compares every page, `contains` reads only the header, and the
+GC fence streams one page at a time and fails closed on a missing, extra,
+corrupt, or digest-mismatched page. A transfer record therefore admits every
+inventory an archive manifest admits.
+
 Offline maintenance transfer first exactly pauses the campaign and pins its closure,
 ensures its complete executable closure in the destination store, verifies
 compatibility, restores on the destination during a separate operator action,
@@ -1764,6 +1778,11 @@ pager is implied.
   externally sorted or spooled in private scratch storage that is removed on
   success and failure, and the manifest digests MUST equal the digests of the
   in-memory canonical entry sequences.
+- **[CSTORE-31]** A campaign transfer journal record MUST admit every archive
+  inventory that a manifest admits, and journal begin, lookup, and GC root
+  enumeration memory MUST be independent of the inventory size outside one
+  canonical page; a record MUST become visible only after all of its pages are
+  durable.
 
 ## 06.10 Pinning, eviction, and garbage collection
 
