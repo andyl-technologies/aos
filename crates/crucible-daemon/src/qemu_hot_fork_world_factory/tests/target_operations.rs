@@ -15,6 +15,13 @@ use crucible_linux_resource::host_supervision::HostOperationSupervisor;
 pub(super) struct ComponentTargetOperations;
 
 impl WorldTargetOperations<ScriptedWorldGuardFactory> for ComponentTargetOperations {
+    fn prepare_component_construction(
+        &self,
+    ) -> Result<Option<Box<crate::ProductionVmConstructionCustody>>, crucible_api::LifecycleApiError>
+    {
+        crate::ProductionVmConstructionCustody::prepare_component().map(Some)
+    }
+
     fn begin_target(
         &self,
         resources: &mut ScriptedWorldGuardFactory,

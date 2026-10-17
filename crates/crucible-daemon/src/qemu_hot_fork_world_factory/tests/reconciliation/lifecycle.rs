@@ -611,11 +611,25 @@ fn failed_target_cleanup_after_first_child_rejection_keeps_the_source_unavailabl
         observations.clone(),
     );
 
+    let failure = factory
+        .try_start(&input, &execution_context(&input, 0x79))
+        .err()
+        .expect("preflight and actual cleanup both refuse");
+    let AttemptWorkerFailure::Retryable(
+        QemuProductionHotForkWorldLifecycleFactoryError::AssemblyCleanup { message, cleanup },
+    ) = failure
+    else {
+        panic!("preflight must retain both original and cleanup causes");
+    };
+    assert!(message.contains("scripted target run-directory rejection"));
+    let crate::ProductionVmConstructionCleanupError::Guard(cleanup) = cleanup else {
+        panic!("aggregate cleanup must retain its actual guard leaf");
+    };
     assert!(matches!(
-        factory.try_start(&input, &execution_context(&input, 0x79)),
-        Err(AttemptWorkerFailure::Retryable(
-            QemuProductionHotForkWorldLifecycleFactoryError::Assembly(_)
-        ))
+        cleanup.error(),
+        QemuVmRealizationError::Executor { operation, message }
+            if *operation == "construct scripted whole-world fixture"
+                && message == "scripted target cleanup failure"
     ));
     assert!(!factory.sources.available());
     assert_eq!(observations.finishes.load(Ordering::SeqCst), 1);

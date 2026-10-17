@@ -145,6 +145,14 @@ impl<G: QemuAttemptProcessResourceGuard> RetainedHotForkInstallation<G> {
         }
     }
 
+    /// Reports fixture history while retaining its actual construction body here.
+    ///
+    /// This is not Main publication, physical cleanup or Source restoration.
+    #[cfg(test)]
+    pub(crate) fn take_component_construction_cause(&mut self) -> Option<LifecycleApiError> {
+        self.construction.as_mut()?.take_component_first_error()
+    }
+
     /// Publishes the same carrier without dropping it on a refused handoff.
     ///
     /// # Errors

@@ -28,6 +28,9 @@ pub struct ProductionVmConstructionCustody {
                 >,
         >,
     >,
+    // The component account remains alive until this actual carrier drops.
+    #[cfg(test)]
+    component_funding: Option<crucible::owned_decode::DecodeCustody>,
 }
 
 pub(super) enum Phase {
@@ -189,7 +192,24 @@ impl ProductionVmConstructionCustody {
             physically_closed: AtomicBool::new(false),
             #[cfg(target_os = "linux")]
             reservation: None,
+            #[cfg(test)]
+            component_funding: None,
         }
+    }
+
+    /// Allocates one component carrier under its already installed fixture account.
+    ///
+    /// This storage has no Main reservation or native launch authority. The
+    /// shared constructor still validates it and retains all actual inputs.
+    #[cfg(test)]
+    pub(crate) fn prepare_component() -> Result<Box<Self>, LifecycleApiError> {
+        let funding = crucible::owned_decode::require_current_custody()
+            .map_err(LifecycleApiError::ConfigurationCopy)?;
+        crucible::owned_decode::charge_array::<Self>(1)
+            .map_err(LifecycleApiError::ConfigurationCopy)?;
+        let mut custody = Self::new();
+        custody.component_funding = Some(funding);
+        Ok(Box::new(custody))
     }
 
     /// Returns the actual carrier body extent required before its allocation.
@@ -404,6 +424,24 @@ impl ProductionVmConstructionFailure {
     #[must_use]
     pub fn first_error(&self) -> Option<&LifecycleApiError> {
         self.first()
+    }
+
+    /// Moves a component diagnostic while its actual body stays in the caller's slot.
+    ///
+    /// Only the explicitly fixture-funded carrier permits this extraction. It
+    /// does not publish to Main or attest cleanup; native carriers keep their
+    /// original error until the canonical reservation accepts the owner.
+    #[cfg(test)]
+    pub(crate) fn take_component_first_error(&mut self) -> Option<LifecycleApiError> {
+        if self.additional.is_some() {
+            return None;
+        }
+        match &mut self.storage {
+            FailureStorage::Preallocated(custody) if custody.component_funding.is_some() => {
+                custody.first.take()
+            }
+            _ => None,
+        }
     }
 
     /// Returns the fixed inline extent of one owning failure slot.
