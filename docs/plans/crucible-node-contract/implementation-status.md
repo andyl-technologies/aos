@@ -1263,6 +1263,47 @@ aliases and serialized identities. Four backend identity/profile controls and
 the two directly affected lineage tests pass; this is not a full campaign-suite
 result. The earlier broad campaign run has no final result after interruption.
 
+### Complete Hello and launch layouts
+
+Failure-only logging on the existing startup test confirms that the invocation
+report check passes. Its next refusal is `ResourceExhausted("native5 actual Hello
+allocation")`, 4.628 seconds into bootstrap and before the five-second cut. This
+run has zero passes and one failure in 71.81 seconds. All six temporary logging
+edits are removed; a 20.23-second rebuild reproduces the pre-probe executable.
+These source-built provider checks use the normal unoptimized Cargo dev profile.
+
+The selected test declaration included the raw Hello frame bytes but omitted
+both retained frame descriptors. It now uses the defining allocation-free layout
+getter, also consumed by baseline pricing. Actual construction, guards, limits
+and deadlines remain unchanged. The shared launch counter also includes its
+defining borrowed field views without duplicating its observer/facts headers.
+
+All 1,753 Core, seven contract and 1,077 provider tests pass with zero failures;
+32 Core and thirteen provider tests remain ignored. The actual Hello controls
+compare requested and allocated layouts at minimum, ordinary and maximum frame
+credits, retain exact/one-short guard behavior and reject invalid limits. The
+clean provider rebuild passes in 20.59 seconds. Startup with the corrected
+declaration still fails, with zero passes and one failure in 72.70 seconds. The
+next precise refusal is unclassified; the final-source gates and native
+preservation remain outstanding.
+
+### Ordinary rational clocks and observation continuity
+
+Authored capability selection now routes the existing rational-rate alarm clock
+through ordinary exact execution and boundary settlement. Two real executor
+controls pass in 3.85 seconds. They compare all six complete native publications
+across two fresh catalogs and reject unsupported operations, Producer editions,
+changed facets, configurations and enrolled script bytes. Preservation and richer
+control capabilities retain their separate admission policies.
+
+Nonempty observation batches now require their checked inclusive sequence range
+to contain exactly their actual event count. The old validator could accept one
+event claiming positions one through one hundred, allowing journal append to
+advance past missing observations. All 25 public contract integration tests and
+21 journal tests pass. New controls exercise actual decode/identity and append,
+rejection without cursor or storage mutation, exact retries, whole-batch paging,
+empty batches and valid ranges ending at the maximum sequence value.
+
 ## Known gaps and exit criteria
 
 Completion requires the full [qualification plan](qualification-plan.md),

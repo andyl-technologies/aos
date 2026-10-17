@@ -770,6 +770,7 @@ mod complete_source;
 pub use complete_source::{
     RetainedCompleteSourceDefinition, RetainedCompleteSourceMetadata,
     observe_retained_native_coordinator, observe_retained_native_launch,
+    retained_native_launch_counter_scratch_data,
 };
 
 mod native_record;

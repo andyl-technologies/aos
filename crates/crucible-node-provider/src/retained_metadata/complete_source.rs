@@ -297,6 +297,104 @@ impl ObserveMetadata for Continuation {
     }
 }
 
+/// Names the defining typed launch observation headers before its borrowed walk.
+///
+/// The count excludes the separately admitted launch clone, raw encoded bank,
+/// nested requested backing and Source holder. It allocates nothing and grants
+/// neither launch, clone nor capture permission.
+pub fn retained_native_launch_counter_scratch_data() -> usize {
+    use crate::reference_packet::service::{PacketNative5SourceLaunch, PacketNative5StorageLimits};
+    use std::mem::size_of;
+
+    size_of::<&PacketNative5SourceLaunch>()
+        + size_of::<MetadataObserver<'static>>()
+        + size_of::<RetainedProtocolMetadataFacts>()
+        + size_of::<Result<RetainedProtocolMetadataFacts, ProviderError>>()
+        + size_of::<Result<(), ProviderError>>()
+        + size_of::<&PacketProgramDefinition>()
+        + size_of::<&PacketConnectedDefinition>()
+        + native_launch_field_view_bytes(|original: &'static PacketNative5SourceLaunch| {
+            let PacketNative5SourceLaunch {
+                schema_version,
+                selection,
+                program,
+                controller_pid,
+                controller_uid,
+                controller_executable,
+                admission_token,
+                initial_coordinator,
+                limits,
+                storage,
+                capture_profile,
+                confirmation_selection,
+                ack_emitter_selection,
+                native_codec_metadata_extent,
+                protocol_metadata_limits,
+                complete_restore_selection,
+                restore_input_emitter_selection,
+                capture_allocation_selection,
+                fresh_restore_allocation_selection,
+                effects,
+            } = original;
+            (
+                (
+                    schema_version,
+                    selection,
+                    program,
+                    controller_pid,
+                    controller_uid,
+                    controller_executable,
+                ),
+                (
+                    admission_token,
+                    initial_coordinator,
+                    limits,
+                    storage,
+                    capture_profile,
+                    confirmation_selection,
+                ),
+                (
+                    ack_emitter_selection,
+                    native_codec_metadata_extent,
+                    protocol_metadata_limits,
+                    complete_restore_selection,
+                ),
+                (
+                    restore_input_emitter_selection,
+                    capture_allocation_selection,
+                    fresh_restore_allocation_selection,
+                    effects,
+                ),
+            )
+        })
+        + native_launch_field_view_bytes(|original: &'static PacketNative5SourceLaunch| {
+            let PacketNative5StorageLimits {
+                snapshot_bytes,
+                control_snapshot_bytes,
+                protocol_snapshot_bytes,
+                frame_bank_bytes,
+                frames_per_direction,
+                hello_bytes,
+                settlement_bytes,
+            } = &original.storage;
+            (
+                snapshot_bytes,
+                control_snapshot_bytes,
+                protocol_snapshot_bytes,
+                frame_bank_bytes,
+                frames_per_direction,
+                hello_bytes,
+                settlement_bytes,
+            )
+        })
+}
+
+fn native_launch_field_view_bytes<T>(
+    _: impl FnOnce(&'static crate::reference_packet::service::PacketNative5SourceLaunch) -> T,
+) -> usize {
+    std::mem::size_of::<T>()
+}
+
 #[cfg(test)]
 #[expect(
     clippy::unwrap_used,

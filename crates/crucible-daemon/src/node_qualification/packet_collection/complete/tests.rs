@@ -482,6 +482,7 @@ fn storage_selection()
             control::PacketNative5StorageSelection, service::PacketNative5StorageLimits,
         },
     };
+    let hello_bytes = crucible_node_provider::native_hello::OriginalNativeHelloJournal::reservation_requested_storage_data(65_536).unwrap();
     // These values are test declaration data, not physical bank allocation.
     PacketNative5StorageSelection {
         storage: PacketNative5StorageLimits {
@@ -490,7 +491,9 @@ fn storage_selection()
             protocol_snapshot_bytes: U64::new(1024 * 1024),
             frame_bank_bytes: U64::new(1024 * 1024),
             frames_per_direction: U64::new(64),
-            hello_bytes: U64::new(131080),
+            // The same fixed native constructor retains two Slot descriptors
+            // beside the literal framed bytes. Declare their complete layout.
+            hello_bytes: U64::new(u64::try_from(hello_bytes).unwrap()),
             settlement_bytes: U64::new(1024 * 1024),
         },
         limits: Limits {

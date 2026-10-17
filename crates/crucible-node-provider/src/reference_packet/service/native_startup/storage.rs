@@ -157,7 +157,6 @@ pub fn original_native_birth_startup_counter_scratch_data() -> usize {
         + size_of::<Result<usize, ProviderError>>()
         + size_of::<Result<Option<bool>, ProviderError>>()
         + size_of::<Result<hello::HelloStorage, ProviderError>>()
-        + size_of::<Result<crate::retained_metadata::RetainedProtocolMetadataFacts, ProviderError>>()
         // Private second-frame projection retains its independent raw extent
         // beside the original max-raw result and nested helper views.
         + size_of::<crate::retained_metadata::serialization_storage::OriginalJsonValueStorageExtentData>()
@@ -167,8 +166,10 @@ pub fn original_native_birth_startup_counter_scratch_data() -> usize {
         + crate::protocol_snapshot::owned11::correspondence::envelope_counter_scratch_data()
         + size_of::<PacketNativeBirthStartupStorageData>()
         + size_of::<PacketNativeBirthStartupInputs<'_>>()
-        + size_of::<MetadataObserver<'static>>()
-        + size_of::<crate::retained_metadata::RetainedProtocolMetadataFacts>()
+        // The defining launch observer includes its complete borrowed field
+        // views beside the observer and returned facts. Both Core and native
+        // admit this same fixed window before the exhaustive launch walk.
+        + crate::retained_metadata::retained_native_launch_counter_scratch_data()
         + original_json_value_storage_extent_counter_scratch_data()
         + super::super::complete_restore::transfer::selected_issuer_decode_counter_scratch_data()
         + size_of::<InitialCounterLocals>()
@@ -445,7 +446,10 @@ fn birth_storage_with_source(
             extent(metadata.native_after_rows.get())?,
         )?;
     let literal = literal_bank(history, frames)?;
-    let native_hello = literal_bank((NATIVE_HELLO_BYTES + 4) * 2, 1)?;
+    let native_hello =
+        crate::native_hello::OriginalNativeHelloJournal::reservation_requested_storage_data(
+            NATIVE_HELLO_BYTES,
+        )?;
     let model_banks = match &launch.program {
         PacketConnectedSourceProgram::Producer { .. } =>
             crate::reference_packet::PacketProgram::original_initial_reservation_requested_bytes()?,

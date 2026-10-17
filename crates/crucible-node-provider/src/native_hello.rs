@@ -59,6 +59,36 @@ impl<S: Read + Write> OriginalNativeHelloBindRefusal<S> {
 }
 
 impl OriginalNativeHelloJournal {
+    /// Quotes requested literal byte and descriptor backing for one Hello.
+    ///
+    /// This includes both framed directions and their two lifetime descriptors.
+    /// It excludes the journal and shared-owner headers, parsing work, and any
+    /// allocator rounding. Actual construction must still check its capacities.
+    /// The allocation-free DATA grants no reservation or native authority.
+    ///
+    /// # Errors
+    /// Refuses zero or over-one-MiB frame credit or checked layout overflow.
+    pub fn reservation_requested_storage_data(
+        maximum_bytes: usize,
+    ) -> Result<usize, ProviderError> {
+        if maximum_bytes == 0 || maximum_bytes > MAXIMUM_HELLO_BYTES {
+            return Err(ProviderError::ResourceExhausted(
+                "native original Hello limits",
+            ));
+        }
+        maximum_bytes
+            .checked_add(4)
+            .and_then(|bytes| bytes.checked_mul(2))
+            .and_then(|bytes| {
+                crate::transport::original_frames::original_frame_slot_layout()
+                    .checked_mul(2)
+                    .and_then(|descriptors| bytes.checked_add(descriptors))
+            })
+            .ok_or(ProviderError::ResourceExhausted(
+                "native original Hello requested storage",
+            ))
+    }
+
     /// Observes the actual Hello bank in the native Capture shared-root roster.
     ///
     /// The original creator guard precedes every bank borrow. This journal's
@@ -512,6 +542,36 @@ mod tests {
         let mut frame = (bytes.len() as u32).to_be_bytes().to_vec();
         frame.extend_from_slice(bytes);
         frame
+    }
+
+    #[test]
+    fn original_hello_requested_layout_includes_both_actual_descriptor_owners() {
+        for maximum_bytes in [1, 128, 65_536, MAXIMUM_HELLO_BYTES] {
+            let requested =
+                OriginalNativeHelloJournal::reservation_requested_storage_data(maximum_bytes)
+                    .unwrap();
+            let original = OriginalNativeHelloJournal::reserve(maximum_bytes, 64).unwrap();
+            let raw_only = (maximum_bytes + 4) * 2;
+
+            assert_eq!(
+                requested,
+                raw_only + 2 * crate::transport::original_frames::original_frame_slot_layout()
+            );
+            assert_eq!(original.allocated_bytes(), requested);
+            // CompleteBirth and endpoint preflight compare these actual
+            // capacities with the selected limit; exact fits, one short fails.
+            assert!(original.allocated_bytes() <= requested);
+            assert!(original.allocated_bytes() > requested - 1);
+            assert!(original.allocated_bytes() > raw_only);
+            assert_eq!(original.original_frames().frames().count(), 0);
+        }
+
+        for invalid in [0, MAXIMUM_HELLO_BYTES + 1, usize::MAX] {
+            assert!(
+                OriginalNativeHelloJournal::reservation_requested_storage_data(invalid).is_err()
+            );
+            assert!(OriginalNativeHelloJournal::reserve(invalid, 64).is_err());
+        }
     }
 
     #[test]
