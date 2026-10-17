@@ -43,57 +43,7 @@ impl RetainedRestorationActivationData<'_> {
         &self,
     ) -> Result<RetainedProtocolMetadataFacts, ProviderError> {
         let mut observer = MetadataObserver::new();
-        match self {
-            Self::Command(value) => observer.observe(*value)?,
-            Self::Response(value) => observe_response(value, &mut observer)?,
-            Self::Manifest(value) => {
-                let crucible_node_contract::ActivationManifest {
-                    schema_version,
-                    transaction_id,
-                    activation_id,
-                    world_generation,
-                    gate_id,
-                    world_binding_hash,
-                    owners,
-                    coordinator_state_ref,
-                    extensions,
-                } = value;
-                observer.observe(schema_version)?;
-                observer.observe(transaction_id)?;
-                observer.observe(activation_id)?;
-                observer.observe(world_generation)?;
-                observer.observe(gate_id)?;
-                observer.observe(world_binding_hash)?;
-                observer.vector::<crucible_node_contract::PreparedOwner>(owners.capacity())?;
-                for owner in owners {
-                    let crucible_node_contract::PreparedOwner {
-                        owner_id,
-                        incarnation_id,
-                        owner_generation,
-                        prepared_token,
-                        binding_hashes,
-                        ready_receipt,
-                        extensions,
-                    } = owner;
-                    observer.observe(owner_id)?;
-                    observer.observe(incarnation_id)?;
-                    observer.observe(owner_generation)?;
-                    observer.observe(prepared_token)?;
-                    observer.observe(binding_hashes)?;
-                    observer.observe(ready_receipt)?;
-                    observer.observe(extensions)?;
-                }
-                observer.observe(coordinator_state_ref)?;
-                observer.observe(extensions)?;
-            }
-            Self::Request(value) => observer.observe(*value)?,
-            Self::Context(value) => observer.observe(*value)?,
-            Self::Proof(value) => observer.observe(*value)?,
-            Self::Artifact(value) => observer.observe(*value)?,
-            Self::UploadRequest(value) => observer.observe(*value)?,
-            Self::UploadContext(value) => observer.observe(*value)?,
-            Self::UploadArtifact(value) => observer.observe(*value)?,
-        }
+        self.observe_historical_metadata_data(&mut observer)?;
         Ok(observer.finish())
     }
 }
@@ -378,7 +328,9 @@ pub(crate) fn observe_response(
 /// charged. These fixed views authorize neither a Source read nor activation.
 pub fn restoration_activation_retained_counter_scratch_data() -> usize {
     use crate::bodies::*;
-    size_of::<RetainedRestorationActivationData<'static>>()
+    size_of::<&mut crate::retained_metadata::records::MetadataRecordBank>()
+        + size_of::<&mut crate::retained_metadata::aliases::MetadataAliasBank>()
+        + size_of::<RetainedRestorationActivationData<'static>>()
         + size_of::<MetadataObserver<'static>>()
         + size_of::<RetainedProtocolMetadataFacts>()
         + size_of::<Result<RetainedProtocolMetadataFacts, ProviderError>>()
@@ -520,4 +472,206 @@ pub fn restoration_activation_historical_native_evidence_transient_bytes_data(
     crate::retained_metadata::historical_serialization_transient_data(
         restoration_activation_retained_native_evidence_data(record, underlying)?,
     )
+}
+
+impl RetainedRestorationActivationData<'_> {
+    fn observe_historical_metadata_data(
+        &self,
+        observer: &mut MetadataObserver<'_>,
+    ) -> Result<(), ProviderError> {
+        match self {
+            Self::Command(value) => observer.observe(*value)?,
+            Self::Response(value) => observe_response(value, observer)?,
+            Self::Manifest(value) => {
+                let crucible_node_contract::ActivationManifest {
+                    schema_version,
+                    transaction_id,
+                    activation_id,
+                    world_generation,
+                    gate_id,
+                    world_binding_hash,
+                    owners,
+                    coordinator_state_ref,
+                    extensions,
+                } = value;
+                observer.observe(schema_version)?;
+                observer.observe(transaction_id)?;
+                observer.observe(activation_id)?;
+                observer.observe(world_generation)?;
+                observer.observe(gate_id)?;
+                observer.observe(world_binding_hash)?;
+                observer.vector::<crucible_node_contract::PreparedOwner>(owners.capacity())?;
+                for owner in owners {
+                    let crucible_node_contract::PreparedOwner {
+                        owner_id,
+                        incarnation_id,
+                        owner_generation,
+                        prepared_token,
+                        binding_hashes,
+                        ready_receipt,
+                        extensions,
+                    } = owner;
+                    observer.observe(owner_id)?;
+                    observer.observe(incarnation_id)?;
+                    observer.observe(owner_generation)?;
+                    observer.observe(prepared_token)?;
+                    observer.observe(binding_hashes)?;
+                    observer.observe(ready_receipt)?;
+                    observer.observe(extensions)?;
+                }
+                observer.observe(coordinator_state_ref)?;
+                observer.observe(extensions)?;
+            }
+            Self::Request(value) => observer.observe(*value)?,
+            Self::Context(value) => observer.observe(*value)?,
+            Self::Proof(value) => observer.observe(*value)?,
+            Self::Artifact(value) => observer.observe(*value)?,
+            Self::UploadRequest(value) => observer.observe(*value)?,
+            Self::UploadContext(value) => observer.observe(*value)?,
+            Self::UploadArtifact(value) => observer.observe(*value)?,
+        }
+        Ok(())
+    }
+
+    /// Records complete actual activation owner capacities into finite banks.
+    ///
+    /// Each owner needs its independent precharged record/alias pair. Both banks
+    /// are cleared; exhaustion preserves partial rows and never grows storage.
+    /// This reuses the identical owning traversal, without serializers or IO.
+    ///
+    /// # Errors
+    /// Refuses unsupported children, traversal/overflow or finite bank exhaustion.
+    pub fn record_historical_metadata_data(
+        &self,
+        records: &mut crate::retained_metadata::records::MetadataRecordBank,
+        aliases: &mut crate::retained_metadata::aliases::MetadataAliasBank,
+    ) -> Result<RetainedProtocolMetadataFacts, ProviderError> {
+        let mut observer = MetadataObserver::recording_with_aliases(records, aliases);
+        self.observe_historical_metadata_data(&mut observer)?;
+        Ok(observer.finish())
+    }
+}
+
+/// Borrows actual command, full manifest or independent World-result history.
+///
+/// ```text
+/// {kind:"command"|"manifest"|"world_result", data:actual_typed_fields}
+/// ```
+///
+/// This wrapper has no decoder, owner extraction or live permission constructor.
+pub enum HistoricalRestorationActivationData<'a> {
+    /// Borrows an actual retained Arm or World command, including all extensions.
+    Command(&'a PacketRestorationActivationCommand),
+    /// Borrows the actual complete manifest and independent owner/ID capacities.
+    Manifest(&'a crucible_node_contract::ActivationManifest),
+    /// Borrows an independently retained actual World result and its own banks.
+    WorldResult(&'a crate::bodies::WorldActivateResult),
+}
+
+impl HistoricalRestorationActivationData<'_> {
+    fn observe_historical_metadata_data(
+        &self,
+        observer: &mut MetadataObserver<'_>,
+    ) -> Result<(), ProviderError> {
+        match self {
+            Self::Command(value) => RetainedRestorationActivationData::Command(value)
+                .observe_historical_metadata_data(observer),
+            Self::Manifest(value) => RetainedRestorationActivationData::Manifest(value)
+                .observe_historical_metadata_data(observer),
+            Self::WorldResult(value) => observer.observe(*value),
+        }
+    }
+
+    /// Observes actual backing without deriving capacity from serialized lengths.
+    ///
+    /// # Errors
+    /// Refuses checked traversal, depth or extent overflow.
+    pub fn retained_metadata_data(&self) -> Result<RetainedProtocolMetadataFacts, ProviderError> {
+        let mut observer = MetadataObserver::new();
+        self.observe_historical_metadata_data(&mut observer)?;
+        Ok(observer.finish())
+    }
+
+    /// Records the exact owning walk in this owner's independent finite banks.
+    ///
+    /// # Errors
+    /// Refuses metadata traversal or either original bank capacity; partial rows
+    /// remain retained and no growth or backend callback occurs.
+    pub fn record_historical_metadata_data(
+        &self,
+        records: &mut crate::retained_metadata::records::MetadataRecordBank,
+        aliases: &mut crate::retained_metadata::aliases::MetadataAliasBank,
+    ) -> Result<RetainedProtocolMetadataFacts, ProviderError> {
+        let mut observer = MetadataObserver::recording_with_aliases(records, aliases);
+        self.observe_historical_metadata_data(&mut observer)?;
+        Ok(observer.finish())
+    }
+
+    /// Bounds actual Bytes serialization temporaries independently of output.
+    ///
+    /// # Errors
+    /// Refuses checked metadata traversal or encoding extent overflow.
+    pub fn historical_serialization_transient_bytes_data(&self) -> Result<usize, ProviderError> {
+        crate::retained_metadata::historical_serialization_transient_data(
+            self.retained_metadata_data()?,
+        )
+    }
+
+    /// Names complete wrapper, same-walk and actual borrowed serializer layouts.
+    pub fn historical_counter_scratch_data() -> usize {
+        restoration_activation_retained_counter_scratch_data()
+            + crate::retained_metadata::historical_serialization_counter_scratch_data()
+            + size_of::<HistoricalRestorationActivationData<'static>>()
+            + size_of::<&HistoricalRestorationActivationData<'static>>()
+            + size_of::<&RetainedRestorationActivationData<'static>>()
+            + size_of::<HistoricalCommand<'static>>()
+            + size_of::<&HistoricalCommand<'static>>()
+            + size_of::<&&PacketRestorationActivationCommand>()
+            + size_of::<&crate::bodies::ActivateRequest>()
+            + size_of::<&crate::bodies::WorldActivateRequest>()
+            + size_of::<&&crucible_node_contract::ActivationManifest>()
+            + size_of::<&&crate::bodies::WorldActivateResult>()
+    }
+}
+
+impl serde::Serialize for HistoricalRestorationActivationData<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("HistoricalRestorationActivationData", 2)?;
+        match self {
+            Self::Command(value) => {
+                state.serialize_field("kind", "command")?;
+                state.serialize_field("data", &HistoricalCommand(value))?;
+            }
+            Self::Manifest(value) => {
+                state.serialize_field("kind", "manifest")?;
+                state.serialize_field("data", value)?;
+            }
+            Self::WorldResult(value) => {
+                state.serialize_field("kind", "world_result")?;
+                state.serialize_field("data", value)?;
+            }
+        }
+        state.end()
+    }
+}
+
+struct HistoricalCommand<'a>(&'a PacketRestorationActivationCommand);
+
+impl serde::Serialize for HistoricalCommand<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("HistoricalRestorationActivationCommand", 2)?;
+        match self.0 {
+            PacketRestorationActivationCommand::Arm(value) => {
+                state.serialize_field("kind", "arm")?;
+                state.serialize_field("data", value)?;
+            }
+            PacketRestorationActivationCommand::WorldActivate(value) => {
+                state.serialize_field("kind", "world_activate")?;
+                state.serialize_field("data", value)?;
+            }
+        }
+        state.end()
+    }
 }

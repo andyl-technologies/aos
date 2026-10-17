@@ -730,3 +730,6 @@ mod tests {
         assert!(!attempt.verified && !attempt.dispatched && !attempt.published);
     }
 }
+
+#[path = "observation/settled.rs"]
+mod settled;

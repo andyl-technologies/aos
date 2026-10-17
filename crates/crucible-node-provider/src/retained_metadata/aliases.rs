@@ -15,6 +15,12 @@ use serde::{Serialize, Serializer, ser::SerializeSeq};
 /// Identifies a closed shared backing category in the whole-eleven graph.
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub enum MetadataSharedKind {
+    /// Names one same-process physical restoration hold, never a portable gate.
+    NativeRestoredPhysicalHold,
+    /// Names one retained native complete Commit attempt allocation.
+    NativeRestoreCommitAttempt,
+    /// Names one retained six-input native restoration custody allocation.
+    NativeRestoreInputCustody,
     /// Names the independent once restored observation attempt allocation.
     NativeRestorationObservationAttempt,
     /// Names a separately spent recurring Observe attempt under startup16.
@@ -80,6 +86,9 @@ impl MetadataSharedKind {
 
     fn name(self) -> &'static str {
         match self {
+            Self::NativeRestoredPhysicalHold => "native-restored-physical-hold",
+            Self::NativeRestoreCommitAttempt => "native-restore-commit-attempt",
+            Self::NativeRestoreInputCustody => "native-restore-input-custody",
             Self::NativeRestorationObservationAttempt => "native-restoration-observation-attempt",
             Self::NativeRestoredSuffixObservationAttempt => {
                 "native-restored-suffix-observe-attempt"

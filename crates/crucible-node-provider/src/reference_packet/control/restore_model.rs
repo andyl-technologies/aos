@@ -320,3 +320,9 @@ impl PacketPreparedCompleteModel {
 fn refused() -> ProviderError {
     ProviderError::Correlation("original complete model/physical hold differs")
 }
+
+#[path = "restore_model/settled.rs"]
+mod settled;
+
+#[path = "restore_model/model_history.rs"]
+mod model_history;

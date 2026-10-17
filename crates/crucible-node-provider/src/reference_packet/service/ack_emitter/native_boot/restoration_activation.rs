@@ -932,3 +932,6 @@ impl OriginalRestorationActivationRequirement {
 #[cfg(test)]
 #[path = "restoration_activation/tests.rs"]
 mod tests;
+
+#[path = "restoration_activation/settled.rs"]
+mod settled;

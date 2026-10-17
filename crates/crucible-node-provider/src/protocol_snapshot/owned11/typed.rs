@@ -627,3 +627,7 @@ pub(crate) use historical_struct;
 // Only the actual closed Position/Phase serializer is admitted by this leaf.
 #[path = "typed/position.rs"]
 mod position;
+
+#[path = "typed/bytes.rs"]
+mod bytes;
+pub(crate) use bytes::historical_bytes_counter_scratch_data;

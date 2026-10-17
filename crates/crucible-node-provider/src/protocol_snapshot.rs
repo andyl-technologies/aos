@@ -1671,3 +1671,6 @@ pub use host_metadata_quote::OriginalOwned11StateQuote;
 
 /// Preserves complete suffix ledger/history as inert versioned data, never a live permit.
 pub mod restored_suffix_history;
+
+/// Reads exact restoration-stage history as DATA, independently of live Capture.
+pub mod native_restoration_stage_history;

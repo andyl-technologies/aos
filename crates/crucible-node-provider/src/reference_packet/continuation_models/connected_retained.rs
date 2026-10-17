@@ -348,3 +348,6 @@ impl PacketConnectedProgram {
         Ok(())
     }
 }
+
+#[path = "connected_adoption_history.rs"]
+mod settled_history;

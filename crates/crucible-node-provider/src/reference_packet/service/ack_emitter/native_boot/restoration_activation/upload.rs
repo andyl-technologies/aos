@@ -839,48 +839,7 @@ impl NativeAckBoot {
                 )?;
                 let flight = attempt.try_borrow().map_err(|_| borrowed())?;
                 flight.ensure_origin()?;
-                let NativeRestorationUploadAttempt {
-                    creator,
-                    thread: _,
-                    ordinal,
-                    original,
-                    artifact,
-                    context,
-                    pending,
-                    terminal,
-                    seen,
-                    bytes,
-                    content_attempted,
-                    next_offset,
-                    published_requests,
-                    verified,
-                    begun,
-                    complete,
-                    next_progress,
-                } = &*flight;
-                observer.observe(creator)?;
-                observer.observe(ordinal)?;
-                observer.observe(original)?;
-                if let Some(artifact) = artifact {
-                    artifact.observe_owned_metadata_data(observer)?;
-                }
-                if let Some(context) = context {
-                    context.observe_owned_metadata_data(observer)?;
-                }
-                observer.observe(pending)?;
-                observer.observe(terminal)?;
-                observer.observe(seen)?;
-                observer.observe(bytes)?;
-                observer.observe(content_attempted)?;
-                observer.observe(next_offset)?;
-                observer.observe(published_requests)?;
-                observer.observe(verified)?;
-                observer.observe(begun)?;
-                observer.observe(complete)?;
-                if let Some((offset, complete)) = next_progress {
-                    observer.observe(offset)?;
-                    observer.observe(complete)?;
-                }
+                flight.observe_settled_history_metadata_data(observer)?;
             }
         }
         Ok(())
@@ -923,3 +882,6 @@ pub(super) fn append_upload_chunk_data(
     bank.extend_from_slice(bytes);
     Ok(next)
 }
+
+#[path = "upload/settled.rs"]
+mod settled;

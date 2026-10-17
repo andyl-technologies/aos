@@ -17,7 +17,7 @@ pub mod json_value;
 
 pub(crate) mod correspondence;
 mod schema;
-mod typed;
+pub(crate) mod typed;
 
 pub mod aliases;
 

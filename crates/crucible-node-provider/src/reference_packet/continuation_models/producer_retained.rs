@@ -502,3 +502,6 @@ mod tests {
         assert_eq!(socket.as_ref().unwrap().as_raw_fd(), descriptor);
     }
 }
+
+#[path = "producer_adoption_history.rs"]
+mod settled_history;

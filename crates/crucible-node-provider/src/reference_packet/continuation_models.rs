@@ -100,7 +100,7 @@ struct CaptureView<'a, T> {
     state: T,
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ModelRecord {
     schema: String,
@@ -226,7 +226,7 @@ struct ProducerView<'a> {
     failed: bool,
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ProducerState {
     events: Vec<PacketEvent>,
@@ -527,3 +527,6 @@ pub fn packet_model_capture_boundary_counter_scratch_data() -> usize {
         + super::connected::continuation::capture_boundary_counter_scratch_data()
         + 20
 }
+
+#[path = "continuation_models/settled_history.rs"]
+pub(crate) mod settled_history;
