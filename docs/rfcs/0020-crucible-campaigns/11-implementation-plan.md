@@ -2573,7 +2573,60 @@ manual-bundle, trusted-signers, legacy evidence, or compatibility input path.
 `gate:campaign-release-acceptance`, `gate:campaign-envoy-network-five-vm`, and
 `gate:e2e-determinism`.
 
-## 11.12 Implementation completion definition
+## 11.12 Phase 10 — Run Arena and Run Journal
+
+Primary crates: `crucible`, `crucible-api`, `crucible-daemon`, and
+`crucible-cas`. [§16](16-run-arena-and-run-journal.md) defines the
+architecture. Each task is independently useful and keeps every existing gate
+green; version-nine closure bytes stay unchanged until T-CAM-10.5.
+
+- [ ] **T-CAM-10.1** Replace whole-value staging and rollback clones of the
+  scheduler, the production fault runtime, the network effect state, and
+  host device trees with structurally shared values, and prove per-quantum
+  host time and resident memory stay flat over a long-horizon attempt.
+- [ ] **T-CAM-10.2** Split the production lifecycle loop into a Run Arena, a
+  Run Authority, rebuilt caches, and unsettled transients with a recorded
+  classification of every field. Add one `freeze_run_arena()` used by both
+  exact capture and hot-fork continuation capture, one `unsettled()` predicate
+  replacing the scattered capture-refusal checks, and one thaw constructor;
+  delete the field-by-field continuation adapter.
+- [ ] **T-CAM-10.3** Merge the scheduler event log and the executor attempt
+  logs into one Run Journal per run with one segment encoding and an
+  entry-prefix digest; seal at every checkpoint and fork offset; make
+  checkpoints, closures, and hot-fork continuations reference journal
+  positions; and convert the remaining log copies into projections or
+  byte-identical placements.
+- [ ] **T-CAM-10.4** Introduce typed tables with write barriers, persistent
+  collections for hot tables, chunked tables with content-defined canonical
+  chunks for growing records, and the StateRoot; extend the hot-fork
+  equivalence matrix to compare StateRoots across tiers.
+- [ ] **T-CAM-10.5** Replace the nested opaque byte vectors in checkpoint wires
+  with an arena manifest of table roots under a new closure schema version,
+  persisting only dirty chunks.
+- [ ] **T-CAM-10.6** Move live operating-system resources into the Run
+  Authority with resource slots, rebind them in one verified transaction, and
+  prove every slot is reaped or quarantined at run end.
+- [ ] **T-CAM-10.7** Add an evicting, trait-backed spill cache for sealed
+  chunks and the read-only Campaign Arena status view.
+- [ ] **T-CAM-10.8** Add the checkpoint-drain stop mode, exact demotion of
+  published-root hot sources, and promotion-only resume admission; add the
+  restart StateRoot-sequence test to the operational-continuity gate.
+- [ ] **T-CAM-10.9** Resolve the survey defects of
+  [§16.14](16-run-arena-and-run-journal.md#1614-known-defects-found-during-the-survey)
+  that no other Phase 10 task owns: the unreachable demanded exact hot-fork
+  source, double genesis replay and unbounded evidence in production debug
+  goto, and the stale schema and namespace numbers in §04a and §05.
+
+**Gates:** `gate:campaign-performance`, `gate:host-clone-cost`,
+`gate:hot-fork-equivalence`, `gate:hot-fork-isolation`,
+`gate:exact-closure-streaming`, `gate:campaign-replay`,
+`gate:content-address`, `gate:attempt-idempotence`,
+`gate:control-responsiveness`, `gate:campaign-store-composition`,
+`gate:campaign-store-equivalence`, `gate:campaign-cold-continuity`,
+`gate:campaign-operational-continuity`, `gate:campaign-component-contract`,
+`gate:e2e-determinism`, `gate:license-boundary`, and `gate:abi-conformance`.
+
+## 11.13 Implementation completion definition
 
 This RFC is implemented only when:
 
@@ -2602,7 +2655,7 @@ This RFC is implemented only when:
   authenticated evidence;
 - every required gate is green with no alternate compatibility runtime.
 
-## 11.13 Requirement and schema traceability
+## 11.14 Requirement and schema traceability
 
 The authoritative mapping in [`requirement-traceability.tsv`](requirement-traceability.tsv)
 names an implementing task and executable gate for each normative
@@ -2623,6 +2676,8 @@ traceability records:
 | `CMEAS-1..22` | 3, 8 | campaign model, replay, ABI conformance |
 | `CSEC-1..12` | 1–9 | license boundary, ABI conformance, isolation, store equivalence |
 | `CPERF-1..10` | 4–7, 9 | branch-point model, lazy frontier, hot-fork scaling/equivalence, exact-closure streaming |
+| `ARENA-1..26` | 10 | hot-fork equivalence/isolation, exact-closure streaming, performance, host clone cost, content address, operational and cold continuity, store composition, license boundary |
+| `RJRNL-1..8` | 10 | campaign replay, content address, attempt idempotence, cold continuity, control responsiveness |
 
 The executable traceability check required by T-CAM-0.4 must require one row per
 requirement ID, name at least one implementing task and test for each, reject
