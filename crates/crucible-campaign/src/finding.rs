@@ -48,8 +48,11 @@ pub const MAX_FINDING_REPLAY_PUBLICATION_STATIC_BYTES: u64 = 512 * 1024 * 1024;
 /// Replay-side scheduler log segments, resolved-effect trace segments, and
 /// replay-closure frames grow with the replayed run, so they are charged to
 /// their own per-finding allowance rather than the static one. The value
-/// admits the four capture roles at the default 4 GiB attempt event-log bound
-/// after equal segments are shared across roles.
+/// admits the four capture roles' scheduler logs at the default 4 GiB attempt
+/// event-log bound after equal segments are shared across roles. Traces are
+/// charged separately against that same per-attempt bound, so four roles with
+/// full logs and full traces can exceed it; the role that crosses the
+/// allowance is recorded as `PublicationLimitExceeded` rather than truncated.
 pub const MAX_FINDING_REPLAY_PUBLICATION_SEGMENT_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 
 /// Role-tagged exact-checkpoint accelerators retained by one finding cluster.
