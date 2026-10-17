@@ -548,7 +548,7 @@ fn actual_pack_bytes_derive_exact_index_but_corrupt_body_never_does() -> TestRes
             &corrupt,
             id,
             &profile,
-            &MetadataValidator::new(profile),
+            &MetadataValidator::new(profile.clone()),
             &BTreeMap::new(),
             limits
         )
