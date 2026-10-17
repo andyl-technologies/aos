@@ -168,7 +168,7 @@
           ),
           (
               ${builtins.toJSON "${executor}/bin/daemon-lib"},
-              ["--exact", "crucible_measurement::evidence::tests::v2_publication_round_trips_and_rederives_guest_and_model_samples"],
+              ["--exact", "crucible_measurement::evidence::tests::v3_publication_round_trips_and_rederives_guest_and_model_samples"],
               "mixed_guest_model_raw_replay", 1,
           ),
           (

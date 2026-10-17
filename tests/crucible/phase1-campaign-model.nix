@@ -120,7 +120,7 @@ in
               model::measurement::runtime::tests::model_sources_project_exact_replay_samples
             run_exact_lib_test \
               crucible-daemon \
-              crucible_measurement::evidence::tests::v2_publication_round_trips_and_rederives_guest_and_model_samples
+              crucible_measurement::evidence::tests::v3_publication_round_trips_and_rederives_guest_and_model_samples
             run_exact_lib_test \
               crucible-daemon \
               crucible_measurement::tests::verified_crucible_aggregate_drives_exact_campaign_objective
