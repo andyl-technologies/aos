@@ -1140,3 +1140,89 @@ fn revocation_completes_while_original_native_poll_effect_is_blocked() {
     );
     assert_eq!(journal.resources().effects, 2);
 }
+
+#[test]
+fn observation_range_mismatch_cannot_skip_retained_stream_or_spend_storage() {
+    let (_handshake, authority, mut journal, _) = fixture();
+    let permit = reserve(&mut journal, &authority, "request", "operation");
+    let before = journal.custody().retained_bytes;
+    let mut missing = observation(permit.operation_id(), 1);
+    missing.last_sequence = U64::new(100);
+
+    assert!(
+        journal
+            .append_observation(&permit, &missing, &verifier())
+            .is_err()
+    );
+
+    let unchanged = journal.poll(permit.operation_id(), U64::new(0), 4).unwrap();
+    assert!(unchanged.observations.is_empty());
+    assert_eq!(unchanged.next_observation_sequence, U64::new(0));
+    assert_eq!(journal.custody().retained_bytes, before);
+    assert!(
+        journal
+            .poll(permit.operation_id(), U64::new(100), 4)
+            .is_err()
+    );
+
+    let first = observation(permit.operation_id(), 1);
+    journal
+        .append_observation(&permit, &first, &verifier())
+        .unwrap();
+    let mut extra = observation(permit.operation_id(), 2);
+    extra
+        .events
+        .push(observation(permit.operation_id(), 3).events.remove(0));
+    let retained = journal.custody().retained_bytes;
+
+    assert!(
+        journal
+            .append_observation(&permit, &extra, &verifier())
+            .is_err()
+    );
+
+    let unchanged = journal.poll(permit.operation_id(), U64::new(0), 4).unwrap();
+    assert_eq!(unchanged.observations, vec![first]);
+    assert_eq!(unchanged.next_observation_sequence, U64::new(1));
+    assert_eq!(journal.custody().retained_bytes, retained);
+    let second = observation(permit.operation_id(), 2);
+    journal
+        .append_observation(&permit, &second, &verifier())
+        .unwrap();
+    let page = journal.poll(permit.operation_id(), U64::new(1), 4).unwrap();
+    assert_eq!(page.observations, vec![second]);
+    assert_eq!(page.next_observation_sequence, U64::new(2));
+}
+
+#[test]
+fn contiguous_observation_batches_preserve_original_retry_and_whole_batch_paging() {
+    let (_handshake, authority, mut journal, _) = fixture();
+    let permit = reserve(&mut journal, &authority, "request", "operation");
+    let mut batch = observation(permit.operation_id(), 1);
+    batch
+        .events
+        .push(observation(permit.operation_id(), 2).events.remove(0));
+    batch.last_sequence = U64::new(2);
+
+    journal
+        .append_observation(&permit, &batch, &verifier())
+        .unwrap();
+    let retained = journal.custody().retained_bytes;
+    journal
+        .append_observation(&permit, &batch, &verifier())
+        .unwrap();
+
+    assert_eq!(journal.custody().retained_bytes, retained);
+    let page = journal.poll(permit.operation_id(), U64::new(0), 4).unwrap();
+    assert_eq!(page.observations, vec![batch]);
+    assert_eq!(page.next_observation_sequence, U64::new(2));
+    assert!(journal.poll(permit.operation_id(), U64::new(1), 4).is_err());
+
+    let third = observation(permit.operation_id(), 3);
+    journal
+        .append_observation(&permit, &third, &verifier())
+        .unwrap();
+    let page = journal.poll(permit.operation_id(), U64::new(2), 4).unwrap();
+    assert_eq!(page.observations, vec![third]);
+    assert_eq!(page.next_observation_sequence, U64::new(3));
+}

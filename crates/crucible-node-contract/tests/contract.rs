@@ -682,3 +682,66 @@ fn canonical_stream_preserves_original_partial_sink_on_failure() {
     assert_eq!(original.bytes, b"{\"a\":1,");
     assert!(original.bytes.len() <= original.maximum);
 }
+
+fn observation(events: Vec<Event>, first: u64, last: u64) -> ObservationBatch {
+    ObservationBatch {
+        schema_version: 1,
+        execution_owner_id: Id::new("owner").unwrap(),
+        owner_binding_hash: canonical::hash("cnp.owner-binding.v1", b"owner").unwrap(),
+        world_binding_hash: canonical::hash("cnp.world-binding.v1", b"world").unwrap(),
+        activation_id: Id::new("activation").unwrap(),
+        world_generation: U64::new(1),
+        owner_generation: U64::new(1),
+        operation_id: Id::new("operation").unwrap(),
+        grant_id: Some(Id::new("grant").unwrap()),
+        first_sequence: U64::new(first),
+        last_sequence: U64::new(last),
+        events,
+        visibility: Visibility::Staged,
+        measurement_ref: canonical::content_ref(b"measurement", "text/plain").unwrap(),
+        extensions: Extensions::new(),
+    }
+}
+
+#[test]
+fn observation_range_mismatches_refuse_validation_identity_and_public_decode() {
+    for (first, last) in [(1, 3), (1, 1), (3, 2), (0, u64::MAX)] {
+        let batch = observation(vec![event(7), event(9)], first, last);
+        let bytes = canonical::canonical_json(&serde_json::to_value(&batch).unwrap()).unwrap();
+
+        assert!(
+            batch.validate().is_err(),
+            "unexpected range: {first}..={last}"
+        );
+        assert!(batch.identity().is_err());
+        assert!(canonical::decode::<ObservationBatch>(&bytes, 16 * 1024).is_err());
+    }
+}
+
+#[test]
+fn observation_range_preserves_empty_maximum_and_independent_producer_sequences() {
+    let batches = [
+        observation(Vec::new(), 0, 0),
+        observation(vec![event(7)], u64::MAX, u64::MAX),
+        observation(vec![event(7), event(9)], 20, 21),
+        observation(vec![event(7), event(9)], u64::MAX - 1, u64::MAX),
+    ];
+    for batch in &batches {
+        let before = canonical::canonical_json(&serde_json::to_value(&batch).unwrap()).unwrap();
+        let identity = batch.identity().unwrap();
+        let decoded: ObservationBatch = canonical::decode(&before, 16 * 1024).unwrap();
+
+        assert_eq!(&decoded, batch);
+        assert_eq!(decoded.identity().unwrap(), identity);
+        assert_eq!(
+            canonical::canonical_json(&serde_json::to_value(decoded).unwrap()).unwrap(),
+            before
+        );
+    }
+
+    let mut empty = observation(Vec::new(), 0, 0);
+    empty.last_sequence = U64::new(1);
+    assert!(empty.validate().is_err());
+    empty.first_sequence = U64::new(1);
+    assert!(empty.validate().is_err());
+}

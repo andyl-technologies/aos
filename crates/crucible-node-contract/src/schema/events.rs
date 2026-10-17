@@ -362,8 +362,19 @@ impl Validate for ObservationBatch {
                     "empty observation batch requires zero sequence bounds",
                 ));
             }
-        } else if self.last_sequence < self.first_sequence {
-            return Err(invalid("sequence", "observation range is reversed"));
+        } else {
+            let count = u64::try_from(self.events.len()).map_err(|_| ContractError::Overflow)?;
+            let range = self
+                .last_sequence
+                .get()
+                .checked_sub(self.first_sequence.get())
+                .and_then(|distance| distance.checked_add(1));
+            if range != Some(count) {
+                return Err(invalid(
+                    "sequence",
+                    "observation range must contain every event exactly once",
+                ));
+            }
         }
         Ok(())
     }
