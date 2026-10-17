@@ -22,7 +22,7 @@ pub(crate) use context::PublisherRecoveryContext;
 #[cfg(feature = "tokio")]
 pub use manifest::PeerManifestPublishedObject;
 #[cfg(feature = "tokio")]
-pub(crate) use running::{PublisherRunningContext, ResumeFailure, ResumeFailureStage};
+pub(crate) use running::{PublisherRunningContext, ResumeFailureStage};
 
 pub use receipt::{PeerPublishedObject, PeerSealProbe};
 
