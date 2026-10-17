@@ -705,8 +705,9 @@ fn shared_owner_authenticates_completion_and_retains_terminal_evidence() {
         });
     let runner = QemuFreshExecutionRunner::new(factory, QemuFreshModeledDriver);
 
-    let completed = run_guarded_default_campaign_with_runner(request, runner, evidence)
-        .expect("shared owner should complete the authenticated attempt");
+    let (completed, recorded) =
+        run_guarded_default_campaign_with_runner_recorded(request, runner, evidence)
+            .expect("shared owner should complete the authenticated attempt");
 
     assert_eq!(
         completed.state_updates(),
@@ -716,7 +717,7 @@ fn shared_owner_authenticates_completion_and_retains_terminal_evidence() {
             CampaignState::Completed,
         ]
     );
-    let watch_frames = completed.watch_frames();
+    let watch_frames = recorded.watch_frames();
     assert_eq!(watch_frames.len(), 4);
     assert_eq!(
         watch_frames
@@ -749,8 +750,9 @@ fn shared_owner_authenticates_completion_and_retains_terminal_evidence() {
     assert_eq!(watch_frames[3].frontier(), VirtualTime { ticks: 7 });
     assert_eq!(watch_frames[3].quanta(), 1);
     assert_eq!(watch_frames[3].observation(), None);
-    assert_eq!(completed.observations().len(), 1);
-    assert_eq!(completed.observations()[0].virtual_time_ticks(), 7);
+    assert_eq!(completed.observation_count(), 1);
+    assert_eq!(recorded.observations().len(), 1);
+    assert_eq!(recorded.observations()[0].virtual_time_ticks(), 7);
     assert_eq!(completed.branch_request_count(), 0);
     assert_eq!(
         completed.terminal().observation().stop(),
@@ -933,25 +935,26 @@ fn bounded_exploration_uses_accepted_branch_requests_and_observations() {
     let request = request.with_exploration(exploration).with_watch_frames();
     let starts = Arc::new(AtomicUsize::new(0));
 
-    let completed = run_selectable_campaign(request, node, Arc::clone(&starts));
+    let (completed, recorded) =
+        run_selectable_campaign_recorded(request, node, Arc::clone(&starts));
 
     assert_eq!(starts.load(Ordering::Relaxed), 3);
-    assert_eq!(completed.observations().len(), 3);
+    assert_eq!(completed.observation_count(), 3);
     assert_eq!(completed.branch_request_count(), 1);
-    assert_eq!(completed.branch_acceptances().len(), 1);
+    assert_eq!(recorded.branch_acceptances().len(), 1);
     assert_eq!(
-        completed.branch_acceptances()[0].observation(),
-        completed.observations()[0].id()
+        recorded.branch_acceptances()[0].observation(),
+        recorded.observations()[0].id()
     );
-    assert_eq!(completed.branch_acceptances()[0].maximum_attempts(), 2);
-    assert!(completed.branch_acceptances()[0].exhausts_domain());
-    assert!(completed.branch_acceptances()[0].snapshot() != completed.final_snapshot());
+    assert_eq!(recorded.branch_acceptances()[0].maximum_attempts(), 2);
+    assert!(recorded.branch_acceptances()[0].exhausts_domain());
+    assert!(recorded.branch_acceptances()[0].snapshot() != completed.final_snapshot());
     assert_eq!(
         completed.exploration_completion(),
         Some(GuardedCampaignExplorationCompletion::Exhausted)
     );
     assert_eq!(
-        completed
+        recorded
             .observations()
             .iter()
             .map(|observation| observation.configuration().id())
@@ -960,22 +963,79 @@ fn bounded_exploration_uses_accepted_branch_requests_and_observations() {
         3
     );
     assert!(
-        completed
+        recorded
             .observations()
             .iter()
             .all(|observation| observation.evidence().frontier().ticks
                 == observation.virtual_time_ticks())
     );
     assert!(
-        completed
+        recorded
             .watch_frames()
             .iter()
             .filter_map(GuardedDefaultCampaignWatchFrame::observation)
-            .eq(completed
+            .eq(recorded
                 .observations()
                 .iter()
                 .map(GuardedDefaultCampaignObservation::id))
     );
+}
+
+#[test]
+fn default_run_choice_budget_is_the_requested_maximum() {
+    let (request, node, _run_state) = selectable_request();
+    let starts = Arc::new(AtomicUsize::new(0));
+
+    let error = try_selectable_campaign(request.with_maximum_choices(0), node, Arc::clone(&starts))
+        .expect_err("a zero choice budget cannot admit the scenario's choice");
+
+    assert!(matches!(
+        error,
+        GuardedDefaultCampaignRunError::Invariant(
+            GuardedDefaultCampaignInvariantError::ChoiceLimit
+        )
+    ));
+    assert_eq!(starts.load(Ordering::Relaxed), 1);
+}
+
+/// Sink that stops the campaign at its first observation.
+struct StoppingSink {
+    observations: usize,
+}
+
+impl GuardedCampaignRunSink for StoppingSink {
+    fn on_observation(
+        &mut self,
+        _observation: &GuardedDefaultCampaignObservation,
+    ) -> Result<(), GuardedCampaignRunSinkError> {
+        self.observations += 1;
+        Err(GuardedCampaignRunSinkError::new("sink is full"))
+    }
+}
+
+#[test]
+fn sink_failure_stops_the_campaign_before_another_attempt() {
+    let (request, node, _run_state) = selectable_request();
+    let starts = Arc::new(AtomicUsize::new(0));
+    let (factory, evidence) =
+        QemuObservedFreshAttemptLifecycleFactory::with_evidence(SelectableLifecycleFactory {
+            node,
+            starts: Arc::clone(&starts),
+            terminal_failure: None,
+        });
+    let runner = QemuFreshExecutionRunner::new(factory, QemuFreshModeledDriver);
+    let mut sink = StoppingSink { observations: 0 };
+
+    let error = run_guarded_default_campaign_with_runner_into(request, runner, evidence, &mut sink)
+        .expect_err("the sink stops the campaign");
+
+    assert!(matches!(error, GuardedDefaultCampaignRunError::Sink(_)));
+    assert_eq!(
+        error.to_string(),
+        "guarded default campaign progress sink failed: sink is full"
+    );
+    assert_eq!(sink.observations, 1);
+    assert_eq!(starts.load(Ordering::Relaxed), 1);
 }
 
 #[test]
@@ -1004,17 +1064,17 @@ fn bounded_exploration_lazily_admits_a_full_width_integer_domain() {
     .expect("bounded exploration");
     let starts = Arc::new(AtomicUsize::new(0));
 
-    let completed = run_selectable_campaign(
+    let (completed, recorded) = run_selectable_campaign_recorded(
         request.with_exploration(exploration),
         node,
         Arc::clone(&starts),
     );
 
     assert_eq!(starts.load(Ordering::Relaxed), 4);
-    assert_eq!(completed.observations().len(), 4);
-    assert_eq!(completed.branch_acceptances().len(), 1);
-    assert_eq!(completed.branch_acceptances()[0].maximum_attempts(), 4);
-    assert!(!completed.branch_acceptances()[0].exhausts_domain());
+    assert_eq!(completed.observation_count(), 4);
+    assert_eq!(recorded.branch_acceptances().len(), 1);
+    assert_eq!(recorded.branch_acceptances()[0].maximum_attempts(), 4);
+    assert!(!recorded.branch_acceptances()[0].exhausts_domain());
     assert_eq!(
         completed.exploration_completion(),
         Some(GuardedCampaignExplorationCompletion::AttemptBudget)
@@ -1033,15 +1093,15 @@ fn bounded_exploration_reports_a_pruned_depth_boundary() {
     .expect("depth-bounded exploration");
     let starts = Arc::new(AtomicUsize::new(0));
 
-    let completed = run_selectable_campaign(
+    let (completed, recorded) = run_selectable_campaign_recorded(
         request.with_exploration(exploration),
         node,
         Arc::clone(&starts),
     );
 
     assert_eq!(starts.load(Ordering::Relaxed), 1);
-    assert_eq!(completed.observations().len(), 1);
-    assert!(completed.branch_acceptances().is_empty());
+    assert_eq!(completed.observation_count(), 1);
+    assert!(recorded.branch_acceptances().is_empty());
     assert_eq!(
         completed.exploration_completion(),
         Some(GuardedCampaignExplorationCompletion::DepthBound)
@@ -1076,7 +1136,7 @@ fn bounded_exploration_stops_on_an_accepted_scenario_finding() {
     .expect("scenario finding campaign");
 
     assert_eq!(starts.load(Ordering::Relaxed), 2);
-    assert_eq!(completed.observations().len(), 2);
+    assert_eq!(completed.observation_count(), 2);
     assert_eq!(
         completed.terminal().observation().stop(),
         &StopOutcome::ScenarioFailure(reasons)
@@ -1117,7 +1177,7 @@ fn bounded_exploration_stops_on_an_accepted_property_finding() {
     // An unreached `sometimes` stays undecided where discovery pauses at the
     // choice; the selected branch ends the run, which decides the finding.
     assert_eq!(starts.load(Ordering::Relaxed), 2);
-    assert_eq!(completed.observations().len(), 2);
+    assert_eq!(completed.observation_count(), 2);
     assert_eq!(
         completed.terminal().observation().stop(),
         &StopOutcome::AssertionFailure(String::from(property_name))
@@ -1214,7 +1274,7 @@ fn explicit_virtual_time_discovery_retains_the_first_frontier_crossing_the_deadl
     let completed = run_guarded_default_campaign_with_runner(request, runner, evidence)
         .expect("virtual-time campaign should reach the requested deadline");
 
-    assert_eq!(completed.observations().len(), 1);
+    assert_eq!(completed.observation_count(), 1);
     assert_eq!(completed.branch_request_count(), 0);
     assert_eq!(completed.evidence().quanta(), 2);
     assert_eq!(completed.evidence().frontier().ticks, completed_frontier);
@@ -1320,9 +1380,12 @@ where
         request,
         runner,
         execution_evidence,
-        repository,
-        planner_authority,
-        Arc::clone(&exact_retention),
+        DefaultRunStores {
+            repository,
+            planner_authority,
+            exact_retention: Arc::clone(&exact_retention),
+        },
+        &mut DiscardGuardedCampaignProgress,
     )?;
 
     Ok((completed, exact_retention))
@@ -1392,7 +1455,7 @@ fn observation_capture_only_stops_before_any_continuation_attempt_or_quantum() {
     let resume = captured.resume().expect("capture-only resume proof");
 
     assert_eq!(starts.load(Ordering::Relaxed), 2);
-    assert_eq!(captured.observations().len(), 1);
+    assert_eq!(captured.observation_count(), 1);
     assert_eq!(captured.terminal().id(), resume.source_observation());
     assert!(resume.source_savepoint().is_some());
     assert!(resume.ready().is_none());
@@ -1433,8 +1496,9 @@ fn selection_free_resume_authenticates_the_exact_source_before_continuing() {
         });
     let runner = QemuFreshExecutionRunner::new(factory, QemuFreshModeledDriver);
 
-    let completed = run_guarded_default_campaign_with_runner(request, runner, evidence)
-        .expect("selection-free guarded campaign resume should complete");
+    let (completed, recorded) =
+        run_guarded_default_campaign_with_runner_recorded(request, runner, evidence)
+            .expect("selection-free guarded campaign resume should complete");
     let resume = completed.resume().expect("authenticated resume proof");
     let source_savepoint = resume
         .source_savepoint()
@@ -1445,18 +1509,18 @@ fn selection_free_resume_authenticates_the_exact_source_before_continuing() {
     assert_eq!(resume.source_frontier(), source_frontier);
     assert_eq!(
         resume.source_configuration(),
-        completed.observations()[0].observation().child()
+        resume.source_observation_record().observation().child()
     );
     assert_eq!(
         resume.source_observation(),
-        completed.observations()[0].id()
+        resume.source_observation_record().id()
     );
     assert!(resume.ready().is_some());
     assert!(resume.selection().is_some());
     assert!(resume.continuation().is_some());
-    assert_eq!(completed.observations().len(), 2);
+    assert_eq!(completed.observation_count(), 2);
     assert_eq!(
-        completed.observations()[0].observation().stop(),
+        resume.source_observation_record().observation().stop(),
         &StopOutcome::Reached(StopCondition::VirtualTimePicoseconds(source_frontier.ticks))
     );
     assert_eq!(
@@ -1477,7 +1541,7 @@ fn selection_free_resume_authenticates_the_exact_source_before_continuing() {
         source_savepoint.checkpoint()
     );
 
-    let watched_observations = completed
+    let watched_observations = recorded
         .watch_frames()
         .iter()
         .filter_map(GuardedDefaultCampaignWatchFrame::observation)
@@ -1523,7 +1587,7 @@ fn selection_free_resume_terminal_at_source_needs_no_continuation() {
     assert!(resume.ready().is_none());
     assert!(resume.selection().is_none());
     assert!(resume.continuation().is_none());
-    assert_eq!(completed.observations().len(), 1);
+    assert_eq!(completed.observation_count(), 1);
     assert_eq!(completed.terminal().id(), resume.source_observation());
 }
 
@@ -1697,9 +1761,9 @@ fn selection_free_resume_applies_an_earlier_final_stop_after_source_admission() 
     assert_eq!(starts.load(Ordering::Relaxed), 3);
     assert!(resume.source_savepoint().is_some());
     assert!(resume.continuation().is_some());
-    assert_eq!(completed.observations().len(), 2);
+    assert_eq!(completed.observation_count(), 2);
     assert_eq!(
-        completed.observations()[0].virtual_time_ticks(),
+        resume.source_observation_record().virtual_time_ticks(),
         source_frontier.ticks
     );
     assert_eq!(
@@ -1748,8 +1812,8 @@ fn selection_free_resume_completes_at_the_requested_next_choice() {
     assert_eq!(starts.load(Ordering::Relaxed), 3);
     assert!(resume.source_savepoint().is_some());
     assert!(resume.continuation().is_some());
-    assert_eq!(completed.observations().len(), 2);
-    assert_eq!(completed.observations()[1].virtual_time_ticks(), 2_100);
+    assert_eq!(completed.observation_count(), 2);
+    assert_eq!(completed.terminal().virtual_time_ticks(), 2_100);
     assert_eq!(completed.branch_request_count(), 0);
     assert_eq!(
         completed.terminal().observation().stop(),
@@ -1854,7 +1918,7 @@ fn explicit_execution_quanta_discovery_stops_at_the_absolute_coordinate() {
     let completed = run_guarded_default_campaign_with_runner(request, runner, evidence)
         .expect("execution-quanta campaign should reach the requested coordinate");
 
-    assert_eq!(completed.observations().len(), 1);
+    assert_eq!(completed.observation_count(), 1);
     assert_eq!(completed.branch_request_count(), 0);
     assert_eq!(completed.evidence().quanta(), execution_quanta);
     assert_eq!(
@@ -1891,7 +1955,7 @@ fn explicit_combined_discovery_stops_at_the_first_reached_bound() {
     let completed = run_guarded_default_campaign_with_runner(request, runner, evidence)
         .expect("combined campaign should reach its virtual-time member first");
 
-    assert_eq!(completed.observations().len(), 1);
+    assert_eq!(completed.observation_count(), 1);
     assert_eq!(completed.branch_request_count(), 0);
     assert_eq!(completed.evidence().quanta(), 2);
     assert_eq!(completed.evidence().frontier().ticks, 20);
@@ -2565,6 +2629,44 @@ fn run_selectable_campaign(
         .expect("guarded selectable campaign should complete")
 }
 
+fn run_selectable_campaign_recorded(
+    request: GuardedDefaultCampaignRunRequest,
+    node: NodeId,
+    starts: Arc<AtomicUsize>,
+) -> (GuardedDefaultCampaignRun, GuardedCampaignRunRecorder) {
+    let (factory, evidence) =
+        QemuObservedFreshAttemptLifecycleFactory::with_evidence(SelectableLifecycleFactory {
+            node,
+            starts,
+            terminal_failure: None,
+        });
+    let runner = QemuFreshExecutionRunner::new(factory, QemuFreshModeledDriver);
+    run_guarded_default_campaign_with_runner_recorded(request, runner, evidence)
+        .expect("guarded selectable campaign should complete")
+}
+
+fn run_guarded_default_campaign_with_runner_recorded<R>(
+    request: GuardedDefaultCampaignRunRequest,
+    runner: R,
+    execution_evidence: QemuAttemptExecutionEvidence,
+) -> Result<
+    (GuardedDefaultCampaignRun, GuardedCampaignRunRecorder),
+    GuardedDefaultCampaignRunError<R::Error>,
+>
+where
+    R: CrucibleExecutionRunner,
+    R::Error: Error + Send + Sync + 'static,
+{
+    let mut recorder = GuardedCampaignRunRecorder::default();
+    let completed = run_guarded_default_campaign_with_runner_into(
+        request,
+        runner,
+        execution_evidence,
+        &mut recorder,
+    )?;
+    Ok((completed, recorder))
+}
+
 fn try_selectable_campaign(
     request: GuardedDefaultCampaignRunRequest,
     node: NodeId,
@@ -2594,5 +2696,12 @@ fn try_selectable_campaign_with_store(
             terminal_failure: None,
         });
     let runner = QemuFreshExecutionRunner::new(factory, QemuFreshModeledDriver);
-    run_guarded_default_campaign_with_store(request, runner, evidence, blobs, refs)
+    run_guarded_default_campaign_with_store(
+        request,
+        runner,
+        evidence,
+        blobs,
+        refs,
+        &mut DiscardGuardedCampaignProgress,
+    )
 }

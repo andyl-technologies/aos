@@ -217,6 +217,7 @@ pub(super) fn typed_selection_schedule(scenario: &crucible::ScenarioDef) -> Sche
 
 pub(super) struct ResumeCampaignFixture {
     pub(super) campaign: GuardedDefaultCampaignRun,
+    pub(super) progress: CampaignRunProgress,
     pub(super) checkpoints: Arc<ExactCheckpointStore>,
     pub(super) checkpoint_directory: TempDir,
     pub(super) checkpoint_root: PathBuf,
@@ -288,11 +289,13 @@ pub(super) fn try_resume_campaign_fixture(
     } else {
         request
     };
+    let mut progress = CampaignRunProgress::default();
     let (campaign, _trace) =
-        run_guarded_default_campaign_test_fixture_with_trace_and_choice_offer(request, false)?;
+        run_guarded_default_campaign_test_fixture_into_sink(request, false, &mut progress)?;
 
     Ok(ResumeCampaignFixture {
         campaign,
+        progress,
         checkpoints,
         checkpoint_directory,
         checkpoint_root,

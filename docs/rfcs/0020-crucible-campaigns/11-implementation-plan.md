@@ -1735,6 +1735,12 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   restore, hot-fork admission, replay proofs, guarded replay planning, and
   finding checkpoint authentication (CCOMP-33, CMEAS-28). The live log and its
   condition prefix still hold complete histories in memory until T-CAM-3.7.
+- [x] **T-CAM-4.17** Stream the guarded campaign owner's accepted
+  observations, exploration branch acceptances, and watch frames to a caller
+  sink while each attempt's segments are live, keep only counts, the terminal
+  observation, and the resume source observation in the result, port the CLI
+  run, replay, resume, search, and fuzz consumers to sinks, and make the
+  funded choice budget the run's only choice bound (CMEAS-29).
 - [x] **T-CAM-4.20** Retain only the scheduler's search frontiers at its
   current boundary, count the retired ones so per-quantum discovery names its
   frontiers by sequence, compare a frontier's time and parent before
@@ -2463,8 +2469,8 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   `run` path, including `--watch`, now executes through the authenticated
   scenario-default campaign owner. Watch records name the exact campaign and
   snapshot and pair that head with the scheduler evidence captured at the same
-  incorporation boundary; the CLI retains them under the owner's fixed bound
-  until its synchronous backend result is rendered. Campaign-produced replay
+  incorporation boundary; the owner streams them to the CLI's sink, which
+  retains them until its synchronous backend result is rendered. Campaign-produced replay
   uses the same owner, and unsupported decision kinds are rejected before
   execution. `campaign triage` enumerates one exact snapshot through
   `CampaignService`, authenticates each retained finding's membership,

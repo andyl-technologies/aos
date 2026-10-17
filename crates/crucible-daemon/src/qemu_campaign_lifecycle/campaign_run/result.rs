@@ -1,4 +1,8 @@
 //! Campaign completion, watch-frame, and retained-evidence materialization.
+//!
+//! Each accepted observation is materialized once, when the attempt is
+//! incorporated, and handed to the run's sink; only the latest one survives
+//! to become the terminal observation of the result.
 
 use super::*;
 
@@ -36,6 +40,62 @@ where
     Ok(final_snapshot)
 }
 
+/// Campaign lifecycle states and the caller's sink for streamed progress.
+pub(super) struct DefaultRunProgress<'a> {
+    pub(super) state_updates: Vec<CampaignState>,
+    pub(super) sink: &'a mut dyn GuardedCampaignRunSink,
+}
+
+impl DefaultRunProgress<'_> {
+    pub(super) fn deliver_watch_frame<S, E>(
+        &mut self,
+        context: &DefaultRunContext<'_, S>,
+        snapshot: CampaignSnapshotId,
+        evidence: &QemuAttemptExecutionEvidenceSnapshot,
+        observation: Option<ObservationId>,
+    ) -> Result<(), GuardedDefaultCampaignRunError<E>>
+    where
+        E: Error + 'static,
+    {
+        if !context.collect_watch_frames {
+            return Ok(());
+        }
+        let frame = campaign_watch_frame(
+            context.repository,
+            context.campaign,
+            snapshot,
+            evidence,
+            observation,
+        )?;
+        self.sink
+            .on_watch_frame(&frame)
+            .map_err(GuardedDefaultCampaignRunError::Sink)
+    }
+
+    /// Completes the campaign and delivers the final watch frame.
+    pub(super) fn complete<S, E>(
+        &mut self,
+        context: &DefaultRunContext<'_, S>,
+        snapshot: CampaignSnapshotId,
+        supervisor_iteration: usize,
+        evidence: &QemuAttemptExecutionEvidenceSnapshot,
+    ) -> Result<CampaignSnapshotId, GuardedDefaultCampaignRunError<E>>
+    where
+        S: crucible_campaign::CampaignService,
+        S::Error: crucible_campaign::CampaignServiceFailureSource,
+        E: Error + 'static,
+    {
+        let final_snapshot = complete_default_campaign(
+            context,
+            snapshot,
+            supervisor_iteration,
+            &mut self.state_updates,
+        )?;
+        self.deliver_watch_frame(context, final_snapshot, evidence, None)?;
+        Ok(final_snapshot)
+    }
+}
+
 pub(super) fn campaign_watch_frame<E>(
     repository: &CampaignRepository,
     campaign: &CampaignName,
@@ -59,6 +119,59 @@ where
     })
 }
 
+/// Materializes one incorporated observation for the sink and the result.
+pub(super) fn materialize_observation<S, E>(
+    context: &DefaultRunContext<'_, S>,
+    accepted: DefaultRunAcceptedObservation,
+    observation: Observation,
+) -> Result<GuardedDefaultCampaignObservation, GuardedDefaultCampaignRunError<E>>
+where
+    E: Error + 'static,
+{
+    let repository = context.repository;
+    let child = repository
+        .load_configuration_artifact(observation.child_content())
+        .map_err(GuardedDefaultCampaignRunError::Repository)?;
+    let configuration = decode_crucible_configuration_artifact_with_selections(
+        context.scenario,
+        context.scenario_artifact,
+        &child,
+        context.executor_store,
+    )
+    .map_err(GuardedDefaultCampaignRunError::Artifact)?;
+    let supplemental_finding =
+        evaluate_supplemental_finding(context, &observation, &configuration)?;
+    let properties = repository
+        .load_property_verdict_set(observation.properties())
+        .map_err(GuardedDefaultCampaignRunError::Repository)?;
+    let coverage = repository
+        .load_coverage_projection(observation.coverage())
+        .map_err(GuardedDefaultCampaignRunError::Repository)?;
+    let replay_closure = GuardedCampaignReplayClosure::collect(
+        context.executor_store,
+        context.scenario,
+        &configuration.schedule,
+    )
+    .map_err(GuardedDefaultCampaignRunError::ReplayClosure)?;
+    let observation_evidence = load_observation_stop_evidence(repository, &observation)?;
+    let timeout =
+        authenticated_timeout_evidence(repository, accepted.id, &observation, &accepted.evidence)?;
+
+    Ok(GuardedDefaultCampaignObservation {
+        id: accepted.id,
+        observation,
+        virtual_time_ticks: accepted.virtual_time_ticks,
+        configuration,
+        properties,
+        coverage,
+        evidence: accepted.evidence,
+        observation_evidence,
+        replay_closure,
+        supplemental_finding,
+        timeout,
+    })
+}
+
 pub(super) fn materialize_result<E>(
     repository: &Arc<CampaignRepository>,
     campaign: CampaignName,
@@ -76,76 +189,15 @@ where
     let lineage = repository
         .load_lineage(head.snapshot().lineage())
         .map_err(GuardedDefaultCampaignRunError::Repository)?;
-    let scenario_artifact = repository
-        .load_scenario_artifact(lineage.scenario_content())
-        .map_err(GuardedDefaultCampaignRunError::Repository)?;
-    let scenario = crate::decode_crucible_scenario_artifact(&scenario_artifact)
-        .map_err(GuardedDefaultCampaignRunError::Artifact)?;
-    let store = CampaignExecutorStore::new(Arc::clone(repository));
-    let mut observations = Vec::new();
-    observations
-        .try_reserve(execution.observations.len())
-        .map_err(GuardedDefaultCampaignRunError::Allocation)?;
-    let observation_count = execution.observations.len();
-    let terminal_execution_evidence = execution
-        .observations
-        .last()
-        .map(|accepted| accepted.evidence.clone())
-        .ok_or(GuardedDefaultCampaignInvariantError::MissingTerminalObservation)?;
-    let mut terminal_configuration = None;
-    for (index, accepted) in execution.observations.into_iter().enumerate() {
-        let observation = repository
-            .load_observation(accepted.id)
-            .map_err(GuardedDefaultCampaignRunError::Repository)?;
-        let child = repository
-            .load_configuration_artifact(observation.child_content())
-            .map_err(GuardedDefaultCampaignRunError::Repository)?;
-        let configuration = decode_crucible_configuration_artifact_with_selections(
-            &scenario,
-            &scenario_artifact,
-            &child,
-            &store,
-        )
-        .map_err(GuardedDefaultCampaignRunError::Artifact)?;
-        let properties = repository
-            .load_property_verdict_set(observation.properties())
-            .map_err(GuardedDefaultCampaignRunError::Repository)?;
-        let coverage = repository
-            .load_coverage_projection(observation.coverage())
-            .map_err(GuardedDefaultCampaignRunError::Repository)?;
-        let replay_closure =
-            GuardedCampaignReplayClosure::collect(&store, &scenario, &configuration.schedule)
-                .map_err(GuardedDefaultCampaignRunError::ReplayClosure)?;
-        let observation_evidence = load_observation_stop_evidence(repository, &observation)?;
-        let timeout = authenticated_timeout_evidence(
-            repository,
-            accepted.id,
-            &observation,
-            &accepted.evidence,
-        )?;
-        if index + 1 == observation_count {
-            terminal_configuration = Some(configuration.clone());
-        }
-        observations.push(GuardedDefaultCampaignObservation {
-            id: accepted.id,
-            observation,
-            virtual_time_ticks: accepted.virtual_time_ticks,
-            configuration,
-            properties,
-            coverage,
-            evidence: accepted.evidence,
-            observation_evidence,
-            replay_closure,
-            supplemental_finding: accepted.supplemental_finding,
-            timeout,
-        });
-    }
-    let terminal = observations
-        .last()
-        .cloned()
-        .ok_or(GuardedDefaultCampaignInvariantError::MissingTerminalObservation)?;
-    let terminal_configuration = terminal_configuration
-        .ok_or(GuardedDefaultCampaignInvariantError::MissingTerminalObservation)?;
+    let DefaultRunTally {
+        observation_count,
+        branch_request_count,
+        terminal,
+    } = execution.tally;
+    let terminal =
+        terminal.ok_or(GuardedDefaultCampaignInvariantError::MissingTerminalObservation)?;
+    let terminal_execution_evidence = terminal.evidence.clone();
+    let terminal_configuration = terminal.configuration.clone();
     let (savepoint, evidence) = match execution.savepoint {
         Some(capture) => {
             let checkpoints =
@@ -208,27 +260,23 @@ where
         repository,
         final_snapshot: execution.final_snapshot,
         lineage: &lineage,
-        observations: &observations,
         terminal: &terminal,
         terminal_evidence: &evidence,
         proof: execution.resume,
         source: resume_source,
     })?;
-    let replay_closure =
-        GuardedCampaignReplayClosure::collect(&store, &scenario, &terminal_configuration.schedule)
-            .map_err(GuardedDefaultCampaignRunError::ReplayClosure)?;
+    // The terminal observation already carries its exact choice closure.
+    let replay_closure = terminal.replay_closure.clone();
     Ok(GuardedDefaultCampaignRun {
         campaign,
         final_snapshot: execution.final_snapshot,
         finding_export,
-        observations,
+        observation_count,
         terminal,
         terminal_configuration,
-        branch_request_count: execution.branch_request_count,
-        branch_acceptances: execution.branch_acceptances,
+        branch_request_count,
         exploration_completion: execution.exploration_completion,
         state_updates: execution.state_updates,
-        watch_frames: execution.watch_frames,
         evidence,
         replay_closure,
         savepoint,

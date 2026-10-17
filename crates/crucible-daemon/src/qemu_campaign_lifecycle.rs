@@ -820,13 +820,17 @@ pub(crate) use evidence::{
 
 mod campaign_run;
 #[cfg(any(test, feature = "test-support"))]
+pub use campaign_run::GuardedCampaignRunRecorder;
+#[cfg(any(test, feature = "test-support"))]
 pub use campaign_run::test_support::{
     GuardedDefaultCampaignTestTrace, run_guarded_default_campaign_test_fixture,
+    run_guarded_default_campaign_test_fixture_into_sink,
     run_guarded_default_campaign_test_fixture_with_choice_offer,
     run_guarded_default_campaign_test_fixture_with_trace,
     run_guarded_default_campaign_test_fixture_with_trace_and_choice_offer,
 };
 pub use campaign_run::{
+    DEFAULT_GUARDED_CAMPAIGN_MAX_CHOICES, DiscardGuardedCampaignProgress,
     GuardedCampaignBranchAcceptance, GuardedCampaignExploration,
     GuardedCampaignExplorationCompletion, GuardedCampaignExplorationStrategy,
     GuardedCampaignFindingExport, GuardedCampaignFindingExportFrame,
@@ -836,14 +840,15 @@ pub use campaign_run::{
     GuardedCampaignFindingOracleError, GuardedCampaignFindingOracleEvaluation,
     GuardedCampaignFindingOracleSource, GuardedCampaignFindingOracleSourceLoadError,
     GuardedCampaignFindingQueryProof, GuardedCampaignFindingTriageReplaySegmentProof,
-    GuardedCampaignReplayClosure, GuardedCampaignReplayClosureError,
-    GuardedCampaignSupplementalFinding, GuardedCampaignTimeoutEvidence,
-    GuardedDefaultCampaignInvariantError, GuardedDefaultCampaignObservation,
-    GuardedDefaultCampaignObservationSource, GuardedDefaultCampaignProductionRunnerError,
-    GuardedDefaultCampaignResumeProof, GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError,
-    GuardedDefaultCampaignRunRequest, GuardedDefaultCampaignSavepoint,
-    GuardedDefaultCampaignSupervisorError, GuardedDefaultCampaignWatchFrame,
-    run_guarded_default_campaign, validate_remote_resume_replay_closure,
+    GuardedCampaignReplayClosure, GuardedCampaignReplayClosureError, GuardedCampaignRunSink,
+    GuardedCampaignRunSinkError, GuardedCampaignSupplementalFinding,
+    GuardedCampaignTimeoutEvidence, GuardedDefaultCampaignInvariantError,
+    GuardedDefaultCampaignObservation, GuardedDefaultCampaignObservationSource,
+    GuardedDefaultCampaignProductionRunnerError, GuardedDefaultCampaignResumeProof,
+    GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError, GuardedDefaultCampaignRunRequest,
+    GuardedDefaultCampaignSavepoint, GuardedDefaultCampaignSupervisorError,
+    GuardedDefaultCampaignWatchFrame, run_guarded_default_campaign,
+    run_guarded_default_campaign_with_sink, validate_remote_resume_replay_closure,
 };
 pub(crate) use campaign_run::{
     GuardedCampaignReplayChoices, GuardedCampaignReplaySelection, MAX_REPLAY_CLOSURE_FRAME_BYTES,

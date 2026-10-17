@@ -276,6 +276,7 @@ CMEAS-25	T-CAM-4.12	gate:campaign-replay,gate:typed-choice
 CMEAS-26	T-CAM-4.13	gate:campaign-replay,gate:campaign-cold-continuity
 CMEAS-27	T-CAM-4.15	gate:campaign-replay,gate:content-address
 CMEAS-28	T-CAM-4.16	gate:exact-closure-streaming,gate:hot-fork-equivalence
+CMEAS-29	T-CAM-4.17	gate:campaign-replay,gate:campaign-model
 CMEAS-31	T-CAM-4.21	gate:campaign-replay
 CSEC-1	T-CAM-1.6,T-CAM-4.9	gate:content-address,gate:campaign-component-contract
 CSEC-2	T-CAM-2.4,T-CAM-2.5	gate:typed-choice,gate:abi-conformance

@@ -601,7 +601,41 @@ search frontiers (single-scheduler continuation v10):
   check that identity. Branch authentication MUST compare a frontier's time
   and parent before normalizing its candidates.
 
-## 15.13 Compatibility
+## 15.13 Guarded campaign run results
+
+The guarded campaign owner behind local `run`, replay, save, resume, search,
+and fuzz accepts one observation per attempt, and a scenario-default path
+takes one attempt per choice. Each accepted observation carries its decoded
+configuration, choice closure, coverage, measurement evidence, and execution
+evidence snapshot. The configuration and closure grow with the path's depth,
+so a result that kept every observation grew quadratically with the number of
+choices.
+
+The owner therefore delivers each accepted observation, each exploration
+branch acceptance, and each requested watch frame to a caller-supplied sink,
+synchronously and in acceptance order. It calls the sink while the
+observation's evidence snapshot still names the attempt's live log segments,
+then drops the observation. The result keeps the observation and
+branch-request counts, the terminal observation, its evidence and choice
+closure, the final snapshot, the savepoint and resume proofs, and at most three
+lifecycle states. A resume proof also keeps its accepted source observation,
+the one earlier observation a resume caller authenticates against its handle.
+CLI consumers fold what they print or admit as each observation arrives:
+canonical-log lines, watch frames, explored configuration identities and
+findings, or fuzz corpus candidates.
+
+A run without exploration is funded for an explicit choice budget. The budget
+defaults to 65,536 and a request can replace it. The campaign's funded budget
+is the run's only choice bound, and the supervisor's livelock guard scales
+with the funded attempt count rather than imposing a second fixed limit.
+
+- **[CMEAS-29]** The guarded campaign owner MUST deliver each accepted
+  observation, branch acceptance, and requested watch frame to the caller's
+  sink, in acceptance order, while the attempt's log segments are live. It
+  MUST NOT retain them beyond the terminal observation and a resume proof's
+  source observation. A run's choice bound MUST be its funded campaign budget.
+
+## 15.14 Compatibility
 
 Version 2 measurement replay evidence remains readable for retained findings
 whose logs fit its bound; new attempts publish only version 3. The attempt
@@ -623,6 +657,9 @@ version 5, reproduction transport version 10, campaign reproduction record
 version 3, and executor payload schema 5 replace their predecessors without
 compatibility readers, and prepared-result journals name reproduction
 segments under segment-set hash version 3.
+The guarded campaign result no longer lists its observations, branch
+acceptances, or watch frames; this is a source-level breaking change for
+callers, which now consume them through a sink.
 
 [CCOMP-21]: 04a-coordinator-executor-contract.md#04a7-capability-and-locality-reporting
 [OBS-17]: ../0010-crucible/19-observability-event-log.md#194-content-addressing-and-prefix-sharing

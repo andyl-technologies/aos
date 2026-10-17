@@ -4,8 +4,9 @@ use super::*;
 
 use crucible_campaign::{StopCondition, StopOutcome};
 use crucible_daemon::qemu_campaign_lifecycle::{
-    GuardedCampaignExploration, GuardedCampaignExplorationStrategy, GuardedDefaultCampaignRun,
-    GuardedDefaultCampaignRunRequest, run_guarded_default_campaign,
+    GuardedCampaignExploration, GuardedCampaignExplorationStrategy, GuardedCampaignRunSink,
+    GuardedCampaignRunSinkError, GuardedDefaultCampaignObservation, GuardedDefaultCampaignRun,
+    GuardedDefaultCampaignRunRequest, run_guarded_default_campaign_with_sink,
 };
 
 #[path = "fuzz/corpus.rs"]
@@ -324,43 +325,98 @@ struct QemuFuzzExecutionContext<'a> {
     payloads: &'a CorpusPayloadStore,
 }
 
-fn authenticate_qemu_fuzz_campaign(
-    form: &crucible::ScenarioDefForm,
-    campaign: &GuardedDefaultCampaignRun,
+/// Folds each accepted observation of one fuzz campaign into a corpus candidate.
+///
+/// The campaign streams its observations, so the candidate is built while the
+/// attempt's log segments are live and the observation itself is dropped.
+struct QemuFuzzCandidateSink<'a> {
+    form: &'a crucible::ScenarioDefForm,
     parent: Option<crucible::ContentHash>,
     sample_index: u64,
     energy: u64,
-) -> Result<(usize, Vec<LiveFuzzCorpusCandidate>), CliError> {
-    let mut override_observations = 0;
-    let mut candidates = Vec::with_capacity(campaign.observations().len());
+    override_observations: usize,
+    candidates: Vec<LiveFuzzCorpusCandidate>,
+    failure: Option<CliError>,
+}
 
-    for accepted in campaign.observations() {
-        let configuration = accepted.configuration();
-        accepted
-            .replay_closure()
-            .validate_for_schedule(form, &configuration.schedule)
-            .map_err(|error| {
-                artifact_error(format!("authenticate QEMU fuzz choice replay: {error}"))
-            })?;
+impl<'a> QemuFuzzCandidateSink<'a> {
+    fn new(
+        form: &'a crucible::ScenarioDefForm,
+        parent: Option<crucible::ContentHash>,
+        sample_index: u64,
+        energy: u64,
+    ) -> Self {
+        Self {
+            form,
+            parent,
+            sample_index,
+            energy,
+            override_observations: 0,
+            candidates: Vec::new(),
+            failure: None,
+        }
+    }
+}
 
-        let artifact = capture_qemu_fuzz_reproduction(form, configuration)?;
-        override_observations += usize::from(
-            configuration
-                .schedule
-                .decision_history()
-                .iter()
-                .any(|decision| matches!(decision, crucible::Decision::Override(_))),
-        );
-        // One streamed pass keeps each distinct coverage observation once.
-        let mut coverage = crucible::EventLogCoverageSet::new();
-        accepted
-            .evidence()
-            .try_for_each_event_log_entry(|entry| {
-                coverage.observe(entry);
-                Ok::<(), std::convert::Infallible>(())
-            })
-            .map_err(|error| artifact_error(format!("read QEMU fuzz event evidence: {error}")))?;
-        candidates.push(LiveFuzzCorpusCandidate {
+impl GuardedCampaignRunSink for QemuFuzzCandidateSink<'_> {
+    fn on_observation(
+        &mut self,
+        accepted: &GuardedDefaultCampaignObservation,
+    ) -> Result<(), GuardedCampaignRunSinkError> {
+        match authenticate_qemu_fuzz_observation(
+            self.form,
+            accepted,
+            self.parent,
+            self.sample_index,
+            self.energy,
+        ) {
+            Ok((overrides, candidate)) => {
+                self.override_observations += usize::from(overrides);
+                self.candidates.push(candidate);
+                Ok(())
+            }
+            Err(error) => {
+                let message = error.to_string();
+                self.failure = Some(error);
+                Err(GuardedCampaignRunSinkError::new(message))
+            }
+        }
+    }
+}
+
+fn authenticate_qemu_fuzz_observation(
+    form: &crucible::ScenarioDefForm,
+    accepted: &GuardedDefaultCampaignObservation,
+    parent: Option<crucible::ContentHash>,
+    sample_index: u64,
+    energy: u64,
+) -> Result<(bool, LiveFuzzCorpusCandidate), CliError> {
+    let configuration = accepted.configuration();
+    accepted
+        .replay_closure()
+        .validate_for_schedule(form, &configuration.schedule)
+        .map_err(|error| {
+            artifact_error(format!("authenticate QEMU fuzz choice replay: {error}"))
+        })?;
+
+    let artifact = capture_qemu_fuzz_reproduction(form, configuration)?;
+    let overrides = configuration
+        .schedule
+        .decision_history()
+        .iter()
+        .any(|decision| matches!(decision, crucible::Decision::Override(_)));
+    // One streamed pass keeps each distinct coverage observation once.
+    let mut coverage = crucible::EventLogCoverageSet::new();
+    accepted
+        .evidence()
+        .try_for_each_event_log_entry(|entry| {
+            coverage.observe(entry);
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .map_err(|error| artifact_error(format!("read QEMU fuzz event evidence: {error}")))?;
+    Ok((
+        overrides,
+        LiveFuzzCorpusCandidate {
             artifact,
             coverage_ids: coverage.identities(),
             coverage,
@@ -369,10 +425,8 @@ fn authenticate_qemu_fuzz_campaign(
             energy,
             replay_closure: accepted.replay_closure().clone(),
             resumable_choice: accepted.observation().stop().reached_next_choice(),
-        });
-    }
-
-    Ok((override_observations, candidates))
+        },
+    ))
 }
 
 fn capture_qemu_fuzz_reproduction(
@@ -529,17 +583,27 @@ fn execute_qemu_fuzz_iterations(
         }
         .with_exploration(exploration);
         let request = context.attempt_policy.apply(request);
-        let campaign = run_guarded_default_campaign(request).map_err(|error| {
+        let mut sink = QemuFuzzCandidateSink::new(&form, parent_id, sample_index, energy);
+        let campaign = run_guarded_default_campaign_with_sink(request, &mut sink);
+        if let Some(failure) = sink.failure.take() {
+            return Err(failure);
+        }
+        let campaign = campaign.map_err(|error| {
             backend_error(format!(
                 "execute QEMU fuzz iteration {sequence} through campaign owner: {error}",
             ))
         })?;
-        let (override_observations, candidates) =
-            authenticate_qemu_fuzz_campaign(&form, &campaign, parent_id, sample_index, energy)?;
+        let QemuFuzzCandidateSink {
+            override_observations,
+            candidates,
+            ..
+        } = sink;
         let (status, terminal_outcome, campaign_completion) = qemu_fuzz_campaign_status(&campaign)?;
+        // A fuzz iteration requests no watch frames.
         let report = crate::cli_verify_serve::campaign_run::campaign_run_report(
             &run_plan,
             &campaign,
+            &[],
             terminal_outcome,
             status,
         )?;
@@ -554,8 +618,8 @@ fn execute_qemu_fuzz_iterations(
             observation: terminal.id(),
             configuration: terminal.configuration().id(),
             stop: qemu_fuzz_campaign_stop_label(terminal.observation().stop()),
-            accepted_observations: campaign.observations().len(),
-            branch_requests: campaign.branch_acceptances().len(),
+            accepted_observations: campaign.observation_count(),
+            branch_requests: campaign.branch_request_count(),
             override_observations,
             frontier: campaign.evidence().frontier(),
             quanta: campaign.evidence().quanta(),
