@@ -47,10 +47,10 @@ pub(super) fn normalize(value: &mut Value, schema: &OptionType) -> Result<()> {
             }
         }
         OptionType::TaggedUnion { tag, variants } => {
-            if let Some(tag) = value.get(tag.as_str()).and_then(Value::as_str) {
-                if let Some((_, variant)) = variants.iter().find(|(name, _)| name.as_str() == tag) {
-                    normalize(value, variant)?;
-                }
+            if let Some(tag) = value.get(tag.as_str()).and_then(Value::as_str)
+                && let Some((_, variant)) = variants.iter().find(|(name, _)| name.as_str() == tag)
+            {
+                normalize(value, variant)?;
             }
         }
         OptionType::Nullable { value: inner } | OptionType::Optional { value: inner } => {

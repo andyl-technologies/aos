@@ -153,7 +153,6 @@ in
         providerGraph = [provider];
       };
       buildDeps = [
-        buildPkgs.aos-ability-contract-validator
         buildPkgs.bash
         buildPkgs.binutils
         buildPkgs.coreutils
@@ -184,8 +183,8 @@ in
               key=$(jq -r ".[$spec].key" work/specs.json)
               root_path=$(jq -r ".[$spec].path" work/specs.json)
               graph=$(jq -r ".[$spec].graph" work/specs.json)
-              ${buildPkgs.aos-ability-contract-validator}/bin/aos-ability-contract-validator \
-                resolve-exported-artifact "$root_path" "$graph" "$NIX_ATTRS_JSON_FILE" \
+              ${graphFixture}/bin/aos-release-fleet-fixture resolve-exported-artifact \
+                "$root_path" "$graph" "$NIX_ATTRS_JSON_FILE" \
                 "work/$key-artifact.json"
 
               if [ "$key" = consumer ]; then
@@ -234,35 +233,30 @@ in
 
             provider_content=$(jq -er .provider.artifact.content "$out/evidence.json")
             ${graphFixture}/bin/aos-release-fleet-fixture \
-              artifact-consumption-bundle \
+              artifact-consumption-evidence \
               "$out/evidence.json" \
-              "$out/inspection-bundle.json"
+              "$out/checked-evidence.json"
             ${inspector}/bin/aos ability artifact-consumption "$out/evidence.json" \
-              --bundle "$out/inspection-bundle.json" \
               --consumer ${lib.escapeShellArg "${builtins.toString consumer}${consumerPath}"} \
               --provider-content "$provider_content" \
               --format json > "$out/explanation.json"
             jq -e \
+              --slurpfile evidence "$out/checked-evidence.json" \
               --arg consumer ${lib.escapeShellArg "${builtins.toString consumer}${consumerPath}"} \
               --arg provider_content "$provider_content" \
               '.evidence_schema == "aos.artifact-consumption.evidence/v1"
                and (.consumer.artifact.store_path + .consumer.path) == $consumer
                and .provider.artifact.content == $provider_content
-               and .ability_graph.consumer == .consumer.artifact
-               and .ability_graph.provider == .provider.artifact
-               and .ability_graph.mechanism == .mechanism
-               and (.ability_graph.edge | test("^sha256:[0-9a-f]{64}$"))
-               and (.ability_graph.bundle | test("^sha256:[0-9a-f]{64}$"))
-               and (.ability_graph.binding_plan | test("^sha256:[0-9a-f]{64}$"))
-               and (.ability_graph.effect_plan | test("^sha256:[0-9a-f]{64}$"))
+               and .consumer == $evidence[0].consumer
+               and .provider == $evidence[0].provider
+               and .contract == $evidence[0].contract
+               and .platforms == $evidence[0].platforms
+               and .mechanism == $evidence[0].mechanism
                and (if .mechanism == "build-tool-execution"
-                    then .ability_graph.phase == "build"
-                      and .ability_graph.retention == "forbidden"
-                    elif .mechanism == "elf-startup-linkage"
-                    then .ability_graph.phase == "runtime-startup"
-                      and .ability_graph.retention == "required"
-                    else .ability_graph.phase == "runtime-operation"
-                      and .ability_graph.retention == "required"
+                    then .contract.retention == "forbidden"
+                    elif .mechanism != "elf-startup-linkage"
+                    then .contract.retention == "required"
+                    else true
                     end)
                and (if .mechanism == "elf-startup-linkage"
                     then .provider_elf_compatible and .loader_elf_compatible

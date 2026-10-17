@@ -16,14 +16,14 @@
     pname = "aos-container-phase0-closure-info";
   };
 in
-  assert builtins.elem pkgs.aos bakedRoots;
+  assert builtins.elem pkgs.apm bakedRoots;
     pkgs.mkDerivation {
       pname = "aos-container-phase0-contract";
       version = "1";
       src = null;
 
       buildDeps = [
-        pkgs.aos
+        pkgs.apm
         pkgs.coreutils
         pkgs.diffutils
         pkgs.findutils
@@ -107,8 +107,8 @@ in
             root_count=$(wc -l < baked-roots)
             test "$root_count" -eq "$EXPECTED_ROOT_COUNT" \
               || fail "baked root serialization lost entries"
-            grep -Fx ${lib.escapeShellArg (builtins.toString pkgs.aos)} baked-roots >/dev/null \
-              || fail "production baked roots do not contain pkgs.aos"
+            grep -Fx ${lib.escapeShellArg (builtins.toString pkgs.apm)} baked-roots >/dev/null \
+              || fail "production baked roots do not contain the package manager"
 
             isolated_root="$TMPDIR/isolated-root"
             store_uri="local?root=$isolated_root"
@@ -151,9 +151,7 @@ in
             export HOME="$isolated_root/root"
             export NIX_CONF_DIR="$nix_conf"
             export NIX_REMOTE="$store_uri"
-            ${pkgs.aos}/bin/aos --version >/dev/null
-            ${pkgs.aos.apm}/bin/apm --help >/dev/null
-            ${pkgs.aos.apr}/bin/apr --help >/dev/null
+            ${pkgs.apm}/bin/apm --help >/dev/null
 
             mkdir -p "$out"
             jq -S -n \
@@ -171,7 +169,7 @@ in
                 },
                 bakedRootCount: $bakedRootCount,
                 closurePathCount: $closurePathCount,
-                daemonlessCommands: ["aos --version", "apm --help", "apr --help"],
+                daemonlessCommands: ["apm --help"],
                 bakedRootsSurviveGc: true
               }' > "$out/evidence.json"
           '';

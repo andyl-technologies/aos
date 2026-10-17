@@ -54,6 +54,9 @@ pub(super) fn from_build(
                 entries.insert(
                     artifact.id.clone(),
                     RegistryReleaseEntry {
+                        scan: (logical_output == "out")
+                            .then(|| package.scan_declarations.get(&cell.platform).cloned())
+                            .flatten(),
                         id: artifact.id.clone(),
                         name: package.name.clone(),
                         version: output.version.clone(),
@@ -108,6 +111,7 @@ mod tests {
             reproducibility: ReproducibilityResult::Reproduced,
         };
         let package = PackagePlan {
+            scan_declarations: Default::default(),
             name: "example".into(),
             publication: Some(PackagePublicationMetadata {
                 output_packages: Default::default(),

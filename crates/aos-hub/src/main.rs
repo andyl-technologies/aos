@@ -86,6 +86,9 @@ enum Command {
     },
     /// Run the hub server.
     Serve {
+        /// Owner-private assessment controller installation file.
+        #[arg(long, env = "HUB_ASSESSMENT_CONFIG_FILE")]
+        assessment_config_file: Option<PathBuf>,
         /// Listen address.
         #[arg(long, env = "HUB_LISTEN", default_value = "127.0.0.1:8420")]
         listen: String,
@@ -380,6 +383,9 @@ enum WorkerCommand {
 
 #[derive(Args)]
 struct HybridConfigArgs {
+    /// Read the explicit assessment physical executor installation from private JSON.
+    #[arg(long)]
+    assessment_profile_file: Option<PathBuf>,
     /// Cloudflare Worker name.
     #[arg(long)]
     name: String,
@@ -552,6 +558,11 @@ impl HybridConfigArgs {
             ),
         };
         Ok(cloudflare::HybridDeployConfig {
+            assessment: self
+                .assessment_profile_file
+                .as_deref()
+                .map(cloudflare::AssessmentEdgeProfileV1::from_file)
+                .transpose()?,
             name: self.name.clone(),
             bucket: self.bucket.clone(),
             deployment_id: self.deployment_id.clone(),
@@ -587,6 +598,18 @@ impl HybridConfigArgs {
 struct HybridDeployArgs {
     #[command(flatten)]
     config: HybridConfigArgs,
+    /// Read the separately paired assessment work authentication key from a private file.
+    #[arg(long, requires = "assessment_profile_file")]
+    assessment_work_key_file: Option<PathBuf>,
+    /// Read a private JSON map from selected source bindings to absolute secret files.
+    #[arg(long, requires = "assessment_profile_file")]
+    assessment_source_secrets_file: Option<PathBuf>,
+    /// Read the independent Native-matched notification work key from a private file.
+    #[arg(long, requires = "assessment_profile_file")]
+    assessment_notification_work_key_file: Option<PathBuf>,
+    /// Read a private map from callback bindings and the gateway key to absolute files.
+    #[arg(long, requires = "assessment_profile_file")]
+    assessment_notification_secrets_file: Option<PathBuf>,
     /// Read the Native-matched ingress key from an owner-private file.
     #[arg(long)]
     hybrid_ingress_key_file: Option<PathBuf>,
@@ -613,6 +636,12 @@ struct HybridDeployArgs {
 impl HybridDeployArgs {
     fn secret_files(&self) -> aos_hub::cloudflare::HybridDeploySecretFiles {
         aos_hub::cloudflare::HybridDeploySecretFiles {
+            assessment_work_key_file: self.assessment_work_key_file.clone(),
+            assessment_source_secrets_file: self.assessment_source_secrets_file.clone(),
+            assessment_notification_work_key_file: self
+                .assessment_notification_work_key_file
+                .clone(),
+            assessment_notification_secrets_file: self.assessment_notification_secrets_file.clone(),
             hybrid_ingress_key_file: self.hybrid_ingress_key_file.clone(),
             storage_work_key_file: self.storage_work_key_file.clone(),
             direct_upload_guard_key_file: self.direct_upload_guard_key_file.clone(),
@@ -727,6 +756,21 @@ struct RestoreBookmarkArgs {
 /// Shared options for the `worker` deployment commands.
 #[derive(Args)]
 struct WorkerArgs {
+    /// Read the assessment executor and optional shared coordinator installation.
+    #[arg(long)]
+    assessment_profile_file: Option<PathBuf>,
+    /// Read the separately paired assessment work authentication key from a private file.
+    #[arg(long, requires = "assessment_profile_file")]
+    assessment_work_key_file: Option<PathBuf>,
+    /// Read a private JSON map from selected source bindings to absolute secret files.
+    #[arg(long, requires = "assessment_profile_file")]
+    assessment_source_secrets_file: Option<PathBuf>,
+    /// Read the independent notification work key from a private file.
+    #[arg(long, requires = "assessment_profile_file")]
+    assessment_notification_work_key_file: Option<PathBuf>,
+    /// Read a private map from callback bindings and the gateway key to absolute files.
+    #[arg(long, requires = "assessment_profile_file")]
+    assessment_notification_secrets_file: Option<PathBuf>,
     /// The hosting provider.
     #[arg(long, value_enum, default_value_t = Provider::Cloudflare)]
     provider: Provider,
@@ -975,6 +1019,7 @@ async fn main() -> Result<()> {
             println!("{}", serde_json::to_string(&result)?);
         }
         Command::Serve {
+            assessment_config_file,
             listen,
             dev,
             seed,
@@ -1102,8 +1147,9 @@ async fn main() -> Result<()> {
                     .context("hybrid serving requires HUB_HYBRID_INGRESS_KEY_FILE")?;
                 let storage_key_file = storage_work_key_file
                     .context("hybrid serving requires HUB_STORAGE_WORK_KEY_FILE")?;
-                let worker_url =
-                    hybrid_worker_url.context("hybrid serving requires HUB_HYBRID_WORKER_URL")?;
+                let worker_url = hybrid_worker_url
+                    .clone()
+                    .context("hybrid serving requires HUB_HYBRID_WORKER_URL")?;
                 let ingress_key = aos_hub_core::hybrid_ingress::HybridIngressKey::new(
                     aos_hub::auth::seal::read_secret_file(&ingress_key_file)?,
                 )?;
@@ -1484,6 +1530,19 @@ async fn main() -> Result<()> {
                 app_state.secret_versions =
                     aos_hub::coreports::load_secret_version_manifest(&path)?;
             }
+            let _assessment_controller = if let Some(path) = assessment_config_file {
+                Some(
+                    aos_hub::assessment::install_controller(
+                        &app_state,
+                        &path,
+                        &topology,
+                        hybrid_worker_url.as_deref(),
+                    )
+                    .await?,
+                )
+            } else {
+                None
+            };
             let index_surfaces: Arc<dyn aos_hub_core::fetch::SurfaceProvider> =
                 if let Some((_, _, work)) = &hybrid_runtime {
                     Arc::new(aos_hub::storage_work::HybridSurfaceProvider::new(
@@ -2407,6 +2466,19 @@ async fn provision_worker(
                 .map(|domain| format!("https://{domain}"))
         })
         .context("worker deploy requires --external-url or at least one --domain")?;
+    let assessment = args
+        .assessment_profile_file
+        .as_deref()
+        .map(aos_hub::cloudflare::AssessmentEdgeProfileV1::from_file)
+        .transpose()?;
+    if let Some(profile) = &assessment {
+        profile.validate(
+            args.deployment_id
+                .as_deref()
+                .context("assessment requires --deployment-id")?,
+            false,
+        )?;
+    }
     let mut cfg = aos_hub::cloudflare::provision(
         assets,
         &args.name,
@@ -2424,6 +2496,7 @@ async fn provision_worker(
     .await?;
     // Apply the observability flags onto the provisioned config (provision()
     // defaults observability on; these let the operator tune or disable it).
+    cfg.assessment = assessment;
     cfg.observability = !args.no_observability;
     cfg.head_sampling_rate = args.head_sampling_rate;
     cfg.logpush = args.logpush;
@@ -2500,7 +2573,23 @@ async fn deploy_worker(
                 })
         })
         .transpose()?;
+    let assessment_profile = args
+        .assessment_profile_file
+        .as_deref()
+        .map(cloudflare::AssessmentEdgeProfileV1::from_file)
+        .transpose()?;
+    let assessment = cloudflare::AssessmentDeploymentSecrets::from_files(
+        assessment_profile.as_ref(),
+        args.assessment_work_key_file.as_deref(),
+        args.assessment_source_secrets_file.as_deref(),
+    )?
+    .with_notifications(
+        assessment_profile.as_ref(),
+        args.assessment_notification_work_key_file.as_deref(),
+        args.assessment_notification_secrets_file.as_deref(),
+    )?;
     let secrets = cloudflare::Secrets {
+        assessment: Some(assessment),
         jwt_secret: args.jwt_secret.clone(),
         seal_key: args.seal_key.clone(),
         egress_gateway_key: args.egress_gateway_key.clone(),

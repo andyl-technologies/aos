@@ -1,0 +1,27 @@
+[package]
+name = "aos-assessment-http"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Bounded native HTTP effects for the shared AOS package assessment executor"
+
+[dependencies]
+anyhow = { workspace = true }
+aos-assessment = { workspace = true }
+aos-assessment-runtime = { workspace = true }
+aos-assessment-providers = { workspace = true }
+aos-contract = { workspace = true }
+async-trait = { workspace = true }
+reqwest = { workspace = true }
+tokio = { workspace = true }
+libc = { workspace = true }
+zeroize = { workspace = true }
+
+[dev-dependencies]
+rcgen = { workspace = true }
+rustls = { workspace = true }
+tokio-rustls = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

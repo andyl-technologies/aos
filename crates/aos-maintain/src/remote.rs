@@ -217,10 +217,10 @@ mod tests {
     }
 
     #[test]
-    fn publication_contains_no_credential_surface() {
+    fn publication_contains_no_credential_surface() -> Result<()> {
         let publication = PullRequestPublicationV1 {
             schema: PACKAGE_UPDATE_PR_PUBLICATION_V1.to_string(),
-            run_id: RunId::parse("run-remote-fixture").unwrap(),
+            run_id: RunId::parse("run-remote-fixture")?,
             remote: "https://github.com/andyl-technologies/aos".to_string(),
             branch: "dplecki/upgrade-zlib-1-3".to_string(),
             base_branch: "main".to_string(),
@@ -231,17 +231,18 @@ mod tests {
             pull_request_url: "https://github.com/andyl-technologies/aos/pull/42".to_string(),
             published_at_unix: 1,
         };
-        publication.validate().unwrap();
-        let encoded = serde_json::to_string(&publication).unwrap();
+        publication.validate()?;
+        let encoded = serde_json::to_string(&publication)?;
         assert!(!encoded.contains("token"));
         assert!(!encoded.contains("credential"));
+        Ok(())
     }
 
     #[test]
-    fn merge_eligibility_is_fail_closed_across_every_axis() {
+    fn merge_eligibility_is_fail_closed_across_every_axis() -> Result<()> {
         let mut observation = PullRequestObservationV1 {
             schema: PACKAGE_UPDATE_PR_OBSERVATION_V1.to_string(),
-            run_id: RunId::parse("run-remote-fixture").unwrap(),
+            run_id: RunId::parse("run-remote-fixture")?,
             pull_request_number: 42,
             head: object('a'),
             base_branch: "main".to_string(),
@@ -260,7 +261,7 @@ mod tests {
             merge_commit: None,
             observed_at_unix: 1,
         };
-        observation.validate().unwrap();
+        observation.validate()?;
         assert!(observation.is_merge_eligible());
         assert!(!observation.is_qualified_merge());
         observation.merged = true;
@@ -273,5 +274,6 @@ mod tests {
         observation.authorization_succeeded = true;
         observation.approvals = 0;
         assert!(!observation.is_merge_eligible());
+        Ok(())
     }
 }

@@ -1,0 +1,10 @@
+# Generation-eighteen private authenticated scan authority.
+assessment_scan_authorities	retain	scan_id	text	no	1	retain
+assessment_scan_authorities	retain	registry_id	integer	no	0	retain
+assessment_scan_authorities	retain	resource_scope	text	no	0	retain
+assessment_scan_authorities	retain	request_digest	text	no	0	fingerprint
+assessment_scan_authorities	retain	actor_ref	text	no	0	retain
+assessment_scan_authorities	retain	authorization_revision	integer	no	0	retain
+assessment_scan_authorities	retain	authority_json	bytes	no	0	private_cell
+assessment_scan_authorities	retain	expires_at	integer	no	0	retain
+assessment_scan_authorities	retain	admitted_at	integer	no	0	retain

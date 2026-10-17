@@ -72,6 +72,7 @@ pub(super) async fn publish_evaluated_package(
     let platform = resolve_publish_platform(&info.path, platform_override)?;
     let (inventory, package) = evaluate_package(&info.path, &platform)?;
     let packages = publication_group(&inventory, &package)?;
+    let assessment = super::assessment::evaluate_inventory(&platform)?;
     let publication = package
         .publication
         .as_ref()
@@ -144,6 +145,9 @@ pub(super) async fn publish_evaluated_package(
             }
 
             publish_native_artifacts(registry_dir, &package, &platform, &store, &internal_printer)?;
+            super::assessment::publish(
+                registry_dir, &assessment, &package.name, &publication.version, &platform,
+            )?;
             for output in &package.outputs {
                 super::output_evidence::publish_output_evidence(
                     registry_dir,

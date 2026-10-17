@@ -77,6 +77,7 @@ async fn seed_at(
         route_reservation_keyring: None,
         container_rollout: aos_hub_core::container_rollout::ContainerRollout::all_enabled(),
         release_evidence: None,
+        assessment_notification_authority: Default::default(),
     });
     (router(state).await, db, keys, secret, scope, owner_id)
 }

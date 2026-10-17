@@ -29,6 +29,14 @@
 //! ```
 
 mod authentication;
+mod assessment;
+mod assessment_publication;
+mod assessment_scans;
+mod assessment_schedules;
+mod assessment_notifications;
+mod assessment_advisories;
+mod assessment_reviews;
+mod assessment_attention;
 mod container;
 mod container_admin;
 mod delivery_workflow;
@@ -12496,11 +12504,6 @@ impl RpcService {
         .map_err(RpcError::internal)?;
         Ok((locator, document))
     }
-
-    /// Fetches and verifies a previously authorized indexed documentation reference.
-    ///
-    /// # Errors
-    /// Returns an error for missing objects, placement failures, or invalid document integrity.
 
     /// `DocumentationService.SearchPackageDocumentation` — ranked index search.
     ///

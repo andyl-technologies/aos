@@ -120,10 +120,17 @@ async fn inspect(connection: &mut MySqlConnection) -> Result<SchemaAdmission> {
         lengths == [i64::try_from(SCHEMA_IDENTITY.len())?],
         "{RESET_REQUIRED}"
     );
-    let identities: Vec<String> =
+    // Binary-collated VARCHAR results can carry the protocol's binary flag.
+    // Decode exact bytes for either text/binary metadata, then reject invalid
+    // UTF-8 without changing collation or bypassing the driver's type check.
+    let identity_bytes: Vec<Vec<u8>> =
         sqlx::query_scalar("SELECT identity FROM hub_schema_identity LIMIT 2")
             .fetch_all(&mut *connection)
             .await?;
+    let identities = identity_bytes
+        .into_iter()
+        .map(|bytes| String::from_utf8(bytes).context("invalid MySQL serving identity UTF-8"))
+        .collect::<Result<Vec<_>>>()?;
     let versions: Vec<i64> = sqlx::query_scalar("SELECT version FROM schema_version LIMIT 2")
         .fetch_all(&mut *connection)
         .await?;

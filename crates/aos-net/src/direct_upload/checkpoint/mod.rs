@@ -61,6 +61,7 @@ impl SqliteDirectCheckpoints {
     /// # Errors
     /// Refuses non-private custody, changed identity/schema, unsupported WAL,
     /// malformed namespace or durable initialization failure.
+    #[allow(clippy::disallowed_methods, reason = "Physical upload journals require unpredictable private run identities; this is outside Crucible state.")]
     pub async fn open(
         path: &Path,
         namespace: &str,

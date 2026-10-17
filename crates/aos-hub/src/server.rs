@@ -118,6 +118,9 @@ pub struct AppState {
     pub container_rollout: aos_hub_core::container_rollout::ContainerRollout,
     /// Deployment-owned release receipt authority.
     pub release_evidence: Option<Arc<dyn aos_hub_core::release_evidence::ReleaseEvidenceAuthority>>,
+    /// Independently installed paired notification current-effect confirmation authority.
+    pub assessment_notification_authority:
+        Arc<std::sync::OnceLock<Arc<crate::assessment::NotificationAuthorityService>>>,
 }
 
 impl AppState {
@@ -160,6 +163,7 @@ impl AppState {
             route_reservation_keyring: None,
             container_rollout: aos_hub_core::container_rollout::ContainerRollout::default(),
             release_evidence: None,
+            assessment_notification_authority: Default::default(),
         }
     }
 
@@ -238,6 +242,7 @@ pub async fn router_with_hybrid_upload_mode(
         crate::storage_work::HybridSurfaceWrites::new(Arc::clone(&state.db), work),
     );
     let ingress_db = Arc::clone(&state.db);
+    let notification_state = Arc::clone(&state);
     let control_url = state.external_url.clone();
     let app = router_with_ports(
         state,
@@ -248,7 +253,7 @@ pub async fn router_with_hybrid_upload_mode(
         upload_mode,
     )
     .await;
-    Router::new()
+    let protected = Router::new()
         .fallback_service(app)
         .layer(axum::middleware::from_fn(move |request, next| {
             let key = Arc::clone(&key);
@@ -266,7 +271,17 @@ pub async fn router_with_hybrid_upload_mode(
                 )
                 .await
             }
-        }))
+        }));
+
+    // This one bounded route has its own independent MAC and SQL authority
+    // checks. It never inherits the generic Hybrid ingress capability.
+    Router::new()
+        .route(
+            aos_assessment_runtime::notifications::NOTIFICATION_EFFECT_PATH,
+            axum::routing::post(crate::assessment::notification_effect),
+        )
+        .with_state(notification_state)
+        .fallback_service(protected)
 }
 
 fn observed_status_response(status: StatusCode) -> Response {
@@ -724,6 +739,10 @@ async fn router_with_ports(
     // dispatcher rewrites a matched endpoint to the typed internal delivery
     // handler; this router owns only control-plane routes and console pages.
     let router = Router::new()
+        .route(
+            aos_assessment_runtime::notifications::NOTIFICATION_EFFECT_PATH,
+            axum::routing::post(crate::assessment::notification_effect),
+        )
         .route("/-/health", get(healthz))
         .route("/healthz", get(healthz))
         .route("/.well-known/aos-deployment", get(deployment_identity))

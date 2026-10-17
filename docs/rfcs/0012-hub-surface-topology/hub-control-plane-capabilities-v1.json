@@ -1306,6 +1306,50 @@
         "CompleteBatch",
         "Abort"
       ]
+    },
+    {
+      "service": "AssessmentService",
+      "audience": "end-user",
+      "cli_families": [
+        "assessment"
+      ],
+      "web_workflows": [
+        "registry-assessments"
+      ],
+      "methods": [
+        "GetPublicationStatus",
+        "GetStatus",
+        "GetAssessment",
+        "GetAdvisory",
+        "ListAlerts",
+        "AcknowledgeAlert",
+        "ListEvents",
+        "ListSchedules",
+        "PlanWriteSchedule",
+        "WriteSchedule",
+        "ListSubscriptions",
+        "ListNotificationDeliveries",
+        "PlanWriteSubscription",
+        "WriteSubscription",
+        "ReviewNotificationDestination"
+      ]
+    },
+    {
+      "service": "ScanService",
+      "audience": "end-user",
+      "cli_families": [
+        "assessment"
+      ],
+      "web_workflows": [
+        "registry-assessments"
+      ],
+      "methods": [
+        "RequestScan",
+        "GetScan",
+        "ListScans",
+        "CancelScan",
+        "RetryScan"
+      ]
     }
   ]
 }

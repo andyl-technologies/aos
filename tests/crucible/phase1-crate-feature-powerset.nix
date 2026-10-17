@@ -166,11 +166,15 @@
     lib.concatMap (
       package: let
         features = builtins.attrNames (manifestFeatures package);
-        sourcePath = cratesDir + "/${package}/src";
-        source =
+        # Cargo features may gate integration tests and packaged acceptance
+        # targets as well as production code. Inspect every conventional target
+        # directory while retaining the separate production dependency checks.
+        source = builtins.concatStringsSep "\n" (map (directory: let
+          sourcePath = cratesDir + "/${package}/${directory}";
+        in
           if builtins.pathExists sourcePath
           then readRustTree sourcePath
-          else "";
+          else "") ["src" "tests" "examples" "benches"]);
       in
         lib.concatMap (
           feature:

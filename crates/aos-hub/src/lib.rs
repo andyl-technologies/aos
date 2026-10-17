@@ -88,6 +88,7 @@ pub use aos_hub_core::crawl;
 /// ([`aos_hub_core::ratelimit::RateLimiter`],
 /// [`aos_hub_core::fetch::SurfaceProvider`]); RFC-0004 Phase 5.
 pub mod coreports;
+pub mod assessment;
 pub mod db;
 /// Bounded signed Native logical direct-upload transport.
 pub mod direct_upload;

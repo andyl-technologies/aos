@@ -91,21 +91,6 @@ impl RpcService {
         }))
     }
 
-    /// Resolves the origin of the registry's OCI surface without inventing one.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for database failure or a malformed ready route origin.
-    pub(crate) async fn container_distribution_origin(
-        &self,
-        registry_id: i64,
-    ) -> Result<Option<String>, RpcError> {
-        Ok(self
-            .container_distribution_exposure(registry_id)
-            .await?
-            .map(|exposure| exposure.origin))
-    }
-
     /// Resolves where the registry's OCI surface is reachable.
     ///
     /// A ready registry-bound route on the registry's preferred authority wins,

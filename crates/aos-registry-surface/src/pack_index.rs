@@ -135,7 +135,7 @@ pub fn validate_against_pack(path: &str, index: &[u8], pack: &[u8]) -> Result<()
         .into_iter()
         .map(|(entry, _)| entry)
         .collect::<Vec<_>>();
-    actual.sort_by(|left, right| left.oid.cmp(&right.oid));
+    actual.sort_by_key(|entry| entry.oid);
     if actual != expected {
         bail!("pack index does not describe its companion pack");
     }
@@ -181,7 +181,8 @@ fn parse_index(path: &str, bytes: &[u8]) -> Result<Vec<IndexEntry>> {
     let object_ids = &bytes[object_ids_start..object_ids_end];
     let mut counts = [0_u32; 256];
     let mut prior: Option<&[u8]> = None;
-    for oid in object_ids.chunks_exact(OBJECT_ID_BYTES) {
+    for oid in object_ids.as_chunks::<OBJECT_ID_BYTES>().0 {
+        let oid = oid.as_slice();
         if prior.is_some_and(|value| value >= oid) {
             bail!("pack index object ids are not strictly sorted");
         }

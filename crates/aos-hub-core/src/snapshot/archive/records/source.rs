@@ -9,7 +9,9 @@ use crate::backend::sqlite_snapshot::{
     SqliteSnapshotSourceAudit, SqliteSnapshotTable, SqliteSnapshotTableCount,
 };
 
-use super::wire::{Audit, PostgresSource, POSTGRES_PROFILE, PROFILE};
+use super::wire::{Audit, PostgresSource, PROFILE};
+#[cfg(feature = "postgres")]
+use super::wire::POSTGRES_PROFILE;
 
 pub(super) enum Source {
     Sqlite {

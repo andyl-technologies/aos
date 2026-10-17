@@ -141,6 +141,13 @@ mod delivery_ingress;
 mod bridge_dispatch;
 
 #[cfg(target_arch = "wasm32")]
+pub mod assessment_provider;
+#[cfg(target_arch = "wasm32")]
+pub mod assessment_notifications;
+#[cfg(target_arch = "wasm32")]
+mod assessment_controller;
+
+#[cfg(target_arch = "wasm32")]
 mod authority_issuer_storage;
 #[cfg(any(test, target_arch = "wasm32"))]
 pub(crate) mod binding_custody;
@@ -546,7 +553,10 @@ mod index_build_identity_tests {
 
         let first = registry_deletion_follow_up(&root, true).unwrap().unwrap();
         let replay = registry_deletion_follow_up(&root, true).unwrap().unwrap();
-        assert_eq!(first, replay, "a redelivered parent must not fork the chain");
+        assert_eq!(
+            first, replay,
+            "a redelivered parent must not fork the chain"
+        );
         assert_eq!(first.job, Job::RunTopologyProbes);
         assert_eq!(first.continuation.as_ref().unwrap().sequence, 1);
 
@@ -1303,6 +1313,9 @@ mod entry {
                 crate::workerqueue::WorkerQueue::from_env(env)?,
             )));
 
+        crate::assessment_controller::register_source_status(env, &db).map_err(|_| {
+            worker::Error::RustError("invalid installed assessment source status configuration".into())
+        })?;
         let mut service = RpcService::new(
             Arc::clone(&db),
             jwt_keys.clone(),
@@ -1439,6 +1452,17 @@ mod entry {
         if req.url()?.path() == aos_hub_core::storage_authority::lease::control::ISSUER_CONTROL_PATH
         {
             return crate::hybrid_authority_issuer::forward(req, &env).await;
+        }
+        if [
+            aos_assessment_runtime::provider::PROVIDER_CAPABILITIES_PATH,
+            aos_assessment_runtime::provider::PROVIDER_WORK_PATH,
+        ]
+        .contains(&req.url()?.path())
+        {
+            return crate::assessment_provider::fetch(req, &env).await;
+        }
+        if req.url()?.path() == aos_assessment_runtime::notifications::NOTIFICATION_WORK_PATH {
+            return crate::assessment_notifications::fetch(req, &env).await;
         }
         let hybrid = hybrid_mode(&env)?;
         if hybrid && req.url()?.path() == DEPLOYMENT_ID_PATH {
@@ -1658,12 +1682,50 @@ mod entry {
     /// to fan out bounded per-resource queue jobs; provider I/O never runs in
     /// the scheduled event.
     #[worker::event(scheduled)]
-    async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
+    async fn scheduled(event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
         crate::tracinglog::init();
         if hybrid_mode(&env).unwrap_or(true) {
             return;
         }
         use aos_hub_core::jobs::Queue as _;
+        if event.cron() == "* * * * *" {
+            let result = async {
+                let queue = crate::workerqueue::WorkerQueue::from_env(&env)?;
+                let db = aos_hub_core::db::Database::attach(job_backend(None, &env));
+                for resource_scope in crate::assessment_controller::installed_partitions(&env)
+                    .map_err(|_| {
+                        worker::Error::RustError("assessment installation unavailable".into())
+                    })?
+                {
+                    if let Some(registry_id) = db
+                        .assessment_registry_for_partition(&resource_scope)
+                        .await
+                        .map_err(|_| {
+                            worker::Error::RustError(
+                                "assessment partition lookup unavailable".into(),
+                            )
+                        })?
+                    {
+                        queue
+                            .enqueue(&aos_hub_core::jobs::Job::AssessmentRegistry {
+                                registry_id,
+                                resource_scope,
+                                after_scan: String::new(),
+                            })
+                            .await
+                            .map_err(|_| {
+                                worker::Error::RustError("assessment wakeup unavailable".into())
+                            })?;
+                    }
+                }
+                Ok::<(), worker::Error>(())
+            }
+            .await;
+            if result.is_err() {
+                worker::console_error!("scheduled: assessment journal wakeup unavailable");
+            }
+            return;
+        }
         let result = match crate::workerqueue::WorkerQueue::from_env(&env) {
             Ok(queue) => {
                 queue
@@ -1828,6 +1890,9 @@ mod entry {
             .into_iter()
             .map(|job| {
                 let cursor = match &job {
+                    aos_hub_core::jobs::Job::AssessmentRegistry { resource_scope, .. } => {
+                        format!("assessment:{resource_scope}")
+                    }
                     aos_hub_core::jobs::Job::RunTopologyProbes => "topology".to_string(),
                     aos_hub_core::jobs::Job::RecoverCacheWrites => "cache-recovery".to_string(),
                     aos_hub_core::jobs::Job::RecoverOciUploads => "oci-recovery".to_string(),
@@ -2098,6 +2163,29 @@ mod entry {
         }
         let make = || job_backend(state, env);
         match &envelope.job {
+            Job::AssessmentRegistry {
+                registry_id,
+                resource_scope,
+                after_scan,
+            } => {
+                if state.is_some() {
+                    return Err(worker::Error::RustError(
+                        "assessment provider work requires the queue isolate".into(),
+                    ));
+                }
+                crate::assessment_controller::run(
+                    Arc::new(Database::attach(make())),
+                    env,
+                    envelope,
+                    *registry_id,
+                    resource_scope,
+                    after_scan,
+                )
+                .await
+                .map_err(|_| {
+                    worker::Error::RustError("assessment journal pass unavailable".into())
+                })?;
+            }
             Job::DispatchMaintenance => run_cron(state, env, envelope).await?,
             Job::RunTopologyProbes => {
                 // Registry deletion does not depend on domain-probe
@@ -2735,9 +2823,7 @@ mod entry {
         .map_err(|error| worker::Error::RustError(format!("registry deletions: {error:#}")))?;
         if let Some(next) = crate::registry_deletion_follow_up(envelope, stats.follow_up_due)
             .map_err(|error| {
-                worker::Error::RustError(format!(
-                    "build registry deletion follow-up: {error:#}"
-                ))
+                worker::Error::RustError(format!("build registry deletion follow-up: {error:#}"))
             })?
         {
             crate::workerqueue::WorkerQueue::from_env(env)?

@@ -26,4 +26,6 @@
 //!
 //! To change the API surface, edit the `.proto` files and rebuild; never
 //! edit the generated output.
+#![allow(clippy::new_ret_no_self, reason = "Generated protobuf view accessors preserve wire field names, including fields named new.")]
+
 include!(concat!(env!("OUT_DIR"), "/_connectrpc.rs"));

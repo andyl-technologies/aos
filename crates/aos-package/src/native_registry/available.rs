@@ -161,10 +161,10 @@ impl RegistryAdmission {
         if self.evidence.contains_key(root) || self.image.receipt_for(root)?.is_some() {
             return Ok(true);
         }
-        for catalog in self
+        if let Some(catalog) = self
             .available
             .values()
-            .filter(|catalog| catalog.roots.contains(root))
+            .find(|catalog| catalog.roots.contains(root))
         {
             catalog.graph()?;
             return Ok(true);

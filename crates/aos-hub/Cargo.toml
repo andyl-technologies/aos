@@ -49,6 +49,10 @@ tempfile = { workspace = true }
 aos-core = { workspace = true }
 aos-package = { workspace = true }
 aos-hub-core = { workspace = true }
+aos-assessment-http = { workspace = true }
+aos-assessment = { workspace = true }
+aos-assessment-runtime = { workspace = true }
+aos-contract = { workspace = true }
 aos-doc-model = { workspace = true }
 aos-oci-types = { workspace = true }
 aos-registry-surface = { workspace = true }

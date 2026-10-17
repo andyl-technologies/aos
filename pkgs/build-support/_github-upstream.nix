@@ -23,6 +23,7 @@
   lifecycle ? "supported",
   successorUnit ? null,
   cohort ? null,
+  security ? null,
 }: let
   advisors =
     if repology == null
@@ -48,67 +49,73 @@
           field = "comparisonVersion";
         };
       };
-      components.main = {
-        current = {
-          inherit upstreamId;
-          comparisonVersion = version;
-        };
-        discovery = {
-          primary = {
-            inherit provider;
-            inherit repository tagPrefix;
+      components.main =
+        {
+          current = {
+            inherit upstreamId;
+            comparisonVersion = version;
           };
-          inherit advisors;
-        };
-        releasePolicy =
-          {
-            strategy = "latest-in-series";
-            inherit versionScheme;
-            allowPrerelease = false;
-            inherit minimumAgeDays;
-          }
-          // (
-            if major == null
-            then
-              if minor == null
-              then {}
-              else throw "mkGithubUpstream: minor series requires a major series"
-            else {
-              series =
-                {inherit major;}
-                // (
-                  if minor == null
-                  then {}
-                  else {inherit minor;}
-                );
+          discovery = {
+            primary = {
+              inherit provider;
+              inherit repository tagPrefix;
+            };
+            inherit advisors;
+          };
+          releasePolicy =
+            {
+              strategy = "latest-in-series";
+              inherit versionScheme;
+              allowPrerelease = false;
+              inherit minimumAgeDays;
             }
-          );
-        sources.source = {
-          fetcher = "fetchurl";
-          urlTemplates =
-            source.urlTemplates
-            or [
-              {
-                scheme = "https";
-                inherit (source) authority path;
+            // (
+              if major == null
+              then
+                if minor == null
+                then {}
+                else throw "mkGithubUpstream: minor series requires a major series"
+              else {
+                series =
+                  {inherit major;}
+                  // (
+                    if minor == null
+                    then {}
+                    else {inherit minor;}
+                  );
               }
-            ];
-          inherit (source) hash;
-          hashMode = source.hashMode or "flat";
-          allowedRedirectHosts =
-            source.allowedRedirectHosts
-            or (
-              if (builtins.head (source.urlTemplates or [{inherit (source) authority;}])).authority == "github.com"
-              then [
-                "codeload.github.com"
-                "github.com"
-                "objects.githubusercontent.com"
-                "release-assets.githubusercontent.com"
-              ]
-              else [source.authority]
             );
-        };
-      };
+          sources.source = {
+            fetcher = "fetchurl";
+            urlTemplates =
+              source.urlTemplates
+            or [
+                {
+                  scheme = "https";
+                  inherit (source) authority path;
+                }
+              ];
+            inherit (source) hash;
+            hashMode = source.hashMode or "flat";
+            allowedRedirectHosts =
+              source.allowedRedirectHosts
+            or (
+                if (builtins.head (source.urlTemplates or [{inherit (source) authority;}])).authority == "github.com"
+                then [
+                  "codeload.github.com"
+                  "github.com"
+                  "objects.githubusercontent.com"
+                  "release-assets.githubusercontent.com"
+                ]
+                else [source.authority]
+              );
+          };
+        }
+        // (
+          if security == null
+          then {}
+          else {inherit security;}
+        );
       inherit artifacts;
       inherit policy;
     }
@@ -118,7 +125,7 @@
       else {inherit cohort;}
     ));
 in {
-  inherit (upstream) version components artifacts;
+  inherit (upstream) version components artifacts assessment;
   update = upstream.forPackage {inherit member;};
   updateFor = member: upstream.forPackage {inherit member;};
   updateWithArtifacts = artifactDerivations:

@@ -705,6 +705,7 @@
     postInstall ? "",
     passthru ? {},
     update ? null,
+    assessment ? null,
     checks ? null,
     # ── Compiler-hardening policy ─────────────────────────────────────
     # Per-package opt-in / opt-out over the central token set. The
@@ -944,6 +945,7 @@
       "postInstall"
       "passthru"
       "update"
+      "assessment"
       "checks"
       "platformSupport"
       "hardeningEnable"
@@ -1235,9 +1237,20 @@
             platforms = derivationPlatforms;
           }
           // (
-            if update != null
+            if update != null || assessment != null
             then {
-              aos = (passthru.aos or {}) // {maintenance = update;};
+              aos =
+                (passthru.aos or {})
+                // (
+                  if update != null
+                  then {maintenance = update;}
+                  else {}
+                )
+                // (
+                  if assessment != null
+                  then {inherit assessment;}
+                  else {}
+                );
             }
             else {}
           );

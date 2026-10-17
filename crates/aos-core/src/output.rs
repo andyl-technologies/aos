@@ -399,11 +399,10 @@ impl ItemProgress {
             return;
         };
         let completed = self.progress.position().min(self.total_items);
-        let percent = if self.total_items == 0 {
-            100
-        } else {
-            completed.saturating_mul(100) / self.total_items
-        };
+        let percent = completed
+            .saturating_mul(100)
+            .checked_div(self.total_items)
+            .unwrap_or(100);
         let bucket = percent / PLAIN_PROGRESS_PERCENT_STEP;
         if bucket <= *last_bucket {
             return;
@@ -618,11 +617,10 @@ impl TransferProgress {
             return;
         };
         let total_bytes = self.inner.total_bytes.load(Ordering::Relaxed);
-        let percent = if total_bytes == 0 {
-            0
-        } else {
-            bytes.saturating_mul(100) / total_bytes
-        };
+        let percent = bytes
+            .saturating_mul(100)
+            .checked_div(total_bytes)
+            .unwrap_or(0);
         let bucket = percent / PLAIN_PROGRESS_PERCENT_STEP;
         let now = Instant::now();
         if bucket <= state.last_percent_bucket

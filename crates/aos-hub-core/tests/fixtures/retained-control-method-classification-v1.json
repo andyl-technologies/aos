@@ -4315,5 +4315,212 @@
       "class": "data_plane_write"
     },
     "external_effects": true
+  },
+  {
+    "service": "AssessmentService",
+    "method": "GetPublicationStatus",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": {
+      "class": "read"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "AssessmentService",
+    "method": "GetStatus",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": {
+      "class": "read"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "AssessmentService",
+    "method": "GetAssessment",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": {
+      "class": "read"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "ScanService",
+    "method": "GetScan",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": {
+      "class": "read"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "ScanService",
+    "method": "ListScans",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": {
+      "class": "read"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "ScanService",
+    "method": "RequestScan",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "assessment_scan_admission"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "ScanService",
+    "method": "CancelScan",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "operation_lifecycle"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "ScanService",
+    "method": "RetryScan",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "operation_lifecycle"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "AssessmentService",
+    "method": "GetAdvisory",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": {
+      "class": "read"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "AssessmentService",
+    "method": "ListAlerts",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": {
+      "class": "read"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "AssessmentService",
+    "method": "ListEvents",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": {
+      "class": "read"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "AssessmentService",
+    "method": "ListSchedules",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": {
+      "class": "read"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "AssessmentService",
+    "method": "ListSubscriptions",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": {
+      "class": "read"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "AssessmentService",
+    "method": "ListNotificationDeliveries",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": {
+      "class": "read"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "AssessmentService",
+    "method": "ReviewNotificationDestination",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": {
+      "class": "read"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "AssessmentService",
+    "method": "AcknowledgeAlert",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "append_only_event",
+      "event_kind": "assessment_alert_acknowledgement"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "AssessmentService",
+    "method": "PlanWriteSchedule",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "plan",
+      "pair": "assessment_schedule_review"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "AssessmentService",
+    "method": "WriteSchedule",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "apply",
+      "pair": "assessment_schedule_review",
+      "outcome": "immediate"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "AssessmentService",
+    "method": "PlanWriteSubscription",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "plan",
+      "pair": "assessment_subscription_review"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "AssessmentService",
+    "method": "WriteSubscription",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "apply",
+      "pair": "assessment_subscription_review",
+      "outcome": "immediate"
+    },
+    "external_effects": false
   }
 ]

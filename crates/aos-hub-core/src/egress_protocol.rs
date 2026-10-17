@@ -8,6 +8,8 @@
 //! boundaries are unambiguous and future contracts cannot be confused with
 //! this one.
 
+pub mod notifications;
+
 use anyhow::{bail, Result};
 use base64::Engine as _;
 use hmac::{Hmac, Mac as _};

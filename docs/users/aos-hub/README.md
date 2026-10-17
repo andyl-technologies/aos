@@ -32,6 +32,8 @@ resources.
   console.
 - [Set up a delivery destination](delivery.md) connects existing CDN and storage
   infrastructure through reviewed setup, verification, and activation.
+- [Install package assessment](package-assessment.md) configures shared source
+  routes, provider quotas, reviewed schedules and Native/Worker/Hybrid placement.
 - [Use the API](api.md) covers transport, authentication, and stable endpoint
   patterns.
 - [Choose the right CLI](cli.md) distinguishes local operator commands from

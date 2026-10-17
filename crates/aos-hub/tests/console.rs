@@ -72,7 +72,26 @@ async fn app_state(db: Arc<Database>) -> Arc<AppState> {
         route_reservation_keyring: None,
         container_rollout: aos_hub_core::container_rollout::ContainerRollout::all_enabled(),
         release_evidence: None,
+        assessment_notification_authority: Default::default(),
     })
+}
+
+#[tokio::test]
+async fn uninstalled_notification_confirmation_is_unavailable_and_uncached() {
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let app = router(app_state(db).await).await;
+    let request = Request::builder()
+        .method("POST")
+        .uri(aos_assessment_runtime::notifications::NOTIFICATION_EFFECT_PATH)
+        .header(header::HOST, "127.0.0.1:8420")
+        .header("content-type", "application/json")
+        .body(Body::from("{}"))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.headers()["cache-control"], "no-store");
 }
 
 async fn send(

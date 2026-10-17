@@ -18,7 +18,9 @@
   packageModulesAvailable ? false,
   ...
 }: {
-  imports = [./server.nix] ++ lib.optionals (!packageModulesAvailable) [./_native-policy/secure-boot.nix];
+  # The fixture enables the server role in its native host policy. Admit the
+  # role's package-owned service definitions before deriving its image graph.
+  imports = [./server.nix ./_server-test-packages.nix] ++ lib.optionals (!packageModulesAvailable) [./_native-policy/secure-boot.nix];
   aos.activation.stages.host.configuration = [
     (builtins.path {
       path = ./_native-policy/secure-boot.nix;

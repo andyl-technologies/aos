@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::build::BuildReportV1;
 
+mod assessment;
+
 /// SPDX document generated for one release build.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

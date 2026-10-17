@@ -47,6 +47,15 @@ pub fn redacted_job_failure(error: &str) -> String {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Job {
+    /// Wakes one bounded assessment pass over an exact registry incarnation.
+    AssessmentRegistry {
+        /// Logical registry key; independently checked against resource scope.
+        registry_id: i64,
+        /// Exact non-reusable installed registry authorization partition.
+        resource_scope: String,
+        /// Exclusive durable scan cursor, empty on the initial pass.
+        after_scan: String,
+    },
     /// Fans one periodic maintenance tick out into bounded resource jobs.
     DispatchMaintenance,
     /// Runs a bounded pass of durable topology-probe operations.
@@ -232,6 +241,24 @@ impl JobEnvelope {
                 bail!("job continuation is invalid");
             }
         }
+        if let Job::AssessmentRegistry {
+            registry_id,
+            resource_scope,
+            after_scan,
+        } = &self.job
+        {
+            if *registry_id <= 0
+                || resource_scope.is_empty()
+                || resource_scope.len() > 128
+                || after_scan.len() > 128
+                || resource_scope
+                    .chars()
+                    .chain(after_scan.chars())
+                    .any(char::is_control)
+            {
+                bail!("assessment wakeup has invalid logical scope or cursor");
+            }
+        }
         Ok(())
     }
 
@@ -251,6 +278,7 @@ impl JobEnvelope {
     #[must_use]
     pub fn kind(&self) -> &'static str {
         match &self.job {
+            Job::AssessmentRegistry { .. } => "assessment_registry",
             Job::DispatchMaintenance => "dispatch_maintenance",
             Job::RunTopologyProbes => "run_topology_probes",
             Job::RecoverCacheWrites => "recover_cache_writes",

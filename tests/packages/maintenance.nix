@@ -121,6 +121,52 @@
   invalidContract = builtins.tryEval (
     (pkgs.mkUpstream (canarySpec // {unknownField = true;})).version
   );
+  securityDeclaration = {
+    identities = [
+      {
+        kind = "ecosystem";
+        ecosystem = "crates.io";
+        name = "maintenance-fixture";
+      }
+    ];
+    advisorySources = [{provider = "osv";}];
+    versionScheme = "semver";
+    dependencyCoverage = {
+      state = "unknown";
+      basis = "Source declaration only";
+    };
+  };
+  securedUpstream = pkgs.mkUpstream (canarySpec
+    // {
+      components =
+        canarySpec.components
+        // {
+          main = canarySpec.components.main // {security = securityDeclaration;};
+        };
+    });
+  secured = pkgs.mkDerivation {
+    pname = "maintenance-derivation-identity-fixture";
+    version = upstream.version;
+    src = null;
+    inherit phases;
+    assessment = securedUpstream.assessment;
+  };
+  invalidSecurity = builtins.tryEval (builtins.deepSeq (
+      (pkgs.mkUpstream (canarySpec
+        // {
+          components =
+            canarySpec.components
+            // {
+              main =
+                canarySpec.components.main
+                // {
+                  security = securityDeclaration // {script = "execute-untrusted-scanner";};
+                };
+            };
+        })).assessment
+    )
+    true);
+  assessmentJson = builtins.toJSON pkgs.assessmentInventory;
   inventoryJson = builtins.toJSON pkgs.maintenanceInventory;
   zlibUnit = builtins.head (
     builtins.filter (unit: unit.unitId == "zlib-1") pkgs.maintenanceInventory.units
@@ -128,6 +174,22 @@
 in
   assert !invalidContract.success;
   assert baseline.drvPath == annotated.drvPath;
+  assert baseline.drvPath == secured.drvPath;
+  assert !invalidSecurity.success;
+  assert secured.passthru.aos.assessment.components.main.identities == securityDeclaration.identities;
+  assert upstream.assessment.components.main.identities
+  == [
+    {
+      kind = "unmapped";
+      reason = "identity-unmapped";
+      explanation = "No reviewed advisory identity is declared for this component.";
+    }
+  ];
+  assert !(secured ? assessment);
+  assert !(annotated.passthru.aos.maintenance.components.main ? security);
+  assert pkgs.assessmentInventory.maintenanceInventory == pkgs.maintenanceInventory;
+  assert builtins.length pkgs.assessmentInventory.securityDeclarations == builtins.length pkgs.maintenanceInventory.units;
+  assert assessmentJson != "";
   assert !(builtins.hasAttr "update" annotated);
   assert annotated.passthru.aos.maintenance.unitId == "maintenance-fixture-1";
   assert annotated.passthru.aos.maintenance.artifacts.goModules.derivation == upstream.components.main.sources.source.drvPath;

@@ -30,16 +30,16 @@ pub mod run;
 pub mod workflow;
 
 /// Schema identifier for the first maintenance inventory contract.
-pub const MAINTENANCE_INVENTORY_V1: &str = "aos.maintenance-inventory/v1";
+pub use aos_assessment::MAINTENANCE_INVENTORY_V1;
 
 /// Schema identifier for the first repository-bound inventory envelope.
 pub const MAINTENANCE_INVENTORY_ENVELOPE_V1: &str = "aos.maintenance-inventory-envelope/v1";
 
 /// Schema identifier for one immutable upstream-provider observation.
-pub const UPSTREAM_OBSERVATION_V1: &str = "aos.upstream-observation/v1";
+pub use aos_assessment::UPSTREAM_OBSERVATION_V1;
 
 /// Schema identifier for one repository-bound discovery snapshot.
-pub const DISCOVERY_SNAPSHOT_V1: &str = "aos.discovery-snapshot/v1";
+pub use aos_assessment::DISCOVERY_SNAPSHOT_V1;
 
 /// Schema identifier for one immutable package-update plan.
 pub const PACKAGE_UPDATE_PLAN_V1: &str = "aos.package-update-plan/v1";

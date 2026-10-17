@@ -10,6 +10,10 @@ members = [
     "aos-ability-runtime",
     "aos-ability-crucible",
     "aos-maintain",
+    "aos-assessment",
+    "aos-assessment-providers",
+    "aos-assessment-runtime",
+    "aos-assessment-http",
     "aos-core",
     "aos-boot-identity",
     "aos-recovery",
@@ -116,6 +120,7 @@ bytes = "1"
 http-body-util = "0.1"
 http-body = "1"
 http = "1"
+httpdate = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "json", "stream"] }
 url = "2"
 unicode-normalization = "0.1"
@@ -183,6 +188,7 @@ clap_complete = "4"
 toml = "0.8"
 toml_edit = "0.22"
 semver = "1"
+packageurl = "0.6"
 # Git access for the apm/apr registry. libgit2 (vendored, built with
 # -DEXPERIMENTAL_SHA256=ON via unstable-sha256) drives local object/ref
 # operations and the git://+ssh:// smart transports; the registry's static
@@ -238,6 +244,10 @@ aos-ability-plan = { path = "aos-ability-plan" }
 aos-ability-runtime = { path = "aos-ability-runtime" }
 aos-ability-crucible = { path = "aos-ability-crucible" }
 aos-maintain = { path = "aos-maintain" }
+aos-assessment = { path = "aos-assessment" }
+aos-assessment-providers = { path = "aos-assessment-providers" }
+aos-assessment-runtime = { path = "aos-assessment-runtime" }
+aos-assessment-http = { path = "aos-assessment-http" }
 crucible-cas = { path = "crucible-cas" }
 crucible-linux-resource = { path = "crucible-linux-resource" }
 crucible-s3-store = { path = "crucible-s3-store" }

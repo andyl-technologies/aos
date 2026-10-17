@@ -139,10 +139,18 @@ pub(in crate::registry_ops) fn build_package_toml(
                 let platforms = ver_table
                     .entry("platforms")
                     .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
-                platforms
+                let platforms = platforms
                     .as_table_mut()
-                    .context("existing package platforms metadata is not a TOML table")?
-                    .insert(platform.to_string(), platform_table);
+                    .context("existing package platforms metadata is not a TOML table")?;
+                // Republish cannot erase the authenticated policy before its
+                // exact-definition check runs later in the transaction.
+                if let Some(scan) = platforms.get(platform).and_then(|entry| entry.get("scan")) {
+                    platform_table
+                        .as_table_mut()
+                        .context("new package platform metadata is not a TOML table")?
+                        .insert("scan".into(), scan.clone());
+                }
+                platforms.insert(platform.to_string(), platform_table);
             } else {
                 // Add new version entry.
                 let mut ver_table = toml::map::Map::new();

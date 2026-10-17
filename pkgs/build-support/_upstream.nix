@@ -4,6 +4,8 @@
   fetchurl,
   platform,
 }: let
+  assessmentSecurity = import ./_assessment-security.nix {inherit lib;};
+
   sortedNames = value: builtins.sort builtins.lessThan (builtins.attrNames value);
 
   assertFields = label: required: optional: value: let
@@ -204,7 +206,7 @@
   };
 
   normalizeComponent = components: componentName: component: let
-    checked = assertFields "component '${componentName}'" ["current" "discovery" "releasePolicy" "sources"] [] component;
+    checked = assertFields "component '${componentName}'" ["current" "discovery" "releasePolicy" "sources"] ["security"] component;
     current = assertFields "component '${componentName}'.current" ["upstreamId" "comparisonVersion"] [] checked.current;
     discovery = assertFields "component '${componentName}'.discovery" ["primary"] ["advisors"] checked.discovery;
     sources = builtins.mapAttrs (normalizeSource components) checked.sources;
@@ -219,6 +221,7 @@
       releasePolicy = normalizeReleasePolicy checked.releasePolicy;
       sources = builtins.mapAttrs (_: value: value.metadata) sources;
     };
+    security = assessmentSecurity.normalize (checked.security or assessmentSecurity.default);
     sourceDerivations = builtins.mapAttrs (_: value: value.derivation) sources;
   };
 
@@ -378,6 +381,11 @@ in
     then throw "mkUpstream: package.currentVersion disagrees with its version projection"
     else {
       version = currentVersion;
+      assessment = {
+        schema = "aos.package-assessment-metadata/v1";
+        unitId = normalized.unitId;
+        components = builtins.mapAttrs (_: value: value.security) normalizedComponents;
+      };
       components = builtins.mapAttrs (_: value: {sources = value.sourceDerivations;}) normalizedComponents;
       artifacts = builtins.mapAttrs (_: value: {inherit (value) hash;}) normalizedArtifacts;
       forPackage = memberSpec: let

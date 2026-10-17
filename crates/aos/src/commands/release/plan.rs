@@ -6,6 +6,7 @@ use std::path::Path;
 use std::process::{Command, Output};
 
 use anyhow::{Context as _, Result, bail};
+use aos_assessment::metadata::PackageAssessmentInventoryV1;
 use aos_core::nix::NixRunner;
 use aos_core::output::Printer;
 use aos_release::canonical;
@@ -66,6 +67,7 @@ pub(super) fn run(args: &ReleasePlanArgs, nix: &NixRunner, printer: &Printer) ->
         serde_json::from_value(nix.eval_json("stdenv.buildPlatform.system")?)
             .context("decoding the native Nix build platform")?;
     let mut derivations = Vec::with_capacity(Platform::ALL.len());
+    let mut scan_inventories = std::collections::BTreeMap::new();
     for platform in Platform::ALL {
         // Passing the native platform as crossSystem selects a cross stdenv.
         // Native cells must retain the repository's ordinary build toolchain.
@@ -79,6 +81,11 @@ pub(super) fn run(args: &ReleasePlanArgs, nix: &NixRunner, printer: &Printer) ->
         }
         evaluated.validate()?;
         derivations.push(evaluated);
+        let scan = nix.eval_json_for_target("assessmentInventory", target)?;
+        scan_inventories.insert(
+            platform,
+            PackageAssessmentInventoryV1::from_slice(&serde_json::to_vec(&scan)?)?,
+        );
     }
     let source = derive_source_identity(
         nix.root(),
@@ -91,7 +98,7 @@ pub(super) fn run(args: &ReleasePlanArgs, nix: &NixRunner, printer: &Printer) ->
         .as_deref()
         .map(read_manifest)
         .transpose()?;
-    let plan = materialize_with_scope(
+    let mut plan = materialize_with_scope(
         request,
         &inventory,
         &derivations,
@@ -99,6 +106,7 @@ pub(super) fn run(args: &ReleasePlanArgs, nix: &NixRunner, printer: &Printer) ->
         qualification,
         predecessor.as_ref(),
     )?;
+    freeze_scan_declarations(&mut plan, &scan_inventories)?;
     for accepted in &accepted {
         accepted.validate_for(&plan)?;
     }
@@ -127,6 +135,40 @@ pub(super) fn run(args: &ReleasePlanArgs, nix: &NixRunner, printer: &Printer) ->
         args.output.display()
     ));
     Ok(())
+}
+
+/// Binds target-specific scan policy before the plan receives its byte identity.
+fn freeze_scan_declarations(
+    plan: &mut ReleasePlan,
+    inventories: &std::collections::BTreeMap<Platform, PackageAssessmentInventoryV1>,
+) -> Result<()> {
+    for package in &mut plan.packages {
+        if package.publication.is_none() {
+            continue;
+        }
+        for cell in &package.platforms {
+            if !matches!(
+                cell.decision,
+                aos_release::platform::MatrixCell::Artifact { .. }
+            ) {
+                continue;
+            }
+            let inventory = inventories
+                .get(&cell.platform)
+                .context("release plan lacks the target's scan inventory")?;
+            let declaration = inventory.publication(
+                aos_assessment::identity::MemberId::parse(&package.name)?,
+                package.name.clone(),
+                package
+                    .version_for(cell.platform)
+                    .context("publishable package lacks its target version")?
+                    .to_owned(),
+                cell.platform.as_str().to_owned(),
+            )?;
+            package.scan_declarations.insert(cell.platform, declaration);
+        }
+    }
+    plan.validate()
 }
 
 /// Materializes the plan with a change scope derived from the plan itself.

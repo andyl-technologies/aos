@@ -1,6 +1,13 @@
 //! Local foreground package-maintenance controller and process-boundary renderer.
 
 mod confinement;
+mod assessment;
+mod assessment_report;
+mod assessment_handoff;
+mod assessment_evidence;
+mod assessment_scans;
+mod assessment_status;
+mod advisories;
 mod discovery;
 mod evidence;
 mod git;
@@ -36,6 +43,13 @@ use serde::Serialize;
 use crate::cli::{Cli, ColorChoice, MaintainArgs, MaintainCommand, ProgressChoice};
 
 const MAX_SCAN_DIAGNOSTICS: usize = 128;
+
+pub use assessment::run_assessment;
+pub use assessment_report::run_assessment_report;
+pub use assessment_evidence::run_local_assessment_evidence;
+pub use assessment_scans::run_local_scans;
+pub use assessment_status::run_local_status;
+pub use advisories::run_advisory;
 
 /// Dispatches one recognized maintenance command to a typed completion.
 ///
@@ -91,6 +105,12 @@ pub async fn run(cli: &Cli, args: &MaintainArgs, printer: &Printer) -> Result<Co
     match &args.command {
         Some(MaintainCommand::Release { .. }) => {
             anyhow::bail!("release commands must use the independent release dispatcher")
+        }
+        Some(MaintainCommand::Scans { .. }) => {
+            anyhow::bail!("scan controls must use the shared assessment dispatcher")
+        }
+        Some(MaintainCommand::Advisory(_)) => {
+            anyhow::bail!("advisory commands must use the shared assessment dispatcher")
         }
         None => cached_completion("home", args, None),
         Some(MaintainCommand::Inventory(command)) => {
@@ -237,7 +257,12 @@ pub async fn run(cli: &Cli, args: &MaintainArgs, printer: &Printer) -> Result<Co
         Some(MaintainCommand::Commit(command)) => commit_command(args, command),
         Some(MaintainCommand::Test(command)) => test_command(args, command, printer),
         Some(MaintainCommand::Repair(command)) => repair_command(cli, args, command, printer).await,
-        Some(MaintainCommand::Evidence(command)) => evidence_command(args, command),
+        Some(MaintainCommand::Evidence(command)) => {
+            let run = command.run.clone().ok_or_else(|| {
+                anyhow::anyhow!("assessment evidence commands require their independent dispatcher")
+            })?;
+            evidence_command(args, &crate::cli::MaintainRunIdentityArgs { run })
+        }
         Some(MaintainCommand::PreparePr(command)) => prepare_pr_command(args, command),
         Some(MaintainCommand::PublishPr(command)) => publish_pr_command(args, command).await,
         Some(MaintainCommand::ObservePr(command)) => observe_pr_command(args, command).await,
@@ -2253,6 +2278,23 @@ fn plan_command(
         ]
     };
     let now = state::now_unix()?;
+    if let Some(path) = &command.assessment_intent {
+        let evidence = command
+            .assessment_evidence
+            .as_deref()
+            .context("assessment intent requires its evidence bundle")?;
+        let unit = unit_id
+            .as_ref()
+            .context("assessment intent requires one exact update unit")?;
+        assessment_handoff::select_from_files(
+            path,
+            evidence,
+            &envelope,
+            &mut snapshot,
+            unit,
+            now,
+        )?;
+    }
     if let Some(target) = &command.target
         && let Err(error) = select_explicit_target(
             &envelope,
@@ -2375,6 +2417,11 @@ fn plan_command(
             );
         }
     };
+    let selection_digest = store.retain_discovery(&snapshot)?;
+    anyhow::ensure!(
+        selection_digest == plan.discovery_snapshot_digest,
+        "plan discovery commitment differs from its retained selection"
+    );
     let digest = if let Some(existing) = store.read_plan(plan.plan_id.as_str())? {
         plan.created_at_unix = existing.created_at_unix;
         if plan != existing {
@@ -2456,6 +2503,8 @@ async fn run_command(
                 campaign: command.campaign.clone(),
                 target: None,
                 component: Vec::new(),
+                assessment_intent: None,
+                assessment_evidence: None,
             },
         )?;
         let Some(plan) = planned.result.data.plan.clone() else {
@@ -3214,6 +3263,8 @@ fn command_name(args: &MaintainArgs) -> &'static str {
     match &args.command {
         None => "home",
         Some(MaintainCommand::Release { .. }) => "release",
+        Some(MaintainCommand::Advisory(_)) => "advisory",
+        Some(MaintainCommand::Scans { .. }) => "assessment-scans",
         Some(MaintainCommand::Inventory(_)) => "inventory",
         Some(MaintainCommand::Scan(_)) => "scan",
         Some(MaintainCommand::Report(_)) => "report",
@@ -3242,6 +3293,8 @@ fn command_name(args: &MaintainArgs) -> &'static str {
 fn activity_label(args: &MaintainArgs) -> Option<&'static str> {
     match args.command.as_ref()? {
         MaintainCommand::Release { .. } => None,
+        MaintainCommand::Advisory(_) => None,
+        MaintainCommand::Scans { .. } => None,
         MaintainCommand::Inventory(_) => Some("Evaluating package maintenance inventory"),
         MaintainCommand::Scan(_) => Some("Checking direct upstreams and advisory evidence"),
         MaintainCommand::RefreshHashes(_) => Some("Refreshing fixed-output package hashes"),

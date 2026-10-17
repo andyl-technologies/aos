@@ -1989,6 +1989,7 @@ mod tests {
             .unwrap();
         let db = Database {
             backend: Box::new(backend),
+            assessment_source_catalog: Default::default(),
         };
         let bundle = admitted_bundle(&db, "ledger-upgrade").await;
         commit_staging(&db, &bundle, "ledger-upgrade").await;
@@ -2071,6 +2072,7 @@ mod tests {
         .unwrap();
         let db = Database {
             backend: Box::new(backend),
+            assessment_source_catalog: Default::default(),
         };
         let version: i64 = db
             .backend

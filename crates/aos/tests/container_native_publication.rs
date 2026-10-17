@@ -975,6 +975,7 @@ async fn spawn_hub(workspace: &Path, trust_key: &str) -> Result<RunningHub> {
         domain_probe_terminator: None,
         identity_domain_verifier: None,
         route_reservation_keyring: None,
+        assessment_notification_authority: Default::default(),
         container_rollout: aos_hub_core::container_rollout::ContainerRollout::all_enabled(),
         release_evidence: None,
     });

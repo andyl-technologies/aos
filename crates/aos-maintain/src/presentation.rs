@@ -15,6 +15,10 @@ use crate::remote::{PullRequestObservationV1, PullRequestPublicationV1};
 use crate::run::{GateResultsV1, PackageUpdateEvidenceV1, PackageUpdateRunV1, RepairAttemptV1};
 use crate::workflow::{DiscoveryDecision, GateOutcome, RunState, TaskStatus};
 
+mod assessment;
+
+pub use assessment::assessment_subject_lines;
+
 /// Classifies the outcome of the requested command independently of run state.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]

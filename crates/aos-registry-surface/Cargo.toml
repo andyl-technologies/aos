@@ -7,6 +7,7 @@ description = "Pure-Rust, no-IO reader for the AOS registry wire surface (RFC-00
 
 [dependencies]
 anyhow = { workspace = true }
+aos-assessment = { workspace = true }
 aos-oci-types = { workspace = true }
 sha2 = { workspace = true }
 base64 = { workspace = true }
