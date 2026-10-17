@@ -16,6 +16,7 @@ fn main() -> std::process::ExitCode {
             "prepare",
             "empty",
             "refuse",
+            "late-refuse",
             "cancel",
             "edquot",
             "hold",

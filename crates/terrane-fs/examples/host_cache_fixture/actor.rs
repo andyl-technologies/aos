@@ -2,10 +2,13 @@
 
 use super::config::{EPOCH, HARD_LIMIT, HOLD, Inputs, STATE};
 use std::{
-    fs::{self, OpenOptions},
+    fs::{self, File, Metadata, OpenOptions},
     future::Future,
-    io::{self, BufRead, Write},
-    os::unix::fs::OpenOptionsExt,
+    io::{self, BufRead, Read, Write},
+    os::{
+        fd::AsRawFd,
+        unix::fs::{MetadataExt, OpenOptionsExt},
+    },
     sync::Arc,
     task::{Context, Poll, Wake, Waker},
 };
@@ -23,7 +26,14 @@ use terrane_fs::{
 pub(super) fn run(mode: &str) -> io::Result<()> {
     if !matches!(
         mode,
-        "prepare" | "empty" | "refuse" | "cancel" | "edquot" | "hold" | "start-refuse"
+        "prepare"
+            | "empty"
+            | "refuse"
+            | "late-refuse"
+            | "cancel"
+            | "edquot"
+            | "hold"
+            | "start-refuse"
     ) {
         return Err(io::Error::other("unknown component selector"));
     }
@@ -77,6 +87,7 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
             }
             emit("PASS unresolved actual candidate refused without clearing state")?;
         }
+        "late-refuse" => late_refuse(&owner, &runtime, &inputs, original)?,
         "cancel" => cancel(&owner, &runtime, &inputs)?,
         "empty" | "edquot" => {
             let completed = runtime.block_on(owner.recover())?;
@@ -109,6 +120,158 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
     }
     confinement.check_current()?;
     require_empty_capabilities()
+}
+
+// This fixture retains and compares the actual unknown inode; it does not turn
+// an inventory candidate or durable reservation into native readiness evidence.
+struct UnknownCandidate {
+    file: File,
+    metadata: Metadata,
+    project: NativeProject,
+    bytes: Vec<u8>,
+}
+
+impl UnknownCandidate {
+    fn capture(inputs: &Inputs) -> io::Result<Self> {
+        let retained = Self::open_name(inputs)?;
+        let metadata = retained.metadata()?;
+        if !metadata.is_file()
+            || metadata.uid() != 840
+            || metadata.gid() != 845
+            || metadata.mode() & 0o7777 != 0o660
+            || metadata.nlink() != 1
+            || metadata.len() > 4096
+        {
+            return Err(io::Error::other("unexpected unknown fixture inode custody"));
+        }
+        // Classify with O_PATH before any readable open: no device is opened
+        // and no FIFO can block. Procfs names only our live retained inode.
+        let mut file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK | libc::O_NOATIME)
+            .open(format!("/proc/self/fd/{}", retained.as_raw_fd()))?;
+        let opened = file.metadata()?;
+        if opened.dev() != metadata.dev() || opened.ino() != metadata.ino() {
+            return Err(io::Error::other("unknown fixture readable inode changed"));
+        }
+        let project = NativeProject::inspect(&file)?;
+        if project.project_id != inputs.project {
+            return Err(io::Error::other("unknown fixture project differs"));
+        }
+        let mut bytes = Vec::new();
+        (&mut file).take(4097).read_to_end(&mut bytes)?;
+        if bytes.len() > 4096 || bytes.len() as u64 != metadata.len() {
+            return Err(io::Error::other(
+                "unknown fixture bytes exceeded capture bound",
+            ));
+        }
+        let named = Self::open_name(inputs)?.metadata()?;
+        if named.dev() != metadata.dev() || named.ino() != metadata.ino() {
+            return Err(io::Error::other(
+                "unknown fixture pathname changed during capture",
+            ));
+        }
+        Ok(Self {
+            file,
+            metadata,
+            project,
+            bytes,
+        })
+    }
+
+    fn open_name(inputs: &Inputs) -> io::Result<File> {
+        Ok(File::from(rustix::fs::openat2(
+            rustix::fs::CWD,
+            inputs.root.join("chunks/unrecognized-name"),
+            rustix::fs::OFlags::PATH | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+            rustix::fs::ResolveFlags::NO_SYMLINKS,
+        )?))
+    }
+
+    fn check_unchanged(&self, inputs: &Inputs) -> io::Result<()> {
+        let current = Self::capture(inputs)?;
+        // Access time is not a content-mutation signal. The fixture reads with
+        // O_NOATIME, but an independent inventory read may legitimately touch it.
+        for actual in [self.file.metadata()?, current.metadata] {
+            let expected = &self.metadata;
+            if actual.dev() != expected.dev()
+                || actual.ino() != expected.ino()
+                || actual.uid() != expected.uid()
+                || actual.gid() != expected.gid()
+                || actual.mode() != expected.mode()
+                || actual.len() != expected.len()
+                || actual.blocks() != expected.blocks()
+                || actual.nlink() != expected.nlink()
+                || actual.mtime() != expected.mtime()
+                || actual.mtime_nsec() != expected.mtime_nsec()
+                || actual.ctime() != expected.ctime()
+                || actual.ctime_nsec() != expected.ctime_nsec()
+            {
+                return Err(io::Error::other(
+                    "late refusal changed unknown inode metadata",
+                ));
+            }
+        }
+        if current.bytes != self.bytes
+            || current.project != self.project
+            || NativeProject::inspect(&self.file)? != self.project
+        {
+            return Err(io::Error::other(
+                "late refusal changed unknown bytes or project",
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn late_refuse(
+    owner: &NativeMetadataOwner,
+    runtime: &tokio::runtime::Runtime,
+    inputs: &Inputs,
+    original: Option<Vec<u8>>,
+) -> io::Result<()> {
+    if inputs.domain != "tenant:unknown" || original.is_some() || snapshot(inputs)?.is_some() {
+        return Err(io::Error::other(
+            "late refusal requires the fresh unknown-only fixture",
+        ));
+    }
+    let unknown = UnknownCandidate::capture(inputs)?;
+    let error = runtime
+        .block_on(owner.recover())
+        .err()
+        .ok_or_else(|| io::Error::other("unknown candidate unexpectedly completed recovery"))?;
+    if error.kind() != io::ErrorKind::WouldBlock {
+        return Err(io::Error::other(format!(
+            "unexpected late recovery refusal: {error}"
+        )));
+    }
+    verify_hold(runtime, inputs)?;
+    let funded = snapshot(inputs)?
+        .ok_or_else(|| io::Error::other("late refusal lost its durable funded snapshot"))?;
+    unknown.check_unchanged(inputs)?;
+
+    let error = runtime
+        .block_on(owner.recover())
+        .err()
+        .ok_or_else(|| io::Error::other("faulted owner unexpectedly completed recovery"))?;
+    if error.kind() != io::ErrorKind::WouldBlock
+        || error.to_string() != "failed physical work requires native reconciliation"
+    {
+        return Err(io::Error::other(format!(
+            "late refusal did not retain faulted custody: {error}"
+        )));
+    }
+    verify_hold(runtime, inputs)?;
+    if snapshot(inputs)?.as_ref() != Some(&funded) {
+        return Err(io::Error::other(
+            "faulted owner changed its durable funded snapshot",
+        ));
+    }
+    unknown.check_unchanged(inputs)?;
+    emit(
+        "PASS actual late refusal retained funded hold, faulted custody and unchanged unknown inode; no Resume",
+    )
 }
 
 fn snapshot(inputs: &Inputs) -> io::Result<Option<Vec<u8>>> {
@@ -150,6 +313,12 @@ fn verify_hold(runtime: &tokio::runtime::Runtime, inputs: &Inputs) -> io::Result
         || state.reservations.len() != 1
         || state.reservations[0].owner != inputs.owner
         || state.reservations[0].bytes != HOLD
+        || state.reservations[0].id.len() != 32
+        || !state.reservations[0]
+            .id
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        || !state.reservations[0].id.bytes().any(|byte| byte != b'0')
     {
         return Err(io::Error::other("actual durable bootstrap hold differs"));
     }
