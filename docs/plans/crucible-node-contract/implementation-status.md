@@ -1311,6 +1311,19 @@ advance past missing observations. All 25 public contract integration tests and
 rejection without cursor or storage mutation, exact retries, whole-batch paging,
 empty batches and valid ranges ending at the maximum sequence value.
 
+### Ordinary opaque-packet capability routing
+
+Authored capability selection now routes the existing opaque packet receiver
+through the installed executor for `exact_run` and `boundary_settle`. Its
+existing complete profile and installed admission policy remain authoritative.
+Two executor controls pass in 3.99 seconds: nonempty binary packets retain exact
+bytes, content identities, fixed response delay, causal Delivery parents and
+FIFO order, with complete response publications equal across two fresh
+catalogs. Changed script bytes, positive latency, facet configuration and
+unsupported operations are refused. This does not qualify packet preservation
+or transport fault controls. Formatting and six-crate all-feature/all-target
+checking pass; the latter completes in 35.40 seconds.
+
 ### Selected executable measurement
 
 The selected startup/Prepare path now reads through a 256 KiB bank. It retains

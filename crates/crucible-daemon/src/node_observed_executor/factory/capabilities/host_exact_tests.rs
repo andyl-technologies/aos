@@ -35,6 +35,9 @@ use super::super::{
 };
 use super::*;
 
+#[path = "host_exact_tests/packet.rs"]
+mod packet;
+
 fn id(value: &str) -> Id {
     Id::new(value).unwrap()
 }

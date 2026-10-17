@@ -150,6 +150,15 @@ pub(super) fn qualify_kind_with_compute(
                     "exact_run" | "boundary_settle"
                 ) && operation.facet.id.as_str() == "host/exact-v1"
             }
+            InstalledNodeKind::HostPacketReceiver { .. } => {
+                // The actual opaque receiver consumes original finite packets
+                // through this exact facade. Its separate archive/control
+                // capabilities are not enrolled by ordinary execution.
+                matches!(
+                    operation.operation.as_str(),
+                    "exact_run" | "boundary_settle"
+                ) && operation.facet.id.as_str() == "host/exact-v1"
+            }
             InstalledNodeKind::HostIo { .. }
             | InstalledNodeKind::HostScripted { .. }
             | InstalledNodeKind::HostNetLink { .. }
