@@ -321,20 +321,9 @@ impl crate::node_contract::NodeRuntime {
                 .map_err(RuntimePollFailure::Admission)?;
             if row.geometry.owner != policy.owner_id
                 || row.geometry.participants.as_slice() != std::slice::from_ref(participant)
-                || row.key.implementation != binding.compatibility.implementation.implementation_id
-                || !binding
-                    .compatibility
-                    .implementation
-                    .formats
-                    .contains(&row.key.schema)
-                || !binding
-                    .compatibility
-                    .operating_contract
-                    .facets
-                    .iter()
-                    .any(|facet| {
-                        facet.id == row.key.profile && facet.version == row.key.schema.version
-                    })
+                || !row
+                    .key
+                    .matches_selected_complete_state_profile_data(&binding.compatibility)
             {
                 return Err(RuntimePollFailure::Admission(RuntimeError::InvalidReceipt));
             }

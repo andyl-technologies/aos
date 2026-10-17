@@ -54,6 +54,20 @@ pub(super) fn matches_selected_complete_state_profile(
             .any(|facet| facet.id == key.profile && facet.version == selected_version)
 }
 
+impl NativeStateKey {
+    /// Checks only the explicit complete-state/facet correspondence.
+    ///
+    /// The owning producer and cold decoder must still authenticate the full
+    /// compiled definition and current custody. A positive DATA comparison is
+    /// not a preflight loan, snapshot permission or native restoration grant.
+    pub(crate) fn matches_selected_complete_state_profile_data(
+        &self,
+        binding: &BindingCompatibility,
+    ) -> bool {
+        matches_selected_complete_state_profile(self, binding)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     // Synthetic metadata uses the real compiled state-schema constructor. It
@@ -128,11 +142,14 @@ mod tests {
 
     #[test]
     fn genuine_invocation15_schema_keeps_preservation_facet5() {
-        let (key, binding) = invocation15();
+        let (key, mut binding) = invocation15();
 
         assert_eq!(key.schema.version, 14);
         assert_eq!(binding.operating_contract.facets[0].version, 5);
-        assert!(matches_selected_complete_state_profile(&key, &binding));
+        assert!(key.matches_selected_complete_state_profile_data(&binding));
+
+        binding.operating_contract.facets[0].version = key.schema.version;
+        assert!(!key.matches_selected_complete_state_profile_data(&binding));
     }
 
     #[test]

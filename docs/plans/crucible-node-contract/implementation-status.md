@@ -1089,6 +1089,15 @@ claimed definition still fails the compiled-schema validator. Six-crate,
 all-feature/all-target checking passes in 49.39 seconds. These component results
 do not establish complete native Capture or restoration.
 
+The same family predicate also corrects capture preflight, which separately
+compared facet and state-schema versions. Preflight retains owning-producer,
+owner/participant, implementation and full-schema checks. Its genuine schema14
+constructor control accepts facet5 and rejects facet14; unknown families stay
+outside this legacy route. The full Core suite passes 1,753 tests with zero
+failures and 32 ignored, and all seven contract tests pass. Formatting passes
+for both changed code files. Native Capture has not yet reached this preflight.
+Six-crate, all-feature/all-target checking passes in 34.76 seconds.
+
 ### Constructor-specific startup projections
 
 Raw Source JSON handling constructs Value trees, not Control snapshots. Its
