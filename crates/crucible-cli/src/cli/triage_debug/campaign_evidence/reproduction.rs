@@ -25,78 +25,88 @@ use super::service::{CampaignFindingOccurrenceScope, StoredCampaignFindingServic
 use super::store::{CampaignExchangeRef, put_evidence_blob, read_evidence_blob};
 use super::*;
 
-/// Schema line of one reproduction's segment list.
-const REPRODUCTION_SEGMENTS_SCHEMA: &str = "crucible.failure-triage.reproduction-segments.v1";
-
-/// Segment-list bound: the schema and count lines plus one line of at most
-/// 160 bytes for each of the at most
-/// [`crucible_campaign::MAX_REPRODUCTION_PAYLOAD_SEGMENTS`] segments.
-const MAX_REPRODUCTION_SEGMENTS_BYTES: usize =
-    1024 + crucible_campaign::MAX_REPRODUCTION_PAYLOAD_SEGMENTS * 160;
-
-/// Encodes one canonical segment list.
-fn encode_segment_list(exchanges: &[CampaignExchangeRef]) -> Vec<u8> {
-    let mut text = format!(
-        "{REPRODUCTION_SEGMENTS_SCHEMA}\nsegment_count={}\n",
-        exchanges.len()
-    );
-    for (index, exchange) in exchanges.iter().enumerate() {
-        text.push_str(&format!("segment.{index}={}\n", exchange.encode()));
-    }
-    text.into_bytes()
+/// One strict segment-exchange list format: its schema line and the largest
+/// number of segments it may name.
+///
+/// The list bound is the schema and count lines plus one line of at most 160
+/// bytes for each segment.
+pub(super) struct SegmentListFormat {
+    pub(super) schema: &'static str,
+    pub(super) max_segments: usize,
+    pub(super) label: &'static str,
 }
 
-/// Stores one reproduction's segment exchanges as a list and returns its key.
-fn put_segment_list(
-    store: &crucible::LocalDagStore,
-    exchanges: &[CampaignExchangeRef],
-) -> Result<crucible::ContentHash, CliError> {
-    put_evidence_blob(store, &encode_segment_list(exchanges))
-}
+/// The segment list of one reproduction's payload segments.
+const REPRODUCTION_SEGMENT_LIST: SegmentListFormat = SegmentListFormat {
+    schema: "crucible.failure-triage.reproduction-segments.v1",
+    max_segments: crucible_campaign::MAX_REPRODUCTION_PAYLOAD_SEGMENTS,
+    label: "reproduction segment list",
+};
 
-/// Reads one strict segment list.
-fn read_segment_list(
-    store: &crucible::LocalDagStore,
-    key: crucible::ContentHash,
-) -> Result<Vec<CampaignExchangeRef>, CliError> {
-    let bytes = read_evidence_blob(
-        store,
-        key,
-        MAX_REPRODUCTION_SEGMENTS_BYTES,
-        "reproduction segment list",
-    )?;
-    let malformed = || artifact_error("campaign reproduction segment list is malformed");
-
-    let text = std::str::from_utf8(&bytes).map_err(|_| malformed())?;
-    let mut lines = text.lines();
-    if lines.next() != Some(REPRODUCTION_SEGMENTS_SCHEMA) {
-        return Err(artifact_error(
-            "unsupported campaign reproduction segment list schema",
-        ));
+impl SegmentListFormat {
+    const fn max_bytes(&self) -> usize {
+        1024 + self.max_segments * 160
     }
-    let count = lines
-        .next()
-        .and_then(|line| line.strip_prefix("segment_count="))
-        .and_then(|count| count.parse::<usize>().ok())
-        .filter(|count| *count <= crucible_campaign::MAX_REPRODUCTION_PAYLOAD_SEGMENTS)
-        .ok_or_else(malformed)?;
-    let mut exchanges = Vec::with_capacity(count);
-    for index in 0..count {
-        let field = format!("segment.{index}");
-        let value = lines
+
+    /// Encodes one canonical segment list.
+    fn encode(&self, exchanges: &[CampaignExchangeRef]) -> Vec<u8> {
+        let mut text = format!("{}\nsegment_count={}\n", self.schema, exchanges.len());
+        for (index, exchange) in exchanges.iter().enumerate() {
+            text.push_str(&format!("segment.{index}={}\n", exchange.encode()));
+        }
+        text.into_bytes()
+    }
+
+    /// Stores segment exchanges as a list and returns its key.
+    pub(super) fn put(
+        &self,
+        store: &crucible::LocalDagStore,
+        exchanges: &[CampaignExchangeRef],
+    ) -> Result<crucible::ContentHash, CliError> {
+        put_evidence_blob(store, &self.encode(exchanges))
+    }
+
+    /// Reads one strict segment list.
+    pub(super) fn read(
+        &self,
+        store: &crucible::LocalDagStore,
+        key: crucible::ContentHash,
+    ) -> Result<Vec<CampaignExchangeRef>, CliError> {
+        let bytes = read_evidence_blob(store, key, self.max_bytes(), self.label)?;
+        let malformed = || artifact_error(format!("campaign {} is malformed", self.label));
+
+        let text = std::str::from_utf8(&bytes).map_err(|_| malformed())?;
+        let mut lines = text.lines();
+        if lines.next() != Some(self.schema) {
+            return Err(artifact_error(format!(
+                "unsupported campaign {} schema",
+                self.label
+            )));
+        }
+        let count = lines
             .next()
-            .and_then(|line| line.strip_prefix(field.as_str()))
-            .and_then(|rest| rest.strip_prefix('='))
+            .and_then(|line| line.strip_prefix("segment_count="))
+            .and_then(|count| count.parse::<usize>().ok())
+            .filter(|count| *count <= self.max_segments)
             .ok_or_else(malformed)?;
-        exchanges.push(CampaignExchangeRef::parse(&field, value)?);
-    }
+        let mut exchanges = Vec::with_capacity(count);
+        for index in 0..count {
+            let field = format!("segment.{index}");
+            let value = lines
+                .next()
+                .and_then(|line| line.strip_prefix(field.as_str()))
+                .and_then(|rest| rest.strip_prefix('='))
+                .ok_or_else(malformed)?;
+            exchanges.push(CampaignExchangeRef::parse(&field, value)?);
+        }
 
-    // Re-encoding rejects every spelling but the canonical one, including
-    // trailing lines and non-shortest numbers.
-    if encode_segment_list(&exchanges) != bytes {
-        return Err(malformed());
+        // Re-encoding rejects every spelling but the canonical one, including
+        // trailing lines and non-shortest numbers.
+        if self.encode(&exchanges) != bytes {
+            return Err(malformed());
+        }
+        Ok(exchanges)
     }
-    Ok(exchanges)
 }
 
 /// Captures every payload segment of a finding-level reproduction and
@@ -138,7 +148,7 @@ where
             &response.canonical_bytes(),
         )?);
     }
-    put_segment_list(store, &exchanges)
+    REPRODUCTION_SEGMENT_LIST.put(store, &exchanges)
 }
 
 /// Captures every payload segment of an occurrence's reproduction and
@@ -212,7 +222,7 @@ where
         }
     }
 
-    let list = put_segment_list(store, &exchanges)?;
+    let list = REPRODUCTION_SEGMENT_LIST.put(store, &exchanges)?;
     let artifact = decode
         .then(|| decode_campaign_reproduction(reproduction, &segments))
         .transpose()?;
@@ -282,7 +292,7 @@ pub(super) fn authenticate_finding_reproduction(
     reproduction: &crucible_campaign::ReproductionArtifact,
     list: crucible::ContentHash,
 ) -> Result<crucible::ReproductionArtifact, CliError> {
-    let exchanges = read_segment_list(evidence, list)?;
+    let exchanges = REPRODUCTION_SEGMENT_LIST.read(evidence, list)?;
     if exchanges.len() != reproduction.payload_segments().len() {
         return Err(artifact_error(
             "campaign reproduction segment list does not cover its payload",
@@ -349,7 +359,7 @@ pub(super) fn authenticate_occurrence_reproduction(
     reproduction: &crucible_campaign::ReproductionArtifact,
     list: crucible::ContentHash,
 ) -> Result<crucible::ReproductionArtifact, CliError> {
-    let exchanges = read_segment_list(evidence, list)?;
+    let exchanges = REPRODUCTION_SEGMENT_LIST.read(evidence, list)?;
     if exchanges.len() != reproduction.payload_segments().len() {
         return Err(artifact_error(
             "campaign occurrence reproduction segment list does not cover its payload",

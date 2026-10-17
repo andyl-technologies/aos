@@ -869,7 +869,7 @@ mod tests {
         let triage_id = |label: &[u8]| {
             FindingTriageReplayEvidenceId::from_content_id(ContentId::for_bytes(
                 ObjectKind::Finding,
-                2,
+                3,
                 label,
             ))
         };

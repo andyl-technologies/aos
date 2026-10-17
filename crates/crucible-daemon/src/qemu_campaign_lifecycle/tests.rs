@@ -2290,8 +2290,8 @@ fn assert_composed_candidate_replay_retains_choice_and_measurement(
         triage.failure(),
         crucible::FailureClusterReportFailure::Property(_)
     ));
-    assert!(!triage.causal_entries().is_empty());
-    assert!(triage.recorded_event_frames().is_empty());
+    assert!(triage.event_log_manifest().entry_count() > 0);
+    assert!(!triage.referenced_segments().is_empty());
 
     let signature = outcome
         .signature()
@@ -2674,9 +2674,22 @@ fn automatic_wrapper_retains_supplemental_violation_when_offline_source_also_fai
         replay: artifact.replay().expect("replay supplemental reproduction"),
         artifact,
     };
+    // The record's log segments are served by the repository, one at a time.
+    let segments = crucible::SharedSegmentStore::new();
+    for (index, segment) in retained.log_segments().iter().enumerate() {
+        let bytes = repository
+            .read_finding_triage_replay_log_segment(
+                triage.minimization_original(),
+                u32::try_from(index).expect("segment index"),
+            )
+            .expect("read supplemental triage log segment");
+        crucible::SegmentSink::put_segment(&segments, segment.content(), &bytes)
+            .expect("hold supplemental triage log segment");
+    }
     let replay = crucible::FailureTriageReplayEvidence::from_compact_binary(
         native_finding,
         retained.payload(),
+        std::sync::Arc::new(segments),
     )
     .expect("decode supplemental triage payload");
     let crucible::FailureClusterReportFailure::Property(actual) = replay.failure() else {
@@ -2781,7 +2794,9 @@ fn finding_candidate_replay_retains_authenticated_execution_quanta_timeout() {
         panic!("execution-bound candidate must be observable")
     };
     let (_, _, _, triage) = evidence.into_parts();
-    let (failures, causal_entries, _, _, _) = triage.into_parts();
+    let triage = triage.into_parts();
+    let causal_entries = triage.log_entries_for_test();
+    let failures = triage.failures;
     let mut timeouts = failures.iter().filter_map(|failure| match failure {
         crucible::FailureClusterReportFailure::Timeout(timeout) => Some(timeout),
         crucible::FailureClusterReportFailure::Property(_)
@@ -2848,7 +2863,7 @@ fn property_failure_precedes_a_coincident_execution_quanta_timeout() {
         panic!("coincident property and timeout candidate must be observable")
     };
     let (_, _, _, triage) = evidence.into_parts();
-    let (failures, _, _, _, _) = triage.into_parts();
+    let failures = triage.into_parts().failures;
 
     assert!(
         matches!(

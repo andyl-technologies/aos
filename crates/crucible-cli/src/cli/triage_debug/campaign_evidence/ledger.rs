@@ -436,9 +436,13 @@ impl CampaignTriageMember {
     }
 
     /// Returns the member's report evidence as clustered at load.
-    pub(crate) fn report(&self) -> TriageFindingEvidence {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a retained replay's log can no longer be read.
+    pub(crate) fn report(&self) -> Result<TriageFindingEvidence, CliError> {
         self.replays.as_ref().map_or_else(
-            || self.finding.report.clone(),
+            || Ok(self.finding.report.clone()),
             |replays| triage_finding_evidence_from_replay(&replays.minimization_original),
         )
     }
@@ -531,7 +535,7 @@ impl CampaignTriageEvidence {
     ) -> Result<TriageFindingEvidence, CliError> {
         self.member(artifact)?
             .map(|member| member.report())
-            .ok_or_else(|| artifact_error("missing member evidence in findings ledger"))
+            .ok_or_else(|| artifact_error("missing member evidence in findings ledger"))?
     }
 }
 

@@ -10,8 +10,8 @@ use std::sync::{Arc, Mutex};
 #[cfg(target_os = "linux")]
 use crucible::NodeId;
 use crucible::{
-    Configuration, Decision, DeliveryOrderDecision, EventLogTime, FailureTriageReplayEvidence,
-    Icount, Schedule, SchedulerEventLogEntry, VirtualTime,
+    Configuration, Decision, DeliveryOrderDecision, EventLogTime, Icount, Schedule,
+    SchedulerEventLogEntry, VirtualTime,
 };
 #[cfg(target_os = "linux")]
 use crucible_api::ProductionVmNodeGeneration;
@@ -465,12 +465,11 @@ impl PrivateFindingReplayRunner for DivergenceReplayRunner {
             divergence_replay_logs()
         };
         let coverage = crucible::coverage_fingerprint_from_event_log(&expected);
-        let triage = FailureTriageReplayEvidence::new_paired_divergence(
+        let triage = crucible::test_support::paired_divergence_evidence_for_test(
             finding.clone(),
-            expected,
-            reproduced,
+            &expected,
+            &reproduced,
             coverage,
-            Vec::new(),
         )
         .map_err(|error| AttemptWorkerFailure::Terminal(io::Error::other(error)))?;
         Ok(AutomaticFindingReplayOutcome::observed_with_triage(

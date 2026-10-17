@@ -19,6 +19,8 @@ mod reproduction;
 mod service;
 #[path = "campaign_evidence/store.rs"]
 mod store;
+#[path = "campaign_evidence/triage_segments.rs"]
+mod triage_segments;
 
 pub(crate) use ledger::{
     CampaignTriageEvidence, campaign_findings_ledger_bytes, load_campaign_findings_ledger,
@@ -254,11 +256,13 @@ fn campaign_model_finding_reproduction(
 /// Decodes one authenticated replay record into its native evidence.
 ///
 /// The record's role and evidence identity are already bound by
-/// authentication; this checks its reproduction and signature bindings.
+/// authentication, and `log_segments` holds the authenticated segments the
+/// record names; this checks its reproduction and signature bindings.
 pub(crate) fn decode_campaign_triage_replay_record(
     record: &crucible_campaign::FindingTriageReplayEvidence,
     reproduction: &crucible_campaign::ReproductionArtifact,
     finding: crucible::FindingReproductionArtifact,
+    log_segments: crucible::FailureTriageReplaySegments,
 ) -> Result<crucible::FailureTriageReplayEvidence, CliError> {
     let reproduction_id = reproduction.id().map_err(|error| {
         artifact_error(format!(
@@ -272,13 +276,34 @@ pub(crate) fn decode_campaign_triage_replay_record(
             "campaign occurrence triage payload has an incompatible semantic binding",
         ));
     }
-    let replay =
-        crucible::FailureTriageReplayEvidence::from_compact_binary(finding, record.payload())
-            .map_err(|error| {
-                artifact_error(format!(
-                    "campaign occurrence triage payload is invalid: {error}"
-                ))
-            })?;
+    let replay = crucible::FailureTriageReplayEvidence::from_compact_binary(
+        finding,
+        record.payload(),
+        log_segments,
+    )
+    .map_err(|error| {
+        artifact_error(format!(
+            "campaign occurrence triage payload is invalid: {error}"
+        ))
+    })?;
+
+    // The record's trace leaves must name exactly the payload's segments, in
+    // order, so a record cannot pin unrelated objects or omit a log segment.
+    let referenced = replay.referenced_segments();
+    let names_payload_segments = record.log_segments().len() == referenced.len()
+        && record
+            .log_segments()
+            .iter()
+            .zip(&referenced)
+            .all(|(named, segment)| {
+                named.content() == segment.id && named.bytes() == segment.encoded_bytes
+            });
+    if !names_payload_segments {
+        return Err(artifact_error(
+            "campaign occurrence triage record names other log segments than its payload",
+        ));
+    }
+
     validate_campaign_native_signature_binding(record, reproduction, &replay)?;
     Ok(replay)
 }
@@ -404,17 +429,32 @@ fn validate_campaign_native_signature_binding(
     Ok(())
 }
 
+/// Projects native replay evidence into the CLI's report evidence.
+///
+/// The CLI report and minimization paths still work over a resident log, so
+/// the replay's segmented log is read back here; campaign replays carry no
+/// CLI recording frames.
 fn triage_finding_evidence_from_replay(
     replay: &crucible::FailureTriageReplayEvidence,
-) -> TriageFindingEvidence {
-    TriageFindingEvidence {
+) -> Result<TriageFindingEvidence, CliError> {
+    let mut causal_entries = Vec::new();
+    replay
+        .recorded_event_log()
+        .try_for_each_entry(|entry| {
+            causal_entries.push(entry.clone());
+            Ok(())
+        })
+        .map_err(|error| {
+            artifact_error(format!("campaign triage replay log is unreadable: {error}"))
+        })?;
+    Ok(TriageFindingEvidence {
         finding: replay.finding().clone(),
-        causal_entries: replay.causal_entries().to_vec(),
+        causal_entries,
         recorded_event_log: replay.recorded_event_log().clone(),
         failure: replay.failure().clone(),
         discovery_signature: replay.signature().clone(),
-        recorded_event_frames: replay.recorded_event_frames().to_vec(),
-    }
+        recorded_event_frames: Vec::new(),
+    })
 }
 
 pub(super) fn campaign_triage_report_evidence_for_run(
@@ -427,7 +467,7 @@ pub(super) fn campaign_triage_report_evidence_for_run(
         .ok_or_else(|| {
             artifact_error("campaign minimized triage result has no authenticated replay evidence")
         })?;
-    let selected = triage_finding_evidence_from_replay(&replays.minimization_selected);
+    let selected = triage_finding_evidence_from_replay(&replays.minimization_selected)?;
     if selected.finding.artifact.id() != run.minimized_artifact() {
         return Err(artifact_error(
             "campaign selected replay disagrees with its minimized triage result",

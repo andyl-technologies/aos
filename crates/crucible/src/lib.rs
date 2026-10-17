@@ -21,7 +21,8 @@
 //! [`backend`] owns the VM backend boundary, [`event_catalog`] owns the versioned
 //! event-kind catalog, [`scheduler`] owns the quantum-loop boundary,
 //! [`segment_store`] re-exports the content-addressed storage shared by
-//! segmented logs, [`trigger`] owns event-graph control flow,
+//! segmented logs, [`attempt_log`] owns the attempt event log's segment and
+//! manifest formats, [`trigger`] owns event-graph control flow,
 //! [`native_console`] owns logical byte-origin encoding without execution
 //! authority, [`tracing_bridge`] owns opt-in host diagnostic
 //! mirroring to `tracing`, `local_backend` provides the production local
@@ -32,6 +33,7 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
+pub mod attempt_log;
 pub mod backend;
 pub mod decision;
 pub mod device;
@@ -54,6 +56,10 @@ pub mod trigger;
 /// Portable canonical campaign vocabulary owned by `crucible-campaign`.
 pub use crucible_campaign as campaign;
 
+pub use attempt_log::{
+    AttemptEventLogError, AttemptLogEntries, AttemptLogManifest, AttemptLogSegmentRef,
+    seal_attempt_log,
+};
 pub use backend::{
     AdvanceOutcome, Backend, BackendDispatchContract, BackendEffect, BackendError, BackendInput,
     BackendIoComputedReply, BackendIoInventory, BackendIoInventoryAuthority, BackendIoNativeCap,
@@ -150,23 +156,23 @@ pub use model::{
     FailureRecordedEventLog, FailureSignature, FailureSignatureKey, FailureSignatureNormalization,
     FailureSignaturePreservingMinimizationResult, FailureSignaturePreservingMinimizationRun,
     FailureSymmetryCanonicalizer, FailureTimeoutBudgetKind, FailureTimeoutRecord,
-    FailureTriageChangedCluster, FailureTriageReplayEvidence, FailureTriageResult,
-    FailureTriageResultDiff, FailureTriageResultIdentity, FailureTriageSignatureCheckRecord,
-    FailureTriageSignatureMismatch, FailureTriageSignatureSelfCheck,
-    FailureTriageSignatureSelfCheckInput, FailureTriageStoredArtifact, FamilyParams, FamilySpace,
-    FaultSignalPlan, FindingDiscoveryPath, FindingReproductionArtifact,
-    FindingReproductionArtifactError, FleetEquivalenceDivergence, FleetEquivalenceReport,
-    FleetFindingSetEntry, FleetWorkClaim, FleetWorkStealingConfig, FleetWorkStealingSearchRun,
-    FramePredicate, FrontierChild, FrontierCoveredChild, FrontierReductionPolicy,
-    FrontierReductionReason, FrontierReductionReport, GenesisCheckpoint, GuestWorkloadBinary,
-    GuestWorkloadConfigTreeDelivery, GuestWorkloadConfigTreeRef, GuestWorkloadLoadPatternFixture,
-    GuestWorkloadParameterKey, GuestWorkloadPattern, GuestWorkloadScalarParameter,
-    GuestWorkloadSeed, GuestWorkloadSpikeMode, GuestWorkloadTimeSource,
-    GuidanceDeterminismLintReport, GuidanceObservation, GuidanceRarityTable, GuidanceScore,
-    GuidanceSearchConfig, GuidanceSearchState, GuidanceSignal, GuidanceSignalComposition,
-    GuidanceSignalInput, GuidanceSignalKind, GuidanceSignalWeight, Icount,
-    InterestingScheduleWindow, InterestingScheduleWindowBasis, IoEventKind, IrqVector, LinkDef,
-    LinkId, LinkLossProbability, LocalDagStore, MAX_APP_RANDOM_SAMPLES_PER_DRAW,
+    FailureTriageChangedCluster, FailureTriageReplayEvidence, FailureTriageReplaySegments,
+    FailureTriageResult, FailureTriageResultDiff, FailureTriageResultIdentity,
+    FailureTriageSignatureCheckRecord, FailureTriageSignatureMismatch,
+    FailureTriageSignatureSelfCheck, FailureTriageSignatureSelfCheckInput,
+    FailureTriageStoredArtifact, FamilyParams, FamilySpace, FaultSignalPlan, FindingDiscoveryPath,
+    FindingReproductionArtifact, FindingReproductionArtifactError, FleetEquivalenceDivergence,
+    FleetEquivalenceReport, FleetFindingSetEntry, FleetWorkClaim, FleetWorkStealingConfig,
+    FleetWorkStealingSearchRun, FramePredicate, FrontierChild, FrontierCoveredChild,
+    FrontierReductionPolicy, FrontierReductionReason, FrontierReductionReport, GenesisCheckpoint,
+    GuestWorkloadBinary, GuestWorkloadConfigTreeDelivery, GuestWorkloadConfigTreeRef,
+    GuestWorkloadLoadPatternFixture, GuestWorkloadParameterKey, GuestWorkloadPattern,
+    GuestWorkloadScalarParameter, GuestWorkloadSeed, GuestWorkloadSpikeMode,
+    GuestWorkloadTimeSource, GuidanceDeterminismLintReport, GuidanceObservation,
+    GuidanceRarityTable, GuidanceScore, GuidanceSearchConfig, GuidanceSearchState, GuidanceSignal,
+    GuidanceSignalComposition, GuidanceSignalInput, GuidanceSignalKind, GuidanceSignalWeight,
+    Icount, InterestingScheduleWindow, InterestingScheduleWindowBasis, IoEventKind, IrqVector,
+    LinkDef, LinkId, LinkLossProbability, LocalDagStore, MAX_APP_RANDOM_SAMPLES_PER_DRAW,
     MAX_AUTOMATIC_INTERESTING_WINDOW_DECISIONS, MAX_FAILURE_TRIAGE_REPLAY_EVIDENCE_BYTES,
     MAX_MINIMIZATION_CANDIDATES, MIN_LINK_LATENCY, MarkerId, MaterializationPolicy,
     MaterializationTrigger, MaterializedSearchMutation, MaterializedSearchPlan, MaterializedState,
@@ -177,42 +183,43 @@ pub use model::{
     PartialOrderIndependenceProof, PartialOrderReductionKey, PartialOrderReductionPolicy,
     PendingFrame, PinnedConfiguration, PinnedScenario, Plan, Predicate, PreemptionBranchConfig,
     PreemptionBranchRun, PreemptionDecision, PreemptionKind, Properties, Property, PropertyKind,
-    ReachabilityExpectation, ReachableDisposition, ReadyPoint, RegexProgram, ReplayOracleCheck,
-    ReproductionArtifact, ReproductionEventLogArtifact, ReproductionEventLogReplay,
-    ReproductionReplay, ResidentScheduleSegments, ResolvedFaultTarget, RngDecision, RngStreamId,
-    RngStreamPosition, RuntimeState, SIM_TICKS_PER_INSTRUCTION, SIM_TICKS_PER_NS, ScenarioBuilder,
-    ScenarioDef, ScenarioDefForm, ScenarioFamily, ScenarioSelectableLimits, ScenarioSelectables,
-    Schedule, ScheduleError, ScheduleIndexRanges, ScheduleManifest, ScheduleSegmentRef,
-    SchedulerNodeId, SchedulerState, SchedulingNodeKind, SchedulingPoint, SearchAssertionFinding,
-    SearchBudget, SearchDiscoveredFailure, SearchExpansion, SearchFailureOracle,
-    SearchFrontierChoice, SearchFrontierChoices, SearchReplayOracleBisectionRequest,
-    SearchReplayOracleSamplingConfig, SearchReplayOracleSamplingReport,
-    SearchRetainedLogAssertionEvidence, SearchRetainedLogPredicateResolutions,
-    SearchRuntimeFrontier, SearchStrategy, Seed, SeedSpace, SeededRngStream, SelectionDecision,
-    SignaturePolicy, SignaturePolicyLevel, SimDuration, SimInstant, SimOffset, SimTick, State,
-    StateSpaceSearchEvidence, SymmetryClassId, SymmetryReductionClasses, SymmetryReductionKey,
-    TargetSelector, TemporalGraph, TemporalGraphFork, TemporalGraphGcReport, TemporalGraphGcRoots,
-    TemporalGraphReferenceCounts, TemporalGraphReplayEvidence, TemporalGraphResumeEvidence,
-    TemporalGraphRuntime, TemporalGraphSampledSearchRun, TemporalGraphSave,
-    TemporalGraphSaveEvidence, TemporalGraphSearch, TemporalGraphSearchRun,
-    TemporalGraphStoreError, TemporalGraphStoreKeys, TimeConversionError, TimerId, TimerRegistry,
-    TimerState, TopologyShape, TopologySizeRange, UnifiedGraphOperationEvidence,
-    UnifiedGraphOperationKind, UnifiedGraphOperationReport, VcpuId, VirtualInstant, VirtualTime,
-    VmArchitecture, VmSnapshotRef, WORKLOAD_CONFIG_TREE_DETERMINISTIC_QIDS,
-    WORKLOAD_CONFIG_TREE_SCENARIO_PARAMETER, WORKLOAD_CONFIG_TREE_SORTED_ENUMERATION,
-    WORKLOAD_CONFIG_TREES_ARE_READ_ONLY, WORKLOAD_ENGINE_ROLE,
-    WORKLOAD_HOST_WALL_CLOCK_LOAD_SHAPES_ALLOWED, WORKLOAD_LOAD_PATTERN_BLACK_BOX_CONFIG_SUFFICES,
-    WORKLOAD_LOAD_PATTERN_REQUIRES_WHITE_BOX, WORKLOAD_LOAD_PATTERN_SCENARIO_PARAMETER,
-    WORKLOAD_PARAMETER_HOST_RUNTIME_POKES_ALLOWED, WORKLOAD_PARAMETERS_ARE_SCENARIO_CONFIG,
-    WORKLOAD_SCENARIO_PARAMETER, WORKLOAD_SEED_BLACK_BOX_CONFIG_SUFFICES,
-    WORKLOAD_SEED_REQUIRES_WHITE_BOX, WORKLOAD_SEED_SCENARIO_PARAMETER,
-    WORKLOAD_SPIKE_MODE_SCENARIO_PARAMETER, WORKLOAD_TIME_SOURCE_SCENARIO_PARAMETER,
-    WORKLOAD_TIME_VARIATION_REQUIRES_VIRTUAL_TIME, WhiteBoxPolicy, WorkloadEngineRole, World,
-    WorldBlockLatency, WorldDeviceKind, WorldIoCoreConfig, WorldIoNode, WorldIoNodeKind,
-    WorldLookaheadEdge, WorldNinePLatency, WorldNode, WorldNodeDef, WorldStaticTopology,
-    WorldVmNodes, WorldWorkloadConfigTree, app_random_branch_decisions, bake, instantiate,
-    lint_guidance_determinism_source, materialize_search_plans, preemption_branch_choices, reduce,
-    run_adaptive_strategy_selection, try_step, validate_preemption_branch_schedule,
+    ReachabilityExpectation, ReachableDisposition, ReadyPoint, RecordedEventLogSegments,
+    RegexProgram, ReplayOracleCheck, ReproductionArtifact, ReproductionEventLogArtifact,
+    ReproductionEventLogReplay, ReproductionReplay, ResidentScheduleSegments, ResolvedFaultTarget,
+    RngDecision, RngStreamId, RngStreamPosition, RuntimeState, SIM_TICKS_PER_INSTRUCTION,
+    SIM_TICKS_PER_NS, ScenarioBuilder, ScenarioDef, ScenarioDefForm, ScenarioFamily,
+    ScenarioSelectableLimits, ScenarioSelectables, Schedule, ScheduleError, ScheduleIndexRanges,
+    ScheduleManifest, ScheduleSegmentRef, SchedulerNodeId, SchedulerState, SchedulingNodeKind,
+    SchedulingPoint, SearchAssertionFinding, SearchBudget, SearchDiscoveredFailure,
+    SearchExpansion, SearchFailureOracle, SearchFrontierChoice, SearchFrontierChoices,
+    SearchReplayOracleBisectionRequest, SearchReplayOracleSamplingConfig,
+    SearchReplayOracleSamplingReport, SearchRetainedLogAssertionEvidence,
+    SearchRetainedLogPredicateResolutions, SearchRuntimeFrontier, SearchStrategy, Seed, SeedSpace,
+    SeededRngStream, SelectionDecision, SignaturePolicy, SignaturePolicyLevel, SimDuration,
+    SimInstant, SimOffset, SimTick, State, StateSpaceSearchEvidence, SymmetryClassId,
+    SymmetryReductionClasses, SymmetryReductionKey, TargetSelector, TemporalGraph,
+    TemporalGraphFork, TemporalGraphGcReport, TemporalGraphGcRoots, TemporalGraphReferenceCounts,
+    TemporalGraphReplayEvidence, TemporalGraphResumeEvidence, TemporalGraphRuntime,
+    TemporalGraphSampledSearchRun, TemporalGraphSave, TemporalGraphSaveEvidence,
+    TemporalGraphSearch, TemporalGraphSearchRun, TemporalGraphStoreError, TemporalGraphStoreKeys,
+    TimeConversionError, TimerId, TimerRegistry, TimerState, TopologyShape, TopologySizeRange,
+    UnifiedGraphOperationEvidence, UnifiedGraphOperationKind, UnifiedGraphOperationReport, VcpuId,
+    VirtualInstant, VirtualTime, VmArchitecture, VmSnapshotRef,
+    WORKLOAD_CONFIG_TREE_DETERMINISTIC_QIDS, WORKLOAD_CONFIG_TREE_SCENARIO_PARAMETER,
+    WORKLOAD_CONFIG_TREE_SORTED_ENUMERATION, WORKLOAD_CONFIG_TREES_ARE_READ_ONLY,
+    WORKLOAD_ENGINE_ROLE, WORKLOAD_HOST_WALL_CLOCK_LOAD_SHAPES_ALLOWED,
+    WORKLOAD_LOAD_PATTERN_BLACK_BOX_CONFIG_SUFFICES, WORKLOAD_LOAD_PATTERN_REQUIRES_WHITE_BOX,
+    WORKLOAD_LOAD_PATTERN_SCENARIO_PARAMETER, WORKLOAD_PARAMETER_HOST_RUNTIME_POKES_ALLOWED,
+    WORKLOAD_PARAMETERS_ARE_SCENARIO_CONFIG, WORKLOAD_SCENARIO_PARAMETER,
+    WORKLOAD_SEED_BLACK_BOX_CONFIG_SUFFICES, WORKLOAD_SEED_REQUIRES_WHITE_BOX,
+    WORKLOAD_SEED_SCENARIO_PARAMETER, WORKLOAD_SPIKE_MODE_SCENARIO_PARAMETER,
+    WORKLOAD_TIME_SOURCE_SCENARIO_PARAMETER, WORKLOAD_TIME_VARIATION_REQUIRES_VIRTUAL_TIME,
+    WhiteBoxPolicy, WorkloadEngineRole, World, WorldBlockLatency, WorldDeviceKind,
+    WorldIoCoreConfig, WorldIoNode, WorldIoNodeKind, WorldLookaheadEdge, WorldNinePLatency,
+    WorldNode, WorldNodeDef, WorldStaticTopology, WorldVmNodes, WorldWorkloadConfigTree,
+    app_random_branch_decisions, bake, instantiate, lint_guidance_determinism_source,
+    materialize_search_plans, preemption_branch_choices, reduce, run_adaptive_strategy_selection,
+    try_step, validate_preemption_branch_schedule,
 };
 pub use native_console::{
     NATIVE_CONSOLE_ORIGIN_BYTES, NativeConsoleByteOrigin, NativeConsoleMappingLease,
@@ -342,6 +349,82 @@ pub mod test_support {
         O: HostAssertionPredicate,
     {
         crate::trigger::unchecked_host_assertion_oracle_for_test(oracle)
+    }
+
+    /// Seals a complete test log into a fresh in-memory segment store.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `entries` are not dense from sequence zero or an entry
+    /// exceeds the segment bound.
+    #[must_use]
+    pub fn sealed_log_for_test(
+        entries: &[SchedulerEventLogEntry],
+    ) -> (
+        crate::AttemptLogManifest,
+        crate::FailureTriageReplaySegments,
+    ) {
+        let store = crate::SharedSegmentStore::new();
+        let manifest = crate::seal_attempt_log(entries, &store)
+            .unwrap_or_else(|error| panic!("test log should seal: {error}"));
+        (manifest, std::sync::Arc::new(store))
+    }
+
+    /// Builds replay evidence for one test replay log.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`crate::FailureTriageReplayEvidence::new`].
+    ///
+    /// # Panics
+    ///
+    /// Panics when `entries` cannot be sealed; see [`sealed_log_for_test`].
+    pub fn replay_evidence_for_test(
+        finding: crate::FindingReproductionArtifact,
+        failure: crate::FailureClusterReportFailure,
+        entries: &[SchedulerEventLogEntry],
+        coverage_fingerprint: ContentHash,
+    ) -> Result<crate::FailureTriageReplayEvidence, crate::EngineError> {
+        let (manifest, segments) = sealed_log_for_test(entries);
+        crate::FailureTriageReplayEvidence::new(
+            finding,
+            failure,
+            manifest,
+            segments,
+            coverage_fingerprint,
+        )
+    }
+
+    /// Builds paired divergence evidence for two test logs sealed together.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of
+    /// [`crate::FailureTriageReplayEvidence::new_paired_divergence`].
+    ///
+    /// # Panics
+    ///
+    /// Panics when either log cannot be sealed; see [`sealed_log_for_test`].
+    pub fn paired_divergence_evidence_for_test(
+        finding: crate::FindingReproductionArtifact,
+        expected: &[SchedulerEventLogEntry],
+        reproduced: &[SchedulerEventLogEntry],
+        coverage_fingerprint: ContentHash,
+    ) -> Result<crate::FailureTriageReplayEvidence, crate::EngineError> {
+        let store = std::sync::Arc::new(crate::SharedSegmentStore::new());
+        let seal = |entries| {
+            crate::seal_attempt_log(entries, store.as_ref())
+                .unwrap_or_else(|error| panic!("test log should seal: {error}"))
+        };
+        let expected = seal(expected);
+        let reproduced = seal(reproduced);
+        crate::FailureTriageReplayEvidence::new_paired_divergence(
+            finding,
+            expected,
+            reproduced,
+            store,
+            coverage_fingerprint,
+        )
     }
 
     /// Builds a scheduler observable event-log entry for integration tests.

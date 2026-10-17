@@ -346,6 +346,13 @@ allowance is recorded as incomplete, never truncated.
   findings and, within a finding, over occurrences. No writer, loader, or
   verifier may materialize the occurrence proofs of a complete finding or
   ledger; at most one triage replay is reassembled at a time.
+- **[CMEAS-27]** Failure-triage replay evidence MUST reference each replayed
+  attempt log by its manifest, and a campaign triage record MUST name every
+  referenced segment, in payload order, as an owned trace leaf. Neither MAY
+  embed log entries or recording frames. Decoding MUST authenticate every
+  segment against its manifest and fail closed on a missing, substituted, or
+  unnamed segment. Signature construction, coverage folding, and
+  paired-divergence comparison MUST stream segments in order.
 - **[CCOMP-30]** Resume from a checkpoint MUST continue from the checkpoint's
   chain position and bounded fold state. Resume proofs MUST compare the
   checkpoint's chain position, not a retained entry vector.

@@ -28,10 +28,11 @@
 //! consecutive occurrences. An occurrence names its page exchange, its three
 //! object exchanges, both reproductions' segment lists, and, when its bundle
 //! carries triage evidence, the ordered segment exchanges of all four replay
-//! roles:
+//! roles, each followed by the segment list of the attempt-log segments that
+//! role's record names (see the `triage_segments` module):
 //!
 //! ```text
-//! crucible.failure-triage.finding-occurrences.v2
+//! crucible.failure-triage.finding-occurrences.v3
 //! first_occurrence=0
 //! occurrence_count=1
 //! occurrence.0.page=<request hash> <response hash>
@@ -43,6 +44,7 @@
 //! occurrence.0.triage=present
 //! occurrence.0.minimization_original.segment_count=1
 //! occurrence.0.minimization_original.segment.0=<request hash> <response hash>
+//! occurrence.0.minimization_original.log_segments=<hash>
 //! ...
 //! ```
 //!
@@ -62,7 +64,7 @@ pub(super) const FINDING_EVIDENCE_SCHEMA: &str = "crucible.failure-triage.findin
 
 /// Schema line of one occurrence chunk.
 pub(super) const FINDING_OCCURRENCES_SCHEMA: &str =
-    "crucible.failure-triage.finding-occurrences.v2";
+    "crucible.failure-triage.finding-occurrences.v3";
 
 /// Largest number of occurrences one chunk holds.
 ///
@@ -77,7 +79,7 @@ pub(super) const MAX_TRIAGE_REPLAY_SEGMENTS: usize = 8;
 /// [`crucible_campaign::MAX_FINDING_OCCURRENCES`] occurrences.
 const MAX_FINDING_EVIDENCE_RECORD_BYTES: usize = 128 * 1024;
 
-/// Chunk bound: 1,024 occurrences of at most 43 lines below 200 bytes each.
+/// Chunk bound: 1,024 occurrences of at most 47 lines below 200 bytes each.
 const MAX_OCCURRENCE_CHUNK_BYTES: usize = 8 * 1024 * 1024;
 
 /// Replay roles in the canonical order the bundle names them.
@@ -132,8 +134,17 @@ pub(crate) struct CampaignOccurrenceExchanges {
     pub(super) minimized: CampaignExchangeRef,
     /// Segment list of the minimized reproduction's payload segment exchanges.
     pub(super) minimized_segments: crucible::ContentHash,
-    /// Segment exchanges in [`TRIAGE_REPLAY_ROLES`] order.
-    pub(super) triage: Option<[Vec<CampaignExchangeRef>; 4]>,
+    /// Replay exchanges in [`TRIAGE_REPLAY_ROLES`] order.
+    pub(super) triage: Option<[CampaignTriageRoleExchanges; 4]>,
+}
+
+/// Exchange references that resolve one triage replay role.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct CampaignTriageRoleExchanges {
+    /// Ordered storage-segment exchanges of the replay record.
+    pub(super) segments: Vec<CampaignExchangeRef>,
+    /// Segment list of the attempt-log segment exchanges the record names.
+    pub(super) log_segments: crucible::ContentHash,
 }
 
 impl CampaignFindingEvidenceRecord {
@@ -387,11 +398,18 @@ pub(super) fn encode_occurrence_chunk(
             continue;
         };
         lines.push(format!("{prefix}.triage=present"));
-        for ((_, label), segments) in TRIAGE_REPLAY_ROLES.iter().zip(triage) {
-            lines.push(format!("{prefix}.{label}.segment_count={}", segments.len()));
-            lines.extend(segments.iter().enumerate().map(|(segment, exchange)| {
+        for ((_, label), role) in TRIAGE_REPLAY_ROLES.iter().zip(triage) {
+            lines.push(format!(
+                "{prefix}.{label}.segment_count={}",
+                role.segments.len()
+            ));
+            lines.extend(role.segments.iter().enumerate().map(|(segment, exchange)| {
                 format!("{prefix}.{label}.segment.{segment}={}", exchange.encode())
             }));
+            lines.push(format!(
+                "{prefix}.{label}.log_segments={}",
+                role.log_segments.to_hex()
+            ));
         }
     }
     canonical_text(lines)
@@ -439,8 +457,8 @@ pub(super) fn parse_occurrence_chunk(
         let triage = match lines.field(&format!("{prefix}.triage"))? {
             "none" => None,
             "present" => {
-                let mut roles: [Vec<CampaignExchangeRef>; 4] = Default::default();
-                for ((_, label), segments) in TRIAGE_REPLAY_ROLES.iter().zip(&mut roles) {
+                let mut roles: [CampaignTriageRoleExchanges; 4] = Default::default();
+                for ((_, label), role) in TRIAGE_REPLAY_ROLES.iter().zip(&mut roles) {
                     let segment_count = lines.number(&format!("{prefix}.{label}.segment_count"))?;
                     if segment_count == 0 || segment_count > MAX_TRIAGE_REPLAY_SEGMENTS as u64 {
                         return Err(artifact_error(format!(
@@ -448,9 +466,10 @@ pub(super) fn parse_occurrence_chunk(
                         )));
                     }
                     for segment in 0..segment_count {
-                        segments
+                        role.segments
                             .push(lines.exchange(&format!("{prefix}.{label}.segment.{segment}"))?);
                     }
+                    role.log_segments = lines.hash(&format!("{prefix}.{label}.log_segments"))?;
                 }
                 Some(roles)
             }
@@ -588,15 +607,26 @@ mod tests {
             minimized_segments: crucible::ContentHash::from_bytes(&[seed, 3]),
             triage: triage.then(|| {
                 [
-                    vec![exchange(seed.wrapping_add(4))],
-                    vec![
-                        exchange(seed.wrapping_add(5)),
-                        exchange(seed.wrapping_add(6)),
-                    ],
-                    vec![exchange(seed.wrapping_add(7))],
-                    vec![exchange(seed.wrapping_add(8))],
+                    role(vec![exchange(seed.wrapping_add(4))], seed, 4),
+                    role(
+                        vec![
+                            exchange(seed.wrapping_add(5)),
+                            exchange(seed.wrapping_add(6)),
+                        ],
+                        seed,
+                        5,
+                    ),
+                    role(vec![exchange(seed.wrapping_add(7))], seed, 7),
+                    role(vec![exchange(seed.wrapping_add(8))], seed, 8),
                 ]
             }),
+        }
+    }
+
+    fn role(segments: Vec<CampaignExchangeRef>, seed: u8, tag: u8) -> CampaignTriageRoleExchanges {
+        CampaignTriageRoleExchanges {
+            segments,
+            log_segments: crucible::ContentHash::from_bytes(&[seed, tag, 0xff]),
         }
     }
 

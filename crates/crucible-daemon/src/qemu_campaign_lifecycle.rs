@@ -1513,7 +1513,15 @@ impl<F, D> QemuFreshExecutionRunner<F, D> {
             }
         };
         let evidence = match expected_replay {
-            Some(expected) => evidence.compare_against_expected_replay(expected),
+            Some(expected) => {
+                evidence
+                    .compare_against_expected_replay(expected)
+                    .map_err(|error| {
+                        Box::new(map_fresh_driver_failure(AttemptWorkerFailure::Terminal(
+                            error,
+                        )))
+                    })?
+            }
             None => evidence,
         };
         Ok(QemuFindingCandidateReplayOutcome::Observed(Box::new(

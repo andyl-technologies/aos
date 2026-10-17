@@ -247,6 +247,16 @@ impl CrucibleMeasurementReplayEvidence {
         }
     }
 
+    /// Returns the sealed log's manifest, or `None` for a version 2 leaf,
+    /// which embeds its entries.
+    #[must_use]
+    pub fn log_manifest(&self) -> Option<&AttemptLogManifest> {
+        match &self.log {
+            ReplayLog::Inline(_) => None,
+            ReplayLog::Segmented(manifest) => Some(manifest),
+        }
+    }
+
     /// Returns the log segments this leaf references, in order.
     ///
     /// Version 2 leaves embed their entries and reference no segment.

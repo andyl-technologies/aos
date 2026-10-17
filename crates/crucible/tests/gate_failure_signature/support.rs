@@ -75,6 +75,15 @@ pub(super) fn recorded_node_divergence_event_log(
     ]
 }
 
+/// Seals `entries` into a fresh in-memory segment store, as an attempt log.
+pub(super) fn sealed_log(
+    entries: &[SchedulerEventLogEntry],
+) -> Result<(AttemptLogManifest, FailureTriageReplaySegments), Box<dyn Error>> {
+    let store = SharedSegmentStore::new();
+    let manifest = seal_attempt_log(entries, &store)?;
+    Ok((manifest, Arc::new(store)))
+}
+
 pub(super) fn recorded_event_log_for_finding(
     finding: &FindingReproductionArtifact,
     entries: &[crucible::SchedulerEventLogEntry],

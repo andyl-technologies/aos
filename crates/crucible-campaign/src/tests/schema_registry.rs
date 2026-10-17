@@ -310,7 +310,18 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
         .unwrap_or_else(|| panic!("missing attempt event-log segment schema"));
     assert_eq!(
         (attempt_segment[1], attempt_segment[2], attempt_segment[3]),
-        ("1", "crucible-daemon::attempt_event_log", "trace")
+        ("1", "crucible::attempt_log", "trace")
+    );
+    let attempt_manifest = rows
+        .get("crucible.attempt.event-log-manifest")
+        .unwrap_or_else(|| panic!("missing attempt event-log manifest schema"));
+    assert_eq!(
+        (
+            attempt_manifest[1],
+            attempt_manifest[2],
+            attempt_manifest[3]
+        ),
+        ("1", "crucible::attempt_log", "execution-model-payload")
     );
     for (schema, version, owner, kind) in [
         (

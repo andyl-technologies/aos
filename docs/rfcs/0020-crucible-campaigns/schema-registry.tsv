@@ -222,7 +222,7 @@ crucible.campaign.survivor-selection	1	crucible-campaign::objective	campaign-fac
 crucible.campaign.reproduction-artifact	3	crucible-campaign::reproduction	finding	gate:campaign-replay,gate:content-address
 crucible.campaign.finding	4	crucible-campaign::finding	finding	gate:campaign-replay,gate:content-address
 crucible.campaign.finding-candidate-bundle	7	crucible-campaign::finding_candidate	finding	gate:campaign-replay,gate:content-address
-crucible.campaign.finding-triage-replay-evidence	2	crucible-campaign::finding_triage_evidence	finding	gate:campaign-replay,gate:content-address
+crucible.campaign.finding-triage-replay-evidence	3	crucible-campaign::finding_triage_evidence	finding	gate:campaign-replay,gate:content-address
 crucible.campaign.finding-triage-replay-evidence-chunk	1	crucible-campaign::finding_triage_evidence	finding	gate:campaign-replay,gate:content-address
 crucible.campaign.statistical-evidence	2	crucible-campaign::statistics::evidence	projection	gate:campaign-statistics,gate:content-address
 crucible.campaign.statistical-evidence-chunk	1	crucible-campaign::statistics::evidence	projection	gate:campaign-statistics,gate:content-address
@@ -237,7 +237,8 @@ crucible.campaign.query-campaign-request-attempts-response	2	crucible-campaign::
 crucible.campaign.state-identity	1	crucible-daemon::campaign_bootstrap	administrative-record	gate:campaign-component-contract
 crucible.execution.dequeued-fault-event	1	crucible-shmem::fault_event::checkpoint	checkpoint	gate:campaign-replay
 crucible.execution.event-log-segment	6	crucible::scheduler::event_codec	trace	gate:campaign-replay,gate:exact-closure-streaming
-crucible.attempt.event-log-segment	1	crucible-daemon::attempt_event_log	trace	gate:campaign-replay,gate:exact-closure-streaming
+crucible.attempt.event-log-segment	1	crucible::attempt_log	trace	gate:campaign-replay,gate:exact-closure-streaming
+crucible.attempt.event-log-manifest	1	crucible::attempt_log	execution-model-payload	gate:campaign-replay,gate:content-address
 crucible.execution.backend-network-output	2	crucible::backend::io::network_checkpoint	device-state	gate:exact-closure-streaming
 crucible.execution.device-scheduling-subnode	2	crucible::device_subnode::checkpoint	checkpoint	gate:campaign-replay,gate:exact-closure-streaming
 crucible.execution.scheduler-network	2	crucible::scheduler::runtime_state::network_checkpoint	checkpoint	gate:campaign-replay,gate:exact-closure-streaming
@@ -254,7 +255,7 @@ crucible.execution.signal-spatial-artifact	1	crucible::model::fault_signal::spat
 crucible.execution.signal-trace-manifest	2	crucible::model::fault_signal::trace	physical-record	gate:campaign-replay,gate:content-address
 crucible.execution.signal-trace-chunk	2	crucible::model::fault_signal::trace	physical-record	gate:campaign-replay,gate:content-address
 crucible.execution.finding-minimization-policy	4	crucible-daemon::crucible_artifact	execution-model-payload	gate:campaign-replay
-crucible.execution.failure-triage-replay-evidence	3	crucible::model::failure::replay_evidence	trace	gate:campaign-replay,gate:content-address
+crucible.execution.failure-triage-replay-evidence	4	crucible::model::failure::replay_evidence	trace	gate:campaign-replay,gate:content-address
 crucible.failure-triage.cluster-report	1	crucible::model::failure::reporting	cli-output	gate:campaign-replay
 crucible.failure-triage.cluster-report-set	1	crucible::model::failure::reporting	cli-output	gate:campaign-replay
 crucible.execution.host-assertion-continuation	3	crucible::trigger::assertions	checkpoint	gate:campaign-replay
@@ -327,8 +328,9 @@ crucible.search-retained-evidence	1	crucible-cli::cli::planning::invocations	dep
 crucible.lifecycle-artifact-bundle	1	crucible-cli::cli::artifact_capture	physical-record	gate:campaign-replay
 crucible.failure-triage.findings-ledger	5	crucible-cli::cli::triage_debug	finding	gate:campaign-replay
 crucible.failure-triage.finding-evidence	2	crucible-cli::cli::triage_debug::campaign_evidence	finding	gate:campaign-replay,gate:content-address
-crucible.failure-triage.finding-occurrences	2	crucible-cli::cli::triage_debug::campaign_evidence	finding	gate:campaign-replay,gate:content-address
+crucible.failure-triage.finding-occurrences	3	crucible-cli::cli::triage_debug::campaign_evidence	finding	gate:campaign-replay,gate:content-address
 crucible.failure-triage.reproduction-segments	1	crucible-cli::cli::triage_debug::campaign_evidence	finding	gate:campaign-replay,gate:content-address
+crucible.failure-triage.triage-log-segments	1	crucible-cli::cli::triage_debug::campaign_evidence	finding	gate:campaign-replay,gate:content-address
 
 # Current campaign content-store records
 crucible.campaign-corpus	1	crucible-cas::cas::campaign_codec	physical-record	gate:campaign-store-composition,gate:content-address

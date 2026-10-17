@@ -2,10 +2,7 @@
 
 use super::*;
 use crate::executor_supervisor::AllowAllAttemptAdmission;
-use crucible::{
-    EventLogTime, FailureClusterReportFailure, FailureTriageReplayEvidence, Icount, NodeId,
-    SchedulerEventLogEntry,
-};
+use crucible::{EventLogTime, FailureClusterReportFailure, Icount, NodeId, SchedulerEventLogEntry};
 use crucible_campaign::{
     CampaignRecordKind, FindingCandidateCore, FindingExactRetentionDisposition,
     FindingExactRetentionIncomplete,
@@ -221,12 +218,11 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
     )
     .expect("capture finding reproduction");
     let (expected, reproduced) = prepared_finding_triage_logs();
-    let triage_probe = FailureTriageReplayEvidence::new_paired_divergence(
+    let triage_probe = crucible::test_support::paired_divergence_evidence_for_test(
         finding,
-        expected,
-        reproduced,
+        &expected,
+        &reproduced,
         ContentHash::from_bytes(b"prepared-finding-triage-coverage"),
-        Vec::new(),
     )
     .expect("derive prepared finding divergence");
     let FailureClusterReportFailure::Divergence(divergence) = triage_probe.failure() else {
@@ -581,12 +577,11 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
             .expect("candidate replay evidence");
 
             let (expected, reproduced) = prepared_finding_triage_logs();
-            let triage = FailureTriageReplayEvidence::new_paired_divergence(
+            let triage = crucible::test_support::paired_divergence_evidence_for_test(
                 candidate.clone(),
-                expected,
-                reproduced,
+                &expected,
+                &reproduced,
                 ContentHash::from_bytes(b"prepared-finding-triage-coverage"),
-                Vec::new(),
             )
             .expect("incompatibility triage replay evidence");
             Ok(AutomaticFindingReplayOutcome::observed_with_triage(
@@ -788,12 +783,11 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
             )
             .expect("candidate replay evidence");
             let (expected, reproduced) = prepared_finding_triage_logs();
-            let triage = FailureTriageReplayEvidence::new_paired_divergence(
+            let triage = crucible::test_support::paired_divergence_evidence_for_test(
                 candidate.clone(),
-                expected,
-                reproduced,
+                &expected,
+                &reproduced,
                 ContentHash::from_bytes(b"prepared-finding-triage-coverage"),
-                Vec::new(),
             )
             .expect("observed finding triage replay evidence");
             Ok(AutomaticFindingReplayOutcome::observed_with_triage(

@@ -398,6 +398,14 @@ pub enum CampaignFindingOccurrenceObjectKind {
         /// Zero-based position in the reproduction's payload segments.
         index: u32,
     },
+    /// One attempt-log segment named by one of the candidate's triage replay
+    /// records, selected by its position in that record's log segments.
+    TriageReplayLogSegment {
+        /// The triage replay record naming the segment.
+        role: CampaignFindingTriageReplayRole,
+        /// Zero-based position in the record's log segments.
+        index: u32,
+    },
 }
 
 impl Canonical for CampaignFindingOccurrenceObjectKind {
@@ -415,6 +423,11 @@ impl Canonical for CampaignFindingOccurrenceObjectKind {
                 encoder.bool(*minimized);
                 encoder.u32(*index);
             }
+            Self::TriageReplayLogSegment { role, index } => {
+                encoder.u8(8);
+                role.encode(encoder);
+                encoder.u32(*index);
+            }
         }
     }
 
@@ -429,6 +442,10 @@ impl Canonical for CampaignFindingOccurrenceObjectKind {
             6 => Ok(Self::VerificationSelectedTriageEvidence),
             7 => Ok(Self::ReproductionPayloadSegment {
                 minimized: decoder.bool()?,
+                index: decoder.u32()?,
+            }),
+            8 => Ok(Self::TriageReplayLogSegment {
+                role: CampaignFindingTriageReplayRole::decode(decoder)?,
                 index: decoder.u32()?,
             }),
             tag => Err(CampaignCodecError::UnknownTag {
@@ -468,6 +485,18 @@ pub enum CampaignFindingOccurrenceObject {
         /// Exact segment bytes.
         bytes: Vec<u8>,
     },
+    /// One authenticated attempt-log segment of a triage replay record.
+    ///
+    /// The service authenticates the bytes against the segment the record
+    /// names; a client checks them against the record it read before.
+    TriageReplayLogSegment {
+        /// The triage replay record naming the segment.
+        role: CampaignFindingTriageReplayRole,
+        /// Zero-based position in the record's log segments.
+        index: u32,
+        /// Exact segment bytes.
+        bytes: Vec<u8>,
+    },
 }
 
 impl CampaignFindingOccurrenceObject {
@@ -498,6 +527,12 @@ impl CampaignFindingOccurrenceObject {
                 minimized: *minimized,
                 index: *index,
             },
+            Self::TriageReplayLogSegment { role, index, .. } => {
+                CampaignFindingOccurrenceObjectKind::TriageReplayLogSegment {
+                    role: *role,
+                    index: *index,
+                }
+            }
         }
     }
 }
@@ -514,7 +549,8 @@ impl Canonical for CampaignFindingOccurrenceObject {
             | Self::MinimizationSelectedTriageEvidence(value)
             | Self::VerificationOriginalTriageEvidence(value)
             | Self::VerificationSelectedTriageEvidence(value) => value.encode(encoder),
-            Self::ReproductionPayloadSegment { bytes, .. } => bytes.encode(encoder),
+            Self::ReproductionPayloadSegment { bytes, .. }
+            | Self::TriageReplayLogSegment { bytes, .. } => bytes.encode(encoder),
         }
     }
 
@@ -557,6 +593,17 @@ impl Canonical for CampaignFindingOccurrenceObject {
                     u8::decode,
                 )?,
             }),
+            CampaignFindingOccurrenceObjectKind::TriageReplayLogSegment { role, index } => {
+                Ok(Self::TriageReplayLogSegment {
+                    role,
+                    index,
+                    bytes: decoder.sequence_bounded(
+                        crucible_cas::segment_store::MAX_SEGMENT_BYTES,
+                        "campaign-finding-occurrence-triage-log-segment-bytes",
+                        u8::decode,
+                    )?,
+                })
+            }
         }
     }
 }
@@ -903,6 +950,10 @@ fn finding_occurrence_object_matches(
         // this same snapshot.
         CampaignFindingOccurrenceObject::ReproductionPayloadSegment { bytes, .. } => {
             Ok(!bytes.is_empty())
+        }
+        // Likewise, a log segment's identity lives in the triage record.
+        CampaignFindingOccurrenceObject::TriageReplayLogSegment { role, bytes, .. } => {
+            Ok(role.evidence(bundle).is_some() && !bytes.is_empty())
         }
     }
 }

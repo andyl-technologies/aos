@@ -8,7 +8,7 @@ mod backend_loop;
 mod causal_digest;
 pub(super) use backend_loop::HeldDeliveryCeiling;
 pub(super) use backend_loop::HeldRunLineage;
-use causal_digest::causal_projection_entry;
+pub(crate) use causal_digest::causal_projection_entry;
 pub use causal_digest::{
     EventLogCausalDigest, EventLogCausalSummary, first_event_log_causal_mismatch,
     is_causal_event_log_entry,

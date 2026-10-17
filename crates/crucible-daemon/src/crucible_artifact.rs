@@ -524,9 +524,7 @@ impl PreparedCrucibleFindingCandidate {
         store.publish_configuration(&self.minimized_configuration)?;
         store.publish_reproduction_record(&self.minimized, self.minimized_artifact.schedule())?;
         if let Some(triage_replays) = &self.triage_replays {
-            for replay in triage_replays.records() {
-                store.publish_finding_triage_replay_record(replay)?;
-            }
+            triage_replays.publish(store)?;
         }
 
         let expected = self.id()?;
@@ -623,14 +621,7 @@ impl PreparedCrucibleFindingCandidate {
             });
         }
         if let Some(triage_replays) = &self.triage_replays {
-            for replay in triage_replays.records() {
-                let stored = store.publish_executor_finding_triage_replay_evidence(replay)?;
-                if stored != replay.id()? {
-                    return Err(CampaignRepositoryError::Integrity {
-                        reason: "prepared-finding-triage-publication-mismatch",
-                    });
-                }
-            }
+            triage_replays.publish_for_executor(store)?;
         }
         let bundle = store.publish_executor_finding_candidate(&self.bundle, authenticator)?;
         if bundle != self.id()? {
@@ -1260,23 +1251,6 @@ impl CrucibleCampaignArtifactStore {
             });
         }
         Ok(stored)
-    }
-
-    fn publish_finding_triage_replay_record(
-        &self,
-        evidence: &FindingTriageReplayEvidence,
-    ) -> Result<(), CrucibleArtifactError> {
-        let expected = evidence.id()?;
-        let stored = self
-            .repository
-            .publish_finding_triage_replay_evidence(evidence)
-            .map_err(CrucibleArtifactError::RepositoryPublication)?;
-        if stored != expected {
-            return Err(CrucibleArtifactError::SemanticIdentityMismatch {
-                artifact: "stored finding triage replay evidence",
-            });
-        }
-        Ok(())
     }
 
     /// Replays, verifies, and publishes one self-contained finding reproduction.

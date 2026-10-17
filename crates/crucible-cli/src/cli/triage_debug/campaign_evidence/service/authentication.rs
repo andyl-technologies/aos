@@ -14,6 +14,7 @@ use super::super::reproduction::{
     authenticate_finding_reproduction, authenticate_occurrence_reproduction,
 };
 use super::super::store::CampaignExchangeRef;
+use super::super::triage_segments::authenticate_occurrence_triage_log_segments;
 use super::*;
 
 /// Largest reassembled triage replay transfer accepted for one role.
@@ -499,7 +500,7 @@ pub(crate) fn authenticate_campaign_occurrence(
                 minimized,
                 selected_artifact,
             )?;
-            for ((role, _), segments) in TRIAGE_REPLAY_ROLES.iter().zip(roles) {
+            for ((role, _), exchanges) in TRIAGE_REPLAY_ROLES.iter().zip(roles) {
                 let evidence_id = triage_role_evidence(&evidence_set, *role);
                 let replay = authenticate_campaign_triage_replay(
                     context,
@@ -509,16 +510,28 @@ pub(crate) fn authenticate_campaign_occurrence(
                         role: *role,
                         evidence: evidence_id,
                     },
-                    segments,
+                    &exchanges.segments,
                     &client,
+                )?;
+                let log_segments = authenticate_occurrence_triage_log_segments(
+                    context.evidence,
+                    record,
+                    bundle_id,
+                    *role,
+                    &replay,
+                    exchanges.log_segments,
                 )?;
                 let (reproduction, model_finding) = if triage_role_is_selected(*role) {
                     (minimized, selected.clone())
                 } else {
                     (reproduction, original.clone())
                 };
-                let native =
-                    decode_campaign_triage_replay_record(&replay, reproduction, model_finding)?;
+                let native = decode_campaign_triage_replay_record(
+                    &replay,
+                    reproduction,
+                    model_finding,
+                    log_segments,
+                )?;
                 drop(replay);
                 on_replay(page, *role, native)?;
             }

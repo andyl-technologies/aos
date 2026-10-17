@@ -261,11 +261,8 @@ impl FailureClusterReport {
             &canonicalizer,
         )?;
         let event_log_excerpt =
-            failure_report_excerpt(event_log, causal_index, excerpt_len, &canonicalizer);
-        let causal_chain = failure_causal_cone_entries(event_log, causal_index, &canonicalizer)
-            .into_iter()
-            .map(|entry| failure_cluster_report_causal_step(entry, &canonicalizer))
-            .collect::<Vec<_>>();
+            failure_report_excerpt(event_log, causal_index, excerpt_len, &canonicalizer)?;
+        let causal_chain = failure_report_causal_chain(event_log, causal_index, &canonicalizer)?;
 
         let minimized = &minimization.minimization.minimized.artifact;
         let minimal_reproduction = FailureClusterReportReproduction {

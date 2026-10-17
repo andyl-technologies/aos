@@ -173,8 +173,9 @@ pub use finding_candidate::{
     MAX_FINDING_EXACT_RETENTION_CANDIDATES,
 };
 pub use finding_triage_evidence::{
-    FindingTriageReplayEvidence, FindingTriageReplayStorageDescription,
-    FindingTriageReplayStorageObject, FindingTriageReplayStorageObjectRole,
+    FindingTriageReplayEvidence, FindingTriageReplayLogSegment,
+    FindingTriageReplayStorageDescription, FindingTriageReplayStorageObject,
+    FindingTriageReplayStorageObjectRole, MAX_FINDING_TRIAGE_REPLAY_LOG_SEGMENTS,
     MAX_FINDING_TRIAGE_REPLAY_PAYLOAD_BYTES, MAX_FINDING_TRIAGE_REPLAY_STORAGE_RANGE_BYTES,
 };
 pub use identity::{

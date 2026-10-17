@@ -23,8 +23,9 @@
 //! ```
 //!
 //! A reproduction names its schedule segments by identity, like the leaves'
-//! log segments; the caller's segment stores yield them when the finding is
-//! decoded.
+//! log segments, and each triage replay record names the attempt-log segments
+//! its payload references; the caller's segment stores yield them all when
+//! the finding is decoded.
 //!
 //! Every record is a u32-length-prefixed canonical body. Counts and indexes are
 //! u32 values. A replay record identity is a u8-length-prefixed canonical
@@ -149,12 +150,16 @@ impl PreparedSemanticAttemptResult {
         finding: Option<PreparedCrucibleFindingCandidate>,
     ) -> Result<Self, PreparedSemanticResultCodecError> {
         let mut log_segments = log_segments.into();
-        // A journal stages the finding's schedule segments only when it is
-        // created, so until then the resident schedules serve them.
+        // A journal stages the finding's schedule and triage log segments only
+        // when it is created, so until then the resident schedules and the
+        // replay stores serve them.
         if let Some(finding) = &finding {
             log_segments.push(std::sync::Arc::new(
                 finding.resident_reproduction_segments()?,
             ));
+            if let Some(triage_replays) = &finding.triage_replays {
+                log_segments.extend(triage_replays.segments.clone());
+            }
         }
         validate_measurement_evidence_order(&measurement_replay_evidence)?;
         validate_log_segments(&measurement_replay_evidence, &log_segments)?;
@@ -227,8 +232,27 @@ impl PreparedSemanticAttemptResult {
         self.observation = self
             .observation
             .with_resolved_effect_trace_segments(log_segments.clone());
+        if let Some(triage_replays) = self
+            .finding
+            .as_mut()
+            .and_then(|finding| finding.triage_replays.as_mut())
+        {
+            triage_replays.segments = log_segments.clone();
+        }
         self.log_segments = log_segments;
         self
+    }
+
+    /// Returns each attempt-log segment the finding's triage replay records
+    /// name once, in record order.
+    pub fn referenced_triage_segments(
+        &self,
+    ) -> Vec<crucible_campaign::FindingTriageReplayLogSegment> {
+        self.finding
+            .as_ref()
+            .and_then(|finding| finding.triage_replays.as_ref())
+            .map(|triage_replays| triage_replays.referenced_segments())
+            .unwrap_or_default()
     }
 
     /// Returns each referenced log segment once, in leaf order.
@@ -1520,6 +1544,7 @@ fn decode_finding(
             .decode_record(FindingTriageReplayEvidence::from_canonical_bytes)?,
         verification_selected: decoder
             .decode_record(FindingTriageReplayEvidence::from_canonical_bytes)?,
+        segments: segments.clone(),
     });
     let bundle = decoder.decode_record(FindingCandidateBundle::from_canonical_bytes)?;
 
@@ -1799,16 +1824,33 @@ fn validate_finding_triage_replays(
         {
             return Err(inconsistent("finding triage replay evidence basis"));
         }
-        let native_replay =
-            FailureTriageReplayEvidence::from_compact_binary(finding.clone(), record.payload())
-                .map_err(|source| CrucibleArtifactError::InvalidPayload {
-                    artifact: "journal finding triage replay evidence",
-                    source: Box::new(source),
-                })?;
+        let native_replay = FailureTriageReplayEvidence::from_compact_binary(
+            finding.clone(),
+            record.payload(),
+            std::sync::Arc::new(triage_replays.segments.clone()),
+        )
+        .map_err(|source| CrucibleArtifactError::InvalidPayload {
+            artifact: "journal finding triage replay evidence",
+            source: Box::new(source),
+        })?;
         if record.payload_schema() != native_replay.schema_version() {
             return Err(inconsistent(
                 "finding triage replay declared payload schema",
             ));
+        }
+        // The record must name exactly the segments its payload references,
+        // or retention would diverge from what verification reads.
+        let referenced = native_replay.referenced_segments();
+        if record.log_segments().len() != referenced.len()
+            || record
+                .log_segments()
+                .iter()
+                .zip(&referenced)
+                .any(|(named, segment)| {
+                    named.content() != segment.id || named.bytes() != segment.encoded_bytes
+                })
+        {
+            return Err(inconsistent("finding triage replay log segments"));
         }
         let native_signature = native_replay.signature();
         let native_kind = match native_signature.failure_kind {

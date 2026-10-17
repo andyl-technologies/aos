@@ -119,7 +119,7 @@ pub fn is_causal_event_log_entry(entry: &SchedulerEventLogEntry) -> bool {
 }
 
 /// Renumbers one causal entry to its position in the projection.
-pub(super) fn causal_projection_entry(
+pub(crate) fn causal_projection_entry(
     causal_index: u64,
     entry: &SchedulerEventLogEntry,
 ) -> SchedulerEventLogEntry {

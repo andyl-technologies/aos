@@ -174,6 +174,20 @@ where
                         .read_reproduction_payload_segment(reproduction, segment.content())?,
                 }
             }
+            CampaignFindingOccurrenceObjectKind::TriageReplayLogSegment { role, index } => {
+                let evidence =
+                    role.evidence(&bundle)
+                        .ok_or(CampaignRepositoryError::InvalidRequest {
+                            reason: "campaign-finding-candidate-has-no-triage-evidence",
+                        })?;
+                CampaignFindingOccurrenceObject::TriageReplayLogSegment {
+                    role,
+                    index,
+                    bytes: self
+                        .repository
+                        .read_finding_triage_replay_log_segment(evidence, index)?,
+                }
+            }
         };
         Ok(GetCampaignFindingOccurrenceObjectResponse::new(
             request,

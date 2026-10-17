@@ -957,9 +957,16 @@ fn validate_replayed_failure_boundary(
             artifact,
             replay,
         };
+        // The record's log segments are served by the repository by position.
+        let log_segments = crucible_core::SharedSegmentStore::new();
+        for (index, segment) in (0_u32..).zip(record.log_segments()) {
+            let bytes = repository.read_finding_triage_replay_log_segment(replay_id, index)?;
+            crucible_core::SegmentSink::put_segment(&log_segments, segment.content(), &bytes)?;
+        }
         let native_replay = crucible_core::FailureTriageReplayEvidence::from_compact_binary(
             native_finding,
             record.payload(),
+            std::sync::Arc::new(log_segments),
         )?;
         if native_replay.schema_version() != record.payload_schema()
             || native_replay
@@ -990,12 +997,14 @@ fn validate_replayed_failure_boundary(
             )
             .into());
         }
-        if native_replay.causal_entries().is_empty() {
+        let replay_entries = native_replay.event_log_manifest().entry_count();
+        if replay_entries == 0 {
             return Err("campaign finding replay retained an empty causal projection".into());
         }
         validate_fast_q7_schedule(native_replay.finding().artifact.schedule())?;
-        causal_entries = causal_entries
-            .checked_add(native_replay.causal_entries().len())
+        causal_entries = usize::try_from(replay_entries)
+            .ok()
+            .and_then(|entries| causal_entries.checked_add(entries))
             .ok_or("campaign replay causal-entry count overflow")?;
     }
 

@@ -14,13 +14,13 @@ use std::sync::{Arc, Mutex};
 use crucible::model::MeasurementTerminalState;
 use crucible::{
     AssertionPhase, Configuration, ContentHash, Decision, EngineError, EventLogCoverageObservation,
-    EventLogOffset, FailureClusterReportDivergence, FailureClusterReportFailure,
-    FailurePropertyViolationRecord, FailureTimeoutBudgetKind, FailureTimeoutRecord,
-    FingerprintSample, HostAssertionOutcomeKind, NetworkFaultPhase, NodeId, ObservableEventPayload,
-    OfflineAssertionCheckError, OfflineAssertionChecker, QuantumOutcome, QuantumRequest,
-    QuantumTerminalVerdict, SchedulerError, SchedulerEventLogEntry, SchedulerEventLogPayload,
+    EventLogOffset, FailureClusterReportFailure, FailurePropertyViolationRecord,
+    FailureTimeoutBudgetKind, FailureTimeoutRecord, FingerprintSample, HostAssertionOutcomeKind,
+    NetworkFaultPhase, NodeId, ObservableEventPayload, OfflineAssertionCheckError,
+    OfflineAssertionChecker, QuantumOutcome, QuantumRequest, QuantumTerminalVerdict,
+    SchedulerError, SchedulerEventLogEntry, SchedulerEventLogPayload,
     SchedulerOperationalFailureClass, SchedulerQuiescence, SelectionDecision, VirtualTime,
-    compare_event_log_determinism, coverage_fingerprint_from_event_log, try_step,
+    try_step,
 };
 use crucible_campaign::{
     AssertionViolationWitness, AttemptStartMode, BoundedStopProof, CampaignCodecError,
@@ -69,6 +69,7 @@ mod resume_progress;
 mod retention_boundary;
 mod selection_projection;
 mod stop_boundary;
+mod triage_inputs;
 
 pub use attempt_log::DEFAULT_MAXIMUM_EVENT_LOG_BYTES;
 pub(crate) use attempt_log::RetainedAttemptLog;
@@ -80,6 +81,7 @@ pub(crate) use replay_proof::SavepointEventPrefixDigest;
 pub use replay_proof::{
     QemuAttemptStartReplayProof, QemuSavepointReplayProof, QemuSelectedResumeBoundary,
 };
+pub(crate) use triage_inputs::{QemuFindingCandidateTriageInputs, QemuFindingCandidateTriageParts};
 
 #[cfg(test)]
 use network_fault_boundary::validate_network_fault_boundary;
@@ -388,113 +390,17 @@ pub(crate) struct QemuFindingCandidateBoundaryEvidence {
     paired_reproduced_coverage: Option<CoverageProjection>,
 }
 
-/// Replay-owned failure inputs awaiting an exact reproduction binding.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct QemuFindingCandidateTriageInputs {
-    failures: Vec<FailureClusterReportFailure>,
-    causal_entries: Vec<SchedulerEventLogEntry>,
-    coverage_fingerprint: ContentHash,
-    recorded_event_frames: Vec<Vec<u8>>,
-    paired_divergence_logs: Option<(Vec<SchedulerEventLogEntry>, Vec<SchedulerEventLogEntry>)>,
-}
-
-/// Owned components retained from one candidate replay's triage projection.
-pub(crate) type QemuFindingCandidateTriageParts = (
-    Vec<FailureClusterReportFailure>,
-    Vec<SchedulerEventLogEntry>,
-    ContentHash,
-    Vec<Vec<u8>>,
-    Option<(Vec<SchedulerEventLogEntry>, Vec<SchedulerEventLogEntry>)>,
-);
-
-impl QemuFindingCandidateTriageInputs {
-    /// Consumes the raw inputs retained from one private QEMU execution.
-    pub(crate) fn into_parts(self) -> QemuFindingCandidateTriageParts {
-        (
-            self.failures,
-            self.causal_entries,
-            self.coverage_fingerprint,
-            self.recorded_event_frames,
-            self.paired_divergence_logs,
-        )
-    }
-
-    /// Builds divergence inputs from two independently retained causal logs.
-    ///
-    /// Returns `None` when the logs have the same causal projection or contain
-    /// no side-specific first-difference coordinate.
-    pub(crate) fn from_replay_determinism_mismatch(
-        expected: &Self,
-        reproduced: &Self,
-    ) -> Option<(Self, bool)> {
-        let comparison =
-            compare_event_log_determinism(&expected.causal_entries, &reproduced.causal_entries);
-        let mismatch = comparison.mismatch()?;
-        let point = mismatch.first_location()?;
-        let selected = if mismatch.expected_location.is_some() {
-            expected
-        } else {
-            reproduced
-        };
-        let divergence = FailureClusterReportDivergence::from_bisected_first_diff(
-            point,
-            divergence_entry_summary(mismatch.expected_entry.as_ref()),
-            divergence_entry_summary(mismatch.reproduced_entry.as_ref()),
-        );
-
-        Some((
-            Self {
-                failures: vec![FailureClusterReportFailure::divergence(divergence)],
-                causal_entries: selected.causal_entries.clone(),
-                coverage_fingerprint: selected.coverage_fingerprint,
-                recorded_event_frames: selected.recorded_event_frames.clone(),
-                paired_divergence_logs: Some((
-                    expected.causal_entries.clone(),
-                    reproduced.causal_entries.clone(),
-                )),
-            },
-            std::ptr::eq(selected, expected),
-        ))
-    }
-
-    #[cfg(test)]
-    pub(crate) fn replay_for_test(
-        causal_entries: Vec<SchedulerEventLogEntry>,
-        coverage_fingerprint: ContentHash,
-        recorded_event_frames: Vec<Vec<u8>>,
-    ) -> Self {
-        Self {
-            failures: Vec::new(),
-            causal_entries,
-            coverage_fingerprint,
-            recorded_event_frames,
-            paired_divergence_logs: None,
-        }
-    }
-}
-
-fn divergence_entry_summary(entry: Option<&SchedulerEventLogEntry>) -> String {
-    entry.map_or_else(
-        || String::from("entry=absent"),
-        |entry| {
-            format!(
-                "entry.content_hash={};entry.sequence={};entry.kind={}",
-                entry.content_hash().to_hex(),
-                entry.sequence(),
-                entry.event_payload().kind(),
-            )
-        },
-    )
-}
-
 impl QemuFindingCandidateBoundaryEvidence {
-    pub(crate) fn causal_entries(&self) -> &[SchedulerEventLogEntry] {
-        &self.triage.causal_entries
+    /// Returns the replay's complete log, read back from its segments.
+    pub(crate) fn complete_log(
+        &self,
+    ) -> Result<Vec<SchedulerEventLogEntry>, crate::attempt_event_log::AttemptEventLogError> {
+        self.triage.complete_log()
     }
 
     pub(crate) fn timeout_record(&self) -> Option<&FailureTimeoutRecord> {
         self.triage
-            .failures
+            .failures()
             .iter()
             .find_map(|failure| match failure {
                 FailureClusterReportFailure::Timeout(record) => Some(record),
@@ -509,18 +415,20 @@ impl QemuFindingCandidateBoundaryEvidence {
         self.policy_timeout.as_ref()
     }
 
-    pub(crate) fn paired_divergence_logs(
+    /// Returns both complete paired logs, expected first, when the replay
+    /// diverged.
+    pub(crate) fn paired_complete_logs(
         &self,
-    ) -> Option<(&[SchedulerEventLogEntry], &[SchedulerEventLogEntry])> {
-        self.triage
-            .paired_divergence_logs
-            .as_ref()
-            .map(|(expected, reproduced)| (expected.as_slice(), reproduced.as_slice()))
+    ) -> Result<
+        Option<triage_inputs::PairedCompleteLogs>,
+        crate::attempt_event_log::AttemptEventLogError,
+    > {
+        self.triage.paired_complete_logs()
     }
 
     /// Returns whether this replay observed a property failure or timeout.
     pub(crate) fn has_higher_priority_failure_source(&self) -> bool {
-        self.triage.failures.iter().any(|failure| {
+        self.triage.failures().iter().any(|failure| {
             matches!(
                 failure,
                 FailureClusterReportFailure::Property(_) | FailureClusterReportFailure::Timeout(_)
@@ -550,17 +458,25 @@ impl QemuFindingCandidateBoundaryEvidence {
     }
 
     /// Replaces ordinary failure inputs when the same candidate replay diverged.
-    pub(crate) fn compare_against_expected_replay(mut self, expected: &Self) -> Self {
-        if !self.triage.failures.is_empty() {
-            return self;
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuFreshModeledDriverError::Measurements`] when either
+    /// replay's log segments cannot be read back for the comparison.
+    pub(crate) fn compare_against_expected_replay(
+        mut self,
+        expected: &Self,
+    ) -> Result<Self, QemuFreshModeledDriverError> {
+        if !self.triage.failures().is_empty() {
+            return Ok(self);
         }
         let reproduced_coverage = self.replay.coverage().clone();
-        if let Some((divergence, selected_expected)) =
-            QemuFindingCandidateTriageInputs::from_replay_determinism_mismatch(
-                &expected.triage,
-                &self.triage,
-            )
-        {
+        let mismatch = QemuFindingCandidateTriageInputs::from_replay_determinism_mismatch(
+            &expected.triage,
+            &self.triage,
+        )
+        .map_err(|error| QemuFreshModeledDriverError::Measurements(error.into()))?;
+        if let Some((divergence, selected_expected)) = mismatch {
             if selected_expected {
                 self.replay = expected.replay.clone();
                 self.measurement_replay_evidence = expected.measurement_replay_evidence.clone();
@@ -569,7 +485,7 @@ impl QemuFindingCandidateBoundaryEvidence {
             self.triage = divergence;
             self.paired_reproduced_coverage = Some(reproduced_coverage);
         }
-        self
+        Ok(self)
     }
 }
 
@@ -2635,31 +2551,17 @@ pub(crate) fn build_finding_candidate_boundary_evidence(
         projection.discovered_choices,
         projection.produced_selections,
     )?;
-    // Triage retains the causal log under its own bound; it is read back
-    // from the bundle's segments rather than kept as a second copy.
-    let mut causal_entries = Vec::new();
-    projection
-        .measurement_evidence
-        .evidence()
-        .try_for_each_entry(projection.measurement_evidence.segments(), |entry| {
-            causal_entries.push(entry.clone());
-            Ok::<_, crate::CrucibleMeasurementError>(())
-        })
-        .map_err(QemuFreshModeledDriverError::Measurements)?;
-    let coverage_fingerprint = coverage_fingerprint_from_event_log(&causal_entries);
+    // Triage references the bundle's sealed log instead of copying it.
+    let triage = QemuFindingCandidateTriageInputs::from_measurement_evidence(
+        projection.failures,
+        &projection.measurement_evidence,
+    )
+    .map_err(|error| QemuFreshModeledDriverError::Measurements(error.into()))?;
     Ok(QemuFindingCandidateBoundaryEvidence {
         replay,
         measurement_replay_evidence: vec![projection.measurement_evidence],
         final_events,
-        triage: QemuFindingCandidateTriageInputs {
-            failures: projection.failures,
-            causal_entries,
-            coverage_fingerprint,
-            // Native QEMU execution has no transport-frame source. Raw frames
-            // remain empty rather than synthesizing them from scheduler entries.
-            recorded_event_frames: Vec::new(),
-            paired_divergence_logs: None,
-        },
+        triage,
         policy_timeout,
         paired_reproduced_coverage: None,
     })

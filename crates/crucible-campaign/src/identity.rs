@@ -695,9 +695,9 @@ impl FindingReplayCaptureEvidenceId {
 content_object_id!(
     FindingTriageReplayEvidenceId,
     ObjectKind::Finding,
-    2,
+    3,
     "crucible.campaign.finding-triage-replay-evidence",
-    "Identifies one exact replay and observed signature in either inline or manifest-backed form."
+    "Identifies one exact replay, its observed signature, and the attempt-log segments it names."
 );
 content_object_id!(
     ReproductionArtifactId,

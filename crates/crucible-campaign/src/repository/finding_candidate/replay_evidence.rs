@@ -3,15 +3,97 @@
 use super::*;
 
 impl CampaignRepository {
+    /// Publishes one attempt-log segment a triage replay record will name.
+    ///
+    /// Segments are publishable before the record, so a writer streams them
+    /// one at a time and publishes the record last. A segment no record names
+    /// is unreachable and collected.
+    ///
+    /// # Errors
+    ///
+    /// Returns an integrity error when `bytes` do not derive the segment's
+    /// identity and length, or a store error when placement fails.
+    pub fn publish_finding_triage_replay_log_segment(
+        &self,
+        segment: crate::FindingTriageReplayLogSegment,
+        bytes: &[u8],
+    ) -> Result<ContentId, CampaignRepositoryError> {
+        if bytes.len() as u64 != segment.bytes() || !segment.content().authenticates(bytes) {
+            return Err(integrity("finding-triage-replay-log-segment-identity"));
+        }
+        let receipt = self
+            .blobs
+            .put_if_absent(segment.content(), &BlobHandle::from_bytes(bytes.to_vec()))?;
+        if receipt.id != segment.content() {
+            return Err(integrity("finding-triage-replay-log-segment-publication"));
+        }
+        Ok(segment.content())
+    }
+
+    /// Reads the authenticated attempt-log segment at `index` in the list
+    /// `evidence` names.
+    ///
+    /// Only the record's manifest root is read to locate the segment, never
+    /// its payload.
+    ///
+    /// # Errors
+    ///
+    /// Returns an invalid-request error when `index` is beyond the record's
+    /// segment list, an integrity error when the stored bytes do not derive
+    /// the segment's identity and length, or a store error when the record or
+    /// segment is unavailable.
+    pub fn read_finding_triage_replay_log_segment(
+        &self,
+        evidence: FindingTriageReplayEvidenceId,
+        index: u32,
+    ) -> Result<Vec<u8>, CampaignRepositoryError> {
+        let root = self.require_record_kind(
+            evidence.content_id(),
+            crate::CampaignRecordKind::FindingTriageReplayEvidence,
+        )?;
+        let manifest = FindingTriageReplayEvidence::manifest_from_canonical_bytes(root.body())?;
+        let segment = usize::try_from(index)
+            .ok()
+            .and_then(|index| manifest.log_segments().get(index))
+            .copied()
+            .ok_or(CampaignRepositoryError::InvalidRequest {
+                reason: "finding-triage-replay-log-segment-index",
+            })?;
+        let bytes = self
+            .blobs
+            .read(segment.content(), None)?
+            .read_all(segment.bytes())?;
+        if bytes.len() as u64 != segment.bytes() || !segment.content().authenticates(&bytes) {
+            return Err(integrity("finding-triage-replay-log-segment-content"));
+        }
+        Ok(bytes)
+    }
+
+    /// Requires every named log segment to be stored with its declared length.
+    fn require_finding_triage_replay_log_segments(
+        &self,
+        evidence: &FindingTriageReplayEvidence,
+    ) -> Result<(), CampaignRepositoryError> {
+        for segment in evidence.log_segments() {
+            let stored = self.blobs.read(segment.content(), None)?;
+            if stored.logical_length() != segment.bytes() {
+                return Err(integrity("finding-triage-replay-log-segment-length"));
+            }
+        }
+        Ok(())
+    }
+
     /// Publishes one transport-neutral native triage replay record.
     ///
-    /// The referenced reproduction and every observed-signature dependency
-    /// must already be durable. Repeating the operation returns the same ID.
+    /// The referenced reproduction, every observed-signature dependency, and
+    /// every named log segment must already be durable. Repeating the
+    /// operation returns the same ID.
     ///
     /// # Errors
     ///
     /// Returns a store, codec, or integrity error when any referenced object
-    /// is absent, corrupt, or inconsistent with the observed signature.
+    /// or log segment is absent, corrupt, or inconsistent with the observed
+    /// signature.
     pub fn publish_finding_triage_replay_evidence(
         &self,
         evidence: &FindingTriageReplayEvidence,
@@ -19,6 +101,7 @@ impl CampaignRepository {
         let plan = evidence.storage_plan()?;
         let expected_content = plan.root.content_id();
         self.validate_finding_triage_replay_evidence(evidence)?;
+        self.require_finding_triage_replay_log_segments(evidence)?;
 
         // Rebuild and authenticate the complete deterministic plan before the
         // first durable write. The second pass publishes one bounded chunk at a

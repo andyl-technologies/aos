@@ -4,6 +4,8 @@ use super::*;
 
 #[path = "model/clustering.rs"]
 mod clustering;
+#[path = "model/recorded_log.rs"]
+mod recorded_log;
 #[path = "model/reporting.rs"]
 mod reporting;
 #[path = "model/signature.rs"]
@@ -14,6 +16,7 @@ mod signature_policy;
 mod triage;
 
 pub use clustering::*;
+pub use recorded_log::*;
 pub use reporting::*;
 pub use signature::*;
 pub use signature_policy::*;

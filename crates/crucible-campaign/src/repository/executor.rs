@@ -585,6 +585,21 @@ impl CampaignExecutorStore {
             .publish_reproduction_payload_segment(segment, bytes)
     }
 
+    /// Publishes one executor-verified attempt-log segment of a triage replay.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of
+    /// [`CampaignRepository::publish_finding_triage_replay_log_segment`].
+    pub fn publish_executor_triage_replay_log_segment(
+        &self,
+        segment: crate::FindingTriageReplayLogSegment,
+        bytes: &[u8],
+    ) -> Result<ContentId, CampaignRepositoryError> {
+        self.repository
+            .publish_finding_triage_replay_log_segment(segment, bytes)
+    }
+
     /// Publishes one executor-prepared finding-candidate root.
     ///
     /// # Errors

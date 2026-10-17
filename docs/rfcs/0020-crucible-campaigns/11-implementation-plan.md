@@ -1719,6 +1719,12 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   records, prepared-result journals, and the finding and occurrence object
   services, and authenticate each segment before decoding (CCOMP-32).
   Executor-side schedule residency backed by stored segments remains open.
+- [ ] **T-CAM-4.15** Reference replayed attempt logs from failure-triage
+  replay evidence by manifest, name their segments as owned children of the
+  campaign triage record, serve them through the occurrence-object service,
+  retain them with prepared results, and authenticate and stream them in
+  every decoder and CLI findings ledger (CMEAS-27). CLI live search and fuzz
+  paths and the CLI report projection still hold resident logs.
 
 **Gates:** `gate:branch-point-model`, `gate:lazy-frontier`,
 `gate:attempt-idempotence`, `gate:campaign-replay`,

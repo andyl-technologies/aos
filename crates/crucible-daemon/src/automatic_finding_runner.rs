@@ -369,10 +369,11 @@ where
 
         let reproduced_coverage = second.paired_reproduced_coverage().cloned();
         let (_, _, _, triage) = second.into_parts();
-        let (failures, _, _, _, paired_logs) = triage.into_parts();
-        let Some((_, _)) = paired_logs else {
+        let triage = triage.into_parts();
+        if triage.paired_divergence_logs.is_none() {
             return Ok(AutomaticFindingDeterminismProbe::Stable);
-        };
+        }
+        let failures = triage.failures;
         let Some(reproduced_coverage) = reproduced_coverage else {
             return Ok(AutomaticFindingDeterminismProbe::Incomplete);
         };
@@ -549,9 +550,14 @@ fn capture_qemu_finding_replay_material(
             } else {
                 crate::FindingProductionReplayTerminalOutcome::Failed
             };
+            // Production capture still re-seals the log prefix from entries,
+            // so the log is read back from its segments for this one replay.
+            let complete_log = evidence
+                .complete_log()
+                .map_err(|_| crate::FindingProductionReplayCaptureError::InvalidEventLog)?;
             let side = capture_qemu_finding_replay_side(
                 terminal,
-                evidence.causal_entries(),
+                &complete_log,
                 first,
                 evidence.timeout_record(),
                 evidence.policy_timeout(),
@@ -566,12 +572,15 @@ fn capture_qemu_finding_replay_material(
             }
         }
         FindingKind::Divergence => {
+            let paired_logs = evidence
+                .paired_complete_logs()
+                .map_err(|_| crate::FindingProductionReplayCaptureError::InvalidEventLog)?;
             let (Some(second), Some((expected_log, reproduced_log))) =
-                (second.as_ref(), evidence.paired_divergence_logs())
+                (second.as_ref(), paired_logs)
             else {
                 return Ok(None);
             };
-            for (log, snapshot) in [(expected_log, first), (reproduced_log, second)] {
+            for (log, snapshot) in [(&expected_log, first), (&reproduced_log, second)] {
                 match capture_qemu_finding_replay_side(
                     crate::FindingProductionReplayTerminalOutcome::Passed,
                     log,
