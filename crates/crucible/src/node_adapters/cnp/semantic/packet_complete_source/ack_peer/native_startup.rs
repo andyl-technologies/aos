@@ -50,6 +50,96 @@ pub(super) struct OriginalNativeStartupFinalization {
 }
 
 impl OriginalNativeStartupFinalization {
+    // Future owners follow the actual completed private member. Both full row
+    // DTOs and current Source banks remain independently counted; a purpose
+    // cannot create the opposite native report's future publication owners.
+    pub(super) fn authenticated_publication_rows_data(
+        &self,
+        source: &PacketCompleteSemanticSource,
+        broad: crate::node_admission::StartupRows,
+    ) -> Result<crate::node_admission::StartupRows, RuntimeError> {
+        self.member.authenticate_boot_ready(source)?;
+        if !self.complete {
+            return Err(RuntimeError::OwnerUnavailable);
+        }
+        if let Some(invocation) = self.original_invocation_data()? {
+            if self.member.rows.initial_report_rows.is_some()
+                || self.additions.is_some()
+                || self.replacement.capacity() != 0
+            {
+                return Err(RuntimeError::ForeignAuthority);
+            }
+            // NativeAckBoot authenticates this same private Source15 purpose
+            // before allocating a report token or publication attempt. Keep
+            // the authorized purpose's complete BROAD row, not an initial14
+            // model projection. No wire row or existing owner is removed.
+            let selected = if invocation.is_original_execution_data() {
+                crate::node_admission::StartupRows {
+                    original_observe12: broad.original_observe12,
+                    fresh_completed_admit13: None,
+                }
+            } else {
+                crate::node_admission::StartupRows {
+                    original_observe12: None,
+                    fresh_completed_admit13: broad.fresh_completed_admit13,
+                }
+            };
+            self.member.authenticate_boot_ready(source)?;
+            return Ok(selected);
+        }
+        let Some(selected) = self.member.rows.initial_report_rows else {
+            return Ok(broad);
+        };
+        if self.member.requires_original_invocation_data()? {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        if self.body.is_some() || self.additions.is_some() || self.replacement.capacity() != 0 {
+            return Err(RuntimeError::OwnerUnavailable);
+        }
+
+        let allowed = broad
+            .original_observe12
+            .as_ref()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        let actual = selected
+            .original_observe12
+            .as_ref()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        allowed
+            .authenticate_actual_data(actual)
+            .map_err(|_| RuntimeError::ResourceLimit)?;
+        if selected.fresh_completed_admit13 != broad.fresh_completed_admit13 {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+
+        self.member.authenticate_boot_ready(source)?;
+        Ok(selected)
+    }
+
+    pub(super) fn publication_rows_counter_scratch_data() -> usize {
+        type Row = crucible_node_provider::reference_packet::service::report_startup::PacketNativeReportStartupAllocationRow;
+        crucible_node_provider::reference_packet::service::native_startup::original_native_invocation_value_counter_scratch_data()
+            + size_of::<Option<crucible_node_provider::reference_packet::service::native_startup::PacketNativeInvocationPurposeData>>()
+            + size_of::<Result<Option<crucible_node_provider::reference_packet::service::native_startup::PacketNativeInvocationPurposeData>, RuntimeError>>()
+            + size_of::<Result<Option<crucible_node_provider::reference_packet::service::native_startup::PacketNativeInvocationPurposeData>, crucible_node_provider::ProviderError>>()
+            + 2 * size_of::<Option<&serde_json::Value>>()
+            + size_of::<Result<Option<&serde_json::Value>, RuntimeError>>()
+            + size_of::<Result<&serde_json::Value, RuntimeError>>()
+            + size_of::<Option<&serde_json::Map<String, serde_json::Value>>>()
+            + size_of::<&serde_json::Map<String, serde_json::Value>>()
+            + size_of::<Option<&str>>()
+            + 2 * size_of::<crate::node_admission::StartupRows>()
+            + size_of::<Option<crate::node_admission::StartupRows>>()
+            + size_of::<Result<crate::node_admission::StartupRows, RuntimeError>>()
+            + 2 * size_of::<&Row>()
+            + 2 * size_of::<Option<&Row>>()
+            + 2 * size_of::<Result<&Row, RuntimeError>>()
+            + size_of::<Result<(), crucible_node_provider::ProviderError>>()
+            + size_of::<Result<bool, RuntimeError>>()
+            + size_of::<&Self>()
+            + size_of::<&PacketCompleteSemanticSource>()
+    }
+
     pub(super) fn retained_storage_data_with_error<E: StorageError>(
         &self,
         maximum: usize,
@@ -894,3 +984,49 @@ impl PacketCompleteSemanticSource {
 
 #[path = "native_startup/restored_suffix.rs"]
 mod restored_suffix;
+
+#[cfg(any(test, feature = "test-double"))]
+impl PacketCompleteSemanticSource {
+    /// Audits genuine completed Source report commitments as inert test DATA.
+    ///
+    /// The explicit expected Source tests actual member identity. No row or
+    /// returned tag constructs a private member, native token or live grant.
+    ///
+    /// # Errors
+    /// Refuses a foreign Source, incomplete member/barrier, missing report or
+    /// invalid retained invocation body. No kernel-current proof is supplied.
+    #[doc(hidden)]
+    pub fn original_native_report_commitment_audit_data(
+        &self,
+        expected_source: &Self,
+    ) -> Result<(
+        Option<bool>,
+        Option<crucible_node_provider::reference_packet::service::report_startup::PacketNativeReportStartupAllocationRow>,
+        Option<crucible_node_provider::reference_packet::service::report_startup::PacketNativeReportStartupAllocationRow>,
+    ), RuntimeError>{
+        self.storage_origin_with_error::<RuntimeError>()?;
+        let slot = self
+            .ack_peer_birth
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        let birth = slot.as_ref().ok_or(RuntimeError::OwnerUnavailable)?;
+        let state = birth
+            .native_startup
+            .as_ref()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        state.member.authenticate_boot_ready(expected_source)?;
+        let broad = birth
+            .report_startup
+            .as_ref()
+            .ok_or(RuntimeError::OwnerUnavailable)?
+            .authenticated_rows_data(expected_source)?;
+        let rows = state.authenticated_publication_rows_data(expected_source, broad)?;
+        Ok((
+            state
+                .original_invocation_data()?
+                .map(|purpose| purpose.is_original_execution_data()),
+            rows.original_observe12,
+            rows.fresh_completed_admit13,
+        ))
+    }
+}

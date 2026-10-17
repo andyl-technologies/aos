@@ -145,8 +145,6 @@ impl NativeStartupRows {
         publication: super::report_startup::StartupRows,
         maximum: usize,
     ) -> Result<usize, RuntimeError> {
-        let mut retained = 0;
-        let mut phase = 0;
         let native_retained = match self.retained_overlap {
             Some(overlap) => overlap
                 .additional_native_retained_requested_bytes_data(
@@ -156,6 +154,53 @@ impl NativeStartupRows {
                 .map_err(|_| RuntimeError::ForeignAuthority)?,
             None => extent(self.native_birth.retained_requested_bytes.get())?,
         };
+        self.peak_with_native_retained(publication, native_retained, maximum)
+    }
+
+    // SDK admission retains the original full native R sum: its existing
+    // outstanding commitment did not use the native intersection proof. Only
+    // sequential native/report temporary phases are shared, exactly as at the
+    // native admission boundary. SDK/Hello work remains independently additive.
+    pub(crate) fn outstanding_peak_with_publication(
+        self,
+        publication: super::report_startup::StartupRows,
+        maximum: usize,
+    ) -> Result<usize, RuntimeError> {
+        self.peak_with_native_retained(
+            publication,
+            extent(self.native_birth.retained_requested_bytes.get())?,
+            maximum,
+        )
+    }
+
+    pub(crate) fn publication_phase_counter_scratch_data() -> usize {
+        2 * size_of::<Self>()
+            + 2 * size_of::<super::report_startup::StartupRows>()
+            + size_of::<[(Option<PacketNativeStartupAllocationRow>, Option<usize>); 3]>()
+            + size_of::<
+                std::array::IntoIter<(Option<PacketNativeStartupAllocationRow>, Option<usize>), 3>,
+            >()
+            + size_of::<[Option<PacketNativeReportStartupAllocationRow>; 2]>()
+            + size_of::<std::array::IntoIter<Option<PacketNativeReportStartupAllocationRow>, 2>>()
+            + size_of::<Result<usize, RuntimeError>>()
+            + size_of::<Result<usize, crucible_node_provider::ProviderError>>()
+            + size_of::<Result<u64, crucible_node_provider::ProviderError>>()
+            + size_of::<Result<u64, RuntimeError>>()
+            + size_of::<Result<usize, std::num::TryFromIntError>>()
+            + size_of::<&PacketNativeStartupAllocationRow>()
+            + size_of::<&PacketNativeReportStartupAllocationRow>()
+            + size_of::<Option<usize>>()
+            + size_of::<usize>()
+    }
+
+    fn peak_with_native_retained(
+        self,
+        publication: super::report_startup::StartupRows,
+        native_retained: usize,
+        maximum: usize,
+    ) -> Result<usize, RuntimeError> {
+        let mut retained = 0;
+        let mut phase = 0;
         for (row, retained_override) in [
             (Some(self.private_bootstrap), None),
             (Some(self.native_birth), Some(native_retained)),

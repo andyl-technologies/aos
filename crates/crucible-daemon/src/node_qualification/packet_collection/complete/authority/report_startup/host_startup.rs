@@ -723,3 +723,37 @@ impl PacketCompleteReportStartupHolder {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "actual retained-owner test oracle")]
+impl PacketCompleteReportStartupHolder {
+    /// Checks real original/fresh future rows and foreign-Source refusal.
+    ///
+    /// # Panics
+    /// Panics when genuine completed members disagree with the expected test
+    /// role or another actual Source can authenticate that member's quote.
+    pub(in crate::node_qualification::packet_collection::complete) fn assert_native_report_commitment_for_test(
+        original: &Rc<RefCell<Self>>,
+        expected_original: bool,
+    ) {
+        let held = original.borrow();
+        for (index, source) in held.authority.roster.sources.iter().enumerate() {
+            let (purpose, original_row, fresh_row) = source
+                .original_native_report_commitment_audit_data(source)
+                .unwrap();
+            assert_eq!(purpose, Some(expected_original));
+            assert_eq!(original_row.is_some(), expected_original);
+            assert_eq!(fresh_row.is_some(), !expected_original);
+            let actual = original_row.or(fresh_row).unwrap();
+            assert!(actual.retained_growth_bytes.get() > 0);
+            assert!(actual.maximum_simultaneous_transient_bytes.get() > 0);
+
+            let other = &held.authority.roster.sources[(index + 1) % 3];
+            assert!(
+                source
+                    .original_native_report_commitment_audit_data(other)
+                    .is_err()
+            );
+        }
+    }
+}

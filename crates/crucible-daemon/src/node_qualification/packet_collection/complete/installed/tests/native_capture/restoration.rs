@@ -221,6 +221,10 @@ impl FreshWorld {
         )
         .unwrap();
         assert!(self.incoming.is_none());
+        PacketCompleteReportStartupHolder::assert_native_report_commitment_for_test(
+            installed.holder(),
+            false,
+        );
         PacketCompleteReportStartupHolder::prepare_original_fresh_runtime(installed.holder())
             .unwrap();
 

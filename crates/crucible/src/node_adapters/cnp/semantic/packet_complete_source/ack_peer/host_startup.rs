@@ -119,7 +119,13 @@ impl PacketCompleteSemanticSource {
             size_of::<std::cell::Ref<'static, OriginalAckPeerBirth>>(),
             size_of::<std::cell::RefMut<'static, Option<OriginalHostStartupMarker>>>(),
         ].into_iter().try_fold(0usize, |total, value| total.checked_add(value)
-            .ok_or(RuntimeError::ResourceLimit))
+            .ok_or(RuntimeError::ResourceLimit))?
+            .checked_add(crate::node_admission::NativeStartupRows::publication_phase_counter_scratch_data())
+            .and_then(|bytes| bytes.checked_add(
+                super::native_startup::OriginalNativeStartupFinalization::publication_rows_counter_scratch_data()
+            ))
+            .and_then(|bytes| bytes.checked_add(Self::original_native_host_barrier_authentication_scratch_data()))
+            .ok_or(RuntimeError::ResourceLimit)
     }
 
     pub(crate) fn original_native_host_startup_quote_data(
@@ -197,54 +203,33 @@ impl PacketCompleteSemanticSource {
                 bytes.checked_add(NodeRuntime::capture_reference_storage(executable).ok()?)
             })
             .ok_or(RuntimeError::ResourceLimit)?;
-        // These private rows were already issued for this same Source. Their
-        // native owners may coexist with the SDK owners constructed here.
-        // Keep the outstanding commitments; completed finalization DOM/banks
-        // were dropped and are already represented by the current Source walk.
-        let mut prior_commitment_peak = native
-            .member
-            .host_launch_requested_bytes
-            .checked_add(native.member.wire_requested_bytes)
-            .ok_or(RuntimeError::ResourceLimit)?;
-        for row in [
-            Some(native.member.rows.private_bootstrap),
-            Some(native.member.rows.native_birth),
-            native.member.rows.restore_prepare,
-        ]
-        .into_iter()
-        .flatten()
-        {
-            prior_commitment_peak = prior_commitment_peak
-                .checked_add(
-                    usize::try_from(
-                        row.requested_peak_data()
-                            .map_err(|_| RuntimeError::ResourceLimit)?,
-                    )
-                    .map_err(|_| RuntimeError::ResourceLimit)?,
-                )
-                .ok_or(RuntimeError::ResourceLimit)?;
-        }
-        if birth.report_startup_required {
-            let report = birth
+        // Keep every native/report retained commitment, including the prior
+        // conservative full native R sum. Their sequential temporary phases
+        // share one same-Source peak; SDK constructor/Hello work remains summed
+        // independently with that complete future commitment below.
+        let publication = if birth.report_startup_required {
+            birth
                 .report_startup
                 .as_ref()
                 .ok_or(RuntimeError::OwnerUnavailable)?
-                .authenticated_rows_data(self)?;
-            for row in [report.original_observe12, report.fresh_completed_admit13]
-                .into_iter()
-                .flatten()
-            {
-                prior_commitment_peak = prior_commitment_peak
-                    .checked_add(
-                        usize::try_from(
-                            row.requested_peak_data()
-                                .map_err(|_| RuntimeError::ResourceLimit)?,
-                        )
-                        .map_err(|_| RuntimeError::ResourceLimit)?,
-                    )
-                    .ok_or(RuntimeError::ResourceLimit)?;
-            }
-        }
+                .authenticated_rows_data(self)?
+        } else {
+            crate::node_admission::StartupRows::default()
+        };
+        // The completed same-Source native member already emitted its exact
+        // selected initial row. Keep the broad member/current census intact;
+        // do not charge future broad owners the actual native can never create.
+        let publication = native.authenticated_publication_rows_data(self, publication)?;
+        let native_and_publication_peak = native
+            .member
+            .rows
+            .outstanding_peak_with_publication(publication, maximum)?;
+        let prior_commitment_peak = native
+            .member
+            .host_launch_requested_bytes
+            .checked_add(native.member.wire_requested_bytes)
+            .and_then(|bytes| bytes.checked_add(native_and_publication_peak))
+            .ok_or(RuntimeError::ResourceLimit)?;
         let quote = OriginalNativeHostStartupQuote::new(
             sdk,
             source_extra,

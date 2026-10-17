@@ -500,6 +500,37 @@ pub const fn original_native_invocation_counter_scratch_data() -> usize {
         + 2 * std::mem::size_of::<fn(&[u8], usize) -> Result<(), ProviderError>>()
 }
 
+/// Names fixed views for the allocation-free complete invocation-value reader.
+///
+/// The caller retains the original Value and credits these views before reading
+/// it. All text is copied only into bounded inline arrays. No metadata decoder,
+/// serializer, owner clone, callback, file access or live permission is involved.
+pub const fn original_native_invocation_value_counter_scratch_data() -> usize {
+    use std::mem::size_of;
+
+    original_native_invocation_counter_scratch_data()
+        + size_of::<Result<TargetData, ProviderError>>()
+        + size_of::<Result<SourceData, ProviderError>>()
+        + size_of::<Result<ReferenceData, ProviderError>>()
+        + size_of::<Result<HashData, ProviderError>>()
+        + size_of::<Result<Text, ProviderError>>()
+        + size_of::<Result<Decimal, ProviderError>>()
+        + size_of::<Result<Decimal, std::num::ParseIntError>>()
+        + size_of::<Result<u64, std::num::ParseIntError>>()
+        + 6 * size_of::<Result<&Map<String, Value>, ProviderError>>()
+        + size_of::<Option<&Map<String, Value>>>()
+        + size_of::<&Value>()
+        + size_of::<&[&str]>()
+        + size_of::<std::slice::Iter<'static, &'static str>>()
+        + size_of::<Option<&str>>()
+        + size_of::<Result<&str, ProviderError>>()
+        + size_of::<Result<&str, std::str::Utf8Error>>()
+        + size_of::<std::slice::Iter<'static, u8>>()
+        + size_of::<std::str::Bytes<'static>>()
+        + size_of::<&[u8]>()
+        + size_of::<u8>()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

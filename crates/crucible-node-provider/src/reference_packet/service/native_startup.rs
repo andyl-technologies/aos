@@ -262,6 +262,7 @@ pub(crate) use storage::{
 mod invocation;
 pub use invocation::{
     PacketNativeInvocationPurposeData, original_native_invocation_counter_scratch_data,
+    original_native_invocation_value_counter_scratch_data,
 };
 
 #[path = "native_startup/invocation_launch.rs"]

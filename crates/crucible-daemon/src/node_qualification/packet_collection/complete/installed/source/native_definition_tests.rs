@@ -188,3 +188,79 @@ fn full_roster_native_and_report_phases_admit_before_any_child() {
     scene.retire().unwrap();
     let _ = scene.poll_reclamation().unwrap();
 }
+
+#[test]
+fn full_roster_native_report_and_sdk_commitments_admit_before_any_child() {
+    use crucible::node_contract::RuntimeError;
+    use std::os::unix::fs::PermissionsExt;
+
+    // The real installer/finalizers read and copy the measured test ELF as
+    // constructor DATA, reserve actual supervision/transport slots and retain
+    // Source banks. The real SDK constructor runs after native finalization;
+    // no launcher, Child, Hello or native protocol lifecycle is called.
+    let executable = std::env::current_exe().unwrap();
+    let (_code_source, declaration) = native_roundtrip::declaration(&executable);
+    for participant in declaration["participants"].as_array().unwrap() {
+        assert_eq!(
+            participant["installation"]["provider"]["implementation"]["formats"]
+                .as_array()
+                .unwrap()
+                .len(),
+            32
+        );
+        assert_eq!(
+            participant["storage"]["limits"]["frame_bytes"],
+            serde_json::to_value(U64::new(65_536)).unwrap()
+        );
+    }
+    let parent = tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .unwrap();
+    let bytes = canonical::canonical_json(&declaration).unwrap();
+    let reference = canonical::content_ref(&bytes, "application/json").unwrap();
+    let path = parent.path().join("installation.json");
+    std::fs::write(&path, bytes).unwrap();
+    let pin = InstalledCompleteSceneManifest::new(path, reference).unwrap();
+    let mut scene = InstalledCompleteScene::install(pin, parent.path().join("scene")).unwrap();
+    let maximum: U64 =
+        serde_json::from_value(declaration["resources"]["memory_bytes"].clone()).unwrap();
+    assert_eq!(maximum.get(), 4 * 1024 * 1024 * 1024);
+
+    PacketCompleteReportStartupHolder::stage_original_scene_into(
+        &scene.original,
+        &mut scene.incoming,
+    )
+    .unwrap();
+    PacketCompleteReportStartupHolder::reserve_original_preparation_supervisors(&scene.original)
+        .unwrap();
+    let report =
+        PacketCompleteReportStartupHolder::finalize_original_report_startup(&scene.original)
+            .unwrap();
+    let native =
+        PacketCompleteReportStartupHolder::finalize_original_native_startup(&scene.original)
+            .unwrap();
+
+    PacketCompleteReportStartupHolder::assert_native_report_commitment_for_test(
+        &scene.original,
+        true,
+    );
+
+    let sdk = PacketCompleteReportStartupHolder::prepare_original_native_host_sdk(&scene.original)
+        .unwrap();
+
+    assert!(scene.incoming.is_none());
+    assert!(report > 0 && report <= usize::try_from(maximum.get()).unwrap());
+    assert!(native > 0 && native <= usize::try_from(maximum.get()).unwrap());
+    assert!(sdk > 0 && sdk <= usize::try_from(maximum.get()).unwrap());
+    assert!(matches!(
+        PacketCompleteReportStartupHolder::prepare_original_native_host_sdk(&scene.original),
+        Err(RuntimeError::DuplicateOperation)
+    ));
+    assert!(matches!(
+        PacketCompleteReportStartupHolder::finalize_original_native_startup(&scene.original),
+        Err(RuntimeError::DuplicateOperation)
+    ));
+    scene.retire().unwrap();
+    let _ = scene.poll_reclamation().unwrap();
+}
