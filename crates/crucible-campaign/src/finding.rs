@@ -361,7 +361,7 @@ impl FindingSignature {
         self.property.as_deref()
     }
 
-    /// Returns the normalized guest or QEMU failure class.
+    /// Returns the normalized guest or backend failure class.
     #[must_use]
     pub fn failure_class(&self) -> &str {
         &self.failure_class
