@@ -170,7 +170,7 @@ impl StateInventory {
         if observed.mode() & 0o222 != 0 || observed.len() != claim.plaintext_size() {
             return Err(invalid("unsafe canonical inventory inode"));
         }
-        let measured = crate::verity::measure(file)?;
+        let measured = crate::verity::measure(&*file)?;
         file.seek(SeekFrom::Start(0))?;
         // The manifest identity authenticates canonical metadata, never assembled
         // bytes. This separately checks exact length, ordered chunks and every
@@ -178,7 +178,7 @@ impl StateInventory {
         claim.verify_reader(file)?;
         verified.recheck(inventory)?;
         if !same_inode_snapshot(&observed, &file.metadata()?)
-            || crate::verity::measure(file)? != measured
+            || crate::verity::measure(&*file)? != measured
         {
             return Err(invalid(
                 "canonical inventory inode changed during verification",

@@ -339,7 +339,7 @@ impl NativeInventory {
         // Actual Chunk identity verification proves the inline kind; length by
         // itself never establishes the kind of a manifest-named sealed inode.
         if file.metadata()?.len() <= self.location.chunk_profile().minimum() as u64 {
-            crate::verity::measure(file)?;
+            crate::verity::measure(&*file)?;
             let plaintext = bytes(file, self.location.chunk_profile().minimum())?;
             let identity = TERRANE_V1
                 .from_digest(IdentityKind::Chunk, &claimed_digest)
