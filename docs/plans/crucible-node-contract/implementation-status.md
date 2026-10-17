@@ -936,6 +936,25 @@ Provider suite passes 1,031 tests with zero failures and thirteen ignored in
 closed until common-runtime admission and the actual durable publisher are
 connected. Component recurrence does not qualify the full installed restoration.
 
+Commit `c9ac1ea31e` separates FreshCompletedAdmit13 receive and publication
+temporary peaks while retaining their simultaneous owned banks. The three
+full-format launch projection controls pass without changing the existing
+limits. Commit `db3592775b` prepares one immutable launch tuple for distinct
+code-validation and fresh-target owners. Its real constructor control passes,
+including changed-token, changed-schema, same-authority and occupied-output
+refusals. The separate sibling-declaration control also passes. The combined
+run has two passes and one native startup failure in 315.85 seconds.
+
+Startup now passes report projection and reaches native admission. Its report
+peak is 2,417,224,182 bytes; native admission starts at a projected 3,840,422,905
+bytes and refuses an additional 910,930,414 bytes against the unchanged 4 GiB
+limit. This is an admission projection, not measured resident memory. Its phase
+accounting still needs investigation. Temporary diagnostics were removed after
+the run. No successful native startup, complete restoration or recapture is
+claimed. The two-world fixture compiles but has not passed execution. Current
+six-crate all-feature/all-target checking passes in 2 minutes 2 seconds, and the
+prepared installer and four fixture modules pass their scoped formatting checks.
+
 ## Known gaps and exit criteria
 
 Completion requires the full [qualification plan](qualification-plan.md),
