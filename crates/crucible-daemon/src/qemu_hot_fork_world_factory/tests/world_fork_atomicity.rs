@@ -425,7 +425,7 @@ fn production_aggregate_release_failure_blocks_source_restore() {
         QemuProductionHotForkWorldLifecycleFactoryError::AssemblyCleanup { message, cleanup },
     ) = failure
     else {
-        panic!("unexpected aggregate release disposition")
+        panic!("unexpected aggregate release disposition: {failure:?}")
     };
     assert!(message.contains("aggregate target release failed after rollback"));
     let raw = cleanup

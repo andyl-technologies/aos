@@ -204,6 +204,24 @@ has five passes; testing standards retains one failure with 25 findings. The
 removed duplicate standalone drain no longer trips its source classifier. The
 independent no-Main component shutdown retains its explicit cleanup route.
 
+Retained-source preparation now shares one borrowed engine for initial capture
+and child promotion. It keeps the same Loop Box, captured continuation, returned
+template tokens and current and prior disk owners before subsequent validation
+can refuse. The original typed cause survives rollback and failure assembly.
+A parent-park refusal retains the actual complete Source instead of forgetting
+it. Two controls verify allocation identity, one-shot refusal and recovery of
+that same owner. This seam still requires the durable Main capture integration.
+
+Both workspace/all-target checks pass. The latest four-thread private daemon
+run has 1,744 passes and 43 ignored probes in 373.10 seconds. An earlier
+four-thread run failed the aggregate-release hot-fork control; its isolated
+control and seven-test module subsequently passed, and the full run includes
+an improved unexpected-disposition diagnostic. The concurrent failure remains
+unexplained. A preceding invocation omitted the established four-thread limit
+and exhausted the fixture's fixed SQLite capacity; its failures remain recorded.
+No fixture capacity or assertion was relaxed. Engineering hygiene has five
+passes; testing standards retains the same 25 classifier findings.
+
 Checked checkpoint-slot operations use nonblocking access and distinguish busy,
 poisoned and occupied storage. A refused restoration returns the same selected
 root instead of overwriting another root or dropping the incoming owner. These
