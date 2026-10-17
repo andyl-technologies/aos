@@ -486,8 +486,15 @@ pub(crate) struct LinuxQemuHotForkWorldReconciliationSet<G>
 where
     G: crate::QemuAttemptResourceGuard,
 {
+    state: Arc<Mutex<LinuxQemuHotForkWorldReconciliationState<G>>>,
+}
+
+struct LinuxQemuHotForkWorldReconciliationState<G>
+where
+    G: crate::QemuAttemptResourceGuard,
+{
     expected: BTreeSet<NodeId>,
-    reconciliations: Arc<Mutex<BTreeMap<NodeId, LinuxQemuHotForkWorldReconciliation<G>>>>,
+    reconciliations: BTreeMap<NodeId, LinuxQemuHotForkWorldReconciliation<G>>,
 }
 
 impl<G> Clone for LinuxQemuHotForkWorldReconciliationSet<G>
@@ -496,8 +503,7 @@ where
 {
     fn clone(&self) -> Self {
         Self {
-            expected: self.expected.clone(),
-            reconciliations: Arc::clone(&self.reconciliations),
+            state: Arc::clone(&self.state),
         }
     }
 }
@@ -508,8 +514,10 @@ where
 {
     pub(crate) fn new(expected: BTreeSet<NodeId>) -> Self {
         Self {
-            expected,
-            reconciliations: Arc::new(Mutex::new(BTreeMap::new())),
+            state: Arc::new(Mutex::new(LinuxQemuHotForkWorldReconciliationState {
+                expected,
+                reconciliations: BTreeMap::new(),
+            })),
         }
     }
 
@@ -517,19 +525,19 @@ where
         &mut self,
         disposition: crate::AttemptExecutionDisposition,
     ) -> Result<crate::AttemptExecutionReconciliationStep, LifecycleApiError> {
-        let mut reconciliations = self.reconciliations.lock().map_err(|_| {
+        let mut state = self.state.lock().map_err(|_| {
             hot_fork_adoption_error("hot-fork world reconciliation registry is poisoned")
         })?;
-        let actual = reconciliations.keys().cloned().collect::<BTreeSet<_>>();
-        if actual != self.expected {
+        if !state.reconciliations.keys().eq(state.expected.iter()) {
             return Err(hot_fork_adoption_error(
                 "hot-fork world reconciliation registry differs from its adopted child roster",
             ));
         }
-        let Some(node) = reconciliations.keys().next().cloned() else {
+        let Some(node) = state.reconciliations.keys().next().cloned() else {
             return Ok(crate::AttemptExecutionReconciliationStep::Complete);
         };
-        let step = reconciliations
+        let step = state
+            .reconciliations
             .get_mut(&node)
             .ok_or_else(|| {
                 hot_fork_adoption_error("hot-fork world reconciliation disappeared during lookup")
@@ -541,11 +549,18 @@ where
                     node.name
                 ))
             })?;
-        if step == crate::AttemptExecutionReconciliationStep::Complete {
-            reconciliations.remove(&node);
-            self.expected.remove(&node);
-        }
-        if self.expected.is_empty() {
+        let retired = if step == crate::AttemptExecutionReconciliationStep::Complete {
+            state.expected.remove(&node);
+            state.reconciliations.remove(&node)
+        } else {
+            None
+        };
+        let complete = state.expected.is_empty();
+        drop(state);
+        // A completed child body can release aliases of other containing
+        // owners. Its destruction must not run under this registry lock.
+        drop(retired);
+        if complete {
             Ok(crate::AttemptExecutionReconciliationStep::Complete)
         } else {
             Ok(crate::AttemptExecutionReconciliationStep::Progressed)
@@ -553,12 +568,11 @@ where
     }
 
     pub(crate) fn validate_operational_handoff(&self) -> Result<(), LifecycleApiError> {
-        let reconciliations = self.reconciliations.lock().map_err(|_| {
+        let state = self.state.lock().map_err(|_| {
             hot_fork_adoption_error("hot-fork world reconciliation registry is poisoned")
         })?;
-        let actual = reconciliations.keys().cloned().collect::<BTreeSet<_>>();
-        if actual != self.expected
-            || reconciliations.values().any(|reconciliation| {
+        if !state.reconciliations.keys().eq(state.expected.iter())
+            || state.reconciliations.values().any(|reconciliation| {
                 reconciliation.phase() != QemuHotForkReconciliationPhase::AwaitingPublication
             })
         {
@@ -570,15 +584,15 @@ where
     }
 
     pub(crate) fn quarantine(&mut self) {
-        match self.reconciliations.lock() {
-            Ok(mut reconciliations) => {
-                for reconciliation in reconciliations.values_mut() {
+        match self.state.lock() {
+            Ok(mut state) => {
+                for reconciliation in state.reconciliations.values_mut() {
                     reconciliation.quarantine();
                 }
             }
             Err(poisoned) => {
-                let mut reconciliations = poisoned.into_inner();
-                for reconciliation in reconciliations.values_mut() {
+                let mut state = poisoned.into_inner();
+                for reconciliation in state.reconciliations.values_mut() {
                     reconciliation.quarantine();
                 }
             }
@@ -670,12 +684,14 @@ where
                 ))
             })? {
                 QemuHotForkReconciliationStep::AwaitingPublication => {
-                    let mut completed = self.completed.reconciliations.lock().map_err(|_| {
+                    let mut completed = self.completed.state.lock().map_err(|_| {
                         hot_fork_adoption_error(
                             "hot-fork world reconciliation registry is poisoned",
                         )
                     })?;
-                    if completed.contains_key(self.identity.node()) {
+                    if !completed.expected.contains(self.identity.node())
+                        || completed.reconciliations.contains_key(self.identity.node())
+                    {
                         return Err(hot_fork_adoption_error(
                             "hot-fork world already retained this child reconciliation",
                         ));
@@ -685,7 +701,9 @@ where
                             "adopted child reconciliation disappeared before transfer",
                         )
                     })?;
-                    completed.insert(self.identity.node().clone(), reconciliation);
+                    completed
+                        .reconciliations
+                        .insert(self.identity.node().clone(), reconciliation);
                     return Ok(());
                 }
                 QemuHotForkReconciliationStep::ChildRunning => {
@@ -938,3 +956,6 @@ where
         Ok((basis, &backend.world_assembly))
     }
 }
+
+#[cfg(test)]
+mod registry_tests;
