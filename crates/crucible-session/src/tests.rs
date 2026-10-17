@@ -36,6 +36,8 @@ mod actor_runtime;
 mod breakpoint_metadata;
 #[path = "tests/engine_state.rs"]
 mod engine_state;
+#[path = "tests/owned_retirement.rs"]
+mod owned_retirement;
 #[path = "tests/terminal_verdict.rs"]
 mod terminal_verdict;
 

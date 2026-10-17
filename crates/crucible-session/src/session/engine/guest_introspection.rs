@@ -2,7 +2,7 @@
 
 use super::*;
 
-impl<L> Engine<L> {
+impl<L: QuantumLoop> Engine<L> {
     pub(super) fn handle_guest_introspection_command(
         &mut self,
         node: &NodeId,
@@ -62,6 +62,7 @@ impl<L> Engine<L> {
         }
         if let Err(error) = self
             .quantum_loop
+            .get_mut()?
             .send_guest_introspection(node.clone(), record.clone())
         {
             if opens_channel {
@@ -119,6 +120,7 @@ impl<L> Engine<L> {
         for _ in 0..GUEST_RESPONSE_BROKER_CAPACITY {
             let Some(record) = self
                 .quantum_loop
+                .get_mut()?
                 .receive_guest_introspection(node.clone())?
             else {
                 return Ok(None);
@@ -173,7 +175,11 @@ impl<L> Engine<L> {
         self.guest_features.remove(&node);
         self.guest_responses
             .remove(&(node.clone(), GUEST_INTROSPECTION_FEATURE_CHANNEL_ID));
-        if let Err(error) = self.quantum_loop.acquire_internal_debug_run() {
+        if let Err(error) = self
+            .quantum_loop
+            .get_mut()
+            .and_then(|quantum_loop| quantum_loop.acquire_internal_debug_run())
+        {
             report.guest_introspection_activation_failure = Some(format!(
                 "scheduler ownership acquisition failed before guest activation: {error}"
             ));
@@ -185,9 +191,17 @@ impl<L> Engine<L> {
             }
             return;
         }
-        if let Err(error) = self.quantum_loop.activate_debug_guest(node.clone()) {
+        if let Err(error) = self
+            .quantum_loop
+            .get_mut()
+            .and_then(|quantum_loop| quantum_loop.activate_debug_guest(node.clone()))
+        {
             let mut reason = error.to_string();
-            if let Err(release_error) = self.quantum_loop.release_internal_debug_run() {
+            if let Err(release_error) = self
+                .quantum_loop
+                .get_mut()
+                .and_then(|quantum_loop| quantum_loop.release_internal_debug_run())
+            {
                 reason.push_str(&format!(
                     "; scheduler ownership release also failed: {release_error}"
                 ));
@@ -291,7 +305,11 @@ impl<L> Engine<L> {
     where
         L: QuantumLoop,
     {
-        if let Err(error) = self.quantum_loop.release_internal_debug_run() {
+        if let Err(error) = self
+            .quantum_loop
+            .get_mut()
+            .and_then(|quantum_loop| quantum_loop.release_internal_debug_run())
+        {
             let release_failure = format!("scheduler ownership release failed: {error}");
             let reason = pending
                 .report
@@ -370,7 +388,7 @@ impl<L> Engine<L> {
         if self.guest_channel_run_active {
             return Ok(());
         }
-        self.quantum_loop.acquire_internal_debug_run()?;
+        self.quantum_loop.get_mut()?.acquire_internal_debug_run()?;
         self.guest_channel_run_active = true;
         self.active_step = None;
         self.state = EngineState::Running;
@@ -384,7 +402,7 @@ impl<L> Engine<L> {
         if !self.guest_channels.is_empty() || !self.guest_channel_run_active {
             return Ok(());
         }
-        self.quantum_loop.release_internal_debug_run()?;
+        self.quantum_loop.get_mut()?.release_internal_debug_run()?;
         self.guest_channel_run_active = false;
         if !matches!(self.state, EngineState::Stopped { .. }) {
             self.state = EngineState::Paused {
@@ -401,7 +419,7 @@ impl<L> Engine<L> {
         if !self.guest_channels.is_empty() || !self.guest_channel_run_active {
             return Ok(());
         }
-        self.quantum_loop.release_internal_debug_run()?;
+        self.quantum_loop.get_mut()?.release_internal_debug_run()?;
         self.guest_channel_run_active = false;
         if !matches!(self.state, EngineState::Stopped { .. }) {
             self.state = EngineState::Paused {
@@ -418,7 +436,7 @@ impl<L> Engine<L> {
         if !self.guest_channel_run_active {
             return Ok(false);
         }
-        self.quantum_loop.release_internal_debug_run()?;
+        self.quantum_loop.get_mut()?.release_internal_debug_run()?;
         self.guest_channel_run_active = false;
         if !matches!(self.state, EngineState::Stopped { .. }) {
             self.state = EngineState::Paused {
@@ -438,7 +456,7 @@ impl<L> Engine<L> {
         if !suspended {
             return Ok(());
         }
-        self.quantum_loop.acquire_internal_debug_run()?;
+        self.quantum_loop.get_mut()?.acquire_internal_debug_run()?;
         self.guest_channel_run_active = true;
         self.active_step = None;
         self.state = EngineState::Running;
@@ -458,7 +476,7 @@ impl<L> Engine<L> {
             "debug runtime reposition closed the guest channel",
         ));
         if self.guest_channel_run_active {
-            self.quantum_loop.release_internal_debug_run()?;
+            self.quantum_loop.get_mut()?.release_internal_debug_run()?;
             self.guest_channel_run_active = false;
         }
         if !matches!(self.state, EngineState::Stopped { .. }) {
@@ -480,7 +498,13 @@ impl<L> Engine<L> {
         self.record_guest_channel_closures(String::from(
             "session terminated before the guest channel completed",
         ));
-        if self.guest_channel_run_active && self.quantum_loop.release_internal_debug_run().is_ok() {
+        if self.guest_channel_run_active
+            && self
+                .quantum_loop
+                .get_mut()
+                .and_then(|quantum_loop| quantum_loop.release_internal_debug_run())
+                .is_ok()
+        {
             self.guest_channel_run_active = false;
         }
     }

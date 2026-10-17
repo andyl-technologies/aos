@@ -222,6 +222,18 @@ and exhausted the fixture's fixed SQLite capacity; its failures remain recorded.
 No fixture capacity or assertion was relaxed. Engineering hygiene has five
 passes; testing standards retains the same 25 classifier findings.
 
+Session ownership now arms one inline loop slot before constructor validation
+and keeps it in the actual Engine owned by the actor. Normal completion,
+unpolled futures, cancellation and unwind consume that same slot through a
+neutral retirement hook. Explicit extraction disarms it. Five controls retain
+and return an actual file, including refusal before an Engine could be built;
+no control issues native authority. Both workspace/all-target checks pass.
+The full scheduler and session unit, integration and documentation suites pass
+1,564 tests with one ignored probe, including 700 scheduler and 107 session
+unit tests. Engineering hygiene passes; the same 25 testing-standards findings
+remain. The production Loop override and its original Main destination belong
+to the coordinated Source cutover and are not qualified by these component runs.
+
 Checked checkpoint-slot operations use nonblocking access and distinguish busy,
 poisoned and occupied storage. A refused restoration returns the same selected
 root instead of overwriting another root or dropping the incoming owner. These

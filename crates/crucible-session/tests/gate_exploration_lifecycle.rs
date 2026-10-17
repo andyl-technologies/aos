@@ -274,7 +274,10 @@ fn run_uninterrupted(scenario: ScenarioDef, quanta: u64) -> UninterruptedRun {
             .unwrap_or_else(|error| panic!("uninterrupted quantum should step: {error}"));
     }
     let snapshot = engine.snapshot();
-    let event_log_entries = engine.into_quantum_loop().emitted_event_log_entries;
+    let event_log_entries = engine
+        .into_quantum_loop()
+        .expect("the engine retains its loop")
+        .emitted_event_log_entries;
     UninterruptedRun {
         snapshot,
         event_log_entries,

@@ -324,7 +324,7 @@ pub struct SessionForkRecord {
 /// The child is an ordinary [`SessionActor`] paused at the forked branch
 /// checkpoint. Continuing it advances from the same realized-checkpoint path
 /// used by resume.
-pub struct SessionFork<L> {
+pub struct SessionFork<L: QuantumLoop> {
     /// Parent engine state observed while servicing the fork.
     pub parent_state: EngineState,
     /// Configuration id used as the fork point.
@@ -347,7 +347,7 @@ pub struct SessionFork<L> {
 /// [`PauseReason::Instantiated`]. Continuing it advances the supplied
 /// [`QuantumLoop`] from the checkpoint's recorded configuration; no restored
 /// session state or fork-specific realization path is introduced.
-pub struct SessionResume<L> {
+pub struct SessionResume<L: QuantumLoop> {
     /// Checkpoint used as the resume source.
     pub checkpoint: ContentHash,
     /// Recorded configuration denoted by `checkpoint`.

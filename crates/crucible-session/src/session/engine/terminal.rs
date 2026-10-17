@@ -30,7 +30,7 @@ impl TerminalCause {
     }
 }
 
-impl<L> Engine<L> {
+impl<L: QuantumLoop> Engine<L> {
     pub(crate) fn stop_after_budget_exhaustion(&mut self) -> Result<(), SessionError>
     where
         L: QuantumLoop,
@@ -57,9 +57,10 @@ impl<L> Engine<L> {
         self.pending_control.clear();
         self.active_step = None;
         self.resolve_guest_introspection_for_terminal();
-        let prepared = self
-            .quantum_loop
-            .prepare_terminal_checkpoint(CheckpointTerminalCause::BackendCrash(detail.clone()));
+        let prepared = self.quantum_loop.get_mut().and_then(|quantum_loop| {
+            quantum_loop
+                .prepare_terminal_checkpoint(CheckpointTerminalCause::BackendCrash(detail.clone()))
+        });
         match prepared
             .map_err(SessionError::from)
             .and_then(|()| self.save_current_checkpoint())
@@ -85,6 +86,7 @@ impl<L> Engine<L> {
     {
         self.resolve_guest_introspection_for_terminal();
         self.quantum_loop
+            .get_mut()?
             .prepare_terminal_checkpoint(cause.checkpoint_cause())?;
         let outcome = match cause {
             TerminalCause::Failed(violations) => Outcome::Failed { violations },
@@ -112,7 +114,11 @@ impl<L> Engine<L> {
     {
         let mut checkpoint = self.graph.save_checkpoint(&self.configuration)?;
         checkpoint.virtual_time = self.frontier;
-        if let Some(closure) = self.quantum_loop.capture_checkpoint(&self.configuration)? {
+        if let Some(closure) = self
+            .quantum_loop
+            .get_mut()?
+            .capture_checkpoint(&self.configuration)?
+        {
             checkpoint = checkpoint.with_execution_closure(closure);
         }
         Ok(checkpoint)
