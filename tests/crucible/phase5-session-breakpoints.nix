@@ -68,8 +68,12 @@
         needle = "ConditionEventLogPrefix::from_evaluation_boundary";
       }
       {
-        label = "full-prefix synthetic boundary";
-        needle = "from_scheduler_event_log_entries_with_evaluation_boundary";
+        label = "full-history synthetic boundary";
+        needle = ".with_evaluation_boundary(";
+      }
+      {
+        label = "condition prefix extended incrementally";
+        needle = "prefix.append_entries(entries.to_vec())";
       }
       {
         label = "breakpoint transition evaluation";
@@ -216,6 +220,14 @@
       {
         label = "public full-prefix boundary builder";
         needle = "pub fn from_scheduler_event_log_entries_with_evaluation_boundary";
+      }
+      {
+        label = "public built-prefix boundary extension";
+        needle = "pub fn with_evaluation_boundary";
+      }
+      {
+        label = "public prefix batch extension";
+        needle = "pub fn append_entries";
       }
       {
         label = "condition prefix event firing facts";
