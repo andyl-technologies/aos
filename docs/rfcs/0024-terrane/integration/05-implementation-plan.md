@@ -8853,8 +8853,21 @@ host-filesystem failure while creating a non-UTF-8 filename. Its later native
 stage fails an old unchanged-snapshot assertion: the reviewed recovery path
 persists a funded hold before refusing unknown content. A distinct late-refusal
 fixture verifies that hold, faulted custody and preservation of the unknown
-inode while retaining the original cold-record controls. Its source passes
-review; the corrected complete native sequence remains pending.
+inode while retaining the original cold-record controls. Corrected checkpoint
+`3def61cf17` passes its source-bound image, completed artifact verifier and
+complete native component sequence: all forty-one unchanged ext4 tests, seven
+strict cold refusals, the distinct funded late refusal, cancellation,
+exclusive-owner controls and actual kernel quota exhaustion after 8,323,072
+written bytes. Independent review verifies every compiler-input hash, executable,
+runtime identity, case result and unchanged source guard. Resume, admission,
+BKT-15 and full host-task qualification remain outside that component result.
+
+The encoded-admission producer now has a separate source checkpoint. Review
+requires corrections for unused registry slots after effect-free rejection,
+phase-specific canonical file custody and checked active-memory overlaps before
+compilation. The separate bounded existing-Original inspection producer passes
+source review; its eleven new tests remain unrun. It retains genuine native
+exclusion without granting fresh-creator or host-readiness authority.
 The module privacy correction likewise passes source review: tmpfiles must
 retain non-public roots at mode `0750`, including override paths, without a
 second declaration widening them to `0755`. Module evaluation and actual
