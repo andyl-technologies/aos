@@ -8833,10 +8833,51 @@ These bounded component cases do not qualify Resume, native admission,
 BKT-15 or either complete host task.
 
 The first-enrollment fixture uses the existing vendored Tokio runtime as a
-development dependency. Its genuine same-process two-owner creator-to-setter
-flow, private-root traversal policy and refusal cases pass source review;
-compilation and native execution remain pending. Separate image and guest
-component checks are declared, with missing implementations failing explicitly.
+development dependency. Its source-bound build and nine selected unit tests
+pass; four native tests remain unexecuted by that unit run. The corrected
+checkpoint `c033a09a8d` passes its fresh image, completed artifact verifier and
+all twelve finite native cases. These include genuine same-process public and
+private enrollment, first-enrollment refusals, actual partial kernel `EDQUOT`
+with permanent claims and an incomplete ledger, authenticated quota reads,
+and foreign-UID denials. Source and artifact guards remain unchanged.
+An earlier guest failed after both genuine creators succeeded because the
+fixture omitted the required empty protected project-claim directory. The
+correction supplies only that directory; production creates every claim and
+anchor. Capability CAS remains explicitly unsupported. This component pass
+does not establish NativeReady, BKT-15 or complete task acceptance.
+
+The manifest recovery candidate builds and passes all forty-one unchanged
+focused tests in an actual ext4 guest, with none ignored and independently
+verified per-test identities and executable hashes. This resolves the earlier
+host-filesystem failure while creating a non-UTF-8 filename. Its later native
+stage fails an old unchanged-snapshot assertion: the reviewed recovery path
+persists a funded hold before refusing unknown content. A distinct late-refusal
+fixture verifies that hold, faulted custody and preservation of the unknown
+inode while retaining the original cold-record controls. Corrected checkpoint
+`3def61cf17` passes its source-bound image, completed artifact verifier and
+complete native component sequence: all forty-one unchanged ext4 tests, seven
+strict cold refusals, the distinct funded late refusal, cancellation,
+exclusive-owner controls and actual kernel quota exhaustion after 8,323,072
+written bytes. Independent review verifies every compiler-input hash, executable,
+runtime identity, case result and unchanged source guard. Resume, admission,
+BKT-15 and full host-task qualification remain outside that component result.
+
+The encoded-admission producer now has a separate source checkpoint. Review
+requires corrections for unused registry slots after effect-free rejection,
+phase-specific canonical file custody and checked active-memory overlaps before
+compilation. The separate bounded existing-Original inspection producer passes
+source review; its eleven new tests remain unrun. It retains genuine native
+exclusion without granting fresh-creator or host-readiness authority.
+The module privacy correction passes source review and all eighty-eight
+declarative module checks at `655b57b853`, including both privacy regressions.
+Independent review verifies all 6,324 tracked inputs and the evaluated report.
+Tmpfiles retain non-public roots at mode `0750`, including override paths,
+without a
+second declaration widening them to `0755`. Actual four-role composition and
+full module-task acceptance remain pending. The combined surface and configured
+SDK candidate is assembled without changing their reviewed implementations;
+fresh task gates, aggregate checks and application qualification remain pending.
+
 The shared glue dependency now names
 the existing Core types directly, and the crate-graph audit includes the current
 native and glue edges. All 632 external dependencies remain unchanged; every
