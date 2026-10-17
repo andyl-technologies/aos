@@ -399,17 +399,20 @@ impl PreparedCompleteRestoration {
 fn duplicate_participant_data(
     participants: &[Participant; 3],
 ) -> Result<[Participant; 3], QualificationError> {
-    let [first, second, third] = participants.each_ref().map(|participant| -> Result<Participant, QualificationError> {
-        let bytes = encoded(&participant.program)?;
-        let program = serde_json::from_slice(&bytes).map_err(|_| refused())?;
-        Ok(Participant {
-            installation: participant.installation.clone(),
-            program,
-            storage: participant.storage.clone(),
-            capture_profile: participant.capture_profile.clone(),
-            protocol_metadata: participant.protocol_metadata,
-        })
-    });
+    let [first, second, third] =
+        participants
+            .each_ref()
+            .map(|participant| -> Result<Participant, QualificationError> {
+                let bytes = encoded(&participant.program)?;
+                let program = serde_json::from_slice(&bytes).map_err(|_| refused())?;
+                Ok(Participant {
+                    installation: participant.installation.clone(),
+                    program,
+                    storage: participant.storage.clone(),
+                    capture_profile: participant.capture_profile.clone(),
+                    protocol_metadata: participant.protocol_metadata,
+                })
+            });
     Ok([first?, second?, third?])
 }
 
