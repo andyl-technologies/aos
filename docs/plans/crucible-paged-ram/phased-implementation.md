@@ -70,6 +70,17 @@ lint tests pass, including controls that reject changed export visibility,
 source placement and operation-clock formulas. These component results do not
 qualify a live VM or replace the missing lifecycle evidence.
 
+Memory-service occurrence admission now compares the reported byte rate,
+operation rate and exact presence bits with the same issued action, alongside
+its existing materialized-latency check. Matching payload hashes alone cannot
+establish that configuration. The new control covers all four enabled/disabled
+rate combinations and rejects twenty individual contradictions while preserving
+the same action and APPLY identities and recomputing valid evidence and transport
+hashes. The complete private QEMU library run has 1,135 passes, the same six
+capture/fault failures and four ignored probes in 20.33 seconds. This validates
+host event admission; native service timing and cold-page fault qualification
+remain required.
+
 Packed inventory, publication readback and canonical archive reads now borrow
 one metadata cache from the existing physical-quota service. Its rows and index
 use the same paired resident/metadata accounts as ordinary service work; they
