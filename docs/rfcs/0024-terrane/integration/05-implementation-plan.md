@@ -8833,10 +8833,26 @@ These bounded component cases do not qualify Resume, native admission,
 BKT-15 or either complete host task.
 
 The first-enrollment fixture uses the existing vendored Tokio runtime as a
-development dependency. Its genuine same-process two-owner creator-to-setter
-flow, private-root traversal policy and refusal cases pass source review;
-compilation and native execution remain pending. Separate image and guest
-component checks are declared, with missing implementations failing explicitly.
+development dependency. Its source-bound build and nine selected unit tests
+pass; four native tests remain unexecuted by that unit run. The diagnostic
+image and completed artifact verifier also pass. Its first actual guest case
+successfully creates both genuine buckets, then fails during AOS provisioning
+with a missing-file error. Review found the fixture omitted the required empty
+protected project-claim directory. The fixture-only correction passes source
+review and awaits fresh native execution; it creates no claim or anchor.
+Separate image and guest component checks remain distinct from task acceptance.
+
+The manifest recovery candidate builds and passes forty of forty-one focused
+tests locally. The remaining test fails while creating a non-UTF-8 filename
+on the host filesystem, before exercising the scanner. An unchanged-test
+ext4 guest harness passes source review; its full execution remains pending.
+The module privacy correction likewise passes source review: tmpfiles must
+retain non-public roots at mode `0750`, including override paths, without a
+second declaration widening them to `0755`. Module evaluation and actual
+four-role composition remain pending. The combined surface and configured
+SDK candidate is assembled without changing their reviewed implementations;
+fresh task gates, aggregate checks and application qualification remain pending.
+
 The shared glue dependency now names
 the existing Core types directly, and the crate-graph audit includes the current
 native and glue edges. All 632 external dependencies remain unchanged; every
