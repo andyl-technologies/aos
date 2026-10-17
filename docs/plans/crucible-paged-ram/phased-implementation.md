@@ -176,6 +176,18 @@ selected-member resource geometry and healthy retirement remain required. These
 component results qualify neither native Target activation nor physical resource
 floors or VM performance parity.
 
+Lifecycle assembly now offers one borrowed preparation core. Input installation
+checks the same pristine carrier before moving either the launcher or decoded
+checkpoint; every refused installation preserves both inputs without allocation.
+Preparation refuses failed, closed, reserved, poisoned or already-cleaned custody
+before configuration copying or native effects. Owning constructors delegate to
+that same core and perform the final move only after complete validation. Three
+controls cover unusable carriers, retained validation failure and re-entry after
+physical cleanup. The final private daemon library run passes all 1,736 tests,
+with 43 ignored probes, in 358.60 seconds; both workspace/all-target checks pass.
+The durable Main producer still needs to adopt this borrowed core before Source
+startup, so these results do not qualify native activation or VM performance.
+
 Replay preparation now selects the actual node for its installed issuer,
 generation directories, child contract and failed-child retention. The same
 node passes through the existing operational checks; no descriptor is cloned

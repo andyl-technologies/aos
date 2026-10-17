@@ -118,7 +118,8 @@ impl DecodedProductionExactCheckpoint {
         }
     }
 
-    pub(in crate::vm_lifecycle) fn into_checkpoint(self) -> ProductionVmExactCheckpointSet {
+    /// Moves the decoded semantic state and its retained restore admissions.
+    pub(crate) fn into_checkpoint(self) -> ProductionVmExactCheckpointSet {
         self.checkpoint
     }
 }
