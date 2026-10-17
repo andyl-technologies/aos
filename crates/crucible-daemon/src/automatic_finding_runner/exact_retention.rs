@@ -26,6 +26,13 @@ use crate::{
     ExactCheckpointStore, ExecutionCancellation,
 };
 
+/// Fixed sanity bound on one finding checkpoint's authenticated metadata.
+///
+/// Metadata is the root envelope, closure manifest, and object-index pages,
+/// never log or RAM content. The index names one object per sealed event-log
+/// segment of up to 8 MiB of entries (RFC-0020 CCOMP-33), so it grows with the
+/// run only by a few dozen bytes per sealed segment, and 64 MiB admits logs
+/// far beyond any operational event-log byte limit.
 const MAX_FINDING_EXACT_METADATA_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_CAMPAIGN_RUN_EXACT_CHECKPOINTS: usize = 65_536;
 

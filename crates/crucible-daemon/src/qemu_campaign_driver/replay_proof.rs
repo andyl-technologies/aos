@@ -201,27 +201,67 @@ impl QemuSavepointReplayProof {
             && self.event_log_offset == other.event_log_offset
     }
 
+    /// Binds a restored checkpoint's boundary, streaming its referenced log.
+    ///
+    /// Sealed segments are read from `segments` and authenticated one at a
+    /// time. Like [`Self::from_reached_boundary`], the proof leaves the
+    /// segment-chain offset unbound.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuFreshModeledDriverError::SavepointReplayProof`] when the
+    /// checkpoint covers only a log suffix, or a referenced segment cannot be
+    /// read or authenticated.
+    pub fn from_checkpoint(
+        configuration: &Configuration,
+        scheduler: &crucible::SingleSchedulerCheckpoint,
+        segments: &(impl crucible::EventLogSegmentReader + ?Sized),
+    ) -> Result<Self, QemuFreshModeledDriverError> {
+        let identity = checkpoint_log_identity(scheduler, segments)?;
+        Ok(Self {
+            configuration: configuration.id(),
+            completed_quanta: scheduler.quanta(),
+            frontier: scheduler.frontier(),
+            event_count: identity.event_count,
+            event_digest: identity.event_digest,
+            causal_digest: identity.causal.content_hash,
+            causal_bytes: identity.causal.canonical_bytes,
+            causal_events: identity.causal.entries,
+            event_log_offset: None,
+            attempt_event_count: None,
+        })
+    }
+
     /// Returns whether one restored checkpoint has this exact modeled boundary.
+    ///
+    /// The checkpoint's log is streamed from `segments` only after its scalar
+    /// coordinates match. A segment that cannot be read or authenticated is a
+    /// mismatch.
     #[must_use]
     pub fn matches_checkpoint(
         self,
         configuration: &Configuration,
         scheduler: &crucible::SingleSchedulerCheckpoint,
+        segments: &(impl crucible::EventLogSegmentReader + ?Sized),
     ) -> bool {
         // The live replay offset authenticates the ordered segment chain,
-        // encoded byte count, and event count. Flat retained entries alone
-        // cannot reconstruct segment boundaries or their prefix hash.
-        scheduler.event_log_offset().events == self.event_count
-            && self
-                .event_log_offset
-                .is_none_or(|offset| offset == scheduler.event_log_offset())
-            && self.matches_boundary(
-                configuration,
-                scheduler.quanta(),
-                scheduler.frontier(),
-                scheduler.retained_event_log_base_events(),
-                scheduler.retained_event_log_entries(),
-            )
+        // encoded byte count, and event count. Entries alone cannot
+        // reconstruct segment boundaries or their prefix hash.
+        let offset = scheduler.event_log_offset();
+        if !self.matches_coordinates(
+            configuration,
+            scheduler.quanta(),
+            scheduler.frontier(),
+            offset.events,
+        ) || self
+            .event_log_offset
+            .is_some_and(|expected| expected != offset)
+        {
+            return false;
+        }
+        checkpoint_log_identity(scheduler, segments).is_ok_and(|identity| {
+            self.event_digest == identity.event_digest && self.matches_causal(identity.causal)
+        })
     }
 
     /// Returns the cumulative scheduler work required to reconstruct the boundary.
@@ -369,6 +409,49 @@ impl QemuSelectedResumeBoundary {
         }
         Ok(self.proof.event_digest == prior.event_prefix_digest_with(quantum_entries)?)
     }
+}
+
+/// Streams a checkpoint's complete event log into its boundary identity.
+///
+/// The causal projection's header names its entry count, so a first pass
+/// counts causal entries and a second digests both projections. Each pass
+/// holds at most one sealed segment.
+fn checkpoint_log_identity(
+    scheduler: &crucible::SingleSchedulerCheckpoint,
+    segments: &(impl crucible::EventLogSegmentReader + ?Sized),
+) -> Result<super::attempt_log::RetainedLogIdentity, QemuFreshModeledDriverError> {
+    let invalid = |_| QemuFreshModeledDriverError::SavepointReplayProof;
+    if scheduler.event_log_base_events() != 0 {
+        return Err(QemuFreshModeledDriverError::SavepointReplayProof);
+    }
+    let event_count = scheduler.event_log_offset().events;
+
+    let mut causal_entries = 0_u64;
+    scheduler
+        .try_for_each_event_log_entry(segments, |entry| {
+            if crucible::is_causal_event_log_entry(entry) {
+                causal_entries += 1;
+            }
+            Ok::<_, crucible::SingleSchedulerCheckpointError>(())
+        })
+        .map_err(invalid)?;
+
+    let mut prefix = SavepointEventPrefixDigest::new(event_count);
+    let mut causal = crucible::EventLogCausalDigest::new(causal_entries);
+    scheduler
+        .try_for_each_event_log_entry(segments, |entry| {
+            prefix.update(entry);
+            causal.observe(entry);
+            Ok::<_, crucible::SingleSchedulerCheckpointError>(())
+        })
+        .map_err(invalid)?;
+    Ok(super::attempt_log::RetainedLogIdentity {
+        event_count,
+        event_digest: prefix.finish(),
+        causal: causal
+            .finish()
+            .ok_or(QemuFreshModeledDriverError::SavepointReplayProof)?,
+    })
 }
 
 fn savepoint_event_prefix_digest(entries: &[SchedulerEventLogEntry]) -> [u8; 32] {

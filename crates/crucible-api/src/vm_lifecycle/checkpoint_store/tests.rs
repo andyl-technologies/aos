@@ -371,7 +371,9 @@ fn build_one_node_raw_checkpoint(
         identity: ContentHash::default(),
         configuration,
         scheduler: Arc::new(scheduler_checkpoint),
-        event_log_objects: Arc::new(BTreeMap::new()),
+        event_log_segments: ProductionEventLogSegments::store(Arc::new(
+            crucible::MemoryDagStore::new(),
+        )),
         signal_artifact_objects: Arc::new(BTreeMap::new()),
         fault_trace_objects: Arc::new(BTreeMap::new()),
         trigger_state: EventGraphState::default(),

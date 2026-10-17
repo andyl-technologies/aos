@@ -168,7 +168,7 @@ impl ProductionVmLifecycleLoop {
                 message: format!("encode production scheduler checkpoint evidence: {error}"),
             }
         })?;
-        let segments = checkpoint.event_log_segment_dependencies().to_vec();
+        let segments = checkpoint.event_log_segment_dependencies();
         let bytes =
             checkpoint
                 .canonical_bytes()

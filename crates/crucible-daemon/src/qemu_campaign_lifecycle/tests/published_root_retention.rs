@@ -172,12 +172,10 @@ fn world_boundary(
     world: &ProductionVmHotForkSourceWorld,
 ) -> (Configuration, QemuSavepointReplayProof) {
     let continuation = world.continuation();
-    let scheduler = continuation.scheduler();
-    let proof = QemuSavepointReplayProof::from_reached_boundary(
+    let proof = QemuSavepointReplayProof::from_checkpoint(
         continuation.configuration(),
-        scheduler.quanta(),
-        scheduler.frontier(),
-        scheduler.retained_event_log_entries(),
+        continuation.scheduler(),
+        continuation.event_log_segments(),
     )
     .expect("world boundary proof");
     (continuation.configuration().clone(), proof)

@@ -14,49 +14,6 @@ use branch_sequence::{configured_branches, first_configured_branch};
 #[path = "construction_tests.rs"]
 mod tests;
 
-fn hydrate_checkpoint_event_log_dependencies(
-    scheduler: &SingleSchedulerCheckpoint,
-    objects: &BTreeMap<ContentHash, Vec<u8>>,
-    store: &dyn DagStore,
-) -> Result<(), LifecycleApiError> {
-    let dependencies = scheduler.event_log_segment_dependencies();
-    if dependencies.len() != objects.len() {
-        return Err(loop_factory_error(
-            "exact checkpoint event-log dependency count changed before restore",
-        ));
-    }
-
-    // Validate the entire authenticated set before writing into the new run.
-    for identity in dependencies {
-        let bytes = objects.get(identity).ok_or_else(|| {
-            loop_factory_error("exact checkpoint event-log dependency is missing before restore")
-        })?;
-        if ContentHash::from_bytes(bytes) != *identity {
-            return Err(loop_factory_error(
-                "exact checkpoint event-log dependency changed before restore",
-            ));
-        }
-    }
-
-    for identity in dependencies {
-        let bytes = objects.get(identity).ok_or_else(|| {
-            loop_factory_error("exact checkpoint event-log dependency disappeared during restore")
-        })?;
-        let stored = store.put(bytes).map_err(|error| {
-            loop_factory_error(format!(
-                "rehydrate exact checkpoint event-log dependency: {error}"
-            ))
-        })?;
-        if stored != *identity {
-            return Err(loop_factory_error(
-                "exact checkpoint event-log dependency changed while rehydrating",
-            ));
-        }
-    }
-
-    Ok(())
-}
-
 pub(super) fn hydrate_checkpoint_signal_artifacts(
     objects: &BTreeMap<ContentHash, Vec<u8>>,
     store: &dyn DagStore,
@@ -178,11 +135,15 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         ));
     }
     if let Some(checkpoint) = &restore_checkpoint {
-        hydrate_checkpoint_event_log_dependencies(
-            &checkpoint.scheduler,
-            &checkpoint.event_log_objects,
-            checkpoint_dag.as_ref(),
-        )?;
+        // Segments move one at a time; restore authenticates each again.
+        checkpoint
+            .event_log_segments
+            .hydrate(&checkpoint.scheduler, checkpoint_dag.as_ref())
+            .map_err(|error| {
+                loop_factory_error(format!(
+                    "rehydrate exact checkpoint event-log segments: {error}"
+                ))
+            })?;
     }
     let nodes = source.world().vm_nodes();
     // Reject incompatible per-node initrd identities before launching any VM.

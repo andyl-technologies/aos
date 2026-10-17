@@ -517,7 +517,8 @@ alternate monolithic VMState reader or restore path.
 stream. Production publication uses
 `crucible.executor.exact-checkpoint-root@exact-manifest.5`. The root commits to
 the version-nine closure manifest and its direct-or-delta RAM layers, device
-state, scheduler continuation, immutable backing, fault checkpoint, and the
+state, scheduler continuation and the sealed event-log segments it references
+(RFC section 15.12), immutable backing, fault checkpoint, and the
 replay closure of choice records discovered before the pause: a version 2
 closure root child plus one `checkpoint-choice-frame-NNNNNNNN` child per frame
 of at most 64 MiB (RFC section 15.8). Loading reads only the closure root;

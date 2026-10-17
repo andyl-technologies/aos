@@ -12,7 +12,8 @@ use std::sync::Arc;
 use crucible::{Configuration, ContentHash, Decision, ScenarioDefForm, SingleSchedulerCheckpoint};
 use crucible_api::{
     DecodedProductionExactCheckpoint, LifecycleApiError, PreparedProductionReplayOraclePromotion,
-    ProductionVmExactHotForkSourceBoundary, ProductionVmExactNodeRestoreAdmissions,
+    ProductionEventLogSegments, ProductionVmExactHotForkSourceBoundary,
+    ProductionVmExactNodeRestoreAdmissions,
 };
 use thiserror::Error;
 
@@ -33,6 +34,7 @@ pub(crate) struct InstalledProductionAttemptCheckpoint {
     loaded: Arc<crate::LoadedProductionExactCheckpoint>,
     configuration: Configuration,
     scheduler: SingleSchedulerCheckpoint,
+    event_log_segments: ProductionEventLogSegments,
     decoded: Option<DecodedProductionExactCheckpoint>,
 }
 
@@ -59,6 +61,7 @@ impl AuthenticatedProductionAttemptResume {
 pub(crate) struct AuthenticatedProductionAttemptBoundary {
     configuration: Configuration,
     scheduler: SingleSchedulerCheckpoint,
+    event_log_segments: ProductionEventLogSegments,
     hot_fork_source: ProductionVmExactHotForkSourceBoundary,
 }
 
@@ -69,6 +72,11 @@ impl AuthenticatedProductionAttemptBoundary {
 
     pub(crate) const fn scheduler(&self) -> &SingleSchedulerCheckpoint {
         &self.scheduler
+    }
+
+    /// Returns read access to the sealed event-log segments the scheduler names.
+    pub(crate) const fn event_log_segments(&self) -> &ProductionEventLogSegments {
+        &self.event_log_segments
     }
 
     pub(crate) fn into_hot_fork_source(self) -> ProductionVmExactHotForkSourceBoundary {
@@ -124,6 +132,14 @@ impl InstalledProductionAttemptCheckpoint {
     #[must_use]
     pub(crate) const fn scheduler(&self) -> &SingleSchedulerCheckpoint {
         &self.scheduler
+    }
+
+    /// Returns read access to the sealed event-log segments the scheduler names.
+    ///
+    /// The handle stays valid after the node-restore admissions are taken.
+    #[must_use]
+    pub(crate) const fn event_log_segments(&self) -> &ProductionEventLogSegments {
+        &self.event_log_segments
     }
 
     pub(crate) fn take_node_restore_admissions(
@@ -241,6 +257,7 @@ pub(crate) fn authenticate_attempt_production_resume_boundary(
     let boundary = AuthenticatedProductionAttemptBoundary {
         configuration: resume.decoded.configuration().clone(),
         scheduler: resume.decoded.scheduler().clone(),
+        event_log_segments: resume.decoded.event_log_segments().clone(),
         hot_fork_source: resume.decoded.hot_fork_source_boundary()?,
     };
     Ok(boundary)
@@ -389,11 +406,13 @@ fn install_attempt_production_exact_checkpoint_inner(
     validate_production_attempt_continuation(effective_start, decoded.configuration(), checkpoint)?;
     let configuration = decoded.configuration().clone();
     let scheduler = decoded.scheduler().clone();
+    let event_log_segments = decoded.event_log_segments().clone();
     Ok(InstalledProductionAttemptCheckpoint {
         checkpoint,
         loaded,
         configuration,
         scheduler,
+        event_log_segments,
         decoded: Some(decoded),
     })
 }

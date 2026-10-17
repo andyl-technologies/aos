@@ -476,10 +476,11 @@ fn prepared_world_mismatch(
     if continuation.configuration().def.id() != input.scenario().scenario_def().id() {
         return Some("prepared scenario differs from the authenticated attempt");
     }
-    if !plan
-        .proof
-        .matches_checkpoint(continuation.configuration(), continuation.scheduler())
-    {
+    if !plan.proof.matches_checkpoint(
+        continuation.configuration(),
+        continuation.scheduler(),
+        continuation.event_log_segments(),
+    ) {
         return Some("prepared scheduler boundary differs from the sealed replay proof");
     }
     if continuation.terminal_verdict().is_some() {

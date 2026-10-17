@@ -69,7 +69,13 @@ const ARTIFACT_CHUNK_BYTES: usize = 4 * 1024 * 1024;
 const ARTIFACT_CHUNK_BYTES_U64: u64 = 4 * 1024 * 1024;
 const SPARSE_COPY_BUFFER_BYTES: usize = 1024 * 1024;
 const SMALL_CONTINUATION_MAX_BYTES: u64 = 268_435_456;
-const LARGE_CONTINUATION_MAX_BYTES: u64 = 1_610_612_800;
+/// Largest scheduler continuation object; it carries only the event log's open tail.
+const SCHEDULER_CONTINUATION_MAX_BYTES: u64 =
+    crucible::MAX_SINGLE_SCHEDULER_CHECKPOINT_BYTES as u64;
+/// Largest sealed segment of the event log or the resolved-effect trace.
+const SEALED_SEGMENT_MAX_BYTES: u64 = crucible::segment_store::MAX_SEGMENT_BYTES as u64;
+/// Largest authored signal artifact retained in a closure.
+const SIGNAL_ARTIFACT_MAX_BYTES: u64 = 1_610_612_800;
 
 struct ExactCheckpointSha256Writer(Sha256);
 
@@ -443,10 +449,11 @@ const fn is_false(value: &bool) -> bool {
     !*value
 }
 
+/// Encoded closure objects, apart from the sealed event-log segments that the
+/// scheduler continuation names and publication copies one at a time.
 struct ClosureObjects {
     schedule: Vec<u8>,
     scheduler: Vec<u8>,
-    event_log_segments: BTreeMap<ContentHash, Vec<u8>>,
     signal_artifacts: BTreeMap<ContentHash, Vec<u8>>,
     fault_trace_segments: BTreeMap<ContentHash, Vec<u8>>,
     trigger_state: Vec<u8>,
@@ -638,12 +645,9 @@ pub(super) fn prepare_exact_checkpoint_set_with_boundary(
         &objects.scheduler,
         boundary,
     )?;
+    persist_event_log_segments_with_boundary(&object_directory, checkpoint, boundary)?;
     let checkpoint_dag = checkpoint_dag_store(run_state_root, scenario);
-    for (identity, bytes) in objects
-        .event_log_segments
-        .iter()
-        .chain(objects.signal_artifacts.iter())
-    {
+    for (identity, bytes) in &objects.signal_artifacts {
         boundary()?;
         persist_object_with_boundary(&object_directory, *identity, bytes, boundary)?;
         let stored = checkpoint_dag
@@ -738,6 +742,33 @@ pub(super) fn prepare_exact_checkpoint_set_with_boundary(
         closure_parent,
         resource_limits: Box::new(resource_limits),
     })
+}
+
+/// Places every sealed event-log segment the scheduler names in the object store.
+///
+/// A segment already in the store, the usual case for a live capture whose
+/// scheduler seals into this same directory, is only re-hashed from disk.
+/// Any other segment is read from the checkpoint's source, authenticated,
+/// and written before the next one is read.
+fn persist_event_log_segments_with_boundary(
+    object_directory: &Path,
+    checkpoint: &ProductionVmExactCheckpointSet,
+    boundary: &mut dyn FnMut() -> Result<(), SchedulerError>,
+) -> Result<(), SchedulerError> {
+    for segment in checkpoint.scheduler.event_log_segments() {
+        boundary()?;
+        let path = object_path(object_directory, segment.object);
+        if path.exists() {
+            validate_file_hash_with_boundary(&path, segment.object, boundary)?;
+            continue;
+        }
+        let bytes = checkpoint
+            .event_log_segments
+            .read_authenticated(segment)
+            .map_err(|error| store_error(format!("copy exact event-log segment: {error}")))?;
+        persist_object_with_boundary(object_directory, segment.object, &bytes, boundary)?;
+    }
+    Ok(())
 }
 
 /// Streams one paused checkpoint artifact into a private content-addressed
@@ -966,7 +997,7 @@ fn load_exact_checkpoint_set_with_boundary(
         &object_directory,
         manifest.scheduler,
         &mut budget,
-        LARGE_CONTINUATION_MAX_BYTES,
+        SCHEDULER_CONTINUATION_MAX_BYTES,
         boundary,
     )?)
     .map_err(|error| loop_factory_error(format!("decode scheduler continuation: {error}")))?;
@@ -984,21 +1015,26 @@ fn load_exact_checkpoint_set_with_boundary(
             "exact checkpoint event-log dependencies do not match the scheduler continuation",
         ));
     }
-    let mut event_log_objects = BTreeMap::new();
-    for identity in &manifest.event_log_segments {
+    // Sealed event-log segments stay in the object store: each is charged
+    // once against the closure quota here and authenticated when restore
+    // reads it, so the load never holds the log (RFC-0020 CMEAS-28).
+    for segment in scheduler.event_log_segments() {
         boundary()?;
-        let bytes = read_object(
-            &object_directory,
-            *identity,
-            &mut budget,
-            LARGE_CONTINUATION_MAX_BYTES,
-            boundary,
-        )?;
-        if event_log_objects.insert(*identity, bytes).is_some() {
+        let path = object_path(&object_directory, segment.object);
+        let length = fs::metadata(&path)
+            .map_err(|error| {
+                loop_factory_error(format!(
+                    "inspect exact checkpoint event-log segment {}: {error}",
+                    path.display()
+                ))
+            })?
+            .len();
+        if length != segment.encoded_bytes || length > SEALED_SEGMENT_MAX_BYTES {
             return Err(loop_factory_error(
-                "exact checkpoint contains duplicate event-log segment identities",
+                "exact checkpoint event-log segment has another length than its reference",
             ));
         }
+        budget.reserve_identity_once(segment.object, length)?;
     }
     let mut signal_artifact_objects = BTreeMap::new();
     for identity in &manifest.signal_artifacts {
@@ -1007,7 +1043,7 @@ fn load_exact_checkpoint_set_with_boundary(
             &object_directory,
             *identity,
             &mut budget,
-            LARGE_CONTINUATION_MAX_BYTES,
+            SIGNAL_ARTIFACT_MAX_BYTES,
             boundary,
         )?;
         if signal_artifact_objects.insert(*identity, bytes).is_some() {
@@ -1023,7 +1059,7 @@ fn load_exact_checkpoint_set_with_boundary(
             &object_directory,
             *identity,
             &mut budget,
-            LARGE_CONTINUATION_MAX_BYTES,
+            SEALED_SEGMENT_MAX_BYTES,
             boundary,
         )?;
         if fault_trace_objects.insert(*identity, bytes).is_some() {
@@ -1033,10 +1069,7 @@ fn load_exact_checkpoint_set_with_boundary(
         }
     }
     let checkpoint_dag = checkpoint_dag_store(run_state_root, scenario.id());
-    for (identity, bytes) in event_log_objects
-        .iter()
-        .chain(signal_artifact_objects.iter())
-    {
+    for (identity, bytes) in &signal_artifact_objects {
         boundary()?;
         let stored = checkpoint_dag.put(bytes).map_err(|error| {
             loop_factory_error(format!("reconstruct checkpoint DAG object: {error}"))
@@ -1232,7 +1265,7 @@ fn load_exact_checkpoint_set_with_boundary(
         identity,
         configuration,
         scheduler: Arc::new(scheduler),
-        event_log_objects: Arc::new(event_log_objects),
+        event_log_segments: ProductionEventLogSegments::store(Arc::clone(&checkpoint_dag)),
         signal_artifact_objects: Arc::new(signal_artifact_objects),
         fault_trace_objects: Arc::new(fault_trace_objects),
         trigger_state,
@@ -1467,25 +1500,12 @@ fn validate_checkpoint_set(
             "exact checkpoint terminal cause disagrees with its trigger verdict",
         ));
     }
-    if checkpoint.scheduler.event_log_segment_dependencies().len()
-        != checkpoint.event_log_objects.len()
-        || checkpoint
-            .scheduler
-            .event_log_segment_dependencies()
-            .iter()
-            .any(|identity| !checkpoint.event_log_objects.contains_key(identity))
-    {
-        return Err(store_error(
-            "exact checkpoint event-log closure is incomplete or out of order",
-        ));
-    }
-    for (identity, bytes) in checkpoint.event_log_objects.iter() {
-        if ContentHash::from_bytes(bytes) != *identity {
-            return Err(store_error(
-                "exact checkpoint event-log object failed content authentication",
-            ));
-        }
-    }
+    // The scheduler continuation is the only event-log index; each sealed
+    // segment is authenticated where its bytes are read or copied.
+    checkpoint
+        .event_log_segments
+        .verify_present(&checkpoint.scheduler)
+        .map_err(|error| store_error(format!("exact checkpoint event-log closure: {error}")))?;
     for (identity, bytes) in checkpoint.signal_artifact_objects.iter() {
         if ContentHash::from_bytes(bytes) != *identity {
             return Err(store_error(
@@ -1733,14 +1753,9 @@ fn enforce_persist_limits(
             )?;
         }
     }
-    for (identity, object) in &objects.event_log_segments {
-        if identities.insert(*identity) {
-            bytes = add_checkpoint_bytes(
-                bytes,
-                u64::try_from(object.len()).map_err(|_| {
-                    store_error("event-log checkpoint object size is not representable")
-                })?,
-            )?;
+    for segment in checkpoint.scheduler.event_log_segments() {
+        if identities.insert(segment.object) {
+            bytes = add_checkpoint_bytes(bytes, segment.encoded_bytes)?;
         }
     }
     for (identity, object) in &objects.signal_artifacts {
@@ -1896,16 +1911,9 @@ fn authenticate_existing_publication_with_boundary(
             boundary,
         )?;
     }
+    // Sealed segments are never held in memory; the published files must
+    // still hash to the identities the scheduler continuation names.
     for identity in &expected.event_log_segments {
-        let bytes = objects
-            .event_log_segments
-            .get(identity)
-            .ok_or_else(|| store_error("event-log closure object disappeared"))?;
-        if hash_bytes_with_boundary(bytes, boundary)? != *identity {
-            return Err(store_error(
-                "event-log checkpoint object changed before retry",
-            ));
-        }
         validate_file_hash_with_boundary(
             &object_path(object_directory, *identity),
             *identity,
@@ -2436,10 +2444,7 @@ fn manifest_and_objects_with_boundary(
         schedule: hash_bytes_with_boundary(&schedule, boundary)?,
         frontier: checkpoint.scheduler.frontier().ticks,
         scheduler: hash_bytes_with_boundary(&scheduler, boundary)?,
-        event_log_segments: checkpoint
-            .scheduler
-            .event_log_segment_dependencies()
-            .to_vec(),
+        event_log_segments: checkpoint.scheduler.event_log_segment_dependencies(),
         signal_artifacts: checkpoint.signal_artifact_objects.keys().copied().collect(),
         fault_trace_segments: checkpoint.fault_trace_objects.keys().copied().collect(),
         trigger_state: hash_bytes_with_boundary(&trigger_state, boundary)?,
@@ -2470,7 +2475,6 @@ fn manifest_and_objects_with_boundary(
         ClosureObjects {
             schedule,
             scheduler,
-            event_log_segments: (*checkpoint.event_log_objects).clone(),
             signal_artifacts: (*checkpoint.signal_artifact_objects).clone(),
             fault_trace_segments: (*checkpoint.fault_trace_objects).clone(),
             trigger_state,

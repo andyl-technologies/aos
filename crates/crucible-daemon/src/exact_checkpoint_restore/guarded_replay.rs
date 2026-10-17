@@ -10,6 +10,7 @@ use crucible::{
     AdvanceOutcome, Configuration, Decision, Icount, SIM_TICKS_PER_INSTRUCTION, ScenarioDefForm,
     SingleSchedulerCheckpoint,
 };
+use crucible_api::ProductionEventLogSegments;
 use crucible_campaign::{CampaignHash, ConfigurationId, ScenarioDefId, SelectionOrigin};
 use crucible_protocol::SelectionReply;
 use crucible_protocol::selectable_catalog_plan::{
@@ -44,6 +45,8 @@ pub(crate) struct GuardedReplayAdmission<'a> {
     pub(crate) choices: &'a GuardedCampaignReplayChoices,
     /// Complete authenticated scheduler event prefix.
     pub(crate) scheduler: &'a SingleSchedulerCheckpoint,
+    /// Read access to the sealed event-log segments `scheduler` names.
+    pub(crate) event_log_segments: &'a ProductionEventLogSegments,
     /// Exact target QEMU process generation.
     pub(crate) process_generation: u64,
 }
@@ -134,6 +137,7 @@ where
             world,
             configuration,
             admission.scheduler,
+            admission.event_log_segments,
             admission.process_generation,
             self.executor.node(),
             snapshot.node_continuation().next_router_inbound_sequence(),

@@ -22,7 +22,8 @@ use thiserror::Error;
 
 use crate::exact_checkpoint_restore::validate_materialized_start_configuration;
 use crate::exact_checkpoint_restore::{
-    GuardedReplayAdmission, QemuGuardedReplayOracleSession, replay_quarantine_with_cause,
+    GuardedReplayAdmission, InstalledProductionAttemptCheckpoint, QemuGuardedReplayOracleSession,
+    replay_quarantine_with_cause,
 };
 use crate::executor_supervisor::SelectedExactCheckpointRoot;
 use crate::{
@@ -584,18 +585,12 @@ where
                         run_state_root,
                         &cancellation,
                         basis.resources(),
-                        installed.configuration(),
-                        installed.scheduler(),
+                        &installed,
                     ),
                     _ => Err(PausedCheckpointPromotionPreparationError::SavepointReplayMismatch),
                 }
                 .map_err(Box::new)?;
-                validate_savepoint_replay_boundary(
-                    replay,
-                    installed.configuration(),
-                    installed.scheduler(),
-                )
-                .map_err(Box::new)?;
+                validate_savepoint_replay_boundary(replay, &installed).map_err(Box::new)?;
             }
             let materialized_start = match promotion_basis.map(|basis| basis.start_mode()) {
                 Some(AttemptStartMode::CaptureMaterializedStart { .. }) => {
@@ -727,11 +722,7 @@ where
                 target.cancellation,
                 target.resources,
             )?;
-            validate_savepoint_replay_boundary(
-                replay,
-                installed.configuration(),
-                installed.scheduler(),
-            )?;
+            validate_savepoint_replay_boundary(replay, &installed)?;
         }
         AttemptStartMode::Execute => {
             let replay = replay_checkpoint_causal_boundary(
@@ -740,14 +731,9 @@ where
                 target.run_state_root,
                 target.cancellation,
                 target.resources,
-                installed.configuration(),
-                installed.scheduler(),
+                &installed,
             )?;
-            validate_savepoint_replay_boundary(
-                replay,
-                installed.configuration(),
-                installed.scheduler(),
-            )?;
+            validate_savepoint_replay_boundary(replay, &installed)?;
         }
         AttemptStartMode::SelectedSavepoint { .. } => {}
     }
@@ -846,6 +832,7 @@ where
             GuardedReplayAdmission {
                 choices: &choices,
                 scheduler: installed.scheduler(),
+                event_log_segments: installed.event_log_segments(),
                 process_generation,
             },
             installed.configuration(),
@@ -933,10 +920,23 @@ fn finish_replay_guard(
 
 fn validate_savepoint_replay_boundary(
     replay: crate::QemuSavepointReplayProof,
+    installed: &InstalledProductionAttemptCheckpoint,
+) -> Result<(), PausedCheckpointPromotionPreparationError> {
+    check_savepoint_replay_boundary(
+        replay,
+        installed.configuration(),
+        installed.scheduler(),
+        installed.event_log_segments(),
+    )
+}
+
+fn check_savepoint_replay_boundary(
+    replay: crate::QemuSavepointReplayProof,
     configuration: &Configuration,
     scheduler: &crucible::SingleSchedulerCheckpoint,
+    segments: &(impl crucible::EventLogSegmentReader + ?Sized),
 ) -> Result<(), PausedCheckpointPromotionPreparationError> {
-    if replay.matches_checkpoint(configuration, scheduler) {
+    if replay.matches_checkpoint(configuration, scheduler, segments) {
         Ok(())
     } else {
         Err(PausedCheckpointPromotionPreparationError::SavepointReplayMismatch)
@@ -949,17 +949,15 @@ fn replay_checkpoint_causal_boundary<F: ProductionPausedCheckpointReplayFactory>
     run_state_root: &Path,
     cancellation: &ExecutionCancellation,
     resources: AttemptResourceLimits,
-    configuration: &Configuration,
-    scheduler: &crucible::SingleSchedulerCheckpoint,
+    installed: &InstalledProductionAttemptCheckpoint,
 ) -> Result<crate::QemuSavepointReplayProof, PausedCheckpointPromotionPreparationError> {
-    let source = crate::QemuSavepointReplayProof::from_reached_boundary(
-        configuration,
-        scheduler.quanta(),
-        scheduler.frontier(),
-        scheduler.retained_event_log_entries(),
-    )
-    .map_err(|_| PausedCheckpointPromotionPreparationError::SavepointReplayMismatch)?;
-    if !source.matches_checkpoint(configuration, scheduler) {
+    let configuration = installed.configuration();
+    let scheduler = installed.scheduler();
+    let segments = installed.event_log_segments();
+    let source =
+        crate::QemuSavepointReplayProof::from_checkpoint(configuration, scheduler, segments)
+            .map_err(|_| PausedCheckpointPromotionPreparationError::SavepointReplayMismatch)?;
+    if !source.matches_checkpoint(configuration, scheduler, segments) {
         return Err(PausedCheckpointPromotionPreparationError::SavepointReplayMismatch);
     }
     let target =

@@ -83,6 +83,8 @@ pub use checkpoint_store::{
     ProductionVmExactNodeRestoreAdmissions, decode_authenticated_production_exact_checkpoint,
     open_exact_checkpoint_closure, retire_production_exact_checkpoint_catalog,
 };
+mod checkpoint_event_log;
+pub use checkpoint_event_log::ProductionEventLogSegments;
 mod checkpoint_dependencies;
 pub use checkpoint_dependencies::{
     collect_signal_artifact_objects, collect_signal_artifact_objects_bounded,
@@ -679,7 +681,8 @@ struct ProductionVmExactCheckpointSet {
     identity: ContentHash,
     configuration: Configuration,
     scheduler: Arc<SingleSchedulerCheckpoint>,
-    event_log_objects: Arc<BTreeMap<ContentHash, Vec<u8>>>,
+    /// Source of the sealed event-log segments `scheduler` names.
+    event_log_segments: ProductionEventLogSegments,
     signal_artifact_objects: Arc<BTreeMap<ContentHash, Vec<u8>>>,
     /// Sealed resolved-effect trace segments the fault continuation names,
     /// keyed by plain content hash like every other closure object.

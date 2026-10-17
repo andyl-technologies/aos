@@ -549,30 +549,29 @@ impl FindingExactCheckpointAuthenticator for ExactFindingCheckpointAuthenticator
             || ConfigurationId::from_hash(CampaignHash::from_bytes(
                 decoded.configuration().id().bytes,
             )) != configuration
-            || scheduler.retained_event_log_base_events() != 0
-            || scheduler.retained_event_log_entries().len() as u64 != checkpoint_events
+            || scheduler.event_log_base_events() != 0
         {
             return Err(FindingExactCheckpointAuthenticationError::AuthenticationFailed);
         }
 
-        // The checkpoint's retained log must equal the leaf's over their
-        // shared prefix; only the segments spanning it are read.
-        let retained = scheduler
-            .retained_event_log_entries()
-            .get(..shared_len)
-            .ok_or(FindingExactCheckpointAuthenticationError::AuthenticationFailed)?;
-        let mut expected = retained.iter();
-        leaf.try_for_each_entry_in(&segments, 0..shared_events, |entry| {
-            if expected.next() == Some(entry) {
+        // The checkpoint's log must equal the leaf's over their shared
+        // prefix. Both sides stream in lockstep, so each holds at most one
+        // decoded segment, and only the segments spanning the prefix are read.
+        let mut expected = scheduler
+            .event_log_entries(decoded.event_log_segments())
+            .take(shared_len);
+        let mut compared = 0_usize;
+        leaf.try_for_each_entry_in(&segments, 0..shared_events, |entry| match expected.next() {
+            Some(Ok(checkpoint_entry)) if checkpoint_entry == *entry => {
+                compared += 1;
                 Ok(())
-            } else {
-                Err(crate::CrucibleMeasurementError::EvidenceBindingMismatch {
-                    binding: "checkpoint-event-prefix",
-                })
             }
+            _ => Err(crate::CrucibleMeasurementError::EvidenceBindingMismatch {
+                binding: "checkpoint-event-prefix",
+            }),
         })
         .map_err(|_| FindingExactCheckpointAuthenticationError::AuthenticationFailed)?;
-        if expected.next().is_some() {
+        if compared != shared_len {
             return Err(FindingExactCheckpointAuthenticationError::AuthenticationFailed);
         }
         Ok(())

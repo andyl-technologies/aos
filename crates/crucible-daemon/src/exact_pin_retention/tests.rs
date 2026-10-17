@@ -295,7 +295,8 @@ fn selection_authenticates_pin_and_checkpoint_and_survives_restart() {
             &bytes,
         )
         .to_hex(),
-        // The current closure includes the v7 scheduler continuation, its
+        // The current closure includes the v9 scheduler continuation, which
+        // names sealed event-log segments and carries only the open tail, its
         // World-bound I/O ledger, the v3 host-assertion continuation, and the
         // genesis observation choice-source and direct-selection index anchors,
         // the v10 closure's resolved-effect trace-segment catalog, a version 2
@@ -304,7 +305,7 @@ fn selection_authenticates_pin_and_checkpoint_and_survives_restart() {
         // version 5 schedule transport inside its configuration payload.
         // Authenticate the pin and closure above before pinning these
         // recanonicalized selection bytes.
-        "a72f80f4515228906488ed007392f9b94e0d1c8ea86e1858cb83d64036e11044"
+        "97c6395e69396e78dd0024c2946deca5db9970fee718cac2d75c6fb9cf71e4a9"
     );
     drop(store);
 

@@ -2031,16 +2031,16 @@ impl ProductionVmLifecycleLoop {
         // Own every scheduler/controller input before the first QMP save can
         // pause a running node. Immutable object and manifest preparation is
         // fallible but remains rollback-safe under the capture owners below.
-        let event_log_objects = Arc::new(
-            self.inner
-                .loop_impl()
-                .event_log_dependency_objects()
-                .map_err(|error| SchedulerError::BoundaryViolation {
-                    message: format!("capture exact event-log closure: {error}"),
-                })?
-                .into_iter()
-                .collect(),
-        );
+        // Sealed segments are captured by reference; only their presence in
+        // the run's checkpoint object store is checked here.
+        self.inner
+            .loop_impl()
+            .verify_event_log_segments()
+            .map_err(|error| SchedulerError::BoundaryViolation {
+                message: format!("capture exact event-log closure: {error}"),
+            })?;
+        let event_log_segments =
+            ProductionEventLogSegments::store(self.inner.loop_impl().event_log_segment_store());
         let scheduler = self.inner.loop_impl().checkpoint().map_err(|error| {
             SchedulerError::BoundaryViolation {
                 message: format!("capture exact scheduler continuation: {error}"),
@@ -2457,7 +2457,7 @@ impl ProductionVmLifecycleLoop {
                 identity: ContentHash::default(),
                 configuration: configuration.clone(),
                 scheduler: Arc::new(scheduler),
-                event_log_objects,
+                event_log_segments,
                 signal_artifact_objects,
                 fault_trace_objects,
                 trigger_state,

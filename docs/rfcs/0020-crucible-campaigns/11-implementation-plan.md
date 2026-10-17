@@ -380,7 +380,9 @@ Primary crates: `crucible`, `crucible-guest`, `crucible-qemu-plugin`, and
   bounded fold of §15.4: declaration-catalog folds, a tail held until every
   consumer advances, deadline evaluation from the interval snapshot, and
   scheduler checkpoints carrying fold state and chain position instead of
-  retained entries.
+  retained entries. Scheduler continuations already carry sealed-segment
+  references and the open tail instead of entries (T-CAM-4.16); restore still
+  refolds the complete condition prefix from those segments.
 - [ ] **T-CAM-3.8** Convert named host predicates to pure accumulators with
   bounded canonical state owned and checkpointed by the assertion evaluator.
 - [ ] **T-CAM-3.9** Compile console patterns at validation into bounded
@@ -1690,9 +1692,10 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   Executor and observer logs seal into per-attempt directories, and
   prepared-result journals own copies of the segments their results
   reference. Checkpoint- and fork-offset seals and chain-position resume
-  remain open. Resolved-effect traces seal into trace segments by size only,
-  checkpoints carry trace positions, and exact closures retain the referenced
-  trace segments (CCOMP-31).
+  remain open; scheduler continuations reference the scheduler log's sealed
+  segments (T-CAM-4.16). Resolved-effect traces seal into trace segments by
+  size only, checkpoints carry trace positions, and exact closures retain the
+  referenced trace segments (CCOMP-31).
 - [ ] **T-CAM-4.12** Convert finding replay captures, CLI explanation,
   objective and observation-stop verification, remote resume, hot-fork
   materialization, and the campaign trace protocol to segment-by-segment
@@ -1725,6 +1728,13 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   retain them with prepared results, and authenticate and stream them in
   every decoder and CLI findings ledger (CMEAS-27). CLI live search and fuzz
   paths and the CLI report projection still hold resident logs.
+- [ ] **T-CAM-4.16** Seal the single scheduler's event log into
+  attempt-format segments, carry segment references and the open tail in
+  single-scheduler continuation version 9, retain the referenced segments as
+  exact-closure objects charged by referenced length, and stream them in
+  restore, hot-fork admission, replay proofs, guarded replay planning, and
+  finding checkpoint authentication (CCOMP-33, CMEAS-28). The live log and its
+  condition prefix still hold complete histories in memory until T-CAM-3.7.
 
 **Gates:** `gate:branch-point-model`, `gate:lazy-frontier`,
 `gate:attempt-idempotence`, `gate:campaign-replay`,

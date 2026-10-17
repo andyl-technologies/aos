@@ -39,6 +39,8 @@ mod ordering;
 mod production_backend;
 #[path = "tests/run_admission.rs"]
 mod run_admission;
+#[path = "tests/sealed_event_log.rs"]
+mod sealed_event_log;
 
 #[test]
 fn pending_network_boundary_release_settles_before_a_far_quantum() {
@@ -1320,15 +1322,22 @@ fn single_scheduler_checkpoint_round_trips_complete_device_and_event_state() {
     let checkpoint = scheduler
         .checkpoint()
         .unwrap_or_else(|error| panic!("scheduler checkpoint should capture: {error}"));
-    assert_eq!(checkpoint.retained_event_log_base_events(), 0);
-    assert_eq!(checkpoint.retained_event_log_entries(), appended.entries);
+    let segments = scheduler.event_log_segment_store();
+    let referenced = |checkpoint: &SingleSchedulerCheckpoint| {
+        checkpoint
+            .event_log_entries(segments.as_ref())
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap_or_else(|error| panic!("checkpoint log should read back: {error}"))
+    };
+    assert_eq!(checkpoint.event_log_base_events(), 0);
+    assert_eq!(referenced(&checkpoint), appended.entries);
     let bytes = checkpoint
         .canonical_bytes()
         .unwrap_or_else(|error| panic!("scheduler checkpoint should encode: {error}"));
     let decoded = SingleSchedulerCheckpoint::from_canonical_bytes(&bytes)
         .unwrap_or_else(|error| panic!("scheduler checkpoint should decode: {error}"));
-    assert_eq!(decoded.retained_event_log_base_events(), 0);
-    assert_eq!(decoded.retained_event_log_entries(), appended.entries);
+    assert_eq!(decoded.event_log_base_events(), 0);
+    assert_eq!(referenced(&decoded), appended.entries);
 
     let mut restored = test_scheduler(vec![node], vec![pending]);
     restored = restored.with_device_sub_node(disk_with_reads("a", "disk-a", &[]));

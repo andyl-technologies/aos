@@ -290,9 +290,11 @@ where
         let continuation = source.continuation();
         let actual_configuration = continuation.configuration().id();
         let prepared_boundary_matches = boundary.configuration() == continuation.configuration()
-            && boundary
-                .proof()
-                .matches_checkpoint(continuation.configuration(), continuation.scheduler())
+            && boundary.proof().matches_checkpoint(
+                continuation.configuration(),
+                continuation.scheduler(),
+                continuation.event_log_segments(),
+            )
             && production_boundary.matches(continuation);
         if actual_configuration != requested_configuration.id() || !prepared_boundary_matches {
             let retirement = source.retire().err().map(Box::new);

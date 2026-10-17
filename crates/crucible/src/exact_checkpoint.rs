@@ -341,11 +341,23 @@ struct RepositoryObjectBinding {
 }
 
 impl ExactCheckpointClosureBinding {
+    /// Returns the ordered event-log segment identities the closure names.
+    ///
+    /// [`Self::visit_semantic_objects`] does not deliver these segments: a
+    /// consumer of the scheduler's log reads and authenticates them one at a
+    /// time through the closure's object opener.
+    #[must_use]
+    pub fn event_log_segments(&self) -> &[ContentHash] {
+        &self.closure.event_log_segments
+    }
+
     /// Consumes and visits every authenticated semantic object once.
     ///
-    /// Each object is opened, bounded, hashed, delivered, and closed before
-    /// the next object is opened. Shared object identities count once against
-    /// `byte_limit` while each semantic role is still delivered.
+    /// Every object is opened, bounded, and hashed before any is delivered.
+    /// Shared object identities count once against `byte_limit` while each
+    /// semantic role is still delivered. Event-log segments also count
+    /// against `byte_limit` but are not opened or delivered; see
+    /// [`Self::event_log_segments`].
     /// The visitor returns the decoded semantic identity for the fault
     /// continuation and `None` for every other role. The resulting target
     /// claims retain that identity for QMP RAM provenance authentication.

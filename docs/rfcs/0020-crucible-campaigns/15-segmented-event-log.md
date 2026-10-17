@@ -514,15 +514,62 @@ reproduction's segment exchanges through a content-addressed segment list.
   record before decoding it, and no service response may carry more than one
   segment.
 
-## 15.12 Compatibility
+## 15.12 Scheduler continuation log
+
+The single scheduler's own event log, which a scheduler continuation formerly
+embedded entry by entry, now uses the attempt segment format of
+[§15.2](#152-attempt-segments). The log keeps its per-append binary segments,
+which chain into its offset ([OBS-17]), and also seals its entries into
+attempt-format segments under the attempt writer's rule: before an entry
+would make the open tail's encoding exceed 8 MiB, and for no other reason.
+Sealed segments are stored in the scheduler's segment store under their
+content hash, so seal points depend only on the entry sequence and a
+restored log seals where the uninterrupted log would.
+
+```text
+continuation event log (single-scheduler continuation v9):
+  prefix, appended_segment, bytes, events   // chain position (offset)
+  base_events                               // first sequence covered
+  segments: [{ object, first_sequence, entry_count, encoded_bytes }, ...]
+  tail: [SchedulerEventLogEntry, ...]       // dense to events, <= 8 MiB
+  last_append_entries                       // entries of the latest append
+```
+
+Restore streams the segments in order to rebuild the condition prefix, and
+recomputes the latest append's per-append segment from the tail, which must
+derive the offset's appended segment. An exact checkpoint closure retains each
+referenced segment as a closure object, charged by its referenced length, and
+a hot-fork continuation names the segments in its run's store. Readers that
+need entries, such as replay proofs, guarded replay planning, and finding
+checkpoint authentication, stream them one segment at a time. The condition
+prefix still retains its complete history until the bounded fold of
+[§15.4](#154-bounded-evaluation-state) replaces it ([CMEAS-15], [CMEAS-16]).
+
+- **[CCOMP-33]** The single scheduler's event log MUST seal its entries into
+  attempt-format segments under the seal rule of [CCOMP-26]. A
+  single-scheduler continuation MUST carry the log's chain position,
+  references to its sealed segments, the open tail, and the latest append's
+  entry count, and never a sealed entry. Restore MUST authenticate each
+  segment against its reference before folding it, and MUST authenticate the
+  latest append against the chain position.
+- **[CMEAS-28]** Exact-checkpoint capture, publication, load, restore, and
+  hot-fork admission MUST NOT hold a continuation's sealed segments together.
+  They MUST check presence, or copy, authenticate, and decode one segment at a
+  time, and an exact closure MUST charge each segment against its byte bounds
+  by its referenced length rather than by reading it.
+
+## 15.13 Compatibility
 
 Version 2 measurement replay evidence remains readable for retained findings
 whose logs fit its bound; new attempts publish only version 3. The attempt
 evidence chain and the console automaton checkpoint encoding are new schemas.
 Named host predicates change from history-reading functions to accumulators;
 this is a source-level breaking change for host predicate implementations.
-Single-scheduler continuation version 8 replaces version 7 and keeps the
-imported I/O ledger in its pruned form; version 7 continuations are refused.
+Single-scheduler continuation version 9 replaces version 8: it keeps the
+imported I/O ledger in its pruned form, names the event log's sealed segments,
+and carries only the open tail; version 8 continuations are refused. The
+production exact closure stays at version 10, because sealed segments occupy
+the closure's existing event-log object role.
 The resolved-effect trace manifest replaces the version 3 whole-trace object
 without a compatibility reader; version 3 traces, fault runtime checkpoints
 before version 7, and observations before version 16 are refused. Schedule

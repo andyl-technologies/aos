@@ -2307,15 +2307,10 @@ where
         .map_err(|error| {
             QemuAttemptProductionVmLifecycleError::CheckpointRestore(Box::new(error))
         })?;
-        let scheduler = boundary.scheduler();
-        if scheduler.retained_event_log_base_events() != 0 {
-            return Err(QemuAttemptProductionVmLifecycleError::InvalidResumeBoundary);
-        }
-        let proof = QemuSavepointReplayProof::from_reached_boundary(
+        let proof = QemuSavepointReplayProof::from_checkpoint(
             boundary.configuration(),
-            scheduler.quanta(),
-            scheduler.frontier(),
-            scheduler.retained_event_log_entries(),
+            boundary.scheduler(),
+            boundary.event_log_segments(),
         )
         .map_err(|_| QemuAttemptProductionVmLifecycleError::InvalidResumeBoundary)?;
         let selected = crate::qemu_campaign_driver::QemuSelectedResumeBoundary::new(
