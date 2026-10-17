@@ -74,7 +74,7 @@ impl Parent {
                 )?);
             }
             same_inode(expected, &current)?;
-            check(owner, &current, true)?;
+            check(owner, &current, InodePhase::Directory)?;
         }
         same_inode(&self.file, &current)
     }
@@ -96,6 +96,8 @@ pub(super) struct PendingFile {
     /// Actual independent read-only open description retained before writer close.
     pub(super) readonly: Option<File>,
     published: bool,
+    closed: Option<FileStamp>,
+    canonical_stamp: Option<FileStamp>,
 }
 
 /// Retains or creates only the generated configured shared directory chain.
@@ -122,7 +124,7 @@ pub(super) fn parent(
         retained: Some(directory.try_clone()?),
         created: false,
     });
-    check(owner, &directory, true)?;
+    check(owner, &directory, InodePhase::Directory)?;
     let mut path = Vec::new();
     let mut chain = vec![directory.try_clone()?];
     for part in parts {
@@ -157,7 +159,7 @@ pub(super) fn parent(
             // Reapply only the fixed shared directory mode removed by umask.
             fs::fchmod(child, Mode::from_raw_mode(0o2770))?;
         }
-        check(owner, child, true)?;
+        check(owner, child, InodePhase::Directory)?;
         child.sync_all()?;
         directory.sync_all()?;
         directory = child.try_clone()?;
@@ -187,6 +189,8 @@ pub(super) fn pending(parent: Parent, canonical: String) -> io::Result<PendingFi
         writer: None,
         readonly: None,
         published: false,
+        closed: None,
+        canonical_stamp: None,
     })
 }
 
@@ -221,12 +225,15 @@ pub(super) fn write(owner: &Custody, pending: &mut PendingFile, bytes: &[u8]) ->
         .writer
         .as_mut()
         .ok_or_else(|| io::Error::other("admission writer absent"))?;
-    check(owner, writer, false)?;
+    check(owner, writer, InodePhase::Writer)?;
     writer.write_all(bytes)?;
+    check(owner, writer, InodePhase::Writer)?;
     // Match existing index publication: owner write, shared content group read,
     // no other access. This does not substitute permission bits for verification.
     fs::fchmod(&*writer, Mode::from_raw_mode(0o640))?;
     writer.sync_all()?;
+    check(owner, writer, InodePhase::Closed)?;
+    let closing = FileStamp::capture(writer)?;
     let reader = open_regular_at(&pending.parent.file, &pending.temporary)?;
     same_inode(writer, &reader)?;
     pending.readonly = Some(reader);
@@ -244,8 +251,12 @@ pub(super) fn write(owner: &Custody, pending: &mut PendingFile, bytes: &[u8]) ->
         .readonly
         .as_ref()
         .ok_or_else(|| io::Error::other("admission reader absent"))?;
-    check(owner, reader, false)?;
-    verify_bytes(reader, bytes)
+    check(owner, reader, InodePhase::Closed)?;
+    closing.check(reader)?;
+    verify_custodied_bytes(owner, reader, bytes)?;
+    closing.check(reader)?;
+    pending.closed = Some(closing);
+    Ok(())
 }
 
 /// Publishes the exact retained inode without replacing any canonical member.
@@ -258,7 +269,13 @@ pub(super) fn publish(owner: &Custody, pending: &mut PendingFile, bytes: &[u8]) 
         .readonly
         .as_ref()
         .ok_or_else(|| io::Error::other("admission reader absent"))?;
-    verify_bytes(reader, bytes)?;
+    let closed = pending
+        .closed
+        .as_ref()
+        .ok_or_else(|| io::Error::other("closed admission stamp absent"))?;
+    closed.check(reader)?;
+    verify_custodied_bytes(owner, reader, bytes)?;
+    closed.check(reader)?;
     let named = open_regular_at(&pending.parent.file, &pending.temporary)?;
     same_inode(reader, &named)?;
     fs::renameat_with(
@@ -270,6 +287,13 @@ pub(super) fn publish(owner: &Custody, pending: &mut PendingFile, bytes: &[u8]) 
     )?;
     pending.published = true;
     pending.parent.file.sync_all()?;
+    let renamed = FileStamp::capture(reader)?;
+    if !closed.same_content_metadata(&renamed) {
+        return Err(io::Error::other("admission metadata changed during rename"));
+    }
+    // Rename may update ctime. Retain that specific observed transition only
+    // after checking every other field against the actual post-close stamp.
+    pending.canonical_stamp = Some(renamed);
     check_current(owner, pending, bytes)
 }
 
@@ -294,15 +318,25 @@ pub(super) fn check_current(
         .ok_or_else(|| io::Error::other("admission reader absent"))?;
     let named = open_regular_at(&pending.parent.file, &pending.canonical)?;
     same_inode(reader, &named)?;
-    check(owner, reader, false)?;
-    verify_bytes(reader, bytes)
+    let stamp = pending
+        .canonical_stamp
+        .as_ref()
+        .ok_or_else(|| io::Error::other("canonical admission stamp absent"))?;
+    stamp.check(reader)?;
+    verify_custodied_bytes(owner, reader, bytes)?;
+    let closing_name = open_regular_at(&pending.parent.file, &pending.canonical)?;
+    same_inode(reader, &closing_name)?;
+    stamp.check(&closing_name)?;
+    pending.parent.recheck(owner)?;
+    stamp.check(reader)
 }
 
 /// Checks actual configured UID, GID, project, device and inode class.
 ///
 /// # Errors
 /// Refuses unavailable, changed or invalid native inputs and failed completion.
-pub(super) fn check(owner: &Custody, file: &File, directory: bool) -> io::Result<()> {
+fn check(owner: &Custody, file: &File, phase: InodePhase) -> io::Result<()> {
+    let directory = matches!(phase, InodePhase::Directory);
     let value = file.metadata()?;
     let config = &owner.preparation.config;
     let project = NativeProject::inspect(file)?;
@@ -319,7 +353,7 @@ pub(super) fn check(owner: &Custody, file: &File, directory: bool) -> io::Result
         || project.device != value.dev()
         || project.project_id != config.project_id
         || (directory && (!project.inherit || value.mode() & 0o7777 != 0o2770))
-        || (!directory && (value.mode() & 0o002 != 0 || value.nlink() != 1))
+        || (!directory && (value.mode() & 0o7777 != phase.mode() || value.nlink() != 1))
     {
         return Err(io::Error::other(
             "admission inode differs from actual configured custody",
@@ -328,25 +362,104 @@ pub(super) fn check(owner: &Custody, file: &File, directory: bool) -> io::Result
     Ok(())
 }
 
+/// Distinguishes exact writable staging custody from closed shared custody.
+#[derive(Clone, Copy)]
+enum InodePhase {
+    Directory,
+    Writer,
+    Closed,
+}
+
+impl InodePhase {
+    fn mode(self) -> u32 {
+        match self {
+            Self::Directory => 0o2770,
+            Self::Writer => 0o600,
+            Self::Closed => 0o640,
+        }
+    }
+}
+
+/// Retains content and custody fields; atime alone may change during reads.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct MetadataStamp {
+    device: u64,
+    inode: u64,
+    length: u64,
+    uid: u32,
+    gid: u32,
+    mode: u32,
+    links: u64,
+    modified: (i64, i64),
+    changed: (i64, i64),
+}
+
+impl From<&std::fs::Metadata> for MetadataStamp {
+    fn from(value: &std::fs::Metadata) -> Self {
+        Self {
+            device: value.dev(),
+            inode: value.ino(),
+            length: value.len(),
+            uid: value.uid(),
+            gid: value.gid(),
+            mode: value.mode(),
+            links: value.nlink(),
+            modified: (value.mtime(), value.mtime_nsec()),
+            changed: (value.ctime(), value.ctime_nsec()),
+        }
+    }
+}
+
+/// Retains actual kernel project assignment with the observed file incarnation.
+struct FileStamp {
+    metadata: MetadataStamp,
+    project: NativeProject,
+}
+
+impl FileStamp {
+    fn capture(file: &File) -> io::Result<Self> {
+        let before = MetadataStamp::from(&file.metadata()?);
+        let project = NativeProject::inspect(file)?;
+        let after = MetadataStamp::from(&file.metadata()?);
+        if before != after || project.device != before.device || project.inode != before.inode {
+            return Err(io::Error::other(
+                "admission custody changed during observation",
+            ));
+        }
+        Ok(Self {
+            metadata: before,
+            project,
+        })
+    }
+
+    fn check(&self, file: &File) -> io::Result<()> {
+        let current = Self::capture(file)?;
+        if self.metadata != current.metadata || self.project != current.project {
+            return Err(io::Error::other("retained admission file metadata changed"));
+        }
+        Ok(())
+    }
+
+    fn same_content_metadata(&self, other: &Self) -> bool {
+        let mut expected = self.metadata.clone();
+        expected.changed = other.metadata.changed;
+        expected == other.metadata && self.project == other.project
+    }
+}
+
+fn verify_custodied_bytes(owner: &Custody, file: &File, bytes: &[u8]) -> io::Result<()> {
+    check(owner, file, InodePhase::Closed)?;
+    let before = FileStamp::capture(file)?;
+    verify_bytes(file, bytes)?;
+    check(owner, file, InodePhase::Closed)?;
+    before.check(file)
+}
+
 fn same_inode(expected: &File, actual: &File) -> io::Result<()> {
     let left = expected.metadata()?;
     let right = actual.metadata()?;
-    if (
-        left.dev(),
-        left.ino(),
-        left.len(),
-        left.uid(),
-        left.gid(),
-        left.mode(),
-    ) != (
-        right.dev(),
-        right.ino(),
-        right.len(),
-        right.uid(),
-        right.gid(),
-        right.mode(),
-    ) {
-        return Err(io::Error::other("admission inode replaced"));
+    if MetadataStamp::from(&left) != MetadataStamp::from(&right) {
+        return Err(io::Error::other("admission inode replaced or changed"));
     }
     Ok(())
 }
@@ -374,23 +487,7 @@ pub(super) fn verify_bytes(file: &File, bytes: &[u8]) -> io::Result<()> {
         }
     }
     let after = file.metadata()?;
-    if (
-        before.dev(),
-        before.ino(),
-        before.len(),
-        before.mtime(),
-        before.mtime_nsec(),
-        before.ctime(),
-        before.ctime_nsec(),
-    ) != (
-        after.dev(),
-        after.ino(),
-        after.len(),
-        after.mtime(),
-        after.mtime_nsec(),
-        after.ctime(),
-        after.ctime_nsec(),
-    ) {
+    if MetadataStamp::from(&before) != MetadataStamp::from(&after) {
         return Err(io::Error::other("admission inode changed during read"));
     }
     Ok(())
@@ -422,6 +519,22 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         file.write_all(b"admission bytes").unwrap();
         file.seek(SeekFrom::Start(4)).unwrap();
+
+        // These are observations of a real regular inode, not project or
+        // admission authority. Exact phase modes and retained stamps reject
+        // later permission changes even when bytes and length are unchanged.
+        fs::fchmod(&file, Mode::from_raw_mode(0o600)).unwrap();
+        let writer = MetadataStamp::from(&file.metadata().unwrap());
+        assert_eq!(writer.mode & 0o7777, InodePhase::Writer.mode());
+        fs::fchmod(&file, Mode::from_raw_mode(0o640)).unwrap();
+        let closed = MetadataStamp::from(&file.metadata().unwrap());
+        assert_eq!(closed.mode & 0o7777, InodePhase::Closed.mode());
+        assert_ne!(writer, closed);
+        fs::fchmod(&file, Mode::from_raw_mode(0o644)).unwrap();
+        let changed = MetadataStamp::from(&file.metadata().unwrap());
+        assert_ne!(changed.mode & 0o7777, InodePhase::Closed.mode());
+        assert_ne!(closed, changed);
+        fs::fchmod(&file, Mode::from_raw_mode(0o640)).unwrap();
 
         verify_bytes(&file, b"admission bytes").unwrap();
         assert_eq!(file.stream_position().unwrap(), 4);

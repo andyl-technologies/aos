@@ -140,6 +140,25 @@ impl NativeOwnerExecutor {
         Ok(job)
     }
 
+    /// Releases rejected input only after proving that no physical work began.
+    ///
+    /// # Errors
+    /// Refuses another worker or poisoned custody; uncertain resources remain.
+    pub(in crate::host_cache::owner) fn reclaim_rejected_admission(
+        &mut self,
+        job: &Arc<Mutex<super::super::admission::AdmissionJob>>,
+    ) -> io::Result<()> {
+        self.check_physical_worker()?;
+        let effect_free = job
+            .lock()
+            .map_err(|_| io::Error::other("admission job poisoned"))?
+            .is_effect_free();
+        if effect_free {
+            super::super::admission::remove_same_slot(&mut self.admission_jobs, job);
+        }
+        Ok(())
+    }
+
     /// Borrows source custody admitted by this exact physical owner only.
     pub(in crate::host_cache::owner) fn admission_jobs(
         &self,

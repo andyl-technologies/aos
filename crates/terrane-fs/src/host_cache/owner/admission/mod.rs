@@ -9,6 +9,7 @@ mod backing;
 mod chunk;
 mod error;
 mod io;
+mod memory;
 mod metadata;
 mod reconcile;
 mod state;
@@ -43,13 +44,7 @@ impl AdmissionBounds {
     pub(in crate::host_cache::owner) fn new(
         config: &NativeCacheOwnerConfig,
     ) -> std_io::Result<Self> {
-        config
-            .state
-            .records
-            .checked_add(config.queued_commands)
-            .and_then(|jobs| jobs.checked_add(1))
-            .and_then(|jobs| jobs.checked_mul(config.reads.max_allocation_bytes))
-            .ok_or_else(|| std_io::Error::other("queued admission memory budget overflow"))?;
+        memory::check(config)?;
         Ok(Self {
             bytes: config.reads.max_allocation_bytes,
         })
@@ -245,7 +240,13 @@ pub(in crate::host_cache::owner) async fn chunk(
         encoded: Arc::new(encoded),
     })?;
     let mut failure = FailureGuard::new(&custody, &job)?;
-    let outcome = chunk::run(executor, &custody, &job).await?;
+    let outcome = match chunk::run(executor, &custody, &job).await {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            executor.reclaim_rejected_admission(&job)?;
+            return Err(error);
+        }
+    };
     context.check_current().map_err(std_io::Error::other)?;
     let (future_hold, directory_allocated) = {
         let actual = backing::lock(&job)?;
@@ -281,7 +282,13 @@ pub(in crate::host_cache::owner) async fn metadata(
         index: Arc::new(index),
     })?;
     let mut failure = FailureGuard::new(&custody, &job)?;
-    let outcome = metadata::run(&custody, &job).await?;
+    let outcome = match metadata::run(&custody, &job).await {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            executor.reclaim_rejected_admission(&job)?;
+            return Err(error);
+        }
+    };
     context.check_current().map_err(std_io::Error::other)?;
     let (future_hold, directory_allocated) = {
         let actual = backing::lock(&job)?;
@@ -296,6 +303,16 @@ pub(in crate::host_cache::owner) async fn metadata(
         future_hold,
         directory_allocated,
     })
+}
+
+/// Removes only pointer-identical slots after the owner proves no effects began.
+///
+/// This container operation itself grants no native or cleanup authority.
+pub(in crate::host_cache::owner) fn remove_same_slot<T>(
+    registry: &mut Vec<Arc<T>>,
+    rejected: &Arc<T>,
+) {
+    registry.retain(|entry| !Arc::ptr_eq(entry, rejected));
 }
 
 /// Invalidates abandoned physical work without taking a state or client mutex.
@@ -339,6 +356,32 @@ impl Drop for FailureGuard {
 #[cfg(test)]
 mod tests {
     use super::AdmissionBounds;
+
+    #[test]
+    fn rejected_inputs_release_exact_slots_before_later_valid_input() {
+        use std::sync::Arc;
+        use terrane_core::identity::{IdentityKind, TERRANE_V1};
+
+        let expected = TERRANE_V1.calculate(IdentityKind::Chunk, b"valid").unwrap();
+        let mut registry = Vec::new();
+        let retained = Arc::new(b"retained".to_vec());
+        registry.push(Arc::clone(&retained));
+        for _ in 0..64 {
+            let rejected = Arc::new(b"invalid".to_vec());
+            registry.push(Arc::clone(&rejected));
+            assert!(TERRANE_V1.verify(&expected, &rejected).is_err());
+
+            // Exercises the exact registry operation after pure verification
+            // rejection, without manufacturing any native custody receipt.
+            super::remove_same_slot(&mut registry, &rejected);
+            assert_eq!(registry.len(), 1);
+            assert!(Arc::ptr_eq(&registry[0], &retained));
+        }
+        let valid = Arc::new(b"valid".to_vec());
+        TERRANE_V1.verify(&expected, &valid).unwrap();
+        registry.push(valid);
+        assert_eq!(registry.len(), 2);
+    }
 
     #[test]
     fn untrusted_pair_input_is_bounded_with_checked_addition() {

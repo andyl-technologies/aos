@@ -8,7 +8,6 @@ use super::{
 };
 use std::{
     io,
-    os::unix::fs::FileExt,
     sync::{Arc, Mutex},
 };
 use terrane::store::ChunkPosition;
@@ -149,14 +148,12 @@ fn dictionary(
             .first()
             .ok_or_else(|| io::Error::other("admitted dictionary member absent"))?;
         native::check_current(owner, member, encoded)?;
-        let file = member
-            .readonly
-            .as_ref()
-            .ok_or_else(|| io::Error::other("admitted dictionary descriptor absent"))?;
-        let mut actual = vec![0; encoded.len()];
-        file.read_exact_at(&mut actual, 0)?;
+        // The exact registered bytes were just compared with the positioned
+        // canonical FD. Decode that immutable Arc payload rather than making
+        // another encoded copy; recheck the same FD again before returning.
+
         if matches!(
-            terrane_core::codec::parse_envelope(&actual)
+            terrane_core::codec::parse_envelope(encoded)
                 .map_err(io::Error::other)?
                 .codec,
             Codec::ZstdDictionary(_)
@@ -176,7 +173,7 @@ fn dictionary(
             ));
         }
         let verified = terrane::codec::decode_verified(
-            &actual,
+            encoded,
             length,
             owner.preparation.config.location.chunk_profile(),
             true,
