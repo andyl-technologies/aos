@@ -3,7 +3,8 @@
 //! The live context borrows the genuine physical executor for its entire life.
 //! It owns the original opaque Drain context, never a replacement epoch. Its
 //! distinct receipt cannot satisfy ordinary retention/currentness or authorize
-//! Resume. No existing recovery dispatch enters this incomplete manifest phase.
+//! Resume. The physical owner enters this phase for supported manifest-only
+//! recovery; exhaustive final reconciliation remains required for completion.
 
 use super::{executor::NativeOwnerExecutor, *};
 use crate::publisher_local::client::PublisherRecoveryContext;
@@ -80,8 +81,9 @@ pub(crate) struct LiveManifestRecoveryContext<'executor> {
 impl NativeOwnerExecutor {
     /// Borrows this executor for the original active, durably reserved phase.
     ///
-    /// This is not wired into dispatch: shared metadata and downstream manifest
-    /// adoption still require their genuine reconciliation implementations.
+    /// The physical owner enters this after the actual bootstrap write. Native
+    /// adoption and independent inspection retain resources before final shared
+    /// namespace, policy and quota reconciliation may complete recovery.
     ///
     /// # Errors
     /// Refuses another worker, a handoff, stale original barrier, absent exact

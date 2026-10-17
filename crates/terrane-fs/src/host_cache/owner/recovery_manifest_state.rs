@@ -115,6 +115,7 @@ pub(super) fn require_same(actual: &CacheState, expected: &CacheState) -> io::Re
 fn token(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
+
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
