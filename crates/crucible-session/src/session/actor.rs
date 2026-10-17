@@ -1,6 +1,7 @@
 //! Asynchronous session actor, mailbox scheduling, and live state mirrors.
 
 use super::*;
+use crate::session_engine::OwnedQuantumLoop;
 use std::time::Duration;
 
 #[path = "actor/terminal.rs"]
@@ -371,7 +372,7 @@ pub struct BreakpointFiring {
 /// `SessionActor` owns the [`Engine`], polls the command mailbox at state
 /// boundaries, drives at most one scheduler quantum per running-loop iteration,
 /// and yields after each applied command or scheduler quantum.
-pub struct SessionActor<L> {
+pub struct SessionActor<L: QuantumLoop> {
     pub(super) engine: Engine<L>,
     pub(super) mailbox: mpsc::Receiver<SessionCommand>,
     pub(super) live: Arc<LiveSnapshot>,
@@ -393,7 +394,7 @@ pub struct SessionActor<L> {
     pub(super) gdb_run_control_stop: Option<Vec<u8>>,
 }
 
-impl<L> SessionActor<L> {
+impl<L: QuantumLoop> SessionActor<L> {
     /// Creates a session actor from an engine and command mailbox.
     #[must_use]
     pub fn new(engine: Engine<L>, mailbox: mpsc::Receiver<SessionCommand>) -> Self {
@@ -993,13 +994,16 @@ where
     }
 
     async fn poll_gdb_run_control(&mut self) -> Result<bool, SessionError> {
-        let Some(packet) = self.engine.quantum_loop.poll_gdb_run_control()? else {
+        let Some(packet) = self.engine.quantum_loop.get_mut()?.poll_gdb_run_control()? else {
             return Ok(false);
         };
         let command = match gdb_run_control_command(&packet) {
             Some(command) => command,
             None => {
-                self.engine.quantum_loop.complete_gdb_run_control(b"E01")?;
+                self.engine
+                    .quantum_loop
+                    .get_mut()?
+                    .complete_gdb_run_control(b"E01")?;
                 return Ok(true);
             }
         };
@@ -1010,12 +1014,18 @@ where
                 Ok(true)
             }
             Err(error @ SessionError::DebugNonCanonicalBranchRequired { .. }) => {
-                self.engine.quantum_loop.complete_gdb_run_control(b"E31")?;
+                self.engine
+                    .quantum_loop
+                    .get_mut()?
+                    .complete_gdb_run_control(b"E31")?;
                 let _ = error;
                 Ok(true)
             }
             Err(error) => {
-                self.engine.quantum_loop.complete_gdb_run_control(b"E31")?;
+                self.engine
+                    .quantum_loop
+                    .get_mut()?
+                    .complete_gdb_run_control(b"E31")?;
                 Err(error)
             }
         }
@@ -1025,7 +1035,10 @@ where
         if !matches!(self.engine.state(), EngineState::Running)
             && let Some(stop) = self.gdb_run_control_stop.as_ref()
         {
-            self.engine.quantum_loop.complete_gdb_run_control(stop)?;
+            self.engine
+                .quantum_loop
+                .get_mut()?
+                .complete_gdb_run_control(stop)?;
             self.gdb_run_control_stop = None;
         }
         Ok(())
@@ -1033,7 +1046,11 @@ where
 
     fn fail_pending_gdb_run_control(&mut self) {
         if self.gdb_run_control_stop.take().is_some() {
-            let _ = self.engine.quantum_loop.complete_gdb_run_control(b"E31");
+            let _ = self
+                .engine
+                .quantum_loop
+                .get_mut()
+                .and_then(|quantum_loop| quantum_loop.complete_gdb_run_control(b"E31"));
         }
     }
 
@@ -1266,7 +1283,7 @@ where
             checkpoint: checkpoint.id,
             configuration: checkpoint.configuration,
         };
-        let child_quantum_loop = factory(request);
+        let child_quantum_loop = OwnedQuantumLoop::new(factory(request));
         let fork = match self.engine.build_checkpoint_child(
             parent_state.clone(),
             checkpoint.id,

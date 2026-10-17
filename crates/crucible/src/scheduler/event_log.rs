@@ -49,6 +49,18 @@ pub enum CheckpointTerminalCause {
 /// for one quantum, but they do not advance backend clocks or deliver
 /// cross-node inputs directly.
 pub trait QuantumLoop {
+    /// Consumes the loop after its final session owner releases it.
+    ///
+    /// Pure loops release their ordinary fields. Adapters that retain an
+    /// external lifecycle body override this hook to deliver that same body to
+    /// its owning cleanup destination; this hook grants no execution authority.
+    fn retire_owned(self)
+    where
+        Self: Sized,
+    {
+        drop(self);
+    }
+
     /// Drives exactly one scheduler quantum.
     ///
     /// # Errors

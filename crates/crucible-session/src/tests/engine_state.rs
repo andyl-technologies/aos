@@ -919,9 +919,9 @@ async fn rejected_debug_runtime_reposition_preserves_session_transaction() {
     assert!(!engine.debug_branch_required());
     assert!(engine.guest_channels.contains(&active_guest_channel));
     assert!(!engine.guest_responses.contains_key(&active_guest_channel));
-    assert!(engine.quantum_loop.scheduler_run_active);
-    assert_eq!(engine.quantum_loop.release_attempts, 1);
-    assert_eq!(engine.quantum_loop.acquire_attempts, 2);
+    assert!(engine.quantum_loop.get().unwrap().scheduler_run_active);
+    assert_eq!(engine.quantum_loop.get().unwrap().release_attempts, 1);
+    assert_eq!(engine.quantum_loop.get().unwrap().acquire_attempts, 2);
 }
 
 #[tokio::test]
