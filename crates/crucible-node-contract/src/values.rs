@@ -283,6 +283,9 @@ impl Validate for Bytes {
     }
 }
 
+#[path = "values/borrowed_bytes.rs"]
+mod borrowed_bytes;
+
 /// Measures picoseconds on the admitted coordinator timeline.
 pub type Tick = U64;
 
