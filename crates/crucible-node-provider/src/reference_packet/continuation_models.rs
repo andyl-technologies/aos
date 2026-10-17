@@ -530,3 +530,11 @@ pub fn packet_model_capture_boundary_counter_scratch_data() -> usize {
 
 #[path = "continuation_models/settled_history.rs"]
 pub(crate) mod settled_history;
+
+#[path = "continuation_models/settled_reader.rs"]
+pub(crate) mod settled_reader;
+
+pub(crate) use settled_reader::prepared::{
+    PacketSettledPreparedModel17Data, PreparedControlHistory17, read_settled_prepared_model17_data,
+    settled_prepared_model17_counter_scratch_data,
+};

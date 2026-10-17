@@ -437,3 +437,6 @@ pub(in crate::reference_packet) fn capture_boundary_counter_scratch_data() -> us
 
 #[path = "connected_settled_history.rs"]
 mod settled_history;
+
+#[path = "connected_settled_reader.rs"]
+pub(in crate::reference_packet) mod settled_reader;

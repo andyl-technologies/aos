@@ -1187,6 +1187,26 @@ native projection is under investigation; no native Capture or fresh-world
 continuation result is claimed. The production provider rebuild passes in 28.80
 seconds and reproduces its pre-probe executable hash.
 
+### Inert current model and displaced control readers
+
+Strict readers now decode the actual current Producer and Reactive histories,
+prepared/adoption/displaced model children, and raw ControlRecord editions five
+and six. One capacity ledger spans their fields. Failed and incomplete state
+remains retained data; settled-adoption eligibility is a separate check. The
+readers construct no live Program, socket, Hold, registration or execution grant.
+The existing old-edition readers and their alias vocabulary remain unchanged.
+
+All 1,753 Core, seven contract and 1,069 provider tests pass with zero failures;
+32 Core and thirteen provider tests remain ignored. Eleven new controls use
+actual serializers, snapshots and model adopters, including completed Reactive
+state, failed partials, nonempty payloads, spare capacities and insufficient or
+malformed recorded fields. Transparent wrappers preserve the actual writer's
+metadata traversal count as well as its full backing facts. All eleven changed
+Rust files pass formatting. Six-crate, all-feature/all-target checking passes in
+50.73 seconds. The full Prepared-root Hold alias roster, complete graph
+correspondence and live Capture17/fresh-loader route remain unfinished.
+The application-target result above covers its earlier committed checkpoint.
+
 ## Known gaps and exit criteria
 
 Completion requires the full [qualification plan](qualification-plan.md),

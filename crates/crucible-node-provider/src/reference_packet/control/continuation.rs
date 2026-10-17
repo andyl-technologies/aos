@@ -867,3 +867,8 @@ pub fn packet_control_snapshot_validation_layouts() -> PacketControlSnapshotVali
 mod startup;
 
 mod settled;
+
+mod settled_reader;
+pub(crate) use settled_reader::{
+    PacketSettledControlRecord17Data, settled_control_record17_counter_scratch_data,
+};

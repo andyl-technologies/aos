@@ -1960,3 +1960,7 @@ pub(crate) use capture::{
 mod birth_scope;
 
 pub(crate) use restored_suffix_observation::original_restored_suffix_observation_control_counter_scratch_data;
+
+pub(crate) use continuation::{
+    PacketSettledControlRecord17Data, settled_control_record17_counter_scratch_data,
+};
