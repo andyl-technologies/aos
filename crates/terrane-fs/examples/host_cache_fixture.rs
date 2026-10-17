@@ -6,6 +6,8 @@
 
 #[path = "host_cache_fixture/actor.rs"]
 mod actor;
+#[path = "host_cache_fixture/admission.rs"]
+mod admission;
 #[path = "host_cache_fixture/config.rs"]
 mod config;
 
@@ -21,6 +23,9 @@ fn main() -> std::process::ExitCode {
             "edquot",
             "hold",
             "start-refuse",
+            "admit-chunk",
+            "admit-metadata",
+            "admit-cancel",
         ] {
             println!("host-cache:{selector}");
         }

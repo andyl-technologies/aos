@@ -34,6 +34,9 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
             | "edquot"
             | "hold"
             | "start-refuse"
+            | "admit-chunk"
+            | "admit-metadata"
+            | "admit-cancel"
     ) {
         return Err(io::Error::other("unknown component selector"));
     }
@@ -86,6 +89,9 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
                 return Err(io::Error::other("refused cold candidate snapshot changed"));
             }
             emit("PASS unresolved actual candidate refused without clearing state")?;
+        }
+        "admit-chunk" | "admit-metadata" | "admit-cancel" => {
+            super::admission::run(mode, &owner, &runtime, &inputs, original)?;
         }
         "late-refuse" => late_refuse(&owner, &runtime, &inputs, original)?,
         "cancel" => cancel(&owner, &runtime, &inputs)?,
