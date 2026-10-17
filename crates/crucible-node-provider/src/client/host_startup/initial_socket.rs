@@ -13,6 +13,7 @@ use std::{
         unix::{ffi::OsStrExt, net::UnixStream},
     },
     path::Path,
+    time::Duration,
 };
 
 use super::OriginalPacketHostStartup;
@@ -38,7 +39,27 @@ pub fn original_packet_host_initial_socket_counter_scratch_data() -> usize {
         + size_of::<&CStr>()
         + size_of::<&Path>()
         + size_of::<crate::operational_time::OperationalDeadline>()
-        + size_of::<std::time::Duration>()
+        + size_of::<Duration>()
+        + size_of::<Option<Duration>>()
+        + size_of::<Result<Duration, ProviderError>>()
+        + size_of::<Result<(), ProviderError>>()
+        + size_of::<&super::ExchangeDeadline>()
+        + size_of::<Result<&CStr, ProviderError>>()
+        + size_of::<rustix::fs::Stat>()
+        + size_of::<Result<rustix::fs::Stat, rustix::io::Errno>>()
+        + size_of::<rustix::fs::AtFlags>()
+        + size_of::<rustix::fs::FileType>()
+        + size_of::<rustix::process::Uid>()
+        + size_of::<u32>()
+        + size_of::<bool>()
+        + size_of::<rustix::event::Timespec>()
+        + size_of::<Option<&rustix::event::Timespec>>()
+        + size_of::<[rustix::event::PollFd<'static>; 0]>()
+        + size_of::<&mut [rustix::event::PollFd<'static>; 0]>()
+        + size_of::<&mut [rustix::event::PollFd<'static>]>()
+        + size_of::<Result<usize, rustix::io::Errno>>()
+        + size_of::<i64>()
+        + size_of::<usize>()
 }
 
 impl OriginalPacketHostStartup {
@@ -48,12 +69,16 @@ impl OriginalPacketHostStartup {
     /// original launch guard and spends the socket phase before this call. This
     /// SDK primitive supplies custody only. It stores the actual descriptor in
     /// `completed` before connect, flag changes or terminal deadline checks can
-    /// refuse. It never replaces a failed descriptor or retries the connection.
+    /// refuse. Before creating that descriptor, it waits for a same-user socket
+    /// at the selected path under the same original deadline. Readiness is not
+    /// peer authentication. It never replaces a failed descriptor or retries
+    /// the connection.
     ///
     /// # Errors
     /// Refuses a foreign, partial or connected SDK root, occupied output,
-    /// invalid path, expired original cut or unavailable socket/connection. Any
-    /// descriptor already created remains in the caller's original output slot.
+    /// invalid path, symlink, non-socket or foreign-user endpoint, expired
+    /// original cut, or unavailable socket/connection. Descriptors already
+    /// created remain in the caller's original output slot.
     pub fn acquire_original_initial_socket_into(
         &self,
         path: &Path,
@@ -76,8 +101,10 @@ impl OriginalPacketHostStartup {
         let deadline = self.deadline.as_ref().ok_or_else(refused)?;
         check_deadline(deadline)?;
         let original_path = SocketPath::new(path)?;
-        let address = rustix::net::SocketAddrUnix::new(original_path.as_c_str()?)
-            .map_err(std::io::Error::from)?;
+        let borrowed_path = original_path.as_c_str()?;
+        wait_for_socket(deadline, borrowed_path)?;
+        let address =
+            rustix::net::SocketAddrUnix::new(borrowed_path).map_err(std::io::Error::from)?;
         let socket = rustix::net::socket_with(
             rustix::net::AddressFamily::UNIX,
             rustix::net::SocketType::STREAM,
@@ -94,6 +121,46 @@ impl OriginalPacketHostStartup {
         stream.set_nonblocking(false)?;
         check_deadline(deadline)?;
         self.creator.ensure_current()
+    }
+}
+
+// The Child consumes its inherited bootstrap and validates its full executable
+// before binding. Wait only for pathname readiness: the held Source guard and
+// subsequent Hello still authenticate the actual process and selected peer.
+// No descriptor exists during this wait, and no unsuccessful connect is retried.
+fn wait_for_socket(deadline: &super::ExchangeDeadline, path: &CStr) -> Result<(), ProviderError> {
+    loop {
+        let remaining = deadline
+            .original_cut()
+            .remaining()
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(refused)?;
+        match rustix::fs::statat(rustix::fs::CWD, path, rustix::fs::AtFlags::SYMLINK_NOFOLLOW) {
+            Ok(metadata) => {
+                if rustix::fs::FileType::from_raw_mode(metadata.st_mode)
+                    != rustix::fs::FileType::Socket
+                    || metadata.st_uid != rustix::process::geteuid().as_raw()
+                {
+                    return Err(refused());
+                }
+                return check_deadline(deadline);
+            }
+            Err(rustix::io::Errno::NOENT) => {
+                // An empty descriptor list avoids creating a wait owner or
+                // lazily initializing thread-parking backing. Interruptions
+                // return to the same original deadline check, never renew it.
+                let wait = remaining.min(Duration::from_millis(1));
+                let timeout = rustix::event::Timespec {
+                    tv_sec: 0,
+                    tv_nsec: i64::from(wait.subsec_nanos()),
+                };
+                match rustix::event::poll(&mut [], Some(&timeout)) {
+                    Ok(_) | Err(rustix::io::Errno::INTR) => {}
+                    Err(error) => return Err(std::io::Error::from(error).into()),
+                }
+            }
+            Err(error) => return Err(std::io::Error::from(error).into()),
+        }
     }
 }
 
@@ -173,5 +240,162 @@ mod tests {
             assert!(SocketPath::new(&path).is_err());
             assert_eq!(path.as_os_str().as_bytes(), before);
         }
+    }
+
+    struct TestDirectory(PathBuf);
+
+    impl TestDirectory {
+        fn new() -> std::io::Result<Self> {
+            use std::os::unix::fs::DirBuilderExt;
+            use std::sync::atomic::{AtomicU64, Ordering};
+
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "aos-initial-socket-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed),
+            ));
+            std::fs::DirBuilder::new().mode(0o700).create(&path)?;
+            Ok(Self(path))
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn initial_socket_waits_for_delayed_real_listener_without_renewing_cut()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::{fd::AsRawFd, unix::net::UnixListener};
+
+        let directory = TestDirectory::new()?;
+        let path = directory.0.join("control.sock");
+        let (_, mut root) = super::super::tests::prepared_initial_lifecycle_model();
+        let cut = super::super::ExchangeDeadline::start(Duration::from_secs(2))?;
+        root.deadline = Some(cut);
+        let deadline = root.deadline.as_ref().ok_or("missing original cut")?;
+        let original_cut = deadline.original_cut();
+        let child_path = path.clone();
+        let listener = std::thread::spawn(move || {
+            std::thread::park_timeout(Duration::from_millis(20));
+            UnixListener::bind(child_path)
+        });
+        let mut completed = None;
+
+        let acquired = root.acquire_original_initial_socket_into(&path, &mut completed);
+        let listener = listener.join().map_err(|_| "listener thread unwound")??;
+        acquired?;
+        listener.set_nonblocking(true)?;
+        let (_peer, _) = listener.accept()?;
+        let stream = completed
+            .as_ref()
+            .ok_or("actual connected socket not retained")?;
+        let descriptor = stream.as_raw_fd();
+
+        assert_eq!(deadline.original_cut(), original_cut);
+        assert!(rustix::io::fcntl_getfd(stream)?.contains(rustix::io::FdFlags::CLOEXEC));
+        assert!(!rustix::fs::fcntl_getfl(stream)?.contains(rustix::fs::OFlags::NONBLOCK));
+        assert!(
+            root.acquire_original_initial_socket_into(&path, &mut completed)
+                .is_err()
+        );
+        assert_eq!(
+            completed.as_ref().ok_or("socket replaced")?.as_raw_fd(),
+            descriptor
+        );
+        assert!(root.controller.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn initial_socket_missing_or_expired_cut_leaves_descriptor_uncreated()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = TestDirectory::new()?;
+        let path = directory.0.join("missing.sock");
+        let (_, mut root) = super::super::tests::prepared_initial_lifecycle_model();
+        let cut = super::super::ExchangeDeadline::start(Duration::from_millis(10))?;
+        root.deadline = Some(cut);
+        let original_cut = root.deadline.as_ref().ok_or("missing cut")?.original_cut();
+        let mut completed = None;
+
+        assert!(
+            root.acquire_original_initial_socket_into(&path, &mut completed)
+                .is_err()
+        );
+        assert!(completed.is_none());
+        assert_eq!(
+            root.deadline.as_ref().ok_or("missing cut")?.original_cut(),
+            original_cut
+        );
+        assert!(original_cut.is_expired());
+        assert!(
+            root.acquire_original_initial_socket_into(&path, &mut completed)
+                .is_err()
+        );
+        assert!(completed.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn initial_socket_rejects_symlink_and_non_socket_before_descriptor_creation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::{fs::symlink, net::UnixListener};
+
+        let directory = TestDirectory::new()?;
+        let actual = directory.0.join("actual.sock");
+        let _listener = UnixListener::bind(&actual)?;
+        let link = directory.0.join("foreign.sock");
+        symlink(&actual, &link)?;
+        let regular = directory.0.join("regular");
+        std::fs::write(&regular, b"not a control socket")?;
+        let (_, root) = super::super::tests::prepared_initial_lifecycle_model();
+
+        for path in [&link, &regular, &directory.0] {
+            let mut completed = None;
+            assert!(
+                root.acquire_original_initial_socket_into(path, &mut completed)
+                    .is_err()
+            );
+            assert!(completed.is_none());
+        }
+        assert!(std::fs::symlink_metadata(link)?.file_type().is_symlink());
+        Ok(())
+    }
+
+    #[test]
+    fn initial_socket_failed_single_connect_keeps_original_descriptor()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::{fd::AsRawFd, unix::net::UnixListener};
+
+        let directory = TestDirectory::new()?;
+        let path = directory.0.join("stale.sock");
+        drop(UnixListener::bind(&path)?);
+        let (_, root) = super::super::tests::prepared_initial_lifecycle_model();
+        let mut completed = None;
+
+        assert!(
+            root.acquire_original_initial_socket_into(&path, &mut completed)
+                .is_err()
+        );
+        let descriptor = completed
+            .as_ref()
+            .ok_or("failed connect descriptor dropped")?
+            .as_raw_fd();
+        assert!(
+            root.acquire_original_initial_socket_into(&path, &mut completed)
+                .is_err()
+        );
+        assert_eq!(
+            completed
+                .as_ref()
+                .ok_or("failed descriptor replaced")?
+                .as_raw_fd(),
+            descriptor
+        );
+        assert!(root.controller.is_none());
+        Ok(())
     }
 }

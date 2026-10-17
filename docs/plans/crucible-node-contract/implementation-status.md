@@ -1152,6 +1152,32 @@ assertions pass. The provider executable in this run is built from the preceding
 constructor correction. Temporary tracing is removed. Capture, fresh-world
 restoration and continuation remain unqualified.
 
+### Bounded initial socket readiness
+
+A temporary probe establishes successful guard entry and SDK preconditions,
+49.82 seconds remaining on the original host cut, and connect failing with
+ENOENT while retaining its created descriptor. The SDK now waits for a same-user
+socket before descriptor creation, using borrowed C-string stat calls with
+NOFOLLOW and an empty-descriptor OS poll. The original deadline governs the
+wait. A later connection still has one attempt and retains its descriptor on
+failure. Symlinks, non-sockets, foreign ownership and other stat errors refuse.
+
+All 1,753 Core, seven contract and 1,058 provider tests pass, with zero failures;
+32 Core and thirteen provider tests remain ignored. Four new controls exercise
+a delayed real listener, expiry without a descriptor, invalid paths, and retained
+failed-connect/occupied-output custody. Formatting passes, and six-crate,
+all-feature/all-target checking passes in 40.32 seconds. The source-built
+provider rebuild passes in 25.65 seconds. The application-target gate currently
+running covers the preceding committed preflight checkpoint, not this change.
+
+Actual startup still refuses during member zero socket acquisition after 71.25
+seconds, with zero passes and one failure. Launches, bootstrap writes, baseline
+reservation and reclamation pass. The exact native-side refusal remains
+unproven. Its bootstrap has a separate five-second cut and retains failures
+before listener binding; a failure-only diagnostic on the existing duplex
+bootstrap channel is being prepared. Temporary phase tracing is removed, and
+Capture and fresh-world continuation remain unqualified.
+
 ## Known gaps and exit criteria
 
 Completion requires the full [qualification plan](qualification-plan.md),
