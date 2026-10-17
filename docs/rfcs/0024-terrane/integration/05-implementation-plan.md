@@ -8814,19 +8814,29 @@ review, including complete first-claim preimages, preflight before effects and
 phase-aware administrative ancestor membership. Native qualification is pending.
 Manifest recovery's resource-custody layer also passes source review, including
 cancelled effects and adopted-body retention before fallible completion. Actual
-publisher response correlation now passes source review; owner dispatch and
-runtime qualification remain pending. The cache proof
+publisher response correlation and the actual manifest-only owner dispatch now
+pass source review; their runtime qualification remains pending. The cache proof
 image now builds and verifies its three actual executables and retained guest
 supervisor. Earlier guest attempts stopped before actor cases because that script
 was absent from the guest closure. Corrections preserve closed writable
 descriptors through real fs-verity enable and final read-only custody, and use
 the native retained-inode syscall to set listener permissions. Corrected guest
-execution passes actual provisioning, helper and publisher preparation, empty
-recovery and eight cold-record or namespace refusal controls. Cancellation
-stops at a broken quota connection; its strict completion assertion and later
-quota-exhaustion and exclusivity cases remain unqualified. The first-enrollment
-fixture uses the existing vendored Tokio runtime as a development dependency;
-its actual two-owner creator-to-setter execution is still pending.
+execution at `454dc9fe0c` passes actual provisioning, helper and publisher
+preparation, empty recovery, eight cold-record or namespace refusal controls,
+the strict cancelled-waiter completion barrier, exclusive-owner refusal and
+release, and actual kernel quota exhaustion after 8,323,072 written bytes.
+All 6,449 source guards remain unchanged through the image, artifact verifier
+and guest execution. Two isolated signal tests also pass for retained socket
+delivery and the original receive deadline. The earlier broken connection's
+cause was not directly observed; this result does not establish its cause.
+These bounded component cases do not qualify Resume, native admission,
+BKT-15 or either complete host task.
+
+The first-enrollment fixture uses the existing vendored Tokio runtime as a
+development dependency. Its genuine same-process two-owner creator-to-setter
+flow, private-root traversal policy and refusal cases pass source review;
+compilation and native execution remain pending. Separate image and guest
+component checks are declared, with missing implementations failing explicitly.
 The shared glue dependency now names
 the existing Core types directly, and the crate-graph audit includes the current
 native and glue edges. All 632 external dependencies remain unchanged; every
