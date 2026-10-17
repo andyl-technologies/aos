@@ -112,6 +112,9 @@ pub struct QemuLiveHostIoRuntime {
 }
 
 mod action;
+mod action_scope;
+#[cfg(test)]
+pub(crate) mod component;
 mod servicing;
 use servicing::{BlockIoServicing, NinepIoServicing};
 

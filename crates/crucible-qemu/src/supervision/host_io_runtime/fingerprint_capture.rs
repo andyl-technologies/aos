@@ -1,5 +1,6 @@
 //! Exact fingerprint publication under an owned or borrowed live operation.
 
+use super::action_scope::{ControlActionScope, SourceControlAction};
 use super::control::PendingControlBoundary;
 use super::*;
 
@@ -23,6 +24,19 @@ impl QemuLiveHostIoRuntime {
         deadline: &OperationPollBudget<'_>,
         timeout: Duration,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        self.capture_execution_fingerprint_with_actions(
+            deadline,
+            timeout,
+            &mut SourceControlAction::default(),
+        )
+    }
+
+    pub(super) fn capture_execution_fingerprint_with_actions(
+        &mut self,
+        deadline: &OperationPollBudget<'_>,
+        timeout: Duration,
+        actions: &mut impl ControlActionScope,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
         let operation = "publish current execution fingerprint";
         check_paired_capture(deadline)?;
         let observed = self
@@ -41,7 +55,7 @@ impl QemuLiveHostIoRuntime {
         }
 
         let fingerprint_request = observed.wrapping_add(1);
-        let loan = self.lend_control_action(deadline, Some(fingerprint_request))?;
+        let loan = actions.lend(self, deadline, Some(fingerprint_request))?;
         deadline.remaining(operation)?.ok_or_else(|| {
             QemuAsyncDriverRuntimeError::new(operation, "capture operation has expired")
         })?;
@@ -57,14 +71,14 @@ impl QemuLiveHostIoRuntime {
             .map_err(|source| QemuAsyncDriverRuntimeError::new(operation, source.to_string()))?;
         let fingerprint_acknowledgement = fingerprint_request.wrapping_add(1);
         let request = self.signal_fingerprint_capture(deadline, fingerprint_request)?;
-        super::action::validate_control_action_request(request, loan)?;
+        actions.validate(request)?;
         let mut last_observed = None;
         let mut attempt = 0_u64;
         loop {
             // The collector publishes an actual terminal cancellation row even
             // when the caller's next original check will refuse continuation.
-            if loan.is_some() {
-                self.refresh_control_action()?;
+            if loan {
+                actions.refresh(self)?;
             }
             if deadline
                 .remaining("publish current execution fingerprint")?
@@ -107,7 +121,7 @@ impl QemuLiveHostIoRuntime {
                     // The digest worker publishes the sample before its release
                     // acknowledgement. This acquire load therefore makes the
                     // exact sample visible through the independent mapping.
-                    if loan.is_none() || self.finish_control_action()? {
+                    if !loan || actions.finish(self)? {
                         deadline.complete("publish current execution fingerprint")?;
                         return Ok(());
                     }

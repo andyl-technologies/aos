@@ -1,4 +1,4 @@
-//! Unit tests for the production host-I/O checkpoint boundary.
+//! Mapped host-control components and unchanged production-refusal boundaries.
 
 use super::control::PendingControlBoundary;
 use super::*;
@@ -122,6 +122,7 @@ fn fingerprint_capture_ack_fixture(owner: CaptureOwner) -> Result<(), Box<dyn st
         )?;
     let original = original_supervisor
         .begin(crucible_linux_resource::host_supervision::HostOperationClass::Preparation)?;
+    let (mut runtime, physical_return) = runtime.into_control_component()?;
     let host = std::thread::spawn(move || {
         #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
         if owner == CaptureOwner::Paired {
@@ -160,6 +161,13 @@ fn fingerprint_capture_ack_fixture(owner: CaptureOwner) -> Result<(), Box<dyn st
         }
         if owner == CaptureOwner::Original {
             runtime.publish_current_execution_fingerprint_under_original(&original)?;
+            let status = original.status().map_err(|source| {
+                QemuAsyncDriverRuntimeError::operational_supervision(
+                    "original after component capture",
+                    source,
+                )
+            })?;
+            assert_eq!(status.completed_work_units, 0);
             original.wait_slice().map_err(|source| {
                 QemuAsyncDriverRuntimeError::operational_supervision(
                     "original remains live",
@@ -200,6 +208,14 @@ fn fingerprint_capture_ack_fixture(owner: CaptureOwner) -> Result<(), Box<dyn st
             .fingerprint_sample(0)?
             .acknowledge_capture_v1(request)
     );
+    // Both mapped ACKs are already visible. Withhold the separate modeled
+    // return until the same shared loop has reached that cut and is still pending.
+    let return_ticket = physical_return.wait_until_awaited(Duration::from_secs(1))?;
+    assert!(
+        !host.is_finished(),
+        "ACKs cannot return the component action"
+    );
+    physical_return.return_action(return_ticket)?;
     host.join()
         .map_err(|_panic| "fingerprint host thread panicked")??;
     assert_eq!(plugin.fingerprint_sample(0)?.snapshot(), Some(fresh));

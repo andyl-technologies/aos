@@ -3,7 +3,7 @@
 use super::*;
 
 pub(crate) fn scripted_node_with_live_host_runtime(
-    host_io_runtime: crate::supervision::QemuLiveHostIoRuntime,
+    host_io_runtime: impl crate::QemuHostIoRuntime + 'static,
 ) -> Result<QemuNode, Box<dyn Error>> {
     let log = shared_log();
     let child = Command::new("sleep").arg("60").spawn()?;

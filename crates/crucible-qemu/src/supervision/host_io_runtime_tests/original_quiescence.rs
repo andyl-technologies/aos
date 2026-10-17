@@ -90,9 +90,10 @@ fn original_idle_handoff_publishes_pause_before_fresh_capture()
         ..Default::default()
     };
     plugin.fingerprint_sample(0)?.publish(&stale)?;
-    let mut runtime =
+    let runtime =
         QemuLiveHostIoRuntime::from_shmem_fd(shmem.as_fd(), wake.as_fd(), layout.region_size, 0)?;
     let (_owner, original, _account) = quiescence_original()?;
+    let (mut runtime, physical_return) = runtime.into_control_component()?;
     // The scope joins the actual fixture worker even when an observation or
     // assertion fails; the same original deadline bounds its cleanup wait.
     std::thread::scope(|scope| -> Result<(), Box<dyn std::error::Error>> {
@@ -125,9 +126,21 @@ fn original_idle_handoff_publishes_pause_before_fresh_capture()
             plugin.fingerprint_sample(0)?.capture_request_generation(),
             0
         );
+        // This component has a separate action owner for the Pause itself.
+        // Wait for its exact control publication before returning that model.
+        while !plugin.node_slot(0)?.control_boundary_is_requested() {
+            if host.is_finished() {
+                host.join().map_err(|_| "pause host panicked")??;
+                return Err("pause host returned before publishing control".into());
+            }
+            original.wait_slice()?;
+            std::thread::yield_now();
+        }
         plugin
             .node_slot(0)?
             .publish_pause_quiesced(73, 73 / crucible_shmem::TICKS_PER_INSTRUCTION)?;
+        plugin.node_slot(0)?.acknowledge_control_boundary();
+        physical_return.return_when_awaited(Duration::from_secs(1))?;
         // Observe the actual capture publication under the same original. An
         // early worker refusal must remain its cause, not a later read timeout.
         while plugin
@@ -173,6 +186,7 @@ fn original_idle_handoff_publishes_pause_before_fresh_capture()
             .node_slot(0)?
             .publish_control_boundary(73, 73 / crucible_shmem::TICKS_PER_INSTRUCTION)?;
         plugin.node_slot(0)?.acknowledge_control_boundary();
+        physical_return.return_when_awaited(Duration::from_secs(1))?;
         let status = host.join().map_err(|_| "pause host panicked")??;
         assert_eq!(status.completed_work_units, 0);
         assert!(original.wait_slice().is_ok());
