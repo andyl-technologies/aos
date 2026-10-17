@@ -59,7 +59,7 @@ use crate::{
 };
 
 mod app_random_branch_replay;
-use app_random_branch_replay::app_random_branch_replay;
+use app_random_branch_replay::{AppRandomLaunchWindow, app_random_branch_replay};
 
 mod interactive_session;
 pub use interactive_session::{
@@ -2266,6 +2266,7 @@ where
             &self.config,
             source,
             installed.configuration(),
+            AppRandomLaunchWindow::RestoredTarget,
             None,
             &[],
         )?;
@@ -2456,6 +2457,7 @@ where
             &self.config,
             source,
             start,
+            AppRandomLaunchWindow::Genesis,
             Some(signal_fault_replay),
             &std::mem::take(&mut self.authenticated_network_selections),
         )

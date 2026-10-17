@@ -43,6 +43,34 @@ pub(super) fn hydrate_checkpoint_signal_artifacts(
     Ok(())
 }
 
+/// Keeps the branch-plan entries a launch at `draw_offset` can still serve.
+///
+/// The plugin skips every entry whose node-local draw index precedes the
+/// launch's draw offset, so earlier entries would only enlarge the setup
+/// descriptor. A launch from genesis has offset zero and keeps the whole plan.
+fn branch_plan_launch_window(
+    plan: &crucible_protocol::app_random_branch_plan::AppRandomBranchPlan,
+    draw_offset: u64,
+    node: &NodeId,
+) -> Result<crucible_protocol::app_random_branch_plan::AppRandomBranchPlan, LifecycleApiError> {
+    let first_served = plan
+        .entries()
+        .partition_point(|entry| entry.draw_index() < draw_offset);
+    if first_served == 0 {
+        return Ok(plan.clone());
+    }
+
+    crucible_protocol::app_random_branch_plan::AppRandomBranchPlan::new(
+        plan.entries().iter().skip(first_served).cloned().collect(),
+    )
+    .map_err(|error| {
+        loop_factory_error(format!(
+            "trim app-random branch plan for `{}` to its launch window: {error}",
+            node.name
+        ))
+    })
+}
+
 fn reject_fresh_fault_replay_on_restore(
     restoring: bool,
     replay: Option<&SignalFaultCampaignReplayPlan>,
@@ -573,15 +601,14 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
                 })?
             } else {
                 production_app_random_launch_config(scenario, &cold_branches, &vm.id)
-            }
-            .with_branch_plan(
-                config
-                    .app_random_branch_plans
-                    .get(&vm.id)
-                    .cloned()
-                    .unwrap_or_default(),
-            );
-            launch = launch.with_app_random(app_random);
+            };
+            let branch_plan = config
+                .app_random_branch_plans
+                .get(&vm.id)
+                .map(|plan| branch_plan_launch_window(plan, app_random.draw_offset, &vm.id))
+                .transpose()?
+                .unwrap_or_default();
+            launch = launch.with_app_random(app_random.with_branch_plan(branch_plan));
         }
         if !source.world().links().is_empty() {
             launch = launch.with_shmem_network_mac(crucible::deterministic_node_mac_string(&vm.id));

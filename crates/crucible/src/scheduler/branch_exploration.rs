@@ -66,21 +66,33 @@ impl SingleScheduler {
     /// and immediately before the corresponding [`Decision::Selection`]. The
     /// scheduler consumes a selection only after replay validation succeeds.
     ///
+    /// Every VM receives its own plugin plan of at most
+    /// [`MAX_APP_RANDOM_BRANCH_PLAN_ENTRIES`] substitutions, so the installed
+    /// set is bounded by that count times the World's VM count.
+    ///
     /// # Errors
     ///
     /// Returns [`SchedulerError::BoundaryViolation`] when a decision is not a
-    /// campaign-branch selection or a parent is duplicated.
+    /// campaign-branch selection, a parent is duplicated, or the set exceeds
+    /// the per-VM plan bound summed over the World's VMs.
     pub fn install_app_random_branch_selections(
         &mut self,
         selections: impl IntoIterator<Item = (ContentHash, SelectionDecision)>,
     ) -> Result<(), SchedulerError> {
+        let vm_count = self
+            .world_scheduling_nodes
+            .iter()
+            .filter(|node| node.kind == SchedulingNodeKind::Vm)
+            .count()
+            .max(1);
+        let maximum = MAX_APP_RANDOM_BRANCH_PLAN_ENTRIES.saturating_mul(vm_count);
         let mut installed = BTreeMap::new();
         for (parent, selection) in selections {
-            if installed.len() >= MAX_APP_RANDOM_BRANCH_PLAN_ENTRIES {
+            if installed.len() >= maximum {
                 return Err(SchedulerError::BoundaryViolation {
                     message: format!(
-                        "app-random replay plan exceeds {} selections",
-                        MAX_APP_RANDOM_BRANCH_PLAN_ENTRIES
+                        "app-random replay plan exceeds {MAX_APP_RANDOM_BRANCH_PLAN_ENTRIES} \
+                         selections for each of {vm_count} VMs"
                     ),
                 });
             }

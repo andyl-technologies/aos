@@ -2895,6 +2895,12 @@ entry binds the node-local draw ordinal, canonical stream, full seeded raw draw,
 selected value, and exact `SelectionId`; before any launch the lifecycle
 requires the aggregate plan entries and scheduler selection set to contain the
 same exact selection identities and rejects foreign or white-box-disabled nodes.
+Each node's plan holds at most 4,096 entries, so the scheduler selection set is
+bounded by that count per VM. A launch carries only the entries at or after its
+node-local draw offset: a genesis replay carries the whole plan, while an exact
+resume or retained hot-fork source restored at the target carries none. The
+bound therefore limits the substitutions of one genesis replay, not the depth
+of a resumed campaign.
 The plugin serves a substitution only
 after the live ordinal, stream, and draw agree and the selected value fits the
 live width. The scheduler independently keys the decoded selection by the exact

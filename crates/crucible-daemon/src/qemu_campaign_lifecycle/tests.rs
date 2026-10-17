@@ -156,8 +156,8 @@ fn selected_start_derives_matching_scheduler_and_plugin_branch_plans() {
         Decision::Selection(SelectionDecision::new(&selection)),
     );
 
-    let (scheduler, plugins) =
-        app_random_branch_replay(&target).expect("selected target should derive plans");
+    let (scheduler, plugins) = app_random_branch_replay(&target, AppRandomLaunchWindow::Genesis)
+        .expect("selected target should derive plans");
 
     assert_eq!(
         scheduler.get(&parent.id()),
@@ -177,6 +177,13 @@ fn selected_start_derives_matching_scheduler_and_plugin_branch_plans() {
                 && entry.selection_id()
                     == selection.id().expect("selection id").content_id().digest()
     ));
+
+    // A launch restored at the target has already served this request.
+    let (scheduler, plugins) =
+        app_random_branch_replay(&target, AppRandomLaunchWindow::RestoredTarget)
+            .expect("restored target should derive empty plans");
+    assert!(scheduler.is_empty());
+    assert!(plugins.is_empty());
 }
 
 #[test]
@@ -250,8 +257,8 @@ fn app_random_projection_ignores_a_campaign_selection_outside_its_owned_stream()
         Decision::Selection(SelectionDecision::new(&selection)),
     );
 
-    let (selections, plans) =
-        app_random_branch_replay(&target).expect("foreign producer stays outside this adapter");
+    let (selections, plans) = app_random_branch_replay(&target, AppRandomLaunchWindow::Genesis)
+        .expect("foreign producer stays outside this adapter");
     assert!(selections.is_empty());
     assert!(plans.is_empty());
 }

@@ -313,14 +313,20 @@ pub(super) fn production_continuation_plan(
     }
 }
 
+/// Derives the lifecycle configuration that launches `start`.
+///
+/// `window` says whether the launch replays `start` from genesis or restores
+/// a checkpoint at `start`; only a genesis launch carries app-random branch
+/// substitutions.
 pub(super) fn production_lifecycle_config_for_start(
     config: &ProductionVmLifecycleConfig,
     source: &ScenarioDefForm,
     start: &Configuration,
+    window: AppRandomLaunchWindow,
     signal_fault_replay: Option<&crucible::SignalFaultCampaignReplayPlan>,
     authenticated_network_selections: &[SelectionDecision],
 ) -> Result<ProductionVmLifecycleConfig, QemuAttemptProductionVmLifecycleError> {
-    let (selections, plans) = app_random_branch_replay(start)
+    let (selections, plans) = app_random_branch_replay(start, window)
         .map_err(QemuAttemptProductionVmLifecycleError::InvalidAppRandomBranchReplay)?;
     if plans.keys().any(|node| {
         !source

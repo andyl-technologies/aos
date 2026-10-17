@@ -2708,16 +2708,11 @@ fn validate_app_random_branch_replay_config(
                     node.name
                 )));
             }
+            // Each node's plan is already bounded by its protocol type, so
+            // the aggregate grows only with the World's VM count.
             planned_count = planned_count
                 .checked_add(1)
                 .ok_or_else(|| loop_factory_error("app-random branch plan entry count overflow"))?;
-            if planned_count
-                > crucible_protocol::app_random_branch_plan::MAX_APP_RANDOM_BRANCH_PLAN_ENTRIES
-            {
-                return Err(loop_factory_error(
-                    "app-random branch replay exceeds the aggregate selection bound",
-                ));
-            }
             let count = planned_selection_ids
                 .entry(entry.selection_id())
                 .or_default();

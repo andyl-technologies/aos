@@ -166,3 +166,35 @@ fn event_log_hydration_rejects_changed_bytes_before_writing() {
     );
     assert!(resumed_store.get(&identity).is_err());
 }
+
+#[test]
+fn branch_plan_launch_window_keeps_only_servable_entries() -> Result<(), Box<dyn std::error::Error>>
+{
+    use crucible_protocol::app_random_branch_plan::{
+        AppRandomBranchPlan, AppRandomBranchPlanEntry,
+    };
+
+    let node = NodeId {
+        name: String::from("node-a"),
+    };
+    let stream = crucible_protocol::app_random_transport::app_random_stream_name(&node.name, "b");
+    let entries = [0_u64, 3, 7]
+        .into_iter()
+        .map(|draw| AppRandomBranchPlanEntry::new(draw, draw, draw + 1, [0x5a; 32], stream.clone()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let plan = AppRandomBranchPlan::new(entries)?;
+
+    let genesis = branch_plan_launch_window(&plan, 0, &node)?;
+    let resumed = branch_plan_launch_window(&plan, 3, &node)?;
+    let exhausted = branch_plan_launch_window(&plan, 8, &node)?;
+
+    assert_eq!(genesis, plan);
+    let served = resumed
+        .entries()
+        .iter()
+        .map(AppRandomBranchPlanEntry::draw_index)
+        .collect::<Vec<_>>();
+    assert_eq!(served, [3, 7]);
+    assert!(exhausted.entries().is_empty());
+    Ok(())
+}

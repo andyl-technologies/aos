@@ -34,6 +34,7 @@ use crucible_campaign::{
     ExecutorCompatibilityProfile,
 };
 
+use super::AppRandomLaunchWindow;
 use super::continuation::production_lifecycle_config_for_start;
 use super::{
     AttemptExecutionContext, AttemptExecutionProduct, AttemptWorkerFailure,
@@ -174,7 +175,14 @@ pub(super) fn prepare_production_retained_source(
     source: &ScenarioDefForm,
     boundary: &Configuration,
 ) -> QemuRetainedSourcePreparation<ProductionVmLifecycleLoop> {
-    let config = match production_lifecycle_config_for_start(base, source, boundary, None, &[]) {
+    let config = match production_lifecycle_config_for_start(
+        base,
+        source,
+        boundary,
+        AppRandomLaunchWindow::RestoredTarget,
+        None,
+        &[],
+    ) {
         Ok(config) => config.with_unbounded_advance_completion(),
         Err(_error) => return QemuRetainedSourcePreparation::Recovered(lifecycle),
     };
