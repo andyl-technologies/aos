@@ -655,6 +655,35 @@ pub(crate) fn original_native_coordinator_decode_counter_scratch_data() -> usize
     coordinator_decode::counter_scratch_data()
 }
 
+/// Counts the actual permanent complete-coordinator DTO, excluding decode work.
+///
+/// The unchanged complete decoder/validator has a separate prospective row.
+/// Unknown shapes retain the defining conservative backing fallback.
+///
+/// # Errors
+/// Refuses encoded extent, unsupported raw structure, checked layout overflow
+/// or a defining component above the supplied construction ceiling.
+pub(crate) fn original_native_coordinator_backing_storage_data(
+    bytes: &[u8],
+    maximum: usize,
+) -> Result<usize, ProviderError> {
+    if bytes.len()
+        > crate::reference_packet::coordinator::PACKET_NATIVE5_COORDINATOR_INSTALLATION_BYTES
+    {
+        return Err(refused());
+    }
+    coordinator_decode::backing(bytes, maximum)
+}
+
+/// Counts the defining backing scanner and its independent nested views.
+pub(crate) fn original_native_coordinator_backing_counter_scratch_data() -> usize {
+    coordinator_decode::counter_scratch_data()
+        + decoded::counter_scratch_data()
+        + size_of::<Result<decoded::DecodedStorage, ProviderError>>()
+        + size_of::<Result<usize, ProviderError>>()
+        + crate::retained_metadata::serialization_storage::original_serialization_tree_node_counter_scratch_data()
+}
+
 // Only actual Value-only fields use this helper. Typed launch/coordinator and
 // authority constructors retain their independently named complete quotes.
 fn decode_value(bytes: &[u8], maximum: usize) -> Result<usize, ProviderError> {

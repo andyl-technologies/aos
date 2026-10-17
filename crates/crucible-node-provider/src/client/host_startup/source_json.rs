@@ -1,8 +1,8 @@
 //! Exposes the existing closed raw-JSON storage counters as Source data only.
 //!
-//! The occurrence counter deliberately retains its selected-Control layout
-//! ceiling. Its result bounds only the raw Value parser/clone/canonical phase;
-//! it is not an arbitrary Source typed-decoder quote or an allocation grant.
+//! The occurrence counter follows the actual raw Value parser/clone/canonical
+//! owners. No Control snapshot DTO is constructed by that path. Typed Source
+//! decoders keep their independent quotes; this data grants no allocation right.
 
 use crate::retained_metadata::serialization_storage::{
     original_json_value_storage_extent_counter_scratch_data,
@@ -11,30 +11,34 @@ use crate::retained_metadata::serialization_storage::{
 use crate::{
     ProviderError,
     reference_packet::service::complete_restore::transfer::{
-        selected_issuer_decode_counter_scratch_data, selected_issuer_decode_storage_data,
+        selected_issuer_decode_counter_scratch_data, selected_value_decode_storage_data,
     },
 };
 
 /// Counts the actual raw Value parse, clone and canonical occurrence phases.
 ///
-/// The selected-Control typed-layout ceiling is conservatively included. Source
-/// callers add their own typed DTOs, custom serializers and retained roots.
+/// Two independently owned Value trees cover parsing and cloned container
+/// rebuilding, including empty object roots. Source callers independently add
+/// their actual typed DTOs, custom serializers and retained enclosing roots.
 ///
 /// # Errors
-/// Refuses malformed/deep JSON, a raw input beyond its actual encoded bound or
-/// checked layout arithmetic overflow. This function performs no allocation.
+/// Refuses unbalanced or excessive nesting, a raw input beyond its actual
+/// encoded bound or checked layout overflow. Strict JSON validation remains
+/// independent. This function performs no allocation.
 pub fn original_host_source_json_occurrence_storage_data(
     bytes: &[u8],
     maximum_encoded_bytes: usize,
 ) -> Result<usize, ProviderError> {
-    let raw = selected_issuer_decode_storage_data(
-        bytes,
-        std::mem::size_of::<serde_json::Value>(),
-        maximum_encoded_bytes,
-    )?;
-    // The legacy occurrence scanner does not name these canonical numeric and
-    // stable-sort workspaces itself. Add the exact separately audited layouts;
-    // no credit is inferred from its unused selected-Control typed pool.
+    if bytes.len() > maximum_encoded_bytes {
+        return Err(ProviderError::ResourceExhausted(
+            "original Source JSON encoded bound",
+        ));
+    }
+    // This API's input ceiling is encoded bytes, not a decoded-allocation cap.
+    // The caller admits the returned complete Value occurrence row separately.
+    let raw = selected_value_decode_storage_data(bytes, usize::MAX)?;
+    // The occurrence scanner does not name these canonical numeric and
+    // stable-sort workspaces itself. Keep their independent audited layouts.
     raw.checked_add(132)
         .and_then(|bytes| bytes.checked_add(4096))
         .ok_or(ProviderError::ResourceExhausted(
@@ -71,4 +75,46 @@ pub fn original_host_source_json_counter_scratch_data() -> usize {
     selected_issuer_decode_counter_scratch_data()
         + original_json_value_storage_extent_counter_scratch_data()
         + std::mem::size_of::<[usize; 3]>()
+        + std::mem::size_of::<Result<usize, ProviderError>>()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::retained_metadata::MetadataObserver;
+    use crate::retained_metadata::requested_storage::requested_metadata_backing_storage_data;
+    use crucible_node_contract::canonical;
+    use serde_json::Value;
+    use std::mem::size_of;
+
+    #[test]
+    fn occurrence_quote_covers_actual_parsed_and_cloned_value_owners()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for raw in [
+            b"{}".as_slice(),
+            br#"{"empty":{},"array":[{},[],"x",1,2],"escaped":"\uD834\uDD1E"}"#,
+            br#"["first","second",{},[],{"nested":{"leaf":true}}]"#,
+        ] {
+            let value: Value = serde_json::from_slice(raw)?;
+            let cloned = value.clone();
+            let canonical = canonical::canonical_json(&value)?;
+            let mut owners = MetadataObserver::new();
+            owners.observe(&value)?;
+            owners.observe(&cloned)?;
+            let actual = requested_metadata_backing_storage_data(&owners.finish())?
+                + 2 * size_of::<Value>()
+                + canonical.capacity();
+            let quote = original_host_source_json_occurrence_storage_data(raw, raw.len())?;
+
+            assert!(quote >= actual);
+            assert_eq!(value, cloned);
+            assert!(original_host_source_json_occurrence_storage_data(raw, raw.len() - 1).is_err());
+        }
+        assert!(original_host_source_json_occurrence_storage_data(b"{", 1).is_err());
+        let deep = format!("{}0{}", "[".repeat(65), "]".repeat(65));
+        assert!(
+            original_host_source_json_occurrence_storage_data(deep.as_bytes(), deep.len()).is_err()
+        );
+        Ok(())
+    }
 }

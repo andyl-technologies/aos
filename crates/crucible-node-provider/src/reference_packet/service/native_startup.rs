@@ -254,6 +254,8 @@ pub(crate) use storage::{
 };
 
 pub(crate) use storage::{
+    original_native_coordinator_backing_counter_scratch_data,
+    original_native_coordinator_backing_storage_data,
     original_native_coordinator_decode_counter_scratch_data,
     original_native_coordinator_decode_storage_data,
 };

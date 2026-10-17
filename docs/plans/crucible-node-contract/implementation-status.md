@@ -1089,6 +1089,33 @@ claimed definition still fails the compiled-schema validator. Six-crate,
 all-feature/all-target checking passes in 49.39 seconds. These component results
 do not establish complete native Capture or restoration.
 
+### Constructor-specific startup projections
+
+Raw Source JSON handling constructs Value trees, not Control snapshots. Its
+occurrence projection now counts both actual Value owners, canonical work and
+empty roots; independently typed Source decoders keep their own rows. The SDK's
+retained coordinator projection now uses the defining complete DTO backing
+counter. All three full coordinator decode/validation work terms remain charged
+separately. Encoded bounds, checked sums and the 4 GiB policy are unchanged.
+
+The normal suites pass 1,752 Core tests, seven contract tests and 1,053 provider
+tests, with zero failures; 32 Core and thirteen provider tests remain ignored.
+Controls compare the projections against actual parsed/cloned Value ownership
+and a real decoded coordinator, retain foreign-grammar rejection, and test
+independent one-short bounds. Formatting passes for all four changed code files.
+The source-built provider rebuild passes in 18.87 seconds; six-crate,
+all-feature/all-target checking passes in 45.05 seconds. The final-source
+application-target gate remains outstanding for this stage.
+
+With the same provider executable as the preceding failure, full-roster
+admission passes and all three actual launches and bootstrap writes complete.
+The selected lifecycle projection falls from 3,947,862,714 to 1,043,716,118 bytes.
+The complete baseline sum is still 3,265,813,349 + 1,043,716,118 against
+4,294,967,296: it refuses by 14,562,171 bytes. The combined run has one pass and
+one failure in 34.67 seconds, and failing startup passes reclamation. These are
+requested-storage projections, not RSS or execution speed. Temporary tracing is
+removed. Native Capture and restoration remain unqualified.
+
 ## Known gaps and exit criteria
 
 Completion requires the full [qualification plan](qualification-plan.md),

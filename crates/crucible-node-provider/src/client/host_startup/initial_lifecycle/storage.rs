@@ -75,6 +75,8 @@ pub fn original_packet_host_initial_lifecycle_counter_scratch_data() -> usize {
         original_json_value_storage_extent_counter_scratch_data,
     };
     crate::reference_packet::coordinator::packet_native5_coordinator_installation_counter_scratch_data()
+        + crate::reference_packet::service::native_startup::original_native_coordinator_decode_counter_scratch_data()
+        + crate::reference_packet::service::native_startup::original_native_coordinator_backing_counter_scratch_data()
         + size_of::<PacketNativeHostInitialLifecycleStorageData>()
         + size_of::<crate::reference_packet::service::native_startup::OriginalHostInitialLifecycleShapes>()
         + 4 * size_of::<MetadataObserver<'static>>() + 4 * size_of::<RetainedProtocolMetadataFacts>()
@@ -108,8 +110,13 @@ pub(super) fn quote(
     let selection = actual(&launch.selection)?;
     let selection_backing = metadata(&launch.selection)?;
     let coordinator_backing = metadata(&launch.initial_coordinator)?;
-    let coordinator_decode = crate::reference_packet::service::complete_restore::transfer::selected_issuer_decode_storage_data(
-        launch.initial_coordinator.bytes.as_slice(), size_of::<crate::reference_packet::coordinator::PacketNative5CoordinatorInstallation>(), maximum,
+    // Retained codec state owns the complete coordinator DTO. Its actual
+    // decoder and complete validator are work, not repeated permanent backing.
+    let coordinator_typed = crate::reference_packet::service::native_startup::original_native_coordinator_backing_storage_data(
+        launch.initial_coordinator.bytes.as_slice(), maximum,
+    )?;
+    let coordinator_decode = crate::reference_packet::service::native_startup::original_native_coordinator_decode_storage_data(
+        launch.initial_coordinator.bytes.as_slice(), maximum,
     )?;
     // Borrowed actual typed rosters dominate from_value's owned children: serde
     // consumes cloned Value Strings/arrays with their exact original lengths.
@@ -142,7 +149,7 @@ pub(super) fn quote(
         crate::connection::original_host_initial_codec_layout_data()?,
         selection_backing,
         coordinator_backing,
-        coordinator_decode,
+        coordinator_typed,
         metadata(&launch.capture_profile)?,
         schema_refs,
         wire,
@@ -558,6 +565,49 @@ mod tests {
         assert!(root.controller.is_none());
         assert!(root.frames.is_some());
         assert!(!root.initial_attachment_attempted);
+    }
+
+    #[test]
+    fn actual_coordinator_backing_and_full_validation_are_independently_priced()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::reference_packet::coordinator::PacketNative5CoordinatorInstallation;
+        use crate::reference_packet::service::native_startup::{
+            original_native_coordinator_backing_storage_data,
+            original_native_coordinator_decode_storage_data,
+        };
+        use crucible_node_contract::canonical;
+
+        let (inputs, root) = crate::client::host_startup::tests::prepared_initial_lifecycle_model();
+        let launch = inputs.borrowed().launch;
+        let raw = launch.initial_coordinator.bytes.as_slice();
+        let decoded = PacketNative5CoordinatorInstallation::decode(raw, &launch.selection)?;
+        let mut owners = MetadataObserver::new();
+        owners.observe(&decoded)?;
+        let actual = backing(&owners.finish())? + size_of::<PacketNative5CoordinatorInstallation>();
+        let retained = original_native_coordinator_backing_storage_data(raw, usize::MAX)?;
+        let validation = original_native_coordinator_decode_storage_data(raw, usize::MAX)?;
+
+        assert!(retained >= actual);
+        assert_eq!(
+            original_native_coordinator_decode_storage_data(raw, validation)?,
+            validation
+        );
+        assert!(original_native_coordinator_decode_storage_data(raw, validation - 1).is_err());
+        let quote = root.quote_original_initial_lifecycle_storage_data(launch)?;
+        assert!(quote.retained_growth_bytes() >= retained + root.quote.retained_requested_bytes());
+        assert!(quote.maximum_simultaneous_transient_bytes() >= validation);
+
+        // A smaller constructor quote cannot admit a foreign coordinator grammar.
+        let mut foreign = decoded;
+        foreign.schema.push_str("/foreign");
+        let bytes = canonical::canonical_json(&serde_json::to_value(&foreign)?)?;
+        assert!(PacketNative5CoordinatorInstallation::decode(&bytes, &launch.selection).is_err());
+        // The DATA quote may cover a foreign schema; only the unchanged real
+        // decoder authenticates its meaning and must reject it.
+        assert!(original_native_coordinator_decode_storage_data(&bytes, usize::MAX)? > 0);
+        assert!(!root.initial_attachment_attempted);
+        assert!(root.controller.is_none());
+        Ok(())
     }
 
     #[test]
