@@ -144,7 +144,18 @@
     then "terrane-content"
     else userFor name;
   publicRoot = (cfg.hostTier.domains.public or {path = cfg.hostTier.path;}).path;
-  roots = [publicRoot] ++ lib.mapAttrsToList (_: domain: domain.path) (builtins.removeAttrs cfg.hostTier.domains ["public"]);
+  domainRoots =
+    [
+      {
+        domain = "public";
+        path = publicRoot;
+      }
+    ]
+    ++ lib.mapAttrsToList (domain: value: {
+      inherit domain;
+      inherit (value) path;
+    }) (builtins.removeAttrs cfg.hostTier.domains ["public"]);
+  roots = map (entry: entry.path) domainRoots;
   declaredRoots = lib.unique ([cfg.hostTier.path] ++ roots);
   overlaps = a: b: a == b || lib.hasPrefix "${a}/" b || lib.hasPrefix "${b}/" a;
   uniqueRoots = builtins.all (a: builtins.all (b: a == b || !overlaps a b) roots) roots && builtins.length (lib.unique roots) == builtins.length roots;
@@ -384,10 +395,18 @@ in {
     # other roles; verified read-only descriptors cross the process boundary.
     environment.etc."tmpfiles.d/terrane.conf".text =
       "d /run/terrane-publish 2750 terrane-publish terrane-content - -\n"
-      + lib.optionalString (publicRoot != cfg.hostTier.path) "d ${cfg.hostTier.path} 0755 root root - -\n"
-      + lib.concatMapStrings (root:
+      + lib.optionalString (!(builtins.elem cfg.hostTier.path roots)) "d ${cfg.hostTier.path} 0755 root root - -\n"
+      + lib.concatMapStrings (entry: let
+        root = entry.path;
+        # Ordinary metadata leaves may be world-readable. Preserve the native
+        # enrollment traversal boundary for every non-public domain.
+        custody =
+          if entry.domain == "public"
+          then "0755 root root"
+          else "0750 root terrane-content";
+      in
         ''
-          d ${root} 0755 root root - -
+          d ${root} ${custody} - -
           d ${root}/state 0755 root root - -
           d ${root}/state/cache 2770 terrane terrane-cache - -
           d ${root}/state/publication 0700 terrane-publish terrane-publish - -
@@ -396,7 +415,7 @@ in {
           d ${root}/pending-delete 0700 terrane-publish terrane-publish - -
         ''
         + lib.concatMapStrings (name: "d ${root}/${name} 2770 terrane terrane-content - -\n") ["chunks" "objects" "quarantine"])
-      roots;
+      domainRoots;
     systemd.slices.aos-control = {description = "AOS control services";};
     systemd.slices.aos-view-services = {description = "AOS filesystem view services outside consumer freezer domains";};
     systemd.services = builtins.listToAttrs (map (role: {

@@ -681,6 +681,48 @@
       name = "publisher-state-custody";
       pass = builtins.elem "/var/lib/terrane/state/publication" (service "publish").ReadWritePaths && !(builtins.elem "/var/lib/terrane/state" (service "serve").ReadWritePaths) && lib.hasInfix "d /var/lib/terrane/state 0755 root root" enabled.environment.etc."tmpfiles.d/terrane.conf".text;
     }
+    {
+      name = "domain-root-traversal-custody";
+      pass = let
+        cfg = evaluate {
+          aos.terrane.hostTier.path = "/srv/terrane-administrative";
+          aos.terrane.hostTier.domains = {
+            public.path = "/srv/terrane-public";
+            "private:operator".path = "/srv/terrane-private";
+            "tenant:operator".path = "/srv/terrane-tenant";
+            "group:operator".path = "/srv/terrane-group";
+          };
+        };
+        lines = lib.splitString "\n" cfg.environment.etc."tmpfiles.d/terrane.conf".text;
+        rootLines = path: builtins.filter (line: lib.hasPrefix "d ${path} " line) lines;
+        defaultRootLines = builtins.filter (line: lib.hasPrefix "d /var/lib/terrane " line) (lib.splitString "\n" enabled.environment.etc."tmpfiles.d/terrane.conf".text);
+      in
+        checksPass cfg
+        # Exact singleton lists also reject duplicate declarations which could
+        # restore a world-searchable mode after the protected declaration.
+        && defaultRootLines == ["d /var/lib/terrane 0755 root root - -"]
+        && rootLines "/srv/terrane-administrative" == ["d /srv/terrane-administrative 0755 root root - -"]
+        && rootLines "/srv/terrane-public" == ["d /srv/terrane-public 0755 root root - -"]
+        && builtins.all (name: rootLines "/srv/terrane-${name}" == ["d /srv/terrane-${name} 0750 root terrane-content - -"]) ["private" "tenant" "group"];
+    }
+    {
+      name = "nonpublic-host-root-not-widened";
+      pass = builtins.all (domain: let
+        cfg = evaluate {
+          aos.terrane.hostTier = {
+            path = "/srv/terrane-domain";
+            domains = {
+              public.path = "/srv/terrane-public";
+              "${domain}:operator".path = "/srv/terrane-domain";
+            };
+          };
+        };
+        lines = lib.splitString "\n" cfg.environment.etc."tmpfiles.d/terrane.conf".text;
+        rootLines = builtins.filter (line: lib.hasPrefix "d /srv/terrane-domain " line) lines;
+      in
+        checksPass cfg && rootLines == ["d /srv/terrane-domain 0750 root terrane-content - -"])
+      ["private" "tenant" "group"];
+    }
   ];
   failures = map (check: check.name) (builtins.filter (check: !check.pass) (assertions ++ extraAssertions));
   verified =
