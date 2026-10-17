@@ -10,6 +10,7 @@ use crucible_node_provider::reference_packet::service::native_startup::{
     PacketNativeInvocationConstructionStorageData, PacketNativeInvocationPurposeData,
     original_native_invocation_construction_storage_data,
     original_native_invocation_counter_scratch_data,
+    original_native_invocation_ingress_storage_data,
 };
 
 /// Retains the same admitted roster and its source-derived invocation identities.
@@ -45,6 +46,8 @@ impl InstalledConformancePlan {
                     crucible_node_provider::ProviderError,
                 >>(),
                 size_of::<Result<PacketNativeInvocationConstructionStorageData, RuntimeError>>(),
+                size_of::<Result<Option<PacketNativeStartupAllocationRow>, RuntimeError>>(),
+                size_of::<Result<u64, std::num::TryFromIntError>>(),
                 original_native_invocation_counter_scratch_data(),
                 PacketCompleteSemanticSource::original_native_invocation_source_counter_scratch_data()?,
             ],
@@ -125,6 +128,39 @@ impl InstalledConformancePlan {
             };
             let before = baseline.quotes[index]
                 .native_and_publication_peak(baseline.policy.maximum_requested_bytes)?;
+            // This independent future owner exists only for a genuine fresh
+            // purpose derived above by this same registered-holder callback.
+            // It is admitted before any member/source finalization or Child.
+            let ingress = original_native_invocation_ingress_storage_data(
+                &launches[index],
+                &purposes[index],
+                baseline.policy.maximum_requested_bytes,
+            )
+            .map_err(|_| RuntimeError::ResourceLimit)?;
+            let ingress_retained = if let Some(ingress) = ingress {
+                let row = &mut baseline.quotes[index].rows.native_birth;
+                row.retained_requested_bytes = crucible_node_contract::U64::new(
+                    u64::try_from(add(
+                        extent(row.retained_requested_bytes.get())?,
+                        extent(ingress.retained_requested_bytes.get())?,
+                        baseline.policy.maximum_requested_bytes,
+                    )?)
+                    .map_err(|_| RuntimeError::ResourceLimit)?,
+                );
+                row.maximum_simultaneous_transient_bytes = crucible_node_contract::U64::new(
+                    row.maximum_simultaneous_transient_bytes
+                        .get()
+                        .max(ingress.maximum_simultaneous_transient_bytes.get()),
+                );
+                row.declared_counter_scratch_bytes = crucible_node_contract::U64::new(
+                    row.declared_counter_scratch_bytes
+                        .get()
+                        .max(ingress.declared_counter_scratch_bytes.get()),
+                );
+                extent(ingress.retained_requested_bytes.get())?
+            } else {
+                0
+            };
             add_row(
                 &mut baseline.quotes[index].rows.private_bootstrap,
                 data.private_retained_requested_bytes(),
@@ -148,7 +184,11 @@ impl InstalledConformancePlan {
                     overlap
                         .with_additional_retained_requested_bytes_data(
                             data.private_retained_requested_bytes(),
-                            data.native_retained_requested_bytes(),
+                            add(
+                                data.native_retained_requested_bytes(),
+                                ingress_retained,
+                                baseline.policy.maximum_requested_bytes,
+                            )?,
                         )
                         .map_err(|_| RuntimeError::ResourceLimit)?,
                 );

@@ -1,6 +1,12 @@
 //! Checks inert prebirth geometry without issuing a ticket, boot or action.
 
 use super::*;
+use crate::reference_packet::service::native_startup::{
+    PACKET_NATIVE_INVOCATION_SOURCE_BINDING_SCHEMA, PACKET_NATIVE_STARTUP_SOURCE_BINDING_SCHEMA,
+    PacketNativeBirthStartupInputs, PacketNativeInvocationPurposeData,
+    original_native_birth_startup_storage_data, original_native_invocation_baseline_storage_data,
+    original_native_invocation_ingress_storage_data,
+};
 use crate::reference_packet::service::*;
 use crucible_node_contract::{Bytes, U64, canonical};
 use serde_json::json;
@@ -388,5 +394,223 @@ fn recurring_quote_recomputes_independent_axes_and_binds_raw_launch_and_closed_b
     assert!(quote.source_evidence_retained_requested_bytes_data() > 0);
     assert!(quote.maximum_restored_record_bytes_data() > 0);
     assert_eq!(quote.maximum_underlying_record_bytes_data(), 65_536);
+    Ok(())
+}
+
+#[test]
+fn original_invocation_declared_restore_grammars_have_no_fresh_ingress() -> TestResult {
+    let launch = launch()?;
+    let purpose = PacketNativeInvocationPurposeData::original_execution_data(&launch)?;
+    // Full immutable grammars remain advertised, but DATA never turns them
+    // into fresh permissions or reachable fresh-only attempt allocations.
+    for feature in [
+        activation::PACKET_RESTORATION_ACTIVATION_FEATURE,
+        restoration_observe::PACKET_RESTORATION_OBSERVE_FEATURE,
+    ] {
+        assert!(
+            launch
+                .selection
+                .provider
+                .extensions_supported
+                .iter()
+                .any(|one| one.as_str() == feature)
+        );
+    }
+    assert!(original_native_invocation_ingress_storage_data(&launch, &purpose, 0)?.is_none());
+
+    let mut foreign = launch;
+    foreign.selection.admission = crucible_node_contract::Id::new("foreign-ingress-admission")?;
+    assert!(
+        original_native_invocation_ingress_storage_data(&foreign, &purpose, usize::MAX).is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn fresh_invocation_ingress_keeps_independent_feature_rows_and_exact_ceiling() -> TestResult {
+    use crate::reference_packet::service::ack_emitter::{
+        original_native_restoration_activation_ingress_row_data,
+        original_native_restoration_observation_ingress_row_data,
+    };
+
+    let mut launch = launch()?;
+    let runtime = canonical::content_ref(b"actual inert runtime bytes", "application/runtime")?;
+    let native = canonical::content_ref(b"actual inert native bytes", "application/native")?;
+    let owner = &launch.selection.realization.owner_bindings[0].owner.id;
+    let purpose = PacketNativeInvocationPurposeData::restoration_target_data(
+        &launch, &runtime, &native, owner,
+    )?;
+    let frame = usize::try_from(launch.limits.frame_bytes.get())?;
+    let activation_row = original_native_restoration_activation_ingress_row_data(frame)?;
+    let observation_row = original_native_restoration_observation_ingress_row_data(frame)?;
+    let features = launch.selection.provider.extensions_supported.clone();
+
+    for (activation_selected, observation_selected) in
+        [(true, true), (true, false), (false, true), (false, false)]
+    {
+        launch.selection.provider.extensions_supported = features
+            .iter()
+            .filter(|feature| {
+                (activation_selected
+                    || feature.as_str() != activation::PACKET_RESTORATION_ACTIVATION_FEATURE)
+                    && (observation_selected
+                        || feature.as_str()
+                            != restoration_observe::PACKET_RESTORATION_OBSERVE_FEATURE)
+            })
+            .cloned()
+            .collect();
+        let quoted =
+            original_native_invocation_ingress_storage_data(&launch, &purpose, usize::MAX)?;
+        let Some(row) = quoted else {
+            assert!(!activation_selected && !observation_selected);
+            assert!(
+                original_native_invocation_ingress_storage_data(&launch, &purpose, 0)?.is_none()
+            );
+            continue;
+        };
+        match (activation_selected, observation_selected) {
+            (true, false) => assert_eq!(row, activation_row),
+            (false, true) => assert_eq!(row, observation_row),
+            (true, true) => {
+                assert_eq!(
+                    row.retained_requested_bytes.get(),
+                    activation_row.retained_requested_bytes.get()
+                        + observation_row.retained_requested_bytes.get()
+                );
+                assert_eq!(
+                    row.maximum_simultaneous_transient_bytes.get(),
+                    activation_row
+                        .maximum_simultaneous_transient_bytes
+                        .get()
+                        .max(observation_row.maximum_simultaneous_transient_bytes.get())
+                );
+                assert_eq!(
+                    row.declared_counter_scratch_bytes.get(),
+                    activation_row
+                        .declared_counter_scratch_bytes
+                        .get()
+                        .max(observation_row.declared_counter_scratch_bytes.get())
+                );
+            }
+            (false, false) => return Err("unselected fresh ingress returned an owner row".into()),
+        }
+        let exact = usize::try_from(row.requested_peak_data()?)?;
+        assert_eq!(
+            original_native_invocation_ingress_storage_data(&launch, &purpose, exact)?,
+            Some(row)
+        );
+        assert!(
+            original_native_invocation_ingress_storage_data(&launch, &purpose, exact - 1).is_err()
+        );
+    }
+    launch.selection.admission =
+        crucible_node_contract::Id::new("foreign-fresh-ingress-admission")?;
+    assert!(
+        original_native_invocation_ingress_storage_data(&launch, &purpose, usize::MAX).is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn original_invocation_native_recount_matches_the_unmodified_host_baseline() -> TestResult {
+    let launch = launch()?;
+    let purpose = PacketNativeInvocationPurposeData::original_execution_data(&launch)?;
+    let raw_launch = canonical::canonical_json(&serde_json::to_value(&launch)?)?;
+    let private_launch = crucible_node_contract::Id::new("inert-original-private-launch")?;
+    // These are full typed launch occurrences in a closed prospective binding,
+    // not a Source/key/ticket or permission to enter the inherited constructor.
+    let mut source = json!({
+        "schema": PACKET_NATIVE_STARTUP_SOURCE_BINDING_SCHEMA,
+        "selection": launch.selection,
+        "program": launch.program,
+        "coordinator": launch.initial_coordinator,
+        "limits": launch.limits,
+        "storage": launch.storage,
+        "capture_profile": launch.capture_profile,
+        "confirmation_selection": launch.confirmation_selection,
+        "ack_emitter_selection": launch.ack_emitter_selection,
+        "codec_metadata_extent": launch.native_codec_metadata_extent,
+        "native_codec_metadata_extent": launch.native_codec_metadata_extent,
+        "protocol_metadata_limits": launch.protocol_metadata_limits,
+        "complete_restore_selection": launch.complete_restore_selection,
+        "restore_input_emitter_selection": launch.restore_input_emitter_selection,
+        "capture_allocation_selection": launch.capture_allocation_selection,
+        "fresh_restore_allocation_selection": launch.fresh_restore_allocation_selection,
+        "report_startup_allocation": null,
+        "native_startup_allocation": null,
+    });
+    let raw_source14 = canonical::canonical_json(&source)?;
+    let registration = canonical::canonical_json(&json!({
+        "schema": "source-owned.packet-canonical-ack-registration/5",
+        "role": "controller",
+        "session_id": launch.selection.realization.bindings[0].authority.session_id,
+        "incarnation_id": launch.selection.realization.bindings[0].authority.incarnation_id,
+        "limits": launch.limits,
+        "features": launch.selection.provider.extensions_supported,
+        "extensions": [],
+        "envelope_extensions": {},
+    }))?;
+    let host_inputs = PacketNativeBirthStartupInputs {
+        launch: &launch,
+        private_launch: &private_launch,
+        encoded_launch: &raw_launch,
+        source_birth: &raw_source14,
+        host_registration: &registration,
+    };
+    let host = original_native_birth_startup_storage_data(&host_inputs, usize::MAX)?;
+    let native_peak = host
+        .retained_requested_bytes()
+        .checked_add(host.maximum_simultaneous_transient_bytes())
+        .and_then(|bytes| bytes.checked_add(host.declared_counter_scratch_bytes()))
+        .ok_or("native baseline extent")?;
+    let private_peak = host
+        .private_bootstrap_retained_requested_bytes()
+        .checked_add(host.private_bootstrap_maximum_simultaneous_transient_bytes())
+        .and_then(|bytes| bytes.checked_add(host.declared_counter_scratch_bytes()))
+        .ok_or("private baseline extent")?;
+    let sealed_baseline_maximum = native_peak.max(private_peak);
+    source["schema"] = json!(PACKET_NATIVE_INVOCATION_SOURCE_BINDING_SCHEMA);
+    source["invocation"] = serde_json::to_value(purpose)?;
+    let raw_source15 = canonical::canonical_json(&source)?;
+    let native_inputs = PacketNativeBirthStartupInputs {
+        source_birth: &raw_source15,
+        ..host_inputs
+    };
+
+    let native = original_native_invocation_baseline_storage_data(
+        &native_inputs,
+        &purpose,
+        sealed_baseline_maximum,
+    )?;
+
+    assert_eq!(
+        native.retained_requested_bytes(),
+        host.retained_requested_bytes()
+    );
+    assert_eq!(
+        native.maximum_simultaneous_transient_bytes(),
+        host.maximum_simultaneous_transient_bytes()
+    );
+    assert_eq!(
+        native.declared_counter_scratch_bytes(),
+        host.declared_counter_scratch_bytes()
+    );
+    assert_eq!(
+        native.private_bootstrap_retained_requested_bytes(),
+        host.private_bootstrap_retained_requested_bytes()
+    );
+    assert_eq!(
+        native.private_bootstrap_maximum_simultaneous_transient_bytes(),
+        host.private_bootstrap_maximum_simultaneous_transient_bytes()
+    );
+    assert!(
+        native_inputs
+            .launch
+            .selection
+            .provider
+            .extensions_supported
+            .iter()
+            .any(|feature| feature.as_str() == activation::PACKET_RESTORATION_ACTIVATION_FEATURE)
+    );
     Ok(())
 }

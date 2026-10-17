@@ -135,6 +135,7 @@ pub fn original_native_birth_startup_counter_scratch_data() -> usize {
     size_of::<crate::reference_packet::service::ack_emitter::OriginalNativeBirthReadScope<'static>>()
         + crate::reference_packet::control::PacketControl::original_native_birth_selection_counter_scratch_data()
         + super::data_equality::counter_scratch_data()
+        + invocation_ingress_counter_scratch_data()
         + retained_overlap::counter_scratch_data()
         + coordinator_decode::counter_scratch_data()
         + decoded::counter_scratch_data()
@@ -230,21 +231,27 @@ pub fn original_native_preflight_birth_startup_storage_data(
     )
 }
 
-// Only the new actual inherited-channel claim uses this source-edition census.
-// It counts the unchanged baseline and leaves the purpose/wrapper additions to
-// the independently named invocation producer, under the SAME admitted rows.
-pub(crate) fn original_native_invocation_baseline_storage_data(
-    input: &PacketNativeBirthStartupInputs<'_>,
+/// Quotes only reachable restoration ingress under a complete invocation target.
+///
+/// Original execution cannot allocate the fresh activation/upload/first-Observe
+/// attempt owners: their actual native preallocation gates reject that purpose.
+/// Fresh targets retain every independently selected ingress row. This DATA does
+/// not authenticate a Source, ticket, bootstrap or request and issues no rights.
+/// The caller credits `original_native_birth_startup_counter_scratch_data` first.
+///
+/// # Errors
+/// Refuses a foreign full target, row overflow or any complete selected ingress
+/// conjunction above the supplied requested-storage ceiling.
+pub fn original_native_invocation_ingress_storage_data(
+    launch: &PacketNative5SourceLaunch,
+    purpose: &super::PacketNativeInvocationPurposeData,
     maximum_requested_bytes: usize,
-) -> Result<PacketNativeBirthStartupStorageData, ProviderError> {
-    let mut row = birth_storage_with_source(
-        input,
-        maximum_requested_bytes,
-        private_bootstrap::project_invocation,
-        false,
-    )?;
-    if input
-        .launch
+) -> Result<Option<super::PacketNativeStartupAllocationRow>, ProviderError> {
+    purpose.authenticate_target_data(launch)?;
+    if purpose.is_original_execution_data() {
+        return Ok(None);
+    }
+    let activation = launch
         .selection
         .provider
         .extensions_supported
@@ -252,58 +259,82 @@ pub(crate) fn original_native_invocation_baseline_storage_data(
         .any(|feature| {
             feature.as_str()
                 == super::super::complete_restore::activation::PACKET_RESTORATION_ACTIVATION_FEATURE
-        })
-    {
-        let ingress =
-            super::super::ack_emitter::original_native_restoration_activation_ingress_row_data(
-                extent(input.launch.limits.frame_bytes.get())?,
-            )?;
-        row.retained_requested_bytes = sum(
-            &[
-                row.retained_requested_bytes,
-                extent(ingress.retained_requested_bytes.get())?,
-            ],
-            maximum_requested_bytes,
-        )?;
-        // The extra ingress is independent retained storage, not another
-        // common owner. Keep the sealed full-row pair aligned with the row
-        // without changing the proven three-owner intersection.
-        row.retained_overlap = row
-            .retained_overlap
-            .with_additional_retained_requested_bytes_data(
-                0,
-                extent(ingress.retained_requested_bytes.get())?,
-            )?;
-        row.maximum_simultaneous_transient_bytes = row
-            .maximum_simultaneous_transient_bytes
-            .max(extent(ingress.maximum_simultaneous_transient_bytes.get())?);
-        row.declared_counter_scratch_bytes = row
-            .declared_counter_scratch_bytes
-            .max(extent(ingress.declared_counter_scratch_bytes.get())?);
-        sum(
-            &[
-                row.retained_requested_bytes,
-                row.maximum_simultaneous_transient_bytes,
-                row.declared_counter_scratch_bytes,
-            ],
-            maximum_requested_bytes,
-        )?;
+        });
+    let observation = launch.selection.provider.extensions_supported.iter().any(|feature| {
+        feature.as_str() == super::super::complete_restore::restoration_observe::PACKET_RESTORATION_OBSERVE_FEATURE
+    });
+    if !activation && !observation {
+        return Ok(None);
     }
-    if input
-        .launch
-        .selection
-        .provider
-        .extensions_supported
-        .iter()
-        .any(|feature| {
-            feature.as_str()
-                == super::super::complete_restore::restoration_observe::PACKET_RESTORATION_OBSERVE_FEATURE
-        })
-    {
-        let ingress =
+    let frame = extent(launch.limits.frame_bytes.get())?;
+    let activation = if activation {
+        Some(
+            super::super::ack_emitter::original_native_restoration_activation_ingress_row_data(
+                frame,
+            )?,
+        )
+    } else {
+        None
+    };
+    let observation = if observation {
+        Some(
             super::super::ack_emitter::original_native_restoration_observation_ingress_row_data(
-                extent(input.launch.limits.frame_bytes.get())?,
-            )?;
+                frame,
+            )?,
+        )
+    } else {
+        None
+    };
+    let row = match (activation, observation) {
+        (Some(activation), Some(observation)) => super::PacketNativeStartupAllocationRow {
+            retained_requested_bytes: crucible_node_contract::U64::new(
+                activation
+                    .retained_requested_bytes
+                    .get()
+                    .checked_add(observation.retained_requested_bytes.get())
+                    .ok_or_else(refused)?,
+            ),
+            maximum_simultaneous_transient_bytes: crucible_node_contract::U64::new(
+                activation
+                    .maximum_simultaneous_transient_bytes
+                    .get()
+                    .max(observation.maximum_simultaneous_transient_bytes.get()),
+            ),
+            declared_counter_scratch_bytes: crucible_node_contract::U64::new(
+                activation
+                    .declared_counter_scratch_bytes
+                    .get()
+                    .max(observation.declared_counter_scratch_bytes.get()),
+            ),
+        },
+        (Some(row), None) | (None, Some(row)) => row,
+        (None, None) => return Ok(None),
+    };
+    if extent(row.requested_peak_data()?)? > maximum_requested_bytes {
+        return Err(refused());
+    }
+    Ok(Some(row))
+}
+
+// Only authenticated invocation15/16 claims use the Source15 census. The same
+// target/purpose producer is prepaid by Core before issuing either member.
+pub(crate) fn original_native_invocation_baseline_storage_data(
+    input: &PacketNativeBirthStartupInputs<'_>,
+    purpose: &super::PacketNativeInvocationPurposeData,
+    maximum_requested_bytes: usize,
+) -> Result<PacketNativeBirthStartupStorageData, ProviderError> {
+    purpose.authenticate_target_data(input.launch)?;
+    let mut row = birth_storage_with_source(
+        input,
+        maximum_requested_bytes,
+        private_bootstrap::project_invocation,
+        false,
+    )?;
+    if let Some(ingress) = original_native_invocation_ingress_storage_data(
+        input.launch,
+        purpose,
+        maximum_requested_bytes,
+    )? {
         row.retained_requested_bytes = sum(
             &[
                 row.retained_requested_bytes,
@@ -311,9 +342,8 @@ pub(crate) fn original_native_invocation_baseline_storage_data(
             ],
             maximum_requested_bytes,
         )?;
-        // The independent seventh ingress is not an intersection owner.
-        // Update both the actual full native row and its sealed carrier;
-        // the original three-owner common subgraph stays unchanged.
+        // Neither independent ingress owner belongs to the original three-owner
+        // intersection. Preserve its full-row seal without enlarging the overlap.
         row.retained_overlap = row
             .retained_overlap
             .with_additional_retained_requested_bytes_data(
@@ -336,6 +366,29 @@ pub(crate) fn original_native_invocation_baseline_storage_data(
         )?;
     }
     Ok(row)
+}
+
+fn invocation_ingress_counter_scratch_data() -> usize {
+    // Full purpose correspondence is borrowed and allocation-free. The two
+    // optional ingress rows coexist through the exhaustive selection match.
+    super::original_native_invocation_counter_scratch_data()
+        + size_of::<&super::PacketNativeInvocationPurposeData>()
+        + size_of::<Result<(), ProviderError>>()
+        + size_of::<Option<super::PacketNativeStartupAllocationRow>>() * 2
+        + size_of::<(
+            Option<super::PacketNativeStartupAllocationRow>,
+            Option<super::PacketNativeStartupAllocationRow>,
+        )>()
+        + size_of::<super::PacketNativeStartupAllocationRow>() * 3
+        + size_of::<Result<super::PacketNativeStartupAllocationRow, ProviderError>>()
+        + size_of::<Result<Option<super::PacketNativeStartupAllocationRow>, ProviderError>>()
+        + size_of::<Option<u64>>()
+        + size_of::<Result<u64, ProviderError>>()
+        + size_of::<std::slice::Iter<'static, crucible_node_contract::Id>>()
+        + size_of::<&crucible_node_contract::Id>()
+        + size_of::<&str>()
+        + size_of::<[bool; 2]>()
+        + size_of::<[usize; 3]>()
 }
 
 fn birth_storage_with_source(

@@ -221,6 +221,7 @@ impl OriginalNativeStartupBootstrap {
                 source_birth: &source_body,
                 host_registration: &host_body,
             },
+            purpose,
             maximum,
         )?;
         let extra = original_native_invocation_construction_storage_data(

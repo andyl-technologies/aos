@@ -1207,6 +1207,33 @@ Rust files pass formatting. Six-crate, all-feature/all-target checking passes in
 correspondence and live Capture17/fresh-loader route remain unfinished.
 The application-target result above covers its earlier committed checkpoint.
 
+### Purpose-bound native restoration ingress
+
+Core and the native invocation recount now use the same complete-target
+projection for restoration ingress. Original execution has no reachable fresh
+activation or first-Observe allocation. Fresh targets retain each independently
+selected ingress row, with retained bytes summed and phase/counter maxima kept.
+Core admits the fresh contribution before Source finalization or Child creation,
+updates the full retained-row seal, and preserves the common-owner intersection.
+All existing policy limits, baseline owners and native effect guards remain.
+
+The normal suites pass 1,753 Core, seven contract and 1,072 provider tests with
+zero failures; 32 Core and thirteen provider tests remain ignored. Three new
+controls cover original host/native baseline parity, all fresh feature
+combinations, exact and insufficient ceilings, and foreign targets. Formatting
+passes for all six code files; the provider rebuild passes in 25.56 seconds.
+Six-crate, all-feature/all-target checking passes in 35.80 seconds.
+
+The clean production startup test still fails, with zero passes and one failure
+in 71.24 seconds; reclamation passes. A subsequent temporary probe confirms
+baseline authentication now passes and identifies the next refusal as
+`Correlation("native report startup original allocation differs")`, 1.798
+seconds into bootstrap. That run has zero passes and one failure in 71.52
+seconds, with reclamation passing. The report validator's combined publisher
+ceiling is under investigation. The complete probe is removed, and a 19.59-second
+production rebuild reproduces its pre-probe executable hash. Native Capture,
+restoration and continuation remain unqualified.
+
 ## Known gaps and exit criteria
 
 Completion requires the full [qualification plan](qualification-plan.md),
