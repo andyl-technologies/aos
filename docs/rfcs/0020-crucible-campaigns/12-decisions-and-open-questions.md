@@ -594,6 +594,44 @@ This preserves the executor's ability to publish immutable content without
 granting it campaign mutation authority and gives direct and loopback paths the
 same canonical completion boundary.
 
+### D-40: Run state has one owner, named the Run Arena, and one event history, named the Run Journal
+
+A run's modeled host state belongs to one Run Arena of typed tables, and its
+event entries belong to one append-only segmented Run Journal. Exact capture,
+hot fork, persist, restore, introspection, and graceful restart are operations
+over those two owners. The campaign-level counterpart is the Campaign Arena.
+The names are fixed so code, metrics, and documentation share one vocabulary.
+
+Rejected: keeping the exact checkpoint set, the hot-fork continuation, and the
+closure wire as separately gathered representations of one field set, and
+keeping per-consumer event-log copies.
+
+### D-41: The arena architecture is a chapter of this RFC
+
+The Run Arena and Run Journal change how the executor realizes the tiers,
+checkpoints, and logs that this RFC already defines, and they reuse its
+requirements, gates, and task plan. They are specified in
+[§16](16-run-arena-and-run-journal.md) rather than in a separate RFC.
+
+### D-42: The arena is built in this repository on safe Rust with persistent collections
+
+Hot tables use persistent ordered collections with structural sharing; growing
+records use chunked tables over the existing content store; identity comes from
+canonical chunks and the StateRoot, never from in-memory node shapes. An
+evicting spill cache may use a pure-Rust embedded store behind a trait.
+
+Rejected: adopting an entity-component system, whose snapshots copy state and
+whose entity IDs are world-local, and using a key-value store as the arena,
+which provides rollback but not cheap writable forks and would duplicate
+identity computation.
+
+### D-43: Memory-mapped and pointer-persistent stores are excluded
+
+LMDB-style memory-mapped environments require `unsafe` at the call site and a
+C dependency, and they make physical layout part of the state. Persistent-memory
+heaps and process-fork snapshots of the daemon have the same problems. None is
+used for arena state.
+
 ## Deliberately rejected representations
 
 The following patterns are outside the design even if they appear convenient
@@ -614,7 +652,9 @@ for a prototype:
 - claims of exhaustive coverage for a progressively widened domain without a
   separately proven finite closure;
 - treating a hot process image as the only durable representation of a branch;
-  and
+- a consumer-owned complete copy of a run's event log, or a checkpoint that
+  embeds log entries instead of referencing a journal position;
+- persisting live descriptors, process IDs, or host paths as run state; and
 - linking the Apache host against QEMU to accelerate the fork path.
 
 ## Open questions to resolve by measurement
@@ -704,6 +744,39 @@ inputs.
 Evidence required: replay and audit exercises showing which facts are needed to
 explain a result without making worker scheduling part of scenario identity.
 
+### OQ-9: How should graceful restart pay the promotion replay floor?
+
+Resume requires a promoted root, and promotion compares the paused root with an
+independently realized thin path that replays the attempt's causal prefix. A
+checkpoint-drain restart therefore costs one full prefix replay per paused
+attempt ([§16.6](16-run-arena-and-run-journal.md#restart-cost-floor)). The
+options are:
+
+1. keep the floor and accept the prefix replay at startup;
+2. promote stride checkpoints in the background while the attempt runs, so a
+   drained root needs only a suffix comparison against a promoted ancestor;
+   this is the recommended option and requires defining promotion by suffix in
+   §05.9 and §04a; or
+3. accept a closure produced by the same daemon identity on the same host
+   without a new comparison, which relaxes the rule that persisted bytes alone
+   cannot authorize a restore.
+
+Evidence required: restart time and guest replay time against attempt length
+for each option, and a soundness argument for options 2 and 3 reviewed against
+the replay-oracle contract.
+
+### OQ-10: When should the ledger and journals move into Campaign Arena tables?
+
+The Campaign Arena starts as a read-only view over the campaign ref, the
+assignment ledger, pins and fallbacks, the hot pool, prepared-result journals,
+and run journals. Moving the ledger and journal indexes into arena tables would
+give the executor's operational state one versioned structure, at the cost of a
+storage migration of crash-critical records.
+
+Evidence required: the read-only view in production use, recovery tests at
+every 04a ordering boundary on the table-backed form, and a measured benefit
+in restart time or code removed.
+
 ## Resolution ownership
 
 Ownership names subsystem roles rather than individuals so the plan remains
@@ -719,6 +792,8 @@ valid across staffing changes:
 | OQ-6 | Campaign projector/supervisor maintainers | T-CAM-4.5, T-CAM-4.6 |
 | OQ-7 | Campaign store maintainers | T-CAM-5.1, T-CAM-5.5, T-CAM-5.7 |
 | OQ-8 | Campaign model, API, and operations maintainers | T-CAM-0.3, T-CAM-1.1, T-CAM-3.4 |
+| OQ-9 | Executor recovery and replay-oracle maintainers | T-CAM-10.8 |
+| OQ-10 | Executor recovery and campaign store maintainers | T-CAM-10.7 |
 
 ## Review exit criterion
 
