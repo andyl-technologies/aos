@@ -160,10 +160,14 @@ impl NinepDevice {
 
     /// Commits one object update to the visibility continuation.
     ///
+    /// `prior_emissions` are the emissions of an event-released update's
+    /// event that the visibility state already consumed; see
+    /// [`NinepVisibilityState::commit`].
+    ///
     /// # Errors
     ///
-    /// Returns [`DeviceError`] for invalid content, conflicting identity, or a
-    /// bounded-state overflow.
+    /// Returns [`DeviceError`] for invalid content, conflicting identity, more
+    /// prior emissions than were consumed, or a bounded-state overflow.
     pub fn commit_visibility_update(
         &mut self,
         key: NinepVisibilityUpdateKey,
@@ -171,6 +175,7 @@ impl NinepDevice {
         policy: NinepVisibilityPolicy,
         release: NinepVisibilityRelease,
         data_lag_nanos: u64,
+        prior_emissions: &[NinepEventEmission],
     ) -> Result<u64, DeviceError> {
         self.visibility.commit(
             key,
@@ -179,22 +184,32 @@ impl NinepDevice {
             release,
             self.session_epoch,
             data_lag_nanos,
+            prior_emissions,
         )
     }
 
-    /// Advances the visible frontier from exact tick and event evidence.
-    /// Event map values use the same tick coordinate as `now_tick`.
+    /// Latches visibility updates from signal emissions appended since the
+    /// last call; see [`NinepVisibilityState::observe_events`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError`] when the emission cursor would overflow.
+    pub fn observe_visibility_events(
+        &mut self,
+        emissions: &[NinepEventEmission],
+    ) -> Result<(), DeviceError> {
+        self.visibility.observe_events(emissions)
+    }
+
+    /// Advances the visible frontier at an exact simulation tick from fixed
+    /// release deadlines and latched event emissions.
     ///
     /// # Errors
     ///
     /// Returns [`DeviceError`] if checkpointed visibility state is inconsistent.
-    pub fn advance_visibility(
-        &mut self,
-        now_tick: u64,
-        observed_events: &BTreeMap<[u8; 32], u64>,
-    ) -> Result<(u64, u64), DeviceError> {
+    pub fn advance_visibility(&mut self, now_tick: u64) -> Result<(u64, u64), DeviceError> {
         self.visibility
-            .advance_visibility(self.session_epoch, now_tick, observed_events)
+            .advance_visibility(self.session_epoch, now_tick)
     }
 
     /// Returns the committed-versus-visible continuation.

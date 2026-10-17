@@ -11,6 +11,7 @@ use super::*;
 
 mod bindings;
 mod media_retirement;
+mod ninep_visibility;
 mod observation_journal;
 mod resource_limits;
 
@@ -34,10 +35,10 @@ use crucible_device::block::{
     ResolvedBlockRequestPersistenceDirective,
 };
 use crucible_device::{
-    FsTree, NinepLatency, NinepObjectVersion, NinepOperation, NinepRequestOpportunity,
-    NinepResultDirective, NinepVisibilityLookup, NinepVisibilityPolicy, NinepVisibilityRelease,
-    NinepVisibilityScope, NinepVisibilityState, NinepVisibilityUpdate, NinepVisibilityUpdateKey,
-    ResolvedNinepRequestDirective,
+    FsTree, NinepEventCoordinate, NinepLatency, NinepObjectVersion, NinepOperation,
+    NinepRequestOpportunity, NinepResultDirective, NinepVisibilityLookup, NinepVisibilityPolicy,
+    NinepVisibilityRelease, NinepVisibilityScope, NinepVisibilityState, NinepVisibilityUpdate,
+    NinepVisibilityUpdateKey, ResolvedNinepRequestDirective,
 };
 use crucible_qemu::{
     ProductionFaultRuntime, QemuAsyncDriverRuntimeError, QemuBlockFaultCoordinator,
@@ -65,6 +66,7 @@ type StorageArrayDirtyRanges = Vec<crucible_device::block::BlockArrayDirtyRange>
 type StorageArrayWriteDestinations = (StorageArrayDestinations, StorageArrayDirtyRanges);
 type DeviceRuntimeError = QemuAsyncDriverRuntimeError;
 type LiveBlockServicer = QemuLiveBlockIoServicer;
+type LiveNinepServicer = QemuLive9pIoServicer;
 
 /// Globally sequenced fault-observation journal shared by every live adapter.
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -82,6 +84,8 @@ pub(super) type ProductionBlockDevices = Arc<Mutex<BTreeMap<ContentHash, QemuSha
 
 struct EvaluatedStoragePhase {
     actions: Vec<ResolvedBindingAction>,
+    /// Exact tick of the evaluated opportunity.
+    coordinate_ticks: u64,
     same_coordinate_sequence: u64,
     journal_sequence: u64,
 }
@@ -766,6 +770,7 @@ impl ProductionBlockFaultCoordinator {
         drop(runtime);
         Ok(EvaluatedStoragePhase {
             actions,
+            coordinate_ticks: opportunity.coordinate().virtual_ticks,
             same_coordinate_sequence: sequence.same_coordinate,
             journal_sequence: sequence.journal,
         })
@@ -1809,6 +1814,10 @@ pub(super) struct ProductionNinepFaultCoordinator {
     world: World,
     target: ResolvedFaultTarget,
     resource_limits: FaultResourceLimits,
+    /// Visibility event cursor whose latches this coordinator has verified
+    /// against the emitted events, or `None` before the first pass and after
+    /// a rollback, which forces verification of a restored continuation.
+    verified_event_cursor: Option<u64>,
 }
 
 impl ProductionNinepFaultCoordinator {
@@ -1828,6 +1837,7 @@ impl ProductionNinepFaultCoordinator {
             world,
             target,
             resource_limits,
+            verified_event_cursor: None,
         }
     }
 
@@ -1952,6 +1962,7 @@ impl ProductionNinepFaultCoordinator {
             .append(sequence.journal, evaluation.observations)?;
         Ok(EvaluatedStoragePhase {
             actions,
+            coordinate_ticks: opportunity.coordinate().virtual_ticks,
             same_coordinate_sequence: sequence.same_coordinate,
             journal_sequence: sequence.journal,
         })
@@ -2068,10 +2079,16 @@ impl ProductionNinepFaultCoordinator {
     fn apply_visibility(
         &self,
         servicer: &mut QemuLive9pIoServicer,
-        actions: &[ResolvedBindingAction],
+        phase: &EvaluatedStoragePhase,
     ) -> Result<Vec<FaultObservation>, QemuAsyncDriverRuntimeError> {
+        // An event release subscribes at the committing evaluation, so only a
+        // strictly later emission releases it, as for block recovery.
+        let subscription = NinepEventCoordinate {
+            ticks: phase.coordinate_ticks,
+            sequence: phase.same_coordinate_sequence,
+        };
         let mut observations = Vec::new();
-        for action in actions {
+        for action in &phase.actions {
             let EffectSpecification::Storage(StorageEffectSpecification::NinePVisibility {
                 update,
                 delay_nanos,
@@ -2097,9 +2114,10 @@ impl ProductionNinepFaultCoordinator {
                         })?;
                     NinepVisibilityRelease::AtTicks(release_tick)
                 }
-                (None, Some(event)) => {
-                    NinepVisibilityRelease::OnEvent(storage_recovery_event_key(event))
-                }
+                (None, Some(event)) => NinepVisibilityRelease::OnEvent {
+                    event: storage_recovery_event_key(event),
+                    after: subscription,
+                },
                 _ => {
                     return Err(storage_error(
                         "apply 9p visibility",
@@ -2127,8 +2145,28 @@ impl ProductionNinepFaultCoordinator {
                 requested,
                 self.resource_limits,
             )?;
+            // Only a new update latches from emissions already consumed; an
+            // idempotent recommit keeps the latch of its first commit.
+            let prior_emissions = match (release, visibility_event) {
+                (
+                    NinepVisibilityRelease::OnEvent {
+                        event: event_key, ..
+                    },
+                    Some(event),
+                ) if requested == 1 => {
+                    self.prior_visibility_emissions(servicer.visibility_state(), event, event_key)?
+                }
+                _ => Vec::new(),
+            };
             let sequence = servicer
-                .commit_visibility_update(key, object.clone(), policy, release, data_lag_nanos)
+                .commit_visibility_update(
+                    key,
+                    object.clone(),
+                    policy,
+                    release,
+                    data_lag_nanos,
+                    &prior_emissions,
+                )
                 .map_err(|error| storage_error("apply 9p visibility", error))?;
             observations.push(FaultObservation {
                 semantic_version: FAULT_RUNTIME_STATE_VERSION,
@@ -2151,104 +2189,6 @@ impl ProductionNinepFaultCoordinator {
             });
         }
         Ok(observations)
-    }
-
-    fn observed_visibility_events(
-        &self,
-        now_ticks: u64,
-    ) -> Result<std::collections::BTreeMap<[u8; 32], u64>, QemuAsyncDriverRuntimeError> {
-        self.runtime
-            .lock()
-            .map_err(|_| {
-                storage_error(
-                    "read 9p visibility events",
-                    "fault runtime lock is poisoned",
-                )
-            })?
-            .emitted_events()
-            .iter()
-            .filter(|event| event.coordinate.virtual_ticks <= now_ticks)
-            .map(|event| {
-                crucible::model::FaultObjectId::parse(event.signal.as_str())
-                    .map(|id| {
-                        (
-                            storage_recovery_event_key(&id),
-                            event.coordinate.virtual_ticks,
-                        )
-                    })
-                    .map_err(|error| storage_error("read 9p visibility events", error))
-            })
-            .collect()
-    }
-
-    fn advance_visibility(
-        &self,
-        servicer: &mut QemuLive9pIoServicer,
-        now_ticks: u64,
-        events: &BTreeMap<[u8; 32], u64>,
-    ) -> Result<(), QemuAsyncDriverRuntimeError> {
-        let session = servicer.visibility_session();
-        let before = servicer.visibility_state().visible_frontier(session);
-        let after = servicer
-            .advance_visibility(now_ticks, events)
-            .map_err(|error| storage_error("advance 9p visibility", error))?;
-        if before == after {
-            return Ok(());
-        }
-        // Updates below the compaction floor survive only as lookup residue.
-        // A newly negotiated session passes them as one jump to the floor,
-        // which the evidence records instead of enumerating them.
-        let state = servicer.visibility_state();
-        let floor = state.compacted_frontier();
-        let mut updates = BTreeMap::new();
-        for (start, end) in [(before.0, after.0), (before.1, after.1)] {
-            let advanced = state
-                .updates_between(start.max(floor), end)
-                .map_err(|error| storage_error("advance 9p visibility", error))?;
-            updates.extend(advanced.into_iter().map(|update| (update.sequence, update)));
-        }
-        let updates = updates.into_values().collect::<Vec<_>>();
-        let evidence = ninep_visibility_advance_evidence(
-            session,
-            before,
-            after,
-            now_ticks,
-            events,
-            &updates,
-            servicer.visibility_state(),
-        );
-        let mut cursor = self.cursor.lock().map_err(|_| {
-            storage_error(
-                "sequence 9p visibility advancement",
-                "production fault evaluation cursor lock is poisoned",
-            )
-        })?;
-        let cursor_before = *cursor;
-        let sequence = cursor
-            .next_sequence(now_ticks)
-            .map_err(|error| storage_error("sequence 9p visibility advancement", error))?;
-        let observation = FaultObservation {
-            semantic_version: FAULT_RUNTIME_STATE_VERSION,
-            kind: FaultObservationKind::EffectApplied,
-            coordinate: FaultCoordinate {
-                virtual_ticks: now_ticks,
-                retired_instructions: None,
-            },
-            binding: None,
-            target: Some(self.target.clone()),
-            opportunity: None,
-            evidence,
-        };
-        if let Err(error) = self
-            .observations
-            .lock()
-            .map_err(|_| storage_error("record 9p visibility advancement", "journal is poisoned"))?
-            .append(sequence.journal, vec![observation])
-        {
-            *cursor = cursor_before;
-            return Err(error);
-        }
-        Ok(())
     }
 
     fn visibility_data_lag(
@@ -2295,8 +2235,8 @@ impl ProductionNinepFaultCoordinator {
             self.resource_limits,
         )?;
         let now_ticks = guest_icount;
-        let events = self.observed_visibility_events(now_ticks)?;
-        self.advance_visibility(servicer, now_ticks, &events)?;
+        self.feed_visibility_events(servicer)?;
+        self.advance_visibility(servicer, now_ticks)?;
 
         let mut result = QemuLive9pIoServiceStep {
             next_completion_icount: servicer.next_completion_icount(),
@@ -2309,7 +2249,7 @@ impl ProductionNinepFaultCoordinator {
                 FaultPhase::Visibility,
                 *completion_icount,
             )?)?;
-            let applied = self.apply_visibility(servicer, &visibility.actions)?;
+            let applied = self.apply_visibility(servicer, &visibility)?;
             self.observations
                 .lock()
                 .map_err(|_| storage_error("record 9p visibility", "journal is poisoned"))?
@@ -2319,7 +2259,7 @@ impl ProductionNinepFaultCoordinator {
                 FaultPhase::Deliver,
                 *completion_icount,
             )?)?;
-            let applied = self.apply_visibility(servicer, &deliver.actions)?;
+            let applied = self.apply_visibility(servicer, &deliver)?;
             self.observations
                 .lock()
                 .map_err(|_| storage_error("record 9p delivery", "journal is poisoned"))?
@@ -2416,7 +2356,7 @@ impl ProductionNinepFaultCoordinator {
                 FaultPhase::Persist,
                 pin.opportunity.request_icount,
             )?)?;
-            let applied = self.apply_visibility(servicer, &persist.actions)?;
+            let applied = self.apply_visibility(servicer, &persist)?;
             self.observations
                 .lock()
                 .map_err(|_| storage_error("record 9p persistence", "journal is poisoned"))?
@@ -2507,6 +2447,8 @@ impl QemuNinepFaultCoordinator for ProductionNinepFaultCoordinator {
         if shared_commit_started {
             return Err(fail_after_shared_ninep_commit(&self.runtime, error));
         }
+        // The rolled-back continuation may hold an earlier event cursor.
+        self.verified_event_cursor = None;
         let mut rollback_failures = Vec::new();
         if let Err(rollback) = servicer.rollback_transaction(servicer_before) {
             rollback_failures.push(format!("servicer rollback failed: {rollback}"));

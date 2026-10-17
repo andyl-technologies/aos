@@ -20,10 +20,20 @@
 //! phase, target, and update object that install visibility updates; its
 //! generation advances with every new installing action, so a superseded
 //! action can never recur and only the newest identity per slot is retained.
+//!
+//! Release timing lives in the `release` submodule: time deadlines, data lag,
+//! and the latch through which an event-released update records the first
+//! emission of its event after its commit.
 
 use std::collections::BTreeSet;
 
 use super::*;
+
+#[path = "visibility_release.rs"]
+mod release;
+
+pub use release::{NinepEventCoordinate, NinepEventEmission};
+use release::{data_deadline, event_subscription, release_coordinate, released_for_every_session};
 
 /// Visibility scope for a committed object update.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -54,8 +64,19 @@ pub enum NinepVisibilityRelease {
     AtNanos(u64),
     /// Becomes visible at this exact simulation tick.
     AtTicks(u64),
-    /// Becomes visible after this signal event identity is observed.
-    OnEvent([u8; 32]),
+    /// Becomes visible at the first emission of `event` strictly after
+    /// `after`, the coordinate of the committing evaluation. A re-emission
+    /// never moves that release coordinate.
+    OnEvent {
+        /// Content identity of the subscribed signal event.
+        event: [u8; 32],
+        /// Coordinate of the committing evaluation.
+        ///
+        /// The first commit of an update fixes it. Recommitting the same
+        /// identity from a later opportunity carries a later coordinate, so
+        /// it is excluded from the committed content digest.
+        after: NinepEventCoordinate,
+    },
 }
 
 /// Authored identity under which one action commits a visibility update.
@@ -90,6 +111,11 @@ pub struct NinepVisibilityUpdate {
     pub writer_session: u64,
     /// Additional delay between metadata and data visibility.
     pub data_lag_nanos: u64,
+    /// Emission that releases an event-released update, once observed.
+    ///
+    /// It is the earliest emission of the subscribed event strictly after the
+    /// subscription coordinate, and it is always absent for time releases.
+    pub event_latch: Option<NinepEventCoordinate>,
 }
 
 impl NinepVisibilityUpdate {
@@ -114,11 +140,14 @@ pub struct NinepVisibilityState {
     next_sequence: u64,
     base_sequence: u64,
     release_tick: u64,
+    event_cursor: u64,
     session: Option<NinepVisibilitySession>,
     updates: BTreeMap<u64, NinepVisibilityUpdate>,
     compacted: BTreeMap<String, NinepCompactedPath>,
     identities: BTreeMap<[u8; 32], NinepSlotIdentity>,
     live_paths: BTreeMap<String, BTreeSet<u64>>,
+    /// Live event-released update sequences by subscribed event.
+    event_subscribers: BTreeMap<[u8; 32], BTreeSet<u64>>,
 }
 
 /// Metadata and data frontiers of the only retained session.
@@ -185,6 +214,7 @@ struct NinepVisibilityStateWire {
     next_sequence: u64,
     base_sequence: u64,
     release_tick: u64,
+    event_cursor: u64,
     session: Option<NinepVisibilitySession>,
     updates: BTreeMap<u64, NinepVisibilityUpdate>,
     compacted: BTreeMap<String, NinepCompactedPath>,
@@ -196,6 +226,7 @@ struct NinepVisibilityStateRef<'a> {
     next_sequence: u64,
     base_sequence: u64,
     release_tick: u64,
+    event_cursor: u64,
     session: &'a Option<NinepVisibilitySession>,
     updates: &'a BTreeMap<u64, NinepVisibilityUpdate>,
     compacted: &'a BTreeMap<String, NinepCompactedPath>,
@@ -208,6 +239,7 @@ impl serde::Serialize for NinepVisibilityState {
             next_sequence: self.next_sequence,
             base_sequence: self.base_sequence,
             release_tick: self.release_tick,
+            event_cursor: self.event_cursor,
             session: &self.session,
             updates: &self.updates,
             compacted: &self.compacted,
@@ -222,21 +254,30 @@ impl TryFrom<NinepVisibilityStateWire> for NinepVisibilityState {
 
     fn try_from(wire: NinepVisibilityStateWire) -> Result<Self, Self::Error> {
         let mut live_paths = BTreeMap::<String, BTreeSet<u64>>::new();
+        let mut event_subscribers = BTreeMap::<[u8; 32], BTreeSet<u64>>::new();
         for (sequence, update) in &wire.updates {
             live_paths
                 .entry(update.object.path.clone())
                 .or_default()
                 .insert(*sequence);
+            if let Some((event, _after)) = event_subscription(update) {
+                event_subscribers
+                    .entry(event)
+                    .or_default()
+                    .insert(*sequence);
+            }
         }
         let state = Self {
             next_sequence: wire.next_sequence,
             base_sequence: wire.base_sequence,
             release_tick: wire.release_tick,
+            event_cursor: wire.event_cursor,
             session: wire.session,
             updates: wire.updates,
             compacted: wire.compacted,
             identities: wire.identities,
             live_paths,
+            event_subscribers,
         };
         state.validate()?;
         Ok(state)
@@ -360,6 +401,7 @@ impl NinepVisibilityState {
     fn validate_live_updates(&self) -> Result<(), DeviceError> {
         let mut update_ids = BTreeSet::new();
         let mut slot_generations = BTreeMap::<[u8; 32], u64>::new();
+        let mut event_released = 0_usize;
         for (sequence, update) in &self.updates {
             update.object.validate()?;
             if *sequence != update.sequence
@@ -371,6 +413,30 @@ impl NinepVisibilityState {
                     .is_some_and(|sequences| sequences.contains(sequence))
             {
                 return Err(invalid("9p visibility checkpoint update is inconsistent"));
+            }
+            // A latch must lie strictly after its commit. Whether an emission
+            // really produced it is checked against the emitted events by
+            // `verify_event_latches`, which this state cannot see.
+            match event_subscription(update) {
+                Some((event, after)) => {
+                    event_released += 1;
+                    if update.event_latch.is_some_and(|latched| latched <= after)
+                        || !self
+                            .event_subscribers
+                            .get(&event)
+                            .is_some_and(|sequences| sequences.contains(sequence))
+                    {
+                        return Err(invalid(
+                            "9p visibility checkpoint event latch precedes its commit",
+                        ));
+                    }
+                }
+                None if update.event_latch.is_some() => {
+                    return Err(invalid(
+                        "9p visibility checkpoint latches a time-released update",
+                    ));
+                }
+                None => {}
             }
             let previous = slot_generations.insert(update.key.slot, update.key.generation);
             if previous.is_some_and(|generation| generation >= update.key.generation) {
@@ -388,7 +454,12 @@ impl NinepVisibilityState {
             }
         }
         let indexed = self.live_paths.values().map(BTreeSet::len).sum::<usize>();
-        if indexed != self.updates.len() {
+        let subscribed = self
+            .event_subscribers
+            .values()
+            .map(BTreeSet::len)
+            .sum::<usize>();
+        if indexed != self.updates.len() || subscribed != event_released {
             return Err(invalid("9p visibility path index is inconsistent"));
         }
         Ok(())
@@ -450,11 +521,23 @@ impl NinepVisibilityState {
     /// Recommitting the newest identity of a slot with byte-identical content
     /// returns its original sequence, even after that update was compacted.
     ///
+    /// A new event-released update latches from `prior_emissions`, which must
+    /// hold every emission of its event among the first
+    /// [`NinepVisibilityState::event_cursor`] fault-runtime emissions; other
+    /// emissions are ignored. Later emissions reach it through
+    /// [`NinepVisibilityState::observe_events`].
+    ///
     /// # Errors
     ///
     /// Returns [`DeviceError`] for malformed objects, a reused identity with
-    /// differing content, a slot generation that does not advance, sequence
-    /// overflow, or the hard retained-version bound.
+    /// differing content, a slot generation that does not advance, more prior
+    /// emissions than the cursor consumed, sequence overflow, or the hard
+    /// retained-version bound.
+    // crucible-lint: allow rust-allow -- one commit validates identity, object, policy, release, writer, lag, and prior emissions atomically.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one commit validates identity, object, policy, release, writer, lag, and prior emissions atomically"
+    )]
     pub fn commit(
         &mut self,
         key: NinepVisibilityUpdateKey,
@@ -463,11 +546,17 @@ impl NinepVisibilityState {
         release: NinepVisibilityRelease,
         writer_session: u64,
         data_lag_nanos: u64,
+        prior_emissions: &[NinepEventEmission],
     ) -> Result<u64, DeviceError> {
         object.validate()?;
         if policy.atomic_metadata_and_data != (data_lag_nanos == 0) {
             return Err(invalid(
                 "9p metadata/data atomicity disagrees with data lag",
+            ));
+        }
+        if !u64::try_from(prior_emissions.len()).is_ok_and(|count| count <= self.event_cursor) {
+            return Err(invalid(
+                "9p visibility prior emissions exceed the event cursor",
             ));
         }
         let content =
@@ -529,8 +618,16 @@ impl NinepVisibilityState {
                 release,
                 writer_session,
                 data_lag_nanos,
+                event_latch: None,
             },
         );
+        if let NinepVisibilityRelease::OnEvent { event, .. } = release {
+            self.event_subscribers
+                .entry(event)
+                .or_default()
+                .insert(sequence);
+            self.latch_prior_emissions(sequence, prior_emissions);
+        }
         if !self.contains_session(writer_session) {
             self.session = Some(NinepVisibilitySession {
                 session: writer_session,
@@ -542,14 +639,16 @@ impl NinepVisibilityState {
     }
 
     /// Advances the contiguous visible frontier at an exact simulation tick.
-    /// Observed event coordinates are exact ticks; absolute nanosecond release
+    /// Latched event coordinates are exact ticks; absolute nanosecond release
     /// boundaries and data-lag durations are scaled before comparison.
     ///
     /// Advancing a session other than the retained one retires the retained
     /// session's frontiers. Before advancing, updates below both the session's
     /// prior data frontier and the globally released prefix are compacted.
-    /// Callers supply a non-decreasing `now_tick` and an event map from which
-    /// observed events are never removed; the compaction proof relies on both.
+    /// Callers supply a non-decreasing `now_tick` and feed new emissions
+    /// through [`NinepVisibilityState::observe_events`] first. The compaction
+    /// proof relies on that clock and on release coordinates never moving
+    /// later.
     ///
     /// # Errors
     ///
@@ -560,13 +659,12 @@ impl NinepVisibilityState {
         &mut self,
         session: u64,
         now_tick: u64,
-        observed_events: &BTreeMap<[u8; 32], u64>,
     ) -> Result<(u64, u64), DeviceError> {
         if now_tick < self.release_tick {
             return Err(invalid("9p visibility clock precedes its compaction proof"));
         }
         self.retire_sessions_except(session);
-        self.compact(now_tick, observed_events);
+        self.compact(now_tick);
 
         // A session below the floor has not advanced yet. Every compacted
         // update is released for every session, so it starts at the floor.
@@ -578,8 +676,7 @@ impl NinepVisibilityState {
             ))?;
             let ready = update.policy.scope == NinepVisibilityScope::WriterImmediate
                 && update.writer_session == session
-                || release_coordinate(update.release, observed_events)?
-                    .is_some_and(|coordinate| now_tick >= coordinate);
+                || release_coordinate(update)?.is_some_and(|coordinate| now_tick >= coordinate);
             if !ready {
                 break;
             }
@@ -597,7 +694,7 @@ impl NinepVisibilityState {
             {
                 true
             } else {
-                data_deadline(update, observed_events)?.is_some_and(|deadline| now_tick >= deadline)
+                data_deadline(update)?.is_some_and(|deadline| now_tick >= deadline)
             };
             if !ready {
                 break;
@@ -620,13 +717,14 @@ impl NinepVisibilityState {
     /// below it are visible to the current session and would be passed by
     /// any later session's first advance, so only their lookup residue
     /// matters.
-    fn compact(&mut self, now_tick: u64, observed_events: &BTreeMap<[u8; 32], u64>) {
+    fn compact(&mut self, now_tick: u64) {
         let data_frontier = self.session.map_or(0, |retained| retained.data);
         let mut floor = self.base_sequence;
         while floor < data_frontier {
-            let released = self.updates.get(&floor).is_some_and(|update| {
-                released_for_every_session(update, now_tick, observed_events)
-            });
+            let released = self
+                .updates
+                .get(&floor)
+                .is_some_and(|update| released_for_every_session(update, now_tick));
             if !released {
                 break;
             }
@@ -643,6 +741,14 @@ impl NinepVisibilityState {
                 sequences.remove(&sequence);
                 if sequences.is_empty() {
                     self.live_paths.remove(&update.object.path);
+                }
+            }
+            if let Some((event, _after)) = event_subscription(&update)
+                && let Some(sequences) = self.event_subscribers.get_mut(&event)
+            {
+                sequences.remove(&sequence);
+                if sequences.is_empty() {
+                    self.event_subscribers.remove(&event);
                 }
             }
             let version = NinepCompactedVersion {
@@ -816,61 +922,6 @@ impl NinepVisibilityState {
     }
 }
 
-fn release_coordinate(
-    release: NinepVisibilityRelease,
-    observed_events: &BTreeMap<[u8; 32], u64>,
-) -> Result<Option<u64>, DeviceError> {
-    match release {
-        NinepVisibilityRelease::AtNanos(deadline) => Ok(Some(crate::ns_to_tick(deadline)?)),
-        NinepVisibilityRelease::AtTicks(deadline) => Ok(Some(deadline)),
-        NinepVisibilityRelease::OnEvent(event) => Ok(observed_events.get(&event).copied()),
-    }
-}
-
-/// Returns the tick at which an update's bytes become visible to a session
-/// that does not own it, or `None` while its release event is unobserved.
-fn data_deadline(
-    update: &NinepVisibilityUpdate,
-    observed_events: &BTreeMap<[u8; 32], u64>,
-) -> Result<Option<u64>, DeviceError> {
-    let Some(coordinate) = release_coordinate(update.release, observed_events)? else {
-        return Ok(None);
-    };
-    let lag_ticks = update
-        .data_lag_nanos
-        .checked_mul(crucible_shmem::TICKS_PER_NS)
-        .ok_or(invalid(
-            "9p data visibility lag exceeds simulation tick range",
-        ))?;
-    coordinate
-        .checked_add(lag_ticks)
-        .map(Some)
-        .ok_or(invalid("9p data visibility deadline overflow"))
-}
-
-/// Returns whether every present and future session would pass `update` at
-/// `now_tick` or any later tick, independently of writer-immediate scope.
-///
-/// Data readiness implies metadata readiness, because the data deadline never
-/// precedes the release coordinate. An event-released update with a data lag
-/// stays live: a re-emitted event moves its observed coordinate later, which
-/// can move its data deadline past a later tick. Range and overflow failures
-/// also stay live, so the session that reaches them reports the same error it
-/// would without compaction.
-fn released_for_every_session(
-    update: &NinepVisibilityUpdate,
-    now_tick: u64,
-    observed_events: &BTreeMap<[u8; 32], u64>,
-) -> bool {
-    if matches!(update.release, NinepVisibilityRelease::OnEvent(_)) && update.data_lag_nanos > 0 {
-        return false;
-    }
-    data_deadline(update, observed_events)
-        .ok()
-        .flatten()
-        .is_some_and(|deadline| now_tick >= deadline)
-}
-
 /// Digests every committed field that idempotent recommits must reproduce.
 fn update_content_digest(
     object: &NinepObjectVersion,
@@ -915,7 +966,9 @@ fn update_content_digest(
             hasher.update(&[1]);
             hasher.update(&ticks.to_le_bytes());
         }
-        NinepVisibilityRelease::OnEvent(event) => {
+        // The first commit fixes the subscription coordinate, so it is not
+        // content: an idempotent recommit from a later opportunity must match.
+        NinepVisibilityRelease::OnEvent { event, after: _ } => {
             hasher.update(&[2]);
             hasher.update(&event);
         }
@@ -926,5 +979,13 @@ fn update_content_digest(
 }
 
 #[cfg(test)]
+#[path = "visibility_test_support.rs"]
+mod test_support;
+
+#[cfg(test)]
 #[path = "visibility_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "visibility_release_tests.rs"]
+mod release_tests;

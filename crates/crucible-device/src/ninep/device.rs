@@ -34,9 +34,9 @@ use crate::subnode::{IoCore, IoCoreSnapshot, IoSubNode, ShmemDeliveryResult, Shm
 
 use super::codec::{self, GetattrReply, Message, Qid, QidType, TMessage};
 use super::fault::{
-    NinepObjectVersion, NinepRequestIdentity, NinepResultDirective, NinepVisibilityLookup,
-    NinepVisibilityPolicy, NinepVisibilityRelease, NinepVisibilityState, NinepVisibilityUpdateKey,
-    ResolvedNinepRequestDirective,
+    NinepEventEmission, NinepObjectVersion, NinepRequestIdentity, NinepResultDirective,
+    NinepVisibilityLookup, NinepVisibilityPolicy, NinepVisibilityRelease, NinepVisibilityState,
+    NinepVisibilityUpdateKey, ResolvedNinepRequestDirective,
 };
 use super::server::{MAX_MSIZE, MIN_MSIZE, NinepServer, NinepServerSnapshot};
 use super::tree::{FsTree, Node};

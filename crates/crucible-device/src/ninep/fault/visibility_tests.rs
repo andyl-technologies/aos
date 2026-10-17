@@ -1,76 +1,14 @@
 //! Compaction, session retirement, and slot-identity tests for 9p visibility.
 //!
 //! The randomized equivalence test drives the compacting state and an
-//! uncompacted reference model through identical commit, advance, and version
-//! negotiation sequences and requires identical lookups and frontiers for the
-//! current session and for a freshly negotiated one.
+//! uncompacted reference model through identical commit, emission, advance,
+//! version negotiation, and checkpoint restore sequences and requires
+//! identical lookups and frontiers for the current session and for a freshly
+//! negotiated one. The reference resolves event releases from the complete
+//! emission log, so it checks the state's latches and emission cursor.
 
+use super::test_support::*;
 use super::*;
-
-fn key(slot: u8, generation: u64) -> NinepVisibilityUpdateKey {
-    let mut update_id = [slot; 32];
-    update_id[..8].copy_from_slice(&generation.to_le_bytes());
-    NinepVisibilityUpdateKey {
-        slot: [slot; 32],
-        update_id,
-        generation,
-    }
-}
-
-fn file(path: &str, version: u32, data: &[u8]) -> NinepObjectVersion {
-    NinepObjectVersion {
-        path: path.to_owned(),
-        version,
-        mode: 0o100_644,
-        data: data.to_vec(),
-        deleted: false,
-    }
-}
-
-fn deletion(path: &str, version: u32) -> NinepObjectVersion {
-    NinepObjectVersion {
-        path: path.to_owned(),
-        version,
-        mode: 0,
-        data: Vec::new(),
-        deleted: true,
-    }
-}
-
-fn atomic(scope: NinepVisibilityScope) -> NinepVisibilityPolicy {
-    NinepVisibilityPolicy {
-        scope,
-        atomic_metadata_and_data: true,
-        retain_deleted_objects: false,
-    }
-}
-
-fn split(scope: NinepVisibilityScope) -> NinepVisibilityPolicy {
-    NinepVisibilityPolicy {
-        scope,
-        atomic_metadata_and_data: false,
-        retain_deleted_objects: false,
-    }
-}
-
-fn ok<T>(result: Result<T, DeviceError>) -> T {
-    result.unwrap_or_else(|error| panic!("visibility operation failed: {error}"))
-}
-
-fn round_trip(state: &NinepVisibilityState) -> NinepVisibilityState {
-    let mut bytes = Vec::new();
-    ciborium::ser::into_writer(state, &mut bytes)
-        .unwrap_or_else(|error| panic!("encode visibility state: {error}"));
-    let decoded: NinepVisibilityState = ciborium::de::from_reader(bytes.as_slice())
-        .unwrap_or_else(|error| panic!("decode visibility state: {error}"));
-    let mut reencoded = Vec::new();
-    ciborium::ser::into_writer(&decoded, &mut reencoded)
-        .unwrap_or_else(|error| panic!("re-encode visibility state: {error}"));
-    assert_eq!(reencoded, bytes, "visibility encoding is canonical");
-    decoded
-}
-
-const NO_EVENTS: &BTreeMap<[u8; 32], u64> = &BTreeMap::new();
 
 #[test]
 fn repeated_released_updates_compact_to_one_version_per_path() {
@@ -83,10 +21,11 @@ fn repeated_released_updates_compact_to_one_version_per_path() {
             NinepVisibilityRelease::AtTicks(u64::from(version)),
             0,
             0,
+            &[],
         ));
-        ok(state.advance_visibility(0, u64::from(version), NO_EVENTS));
+        ok(state.advance_visibility(0, u64::from(version)));
     }
-    ok(state.advance_visibility(0, 64, NO_EVENTS));
+    ok(state.advance_visibility(0, 64));
 
     assert_eq!(state.committed_frontier(), 64);
     assert_eq!(state.compacted_frontier(), 64);
@@ -108,6 +47,7 @@ fn compacted_deletion_keeps_prior_bytes_for_split_data_visibility() {
         NinepVisibilityRelease::AtTicks(0),
         0,
         0,
+        &[],
     ));
     ok(state.commit(
         key(2, 1),
@@ -119,9 +59,10 @@ fn compacted_deletion_keeps_prior_bytes_for_split_data_visibility() {
         NinepVisibilityRelease::AtTicks(0),
         0,
         0,
+        &[],
     ));
-    ok(state.advance_visibility(0, 0, NO_EVENTS));
-    ok(state.advance_visibility(0, 0, NO_EVENTS));
+    ok(state.advance_visibility(0, 0));
+    ok(state.advance_visibility(0, 0));
     assert_eq!(state.compacted_frontier(), 2);
     assert_eq!(state.object_version_count(), 2);
     assert_eq!(state.lookup_object(0, "/a"), NinepVisibilityLookup::Deleted);
@@ -135,8 +76,9 @@ fn compacted_deletion_keeps_prior_bytes_for_split_data_visibility() {
         NinepVisibilityRelease::AtTicks(10),
         0,
         5,
+        &[],
     ));
-    ok(state.advance_visibility(0, 10, NO_EVENTS));
+    ok(state.advance_visibility(0, 10));
     let visible = state
         .visible_object(0, "/a")
         .unwrap_or_else(|| panic!("recreated object is visible"));
@@ -155,11 +97,12 @@ fn recommit_after_compaction_returns_the_original_sequence() {
             NinepVisibilityRelease::AtTicks(0),
             0,
             0,
+            &[],
         )
     };
     assert_eq!(ok(commit(&mut state, b"one")), 0);
-    ok(state.advance_visibility(0, 0, NO_EVENTS));
-    ok(state.advance_visibility(0, 0, NO_EVENTS));
+    ok(state.advance_visibility(0, 0));
+    ok(state.advance_visibility(0, 0));
     assert_eq!(state.compacted_frontier(), 1);
 
     assert!(state.contains_update(&first));
@@ -179,6 +122,7 @@ fn superseded_slot_generation_fails_closed() {
             NinepVisibilityRelease::AtTicks(0),
             0,
             0,
+            &[],
         )
     };
     assert_eq!(ok(commit(&mut state, key(1, 2))), 0);
@@ -201,11 +145,12 @@ fn identity_reused_by_a_later_session_fails_closed() {
             NinepVisibilityRelease::AtTicks(0),
             writer,
             0,
+            &[],
         )
     };
     ok(commit(&mut state, 0));
-    ok(state.advance_visibility(0, 0, NO_EVENTS));
-    ok(state.advance_visibility(0, 0, NO_EVENTS));
+    ok(state.advance_visibility(0, 0));
+    ok(state.advance_visibility(0, 0));
     assert_eq!(state.compacted_frontier(), 1);
 
     // The writer session is part of the committed content, so reapplying the
@@ -223,6 +168,7 @@ fn unreleased_writer_immediate_update_stops_compaction() {
         NinepVisibilityRelease::AtTicks(1_000),
         3,
         0,
+        &[],
     ));
     ok(state.commit(
         key(2, 1),
@@ -231,42 +177,19 @@ fn unreleased_writer_immediate_update_stops_compaction() {
         NinepVisibilityRelease::AtTicks(0),
         3,
         0,
+        &[],
     ));
-    assert_eq!(ok(state.advance_visibility(3, 10, NO_EVENTS)), (2, 2));
-    ok(state.advance_visibility(3, 10, NO_EVENTS));
+    assert_eq!(ok(state.advance_visibility(3, 10)), (2, 2));
+    ok(state.advance_visibility(3, 10));
     assert_eq!(state.compacted_frontier(), 0);
 
     // Another session must still wait for the writer-immediate release.
     state.retire_sessions_except(4);
-    assert_eq!(ok(state.advance_visibility(4, 10, NO_EVENTS)), (0, 0));
+    assert_eq!(ok(state.advance_visibility(4, 10)), (0, 0));
     assert_eq!(state.visible_object(4, "/b"), None);
-    assert_eq!(ok(state.advance_visibility(4, 1_000, NO_EVENTS)), (2, 2));
-    ok(state.advance_visibility(4, 1_000, NO_EVENTS));
+    assert_eq!(ok(state.advance_visibility(4, 1_000)), (2, 2));
+    ok(state.advance_visibility(4, 1_000));
     assert_eq!(state.compacted_frontier(), 2);
-}
-
-#[test]
-fn event_release_with_data_lag_is_never_compacted() {
-    let mut state = NinepVisibilityState::default();
-    let event = [9; 32];
-    ok(state.commit(
-        key(1, 1),
-        file("/a", 1, b"lagged"),
-        split(NinepVisibilityScope::Global),
-        NinepVisibilityRelease::OnEvent(event),
-        0,
-        1,
-    ));
-    let events = BTreeMap::from([(event, 5)]);
-    assert_eq!(ok(state.advance_visibility(0, 1_005, &events)), (1, 1));
-    ok(state.advance_visibility(0, 50_000, &events));
-    assert_eq!(state.compacted_frontier(), 0);
-
-    // A re-emitted event moves the observed coordinate, so a new session
-    // re-evaluates the data deadline exactly as the uncompacted state would.
-    state.retire_sessions_except(1);
-    let reemitted = BTreeMap::from([(event, 49_500)]);
-    assert_eq!(ok(state.advance_visibility(1, 50_000, &reemitted)), (1, 0));
 }
 
 #[test]
@@ -279,15 +202,16 @@ fn new_session_sees_compacted_state_only_after_its_first_advance() {
         NinepVisibilityRelease::AtTicks(0),
         0,
         0,
+        &[],
     ));
-    ok(state.advance_visibility(0, 0, NO_EVENTS));
-    ok(state.advance_visibility(0, 0, NO_EVENTS));
+    ok(state.advance_visibility(0, 0));
+    ok(state.advance_visibility(0, 0));
     assert_eq!(state.compacted_frontier(), 1);
 
     state.retire_sessions_except(1);
     assert_eq!(state.session_count(), 0);
     assert_eq!(state.lookup_object(1, "/a"), NinepVisibilityLookup::Base);
-    assert_eq!(ok(state.advance_visibility(1, 0, NO_EVENTS)), (1, 1));
+    assert_eq!(ok(state.advance_visibility(1, 0)), (1, 1));
     assert!(state.visible_object(1, "/a").is_some());
 }
 
@@ -302,9 +226,10 @@ fn folded_updates_are_unavailable_individually() {
             NinepVisibilityRelease::AtTicks(0),
             0,
             0,
+            &[],
         ));
     }
-    ok(state.advance_visibility(0, 0, NO_EVENTS));
+    ok(state.advance_visibility(0, 0));
     ok(state.commit(
         key(4, 1),
         file("/a", 4, b"x"),
@@ -312,8 +237,9 @@ fn folded_updates_are_unavailable_individually() {
         NinepVisibilityRelease::AtTicks(5),
         0,
         0,
+        &[],
     ));
-    ok(state.advance_visibility(0, 0, NO_EVENTS));
+    ok(state.advance_visibility(0, 0));
     assert_eq!(state.compacted_frontier(), 3);
 
     assert!(state.updates_between(2, 4).is_err());
@@ -332,11 +258,12 @@ fn clock_regression_below_the_compaction_proof_fails_closed() {
         NinepVisibilityRelease::AtTicks(10),
         0,
         0,
+        &[],
     ));
-    ok(state.advance_visibility(0, 10, NO_EVENTS));
-    ok(state.advance_visibility(0, 20, NO_EVENTS));
+    ok(state.advance_visibility(0, 10));
+    ok(state.advance_visibility(0, 20));
     assert_eq!(state.compacted_frontier(), 1);
-    assert!(state.advance_visibility(0, 19, NO_EVENTS).is_err());
+    assert!(state.advance_visibility(0, 19).is_err());
 }
 
 #[test]
@@ -349,9 +276,10 @@ fn decoded_state_rejects_inconsistent_compaction_records() {
         NinepVisibilityRelease::AtTicks(0),
         0,
         0,
+        &[],
     ));
-    ok(state.advance_visibility(0, 0, NO_EVENTS));
-    ok(state.advance_visibility(0, 0, NO_EVENTS));
+    ok(state.advance_visibility(0, 0));
+    ok(state.advance_visibility(0, 0));
     let decoded = round_trip(&state);
     assert_eq!(decoded, state);
 
@@ -365,6 +293,7 @@ fn decoded_state_rejects_inconsistent_compaction_records() {
         next_sequence: state.next_sequence,
         base_sequence: state.base_sequence,
         release_tick: state.release_tick,
+        event_cursor: state.event_cursor,
         session: state.session,
         updates: state.updates.clone(),
         compacted: state.compacted.clone(),
@@ -396,6 +325,10 @@ fn decoded_state_rejects_inconsistent_compaction_records() {
 }
 
 /// Uncompacted reference model with every session's frontiers retained.
+///
+/// It resolves an event release from the complete emission log on every
+/// advance, as the earliest emission strictly after the update's commit,
+/// independently of the state's latches and emission cursor.
 #[derive(Default)]
 struct Reference {
     updates: Vec<NinepVisibilityUpdate>,
@@ -422,13 +355,13 @@ impl Reference {
         &mut self,
         session: u64,
         now: u64,
-        events: &BTreeMap<[u8; 32], u64>,
+        emissions: &[NinepEventEmission],
     ) -> Result<(u64, u64), DeviceError> {
         let (mut metadata, mut data) = self.frontiers.get(&session).copied().unwrap_or_default();
         while let Some(update) = self.updates.get(metadata as usize) {
             let ready = update.policy.scope == NinepVisibilityScope::WriterImmediate
                 && update.writer_session == session
-                || release_coordinate(update.release, events)?.is_some_and(|tick| now >= tick);
+                || reference_release(update, emissions)?.is_some_and(|tick| now >= tick);
             if !ready {
                 break;
             }
@@ -437,7 +370,8 @@ impl Reference {
         while let Some(update) = self.updates.get(data as usize) {
             let ready = update.policy.scope == NinepVisibilityScope::WriterImmediate
                 && update.writer_session == session
-                || data_deadline(update, events)?.is_some_and(|deadline| now >= deadline);
+                || reference_data_deadline(update, emissions)?
+                    .is_some_and(|deadline| now >= deadline);
             if !ready {
                 break;
             }
@@ -483,6 +417,42 @@ impl Reference {
     }
 }
 
+/// Returns the tick that releases `update`'s metadata in the reference model.
+fn reference_release(
+    update: &NinepVisibilityUpdate,
+    emissions: &[NinepEventEmission],
+) -> Result<Option<u64>, DeviceError> {
+    match update.release {
+        NinepVisibilityRelease::AtNanos(deadline) => Ok(Some(crate::ns_to_tick(deadline)?)),
+        NinepVisibilityRelease::AtTicks(deadline) => Ok(Some(deadline)),
+        NinepVisibilityRelease::OnEvent { event, after } => Ok(emissions
+            .iter()
+            .filter(|emission| emission.event == event && emission.coordinate > after)
+            .map(|emission| emission.coordinate.ticks)
+            .min()),
+    }
+}
+
+/// Returns the tick that releases `update`'s bytes in the reference model.
+fn reference_data_deadline(
+    update: &NinepVisibilityUpdate,
+    emissions: &[NinepEventEmission],
+) -> Result<Option<u64>, DeviceError> {
+    let Some(release) = reference_release(update, emissions)? else {
+        return Ok(None);
+    };
+    let lag_ticks = update
+        .data_lag_nanos
+        .checked_mul(crucible_shmem::TICKS_PER_NS)
+        .ok_or(invalid(
+            "9p data visibility lag exceeds simulation tick range",
+        ))?;
+    release
+        .checked_add(lag_ticks)
+        .map(Some)
+        .ok_or(invalid("9p data visibility deadline overflow"))
+}
+
 /// Small deterministic generator; the test needs reproducible coverage, not
 /// statistical quality.
 struct SplitMix(u64);
@@ -502,6 +472,12 @@ impl SplitMix {
 
     fn chance(&mut self, percent: u64) -> bool {
         self.below(100) < percent
+    }
+
+    /// Returns a coordinate at most `window` ticks before `now`, with a small
+    /// same-tick sequence so commits and emissions often share a tick.
+    fn recent_coordinate(&mut self, now: u64, window: u64) -> NinepEventCoordinate {
+        coordinate(now.saturating_sub(self.below(window)), self.below(4))
     }
 }
 
@@ -530,7 +506,10 @@ fn random_update(
     let release = match rng.below(3) {
         0 => NinepVisibilityRelease::AtTicks(now + rng.below(5_000)),
         1 => NinepVisibilityRelease::AtNanos(now / crucible_shmem::TICKS_PER_NS + rng.below(5)),
-        _ => NinepVisibilityRelease::OnEvent(EVENTS[rng.below(EVENTS.len() as u64) as usize]),
+        _ => on_event(
+            EVENTS[rng.below(EVENTS.len() as u64) as usize],
+            rng.recent_coordinate(now, 1_000),
+        ),
     };
     NinepVisibilityUpdate {
         key,
@@ -544,7 +523,39 @@ fn random_update(
         release,
         writer_session,
         data_lag_nanos,
+        event_latch: None,
     }
+}
+
+/// Returns the consumed emissions a new update's release subscribes to.
+fn prior_emissions(
+    update: &NinepVisibilityUpdate,
+    consumed: &[NinepEventEmission],
+) -> Vec<NinepEventEmission> {
+    match update.release {
+        NinepVisibilityRelease::OnEvent { event, .. } => consumed
+            .iter()
+            .copied()
+            .filter(|emission| emission.event == event)
+            .collect(),
+        NinepVisibilityRelease::AtNanos(_) | NinepVisibilityRelease::AtTicks(_) => Vec::new(),
+    }
+}
+
+fn commit_update(
+    state: &mut NinepVisibilityState,
+    update: &NinepVisibilityUpdate,
+    prior: &[NinepEventEmission],
+) -> u64 {
+    ok(state.commit(
+        update.key,
+        update.object.clone(),
+        update.policy,
+        update.release,
+        update.writer_session,
+        update.data_lag_nanos,
+        prior,
+    ))
 }
 
 fn assert_equivalent(
@@ -567,23 +578,33 @@ fn assert_equivalent(
     }
 }
 
+/// Drives the compacting state and the reference through identical commits,
+/// emissions, advances, version negotiations, and checkpoint restores.
+///
+/// Emissions are appended to a log and fed to the state only at the next
+/// advance, as the production coordinator does, so commits latch from the
+/// consumed prefix while later emissions arrive through the cursor. Emission
+/// coordinates may precede earlier ones and repeat events, which exercises
+/// re-emission and out-of-order latching.
 #[test]
 fn compacted_state_matches_the_uncompacted_reference() {
     let mut compacted_runs = 0;
+    let mut folded_event_lag_runs = 0;
     for seed in 0..256_u64 {
         let mut rng = SplitMix(seed);
         let mut state = NinepVisibilityState::default();
         let mut reference = Reference::default();
         let mut session = 0_u64;
         let mut now = 0_u64;
-        let mut events = BTreeMap::new();
+        let mut emissions = Vec::<NinepEventEmission>::new();
+        let mut consumed = 0_usize;
         let mut last_commit: Option<NinepVisibilityUpdate> = None;
         let mut generations = [0_u64; 4];
 
         for step in 0..300 {
             let context = format!("seed {seed} step {step}");
             match rng.below(100) {
-                0..=39 => {
+                0..=34 => {
                     let slot = rng.below(generations.len() as u64) as usize;
                     generations[slot] += 1;
                     let update = random_update(
@@ -592,43 +613,45 @@ fn compacted_state_matches_the_uncompacted_reference() {
                         now,
                         session,
                     );
-                    let sequence = ok(state.commit(
-                        update.key,
-                        update.object.clone(),
-                        update.policy,
-                        update.release,
-                        update.writer_session,
-                        update.data_lag_nanos,
-                    ));
+                    let prior = prior_emissions(&update, &emissions[..consumed]);
+                    let sequence = commit_update(&mut state, &update, &prior);
                     assert_eq!(sequence, reference.commit(update.clone()), "{context}");
                     last_commit = Some(update);
                 }
-                40..=44 => {
+                35..=39 => {
                     // Recommitting the newest identity is idempotent whether or
-                    // not its update has been compacted.
-                    if let Some(update) = last_commit
+                    // not its update has been compacted, even from a later
+                    // opportunity whose subscription coordinate differs.
+                    if let Some(mut update) = last_commit
                         .clone()
                         .filter(|update| update.writer_session == session)
                     {
-                        let sequence = ok(state.commit(
-                            update.key,
-                            update.object.clone(),
-                            update.policy,
-                            update.release,
-                            update.writer_session,
-                            update.data_lag_nanos,
-                        ));
+                        if let NinepVisibilityRelease::OnEvent { event, after } = update.release {
+                            let later =
+                                coordinate(after.ticks + 1 + rng.below(100), after.sequence);
+                            update.release = on_event(event, later);
+                        }
+                        let sequence = commit_update(&mut state, &update, &[]);
                         assert_eq!(sequence, reference.commit(update), "{context}");
                     }
                 }
-                45..=84 => {
-                    now += rng.below(3_000);
-                    if rng.chance(30) {
-                        events.insert(EVENTS[rng.below(EVENTS.len() as u64) as usize], now);
+                40..=49 => {
+                    let event = EVENTS[rng.below(EVENTS.len() as u64) as usize];
+                    for _ in 0..=rng.below(3) {
+                        let at = rng.recent_coordinate(now, 1_500);
+                        emissions.push(NinepEventEmission {
+                            event,
+                            coordinate: at,
+                        });
                     }
+                }
+                50..=84 => {
+                    now += rng.below(3_000);
+                    ok(state.observe_events(&emissions[consumed..]));
+                    consumed = emissions.len();
                     assert_eq!(
-                        state.advance_visibility(session, now, &events),
-                        reference.advance(session, now, &events),
+                        state.advance_visibility(session, now),
+                        reference.advance(session, now, &emissions),
                         "{context}: advance"
                     );
                 }
@@ -637,11 +660,16 @@ fn compacted_state_matches_the_uncompacted_reference() {
                     state.retire_sessions_except(session);
                 }
                 _ => {
-                    assert_eq!(round_trip(&state), state, "{context}: round trip");
+                    // Continue from the decoded checkpoint, as a restore does.
+                    let restored = round_trip(&state);
+                    assert_eq!(restored, state, "{context}: round trip");
+                    state = restored;
                 }
             }
 
             ok(state.validate());
+            ok(state.verify_event_latches(&emissions[..consumed]));
+            assert_eq!(state.event_cursor(), consumed as u64, "{context}: cursor");
             assert!(state.object_version_count() <= reference.updates.len());
             assert_equivalent(&state, &reference, session, &context);
 
@@ -652,19 +680,33 @@ fn compacted_state_matches_the_uncompacted_reference() {
                 frontiers: BTreeMap::new(),
             };
             fresh.retire_sessions_except(session + 1);
+            ok(fresh.observe_events(&emissions[consumed..]));
             assert_eq!(
-                fresh.advance_visibility(session + 1, now, &events),
-                fresh_reference.advance(session + 1, now, &events),
+                fresh.advance_visibility(session + 1, now),
+                fresh_reference.advance(session + 1, now, &emissions),
                 "{context}: fresh advance"
             );
             assert_equivalent(&fresh, &fresh_reference, session + 1, &context);
         }
+
         if state.compacted_frontier() > 0 {
             compacted_runs += 1;
+        }
+        let folded_event_lag = reference.updates.iter().any(|update| {
+            matches!(update.release, NinepVisibilityRelease::OnEvent { .. })
+                && update.data_lag_nanos > 0
+                && update.sequence < state.compacted_frontier()
+        });
+        if folded_event_lag {
+            folded_event_lag_runs += 1;
         }
     }
     assert!(
         compacted_runs > 128,
         "compaction ran in {compacted_runs} runs"
+    );
+    assert!(
+        folded_event_lag_runs > 192,
+        "lagged event releases folded in {folded_event_lag_runs} runs"
     );
 }

@@ -353,6 +353,7 @@ mod tests {
                 NinepVisibilityRelease::AtNanos(10),
                 0,
                 0,
+                &[],
             )
             .unwrap_or_else(|error| panic!("commit: {error}"));
         state
@@ -360,28 +361,43 @@ mod tests {
                 key(2),
                 object("/b", 1, b"two"),
                 atomic(NinepVisibilityScope::Global, false),
-                NinepVisibilityRelease::OnEvent([9; 32]),
+                NinepVisibilityRelease::OnEvent {
+                    event: [9; 32],
+                    after: NinepEventCoordinate {
+                        ticks: 0,
+                        sequence: 0,
+                    },
+                },
                 0,
                 0,
+                &[],
             )
             .unwrap_or_else(|error| panic!("commit: {error}"));
 
         assert_eq!(
             state
-                .advance_visibility(7, 9_999, &BTreeMap::new())
+                .advance_visibility(7, 9_999)
                 .unwrap_or_else(|error| panic!("advance: {error}")),
             (0, 0)
         );
         assert_eq!(
             state
-                .advance_visibility(7, 10_000, &BTreeMap::new())
+                .advance_visibility(7, 10_000)
                 .unwrap_or_else(|error| panic!("advance: {error}")),
             (1, 1)
         );
-        let events = BTreeMap::from([([9; 32], 12_000)]);
+        state
+            .observe_events(&[NinepEventEmission {
+                event: [9; 32],
+                coordinate: NinepEventCoordinate {
+                    ticks: 12_000,
+                    sequence: 1,
+                },
+            }])
+            .unwrap_or_else(|error| panic!("observe: {error}"));
         assert_eq!(
             state
-                .advance_visibility(7, 12_000, &events)
+                .advance_visibility(7, 12_000)
                 .unwrap_or_else(|error| panic!("advance: {error}")),
             (2, 2)
         );
@@ -398,6 +414,7 @@ mod tests {
                 NinepVisibilityRelease::AtNanos(0),
                 0,
                 0,
+                &[],
             )
             .unwrap_or_else(|error| panic!("commit: {error}"));
         state
@@ -412,11 +429,12 @@ mod tests {
                 NinepVisibilityRelease::AtNanos(10),
                 0,
                 5,
+                &[],
             )
             .unwrap_or_else(|error| panic!("commit: {error}"));
 
         state
-            .advance_visibility(3, 10_000, &BTreeMap::new())
+            .advance_visibility(3, 10_000)
             .unwrap_or_else(|error| panic!("advance: {error}"));
         let split = state
             .visible_object(3, "/a")
@@ -424,7 +442,7 @@ mod tests {
         assert_eq!(split.version, 2);
         assert_eq!(split.data, b"old");
         state
-            .advance_visibility(3, 15_000, &BTreeMap::new())
+            .advance_visibility(3, 15_000)
             .unwrap_or_else(|error| panic!("advance: {error}"));
         assert_eq!(
             state
@@ -447,15 +465,30 @@ mod tests {
                     atomic_metadata_and_data: false,
                     retain_deleted_objects: false,
                 },
-                NinepVisibilityRelease::OnEvent([9; 32]),
+                NinepVisibilityRelease::OnEvent {
+                    event: [9; 32],
+                    after: NinepEventCoordinate {
+                        ticks: 0,
+                        sequence: 0,
+                    },
+                },
                 0,
                 1,
+                &[],
             )
             .unwrap_or_else(|error| panic!("commit: {error}"));
 
-        let events = BTreeMap::from([([9; 32], 7)]);
-        assert_eq!(state.advance_visibility(3, 1_006, &events), Ok((1, 0)));
-        assert_eq!(state.advance_visibility(3, 1_007, &events), Ok((1, 1)));
+        state
+            .observe_events(&[NinepEventEmission {
+                event: [9; 32],
+                coordinate: NinepEventCoordinate {
+                    ticks: 7,
+                    sequence: 1,
+                },
+            }])
+            .unwrap_or_else(|error| panic!("observe: {error}"));
+        assert_eq!(state.advance_visibility(3, 1_006), Ok((1, 0)));
+        assert_eq!(state.advance_visibility(3, 1_007), Ok((1, 1)));
     }
 
     #[test]
@@ -469,17 +502,12 @@ mod tests {
                 NinepVisibilityRelease::AtNanos(2),
                 0,
                 0,
+                &[],
             )
             .unwrap_or_else(|error| panic!("commit: {error}"));
 
-        assert_eq!(
-            state.advance_visibility(3, 1_999, &BTreeMap::new()),
-            Ok((0, 0))
-        );
-        assert_eq!(
-            state.advance_visibility(3, 2_000, &BTreeMap::new()),
-            Ok((1, 1))
-        );
+        assert_eq!(state.advance_visibility(3, 1_999), Ok((0, 0)));
+        assert_eq!(state.advance_visibility(3, 2_000), Ok((1, 1)));
     }
 
     #[test]
@@ -495,17 +523,12 @@ mod tests {
                 NinepVisibilityRelease::AtTicks(release_tick),
                 0,
                 0,
+                &[],
             )
             .unwrap_or_else(|error| panic!("commit: {error}"));
 
-        assert_eq!(
-            state.advance_visibility(3, release_tick - 1, &BTreeMap::new()),
-            Ok((0, 0))
-        );
-        assert_eq!(
-            state.advance_visibility(3, release_tick, &BTreeMap::new()),
-            Ok((1, 1))
-        );
+        assert_eq!(state.advance_visibility(3, release_tick - 1), Ok((0, 0)));
+        assert_eq!(state.advance_visibility(3, release_tick), Ok((1, 1)));
     }
 
     #[test]
@@ -519,10 +542,11 @@ mod tests {
                 NinepVisibilityRelease::AtNanos(0),
                 4,
                 0,
+                &[],
             )
             .unwrap_or_else(|error| panic!("commit: {error}"));
         state
-            .advance_visibility(4, 0, &BTreeMap::new())
+            .advance_visibility(4, 0)
             .unwrap_or_else(|error| panic!("advance: {error}"));
         let mut deletion = object("/a", 2, b"");
         deletion.mode = 0;
@@ -535,15 +559,16 @@ mod tests {
                 NinepVisibilityRelease::AtNanos(100),
                 4,
                 0,
+                &[],
             )
             .unwrap_or_else(|error| panic!("commit: {error}"));
 
         state
-            .advance_visibility(4, 1, &BTreeMap::new())
+            .advance_visibility(4, 1)
             .unwrap_or_else(|error| panic!("advance: {error}"));
         assert!(state.visible_object(4, "/a").is_none());
         state
-            .advance_visibility(5, 1, &BTreeMap::new())
+            .advance_visibility(5, 1)
             .unwrap_or_else(|error| panic!("advance: {error}"));
         assert_eq!(
             state
@@ -569,12 +594,9 @@ mod tests {
                 NinepVisibilityRelease::AtNanos(u64::MAX),
                 0,
                 1,
+                &[],
             )
             .unwrap_or_else(|error| panic!("commit: {error}"));
-        assert!(
-            state
-                .advance_visibility(1, u64::MAX, &BTreeMap::new())
-                .is_err()
-        );
+        assert!(state.advance_visibility(1, u64::MAX).is_err());
     }
 }

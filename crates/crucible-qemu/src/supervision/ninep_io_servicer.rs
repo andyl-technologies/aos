@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use crucible::model::ContentHash;
 use crucible_device::{
-    DeviceError, FsTree, IoCore, NinepDevice, NinepLatency, NinepObjectVersion,
+    DeviceError, FsTree, IoCore, NinepDevice, NinepEventEmission, NinepLatency, NinepObjectVersion,
     NinepRequestIdentity, NinepRequestOpportunity, NinepSnapshot, NinepVisibilityPolicy,
     NinepVisibilityRelease, NinepVisibilityState, NinepVisibilityUpdateKey, Node, Request,
     ResolvedNinepRequestDirective, ResponseStatus,
@@ -275,6 +275,10 @@ impl QemuLive9pIoServicer {
 
     /// Commits one scenario-owned object update.
     ///
+    /// `prior_emissions` are the already-consumed emissions of an
+    /// event-released update's event; see
+    /// [`NinepVisibilityState::commit`].
+    ///
     /// # Errors
     ///
     /// Returns [`QemuLive9pIoServicerError::Device`] for invalid or conflicting
@@ -286,13 +290,37 @@ impl QemuLive9pIoServicer {
         policy: NinepVisibilityPolicy,
         release: NinepVisibilityRelease,
         data_lag_nanos: u64,
+        prior_emissions: &[NinepEventEmission],
     ) -> Result<u64, QemuLive9pIoServicerError> {
         self.device
-            .commit_visibility_update(key, object, policy, release, data_lag_nanos)
+            .commit_visibility_update(
+                key,
+                object,
+                policy,
+                release,
+                data_lag_nanos,
+                prior_emissions,
+            )
             .map_err(|source| QemuLive9pIoServicerError::Device { source })
     }
 
-    /// Advances object visibility from exact time and observed event identities.
+    /// Latches visibility updates from signal emissions appended since the
+    /// last call.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLive9pIoServicerError::Device`] when the emission cursor
+    /// would overflow.
+    pub fn observe_visibility_events(
+        &mut self,
+        emissions: &[NinepEventEmission],
+    ) -> Result<(), QemuLive9pIoServicerError> {
+        self.device
+            .observe_visibility_events(emissions)
+            .map_err(|source| QemuLive9pIoServicerError::Device { source })
+    }
+
+    /// Advances object visibility from exact time and latched event emissions.
     ///
     /// # Errors
     ///
@@ -300,10 +328,9 @@ impl QemuLive9pIoServicer {
     pub fn advance_visibility(
         &mut self,
         now_tick: u64,
-        events: &BTreeMap<[u8; 32], u64>,
     ) -> Result<(u64, u64), QemuLive9pIoServicerError> {
         self.device
-            .advance_visibility(now_tick, events)
+            .advance_visibility(now_tick)
             .map_err(|source| QemuLive9pIoServicerError::Device { source })
     }
 

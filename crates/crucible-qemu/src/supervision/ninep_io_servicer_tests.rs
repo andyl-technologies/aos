@@ -67,6 +67,7 @@ fn host_private_transaction_rollback_restores_exact_state() {
             },
             NinepVisibilityRelease::AtNanos(10),
             0,
+            &[],
         )
         .unwrap_or_else(|error| panic!("mutate visibility: {error}"));
     assert_ne!(servicer.visibility_state().committed_frontier(), 0);

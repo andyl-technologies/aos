@@ -1,7 +1,5 @@
 //! 9p fault-directive and visibility-policy tests.
 
-use std::collections::BTreeMap;
-
 use super::test_support::*;
 use super::*;
 fn file_object(path: &str, version: u32, data: &[u8]) -> NinepObjectVersion {
@@ -113,8 +111,9 @@ fn visible_deletion_hides_base_tree_and_already_walked_fids() {
         atomic_visibility(true),
         NinepVisibilityRelease::AtNanos(0),
         0,
+        &[],
     ));
-    ok(dev.advance_visibility(0, &BTreeMap::new()));
+    ok(dev.advance_visibility(0));
 
     let (_, existing) = round_trip(&mut dev, 3, &tread(4, 2, 0, 8));
     assert_eq!(reply_type(&existing), codec::RLERROR);
@@ -139,8 +138,9 @@ fn visible_creation_is_discoverable_by_normal_walk_and_tracks_updates() {
         atomic_visibility(false),
         NinepVisibilityRelease::AtNanos(0),
         0,
+        &[],
     ));
-    ok(dev.advance_visibility(0, &BTreeMap::new()));
+    ok(dev.advance_visibility(0));
     let (_, walked) = round_trip(&mut dev, 2, &twalk(3, 1, 2, &["new"]));
     assert_eq!(reply_type(&walked), codec::RWALK);
     let (_, first) = round_trip(&mut dev, 3, &tread(4, 2, 0, 16));
@@ -152,8 +152,9 @@ fn visible_creation_is_discoverable_by_normal_walk_and_tracks_updates() {
         atomic_visibility(false),
         NinepVisibilityRelease::AtNanos(0),
         0,
+        &[],
     ));
-    ok(dev.advance_visibility(0, &BTreeMap::new()));
+    ok(dev.advance_visibility(0));
     let (_, second) = round_trip(&mut dev, 4, &tread(5, 2, 0, 16));
     assert_eq!(&second[11..], b"second");
 }
@@ -177,9 +178,10 @@ fn visible_walk_never_traverses_through_a_regular_object() {
             atomic_visibility(false),
             NinepVisibilityRelease::AtNanos(0),
             0,
+            &[],
         ));
     }
-    ok(dev.advance_visibility(0, &BTreeMap::new()));
+    ok(dev.advance_visibility(0));
     let (_, walked) = round_trip(&mut dev, 2, &twalk(3, 1, 2, &["a", "b"]));
     assert_eq!(reply_type(&walked), codec::RWALK);
     assert_eq!(u16::from_le_bytes([walked[7], walked[8]]), 1);
@@ -229,6 +231,7 @@ fn fault_resource_usage_tracks_sessions_fids_and_object_versions() {
         atomic_visibility(false),
         NinepVisibilityRelease::AtNanos(0),
         0,
+        &[],
     ));
     assert!(dev.contains_visibility_update(&update_id));
     assert_eq!(

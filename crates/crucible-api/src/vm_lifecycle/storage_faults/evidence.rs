@@ -250,7 +250,7 @@ pub(super) fn ninep_visibility_evidence(
     let release = match release {
         NinepVisibilityRelease::AtNanos(nanos) => format!("at_nanos:{nanos}"),
         NinepVisibilityRelease::AtTicks(ticks) => format!("at_ticks:{ticks}"),
-        NinepVisibilityRelease::OnEvent(event) => {
+        NinepVisibilityRelease::OnEvent { event, .. } => {
             format!("on_event:{}", ContentHash { bytes: event }.to_hex(),)
         }
     };
@@ -324,22 +324,27 @@ pub(super) fn ninep_visibility_advance_evidence(
     before: (u64, u64),
     after: (u64, u64),
     observed_ticks: u64,
-    events: &BTreeMap<[u8; 32], u64>,
     updates: &[NinepVisibilityUpdate],
     state: &NinepVisibilityState,
 ) -> ContentHash {
+    let coordinate = |coordinate: crucible_device::NinepEventCoordinate| {
+        format!("{}:{}", coordinate.ticks, coordinate.sequence)
+    };
     let updates = updates
         .iter()
         .map(|update| {
+            // An event release records its subscription and the latched
+            // emission, which no later re-emission can move.
             let release = match update.release {
                 NinepVisibilityRelease::AtNanos(deadline) => format!("absolute_ns:{deadline}"),
                 NinepVisibilityRelease::AtTicks(deadline) => format!("tick:{deadline}"),
-                NinepVisibilityRelease::OnEvent(event) => format!(
-                    "event:{}:observed_at:{}",
+                NinepVisibilityRelease::OnEvent { event, after } => format!(
+                    "event:{}:after:{}:first_observed_at:{}",
                     ContentHash { bytes: event }.to_hex(),
-                    events
-                        .get(&event)
-                        .map_or_else(|| String::from("absent"), u64::to_string),
+                    coordinate(after),
+                    update
+                        .event_latch
+                        .map_or_else(|| String::from("absent"), coordinate),
                 ),
             };
             format!(
@@ -354,7 +359,7 @@ pub(super) fn ninep_visibility_advance_evidence(
         .collect::<Vec<_>>()
         .join("|");
     ContentHash::from_canonical_material(
-        "crucible.ninep-visibility-advance-evidence.v3",
+        "crucible.ninep-visibility-advance-evidence.v4",
         &format!(
             "session={session}\nobserved_ticks={observed_ticks}\nmetadata_before={}\nmetadata_after={}\ndata_before={}\ndata_after={}\ncompacted_frontier={}\nupdates={updates}",
             before.0,
