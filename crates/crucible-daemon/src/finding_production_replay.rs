@@ -12,9 +12,9 @@
 //! its publication holds a run-length log in memory (RFC-0020 section 15.8):
 //!
 //! ```text
-//! envelope "crucible.executor.finding-production-replay-capture" v4 {
+//! envelope "crucible.executor.finding-production-replay-capture" v5 {
 //!   body: CaptureManifest {
-//!     schema_version: 4, reproduction, observed_signature,
+//!     schema_version: 5, reproduction, observed_signature,
 //!     finding_fingerprint, model_reproduction: leaf, recipe,
 //!     deployment: { runtime, root_image_format,
 //!                   guest_assets: [{ architecture, kernel, root_image,
@@ -24,7 +24,7 @@
 //!     sides: [{ outcome, completed_quanta, frontier_ticks,
 //!               event_log: { entry_count, chain, segments },
 //!               terminal_fingerprints, resolved_effect_trace: leaf? }],
-//!     campaign_replay_closure: leaf,
+//!     campaign_replay_closure: { root: leaf, frames: [leaf] },
 //!     lifecycle_objects: [{ identity, leaf }],
 //!   }
 //!   children: one role-tagged child per leaf and per log segment
@@ -111,7 +111,7 @@ pub const MAX_FINDING_PRODUCTION_REPLAY_GUEST_ASSET_BYTES: u64 = 2 * 1024 * 1024
 pub const MAX_FINDING_PRODUCTION_REPLAY_TRACE_BUNDLE_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Current production replay capture schema.
-pub const FINDING_PRODUCTION_REPLAY_CAPTURE_SCHEMA_VERSION: u32 = 4;
+pub const FINDING_PRODUCTION_REPLAY_CAPTURE_SCHEMA_VERSION: u32 = 5;
 
 const MAX_RUNTIME_IDENTITY_FIELD_BYTES: usize = 1_024;
 
@@ -533,7 +533,7 @@ pub struct FindingProductionReplayCaptureMaterial {
     shared_context: Arc<FindingProductionReplaySharedContext>,
     selected_side: FindingProductionReplaySelectedSide,
     sides: Arc<[FindingProductionReplayExecutionSide]>,
-    campaign_replay_closure: Arc<[u8]>,
+    campaign_replay_closure: GuardedCampaignReplayClosure,
 }
 
 /// Shared owned inputs for one production replay capture.
@@ -633,10 +633,7 @@ impl FindingProductionReplayCaptureMaterial {
             shared_context,
             selected_side,
             sides: sides.into(),
-            campaign_replay_closure: campaign_replay_closure
-                .to_canonical_bytes()
-                .map_err(FindingProductionReplayCaptureError::ReplayClosure)?
-                .into(),
+            campaign_replay_closure: campaign_replay_closure.clone(),
         };
         material.validate(limits)?;
         Ok(material)
@@ -728,7 +725,7 @@ impl FindingProductionReplayCaptureMaterial {
 
     /// Returns the authenticated campaign choice closure.
     #[must_use]
-    pub fn campaign_replay_closure(&self) -> &[u8] {
+    pub const fn campaign_replay_closure(&self) -> &GuardedCampaignReplayClosure {
         &self.campaign_replay_closure
     }
 
@@ -775,7 +772,7 @@ pub struct FindingProductionReplayCapture {
     shared_context: Arc<FindingProductionReplaySharedContext>,
     selected_side: FindingProductionReplaySelectedSide,
     sides: Arc<[FindingProductionReplayExecutionSide]>,
-    campaign_replay_closure: Arc<[u8]>,
+    campaign_replay_closure: GuardedCampaignReplayClosure,
 }
 
 impl FindingProductionReplayCapture {
@@ -868,7 +865,7 @@ impl FindingProductionReplayCapture {
 
     /// Returns the authenticated campaign choice closure.
     #[must_use]
-    pub fn campaign_replay_closure(&self) -> &[u8] {
+    pub const fn campaign_replay_closure(&self) -> &GuardedCampaignReplayClosure {
         &self.campaign_replay_closure
     }
 

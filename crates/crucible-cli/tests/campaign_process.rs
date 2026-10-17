@@ -26,7 +26,7 @@ const LIVE_QEMU_EVENT_STREAM_MEDIA_TYPE: &str =
 const LIVE_QEMU_FINGERPRINT_STREAM_MEDIA_TYPE: &str =
     "application/vnd.crucible.live-qemu-fingerprint-stream.v1+bytes";
 const CAMPAIGN_REPLAY_CLOSURE_MEDIA_TYPE: &str =
-    "application/vnd.crucible.campaign-replay-closure.v1+binary";
+    "application/vnd.crucible.campaign-replay-closure.v2+binary";
 const LIVE_QEMU_REPLAY_CONTRACT_MEDIA_TYPE: &str =
     "application/vnd.crucible.live-qemu-replay-contract.v5+text";
 

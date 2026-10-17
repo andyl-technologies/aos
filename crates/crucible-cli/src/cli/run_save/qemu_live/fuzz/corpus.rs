@@ -357,9 +357,7 @@ mod tests {
             .map(|entry| entry.observation.content_hash())
             .collect();
         let replay_closure =
-            crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::from_canonical_bytes(
-                b"CCRC\0\0\0\x01\0\0\0\0",
-            )?;
+            crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::empty();
         let candidate = LiveFuzzCorpusCandidate {
             artifact,
             feedback,

@@ -86,11 +86,15 @@ pub use finding_export::{
 };
 
 mod replay_closure;
+pub(crate) use replay_closure::{
+    GuardedCampaignReplayChoices, GuardedCampaignReplaySelection, MAX_REPLAY_CLOSURE_FRAME_BYTES,
+    MAX_REPLAY_CLOSURE_FRAMES, MAX_REPLAY_CLOSURE_ROOT_BYTES, REPLAY_CLOSURE_OBJECT_KIND,
+    REPLAY_CLOSURE_OBJECT_SCHEMA_VERSION, closure_object_id,
+};
 pub use replay_closure::{
     GuardedCampaignReplayClosure, GuardedCampaignReplayClosureError,
     validate_remote_resume_replay_closure,
 };
-pub(crate) use replay_closure::{GuardedCampaignReplaySelection, MAX_REPLAY_CLOSURE_BYTES};
 
 mod resume;
 pub use resume::GuardedDefaultCampaignResumeProof;
@@ -1789,12 +1793,7 @@ where
         Some(closure) => closure
             .validate_for_schedule(&request.scenario, &request.initial_schedule)
             .map_err(GuardedDefaultCampaignRunError::ReplayClosure),
-        None if replay_closure::schedule_selection_ids(&request.initial_schedule)
-            .map_err(GuardedDefaultCampaignRunError::ReplayClosure)?
-            .is_empty() =>
-        {
-            Ok(())
-        }
+        None if !replay_closure::schedule_has_selection(&request.initial_schedule) => Ok(()),
         None => Err(GuardedDefaultCampaignRunError::ReplayClosure(
             GuardedCampaignReplayClosureError::Invalid {
                 reason: "a nonempty initial schedule requires its authenticated choice closure",

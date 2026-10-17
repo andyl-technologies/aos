@@ -702,21 +702,15 @@ where
         target.post_selection,
         target.cancellation,
     )?;
-    let owned_choices =
-        crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::from_canonical_bytes(
-            installed.loaded().choice_closure(),
-        )?;
+    let owned_choices = installed.loaded().choice_closure().clone();
     let choices = match target.replay_store {
         Some(store) => owned_choices.complete_from_repository(
             store,
             target.source,
             &installed.configuration().schedule,
         )?,
-        None => {
-            owned_choices
-                .validate_for_schedule(target.source, &installed.configuration().schedule)?;
-            owned_choices
-        }
+        None => owned_choices
+            .into_validated_choices(target.source, &installed.configuration().schedule)?,
     };
     match target.start_mode {
         AttemptStartMode::CaptureMaterializedStart { .. } => {

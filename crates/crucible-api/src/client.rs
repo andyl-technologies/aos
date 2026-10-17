@@ -1043,14 +1043,23 @@ fn encode_resume_session_request(request: &ResumeSessionRequest) -> Vec<u8> {
         );
         push_line(
             &mut output,
-            "campaign-replay-closure-size",
-            &closure.payload_len().to_string(),
+            "campaign-replay-closure-frames",
+            &closure.frames().len().to_string(),
         );
-        push_line(
-            &mut output,
-            "campaign-replay-closure-payload",
-            &hex_encode(closure.payload()),
-        );
+        // Each frame is its own size-prefixed element within the
+        // component-message bound.
+        for frame in closure.frames() {
+            push_line(
+                &mut output,
+                "campaign-replay-closure-frame-size",
+                &frame.len().to_string(),
+            );
+            push_line(
+                &mut output,
+                "campaign-replay-closure-frame",
+                &hex_encode(frame),
+            );
+        }
     }
     let source = &request.observation_source;
     push_line(

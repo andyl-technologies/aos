@@ -147,7 +147,7 @@ crucible.campaign.gc-journal-state	1	crucible-daemon::campaign_gc	administrative
 crucible.executor.assignment-record	1	crucible-daemon::assignment_ledger	operational-record	gate:campaign-component-contract
 crucible.executor.attempt-state-record	15	crucible-daemon::assignment_ledger	operational-record	gate:campaign-component-contract
 crucible.executor.prepared-semantic-attempt-result	11	crucible-daemon::crucible_artifact::prepared_result	operational-record	gate:campaign-component-contract,gate:campaign-replay
-crucible.executor.finding-production-replay-capture	4	crucible-daemon::finding_production_replay	exact-manifest	gate:campaign-replay,gate:content-address
+crucible.executor.finding-production-replay-capture	5	crucible-daemon::finding_production_replay	exact-manifest	gate:campaign-replay,gate:content-address
 crucible.executor.finding-production-replay-capture-leaf	1	crucible-daemon::finding_production_replay	trace	gate:campaign-replay,gate:content-address
 crucible.executor.prepared-result-journal-state	4	crucible-daemon::prepared_result_journal	operational-record	gate:campaign-component-contract,gate:campaign-replay
 crucible.daemon.finding-export-transcript	1	crucible-daemon::qemu_campaign_lifecycle::campaign_run::finding_export	operational-record	gate:campaign-component-contract
@@ -165,7 +165,9 @@ crucible.production-lifecycle-exit-log	1	crucible-api::vm_lifecycle::quantum_loo
 crucible.production-run-state	3	crucible-api::vm_lifecycle::quantum_loop::lifecycle::persistence	operational-record	gate:campaign-cold-continuity,gate:exact-closure-streaming
 crucible.executor.production-checkpoint-object	5	crucible-daemon::exact_checkpoint_store	device-state	gate:content-address,gate:exact-closure-streaming
 crucible.executor.production-checkpoint-index	1	crucible-daemon::exact_checkpoint_store	exact-manifest	gate:content-address,gate:exact-closure-streaming
-crucible.executor.checkpoint-choice-closure	1	crucible-daemon::qemu_campaign_lifecycle::campaign_run::replay_closure	observation	gate:typed-choice,gate:campaign-replay,gate:exact-closure-streaming
+crucible.executor.checkpoint-choice-closure	2	crucible-daemon::qemu_campaign_lifecycle::campaign_run::replay_closure	observation	gate:typed-choice,gate:campaign-replay,gate:exact-closure-streaming
+crucible.executor.checkpoint-choice-frame	2	crucible-daemon::qemu_campaign_lifecycle::campaign_run::replay_closure	observation	gate:typed-choice,gate:campaign-replay,gate:exact-closure-streaming
+crucible.executor.replay-closure-bundle	2	crucible-daemon::qemu_campaign_lifecycle::campaign_run::replay_closure	physical-record	gate:typed-choice,gate:campaign-replay
 crucible.lifecycle.resume-observation-source	1	crucible-api::lifecycle::session_contract	component-message	gate:campaign-component-contract,gate:campaign-replay
 crucible.executor.exact-checkpoint-root	5	crucible-daemon::exact_checkpoint_store	exact-manifest	gate:content-address,gate:exact-closure-streaming
 crucible.executor.loopback-frame	5	crucible-daemon::executor_loopback	component-message	gate:campaign-component-contract

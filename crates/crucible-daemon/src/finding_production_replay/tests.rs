@@ -169,8 +169,7 @@ fn decoder_rejects_hostile_declared_container_length_before_deserialization() {
 fn canonical_capture_round_trips_and_selects_expected_divergence_side() {
     let finding = finding();
     let (reproduction, signature) = campaign_binding(&finding, FindingKind::Divergence);
-    let closure = GuardedCampaignReplayClosure::from_canonical_bytes(b"CCRC\0\0\0\x01\0\0\0\0")
-        .expect("empty choice closure");
+    let closure = GuardedCampaignReplayClosure::empty();
     let limits = FindingProductionReplayCaptureLimits::for_finding(&finding);
     let material = FindingProductionReplayCaptureMaterial::new(
         &finding,
@@ -195,10 +194,11 @@ fn canonical_capture_round_trips_and_selects_expected_divergence_side() {
         &cloned_material.model_reproduction
     ));
     assert!(Arc::ptr_eq(&material.sides, &cloned_material.sides));
-    assert!(Arc::ptr_eq(
-        &material.campaign_replay_closure,
-        &cloned_material.campaign_replay_closure
-    ));
+    assert!(
+        material
+            .campaign_replay_closure
+            .shares_storage_with(&cloned_material.campaign_replay_closure)
+    );
     let capture = material
         .bind(reproduction, signature.clone(), limits)
         .expect("bind capture");
@@ -298,8 +298,7 @@ fn canonical_capture_round_trips_and_selects_expected_divergence_side() {
 fn capture_rejects_missing_or_extraneous_lifecycle_objects() {
     let finding = finding();
     let (reproduction, signature) = campaign_binding(&finding, FindingKind::Timeout);
-    let closure = GuardedCampaignReplayClosure::from_canonical_bytes(b"CCRC\0\0\0\x01\0\0\0\0")
-        .expect("empty choice closure");
+    let closure = GuardedCampaignReplayClosure::empty();
     let mut objects = BTreeMap::new();
     let bytes = b"unreferenced".to_vec();
     objects.insert(ContentHash::from_bytes(&bytes), bytes);
@@ -328,8 +327,7 @@ fn capture_rejects_missing_or_extraneous_lifecycle_objects() {
 fn paired_capture_rejects_equal_executions() {
     let finding = finding();
     let (reproduction, signature) = campaign_binding(&finding, FindingKind::Divergence);
-    let closure = GuardedCampaignReplayClosure::from_canonical_bytes(b"CCRC\0\0\0\x01\0\0\0\0")
-        .expect("empty choice closure");
+    let closure = GuardedCampaignReplayClosure::empty();
     let observed = side("same");
     let error = FindingProductionReplayCapture::new(
         &finding,
@@ -381,8 +379,7 @@ fn referenced_world_object_must_exist_and_match_its_hash() {
     ));
 
     let (reproduction, signature) = campaign_binding(&finding, FindingKind::Timeout);
-    let closure = GuardedCampaignReplayClosure::from_canonical_bytes(b"CCRC\0\0\0\x01\0\0\0\0")
-        .expect("empty choice closure");
+    let closure = GuardedCampaignReplayClosure::empty();
     let mut tampered = BTreeMap::new();
     tampered.insert(identity, b"tampered-world-block".to_vec());
     let error = FindingProductionReplayCapture::new(
@@ -468,8 +465,7 @@ fn signal_lifecycle_capture_requires_authenticates_and_bounds_its_store() {
 fn capture_enforces_guest_asset_caps_when_captured_and_decoded() {
     let finding = finding();
     let (reproduction, signature) = campaign_binding(&finding, FindingKind::Timeout);
-    let closure = GuardedCampaignReplayClosure::from_canonical_bytes(b"CCRC\0\0\0\x01\0\0\0\0")
-        .expect("empty choice closure");
+    let closure = GuardedCampaignReplayClosure::empty();
     let mut asset_limits = FindingProductionReplayCaptureLimits::for_finding(&finding);
     asset_limits.max_guest_asset_bytes = 1;
     assert!(matches!(
@@ -748,8 +744,7 @@ fn static_limit_counts_guest_and_world_roles_by_content_identity() {
 fn capture_rejects_progress_beyond_recipe_or_terminal_frontier() {
     let finding = finding();
     let (reproduction, signature) = campaign_binding(&finding, FindingKind::Timeout);
-    let closure = GuardedCampaignReplayClosure::from_canonical_bytes(b"CCRC\0\0\0\x01\0\0\0\0")
-        .expect("empty choice closure");
+    let closure = GuardedCampaignReplayClosure::empty();
     let limits = FindingProductionReplayCaptureLimits::for_finding(&finding);
 
     let mut over_budget = timeout_side();

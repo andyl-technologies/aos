@@ -296,7 +296,7 @@ fn decode_replay_closure(
             envelope.schema_version(),
         )));
     }
-    GuardedCampaignReplayClosure::from_canonical_bytes(envelope.payload())
+    GuardedCampaignReplayClosure::from_frame_objects(envelope.frames())
         .map_err(|error| observation_error(format!("decode replay closure: {error}")))
 }
 

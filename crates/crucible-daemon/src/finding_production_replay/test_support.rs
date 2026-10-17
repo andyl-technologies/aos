@@ -227,8 +227,7 @@ pub(crate) fn timeout_capture(
 ) {
     let finding = finding();
     let (reproduction, signature) = campaign_binding(&finding, FindingKind::Timeout);
-    let closure = GuardedCampaignReplayClosure::from_canonical_bytes(b"CCRC\0\0\0\x01\0\0\0\0")
-        .expect("empty choice closure");
+    let closure = GuardedCampaignReplayClosure::empty();
     let limits = FindingProductionReplayCaptureLimits::for_finding(&finding);
     let entries = kinds
         .iter()

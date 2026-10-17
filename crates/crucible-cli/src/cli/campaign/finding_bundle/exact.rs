@@ -13,7 +13,7 @@ use crucible_daemon::finding_production_replay::{
     FindingProductionReplaySelectedSide, FindingProductionReplayTerminalOutcome,
 };
 use crucible_daemon::qemu_campaign_lifecycle::{
-    GuardedCampaignReplayClosure, GuardedDefaultCampaignRunRequest, run_guarded_default_campaign,
+    GuardedDefaultCampaignRunRequest, run_guarded_default_campaign,
 };
 use serde::Serialize;
 
@@ -61,11 +61,7 @@ pub(super) fn replay_exact_finding(
         .map_err(|error| {
         backend_error(format!("finding model reproduction is invalid: {error}"))
     })?;
-    let closure =
-        GuardedCampaignReplayClosure::from_canonical_bytes(capture.campaign_replay_closure())
-            .map_err(|error| {
-                backend_error(format!("finding replay closure is invalid: {error}"))
-            })?;
+    let closure = capture.campaign_replay_closure().clone();
     closure
         .validate_for_schedule(model.scenario_form(), model.schedule())
         .map_err(|error| backend_error(format!("finding replay choices are invalid: {error}")))?;

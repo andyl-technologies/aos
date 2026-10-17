@@ -916,13 +916,15 @@ pub(super) fn write_savepoint_handle_fixture(
             &hex_bytes(&schedule_payload),
         ],
     );
-    let replay_closure = b"CCRC\0\0\0\x01\0\0\0\0";
+    let replay_closure =
+        crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::empty()
+            .to_canonical_bytes()?;
     artifact_line(
         &mut text,
         &[
             "campaign-replay-closure",
-            &content_address_bytes(replay_closure),
-            &hex_bytes(replay_closure),
+            &content_address_bytes(&replay_closure),
+            &hex_bytes(&replay_closure),
         ],
     );
     artifact_line(&mut text, &["frontier", &frontier_ticks.to_string()]);

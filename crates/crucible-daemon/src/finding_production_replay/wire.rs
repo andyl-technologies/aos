@@ -1,4 +1,4 @@
-//! Canonical wire representation of the version 4 capture manifest body.
+//! Canonical wire representation of the version 5 capture manifest body.
 //!
 //! The body holds only bounded descriptors. Every byte string that can be
 //! large is a leaf named by its digest and length, and every side log is its
@@ -8,7 +8,8 @@
 //! CaptureManifestWire { schema_version, reproduction, observed_signature,
 //!                       finding_fingerprint, model_reproduction: Leaf,
 //!                       recipe, deployment, selected_side, sides,
-//!                       campaign_replay_closure: Leaf, lifecycle_objects }
+//!                       campaign_replay_closure: Closure, lifecycle_objects }
+//! Closure { root: Leaf, frames: [Leaf] }           // replay-closure root and frames
 //! Leaf    { digest: bytes[32], length: u64 }       // trace content ID v1
 //! Segment { digest: bytes[32], first_sequence, entry_count, encoded_bytes }
 //! ```
@@ -152,7 +153,7 @@ fn read_cbor_argument(bytes: &[u8], position: &mut usize, additional: u8) -> Res
     Ok(u64::from_be_bytes(encoded))
 }
 
-/// Complete bounded body of one version 4 capture manifest.
+/// Complete bounded body of one version 5 capture manifest.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct CaptureManifestWire {
@@ -165,8 +166,19 @@ pub(super) struct CaptureManifestWire {
     pub(super) deployment: DeploymentWire,
     pub(super) selected_side: FindingProductionReplaySelectedSide,
     pub(super) sides: Vec<SideWire>,
-    pub(super) campaign_replay_closure: LeafWire,
+    pub(super) campaign_replay_closure: ReplayClosureWire,
     pub(super) lifecycle_objects: Vec<LifecycleObjectWire>,
+}
+
+/// The campaign replay closure's root leaf and its frame leaves, in order.
+///
+/// Frames grow with the replayed run and are at most 64 MiB each; the body
+/// holds only their descriptors.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ReplayClosureWire {
+    pub(super) root: LeafWire,
+    pub(super) frames: Vec<LeafWire>,
 }
 
 /// One trace leaf named by its content digest and exact length.

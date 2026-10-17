@@ -44,13 +44,14 @@ pub const MAX_FINDING_MINIMIZATION_POLICY_BYTES: usize = 64 * 1024;
 /// Maximum unique static bytes retained by one finding's replay captures.
 ///
 /// Static bytes are the capture manifests and every scenario-bounded leaf:
-/// model reproductions, replay closures, resolved-effect traces, guest
+/// model reproductions, replay-closure roots, resolved-effect traces, guest
 /// assets, and lifecycle objects.
 pub const MAX_FINDING_REPLAY_PUBLICATION_STATIC_BYTES: u64 = 512 * 1024 * 1024;
-/// Maximum unique side-log segment bytes retained by one finding's replay captures.
+/// Maximum unique run-length leaf bytes retained by one finding's replay captures.
 ///
-/// Replay-side scheduler logs grow with the replayed run, so they are charged
-/// to their own per-finding allowance rather than the static one. The value
+/// Replay-side scheduler log segments and replay-closure frames grow with the
+/// replayed run, so they are charged to their own per-finding allowance rather
+/// than the static one. The value
 /// admits the four capture roles at the default 4 GiB attempt event-log bound
 /// after equal segments are shared across roles.
 pub const MAX_FINDING_REPLAY_PUBLICATION_SEGMENT_BYTES: u64 = 16 * 1024 * 1024 * 1024;

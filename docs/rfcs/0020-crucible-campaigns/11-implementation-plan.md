@@ -239,7 +239,8 @@ stable runtime opportunity, stops discovery without replying, applies exact
 defaults for deterministic continuation, and consumes authenticated campaign
 selections at the matching thin-replay boundary. Checkpoint capture includes
 the guarded choice replay closure; the production exact-checkpoint store writes
-that closure as a content-addressed child and validates it on load.
+that closure's root and frames as content-addressed children, authenticates the
+root and frame identities on load, and leaves frame reads to replay validation.
 
 The process-neutral `CRUCSCP4` catalog-plan codec freezes the sealed
 descriptor body, including exact expectations, limits, registered identifiers,
@@ -1697,7 +1698,10 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   materialization, and the campaign trace protocol to segment-by-segment
   readers. Finding replay captures reference side-log segments as manifest
   leaves under a per-finding run-length allowance, and CLI midpoint and
-  exact-bundle checks stream them; the remaining readers remain open.
+  exact-bundle checks stream them. Campaign replay closures are framed
+  version 2 objects: exact checkpoints keep the root and frames as separate
+  children loaded lazily, captures keep them as leaves, and the resume request
+  carries each frame as its own element. The remaining readers remain open.
 - [ ] **T-CAM-4.13** Make replay-target matching, network-fault discovery,
   guest-marker observation, console matching, scheduler staging, schedule
   identity, stop checks, imported I/O inventory, and fault accounting

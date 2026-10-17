@@ -23,7 +23,7 @@ use crucible_qemu::{
 use crate::QemuAttemptProcessResourceGuard;
 use crate::guest_selectable::{resolve_guest_selectable, selected_guest_reply};
 use crate::qemu_campaign_lifecycle::{
-    GuardedCampaignReplayClosure, GuardedCampaignReplaySelection,
+    GuardedCampaignReplayChoices, GuardedCampaignReplaySelection,
 };
 
 mod contract_context;
@@ -41,7 +41,7 @@ const MAX_REPLAY_STALLED_REISSUES: u8 = 2;
 /// Root-bound scheduler evidence required to reconstruct physical replay.
 pub(crate) struct GuardedReplayAdmission<'a> {
     /// Authenticated guest choices for the target schedule.
-    pub(crate) choices: &'a GuardedCampaignReplayClosure,
+    pub(crate) choices: &'a GuardedCampaignReplayChoices,
     /// Complete authenticated scheduler event prefix.
     pub(crate) scheduler: &'a SingleSchedulerCheckpoint,
     /// Exact target QEMU process generation.
@@ -164,6 +164,9 @@ where
         );
         let mut thin = self.observe_realization(result)?;
 
+        // Steps visit decisions in increasing order, so one cursor walks the
+        // schedule and the closure frames once.
+        let mut choices = admission.choices.cursor(&configuration.schedule);
         let mut current = genesis;
         for step in steps {
             let decision_index = match step {
@@ -181,9 +184,8 @@ where
                     message: format!("decision violates the scenario model: {source}"),
                 }
             })?;
-            let recorded = admission
-                .choices
-                .selection_for_decision(decision_index, &configuration.schedule)
+            let recorded = choices
+                .selection_for_decision(decision_index)
                 .map_err(|error| invalid_replay_selection(error.to_string()))?;
             match recorded {
                 Some(recorded) => {
@@ -197,7 +199,7 @@ where
                             target_icount,
                             source,
                             &current,
-                            recorded,
+                            &recorded,
                         )?;
                     } else {
                         reject_unrecorded_local_request(self)?;

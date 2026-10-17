@@ -666,10 +666,8 @@ mod tests {
         assert_campaign_owner(&contract, &schedule, true);
         assert!(validate_live_qemu_campaign_owner(&contract, &schedule, false).is_err());
 
-        let closure = match crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::from_canonical_bytes(b"CCRC\0\0\0\x01\0\0\0\0") {
-            Ok(closure) => closure,
-            Err(error) => panic!("selection-free resume closure failed: {error}"),
-        };
+        let closure =
+            crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::empty();
         let accepted = match campaign_owner_replay_closure("campaign-run", Some(closure.clone())) {
             Ok(closure) => closure,
             Err(error) => panic!("campaign-owned resume closure failed: {error}"),

@@ -487,16 +487,17 @@ pub(super) async fn run_remote_control_client_resume_from_evidence_with_driver_a
 where
     C: ControlClient + Sync,
 {
-    let replay_closure_payload = evidence
+    // The request carries the root and each frame as separate elements.
+    let replay_closure_frames = evidence
         .replay_closure
-        .to_canonical_bytes()
+        .to_frame_objects()
         .map_err(|error| artifact_error(format!("encode remote resume replay closure: {error}")))?;
     let replay_closure = crucible_api::ResumeReplayClosure::new(
         &evidence.scenario_form,
         &evidence.schedule,
         &evidence.checkpoint,
         crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::SCHEMA_VERSION,
-        replay_closure_payload,
+        replay_closure_frames,
     )
     .map_err(|error| artifact_error(error.to_string()))?;
     let observation_source = match (

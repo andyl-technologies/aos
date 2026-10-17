@@ -896,7 +896,8 @@ fn unpublished_default_selection_survives_root_closure_restart_without_repositor
         .complete_from_repository(&store, &scenario, &default_schedule)
         .expect("root-owned default needs no repository record");
     let record = completed
-        .selection_for_decision(0, &default_schedule)
+        .cursor(&default_schedule)
+        .selection_for_decision(0)
         .expect("read default decision")
         .expect("default decision has a root-owned record");
     assert_eq!(record.selection(), &default);
@@ -1409,8 +1410,7 @@ fn selection_free_resume_authenticates_the_exact_source_before_continuing() {
     let checkpoints = exact_checkpoint_store(&checkpoint_directory);
     let (request, node, _run_state) = checkpoint_request();
     let checkpoint = guarded_resume_checkpoint(&request, &schedule, source_frontier);
-    let closure = GuardedCampaignReplayClosure::from_canonical_bytes(b"CCRC\0\0\0\x01\0\0\0\0")
-        .expect("selection-free replay closure");
+    let closure = GuardedCampaignReplayClosure::empty();
     let request = request
         .with_resume_source(
             schedule,
@@ -1496,8 +1496,7 @@ fn selection_free_resume_terminal_at_source_needs_no_continuation() {
     let (request, node, _run_state) = checkpoint_request();
     let schedule = Schedule::empty();
     let checkpoint = guarded_resume_checkpoint(&request, &schedule, source_frontier);
-    let closure = GuardedCampaignReplayClosure::from_canonical_bytes(b"CCRC\0\0\0\x01\0\0\0\0")
-        .expect("selection-free replay closure");
+    let closure = GuardedCampaignReplayClosure::empty();
     let request = request.with_resume_source(
         schedule,
         closure,
@@ -1536,8 +1535,7 @@ fn selection_free_resume_rejects_terminal_before_the_source_boundary() {
     let (request, node, _run_state) = request();
     let schedule = Schedule::empty();
     let checkpoint = guarded_resume_checkpoint(&request, &schedule, source_frontier);
-    let closure = GuardedCampaignReplayClosure::from_canonical_bytes(b"CCRC\0\0\0\x01\0\0\0\0")
-        .expect("selection-free replay closure");
+    let closure = GuardedCampaignReplayClosure::empty();
     let request = request.with_resume_source(
         schedule,
         closure,
@@ -1580,8 +1578,7 @@ fn selection_free_resume_rejects_a_checkpoint_for_another_configuration() {
             order: Vec::new(),
         },
     )]);
-    let closure = GuardedCampaignReplayClosure::from_canonical_bytes(b"CCRC\0\0\0\x01\0\0\0\0")
-        .expect("selection-free replay closure");
+    let closure = GuardedCampaignReplayClosure::empty();
     let request = request.with_resume_source(
         schedule,
         closure,
@@ -1632,8 +1629,7 @@ fn portable_resume_rejects_override_before_execution() {
         let checkpoints = exact_checkpoint_store(&checkpoint_directory);
         let (request, node, _run_state) = request();
         let checkpoint = guarded_resume_checkpoint(&request, &schedule, VirtualTime::default());
-        let closure = GuardedCampaignReplayClosure::from_canonical_bytes(b"CCRC\0\0\0\x01\0\0\0\0")
-            .expect("non-selection decisions require no separate choice records");
+        let closure = GuardedCampaignReplayClosure::empty();
         let request = request.with_resume_source(
             schedule,
             closure,
@@ -1673,8 +1669,7 @@ fn selection_free_resume_applies_an_earlier_final_stop_after_source_admission() 
     let (request, node, _run_state) = checkpoint_request();
     let schedule = Schedule::empty();
     let checkpoint = guarded_resume_checkpoint(&request, &schedule, source_frontier);
-    let closure = GuardedCampaignReplayClosure::from_canonical_bytes(b"CCRC\0\0\0\x01\0\0\0\0")
-        .expect("selection-free replay closure");
+    let closure = GuardedCampaignReplayClosure::empty();
     let request = request.with_resume_source(
         schedule,
         closure,
@@ -1724,8 +1719,7 @@ fn selection_free_resume_completes_at_the_requested_next_choice() {
     let (request, node, _run_state) = checkpoint_request();
     let schedule = Schedule::empty();
     let checkpoint = guarded_resume_checkpoint(&request, &schedule, source_frontier);
-    let closure = GuardedCampaignReplayClosure::from_canonical_bytes(b"CCRC\0\0\0\x01\0\0\0\0")
-        .expect("selection-free replay closure");
+    let closure = GuardedCampaignReplayClosure::empty();
     let request = request.with_resume_source(
         schedule,
         closure,
@@ -2125,7 +2119,7 @@ fn replay_closure_rejects_missing_extra_duplicate_and_tampered_records_before_st
 
     let wrong_selection = completed
         .replay_closure()
-        .with_alternate_boolean_branch_selection()
+        .with_alternate_boolean_branch_selection(&schedule)
         .expect("canonical closure with another legal branch selection");
     let (wrong_request, wrong_node, _run_state) = selectable_request();
     let wrong_request = wrong_request.with_initial_replay(schedule, Some(wrong_selection));
@@ -2140,23 +2134,22 @@ fn replay_closure_rejects_missing_extra_duplicate_and_tampered_records_before_st
     ));
     assert_eq!(wrong_starts.load(Ordering::Relaxed), 0);
 
-    let mut duplicate = Vec::from(&closure_bytes[..8]);
-    duplicate.extend_from_slice(&2_u32.to_le_bytes());
-    duplicate.extend_from_slice(&closure_bytes[12..]);
-    duplicate.extend_from_slice(&closure_bytes[12..]);
+    let mut trailing = closure_bytes.clone();
+    trailing.push(0);
     assert!(matches!(
-        GuardedCampaignReplayClosure::from_canonical_bytes(&duplicate),
+        GuardedCampaignReplayClosure::from_canonical_bytes(&trailing),
         Err(GuardedCampaignReplayClosureError::Invalid { .. })
     ));
 
+    // The last byte belongs to the last frame, whose digest the root names.
     let mut tampered = closure_bytes;
-    let domain_length = u32::from_le_bytes(
-        tampered[12..16]
-            .try_into()
-            .expect("selected closure domain length"),
-    );
-    tampered[12..16].copy_from_slice(&domain_length.saturating_add(1).to_le_bytes());
-    assert!(GuardedCampaignReplayClosure::from_canonical_bytes(&tampered).is_err());
+    if let Some(last) = tampered.last_mut() {
+        *last ^= 1;
+    }
+    assert!(matches!(
+        GuardedCampaignReplayClosure::from_canonical_bytes(&tampered),
+        Err(GuardedCampaignReplayClosureError::Invalid { .. })
+    ));
 }
 
 #[test]
@@ -2170,16 +2163,16 @@ fn remote_resume_validator_reconstructs_exact_closure_and_rejects_bad_envelopes(
         &configuration.schedule,
         VirtualTime { ticks: 7 },
     );
-    let closure_bytes = completed
+    let closure_frames = completed
         .replay_closure()
-        .to_canonical_bytes()
+        .to_frame_objects()
         .expect("selected replay closure");
     let envelope = crucible_api::ResumeReplayClosure::new(
         &scenario,
         &configuration.schedule,
         &checkpoint,
         GuardedCampaignReplayClosure::SCHEMA_VERSION,
-        closure_bytes.clone(),
+        closure_frames.clone(),
     )
     .expect("bounded remote replay envelope");
 
@@ -2193,7 +2186,7 @@ fn remote_resume_validator_reconstructs_exact_closure_and_rejects_bad_envelopes(
         &configuration.schedule,
         &checkpoint,
         99,
-        closure_bytes.clone(),
+        closure_frames.clone(),
     )
     .expect("bounded unknown-schema envelope");
     assert!(matches!(
@@ -2206,8 +2199,11 @@ fn remote_resume_validator_reconstructs_exact_closure_and_rejects_bad_envelopes(
         Err(GuardedCampaignReplayClosureError::UnsupportedSchema { .. })
     ));
 
-    let mut tampered_bytes = closure_bytes.clone();
-    if let Some(last) = tampered_bytes.last_mut() {
+    let mut tampered_frames = closure_frames.clone();
+    if let Some(last) = tampered_frames
+        .last_mut()
+        .and_then(|frame| frame.last_mut())
+    {
         *last ^= 1;
     }
     let tampered = crucible_api::ResumeReplayClosure::new(
@@ -2215,7 +2211,7 @@ fn remote_resume_validator_reconstructs_exact_closure_and_rejects_bad_envelopes(
         &configuration.schedule,
         &checkpoint,
         GuardedCampaignReplayClosure::SCHEMA_VERSION,
-        tampered_bytes,
+        tampered_frames,
     )
     .expect("bounded tampered envelope");
     assert!(
@@ -2234,7 +2230,7 @@ fn remote_resume_validator_reconstructs_exact_closure_and_rejects_bad_envelopes(
         &Schedule::empty(),
         &empty_checkpoint,
         GuardedCampaignReplayClosure::SCHEMA_VERSION,
-        closure_bytes,
+        closure_frames,
     )
     .expect("bounded extra-record envelope");
     assert!(

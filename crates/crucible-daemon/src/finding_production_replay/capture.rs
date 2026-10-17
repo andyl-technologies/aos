@@ -8,7 +8,7 @@ pub(super) fn validate_capture_content(
     shared_context: &FindingProductionReplaySharedContext,
     retained_selected_side: FindingProductionReplaySelectedSide,
     sides: &[FindingProductionReplayExecutionSide],
-    campaign_replay_closure: &[u8],
+    campaign_replay_closure: &GuardedCampaignReplayClosure,
     limits: FindingProductionReplayCaptureLimits,
 ) -> Result<(), FindingProductionReplayCaptureError> {
     let model = crucible::ReproductionArtifact::from_compact_binary(model_reproduction).map_err(
@@ -25,9 +25,7 @@ pub(super) fn validate_capture_content(
         })?;
     let scenario = model.scenario_form();
     validate_shared_context(scenario, shared_context, limits)?;
-    let closure = GuardedCampaignReplayClosure::from_canonical_bytes(campaign_replay_closure)
-        .map_err(FindingProductionReplayCaptureError::ReplayClosure)?;
-    closure
+    campaign_replay_closure
         .validate_for_schedule(scenario, model.schedule())
         .map_err(FindingProductionReplayCaptureError::ReplayClosure)?;
 

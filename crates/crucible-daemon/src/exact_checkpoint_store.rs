@@ -8,7 +8,8 @@
 //! ```text
 //! ExactCheckpointRootV5
 //!   production-manifest -> ProductionExactCheckpointClosureV9
-//!   checkpoint-choice-closure -> bounded owned replay selections
+//!   checkpoint-choice-closure -> owned replay-closure root
+//!   checkpoint-choice-frame-* -> replay-closure frames, at most 64 MiB each
 //!   production-object-index-* -> ProductionCheckpointIndexV1
 //!     object-<native-hash> -> opaque typed production object
 //! ```
@@ -58,7 +59,7 @@ pub use production::{
 /// Attempt-owned production closure awaiting no-write immutable-store preparation.
 pub struct CapturedAttemptCheckpoint {
     closure: ProductionExactCheckpointClosure,
-    choice_closure: Option<Vec<u8>>,
+    choice_closure: Option<crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure>,
 }
 
 impl fmt::Debug for CapturedAttemptCheckpoint {
@@ -81,18 +82,18 @@ impl CapturedAttemptCheckpoint {
         }
     }
 
-    pub(crate) fn with_choice_closure(mut self, bytes: Vec<u8>) -> Self {
-        self.choice_closure = Some(bytes);
+    pub(crate) fn with_choice_closure(
+        mut self,
+        closure: crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure,
+    ) -> Self {
+        self.choice_closure = Some(closure);
         self
     }
 
-    fn choice_closure_bytes(&self) -> Result<Vec<u8>, ExactCheckpointStoreError> {
-        match &self.choice_closure {
-            Some(bytes) => Ok(bytes.clone()),
-            None => crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::empty()
-                .to_canonical_bytes()
-                .map_err(|_| invalid_root("empty choice closure could not be encoded")),
-        }
+    fn choice_closure(&self) -> crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure {
+        self.choice_closure
+            .clone()
+            .unwrap_or_else(crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::empty)
     }
 
     /// Returns the semantic scenario authenticated by this capture.
@@ -393,7 +394,7 @@ impl ExactCheckpointStore {
         &self,
         capture: &CapturedAttemptCheckpoint,
     ) -> Result<PreparedAttemptCheckpoint, ExactCheckpointStoreError> {
-        let choices = capture.choice_closure_bytes()?;
+        let choices = capture.choice_closure();
         self.prepare_production_closure_inner(capture.closure.clone(), choices, None)
             .map(PreparedAttemptCheckpoint)
     }
@@ -416,7 +417,7 @@ impl ExactCheckpointStore {
         if cancellation.is_canceled() {
             return Err(ExactCheckpointStoreError::Canceled);
         }
-        let choices = capture.choice_closure_bytes()?;
+        let choices = capture.choice_closure();
         self.prepare_production_closure_with_cancellation(
             capture.closure.clone(),
             choices,
@@ -431,10 +432,11 @@ impl ExactCheckpointStore {
         closure: ProductionExactCheckpointClosure,
         cancellation: &ExecutionCancellation,
     ) -> Result<PreparedProductionExactCheckpoint, ExactCheckpointStoreError> {
-        let choices = crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::empty()
-            .to_canonical_bytes()
-            .map_err(|_| invalid_root("empty choice closure could not be encoded"))?;
-        self.prepare_production_closure_with_cancellation(closure, choices, cancellation)
+        self.prepare_production_closure_with_cancellation(
+            closure,
+            crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::empty(),
+            cancellation,
+        )
     }
 
     /// Publishes one prepared production checkpoint through root-last ordering.

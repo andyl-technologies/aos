@@ -141,9 +141,7 @@ pub(super) fn resume_evidence_for_scenario(
     };
     let checkpoint =
         checkpoint_for_resume_configuration(&configuration, frontier).or_panic("resume checkpoint");
-    let replay_closure =
-        GuardedCampaignReplayClosure::from_canonical_bytes(b"CCRC\0\0\0\x01\0\0\0\0")
-            .or_panic("canonical empty replay closure");
+    let replay_closure = GuardedCampaignReplayClosure::empty();
     replay_closure
         .validate_for_schedule(&scenario_form, &schedule)
         .or_panic("replay closure matches fixture schedule");
@@ -351,7 +349,7 @@ pub(super) fn capture_only_remote_observation_factory(
                 },
             )
             .and_then(|closure| {
-                GuardedCampaignReplayClosure::from_canonical_bytes(closure.payload()).map_err(
+                GuardedCampaignReplayClosure::from_frame_objects(closure.frames()).map_err(
                     |error| crucible_api::LifecycleApiError::ResumeObservationSource {
                         message: format!("decode test remote replay closure: {error}"),
                     },

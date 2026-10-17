@@ -218,7 +218,8 @@ fn repository_fixture(closure: &ExactCheckpointClosureRecord) -> RepositoryFixtu
                 ContentId::for_bytes(
                     ObjectKind::Observation,
                     CHOICE_CLOSURE_SCHEMA_VERSION,
-                    b"CCRC\0\0\0\x01\0\0\0\0",
+                    // The empty version 2 replay-closure root.
+                    b"CCRC\0\0\0\x02\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
                 ),
             )
             .unwrap_or_else(|error| panic!("fixture choice child: {error:?}")),
@@ -760,4 +761,39 @@ fn closure_delivers_sorted_fault_trace_segments_and_rejects_unsorted_ones() {
         .map(|(index, (identity, bytes))| (index, identity, bytes))
         .collect::<Vec<_>>();
     assert_eq!(delivered, expected);
+}
+
+#[test]
+fn repository_root_admits_dense_choice_frames_and_rejects_gaps() {
+    let (_, closure, _) = fixture();
+    let repository = repository_fixture(&closure);
+    let original = ContentEnvelope::from_canonical_bytes(&repository.envelope)
+        .unwrap_or_else(|error| panic!("decode fixture root: {error:?}"));
+    let with_frames = |ordinals: &[usize]| {
+        let mut children = original.children().clone();
+        for ordinal in ordinals {
+            let frame = ContentId::for_bytes(
+                ObjectKind::Observation,
+                CHOICE_FRAME_SCHEMA_VERSION,
+                &ordinal.to_le_bytes(),
+            );
+            children.insert(
+                ContentChild::new(format!("{CHOICE_FRAME_ROLE_PREFIX}{ordinal:08x}"), frame)
+                    .unwrap_or_else(|error| panic!("fixture frame child: {error:?}")),
+            );
+        }
+        ContentEnvelope::new(
+            ROOT_SCHEMA,
+            ROOT_SCHEMA_VERSION,
+            children,
+            original.body().to_vec(),
+        )
+        .unwrap_or_else(|error| panic!("fixture framed root: {error:?}"))
+    };
+
+    assert!(decode_root_children(&with_frames(&[0, 1, 2]), 1).is_ok());
+    assert_eq!(
+        decode_root_children(&with_frames(&[0, 2]), 1).err(),
+        Some(ExactCheckpointRelationError::RepositoryRootMismatch)
+    );
 }

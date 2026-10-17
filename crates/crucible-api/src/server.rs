@@ -42,7 +42,8 @@ use crate::lifecycle::{
     CreateSessionRequest, CreateSessionResponse, DestroySessionRequest, DestroySessionResponse,
     GetReproductionRequest, GetReproductionResponse, LifecycleApiError, LifecycleControlPlane,
     ListScenariosResponse, ListSessionsResponse, RESUME_OBSERVATION_SOURCE_MAX_BYTES,
-    RESUME_REPLAY_CLOSURE_MAX_BYTES, ReproductionCommandRecord, ReproductionCommandResult,
+    RESUME_REPLAY_CLOSURE_FRAME_MAX_BYTES, RESUME_REPLAY_CLOSURE_MAX_BYTES,
+    RESUME_REPLAY_CLOSURE_MAX_FRAMES, ReproductionCommandRecord, ReproductionCommandResult,
     ResumeObservationSource, ResumeReplayClosure, ResumeSessionRequest, ResumeSessionResponse,
     SessionId, SessionRef,
 };
@@ -1167,6 +1168,54 @@ fn parse_resume_session_request(body: &[u8]) -> Result<ResumeSessionRequest, Str
     Ok(request)
 }
 
+/// Parses the size-prefixed closure frames, checking every bound before
+/// decoding each frame's hex.
+fn parse_resume_replay_closure_frames<'a>(
+    lines: &mut impl Iterator<Item = &'a str>,
+    // crucible-lint: allow stringly-error -- this private wire parser returns bounded diagnostics that its typed transport boundary immediately encodes.
+) -> Result<Vec<Vec<u8>>, String> {
+    let count = parse_u64_line(lines.next(), "campaign-replay-closure-frames=")?;
+    let count = usize::try_from(count)
+        .ok()
+        .filter(|count| (1..=RESUME_REPLAY_CLOSURE_MAX_FRAMES).contains(count))
+        .ok_or_else(|| {
+            format!(
+                "campaign replay closure has {count} frames, expected 1 through {RESUME_REPLAY_CLOSURE_MAX_FRAMES}"
+            )
+        })?;
+
+    let mut frames = Vec::with_capacity(count);
+    let mut total = 0_usize;
+    for _ in 0..count {
+        let size = parse_u64_line(lines.next(), "campaign-replay-closure-frame-size=")?;
+        let size = usize::try_from(size)
+            .ok()
+            .filter(|size| *size <= RESUME_REPLAY_CLOSURE_FRAME_MAX_BYTES)
+            .ok_or_else(|| {
+                format!(
+                    "campaign replay closure frame has {size} bytes, maximum is {RESUME_REPLAY_CLOSURE_FRAME_MAX_BYTES}"
+                )
+            })?;
+        total = total
+            .checked_add(size)
+            .filter(|total| *total <= RESUME_REPLAY_CLOSURE_MAX_BYTES)
+            .ok_or_else(|| {
+                format!("campaign replay closure exceeds {RESUME_REPLAY_CLOSURE_MAX_BYTES} bytes")
+            })?;
+
+        let frame_hex = parse_wire_line(lines.next(), "campaign-replay-closure-frame=")?;
+        if frame_hex.len() != size * 2 {
+            return Err(format!(
+                "campaign replay closure frame has {} hex bytes, expected {}",
+                frame_hex.len(),
+                size * 2
+            ));
+        }
+        frames.push(parse_hex_bytes(frame_hex)?);
+    }
+    Ok(frames)
+}
+
 fn parse_optional_resume_replay_closure<'a>(
     scenario: &ScenarioDefForm,
     schedule: &Schedule,
@@ -1185,35 +1234,8 @@ fn parse_optional_resume_replay_closure<'a>(
         .map_err(|_| String::from("campaign replay closure version exceeds u32"))?;
     let expected_identity =
         parse_content_hash_line(lines.next(), "campaign-replay-closure-identity=")?;
-    let expected_size = parse_u64_line(lines.next(), "campaign-replay-closure-size=")?;
-    let max_size = u64::try_from(RESUME_REPLAY_CLOSURE_MAX_BYTES)
-        .map_err(|_| String::from("campaign replay closure byte bound cannot be represented"))?;
-    if expected_size > max_size {
-        return Err(format!(
-            "campaign replay closure has {expected_size} bytes, maximum is {RESUME_REPLAY_CLOSURE_MAX_BYTES}"
-        ));
-    }
-    let payload_hex = parse_wire_line(lines.next(), "campaign-replay-closure-payload=")?;
-    let expected_hex_size = usize::try_from(expected_size)
-        .ok()
-        .and_then(|size| size.checked_mul(2))
-        .ok_or_else(|| String::from("campaign replay closure hex size overflowed"))?;
-    if payload_hex.len() != expected_hex_size {
-        return Err(format!(
-            "campaign replay closure payload has {} hex bytes, expected {expected_hex_size}",
-            payload_hex.len()
-        ));
-    }
-    let payload = parse_hex_bytes(payload_hex)?;
-
-    let actual_size = u64::try_from(payload.len())
-        .map_err(|_| String::from("campaign replay closure size cannot be represented"))?;
-    if actual_size != expected_size {
-        return Err(format!(
-            "campaign replay closure size {actual_size} did not match bound size {expected_size}"
-        ));
-    }
-    let closure = ResumeReplayClosure::new(scenario, schedule, checkpoint, version, payload)
+    let frames = parse_resume_replay_closure_frames(lines)?;
+    let closure = ResumeReplayClosure::new(scenario, schedule, checkpoint, version, frames)
         .map_err(|error| error.to_string())?;
     if closure.identity() != expected_identity {
         return Err(format!(

@@ -845,7 +845,11 @@ pub use campaign_run::{
     GuardedDefaultCampaignSupervisorError, GuardedDefaultCampaignWatchFrame,
     run_guarded_default_campaign, validate_remote_resume_replay_closure,
 };
-pub(crate) use campaign_run::{GuardedCampaignReplaySelection, MAX_REPLAY_CLOSURE_BYTES};
+pub(crate) use campaign_run::{
+    GuardedCampaignReplayChoices, GuardedCampaignReplaySelection, MAX_REPLAY_CLOSURE_FRAME_BYTES,
+    MAX_REPLAY_CLOSURE_FRAMES, MAX_REPLAY_CLOSURE_ROOT_BYTES, REPLAY_CLOSURE_OBJECT_KIND,
+    REPLAY_CLOSURE_OBJECT_SCHEMA_VERSION, closure_object_id,
+};
 
 /// Narrow modeled-execution view of one guarded fresh QEMU lifecycle.
 ///

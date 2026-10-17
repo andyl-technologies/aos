@@ -665,10 +665,12 @@ impl CampaignRepository {
     }
 }
 
-/// Admits a version 4 capture manifest or one of its version 1 trace leaves.
+/// Admits a current capture manifest or one of its version 1 trace leaves.
 fn validate_finding_replay_capture_object_id(id: ContentId) -> Result<(), CampaignRepositoryError> {
     let admitted = match id.kind() {
-        ObjectKind::ExactManifest => id.schema_version() == 4,
+        ObjectKind::ExactManifest => {
+            crate::FindingReplayCaptureEvidenceId::from_manifest_content_id(id).is_ok()
+        }
         ObjectKind::Trace => id.schema_version() == 1,
         _ => false,
     };

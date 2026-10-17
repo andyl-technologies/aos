@@ -1,4 +1,4 @@
-//! Publication and loading of version 4 capture manifests.
+//! Publication and loading of version 5 capture manifests.
 //!
 //! [`FindingProductionReplayCapture::prepare_objects`] derives the manifest
 //! envelope and every leaf without writing anything. Leaf bytes are read from
@@ -8,40 +8,47 @@
 //! [`FindingProductionReplayCapture::from_objects`] decodes a published
 //! manifest, checks that its children are exactly the leaves its body names,
 //! and reads the static leaves under fixed or scenario-derived bounds. Side
-//! logs stay segment references served by the supplied leaf handles.
+//! logs stay segment references served by the supplied leaf handles, and the
+//! replay closure's frames stay leaf handles read one at a time.
 //!
 //! ```text
-//! child role               leaf content                          read bound
-//! model-reproduction       compact model reproduction            32 MiB
-//! campaign-replay-closure  canonical guarded replay closure      128 MiB
-//! resolved-effect-trace    one side's resolved-effect trace      64 MiB
-//! guest-asset              kernel, root image, or initrd bytes   scenario guest-asset bytes
-//! lifecycle-object         signal artifact or World base image   scenario lifecycle bytes
-//! event-log-segment        one attempt-log segment               16 MiB, streamed
+//! child role                     leaf content                         read bound
+//! model-reproduction             compact model reproduction           32 MiB
+//! campaign-replay-closure        guarded replay-closure root          1.3 MiB
+//! campaign-replay-closure-frame  one replay-closure frame             64 MiB, lazy
+//! resolved-effect-trace          one side's resolved-effect trace     64 MiB
+//! guest-asset                    kernel, root image, or initrd bytes  scenario guest-asset bytes
+//! lifecycle-object               signal artifact or World base image  scenario lifecycle bytes
+//! event-log-segment              one attempt-log segment              16 MiB, streamed
 //! ```
 //!
 //! Every leaf is a trace object of schema version 1 whose identity derives
-//! from its bytes, and the envelope is an exact manifest of schema version 4.
+//! from its bytes, and the envelope is an exact manifest of schema version 5.
 
-use std::io::{self, Cursor, Read};
+mod leaf_sources;
 
 use crucible_campaign::FindingReplayCaptureEvidenceId;
 use crucible_cas::content_envelope::{ContentChild, ContentEnvelope};
-use crucible_cas::content_store::{BlobHandle, BlobSource, ObjectKind, StoreError};
+use crucible_cas::content_store::{BlobHandle, ObjectKind, StoreError};
 
 use super::wire::{
     ArchitectureWire, AssetWire, BoundedVecWriter, ByteBuf, CAPTURE_LEAF_SCHEMA_VERSION,
     CaptureManifestWire, DeploymentWire, EventLogWire, FingerprintWire, GuestAssetsWire, LeafWire,
-    LifecycleObjectWire, SegmentWire, SideWire, preflight_canonical_cbor,
+    LifecycleObjectWire, ReplayClosureWire, SegmentWire, SideWire, preflight_canonical_cbor,
 };
 use super::*;
-use crate::qemu_campaign_lifecycle::MAX_REPLAY_CLOSURE_BYTES;
+use crate::qemu_campaign_lifecycle::{
+    MAX_REPLAY_CLOSURE_FRAME_BYTES, MAX_REPLAY_CLOSURE_ROOT_BYTES,
+};
 use crate::{
-    AttemptLogManifest, AttemptLogSegmentRef, AttemptLogSegmentSource, AttemptLogSegmentSources,
-    MAX_ATTEMPT_LOG_SEGMENT_BYTES, MAX_CRUCIBLE_CAMPAIGN_IMPORT_FILE_BYTES,
+    AttemptLogManifest, AttemptLogSegmentRef, AttemptLogSegmentSources,
+    MAX_CRUCIBLE_CAMPAIGN_IMPORT_FILE_BYTES,
+};
+use leaf_sources::{
+    ClosureFrameLeafSource, LeafSegmentSource, SegmentLeafSource, SharedBytes, SharedBytesSource,
 };
 
-/// Schema name of the version 4 capture manifest envelope.
+/// Schema name of the version 5 capture manifest envelope.
 pub const FINDING_PRODUCTION_REPLAY_CAPTURE_SCHEMA: &str =
     "crucible.executor.finding-production-replay-capture";
 
@@ -61,8 +68,10 @@ const MAX_MODEL_REPRODUCTION_LEAF_BYTES: u64 = MAX_CRUCIBLE_CAMPAIGN_IMPORT_FILE
 pub enum FindingProductionReplayLeafRole {
     /// The compact model reproduction the replay executed.
     ModelReproduction,
-    /// The canonical guarded campaign replay closure.
+    /// The guarded campaign replay closure's root.
     CampaignReplayClosure,
+    /// One frame of the guarded campaign replay closure.
+    CampaignReplayClosureFrame,
     /// One side's canonical resolved-effect trace.
     ResolvedEffectTrace,
     /// One guest kernel, root image, or initrd.
@@ -80,6 +89,7 @@ impl FindingProductionReplayLeafRole {
         match self {
             Self::ModelReproduction => "model-reproduction",
             Self::CampaignReplayClosure => "campaign-replay-closure",
+            Self::CampaignReplayClosureFrame => "campaign-replay-closure-frame",
             Self::ResolvedEffectTrace => "resolved-effect-trace",
             Self::GuestAsset => "guest-asset",
             Self::LifecycleObject => "lifecycle-object",
@@ -93,6 +103,7 @@ impl FindingProductionReplayLeafRole {
         [
             Self::ModelReproduction,
             Self::CampaignReplayClosure,
+            Self::CampaignReplayClosureFrame,
             Self::ResolvedEffectTrace,
             Self::GuestAsset,
             Self::LifecycleObject,
@@ -104,11 +115,15 @@ impl FindingProductionReplayLeafRole {
 
     /// Returns whether the leaf's size grows with the replayed run.
     ///
-    /// Only side-log segments do; every other leaf is fixed by the scenario
-    /// or by a constant format bound.
+    /// Side-log segments and replay-closure frames do: a closure holds one
+    /// entry per selection decision. Every other leaf is fixed by the
+    /// scenario or by a constant format bound.
     #[must_use]
     pub const fn is_run_length(self) -> bool {
-        matches!(self, Self::EventLogSegment)
+        matches!(
+            self,
+            Self::EventLogSegment | Self::CampaignReplayClosureFrame
+        )
     }
 }
 
@@ -262,11 +277,7 @@ impl FindingProductionReplayCapture {
             SharedBytes::Owned(Arc::clone(&self.model_reproduction)),
             None,
         )?;
-        let campaign_replay_closure = leaves.insert_bytes(
-            FindingProductionReplayLeafRole::CampaignReplayClosure,
-            SharedBytes::Owned(Arc::clone(&self.campaign_replay_closure)),
-            None,
-        )?;
+        let campaign_replay_closure = closure_wire(&self.campaign_replay_closure, &mut leaves)?;
         let deployment = deployment_wire(&self.shared_context.deployment, leaf_ids, &mut leaves)?;
         let mut lifecycle_objects = Vec::with_capacity(self.shared_context.lifecycle_objects.len());
         for identity in self.shared_context.lifecycle_objects.keys() {
@@ -346,10 +357,7 @@ impl FindingProductionReplayCapture {
         let reader = LeafReader { leaves };
         let model_reproduction =
             reader.read(&body.model_reproduction, MAX_MODEL_REPRODUCTION_LEAF_BYTES)?;
-        let campaign_replay_closure = reader.read(
-            &body.campaign_replay_closure,
-            MAX_REPLAY_CLOSURE_BYTES as u64,
-        )?;
+        let campaign_replay_closure = read_closure(&reader, &body.campaign_replay_closure)?;
         let mut leaf_ids = BTreeMap::new();
         let deployment = read_deployment(&reader, body.deployment, limits, &mut leaf_ids)?;
         let lifecycle_objects =
@@ -376,7 +384,7 @@ impl FindingProductionReplayCapture {
             shared_context: Arc::new(shared_context),
             selected_side: body.selected_side,
             sides: sides.into(),
-            campaign_replay_closure: campaign_replay_closure.into(),
+            campaign_replay_closure,
         };
         capture.validate(limits)?;
         Ok(capture)
@@ -474,6 +482,65 @@ impl LeafSet {
         }
         Ok(())
     }
+}
+
+/// Adds the closure root and every frame as leaves.
+///
+/// Frames are read once here to derive their trace identities and again
+/// only when a backend copies them.
+fn closure_wire(
+    closure: &GuardedCampaignReplayClosure,
+    leaves: &mut LeafSet,
+) -> Result<ReplayClosureWire, FindingProductionReplayCaptureError> {
+    let root = leaves.insert_bytes(
+        FindingProductionReplayLeafRole::CampaignReplayClosure,
+        SharedBytes::Owned(Arc::from(closure.root_bytes())),
+        None,
+    )?;
+    let frame_count = closure.frame_ids().len();
+    let mut frames = Vec::with_capacity(frame_count);
+    for index in 0..frame_count {
+        let bytes = closure
+            .frame_bytes(index)
+            .map_err(FindingProductionReplayCaptureError::ReplayClosure)?;
+        let id = leaf_id(&bytes);
+        let length = bytes.len() as u64;
+        let source = BlobHandle::new(Arc::new(ClosureFrameLeafSource {
+            closure: closure.clone(),
+            index,
+            length,
+        }));
+        leaves.insert(
+            FindingProductionReplayLeafRole::CampaignReplayClosureFrame,
+            id,
+            length,
+            source,
+        )?;
+        frames.push(LeafWire::new(id, length));
+    }
+    Ok(ReplayClosureWire { root, frames })
+}
+
+/// Reads the closure root and opens every frame leaf without reading it.
+fn read_closure(
+    reader: &LeafReader<'_>,
+    wire: &ReplayClosureWire,
+) -> Result<GuardedCampaignReplayClosure, FindingProductionReplayCaptureError> {
+    let root = reader.read(&wire.root, MAX_REPLAY_CLOSURE_ROOT_BYTES as u64)?;
+    let frames = wire
+        .frames
+        .iter()
+        .map(|frame| {
+            if frame.length > MAX_REPLAY_CLOSURE_FRAME_BYTES as u64 {
+                return Err(FindingProductionReplayCaptureError::LimitExceeded {
+                    limit: "finding-production-replay-leaf-bytes",
+                });
+            }
+            reader.handle(frame.id()?, frame.length).cloned()
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    GuardedCampaignReplayClosure::from_stored(root, frames)
+        .map_err(FindingProductionReplayCaptureError::ReplayClosure)
 }
 
 fn deployment_wire(
@@ -611,8 +678,14 @@ fn manifest_children(
     )?;
     child(
         FindingProductionReplayLeafRole::CampaignReplayClosure,
-        body.campaign_replay_closure.id()?,
+        body.campaign_replay_closure.root.id()?,
     )?;
+    for frame in &body.campaign_replay_closure.frames {
+        child(
+            FindingProductionReplayLeafRole::CampaignReplayClosureFrame,
+            frame.id()?,
+        )?;
+    }
     for assets in &body.deployment.guest_assets {
         for asset in [&assets.kernel, &assets.root_image] {
             child(
@@ -843,106 +916,4 @@ fn read_side(
             .collect(),
         resolved_effect_trace,
     )
-}
-
-/// Shared immutable bytes a leaf source reads without copying them first.
-#[derive(Clone)]
-enum SharedBytes {
-    /// Bytes owned through their own reference count.
-    Owned(Arc<[u8]>),
-    /// One lifecycle object inside a shared replay context.
-    LifecycleObject {
-        context: Arc<FindingProductionReplaySharedContext>,
-        identity: ContentHash,
-    },
-}
-
-impl SharedBytes {
-    fn as_slice(&self) -> &[u8] {
-        match self {
-            Self::Owned(bytes) => bytes,
-            // A context never loses an object, so absence cannot occur; an
-            // empty read would fail the backend's length and identity checks.
-            Self::LifecycleObject { context, identity } => context
-                .lifecycle_objects
-                .get(identity)
-                .map_or(&[][..], Vec::as_slice),
-        }
-    }
-}
-
-struct SharedBytesSource(SharedBytes);
-
-impl BlobSource for SharedBytesSource {
-    fn logical_length(&self) -> u64 {
-        self.0.as_slice().len() as u64
-    }
-
-    fn open(&self) -> Result<Box<dyn Read + Send>, StoreError> {
-        Ok(Box::new(SharedBytesReader {
-            bytes: self.0.clone(),
-            position: 0,
-        }))
-    }
-}
-
-struct SharedBytesReader {
-    bytes: SharedBytes,
-    position: usize,
-}
-
-impl Read for SharedBytesReader {
-    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        let remaining = self
-            .bytes
-            .as_slice()
-            .get(self.position..)
-            .unwrap_or_default();
-        let count = remaining.len().min(buffer.len());
-        buffer[..count].copy_from_slice(&remaining[..count]);
-        self.position += count;
-        Ok(count)
-    }
-}
-
-/// One side-log segment read from the side's stores when it is copied.
-struct SegmentLeafSource {
-    segment: AttemptLogSegmentRef,
-    segments: AttemptLogSegmentSources,
-}
-
-impl BlobSource for SegmentLeafSource {
-    fn logical_length(&self) -> u64 {
-        self.segment.encoded_bytes
-    }
-
-    fn open(&self) -> Result<Box<dyn Read + Send>, StoreError> {
-        let bytes =
-            self.segments
-                .segment(self.segment.id)
-                .map_err(|source| StoreError::StreamIo {
-                    operation: "read-finding-replay-segment",
-                    source,
-                })?;
-        Ok(Box::new(Cursor::new(bytes)))
-    }
-}
-
-/// Serves a loaded side log's segments from their published leaf handles.
-struct LeafSegmentSource {
-    handles: BTreeMap<ContentId, BlobHandle>,
-}
-
-impl AttemptLogSegmentSource for LeafSegmentSource {
-    fn segment(&self, id: ContentId) -> io::Result<Vec<u8>> {
-        let handle = self.handles.get(&id).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                "finding replay segment leaf absent",
-            )
-        })?;
-        handle
-            .read_all(MAX_ATTEMPT_LOG_SEGMENT_BYTES as u64)
-            .map_err(io::Error::other)
-    }
 }

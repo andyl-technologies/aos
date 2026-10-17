@@ -278,23 +278,47 @@ by the carrier's own message limit. A bundle is a transport form; it never
 enters production identity, and decoding it requires exactly the referenced
 segments.
 
-A finding production replay capture is a version 4 exact manifest whose
+A campaign replay closure, the choice records that authenticate a schedule's
+selections, grows with the run in the same way and follows the same rule. Its
+version 2 encoding is a root followed by frames of at most 64 MiB. The root
+names every frame by length and digest. Entry frames list one entry per
+covered selection decision, in schedule order, naming the selection by
+identity and its domain, declaration, and opportunity by record ordinal.
+Record frames hold each distinct record once, so a domain shared by many
+selections is stored once. An exact checkpoint keeps the root and each frame
+as separate children, and a finding capture keeps them as separate leaves; a
+loader reads only the root, and validation reads frames one at a time as it
+walks the schedule. Selections a raw checkpoint did not discover resolve from
+the campaign repository one at a time. A carrier without a repository sends
+a closure bundle, the root followed by its frames, as a sequence of separate
+elements.
+
+A finding production replay capture is a version 5 exact manifest whose
 children are trace leaves: the model reproduction, the campaign replay
-closure, each guest asset and lifecycle object, any resolved-effect trace,
-and, for each execution side, the attempt-log segments in manifest order.
+closure root and each of its frames, each guest asset and lifecycle object,
+any resolved-effect trace, and, for each execution side, the attempt-log
+segments in manifest order.
 A side's recorded segments are referenced as sealed; only the replay prefix
 before a resumed recording and the closing tail are sealed as new segments.
 Selecting the side that explains a divergence streams both side logs to the
 first causal mismatch. The four roles of one finding share equal leaves, and
 each distinct leaf is charged once to one of two per-finding allowances:
-segments to the run-length allowance and every other leaf, with the
-manifests, to the static allowance. A role that would exceed either
+segments and replay-closure frames to the run-length allowance and every
+other leaf, with the manifests, to the static allowance. A role that would exceed either
 allowance is recorded as incomplete, never truncated.
 
 - **[CMEAS-22]** A reader MUST NOT materialize a complete attempt log. Every
   service response that carries log content MUST carry at most one segment and
   remain within the ordinary 64 MiB component-message bound. Digests, density
   checks, replay comparisons, and projections MUST stream segments in order.
+- **[CMEAS-25]** A replay closure bundle MUST carry its root and every frame
+  as separate elements, each within the ordinary 64 MiB component-message
+  bound, mirroring [CMEAS-22]'s one-segment-per-response rule. Only a carrier
+  that is one unary message, such as the resume request, bounds the sum by its
+  own message limit, and a file carrier such as a savepoint handle may hold the
+  bundle in one buffer. A loader MUST NOT read closure frames before
+  validation needs them, and decoding MUST reject a frame whose length or
+  digest differs from the root or a closure that is not canonically encoded.
 - **[CMEAS-24]** Finding evidence ledgers MUST reference every captured
   service exchange by content address and MUST be authenticated as a fold over
   findings and, within a finding, over occurrences. No writer, loader, or

@@ -127,11 +127,13 @@ impl AuthenticatedChildren {
                 .children()
                 .iter()
                 .map(|child| {
+                    // Replay-closure frames are exact leaves like the
+                    // closure root that names them.
                     let exact_leaf = *exact_root
-                        && matches!(
+                        && (matches!(
                             child.role(),
                             "checkpoint-choice-closure" | "replay-oracle-evidence"
-                        );
+                        ) || child.role().starts_with("checkpoint-choice-frame-"));
                     (child.role(), child.id(), exact_leaf)
                 })
                 .collect(),
