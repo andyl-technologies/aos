@@ -739,6 +739,11 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
             "administrative-record",
         ),
         (
+            "crucible.content-store.pack-table",
+            "crucible-cas::content_store",
+            "administrative-record",
+        ),
+        (
             "crucible.content-store.pack-repack-plan",
             "crucible-cas::content_store",
             "administrative-record",
@@ -747,10 +752,10 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
         let row = rows
             .get(schema)
             .unwrap_or_else(|| panic!("missing lower schema {schema}"));
-        let expected_version = if schema == "crucible.content-store.graph-configuration" {
-            "11"
-        } else {
-            "1"
+        let expected_version = match schema {
+            "crucible.content-store.graph-configuration" => "11",
+            "crucible.content-store.pack-index" | "crucible.content-store.pack-repack-plan" => "2",
+            _ => "1",
         };
         assert_eq!(row[1], expected_version);
         assert_eq!(row[2], owner);

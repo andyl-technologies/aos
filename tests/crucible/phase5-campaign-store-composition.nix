@@ -177,6 +177,12 @@ in
             content_store::tests::write_back::write_back_journal_recovers_torn_tail_and_rejects_corruption \
             content_store::tests::packed::packed_inventory_deletes_logical_entries_without_removing_live_pack_bytes \
             content_store::tests::packed::packed_store_graph_is_admitted_and_requires_an_isolated_persistent_root \
+            content_store::packed::tests::sorted_base_lookups_and_iteration_scale_beyond_the_retired_object_ceiling \
+            content_store::packed::tests::journal_commits_and_compactions_match_a_reference_model_beyond_the_retired_ceiling \
+            content_store::packed::tests::uncommitted_journal_tail_is_discarded_and_lost_committed_records_fail_closed \
+            content_store::packed::tests::compaction_preserves_objects_across_restart_repack_and_deletion \
+            content_store::packed::tests::legacy_index_migrates_in_place_with_identity_and_contents_preserved \
+            content_store::packed::tests::interrupted_or_superseded_legacy_migration_converges_and_corruption_fails_closed \
             content_store::s3::tests::behavior::graph_binds_exact_endpoint_capability_and_canonical_configuration
           do
             run_exact_lib_test crucible-cas "$cas_test"
@@ -186,7 +192,10 @@ in
           # feature. Require each exact test to list before exercising it.
           for recovery_test in \
             content_store::tests::tier::corrupt_tier_copy_fails_closed_then_repairs_from_authenticated_lower_tier \
-            content_store::tests::packed::pack_index_interruption_recovers_old_generation_and_retries
+            content_store::tests::packed::pack_index_interruption_recovers_old_generation_and_retries \
+            content_store::tests::packed::pack_journal_tail_interruption_discards_the_uncommitted_put \
+            content_store::tests::packed::pack_compaction_interruption_keeps_the_previous_root \
+            content_store::packed::tests::interrupted_migration_keeps_the_legacy_index_authoritative
           do
             recovery_listing=$(cargo test \
               --frozen --offline --target-dir "$target" \

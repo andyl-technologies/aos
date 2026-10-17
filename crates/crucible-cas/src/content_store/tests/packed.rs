@@ -262,19 +262,22 @@ fn pack_index_interruption_recovers_old_generation_and_retries() {
         String::from_utf8_lossy(&child.stdout),
         String::from_utf8_lossy(&child.stderr),
     );
+    // The replacement pack and its staged base, pack table, and journal are
+    // durable, but the old root still names the old generation.
     assert_eq!(pack_file_count(&root), 3);
-    assert_eq!(pack_staging_file_count(&root), 1);
+    assert_eq!(pack_staging_file_count(&root), 0);
+    assert_eq!(index_file_count(&root, "index-base-"), 2);
 
     let restarted =
         PackedBlobBackend::open("packed", &root, 64 * 1024).expect("restart old generation");
     assert_eq!(pack_file_count(&root), 3);
-    assert_eq!(pack_staging_file_count(&root), 1);
+    assert_eq!(index_file_count(&root, "index-base-"), 1);
     let cleanup = restarted
         .cleanup_incomplete_packs()
         .expect("clean interrupted replacement material");
     assert_eq!(cleanup.index_generation(), before.generation());
     assert_eq!(cleanup.removed_unreferenced_packs(), 1);
-    assert_eq!(cleanup.removed_staging_packs(), 1);
+    assert_eq!(cleanup.removed_staging_packs(), 0);
     assert_eq!(pack_file_count(&root), 2);
     assert_eq!(pack_staging_file_count(&root), 0);
     assert_eq!(
@@ -320,6 +323,153 @@ fn run_pack_index_interruption_child() {
     store
         .apply_repack(&plan)
         .expect("fault hook must interrupt before repack returns");
+}
+
+#[cfg(feature = "destructive-recovery-faults")]
+fn index_file_count(root: &Path, prefix: &str) -> usize {
+    fs::read_dir(root.join(".packed-admin"))
+        .expect("read packed admin directory")
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with(prefix))
+        .count()
+}
+
+/// Runs this test binary's `test_name` as a child that stops at `trigger`.
+#[cfg(feature = "destructive-recovery-faults")]
+fn run_interrupted_child(test_name: &str, root: &Path, trigger: &str) {
+    let child = std::process::Command::new(std::env::current_exe().expect("current test binary"))
+        .arg("--exact")
+        .arg(test_name)
+        .arg("--nocapture")
+        .env(PACK_INDEX_INTERRUPTION_CHILD_ENVIRONMENT, "1")
+        .env(PACK_INDEX_INTERRUPTION_ROOT_ENVIRONMENT, root)
+        .env(DESTRUCTIVE_RECOVERY_TRIGGER_ENVIRONMENT, trigger)
+        .output()
+        .expect("run interrupted packed child");
+    assert_eq!(
+        child.status.code(),
+        Some(PACK_INDEX_INTERRUPTION_CHILD_EXIT_CODE),
+        "packed child did not stop at {trigger}:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&child.stdout),
+        String::from_utf8_lossy(&child.stderr),
+    );
+}
+
+#[cfg(feature = "destructive-recovery-faults")]
+fn interrupted_child_root() -> Option<PathBuf> {
+    std::env::var_os(PACK_INDEX_INTERRUPTION_CHILD_ENVIRONMENT)?;
+    std::env::var_os(PACK_INDEX_INTERRUPTION_ROOT_ENVIRONMENT).map(PathBuf::from)
+}
+
+#[cfg(feature = "destructive-recovery-faults")]
+#[test]
+fn pack_journal_tail_interruption_discards_the_uncommitted_put() {
+    let interrupted = b"put interrupted after its journal append";
+    let id = ContentId::for_bytes(ObjectKind::RamExtent, 1, interrupted);
+    if let Some(root) = interrupted_child_root() {
+        let store = PackedBlobBackend::open("packed", root, 64 * 1024).expect("child backend");
+        let _committed = put_bytes(&store, id, interrupted);
+        panic!("journal child returned without reaching the injected interruption");
+    }
+
+    let temporary = TempDir::new().expect("journal interruption fixture root");
+    let root = temporary.path().join("packed");
+    let store = PackedBlobBackend::open("packed", &root, 64 * 1024).expect("packed backend");
+    let kept = ContentId::for_bytes(ObjectKind::RamExtent, 1, b"committed before");
+    put_bytes(&store, kept, b"committed before").expect("committed put");
+    let before = store.accounting().expect("accounting before interruption");
+    drop(store);
+
+    run_interrupted_child(
+        PACK_JOURNAL_TAIL_TEST_NAME,
+        &root,
+        PACK_JOURNAL_TAIL_TRIGGER,
+    );
+    assert_eq!(pack_file_count(&root), 2);
+
+    let restarted = PackedBlobBackend::open("packed", &root, 64 * 1024).expect("restart");
+    assert!(!restarted.contains(id).expect("uncommitted put is absent"));
+    assert_eq!(
+        restarted.accounting().expect("recovered accounting"),
+        before
+    );
+    assert_eq!(
+        restarted
+            .cleanup_incomplete_packs()
+            .expect("reclaim uncommitted pack")
+            .removed_unreferenced_packs(),
+        1
+    );
+
+    put_bytes(&restarted, id, interrupted).expect("retry interrupted put");
+    assert_eq!(
+        read_bytes(&restarted, id, None).expect("retried object"),
+        interrupted
+    );
+    assert_eq!(
+        read_bytes(&restarted, kept, None).expect("earlier object"),
+        b"committed before"
+    );
+}
+
+#[cfg(feature = "destructive-recovery-faults")]
+#[test]
+fn pack_compaction_interruption_keeps_the_previous_root() {
+    let third = b"third put compacts the journal first";
+    let third_id = ContentId::for_bytes(ObjectKind::RamExtent, 1, third);
+    if let Some(root) = interrupted_child_root() {
+        let store = PackedBlobBackend::open_with_journal_threshold("packed", root, 64 * 1024, 2)
+            .expect("child backend");
+        let _committed = put_bytes(&store, third_id, third);
+        panic!("compaction child returned without reaching the injected interruption");
+    }
+
+    let temporary = TempDir::new().expect("compaction interruption fixture root");
+    let root = temporary.path().join("packed");
+    let open = || {
+        PackedBlobBackend::open_with_journal_threshold("packed", &root, 64 * 1024, 2)
+            .expect("compacting packed backend")
+    };
+    let store = open();
+    let first = ContentId::for_bytes(ObjectKind::RamExtent, 1, b"first journal record");
+    let second = ContentId::for_bytes(ObjectKind::DiskExtent, 1, b"second journal record");
+    put_bytes(&store, first, b"first journal record").expect("first put");
+    put_bytes(&store, second, b"second journal record").expect("second put");
+    let before = store.accounting().expect("accounting before compaction");
+    drop(store);
+
+    run_interrupted_child(PACK_COMPACTION_TEST_NAME, &root, PACK_COMPACTION_TRIGGER);
+    assert_eq!(index_file_count(&root, "index-base-"), 2);
+    assert_eq!(index_file_count(&root, "index-journal-"), 2);
+
+    let restarted = open();
+    assert_eq!(index_file_count(&root, "index-base-"), 1);
+    assert_eq!(restarted.accounting().expect("previous accounting"), before);
+    assert!(
+        !restarted
+            .contains(third_id)
+            .expect("interrupted put is absent")
+    );
+    assert_eq!(
+        restarted
+            .cleanup_incomplete_packs()
+            .expect("reclaim interrupted pack")
+            .removed_unreferenced_packs(),
+        1
+    );
+
+    put_bytes(&restarted, third_id, third).expect("retry compacting put");
+    for (id, bytes) in [
+        (first, &b"first journal record"[..]),
+        (second, &b"second journal record"[..]),
+        (third_id, &third[..]),
+    ] {
+        assert_eq!(
+            read_bytes(&restarted, id, None).expect("compacted object"),
+            bytes
+        );
+    }
+    assert_eq!(index_file_count(&root, "index-base-"), 1);
 }
 
 #[test]
@@ -447,8 +597,8 @@ fn packed_backend_rejects_corruption_and_cleans_unindexed_complete_packs() {
         bytes
     );
 
-    fs::write(second_root.join(".packed-admin/index-v1"), b"truncated")
-        .expect("truncate packed index");
+    fs::write(second_root.join(".packed-admin/index-v2"), b"truncated")
+        .expect("truncate packed index root");
     assert!(matches!(
         PackedBlobBackend::open("recovery", &second_root, 64 * 1024),
         Err(StoreError::Incompatible)

@@ -77,7 +77,7 @@ fn public_exact_paused_guest_survives_packed_repack_corruption_and_gc() -> Resul
         authenticate_checkpoint(&checkpoints, checkpoint)?,
         authenticated_basis
     );
-    let index = fixture.objects.join(".packed-admin/index-v1");
+    let index = fixture.objects.join(".packed-admin/index-v2");
     let original_index = corrupt_index(&index)?;
     require_corrupt_store_verify_refusal(&fixture)?;
     let refused = match start_packaged_service(&fixture, &authority) {
@@ -307,11 +307,11 @@ fn public_packed_repack_rejects_changed_generation_without_rewriting_the_plan()
     )?;
     assert_eq!(planned["phase"], "planned");
     let original_journal = fs::read(journal.join("record-v1.json"))?;
-    let index_before = fs::read(fixture.objects.join(".packed-admin/index-v1"))?;
+    let index_before = fs::read(fixture.objects.join(".packed-admin/index-v2"))?;
     let later_bytes = b"later authenticated logical mutation";
     let later = ContentId::for_bytes(ObjectKind::Trace, 1, later_bytes);
     backend.put_if_absent(later, &BlobHandle::from_bytes(later_bytes.to_vec()))?;
-    let index_after_mutation = fs::read(fixture.objects.join(".packed-admin/index-v1"))?;
+    let index_after_mutation = fs::read(fixture.objects.join(".packed-admin/index-v2"))?;
     assert_ne!(index_before, index_after_mutation);
 
     let refused = output_with_timeout(
@@ -321,7 +321,7 @@ fn public_packed_repack_rejects_changed_generation_without_rewriting_the_plan()
     assert!(!refused.status.success());
     assert!(String::from_utf8_lossy(&refused.stderr).contains(INCOMPATIBLE_STORE));
     assert_eq!(
-        fs::read(fixture.objects.join(".packed-admin/index-v1"))?,
+        fs::read(fixture.objects.join(".packed-admin/index-v2"))?,
         index_after_mutation
     );
     assert_eq!(fs::read(journal.join("record-v1.json"))?, original_journal);
@@ -339,7 +339,7 @@ fn public_packed_startup_refuses_corrupt_index_and_restores_exact_bytes()
     let bytes = b"packed corruption control";
     let content = ContentId::for_bytes(ObjectKind::Trace, 1, bytes);
     backend.put_if_absent(content, &BlobHandle::from_bytes(bytes.to_vec()))?;
-    let index = fixture.objects.join(".packed-admin/index-v1");
+    let index = fixture.objects.join(".packed-admin/index-v2");
     let original_index = fs::read(&index)?;
     assert!(matches!(
         PackedBlobBackend::open("wrong-owner", &fixture.objects, TARGET_PACK_BYTES),

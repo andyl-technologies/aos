@@ -15,8 +15,9 @@ crucible.content-store.compressed-encrypted-object	1	crucible-cas::content_store
 crucible.content-store.encryption-key-state	1	crucible-cas::content_store	administrative-record	gate:campaign-store-composition
 crucible.content-store.logical-quota-state	1	crucible-cas::content_store	administrative-record	gate:campaign-store-composition
 crucible.content-store.pack	1	crucible-cas::content_store	physical-record	gate:campaign-store-composition
-crucible.content-store.pack-index	1	crucible-cas::content_store	administrative-record	gate:campaign-store-composition
-crucible.content-store.pack-repack-plan	1	crucible-cas::content_store	administrative-record	gate:campaign-store-composition
+crucible.content-store.pack-index	2	crucible-cas::content_store	administrative-record	gate:campaign-store-composition
+crucible.content-store.pack-table	1	crucible-cas::content_store	administrative-record	gate:campaign-store-composition
+crucible.content-store.pack-repack-plan	2	crucible-cas::content_store	administrative-record	gate:campaign-store-composition
 crucible.campaign.lineage	1	crucible-campaign::object	campaign-fact	gate:campaign-model,gate:content-address
 crucible.campaign.policy	5	crucible-campaign::object	policy	gate:campaign-model,gate:content-address
 crucible.campaign.snapshot	3	crucible-campaign::object	campaign-snapshot	gate:campaign-model,gate:content-address

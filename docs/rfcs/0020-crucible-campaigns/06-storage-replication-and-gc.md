@@ -1475,10 +1475,15 @@ collecting sparse packs preserves every logical ID.
   object after range extraction and MUST recover safely from interruption
   between pack and index publication.
 
-The single-host packed leaf implements the following registered canonical v1
-physical formats. Every integer is unsigned big-endian, every content ID is its
-canonical lowercase ASCII form preceded by a `u16` byte length, and every
-literal includes the shown trailing NUL where present:
+The single-host packed leaf implements the following registered canonical
+physical formats: pack v1, pack index v2, pack table v1, and repack plan v2.
+Every integer is unsigned big-endian. A pack manifest encodes each content ID
+as its canonical lowercase ASCII form preceded by a `u16` byte length. Index,
+pack-table, and journal records encode it as fixed-width binary
+`content_id[37] = object_kind_code_u8 || schema_version_u32 || digest[32]`,
+where codes 0 through 13 follow the `ObjectKind` declaration order
+(`campaign-fact` through `trace`), so encoded byte order equals content-ID
+order. Every literal includes the shown trailing NUL where present:
 
 ```text
 PackV1 =
@@ -1495,29 +1500,69 @@ PackV1 =
   manifest_checksum[32]
   concatenated_logical_bodies
 
-PackIndexV1 =
-  "crucible.content-store.pack-index.v1\0"
+PackIndexV2 =                   # .packed-admin/index-v2, the root
+  "crucible.content-store.pack-index.v2\0"
   configuration[32]
   backend_instance[32]
   generation_u64
-  last_repack_tag_u8          # 0 None, 1 Some
-  [last_repack_plan_id[32]]   # present exactly when tag is 1
-  entry_count_u32
-  repeated entry_count {
-    content_id_length_u16
-    content_id_ascii[content_id_length]
+  last_repack_tag_u8            # 0 None, 1 Some
+  [last_repack_plan_id[32]]     # present exactly when tag is 1
+  base_digest[32]
+  base_record_count_u64
+  pack_table_digest[32]
+  pack_table_record_count_u64
+  journal_committed_length_u64  # journal header plus committed records
+  journal_record_count_u64
+  journal_chain[32]
+  logical_object_count_u64
+  logical_bytes_u64
+  referenced_pack_count_u64
+  referenced_physical_bytes_u64
+  root_checksum[32]
+
+SortedFile(magic, record) =     # shared by the base and the pack table
+  magic
+  configuration[32]
+  backend_instance[32]
+  generation_u64
+  repeated block_count {
+    record * n                  # n = block_records except in the final block
+    block_checksum[32]
+  }
+  record_count_u64
+  trailer_checksum[32]
+
+PackIndexBaseV2 =               # .packed-admin/index-base-<base_digest>
+  SortedFile("crucible.content-store.pack-index-base.v2\0",
+             content_id[37] pack_id[32] absolute_body_offset_u64
+             logical_length_u64)            # 48 records per block
+
+PackTableV1 =                   # .packed-admin/pack-table-<pack_table_digest>
+  SortedFile("crucible.content-store.pack-table.v1\0",
+             pack_id[32] live_entry_count_u64
+             pack_physical_bytes_u64)       # 85 records per block
+
+PackIndexJournalV2 =            # .packed-admin/index-journal-<base_digest>
+  "crucible.content-store.pack-index-journal.v2\0"
+  configuration[32]
+  backend_instance[32]
+  base_digest[32]
+  repeated {
+    operation_u8                # 1 put, 2 delete
+    content_id[37]
     pack_id[32]
     absolute_body_offset_u64
     logical_length_u64
+    pack_physical_bytes_u64
+    chain[32]
   }
-  index_checksum[32]
 
-PackedRepackPlanV1 =
-  "crucible.content-store.pack-repack-plan.v1\0"
+PackedRepackPlanV2 =
+  "crucible.content-store.pack-repack-plan.v2\0"
   configuration[32]
   backend_instance[32]
   index_generation_u64
-  exact_index_digest[32]
+  exact_root_digest[32]
   accounting_generation_u64
   logical_object_count_u64
   logical_bytes_u64
@@ -1534,45 +1579,94 @@ the exact pack bytes preceding the checksum)` and
 `PackId = BLAKE3("crucible.content-store.pack-id.v1" || configuration ||
 the exact manifest entry bytes)`. Logical bodies are authenticated by their
 manifest `ContentId`s, so physical pack identity does not become logical
-identity. `index_checksum` uses the domain
-`crucible.content-store.pack-index.v1` over the exact preceding index bytes.
-`exact_index_digest` uses
-`crucible.content-store.pack-index-digest.v1` over the complete checksummed
-index. `plan_checksum` uses
-`crucible.content-store.pack-repack-plan.v1`, and `PackedRepackPlanId` uses
-`crucible.content-store.pack-repack-plan-id.v1` over the complete checksummed
+identity. `root_checksum` uses the domain
+`crucible.content-store.pack-index.v2` over the exact preceding root bytes.
+In a sorted file, `header` is the bytes from the magic through
+`generation_u64`; `block_checksum = BLAKE3(block_domain || header ||
+BE64(block_ordinal) || the block's record bytes)`, `trailer_checksum =
+BLAKE3(trailer_domain || header || record_count_u64)`, and the file digest that
+names the file and that the root commits is `BLAKE3(digest_domain || every
+file byte)`. The base domains are
+`crucible.content-store.pack-index-base-{block,trailer,digest}.v2` and the
+pack-table domains are
+`crucible.content-store.pack-table-{block,trailer,digest}.v1`. A journal
+record's `chain = BLAKE3("crucible.content-store.pack-index-journal.v2" ||
+previous_chain || the record bytes preceding chain)`, and the chain before the
+first record is the same hash over the journal header alone.
+`exact_root_digest` uses `crucible.content-store.pack-index-digest.v2` over the
+complete checksummed root. `plan_checksum` uses
+`crucible.content-store.pack-repack-plan.v2`, and `PackedRepackPlanId` uses
+`crucible.content-store.pack-repack-plan-id.v2` over the complete checksummed
 plan.
 
 `accounting_generation_u64` MUST equal `index_generation_u64`; count, byte, and
 pack relationships are checked before a decoded plan can be applied.
 
-One index admits at most 65,536 logical objects and 65,536 referenced packs and
-is at most 16 MiB. One pack contains 1 through 4,096 entries and is at most
-128 MiB including metadata and bodies. Configured target size is 64 KiB through
-128 MiB. Empty logical objects are valid. Entry IDs are strictly increasing;
-offsets are absolute, contiguous, overflow-checked, and cover the exact pack
-length. Decoders reject unknown tags, duplicate IDs, trailing bytes,
-configuration mismatch, checksum mismatch, missing referenced packs, and an
-index entry that does not exactly match its pack manifest.
+The logical index is the base overlaid by the committed journal prefix. A put
+record adds an absent identity; a delete record repeats the exact removed
+entry and its pack's exact length, and replay rejects a record that does not
+match the current view. The pack table records every referenced pack with its
+live entry count (1 through 4,096) and exact file length, and the root's
+totals equal the overlaid view. A sorted file's records are strictly
+increasing and its length is exactly the length implied by `record_count`.
+The base and pack table of one root carry the same generation, which is at most
+the root generation. Lookups binary-search whole blocks with positioned reads
+and authenticate each probed block; a complete iteration also recomputes the
+file digest. The resident journal overlay holds at most one entry and one pack
+per journal record. When the journal already holds
+`clamp(base_record_count / 8, 4,096, 65,536)` records, the next mutation first
+compacts it by streaming the overlaid view into a new base and pack table at
+the same generation and publishing a root that names them with an empty
+journal.
 
-Ordinary puts durably publish an authenticated one-object pack before atomically
-advancing the index. Repack planning is read-only and binds the exact backend
-configuration, persistent instance, generation, complete index digest, and
-checked logical/physical accounting. Apply accepts only that exact basis,
-writes and verifies every deterministic replacement pack, atomically publishes
-the next checksummed index by write-fsync-rename-directory-fsync, and then
-durably removes superseded pack names. A publication error is reconciled by
-reloading and re-fsyncing the visible index. The next index retains the applied
-plan ID, so retry after an indeterminate switch or cleanup error is idempotent;
-any later put, delete, or repack generation makes the old plan stale.
+The index imposes no store-wide object or pack ceiling; a logical quota layer
+and deployment storage bound growth. One pack contains 1 through 4,096 entries
+and is at most 128 MiB including metadata and bodies. Configured target size
+is 64 KiB through 128 MiB. Empty logical objects are valid. Pack entry IDs are
+strictly increasing; offsets are absolute, contiguous, overflow-checked, and
+cover the exact pack length. Decoders reject unknown tags, duplicate or
+unordered IDs, trailing bytes, configuration or instance mismatch, checksum or
+chain mismatch, missing referenced packs, a recorded pack length or live count
+that differs from the pack, and an index entry that does not exactly match its
+pack manifest.
 
-Startup removes complete unindexed pack names left by a pack-before-index
-interruption, but fails closed for a missing or malformed referenced pack.
-Readers retain an open pack inode before releasing the state lock and
-authenticate the complete logical body, including bytes outside a requested
-range; replacement and unlink therefore cannot retarget an in-flight read.
-Logical deletion removes only the index entry until the final entry in that
-pack is deleted. Repack is the operation that reclaims sparse physical bytes.
+Ordinary puts durably publish an authenticated one-object pack, append and
+fsync one journal record at the committed length, and then atomically publish
+the next root by write-fsync-rename-directory-fsync. Every journal record
+advances the generation. Compaction, repack, and migration first make every
+new base, pack table, and empty journal durable and fsync the administrative
+directory, and only then switch the root. Repack planning is read-only and
+binds the exact backend configuration, persistent instance, generation, root
+digest, and checked logical/physical accounting. Apply accepts only that exact
+basis, streams the overlaid entries into deterministic replacement packs and
+a new base, externally sorts the new pack table in bounded memory, switches
+the root, and then durably removes superseded pack names and index files. A
+root publication error is reconciled by rereading and re-fsyncing the visible
+root. The next root retains the applied plan ID, so retry after an
+indeterminate switch or cleanup error is idempotent; any later put, delete,
+compaction, or repack makes the old plan stale.
+
+Recovery follows from that ordering. Bytes beyond the committed journal length
+are an uncommitted tail from a mutation interrupted before its root switch;
+initialization and the next append truncate them. A journal shorter than its
+committed length, or a committed record whose chain does not verify, fails
+closed. Base, pack-table, journal, and staging names that the root does not
+name are reclaimed under the exclusive lifecycle lock at initialization,
+cleanup, and repack. Explicit cleanup, maintenance-fence acquisition, and
+repack remove complete unindexed pack names left by a pack-before-journal
+interruption, but every path fails closed for a missing or malformed
+referenced pack. A store whose administrative directory holds only the
+retired whole-file `crucible.content-store.pack-index.v1` record is migrated
+in place under the exclusive lifecycle lock: the leaf
+writes the equivalent base, pack table, and empty journal with the same
+instance, generation, and last repack plan, authenticates them against every
+referenced pack, publishes the root, and only then removes the legacy file. A
+legacy file beside a valid root is stale and is removed. Readers retain an
+open pack inode before releasing the state lock and authenticate the complete
+logical body, including bytes outside a requested range; replacement and
+unlink therefore cannot retarget an in-flight read. Logical deletion removes
+only the index entry until the final entry in that pack is deleted. Repack is
+the operation that reclaims sparse physical bytes.
 
 The public repack owner preserves this exact backend plan format:
 
@@ -1583,7 +1677,7 @@ crucible store transform packed --store STORE --node PACKED_NODE --journal JOURN
 
 Every path is absolute, normalized, and bounded. Planning authenticates the
 current packed generation and durably creates the exact canonical
-`PackedRepackPlanV1` bytes using create-new, file fsync, and parent-directory
+`PackedRepackPlanV2` bytes using create-new, file fsync, and parent-directory
 fsync. Exact replay reauthenticates and re-fsyncs the same opened regular file.
 Apply likewise authenticates and re-fsyncs the bounded plan file before asking
 the configured packed-leaf capability to revalidate and publish it. A physical
