@@ -10,6 +10,7 @@ impl PacketNativeRestoredSuffixStartupStorageData {
         Sealed(self)
     }
 }
+
 struct Sealed<'a>(&'a PacketNativeRestoredSuffixStartupStorageData);
 impl Serialize for Sealed<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {

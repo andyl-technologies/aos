@@ -315,15 +315,18 @@ fn fields(body: &Map<String, Value>, expected: &[&str]) -> Result<(), ProviderEr
     }
     Ok(())
 }
+
 fn object<'a>(value: &'a Value) -> Result<&'a Map<String, Value>, ProviderError> {
     value.as_object().ok_or_else(invalid)
 }
+
 fn text(value: &Value, limit: usize) -> Result<&str, ProviderError> {
     value
         .as_str()
         .filter(|value| value.len() <= limit)
         .ok_or_else(invalid)
 }
+
 fn raw_shape(original: &Envelope) -> Result<(), ProviderError> {
     if original.message != MessageKind::Request
         || !original.extensions.is_empty()
@@ -570,14 +573,17 @@ pub(super) fn counter_scratch_data() -> usize {
         + size_of::<ContentRef>()
         + size_of::<Stage>() * 2
 }
+
 fn sum(terms: &[usize]) -> Result<usize, ProviderError> {
     terms
         .iter()
         .try_fold(0usize, |n, v| n.checked_add(*v).ok_or_else(invalid))
 }
+
 fn mul(n: usize, bytes: usize) -> Result<usize, ProviderError> {
     n.checked_mul(bytes).ok_or_else(invalid)
 }
+
 fn quantity(bytes: usize) -> Result<U64, ProviderError> {
     Ok(U64::new(u64::try_from(bytes).map_err(|_| invalid())?))
 }

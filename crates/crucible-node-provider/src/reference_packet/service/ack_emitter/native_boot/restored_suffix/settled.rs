@@ -50,6 +50,7 @@ struct SuffixHistory<'a> {
     records: &'a crate::retained_metadata::records::MetadataRecordBank,
     facts: crate::retained_metadata::RetainedProtocolMetadataFacts,
 }
+
 impl Serialize for SuffixHistory<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let NativeRestoredSuffixStartupOwner {
@@ -105,6 +106,7 @@ impl Serialize for SuffixHistory<'_> {
         state.end()
     }
 }
+
 struct ObserveAttempts<'a>(&'a [Rc<RefCell<NativeRestoredSuffixObserveAttempt>>]);
 impl Serialize for ObserveAttempts<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -116,6 +118,7 @@ impl Serialize for ObserveAttempts<'_> {
         seq.end()
     }
 }
+
 struct ProducerAttempts<'a>(&'a [Rc<RefCell<NativeRestoredProducerAttempt>>]);
 impl Serialize for ProducerAttempts<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {

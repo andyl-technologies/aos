@@ -252,6 +252,7 @@ pub struct RestoredSuffixHistoryConstructionData {
     scratch: usize,
     total: usize,
 }
+
 impl RestoredSuffixHistoryConstructionData {
     /// Returns independent raw, typed and historical capacity-owner storage.
     pub const fn retained_requested_bytes_data(&self) -> usize {
@@ -277,6 +278,7 @@ pub struct RestoredSuffixHistoryDecodePlan<'a> {
     maximum: usize,
     demand: RestoredSuffixHistoryConstructionData,
 }
+
 impl<'a> RestoredSuffixHistoryDecodePlan<'a> {
     /// Checks the exact family/roster and bounds independent owning decode work.
     ///
@@ -605,6 +607,7 @@ impl HistoricalRestoredSuffixHistory {
         Ok(())
     }
 }
+
 fn typed_body_matches(original: &Envelope, body: &impl Serialize) -> Result<(), ProviderError> {
     if serde_json::to_value(body).map_err(crucible_node_contract::ContractError::from)?
         != Value::Object(original.body.clone())
@@ -613,6 +616,7 @@ fn typed_body_matches(original: &Envelope, body: &impl Serialize) -> Result<(), 
     }
     Ok(())
 }
+
 fn compact_fixed(value: &Value, expected: usize) -> Result<(), ProviderError> {
     let bytes = crucible_node_contract::canonical::canonical_json(value)?;
     if ValidatedCompactBytes::validate(&bytes, bytes.len(), expected)?.decoded_length() != expected
@@ -621,6 +625,7 @@ fn compact_fixed(value: &Value, expected: usize) -> Result<(), ProviderError> {
     }
     Ok(())
 }
+
 fn ordinal(actual: u64, previous: &mut u64, maximum: u64) -> Result<(), ProviderError> {
     if actual == 0 || actual <= *previous || actual > maximum {
         return Err(invalid());
@@ -628,6 +633,7 @@ fn ordinal(actual: u64, previous: &mut u64, maximum: u64) -> Result<(), Provider
     *previous = actual;
     Ok(())
 }
+
 fn attempt_state(
     stage: HistoricalRestoredAttemptStage,
     original: &Option<Envelope>,

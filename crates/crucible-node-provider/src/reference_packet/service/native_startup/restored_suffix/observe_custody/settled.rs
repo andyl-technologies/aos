@@ -9,6 +9,7 @@ impl NativeRestoredSuffixObserveAttempt {
         History(self)
     }
 }
+
 struct History<'a>(&'a NativeRestoredSuffixObserveAttempt);
 impl Serialize for History<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {

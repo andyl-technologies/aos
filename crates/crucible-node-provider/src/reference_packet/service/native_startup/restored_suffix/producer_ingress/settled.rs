@@ -9,6 +9,7 @@ impl NativeRestoredProducerAttempt {
         History(self)
     }
 }
+
 struct History<'a>(&'a NativeRestoredProducerAttempt);
 impl Serialize for History<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -95,11 +96,10 @@ mod tests {
         let mut actual = NativeRestoredProducerAttempt::new_data(2);
         actual.retain_original_data(raw.clone()).unwrap();
         assert!(actual.decode_body_data(65_536).is_err());
-        let bytes =
-            crucible_node_contract::canonical::canonical_json(
-                &serde_json::to_value(actual.borrowed_settled_history_data()).unwrap(),
-            )
-                .unwrap();
+        let bytes = crucible_node_contract::canonical::canonical_json(
+            &serde_json::to_value(actual.borrowed_settled_history_data()).unwrap(),
+        )
+        .unwrap();
         let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(value["stage"], "failed");
         assert_eq!(value["ordinal"], 2);
