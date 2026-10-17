@@ -420,7 +420,7 @@ mod tests {
             &scenario_artifact,
             &terminal,
             &mut budget,
-            |visit| intermediates.iter().try_for_each(|origin| visit(origin)),
+            |visit| intermediates.iter().try_for_each(visit),
         )?;
         let reached = decoded
             .iter()
