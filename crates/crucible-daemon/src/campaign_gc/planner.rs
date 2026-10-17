@@ -38,7 +38,7 @@ use super::roots::{
     CampaignGcRootInventoryError, ReachabilityError, RootAccumulator, RootClassificationError,
     authenticated_reachable, inventory_authoritative_refs,
 };
-use super::spill::GcWorkDirectory;
+use super::spill::create_work_directory;
 use super::{
     CampaignGcCandidateManifest, CampaignGcManifestError, CampaignGcPlan, CampaignGcPlanError,
     CampaignGcRetentionSources, CampaignGcRootManifest, MAX_CAMPAIGN_GC_PHYSICAL_INVENTORIES,
@@ -481,8 +481,7 @@ where
         retention: root_sources,
     } = roots;
     let exact_pins = root_sources.exact_pins;
-    let directory =
-        GcWorkDirectory::create(spill_parent).map_err(CampaignGcPlanningError::Spill)?;
+    let directory = create_work_directory(spill_parent).map_err(CampaignGcPlanningError::Spill)?;
 
     let mut roots = RootAccumulator::new(&directory);
     let mut ref_fence = refs

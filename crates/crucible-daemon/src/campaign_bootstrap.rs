@@ -466,17 +466,16 @@ impl CampaignLocalServiceConfig {
             Some((planner, debugger)) => {
                 let retained_planner = planner.clone();
                 (
-                    Arc::new(
-                        CampaignRepository::with_component_authorities(
-                            blobs, refs, planner, debugger,
-                        )
+                    CampaignRepository::with_component_authorities(blobs, refs, planner, debugger)
                         .map_err(|_| CampaignLocalServiceError::InvalidComponentAuthorityFile)?,
-                    ),
                     Some(retained_planner),
                 )
             }
-            None => (Arc::new(CampaignRepository::new(blobs, refs)), None),
+            None => (CampaignRepository::new(blobs, refs), None),
         };
+        // Archive planning and inspection spill beside the object and ref
+        // stores, on the same durable storage as the campaign state.
+        let repository = Arc::new(repository.with_scratch_directory(self.state_directory.clone()));
         Ok(PreparedCampaignLocalService {
             endpoint: self.endpoint.clone(),
             server: self.server,
@@ -869,6 +868,28 @@ impl PreparedCampaignLocalService {
         archive_name: &str,
     ) -> Result<crucible_campaign::CampaignArchiveInspection, CampaignRepositoryError> {
         self.repository.inspect_campaign_archive_ref(archive_name)
+    }
+
+    /// Replays one inventory of an archive inspected through this service.
+    ///
+    /// Entries arrive in ascending identity order, one canonical page at a
+    /// time, after each page is checked against the inspected manifest.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first error from `visit`, or a [`CampaignRepositoryError`]
+    /// when a page is missing, corrupt, or inconsistent with the manifest.
+    pub fn visit_campaign_archive_entries<E>(
+        &self,
+        inspection: &crucible_campaign::CampaignArchiveInspection,
+        disposition: crucible_campaign::ArchiveInventoryDisposition,
+        visit: impl FnMut(crucible_campaign::ArchiveObjectEntry) -> Result<(), E>,
+    ) -> Result<(), E>
+    where
+        E: From<CampaignRepositoryError>,
+    {
+        self.repository
+            .visit_campaign_archive_entries(inspection, disposition, visit)
     }
 
     /// Borrows this deployment's GC-registered archive-transfer endpoint.

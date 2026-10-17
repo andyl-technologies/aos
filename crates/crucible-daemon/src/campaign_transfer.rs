@@ -14,6 +14,7 @@
 //! A record becomes visible by file sync, rename, and directory sync. GC holds
 //! the journal fence while treating every recorded object as a direct root.
 
+use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::path::PathBuf;
@@ -328,11 +329,25 @@ impl DirectoryCampaignTransferJournal {
             .lifecycle
             .write()
             .map_err(|_| CampaignTransferJournalError::Poisoned)?;
-        let objects = plan.transfer_objects();
-        if objects.is_empty() || objects.len() > MAX_TRANSFER_OBJECTS {
+        // The record is bounded, so the plan's spooled inventory is replayed
+        // only up to that bound rather than materialized whole.
+        let mut objects = BTreeSet::new();
+        plan.visit_transfer_objects(|id, logical_length| {
+            objects.insert((id, logical_length));
+            if objects.len() > MAX_TRANSFER_OBJECTS {
+                return Err(CampaignTransferJournalError::ObjectLimit);
+            }
+            Ok(())
+        })?;
+        if objects.is_empty() {
             return Err(CampaignTransferJournalError::ObjectLimit);
         }
-        let record = TransferRecord::new(operation, role, plan.manifest_id(), objects)?;
+        let record = TransferRecord::new(
+            operation,
+            role,
+            plan.manifest_id(),
+            objects.into_iter().collect(),
+        )?;
         let bytes = record.canonical_bytes()?;
         let path = self.record_path(operation);
         match read_bounded_file(&path) {
@@ -981,6 +996,9 @@ pub enum CampaignTransferJournalError {
     /// A GC retention visitor rejected one root.
     #[error("campaign transfer retention visitor failed")]
     Visitor(#[source] StoreError),
+    /// The archive plan's spooled inventory could not be replayed.
+    #[error("campaign transfer plan inventory could not be replayed")]
+    Plan(#[from] CampaignRepositoryError),
     /// The shared in-process journal lifecycle lock was poisoned.
     #[error("campaign transfer journal lifecycle lock is poisoned")]
     Poisoned,

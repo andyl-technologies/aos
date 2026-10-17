@@ -362,7 +362,9 @@ fn durable_transfer_stages_source_metadata_and_retries_idempotently() {
     assert_eq!(retry_transfer.copied_objects, 0);
     assert_eq!(
         retry_transfer.existing_objects,
-        plan.transfer_objects().len() as u64
+        plan.transfer_objects()
+            .expect("replay transfer objects")
+            .len() as u64
     );
     assert_eq!(retry_transfer.minimum_observed_durable_placements, 1);
 }
@@ -532,7 +534,13 @@ fn corrupt_destination_object_retains_ownership_and_retries_after_repair() {
         )),
     );
     let plan = plan_in_repository(&source);
-    let damaged = plan.selected()[0];
+    let mut selected = Vec::new();
+    plan.visit_selected(|entry| {
+        selected.push(entry);
+        Ok::<(), CampaignRepositoryError>(())
+    })
+    .expect("replay selected inventory");
+    let damaged = selected[0];
     let source_handle = source_backend
         .read(damaged.id(), None)
         .expect("source object");

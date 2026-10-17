@@ -677,3 +677,57 @@ fn validate_finding_replay_capture_object_id(id: ContentId) -> Result<(), Campai
     }
     Ok(())
 }
+
+impl CampaignRepositoryError {
+    /// Maps read-only executor validation failure into the wire rejection vocabulary.
+    ///
+    /// Missing or temporarily unreadable immutable input remains retryable under
+    /// a fresh assignment. Authenticated incompatibility and corrupt canonical
+    /// structure fail stably, while backend authorization remains distinct.
+    #[must_use]
+    pub fn executor_rejection(&self) -> ExecutorRejection {
+        match self {
+            Self::Store(error) => store_executor_rejection(error),
+            Self::Merkle(crate::CampaignStoreError::Store(error)) => {
+                store_executor_rejection(error)
+            }
+            Self::NotFound | Self::Poisoned | Self::Scratch { .. } => {
+                ExecutorRejection::UnavailableInput
+            }
+            Self::Budget(_)
+            | Self::Codec(_)
+            | Self::SelectionResolutionBudgetExceeded { .. }
+            | Self::Merkle(_)
+            | Self::AlreadyExists
+            | Self::Stale { .. }
+            | Self::CommandReuse
+            | Self::RefConflict { .. }
+            | Self::InvalidRequest { .. }
+            | Self::Integrity { .. }
+            | Self::InvalidTransition { .. } => ExecutorRejection::Incompatible,
+        }
+    }
+}
+
+fn store_executor_rejection(error: &StoreError) -> ExecutorRejection {
+    match error {
+        StoreError::NotFound { .. }
+        | StoreError::Quota
+        | StoreError::Unavailable
+        | StoreError::Poisoned { .. }
+        | StoreError::Io { .. }
+        | StoreError::StreamIo { .. } => ExecutorRejection::UnavailableInput,
+        StoreError::Unauthorized => ExecutorRejection::Unauthorized,
+        StoreError::Corrupt { .. }
+        | StoreError::InvalidId
+        | StoreError::InvalidRefName { .. }
+        | StoreError::InvalidRange { .. }
+        | StoreError::InvalidComposition { .. }
+        | StoreError::InvalidGraph { .. }
+        | StoreError::DurabilityUnsatisfied { .. }
+        | StoreError::Incompatible
+        | StoreError::InvalidSourceLength { .. }
+        | StoreError::MultipartCleanupRequired
+        | StoreError::Unsupported { .. } => ExecutorRejection::Incompatible,
+    }
+}

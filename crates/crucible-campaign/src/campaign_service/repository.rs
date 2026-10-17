@@ -93,6 +93,7 @@ pub(super) fn repository_service_failure(
             CampaignServiceFailure::InvalidTransition { state: *state }
         }
         CampaignRepositoryError::Poisoned => CampaignServiceFailure::IntegrityFailure,
+        CampaignRepositoryError::Scratch { .. } => CampaignServiceFailure::Unavailable,
     }
 }
 

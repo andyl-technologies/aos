@@ -12,7 +12,9 @@
 //! campaign vocabulary; `campaign_service`, `execution`, and `planner_service`
 //! own component contracts; `repository` owns authenticated persistence and
 //! transitions; `codec`, `identity`, `object`, and `merkle` own canonical
-//! encoding, typed identities, envelopes, and authenticated maps.
+//! encoding, typed identities, envelopes, and authenticated maps. `spill`
+//! provides the bounded external sorting that archive planning, archive
+//! inspection, and campaign GC use for closure-sized identity sets.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -40,6 +42,7 @@ mod observation;
 mod planner_service;
 mod policy;
 mod repository;
+pub mod spill;
 mod statistics;
 
 pub use model::{CampaignBudgetError, CampaignBudgetLedger};

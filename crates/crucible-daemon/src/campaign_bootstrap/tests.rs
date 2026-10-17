@@ -1577,6 +1577,7 @@ fn prepared_store_gc_automatically_inventories_registered_transfer_journal() {
         .expect("plan metadata archive");
     let transfer_objects = plan
         .transfer_objects()
+        .expect("replay transfer objects")
         .into_iter()
         .map(|(id, _)| id)
         .collect::<BTreeSet<_>>();

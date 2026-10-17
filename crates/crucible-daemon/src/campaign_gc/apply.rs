@@ -37,7 +37,7 @@ use super::roots::{
     CampaignGcRootInventoryError, ReachabilityError, RootAccumulator, RootClassificationError,
     authenticated_reachable, inventory_authoritative_refs,
 };
-use super::spill::GcWorkDirectory;
+use super::spill::create_work_directory;
 use super::{
     CampaignGcBlobInventoryBasis, CampaignGcCandidateReason, CampaignGcJournalError,
     CampaignGcJournalPhase, CampaignGcManifestError, CampaignGcPhysicalStore, CampaignGcPlanError,
@@ -403,7 +403,7 @@ where
         return Err(CampaignGcApplyError::StoreGraphChanged);
     }
     validate_physical_basis(journal, physical)?;
-    let directory = GcWorkDirectory::create(journal.root()).map_err(CampaignGcApplyError::Spill)?;
+    let directory = create_work_directory(journal.root()).map_err(CampaignGcApplyError::Spill)?;
 
     let mut ref_fence = refs
         .acquire_ref_inventory_fence()

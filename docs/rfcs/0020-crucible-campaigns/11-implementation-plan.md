@@ -1750,7 +1750,9 @@ Primary crates: `crucible-cas` and `crucible-api` lifecycle/checkpoint code.
 - [x] **T-CAM-5.9** Implement metadata/findings/debug/executable/mirror closure
   policies, durability receipts, pins, sensitive-export reporting, resumable
   missing-object transfer, and offline maintenance transfer. Do not implement
-  demand paging or worker fanout.
+  demand paging or worker fanout. Archive planning and inspection stream their
+  closure, reachability, child, and page sets through private scratch storage
+  ([CSTORE-30]).
 
 The admitted graph checkpoint currently provides bounded acyclic validation,
 exact kind routing, logical verification, ordered tiers and promotion,

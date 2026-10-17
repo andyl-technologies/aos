@@ -228,6 +228,7 @@ CSTORE-26	T-CAM-5.7	gate:campaign-store-composition,gate:campaign-store-equivale
 CSTORE-27	T-CAM-5.7	gate:campaign-store-composition,gate:campaign-store-equivalence
 CSTORE-28	T-CAM-5.7	gate:campaign-store-composition,gate:campaign-store-equivalence
 CSTORE-29	T-CAM-5.9	gate:campaign-store-composition,gate:campaign-operational-continuity
+CSTORE-30	T-CAM-5.9	gate:campaign-store-composition,gate:campaign-operational-continuity
 CAPI-1	T-CAM-8.1	gate:campaign-model
 CAPI-2	T-CAM-8.1	gate:campaign-model
 CAPI-3	T-CAM-8.1	gate:campaign-component-contract

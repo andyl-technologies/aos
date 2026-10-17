@@ -62,6 +62,12 @@ pub(super) enum CampaignGcRootInventoryError {
     Limit,
 }
 
+impl From<CampaignRepositoryError> for CampaignGcRootInventoryError {
+    fn from(source: CampaignRepositoryError) -> Self {
+        Self::Campaign(source)
+    }
+}
+
 pub(super) fn inventory_authoritative_refs(
     repository: &CampaignRepository,
     fence: &mut dyn RefInventoryFence,
@@ -107,13 +113,27 @@ pub(super) fn inventory_authoritative_refs(
                     });
                 }
             };
-            for id in inspection.retained_objects() {
-                if roots.insert_direct(*id).is_err() {
-                    semantic_error = Some(CampaignGcRootInventoryError::Limit);
-                    return Err(StoreError::Quota);
+            let retained = repository.visit_campaign_archive_retained_objects(
+                &inspection,
+                |id| -> Result<(), CampaignGcRootInventoryError> {
+                    roots
+                        .insert_direct(id)
+                        .map_err(|_| CampaignGcRootInventoryError::Limit)
+                },
+            );
+            return match retained {
+                Ok(()) => Ok(()),
+                Err(error) => {
+                    let store_error = match error {
+                        CampaignGcRootInventoryError::Limit => StoreError::Quota,
+                        _ => StoreError::InvalidComposition {
+                            reason: "campaign GC archive inventory failed",
+                        },
+                    };
+                    semantic_error = Some(error);
+                    Err(store_error)
                 }
-            }
-            return Ok(());
+            };
         }
         let Some(name) = record.name().as_str().strip_prefix("campaigns/") else {
             roots

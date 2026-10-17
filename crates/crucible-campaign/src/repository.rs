@@ -499,58 +499,15 @@ pub enum CampaignRepositoryError {
     /// A local coordinator synchronization primitive was poisoned.
     #[error("campaign coordinator lock was poisoned")]
     Poisoned,
-}
-
-impl CampaignRepositoryError {
-    /// Maps read-only executor validation failure into the wire rejection vocabulary.
-    ///
-    /// Missing or temporarily unreadable immutable input remains retryable under
-    /// a fresh assignment. Authenticated incompatibility and corrupt canonical
-    /// structure fail stably, while backend authorization remains distinct.
-    #[must_use]
-    pub fn executor_rejection(&self) -> ExecutorRejection {
-        match self {
-            Self::Store(error) => store_executor_rejection(error),
-            Self::Merkle(crate::CampaignStoreError::Store(error)) => {
-                store_executor_rejection(error)
-            }
-            Self::NotFound | Self::Poisoned => ExecutorRejection::UnavailableInput,
-            Self::Budget(_)
-            | Self::Codec(_)
-            | Self::SelectionResolutionBudgetExceeded { .. }
-            | Self::Merkle(_)
-            | Self::AlreadyExists
-            | Self::Stale { .. }
-            | Self::CommandReuse
-            | Self::RefConflict { .. }
-            | Self::InvalidRequest { .. }
-            | Self::Integrity { .. }
-            | Self::InvalidTransition { .. } => ExecutorRejection::Incompatible,
-        }
-    }
-}
-
-fn store_executor_rejection(error: &StoreError) -> ExecutorRejection {
-    match error {
-        StoreError::NotFound { .. }
-        | StoreError::Quota
-        | StoreError::Unavailable
-        | StoreError::Poisoned { .. }
-        | StoreError::Io { .. }
-        | StoreError::StreamIo { .. } => ExecutorRejection::UnavailableInput,
-        StoreError::Unauthorized => ExecutorRejection::Unauthorized,
-        StoreError::Corrupt { .. }
-        | StoreError::InvalidId
-        | StoreError::InvalidRefName { .. }
-        | StoreError::InvalidRange { .. }
-        | StoreError::InvalidComposition { .. }
-        | StoreError::InvalidGraph { .. }
-        | StoreError::DurabilityUnsatisfied { .. }
-        | StoreError::Incompatible
-        | StoreError::InvalidSourceLength { .. }
-        | StoreError::MultipartCleanupRequired
-        | StoreError::Unsupported { .. } => ExecutorRejection::Incompatible,
-    }
+    /// Private scratch storage for an external sort or page spool failed.
+    #[error("campaign scratch storage failed during {operation}")]
+    Scratch {
+        /// Stable scratch operation category.
+        operation: &'static str,
+        /// Underlying filesystem error.
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 /// Repository and sole-writer transaction boundary for local campaigns.
@@ -565,6 +522,9 @@ pub struct CampaignRepository {
     validated_heads: Mutex<BTreeMap<ContentId, ValidationCheckpoint>>,
     planner_authority: Option<PlannerAuthorityKey>,
     debugger_authority: Option<DebuggerAuthorityKey>,
+    // Operational parent for private archive spill directories. It never
+    // enters campaign state; without it, spills stay in process memory.
+    scratch_directory: Option<std::path::PathBuf>,
 }
 
 struct RepositoryMutationGuard<'a> {

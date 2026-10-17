@@ -1727,6 +1727,25 @@ stores, verifies every object, then creates or advances the destination ref.
 Supported closure policies are `metadata`, `findings`, `debug`, `executable`,
 and `mirror`. A metadata archive can be inspected without downloading RAM.
 
+An archive manifest partitions the represented closure into selected and
+omitted inventories of 4,096-entry canonical pages whose identities are the
+manifest envelope's children. The inventory limit is therefore a format limit:
+with at most 65,536 pages, any partition of `(65,536 - 1) * 4,096 =
+268,431,360` objects fits one manifest. Planning streams the source head's
+inductively validated closure, mirror retained-root closures, and selected
+checkpoint closures into an external sort in private scratch storage beside
+the repository, profiles each object as the sorted stream passes, and spools
+finished page envelopes to the same scratch storage. The plan stays free of
+store effects; staging or publishing places the spooled pages. Each
+ordered-entry digest hashes the canonical sequence length first, so it is
+measured in one pass and hashed in a second. The debug policy's finding closure is
+computed by joining the spilled parent-to-child edges round by round from the
+findings root. Inspection replays pages from the store, checks page order and
+digests in streaming passes, merge-compares the selected inventory with the
+spilled source closure for executable archives, proves every selected child
+declared by an anti-join against a spilled child set, and computes debug
+reachability over spilled selected edges.
+
 Offline maintenance transfer first exactly pauses the campaign and pins its closure,
 ensures its complete executable closure in the destination store, verifies
 compatibility, restores on the destination during a separate operator action,
@@ -1739,6 +1758,12 @@ pager is implied.
 - **[CSTORE-18]** Initial exact restore MUST require all execution-required
   logical objects to be locally readable and authenticated before modeled
   execution resumes; remote demand paging is outside this RFC.
+- **[CSTORE-30]** Archive planning and inspection memory MUST be independent of
+  the represented closure and inventory sizes outside one closure walk's own
+  traversal state: closure, finding-reachability, child, and page sets MUST be
+  externally sorted or spooled in private scratch storage that is removed on
+  success and failure, and the manifest digests MUST equal the digests of the
+  in-memory canonical entry sequences.
 
 ## 06.10 Pinning, eviction, and garbage collection
 

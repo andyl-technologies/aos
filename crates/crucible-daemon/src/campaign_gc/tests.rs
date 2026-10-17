@@ -42,7 +42,7 @@ use crucible_cas::content_store::{
 use crucible_cas::content_store::{RefInventoryFence, RefStoreAdmin};
 
 use super::apply::CampaignGcApplySources;
-use super::spill::GcWorkDirectory;
+use super::spill::create_work_directory;
 use super::*;
 use super::{
     apply_single_host_campaign_gc_with_physical as apply_single_host_campaign_gc,
@@ -825,7 +825,7 @@ fn decoder_rejects_truncation_trailing_bytes_and_wrong_schema() {
 #[test]
 fn root_and_candidate_manifests_round_trip_with_stable_identity() {
     let temp = tempfile::tempdir().expect("manifest root");
-    let directory = GcWorkDirectory::create(temp.path()).expect("work directory");
+    let directory = create_work_directory(temp.path()).expect("work directory");
     let first = ContentId::for_bytes(ObjectKind::Trace, 1, b"first");
     let second = ContentId::for_bytes(ObjectKind::Finding, 2, b"second");
     let roots = CampaignGcRootManifest::from_roots_for_test(&directory, [second, first, first])
@@ -898,7 +898,7 @@ fn root_and_candidate_manifests_round_trip_with_stable_identity() {
 #[test]
 fn manifests_reject_duplicates_trailing_bytes_and_noncanonical_order() {
     let temp = tempfile::tempdir().expect("manifest root");
-    let directory = GcWorkDirectory::create(temp.path()).expect("work directory");
+    let directory = create_work_directory(temp.path()).expect("work directory");
     let first = ContentId::for_bytes(ObjectKind::Trace, 1, b"first");
     assert!(matches!(
         CampaignGcCandidateManifest::from_candidates_for_test(
@@ -941,7 +941,7 @@ fn manifests_reject_duplicates_trailing_bytes_and_noncanonical_order() {
 #[test]
 fn full_manifest_iteration_detects_a_file_replaced_after_open() {
     let temp = tempfile::tempdir().expect("manifest root");
-    let directory = GcWorkDirectory::create(temp.path()).expect("work directory");
+    let directory = create_work_directory(temp.path()).expect("work directory");
     let first = ContentId::for_bytes(ObjectKind::Trace, 1, b"first");
     let second = ContentId::for_bytes(ObjectKind::Trace, 1, b"second");
     let candidates = CampaignGcCandidateManifest::from_candidates_for_test(
@@ -1216,7 +1216,7 @@ fn policy_aware_gc_evicts_a_wrapped_read_through_cache_with_a_required_copy() {
         Err(CampaignGcManifestError::Noncanonical)
     ));
 
-    let forged_directory = GcWorkDirectory::create(temp.path()).expect("forged work directory");
+    let forged_directory = create_work_directory(temp.path()).expect("forged work directory");
     let forged_candidates = CampaignGcCandidateManifest::from_candidates_for_test(
         &forged_directory,
         vec![

@@ -303,30 +303,6 @@ impl CampaignRepository {
         Ok(())
     }
 
-    // Only archive checkpoint selections may opt into raw production leaves.
-    // The source resolver and destination exact store authenticate their semantics.
-    pub(in crate::repository) fn authenticated_closure_with_exact_leaves(
-        &self,
-        roots: impl IntoIterator<Item = ContentId>,
-    ) -> Result<(BTreeSet<ContentId>, BTreeSet<ContentId>), CampaignRepositoryError> {
-        let mut objects = BTreeSet::new();
-        let mut exact_leaves = BTreeSet::new();
-        self.walk_campaign_closures(
-            roots,
-            &BTreeSet::new(),
-            true,
-            &mut ChoiceValidationCache::default(),
-            Some(&mut |id, exact_leaf| {
-                objects.insert(id);
-                if exact_leaf {
-                    exact_leaves.insert(id);
-                }
-                Ok(())
-            }),
-        )?;
-        Ok((objects, exact_leaves))
-    }
-
     pub(in crate::repository) fn verify_campaign_closures_anchored_cached(
         &self,
         roots: impl IntoIterator<Item = ContentId>,

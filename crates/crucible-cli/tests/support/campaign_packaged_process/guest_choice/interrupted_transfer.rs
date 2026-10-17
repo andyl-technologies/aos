@@ -6,7 +6,8 @@
 
 use super::*;
 use crucible_campaign::{
-    CampaignArchivePlan, CampaignArchivePolicy, CampaignSnapshotId, ObjectEnvelope,
+    CampaignArchivePlan, CampaignArchivePolicy, CampaignRepositoryError, CampaignSnapshotId,
+    ObjectEnvelope,
 };
 use crucible_cas::content_store::{
     DirectoryRefBackend, MutableRefBackend, RefName, StoreError, StoreGraphConfig,
@@ -71,12 +72,15 @@ pub(super) fn transfer_after_interruption(
 ) -> Result<(Value, Value), Box<dyn Error>> {
     let plan = source_plan(source, snapshot)?;
     assert!(!plan.manifest().checkpoint_selections().is_empty());
-    assert!(plan.selected().iter().any(|entry| {
-        matches!(
+    let mut exact_state_selected = false;
+    plan.visit_selected(|entry| {
+        exact_state_selected |= matches!(
             entry.id().kind(),
             ObjectKind::RamExtent | ObjectKind::DeviceState
-        )
-    }));
+        );
+        Ok::<(), CampaignRepositoryError>(())
+    })?;
+    assert!(exact_state_selected);
     let window = InterruptedCopy::refuse(source, destination, snapshot, &plan)?;
     let (preflight, complete) = window.repair_gc_and_retry(source, destination, snapshot)?;
 
@@ -172,7 +176,7 @@ impl InterruptedCopy {
         let original_bytes =
             ObjectEnvelope::for_archive_manifest(plan.manifest())?.canonical_bytes();
         let backend = directory_backend(destination);
-        for (id, _) in plan.transfer_objects() {
+        for (id, _) in plan.transfer_objects()? {
             assert!(
                 !backend.contains(id)?,
                 "destination already contained selected transfer bytes"
@@ -195,7 +199,7 @@ impl InterruptedCopy {
         require_transfer_corruption(source, destination, snapshot, manifest)?;
 
         let objects = plan
-            .transfer_objects()
+            .transfer_objects()?
             .into_iter()
             .collect::<BTreeMap<_, _>>();
         let source_journal = journal_inventory(source)?;
@@ -219,11 +223,11 @@ impl InterruptedCopy {
             .collect::<BTreeMap<_, _>>();
         assert!(!preceding.is_empty());
         authenticate_ids(&backend, &preceding)?;
-        let transferred = plan
-            .selected()
-            .iter()
-            .filter(|entry| entry.id() != manifest)
-            .count();
+        let mut transferred = 0_usize;
+        plan.visit_selected(|entry| {
+            transferred += usize::from(entry.id() != manifest);
+            Ok::<(), CampaignRepositoryError>(())
+        })?;
         assert!(transferred > 0);
         Ok(Self {
             manifest,

@@ -164,22 +164,19 @@ fn campaign_cold_continuity_survives_pause_restart_archive_restore_and_resume()
         [],
         Some(&mut resolver),
     )?;
-    assert!(plan.omitted().is_empty());
+    assert_eq!(plan.manifest().omitted_count(), 0);
     assert_eq!(plan.manifest().checkpoint_selections().len(), 1);
     assert_eq!(
         plan.manifest().checkpoint_selections()[0].checkpoint(),
         checkpoint
     );
-    assert!(
-        plan.selected()
-            .iter()
-            .any(|entry| entry.id() == checkpoint.content_id())
-    );
-    assert!(
-        plan.selected()
-            .iter()
-            .any(|entry| entry.id() == checkpoint_leaf)
-    );
+    let mut selected = Vec::new();
+    plan.visit_selected(|entry| {
+        selected.push(entry.id());
+        Ok::<(), CampaignRepositoryError>(())
+    })?;
+    assert!(selected.contains(&checkpoint.content_id()));
+    assert!(selected.contains(&checkpoint_leaf));
     source.stage_campaign_archive_metadata(&plan)?;
 
     let destination = CampaignRepository::new(
