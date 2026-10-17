@@ -5,3 +5,6 @@
 
 /// Retains fresh-bucket observations for administrative native enrollment.
 pub mod initial_enrollment;
+
+mod namespace;
+pub use namespace::require_host_root_namespace_boundary;
