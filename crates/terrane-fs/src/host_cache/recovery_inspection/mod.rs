@@ -23,7 +23,7 @@ mod verification;
 mod tests;
 
 pub use inspection::{NativeRecoveryCandidate, NativeRecoveryInspection, RecoveryIssue};
-pub(in crate::host_cache) use manifest::{ManifestInspectionFailure, VerifiedRecoveryManifest};
+pub(in crate::host_cache) use manifest::VerifiedRecoveryManifest;
 pub use verification::{
     DerivedIndexRepair, DetachedIndexStatus, VerifiedEncodedBody, VerifiedStandaloneChunk,
 };
