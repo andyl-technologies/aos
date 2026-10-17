@@ -17,14 +17,40 @@
       extraBuildDeps = [pkgs.binutils];
     } "configured-sdk-image" ''
       cd crates
-      cargo test --frozen --offline -p terrane-fs \
-        --features tokio,terrane/surface-sdk --lib --no-run --message-format=json \
-        > "$TMPDIR/configured-sdk-unit.jsonl"
-      cargo build --frozen --offline -p terrane-fs \
+      # Keep artifact events intact while exposing compiler failures in Nix logs.
+      # --keep-failed retains the original JSON stream for diagnostic receipts.
+      cargo_json() {
+        cargo_log=$1
+        shift
+        cargo_status=0
+        cargo "$@" > "$cargo_log" || cargo_status=$?
+        if [ "$cargo_status" -ne 0 ]; then
+          python3 - "$cargo_log" <<'PY' || true
+      import json
+      import pathlib
+      import sys
+
+      for line in pathlib.Path(sys.argv[1]).read_text().splitlines():
+          try:
+              event = json.loads(line)
+          except json.JSONDecodeError:
+              continue
+          if event.get("reason") == "compiler-message":
+              rendered = event.get("message", {}).get("rendered")
+              if rendered:
+                  print(rendered, file=sys.stderr, end="")
+      PY
+          return "$cargo_status"
+        fi
+      }
+
+      cargo_json "$TMPDIR/configured-sdk-unit.jsonl" test --frozen --offline -p terrane-fs \
+        --features tokio,terrane/surface-sdk --lib --no-run --message-format=json
+      cargo_json "$TMPDIR/configured-sdk-example.jsonl" build --frozen --offline -p terrane-fs \
         --features tokio,terrane/surface-sdk --example configured_sdk_fixture \
-        --message-format=json > "$TMPDIR/configured-sdk-example.jsonl"
-      cargo build --frozen --offline -p terrane-cli --bin terrane \
-        --message-format=json > "$TMPDIR/configured-sdk-cli.jsonl"
+        --message-format=json
+      cargo_json "$TMPDIR/configured-sdk-cli.jsonl" build --frozen --offline -p terrane-cli --bin terrane \
+        --message-format=json
       cargo metadata --frozen --offline --no-deps --format-version=1 \
         > "$TMPDIR/configured-sdk-packages.json"
       rustc --print target-libdir > "$TMPDIR/configured-sdk-target-libdir"
