@@ -337,7 +337,66 @@ deliveries published since the last import. Staging copies share the
 published part through a reference count, so copying a scheduler does not
 copy run history.
 
-## 15.10 Compatibility
+## 15.10 Resolved-effect trace
+
+The resolved-effect trace of RFC-0014 section 5.1 holds one work item per
+evaluated scheduler boundary or fault opportunity, so it grows with virtual
+time exactly as the attempt log does. The fault runtime, the campaign network
+effect log, the candidate observation, the executor's prepared result, and the
+daemon's attempt evidence formerly each held the complete trace as one
+canonical value under a 64 MiB bound, and the fault runtime checkpoint embedded
+it whole. The trace now uses the segment scheme of
+[§15.2](#152-attempt-segments) with its own object schemas:
+
+```text
+segment   ContentId(trace, schema 1), at most 16 MiB:
+  canonical CBOR { schema: 1, first_item: u64,
+                   work_items: [ResolvedReplayWorkItem, ...] }   // dense, nonempty
+
+manifest  ContentId(trace, schema 4), at most 1 MiB:
+  "crucible.resolved-effect-trace.v4\0" ++ canonical CBOR {
+    mode, work_items: u64, records: u64, chain: ContentHash,
+    segments: [{ id, first_item, item_count, records, encoded_bytes }, ...] }
+
+chain_0 = H("crucible.fault.resolved-effect-trace.chain.v1", "empty")
+chain_i = H(domain, chain_(i-1) | segment id | first item | item count
+                    | record count | encoded bytes)
+
+bundle    "crucible.resolved-effect-trace-bundle.v1\0"
+          u32 manifest length, manifest, u32 segment count,
+          per segment in manifest order: u32 length, segment
+```
+
+A segment carries no replay mode, so one sealed segment serves recomputed and
+locked replay of the same execution. A bundle is the transport form of
+[§15.8](#158-readers-findings-and-resume) for carriers without a segment
+store: a finding production-replay capture, a saved run artifact, and a
+lifecycle query assembled by a client. It never enters production identity.
+
+- **[CCOMP-31]** The fault runtime and the campaign network effect log MUST
+  retain each resolved-effect trace as sealed trace segments followed by one
+  open tail. A writer MUST seal before an append would make the tail's
+  encoding exceed 8 MiB and MUST NOT seal for any other reason, so seal points
+  are a pure function of the work-item sequence and a writer restored from a
+  checkpoint seals where the uninterrupted writer would ([CCOMP-21]). A
+  checkpoint MUST carry the trace position (sealed segment references, chain,
+  running work-item and record counters, and the open tail) and never a sealed
+  work item; an exact checkpoint closure retains every sealed segment its
+  fault continuation references as a closure object. Observations retain the
+  manifest and every segment as content children, prepared results and their
+  journals name segments by identity, and every reader, comparison, and
+  replay cursor decodes one segment at a time.
+
+Running counters replace the former per-item and per-record collection
+bounds: the authored `thin_replay_events` and `resolved_effect_records`
+limits apply to the counters, and the fat checkpoint bound applies to the
+encoded position including its open tail. An exported trace merges the
+signal runtime's trace and the campaign network effect log by scheduler
+coordinate and same-coordinate sequence, signal work first on ties, and a
+replay partitions a supplied trace back into those two owners while
+streaming.
+
+## 15.11 Compatibility
 
 Version 2 measurement replay evidence remains readable for retained findings
 whose logs fit its bound; new attempts publish only version 3. The attempt
@@ -346,7 +405,11 @@ Named host predicates change from history-reading functions to accumulators;
 this is a source-level breaking change for host predicate implementations.
 Single-scheduler continuation version 8 replaces version 7 and keeps the
 imported I/O ledger in its pruned form; version 7 continuations are refused.
+The resolved-effect trace manifest replaces the version 3 whole-trace object
+without a compatibility reader; version 3 traces, fault runtime checkpoints
+before version 7, and observations before version 16 are refused.
 
+[CCOMP-21]: 04a-coordinator-executor-contract.md#04a7-capability-and-locality-reporting
 [OBS-17]: ../0010-crucible/19-observability-event-log.md#194-content-addressing-and-prefix-sharing
 [OBS-18]: ../0010-crucible/19-observability-event-log.md#194-content-addressing-and-prefix-sharing
 [OBS-19]: ../0010-crucible/19-observability-event-log.md#194-content-addressing-and-prefix-sharing

@@ -1128,7 +1128,7 @@ impl QemuFreshAttemptDriver for QemuFreshModeledDriver {
         &mut self,
         mut pending: Self::Pending,
         final_events: Vec<SchedulerEventLogEntry>,
-        resolved_effect_trace: Option<Vec<u8>>,
+        resolved_effect_trace: Option<crucible::model::ResolvedEffectTrace>,
     ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>> {
         pending
             .event_log
@@ -1204,7 +1204,7 @@ impl QemuFreshAttemptDriver for QemuFreshSupplementalModeledDriver {
         &mut self,
         mut pending: Self::Pending,
         final_events: Vec<SchedulerEventLogEntry>,
-        resolved_effect_trace: Option<Vec<u8>>,
+        resolved_effect_trace: Option<crucible::model::ResolvedEffectTrace>,
     ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>> {
         pending
             .event_log

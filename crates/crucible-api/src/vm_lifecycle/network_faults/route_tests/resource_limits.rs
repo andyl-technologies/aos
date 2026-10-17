@@ -491,7 +491,7 @@ fn contact_and_restore_admission_use_authored_aggregate_coordinates() {
         observations:
             super::super::super::storage_faults::ProductionFaultObservationJournal::default(),
         effect_state: state,
-        campaign_records: Vec::new(),
+        campaign_records: CampaignRecordLogPosition::empty(),
         campaign_replay_identity: None,
         campaign_marker_releases: Vec::new(),
     };
@@ -538,7 +538,7 @@ fn contact_and_restore_admission_use_authored_aggregate_coordinates() {
         observations:
             super::super::super::storage_faults::ProductionFaultObservationJournal::default(),
         effect_state: state,
-        campaign_records: Vec::new(),
+        campaign_records: CampaignRecordLogPosition::empty(),
         campaign_replay_identity: None,
         campaign_marker_releases: Vec::new(),
     };

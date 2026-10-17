@@ -175,6 +175,7 @@ CCOMP-27	T-CAM-4.11	gate:campaign-replay,gate:e2e-determinism
 CCOMP-28	T-CAM-4.11	gate:campaign-component-contract,gate:attempt-idempotence
 CCOMP-29	T-CAM-4.11	gate:attempt-idempotence,gate:content-address
 CCOMP-30	T-CAM-4.11	gate:campaign-replay,gate:campaign-cold-continuity
+CCOMP-31	T-CAM-4.11	gate:campaign-replay,gate:exact-closure-streaming
 HFORK-1	T-CAM-7.3,T-CAM-7.6	gate:hot-fork-equivalence
 HFORK-2	T-CAM-7.3,T-CAM-7.6	gate:hot-fork-equivalence
 HFORK-3	T-CAM-6.1,T-CAM-7.1	gate:hot-fork-isolation,gate:abi-conformance

@@ -1,7 +1,7 @@
 //! Content-addressed object directories owned by one prepared-result journal.
 //!
 //! A prepared result names some of its content only by identity: attempt-log
-//! segments and finding replay records. Staging copies each named object into
+//! and resolved-effect trace segments, and finding replay records. Staging copies each named object into
 //! a journal subdirectory, authenticated and synchronized, before the result
 //! and state files are written, so a journal never depends on the stores the
 //! attempt wrote:

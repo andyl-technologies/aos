@@ -13,12 +13,12 @@ use crucible::model::{
     BindingActionKind, BindingEvaluation, BindingSearchChoice, ContentHash, EffectSpecification,
     FaultAdapterManifests, FaultCoordinate, FaultExecutionError, FaultObservation,
     FaultObservationKind, FaultOpportunity, FaultReplayMode, FaultResourceLimitError,
-    FaultResourceLimits, FaultRuntimeCheckpoint, FaultSignalPlan, HostFaultActionSink,
-    HostFaultActionState, HostFaultAdapterManifests, NodeBootPolicy, NodeEffectSpecification,
-    NodeHangScope, NodeLifecycleTransition, NodeStatePolicy, NodeWatchdogPolicy,
-    OwnedFaultExecutionRuntime, ReferencedSignalEvent, ResolvedBindingAction, ResolvedEffectTrace,
-    ResolvedFaultTarget, SearchChoiceId, SearchOverride, SignalArtifactProvider,
-    SignalBoundarySnapshot,
+    FaultResourceLimits, FaultRuntimeCheckpoint, FaultSignalPlan, FaultTraceStorage,
+    HostFaultActionSink, HostFaultActionState, HostFaultAdapterManifests, NodeBootPolicy,
+    NodeEffectSpecification, NodeHangScope, NodeLifecycleTransition, NodeStatePolicy,
+    NodeWatchdogPolicy, OwnedFaultExecutionRuntime, ReferencedSignalEvent, ResolvedBindingAction,
+    ResolvedEffectTrace, ResolvedFaultTarget, SearchChoiceId, SearchOverride,
+    SignalArtifactProvider, SignalBoundarySnapshot,
 };
 use crucible::{BackendError, BackendNetworkOutput, NodeId, SchedulerNetworkCheckpoint};
 use crucible_shmem::{
@@ -117,6 +117,15 @@ impl ProductionNetworkStateCheckpoint {
         self.identity
     }
 
+    /// Returns the encoded host network adapter state without consuming it.
+    ///
+    /// Exact checkpoint capture reads it to find the trace segments the
+    /// adapter's campaign effect log references.
+    #[must_use]
+    pub fn adapter_state(&self) -> &[u8] {
+        &self.adapter_state
+    }
+
     /// Consumes the checkpoint into scheduler, pending-frame, and adapter state.
     #[must_use]
     pub fn into_parts(
@@ -189,6 +198,15 @@ impl ProductionFaultRuntimeCheckpoint {
     #[must_use]
     pub const fn network_state(&self) -> Option<&ProductionNetworkStateCheckpoint> {
         self.network_state.as_ref()
+    }
+
+    /// Returns the signal runtime continuation, absent for an inert plan.
+    ///
+    /// Its recorded trace position names the sealed trace segments an exact
+    /// checkpoint closure must retain beside it.
+    #[must_use]
+    pub const fn runtime_checkpoint(&self) -> Option<&FaultRuntimeCheckpoint> {
+        self.runtime.as_ref()
     }
 
     /// Returns the captured execution fingerprint for one QEMU node.

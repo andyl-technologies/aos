@@ -8,7 +8,7 @@
 use crucible_api::vm_lifecycle::ProductionVmHotForkSourceWorld;
 use crucible_campaign::{ChoiceCoordinate, ChoiceOpportunity};
 
-use super::super::test_support::{Order, RETENTION_TRACE, RetentionFactory, Script, entry};
+use super::super::test_support::{Order, RetentionFactory, Script, entry, retention_trace};
 use super::*;
 use crate::managed_qemu_hot_fork_source_world_pool::test_support::advanced_published_root_source_for_test;
 use crate::qemu_hot_fork_source_capture::AuthenticatedPublishedRootQemuHotForkSource;
@@ -19,7 +19,7 @@ use crate::{
 };
 
 /// Final entries and effect trace one seal received.
-type SealRecord = (Vec<u64>, Option<Vec<u8>>);
+type SealRecord = (Vec<u64>, Option<crucible::model::ResolvedEffectTrace>);
 
 struct RetentionDriver {
     order: Order,
@@ -62,7 +62,7 @@ impl QemuFreshAttemptDriver for RetentionDriver {
         &mut self,
         _pending: Self::Pending,
         final_events: Vec<SchedulerEventLogEntry>,
-        resolved_effect_trace: Option<Vec<u8>>,
+        resolved_effect_trace: Option<crucible::model::ResolvedEffectTrace>,
     ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>> {
         self.order.lock().expect("retention order").push("seal");
         let sequences = final_events.iter().map(|entry| entry.sequence()).collect();
@@ -330,10 +330,7 @@ fn retainable_boundary_seals_what_ordinary_teardown_seals() {
     );
     // CCOMP-21: sealing receives identical inputs on both paths.
     assert_eq!(ordinary.sealed(), retained.sealed());
-    assert_eq!(
-        retained.sealed(),
-        [(Vec::new(), Some(RETENTION_TRACE.to_vec()))]
-    );
+    assert_eq!(retained.sealed(), [(Vec::new(), Some(retention_trace()))]);
     assert_eq!(
         observation_disposition(&ordinary_outcome),
         observation_disposition(&retained_outcome)
@@ -369,10 +366,7 @@ fn nonempty_final_drain_precedes_shutdown_entries_when_sealing() {
         fixture.order(),
         ["begin", "drive", "drain", "shutdown", "seal"]
     );
-    assert_eq!(
-        fixture.sealed(),
-        [(vec![3, 4, 5], Some(RETENTION_TRACE.to_vec()))]
-    );
+    assert_eq!(fixture.sealed(), [(vec![3, 4, 5], Some(retention_trace()))]);
 }
 
 #[test]
@@ -397,10 +391,7 @@ fn ineligible_final_drain_keeps_ordinary_teardown() {
         fixture.order(),
         ["begin", "drive", "drain", "shutdown", "seal"]
     );
-    assert_eq!(
-        fixture.sealed(),
-        [(vec![9], Some(RETENTION_TRACE.to_vec()))]
-    );
+    assert_eq!(fixture.sealed(), [(vec![9], Some(retention_trace()))]);
 }
 
 #[test]
@@ -452,10 +443,7 @@ fn unretainable_stops_and_full_pools_never_settle_the_boundary() {
 
     for fixture in [&no_boundary, &full_pool, &unbound] {
         assert_eq!(fixture.order(), ["begin", "drive", "shutdown", "seal"]);
-        assert_eq!(
-            fixture.sealed(),
-            [(vec![2], Some(RETENTION_TRACE.to_vec()))]
-        );
+        assert_eq!(fixture.sealed(), [(vec![2], Some(retention_trace()))]);
     }
 }
 

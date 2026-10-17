@@ -97,15 +97,14 @@ pub(super) fn replay_exact_finding(
             Arc::clone(&lifecycle_objects),
         )?;
         if let Some(trace) = side.resolved_effect_trace() {
-            let trace = crucible::ResolvedEffectTrace::from_canonical_bytes(
+            let trace = crate::decode_resolved_effect_trace_bundle(
                 trace,
                 model
                     .scenario_form()
                     .plan()
                     .fault_signals()
                     .resource_limits(),
-            )
-            .map_err(|error| backend_error(format!("finding effect trace is invalid: {error}")))?;
+            )?;
             lifecycle = lifecycle.with_fault_replay(trace);
         }
         if side.completed_quanta() == 0 || side.frontier().ticks == 0 {
@@ -288,7 +287,10 @@ fn compare_side(
         || evidence.frontier() != retained.frontier()
         || !evidence_event_log_matches(evidence, retained.event_log())
         || evidence.terminal_fingerprints() != Some(retained.terminal_fingerprints())
-        || evidence.resolved_effect_trace() != retained.resolved_effect_trace()
+        || !same_effect_trace(
+            evidence.resolved_effect_trace(),
+            retained.resolved_effect_trace(),
+        )
     {
         return Err(backend_error(
             "fresh finding QEMU evidence differs from retained capture",
@@ -326,5 +328,23 @@ impl CampaignFindingBundleRole {
             Self::VerificationOriginal => "verification-original",
             Self::VerificationSelected => "verification-selected",
         }
+    }
+}
+
+/// Compares a fresh segmented trace with a retained trace bundle.
+///
+/// Manifests name their segments by content identity, so equal manifests
+/// prove equal traces; an undecodable bundle never matches.
+fn same_effect_trace(
+    fresh: Option<&crucible_session::engine::ResolvedEffectTrace>,
+    retained: Option<&[u8]>,
+) -> bool {
+    match (fresh, retained) {
+        (None, None) => true,
+        (Some(fresh), Some(bundle)) => {
+            crucible_session::engine::ResolvedEffectTrace::from_bundle_bytes(bundle, bundle.len())
+                .is_ok_and(|retained| retained.manifest() == fresh.manifest())
+        }
+        _ => false,
     }
 }

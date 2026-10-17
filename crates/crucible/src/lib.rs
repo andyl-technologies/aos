@@ -19,9 +19,11 @@
 //! snapshots independent of run length,
 //! [`node_time`] owns backend-counter to scheduler-time rebasing,
 //! [`backend`] owns the VM backend boundary, [`event_catalog`] owns the versioned
-//! event-kind catalog, [`scheduler`] owns the quantum-loop boundary, [`trigger`]
-//! owns event-graph control flow, [`native_console`] owns logical byte-origin
-//! encoding without execution authority, [`tracing_bridge`] owns opt-in host diagnostic
+//! event-kind catalog, [`scheduler`] owns the quantum-loop boundary,
+//! [`segment_store`] re-exports the content-addressed storage shared by
+//! segmented logs, [`trigger`] owns event-graph control flow,
+//! [`native_console`] owns logical byte-origin encoding without execution
+//! authority, [`tracing_bridge`] owns opt-in host diagnostic
 //! mirroring to `tracing`, `local_backend` provides the production local
 //! backend, and `sim_backend` provides the feature-gated in-process QEMU test
 //! double.
@@ -43,6 +45,7 @@ pub mod model;
 pub mod native_console;
 pub mod node_time;
 pub mod scheduler;
+pub use crucible_cas::segment_store;
 #[cfg(feature = "test-double")]
 mod sim_backend;
 pub mod tracing_bridge;
@@ -217,6 +220,7 @@ pub use native_console::{
 pub use node_time::NodeTimeMapping;
 #[cfg(feature = "test-double")]
 pub use scheduler::SchedulerRunCeilingHandoffError;
+pub use segment_store::{SegmentSink, SegmentSource, SegmentSources, SharedSegmentStore};
 /// Shared-memory ABI version used by Crucible backends and artifacts.
 pub const SHMEM_ABI_VERSION: u32 = include!("../../crucible-shmem/src/abi_version.in");
 pub use scheduler::{

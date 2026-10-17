@@ -220,8 +220,8 @@ pub use observation::{
     AssertionViolationWitness, BoundedStopProof, CoverageProjection, MeasurementEvaluationPayload,
     MeasurementSet, Observation, ObservationEventLogProof, ObservationOutcome,
     ObservationQuantumBoundary, ObservationStopProof, ObservationStopSatisfaction,
-    PolicyTimeoutKind, PropertyEvidence, PropertyVerdict, PropertyVerdictSet, StopOutcome,
-    choice_set_key,
+    PolicyTimeoutKind, PropertyEvidence, PropertyVerdict, PropertyVerdictSet,
+    ResolvedEffectTraceRef, StopOutcome, choice_set_key,
 };
 pub use planner_service::{
     AuthorizedPlannerService, AuthorizedPlannerServiceError, CANONICAL_BEAM_SURVIVORS_CAPABILITY,
@@ -281,11 +281,12 @@ pub use repository::{
     MAX_ATTEMPT_QUEUE_SCAN_PAGE_ITEMS, MAX_CAMPAIGN_SNAPSHOT_ANCESTRY,
     MAX_CAMPAIGN_SUPERVISOR_WORKER_SLOTS, MAX_OBJECTIVE_EVALUATION_SCAN_PAGE_ITEMS,
     MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES, MAX_PIN_RETENTION_PAGE_ENTRIES,
-    MAX_PLANNER_SCAN_PAGE_ITEMS, MAX_SAVEPOINT_CAPTURE_SCAN_PAGE_ITEMS, NonModeledAttemptResult,
-    ObjectiveEvaluationCursor, ObjectiveEvaluationInput, ObjectiveEvaluationPublicationResult,
-    ObjectiveEvaluationScanPage, ObservationCandidate, ObservationDisposition, ObservationResult,
-    PendingSavepointCapture, PendingSavepointCapturePage, PlannerStepResult, ProducedSelections,
-    ProposalResult, ResolvedSelection, SavepointCaptureCursor, SavepointCaptureResolutionResult,
+    MAX_PLANNER_SCAN_PAGE_ITEMS, MAX_RESOLVED_EFFECT_TRACE_MANIFEST_BYTES,
+    MAX_SAVEPOINT_CAPTURE_SCAN_PAGE_ITEMS, NonModeledAttemptResult, ObjectiveEvaluationCursor,
+    ObjectiveEvaluationInput, ObjectiveEvaluationPublicationResult, ObjectiveEvaluationScanPage,
+    ObservationCandidate, ObservationDisposition, ObservationResult, PendingSavepointCapture,
+    PendingSavepointCapturePage, PlannerStepResult, ProducedSelections, ProposalResult,
+    ResolvedSelection, SavepointCaptureCursor, SavepointCaptureResolutionResult,
     SavepointCaptureResult, SavepointContinuationResult, SavepointContinuationSource,
     SelectionResolver, WorkerSlotId,
 };

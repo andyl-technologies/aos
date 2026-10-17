@@ -21,9 +21,9 @@ use crucible::{
     QuantumLoop, QuantumOutcome, QuantumRequest, QuantumTerminalVerdict, RuntimeState, ScenarioDef,
     ScenarioDefForm, Schedule, SchedulerError, SchedulerEventLogAppend, SchedulerEventLogEntry,
     SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerQuiescence, SchedulerState,
-    SearchFrontierChoices, Seed, SelectionDecision, SignalFaultCampaignReplayPlan, SimDuration,
-    SimInstant, SimulationBackend, SingleScheduler, SingleSchedulerCheckpoint, VirtualTime,
-    VmArchitecture, World, WorldIoNodeKind,
+    SearchFrontierChoices, Seed, SegmentSink, SelectionDecision, SignalFaultCampaignReplayPlan,
+    SimDuration, SimInstant, SimulationBackend, SingleScheduler, SingleSchedulerCheckpoint,
+    VirtualTime, VmArchitecture, World, WorldIoNodeKind,
 };
 pub use crucible_qemu::{
     BoundedSchedulerPreemptionEvidence, BoundedSchedulerPreemptionEvidenceSnapshot,
@@ -180,6 +180,7 @@ pub struct ProductionVmLifecycleConfig {
         BTreeMap<NodeId, crucible_protocol::app_random_branch_plan::AppRandomBranchPlan>,
     signal_artifacts: Option<Arc<dyn DagStore>>,
     fault_replay: Option<ResolvedEffectTrace>,
+    fault_trace_segments: Option<Arc<dyn SegmentSink>>,
     world_artifacts: Option<Arc<dyn DagStore>>,
     bounded_scheduler_preemption: Option<BoundedSchedulerPreemptionFlights>,
 }
@@ -262,6 +263,10 @@ impl std::fmt::Debug for ProductionVmLifecycleConfig {
                 &self.signal_artifacts.is_some(),
             )
             .field("fault_replay_configured", &self.fault_replay.is_some())
+            .field(
+                "fault_trace_segments_configured",
+                &self.fault_trace_segments.is_some(),
+            )
             .field(
                 "world_artifacts_configured",
                 &self.world_artifacts.is_some(),
@@ -676,6 +681,9 @@ struct ProductionVmExactCheckpointSet {
     scheduler: Arc<SingleSchedulerCheckpoint>,
     event_log_objects: Arc<BTreeMap<ContentHash, Vec<u8>>>,
     signal_artifact_objects: Arc<BTreeMap<ContentHash, Vec<u8>>>,
+    /// Sealed resolved-effect trace segments the fault continuation names,
+    /// keyed by plain content hash like every other closure object.
+    fault_trace_objects: Arc<BTreeMap<ContentHash, Vec<u8>>>,
     trigger_state: EventGraphState,
     assertion_state: HostAssertionEvaluatorCheckpoint,
     terminal_verdict: Option<QuantumTerminalVerdict>,
@@ -1107,6 +1115,9 @@ pub struct ProductionVmLifecycleLoop {
     repository_exact_ram_rebase: Option<ProductionRepositoryExactRamRebase>,
     recorded_controls: Vec<ProductionVmRecordedControl>,
     signal_artifact_objects: Arc<BTreeMap<ContentHash, Vec<u8>>>,
+    /// Sink holding every sealed resolved-effect trace segment of this
+    /// execution; exact checkpoint capture copies the referenced ones.
+    fault_trace_segments: Arc<dyn SegmentSink>,
     debug_backend_paths: BTreeMap<NodeId, PathBuf>,
     debug_gateway: Option<DebugGatewayProcess>,
     debug_attach: Option<GdbAttachInfo>,

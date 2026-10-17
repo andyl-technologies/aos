@@ -60,7 +60,7 @@ pub use test_support::{
     build_streaming_production_checkpoint_codec_fixture,
 };
 
-const MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v9\0";
+const MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v10\0";
 const MANIFEST_VERSION: u8 = PRODUCTION_EXACT_CLOSURE_SCHEMA_VERSION;
 const MANIFEST_FILE: &str = "manifest.cbor";
 const MAX_MANIFEST_BYTES: usize = 64 * 1024 * 1024;
@@ -313,6 +313,8 @@ struct ClosureManifest {
     event_log_segments: Vec<ContentHash>,
     #[serde(deserialize_with = "decode::deserialize_vec")]
     signal_artifacts: Vec<ContentHash>,
+    #[serde(deserialize_with = "decode::deserialize_vec")]
+    fault_trace_segments: Vec<ContentHash>,
     trigger_state: ContentHash,
     assertion_state: ContentHash,
     lifecycle_state: ContentHash,
@@ -446,6 +448,7 @@ struct ClosureObjects {
     scheduler: Vec<u8>,
     event_log_segments: BTreeMap<ContentHash, Vec<u8>>,
     signal_artifacts: BTreeMap<ContentHash, Vec<u8>>,
+    fault_trace_segments: BTreeMap<ContentHash, Vec<u8>>,
     trigger_state: Vec<u8>,
     assertion_state: Vec<u8>,
     lifecycle_state: Vec<u8>,
@@ -651,6 +654,10 @@ pub(super) fn prepare_exact_checkpoint_set_with_boundary(
                 "checkpoint DAG returned a different content identity",
             )));
         }
+    }
+    for (identity, bytes) in &objects.fault_trace_segments {
+        boundary()?;
+        persist_object_with_boundary(&object_directory, *identity, bytes, boundary)?;
     }
     persist_object_with_boundary(
         &object_directory,
@@ -1009,6 +1016,22 @@ fn load_exact_checkpoint_set_with_boundary(
             ));
         }
     }
+    let mut fault_trace_objects = BTreeMap::new();
+    for identity in &manifest.fault_trace_segments {
+        boundary()?;
+        let bytes = read_object(
+            &object_directory,
+            *identity,
+            &mut budget,
+            LARGE_CONTINUATION_MAX_BYTES,
+            boundary,
+        )?;
+        if fault_trace_objects.insert(*identity, bytes).is_some() {
+            return Err(loop_factory_error(
+                "exact checkpoint contains duplicate trace-segment identities",
+            ));
+        }
+    }
     let checkpoint_dag = checkpoint_dag_store(run_state_root, scenario.id());
     for (identity, bytes) in event_log_objects
         .iter()
@@ -1071,6 +1094,8 @@ fn load_exact_checkpoint_set_with_boundary(
         scenario.id(),
     )
     .map_err(|error| loop_factory_error(format!("decode fault continuation: {error}")))?;
+    validate_fault_trace_objects(Some(&fault_checkpoint), &fault_trace_objects)
+        .map_err(|error| loop_factory_error(error.to_string()))?;
     let fault_manifest_identity = manifest.fault_checkpoint;
 
     let mut targets = BTreeMap::new();
@@ -1209,6 +1234,7 @@ fn load_exact_checkpoint_set_with_boundary(
         scheduler: Arc::new(scheduler),
         event_log_objects: Arc::new(event_log_objects),
         signal_artifact_objects: Arc::new(signal_artifact_objects),
+        fault_trace_objects: Arc::new(fault_trace_objects),
         trigger_state,
         assertion_state,
         terminal_verdict: lifecycle.terminal,
@@ -1372,6 +1398,7 @@ fn manifest_object_identities(manifest: &ClosureManifest) -> BTreeSet<ContentHas
     ]);
     identities.extend(manifest.event_log_segments.iter().copied());
     identities.extend(manifest.signal_artifacts.iter().copied());
+    identities.extend(manifest.fault_trace_segments.iter().copied());
     identities.extend(
         manifest
             .failed_host_io
@@ -1466,6 +1493,10 @@ fn validate_checkpoint_set(
             ));
         }
     }
+    validate_fault_trace_objects(
+        checkpoint.fault_checkpoint.as_ref(),
+        &checkpoint.fault_trace_objects,
+    )?;
     match (
         checkpoint.scheduler.branch_frontier_cap(),
         checkpoint.branch.as_ref(),
@@ -1722,6 +1753,16 @@ fn enforce_persist_limits(
             )?;
         }
     }
+    for (identity, object) in &objects.fault_trace_segments {
+        if identities.insert(*identity) {
+            bytes = add_checkpoint_bytes(
+                bytes,
+                u64::try_from(object.len()).map_err(|_| {
+                    store_error("trace-segment checkpoint object size is not representable")
+                })?,
+            )?;
+        }
+    }
     for failed in &manifest.failed_host_io {
         let node = NodeId {
             name: failed.node.to_string(),
@@ -1879,6 +1920,22 @@ fn authenticate_existing_publication_with_boundary(
         if hash_bytes_with_boundary(bytes, boundary)? != *identity {
             return Err(store_error(
                 "signal-artifact checkpoint object changed before retry",
+            ));
+        }
+        validate_file_hash_with_boundary(
+            &object_path(object_directory, *identity),
+            *identity,
+            boundary,
+        )?;
+    }
+    for identity in &expected.fault_trace_segments {
+        let bytes = objects
+            .fault_trace_segments
+            .get(identity)
+            .ok_or_else(|| store_error("trace-segment closure object disappeared"))?;
+        if hash_bytes_with_boundary(bytes, boundary)? != *identity {
+            return Err(store_error(
+                "trace-segment checkpoint object changed before retry",
             ));
         }
         validate_file_hash_with_boundary(
@@ -2384,6 +2441,7 @@ fn manifest_and_objects_with_boundary(
             .event_log_segment_dependencies()
             .to_vec(),
         signal_artifacts: checkpoint.signal_artifact_objects.keys().copied().collect(),
+        fault_trace_segments: checkpoint.fault_trace_objects.keys().copied().collect(),
         trigger_state: hash_bytes_with_boundary(&trigger_state, boundary)?,
         assertion_state: hash_bytes_with_boundary(&assertion_state, boundary)?,
         lifecycle_state: hash_bytes_with_boundary(&lifecycle_state, boundary)?,
@@ -2414,6 +2472,7 @@ fn manifest_and_objects_with_boundary(
             scheduler,
             event_log_segments: (*checkpoint.event_log_objects).clone(),
             signal_artifacts: (*checkpoint.signal_artifact_objects).clone(),
+            fault_trace_segments: (*checkpoint.fault_trace_objects).clone(),
             trigger_state,
             assertion_state,
             lifecycle_state,
@@ -2464,6 +2523,7 @@ fn closure_identity(manifest: &ClosureManifest) -> Result<ContentHash, Scheduler
         scheduler: manifest.scheduler,
         event_log_segments: manifest.event_log_segments.clone(),
         signal_artifacts: manifest.signal_artifacts.clone(),
+        fault_trace_segments: manifest.fault_trace_segments.clone(),
         trigger_state: manifest.trigger_state,
         assertion_state: manifest.assertion_state,
         lifecycle_state: manifest.lifecycle_state,
@@ -2491,7 +2551,7 @@ fn closure_identity(manifest: &ClosureManifest) -> Result<ContentHash, Scheduler
     if manifest.format_version != MANIFEST_VERSION {
         return Err(store_error("unsupported exact checkpoint manifest version"));
     }
-    let domain = "crucible.production-exact-closure.v9";
+    let domain = "crucible.production-exact-closure.v10";
     Ok(ContentHash::from_canonical_material(
         domain,
         &hex_bytes(&bytes),
@@ -2549,6 +2609,10 @@ fn validate_manifest_shape(manifest: &ClosureManifest) -> Result<(), String> {
             .signal_artifacts
             .windows(2)
             .all(|pair| pair[0] < pair[1])
+        || !manifest
+            .fault_trace_segments
+            .windows(2)
+            .all(|pair| pair[0] < pair[1])
         || manifest
             .event_log_segments
             .iter()
@@ -2597,7 +2661,7 @@ fn validate_manifest_shape(manifest: &ClosureManifest) -> Result<(), String> {
     for target in &manifest.targets {
         if !target.overlay.sparse {
             return Err(String::from(
-                "v9 closure manifest has an invalid overlay layout",
+                "v10 closure manifest has an invalid overlay layout",
             ));
         }
         validate_sparse_artifact_shape(&target.overlay)?;
@@ -2623,7 +2687,7 @@ fn validate_exact_ram_manifest(checkpoint: &ExactRamManifest) -> Result<(), Stri
         || (checkpoint.layers.len() > 1) != checkpoint.parent_closure.is_some()
     {
         return Err(String::from(
-            "v9 exact RAM chain has an invalid base or depth",
+            "v10 exact RAM chain has an invalid base or depth",
         ));
     }
     validate_dense_artifact_shape(&checkpoint.device)?;
@@ -2631,13 +2695,15 @@ fn validate_exact_ram_manifest(checkpoint: &ExactRamManifest) -> Result<(), Stri
     for (index, layer) in checkpoint.layers.iter().enumerate() {
         validate_dense_artifact_shape(&layer.artifact)?;
         if layer.ram_regions == 0 || layer.artifact.length == 0 || layer.topology != topology {
-            return Err(String::from("v9 exact RAM layer has invalid QEMU metadata"));
+            return Err(String::from(
+                "v10 exact RAM layer has invalid QEMU metadata",
+            ));
         }
         if index > 0 {
             let parent = &checkpoint.layers[index - 1];
             if layer.kind != ProductionExactRamKind::Delta || layer.parent != Some(parent.identity)
             {
-                return Err(String::from("v9 exact RAM delta chain is not contiguous"));
+                return Err(String::from("v10 exact RAM delta chain is not contiguous"));
             }
         }
     }

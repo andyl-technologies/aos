@@ -194,12 +194,14 @@ not require rederiving the effect from the original physical model.
 This mode supports incident reproduction across model calibration changes while
 the exact effect and backend capability semantic versions remain identical. A
 version mismatch is rejected; this implementation does not carry compatibility
-shims for older effect semantics. Resolved-effect artifacts use the explicit
-`crucible.resolved-effect-trace.v1` envelope, runtime checkpoints use semantic
-version 4, and production runtime checkpoints use envelope v6 with identity
-domain v9. The refined QEMU retired-instruction coordinate is mandatory in
-these versions, so older unrefined records fail at version admission rather
-than after a replay mutation.
+shims for older effect semantics. Resolved-effect traces are segmented
+(RFC-0020 section 15.10): a `crucible.resolved-effect-trace.v4` manifest names
+content-addressed segments of at most 16 MiB, runtime checkpoints use semantic
+version 7 and carry only the trace position, and production runtime
+checkpoints use envelope v7 with identity domain v10. The refined QEMU
+retired-instruction coordinate is mandatory in these versions, so older
+unrefined records fail at version admission rather than after a replay
+mutation.
 
 ### Outcome-only network replay
 

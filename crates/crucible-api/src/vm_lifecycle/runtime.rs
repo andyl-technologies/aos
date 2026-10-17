@@ -398,14 +398,12 @@ impl ProductionVmLifecycleLoop {
         let network = self.inner.network_output_interceptor();
         let resolved_effect_trace = super::network_faults::trace_with_campaign_network_records(
             resolved_effect_trace,
-            network.campaign_effect_records(),
-            network.resource_limits(),
+            network.campaign_effect_log(),
             crucible::model::FaultReplayMode::RecomputedCause,
         )?;
         let locked_effect_trace = super::network_faults::trace_with_campaign_network_records(
             locked_effect_trace,
-            network.campaign_effect_records(),
-            network.resource_limits(),
+            network.campaign_effect_log(),
             crucible::model::FaultReplayMode::LockedEffect,
         )?;
         let network_outages = self

@@ -425,11 +425,11 @@ The daemon's local prepared-publication formats use this closed registry:
 
 | Schema name | Current version | Contract |
 |---|---:|---|
-| `crucible.executor.prepared-semantic-attempt-result` | 10 | Contains the observation, optional canonical resolved-effect trace, content-ordered raw measurement replay leaves, and optional finding closure. Leaves name their attempt-log segments by identity, and the finding names its retained replay records by identity in eight first-seen tables; the payload carries no segment or replay-record bytes. |
-| `crucible.executor.prepared-result-journal-state` | 4 | Binds the execution key, observation/finding IDs, raw-leaf count and ordered-ID-set hash, referenced-segment count and ordered-reference hash, retained-record count and ordered-ID hash, payload limit, length, and hash. |
-| `crucible.attempt.event-log-segment` | 1 | One sealed, content-addressed run of attempt-log entries. The journal owns a copy of every segment its result references. |
+| `crucible.executor.prepared-semantic-attempt-result` | 11 | Contains the observation, optional resolved-effect trace manifest, content-ordered raw measurement replay leaves, and optional finding closure. Leaves name their attempt-log segments, the observation its trace segments, and the finding its retained replay records in eight first-seen tables, by identity; the payload carries no segment or replay-record bytes. |
+| `crucible.executor.prepared-result-journal-state` | 4 | Binds the execution key, observation/finding IDs, raw-leaf count and ordered-ID-set hash, referenced-segment count and ordered-reference hash (attempt-log segments, then resolved-effect trace segments, under hash domain v2), retained-record count and ordered-ID hash, payload limit, length, and hash. |
+| `crucible.attempt.event-log-segment` | 1 | One sealed, content-addressed run of attempt-log entries. The journal owns a copy of every segment its result references, attempt-log and resolved-effect trace alike. |
 
-Readers accept only prepared-result version 10 and journal-state version 4. A
+Readers accept only prepared-result version 11 and journal-state version 4. A
 state file and its result payload must use those exact current versions;
 mismatches fail closed. Decoding a prepared result reads and authenticates
 every referenced segment and retained replay record from the stores it is

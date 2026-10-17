@@ -144,6 +144,43 @@ impl ProductionFaultRuntime {
         nodes: &QemuNodeSet,
         search_overrides: BTreeMap<SearchChoiceId, SearchOverride>,
     ) -> Result<Self, ProductionFaultRuntimeError> {
+        Self::new_with_storage(
+            plan,
+            artifacts,
+            boundary,
+            scenario_seed,
+            host_manifests,
+            nodes,
+            search_overrides,
+            FaultTraceStorage::in_memory(),
+        )
+    }
+
+    /// Admits a complete plan whose resolved-effect trace seals into `storage`.
+    ///
+    /// The storage's recording sink receives every sealed trace segment, and
+    /// its replay sources must hold the segments of any replay trace installed
+    /// later.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProductionFaultRuntimeError`] under the same conditions as
+    /// [`Self::new_with_search_overrides`].
+    // crucible-lint: allow rust-allow -- construction admits each independent runtime owner explicitly.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "construction admits each independent runtime owner explicitly"
+    )]
+    pub fn new_with_storage(
+        plan: FaultSignalPlan,
+        artifacts: Option<Arc<dyn SignalArtifactProvider>>,
+        boundary: SignalBoundarySnapshot,
+        scenario_seed: ContentHash,
+        host_manifests: HostFaultAdapterManifests,
+        nodes: &QemuNodeSet,
+        search_overrides: BTreeMap<SearchChoiceId, SearchOverride>,
+        storage: FaultTraceStorage,
+    ) -> Result<Self, ProductionFaultRuntimeError> {
         validate_ready_marker_admission(&plan, nodes)?;
         let manifests = production_manifests(nodes, host_manifests)?;
         let plan_id = plan.id();
@@ -153,13 +190,14 @@ impl ProductionFaultRuntime {
         } else {
             let artifacts =
                 artifacts.ok_or(ProductionFaultRuntimeError::MissingArtifactProvider)?;
-            Some(OwnedFaultExecutionRuntime::new_with_search_overrides(
+            Some(OwnedFaultExecutionRuntime::new_with_storage(
                 plan,
                 artifacts,
                 boundary,
                 scenario_seed,
                 manifests,
                 search_overrides,
+                storage,
             )?)
         };
         let lifecycle_owner_instance = next_lifecycle_owner_instance()?;
@@ -188,6 +226,9 @@ impl ProductionFaultRuntime {
 
     /// Restores one authenticated production continuation.
     ///
+    /// The sealed trace segments the checkpoint references must be readable
+    /// from `storage`'s recording sink, and later segments seal into it.
+    ///
     /// # Errors
     ///
     /// Returns [`ProductionFaultRuntimeError`] when the checkpoint's runtime presence
@@ -199,6 +240,7 @@ impl ProductionFaultRuntime {
         checkpoint: ProductionFaultRuntimeCheckpoint,
         host_manifests: HostFaultAdapterManifests,
         nodes: &mut QemuNodeSet,
+        storage: FaultTraceStorage,
     ) -> Result<Self, ProductionFaultRuntimeError> {
         validate_ready_marker_admission(&plan, nodes)?;
         let manifests = production_manifests(nodes, host_manifests)?;
@@ -321,6 +363,7 @@ impl ProductionFaultRuntime {
                     scenario_seed,
                     manifests,
                     checkpoint,
+                    storage,
                 )?)
             }
             _ => return Err(FaultExecutionError::CheckpointPresence.into()),
@@ -361,6 +404,9 @@ impl ProductionFaultRuntime {
     }
 
     /// Installs a fresh authoritative replay trace for subsequent live execution.
+    ///
+    /// The trace keeps its own segment sources; only its manifest and cursor
+    /// enter later checkpoints.
     ///
     /// # Errors
     ///

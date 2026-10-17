@@ -709,7 +709,9 @@ where
         self.inner.prepare_terminal_fingerprints()
     }
 
-    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
+    fn resolved_effect_trace(
+        &self,
+    ) -> Result<Option<crucible::model::ResolvedEffectTrace>, SchedulerError> {
         self.inner.resolved_effect_trace()
     }
 

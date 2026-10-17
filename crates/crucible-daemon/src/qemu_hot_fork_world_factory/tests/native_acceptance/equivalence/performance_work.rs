@@ -54,8 +54,21 @@ fn continuation(evidence: &ContinuationEvidence) -> Value {
         }).collect::<Vec<_>>(),
         "outcomes": outcomes,
         "fingerprints": fingerprints,
-        "resolved_effect_trace": evidence.fault_evidence.resolved_effect_trace,
-        "locked_effect_trace": evidence.fault_evidence.locked_effect_trace,
+        // Equal manifests name equal segments, so the manifest identity
+        // stands for the whole trace.
+        "resolved_effect_trace": trace_identity(evidence.fault_evidence.resolved_effect_trace.as_ref()),
+        "locked_effect_trace": trace_identity(evidence.fault_evidence.locked_effect_trace.as_ref()),
+    })
+}
+
+/// Returns the manifest identity naming a trace, when one was recorded.
+fn trace_identity(trace: Option<&crucible::model::ResolvedEffectTrace>) -> Option<String> {
+    trace.map(|trace| {
+        trace
+            .manifest()
+            .content_id()
+            .expect("trace manifest identity")
+            .encode()
     })
 }
 

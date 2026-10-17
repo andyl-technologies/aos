@@ -1,6 +1,102 @@
 //! Record contracts.
+//!
+//! An observation names its attempt's resolved-effect trace by reference: the
+//! manifest leaf and, in manifest order, every segment it references. The
+//! segments are content children of the observation so retention, transfer,
+//! and closure walks reach them without understanding the trace format.
+
+use crucible_cas::content_store::ObjectKind;
+use crucible_cas::segment_store::MAX_MANIFEST_SEGMENTS;
 
 use super::*;
+
+/// Trace schema of a resolved-effect trace manifest leaf.
+pub(crate) const RESOLVED_EFFECT_TRACE_MANIFEST_SCHEMA: u32 = 4;
+
+/// Trace schema of one resolved-effect trace segment leaf.
+pub(crate) const RESOLVED_EFFECT_TRACE_SEGMENT_SCHEMA: u32 = 1;
+
+/// Content references of one segmented resolved-effect trace.
+///
+/// The manifest is an opaque Trace schema 4 leaf; its segments are Trace
+/// schema 1 leaves listed in manifest order. The campaign repository does not
+/// decode either: the producer guarantees that the list equals the manifest's
+/// references, and readers authenticate each segment against the manifest.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedEffectTraceRef {
+    manifest: ContentId,
+    segments: Vec<ContentId>,
+}
+
+impl ResolvedEffectTraceRef {
+    /// Builds one validated trace reference.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the manifest is not a Trace schema 4 identity, a
+    /// segment is not a Trace schema 1 identity, a segment repeats, or more
+    /// than [`MAX_MANIFEST_SEGMENTS`] segments are listed.
+    pub fn new(manifest: ContentId, segments: Vec<ContentId>) -> Result<Self, CampaignCodecError> {
+        let invalid = CampaignCodecError::InvalidValue {
+            reason: "observation resolved-effect trace reference is invalid",
+        };
+        if manifest.kind() != ObjectKind::Trace
+            || manifest.schema_version() != RESOLVED_EFFECT_TRACE_MANIFEST_SCHEMA
+        {
+            return Err(invalid);
+        }
+        if segments.len() > MAX_MANIFEST_SEGMENTS {
+            return Err(CampaignCodecError::LimitExceeded {
+                limit: "observation-resolved-effect-trace-segment-count",
+            });
+        }
+        let mut distinct = BTreeSet::new();
+        for segment in &segments {
+            if segment.kind() != ObjectKind::Trace
+                || segment.schema_version() != RESOLVED_EFFECT_TRACE_SEGMENT_SCHEMA
+                || !distinct.insert(*segment)
+            {
+                return Err(invalid);
+            }
+        }
+        Ok(Self { manifest, segments })
+    }
+
+    /// Returns the manifest leaf identity.
+    #[must_use]
+    pub const fn manifest(&self) -> ContentId {
+        self.manifest
+    }
+
+    /// Returns the segment leaf identities in manifest order.
+    #[must_use]
+    pub fn segments(&self) -> &[ContentId] {
+        &self.segments
+    }
+
+    /// Returns whether `segment` is one of the referenced segments.
+    #[must_use]
+    pub fn contains_segment(&self, segment: ContentId) -> bool {
+        self.segments.contains(&segment)
+    }
+}
+
+impl Canonical for ResolvedEffectTraceRef {
+    fn encode(&self, encoder: &mut Encoder) {
+        Canonical::encode(&self.manifest, encoder);
+        self.segments.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        let manifest = ContentId::decode(decoder)?;
+        let segments = decoder.sequence_bounded(
+            MAX_MANIFEST_SEGMENTS,
+            "observation-resolved-effect-trace-segment-count",
+            ContentId::decode,
+        )?;
+        Self::new(manifest, segments)
+    }
+}
 
 /// Canonical modeled result of one admitted attempt.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -15,7 +111,7 @@ pub struct Observation {
     coverage: CoverageProjectionId,
     discovered_choices: MerkleMapRoot,
     produced_selections: MerkleMapRoot,
-    resolved_effect_trace: Option<ContentId>,
+    resolved_effect_trace: Option<ResolvedEffectTraceRef>,
 }
 
 /// Modeled child state and evidence produced by one completed attempt.
@@ -112,21 +208,19 @@ impl Observation {
         })
     }
 
-    /// Binds the exact canonical resolved-effect trace retained for this attempt.
+    /// Binds the exact segmented resolved-effect trace retained for this attempt.
     ///
     /// # Errors
     ///
-    /// Returns an error if the trace identity is invalid or already attached.
+    /// Returns an error if a trace is already attached or the observation
+    /// would exceed its encoded-size bound.
     pub fn with_resolved_effect_trace(
         mut self,
-        trace: ContentId,
+        trace: ResolvedEffectTraceRef,
     ) -> Result<Self, CampaignCodecError> {
-        if trace.kind() != crucible_cas::content_store::ObjectKind::Trace
-            || trace.schema_version() != 1
-            || self.resolved_effect_trace.is_some()
-        {
+        if self.resolved_effect_trace.is_some() {
             return Err(CampaignCodecError::InvalidValue {
-                reason: "observation resolved-effect trace identity is invalid",
+                reason: "observation already carries a resolved-effect trace",
             });
         }
         self.resolved_effect_trace = Some(trace);
@@ -165,14 +259,6 @@ impl Observation {
 
     fn validate(value: Self) -> Result<Self, CampaignCodecError> {
         value.stop.validate()?;
-        if value.resolved_effect_trace.is_some_and(|trace| {
-            trace.kind() != crucible_cas::content_store::ObjectKind::Trace
-                || trace.schema_version() != 1
-        }) {
-            return Err(CampaignCodecError::InvalidValue {
-                reason: "observation resolved-effect trace identity is invalid",
-            });
-        }
         if matches!(&value.stop, StopOutcome::ObservationReached(proof) if proof.child() != value.child)
         {
             return Err(CampaignCodecError::InvalidValue {
@@ -258,10 +344,10 @@ impl Observation {
         self.produced_selections
     }
 
-    /// Returns the exact retained canonical resolved-effect trace, when present.
+    /// Returns the exact retained segmented resolved-effect trace, when present.
     #[must_use]
-    pub const fn resolved_effect_trace(&self) -> Option<ContentId> {
-        self.resolved_effect_trace
+    pub const fn resolved_effect_trace(&self) -> Option<&ResolvedEffectTraceRef> {
+        self.resolved_effect_trace.as_ref()
     }
 
     /// Returns strict canonical bytes.
@@ -313,8 +399,14 @@ impl Observation {
                 self.produced_selections.content_id(),
             ),
         ];
-        if let Some(trace) = self.resolved_effect_trace {
-            children.push(("resolved-effect-trace".to_owned(), trace));
+        if let Some(trace) = &self.resolved_effect_trace {
+            children.push(("resolved-effect-trace".to_owned(), trace.manifest));
+            children.extend(trace.segments.iter().enumerate().map(|(index, segment)| {
+                (
+                    format!("resolved-effect-trace.segment.{index:04x}"),
+                    *segment,
+                )
+            }));
         }
         children
     }
@@ -356,7 +448,7 @@ impl Canonical for Observation {
         let coverage = CoverageProjectionId::decode(decoder)?;
         let discovered_choices = MerkleMapRoot::decode(decoder)?;
         let produced_selections = MerkleMapRoot::decode(decoder)?;
-        let resolved_effect_trace = Option::<ContentId>::decode(decoder)?;
+        let resolved_effect_trace = Option::<ResolvedEffectTraceRef>::decode(decoder)?;
         Self::validate(Self {
             attempt,
             child,

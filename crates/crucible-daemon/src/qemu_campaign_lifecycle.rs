@@ -520,12 +520,17 @@ pub trait QemuFreshAttemptLifecycleOwner {
     /// be sampled at the terminal boundary.
     fn prepare_terminal_fingerprints(&mut self) -> Result<(), SchedulerError>;
 
-    /// Copies the exact resolved-effect trace retained by the live fault runtime.
+    /// Exports the exact resolved-effect trace retained by the live fault runtime.
+    ///
+    /// The result is a segmented trace handle; its segments stay in the
+    /// lifecycle's segment store.
     ///
     /// # Errors
     ///
-    /// Returns [`SchedulerError`] when retained effect evidence cannot be encoded.
-    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError>;
+    /// Returns [`SchedulerError`] when retained effect evidence cannot be exported.
+    fn resolved_effect_trace(
+        &self,
+    ) -> Result<Option<crucible::model::ResolvedEffectTrace>, SchedulerError>;
 
     /// Settles the final boundary without teardown so the world may be retained.
     ///
@@ -762,7 +767,9 @@ impl QemuFreshAttemptLifecycleOwner for ProductionVmLifecycleLoop {
         ProductionVmLifecycleLoop::prepare_terminal_fingerprints(self)
     }
 
-    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
+    fn resolved_effect_trace(
+        &self,
+    ) -> Result<Option<crucible::model::ResolvedEffectTrace>, SchedulerError> {
         // crucible-lint: allow host-nondeterminism-state -- this copies scheduler-retained replay evidence without feeding it into execution.
         QuantumLoop::resolved_effect_trace(self)
     }
@@ -795,13 +802,13 @@ pub(crate) use source_retention::{
 mod evidence;
 #[cfg(test)]
 pub(crate) use evidence::QemuTerminalEvidenceExecutionRunnerError;
-pub(crate) use evidence::{
-    MAX_RESOLVED_EFFECT_TRACE_BYTES, QemuObservedFreshAttemptLifecycle,
-    QemuTerminalEvidenceExecutionRunner, map_observed_evidence_failure, map_observed_inner_failure,
-};
 pub use evidence::{
     QemuAttemptExecutionEvidence, QemuAttemptExecutionEvidenceSnapshot,
     QemuObservedFreshAttemptLifecycleFactory, QemuObservedFreshAttemptLifecycleFactoryError,
+};
+pub(crate) use evidence::{
+    QemuObservedFreshAttemptLifecycle, QemuTerminalEvidenceExecutionRunner,
+    map_observed_evidence_failure, map_observed_inner_failure,
 };
 
 mod campaign_run;
@@ -1246,7 +1253,7 @@ pub trait QemuFreshAttemptDriver {
         &mut self,
         pending: Self::Pending,
         final_events: Vec<SchedulerEventLogEntry>,
-        _resolved_effect_trace: Option<Vec<u8>>,
+        _resolved_effect_trace: Option<crucible::model::ResolvedEffectTrace>,
     ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>> {
         self.seal(pending, final_events)
     }

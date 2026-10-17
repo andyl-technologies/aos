@@ -367,22 +367,25 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
         observation_result
     );
 
-    let trace_bytes = crucible::model::ResolvedEffectTrace {
-        mode: crucible::model::FaultReplayMode::LockedEffect,
-        work_items: Vec::new(),
-        cursor: 0,
-    }
-    .canonical_bytes()
-    .expect("canonical resolved effect trace");
-    let trace_id = crucible_cas::content_store::ContentId::for_bytes(
-        crucible_cas::content_store::ObjectKind::Trace,
-        1,
-        &trace_bytes,
-    );
+    let trace =
+        crucible::model::ResolvedEffectTrace::empty(crucible::model::FaultReplayMode::LockedEffect)
+            .expect("empty resolved effect trace");
+    let trace_manifest = trace
+        .manifest()
+        .canonical_bytes()
+        .expect("canonical resolved effect trace manifest");
+    let trace_reference = crucible_campaign::ResolvedEffectTraceRef::new(
+        trace
+            .manifest()
+            .content_id()
+            .expect("trace manifest identity"),
+        trace.manifest().segment_ids().collect(),
+    )
+    .expect("trace reference");
     let trace_observation = observation_candidate_with_measurements
         .observation()
         .clone()
-        .with_resolved_effect_trace(trace_id)
+        .with_resolved_effect_trace(trace_reference)
         .expect("trace child");
     let trace_candidate = ObservationCandidate::new(
         observation_candidate_with_measurements.child().clone(),
@@ -397,8 +400,8 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
         trace_observation,
     )
     .expect("trace observation candidate")
-    .with_resolved_effect_trace(trace_bytes.clone())
-    .expect("trace bytes");
+    .with_resolved_effect_trace(trace_manifest, trace.segments().clone())
+    .expect("trace manifest");
     let trace_result = PreparedSemanticAttemptResult::new(
         trace_candidate,
         observation_result.measurement_replay_evidence().to_vec(),

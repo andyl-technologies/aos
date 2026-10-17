@@ -113,14 +113,22 @@ impl CampaignRepository {
     ) -> Result<(), CampaignRepositoryError> {
         let observation = candidate.observation();
         if observation.resolved_effect_trace().is_some()
-            != candidate.resolved_effect_trace().is_some()
+            != candidate.resolved_effect_trace_manifest().is_some()
         {
             return Err(integrity("observation-candidate-trace-missing"));
         }
-        if let Some(bytes) = candidate.resolved_effect_trace()
-            && (bytes.len() > 64 * 1024 * 1024
-                || observation.resolved_effect_trace()
-                    != Some(ContentId::for_bytes(ObjectKind::Trace, 1, bytes)))
+        // Segments are authenticated as publication streams them; the
+        // candidate carries only the manifest bytes.
+        if let Some(manifest) = candidate.resolved_effect_trace_manifest()
+            && (manifest.len() > MAX_RESOLVED_EFFECT_TRACE_MANIFEST_BYTES
+                || observation
+                    .resolved_effect_trace()
+                    .map(ResolvedEffectTraceRef::manifest)
+                    != Some(ContentId::for_bytes(
+                        ObjectKind::Trace,
+                        crate::observation::RESOLVED_EFFECT_TRACE_MANIFEST_SCHEMA,
+                        manifest,
+                    )))
         {
             return Err(integrity("observation-candidate-trace-mismatch"));
         }

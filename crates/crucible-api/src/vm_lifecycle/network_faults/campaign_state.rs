@@ -1,6 +1,7 @@
 //! Exact selected network interval state and resolved-effect replay admission.
 
 use super::*;
+use crucible::model::ResolvedEffectTrace;
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -95,11 +96,7 @@ impl ProductionFaultNetworkInterceptor {
                 }
             }
         }
-        let committed = u64::try_from(self.campaign_records.len()).map_err(|_| {
-            SchedulerError::BoundaryViolation {
-                message: String::from("campaign network effect record count exceeds u64"),
-            }
-        })?;
+        let committed = self.campaign_log.records();
         let mut runtime = self
             .runtime
             .lock()
@@ -195,38 +192,49 @@ impl ProductionFaultNetworkInterceptor {
         Ok(())
     }
 
-    /// Returns committed network actions using the production resolved-effect contract.
-    pub(in crate::vm_lifecycle) fn campaign_effect_records(&self) -> &[ResolvedEffectRecord] {
-        &self.campaign_records
+    /// Returns every committed campaign record, reading sealed segments.
+    #[cfg(test)]
+    pub(in crate::vm_lifecycle) fn campaign_effect_records(
+        &self,
+    ) -> Vec<crucible::model::ResolvedEffectRecord> {
+        let mut records = Vec::new();
+        self.campaign_log
+            .try_for_each_record(|record| {
+                records.push(record.clone());
+                Ok(())
+            })
+            .unwrap_or_else(|error| panic!("campaign effect log should read: {error}"));
+        records
+    }
+
+    /// Returns the segmented log of committed campaign network effects.
+    pub(in crate::vm_lifecycle) fn campaign_effect_log(&self) -> &CampaignRecordLog {
+        &self.campaign_log
     }
 
     /// Installs exact campaign-owned effect evidence after owner partitioning.
+    ///
+    /// A restore consumes the records the checkpointed log already committed,
+    /// reading both one segment at a time.
     pub(in crate::vm_lifecycle) fn install_campaign_effect_replay(
         &mut self,
-        expected: Option<Vec<ResolvedEffectRecord>>,
+        expected: Option<ResolvedEffectTrace>,
         restoring: bool,
     ) -> Result<(), SchedulerError> {
+        let mut replay = expected
+            .map(|trace| CampaignRecordReplay::new(trace, self.resource_limits))
+            .transpose()?;
         if self.campaign_replay.is_none()
-            && expected.as_ref().is_some_and(|records| !records.is_empty())
+            && replay.as_ref().is_some_and(|replay| replay.total() != 0)
         {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from("campaign effect evidence has no selected network plan"),
             });
         }
-        let consumed = if restoring {
-            self.campaign_records.len()
-        } else {
-            0
-        };
-        if let Some(records) = &expected
-            && (consumed > records.len() || records[..consumed] != self.campaign_records)
-        {
-            return Err(SchedulerError::BoundaryViolation {
-                message: String::from("restored network effect prefix differs from replay"),
-            });
+        if restoring && let Some(replay) = replay.as_mut() {
+            replay.skip_committed(&self.campaign_log)?;
         }
-        self.campaign_effect_replay = expected;
-        self.campaign_effect_replay_cursor = consumed;
+        self.campaign_effect_replay = replay;
         Ok(())
     }
 
@@ -237,7 +245,7 @@ impl ProductionFaultNetworkInterceptor {
         if self
             .campaign_effect_replay
             .as_ref()
-            .is_some_and(|expected| self.campaign_effect_replay_cursor != expected.len())
+            .is_some_and(|replay| !replay.exhausted())
         {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from("campaign network effect replay was not exhausted"),
@@ -247,6 +255,7 @@ impl ProductionFaultNetworkInterceptor {
     }
 
     /// Returns the authored limits used by this network adapter.
+    #[cfg(test)]
     pub(in crate::vm_lifecycle) fn resource_limits(&self) -> FaultResourceLimits {
         self.resource_limits
     }

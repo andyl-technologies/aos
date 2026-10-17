@@ -692,12 +692,16 @@ pub trait QuantumLoop {
     /// Returns the exact resolved-effect trace retained by a live fault runtime.
     ///
     /// Loops without a signal-driven fault runtime return `None`. Production
-    /// loops return an unconsumed trace suitable for a reproduction artifact.
+    /// loops return a segmented trace handle suitable for a reproduction
+    /// artifact; its segments stay in the loop's segment store and are read
+    /// one at a time.
     ///
     /// # Errors
     ///
-    /// Returns [`SchedulerError`] when the runtime cannot encode a valid trace.
-    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
+    /// Returns [`SchedulerError`] when the runtime cannot export a valid trace.
+    fn resolved_effect_trace(
+        &self,
+    ) -> Result<Option<crate::model::ResolvedEffectTrace>, SchedulerError> {
         Ok(None)
     }
 

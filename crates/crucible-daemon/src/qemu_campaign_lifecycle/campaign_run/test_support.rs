@@ -32,15 +32,11 @@ use crate::{
 
 const TEST_SELECTION_APPLIED_MARKER: &str = "campaign-save-fixture-selection-applied";
 
-fn test_effect_trace() -> Result<Vec<u8>, SchedulerError> {
-    ResolvedEffectTrace {
-        mode: FaultReplayMode::RecomputedCause,
-        work_items: Vec::new(),
-        cursor: 0,
-    }
-    .canonical_bytes()
-    .map_err(|error| SchedulerError::BoundaryViolation {
-        message: format!("fixture effect trace did not encode: {error}"),
+fn test_effect_trace() -> Result<ResolvedEffectTrace, SchedulerError> {
+    ResolvedEffectTrace::empty(FaultReplayMode::RecomputedCause).map_err(|error| {
+        SchedulerError::BoundaryViolation {
+            message: format!("fixture effect trace did not build: {error}"),
+        }
     })
 }
 
@@ -321,7 +317,9 @@ impl QemuFreshAttemptLifecycleOwner for TestLifecycle {
         Ok(())
     }
 
-    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
+    fn resolved_effect_trace(
+        &self,
+    ) -> Result<Option<crucible::model::ResolvedEffectTrace>, SchedulerError> {
         Ok(Some(test_effect_trace()?))
     }
 

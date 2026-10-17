@@ -33,14 +33,14 @@ use codec::*;
 /// Maximum number of RAM layers in one authenticated production checkpoint.
 pub const MAX_EXACT_CHECKPOINT_RAM_LAYERS: usize = 8;
 
-/// Maximum canonical v9 closure-manifest size.
+/// Maximum canonical v10 closure-manifest size.
 pub const MAX_EXACT_CHECKPOINT_MANIFEST_BYTES: usize = 64 * 1024 * 1024;
 
 /// Current production exact-closure manifest schema version.
-pub const PRODUCTION_EXACT_CLOSURE_SCHEMA_VERSION: u8 = 9;
+pub const PRODUCTION_EXACT_CLOSURE_SCHEMA_VERSION: u8 = 10;
 
-const MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v9\0";
-const CLOSURE_DOMAIN: &str = "crucible.production-exact-closure.v9";
+const MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v10\0";
+const CLOSURE_DOMAIN: &str = "crucible.production-exact-closure.v10";
 const TARGET_DOMAIN: &str = "crucible.production-vm-exact-checkpoint.v3";
 const RAM_TARGET_DOMAIN: &str = "crucible.production-vm-exact-checkpoint.v2";
 const SPARSE_ARTIFACT_DOMAIN: &str = "crucible.production-exact-sparse-artifact.v1";
@@ -208,7 +208,7 @@ struct ExactCheckpointObjectRecord {
     pub length: u64,
 }
 
-/// Complete canonical v9 closure record used to authenticate a target.
+/// Complete canonical v10 closure record used to authenticate a target.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ExactCheckpointClosureRecord {
@@ -228,6 +228,10 @@ struct ExactCheckpointClosureRecord {
     /// Sorted signal-artifact identities.
     #[serde(deserialize_with = "decode::deserialize_vec")]
     pub signal_artifacts: Vec<ContentHash>,
+    /// Sorted identities of the sealed resolved-effect trace segments the
+    /// fault continuation references (RFC-0020 section 15).
+    #[serde(deserialize_with = "decode::deserialize_vec")]
+    pub fault_trace_segments: Vec<ContentHash>,
     /// Trigger continuation identity.
     pub trigger_state: ContentHash,
     /// Assertion continuation identity.
@@ -913,7 +917,7 @@ pub enum ExactCheckpointExecutionSourceError {
 /// substitute a snapshot, artifact, RAM layer, parent, or geometry value after
 /// validation.
 /// The decoder admits every owned allocation against `owned_byte_limit`, then
-/// requires the input bytes to match the canonical v9 encoding exactly.
+/// requires the input bytes to match the canonical v10 encoding exactly.
 /// Storage separately authenticates the bytes named by each artifact; QEMU
 /// rechecks those identities while consuming the proof.
 ///

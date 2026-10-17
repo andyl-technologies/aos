@@ -997,6 +997,7 @@ pub(in crate::vm_lifecycle) fn production_loop_without_backends(
         source.plan().fault_signals().resource_limits(),
         source.world().fault_topology().clone(),
         source.world().links().to_vec(),
+        Arc::new(crucible::segment_store::SharedSegmentStore::new()),
     );
     let run_directory = ProductionRunDirectory::temporary()
         .unwrap_or_else(|error| panic!("test run directory should build: {error}"));
@@ -1064,6 +1065,7 @@ pub(in crate::vm_lifecycle) fn production_loop_without_backends(
         repository_exact_ram_rebase: None,
         recorded_controls: Vec::new(),
         signal_artifact_objects: Arc::new(BTreeMap::new()),
+        fault_trace_segments: Arc::new(crucible::segment_store::SharedSegmentStore::new()),
         debug_backend_paths: BTreeMap::new(),
         debug_gateway: None,
         debug_attach: None,

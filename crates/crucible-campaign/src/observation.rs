@@ -33,7 +33,7 @@ use crate::{
 };
 
 const RECORD_SCHEMA_VERSION: u32 = 1;
-const OBSERVATION_SCHEMA_VERSION: u32 = 15;
+const OBSERVATION_SCHEMA_VERSION: u32 = 16;
 const MEASUREMENT_SET_SCHEMA_VERSION: u32 = 2;
 const MAX_RECORD_BYTES: usize = 32 * 1024 * 1024;
 const MAX_MEASUREMENT_EVALUATION_PAYLOAD_BYTES: usize = 32 * 1024 * 1024;
@@ -44,7 +44,9 @@ const MAX_SCENARIO_FAILURE_REASON_BYTES: usize = 16 * 1024 * 1024;
 const MAX_SCENARIO_FAILURE_REASONS_BYTES: usize = MAX_RECORD_BYTES;
 const MAX_EVIDENCE_OBJECTS: usize = 4096;
 const MAX_COVERAGE_IDENTITIES: usize = 1_000_000;
-// The generic content envelope permits 65,536 children.
+// The generic content envelope permits 65,536 children. An observation
+// names eight fixed roles, the resolved-effect trace manifest, and at most
+// `MAX_MANIFEST_SEGMENTS` trace segments, so it always fits.
 const MAX_ENVELOPE_CHILDREN: usize = 65_536;
 
 /// Returns the paged-set key of one choice opportunity.
@@ -1429,5 +1431,8 @@ pub(crate) fn scenario_failure_hash(reasons: &[String]) -> CampaignHash {
 }
 
 mod record;
-pub use record::{Observation, ObservationOutcome};
+pub use record::{Observation, ObservationOutcome, ResolvedEffectTraceRef};
+pub(crate) use record::{
+    RESOLVED_EFFECT_TRACE_MANIFEST_SCHEMA, RESOLVED_EFFECT_TRACE_SEGMENT_SCHEMA,
+};
 use record::{decode_record, require_schema};

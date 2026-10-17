@@ -71,17 +71,15 @@ impl CampaignRepository {
         let measurements = self.put_measurement_set(candidate.measurements())?;
         let properties = self.put_property_verdict_set(candidate.properties())?;
         let coverage = self.put_coverage_projection(candidate.coverage())?;
-        if let Some(bytes) = candidate.resolved_effect_trace() {
+        if let (Some(manifest), Some(segments)) = (
+            candidate.resolved_effect_trace_manifest(),
+            candidate.resolved_effect_trace_segments(),
+        ) {
             let trace = candidate
                 .observation()
                 .resolved_effect_trace()
                 .ok_or_else(|| integrity("observation-trace-identity-missing"))?;
-            let receipt = self
-                .blobs
-                .put_if_absent(trace, &BlobHandle::from_bytes(bytes.to_vec()))?;
-            if receipt.id != trace {
-                return Err(integrity("observation-trace-publication-id-mismatch"));
-            }
+            self.publish_resolved_effect_trace(trace, manifest, segments)?;
         }
         let observation = self.put_observation(candidate.observation())?;
 
@@ -95,6 +93,47 @@ impl CampaignRepository {
         }
         self.verify_campaign_closure(observation)?;
         ObservationId::from_content_id(observation).map_err(Into::into)
+    }
+
+    /// Publishes a segmented resolved-effect trace one segment at a time.
+    ///
+    /// Each segment is read from the producer's stores, authenticated against
+    /// the identity the observation lists, and stored before the next one is
+    /// read, so publication holds at most one segment in memory. The manifest
+    /// leaf is stored last. A failure can leave earlier authenticated segments
+    /// as unreferenced content-addressed leaves for ordinary collection.
+    fn publish_resolved_effect_trace(
+        &self,
+        trace: &ResolvedEffectTraceRef,
+        manifest_bytes: &[u8],
+        sources: &SegmentSources,
+    ) -> Result<(), CampaignRepositoryError> {
+        for &segment in trace.segments() {
+            if self.blobs.contains(segment)? {
+                continue;
+            }
+            let bytes = sources
+                .segment(segment)
+                .map_err(|_| integrity("observation-trace-segment-unavailable"))?;
+            if bytes.len() > MAX_SEGMENT_BYTES || !segment.authenticates(&bytes) {
+                return Err(integrity("observation-trace-segment-mismatch"));
+            }
+            let receipt = self
+                .blobs
+                .put_if_absent(segment, &BlobHandle::from_bytes(bytes))?;
+            if receipt.id != segment {
+                return Err(integrity("observation-trace-publication-id-mismatch"));
+            }
+        }
+
+        let manifest = trace.manifest();
+        let receipt = self
+            .blobs
+            .put_if_absent(manifest, &BlobHandle::from_bytes(manifest_bytes.to_vec()))?;
+        if receipt.id != manifest {
+            return Err(integrity("observation-trace-publication-id-mismatch"));
+        }
+        Ok(())
     }
 
     /// Publishes a canonical exact measurement set without advancing a campaign.

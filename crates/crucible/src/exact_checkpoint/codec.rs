@@ -1,4 +1,4 @@
-//! Canonical v9 checkpoint envelope, manifest, and shape verification.
+//! Canonical v10 checkpoint envelope, manifest, and shape verification.
 
 use super::*;
 
@@ -467,6 +467,7 @@ pub(super) fn validate_closure_structure(
     closure: &ExactCheckpointClosureRecord,
 ) -> Result<(), ExactCheckpointRelationError> {
     if !strictly_sorted(&closure.signal_artifacts)
+        || !strictly_sorted(&closure.fault_trace_segments)
         || closure
             .event_log_segments
             .iter()
@@ -544,6 +545,7 @@ pub(super) fn manifest_object_identities(
     ]);
     identities.extend(closure.event_log_segments.iter().copied());
     identities.extend(closure.signal_artifacts.iter().copied());
+    identities.extend(closure.fault_trace_segments.iter().copied());
     identities.extend(
         closure
             .failed_host_io

@@ -1,6 +1,6 @@
 //! Pure reconstruction of repository-authenticated lifecycle state.
 //!
-//! The lower exact-checkpoint verifier owns the v9 manifest and object
+//! The lower exact-checkpoint verifier owns the v10 manifest and object
 //! relation. This module decodes each authenticated semantic object once into
 //! the API-owned lifecycle types without installing a native closure or
 //! exposing artifact identities and readers.
@@ -190,6 +190,7 @@ struct SemanticObjects {
     scheduler: Option<SingleSchedulerCheckpoint>,
     event_log_objects: BTreeMap<usize, (ContentHash, Vec<u8>)>,
     signal_artifact_objects: BTreeMap<ContentHash, Vec<u8>>,
+    fault_trace_objects: BTreeMap<ContentHash, Vec<u8>>,
     trigger_state: Option<EventGraphState>,
     assertion_state: Option<HostAssertionEvaluatorCheckpoint>,
     lifecycle_state: Option<DecodedLifecycle>,
@@ -307,6 +308,16 @@ fn collect_semantic_object(
                 .is_some()
             {
                 return Err(duplicate("signal artifact"));
+            }
+        }
+        ExactCheckpointSemanticObjectRole::FaultTraceSegment { identity, .. } => {
+            let value = fallible_copy(bytes, "trace segment")?;
+            if objects
+                .fault_trace_objects
+                .insert(identity, value)
+                .is_some()
+            {
+                return Err(duplicate("trace segment"));
             }
         }
         ExactCheckpointSemanticObjectRole::TriggerState => {
@@ -534,6 +545,8 @@ fn decode_semantic_checkpoint(
     let assertion_state = take_role(&mut objects.assertion_state, "assertion state")?;
     let lifecycle = take_role(&mut objects.lifecycle_state, "lifecycle state")?;
     let fault_checkpoint = take_role(&mut objects.fault_checkpoint, "fault checkpoint")?;
+    validate_fault_trace_objects(Some(&fault_checkpoint), &objects.fault_trace_objects)
+        .map_err(|error| loop_factory_error(error.to_string()))?;
 
     let configuration = Arc::new(configuration);
     let mut targets = BTreeMap::new();
@@ -601,6 +614,7 @@ fn decode_semantic_checkpoint(
         scheduler: Arc::new(scheduler),
         event_log_objects: Arc::new(event_log_objects),
         signal_artifact_objects: Arc::new(objects.signal_artifact_objects),
+        fault_trace_objects: Arc::new(objects.fault_trace_objects),
         trigger_state,
         assertion_state,
         terminal_verdict: lifecycle.terminal,

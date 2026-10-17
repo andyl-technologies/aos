@@ -140,7 +140,9 @@ crucible.execution.device-scheduling-subnode|crates/crucible/src/device_subnode/
 crucible.execution.scenario-selectable-component|crates/crucible/src/model/scenario_selectables.rs|number|SCENARIO_SELECTABLE_VERSION
 crucible.execution.fault-adapter-checkpoint|crates/crucible/src/model/fault_signal/adapter_runtime.rs|number|ADAPTER_CHECKPOINT_VERSION
 crucible.execution.fault-runtime-checkpoint|crates/crucible/src/model/fault_signal/runtime.rs|number|FAULT_RUNTIME_STATE_VERSION
-crucible.execution.resolved-effect-trace|crates/crucible/src/model/fault_signal/runtime.rs|magic|RESOLVED_EFFECT_TRACE_MAGIC
+crucible.execution.resolved-effect-trace|crates/crucible/src/model/fault_signal/runtime/trace_format.rs|magic|MANIFEST_MAGIC
+crucible.execution.resolved-effect-trace-segment|crates/crucible/src/model/fault_signal/runtime/trace_format.rs|number|RESOLVED_EFFECT_TRACE_SEGMENT_SCHEMA
+crucible.execution.resolved-effect-trace-bundle|crates/crucible/src/model/fault_signal/runtime/trace_reader.rs|magic|BUNDLE_MAGIC
 crucible.execution.signal-inverse-cdf-table|crates/crucible/src/model/fault_signal/sampler.rs|magic|CRCDFTB1
 crucible.execution.signal-spatial-artifact|crates/crucible/src/model/fault_signal/spatial.rs|magic|CRSPAT01
 crucible.execution.signal-evaluator-checkpoint|crates/crucible/src/model/fault_signal/evaluator.rs|magic|EVALUATOR_CHECKPOINT_MAGIC

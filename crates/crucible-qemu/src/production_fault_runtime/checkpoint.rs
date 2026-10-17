@@ -97,7 +97,8 @@ impl ProductionFaultRuntime {
         let runtime = self
             .runtime
             .as_ref()
-            .map(|runtime| runtime.checkpoint().clone());
+            .map(OwnedFaultExecutionRuntime::checkpoint)
+            .transpose()?;
         let host = self.host.state().clone();
         let qemu_fingerprints =
             qemu_fingerprint_map(nodes, self.resource_limits, remaining_event_records)?;

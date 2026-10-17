@@ -780,7 +780,12 @@ fn observed_lifecycle_retains_only_successful_execution_evidence() {
     );
     assert_eq!(
         snapshot.resolved_effect_trace(),
-        Some(b"resolved-effect-test".as_slice())
+        Some(
+            &crucible::model::ResolvedEffectTrace::empty(
+                crucible::model::FaultReplayMode::RecomputedCause
+            )
+            .expect("empty effect trace")
+        )
     );
     assert_eq!(
         *order.lock().expect("standalone lifecycle order"),
@@ -1123,7 +1128,9 @@ impl QemuFreshAttemptLifecycleOwner for BoundaryCaptureLifecycle {
         Ok(())
     }
 
-    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, crucible::SchedulerError> {
+    fn resolved_effect_trace(
+        &self,
+    ) -> Result<Option<crucible::model::ResolvedEffectTrace>, crucible::SchedulerError> {
         Ok(None)
     }
 

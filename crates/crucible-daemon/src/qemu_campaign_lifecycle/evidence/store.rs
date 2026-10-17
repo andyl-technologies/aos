@@ -7,16 +7,18 @@
 //! modeled driver applies (RFC-0020 CCOMP-25 through CCOMP-28). An executor
 //! attempt seals the copy into its own directory, like the driver's log.
 //! Sealed segments are shared, so a snapshot copies only the open tail.
+//!
+//! The resolved-effect trace is retained the same way: the snapshot holds a
+//! segmented trace handle whose segments stay in the lifecycle's segment
+//! store, so retaining a long trace costs its manifest, not its items.
 
 use std::convert::Infallible;
 use std::sync::{Arc, Mutex};
 
+use crucible::model::ResolvedEffectTrace;
 use crucible::{FingerprintSample, SchedulerError, SchedulerEventLogEntry};
 
-use super::{
-    MAX_EXECUTION_FINGERPRINT_SAMPLES, MAX_RESOLVED_EFFECT_TRACE_BYTES,
-    MAX_TERMINAL_FINGERPRINT_SAMPLES,
-};
+use super::{MAX_EXECUTION_FINGERPRINT_SAMPLES, MAX_TERMINAL_FINGERPRINT_SAMPLES};
 use crate::DEFAULT_MAXIMUM_EVENT_LOG_BYTES;
 use crate::attempt_event_log::{
     AttemptEventLog, AttemptEventLogError, AttemptEventLogVisitError, AttemptLogManifest,
@@ -33,7 +35,7 @@ pub struct QemuAttemptExecutionEvidenceSnapshot {
     event_log: RecordedEventLog,
     execution_fingerprints: Vec<FingerprintSample>,
     terminal_fingerprints: Option<Vec<FingerprintSample>>,
-    resolved_effect_trace: Option<Vec<u8>>,
+    resolved_effect_trace: Option<ResolvedEffectTrace>,
 }
 
 impl QemuAttemptExecutionEvidenceSnapshot {
@@ -191,10 +193,10 @@ impl QemuAttemptExecutionEvidenceSnapshot {
         self.terminal_fingerprints.as_deref()
     }
 
-    /// Returns the encoded resolved-effect trace retained by the live runtime.
+    /// Returns the segmented resolved-effect trace retained by the live runtime.
     #[must_use]
-    pub fn resolved_effect_trace(&self) -> Option<&[u8]> {
-        self.resolved_effect_trace.as_deref()
+    pub const fn resolved_effect_trace(&self) -> Option<&ResolvedEffectTrace> {
+        self.resolved_effect_trace.as_ref()
     }
 }
 
@@ -469,39 +471,18 @@ impl QemuAttemptExecutionEvidence {
         Ok(())
     }
 
+    /// Records the final drain, trace, and terminal fingerprints.
+    ///
+    /// The trace is a segmented handle: its length is bounded by the authored
+    /// replay counters the fault runtime enforced while recording, not by an
+    /// evidence byte ceiling (RFC-0020 section 15).
     pub(super) fn complete(
         &self,
         entries: &[SchedulerEventLogEntry],
-        resolved_effect_trace: Option<Vec<u8>>,
+        resolved_effect_trace: Option<ResolvedEffectTrace>,
         terminal_fingerprints: Option<Vec<FingerprintSample>>,
-    ) -> Result<(), SchedulerError> {
-        self.complete_with_trace_limit(
-            entries,
-            resolved_effect_trace,
-            terminal_fingerprints,
-            MAX_RESOLVED_EFFECT_TRACE_BYTES,
-        )
-    }
-
-    fn complete_with_trace_limit(
-        &self,
-        entries: &[SchedulerEventLogEntry],
-        resolved_effect_trace: Option<Vec<u8>>,
-        terminal_fingerprints: Option<Vec<FingerprintSample>>,
-        trace_byte_limit: usize,
     ) -> Result<(), SchedulerError> {
         let mut snapshot = self.snapshot.lock().map_err(|_| evidence_poisoned())?;
-        if resolved_effect_trace
-            .as_ref()
-            .is_some_and(|trace| trace.len() > trace_byte_limit)
-        {
-            return Err(evidence_limit(
-                "qemu-resolved-effect-trace-bytes",
-                0,
-                resolved_effect_trace.as_ref().map_or(0, Vec::len) as u64,
-                trace_byte_limit as u64,
-            ));
-        }
         if terminal_fingerprints
             .as_ref()
             .is_some_and(|samples| samples.len() > MAX_TERMINAL_FINGERPRINT_SAMPLES)
@@ -514,8 +495,8 @@ impl QemuAttemptExecutionEvidence {
             ));
         }
 
-        // Both bounded payloads were validated above and the append is
-        // all-or-nothing, so a rejected final drain preserves the last
+        // The bounded fingerprint payload was validated above and the append
+        // is all-or-nothing, so a rejected final drain preserves the last
         // complete evidence snapshot for diagnosis.
         snapshot.event_log.append(entries)?;
         snapshot.resolved_effect_trace = resolved_effect_trace;
@@ -1117,30 +1098,48 @@ mod tests {
     }
 
     #[test]
-    fn effect_trace_limit_refusal_preserves_final_events_and_prior_evidence() {
+    fn completion_retains_the_segmented_effect_trace_handle() {
         let evidence = QemuAttemptExecutionEvidence::default();
         evidence
             .record(3, VirtualTime { ticks: 11 }, &[])
             .expect("seed evidence");
-        let before = evidence.snapshot().expect("snapshot before refusal");
-        let final_entry = SchedulerEventLogEntry::execution_budget_exhausted(
-            0,
-            VirtualTime { ticks: 12 },
-            "final-evidence-limit-fixture",
-        );
+        let item = crucible::model::ResolvedReplayWorkItem {
+            coordinate: crucible::model::FaultCoordinate {
+                virtual_ticks: 12,
+                retired_instructions: None,
+            },
+            same_coordinate_sequence: 0,
+            opportunity: None,
+            target: None,
+            operation: None,
+            direction: None,
+            phase: None,
+            network_frame_key: None,
+            network_producer_direction_key: None,
+            derivation_fingerprint: ContentHash::from_bytes(b"retained-trace-fixture"),
+            records: Vec::new(),
+        };
+        let trace = ResolvedEffectTrace::from_items(
+            crucible::model::FaultReplayMode::RecomputedCause,
+            [item.clone()],
+            crucible::model::FaultResourceLimits::default(),
+        )
+        .expect("trace fixture");
 
-        let error = evidence
-            .complete_with_trace_limit(&[final_entry], Some(vec![0xa5, 0x5a]), None, 1)
-            .expect_err("the effect-trace byte ceiling must reject the final evidence");
+        evidence
+            .complete(&[], Some(trace.clone()), Some(Vec::new()))
+            .expect("complete evidence");
 
-        assert!(matches!(
-            error,
-            SchedulerError::ResourceLimit {
-                field: "qemu-resolved-effect-trace-bytes",
-                ..
-            }
-        ));
-        assert_eq!(evidence.snapshot().expect("snapshot after refusal"), before);
+        let snapshot = evidence.snapshot().expect("completed snapshot");
+        let retained = snapshot
+            .resolved_effect_trace()
+            .expect("the completed snapshot retains the trace");
+        assert_eq!(retained, &trace);
+        let items = retained
+            .items()
+            .collect::<Result<Vec<_>, _>>()
+            .expect("retained items stay readable");
+        assert_eq!(items, vec![item]);
     }
 
     #[test]
@@ -1163,12 +1162,7 @@ mod tests {
             vec![sample; MAX_TERMINAL_FINGERPRINT_SAMPLES.saturating_add(1)];
 
         let error = evidence
-            .complete_with_trace_limit(
-                &[],
-                Some(vec![0xa5]),
-                Some(terminal_fingerprints),
-                MAX_RESOLVED_EFFECT_TRACE_BYTES,
-            )
+            .complete(&[], None, Some(terminal_fingerprints))
             .expect_err("the terminal fingerprint ceiling must reject the final evidence");
 
         assert!(matches!(

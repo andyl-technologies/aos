@@ -1,7 +1,6 @@
 //! Canonical campaign observation construction after final QEMU drain.
 
 use super::*;
-use crucible_cas::content_store::ObjectKind;
 
 /// Bounds the stop outcome rendered into the opt-in seal diagnostic.
 const STOP_DIAGNOSTIC_CHARS: usize = 512;
@@ -326,9 +325,53 @@ pub(super) fn property_verdicts(
     PropertyVerdictSet::new(properties).map_err(Into::into)
 }
 
+/// A sealed resolved-effect trace as an observation references it.
+struct SealedTraceReference {
+    reference: crucible_campaign::ResolvedEffectTraceRef,
+    manifest: Vec<u8>,
+    segments: crucible::segment_store::SegmentSources,
+}
+
+/// Admits a recorded trace's manifest and names its manifest and segments.
+fn sealed_trace_reference(
+    trace: crucible::model::ResolvedEffectTrace,
+    pending: &QemuFreshPendingObservation,
+) -> Result<SealedTraceReference, QemuFreshModeledDriverError> {
+    let limits = pending
+        .input
+        .scenario()
+        .plan()
+        .fault_signals()
+        .resource_limits();
+    trace
+        .manifest()
+        .admit(limits)
+        .map_err(QemuFreshModeledDriverError::ResolvedEffectTrace)?;
+
+    let manifest_id = trace
+        .manifest()
+        .content_id()
+        .map_err(QemuFreshModeledDriverError::ResolvedEffectTrace)?;
+    let manifest = trace
+        .manifest()
+        .canonical_bytes()
+        .map_err(QemuFreshModeledDriverError::ResolvedEffectTrace)?;
+    let reference = crucible_campaign::ResolvedEffectTraceRef::new(
+        manifest_id,
+        trace.manifest().segment_ids().collect(),
+    )?;
+    let (_, segments) = trace.into_parts();
+
+    Ok(SealedTraceReference {
+        reference,
+        manifest,
+        segments,
+    })
+}
+
 pub(super) fn build_observation_candidate(
     pending: QemuFreshPendingObservation,
-    resolved_effect_trace: Option<Vec<u8>>,
+    resolved_effect_trace: Option<crucible::model::ResolvedEffectTrace>,
 ) -> Result<AttemptExecutionProduct, QemuFreshModeledDriverError> {
     build_observation_candidate_inner(pending, None, resolved_effect_trace)
 }
@@ -337,7 +380,7 @@ pub(super) fn build_observation_candidate_with_supplemental(
     pending: QemuFreshPendingObservation,
     oracle: &dyn GuardedCampaignFindingOracle,
     source: ContentId,
-    resolved_effect_trace: Option<Vec<u8>>,
+    resolved_effect_trace: Option<crucible::model::ResolvedEffectTrace>,
 ) -> Result<AttemptExecutionProduct, QemuFreshModeledDriverError> {
     build_observation_candidate_inner(pending, Some((oracle, source)), resolved_effect_trace)
 }
@@ -345,27 +388,23 @@ pub(super) fn build_observation_candidate_with_supplemental(
 fn build_observation_candidate_inner(
     pending: QemuFreshPendingObservation,
     supplemental_oracle: Option<(&dyn GuardedCampaignFindingOracle, ContentId)>,
-    resolved_effect_trace: Option<Vec<u8>>,
+    resolved_effect_trace: Option<crucible::model::ResolvedEffectTrace>,
 ) -> Result<AttemptExecutionProduct, QemuFreshModeledDriverError> {
     crate::crucible_execution::record_execution_phase_diagnostic(
         "seal-effect-trace-enter",
         format_args!(
-            "bytes={}",
-            resolved_effect_trace.as_ref().map_or(0, Vec::len)
+            "segments={}",
+            resolved_effect_trace
+                .as_ref()
+                .map_or(0, |trace| trace.manifest().segments().len())
         ),
     );
-    if let Some(bytes) = &resolved_effect_trace {
-        crucible::model::ResolvedEffectTrace::from_canonical_bytes(
-            bytes,
-            pending
-                .input
-                .scenario()
-                .plan()
-                .fault_signals()
-                .resource_limits(),
-        )
-        .map_err(QemuFreshModeledDriverError::ResolvedEffectTrace)?;
-    }
+    // The runtime sealed every segment under these limits; admitting the
+    // manifest rechecks its counters without reading a segment. Publication
+    // authenticates each segment when it streams it.
+    let resolved_effect_trace = resolved_effect_trace
+        .map(|trace| sealed_trace_reference(trace, &pending))
+        .transpose()?;
     crate::crucible_execution::record_execution_phase_diagnostic(
         "seal-effect-trace-return",
         format_args!("completed=true"),
@@ -391,11 +430,7 @@ fn build_observation_candidate_inner(
         projection.discovered_ids,
     )?;
     let observation = match &resolved_effect_trace {
-        Some(bytes) => observation.with_resolved_effect_trace(ContentId::for_bytes(
-            ObjectKind::Trace,
-            1,
-            bytes,
-        ))?,
+        Some(sealed) => observation.with_resolved_effect_trace(sealed.reference.clone())?,
         None => observation,
     };
     let candidate = ObservationCandidate::new(
@@ -408,7 +443,7 @@ fn build_observation_candidate_inner(
     )
     .and_then(|candidate| candidate.with_produced_selections(projection.produced_selections))?;
     let candidate = match resolved_effect_trace {
-        Some(bytes) => candidate.with_resolved_effect_trace(bytes)?,
+        Some(sealed) => candidate.with_resolved_effect_trace(sealed.manifest, sealed.segments)?,
         None => candidate,
     };
     let (measurement_evidence, log_segments) = projection.measurement_evidence.into_parts();

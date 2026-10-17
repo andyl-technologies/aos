@@ -1689,7 +1689,9 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   Executor and observer logs seal into per-attempt directories, and
   prepared-result journals own copies of the segments their results
   reference. Checkpoint- and fork-offset seals and chain-position resume
-  remain open.
+  remain open. Resolved-effect traces seal into trace segments by size only,
+  checkpoints carry trace positions, and exact closures retain the referenced
+  trace segments (CCOMP-31).
 - [ ] **T-CAM-4.12** Convert finding replay captures, CLI explanation,
   objective and observation-stop verification, remote resume, hot-fork
   materialization, and the campaign trace protocol to segment-by-segment

@@ -321,8 +321,17 @@ impl QemuFreshAttemptLifecycleOwner for FakeFreshLifecycle {
         Ok(())
     }
 
-    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, crucible::SchedulerError> {
-        Ok(Some(b"resolved-effect-test".to_vec()))
+    fn resolved_effect_trace(
+        &self,
+    ) -> Result<Option<crucible::model::ResolvedEffectTrace>, crucible::SchedulerError> {
+        Ok(Some(
+            crucible::model::ResolvedEffectTrace::empty(
+                crucible::model::FaultReplayMode::RecomputedCause,
+            )
+            .map_err(|error| crucible::SchedulerError::BoundaryViolation {
+                message: format!("fixture effect trace did not build: {error}"),
+            })?,
+        ))
     }
 
     fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, crucible::SchedulerError> {

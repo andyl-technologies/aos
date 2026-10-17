@@ -898,7 +898,9 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
         self.inner.loop_impl().pending_branch_effect_choice_count()
     }
 
-    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
+    fn resolved_effect_trace(
+        &self,
+    ) -> Result<Option<crucible::model::ResolvedEffectTrace>, SchedulerError> {
         let runtime = self
             .fault_runtime
             .lock()
@@ -917,22 +919,13 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
                     });
                 }
             };
+        drop(runtime);
         let network = self.inner.network_output_interceptor();
-        let combined = super::network_faults::trace_with_campaign_network_records(
+        super::network_faults::trace_with_campaign_network_records(
             recorded,
-            network.campaign_effect_records(),
-            network.resource_limits(),
+            network.campaign_effect_log(),
             crucible::model::FaultReplayMode::RecomputedCause,
-        )?;
-        combined
-            .map(|trace| {
-                trace
-                    .canonical_bytes()
-                    .map_err(|error| SchedulerError::BoundaryViolation {
-                        message: format!("encode production resolved-effect trace: {error}"),
-                    })
-            })
-            .transpose()
+        )
     }
 
     fn take_terminal_verdict(&mut self) -> Option<QuantumTerminalVerdict> {
@@ -2050,6 +2043,10 @@ impl ProductionVmLifecycleLoop {
             }
         })?;
         let signal_artifact_objects = self.signal_artifact_objects.clone();
+        let fault_trace_objects = Arc::new(capture_fault_trace_objects(
+            &fault_checkpoint,
+            self.fault_trace_segments.as_ref(),
+        )?);
         let trigger_state = self.trigger_state.clone();
         let assertion_state = self.assertion_evaluator.checkpoint();
         let terminal_verdict = self.terminal_verdict.clone();
@@ -2458,6 +2455,7 @@ impl ProductionVmLifecycleLoop {
                 scheduler: Arc::new(scheduler),
                 event_log_objects,
                 signal_artifact_objects,
+                fault_trace_objects,
                 trigger_state,
                 assertion_state,
                 terminal_verdict,

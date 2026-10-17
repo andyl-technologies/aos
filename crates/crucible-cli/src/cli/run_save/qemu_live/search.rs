@@ -799,7 +799,8 @@ fn campaign_search_finding(
         resolved_effect_trace: accepted
             .evidence()
             .resolved_effect_trace()
-            .map(ToOwned::to_owned),
+            .map(crate::resolved_effect_trace_bundle)
+            .transpose()?,
         replay_closure: accepted.replay_closure().clone(),
     }))
 }

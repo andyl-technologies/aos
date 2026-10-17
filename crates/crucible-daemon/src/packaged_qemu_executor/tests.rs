@@ -164,6 +164,12 @@ impl LocalCheckpointPromotionWorker for UnusedPromotionWorker {
     }
 }
 
+/// Returns the resolved-effect trace the controlled inner lifecycle reports.
+fn controlled_effect_trace() -> crucible::model::ResolvedEffectTrace {
+    crucible::model::ResolvedEffectTrace::empty(crucible::model::FaultReplayMode::LockedEffect)
+        .expect("empty controlled effect trace")
+}
+
 fn unused_host_error() -> QemuVmRealizationError {
     QemuVmRealizationError::Executor {
         operation: "use unused packaged test host",
@@ -1271,14 +1277,16 @@ impl QemuFreshAttemptLifecycleOwner for ControlledLifecycle {
         Ok(())
     }
 
-    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
+    fn resolved_effect_trace(
+        &self,
+    ) -> Result<Option<crucible::model::ResolvedEffectTrace>, SchedulerError> {
         if self.boundary.fail_effect_trace.load(Ordering::Acquire) {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from("controlled effect-trace failure"),
             });
         }
 
-        Ok(Some(b"controlled-inner-effect-trace".to_vec()))
+        Ok(Some(controlled_effect_trace()))
     }
 
     fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
@@ -1435,7 +1443,7 @@ fn packaged_status_lifecycle_delegates_execution_evidence_and_errors() {
         lifecycle
             .resolved_effect_trace()
             .expect("delegated effect trace"),
-        Some(b"controlled-inner-effect-trace".to_vec())
+        Some(controlled_effect_trace())
     );
 
     boundary

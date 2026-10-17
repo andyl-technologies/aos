@@ -140,7 +140,7 @@ pub(super) enum QemuPublishedRootAttempt<L, P, E> {
     Declined {
         lifecycle: L,
         pending: P,
-        trace: Option<Vec<u8>>,
+        trace: Option<crucible::model::ResolvedEffectTrace>,
         /// Entries a nonempty final drain appended before shutdown.
         drained: Vec<SchedulerEventLogEntry>,
     },
@@ -257,7 +257,7 @@ where
         &mut self,
         mut lifecycle: F::Lifecycle,
         pending: D::Pending,
-        trace: Option<Vec<u8>>,
+        trace: Option<crucible::model::ResolvedEffectTrace>,
         plan: QemuPublishedRootPlan,
         input: &CrucibleAttemptExecution,
     ) -> RetentionAttempt<F, D> {

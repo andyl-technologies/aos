@@ -8,7 +8,7 @@
 //! measurement-ownership, or finding-closure invariants.
 //!
 //! ```text
-//! v10-magic
+//! v11-magic
 //! observation-child, measurements, properties, coverage
 //! discovered-choice-count, discovered-choice records
 //! produced-selection-count, selection records, observation, optional resolved-effect trace
@@ -80,7 +80,7 @@ use crate::{
 };
 
 const PREPARED_RESULT_MAGIC_V10: &[u8] =
-    b"crucible.executor.prepared-semantic-attempt-result.v10\0";
+    b"crucible.executor.prepared-semantic-attempt-result.v11\0";
 pub(super) const MAX_PREPARED_RESULT_RECORDS: usize = 200_000;
 const MAX_RECORD_BYTES: usize = 64 * 1024 * 1024;
 const MAX_REPLAY_VALIDATION_REFERENCES: usize = 4 * 1024 * 1024;
@@ -93,8 +93,10 @@ pub const MAX_PREPARED_SEMANTIC_RESULT_BYTES: usize = 1024 * 1024 * 1024;
 /// Complete immutable semantic result retained across publication retries.
 ///
 /// The result references its attempt-log segments by identity through its
-/// measurement leaves and holds only read handles to the stores containing
-/// them, so neither its memory nor its encoding grows with the attempt log.
+/// measurement leaves, and its resolved-effect trace segments through the
+/// observation's trace reference. It holds only read handles to the stores
+/// containing them, so neither its memory nor its encoding grows with the
+/// attempt log or the trace.
 /// Equality compares the recorded content, never the store handles.
 #[derive(Clone, Debug)]
 pub struct PreparedSemanticAttemptResult {
@@ -203,11 +205,16 @@ impl PreparedSemanticAttemptResult {
         &self.log_segments
     }
 
-    /// Rebinds the result to read its log segments from `log_segments` only.
+    /// Rebinds the result to read its log and trace segments from
+    /// `log_segments` only.
     ///
-    /// The caller must already have copied every referenced segment there;
-    /// later reads authenticate each segment against its reference.
+    /// The caller must already have copied every referenced attempt-log and
+    /// resolved-effect trace segment there; later reads authenticate each
+    /// segment against its reference.
     pub(crate) fn with_log_segments(mut self, log_segments: AttemptLogSegmentSources) -> Self {
+        self.observation = self
+            .observation
+            .with_resolved_effect_trace_segments(log_segments.clone());
         self.log_segments = log_segments;
         self
     }
@@ -263,23 +270,53 @@ impl PreparedSemanticAttemptResult {
         self
     }
 
+    /// Returns each resolved-effect trace segment the observation names, in
+    /// trace order.
+    pub fn referenced_trace_segments(&self) -> &[crucible::segment_store::ContentId] {
+        self.observation
+            .observation()
+            .resolved_effect_trace()
+            .map_or(&[], |trace| trace.segments())
+    }
+
     /// Checks the retained attempt trace against the authenticated scenario contract.
+    ///
+    /// The manifest must be canonical, within the authored fault resource
+    /// limits, and list exactly the observation's segments; every segment is
+    /// then read, authenticated, and decoded once, one at a time.
     ///
     /// # Errors
     ///
-    /// Returns an error for noncanonical bytes or a trace outside the authored
-    /// fault resource limits.
+    /// Returns an error for a noncanonical manifest, a trace outside the
+    /// authored fault resource limits, a segment list that differs from the
+    /// observation's, or a segment that is absent, fails authentication, or
+    /// holds an invalid work item.
     pub fn verify_resolved_effect_trace(
         &self,
         scenario: &ScenarioDefForm,
     ) -> Result<(), PreparedSemanticResultCodecError> {
-        if let Some(bytes) = self.observation.resolved_effect_trace() {
-            crucible::model::ResolvedEffectTrace::from_canonical_bytes(
-                bytes,
-                scenario.plan().fault_signals().resource_limits(),
-            )
+        let (Some(reference), Some(manifest), Some(segments)) = (
+            self.observation.observation().resolved_effect_trace(),
+            self.observation.resolved_effect_trace_manifest(),
+            self.observation.resolved_effect_trace_segments(),
+        ) else {
+            return Ok(());
+        };
+
+        let manifest = crucible::model::ResolvedEffectTraceManifest::from_canonical_bytes(manifest)
+            .map_err(|_| inconsistent("resolved-effect trace manifest"))?;
+        manifest
+            .admit(scenario.plan().fault_signals().resource_limits())
             .map_err(|_| inconsistent("resolved-effect trace contract"))?;
+        if !manifest
+            .segment_ids()
+            .eq(reference.segments().iter().copied())
+        {
+            return Err(inconsistent("resolved-effect trace segment list"));
         }
+
+        crucible::model::ResolvedEffectTrace::referencing(manifest, segments.clone())
+            .map_err(|_| inconsistent("resolved-effect trace segments"))?;
         Ok(())
     }
 
@@ -645,6 +682,10 @@ impl PreparedSemanticAttemptResult {
         };
         decoder.finish()?;
 
+        // The payload names trace segments only by identity, like log
+        // segments; both are read from the caller's stores.
+        let log_segments = log_segments.into();
+        let observation = observation.with_resolved_effect_trace_segments(log_segments.clone());
         let value = Self::new(
             observation,
             measurement_replay_evidence,
@@ -747,17 +788,20 @@ fn validate_pair(
     finding: Option<&PreparedCrucibleFindingCandidate>,
 ) -> Result<(), PreparedSemanticResultCodecError> {
     if observation.observation().resolved_effect_trace().is_some()
-        != observation.resolved_effect_trace().is_some()
+        != observation.resolved_effect_trace_manifest().is_some()
     {
         return Err(inconsistent("observation resolved-effect trace ownership"));
     }
-    if let Some(bytes) = observation.resolved_effect_trace()
-        && (bytes.len() > MAX_RECORD_BYTES
-            || observation.observation().resolved_effect_trace()
+    if let Some(manifest) = observation.resolved_effect_trace_manifest()
+        && (manifest.len() > crucible::model::MAX_RESOLVED_EFFECT_TRACE_MANIFEST_BYTES
+            || observation
+                .observation()
+                .resolved_effect_trace()
+                .map(crucible_campaign::ResolvedEffectTraceRef::manifest)
                 != Some(crucible_cas::content_store::ContentId::for_bytes(
                     crucible_cas::content_store::ObjectKind::Trace,
-                    1,
-                    bytes,
+                    crucible::model::RESOLVED_EFFECT_TRACE_MANIFEST_SCHEMA,
+                    manifest,
                 )))
     {
         return Err(inconsistent("observation resolved-effect trace identity"));
@@ -1202,10 +1246,11 @@ fn encode_observation(
         encoder.record(&selection.canonical_bytes())?;
     }
     encoder.record(&value.observation().canonical_bytes())?;
-    match value.resolved_effect_trace() {
-        Some(bytes) => {
+    // Only the manifest is encoded; segments stay in the segment stores.
+    match value.resolved_effect_trace_manifest() {
+        Some(manifest) => {
             encoder.byte(1)?;
-            encoder.record(bytes)?;
+            encoder.record(manifest)?;
         }
         None => encoder.byte(0)?,
     }
@@ -1320,8 +1365,12 @@ fn decode_observation(
     )?;
     match decoder.byte()? {
         0 => Ok(candidate),
+        // The caller rebinds the segments to its stores after decoding.
         1 => candidate
-            .with_resolved_effect_trace(decoder.record()?.to_vec())
+            .with_resolved_effect_trace(
+                decoder.record()?.to_vec(),
+                crucible::segment_store::SegmentSources::default(),
+            )
             .map_err(Into::into),
         _ => Err(PreparedSemanticResultCodecError::InvalidTag),
     }

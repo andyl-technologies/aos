@@ -169,7 +169,7 @@ fn content_identities_admit_only_current_registry_versions() {
     assert_current_version!(BranchRequestId, ObjectKind::CampaignFact, 10);
     assert_current_version!(ProposalId, ObjectKind::CampaignFact, 3);
     assert_current_version!(AttemptId, ObjectKind::CampaignFact, 9);
-    assert_current_version!(ObservationId, ObjectKind::Observation, 15);
+    assert_current_version!(ObservationId, ObjectKind::Observation, 16);
     assert_current_version!(ObjectiveEvaluationId, ObjectKind::Observation, 2);
     assert_current_version!(RankingExplanationId, ObjectKind::Projection, 2);
     assert_current_version!(FindingId, ObjectKind::Finding, 4);
@@ -661,7 +661,7 @@ fn command_and_fact_identities_bind_payload_and_admission_order() {
     let credited = CampaignFact::ObservationCredited(stored_id!(
         ObservationId,
         ObjectKind::Observation,
-        15,
+        16,
         "credited-observation"
     ));
     assert_eq!(
@@ -1517,13 +1517,13 @@ fn continuation_inputs_are_canonical_bounded_and_attempt_identifying() {
     let source_observation = stored_id!(
         ObservationId,
         ObjectKind::Observation,
-        15,
+        16,
         "continuation-input-source-observation"
     );
     let another_source_observation = stored_id!(
         ObservationId,
         ObjectKind::Observation,
-        15,
+        16,
         "continuation-input-another-source-observation"
     );
     let start = AttemptStart::AfterAttempt { origin, reached };
@@ -2495,7 +2495,7 @@ fn observation_records_are_canonical_bounded_and_child_bearing() {
     );
     let envelope = ObjectEnvelope::for_record_versioned(
         CampaignRecordKind::Observation,
-        15,
+        16,
         super::object::content_children(observation.content_children())
             .expect("observation children"),
         observation.canonical_bytes(),
@@ -2520,7 +2520,7 @@ fn observation_records_are_canonical_bounded_and_child_bearing() {
         .clone()
         .with_produced_selections(BTreeMap::from([(discovered_choice, produced_selection)]))
         .expect("selection observation");
-    assert_eq!(selection_observation.schema_version(), 15);
+    assert_eq!(selection_observation.schema_version(), 16);
     assert_eq!(
         Observation::from_canonical_bytes(&selection_observation.canonical_bytes())
             .expect("canonical selection observation"),
@@ -2532,7 +2532,7 @@ fn observation_records_are_canonical_bounded_and_child_bearing() {
             .expect("selection observation id")
             .content_id()
             .schema_version(),
-        15
+        16
     );
     // The produced set is one paged-set child, not one child per selection.
     assert!(!selection_observation.produced_selections().is_empty());
@@ -2567,7 +2567,7 @@ fn observation_records_are_canonical_bounded_and_child_bearing() {
         BTreeSet::from([discovered_choice]),
     )
     .expect("scenario failure observation");
-    assert_eq!(scenario_failure.schema_version(), 15);
+    assert_eq!(scenario_failure.schema_version(), 16);
     assert_eq!(
         Observation::from_canonical_bytes(&scenario_failure.canonical_bytes())
             .expect("canonical scenario failure observation"),
@@ -2579,13 +2579,13 @@ fn observation_records_are_canonical_bounded_and_child_bearing() {
             .expect("scenario failure observation id")
             .content_id()
             .schema_version(),
-        15
+        16
     );
     let failure_selection_observation = scenario_failure
         .clone()
         .with_produced_selections(BTreeMap::from([(discovered_choice, produced_selection)]))
         .expect("scenario failure selection observation");
-    assert_eq!(failure_selection_observation.schema_version(), 15);
+    assert_eq!(failure_selection_observation.schema_version(), 16);
     assert_eq!(
         Observation::from_canonical_bytes(&failure_selection_observation.canonical_bytes())
             .expect("canonical scenario failure selection observation"),
@@ -2832,7 +2832,7 @@ fn finding_and_reproduction_records_round_trip_with_exact_children() {
     .expect("signature");
     let observation = ObservationId::from_content_id(ContentId::for_bytes(
         ObjectKind::Observation,
-        15,
+        16,
         b"finding-observation",
     ))
     .expect("observation id");
@@ -3049,7 +3049,7 @@ fn current_finding_retains_minimization_trace_and_role_tagged_exact_pins() {
     .expect("role-tagged pins");
     let observation = ObservationId::from_content_id(ContentId::for_bytes(
         ObjectKind::Observation,
-        15,
+        16,
         b"finding-current-observation",
     ))
     .expect("observation id");

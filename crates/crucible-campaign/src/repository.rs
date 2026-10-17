@@ -14,6 +14,7 @@ use crucible_cas::content_store::{
     BlobHandle, ContentId, ImmutableBlobBackend, MutableRefBackend, ObjectKind, RefCasOutcome,
     RefName, RefPublicationGuard, StoreError,
 };
+use crucible_cas::segment_store::{MAX_SEGMENT_BYTES, SegmentSource, SegmentSources};
 use thiserror::Error;
 
 use crate::{
@@ -49,7 +50,9 @@ use crate::{
     StopCondition, StopOutcome, SubmitAttemptDisposition, SubmitAttemptRequest,
     SubmitAttemptResponse, SurvivorSelection, SurvivorSelectionBundle, SurvivorSelectionId,
 };
-use crate::{BranchAcceptanceCount, BranchAcceptanceSummary, choice_set_key};
+use crate::{
+    BranchAcceptanceCount, BranchAcceptanceSummary, ResolvedEffectTraceRef, choice_set_key,
+};
 
 const MAX_ENVELOPE_BYTES: u64 = crate::codec::MAX_CANONICAL_BYTES as u64;
 /// Bounds the number of snapshots authenticated in one campaign ancestry.
@@ -389,7 +392,7 @@ pub struct ObservationCandidate {
     produced_selections: Vec<Selection>,
     choice_material_bytes: usize,
     observation: Observation,
-    resolved_effect_trace: Option<Vec<u8>>,
+    resolved_effect_trace: Option<ResolvedEffectTraceContent>,
 }
 
 /// Selection and exact choice records authenticated together by a repository.
@@ -563,6 +566,9 @@ impl CampaignRepository {
 }
 
 mod candidate;
+
+pub use candidate::MAX_RESOLVED_EFFECT_TRACE_MANIFEST_BYTES;
+use candidate::ResolvedEffectTraceContent;
 mod index_keys;
 
 use index_keys::*;

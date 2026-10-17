@@ -203,6 +203,13 @@ command or acknowledgement.
 | `resolved_effect_records` | 268,435,456 | 1,073,741,824 |
 | `replay_first_mismatch_context_bytes` | 16,777,216 | 67,108,864 |
 
+`thin_replay_events` and `resolved_effect_records` bound the running work-item
+and record counters of the segmented resolved-effect trace (RFC-0020 section
+15.10). They are checked against the counters before an append, never by
+collecting the trace, and a checkpoint stores the counters beside the sealed
+segment references and the open tail; `fat_checkpoint_bytes` bounds that
+encoded position.
+
 Logs and checkpoints are chunked content-addressed artifacts. Reaching a byte or
 record bound is a typed terminal result; retaining fewer records is allowed only
 under an authored observability policy that still preserves every transition,

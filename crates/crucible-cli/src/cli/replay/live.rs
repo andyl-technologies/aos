@@ -184,11 +184,10 @@ pub(super) fn replay_live_qemu_evidence(
     }
     let resolved_effect_trace = resolved_effect_trace_bytes
         .map(|bytes| {
-            crucible::ResolvedEffectTrace::from_canonical_bytes(
+            crate::decode_resolved_effect_trace_bundle(
                 bytes,
                 scenario.plan().fault_signals().resource_limits(),
             )
-            .map_err(|error| artifact_error(format!("decode resolved-effect trace: {error}")))
         })
         .transpose()?;
     match (

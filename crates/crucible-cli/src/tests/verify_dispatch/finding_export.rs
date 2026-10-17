@@ -934,6 +934,9 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
         Some(report),
         &evidence_store,
     )?;
+    // The finding still holds the frame-distinct occurrence above, and
+    // occurrence pages follow candidate-bundle identity. Whichever of the two
+    // tampered occurrences is authenticated first refuses the ledger.
     assert!(matches!(
         load(
             &crate::cli_triage_debug::campaign_evidence::campaign_findings_ledger_bytes(&[(
@@ -943,6 +946,7 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
         ),
         Err(CliError::Artifact(message))
             if message.contains("disagrees with its observed campaign signature")
+                || message.contains("conflicting authenticated native signatures")
     ));
     Ok(())
 }

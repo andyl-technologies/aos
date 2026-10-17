@@ -47,10 +47,13 @@ pub use store::{AttemptLogSegmentSource, AttemptLogSegmentSources, MemorySegment
 pub const ATTEMPT_LOG_SEGMENT_SCHEMA: u32 = 1;
 
 /// Encoded size before which the open tail is sealed.
-pub const ATTEMPT_LOG_SEGMENT_TARGET_BYTES: usize = 8 * 1024 * 1024;
+///
+/// Every segmented log shares the RFC-0020 section 15 sealing rule.
+pub const ATTEMPT_LOG_SEGMENT_TARGET_BYTES: usize =
+    crucible_cas::segment_store::SEGMENT_TARGET_BYTES;
 
 /// Largest encoded segment any writer produces or reader accepts.
-pub const MAX_ATTEMPT_LOG_SEGMENT_BYTES: usize = 16 * 1024 * 1024;
+pub const MAX_ATTEMPT_LOG_SEGMENT_BYTES: usize = crucible_cas::segment_store::MAX_SEGMENT_BYTES;
 
 /// Largest single encoded entry; anything larger fails the attempt closed.
 pub const MAX_ATTEMPT_LOG_ENTRY_BYTES: usize = ATTEMPT_LOG_SEGMENT_TARGET_BYTES;
@@ -458,7 +461,8 @@ impl<S: AttemptLogSegmentStore> AttemptEventLog<S> {
 ///
 /// A manifest and its segments are published as the evidence children of one
 /// measurement set, whose evidence set holds at most 4,096 objects.
-pub const MAX_ATTEMPT_LOG_MANIFEST_SEGMENTS: usize = 4_095;
+pub const MAX_ATTEMPT_LOG_MANIFEST_SEGMENTS: usize =
+    crucible_cas::segment_store::MAX_MANIFEST_SEGMENTS;
 
 /// The ordered segment references identifying one complete attempt log.
 ///

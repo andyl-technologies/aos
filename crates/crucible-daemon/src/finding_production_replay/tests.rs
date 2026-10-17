@@ -143,13 +143,10 @@ fn network_only_finding_accepts_canonical_effect_trace() {
     let scenario = base
         .with_selectables(selectables)
         .expect("selected scenario");
-    let trace = ResolvedEffectTrace {
-        mode: FaultReplayMode::RecomputedCause,
-        work_items: Vec::new(),
-        cursor: 0,
-    }
-    .canonical_bytes()
-    .expect("canonical network trace");
+    let trace = ResolvedEffectTrace::empty(FaultReplayMode::RecomputedCause)
+        .expect("empty network trace")
+        .to_bundle_bytes(usize::MAX)
+        .expect("network trace bundle");
     let mut execution = side("network-fault");
     execution.resolved_effect_trace = Some(Arc::from(trace));
     let recipe = FindingProductionReplayRecipe::new(10_000, 64, true).expect("valid recipe");

@@ -1,4 +1,4 @@
-//! Verifies refusal of absent or altered device chunks by the v9 closure loader.
+//! Verifies refusal of absent or altered device chunks by the v10 closure loader.
 
 use super::*;
 

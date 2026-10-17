@@ -9,8 +9,8 @@ use crucible_cas::content_envelope::ContentChild;
 
 #[test]
 fn production_exact_closure_schema_matches_current_magic() {
-    assert_eq!(PRODUCTION_EXACT_CLOSURE_SCHEMA_VERSION, 9);
-    assert_eq!(MANIFEST_MAGIC, b"crucible.production-exact-closure.v9\0");
+    assert_eq!(PRODUCTION_EXACT_CLOSURE_SCHEMA_VERSION, 10);
+    assert_eq!(MANIFEST_MAGIC, b"crucible.production-exact-closure.v10\0");
 }
 
 fn hash(label: &[u8]) -> ContentHash {
@@ -107,6 +107,7 @@ fn fixture() -> (
         scheduler: hash(b"scheduler"),
         event_log_segments: Vec::new(),
         signal_artifacts: Vec::new(),
+        fault_trace_segments: Vec::new(),
         trigger_state: hash(b"trigger"),
         assertion_state: hash(b"assertion"),
         lifecycle_state: hash(b"lifecycle"),
@@ -655,4 +656,108 @@ fn closure_binding_rejects_missing_extra_and_substituted_inventory() {
         validate_closure_structure(&substituted),
         Err(ExactCheckpointRelationError::InvalidStructure)
     );
+}
+
+#[test]
+fn closure_delivers_sorted_fault_trace_segments_and_rejects_unsorted_ones() {
+    let (_, mut closure, _) = fixture();
+    let shared_bytes = b"shared semantic object";
+    let shared = hash(shared_bytes);
+    let segments = [b"trace segment one".to_vec(), b"trace segment two".to_vec()]
+        .into_iter()
+        .map(|bytes| (hash(&bytes), bytes))
+        .collect::<std::collections::BTreeMap<_, _>>();
+
+    // Every other semantic object shares one body so the visitor only has to
+    // serve the shared bytes and the trace segments.
+    closure.schedule = shared;
+    closure.scheduler = shared;
+    closure.trigger_state = shared;
+    closure.assertion_state = shared;
+    closure.lifecycle_state = shared;
+    closure.fault_checkpoint = shared;
+    closure.targets[0].snapshot = shared;
+    closure.targets[0].manifest_identity = exact_checkpoint_target_manifest_identity(
+        closure.configuration,
+        closure.fault_checkpoint,
+        &closure.targets[0],
+    );
+    closure.fault_trace_segments = segments.keys().copied().collect();
+    closure.objects = manifest_object_identities(&closure)
+        .into_iter()
+        .map(|identity| ExactCheckpointObjectRecord {
+            identity,
+            length: if identity == shared {
+                shared_bytes.len() as u64
+            } else {
+                segments
+                    .get(&identity)
+                    .map_or(1, |bytes| bytes.len() as u64)
+            },
+        })
+        .collect();
+    assign_exact_checkpoint_closure_identity(&mut closure)
+        .unwrap_or_else(|error| panic!("trace closure root: {error:?}"));
+
+    let mut unsorted = closure.clone();
+    unsorted.fault_trace_segments.reverse();
+    assert_eq!(
+        validate_closure_structure(&unsorted),
+        Err(ExactCheckpointRelationError::InvalidStructure)
+    );
+
+    let fixture = repository_fixture(&closure);
+    let repository = authenticate_exact_checkpoint_repository(
+        fixture.root,
+        &fixture.envelope,
+        &fixture.indexes,
+        &fixture.observed,
+    )
+    .unwrap_or_else(|error| panic!("authenticate trace repository: {error:?}"));
+    let manifest = exact_checkpoint_closure_test_bytes(&closure)
+        .unwrap_or_else(|error| panic!("trace manifest: {error:?}"));
+    let binding = authenticate_exact_checkpoint_closure(
+        repository,
+        &manifest,
+        MAX_EXACT_CHECKPOINT_MANIFEST_BYTES as u64,
+    )
+    .unwrap_or_else(|error| panic!("authenticate trace closure: {error:?}"));
+
+    let byte_limit = shared_bytes.len() as u64
+        + segments
+            .values()
+            .map(|bytes| bytes.len() as u64)
+            .sum::<u64>();
+    let mut delivered = Vec::new();
+    binding
+        .visit_semantic_objects(
+            byte_limit,
+            || Ok(()),
+            |identity| {
+                let bytes = segments
+                    .get(&identity)
+                    .cloned()
+                    .unwrap_or_else(|| shared_bytes.to_vec());
+                Ok(Box::new(Cursor::new(bytes)))
+            },
+            |role, bytes| {
+                if let ExactCheckpointSemanticObjectRole::FaultTraceSegment { index, identity } =
+                    role
+                {
+                    delivered.push((index, identity, bytes.to_vec()));
+                }
+                Ok(
+                    matches!(role, ExactCheckpointSemanticObjectRole::FaultCheckpoint)
+                        .then(|| hash(b"decoded fault semantic identity")),
+                )
+            },
+        )
+        .unwrap_or_else(|error| panic!("visit trace closure: {error:?}"));
+
+    let expected = segments
+        .into_iter()
+        .enumerate()
+        .map(|(index, (identity, bytes))| (index, identity, bytes))
+        .collect::<Vec<_>>();
+    assert_eq!(delivered, expected);
 }

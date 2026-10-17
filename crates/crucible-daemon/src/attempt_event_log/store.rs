@@ -12,6 +12,11 @@
 //! - [`AttemptLogStore`] is the store an executor attempt writes: a directory
 //!   created in the executor's [`AttemptLogNamespace`], or memory without one.
 //!
+//! The read trait and the source chain are the shared
+//! [`crucible_cas::segment_store`] contracts, so a directory that holds an
+//! attempt's event-log segments also holds its resolved-effect trace segments
+//! (RFC-0020 section 15), and one prepared-result journal stages both.
+//!
 //! A directory holds one file per segment, named by the lowercase hex digest
 //! of its identity:
 //!
@@ -31,6 +36,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crucible::SchedulerEventLogEntry;
 use crucible_cas::content_store::{ContentId, ObjectKind};
+use crucible_cas::segment_store::{SegmentSink, SegmentSources};
 
 use super::{
     ATTEMPT_LOG_SEGMENT_SCHEMA, AttemptEventLog, AttemptEventLogError, AttemptLogManifest,
@@ -46,16 +52,19 @@ const SEGMENT_FILE_SUFFIX: &str = ".segment";
 /// Read access to sealed segments, addressed by content identity.
 ///
 /// Readers authenticate every segment they receive against its reference, so
-/// a source only needs to return the bytes it holds under an identity.
-pub trait AttemptLogSegmentSource {
-    /// Reads one encoded segment.
-    ///
-    /// # Errors
-    ///
-    /// Returns an I/O error when the segment is absent, unreadable, or larger
-    /// than [`MAX_ATTEMPT_LOG_SEGMENT_BYTES`].
-    fn segment(&self, id: ContentId) -> io::Result<Vec<u8>>;
-}
+/// a source only needs to return the bytes it holds under an identity. This
+/// is the segment-store read contract every segmented log shares.
+pub use crucible_cas::segment_store::SegmentSource as AttemptLogSegmentSource;
+
+/// Shared read handles to every store that may hold a result's segments.
+///
+/// A prepared result references its log segments by identity and keeps these
+/// handles instead of the bytes, so its size does not grow with the attempt
+/// log. Lookups try each store in order. Every reader authenticates the bytes
+/// it receives against the referencing [`AttemptLogSegmentRef`], so a store
+/// that lacks a segment, or holds foreign bytes under its name, can only make
+/// a read fail.
+pub type AttemptLogSegmentSources = SegmentSources;
 
 /// Writable storage for the segments an attempt seals.
 pub(crate) trait AttemptLogSegmentStore: AttemptLogSegmentSource {
@@ -140,6 +149,20 @@ impl Eq for DirectorySegmentStore {}
 impl AttemptLogSegmentStore for DirectorySegmentStore {
     fn put(&mut self, id: ContentId, bytes: &[u8]) -> io::Result<()> {
         write_content_file(self.directory.path(), id, SEGMENT_FILE_SUFFIX, bytes)
+    }
+}
+
+/// The directory also receives resolved-effect trace segments sealed by the
+/// attempt's fault runtime, through the shared sink contract.
+impl SegmentSink for DirectorySegmentStore {
+    fn put_segment(&self, id: ContentId, bytes: &[u8]) -> io::Result<()> {
+        if !id.authenticates(bytes) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "segment bytes do not derive their identity",
+            ));
+        }
+        self.clone().put(id, bytes)
     }
 }
 
@@ -291,50 +314,9 @@ impl AttemptLogSegmentSource for MemorySegmentStore {
     }
 }
 
-/// Shared read handles to every store that may hold a result's segments.
-///
-/// A prepared result references its log segments by identity and keeps these
-/// handles instead of the bytes, so its size does not grow with the attempt
-/// log. Lookups try each store in order. Every reader authenticates the bytes
-/// it receives against the referencing [`AttemptLogSegmentRef`], so a store
-/// that lacks a segment, or holds foreign bytes under its name, can only make
-/// a read fail.
-#[derive(Clone, Default)]
-pub struct AttemptLogSegmentSources {
-    sources: Vec<Arc<dyn AttemptLogSegmentSource + Send + Sync>>,
-}
-
-impl AttemptLogSegmentSources {
-    /// Adds `source` after every store already held.
-    pub fn push(&mut self, source: Arc<dyn AttemptLogSegmentSource + Send + Sync>) {
-        self.sources.push(source);
-    }
-
-    /// Adds every store of `other` after the stores already held.
-    pub fn extend(&mut self, other: Self) {
-        self.sources.extend(other.sources);
-    }
-
-    /// Returns whether no store is held.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.sources.is_empty()
-    }
-
-    /// Reads through one attempt's segment directory.
-    pub(crate) fn from_directory(store: DirectorySegmentStore) -> Self {
-        let mut sources = Self::default();
-        sources.push(Arc::new(store));
-        sources
-    }
-}
-
-impl std::fmt::Debug for AttemptLogSegmentSources {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("AttemptLogSegmentSources")
-            .field("stores", &self.sources.len())
-            .finish()
+impl From<DirectorySegmentStore> for AttemptLogSegmentSources {
+    fn from(store: DirectorySegmentStore) -> Self {
+        Self::single(Arc::new(store))
     }
 }
 
@@ -345,21 +327,6 @@ impl From<MemorySegmentStore> for AttemptLogSegmentSources {
             sources.push(Arc::new(store));
         }
         sources
-    }
-}
-
-impl AttemptLogSegmentSource for AttemptLogSegmentSources {
-    fn segment(&self, id: ContentId) -> io::Result<Vec<u8>> {
-        let mut last_error = None;
-        for source in &self.sources {
-            match source.segment(id) {
-                Ok(bytes) => return Ok(bytes),
-                Err(error) => last_error = Some(error),
-            }
-        }
-        Err(last_error.unwrap_or_else(|| {
-            io::Error::new(io::ErrorKind::NotFound, "attempt log segment absent")
-        }))
     }
 }
 
@@ -405,7 +372,7 @@ impl From<AttemptLogStore> for AttemptLogSegmentSources {
     fn from(store: AttemptLogStore) -> Self {
         match store {
             AttemptLogStore::Memory(store) => store.into(),
-            AttemptLogStore::Directory(store) => Self::from_directory(store),
+            AttemptLogStore::Directory(store) => store.into(),
         }
     }
 }

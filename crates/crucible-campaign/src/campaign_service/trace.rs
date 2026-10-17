@@ -1,14 +1,24 @@
 //! Bounded reads of trace leaves owned by authenticated attempt observations.
 
 use crucible_cas::content_store::{ContentId, ObjectKind};
+use crucible_cas::segment_store::MAX_SEGMENT_BYTES;
 
 use super::*;
-use crate::{AttemptId, MeasurementSet, Observation};
+use crate::{
+    AttemptId, MAX_RESOLVED_EFFECT_TRACE_MANIFEST_BYTES, MeasurementSet, Observation,
+    ResolvedEffectTraceRef,
+};
 
 /// Maximum trace bytes returned by one campaign service response.
 pub const MAX_CAMPAIGN_TRACE_CHUNK_BYTES: u32 = 1024 * 1024;
 
-/// Maximum logical bytes admitted for one observation-linked trace.
+/// Maximum logical bytes of any one observation-linked trace leaf.
+///
+/// This bounds a single leaf, not a run: a resolved-effect trace is read as a
+/// manifest plus segments, and a schema 3 measurement leaf references its
+/// event log as segments. The largest leaf kind is a schema 2 measurement
+/// leaf that embeds its event log; [`CampaignTraceKind::max_leaf_bytes`]
+/// gives each kind's tighter bound.
 pub const MAX_CAMPAIGN_TRACE_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Payload schema of a measurement event-log segment leaf.
@@ -17,7 +27,9 @@ pub(super) const MEASUREMENT_EVENT_LOG_SEGMENT_SCHEMA: u32 = 1;
 /// Trace leaf selected from one authenticated attempt observation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CampaignTraceKind {
-    /// The canonical trace of resolved environment and guest effects.
+    /// The manifest leaf of the segmented resolved-effect trace.
+    ///
+    /// Each referenced segment is read with [`Self::ResolvedEffectSegment`].
     ResolvedEffect,
     /// The measurement replay leaf retained by the measurement set.
     ///
@@ -26,6 +38,22 @@ pub enum CampaignTraceKind {
     MeasurementEventLog,
     /// One event-log segment owned by the measurement set.
     MeasurementEventLogSegment(ContentId),
+    /// One resolved-effect trace segment listed by the observation.
+    ResolvedEffectSegment(ContentId),
+}
+
+impl CampaignTraceKind {
+    /// Returns the largest logical leaf this kind may name.
+    #[must_use]
+    pub const fn max_leaf_bytes(self) -> u64 {
+        match self {
+            Self::ResolvedEffect => MAX_RESOLVED_EFFECT_TRACE_MANIFEST_BYTES as u64,
+            Self::ResolvedEffectSegment(_) => MAX_SEGMENT_BYTES as u64,
+            Self::MeasurementEventLog | Self::MeasurementEventLogSegment(_) => {
+                MAX_CAMPAIGN_TRACE_BYTES
+            }
+        }
+    }
 }
 
 impl Canonical for CampaignTraceKind {
@@ -35,6 +63,10 @@ impl Canonical for CampaignTraceKind {
             Self::MeasurementEventLog => encoder.u8(1),
             Self::MeasurementEventLogSegment(segment) => {
                 encoder.u8(2);
+                segment.encode(encoder);
+            }
+            Self::ResolvedEffectSegment(segment) => {
+                encoder.u8(3);
                 segment.encode(encoder);
             }
         }
@@ -47,6 +79,7 @@ impl Canonical for CampaignTraceKind {
             2 => Ok(Self::MeasurementEventLogSegment(ContentId::decode(
                 decoder,
             )?)),
+            3 => Ok(Self::ResolvedEffectSegment(ContentId::decode(decoder)?)),
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "campaign-trace-kind",
                 tag,
@@ -100,8 +133,7 @@ impl GetCampaignTraceChunkRequest {
         offset: u64,
         limit: u32,
     ) -> Result<Self, CampaignCodecError> {
-        if limit == 0 || limit > MAX_CAMPAIGN_TRACE_CHUNK_BYTES || offset > MAX_CAMPAIGN_TRACE_BYTES
-        {
+        if limit == 0 || limit > MAX_CAMPAIGN_TRACE_CHUNK_BYTES || offset > kind.max_leaf_bytes() {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "campaign trace chunk range is invalid",
             });
@@ -320,7 +352,7 @@ impl GetCampaignTraceChunkResponse {
             || self.snapshot_body.id()? != request.snapshot()
             || self.observation.attempt() != request.attempt()
             || self.trace.kind() != ObjectKind::Trace
-            || self.total_bytes > MAX_CAMPAIGN_TRACE_BYTES
+            || self.total_bytes > request.kind().max_leaf_bytes()
             || self.offset != request.offset()
             || self.offset > self.total_bytes
             || self.chunk.len() as u64
@@ -348,8 +380,26 @@ impl GetCampaignTraceChunkResponse {
         match request.kind() {
             CampaignTraceKind::ResolvedEffect => {
                 if self.measurement_set.is_some()
-                    || self.trace.schema_version() != 1
-                    || self.observation.resolved_effect_trace() != Some(self.trace)
+                    || self.trace.schema_version()
+                        != crate::observation::RESOLVED_EFFECT_TRACE_MANIFEST_SCHEMA
+                    || self
+                        .observation
+                        .resolved_effect_trace()
+                        .map(ResolvedEffectTraceRef::manifest)
+                        != Some(self.trace)
+                {
+                    return Err(invalid());
+                }
+            }
+            CampaignTraceKind::ResolvedEffectSegment(segment) => {
+                if self.measurement_set.is_some()
+                    || self.trace != segment
+                    || segment.schema_version()
+                        != crate::observation::RESOLVED_EFFECT_TRACE_SEGMENT_SCHEMA
+                    || !self
+                        .observation
+                        .resolved_effect_trace()
+                        .is_some_and(|trace| trace.contains_segment(segment))
                 {
                     return Err(invalid());
                 }

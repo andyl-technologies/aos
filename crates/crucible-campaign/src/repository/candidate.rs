@@ -2,6 +2,34 @@
 
 use super::*;
 
+/// Largest resolved-effect trace manifest leaf a candidate may carry.
+///
+/// The manifest lists at most
+/// [`MAX_MANIFEST_SEGMENTS`](crucible_cas::segment_store::MAX_MANIFEST_SEGMENTS)
+/// segment references, so its encoding stays far below this bound.
+pub const MAX_RESOLVED_EFFECT_TRACE_MANIFEST_BYTES: usize = 1024 * 1024;
+
+/// Content of the segmented resolved-effect trace attached to a candidate.
+///
+/// The manifest bytes travel with the candidate; segments stay in the
+/// producer's stores and are streamed one at a time during publication, so a
+/// candidate's size does not grow with the trace. Two values are equal when
+/// their manifests are: the observation names every segment by identity, and
+/// publication authenticates each one.
+#[derive(Clone, Debug)]
+pub(super) struct ResolvedEffectTraceContent {
+    manifest: Vec<u8>,
+    segments: SegmentSources,
+}
+
+impl PartialEq for ResolvedEffectTraceContent {
+    fn eq(&self, other: &Self) -> bool {
+        self.manifest == other.manifest
+    }
+}
+
+impl Eq for ResolvedEffectTraceContent {}
+
 impl ChoiceDiscovery {
     /// Builds one self-contained choice discovery record set.
     ///
@@ -253,29 +281,41 @@ impl ObservationCandidate {
         })
     }
 
-    /// Attaches the exact bounded trace already named by the observation.
+    /// Attaches the segmented trace already named by the observation.
     ///
-    /// Typed canonical validation belongs to the Crucible producer and reader;
-    /// the campaign repository authenticates its opaque content identity.
+    /// `manifest` is the trace's opaque manifest leaf and `segments` reads the
+    /// segments the observation lists. Typed canonical validation belongs to
+    /// the Crucible producer and reader; the campaign repository authenticates
+    /// the manifest's content identity here and each segment's identity when
+    /// it streams the segment during publication.
     ///
     /// # Errors
     ///
-    /// Returns an error when the trace is oversized or its content identity
-    /// differs from the observation's immutable reference.
+    /// Returns an error when the observation names no trace, the manifest
+    /// exceeds [`MAX_RESOLVED_EFFECT_TRACE_MANIFEST_BYTES`], or its content
+    /// identity differs from the observation's manifest reference.
     pub fn with_resolved_effect_trace(
         mut self,
-        bytes: Vec<u8>,
+        manifest: Vec<u8>,
+        segments: SegmentSources,
     ) -> Result<Self, CampaignCodecError> {
-        const MAX_TRACE_BYTES: usize = 64 * 1024 * 1024;
-        if bytes.len() > MAX_TRACE_BYTES
-            || self.observation.resolved_effect_trace()
-                != Some(ContentId::for_bytes(ObjectKind::Trace, 1, &bytes))
+        let expected = self
+            .observation
+            .resolved_effect_trace()
+            .map(ResolvedEffectTraceRef::manifest);
+        if manifest.len() > MAX_RESOLVED_EFFECT_TRACE_MANIFEST_BYTES
+            || expected
+                != Some(ContentId::for_bytes(
+                    ObjectKind::Trace,
+                    crate::observation::RESOLVED_EFFECT_TRACE_MANIFEST_SCHEMA,
+                    &manifest,
+                ))
         {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "observation candidate resolved-effect trace differs from observation",
             });
         }
-        self.resolved_effect_trace = Some(bytes);
+        self.resolved_effect_trace = Some(ResolvedEffectTraceContent { manifest, segments });
         Ok(self)
     }
 
@@ -471,9 +511,37 @@ impl ObservationCandidate {
         &self.observation
     }
 
-    /// Returns the authenticated opaque trace bytes attached to this candidate.
+    /// Returns the authenticated opaque trace manifest attached to this
+    /// candidate.
+    ///
+    /// The segment identities are listed by the observation's
+    /// [`ResolvedEffectTraceRef`].
     #[must_use]
-    pub fn resolved_effect_trace(&self) -> Option<&[u8]> {
-        self.resolved_effect_trace.as_deref()
+    pub fn resolved_effect_trace_manifest(&self) -> Option<&[u8]> {
+        self.resolved_effect_trace
+            .as_ref()
+            .map(|trace| trace.manifest.as_slice())
+    }
+
+    /// Returns read handles to the stores holding the trace's segments.
+    #[must_use]
+    pub fn resolved_effect_trace_segments(&self) -> Option<&SegmentSources> {
+        self.resolved_effect_trace
+            .as_ref()
+            .map(|trace| &trace.segments)
+    }
+
+    /// Reads the attached trace's segments from `segments` instead.
+    ///
+    /// A producer that copies the segments into its own staging store rebinds
+    /// the candidate to that store; the manifest and the observation's segment
+    /// list are unchanged, and publication still authenticates each segment.
+    /// A candidate without a trace is returned unchanged.
+    #[must_use]
+    pub fn with_resolved_effect_trace_segments(mut self, segments: SegmentSources) -> Self {
+        if let Some(trace) = self.resolved_effect_trace.as_mut() {
+            trace.segments = segments;
+        }
+        self
     }
 }

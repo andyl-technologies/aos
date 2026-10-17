@@ -20,11 +20,13 @@ pub mod engine {
         FaultDirection, FaultOperation, FaultReplayMode, FaultResourceLimits,
         MeasurementDefinition, MeasurementDefinitions, MeasurementId, MeasurementInstanceKey,
         MetricDefinition, MetricId, MetricSource, MetricValueType, ModeledMeasurementTimeout,
-        NetworkEffectSpecification, ResolvedEffectTrace, SignalId, UnitId, WorldFaultDomain,
-        WorldFaultTargetRef, WorldFaultTopology, WorldNetworkInterface, WorldNetworkPath,
-        WorldNetworkPathHop, WorldNetworkSegment, WorldNetworkSegmentKind, WorldNetworkTechnology,
-        reduce,
+        NetworkEffectSpecification, ResolvedEffectTrace, ResolvedEffectTraceManifest,
+        ResolvedReplayWorkItem, SignalId, UnitId, WorldFaultDomain, WorldFaultTargetRef,
+        WorldFaultTopology, WorldNetworkInterface, WorldNetworkPath, WorldNetworkPathHop,
+        WorldNetworkSegment, WorldNetworkSegmentKind, WorldNetworkTechnology,
+        decode_resolved_effect_trace_segment, reduce,
     };
+    pub use crucible::segment_store::{ContentId, SegmentSink, SharedSegmentStore};
     pub use crucible::{
         Action, AssertionDef, AssertionId, AssertionPhase, AssertionQuantifierKind,
         BlackBoxHostOracle, CRASH_RESTART_SCENARIO_NAME, Checkpoint, CheckpointKind,

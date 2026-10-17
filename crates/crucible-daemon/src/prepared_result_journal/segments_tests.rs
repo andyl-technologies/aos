@@ -27,6 +27,8 @@ use crate::{
 /// bytes would contain it.
 const ENTRY_TEXT_MARKER: &str = "journal-segment-fixture-text";
 
+const V11_MAGIC: &[u8] = b"crucible.executor.prepared-semantic-attempt-result.v11\0";
+
 const V10_MAGIC: &[u8] = b"crucible.executor.prepared-semantic-attempt-result.v10\0";
 
 fn entry(sequence: u64) -> SchedulerEventLogEntry {
@@ -76,6 +78,85 @@ fn result_with_segments(
     (result, segments)
 }
 
+/// Rebuilds `result` with a resolved-effect trace of `items` pass items.
+///
+/// Each item seals into the trace's private store; the returned result reads
+/// trace segments from there and log segments from `segments`.
+fn result_with_trace(
+    result: PreparedSemanticAttemptResult,
+    segments: &MemorySegmentStore,
+    items: u64,
+) -> (
+    PreparedSemanticAttemptResult,
+    crucible::model::ResolvedEffectTrace,
+) {
+    // A scheduler-boundary pass item: no opportunity fields, no records.
+    let pass_items = (0..items).map(|index| crucible::model::ResolvedReplayWorkItem {
+        coordinate: crucible::model::FaultCoordinate {
+            virtual_ticks: index,
+            retired_instructions: None,
+        },
+        same_coordinate_sequence: 0,
+        opportunity: None,
+        target: None,
+        operation: None,
+        direction: None,
+        phase: None,
+        network_frame_key: None,
+        network_producer_direction_key: None,
+        derivation_fingerprint: crucible::ContentHash::from_bytes(&index.to_be_bytes()),
+        records: Vec::new(),
+    });
+    let trace = crucible::model::ResolvedEffectTrace::from_items(
+        crucible::model::FaultReplayMode::RecomputedCause,
+        pass_items,
+        crucible::model::FaultResourceLimits::default(),
+    )
+    .unwrap_or_else(|error| panic!("fixture trace: {error}"));
+    let manifest = trace.manifest();
+    let reference = crucible_campaign::ResolvedEffectTraceRef::new(
+        manifest
+            .content_id()
+            .unwrap_or_else(|error| panic!("manifest identity: {error}")),
+        manifest.segment_ids().collect(),
+    )
+    .unwrap_or_else(|error| panic!("trace reference: {error}"));
+
+    let candidate = result.observation();
+    let observation = candidate
+        .observation()
+        .clone()
+        .with_resolved_effect_trace(reference)
+        .unwrap_or_else(|error| panic!("observation trace: {error}"));
+    let candidate = crucible_campaign::ObservationCandidate::from_recorded_parts(
+        candidate.child().clone(),
+        candidate.measurements().clone(),
+        candidate.properties().clone(),
+        candidate.coverage().clone(),
+        candidate.discovered_choices().to_vec(),
+        candidate.produced_selections().to_vec(),
+        observation,
+    )
+    .and_then(|candidate| {
+        candidate.with_resolved_effect_trace(
+            manifest
+                .canonical_bytes()
+                .unwrap_or_else(|error| panic!("manifest bytes: {error}")),
+            trace.segments().clone(),
+        )
+    })
+    .unwrap_or_else(|error| panic!("trace candidate: {error}"));
+
+    let result = PreparedSemanticAttemptResult::new(
+        candidate,
+        result.measurement_replay_evidence().to_vec(),
+        segments.clone(),
+        None,
+    )
+    .unwrap_or_else(|error| panic!("trace result: {error}"));
+    (result, trace)
+}
+
 fn segment_files(journal: &DirectoryPreparedResultJournal) -> Vec<PathBuf> {
     let mut files = fs::read_dir(journal.root().join(SEGMENTS.directory))
         .unwrap_or_else(|error| panic!("list journal segments: {error}"))
@@ -99,15 +180,15 @@ impl AttemptLogSegmentSource for SubstitutingSource {
 }
 
 #[test]
-fn v10_payload_names_segments_without_their_bytes() {
-    let key = semantic_key(b"v10-payload");
+fn v11_payload_names_segments_without_their_bytes() {
+    let key = semantic_key(b"v11-payload");
     let (result, segments) = result_with_segments(0x71, key);
 
     let payload = result
         .canonical_bytes_with_limit(TEST_PAYLOAD_LIMIT)
-        .unwrap_or_else(|error| panic!("v10 payload: {error}"));
+        .unwrap_or_else(|error| panic!("v11 payload: {error}"));
 
-    assert!(payload.starts_with(V10_MAGIC));
+    assert!(payload.starts_with(V11_MAGIC));
     assert!(
         !payload
             .windows(ENTRY_TEXT_MARKER.len())
@@ -118,15 +199,14 @@ fn v10_payload_names_segments_without_their_bytes() {
 }
 
 #[test]
-fn v8_payload_is_rejected() {
-    let key = semantic_key(b"v8-payload");
+fn v10_payload_is_rejected() {
+    let key = semantic_key(b"v10-payload");
     let (result, segments) = result_with_segments(0x72, key);
-    let mut payload = result
+    let current = result
         .canonical_bytes_with_limit(TEST_PAYLOAD_LIMIT)
-        .unwrap_or_else(|error| panic!("v10 payload: {error}"));
-    // The version digit precedes the magic's terminating NUL.
-    let version = V10_MAGIC.len() - 2;
-    payload[version] = b'8';
+        .unwrap_or_else(|error| panic!("v11 payload: {error}"));
+    let mut payload = V10_MAGIC.to_vec();
+    payload.extend_from_slice(&current[V11_MAGIC.len()..]);
 
     let decoded = PreparedSemanticAttemptResult::from_canonical_bytes(
         &payload,
@@ -208,6 +288,64 @@ fn journal_v4_reopens_segments_after_source_dropped() {
         .remove()
         .unwrap_or_else(|error| panic!("remove journal: {error}"));
     assert!(!reopened.root().exists());
+}
+
+#[test]
+fn journal_stages_trace_segments_beside_log_segments() {
+    let namespace = TempDir::new().unwrap_or_else(|error| panic!("journal namespace: {error}"));
+    let runtime = PreparedResultJournalNamespace::open(namespace.path())
+        .unwrap_or_else(|error| panic!("runtime: {error}"));
+    let key = semantic_key(b"trace-segment-reopen");
+    let execution =
+        ExecutionId::from_bytes([0x76; 16]).unwrap_or_else(|error| panic!("execution: {error}"));
+    let (result, segments) = result_with_segments(0x76, key);
+    let (result, trace) = result_with_trace(result, &segments, 3);
+    let payload = result
+        .canonical_bytes_with_limit(TEST_PAYLOAD_LIMIT)
+        .unwrap_or_else(|error| panic!("trace payload: {error}"));
+    let trace_segments = result.referenced_trace_segments().to_vec();
+    assert!(!trace_segments.is_empty());
+
+    let (journal, _) = DirectoryPreparedResultJournal::create(
+        &runtime,
+        key,
+        execution,
+        TEST_PAYLOAD_LIMIT,
+        result.clone(),
+    )
+    .unwrap_or_else(|error| panic!("create journal: {error}"));
+    let staged_files = segment_files(&journal).len();
+    drop(journal);
+    drop(segments);
+    drop(trace);
+    let reopened =
+        DirectoryPreparedResultJournal::open(&runtime, key, execution, TEST_PAYLOAD_LIMIT)
+            .unwrap_or_else(|error| panic!("reopen journal: {error}"));
+
+    // The payload names trace segments by identity only.
+    assert!(payload.len() < MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES);
+    assert_eq!(
+        staged_files,
+        result.referenced_log_segments().len() + trace_segments.len()
+    );
+    assert_eq!(reopened.result(), &result);
+    let candidate = reopened.result().observation();
+    let manifest = crucible::model::ResolvedEffectTraceManifest::from_canonical_bytes(
+        candidate
+            .resolved_effect_trace_manifest()
+            .unwrap_or_else(|| panic!("reopened result keeps its trace manifest")),
+    )
+    .unwrap_or_else(|error| panic!("reopened manifest: {error}"));
+    let sources = candidate
+        .resolved_effect_trace_segments()
+        .unwrap_or_else(|| panic!("reopened result reads trace segments"))
+        .clone();
+    let reread = crucible::model::ResolvedEffectTrace::referencing(manifest, sources)
+        .unwrap_or_else(|error| panic!("journal trace segments authenticate: {error}"));
+    assert_eq!(reread.work_items(), 3);
+    reopened
+        .remove()
+        .unwrap_or_else(|error| panic!("remove journal: {error}"));
 }
 
 #[test]

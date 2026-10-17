@@ -602,7 +602,9 @@ pub(super) fn validate_execution_side(
         return Err(FindingProductionReplayCaptureError::InvalidResolvedEffectTrace);
     }
     if let Some(bytes) = &side.resolved_effect_trace {
-        ResolvedEffectTrace::from_canonical_bytes(bytes, plan.resource_limits())
+        // Decoding authenticates every bundled segment against the manifest.
+        ResolvedEffectTrace::from_bundle_bytes(bytes, bytes.len())
+            .and_then(|trace| trace.manifest().admit(plan.resource_limits()))
             .map_err(|_| FindingProductionReplayCaptureError::InvalidResolvedEffectTrace)?;
     }
     Ok(())

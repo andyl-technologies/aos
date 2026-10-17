@@ -191,7 +191,7 @@ pub(super) fn prepare_finding_bundle_midpoint(
     let fault_trace = selected
         .resolved_effect_trace()
         .map(|bytes| {
-            crucible::ResolvedEffectTrace::from_canonical_bytes(
+            crate::decode_resolved_effect_trace_bundle(
                 bytes,
                 model
                     .scenario_form()
@@ -199,7 +199,6 @@ pub(super) fn prepare_finding_bundle_midpoint(
                     .fault_signals()
                     .resource_limits(),
             )
-            .map_err(|error| backend_error(format!("finding effect trace is invalid: {error}")))
         })
         .transpose()?;
     if let Some(trace) = &fault_trace {
@@ -351,6 +350,7 @@ fn midpoint_report(
         bundle.evidence.finding.id().map_err(|error| {
             backend_error(format!("verified finding identity is invalid: {error}"))
         })?;
+    let signal_effects = fault_trace.map(signal_effects_json).transpose()?;
     let fields = json!({
         "schema": "crucible.cli.campaign-finding-bundle-midpoint.v1",
         "operation": "open-finding-bundle-midpoint",
@@ -368,7 +368,7 @@ fn midpoint_report(
         "failure_detail": failure_detail,
         "observation_stop": format!("{:?}", bundle.evidence.observation.stop()),
         "causal_entries": bundle.evidence.report.causal_entries,
-        "signal_effects": fault_trace,
+        "signal_effects": signal_effects,
         "metrics": {
             "payload_schema": evaluation.payload_schema(),
             "payload_hex": lower_hex(evaluation.payload()),
@@ -379,6 +379,23 @@ fn midpoint_report(
         fields,
         events: selected.event_log().clone(),
     })
+}
+
+/// Projects a segmented trace into the report's `signal_effects` object.
+///
+/// The report shows every work item, so the items are read one segment at a
+/// time into the projection.
+fn signal_effects_json(
+    trace: &crucible::ResolvedEffectTrace,
+) -> Result<serde_json::Value, CliError> {
+    let work_items = trace
+        .items()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| backend_error(format!("read finding effect trace: {error}")))?;
+    Ok(json!({
+        "mode": trace.mode(),
+        "work_items": work_items,
+    }))
 }
 
 fn lower_hex(bytes: &[u8]) -> String {

@@ -29,6 +29,13 @@ pub enum ExactCheckpointSemanticObjectRole<'a> {
         /// Authenticated content identity.
         identity: ContentHash,
     },
+    /// Sealed resolved-effect trace segment referenced by the fault continuation.
+    FaultTraceSegment {
+        /// Position in the sorted trace-segment catalog.
+        index: usize,
+        /// Authenticated content identity.
+        identity: ContentHash,
+    },
     /// Trigger runtime continuation.
     TriggerState,
     /// Assertion runtime continuation.
@@ -135,6 +142,12 @@ pub(super) fn visit_authenticated_semantic_objects(
                 identity,
             )?;
         }
+        for (index, identity) in closure.fault_trace_segments.iter().copied().enumerate() {
+            deliver(
+                ExactCheckpointSemanticObjectRole::FaultTraceSegment { index, identity },
+                identity,
+            )?;
+        }
         deliver(
             ExactCheckpointSemanticObjectRole::TriggerState,
             closure.trigger_state,
@@ -232,6 +245,7 @@ fn read_unique_semantic_objects(
     ]);
     identities.extend(closure.event_log_segments.iter().copied());
     identities.extend(closure.signal_artifacts.iter().copied());
+    identities.extend(closure.fault_trace_segments.iter().copied());
     identities.extend(targets.iter().flatten().map(|target| target.snapshot));
     identities.extend(
         closure
@@ -273,6 +287,7 @@ fn closure_object_reference_count(
     6_usize
         .checked_add(closure.event_log_segments.len())
         .and_then(|count| count.checked_add(closure.signal_artifacts.len()))
+        .and_then(|count| count.checked_add(closure.fault_trace_segments.len()))
         .and_then(|count| count.checked_add(targets.len()))
         .and_then(|count| count.checked_add(closure.failed_host_io.len()))
         .ok_or_else(|| io::Error::other("semantic object reference count overflow").into())

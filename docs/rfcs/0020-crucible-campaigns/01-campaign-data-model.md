@@ -779,7 +779,7 @@ pub enum AttemptAdmissionRole {
 }
 
 pub struct Observation {
-    pub schema_version: u32, // exact current schema v15
+    pub schema_version: u32, // exact current schema v16
     pub attempt: AttemptId,
     pub child: ConfigurationId,
     pub child_content: ConfigurationArtifactId,
@@ -790,11 +790,16 @@ pub struct Observation {
     pub coverage: CoverageProjectionId,
     pub discovered_choices: MerkleMapRoot, // opportunity key -> ChoiceOpportunityId
     pub produced_selections: MerkleMapRoot, // selected opportunity key -> SelectionId
-    pub resolved_effect_trace: Option<ContentId>,
+    pub resolved_effect_trace: Option<ResolvedEffectTraceRef>,
+}
+
+pub struct ResolvedEffectTraceRef {
+    pub manifest: ContentId,      // Trace schema 4 manifest leaf
+    pub segments: Vec<ContentId>, // Trace schema 1 segments, manifest order
 }
 ```
 
-Observation schema v15 is the sole current encoding. Its choice material is
+Observation schema v16 is the sole current encoding. Its choice material is
 paged: the opportunities an attempt discovered and the selections it produced
 while continuing through them are two Merkle maps, and the observation encodes
 only each map's root identity and entry count. Both maps use the
@@ -817,11 +822,19 @@ entry count with the committed count. Through the two roots the accepted
 observation still roots the complete replay closure. The resident bound on
 one attempt's choice material is operational: the executor's candidate charges
 at most 128 MiB of unique canonical choice records, as section 04a states.
-An optional schema-1 trace leaf
-retains the canonical resolved effects from the same completed attempt. Its
-content identity is an observation child; producer and public reader decode
-the bounded trace against the Crucible fault contract. Any other observation schema is
-rejected.
+An optional segmented resolved-effect
+trace (§15) retains the canonical resolved effects from the same completed
+attempt. The observation names its Trace schema 4 manifest leaf as child
+`resolved-effect-trace` and each Trace schema 1 segment, in manifest order,
+as child `resolved-effect-trace.segment.NNNN`; at most 4,095 distinct
+segments are listed, so the fixed roles, the manifest, and the segments
+always fit the envelope's child allowance. The campaign repository treats
+both leaf kinds as opaque: a candidate carries the manifest bytes, at most
+1 MiB, plus read handles to the producer's segment stores, and publication
+streams and authenticates one segment at a time, so no repository bound
+grows with the trace. Producer and public reader decode the manifest and
+each segment against the Crucible fault contract. Any other observation
+schema is rejected.
 
 Stop-condition tags 5 and 6 add `ExecutionQuanta` and
 `VirtualTimeOrExecutionQuanta`. Both quantum bounds are absolute scheduler
@@ -863,7 +876,7 @@ the attempt event-log byte bound, or the host completion watchdog. These
 refusals are operational failures, never `PolicyTimeout` evidence.
 
 These stop tags occur only in the current enclosing records: `Attempt` v9,
-`BranchRequest` v10, `CampaignFact` v15, `Observation` v14, and discovery-service
+`BranchRequest` v10, `CampaignFact` v15, `Observation` v16, and discovery-service
 request v4. A noncurrent enclosing schema is rejected before interpreting the
 stop body.
 

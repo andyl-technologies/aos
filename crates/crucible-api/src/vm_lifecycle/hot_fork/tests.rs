@@ -127,6 +127,7 @@ fn exact_boundary_from_continuation(
         scheduler: Arc::clone(&continuation.scheduler),
         event_log_objects: Arc::clone(&continuation.event_log_objects),
         signal_artifact_objects: Arc::clone(&continuation.signal_artifact_objects),
+        fault_trace_objects: Arc::clone(&continuation.fault_trace_objects),
         node_generations: continuation.node_generations.clone(),
         node_service_states: continuation.node_service_states.clone(),
         host_io,

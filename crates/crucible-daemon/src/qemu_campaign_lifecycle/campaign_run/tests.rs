@@ -44,14 +44,9 @@ use crate::{
     decode_crucible_scenario_artifact, plan_single_host_campaign_gc,
 };
 
-fn test_effect_trace() -> Vec<u8> {
-    ResolvedEffectTrace {
-        mode: FaultReplayMode::RecomputedCause,
-        work_items: Vec::new(),
-        cursor: 0,
-    }
-    .canonical_bytes()
-    .expect("canonical fixture effect trace")
+fn test_effect_trace() -> ResolvedEffectTrace {
+    ResolvedEffectTrace::empty(FaultReplayMode::RecomputedCause)
+        .expect("empty fixture effect trace")
 }
 
 type TestGuardedDefaultCampaignRunError = GuardedDefaultCampaignRunError<
@@ -348,7 +343,9 @@ impl QemuFreshAttemptLifecycleOwner for TerminalLifecycle {
         Ok(())
     }
 
-    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
+    fn resolved_effect_trace(
+        &self,
+    ) -> Result<Option<crucible::model::ResolvedEffectTrace>, SchedulerError> {
         Ok(Some(test_effect_trace()))
     }
 
@@ -533,7 +530,9 @@ impl QemuFreshAttemptLifecycleOwner for SelectableLifecycle {
         Ok(())
     }
 
-    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
+    fn resolved_effect_trace(
+        &self,
+    ) -> Result<Option<crucible::model::ResolvedEffectTrace>, SchedulerError> {
         Ok(None)
     }
 
@@ -793,10 +792,7 @@ fn shared_owner_authenticates_completion_and_retains_terminal_evidence() {
     assert_eq!(terminal_fingerprints.len(), 1);
     assert_eq!(terminal_fingerprints[0].node, node);
     assert_eq!(terminal_fingerprints[0].at, VirtualTime { ticks: 7 });
-    assert_eq!(
-        evidence.resolved_effect_trace(),
-        Some(test_effect_trace().as_slice())
-    );
+    assert_eq!(evidence.resolved_effect_trace(), Some(&test_effect_trace()));
 }
 
 #[test]

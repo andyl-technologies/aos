@@ -466,8 +466,14 @@ discovered opportunities.
 execution-basis cause and ordinal, branch selection and proposal provenance
 when present, plus a canonical completion or proved absence. For a completed
 attempt, it then reads the observation-linked measurement event leaf and any
-resolved-effect leaf through separately authorized, 1 MiB trace chunks. The
-client verifies the complete content ID before decoding either leaf. Its
+resolved-effect trace through separately authorized, 1 MiB trace chunks. The
+server reads only each requested byte range of a leaf, so a leaf costs linear
+work. Each trace kind bounds one leaf, never a whole run: a resolved-effect
+manifest is at most 1 MiB, a resolved-effect segment
+(`ResolvedEffectSegment`, admitted only when the observation lists it) at most
+16 MiB, and a measurement leaf at most 64 MiB. The client verifies each leaf's
+complete content ID before decoding it, and streams a resolved-effect trace
+one authenticated segment at a time against its manifest. Its
 attempt-explanation JSON includes a bounded
 `effect_evidence` object with schema
 `crucible.cli.campaign-attempt-effect-evidence.v2`: up to 4096 applied network

@@ -257,6 +257,7 @@ fn production_checkpoints_referenced_storage_recovery_events() {
         checkpoint,
         test_host_manifests(),
         &mut nodes,
+        crucible::model::FaultTraceStorage::in_memory(),
     )
     .unwrap_or_else(|error| panic!("production checkpoint should restore: {error}"));
     assert_eq!(restored.emitted_events(), runtime.emitted_events());

@@ -35,7 +35,7 @@ use super::wire::{
     LifecycleObjectWire, SegmentWire, SideWire, preflight_canonical_cbor,
 };
 use super::*;
-use crate::qemu_campaign_lifecycle::{MAX_REPLAY_CLOSURE_BYTES, MAX_RESOLVED_EFFECT_TRACE_BYTES};
+use crate::qemu_campaign_lifecycle::MAX_REPLAY_CLOSURE_BYTES;
 use crate::{
     AttemptLogManifest, AttemptLogSegmentRef, AttemptLogSegmentSource, AttemptLogSegmentSources,
     MAX_ATTEMPT_LOG_SEGMENT_BYTES, MAX_CRUCIBLE_CAMPAIGN_IMPORT_FILE_BYTES,
@@ -822,7 +822,12 @@ fn read_side(
     let resolved_effect_trace = wire
         .resolved_effect_trace
         .as_ref()
-        .map(|leaf| reader.read(leaf, MAX_RESOLVED_EFFECT_TRACE_BYTES as u64))
+        .map(|leaf| {
+            reader.read(
+                leaf,
+                super::MAX_FINDING_PRODUCTION_REPLAY_TRACE_BUNDLE_BYTES,
+            )
+        })
         .transpose()?
         .map(Arc::from);
     FindingProductionReplayExecutionSide::from_parts(

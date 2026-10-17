@@ -105,6 +105,18 @@ fn node_service_effect() -> EffectRequest {
     .unwrap_or_else(|error| panic!("invalid node service effect: {error}"))
 }
 
+fn trace_writer() -> ResolvedEffectTraceWriter {
+    ResolvedEffectTraceWriter::new(
+        Arc::new(crate::segment_store::SharedSegmentStore::new()),
+        FaultResourceLimits::default(),
+    )
+}
+
+fn locked_reader(trace: &ResolvedEffectTrace) -> ResolvedEffectTraceReader {
+    ResolvedEffectTraceReader::new(trace.clone(), FaultResourceLimits::default())
+        .unwrap_or_else(|error| panic!("replay reader: {error}"))
+}
+
 fn recorded_precondition() -> ContentHash {
     ContentHash::from_bytes(b"refined-coordinate-precondition")
 }
@@ -156,7 +168,7 @@ fn locked_replay_retains_and_enforces_a_backend_refined_coordinate() {
         FaultResourceLimits::default(),
     )
     .unwrap_or_else(|error| panic!("invalid unrefined coordinate runtime: {error}"));
-    let mut unrefined_recorded = Vec::new();
+    let mut unrefined_recorded = trace_writer();
     let unrefined_result = unrefined_runtime.evaluate_boundary_traced(
         coordinate(0),
         0,
@@ -174,13 +186,12 @@ fn locked_replay_retains_and_enforces_a_backend_refined_coordinate() {
         unrefined_result.is_ok(),
         "unexpected unrefined result: {unrefined_result:?}"
     );
+    let unrefined_item = &unrefined_recorded.position().tail()[0];
     assert_eq!(
-        unrefined_recorded[0].records[0]
-            .coordinate
-            .retired_instructions,
+        unrefined_item.records[0].coordinate.retired_instructions,
         None
     );
-    assert!(unrefined_recorded[0].records[0].validate().is_ok());
+    assert!(unrefined_item.records[0].validate().is_ok());
 
     let mut recorder = FaultBindingRuntime::new(
         &program,
@@ -191,7 +202,7 @@ fn locked_replay_retains_and_enforces_a_backend_refined_coordinate() {
         FaultResourceLimits::default(),
     )
     .unwrap_or_else(|error| panic!("invalid coordinate recorder: {error}"));
-    let mut recorded = Vec::new();
+    let mut recorder_trace = trace_writer();
     let evaluation = recorder
         .evaluate_boundary_traced(
             coordinate(0),
@@ -204,9 +215,10 @@ fn locked_replay_retains_and_enforces_a_backend_refined_coordinate() {
                 prepared: None,
             },
             None,
-            &mut recorded,
+            &mut recorder_trace,
         )
         .unwrap_or_else(|error| panic!("coordinate recording failed: {error}"));
+    let recorded = recorder_trace.position().tail().to_vec();
     assert_eq!(recorded[0].coordinate.retired_instructions, None);
     assert_eq!(
         recorded[0].records[0].coordinate.retired_instructions,
@@ -225,11 +237,9 @@ fn locked_replay_retains_and_enforces_a_backend_refined_coordinate() {
     illicit_host_coordinate.retired_instructions = Some(73);
     assert!(!host_action.accepts_observation_coordinate(illicit_host_coordinate));
 
-    let trace = ResolvedEffectTrace {
-        mode: FaultReplayMode::LockedEffect,
-        work_items: recorded,
-        cursor: 0,
-    };
+    let trace = recorder_trace
+        .export(FaultReplayMode::LockedEffect)
+        .unwrap_or_else(|error| panic!("locked trace: {error}"));
     let mut replay = FaultBindingRuntime::new(
         &program,
         vec![binding.clone()],
@@ -239,7 +249,7 @@ fn locked_replay_retains_and_enforces_a_backend_refined_coordinate() {
         FaultResourceLimits::default(),
     )
     .unwrap_or_else(|error| panic!("invalid coordinate replay: {error}"));
-    let mut mismatched_trace = trace.clone();
+    let mut mismatched_trace = locked_reader(&trace);
     assert!(matches!(
         replay.evaluate_boundary_traced(
             coordinate(0),
@@ -252,13 +262,13 @@ fn locked_replay_retains_and_enforces_a_backend_refined_coordinate() {
                 prepared: None,
             },
             Some(&mut mismatched_trace),
-            &mut Vec::new(),
+            &mut trace_writer(),
         ),
         Err(BindingRuntimeError::AdapterCommit(
             FaultRuntimeError::IncompleteAdapterState
         ))
     ));
-    assert_eq!(mismatched_trace.cursor, 0);
+    assert_eq!(mismatched_trace.cursor(), 0);
 
     let mut matching_replay = FaultBindingRuntime::new(
         &program,
@@ -269,7 +279,7 @@ fn locked_replay_retains_and_enforces_a_backend_refined_coordinate() {
         FaultResourceLimits::default(),
     )
     .unwrap_or_else(|error| panic!("invalid matching coordinate replay: {error}"));
-    let mut matching_trace = trace.clone();
+    let mut matching_trace = locked_reader(&trace);
     matching_replay
         .evaluate_boundary_traced(
             coordinate(0),
@@ -282,13 +292,16 @@ fn locked_replay_retains_and_enforces_a_backend_refined_coordinate() {
                 prepared: None,
             },
             Some(&mut matching_trace),
-            &mut Vec::new(),
+            &mut trace_writer(),
         )
         .unwrap_or_else(|error| panic!("matching coordinate replay failed: {error}"));
-    assert_eq!(matching_trace.cursor, 1);
+    assert_eq!(matching_trace.cursor(), 1);
 
-    let mut recomputed_trace = trace;
-    recomputed_trace.mode = FaultReplayMode::RecomputedCause;
+    let mut recomputed_trace = locked_reader(
+        &trace
+            .with_mode(FaultReplayMode::RecomputedCause)
+            .unwrap_or_else(|error| panic!("recomputed trace: {error}")),
+    );
     let mut divergent_replay = FaultBindingRuntime::new(
         &program,
         vec![binding],
@@ -311,11 +324,11 @@ fn locked_replay_retains_and_enforces_a_backend_refined_coordinate() {
             0,
             &mut divergent_sink,
             Some(&mut recomputed_trace),
-            &mut Vec::new(),
+            &mut trace_writer(),
         ),
         Err(BindingRuntimeError::AdapterRejected(rejected))
             if matches!(rejected.error, FaultRuntimeError::ReplayPreconditionMismatch { .. })
     ));
     assert_eq!(divergent_sink.commits, 0);
-    assert_eq!(recomputed_trace.cursor, 0);
+    assert_eq!(recomputed_trace.cursor(), 0);
 }

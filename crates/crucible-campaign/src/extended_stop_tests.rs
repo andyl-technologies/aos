@@ -333,7 +333,7 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
         BTreeSet::from([discovered]),
     )
     .expect("execution-quanta observation");
-    assert_eq!(observation.schema_version(), 15);
+    assert_eq!(observation.schema_version(), 16);
     assert_eq!(
         Observation::from_canonical_bytes(&observation.canonical_bytes())
             .expect("observation round trip"),
@@ -345,7 +345,7 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
             .expect("observation ID")
             .content_id()
             .schema_version(),
-        15
+        16
     );
     let mut noncurrent_observation = observation.canonical_bytes();
     noncurrent_observation[..4].copy_from_slice(&0_u32.to_be_bytes());
@@ -361,7 +361,7 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
         .clone()
         .with_produced_selections(BTreeMap::from([(discovered, produced_selection)]))
         .expect("selection observation");
-    assert_eq!(selection_observation.schema_version(), 15);
+    assert_eq!(selection_observation.schema_version(), 16);
     assert_eq!(
         Observation::from_canonical_bytes(&selection_observation.canonical_bytes())
             .expect("selection observation round trip"),
@@ -442,8 +442,8 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
             "bc145ec18271f78ff9f324c305856fd18152b93bab4e7e07a8a88accc8ef64e9",
             "d4754100d75c1d9aff859cfe7e51a6bd72019abb88470969b219acfe0ebc4585",
             "139478d7eac7d9259fafb8b7b183fd76925bfa139de985f989899260222e9da7",
-            "b6e1865bfebd23f4404c60a9d1bb5ad2b53fc161731e88da2cb013044a497e3f",
-            "c52d7eaf2decb7afe128bdb50df675ec81c11fbdff3e8463e7154990e51956ec",
+            "5cbe7e0c70ceeeaa99063a0346c16b7ea5aafa8eee0433669bbf61c721214f78",
+            "c3660b67c51f3b20927917290d5d366c69bb8637d0640d43cd7e04925b39cf60",
             "77d184206bea6bea5cc19d3831c4f5f73c75c884821c8dca52d10ca149afbc7e",
             "196a26d78fa08a0775a71cd23682712965fde66f8b5921c6121582cb38d40e3f",
         ]

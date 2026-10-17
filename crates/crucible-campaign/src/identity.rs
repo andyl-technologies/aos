@@ -635,7 +635,7 @@ content_object_id!(
 content_object_id!(
     ObservationId,
     ObjectKind::Observation,
-    15,
+    16,
     "crucible.campaign.observation",
     "Identifies one current canonical observation with its stop and produced-selection semantics."
 );

@@ -68,7 +68,7 @@ fn completed_responses_encode_current_optional_finding_candidates() {
     let execution = ExecutionId::from_bytes([0x71; 16]).expect("execution");
     let observation = ObservationId::from_content_id(ContentId::for_bytes(
         ObjectKind::Observation,
-        15,
+        16,
         b"candidate-bearing-completion",
     ))
     .expect("observation");
@@ -606,7 +606,7 @@ fn get_attempt_execution_messages_are_strict_and_exact_request_bound() {
 
     let observation = ObservationId::from_content_id(ContentId::for_bytes(
         ObjectKind::Observation,
-        15,
+        16,
         b"executor-status-observation",
     ))
     .expect("observation");
@@ -627,7 +627,7 @@ fn get_attempt_execution_messages_are_strict_and_exact_request_bound() {
             &response_bytes,
         )
         .to_hex(),
-        "0cf9f16d9ed62055e66c084ab5f069ea2a70c3036d4f1b229cb8baaad9515cd0"
+        "615705f5cfd30bfcbb281095280b6cfeb56387e59d359f4d11bc652c28fd06b5"
     );
 
     let other_execution = ExecutionId::from_bytes([0x38; 16]).expect("other execution");
@@ -1001,7 +1001,7 @@ fn cancel_attempt_execution_messages_are_strict_and_exact_request_bound() {
 
     let observation = ObservationId::from_content_id(ContentId::for_bytes(
         ObjectKind::Observation,
-        15,
+        16,
         b"executor-cancellation-observation",
     ))
     .expect("observation");
@@ -1022,7 +1022,7 @@ fn cancel_attempt_execution_messages_are_strict_and_exact_request_bound() {
             &response_bytes,
         )
         .to_hex(),
-        "c56b43948d4489e531a5cca1f5316c37229521eef15d14d7bff56d55043e28c6"
+        "850687bff402ea93005b188d3239392851bed27aadc222646c22628117623574"
     );
 
     let other = CancelAttemptExecutionRequest::new(

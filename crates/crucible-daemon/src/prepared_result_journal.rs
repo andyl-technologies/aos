@@ -13,8 +13,9 @@
 //! ```
 //!
 //! The result contains the complete typed observation/finding closure and
-//! names its attempt-log segments and finding replay records by identity; the
-//! journal holds its own authenticated copy of each one. State
+//! names its attempt-log and resolved-effect trace segments and its finding
+//! replay records by identity; the journal holds its own authenticated copy
+//! of each one. State
 //! binds its hash and exact publication IDs to the lineage, attempt, and
 //! versioned execution scope. The complete pair remains hidden until the
 //! operational ledger grants `Publishing`, then one rename makes it visible.
@@ -29,7 +30,7 @@
 //!             measurement-evidence-set-hash, segment-count, segment-set-hash,
 //!             record-count, record-set-hash, finding-present, [finding],
 //!             payload-length, payload-hash, state-checksum
-//! result-v4 := prepared-semantic-attempt-result-v10
+//! result-v4 := prepared-semantic-attempt-result-v11
 //! ```
 //!
 //! State is bounded at 16 KiB. The result has both the format ceiling and the
@@ -800,8 +801,7 @@ fn encode_state(
         .transpose()?;
     let (measurement_evidence_count, measurement_evidence_hash) =
         measurement_evidence_identity(result)?;
-    let (segment_count, segment_hash) =
-        segments::segment_set_identity(&result.referenced_log_segments());
+    let (segment_count, segment_hash) = segments::segment_set_identity(result);
     let (record_count, record_hash) =
         records::record_set_identity(&result.referenced_replay_records());
     let mut state = Vec::new();
@@ -894,7 +894,7 @@ impl JournalStateEnvelope<'_> {
             _ => {}
         }
 
-        if segments::segment_set_identity(&result.referenced_log_segments()) != self.segments {
+        if segments::segment_set_identity(result) != self.segments {
             return Err(PreparedResultJournalError::InvalidState);
         }
         if records::record_set_identity(&result.referenced_replay_records()) != self.records {
@@ -1651,12 +1651,12 @@ mod tests {
         );
         assert_eq!(
             blake3::hash(&payload).to_hex().as_str(),
-            "a31cbe3e3f3f45fac0a48e8b4244928095f86521e334d736900ef3efb5c7bdad"
+            "13002d852b42a775d0ed3634370fe6c8fb4e66ebed5d908c41e2d7f3b5a258fc"
         );
         let state = fs::read(journal.root().join(JOURNAL_STATE_FILE)).expect("v4 state");
         assert_eq!(
             blake3::hash(&state).to_hex().as_str(),
-            "ebde184973627bbe8a7b52751aa2650e065a90bafcd9c437f5fde4d22f5f6575"
+            "1e48e3d9bf69702d1af790744b761d3a317e5fb242f63a92d1144c85686f0259"
         );
         journal.remove().expect("remove v4 journal");
     }

@@ -18,12 +18,16 @@ fn authenticated_trace_chunks_follow_the_observed_attempt_and_exact_snapshot() {
         .blobs
         .put_if_absent(trace, &BlobHandle::from_bytes(trace_bytes.clone()))
         .expect("trace leaf");
-    let effect_bytes = b"resolved effects".to_vec();
-    let effect = ContentId::for_bytes(ObjectKind::Trace, 1, &effect_bytes);
-    repository
-        .blobs
-        .put_if_absent(effect, &BlobHandle::from_bytes(effect_bytes.clone()))
-        .expect("resolved effect trace leaf");
+    let effect_bytes = b"resolved effect manifest".to_vec();
+    let effect = ContentId::for_bytes(ObjectKind::Trace, 4, &effect_bytes);
+    let segment_bytes = b"resolved effect segment".to_vec();
+    let segment = ContentId::for_bytes(ObjectKind::Trace, 1, &segment_bytes);
+    for (id, bytes) in [(effect, &effect_bytes), (segment, &segment_bytes)] {
+        repository
+            .blobs
+            .put_if_absent(id, &BlobHandle::from_bytes(bytes.clone()))
+            .expect("resolved effect trace leaf");
+    }
     let measurements = MeasurementSet::test_evaluation(b"observed trace", BTreeSet::from([trace]))
         .expect("measurement set");
     let measurements = repository
@@ -43,7 +47,9 @@ fn authenticated_trace_chunks_follow_the_observed_attempt_and_exact_snapshot() {
         discovered_choice_ids(&repository, &base),
     )
     .expect("observation")
-    .with_resolved_effect_trace(effect)
+    .with_resolved_effect_trace(
+        crate::ResolvedEffectTraceRef::new(effect, vec![segment]).expect("trace reference"),
+    )
     .expect("resolved effect trace attachment");
     let published = repository
         .publish_observation(campaign, admitted.new_snapshot, &observation)
@@ -97,6 +103,48 @@ fn authenticated_trace_chunks_follow_the_observed_attempt_and_exact_snapshot() {
         .expect("authenticated resolved effect trace");
     assert_eq!(resolved_effect.trace(), effect);
     assert_eq!(resolved_effect.chunk(), effect_bytes);
+
+    let segment_request = |kind, offset, limit| {
+        crate::GetCampaignTraceChunkRequest::new(
+            first_request.principal().clone(),
+            first_request.campaign().clone(),
+            published.new_snapshot,
+            observation.attempt(),
+            kind,
+            offset,
+            limit,
+        )
+        .expect("resolved effect segment request")
+    };
+    // Ranged reads return exactly the requested slice of a listed segment.
+    let listed = crate::CampaignTraceKind::ResolvedEffectSegment(segment);
+    let head = client
+        .get_campaign_trace_chunk(&segment_request(listed, 0, 9))
+        .expect("first segment chunk");
+    let tail = client
+        .get_campaign_trace_chunk(&segment_request(listed, 9, 1024))
+        .expect("segment remainder");
+    assert_eq!(head.trace(), segment);
+    assert_eq!(head.total_bytes(), segment_bytes.len() as u64);
+    assert_eq!([head.chunk(), tail.chunk()].concat(), segment_bytes);
+
+    // A segment the observation does not list is refused even when stored.
+    let unlisted_bytes = b"unlisted segment".to_vec();
+    let unlisted = ContentId::for_bytes(ObjectKind::Trace, 1, &unlisted_bytes);
+    repository
+        .blobs
+        .put_if_absent(unlisted, &BlobHandle::from_bytes(unlisted_bytes))
+        .expect("unlisted segment leaf");
+    assert!(matches!(
+        client.get_campaign_trace_chunk(&segment_request(
+            crate::CampaignTraceKind::ResolvedEffectSegment(unlisted),
+            0,
+            1024
+        )),
+        Err(crate::CampaignClientError::Service(
+            crate::CampaignServiceFailure::InvalidRequest
+        ))
+    ));
 
     struct DenyTrace;
 

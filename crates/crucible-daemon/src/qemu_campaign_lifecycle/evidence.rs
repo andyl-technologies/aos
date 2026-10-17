@@ -36,9 +36,6 @@ use crate::{AttemptExecutionDisposition, AttemptExecutionReconciliationStep};
 const MAX_EXECUTION_FINGERPRINT_SAMPLES: usize = MAX_QEMU_ATTEMPT_GENERATION_NODES * 2;
 const MAX_TERMINAL_FINGERPRINT_SAMPLES: usize = MAX_QEMU_ATTEMPT_GENERATION_NODES;
 
-/// Largest encoded resolved-effect trace retained for one attempt.
-pub(crate) const MAX_RESOLVED_EFFECT_TRACE_BYTES: usize = 64 * 1024 * 1024;
-
 /// Lifecycle wrapper that records exact process-local execution evidence.
 ///
 /// Resource enforcement remains wholly owned by the wrapped lifecycle. This
@@ -427,7 +424,9 @@ where
         Ok(())
     }
 
-    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
+    fn resolved_effect_trace(
+        &self,
+    ) -> Result<Option<crucible::model::ResolvedEffectTrace>, SchedulerError> {
         self.lifecycle.resolved_effect_trace()
     }
 

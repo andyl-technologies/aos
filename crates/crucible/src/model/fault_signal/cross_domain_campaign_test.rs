@@ -121,9 +121,12 @@ fn cross_domain_fleet_search_minimizes_and_locked_replays_without_explorer() {
     let trace = recorder
         .recorded_trace(FaultReplayMode::LockedEffect)
         .unwrap_or_else(|error| panic!("cross-domain locked trace: {error}"));
-    assert_eq!(trace.work_items.len(), 1);
-    assert_eq!(trace.work_items[0].records.len(), expected_effects().len());
-    let expected_work_items = trace.work_items.clone();
+    let expected_work_items = trace_items(&trace);
+    assert_eq!(expected_work_items.len(), 1);
+    assert_eq!(
+        expected_work_items[0].records.len(),
+        expected_effects().len()
+    );
 
     // The minimized ordinary schedule selected the exact effect retained in
     // the locked trace. This fresh runtime receives only that trace: no
@@ -146,10 +149,11 @@ fn cross_domain_fleet_search_minimizes_and_locked_replays_without_explorer() {
         .verify_replay_exhausted()
         .unwrap_or_else(|error| panic!("cross-domain replay exhaustion: {error}"));
     assert_eq!(
-        replay
-            .recorded_trace(FaultReplayMode::LockedEffect)
-            .unwrap_or_else(|error| panic!("replayed cross-domain trace: {error}"))
-            .work_items,
+        trace_items(
+            &replay
+                .recorded_trace(FaultReplayMode::LockedEffect)
+                .unwrap_or_else(|error| panic!("replayed cross-domain trace: {error}"))
+        ),
         expected_work_items
     );
 

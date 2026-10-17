@@ -1027,12 +1027,25 @@ where
         let (measurement_set, trace) = match request.kind() {
             CampaignTraceKind::ResolvedEffect => (
                 None,
-                observation.resolved_effect_trace().ok_or(
-                    CampaignRepositoryError::InvalidRequest {
+                observation
+                    .resolved_effect_trace()
+                    .ok_or(CampaignRepositoryError::InvalidRequest {
                         reason: "campaign-observation-has-no-resolved-effect-trace",
-                    },
-                )?,
+                    })?
+                    .manifest(),
             ),
+            CampaignTraceKind::ResolvedEffectSegment(segment) => {
+                if !observation
+                    .resolved_effect_trace()
+                    .is_some_and(|trace| trace.contains_segment(segment))
+                {
+                    return Err(CampaignRepositoryError::InvalidRequest {
+                        reason: "campaign-resolved-effect-trace-segment-is-not-owned",
+                    }
+                    .into());
+                }
+                (None, segment)
+            }
             CampaignTraceKind::MeasurementEventLog => {
                 let measurements = self
                     .repository
@@ -1059,9 +1072,12 @@ where
                 (Some(measurements), segment)
             }
         };
-        let (total_bytes, chunk) =
-            self.repository
-                .load_trace_chunk(trace, request.offset(), request.limit())?;
+        let (total_bytes, chunk) = self.repository.load_trace_chunk(
+            trace,
+            request.offset(),
+            request.limit(),
+            request.kind().max_leaf_bytes(),
+        )?;
         Ok(GetCampaignTraceChunkResponse::new(
             request,
             head.snapshot().clone(),

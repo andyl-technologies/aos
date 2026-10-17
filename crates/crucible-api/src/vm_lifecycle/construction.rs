@@ -383,7 +383,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
             })
             .map_err(|error| {
                 loop_factory_error(format!(
-                    "derive v9 exact restore identity for `{}`: {error}",
+                    "derive v10 exact restore identity for `{}`: {error}",
                     vm.id.name
                 ))
             })?;
@@ -391,7 +391,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
                 && QmpCheckpointIdentity::from(exact_ram.identity) != expected
             {
                 return Err(loop_factory_error(format!(
-                    "v9 exact checkpoint identity for `{}` differs from its authenticated restore basis",
+                    "v10 exact checkpoint identity for `{}` differs from its authenticated restore basis",
                     vm.id.name
                 )));
             }
@@ -1224,21 +1224,34 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
     } else {
         None
     };
+    // Every sealed resolved-effect segment of this execution, signal and
+    // campaign alike, lands in one sink. A restore hydrates it with the
+    // segments its checkpoint references before any owner reads them.
+    let trace_segments = config.fault_trace_segments();
+    if let Some(checkpoint) = &restore_checkpoint {
+        hydrate_fault_trace_segments(&checkpoint.fault_trace_objects, trace_segments.as_ref())
+            .map_err(|error| loop_factory_error(error.to_string()))?;
+    }
     let (signal_effect_replay, campaign_effect_replay) = match config.fault_replay.clone() {
         Some(trace) => {
-            trace
-                .validate(source.plan().fault_signals().resource_limits())
-                .map_err(|error| loop_factory_error(format!("validate fault replay: {error}")))?;
-            let (signal, campaign) =
-                network_faults::split_campaign_network_trace(trace, network_replay.is_some())
-                    .map_err(|error| {
-                        loop_factory_error(format!("partition fault replay: {error}"))
-                    })?;
-            let signal = (signal_plan_active || !signal.work_items.is_empty()).then_some(signal);
+            let (signal, campaign) = network_faults::split_campaign_network_trace(
+                trace,
+                network_replay.is_some(),
+                &trace_segments,
+                source.plan().fault_signals().resource_limits(),
+            )
+            .map_err(|error| loop_factory_error(format!("partition fault replay: {error}")))?;
+            let signal = (signal_plan_active || !signal.is_empty()).then_some(signal);
             (signal, Some(campaign))
         }
         None => (None, None),
     };
+    // A restored replay cursor names the signal partition's manifest; the
+    // partition's own sources hold its segments.
+    let mut trace_storage = crucible::model::FaultTraceStorage::new(Arc::clone(&trace_segments));
+    if let Some(signal) = &signal_effect_replay {
+        trace_storage = trace_storage.with_replay_segments(signal.segments().clone());
+    }
     let (
         fault_runtime,
         fault_evaluation_cursor,
@@ -1276,6 +1289,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
             &mut scheduler,
             &mut pending_outputs,
             Arc::clone(&storage_fault_observations),
+            trace_storage,
         )
         .map_err(|error| {
             loop_factory_error(format!(
@@ -1290,7 +1304,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
             committed_frontier,
         )
     } else {
-        let mut runtime = ProductionFaultRuntime::new_with_search_overrides(
+        let mut runtime = ProductionFaultRuntime::new_with_storage(
             signal_plan,
             signal_artifacts,
             SignalBoundarySnapshot::default(),
@@ -1298,6 +1312,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
             host_fault_manifests,
             &backends,
             fault_search_overrides.clone(),
+            trace_storage,
         )
         .map_err(|error| loop_factory_error(format!("admit signal fault runtime: {error}")))?;
         if let Some(trace) = signal_effect_replay {
@@ -1316,6 +1331,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
             source.plan().fault_signals().resource_limits(),
             source.world().fault_topology().clone(),
             source.world().links().to_vec(),
+            Arc::clone(&trace_segments),
         );
         (
             runtime,
@@ -1529,6 +1545,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
             .as_ref()
             .map_or_else(Vec::new, |checkpoint| checkpoint.recorded_controls.clone()),
         signal_artifact_objects,
+        fault_trace_segments: trace_segments,
         debug_backend_paths,
         debug_gateway: None,
         debug_attach: None,

@@ -16,6 +16,7 @@ fn production_preview_treats_a_future_partition_pulse_as_inactive() {
     .unwrap_or_else(|error| panic!("future pulse owner: {error}"));
     let initial_checkpoint = owner
         .checkpoint()
+        .unwrap_or_else(|error| panic!("initial checkpoint state: {error}"))
         .content_id()
         .unwrap_or_else(|error| panic!("initial checkpoint: {error}"));
 
@@ -32,6 +33,7 @@ fn production_preview_treats_a_future_partition_pulse_as_inactive() {
     assert_eq!(
         owner
             .checkpoint()
+            .unwrap_or_else(|error| panic!("checkpoint state after preview: {error}"))
             .content_id()
             .unwrap_or_else(|error| panic!("checkpoint after preview: {error}")),
         initial_checkpoint
@@ -74,9 +76,15 @@ fn execution_checkpoint_restores_the_same_adapter_contributions() {
     let checkpoint = runtime
         .checkpoint()
         .unwrap_or_else(|error| panic!("checkpoint: {error}"));
-    let restored =
-        FaultExecutionRuntime::restore(&plan, &NoArtifacts, seed, manifests(), &checkpoint)
-            .unwrap_or_else(|error| panic!("restore: {error}"));
+    let restored = FaultExecutionRuntime::restore(
+        &plan,
+        &NoArtifacts,
+        seed,
+        manifests(),
+        &checkpoint,
+        &FaultTraceStorage::new(Arc::clone(runtime.trace.recorded.sink())),
+    )
+    .unwrap_or_else(|error| panic!("restore: {error}"));
     assert_eq!(
         restored.adapter(FaultAdapter::Network).composition_groups(),
         runtime.adapter(FaultAdapter::Network).composition_groups()
@@ -110,7 +118,7 @@ fn recorded_effects_execute_in_every_network_replay_mode() {
         let trace = recorder
             .recorded_trace(mode)
             .unwrap_or_else(|error| panic!("recorded trace: {error}"));
-        let expected_work_items = trace.work_items.clone();
+        let expected_work_items = trace_items(&trace);
         let mut replay = FaultExecutionRuntime::new(
             &plan,
             &NoArtifacts,
@@ -130,10 +138,11 @@ fn recorded_effects_execute_in_every_network_replay_mode() {
             .verify_replay_exhausted()
             .unwrap_or_else(|error| panic!("replay exhaustion: {error}"));
         assert_eq!(
-            replay
-                .recorded_trace(mode)
-                .unwrap_or_else(|error| panic!("replay recording: {error}"))
-                .work_items,
+            trace_items(
+                &replay
+                    .recorded_trace(mode)
+                    .unwrap_or_else(|error| panic!("replay recording: {error}"))
+            ),
             expected_work_items,
         );
         replay
@@ -180,8 +189,9 @@ fn outcome_replay_aligns_a_frame_without_rederiving_its_model() {
         let trace = recorder
             .recorded_trace(FaultReplayMode::OutcomeOnlyNetwork(alignment))
             .unwrap_or_else(|error| panic!("outcome trace: {error}"));
-        assert_eq!(trace.work_items.len(), 2);
-        assert!(trace.work_items[0].records.is_empty());
+        let items = trace_items(&trace);
+        assert_eq!(items.len(), 2);
+        assert!(items[0].records.is_empty());
         let replay_coordinate = if alignment == NetworkOutcomeAlignment::ExactEventCoordinate {
             coordinate
         } else {

@@ -148,6 +148,7 @@ pub struct ProductionVmExactHotForkSourceBoundary {
     pub(super) scheduler: Arc<SingleSchedulerCheckpoint>,
     pub(super) event_log_objects: Arc<BTreeMap<ContentHash, Vec<u8>>>,
     pub(super) signal_artifact_objects: Arc<BTreeMap<ContentHash, Vec<u8>>>,
+    pub(super) fault_trace_objects: Arc<BTreeMap<ContentHash, Vec<u8>>>,
     pub(super) node_generations: BTreeMap<NodeId, u64>,
     pub(super) node_service_states: BTreeMap<NodeId, ProductionNodeServiceState>,
     pub(super) host_io: BTreeMap<NodeId, QemuHostIoCheckpoint>,
@@ -195,6 +196,7 @@ impl ProductionVmExactHotForkSourceBoundary {
             scheduler: Arc::clone(&checkpoint.scheduler),
             event_log_objects: Arc::clone(&checkpoint.event_log_objects),
             signal_artifact_objects: Arc::clone(&checkpoint.signal_artifact_objects),
+            fault_trace_objects: Arc::clone(&checkpoint.fault_trace_objects),
             node_generations: checkpoint.node_generations.clone(),
             node_service_states: checkpoint.node_service_states.clone(),
             host_io,
@@ -221,6 +223,7 @@ impl ProductionVmExactHotForkSourceBoundary {
             || self.scheduler != continuation.scheduler
             || self.event_log_objects != continuation.event_log_objects
             || self.signal_artifact_objects != continuation.signal_artifact_objects
+            || self.fault_trace_objects != continuation.fault_trace_objects
             || self.node_generations != continuation.node_generations
             || self.node_service_states != continuation.node_service_states
             || self.fault_checkpoint != continuation.fault_checkpoint.id()

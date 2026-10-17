@@ -1271,7 +1271,10 @@ fn campaign_run_report_with_state(
         streamed_event_frames,
         coverage_feedback: coverage.finish(),
         execution_fingerprints,
-        resolved_effect_trace: evidence.resolved_effect_trace().map(ToOwned::to_owned),
+        resolved_effect_trace: evidence
+            .resolved_effect_trace()
+            .map(crate::resolved_effect_trace_bundle)
+            .transpose()?,
         acknowledged_commands: Vec::new(),
         reproduction_commands: Vec::new(),
         watch_statuses,

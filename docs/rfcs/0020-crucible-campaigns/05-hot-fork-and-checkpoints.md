@@ -528,10 +528,10 @@ never process-launch authority. Sparse overlay restore authenticates the exact
 extent manifest and every named chunk before atomically exposing a file whose
 omitted ranges are zero holes.
 
-The complete multi-node production continuation uses version nine of the same
+The complete multi-node production continuation uses version ten of the same
 typed root rather than flattening a potentially large object set into one
 generic envelope. The registered leaves are the canonical
-`crucible.production-exact-closure@device-state.9` manifest and exact opaque
+`crucible.production-exact-closure@device-state.10` manifest and exact opaque
 production objects under
 `crucible.executor.production-checkpoint-object@device-state.5`. Every object
 retains its production BLAKE3 identity and declared length in a registered

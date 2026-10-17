@@ -178,6 +178,7 @@ impl ProductionVmLifecycleConfig {
             app_random_branch_plans: BTreeMap::new(),
             signal_artifacts: None,
             fault_replay: None,
+            fault_trace_segments: None,
             world_artifacts: None,
             bounded_scheduler_preemption: None,
         }
@@ -492,6 +493,25 @@ impl ProductionVmLifecycleConfig {
         self
     }
 
+    /// Returns this configuration with the store receiving sealed trace segments.
+    ///
+    /// The fault runtime and the campaign network effect log seal their
+    /// resolved-effect trace segments (RFC-0020 section 15) into `segments`,
+    /// and exported traces read them back from it. Without a store, each
+    /// lifecycle keeps its segments in a private in-memory store.
+    #[must_use]
+    pub fn with_fault_trace_segments(mut self, segments: Arc<dyn SegmentSink>) -> Self {
+        self.fault_trace_segments = Some(segments);
+        self
+    }
+
+    /// Returns the configured trace segment store, or a fresh in-memory one.
+    pub(super) fn fault_trace_segments(&self) -> Arc<dyn SegmentSink> {
+        self.fault_trace_segments
+            .clone()
+            .unwrap_or_else(|| Arc::new(crucible::segment_store::SharedSegmentStore::new()))
+    }
+
     /// Returns this configuration with the authoritative signal artifact store.
     ///
     /// Exact checkpoints copy every transitively referenced signal object into
@@ -549,6 +569,11 @@ impl ProductionVmLifecycleConfig {
             && self.debug_gateway_executable == other.debug_gateway_executable
             && self.debug == other.debug
             && self.fault_replay == other.fault_replay
+            && match (&self.fault_trace_segments, &other.fault_trace_segments) {
+                (None, None) => true,
+                (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+                _ => false,
+            }
             && same_store(
                 self.signal_artifacts.as_ref(),
                 other.signal_artifacts.as_ref(),

@@ -588,6 +588,7 @@ pub struct ProductionVmHotForkWorldContinuation {
     scheduler: Arc<SingleSchedulerCheckpoint>,
     event_log_objects: Arc<BTreeMap<ContentHash, Vec<u8>>>,
     signal_artifact_objects: Arc<BTreeMap<ContentHash, Vec<u8>>>,
+    fault_trace_objects: Arc<BTreeMap<ContentHash, Vec<u8>>>,
     trigger_state: EventGraphState,
     assertion_state: HostAssertionEvaluatorCheckpoint,
     terminal_verdict: Option<QuantumTerminalVerdict>,
@@ -622,6 +623,7 @@ impl ProductionVmHotForkWorldContinuation {
             scheduler: Arc::clone(&self.scheduler),
             event_log_objects: self.event_log_objects.clone(),
             signal_artifact_objects: self.signal_artifact_objects.clone(),
+            fault_trace_objects: Arc::clone(&self.fault_trace_objects),
             trigger_state: self.trigger_state.clone(),
             assertion_state: self.assertion_state.clone(),
             terminal_verdict: self.terminal_verdict.clone(),
@@ -878,6 +880,7 @@ impl ProductionVmHotForkWorldContinuation {
             scheduler: self.scheduler,
             event_log_objects: self.event_log_objects,
             signal_artifact_objects: self.signal_artifact_objects,
+            fault_trace_objects: self.fault_trace_objects,
             trigger_state: self.trigger_state,
             assertion_state: self.assertion_state,
             terminal_verdict: self.terminal_verdict,
@@ -1525,6 +1528,8 @@ impl ProductionVmLifecycleLoop {
             })?
             .into_iter()
             .collect();
+        let fault_trace_objects =
+            capture_fault_trace_objects(&fault_checkpoint, self.fault_trace_segments.as_ref())?;
         let selectable_catalog_plans = self.inner.backend().selectable_catalog_plans();
         let after = self.hot_fork_node_boundaries()?;
         if before != after || scheduler.frontier() != checkpoint_virtual_time {
@@ -1539,6 +1544,7 @@ impl ProductionVmLifecycleLoop {
             scheduler: Arc::new(scheduler),
             event_log_objects: Arc::new(event_log_objects),
             signal_artifact_objects: Arc::clone(&self.signal_artifact_objects),
+            fault_trace_objects: Arc::new(fault_trace_objects),
             trigger_state: self.trigger_state.clone(),
             assertion_state: self.assertion_evaluator.checkpoint(),
             terminal_verdict: self.terminal_verdict.clone(),

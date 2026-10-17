@@ -104,6 +104,12 @@ pub const MAX_FINDING_PRODUCTION_REPLAY_LIFECYCLE_OBJECTS: usize = 65_536;
 /// Maximum aggregate bytes retained for portable guest boot assets.
 pub const MAX_FINDING_PRODUCTION_REPLAY_GUEST_ASSET_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
+/// Maximum bytes in one side's resolved-effect trace bundle.
+///
+/// A capture carries the trace as one bundle leaf rather than as
+/// segment-referenced children, so the bundle keeps a carrier bound.
+pub const MAX_FINDING_PRODUCTION_REPLAY_TRACE_BUNDLE_BYTES: u64 = 64 * 1024 * 1024;
+
 /// Current production replay capture schema.
 pub const FINDING_PRODUCTION_REPLAY_CAPTURE_SCHEMA_VERSION: u32 = 4;
 
@@ -260,6 +266,8 @@ pub struct FindingProductionReplayExecutionSide {
     frontier: VirtualTime,
     event_log: FindingProductionReplayEventLog,
     terminal_fingerprints: Vec<FingerprintSample>,
+    /// Transport bundle of the segmented resolved-effect trace (RFC-0020
+    /// section 15.8), published as one capture leaf.
     resolved_effect_trace: Option<Arc<[u8]>>,
 }
 
@@ -316,6 +324,10 @@ impl FindingProductionReplayExecutionSide {
                 FindingProductionReplayIncomplete::MissingTerminalFingerprints,
             ));
         };
+        let resolved_effect_trace = snapshot
+            .resolved_effect_trace()
+            .map(trace_bundle)
+            .transpose()?;
 
         Ok(FindingProductionReplayCaptureOutcome::Complete(Self {
             outcome,
@@ -323,7 +335,7 @@ impl FindingProductionReplayExecutionSide {
             frontier: snapshot.frontier(),
             event_log,
             terminal_fingerprints: terminal_fingerprints.to_vec(),
-            resolved_effect_trace: snapshot.resolved_effect_trace().map(Arc::from),
+            resolved_effect_trace,
         }))
     }
 
@@ -377,11 +389,38 @@ impl FindingProductionReplayExecutionSide {
         &self.terminal_fingerprints
     }
 
-    /// Returns the resolved signal-effect trace, when the scenario has one.
+    /// Returns the resolved signal-effect trace bundle, when the scenario has one.
+    ///
+    /// [`ResolvedEffectTrace::from_bundle_bytes`] decodes it and authenticates
+    /// every segment.
     #[must_use]
     pub fn resolved_effect_trace(&self) -> Option<&[u8]> {
         self.resolved_effect_trace.as_deref()
     }
+}
+
+/// Copies a segmented trace into the bundle a portable capture carries.
+///
+/// The bundle length is known from the manifest, so a trace above
+/// [`MAX_FINDING_PRODUCTION_REPLAY_TRACE_BUNDLE_BYTES`] is refused before any
+/// segment is read.
+fn trace_bundle(
+    trace: &ResolvedEffectTrace,
+) -> Result<Arc<[u8]>, FindingProductionReplayCaptureError> {
+    let length = trace
+        .bundle_len()
+        .map_err(|_| FindingProductionReplayCaptureError::InvalidResolvedEffectTrace)?;
+    if length > MAX_FINDING_PRODUCTION_REPLAY_TRACE_BUNDLE_BYTES {
+        return Err(FindingProductionReplayCaptureError::LimitExceeded {
+            limit: "finding-production-replay-resolved-effect-trace-bytes",
+        });
+    }
+    let maximum = usize::try_from(MAX_FINDING_PRODUCTION_REPLAY_TRACE_BUNDLE_BYTES)
+        .map_err(|_| FindingProductionReplayCaptureError::InvalidResolvedEffectTrace)?;
+    trace
+        .to_bundle_bytes(maximum)
+        .map(Arc::from)
+        .map_err(|_| FindingProductionReplayCaptureError::InvalidResolvedEffectTrace)
 }
 
 /// Classifies a failure to seal or read a replay-side log.
