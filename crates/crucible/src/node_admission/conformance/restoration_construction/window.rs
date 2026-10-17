@@ -242,6 +242,7 @@ impl InstalledConformancePlan {
             size_of::<Result<Rc<super::transaction_group::OriginalRestorationTransactionGroup>, Rc<super::transaction_group::OriginalRestorationTransactionGroup>>>(),
             size_of::<std::iter::Zip<std::slice::Iter<'static, RefCell<Option<CompleteOriginalRestorationTransactionTarget>>>, std::slice::Iter<'static, OnceCell<CompleteOriginalRestorationTransactionTarget>>>>(),
             OriginalRestorationColdGroup::counter_scratch_data(),
+            installed_import::counter_scratch_data(),
             PacketCompleteSemanticSource::original_restoration_target_counter_scratch_data(),
             CompleteOriginalNativeTicket::original_restoration_journal_counter_scratch_data(),
             size_of::<OriginalRestorationNodeDispatch<'static>>(),
@@ -1386,3 +1387,6 @@ pub use producer_execution::{
 };
 
 pub(crate) use producer_execution::ProducerExecutionPhase;
+
+#[path = "window/installed_import.rs"]
+mod installed_import;

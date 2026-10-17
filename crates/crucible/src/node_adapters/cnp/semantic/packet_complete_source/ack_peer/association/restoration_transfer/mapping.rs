@@ -71,7 +71,7 @@ impl PacketCompleteSemanticSource {
         controller
             .prepare_original_selected_archived_mapping_into(
                 inputs.host,
-                inputs.native,
+                &inputs.native,
                 inputs.host_reference,
                 inputs.native_reference,
                 nonce,

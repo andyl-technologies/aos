@@ -138,13 +138,7 @@ impl OriginalRestorationNodeContinuationInspection<'_> {
             signer,
             &inspection,
         )?;
-        let cold = self
-            .window
-            .cold
-            .get()
-            .ok_or(RuntimeError::OwnerUnavailable)?
-            .original_owner_data(self.selected, source, target.ticket_data()?)?;
-        let runtime = self.window.archive.original_runtime_record_data()?;
+        self.window.archive.original_runtime_record_data()?;
         let maximum_record = self
             .window
             .archive
@@ -162,18 +156,14 @@ impl OriginalRestorationNodeContinuationInspection<'_> {
             signer,
             uploaded,
             |held, reference| {
-                source
-                    .authenticate_original_retained_restoration_validation_data(
-                        &cold,
-                        runtime,
-                        self.window.archive.content(),
-                        held,
-                        validation,
-                        maximum_record,
-                        other,
-                        self.window.policy.maximum_requested_bytes,
-                    )
-                    .map_err(|_| RuntimeError::InvalidReceipt)?;
+                self.window.authenticate_original_import_boundary_data(
+                    self.selected,
+                    source,
+                    held,
+                    validation,
+                    maximum_record,
+                    other,
+                )?;
                 // Every later inspection repeats the actual receipt/MAC chain and
                 // model predicates before comparing these correspondence identities.
                 observed = Some(OriginalRestorationNativeContinuationIdentity {

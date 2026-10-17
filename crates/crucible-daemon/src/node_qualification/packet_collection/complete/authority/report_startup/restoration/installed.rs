@@ -17,6 +17,52 @@ use crucible_cas::content_store::{DirectoryBlobBackend, DirectoryRefBackend};
 use std::sync::Arc;
 
 impl PacketCompleteReportStartupHolder {
+    /// Releases redundant decoded native and registry imports after real seeding.
+    ///
+    /// This explicit local administration retains the original archive, decoded
+    /// Host and every live journal. It neither changes immutable binding bytes nor
+    /// performs Capture, native publication or operation retirement.
+    ///
+    /// # Errors
+    /// Refuses foreign/incomplete installation, previous actions or release,
+    /// busy owners, stale evidence and the unchanged full resource policy.
+    pub fn release_original_restored_import_duplicates(
+        original: &Rc<RefCell<Self>>,
+        activation: &crucible::node_contract::ActivationRecord,
+    ) -> Result<(usize, usize), RuntimeError> {
+        let held = original.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
+        held.authenticate_native_origin_data()?;
+        let window = held
+            .restoration_window
+            .get()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        let StartupHolderPurpose::FreshRestoration(capsule) = &held.purpose else {
+            return Err(RuntimeError::ForeignAuthority);
+        };
+        let outputs = held
+            .host_sdk_outputs
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        let sdks = [
+            outputs[0].as_ref().ok_or(RuntimeError::OwnerUnavailable)?,
+            outputs[1].as_ref().ok_or(RuntimeError::OwnerUnavailable)?,
+            outputs[2].as_ref().ok_or(RuntimeError::OwnerUnavailable)?,
+        ];
+        let capsule = capsule.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
+        let runtime = capsule.runtime_data()?;
+        window.release_original_installed_import_duplicates(
+            &held.plan,
+            sdks,
+            &held.authority.original_launches,
+            held.authority
+                .private_launches
+                .each_ref()
+                .map(Vec::as_slice),
+            &runtime,
+            activation,
+        )
+    }
+
     /// Restores the original complete world through its actual installed owners.
     ///
     /// The source, tickets and actual native attempts remain in this registered
@@ -367,6 +413,13 @@ impl PacketCompleteReportStartupHolder {
             // The fixed failure diagnostic owns a String even when the older
             // installer stops before the first scheduling admission exists.
             + Self::RESTORATION_FAILURE.len()
+            + size_of::<std::cell::Ref<'static, crucible::node_contract::ConformanceRuntime>>()
+            + size_of::<Result<std::cell::Ref<'static, crucible::node_contract::ConformanceRuntime>, RuntimeError>>()
+            + size_of::<Result<HolderRef, RuntimeError>>()
+            + size_of::<Result<CapsuleRef, RuntimeError>>()
+            + size_of::<Result<OutputsRef, RuntimeError>>()
+            + size_of::<(usize, usize)>()
+            + size_of::<Result<(usize, usize), RuntimeError>>()
             + size_of::<HolderRef>()
             + size_of::<Result<HolderRef, std::cell::BorrowError>>()
             + size_of::<Result<HolderRef, RuntimePollFailure>>()

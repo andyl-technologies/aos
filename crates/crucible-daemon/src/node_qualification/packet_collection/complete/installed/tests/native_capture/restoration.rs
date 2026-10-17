@@ -52,6 +52,7 @@ struct FreshWorld {
     observation: Option<ValidatedSchedulingObservation>,
     publication_inputs: Option<PacketRestoredProducerPublicationInputs>,
     continuation: Option<ProducerContinuation>,
+    idle_continuation: Option<(Position, Position)>,
 }
 
 impl FreshWorld {
@@ -105,6 +106,7 @@ impl FreshWorld {
             observation: None,
             publication_inputs: Some(publication_inputs),
             continuation: None,
+            idle_continuation: None,
         }
     }
 
@@ -238,6 +240,16 @@ impl FreshWorld {
         .unwrap();
         assert!(self.publication_inputs.is_none());
 
+        // An actual prepared target alone has no completed installation,
+        // first Observe or seed authority to release decoded imports.
+        assert!(
+            PacketCompleteReportStartupHolder::release_original_restored_import_duplicates(
+                installed.holder(),
+                activation,
+            )
+            .is_err()
+        );
+
         let observed_node = sources[0].installation().descriptor.id.clone();
         self.observation = Some(
             installed
@@ -329,6 +341,44 @@ impl FreshWorld {
         assert!(self.continuation.is_some());
     }
 
+    fn continue_empty_producer(&mut self, label: &str) {
+        let installed = self.target.as_ref().unwrap();
+        let node = &self.observation.as_ref().unwrap().native().node;
+        let previous = self.continuation.as_ref().unwrap().reached;
+        let idle = &mut self.idle_continuation;
+        PacketCompleteReportStartupHolder::execute_original_restored_producer(
+            installed.holder(),
+            node,
+            id(&format!("{label}-restored-empty-producer")),
+            U64::new(7),
+            &mut |outcome| {
+                // The same finite two-slot publisher funds a SECOND real
+                // Begin/Poll/durable ACK/Retire/final Observe. The immutable
+                // program has no second payload, so this is genuine empty
+                // HorizonPark recurrence, not deferred-publication coverage.
+                assert!(idle.is_none());
+                assert_eq!(&outcome.node, node);
+                let ProgressEvidence::Exact { reached, stop } = &outcome.progress else {
+                    panic!("second Producer did not return exact native progress");
+                };
+                assert_eq!(*stop, crucible::node_contract::StopReason::HorizonPark);
+                assert_eq!(
+                    *reached,
+                    Position::new(U64::new(7), U64::new(0), Phase::BoundaryControl),
+                );
+                assert!(*reached > previous);
+                assert!(outcome.retained_outputs.is_empty());
+                let scheduling = outcome.scheduling.as_ref().unwrap();
+                assert_eq!(scheduling.reached, *reached);
+                assert!(scheduling.publications.is_empty());
+                *idle = Some((*reached, scheduling.closed_prefix));
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(self.idle_continuation.is_some());
+    }
+
     fn retire_and_reclaim(&mut self) {
         let Some(installed) = &self.target else {
             return;
@@ -418,10 +468,37 @@ pub(super) fn restore_two_worlds_and_observe(
             second.observation.as_ref().unwrap().native(),
         );
 
+        // Select the local administration in only one actual World. The other
+        // keeps its full decoded import graphs as the behavioral reference.
+        let (before, after) =
+            PacketCompleteReportStartupHolder::release_original_restored_import_duplicates(
+                left.holder(),
+                left_activation,
+            )
+            .unwrap();
+        assert!(
+            after < before,
+            "the exact retained decoded owners were not released"
+        );
+        assert!(
+            PacketCompleteReportStartupHolder::release_original_restored_import_duplicates(
+                left.holder(),
+                left_activation,
+            )
+            .is_err()
+        );
+
         for (world, label) in worlds.iter_mut().zip(["first", "second"]) {
             world.continue_nonempty_producer(label);
         }
         assert_eq!(worlds[0].continuation, worlds[1].continuation);
+
+        // Preserve the first nonempty operation and compare a real consecutive
+        // second lifecycle with and without local decoded-import release.
+        for (world, label) in worlds.iter_mut().zip(["first", "second"]) {
+            world.continue_empty_producer(label);
+        }
+        assert_eq!(worlds[0].idle_continuation, worlds[1].idle_continuation);
     }));
 
     // A cleanup error in one World must not prevent attempting cleanup under

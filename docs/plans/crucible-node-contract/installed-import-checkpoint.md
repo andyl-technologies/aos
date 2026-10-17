@@ -30,6 +30,10 @@ Clearing the unrelated Owned11-only `InstalledArchivedProtocolState` slot would
 not change these consumers. A digest or a successful installation flag cannot
 replace the predicates they currently evaluate.
 
+The first concrete cohort releases only decoded native-before, native-after and
+registry owners; it retains decoded Host for the actual original Capture-terminal
+signing loan until a separately admitted terminal projection replaces that loan.
+
 Implement this sequence under a new explicitly selected reader family:
 
 1. **Reach genuine installation.** Complete all four actual owner restorations,

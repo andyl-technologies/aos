@@ -236,3 +236,17 @@ impl ConformanceRuntime {
         context.validate_current(&self.runtime)
     }
 }
+
+impl ConformanceRuntime {
+    pub(crate) fn authenticate_installed_import_release_current_data(
+        &self,
+        window: &CompleteOriginalRestorationWindow,
+        plan: &InstalledConformancePlan,
+    ) -> Result<(), RuntimeError> {
+        self.authenticate_complete_original_restoration_origin()?;
+        if !self.graph.plan().is_same_original_plan_data(plan) {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        window.authenticate_installed_import_release_current_data(plan, &self.runtime)
+    }
+}

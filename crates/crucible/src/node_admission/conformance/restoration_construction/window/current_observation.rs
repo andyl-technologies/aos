@@ -129,7 +129,7 @@ impl OriginalRestoredSchedulingObservationConstructionData {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum CurrentObservationStage {
+pub(super) enum CurrentObservationStage {
     Empty,
     Quoted,
     Started,
@@ -145,6 +145,16 @@ pub(super) struct CurrentObservationLedger {
 }
 
 impl CurrentObservationLedger {
+    pub(super) fn authenticate_no_pending_data(&self) -> Result<(), RuntimeError> {
+        if !matches!(
+            self.stage,
+            CurrentObservationStage::Empty | CurrentObservationStage::Verified
+        ) {
+            return Err(RuntimeError::OutstandingObligations);
+        }
+        Ok(())
+    }
+
     pub(super) fn new() -> Self {
         Self {
             row: None,
@@ -633,6 +643,10 @@ impl CompleteOriginalRestorationWindow {
         plan: &InstalledConformancePlan,
         world: &WorldActivation,
     ) -> Result<(), RuntimeError> {
+        self.cold
+            .get()
+            .ok_or(RuntimeError::OwnerUnavailable)?
+            .authenticate_import_release_idle_data()?;
         runtime.authenticate_original_installed_runtime_data(
             self,
             &self.archive,

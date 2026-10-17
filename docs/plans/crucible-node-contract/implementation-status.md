@@ -1021,8 +1021,10 @@ reason strings and both independently owned uncertain committed prefixes,
 including spare identifier/vector capacity. Both exact/one-byte-short controls
 pass. The full refreshed suites pass 1,747 Core, seven contract and 1,051 Provider
 tests with zero failures; 32 Core and thirteen Provider native controls remain
-explicitly ignored. The mandatory application-target build is in progress for
-this checkpoint.
+explicitly ignored. The mandatory application-target gate passes for this
+SDK/storage checkpoint, compiling 167 test artifacts across 48 application roots,
+including 69 integration targets. This compiles the targets without executing
+them; subsequent import-release changes require their own final-source gate.
 
 Recursive serialization of additional decoded import ancestors is paused while
 the smaller installed-import checkpoint design is reviewed. Its first stage
@@ -1036,6 +1038,39 @@ not perform either transition implicitly. The separate
 replacements and behavioral acceptance for both stages. The planned first
 implementation retains the decoded Host needed by existing signing readers and
 targets only the other three decoded import graphs.
+
+### Guarded decoded-import release
+
+The local release implementation keeps the original verified archive, decoded
+Host and signing terminal, all current native/SDK/Source journals, pending and
+deferred evidence, and actual Commit/Hold/currentness proofs. Its private
+installed-boundary witness replaces only repeated immutable import validation.
+All three decoded-owner write loans are acquired before removing any native-
+before, native-after or registry graph. Failed admission or final checks retain
+the old graphs; a completed release remains spent even if its later census fails.
+Capture does not invoke this administration or serialize the local witness.
+
+Normal six-crate, all-feature/all-target checking passes after correcting two
+explicit Rust module paths. The full Core suite passes 1,748 tests with zero
+failures and 32 ignored; all seven contract tests pass. The actual two-world
+fixture selects release in only one world, requires a smaller same-owner backing
+census and repeated-release refusal, and compares real Producer continuations.
+It also adds a genuine empty second lifecycle under the existing two-slot
+publisher allowance. These native assertions remain unrun: initial startup still
+fails before either fresh world. No resident-memory or speed reduction is
+claimed. The existing finite model cannot exercise an evaluation preceding the
+next operation's start; genuine deferred-reaction coverage needs a distinct
+model extension, not weakened old guards.
+
+Commit `7b2a73d441` fixes retirement of prepared but unlaunched process
+reservations. Their existing guard destructor releases the unused expected slots
+or forwards an actual partial Child to its original supervisor. Commands, wire
+banks and spent flags stay retained. The three-slot regression passes, and the
+real failing startup now completes its reclamation assertions. A subsequent
+trace reaches all three real process launches and bootstrap writes, then refuses
+baseline admission. Its byte terms are 3,265,796,731 plus 3,947,862,714 against
+4,294,967,296; descriptor usage stays within its separate limit. All temporary
+tracing is removed. The selected lifecycle quote is under investigation.
 
 ## Known gaps and exit criteria
 

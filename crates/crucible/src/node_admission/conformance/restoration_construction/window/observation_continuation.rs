@@ -46,34 +46,25 @@ impl CompleteOriginalRestorationWindow {
             .and_then(OnceCell::get)
             .ok_or(RuntimeError::OwnerUnavailable)?;
         let ticket = target.ticket_data()?;
-        let cold = self
-            .cold
-            .get()
-            .ok_or(RuntimeError::OwnerUnavailable)?
-            .original_owner_data(selected, source, ticket)?;
         let row = ticket
             .native_restoration_construction_data()?
             .original_archived_validation_construction_data()
             .ok_or(RuntimeError::OwnerUnavailable)?;
         // This SAME independent row remains in every Transaction/Installed
         // whole-window sum. It is not borrowed from Source's evidence budget.
-        source
-            .authenticate_original_retained_restoration_validation_data(
-                &cold,
-                self.archive.original_runtime_record_data()?,
-                self.archive.content(),
-                held,
-                row,
-                self.archive
-                    .original_archive_limits_data()?
-                    .state
-                    .maximum_record_bytes,
-                self.observed_other_retained
-                    .get()
-                    .ok_or(RuntimeError::OwnerUnavailable)?,
-                self.policy.maximum_requested_bytes,
-            )
-            .map_err(|_| RuntimeError::InvalidReceipt)?;
+        self.authenticate_original_import_boundary_data(
+            selected,
+            source,
+            held,
+            row,
+            self.archive
+                .original_archive_limits_data()?
+                .state
+                .maximum_record_bytes,
+            self.observed_other_retained
+                .get()
+                .ok_or(RuntimeError::OwnerUnavailable)?,
+        )?;
         // Temporary semantics/model owners above are gone before Node's
         // actual copy/comparison callback. Source still owns its read fence.
         self.authenticate_original_retained_observation_identity_data(selected, source, proof)

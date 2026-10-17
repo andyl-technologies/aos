@@ -9,7 +9,10 @@
 use super::*;
 use crate::node_contract::RuntimeError;
 use crate::node_state::CompleteOriginalRestorationSource;
-use std::rc::Rc;
+use std::{
+    cell::{Cell, OnceCell, Ref, RefCell},
+    rc::Rc,
+};
 
 /// Retains actual grouped cold outputs beneath one genuine restoration action.
 ///
@@ -25,6 +28,7 @@ pub(crate) struct OriginalRestorationColdGroup {
     owners: [Option<RetainedColdOwner>; 3],
     staging_started: bool,
     staging_finished: bool,
+    import_release: Cell<ImportReleaseStage>,
 }
 
 /// Lends exact decoder-produced owners without a live authority conversion.
@@ -33,9 +37,9 @@ pub(crate) struct OriginalRestorationColdOwnerView<'a> {
     pub(crate) owner: &'a NativeOwnerState,
     pub(crate) journal: &'a PacketCompleteSettledJournal,
     pub(crate) host: &'a SealedHistoricalControllerState,
-    pub(crate) native_before: &'a SealedHistoricalNativeState,
-    pub(crate) native_after: &'a SealedHistoricalNativeState,
-    pub(crate) registry: &'a SealedHistoricalHostExtensionRegistry,
+    pub(crate) native_before: Ref<'a, SealedHistoricalNativeState>,
+    pub(crate) native_after: Ref<'a, SealedHistoricalNativeState>,
+    pub(crate) registry: Ref<'a, SealedHistoricalHostExtensionRegistry>,
 }
 
 struct RetainedColdOwner {
@@ -57,17 +61,26 @@ struct RetainedColdOwner {
     before_reference: Option<ContentRef>,
     before_raw: Vec<u8>,
     before_encoded: Option<Vec<u8>>,
-    before: Option<SealedHistoricalNativeState>,
+
     host_encoded: Option<Vec<u8>>,
     native_encoded: Option<Vec<u8>>,
     registry_encoded: Option<Vec<u8>>,
-    registry: Option<SealedHistoricalHostExtensionRegistry>,
+
     host: Option<SealedHistoricalControllerState>,
-    native: Option<SealedHistoricalNativeState>,
+
     known_requested: Option<usize>,
     native_restoration_demand: Option<crucible_node_provider::protocol_snapshot::owned11::native::outer::NativeOwnedProtocol11AllocationDemand>,
     attempted: bool,
     failed: bool,
+    decoded: RefCell<DecodedImportOwners>,
+    installed_boundary: OnceCell<InstalledImportBoundary>,
+}
+
+struct ColdSigningView<'a> {
+    source: &'a PacketCompleteSemanticSource,
+    owner: &'a NativeOwnerState,
+    journal: &'a PacketCompleteSettledJournal,
+    host: &'a SealedHistoricalControllerState,
 }
 
 /// Moves all actual cold results into their preinstalled root during unwinding.
@@ -105,6 +118,7 @@ impl OriginalRestorationColdGroup {
             owners: std::array::from_fn(|_| None),
             staging_started: false,
             staging_finished: false,
+            import_release: Cell::new(ImportReleaseStage::Retained),
         });
         Ok(())
     }
@@ -193,12 +207,12 @@ impl OriginalRestorationColdGroup {
     ///
     /// This inert loan does not authenticate a live peer or permit a signer.
     /// The action independently checks its actual source/member/currentness.
-    pub(crate) fn original_owner_data(
+    fn original_signing_owner_data(
         &self,
         index: usize,
         source: &Rc<PacketCompleteSemanticSource>,
         ticket: &crate::node_state::CompleteOriginalNativeTicket,
-    ) -> Result<OriginalRestorationColdOwnerView<'_>, RuntimeError> {
+    ) -> Result<ColdSigningView<'_>, RuntimeError> {
         self.origin()?;
         ticket.authenticate_source(&self.archive)?;
         let original_source = self
@@ -242,7 +256,7 @@ impl OriginalRestorationColdGroup {
         if self.archive.content().get(journal_reference).is_none() {
             return Err(RuntimeError::OwnerUnavailable);
         }
-        let view = OriginalRestorationColdOwnerView {
+        let view = ColdSigningView {
             source: original_source,
             owner,
             journal,
@@ -250,34 +264,52 @@ impl OriginalRestorationColdGroup {
                 .host
                 .as_ref()
                 .ok_or(RuntimeError::OwnerUnavailable)?,
-            native_before: retained
-                .before
-                .as_ref()
-                .ok_or(RuntimeError::OwnerUnavailable)?,
-            native_after: retained
-                .native
-                .as_ref()
-                .ok_or(RuntimeError::OwnerUnavailable)?,
-            registry: retained
-                .registry
-                .as_ref()
-                .ok_or(RuntimeError::OwnerUnavailable)?,
         };
-        // All four opaque slots must still represent completed real decodes.
         view.host
-            .historical()
-            .map_err(|_| RuntimeError::InvalidReceipt)?;
-        view.native_before
-            .historical()
-            .map_err(|_| RuntimeError::InvalidReceipt)?;
-        view.native_after
-            .historical()
-            .map_err(|_| RuntimeError::InvalidReceipt)?;
-        view.registry
             .historical()
             .map_err(|_| RuntimeError::InvalidReceipt)?;
         self.origin()?;
         Ok(view)
+    }
+
+    pub(crate) fn original_owner_data(
+        &self,
+        index: usize,
+        source: &Rc<PacketCompleteSemanticSource>,
+        ticket: &crate::node_state::CompleteOriginalNativeTicket,
+    ) -> Result<OriginalRestorationColdOwnerView<'_>, RuntimeError> {
+        let stable = self.original_signing_owner_data(index, source, ticket)?;
+        let retained = self.owners[index]
+            .as_ref()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        let decoded = retained
+            .decoded
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        let before = Ref::filter_map(Ref::clone(&decoded), |owners| owners.before.as_ref())
+            .map_err(|_| RuntimeError::OwnerUnavailable)?;
+        let native = Ref::filter_map(Ref::clone(&decoded), |owners| owners.native.as_ref())
+            .map_err(|_| RuntimeError::OwnerUnavailable)?;
+        let registry = Ref::filter_map(decoded, |owners| owners.registry.as_ref())
+            .map_err(|_| RuntimeError::OwnerUnavailable)?;
+        before
+            .historical()
+            .map_err(|_| RuntimeError::InvalidReceipt)?;
+        native
+            .historical()
+            .map_err(|_| RuntimeError::InvalidReceipt)?;
+        registry
+            .historical()
+            .map_err(|_| RuntimeError::InvalidReceipt)?;
+        Ok(OriginalRestorationColdOwnerView {
+            source: stable.source,
+            owner: stable.owner,
+            journal: stable.journal,
+            host: stable.host,
+            native_before: before,
+            native_after: native,
+            registry,
+        })
     }
 
     /// Borrows the same completed cold originals for a Source construction quote.
@@ -306,7 +338,8 @@ impl OriginalRestorationColdGroup {
             return Err(RuntimeError::ForeignAuthority);
         }
         native.authenticate_original_source_data(inputs.source)?;
-        let cold = self.original_owner_data(inputs.selected, inputs.source, inputs.ticket)?;
+        let cold =
+            self.original_signing_owner_data(inputs.selected, inputs.source, inputs.ticket)?;
         let host = cold
             .host
             .historical()
@@ -366,7 +399,7 @@ impl OriginalRestorationColdGroup {
         source: &Rc<PacketCompleteSemanticSource>,
         ticket: &crate::node_state::CompleteOriginalNativeTicket,
     ) -> Result<[&'a ContentRef; 5], RuntimeError> {
-        let cold = self.original_owner_data(index, source, ticket)?;
+        let cold = self.original_signing_owner_data(index, source, ticket)?;
         let retained = self.owners[index]
             .as_ref()
             .ok_or(RuntimeError::OwnerUnavailable)?;
@@ -407,7 +440,7 @@ impl OriginalRestorationColdGroup {
         observed_other_retained_bytes: usize,
     ) -> Result<crate::node_admission::OriginalRestorationSigningInputs<'a>, RuntimeError> {
         native.authenticate_original_source_data(source)?;
-        let cold = self.original_owner_data(index, source, ticket)?;
+        let cold = self.original_signing_owner_data(index, source, ticket)?;
         let references = self.original_restoration_references_data(index, source, ticket)?;
         let host = cold
             .host
@@ -463,6 +496,7 @@ impl OriginalRestorationColdGroup {
     /// Names fixed raw-view/counter work before walking the first sealed graph.
     pub(crate) fn counter_scratch_data() -> usize {
         size_of::<[usize; 8]>()
+            .saturating_add(Self::installed_import_counter_scratch_data())
             .saturating_add(size_of::<OriginalRestorationColdOwnerView<'static>>())
             .saturating_add(size_of::<crate::node_admission::OriginalRestorationSigningInputs<'static>>())
             .saturating_add(size_of::<Result<crate::node_admission::OriginalRestorationSigningInputs<'static>, RuntimeError>>())
@@ -620,17 +654,20 @@ impl RetainedColdOwner {
             before_reference,
             before_raw,
             before_encoded,
-            before,
             host_encoded,
             native_encoded,
             registry_encoded,
-            registry,
             host,
-            native,
             known_requested,
             native_restoration_demand,
             attempted,
             failed,
+            decoded: RefCell::new(DecodedImportOwners {
+                before,
+                native,
+                registry,
+            }),
+            installed_boundary: OnceCell::new(),
         }
     }
 
@@ -654,18 +691,23 @@ impl RetainedColdOwner {
             before_reference,
             before_raw,
             before_encoded,
-            before,
             host_encoded,
             native_encoded,
             registry_encoded,
-            registry,
             host,
-            native,
             known_requested: _,
             native_restoration_demand: _,
             attempted: _,
             failed: _,
+            decoded,
+            installed_boundary: _,
         } = self;
+        let decoded = decoded.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
+        let DecodedImportOwners {
+            before,
+            native,
+            registry,
+        } = &*decoded;
         let mut total = 0usize;
         for aliases in [
             host_aliases,
@@ -848,3 +890,7 @@ fn journal_storage_data(
     }
     Ok(total)
 }
+
+#[path = "retained/installed_import.rs"]
+mod installed_import;
+use installed_import::{DecodedImportOwners, ImportReleaseStage, InstalledImportBoundary};

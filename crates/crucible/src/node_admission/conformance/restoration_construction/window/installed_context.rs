@@ -355,11 +355,6 @@ impl CompleteOriginalRestorationWindow {
             signer,
             &inspection,
         )?;
-        let cold = self
-            .cold
-            .get()
-            .ok_or(RuntimeError::OwnerUnavailable)?
-            .original_owner_data(selected, source, target.ticket_data()?)?;
         let row = target
             .ticket_data()?
             .native_restoration_construction_data()?
@@ -377,20 +372,16 @@ impl CompleteOriginalRestorationWindow {
             uploaded,
             |held, reference| {
                 self.authenticate_original_activation_hold_data(selected, scope, held, reference)?;
-                source
-                    .authenticate_original_retained_restoration_validation_data(
-                        &cold,
-                        record,
-                        self.archive.content(),
-                        held,
-                        row,
-                        maximum_record,
-                        self.observed_other_retained
-                            .get()
-                            .ok_or(RuntimeError::OwnerUnavailable)?,
-                        self.policy.maximum_requested_bytes,
-                    )
-                    .map_err(|_| RuntimeError::InvalidReceipt)?;
+                self.authenticate_original_import_boundary_data(
+                    selected,
+                    source,
+                    held,
+                    row,
+                    maximum_record,
+                    self.observed_other_retained
+                        .get()
+                        .ok_or(RuntimeError::OwnerUnavailable)?,
+                )?;
                 inspect(record, scope, self.archive.content())
             },
             || self.authenticate_original_complete_member_data(&plan, scope),
@@ -433,18 +424,6 @@ impl CompleteOriginalRestorationWindow {
             .ok_or(RuntimeError::OwnerUnavailable)?
             .scope_data()?;
         let proof = self.original_complete_scope_proof_identity_data()?;
-        let cold = self
-            .cold
-            .get()
-            .ok_or(RuntimeError::OwnerUnavailable)?
-            .original_owner_data(
-                selected,
-                source,
-                self.targets[selected]
-                    .get()
-                    .ok_or(RuntimeError::OwnerUnavailable)?
-                    .ticket_data()?,
-            )?;
         let validation = self.targets[selected]
             .get()
             .ok_or(RuntimeError::OwnerUnavailable)?
@@ -476,20 +455,16 @@ impl CompleteOriginalRestorationWindow {
                         self.authenticate_original_activation_hold_data(
                             selected, scope, held, reference,
                         )?;
-                        source
-                            .authenticate_original_retained_restoration_validation_data(
-                                &cold,
-                                record,
-                                self.archive.content(),
-                                held,
-                                validation,
-                                maximum_record,
-                                self.observed_other_retained
-                                    .get()
-                                    .ok_or(RuntimeError::OwnerUnavailable)?,
-                                self.policy.maximum_requested_bytes,
-                            )
-                            .map_err(|_| RuntimeError::InvalidReceipt)?;
+                        self.authenticate_original_import_boundary_data(
+                            selected,
+                            source,
+                            held,
+                            validation,
+                            maximum_record,
+                            self.observed_other_retained
+                                .get()
+                                .ok_or(RuntimeError::OwnerUnavailable)?,
+                        )?;
                         inspect(record, scope, self.archive.content())
                     },
                     final_currency,

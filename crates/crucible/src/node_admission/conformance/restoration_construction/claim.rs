@@ -47,7 +47,7 @@ pub(crate) struct OriginalRestorationMappingInputs<'a> {
     pub(crate) source: &'a Rc<PacketCompleteSemanticSource>,
     pub(crate) plan: &'a InstalledConformancePlan,
     pub(crate) host: &'a crucible_node_provider::protocol_snapshot::owned11::outer::SealedHistoricalControllerState,
-    pub(crate) native: &'a crucible_node_provider::protocol_snapshot::owned11::native::outer::SealedHistoricalNativeState,
+    pub(crate) native: std::cell::Ref<'a, crucible_node_provider::protocol_snapshot::owned11::native::outer::SealedHistoricalNativeState>,
     pub(crate) host_reference: &'a ContentRef,
     pub(crate) native_reference: &'a ContentRef,
 }
