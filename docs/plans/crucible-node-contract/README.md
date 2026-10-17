@@ -20,6 +20,7 @@ identifiers refer to RFC-0025; the RFC controls if these plans disagree with it.
 | [Qualification plan](qualification-plan.md) | Existing regression coverage, new behavioral qualification, performance methodology, and requirement traceability |
 | [Implementation status](implementation-status.md) | Tested implementation stages, active integration work, and native qualification gaps |
 | [CNP construction and preparation custody](cnp-owned-preparation.md) | Original controller slots, partial provider ownership and current component qualification |
+| [Installed-import checkpoint and consumed journal retirement](installed-import-checkpoint.md) | Proposed initial decoded-import release, later durable journal retirement, reader changes and behavioral acceptance |
 
 ## Scope and engineering posture
 

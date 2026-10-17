@@ -980,6 +980,63 @@ of compilation. The remaining charge requires investigation; the phase change
 is not a successful startup fix. The fixture has not reached native Capture,
 source removal, either restored operation or recapture successfully.
 
+### SDK startup commitments and exact retained history
+
+Commits `593f52b6d0`, `0267b6ae70` and `ea85c352f2` add exact inert
+history records and borrowed byte encoding. The full Provider suite passes
+1,051 tests with zero failures and thirteen ignored; the corresponding Core
+suite passes 1,745 tests and the contract suite passes seven. These serializers
+do not admit a new Capture format or manufacture a restored execution owner.
+
+Commit `1f847db9eb` derives future report commitments from the actual completed
+native invocation's authenticated purpose. Original execution retains the full
+OriginalObserve12 allowance; a fresh target retains the full
+FreshCompletedAdmit13 allowance. Both allocation-row records and all existing
+owners remain charged. Sequential native/report temporary phases share their
+peak, while SDK construction, Hello, native retained commitments and all three
+Source commitments remain independently additive. Neither the production
+limits nor the fixture's existing 4 GiB limit changes.
+
+The genuine full-roster SDK admission control now passes, including actual
+three-member purpose checks and foreign-Source refusal. The real initial scene
+still fails later. A temporary diagnostic observes a 3,628,311,225-byte SDK
+admission projection and successful reservation checks for all three members;
+this is requested storage, not RSS. A subsequent diagnostic reaches successful
+launch/authentication of the first actual provider process, then fails while
+writing its private bootstrap message. That run also fails the cleanup-completion
+assertion, finishing with zero passes and one failure in 46.46 seconds. A later
+process inspection finds no live reference-provider process; this does not make
+the failed completion assertion pass. Temporary tracing is removed after each
+run. The refreshed Core and contract suites pass 1,745 and seven tests
+respectively, with 32 explicit native Core controls ignored.
+
+An earlier proposed refinement of the initial14 report row was not the cause
+of this improvement: these fixtures use invocation15 and retain its full broad
+authorized report row. No successful native Capture, restored Producer operation
+or recapture is claimed by the startup result.
+
+Commit `efcb69dca1` fixes omitted allocated storage in saved operation close
+submissions and dispatch effects. The bounded snapshot walk now counts refused
+reason strings and both independently owned uncertain committed prefixes,
+including spare identifier/vector capacity. Both exact/one-byte-short controls
+pass. The full refreshed suites pass 1,747 Core, seven contract and 1,051 Provider
+tests with zero failures; 32 Core and thirteen Provider native controls remain
+explicitly ignored. The mandatory application-target build is in progress for
+this checkpoint.
+
+Recursive serialization of additional decoded import ancestors is paused while
+the smaller installed-import checkpoint design is reviewed. Its first stage
+would replace repeated readers of immutable imported ancestry and release only
+their duplicate decoded Core graphs. All current SDK/native/Source journals,
+pending inputs, deferred evidence, current proofs and frontiers remain live.
+Later consumed-journal retirement requires a separate durable post-Observe
+checkpoint, acknowledgement, nonreuse state and reader migration. Capture must
+not perform either transition implicitly. The separate
+[installed-import plan](installed-import-checkpoint.md) gives ordering, reader
+replacements and behavioral acceptance for both stages. The planned first
+implementation retains the decoded Host needed by existing signing readers and
+targets only the other three decoded import graphs.
+
 ## Known gaps and exit criteria
 
 Completion requires the full [qualification plan](qualification-plan.md),
