@@ -2,7 +2,8 @@
 //!
 //! This installed control launches only the explicitly measured source-built
 //! packet provider. The expected cut is a request; actual unchanged-cut proofs
-//! and the locally authenticated archive must establish it independently.
+//! and the locally authenticated archive must establish it independently. The
+//! selected reload then supplies real tickets to a distinct installed target16.
 
 use super::*;
 use crate::node_observed_executor::StoredWorldActivationPublisher;
@@ -169,4 +170,23 @@ fn source_built_packet_three_stored_grants_capture_and_selected_reload() {
     assert_eq!(loaded.manifest(), captured.manifest());
     assert_eq!(loaded.owners().len(), 4);
     assert!(installed.prepare().is_err());
+    // The new target cannot borrow an old live Source, actor or controller.
+    // The separate unstarted fixture keeps the measured files alive.
+    drop(installed);
+
+    let second = archive.load_complete_original(captured.artifact()).unwrap();
+    assert_eq!(second.artifact(), loaded.artifact());
+    assert_eq!(second.manifest(), loaded.manifest());
+
+    // Original mutable transport resources are gone before either new World
+    // prepares. The separately measured implementation files and archive store
+    // deliberately remain available to both independent restoration factories.
+    let mutable_namespace = directory.path().join("scene");
+    std::fs::remove_dir_all(&mutable_namespace).unwrap();
+    assert!(!mutable_namespace.exists());
+
+    restoration::restore_two_worlds_and_observe(&declaration, [loaded, second], limits);
 }
+
+#[path = "native_capture/restoration.rs"]
+mod restoration;

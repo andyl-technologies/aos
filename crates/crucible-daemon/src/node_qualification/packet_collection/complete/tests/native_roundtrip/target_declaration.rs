@@ -12,6 +12,19 @@ use crucible_node_provider::reference_packet::coordinator::PacketNative5Coordina
 pub(in crate::node_qualification::packet_collection::complete) fn target_declaration(
     original: &serde_json::Value,
 ) -> serde_json::Value {
+    target_declaration_for(original, "")
+}
+
+/// Requests a distinct fixture incarnation before either target code plan exists.
+pub(in crate::node_qualification::packet_collection::complete) fn target_declaration_for(
+    original: &serde_json::Value,
+    label: &str,
+) -> serde_json::Value {
+    let prefix = if label.is_empty() {
+        "installed-target".to_owned()
+    } else {
+        format!("installed-target-{label}")
+    };
     let mut selected = original.clone();
     selected["schema"] = serde_json::json!("crucible.complete-scene.installation/6");
     let mut coordinator: PacketNative5CoordinatorInstallation =
@@ -38,8 +51,7 @@ pub(in crate::node_qualification::packet_collection::complete) fn target_declara
         )
         .unwrap();
         let compatibility = binding.identity().unwrap();
-        binding.authority.incarnation_id =
-            id(&format!("installed-target-native-incarnation-{member}"));
+        binding.authority.incarnation_id = id(&format!("{prefix}-native-incarnation-{member}"));
         binding.authority.owner_generation = U64::new(
             binding
                 .authority
@@ -69,7 +81,7 @@ pub(in crate::node_qualification::packet_collection::complete) fn target_declara
     let mut host: HostSchedulingSelection =
         serde_json::from_value(selected["host"].clone()).unwrap();
     let compatibility = host.binding.identity().unwrap();
-    host.binding.authority.incarnation_id = id("installed-target-host-incarnation");
+    host.binding.authority.incarnation_id = id(&format!("{prefix}-host-incarnation"));
     host.binding.authority.owner_generation = U64::new(
         host.binding
             .authority
@@ -104,8 +116,11 @@ pub(in crate::node_qualification::packet_collection::complete) fn target_declara
     coordinator.template["activation"]["owners"] = serde_json::to_value(&identities).unwrap();
     coordinator.template["activation"]["generation"] =
         serde_json::to_value(U64::new(old_generation.get().checked_add(1).unwrap())).unwrap();
-    coordinator.template["activation"]["activation_id"] =
-        serde_json::json!("installed-packet-restored-world");
+    coordinator.template["activation"]["activation_id"] = if label.is_empty() {
+        serde_json::json!("installed-packet-restored-world")
+    } else {
+        serde_json::json!(format!("installed-packet-restored-world-{label}"))
+    };
     for participant in &coordinator.participants {
         coordinator.validate(participant).unwrap();
     }
@@ -157,4 +172,33 @@ fn fresh_owner_declaration_keeps_durable_world_and_advances_each_live_owner() {
             .is_original_restored_suffix_declaration_data()
             .unwrap()
     }));
+}
+
+#[test]
+fn sibling_declarations_have_distinct_live_identities_and_same_durable_world() {
+    let scene = scene(&std::env::current_exe().unwrap());
+    let original = super::super::scene_declaration(&scene);
+    let first = target_declaration_for(&original, "first");
+    let second = target_declaration_for(&original, "second");
+    assert_eq!(first["world"], second["world"]);
+    assert_ne!(
+        first["coordinator"]["template"]["activation"]["activation_id"],
+        second["coordinator"]["template"]["activation"]["activation_id"]
+    );
+
+    let first: Vec<OwnerIdentity> =
+        serde_json::from_value(first["coordinator"]["template"]["activation"]["owners"].clone())
+            .unwrap();
+    let second: Vec<OwnerIdentity> =
+        serde_json::from_value(second["coordinator"]["template"]["activation"]["owners"].clone())
+            .unwrap();
+    for (left, right) in first.iter().zip(&second) {
+        assert_eq!(left.owner, right.owner);
+        assert_eq!(left.generation, right.generation);
+        assert!(
+            second
+                .iter()
+                .all(|other| left.incarnation != other.incarnation)
+        );
+    }
 }
