@@ -534,25 +534,33 @@ impl InstalledPacketCompleteGraphPolicy {
         })
     }
 
-    /// Brackets the unchanged complete scope with bounded original currentness checks.
+    /// Checks the same original scope without reading its measured files.
+    ///
+    /// This is an identity comparison only. The closed Authority currentness
+    /// interval separately retains its complete entry and exit file reads.
     ///
     /// # Errors
-    /// Refuses changed source, Host, graph, process, file content or path identity.
-    pub(in crate::node_qualification::packet_collection::complete) fn authenticate_original_initial_callback_scope_data(
+    /// Refuses another original roster, Host, world or requirements identity.
+    pub(in crate::node_qualification::packet_collection::complete) fn authenticate_original_initial_callback_scope_roster_data(
         &self,
         roster: &PacketCompleteRoster,
         host: &Rc<HostSchedulingSource>,
         world: &WorldBinding,
         requirements: &HashRef,
     ) -> Result<(), crucible::node_contract::RuntimeError> {
-        use crucible::node_contract::RuntimeError;
-        self.read_original_initial_callback_data()?;
         self.authenticate_scope_roster_data(roster, host, world, requirements)
-            .map_err(|_| RuntimeError::ForeignAuthority)?;
-        self.read_original_initial_callback_data()
+            .map_err(|_| crucible::node_contract::RuntimeError::ForeignAuthority)
     }
 
-    fn read_original_initial_callback_data(
+    /// Checks the original Source and Host guards without measuring files.
+    ///
+    /// This does not establish file currency or authorize an effect. It keeps
+    /// the interior guards of the closed Authority interval in their original
+    /// order between the two complete file measurements.
+    ///
+    /// # Errors
+    /// Refuses foreign origin, revoked graph, changed Source scope or Host custody.
+    pub(in crate::node_qualification::packet_collection::complete) fn authenticate_original_initial_callback_parents_data(
         &self,
     ) -> Result<(), crucible::node_contract::RuntimeError> {
         use crucible::node_contract::RuntimeError;
@@ -561,14 +569,22 @@ impl InstalledPacketCompleteGraphPolicy {
         if !self.revision.get() {
             return Err(RuntimeError::ForeignAuthority);
         }
-        // Keep every source and Host guard in the original order. Their actual
-        // concrete diagnostics are separately quoted by the Source action.
         self.roster
             .current_scope()
             .map_err(|_| RuntimeError::ForeignAuthority)?;
         self.host
             .authenticate_dispatch_source()
-            .map_err(|_| RuntimeError::ForeignAuthority)?;
+            .map_err(|_| RuntimeError::ForeignAuthority)
+    }
+
+    /// Reads complete original file currency after the concrete parent guards.
+    ///
+    /// # Errors
+    /// Refuses foreign or revoked parents, changed file bytes or path identity.
+    pub(in crate::node_qualification::packet_collection::complete) fn read_original_initial_callback_data(
+        &self,
+    ) -> Result<(), crucible::node_contract::RuntimeError> {
+        self.authenticate_original_initial_callback_parents_data()?;
         for (index, files) in self.files.iter().enumerate() {
             if !self.files[..index]
                 .iter()

@@ -489,13 +489,32 @@ impl InstalledPacketCompleteCollectionAuthority {
     }
 
     fn current_original_initial_callback_data(&self) -> Result<(), RuntimeError> {
+        self.graph_policy.read_original_initial_callback_data()?;
+
+        // This concrete body reads only retained scope, kernel, population and
+        // audit data. It invokes no SDK, transport, vendor or evidence callback.
+        // Keep all four Source/Host checks and both roster comparisons, while
+        // measuring the files only at the boundaries of this closed interval.
+        let checked = self.authenticate_original_initial_callback_body_data();
+        let terminal = self.graph_policy.read_original_initial_callback_data();
+
+        // Always read the terminal fence, including after a failed body. File
+        // drift must revoke its actual owner without replacing the primary
+        // body failure when both checks fail.
+        checked.and(terminal)
+    }
+
+    fn authenticate_original_initial_callback_body_data(&self) -> Result<(), RuntimeError> {
         self.graph_policy
-            .authenticate_original_initial_callback_scope_data(
+            .authenticate_original_initial_callback_scope_roster_data(
                 &self.roster,
                 &self.host,
                 &self.world,
                 &self.requirements,
             )?;
+        self.graph_policy
+            .authenticate_original_initial_callback_parents_data()?;
+
         crate::node_qualification::packet_collection::fixture::authenticate_original_kernel_data(
             &self.kernel,
         )?;
@@ -509,8 +528,11 @@ impl InstalledPacketCompleteCollectionAuthority {
         ) {
             return Err(RuntimeError::ForeignAuthority);
         }
+
         self.graph_policy
-            .authenticate_original_initial_callback_scope_data(
+            .authenticate_original_initial_callback_parents_data()?;
+        self.graph_policy
+            .authenticate_original_initial_callback_scope_roster_data(
                 &self.roster,
                 &self.host,
                 &self.world,
@@ -580,6 +602,18 @@ impl InstalledPacketCompleteCollectionAuthority {
             .into_iter()
             .try_fold(0usize, |sum, bytes| {
                 sum.checked_add(bytes).ok_or(RuntimeError::ResourceLimit)
+            })
+            .and_then(|bytes| {
+                // The closed interval retains checked and terminal results,
+                // then moves them through Result::and's returned result. These
+                // are fixed controls; no new retained or heap backing exists.
+                bytes
+                    .checked_add(std::mem::size_of::<(
+                        Result<(), RuntimeError>,
+                        Result<(), RuntimeError>,
+                        Result<(), RuntimeError>,
+                    )>())
+                    .ok_or(RuntimeError::ResourceLimit)
             })
     }
 }

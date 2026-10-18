@@ -638,3 +638,70 @@ pub(super) mod native_roundtrip;
 
 #[path = "tests/schema_roster.rs"]
 mod schema_roster;
+
+#[test]
+fn original_callback_parent_guard_keeps_graph_revocation_after_scope_comparison() {
+    use crucible::node_contract::RuntimeError;
+
+    let scene = Scene::new();
+    let mut owner = PacketCompleteGraphOwner::install(scene.request(&scene.world.content)).unwrap();
+    let policy = owner.graph_policy().unwrap();
+    let requirements =
+        canonical::json_hash("cnp.admission-requirements.v1", &scene.world.requirements).unwrap();
+    policy
+        .authenticate_original_initial_callback_parents_data()
+        .unwrap();
+    policy
+        .authenticate_original_initial_callback_scope_roster_data(
+            &scene.roster,
+            &scene.world.host_source,
+            &scene.world.world,
+            &requirements,
+        )
+        .unwrap();
+
+    owner.revoke();
+
+    // Immutable scope equality is DATA and remains insufficient after revocation.
+    policy
+        .authenticate_original_initial_callback_scope_roster_data(
+            &scene.roster,
+            &scene.world.host_source,
+            &scene.world.world,
+            &requirements,
+        )
+        .unwrap();
+    assert!(matches!(
+        policy.authenticate_original_initial_callback_parents_data(),
+        Err(RuntimeError::ForeignAuthority),
+    ));
+    assert!(matches!(
+        policy.read_original_initial_callback_data(),
+        Err(RuntimeError::ForeignAuthority),
+    ));
+    assert!(owner.graph_policy().is_err());
+}
+
+#[test]
+fn original_callback_parent_guard_keeps_actual_host_owner_revocation() {
+    use crucible::node_contract::RuntimeError;
+
+    let mut scene = Scene::new();
+    let owner = PacketCompleteGraphOwner::install(scene.request(&scene.world.content)).unwrap();
+    let policy = owner.graph_policy().unwrap();
+    policy
+        .authenticate_original_initial_callback_parents_data()
+        .unwrap();
+
+    scene.world._host_owner.revoke();
+
+    assert!(matches!(
+        policy.authenticate_original_initial_callback_parents_data(),
+        Err(RuntimeError::ForeignAuthority),
+    ));
+    assert!(matches!(
+        policy.read_original_initial_callback_data(),
+        Err(RuntimeError::ForeignAuthority),
+    ));
+    assert!(owner.graph_policy().is_err());
+}
