@@ -51,6 +51,7 @@ class SparsePublicationOrchestration(unittest.TestCase):
             calls.append(("changed", args[-1]))
             return {"journalsUnchanged": True}
         bindings = {
+            "login_direct_publisher": lambda *args: None,
             "direct_root_browser_token": lambda *args, **kwargs: "fresh-controlled-token",
             "private_guest_command": lambda *args, **kwargs: None,
             "start_direct_publication": start,
@@ -75,7 +76,7 @@ class SparsePublicationOrchestration(unittest.TestCase):
         self.assertEqual(set(publications), {"a", "b"})
         self.assertEqual([row[:3] for row in calls if row[0] == "start"],
             [("start", "a", 1), ("start", "a", 2), ("start", "b", 1)])
-        self.assertEqual(calls[1], ("changed", "fresh-controlled-token"))
+        self.assertEqual(calls[1], ("changed", None))
         killed = observations["invocations"][0]
         self.assertEqual(killed["result"]["exitCode"], -9)
         self.assertFalse(killed["terminalCountersAvailable"])

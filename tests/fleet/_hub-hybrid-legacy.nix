@@ -2453,9 +2453,19 @@
   ]
   assert sum(source for _, source in placement_copies) >= multipart_size, placement_copies
   assert all(response < 2048 for response, _ in placement_copies), placement_copies
-  origin_log = worker.succeed(
-      f"{GREP} 'hybrid_origin_request' /var/lib/hybrid-worker/worker.log"
+  origin_path = "/var/lib/hybrid-worker-origin-requests.log"
+  private_guest_command(worker,
+      "set -o pipefail\numask 077\n"
+      f"{GREP} 'hybrid_origin_request' /var/lib/hybrid-worker/worker.log "
+      f"> {shlex.quote(origin_path)}",
+      timeout=120,
   )
+  origin_after = direct_log_position(worker, "${pkgs.python3}/bin/python3", origin_path)
+  origin_file, _ = retain_direct_log_window(
+      worker, "${pkgs.python3}/bin/python3", {**origin_after, "byteSize": 0},
+      "proxy-worker-origin-requests.log", after=origin_after,
+  )
+  origin_log = origin_file.read_text()
   origin_request_bytes = [
       int(size) for size in re.findall(r"request_bytes=(\d+)", origin_log)
   ]

@@ -635,9 +635,10 @@ def probe_direct_changed_source(client, tools, process, signed, source, token):
         inputs = _inputs(root, selected['signed'], process)
         environment, environment_receipt = _original_environment(root, inputs['arguments'], process['supervisorUid'])
         arguments = inputs['arguments'][:]
-        if arguments.count('--token') != 1:
+        if arguments.count('--token') != (1 if selected['token'] is not None else 0):
             raise ValueError('actual publisher token selector is ambiguous')
-        arguments[arguments.index('--token') + 1] = selected['token']
+        if selected['token'] is not None:
+            arguments[arguments.index('--token') + 1] = selected['token']
         source = selected['source']
         path = Path(selected['signed']['surfaceRoot']) / source['path']
         if path.resolve() != path or not path.is_relative_to(Path(selected['signed']['surfaceRoot'])):

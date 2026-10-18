@@ -9,10 +9,82 @@ production queue intervals determine whether real overlap occurred.
 import base64
 import hashlib
 import json
-import re
 import shlex
 import textwrap
 import time
+
+
+def login_direct_publisher(client, tools, signed):
+    """Approve the ordinary CLI device login and retain its renewable profile."""
+    observed = json.loads(direct_guest_python(client, tools["python"], """
+        import os, re, subprocess, time, urllib.parse
+        from pathlib import Path
+
+        os.umask(0o077)
+        home = Path(selected['home'])
+        root = home / 'device-login'
+        root.mkdir(mode=0o700, exist_ok=False)
+        environment = dict(os.environ)
+        environment.update(AOS_CONFIG_HOME=str(home / '.config/aos'),
+            XDG_CONFIG_HOME=str(home / '.config'),
+            XDG_DATA_HOME=str(home / '.local/share'), XDG_CACHE_HOME=str(home / '.cache'),
+            SSL_CERT_FILE='/etc/ssl/certs/ca-certificates.crt')
+        origin = selected['origin']
+        cookie = '/var/lib/hybrid-client/browser-session/cookies'
+
+        def request(label, path, arguments=()):
+            result = subprocess.run(selected['curl'] + ['-sS', '--max-time', '20',
+                '--max-filesize', '262144', '--cookie', cookie,
+                '--output', str(root / (label + '.body')), '--write-out', '%{http_code}']
+                + list(arguments) + [origin + path], capture_output=True, check=False, timeout=25)
+            (root / (label + '.stderr')).write_bytes(result.stderr)
+            if result.returncode or result.stderr:
+                raise ValueError('device approval transport failed; private originals retained')
+            return result.stdout, (root / (label + '.body')).read_bytes()
+
+        with (root / 'stdout').open('xb') as stdout, (root / 'stderr').open('xb') as stderr:
+            login = subprocess.Popen([selected['aos'], 'hub', 'login', '--hub', origin],
+                stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr, env=environment)
+            try:
+                deadline = time.monotonic() + 45
+                while True:
+                    output = (root / 'stdout').read_bytes() + (root / 'stderr').read_bytes()
+                    if len(output) > 65536:
+                        raise ValueError('device login output exceeded its bound')
+                    codes = set(re.findall(re.escape(origin.encode())
+                        + rb'/activate\\?user_code=([A-Z0-9-]{4,32})', output))
+                    if len(codes) == 1:
+                        break
+                    if codes or login.poll() is not None or time.monotonic() > deadline:
+                        raise ValueError('ordinary CLI did not publish a unique device approval code')
+                    time.sleep(0.05)
+                code = next(iter(codes)).decode()
+                status, page = request('activate', '/activate?user_code=' + code)
+                csrf = re.findall(rb'name="csrf" value="([0-9a-f]{64})"', page)
+                if status != b'200' or len(set(csrf)) != 1:
+                    raise ValueError('authenticated device approval has no unique CSRF value')
+                payload = urllib.parse.urlencode({'csrf': csrf[0].decode(),
+                    'user_code': code, 'decision': 'approve'}).encode()
+                payload_file = root / 'approval.request'
+                payload_file.write_bytes(payload)
+                status, _ = request('approve', '/activate', ['--header', 'Origin: ' + origin,
+                    '--header', 'Content-Type: application/x-www-form-urlencoded',
+                    '--data-binary', '@' + str(payload_file)])
+                if status != b'303' or login.wait(timeout=30) != 0:
+                    raise ValueError('ordinary CLI device login did not complete successfully')
+                profile = home / '.config/aos/hub-profiles.json'
+                if not profile.is_file() or profile.stat().st_mode & 0o077:
+                    raise ValueError('ordinary CLI did not retain a private renewable profile')
+                print(json.dumps({'version': 1, 'loginExitCode': login.returncode,
+                    'approvalStatus': 303, 'privateProfileStored': True}))
+            finally:
+                if login.poll() is None:
+                    login.kill()
+                    login.wait(timeout=5)
+    """, {"home": signed["publisherHome"], "origin": tools["workerUrl"],
+            "aos": tools["aos"], "curl": shlex.split(tools["curl"])}, timeout=100))
+    retain_direct_flow("publisher-" + signed["publisherHome"].rsplit("/", 1)[-1]
+        + "-device-login.json", observed)
 
 
 def split_direct_publication_sources(client, tools, signed_a, signed_b, corpus):
@@ -50,9 +122,11 @@ def start_direct_publication(client, tools, registry_slug, signed, token, label,
     if label not in {"a", "b"} or type(attempt) is not int or not 1 <= attempt <= 3:
         raise ValueError("publication invocation identity is invalid")
     arguments = [tools["aos"], "--json", "hub", "registry", "publish", "upload", registry_slug,
-        "--root", signed["surfaceRoot"], "--hub", tools["workerUrl"], "--token", token,
+        "--root", signed["surfaceRoot"], "--hub", tools["workerUrl"],
         "--direct-provider-policy", tools["providerPolicyFile"],
         "--direct-upload-journal", signed["publisherHome"] + "/direct-upload.sqlite"]
+    if token is not None:
+        arguments += ["--token", token]
     supervisor = textwrap.dedent("""
         import json, os, subprocess, sys, time
         from pathlib import Path
@@ -83,7 +157,8 @@ def start_direct_publication(client, tools, registry_slug, signed, token, label,
         retain_receipt('process.json', pin)
         selected = json.loads((root / 'input.json').read_bytes())
         environment = dict(os.environ)
-        environment.update(XDG_CONFIG_HOME=selected['publisherHome']+'/.config',
+        environment.update(AOS_CONFIG_HOME=selected['publisherHome']+'/.config/aos',
+            XDG_CONFIG_HOME=selected['publisherHome']+'/.config',
             XDG_DATA_HOME=selected['publisherHome']+'/.local/share',
             XDG_CACHE_HOME=selected['publisherHome']+'/.cache', SSL_CERT_FILE='/etc/ssl/certs/ca-certificates.crt')
         started = time.time_ns()
@@ -212,11 +287,12 @@ def run_direct_concurrent_publications(client, worker, tools, sources, registrie
     sparse = {"interruption": None, "changedSource": None, "continuity": None,
         "terminalCountersUnavailable": []}
     cursor = {**before_worker, "offset": before_worker["byteSize"]}
+    for signed in sources.values():
+        login_direct_publisher(client, tools, signed)
 
     def start(label, attempt):
-        token = direct_root_browser_token(client, tools["curl"], tools["python"], private_guest_command, reuse_session=True)
         process = start_direct_publication(client, tools, registries[label]["registry"]["slug"],
-            sources[label], token, label, attempt)
+            sources[label], None, label, attempt)
         processes[label] = process
         retain_direct_flow("publisher-" + label + "-" + str(attempt) + ".process.json", process)
 
@@ -249,10 +325,8 @@ def run_direct_concurrent_publications(client, worker, tools, sources, registrie
                 source = next(item for item in corpus_a["large_objects"]
                     if any(session["path"] == item["path"] and session["sparseGaps"]
                         for session in interrupted["checkpoint"]["sessions"]))
-                fresh_token = direct_root_browser_token(client, tools["curl"], tools["python"],
-                    private_guest_command, reuse_session=True)
                 sparse["changedSource"] = probe_direct_changed_source(
-                    client, tools, process, sources["a"], source, fresh_token)
+                    client, tools, process, sources["a"], source, None)
                 start("a", process["attempt"] + 1)
         if "b" not in processes:
             rendezvous = direct_visibility_rendezvous(worker, tools, cursor, expected_source)
@@ -288,15 +362,7 @@ def run_direct_concurrent_publications(client, worker, tools, sources, registrie
                         sparse["interruption"], checkpoint, publication)
                     retain_direct_flow("actual-sparse-publication-continuity.json", sparse["continuity"])
                 continue
-            error = reply.get("error", "")
-            retained = re.search(r"publication ([0-9a-f]{32}) remains resumable;", error)
-            if (result["timedOut"] or process["attempt"] >= 3 or retained is None
-                    or "401 Unauthorized" not in error or "JWT has expired" not in error):
-                raise RuntimeError("actual concurrent publisher failed; no mutation replay or cleanup")
-            if label in originals and originals[label] != retained.group(1):
-                raise ValueError("publication JWT resume changed its retained original")
-            originals[label] = retained.group(1)
-            start(label, process["attempt"] + 1)
+            raise RuntimeError("actual concurrent publisher failed; no mutation replay or cleanup")
         if "a" in completed and "b" not in processes:
             raise RuntimeError("A completed without an observed Visibility rendezvous; no overlap fabricated")
         if len(completed) == 2:
