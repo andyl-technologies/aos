@@ -32,6 +32,16 @@ pub(super) const CONTRACTS: &[Contract] = &[Contract {
             1,
         ),
         (
+            r#"type PostBody = crate::ProductionVmConstructionPostBody;"#,
+            1,
+        ),
+        (
+            r#"fn take_post_body(&mut self) -> Result<Option<Self::PostBody>, Self::Failure> {
+                panic!("");
+            }"#,
+            1,
+        ),
+        (
             r#"impl Drop for FileOwner { fn drop(&mut self) { self.destroyed.store(true, Ordering::SeqCst); } }"#,
             1,
         ),
@@ -80,7 +90,10 @@ let metadata = file.metadata().expect("");"#,
             1,
         ),
         (
-            r#"let owner: Box<dyn ProductionVmCleanupOwner<Failure = CleanupFailure>> = Box::new(FileOwner {
+            r#"let owner: Box<dyn ProductionVmCleanupOwner<
+    Failure = CleanupFailure,
+    PostBody = crate::ProductionVmConstructionPostBody,
+>,> = Box::new(FileOwner {
     _file: file,
     cleanup_calls: Arc::clone(&cleanup_calls),
     destroyed: Arc::clone(&destroyed),
@@ -167,6 +180,8 @@ assert_eq!(expected.cleanup_calls.load(Ordering::SeqCst), 0);"#,
                     r#"pub(crate) fn unavailable_reservation_for_test() -> Box<
     dyn ProductionVmCleanupReservation<
         Failure = <crate::ProductionVmConstructionCustody as ProductionVmCleanupOwner>::Failure,
+        PostBody = <crate::ProductionVmConstructionCustody as ProductionVmCleanupOwner>::PostBody,
+        ReturnDestination = crate::lifecycle_cleanup::SourceBodyReturn
     >,
 > {"#,
                     1,
@@ -179,12 +194,19 @@ assert_eq!(expected.cleanup_calls.load(Ordering::SeqCst), 0);"#,
         epoch: 0,
         observed: ProductionVmCleanupStage::BodyRetained,
         first_failure: None,
+        terminal_history: None,
+        report_reference: false,
     })
 } }"#,
                     1,
                 ),
                 (
                     r#"let Some(queue) = self.queue.upgrade() else { return Err((self, owner)); };"#,
+                    2,
+                ),
+                (r#"self.publish_owner(slot, owner).map(|receipt|"#, 1),
+                (
+                    r#"self.publish_returned_owner(slot, owner).map(|receipt|"#,
                     1,
                 ),
             ],

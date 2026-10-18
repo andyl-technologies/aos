@@ -95,10 +95,20 @@ ownership or disposal.
 Unissued field/pin controls verify repeated return of the same Box and real file,
 preserved raw errors, stale-epoch refusal, panic retention, poisoned metadata and
 late-report rejection. These controls establish neither native Main return nor
-the deployed parent/child handback path. A retiring parent and differing concrete
-Source/Target factory types still need end-to-end coverage. Cleanup error folding
-must also retain a later independent Main report as well as the guard leaves
-covered by the existing two-body component controls.
+the deployed parent/child handback path. Source Pending cleanup first refuses
+while either original row allocation is lent. Only after those rows return can
+its cleanup succeed and the driver latch `body_closed` or extract its post-body
+obligations. The parent projection's closed-body guards agree with that ordering;
+external Loop destruction alone does not close the prepared metadata destination.
+Retiring-parent contention still needs end-to-end coverage.
+
+Native comparison fixtures must retain the campaign's actual published Main
+provider and its concrete factory recipe. Opening an independent raw allocator
+does not supply that provider. Source and Target must also agree on the typed
+row storage they exchange; a cast cannot establish either ownership or payment.
+This integration remains unfinished. Cleanup error folding must also retain a
+later independent Main report as well as the guard leaves covered by the
+existing two-body component controls.
 
 ## Factory and runtime integration
 

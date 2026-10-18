@@ -44,6 +44,18 @@ fn unavailable_token_contract_rejects_acceptance_and_custody_changes()
             "fn retry_cleanup(&mut self) -> Result<(), Self::Failure> { foreign_cleanup(); panic!(); }",
         ),
         (
+            "type PostBody = crate::ProductionVmConstructionPostBody;",
+            "type PostBody = ForeignPostBody;",
+        ),
+        (
+            "fn take_post_body(&mut self) -> Result<Option<Self::PostBody>, Self::Failure> { panic!(\"\"); }",
+            "fn take_post_body(&mut self) -> Result<Option<Self::PostBody>, Self::Failure> { Ok(None) }",
+        ),
+        (
+            "fn take_post_body(&mut self) -> Result<Option<Self::PostBody>, Self::Failure> { panic!(\"\"); }",
+            "fn take_post_body(&mut self) -> Result<Option<Self::PostBody>, Self::Failure> { transfer_foreign_body(); panic!(\"\"); }",
+        ),
+        (
             REFUSED_CALL,
             "assert!(failure.retry_reserved_publication().is_ok());",
         ),
@@ -140,6 +152,21 @@ fn unavailable_token_contract_rejects_acceptance_and_custody_changes()
             0,
             "return Err((self, owner));",
             "return Ok(accepting_handoff());",
+        ),
+        (
+            0,
+            "index: usize::MAX, epoch: 0, observed: ProductionVmCleanupStage::BodyRetained, first_failure: None, terminal_history: None, report_reference: false,",
+            "index: usize::MAX, epoch: 0, observed: ProductionVmCleanupStage::BodyRetained, first_failure: None, terminal_history: Some(foreign_terminal), report_reference: true,",
+        ),
+        (
+            0,
+            "PostBody = <crate::ProductionVmConstructionCustody as ProductionVmCleanupOwner>::PostBody, ReturnDestination = crate::lifecycle_cleanup::SourceBodyReturn",
+            "PostBody = <crate::ProductionVmConstructionCustody as ProductionVmCleanupOwner>::PostBody, ReturnDestination = ForeignReturnDestination",
+        ),
+        (
+            0,
+            "self.publish_returned_owner(slot, owner)",
+            "self.publish_returned_owner(slot, foreign_owner)",
         ),
         (
             1,
