@@ -882,7 +882,7 @@ def unit_source_contract():
             if node.targets[0].id in {"UNIT_TESTS", "UNIT_PREFIXES", "UNIT_PROFILE"}:
                 values[node.targets[0].id] = ast.literal_eval(node.value)
     require(set(values) == {"UNIT_TESTS", "UNIT_PREFIXES", "UNIT_PROFILE"}
-            and len(values["UNIT_TESTS"]) == len(set(values["UNIT_TESTS"])) == 47,
+            and len(values["UNIT_TESTS"]) == len(set(values["UNIT_TESTS"])) == 48,
             "missing immutable FS unit contract")
     return values
 
@@ -977,9 +977,9 @@ def filesystem_unit_cases():
                             "scratch_device": temporary.stat().st_dev, "elf_sha256": unit_hash})
             print("FS_UNIT_RESULT " + json.dumps(records[-1], sort_keys=True), flush=True)
             shutil.rmtree(temporary)
-        require(len(records) == 47 and hashlib.sha256(unit_elf.read_bytes()).hexdigest() == unit_hash,
+        require(len(records) == 48 and hashlib.sha256(unit_elf.read_bytes()).hexdigest() == unit_hash,
                 "incomplete FS ext4 unit execution or changed executable")
-        print("PASS all47 focused FS unit cases on ext4 (41 existing plus six admission/snapshot cases); no native Ready claim", flush=True)
+        print("PASS all48 focused FS unit cases on ext4; no native Ready claim", flush=True)
     finally:
         shutil.rmtree(temporary_root)
 
