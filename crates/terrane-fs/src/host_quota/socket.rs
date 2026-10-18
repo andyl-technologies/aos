@@ -9,6 +9,24 @@ use std::time::{Duration, Instant};
 
 pub(super) struct PacketSocket(OwnedFd);
 
+/// Supplies monotonic native ticks only to the bounded socket receive loop.
+trait ReceiveClock {
+    fn monotonic(&self) -> Instant;
+}
+
+/// Binds host-only transport deadlines independently of optional Tokio support.
+struct NativeReceiveClock;
+
+impl ReceiveClock for NativeReceiveClock {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "This private native clock binding is the injection boundary for host socket deadlines."
+    )]
+    fn monotonic(&self) -> Instant {
+        Instant::now()
+    }
+}
+
 impl PacketSocket {
     fn socket() -> io::Result<Self> {
         // SAFETY: socket has no pointer arguments and returns a new descriptor.
@@ -166,12 +184,20 @@ impl PacketSocket {
     }
 
     pub(super) fn receive(&self) -> io::Result<Vec<u8>> {
-        self.receive_until(Instant::now() + Duration::from_secs(5))
+        self.receive_until(NativeReceiveClock.monotonic() + Duration::from_secs(5))
     }
 
     fn receive_until(&self, deadline: Instant) -> io::Result<Vec<u8>> {
+        self.receive_until_with_clock(deadline, &NativeReceiveClock)
+    }
+
+    fn receive_until_with_clock(
+        &self,
+        deadline: Instant,
+        clock: &impl ReceiveClock,
+    ) -> io::Result<Vec<u8>> {
         loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
+            let remaining = deadline.saturating_duration_since(clock.monotonic());
             if remaining.is_zero() {
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,

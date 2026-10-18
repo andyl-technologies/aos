@@ -97,11 +97,12 @@ fn repeated_interruptions_do_not_extend_the_original_deadline() {
         }
     });
 
-    let started = Instant::now();
+    let clock = NativeReceiveClock;
+    let started = clock.monotonic();
     let error = receiver
         .receive_until(started + Duration::from_millis(250))
         .expect_err("finite interrupted receive must expire");
-    let elapsed = started.elapsed();
+    let elapsed = clock.monotonic().saturating_duration_since(started);
     assert_eq!(error.kind(), io::ErrorKind::TimedOut);
     assert!(
         elapsed >= Duration::from_millis(200),
