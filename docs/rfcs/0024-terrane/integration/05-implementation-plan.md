@@ -9068,9 +9068,28 @@ Resumed qualification:
   application target compilation is running; no strict-Clippy pass is claimed.
   Follow-up `49972406ae` carries the original queued completion box through
   either Resume outcome, boxes large repair/inspection values and counts command
-  pointees in the checked storage envelope. Full diff and syntax review pass;
-  build, existing tests and native qualification are queued. No component change
-  accepts a complete T2 task or changes frozen formats, traits or dependencies.
+  pointees in the checked storage envelope. Full diff and syntax review pass.
+  Its unstarted qualification is superseded by the combined transfer candidate
+  below, which includes all of these changes and the original native controls.
+  No component change accepts a complete T2 task or changes frozen formats,
+  traits or dependencies.
+- Inline residence-transfer candidate `b57d351aa4`: the actual funded Running
+  command now selects an original completed admission, requires verified sealed
+  backing, inspects the exact source inode and invokes publisher
+  retirement before synchronizing the sealed residence. The old admission,
+  native reply, source descriptors, pins and holds remain retained. Physical
+  and byte checks occur outside the client RPC mutex. An occupied pending name
+  faults the command without replacing or removing the original canonical inode
+  or releasing the verified sealed outcome. Three fresh guest controls cover
+  success, a stopped publisher with a dropped waiter, and pending-name collision;
+  the supervisor independently checks original pending inodes, bytes and durable
+  publisher retirement leases. Seventeen-file source review, provisional
+  all-target and native-only builds, Rust formatting and Python syntax checks
+  pass. Exact committed-source image/guest qualification is queued; the three
+  controls have not executed. A strict attempt still fails nineteen unused
+  integration or retention findings, so no clean-Clippy claim is made.
+  Pending deletion completion, manifest Running publication, consumer leases,
+  NativeReady, BKT-15 and complete host task acceptance remain open.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
   and all seven strict Clippy/documentation profiles pass. The interface,
   commit-path, status and schema gates pass on unchanged final source, including
