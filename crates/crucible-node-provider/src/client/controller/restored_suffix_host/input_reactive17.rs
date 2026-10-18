@@ -59,7 +59,7 @@ impl CnpController {
         // Assignment creates the actual Envelope once. The empty extension is
         // never published: only this distinct marker can install and seal17.
         // The ordinary public SDK constructor keeps all its exact old guards.
-        let mut inner = self.prepare_original_restored_suffix_into(
+        let inner = self.prepare_original_restored_suffix_into(
             emitter,
             request_id,
             operation_id,

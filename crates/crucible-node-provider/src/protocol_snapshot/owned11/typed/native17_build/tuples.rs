@@ -9,7 +9,7 @@ use crate::ProviderError;
 use crate::protocol_snapshot::owned11::typed::{Fields, Ledger, invalid};
 use crate::retained_metadata::MetadataObserver;
 
-type PairFields<A: Native17Build, B: Native17Build> =
+type PairFields<A, B> =
     Native17Fields<Native17Field<A>, Native17Fields<Native17Field<B>, Native17FieldsEnd>>;
 
 impl<A: Native17Build, B: Native17Build> Native17Build for (A, B) {

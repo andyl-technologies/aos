@@ -76,7 +76,7 @@ impl ClientContent {
             + size_of::<[usize; 5]>()
             + size_of::<std::collections::btree_map::Values<'static, Id, Transfer>>()
             + size_of::<Option<&Transfer>>()
-            + 8 * size_of::<usize>()
+            + size_of::<[usize; 8]>()
             + size_of::<std::array::IntoIter<usize, 5>>()
             + size_of::<Result<(usize, usize), ProviderError>>()
     }

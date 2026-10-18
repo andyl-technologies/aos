@@ -27,7 +27,9 @@ type ReactiveProgramLoans<'a> = (ReactiveStateLoans<'a>, &'a UnixDatagram);
 pub(in crate::reference_packet) struct ReactiveProgramHistory<'a>(&'a PacketConnectedProgram);
 
 impl PacketConnectedProgram {
-    pub(crate) fn borrowed_settled_model_data(&self) -> ReactiveProgramHistory<'_> {
+    pub(in crate::reference_packet) fn borrowed_settled_model_data(
+        &self,
+    ) -> ReactiveProgramHistory<'_> {
         ReactiveProgramHistory(self)
     }
 

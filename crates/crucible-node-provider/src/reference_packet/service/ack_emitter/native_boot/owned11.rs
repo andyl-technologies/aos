@@ -650,7 +650,7 @@ impl NativeAckBoot {
     /// The caller owns and walks the same actual transfer Rc once; its second
     /// edge from boot is recorded here. No transferSome or numeric data alone
     /// satisfies the full current baseline, source allocation and verified Rc.
-    pub(in crate::reference_packet::service::ack_emitter::native_boot) fn observe_verified_startup_prepare_metadata(
+    pub(super) fn observe_verified_startup_prepare_metadata(
         &self,
         expected: &Rc<RefCell<restore_prepare::NativeCompleteRestorePrepareAttempt>>,
         roots: &mut crate::retained_metadata::NativeCaptureMetadataRoots,

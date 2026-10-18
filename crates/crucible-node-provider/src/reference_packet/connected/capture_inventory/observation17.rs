@@ -357,7 +357,7 @@ pub(crate) fn observation17_inventory_counter_scratch_data() -> usize {
         + size_of::<std::slice::Iter<'static, OriginalStage>>()
         + size_of::<std::slice::Iter<'static, ContentRef>>()
         + size_of::<[usize; 4]>()
-        + 8 * size_of::<usize>()
+        + size_of::<[usize; 8]>()
         + size_of::<U64>()
         + size_of::<Result<(), ProviderError>>()
 }

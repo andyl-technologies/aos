@@ -2,9 +2,8 @@
 
 use super::*;
 use crate::protocol_snapshot::restored_settled17::current_import17::{
-    BorrowedImport17, Import17, SharedImport17, import_fields17,
+    BorrowedImport17, import_fields17,
 };
-use crate::retained_metadata::aliases::MetadataSharedKind;
 
 import_fields17!(HistoricalNativeInstallation => HistoricalNativeInstallationCurrent17, "source-private.current-import-historical-native-installation/17", {
     session: Id,

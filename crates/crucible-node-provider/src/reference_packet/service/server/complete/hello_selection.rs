@@ -108,7 +108,7 @@ pub(in crate::reference_packet::service) fn counter_scratch_data() -> usize {
         >()
         + size_of::<blake3::Hasher>()
         + size_of::<blake3::Hash>()
-        + 8 * size_of::<usize>()
+        + size_of::<[usize; 8]>()
 }
 
 fn refused() -> ProviderError {

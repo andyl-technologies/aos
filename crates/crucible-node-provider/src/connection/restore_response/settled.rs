@@ -6,7 +6,7 @@
 //! deliberately unencoded and no fresh deadline or issuer is reconstructed.
 
 use super::*;
-use crate::retained_metadata::{MetadataObserver, aliases::MetadataSharedKind};
+use crate::retained_metadata::MetadataObserver;
 use serde::{Serialize, Serializer, ser::SerializeStruct};
 
 struct ChildHistory<'a>(&'a AssignedNativeRestoreResponse);
