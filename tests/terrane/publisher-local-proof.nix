@@ -17,9 +17,9 @@
       cd crates
       cargo test --frozen --offline -p terrane-fs --features native-test-fixtures --lib \
         --test publisher_local_protocol --test publisher_local_vm --test publisher_local_native \
-        --no-run --message-format=json > "$TMPDIR/publisher-local-build.jsonl"
+        --no-run --message-format=json-render-diagnostics > "$TMPDIR/publisher-local-build.jsonl"
       cargo build --frozen --offline -p terrane-fs --features native-test-fixtures \
-        --example publication_fixture --message-format=json >> "$TMPDIR/publisher-local-build.jsonl"
+        --example publication_fixture --message-format=json-render-diagnostics >> "$TMPDIR/publisher-local-build.jsonl"
       rustc --print target-libdir > "$TMPDIR/publisher-local-rust-libdir"
 
       cargo metadata --frozen --offline --no-deps --format-version=1 > "$TMPDIR/publisher-local-packages.json"
@@ -41,7 +41,7 @@
   native = testing.mkVMTest {
     name = "terrane-publisher-local-native-ext4";
     memory = 1024;
-    rootfsDeps = [image pkgs.coreutils pkgs.util-linux pkgs.e2fsprogs];
+    rootfsDeps = [image pkgs.bash pkgs.coreutils pkgs.util-linux pkgs.e2fsprogs];
     testScript = ''
       set -eu
       mkdir -p /var/lib/terrane-publisher-local /mnt/terrane-publisher-local
@@ -55,6 +55,8 @@
       export TERRANE_PUBLISHER_EXT4_ROOT=/mnt/terrane-publisher-local
       export TERRANE_PUBLICATION_FIXTURE="${image}/bin/publication_fixture"
       export LD_LIBRARY_PATH="${image}/lib"
+      ${pkgs.bash}/bin/bash ${image}/share/native_socket_units.bash \
+        ${image} "$TERRANE_PUBLISHER_EXT4_ROOT/socket-unit" ${pkgs.util-linux}/bin/setpriv
       ${image}/bin/publisher_local_native --exact publisher_local_native_role --ignored --nocapture
       ${image}/bin/publisher_local_native --exact publisher_local_native_lifecycle_vm --ignored --nocapture
     '';

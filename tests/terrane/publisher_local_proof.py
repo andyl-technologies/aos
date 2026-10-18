@@ -14,6 +14,13 @@ sys.path.insert(0, sys.argv[1])
 from native_sdk_test_image import allowed_directory, require, runtime_closure, source_hashes
 
 FEATURES = ["native-test-fixtures", "tokio"]
+# Nix forbids creating setgid directories. Preserve these exact native cases
+# for the AOS guest, where the ordinary publisher identity can exercise them.
+NATIVE_SOCKET_CASES = {
+    "retained_socket_chmod_sets_exact_mode_without_changing_inode_or_group",
+    "replaced_socket_name_is_rejected_without_changing_either_inode",
+    "socket_chmod_rejects_wrong_type_and_owner_before_mutation",
+}
 EXPECTED = {
     "terrane_fs": {
         "kernel_peer_credentials_cannot_be_claimed_in_packet",
@@ -49,6 +56,16 @@ EXPECTED = {
 def sha256(path):
     """Binds selected executable bytes before discovery and installation."""
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def run_captured(command, environment):
+    """Retains the original child diagnostics before failing qualification."""
+    result = subprocess.run(command, text=True, capture_output=True, env=environment)
+    if result.returncode != 0:
+        sys.stderr.write(result.stdout)
+        sys.stderr.write(result.stderr)
+        raise SystemExit(f"transport proof command failed ({result.returncode}): {command}")
+    return result
 
 
 def select_artifacts(workspace, temporary, target):
@@ -113,11 +130,15 @@ def launch_directories(executable, workspace, temporary, target):
     environment = dict(os.environ)
     triple = target_libraries.parent.name.upper().replace("-", "_")
     environment[f"CARGO_TARGET_{triple}_RUNNER"] = str(runner)
-    with (temporary / "publisher-local-cargo-discovery.log").open("w") as log:
-        subprocess.run(["cargo", "run", "--frozen", "--offline", "-p", "terrane-fs",
-                        "--features", "native-test-fixtures", "--example", "publication_fixture",
-                        "--", "--discover"], env=environment, stdout=log,
-                       stderr=subprocess.STDOUT, check=True)
+    discovery_log = temporary / "publisher-local-cargo-discovery.log"
+    with discovery_log.open("w") as log:
+        discovery = subprocess.run(
+            ["cargo", "run", "--frozen", "--offline", "-p", "terrane-fs",
+             "--features", "native-test-fixtures", "--example", "publication_fixture",
+             "--", "--discover"], env=environment, stdout=log, stderr=subprocess.STDOUT)
+    if discovery.returncode != 0:
+        sys.stderr.write(discovery_log.read_text())
+        raise SystemExit("transport Cargo runtime discovery failed")
     captured = capture.read_text()
     require(captured.endswith("\n") and captured.count("\n") == 1 and captured.strip(),
             "missing Cargo runtime environment")
@@ -136,7 +157,8 @@ def install_and_execute():
     output = pathlib.Path(os.environ["out"])
     selected = select_artifacts(workspace, temporary, target)
     hashes = source_hashes(workspace, source)
-    for name in ["publisher_local_proof.py", "native_sdk_test_image.py", "publisher-local-proof.nix"]:
+    for name in ["publisher_local_proof.py", "native_sdk_test_image.py",
+                 "publisher-local-proof.nix", "native_socket_units.bash"]:
         path = source / "tests/terrane" / name
         hashes[f"tests/terrane/{name}"] = sha256(path)
     directories = launch_directories(selected["publication_fixture"][1], workspace, temporary, target)
@@ -174,8 +196,7 @@ def install_and_execute():
                             "profile": artifact["profile"], "features": artifact["features"],
                             "executable_sha256": digest}
     fixture = output / "bin/publication_fixture"
-    listed = subprocess.run([str(fixture), "--list"], check=True, text=True,
-                            capture_output=True, env=environment).stdout
+    listed = run_captured([str(fixture), "--list"], environment).stdout
     selectors = [line for line in listed.splitlines() if line.startswith("transport:")]
     require(sorted(selectors) == ["transport:native-client", "transport:native-publisher"],
             "fresh-process transport selector inventory mismatch")
@@ -183,8 +204,7 @@ def install_and_execute():
     for name, expected in EXPECTED.items():
         executable = output / "bin" / name
         prefix = "publisher_local::socket::tests::" if name == "terrane_fs" else ""
-        listed = subprocess.run([str(executable), "--list", "--format", "terse"], check=True,
-                                text=True, capture_output=True, env=environment).stdout
+        listed = run_captured([str(executable), "--list", "--format", "terse"], environment).stdout
         actual = [line.removesuffix(": test").removeprefix(prefix) for line in listed.splitlines()
                   if line.endswith(": test") and line.startswith(prefix)]
         require(len(actual) == len(set(actual)) and set(actual) == expected,
@@ -193,18 +213,28 @@ def install_and_execute():
         if name in {"publisher_local_vm", "publisher_local_native"}:
             continue
         for case in sorted(actual):
-            result = subprocess.run([str(executable), "--exact", prefix + case, "--nocapture"],
-                                    check=True, text=True, capture_output=True, env=environment)
+            if name == "terrane_fs" and case in NATIVE_SOCKET_CASES:
+                continue
+            result = run_captured([str(executable), "--exact", prefix + case, "--nocapture"],
+                                  environment)
             require("test result: ok. 1 passed; 0 failed; 0 ignored;" in result.stdout,
                     f"publisher-local test did not execute exactly once: {case}")
             evidence[name]["executed"].append({"case": case, "stdout": result.stdout, "stderr": result.stderr})
     require(source_hashes(workspace, source) == {key: value for key, value in hashes.items()
                                                if not key.startswith("tests/")},
             "source changed during transport discovery/execution")
+    require(len(NATIVE_SOCKET_CASES) == 3 and NATIVE_SOCKET_CASES <= EXPECTED["terrane_fs"],
+            "native socket inventory must retain its three original source cases")
+    native_cases = ["publisher_local::socket::tests::" + case
+                    for case in sorted(NATIVE_SOCKET_CASES)]
+    (output / "share/native-socket-cases").write_text("\n".join(native_cases) + "\n")
+    shutil.copy2(source / "tests/terrane/native_socket_units.bash",
+                 output / "share/native_socket_units.bash")
     identity = {"schema_version": 1, "source": str(source), "requested_features": ["native-test-fixtures"],
                 "input_sha256": hashes, "artifacts": identities,
                 "copied_runtime_libraries": {name: sha256(path) for name, path in libraries.items()},
-                "runtime_library_path": library_path, "tests": evidence}
+                "runtime_library_path": library_path, "tests": evidence,
+                "native_socket_tests": native_cases}
     (output / "share/identity.json").write_text(json.dumps(identity, indent=2) + "\n")
     for name in ["publisher-local-build.jsonl", "publisher-local-packages.json",
                  "publisher-local-cargo-discovery.log"]:
