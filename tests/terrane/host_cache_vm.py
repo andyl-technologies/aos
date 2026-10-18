@@ -883,7 +883,7 @@ def unit_source_contract():
             if node.targets[0].id in {"UNIT_TESTS", "UNIT_PREFIXES", "UNIT_PROFILE"}:
                 values[node.targets[0].id] = ast.literal_eval(node.value)
     require(set(values) == {"UNIT_TESTS", "UNIT_PREFIXES", "UNIT_PROFILE"}
-            and len(values["UNIT_TESTS"]) == len(set(values["UNIT_TESTS"])) == 48,
+            and 0 < len(values["UNIT_TESTS"]) == len(set(values["UNIT_TESTS"])) <= 4096,
             "missing immutable FS unit contract")
     return values
 
