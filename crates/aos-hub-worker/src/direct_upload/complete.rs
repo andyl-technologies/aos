@@ -9,7 +9,7 @@ use anyhow::{ensure, Result};
 use aos_hub_core::direct_upload::*;
 
 use super::{
-    batches::{bounded, item_error, merge_reply},
+    batches::{bounded, frozen_state, item_error, merge_reply},
     control::LogicalReply,
 };
 
@@ -27,6 +27,8 @@ trait Runtime {
         context: &DirectRequestContext,
         value: DirectUploadLogicalRequest,
     ) -> Result<LogicalReply>;
+
+    /// Returns only after the exact freeze is acknowledged; `None` leaves verification pending.
     async fn prepare(
         &self,
         context: &DirectRequestContext,
@@ -227,8 +229,10 @@ async fn run<R: Runtime>(
     let prepared = bounded(
         items.into_iter().map(|(admission, complete)| async move {
             let identity = complete.operation_id.clone();
+            let session = complete.session.clone();
             (
                 identity,
+                session,
                 runtime.prepare(context, admission, complete).await,
             )
         }),
@@ -238,7 +242,18 @@ async fn run<R: Runtime>(
 
     let mut pending = Vec::new();
     let mut published = Vec::new();
-    for (identity, result) in prepared {
+    for (identity, session, result) in prepared {
+        if result.is_ok() {
+            // Native retains Creating until verified stage evidence arrives.
+            // Successful preparation independently proves the durable freeze.
+            if let Some(status) = response
+                .sessions
+                .iter_mut()
+                .find(|status| status.session == session)
+            {
+                status.state = frozen_state(status.state);
+            }
+        }
         match result {
             Ok(Some(ready)) if ready.settled.len() == ready.admission.placements.len() => {
                 match finish(ready, context) {

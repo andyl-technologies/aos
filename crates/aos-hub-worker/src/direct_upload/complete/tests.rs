@@ -151,6 +151,7 @@ fn response() -> DirectUploadResponse {
 
 struct PhysicalFixture {
     metadata_only: bool,
+    verification_pending: bool,
     store: Rc<FixtureStore>,
     transport: http::HttpTransport,
     nonce: Cell<u64>,
@@ -241,6 +242,7 @@ impl PhysicalFixture {
     fn reopen(store: Rc<FixtureStore>, transport: http::HttpTransport) -> Self {
         Self {
             metadata_only: false,
+            verification_pending: false,
             store,
             transport,
             nonce: Cell::new(0),
@@ -315,6 +317,10 @@ impl Runtime for PhysicalFixture {
         self.prepared_order
             .borrow_mut()
             .push(complete.session.session_id.clone());
+
+        if self.verification_pending {
+            return Ok(None);
+        }
 
         let settled = self
             .store
@@ -416,6 +422,40 @@ impl Runtime for PhysicalFixture {
             .insert(item.ready.complete.session.session_id.clone());
         Ok(())
     }
+}
+
+#[tokio::test]
+async fn acknowledged_freeze_projects_native_admission_as_pending_verification() {
+    let fixtures = (0..7).map(fixture).collect::<Vec<_>>();
+    let (context, public_bytes) = public(&fixtures);
+    let server = http::Server::start(fixtures.clone(), None, false).await;
+    let mut runtime = PhysicalFixture::new(fixtures.clone(), server.transport());
+    runtime.verification_pending = true;
+    let mut output = response();
+
+    run(
+        &runtime,
+        &context,
+        &public_bytes,
+        fixtures.iter().map(|item| item.complete.clone()).collect(),
+        &mut output,
+    )
+    .await;
+
+    assert!(output.errors.is_empty());
+    assert_eq!(output.sessions.len(), fixtures.len());
+    for (status, original) in output.sessions.iter().zip(&fixtures) {
+        assert_eq!(status.session, original.complete.session);
+        assert_eq!(status.resource_version, WireInteger::new(9));
+        assert_eq!(status.state, DirectSessionState::Freezing);
+    }
+    output.validate().unwrap();
+    assert_eq!(server.captured().requests.len(), 1);
+    assert!(runtime.promotion_order.borrow().is_empty());
+    assert!(runtime.acknowledged.borrow().is_empty());
+    assert_eq!(runtime.store.count(), 0);
+
+    server.stop().await;
 }
 
 #[tokio::test]
@@ -592,6 +632,7 @@ async fn historical_complete_missing_positive_never_enters_provider_phases() {
     .await;
 
     assert_eq!(output.errors.len(), 1);
+    assert_eq!(output.sessions[0].state, DirectSessionState::Creating);
     assert_eq!(server.captured().requests.len(), 1);
     assert_eq!(runtime.store.count(), 0);
     assert!(runtime.promotion_order.borrow().is_empty());

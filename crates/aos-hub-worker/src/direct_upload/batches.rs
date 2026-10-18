@@ -60,6 +60,21 @@ pub(super) fn created_state(
     })
 }
 
+/// Projects state after an independently acknowledged durable freeze.
+///
+/// Callers must prove the exact freeze succeeded before using this projection.
+/// Later Native states remain authoritative, including blocked outcomes.
+pub(super) fn frozen_state(state: DirectSessionState) -> DirectSessionState {
+    if matches!(
+        state,
+        DirectSessionState::Creating | DirectSessionState::Active
+    ) {
+        DirectSessionState::Freezing
+    } else {
+        state
+    }
+}
+
 pub(super) fn merge_reply(response: &mut DirectUploadResponse, reply: DirectUploadLogicalReply) {
     for status in reply.sessions {
         merge_status(response, status);
@@ -150,6 +165,28 @@ mod tests {
         let wire = serde_json::to_string(&response).unwrap();
         assert!(!wire.contains("intent"));
         assert!(!wire.contains("admissions"));
+    }
+
+    #[test]
+    fn frozen_projection_preserves_later_authoritative_states() {
+        use aos_hub_core::direct_upload::DirectSessionState::*;
+
+        for state in [Creating, Active] {
+            assert_eq!(super::frozen_state(state), Freezing);
+        }
+        for state in [
+            Freezing,
+            CompletingStaging,
+            StagedVerified,
+            Promoting,
+            Committed,
+            Aborting,
+            Aborted,
+            BlockedUnknown,
+            CleanupPending,
+        ] {
+            assert_eq!(super::frozen_state(state), state);
+        }
     }
 
     #[test]

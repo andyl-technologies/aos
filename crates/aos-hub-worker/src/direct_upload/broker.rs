@@ -13,7 +13,9 @@ use wasm_bindgen::JsValue;
 use worker::{Env, Headers, Method, Request, RequestInit, Response};
 
 use super::{
-    batches::{bounded, created_state, item_error, merge_reply, merge_status, part_response},
+    batches::{
+        bounded, created_state, frozen_state, item_error, merge_reply, merge_status, part_response,
+    },
     complete,
     config::QualifiedConfig,
     control::{self, Transport},
@@ -115,8 +117,7 @@ async fn execute(request: &mut Request, env: &Env) -> Result<DirectUploadRespons
             response.errors = reply.errors.clone();
             let outcomes = bounded(
                 reply.admissions.iter().map(|admission| async {
-                    (
-                        &admission.intent.client_operation_id,
+                    let result = async {
                         begin_with_signal(
                             env,
                             &qualified,
@@ -125,21 +126,33 @@ async fn execute(request: &mut Request, env: &Env) -> Result<DirectUploadRespons
                             Some(request.inner().signal()),
                             None,
                         )
-                        .await,
-                    )
+                        .await?;
+                        let state = reply
+                            .sessions
+                            .iter()
+                            .find(|status| {
+                                status.intent.client_operation_id
+                                    == admission.intent.client_operation_id
+                            })
+                            .ok_or_else(|| anyhow::anyhow!("direct creation status absent"))?
+                            .state;
+                        retained_created_state(env, admission, state).await
+                    }
+                    .await;
+                    (&admission.intent.client_operation_id, result)
                 }),
                 maximum,
             )
             .await;
             for (identity, result) in outcomes {
                 match result {
-                    Ok(()) => {
+                    Ok(state) => {
                         if let Some(status) = response
                             .sessions
                             .iter_mut()
                             .find(|status| status.intent.client_operation_id == *identity)
                         {
-                            status.state = created_state(status.state, Ok(()))?;
+                            status.state = state;
                         }
                     }
                     Err(error) => response.errors.push(item_error(identity, &error)),
@@ -388,6 +401,39 @@ async fn execute(request: &mut Request, env: &Env) -> Result<DirectUploadRespons
     Ok(response)
 }
 
+/// Reads the retained freeze after acknowledged creation, including exact Begin replay.
+async fn retained_created_state(
+    env: &Env,
+    admission: &DirectUploadAdmission,
+    state: DirectSessionState,
+) -> Result<DirectSessionState> {
+    if state != DirectSessionState::Creating {
+        return Ok(state);
+    }
+    let Reply::Original {
+        admission: retained,
+        complete,
+    } = storage::call(env, admission, Operation::ReadOriginal).await?
+    else {
+        anyhow::bail!("direct retained creation original absent");
+    };
+    ensure!(
+        retained == *admission,
+        "direct retained creation original differs"
+    );
+    let state = created_state(state, Ok(()))?;
+    if let Some(complete) = complete {
+        ensure!(
+            complete.session.session_id == admission.session_id
+                && complete.session.logical_fingerprint == admission.logical_fingerprint,
+            "direct retained freeze original differs"
+        );
+        complete.fingerprint()?;
+        return Ok(frozen_state(state));
+    }
+    Ok(state)
+}
+
 async fn sparse_status(
     env: &Env,
     admission: &DirectUploadAdmission,
@@ -400,7 +446,7 @@ async fn sparse_status(
         for placement in &admission.placements {
             created(env, admission, placement.placement_id).await?;
         }
-        status.state = created_state(status.state, Ok(()))?;
+        status.state = retained_created_state(env, admission, status.state).await?;
     }
     let mut remaining = query.maximum_parts;
     let after_placement = query

@@ -265,7 +265,9 @@ fn reply(
                     reply.session_summaries.push(DirectLogicalSessionSummary {
                         session: item.complete.session.clone(),
                         resource_version: WireInteger::new(9),
-                        state: DirectSessionState::Freezing,
+                        // Native retains logical admission until verified stage
+                        // evidence arrives. The Worker owns the freeze receipt.
+                        state: DirectSessionState::Creating,
                         outstanding_grants: false,
                     });
                 }
