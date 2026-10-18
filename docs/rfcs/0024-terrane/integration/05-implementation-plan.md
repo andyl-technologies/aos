@@ -9094,8 +9094,10 @@ Resumed qualification:
   recovery cases, both original publication controls, all three transfer
   controls and three process-confinement controls execute successfully; no
   post-result guest I/O diagnostic appears. Required application target
-  compilation is running. Strict Clippy still fails nineteen unused integration
-  or retention findings, so no clean-Clippy claim is made.
+  compilation also passes in 2,478 seconds, producing 128 unit/integration test
+  artifacts across 29 packages without executing them. Strict Clippy still fails
+  nineteen unused integration or retention findings, so no clean-Clippy claim
+  is made.
   Pending deletion completion, manifest Running publication, consumer leases,
   NativeReady, BKT-15 and complete host task acceptance remain open.
 - Running metadata-retention candidate `1aa1c86f96`: the physical worker now
@@ -9114,8 +9116,16 @@ Resumed qualification:
   guest still has 202,248,192 filesystem bytes available. The combined candidate
   `a6952e8edb` gives only this expanded fixture's publisher child a finite 4,096
   descriptor budget; quota, seal, pin, identity and cancellation assertions
-  remain intact. Fresh exact-source qualification is running. Manifest Running
-  publication, consumer leases, readiness and the complete host tasks remain open.
+  remain intact. Exact-source all-target build, nine focused nextest cases,
+  formatter pair, immutable image, independent source/image verification and
+  actual ext4 guest now pass. Both Running-retention controls execute, including
+  the abandoned waiter; all 47 selected filesystem cases, eight manifest/mixed
+  recovery cases, five original publication/transfer controls and three process
+  confinement controls also pass. The actual publisher has the finite 4,096
+  descriptor ceiling; no post-result guest I/O diagnostic appears. Manifest
+  Running publication, consumer leases, readiness and complete host tasks remain
+  open; strict Clippy still has nineteen unused integration or retention
+  findings.
 - Streamed-assembly component `7c00759f16`: the native reassembly plan can copy
   its ordered source stream into caller-owned output through the existing chunk,
   length and whole-file verifier without collecting the complete object. Errors
@@ -9127,7 +9137,13 @@ Resumed qualification:
   gives metadata-pair fields names and scopes intentional assertion lints to
   integration-test crates. A diagnostic with dead-code checks disabled reaches
   all targets successfully; it is not a strict-Clippy pass. These changes are
-  included in `a6952e8edb`; native and application qualification remain required.
+  included in `a6952e8edb`. Its full filesystem suite now executes on actual
+  ext4: all 115 nonignored cases pass under UID/GID 842, empty capabilities and
+  NoNewPrivs, including the unchanged non-UTF-8-name case and four streaming
+  cases. Independent review matches every actual passing case to the complete
+  source-bound archive inventory and verifies all 3,468 archive inputs and its
+  digest. The six original privileged VM cases remain separately inventoried.
+  Required application target compilation for this combined source is running.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
   and all seven strict Clippy/documentation profiles pass. The interface,
   commit-path, status and schema gates pass on unchanged final source, including
@@ -9145,7 +9161,7 @@ Resumed qualification:
   was stopped after the policy fix and supplies no aggregate success.
 
 All five T2 task checkboxes remain open. The transport and cache results above
-accept components only. Running sealed publication, full host isolation,
+accept components only. Manifest Running publication, full host isolation,
 NativeReady, BKT-15 and actual four-role deployment remain unqualified. The
 zero-wipe requirement conflict remains stopped; T3 and branch work stay deferred.
 
