@@ -1396,6 +1396,40 @@ passes socket acquisition and Hello, then refuses in Prepare with
 progress, not a successful startup or a performance comparison. All temporary
 logging is removed after the probes. Native preservation remains unqualified.
 
+### First restored Observe evidence
+
+The SDK now retains the actual raw and typed terminal, then receives the
+promised singleton evidence root through its existing Session and original
+absolute cut. It records the actual SDK completion frontier only after content
+verification. A disconnect leaves the owner Publishing, with no completion
+frontier, while retaining the terminal, incomplete bytes, original provider
+requests and cached acknowledgements. The saved frontier remains correspondence
+data; Source authentication and each subsequent action claim stay separate.
+
+The actual public construction quote independently prices host receiver
+retained, transient and counter storage before its Window claim. The row covers
+all finite provider originals, acknowledgements, partial content, raw decoding
+and failure owners. Prospective appended bytes follow immutable request/chunk
+limits; numeric reserved lengths provide no allocation credit. Current owners
+remain separately charged, and global policy ceilings are unchanged.
+
+The component tests use the real Unix framed transport with a modeled installed
+codec and inert proof content. They exercise dependency-first multi-chunk
+receipt, every correlated acknowledgement, exact retained custody, failure
+partials, unchanged cuts and exact byte-boundary refusal. They do not issue a
+genuine Source/Window claim or qualify native restoration. A complete public
+construction positive and fresh native continuations remain required.
+
+All 1,753 Core, seven contract and 1,084 provider tests pass at this stage.
+After independently reviewed receiver hashing headers are added, all 1,084
+provider tests pass again in 11.84 seconds, with fifteen ignored. Formatting and
+final six-crate all-feature/all-target checking pass; the latter completes in
+34.47 seconds. All four full-roster definition/admission controls pass in 24.70
+seconds. Native startup remains unqualified: a subsequent failure-only
+probe records zero passes and one failure in 15.00 seconds and isolates Prepare
+to the client's original-journal byte limit. Its declared growth and the Source
+preflight requirement remain under investigation; no policy limit is raised.
+
 ## Known gaps and exit criteria
 
 Completion requires the full [qualification plan](qualification-plan.md),

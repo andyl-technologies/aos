@@ -71,3 +71,13 @@ impl ClientSession {
 fn refused() -> ProviderError {
     ProviderError::Correlation("original installed observation terminal missing or changed")
 }
+
+impl ClientSession {
+    pub(in crate::client) fn ensure_original_observation_receiver_idle_data(
+        &self,
+    ) -> Result<(), ProviderError> {
+        self.authenticate_native5_source_codec()?;
+        self.connection
+            .ensure_original_observation_receiver_idle_data()
+    }
+}

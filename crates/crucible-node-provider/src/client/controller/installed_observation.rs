@@ -25,6 +25,7 @@ pub(super) struct AssignedOriginalInstalledRestorationObservation {
     state: ObservationState,
     response: Option<Envelope>,
     decoded: Option<ResponseBody>,
+    completed_frontier: Option<U64>,
 }
 
 /// Borrows one actual assigned Observe without renewing its ID, sequence or cut.
@@ -38,6 +39,7 @@ pub struct CompletedOriginalInstalledRestorationObservation<'a> {
     original: &'a Envelope,
     response: &'a Envelope,
     decoded: &'a ResponseBody,
+    completed_frontier: U64,
 }
 
 impl CompletedOriginalInstalledRestorationObservation<'_> {
@@ -54,6 +56,13 @@ impl CompletedOriginalInstalledRestorationObservation<'_> {
     /// Borrows the actual retained typed terminal before additional Source copies.
     pub fn response_body_data(&self) -> &ResponseBody {
         self.decoded
+    }
+
+    /// Returns the saved SDK frontier after every promised proof was received.
+    ///
+    /// Later traffic cannot renew this immutable historical completion cut.
+    pub const fn completed_frontier_data(&self) -> U64 {
+        self.completed_frontier
     }
 }
 
@@ -126,6 +135,12 @@ impl CnpController {
             + size_of::<Result<&mut serde_json::Map<String, Value>, ProviderError>>()
             + size_of::<Result<&Value, ProviderError>>()
             + size_of::<ObservationState>()
+            + size_of::<Option<U64>>()
+            + size_of::<&ContentRef>()
+            + size_of::<&[ContentRef]>()
+            + size_of::<Option<&MethodResult>>()
+            + size_of::<Option<&ObserveResult>>()
+            + size_of::<&crucible_node_contract::ObservationBatch>()
             + size_of::<crate::bodies::RequestBody>()
             + size_of::<ResponseBody>()
             + size_of::<Envelope>()
@@ -152,6 +167,7 @@ impl CnpController {
             + size_of::<&crate::reference_packet::control::PacketControlSelection>()
             + size_of::<Result<&crate::reference_packet::control::PacketControlSelection, ProviderError>>()
             + restoration_observe_protocol_counter_scratch_data()
+            + receive_storage::counter_scratch_data()
     }
 
     /// Assigns one observation only after the actual complete World pair.
@@ -196,6 +212,8 @@ impl CnpController {
             PacketRestorationActivationPhase::WorldActivate,
         )?;
         let maximum = self.maximum_frame()?;
+        self.session
+            .ensure_original_observation_receiver_idle_data()?;
         let (sequence, cut) = self.session.begin_original_ack_admit(self.budget)?;
         self.original_installed_restoration_observation =
             Some(AssignedOriginalInstalledRestorationObservation {
@@ -215,6 +233,7 @@ impl CnpController {
                 state: ObservationState::Preparing,
                 response: None,
                 decoded: None,
+                completed_frontier: None,
             });
         // Canonical pair checks can fail. Their actual request and cut already
         // reside in the sticky owner, so no later call can silently renew them.
@@ -316,6 +335,30 @@ impl CnpController {
         let actual = self.original(id).ok_or_else(refused)?;
         if &actual.request != completed.original()
             || actual.response.as_ref() != Some(completed.response())
+        {
+            return Err(refused());
+        }
+        Ok(())
+    }
+
+    /// Authenticates the saved first-observation frontier against this Session.
+    ///
+    /// This correspondence loan creates no action claim or native authority.
+    ///
+    /// # Errors
+    /// Refuses another emitter/codec, incomplete or changed original custody,
+    /// a changed saved completion frontier, or subsequent SDK traffic.
+    pub fn authenticate_original_installed_restoration_observation_frontier_data(
+        &self,
+        emitter: &OriginalCanonicalBlobAckEmitter,
+        expected: U64,
+    ) -> Result<(), ProviderError> {
+        self.authenticate_original_installed_restored_suffix_data(emitter)?;
+        if self
+            .original_completed_installed_restoration_observation(emitter)?
+            .completed_frontier_data()
+            != expected
+            || self.session.fresh_restore_query_sequence()? != expected
         {
             return Err(refused());
         }
@@ -471,6 +514,7 @@ impl CnpController {
             original,
             response,
             decoded: state.decoded.as_ref().ok_or_else(refused)?,
+            completed_frontier: state.completed_frontier.ok_or_else(refused)?,
         })
     }
 
@@ -635,8 +679,8 @@ impl PreparedOriginalInstalledRestorationObservation<'_> {
         let response = state.response.as_ref().ok_or_else(refused)?;
         original.matches_response(response)?;
         *completed = Some(state.decoded.as_ref().ok_or_else(refused)?.clone());
-        state.state = ObservationState::Complete;
-        Ok(())
+        self.controller
+            .complete_original_installed_observation_content_data()
     }
 
     /// Borrows the completed pair while retaining the exclusive Controller loan.
@@ -649,6 +693,45 @@ impl PreparedOriginalInstalledRestorationObservation<'_> {
     ) -> Result<CompletedOriginalInstalledRestorationObservation<'_>, ProviderError> {
         self.controller
             .original_completed_installed_restoration_observation(emitter)
+    }
+}
+
+impl CnpController {
+    // The endpoint sends the terminal before its dependency-ordered Blob suffix.
+    // Keep the same raw/typed terminal and original cut while receiving that
+    // suffix; observing a terminal alone cannot complete this SDK owner.
+    fn complete_original_installed_observation_content_data(
+        &mut self,
+    ) -> Result<(), ProviderError> {
+        self.session
+            .ensure_original_observation_receiver_idle_data()?;
+        let state = self
+            .original_installed_restoration_observation
+            .as_mut()
+            .ok_or_else(refused)?;
+        if state.state != ObservationState::Publishing
+            || state.completed_frontier.is_some()
+            || state.response.is_none()
+        {
+            return Err(refused());
+        }
+        let decoded = state.decoded.as_ref().ok_or_else(refused)?;
+        if let Some(MethodResult::Observe(result)) = decoded.result.as_ref() {
+            // The actual signed request admits exactly one complete observation.
+            // Borrow its retained root directly: no replacement root vector or
+            // independent allocation is introduced between terminal and proof.
+            let [batch] = result.observations.as_slice() else {
+                return Err(refused());
+            };
+            self.session.receive_content(
+                &mut self.custody,
+                std::slice::from_ref(&batch.measurement_ref),
+                self.budget,
+            )?;
+        }
+        state.completed_frontier = Some(self.session.fresh_restore_query_sequence()?);
+        state.state = ObservationState::Complete;
+        Ok(())
     }
 }
 
@@ -668,6 +751,7 @@ impl AssignedOriginalInstalledRestorationObservation {
             state,
             response,
             decoded,
+            completed_frontier,
         } = self;
         match state {
             ObservationState::Preparing
@@ -686,6 +770,7 @@ impl AssignedOriginalInstalledRestorationObservation {
         observer.observe(original)?;
         observer.vector::<u8>(bytes.capacity())?;
         observer.observe(response)?;
+        observer.observe(completed_frontier)?;
         if let Some(decoded) = decoded {
             Owned::Response(decoded).observe_owned_metadata_data(observer)?;
         }
@@ -790,6 +875,7 @@ mod pending_tests {
                     state,
                     response: None,
                     decoded: None,
+                    completed_frontier: None,
                 });
             assert!(
                 controller
@@ -856,3 +942,9 @@ mod suffix_data_tests {
         assert!(authenticate_suffix_proof_original_data(&begin, &begin).is_ok());
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "installed_observation/evidence_tests.rs"]
+mod evidence_tests;
+
+mod receive_storage;

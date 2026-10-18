@@ -35,6 +35,21 @@ impl CnpController {
             self.authority(),
         )?;
         let mut row = quote(launch, inputs)?;
+        // The generic host receiver can retain unexpected/incomplete provider
+        // transfers before the promised root arrives. Price its actual fixed
+        // ceilings and every named journal/ACK owner independently of native
+        // prefix production; old current owners supply no prospective credit.
+        let receiver =
+            self.original_observation_receive_storage_data(inputs.maximum_requested_bytes)?;
+        row.host_retained = add(row.host_retained, receiver.retained)?;
+        row.host_transient = add(row.host_transient, receiver.transient)?;
+        row.host_scratch = add(row.host_scratch, receiver.scratch)?;
+        row.requested = sum(&[
+            row.requested,
+            receiver.retained,
+            receiver.transient,
+            receiver.scratch,
+        ])?;
         if row.requested > inputs.maximum_requested_bytes {
             return Err(credit());
         }
