@@ -55,46 +55,6 @@ pub(super) struct SourcePreparationHistory {
         Option<crate::vm_lifecycle::ProductionVmHotForkSourcePreparationHistory>,
 }
 
-impl SourcePreparationHistory {
-    fn first_error(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self.first.as_ref() {
-            Some(SourcePreparationFirst::Lifecycle(first)) => Some(first),
-            Some(SourcePreparationFirst::Role(first)) => Some(first),
-            Some(SourcePreparationFirst::Selection(first)) => Some(first),
-            Some(SourcePreparationFirst::WorkerGeometry(first)) => Some(first),
-            None => self
-                .preparation
-                .as_ref()
-                .and_then(|history| history.first_error())
-                .or_else(|| {
-                    self.native
-                        .as_ref()
-                        .map(|first| first as &(dyn std::error::Error + 'static))
-                })
-                .or_else(|| {
-                    self.cleanup_first
-                        .as_ref()
-                        .map(|first| first as &(dyn std::error::Error + 'static))
-                })
-                .or_else(|| {
-                    self.cleanup_post
-                        .as_ref()
-                        .map(|first| first as &(dyn std::error::Error + 'static))
-                })
-                .or_else(|| {
-                    self.context_restore
-                        .as_ref()
-                        .map(|first| first as &(dyn std::error::Error + 'static))
-                })
-                .or_else(|| {
-                    self.body_acceptance
-                        .as_ref()
-                        .map(|first| first as &(dyn std::error::Error + 'static))
-                }),
-        }
-    }
-}
-
 impl std::fmt::Display for SourcePreparationHistory {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -113,7 +73,48 @@ impl std::fmt::Display for SourcePreparationHistory {
 
 impl std::error::Error for SourcePreparationHistory {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.first_error()
+        match self.first.as_ref() {
+            Some(SourcePreparationFirst::Lifecycle(first)) => return Some(first),
+            Some(SourcePreparationFirst::Role(first)) => return Some(first),
+            Some(SourcePreparationFirst::Selection(first)) => return Some(first),
+            Some(SourcePreparationFirst::WorkerGeometry(first)) => return Some(first),
+            None => {}
+        }
+
+        if let Some(history) = &self.preparation {
+            use crate::vm_lifecycle::ProductionVmHotForkSourcePreparationError as First;
+
+            match history.first_error() {
+                Some(First::Scheduler { source, .. }) => return Some(source),
+                Some(First::Backend { source, .. }) => return Some(source),
+                Some(First::Allocation(source)) => return Some(source),
+                Some(First::Original(source)) => return Some(source),
+                Some(First::EventIdentity(source)) => return Some(source),
+                Some(First::PostRefused) | None => {
+                    if let Some(post) = history.post_failure() {
+                        return Some(post);
+                    }
+                }
+                Some(first) => return Some(first),
+            }
+        }
+
+        if let Some(first) = &self.native {
+            return Some(first);
+        }
+        if let Some(first) = &self.cleanup_first {
+            return Some(first);
+        }
+        if let Some(first) = &self.cleanup_post {
+            return Some(first);
+        }
+        if let Some(first) = &self.context_restore {
+            return Some(first);
+        }
+        if let Some(first) = &self.body_acceptance {
+            return Some(first);
+        }
+        None
     }
 }
 
@@ -720,7 +721,7 @@ where
 
     /// Borrows the original typed construction cause without moving custody.
     pub(crate) fn first_error(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.history.first_error()
+        std::error::Error::source(&self.history)
     }
 
     /// Projects only this concrete Pending type from its original Main Box.
@@ -1026,8 +1027,7 @@ mod history_tests {
             ..SourcePreparationHistory::default()
         };
 
-        let original = history
-            .first_error()
+        let original = std::error::Error::source(&history)
             .unwrap()
             .downcast_ref::<crate::QemuAttemptProductionVmLifecycleError>()
             .unwrap();
@@ -1037,6 +1037,91 @@ mod history_tests {
         };
         assert_eq!(pointer(original), constructor_pointer);
         assert_eq!(pointer(history.native.as_ref().unwrap()), cleanup_pointer);
+    }
+
+    #[test]
+    fn pending_capture_preserves_initiating_leaf_and_independent_work_post() {
+        use crate::vm_lifecycle::{
+            ProductionVmHotForkSourcePreparationError as First,
+            ProductionVmHotForkSourcePreparationHistory,
+        };
+        // Diagnostic values only: no Main role or cleanup authority is issued.
+        let message = String::from("capture boundary refused");
+        let original_allocation = message.as_ptr();
+        let post = String::from("independent capture post refused");
+        let post_allocation = post.as_ptr();
+        let history = SourcePreparationHistory {
+            preparation: Some(ProductionVmHotForkSourcePreparationHistory::from_failures(
+                Some(First::Scheduler {
+                    operation: "component source capture",
+                    source: crucible_engine::SchedulerError::BoundaryViolation { message },
+                }),
+                Some(crucible_control_api::LifecycleApiError::LoopFactory { message: post }),
+            )),
+            native: Some(native("later native cleanup")),
+            ..Default::default()
+        };
+
+        let original = std::error::Error::source(&history)
+            .unwrap()
+            .downcast_ref::<crucible_engine::SchedulerError>()
+            .unwrap();
+
+        let crucible_engine::SchedulerError::BoundaryViolation { message } = original else {
+            panic!("the actual capture leaf remains selected");
+        };
+        assert_eq!(message.as_ptr(), original_allocation);
+        let Some(crucible_control_api::LifecycleApiError::LoopFactory { message }) =
+            history.preparation.as_ref().unwrap().post_failure()
+        else {
+            panic!("the independent work post remains separately retained");
+        };
+        assert_eq!(message.as_ptr(), post_allocation);
+        assert!(history.native.is_some());
+    }
+
+    #[test]
+    fn pending_capture_post_precedes_later_native_cleanup_without_replacing_it() {
+        use crate::vm_lifecycle::{
+            ProductionVmHotForkSourcePreparationError as First,
+            ProductionVmHotForkSourcePreparationHistory,
+        };
+        let message = String::from("actual capture post refused");
+        let original_allocation = message.as_ptr();
+        let cleanup = native("later native cleanup");
+        let QemuVmRealizationError::ExecutorUnavailable {
+            message: cleanup_message,
+            ..
+        } = &cleanup else {
+            panic!("unexpected fixture variant");
+        };
+        let cleanup_allocation = cleanup_message.as_ptr();
+        let history = SourcePreparationHistory {
+            preparation: Some(ProductionVmHotForkSourcePreparationHistory::from_failures(
+                Some(First::PostRefused),
+                Some(crucible_control_api::LifecycleApiError::LoopFactory { message }),
+            )),
+            native: Some(cleanup),
+            ..Default::default()
+        };
+
+        let original = std::error::Error::source(&history)
+            .unwrap()
+            .downcast_ref::<crucible_control_api::LifecycleApiError>()
+            .unwrap();
+
+        let crucible_control_api::LifecycleApiError::LoopFactory { message } = original else {
+            panic!("the actual post remains selected instead of its marker");
+        };
+        assert_eq!(message.as_ptr(), original_allocation);
+        let capture = history.preparation.as_ref().unwrap();
+        assert!(matches!(capture.first_error(), Some(First::PostRefused)));
+        assert!(std::ptr::eq(original, capture.post_failure().unwrap()));
+        let Some(QemuVmRealizationError::ExecutorUnavailable { message, .. }) = &history.native
+        else {
+            panic!("the independent native cleanup cause remains retained");
+        };
+        assert_eq!(message.as_ptr(), cleanup_allocation);
     }
 
     #[test]
@@ -1062,8 +1147,7 @@ mod history_tests {
             ..SourcePreparationHistory::default()
         };
 
-        let original = history
-            .first_error()
+        let original = std::error::Error::source(&history)
             .unwrap()
             .downcast_ref::<crate::QemuAttemptProductionVmLifecycleError>()
             .unwrap();
@@ -1081,10 +1165,10 @@ mod history_tests {
             panic!("body cause was replaced");
         };
         assert_eq!(message.as_ptr(), cleanup_pointer);
-        assert!(std::ptr::addr_eq(
-            std::error::Error::source(&history).unwrap(),
-            history.first_error().unwrap()
-        ));
+        let Some(SourcePreparationFirst::Lifecycle(stored)) = history.first.as_ref() else {
+            panic!("the original constructor phase remains retained");
+        };
+        assert!(std::ptr::eq(original, stored));
         assert!(history.cleanup_post.is_none());
     }
 
@@ -1105,8 +1189,7 @@ mod history_tests {
             ..SourcePreparationHistory::default()
         };
 
-        let original = history
-            .first_error()
+        let original = std::error::Error::source(&history)
             .unwrap()
             .downcast_ref::<crate::QemuAttemptProductionVmLifecycleError>()
             .unwrap();

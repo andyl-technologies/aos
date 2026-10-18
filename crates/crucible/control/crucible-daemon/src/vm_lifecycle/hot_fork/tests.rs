@@ -1176,12 +1176,10 @@ fn borrowed_source_preparation_keeps_same_box_and_typed_failure_before_assembly(
         address
     ));
     assert!(preparation.run().is_err());
-    let original = preparation.first.as_ref().unwrap();
-    let original = std::error::Error::source(original)
-        .unwrap()
-        .downcast_ref::<SchedulerError>()
-        .unwrap();
-    let SchedulerError::BoundaryViolation { message } = original else {
+    let Some(ProductionVmHotForkSourcePreparationError::Scheduler {
+        source: SchedulerError::BoundaryViolation { message },
+        ..
+    }) = preparation.first.as_ref() else {
         panic!("missing source authority must retain its original boundary error");
     };
     let message_allocation = message.as_ptr();
@@ -1201,12 +1199,10 @@ fn borrowed_source_preparation_keeps_same_box_and_typed_failure_before_assembly(
 
     let failure = preparation.into_failure();
     assert!(std::ptr::eq(failure.lifecycle.as_deref().unwrap(), address));
-    let original = failure
-        .first_error()
-        .unwrap()
-        .downcast_ref::<SchedulerError>()
-        .unwrap();
-    let SchedulerError::BoundaryViolation { message } = original else {
+    let Some(ProductionVmHotForkSourcePreparationError::Scheduler {
+        source: SchedulerError::BoundaryViolation { message },
+        ..
+    }) = failure.first_error() else {
         panic!("failure assembly replaced the typed boundary error");
     };
     assert_eq!(message.as_ptr(), message_allocation);

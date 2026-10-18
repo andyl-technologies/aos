@@ -59,6 +59,10 @@ rearm, admission, rollback, shutdown and physical-body order. Its typed visitor
 keeps independent later causes visible, and rearm diagnostics borrow their
 original preparation error, node list and rollback allocations. These views
 grant no cleanup, native return or rearm authority.
+Source preparation exposes its original concrete error and independent same-work
+postcheck separately. The ordinary error chain borrows that concrete error, or
+the actual post when only the post refused. Recovery and cleanup retain the
+same Loop Box and partial fields; diagnostic inspection authorizes no retry.
 
 Promoted children retain their original return pair and a bounded-step lineage
 controller. Descendant retirement keeps each parent checkout until exclusive

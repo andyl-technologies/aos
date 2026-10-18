@@ -1054,15 +1054,8 @@ impl ProductionVmHotForkSourceWorldPreparationFailure {
     /// Recovery-only refusals created without an underlying operation error
     /// return `None`. This observation grants no cleanup or Source authority.
     #[must_use]
-    pub fn first_error(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        use preparation::ProductionVmHotForkSourcePreparationError as First;
-
-        self.first.as_ref().map(|first| match first {
-            First::Scheduler { source, .. } => source as &(dyn std::error::Error + 'static),
-            First::Backend { source, .. } => source as &(dyn std::error::Error + 'static),
-            First::Allocation(source) => source as &(dyn std::error::Error + 'static),
-            first => first as &(dyn std::error::Error + 'static),
-        })
+    pub fn first_error(&self) -> Option<&ProductionVmHotForkSourcePreparationError> {
+        self.first.as_ref()
     }
 
     /// Returns sources whose rollback could not be authenticated as complete.
@@ -1148,7 +1141,10 @@ impl std::fmt::Display for ProductionVmHotForkSourceWorldPreparationFailure {
 
 impl std::error::Error for ProductionVmHotForkSourceWorldPreparationFailure {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.first_error()
+        match self.first_error() {
+            Some(first) => Some(first),
+            None => None,
+        }
     }
 }
 

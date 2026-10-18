@@ -52,6 +52,22 @@ fn closed_original_refuses_capture_effect_and_observes_its_independent_post() {
     ));
     assert_eq!(state.effects, 0);
     assert!(state.output.is_none());
+
+    let history = ProductionVmHotForkSourcePreparationHistory {
+        first: result.err(),
+        post,
+    };
+    assert!(matches!(
+        history.first_error(),
+        Some(First::Original(
+            LifecycleApiError::ConstructionCustodyUnavailable
+        ))
+    ));
+    assert!(matches!(
+        history.post_failure(),
+        Some(LifecycleApiError::ConstructionCustodyUnavailable)
+    ));
+    assert!(!history.is_empty());
 }
 
 #[test]
@@ -78,6 +94,23 @@ fn actual_output_remains_owned_when_the_same_original_post_refuses() {
         state.output.as_deref(),
         Some("same returned capture metadata")
     );
+
+    let history = ProductionVmHotForkSourcePreparationHistory {
+        first: result.err(),
+        post,
+    };
+    assert!(matches!(history.first_error(), Some(First::PostRefused)));
+    let retained_post = history.post_failure().unwrap();
+    let chained_post = std::error::Error::source(&history)
+        .unwrap()
+        .downcast_ref::<LifecycleApiError>()
+        .unwrap();
+    assert!(std::ptr::eq(retained_post, chained_post));
+    assert!(matches!(
+        retained_post,
+        LifecycleApiError::ConstructionCustodyUnavailable
+    ));
+    assert!(!history.is_empty());
 }
 
 #[test]
@@ -93,14 +126,25 @@ fn initiating_leaf_and_completed_original_post_remain_independent() {
         Err(first)
     });
 
-    let Err(First::Original(LifecycleApiError::LoopFactory { message })) = result else {
+    let history = ProductionVmHotForkSourcePreparationHistory {
+        first: result.err(),
+        post,
+    };
+    let Some(First::Original(LifecycleApiError::LoopFactory { message })) = history.first_error()
+    else {
         panic!("the initiating typed leaf was replaced by the post");
     };
     assert_eq!(message.as_ptr(), pointer);
-    assert_eq!(message, "actual capture operation refused");
+    assert_eq!(message.as_str(), "actual capture operation refused");
     assert!(matches!(
-        post,
+        history.post_failure(),
         Some(LifecycleApiError::ConstructionCustodyUnavailable)
     ));
+    let chained_first = std::error::Error::source(&history)
+        .unwrap()
+        .downcast_ref::<ProductionVmHotForkSourcePreparationError>()
+        .unwrap();
+    assert!(std::ptr::eq(history.first_error().unwrap(), chained_first));
+    assert!(!history.is_empty());
     assert_eq!(state.effects, 1);
 }

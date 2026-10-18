@@ -60,23 +60,30 @@ pub struct ProductionVmHotForkSourcePreparationHistory {
 }
 
 impl ProductionVmHotForkSourcePreparationHistory {
-    /// Borrows the original typed refusal independently of any later post.
-    pub fn first_error(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self.first.as_ref() {
-            Some(First::Scheduler { source, .. }) => Some(source),
-            Some(First::Backend { source, .. }) => Some(source),
-            Some(First::Allocation(source)) => Some(source),
-            Some(First::Original(source)) => Some(source),
-            Some(First::EventIdentity(source)) => Some(source),
-            Some(First::PostRefused) | None => self
-                .post
-                .as_ref()
-                .map(|post| post as &dyn std::error::Error),
-            Some(first) => Some(first),
-        }
+    /// Moves the initiating refusal and independent post into one diagnostic.
+    pub(crate) fn from_failures(first: Option<First>, post: Option<LifecycleApiError>) -> Self {
+        Self { first, post }
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
+    /// Borrows the original typed refusal independently of any later post.
+    #[must_use]
+    pub fn first_error(&self) -> Option<&ProductionVmHotForkSourcePreparationError> {
+        self.first.as_ref()
+    }
+
+    /// Borrows the independent postcheck on the same original work operation.
+    ///
+    /// When [`Self::first_error`] returns
+    /// [`ProductionVmHotForkSourcePreparationError::PostRefused`], the original
+    /// postcheck cause remains separately available here.
+    #[must_use]
+    pub fn post_failure(&self) -> Option<&LifecycleApiError> {
+        self.post.as_ref()
+    }
+
+    /// Reports whether both the initiating cause and independent post are absent.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
         self.first.is_none() && self.post.is_none()
     }
 }
@@ -93,7 +100,13 @@ impl std::fmt::Display for ProductionVmHotForkSourcePreparationHistory {
 
 impl std::error::Error for ProductionVmHotForkSourcePreparationHistory {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.first_error()
+        match self.first_error() {
+            Some(First::PostRefused) | None => match self.post_failure() {
+                Some(post) => Some(post),
+                None => None,
+            },
+            Some(first) => Some(first),
+        }
     }
 }
 
@@ -523,10 +536,10 @@ impl SourceWorldPreparation {
     }
 
     pub(crate) fn take_history(&mut self) -> ProductionVmHotForkSourcePreparationHistory {
-        ProductionVmHotForkSourcePreparationHistory {
-            first: self.first.take(),
-            post: self.work_post.take(),
-        }
+        ProductionVmHotForkSourcePreparationHistory::from_failures(
+            self.first.take(),
+            self.work_post.take(),
+        )
     }
 
     pub(crate) fn is_complete(&self) -> bool {
