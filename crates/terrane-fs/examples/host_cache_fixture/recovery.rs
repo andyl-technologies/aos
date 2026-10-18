@@ -6,6 +6,9 @@
 //! actor invokes the genuine owner, Inspector and publisher channel; only their
 //! actual result permits Resume.
 
+#[path = "recovery/reuse.rs"]
+mod reuse;
+
 use super::config::{HARD_LIMIT, HOLD, Inputs, STATE};
 use rustix::process::{Gid, Uid};
 use std::{
@@ -376,6 +379,9 @@ pub(super) fn run(
     println!(
         "PASS actual recovered ranges survived a new Running admission; original metadata retained"
     );
+    if case == FixtureCase::Verified {
+        reuse::run(owner, runtime, inputs)?;
+    }
     if case.mixed() {
         println!(
             "PASS actual mixed recovery adopted inline and manifest bytes and acknowledged Resume; no Ready"

@@ -329,6 +329,9 @@ def manifest_recovery_cases(uuid, seeded):
         if case == "manifest-mixed":
             expected = "PASS actual mixed recovery adopted inline and manifest bytes and acknowledged Resume; no Ready"
         require(expected in output.splitlines(), "missing native manifest result: " + case)
+        if case == "manifest-recovery":
+            runpy.run_path(str(IMAGE / "share/manifest_publication_vm.py"))[
+                "check_recovered_reassembly"](sys.modules[__name__], case, output, seeded[case])
         require("PASS actual recovered source refused without acknowledged Resume; policy unchanged"
                 in output.splitlines(), "recovery source bypassed actual Resume: " + case)
         if recovers:

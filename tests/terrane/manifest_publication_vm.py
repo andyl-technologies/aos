@@ -7,6 +7,57 @@ import time
 import tomllib
 
 
+def check_recovered_reassembly(driver, case, output, original):
+    """Compares actual new sealed bytes and retirement against original recovery custody."""
+    rows = [line.split() for line in output.splitlines()
+            if line.startswith("RECOVERED_ASSEMBLY ")]
+    driver.require(len(rows) == 1 and len(rows[0]) == 5,
+                   "missing exact recovered reassembly native observations")
+    _, manifest, prefix, inode, length = rows[0]
+    driver.require(all(len(value) == 64 and all(char in "0123456789abcdef" for char in value)
+                       for value in [manifest, prefix]), "invalid recovered reassembly identity")
+    inode, length = int(inode), int(length)
+    root = driver.root(case)
+    body = root / "sealed" / manifest[:2] / manifest
+    retired = root / "pending-delete" / prefix
+    encoded = retired.read_bytes()
+    actual = body.read_bytes()
+    observed = retired.stat()
+    sealed = body.stat()
+    driver.require(len(encoded) == length + 1 and encoded[0] == 0
+                   and actual == encoded[1:] + original["body"].read_bytes(),
+                   "recovered assembly differs from actual original body and retired prefix")
+    driver.require(observed.st_ino == inode and observed.st_nlink == 1
+                   and observed.st_dev == original["body"].stat().st_dev
+                   and sealed.st_uid == sealed.st_gid == 841
+                   and sealed.st_nlink == 1 and sealed.st_mode & 0o7777 == 0o400,
+                   "recovered reassembly changed actual native inode custody")
+    driver.require(set((root / "pending-delete").iterdir()) == {retired}
+                   and not list((root / "chunks" / prefix[:2]).glob(prefix + ".*")),
+                   "recovered reassembly retired extra bodies or left duplicate new sources")
+    leases = [tomllib.loads(path.read_text()) for path in
+              (root / "state/publication").glob("retirement-*.toml")]
+    driver.require(len(leases) == 1 and leases[0]["domain"] == driver.domain(case)
+                   and leases[0]["device"] == observed.st_dev and leases[0]["inode"] == inode
+                   and leases[0]["deadline_unix_ms"] > 0
+                   and leases[0]["changed_seconds"] == observed.st_ctime_ns // 1_000_000_000
+                   and leases[0]["changed_nanoseconds"] == observed.st_ctime_ns % 1_000_000_000,
+                   "new prefix lost actual original-inode retirement registration")
+    state = tomllib.loads((root / "state/cache/records.toml").read_text())
+    driver.require(len(state["reservations"]) == 7 and len(state["leases"]) == 6
+                   and len(state["pins"]) == 9, "recovered reassembly lost exact policy closure")
+    new = [row for row in state["residences"] if row["chunk"] == prefix]
+    old = [row for row in state["residences"] if row["chunk"] != prefix]
+    driver.require(new == [{"chunk": prefix, "object": manifest, "offset": 0, "length": length}]
+                   and old and all(row["object"] == original["body"].name for row in old),
+                   "recovered reassembly replaced original residences with new offsets")
+    driver.require(all(not list((root / "chunks" / row["chunk"][:2]).glob(row["chunk"] + ".*"))
+                       for row in old), "recovered range gained another encoded canonical body")
+    expected = "PASS actual reassembly reused recovered manifest ranges, preserved original residences and retired only its new standalone prefix; no Ready"
+    driver.require(output.splitlines().count(expected) == 1,
+                   "missing actual retained recovered source and new-prefix read results")
+
+
 def run(driver, publisher, uuid):
     """Checks actual original inodes, repeated ranges, cancellation and failed output."""
     published = []

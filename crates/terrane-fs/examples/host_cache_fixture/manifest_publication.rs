@@ -59,6 +59,14 @@ fn data(bad_whole: bool, dictionary_backed: bool) -> io::Result<Data> {
     data_with_tail(bad_whole, dictionary_backed, 99)
 }
 
+/// Derives honest nonfinal fixture bytes without granting native source custody.
+///
+/// # Errors
+/// Refuses a bounded search without an actual cut or invalid fixture metadata.
+pub(super) fn nonfinal_fixture_chunk() -> io::Result<Vec<u8>> {
+    data(false, false).map(|data| data.first)
+}
+
 fn data_with_tail(bad_whole: bool, dictionary_backed: bool, tail_byte: u8) -> io::Result<Data> {
     let profile = ChunkProfile::cdc_1m([0; 32]);
     let mut first = None;
