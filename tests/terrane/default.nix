@@ -108,6 +108,20 @@
         };
       }) ["image" "native"]);
 
+  # Transport components qualify actual peer and native command behavior,
+  # independently of complete cache recovery or host-tier readiness.
+  publisherLocalProof =
+    if builtins.pathExists ./publisher-local-proof.nix
+    then import ./publisher-local-proof.nix {inherit pkgs lib sourceGateWithInputs;}
+    else
+      builtins.listToAttrs (map (name: {
+        inherit name;
+        value = pendingGate {
+          name = "publisher-local-${name}";
+          requirements = "PROTO-56 to PROTO-59 native publisher transport component";
+        };
+      }) ["image" "multiUid" "native"]);
+
   # Enrollment must consume the genuine fresh creator receipt in one process.
   # These component checks cannot stand in for complete host-tier readiness.
   initialEnrollmentProof =
@@ -366,6 +380,9 @@ in {
   integration.native-configured-sdk = configuredSdkProof.native;
   integration.host-cache-image = hostCacheProof.image;
   integration.native-host-cache = hostCacheProof.native;
+  integration.publisher-local-image = publisherLocalProof.image;
+  integration.publisher-local-multuid = publisherLocalProof.multiUid;
+  integration.native-publisher-local = publisherLocalProof.native;
   integration.initial-enrollment-image = initialEnrollmentProof.image;
   integration.native-initial-enrollment = initialEnrollmentProof.native;
   integration.foundation-format-vectors = import ./foundation-vectors.nix {inherit sourceGate;};

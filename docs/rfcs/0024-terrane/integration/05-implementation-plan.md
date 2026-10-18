@@ -8959,6 +8959,13 @@ Resumed qualification:
   later schema-invalid body. Earlier failures remain archived. This is component
   evidence, not sealed Running publication, live R, NativeReady, BKT-15 or full
   host-task acceptance.
+- Publisher custody candidate `a4ef3ccd71`: source review and formatting pass
+  for compact owned command payloads, original boxed recovery completion on
+  Resume refusal, and retained verified inventory sources. Compilation and
+  native qualification remain pending. The shared registry now exposes
+  `integration.publisher-local-image`, `integration.publisher-local-multuid`
+  and `integration.native-publisher-local`; each fails explicitly while its
+  implementation file is absent. Registration supplies no conformance credit.
 - Surface candidate `6cb1fcf235`: shared prerequisite `38a1ee21f6` is integrated
   through a normal merge, preserving the previous frozen candidate and receipts.
   The full current-trunk gate aggregate and required application test-target
