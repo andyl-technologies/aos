@@ -7,7 +7,7 @@ use crate::{
     publisher_local::client::Client,
     quota_confinement::Installed,
 };
-use std::{collections::BTreeSet, io, sync::Arc};
+use std::{collections::BTreeSet, fmt, io, sync::Arc};
 use terrane::host::cache::HostDomainLocation;
 
 /// Retains real confinement, root, quota and probe custody before recovery.
@@ -93,10 +93,15 @@ impl NativeCachePreparation {
             chunk_profile_name: config.publisher.chunk_profile_name.clone(),
             wait_budget_ms: config.publisher.wait_budget_ms,
         };
-        let publisher =
-            Client::connect(publisher_config, Arc::clone(&layout)).map_err(io::Error::other)?;
-        publisher.drain().map_err(io::Error::other)?;
-        let seal = NativeSealCapability::from_probe(publisher.probe().map_err(io::Error::other)?)?;
+        let publisher = Client::connect(publisher_config, Arc::clone(&layout))
+            .map_err(|source| publisher_failure("connect", source))?;
+        publisher
+            .drain()
+            .map_err(|source| publisher_failure("drain", source))?;
+        let probe = publisher
+            .probe()
+            .map_err(|source| publisher_failure("seal probe", source))?;
+        let seal = NativeSealCapability::from_probe(probe)?;
         confinement.check_current()?;
         layout.recheck()?;
         Ok(Self {
@@ -236,4 +241,32 @@ fn check_observation(
 
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, message)
+}
+
+// Preserve the original transport/native cause while identifying the boundary
+// that failed before a physical owner could begin recovery.
+#[derive(Debug)]
+struct PublisherPreparationError {
+    operation: &'static str,
+    source: crate::publisher_local::Error,
+}
+
+impl fmt::Display for PublisherPreparationError {
+    fn fmt(&self, output: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            output,
+            "publisher {} failed: {}",
+            self.operation, self.source
+        )
+    }
+}
+
+impl std::error::Error for PublisherPreparationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+fn publisher_failure(operation: &'static str, source: crate::publisher_local::Error) -> io::Error {
+    io::Error::other(PublisherPreparationError { operation, source })
 }

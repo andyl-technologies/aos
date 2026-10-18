@@ -1008,6 +1008,19 @@ def main():
         admission_cases(helper, uuid)
         publication_cases(publisher, uuid)
         inline_transfer_cases(publisher, uuid)
+        # Preserve resource facts at the failed preparation boundary without
+        # changing limits, retrying physical work or weakening its assertions.
+        try:
+            process_root = pathlib.Path(f"/proc/{publisher.pid}")
+            filesystem = os.statvfs(MOUNT)
+            print("PUBLISHER_PREPARATION_RESOURCES " + json.dumps({
+                "open_descriptors": len(list((process_root / "fd").iterdir())),
+                "limits": (process_root / "limits").read_text(),
+                "filesystem_available_bytes": filesystem.f_bavail * filesystem.f_frsize,
+                "filesystem_available_inodes": filesystem.f_favail,
+            }, sort_keys=True), flush=True)
+        except OSError as error:
+            print("PUBLISHER_PREPARATION_RESOURCES unavailable: " + str(error), flush=True)
         running_retention_cases(helper, uuid)
         manifest_recovery_cases(uuid, manifest_candidates)
         print("PASS bounded native cache recovery, encoded admission and inline publication; full Running publication/BKT15 remain unqualified", flush=True)
