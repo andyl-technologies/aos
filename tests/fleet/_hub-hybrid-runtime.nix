@@ -7,9 +7,14 @@
   runtimeSourceIdentity ? null,
   separateDatabase ? true,
   externalDirect ? true,
+  testDriver ? null,
 }: let
   runtime = import runtimeSource {};
   runtimePkgs = runtime.pkgs;
+  selectedDriver =
+    if testDriver == null
+    then runtimePkgs.aos-test-driver
+    else testDriver;
   fixture = import (fixtureSource + "/tests/fleet/hub-hybrid.nix") {
     inherit (runtime) lib;
     mkSystem = import ./_hub-fixture-system.nix {inherit (runtime) mkSystem;};
@@ -18,7 +23,7 @@
   };
   fleetHarness = import (runtimeSource + "/lib/testing/fleet.nix") {
     inherit (runtime) lib;
-    pkgs = runtimePkgs;
+    pkgs = runtimePkgs // {aos-test-driver = selectedDriver;};
   };
 in {
   inherit fixture;
@@ -32,6 +37,6 @@ in {
     worker = toString runtimePkgs.aos-hub-direct-guard-e2e.passthru.workerDist;
     node = toString runtimePkgs.nodejs;
     workerd = toString runtimePkgs.workerd-source;
-    driver = toString runtimePkgs.aos-test-driver;
+    driver = toString selectedDriver;
   };
 }

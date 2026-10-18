@@ -12,6 +12,7 @@ import secrets
 import shutil
 import socket
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -20,6 +21,7 @@ from typing import IO, ClassVar, override
 from .agent import Driver
 from .fs import clone_or_copy
 from .machine import Machine
+from .network import configure_multicast_buffers
 
 
 log: logging.Logger = logging.getLogger(__name__)
@@ -595,6 +597,21 @@ class QemuMachine(Machine):
                 f"[{self.name}] QEMU exited immediately"
                 f" (code {self.qemu_proc.returncode})"
             )
+
+        if sys.platform == "linux":
+            try:
+                receive, send = configure_multicast_buffers(
+                    self.qemu_proc.pid, (MCAST_GROUP, MCAST_PORT)
+                )
+                log.info(
+                    "[%s] multicast buffers: receive=%d send=%d", self.name, receive, send
+                )
+            except OSError as error:
+                # Restricted hosts can deny pidfd_getfd. Keep ordinary boot
+                # available and expose the untuned transport in the test log.
+                log.warning(
+                    "[%s] multicast buffer setup unavailable (errno=%s)", self.name, error.errno
+                )
 
     def _start_serial_bridge(self) -> None:
         """Starts one bidirectional serial bridge and append-only drain."""
