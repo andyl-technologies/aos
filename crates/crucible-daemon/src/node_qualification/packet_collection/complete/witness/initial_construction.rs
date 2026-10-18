@@ -41,6 +41,9 @@ pub(super) fn authenticate_initial_record_data(
     program: &PacketConnectedSourceProgram,
     record: PacketCompleteNativeRecord<'_>,
 ) -> Result<(), QualificationError> {
+    // CollectingGraph and InactiveRuntime precede Ready/Arm/WorldActivate.
+    // Their latest genuine proof is the unopened Realize inventory; only the
+    // later WorldActivate constructor records the prospective open gate.
     let start = Position::new(U64::new(0), U64::new(0), Phase::BoundaryControl);
     let initial = match (program, record) {
         (
@@ -50,7 +53,7 @@ pub(super) fn authenticate_initial_record_data(
             let inventory = &record.inventory;
             record.grant.is_none()
                 && inventory.reached == start
-                && !inventory.gate_closed
+                && inventory.gate_closed
                 && inventory.pending == program.events
                 && inventory.retained_outputs.is_empty()
                 && inventory.private_mutations.get() == 0
@@ -63,7 +66,7 @@ pub(super) fn authenticate_initial_record_data(
             let inventory = &record.inventory;
             record.grant.is_none()
                 && inventory.reached == start
-                && !inventory.gate_closed
+                && inventory.gate_closed
                 && inventory.reactions.is_empty()
                 && inventory.delivered_inputs.is_empty()
                 && inventory.publications.is_empty()
@@ -215,14 +218,16 @@ impl PacketCompleteNativeOracle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crucible_node_contract::{Bytes, Extensions};
+    use crucible_node_contract::{Bytes, Endpoint, Extensions};
     use crucible_node_provider::{
         envelope::{Envelope, MessageKind, Method, Nullable},
         reference_packet::{
-            PacketEvent, PacketInventory, PacketProgramDefinition,
-            connected::{PacketConnectedDefinition, PacketConnectedInventory},
+            PacketEvent, PacketProgram, PacketProgramDefinition,
+            connected::{PacketConnectedDefinition, PacketConnectedProgram, PacketInputConnection},
         },
     };
+
+    use std::os::unix::net::UnixDatagram;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -239,10 +244,10 @@ mod tests {
             node_id: Nullable(Some(Id::new("producer").unwrap())),
             execution_owner_id: Nullable(Some(Id::new("owner").unwrap())),
             capture_owner_id: Nullable(Some(Id::new("capture").unwrap())),
-            request_id: Nullable(Some(Id::new("world-activate").unwrap())),
+            request_id: Nullable(Some(Id::new("realize").unwrap())),
             operation_id: Nullable(None),
-            sequence: U64::new(4),
-            method: Method::WorldActivate,
+            sequence: U64::new(2),
+            method: Method::Realize,
             body: serde_json::Map::new(),
             extensions: Extensions::new(),
         }
@@ -258,66 +263,79 @@ mod tests {
         [
             PacketConnectedSourceProgram::Producer {
                 program: PacketProgramDefinition {
-                    schema: "source-owned.packet-program/2".into(),
+                    schema: "source-owned.packet-program.v1".into(),
                     events: vec![event],
                 },
             },
             PacketConnectedSourceProgram::Reactive {
-                program: PacketConnectedDefinition {
-                    schema: "source-owned.packet-connected-program/4".into(),
-                    connections: Vec::new(),
-                    output: None,
-                },
+                program: reactive_definition().unwrap(),
             },
             PacketConnectedSourceProgram::Reactive {
-                program: PacketConnectedDefinition {
-                    schema: "source-owned.packet-connected-program/4".into(),
-                    connections: Vec::new(),
-                    output: None,
-                },
+                program: reactive_definition().unwrap(),
             },
         ]
     }
 
-    fn producer(programmes: &[PacketConnectedSourceProgram; 3]) -> PacketNativeRecord {
+    fn producer_model(
+        programmes: &[PacketConnectedSourceProgram; 3],
+    ) -> Result<PacketProgram, Box<dyn std::error::Error>> {
         let PacketConnectedSourceProgram::Producer { program } = &programmes[0] else {
             panic!("selected producer fixture");
         };
+        Ok(PacketProgram::new(
+            program.events.clone(),
+            UnixDatagram::unbound()?,
+        )?)
+    }
+
+    fn reactive_definition() -> Result<PacketConnectedDefinition, Box<dyn std::error::Error>> {
+        let endpoint = |node| -> Result<Endpoint, Box<dyn std::error::Error>> {
+            Ok(Endpoint {
+                node_id: Id::new(node)?,
+                port_id: Id::new("port")?,
+                lane_id: Id::new("lane")?,
+            })
+        };
+        Ok(PacketConnectedDefinition {
+            schema: "source-owned.packet-connected-program/4".into(),
+            connections: vec![PacketInputConnection {
+                id: Id::new("original-route")?,
+                policy: canonical::content_ref(b"original-policy", "application/octet-stream")?,
+                producer: endpoint("producer")?,
+                consumer: endpoint("reactive")?,
+                delay_ps: U64::new(1),
+            }],
+            output: None,
+        })
+    }
+
+    fn reactive_model() -> Result<PacketConnectedProgram, Box<dyn std::error::Error>> {
+        Ok(PacketConnectedProgram::new(
+            reactive_definition()?,
+            UnixDatagram::unbound()?,
+        )?)
+    }
+
+    fn producer(model: &PacketProgram) -> PacketNativeRecord {
         PacketNativeRecord {
             schema: "source-owned.packet-native/2".into(),
-            native_pid: U64::new(37),
+            native_pid: U64::new(u64::from(std::process::id())),
             original: original(),
-            inventory: PacketInventory {
-                reached: start(),
-                gate_closed: false,
-                pending: program.events.clone(),
-                retained_outputs: Vec::new(),
-                private_mutations: U64::new(0),
-                packet_effects: U64::new(0),
-            },
+            inventory: model.inventory(),
             grant: None,
         }
     }
 
-    fn reactive() -> PacketConnectedNativeRecord {
-        PacketConnectedNativeRecord {
+    fn reactive(
+        model: &PacketConnectedProgram,
+    ) -> Result<PacketConnectedNativeRecord, Box<dyn std::error::Error>> {
+        Ok(PacketConnectedNativeRecord {
             schema: "source-owned.packet-native/4".into(),
-            native_pid: U64::new(41),
+            native_pid: U64::new(u64::from(std::process::id())),
             original: original(),
-            inventory: PacketConnectedInventory {
-                reached: start(),
-                gate_closed: false,
-                reactions: Vec::new(),
-                delivered_inputs: Vec::new(),
-                publications: Vec::new(),
-                retained_outputs: Vec::new(),
-                reactions_completed: U64::new(0),
-                packet_effects: U64::new(0),
-                stages: Vec::new(),
-                commits: Vec::new(),
-            },
+            inventory: model.inventory()?,
             grant: None,
-        }
+        })
     }
 
     fn empty() -> Observed {
@@ -333,8 +351,8 @@ mod tests {
     fn real_populated_producer_and_reactive_seals_count_exactly_and_refuse_one_short() -> TestResult
     {
         let programmes = programmes();
-        let producer = producer(&programmes);
-        let reactive = reactive();
+        let producer = producer(&producer_model(&programmes)?);
+        let reactive = reactive(&reactive_model()?)?;
         let mut observed = empty();
         authenticate_initial_journal_data(&programmes, &observed)?;
         for (member, body) in [
@@ -413,10 +431,10 @@ mod tests {
     }
 
     #[test]
-    fn initial_inventory_guard_refuses_progress_and_foreign_family() {
+    fn initial_inventory_guard_refuses_progress_and_foreign_family() -> TestResult {
         let programmes = programmes();
-        let mut producer = producer(&programmes);
-        let mut reactive = reactive();
+        let mut producer = producer(&producer_model(&programmes)?);
+        let mut reactive = reactive(&reactive_model()?)?;
         assert!(
             authenticate_initial_record_data(
                 &programmes[0],
@@ -438,6 +456,15 @@ mod tests {
             )
             .is_err()
         );
+        let pending = producer.inventory.pending.pop().unwrap();
+        assert!(
+            authenticate_initial_record_data(
+                &programmes[0],
+                PacketCompleteNativeRecord::Producer(&producer)
+            )
+            .is_err()
+        );
+        producer.inventory.pending.push(pending);
         producer.inventory.private_mutations = U64::new(1);
         assert!(
             authenticate_initial_record_data(
@@ -457,11 +484,56 @@ mod tests {
             )
             .is_err()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn actual_unopened_models_pass_and_actual_open_gate_models_refuse() -> TestResult {
+        let programmes = programmes();
+        let mut producer_model = producer_model(&programmes)?;
+        let mut reactive_model = reactive_model()?;
+        let producer_before = producer(&producer_model);
+        let reactive_before = reactive(&reactive_model)?;
+        assert_eq!(producer_before.inventory.reached, start());
+        assert_eq!(reactive_before.inventory.reached, start());
+        assert!(producer_before.inventory.gate_closed);
+        assert!(reactive_before.inventory.gate_closed);
+        authenticate_initial_record_data(
+            &programmes[0],
+            PacketCompleteNativeRecord::Producer(&producer_before),
+        )?;
+        authenticate_initial_record_data(
+            &programmes[1],
+            PacketCompleteNativeRecord::Reactive(&reactive_before),
+        )?;
+
+        // Use the genuine model transitions rather than rewriting the proof's
+        // gate flag. Even zero-progress opened owners are a later phase.
+        producer_model.open_gate()?;
+        reactive_model.open_gate()?;
+        let producer_after = producer(&producer_model);
+        let reactive_after = reactive(&reactive_model)?;
+        assert!(!producer_after.inventory.gate_closed);
+        assert!(!reactive_after.inventory.gate_closed);
+        assert!(
+            authenticate_initial_record_data(
+                &programmes[0],
+                PacketCompleteNativeRecord::Producer(&producer_after),
+            )
+            .is_err()
+        );
+        assert!(
+            authenticate_initial_record_data(
+                &programmes[1],
+                PacketCompleteNativeRecord::Reactive(&reactive_after),
+            )
+            .is_err()
+        );
+        Ok(())
     }
 
     #[test]
     fn unsupported_initial_datagram_stays_in_the_same_receiver() -> TestResult {
-        use std::os::unix::net::UnixDatagram;
         let [(a, peer_a), (b, peer_b), (c, peer_c)] = [
             UnixDatagram::pair()?,
             UnixDatagram::pair()?,
