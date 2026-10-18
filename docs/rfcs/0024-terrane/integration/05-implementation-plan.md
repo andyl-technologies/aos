@@ -9362,9 +9362,31 @@ Resumed qualification:
   118 filesystem cases also pass; 3,477 archive inputs and the archive digest
   verify, with the same six privileged cases separately inventoried. Both
   direct builds, eight focused cases and the formatter pair pass. Strict
-  Clippy retains the same nineteen findings as its parent; application target
-  compilation and full task qualification remain pending. Consumer leases,
-  complete retirement and NativeReady are not qualified by these source pins.
+  Clippy retains the same nineteen findings as its parent; the separate
+  all-target diagnostic passes without changing source lint policy. Application
+  target compilation and full task qualification remain pending. Consumer
+  leases, complete retirement and NativeReady are not qualified by these pins.
+- Cold-policy candidate `db93de1fea`: recovery retains the original bounded
+  pins, leases, future holds and residence candidates through its new random
+  bootstrap and actual snapshot synchronization. Completion requires
+  every old pin and range to reconcile with independently adopted sealed bodies
+  or retained verified metadata. Foreign hold ownership, pins without leases
+  and missing native backing remain refused. Original ranges are preferred
+  across duplicate backing only when verification supplies that exact range;
+  a preference alone emits no residence. Additional snapshot and selection
+  storage enters checked memory arithmetic. Two native controls seed old
+  manifest pins/holds and inline residences before either role starts; their
+  independent supervisor requires every original record after real recovery,
+  acknowledged Resume and later Running work. This is the prerequisite for a
+  complete durable consumer lifecycle, not its acceptance. Identities,
+  encodings, bucket keys, store traits and dependencies remain unchanged.
+  Initial revision `6dd0a19e57` passes both direct builds, ten focused cases,
+  formatters and the separate diagnostic; strict Clippy retains nineteen prior
+  findings. Its image stops before native execution because an exact unit-count
+  assertion still expects 47 after the inventory expands to 48. The failed
+  image is retained. Both image and independent guest assertions now require
+  the exact 48-case inventory. Revised direct, native and complete filesystem
+  qualification is running; no native or full task success is claimed yet.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
   and all seven strict Clippy/documentation profiles pass. The interface,
   commit-path, status and schema gates pass on unchanged final source, including
@@ -9388,10 +9410,15 @@ Resumed qualification:
   not qualify the failed matrix. Candidate `bf3c74517e` pauses only quiescent
   recovery fixture setup on the same injected clock, resuming real progression
   before deletion; lease durations, full D waits, renewal checks and fault
-  assertions remain unchanged. Focused fault and expiry controls are running
-  before any broader requalification. The original failure remains retained;
-  no matrix or aggregate success is claimed. The superseded `6cb1fcf235` aggregate
-  was stopped after the policy fix and supplies no aggregate success.
+  assertions remain unchanged. All six focused fault, expiry and clock
+  continuity controls pass in 320.771 seconds on the failed profile; the
+  original fault case is included, with no retry or skipped expiry assertion.
+  The formatter pair and all seven strict Clippy/documentation profiles also
+  pass on this revision. Its owning collector gates are running before surface,
+  application, SDK, feature-matrix and full current-trunk requalification.
+  The original failure remains retained; no matrix or aggregate success is
+  claimed. The superseded `6cb1fcf235` aggregate was stopped after the policy
+  fix and supplies no aggregate success.
 
 All five T2 task checkboxes remain open. The transport and cache results above
 accept components only. Complete manifest reuse and retirement, full host
