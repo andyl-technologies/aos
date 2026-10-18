@@ -235,5 +235,3 @@ crucible-qemu-plugin	src/paged_ram/source	std::thread::sleep	1
 crucible-qemu-plugin	src/paged_ram/engine/placement	retry	1
 crucible-qemu-plugin	src/paged_ram/engine/placement	thread::sleep	1
 crucible-qemu-plugin	src/paged_ram/engine/placement	std::thread::sleep	1
-crucible-qemu-host	src/supervision/host_io_runtime/fault_result	thread::sleep	1
-crucible-qemu-host	src/supervision/node_step_gate/support	thread::sleep	1

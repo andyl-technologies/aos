@@ -79,9 +79,22 @@ fn publication_requires_same_pair_and_preserves_the_original_cause()
             "match reservation.retain(custody)",
             "match reservation.retain(foreign_custody)",
         ),
+        ("reservation.retain(self)", "foreign_token.retain(self)"),
         (
-            "match reservation.retain(self)",
-            "match foreign_token.retain(self)",
+            "self.publish_cleanup_mode(false)",
+            "self.publish_cleanup_mode(true)",
+        ),
+        (
+            "self.publish_cleanup_mode(true)",
+            "self.publish_cleanup_mode(false)",
+        ),
+        (
+            "reservation.retain_returned(self)",
+            "reservation.retain_returned(foreign_owner)",
+        ),
+        (
+            "destination.deliver(self)",
+            "destination.deliver(foreign_owner)",
         ),
     ] {
         let changed = replace_one_obligation(&code, &source_pattern(obligation), replacement);
@@ -125,189 +138,499 @@ fn canonical_cell_and_source_receipt_obligations_reject_foreign_or_early_closure
     let companions = read_companions(contract)?;
     assert!(!rejected(contract, &code, &companions));
 
-    for (index, obligation, replacement) in [
-        (0, "self: Box<Self>, owner:", "self: &mut Self, owner:"),
+    for (scope, obligation, replacement) in [
         (
-            1,
-            "queue.slots.get(self.index)",
-            "queue.slots.get(other_index)",
+            "crucible-control-api/src/cleanup_owner.rs",
+            r#"self: Box<Self>, owner:"#,
+            r#"self: &mut Self, owner:"#,
         ),
         (
-            1,
-            "self.publish_owner(slot, owner)",
-            "self.publish_owner(slot, foreign_owner)",
+            "crucible-control-api/src/cleanup_owner.rs",
+            r#"PostBody = Self::PostBody"#,
+            r#"PostBody = ForeignPostBody"#,
         ),
         (
-            1,
-            "CleanupPhase::Reserved, CleanupPhase::Publishing",
-            "CleanupPhase::Free, CleanupPhase::Publishing",
+            "crucible-control-api/src/cleanup_owner.rs",
+            r#"ReturnDestination = Self::ReturnDestination"#,
+            r#"ReturnDestination = ForeignReturn"#,
         ),
         (
-            1,
-            "cell.epoch != self.epoch || cell.owner.is_some()",
-            "cell.owner.is_some()",
+            "lifecycle_cleanup/reservation.rs",
+            r#"queue.slots.get(self.index)"#,
+            r#"queue.slots.get(other_index)"#,
         ),
         (
-            1,
-            "cell.owner = Some(owner); cell.handoff = true; drop(cell); slot.publish(CleanupPhase::Queued); Ok(self)",
-            "slot.publish(CleanupPhase::Queued); cell.owner = Some(owner); cell.handoff = true; drop(cell); Ok(self)",
+            "lifecycle_cleanup/reservation.rs",
+            r#"self.publish_owner(slot, owner)"#,
+            r#"self.publish_owner(slot, foreign_owner)"#,
         ),
         (
-            1,
-            "cell.owner = Some(owner); cell.handoff = true; drop(cell); slot.publish(CleanupPhase::Queued); Ok(self)",
-            "cell.owner = Some(owner); cell.handoff = true; drop(cell); slot.publish(CleanupPhase::Free); Ok(self)",
+            "lifecycle_cleanup/reservation.rs",
+            r#"CleanupPhase::Reserved, CleanupPhase::Publishing"#,
+            r#"CleanupPhase::Free, CleanupPhase::Publishing"#,
         ),
         (
-            1,
-            "queue: Weak::clone(&self.queue), index, epoch,",
-            "queue: Weak::clone(&foreign_queue), index, epoch,",
+            "lifecycle_cleanup/reservation.rs",
+            r#"cell.epoch != self.epoch || cell.owner.is_some()"#,
+            r#"cell.owner.is_some()"#,
         ),
         (
-            1,
-            "cell: ReservedWorldCell { queue: Weak::clone(&self.queue), index, epoch, }",
-            "cell: ReservedWorldCell { queue: Weak::clone(&self.queue), index, epoch: foreign_epoch, }",
+            "lifecycle_cleanup/reservation.rs",
+            r#"slot.request_retirement(); cell.owner = Some(owner);"#,
+            r#"slot.publish(CleanupPhase::Queued); cell.owner = Some(owner);"#,
         ),
         (
-            1,
-            "queue.slots.get(self.cell.index)",
-            "queue.slots.get(foreign_index)",
+            "lifecycle_cleanup/reservation.rs",
+            r#"CleanupPhase::Publishing, CleanupPhase::Queued"#,
+            r#"CleanupPhase::Publishing, CleanupPhase::Free"#,
         ),
         (
-            1,
-            "borrow_reserved_cell(slot, self.cell.epoch)",
-            "borrow_reserved_cell(slot, foreign_epoch)",
-        ),
-        (1, "cell.controls.is_some()", "true"),
-        (1, "slot.cell.try_lock().ok()?", "slot.cell.lock().ok()?"),
-        (
-            1,
-            "cell.epoch != epoch || cell.owner.is_some()",
-            "cell.owner.is_some()",
-        ),
-        (1, "cell.controls = Some(controls)", "drop(controls)"),
-        (1, "checked_add(1)", "wrapping_add(1)"),
-        (
-            2,
-            "CleanupPhase::Queued, CleanupPhase::Retrying",
-            "CleanupPhase::Reserved, CleanupPhase::Retrying",
+            "lifecycle_cleanup/reservation.rs",
+            r#"queue: Weak::clone(queue), index, epoch,"#,
+            r#"queue: Weak::clone(foreign_queue), index, epoch,"#,
         ),
         (
-            2,
-            "CleanupPhase::OwnerDestroyed, CleanupPhase::Completing",
-            "CleanupPhase::Publishing, CleanupPhase::Completing",
+            "lifecycle_cleanup/reservation.rs",
+            r#"cell: ReservedWorldCell { queue: Weak::clone(queue), index, epoch, }"#,
+            r#"cell: ReservedWorldCell { queue: Weak::clone(queue), index, epoch: foreign_epoch, }"#,
         ),
         (
-            2,
-            "Ordering::AcqRel, Ordering::Acquire",
-            "Ordering::Relaxed, Ordering::Relaxed",
+            "lifecycle_cleanup/reservation.rs",
+            r#"queue.slots.get(self.cell.index)"#,
+            r#"queue.slots.get(foreign_index)"#,
         ),
         (
-            3,
-            "owner.retry_reserved_publication()?",
-            "foreign_owner.retry_reserved_publication()?",
+            "lifecycle_cleanup/reservation.rs",
+            r#"borrow_reserved_cell(slot, self.cell.epoch)"#,
+            r#"borrow_reserved_cell(slot, foreign_epoch)"#,
         ),
         (
-            3,
-            "let Some(receipt) = published else { return Err(\"\"); };",
-            "let Some(receipt) = published else { return Ok(true); };",
+            "lifecycle_cleanup/reservation.rs",
+            r#"cell.controls.is_some()"#,
+            r#"true"#,
         ),
         (
-            3,
-            "*slot = Some(receipt); Ok(false)",
-            "drop(receipt); Ok(true)",
+            "lifecycle_cleanup/reservation.rs",
+            r#"slot.cell.try_lock().ok()?"#,
+            r#"slot.cell.lock().ok()?"#,
         ),
         (
-            3,
-            "if owner.handoff_mut().is_none()",
-            "if owner.handoff_mut().is_some()",
+            "lifecycle_cleanup/reservation.rs",
+            r#"cell.epoch != epoch || cell.owner.is_some()"#,
+            r#"cell.owner.is_some()"#,
         ),
         (
-            3,
-            "let attempt = receipt.retry(); let stage = receipt.stage();",
-            "let stage = Ok(ProductionVmCleanupStage::Complete); let attempt = Ok(());",
+            "lifecycle_cleanup/reservation.rs",
+            r#"cell.controls = Some(controls)"#,
+            r#"drop(controls)"#,
         ),
         (
-            3,
-            "&& !matches!(handoff.stage(), Ok(ProductionVmCleanupStage::Complete))",
-            "&& false",
-        ),
-        (3, "self.retry_retained_source_installation()", "Ok(())"),
-        (
-            4,
-            "reservation.attach_controls(controls)",
-            "reservation.attach_controls(foreign_controls)",
+            "lifecycle_cleanup/reservation.rs",
+            r#"cell.controls_bound = true"#,
+            r#"cell.controls_bound = false"#,
         ),
         (
-            5,
-            "let preclaimed = reservation.is_preclaimed();",
-            "let preclaimed = true;",
+            "lifecycle_cleanup/reservation.rs",
+            r#"returned && slot.claim(CleanupPhase::RetryingPrepared, CleanupPhase::Publishing)"#,
+            r#"slot.claim(CleanupPhase::RetryingPrepared, CleanupPhase::Publishing)"#,
         ),
         (
-            4,
-            "self.reservation.as_ref().is_none_or(|reservation| !reservation.is_reserved())",
-            "self.reservation.is_none()",
+            "lifecycle_cleanup/reservation.rs",
+            r#"if poisoned || was_quarantined"#,
+            r#"if false"#,
         ),
         (
-            4,
-            "self.controls = Some(controls); self.record_first(",
-            "drop(controls); self.record_first(",
-        ),
-        (5, "self.require_install_vacancy()?;", ""),
-        (
-            5,
-            ".with_cleanup_reservation(reservation)",
-            ".with_cleanup_reservation(foreign_token)",
-        ),
-        (6, "self.cleanup_reservation.take()", "Some(foreign_token)"),
-        (4, "self.world.take()", "foreign_world.take()"),
-        (4, "self.world.is_none()", "false"),
-        (
-            5,
-            ".with_world_cleanup_loan(world)",
-            ".with_world_cleanup_loan(foreign_world)",
+            "lifecycle_cleanup/reservation.rs",
+            r#"!report_refs::register(slot, self.epoch)"#,
+            r#"false"#,
         ),
         (
-            5,
-            "PendingSourceConstruction::new_prepaid(factory, reservation)",
-            "PendingSourceConstruction::new_prepaid(foreign_factory, reservation)",
-        ),
-        (8, "self.worlds[index] = Some(world);", "drop(world);"),
-        (8, "admission_failure.take(), retained,", "None, retained,"),
-        (
-            8,
-            "return Err(report(first, retained.err()));",
-            "return prepare();",
+            "lifecycle_cleanup/prepared_producer.rs",
+            r#"checked_add(1)"#,
+            r#"wrapping_add(1)"#,
         ),
         (
-            8,
-            "original.wait_slice().map_err(|first| original_roster::original_error(first.into()))?; before_effects.prepare_world()",
-            "other_guard.wait_slice().map_err(|first| original_roster::original_error(first.into()))?; before_effects.prepare_world()",
+            "lifecycle_cleanup/prepared_producer.rs",
+            r#"queue._pool.verify_retained_main()"#,
+            r#"other_pool.verify_retained_main()"#,
         ),
-        (9, "self._retained.as_mut()?._world.take()", "None"),
-        (9, "retained.delivery.get_or_insert(error);", "drop(error);"),
         (
-            9,
-            "retained.receiver.get_or_insert(operation);",
-            "drop(operation);",
+            "lifecycle_cleanup/prepared_producer.rs",
+            r#"constructor_bytes < minimum_body || constructor_bytes > queue.constructor_bytes"#,
+            r#"constructor_bytes < minimum_body"#,
         ),
-        (6, "self._world_cleanup_loan = Some(world)", "drop(world)"),
         (
-            7,
-            "cleanup.reserve_for_source()",
-            "foreign_cleanup.reserve_for_source()",
+            "lifecycle_cleanup/prepared_producer.rs",
+            r#"slot.external_return_reserved.load(Ordering::Acquire)"#,
+            r#"false"#,
+        ),
+        (
+            "lifecycle_cleanup/prepared_producer.rs",
+            r#"slot.report_references.load(Ordering::Acquire) != report_refs::CLOSED"#,
+            r#"false"#,
+        ),
+        (
+            "lifecycle_cleanup/prepared_producer.rs",
+            r#"slot.external_receivers.load(Ordering::Acquire) != 0"#,
+            r#"false"#,
+        ),
+        (
+            "lifecycle_cleanup/prepared_producer.rs",
+            r#"new_world_reservation(&self.queue, index, epoch)"#,
+            r#"new_world_reservation(&foreign_queue, index, epoch)"#,
+        ),
+        (
+            "lifecycle_cleanup/prepared_producer.rs",
+            r#"build(input, reservation)"#,
+            r#"build(input, foreign_reservation)"#,
+        ),
+        (
+            "lifecycle_cleanup/prepared_producer.rs",
+            r#"drop(cell); drop(service); drop(prepared); slot.publish(CleanupPhase::Reserved);"#,
+            r#"slot.publish(CleanupPhase::Reserved); drop(cell); drop(service); drop(prepared);"#,
+        ),
+        (
+            "crucible-daemon/src/lifecycle_cleanup.rs",
+            r#"Ordering::AcqRel, Ordering::Acquire"#,
+            r#"Ordering::Relaxed, Ordering::Relaxed"#,
+        ),
+        (
+            "crucible-daemon/src/lifecycle_cleanup.rs",
+            r#"prepared_constructor_control_bytes()? .checked_mul"#,
+            r#"0u64.checked_mul"#,
+        ),
+        (
+            "crucible-daemon/src/lifecycle_cleanup.rs",
+            r#"Ok(source.max(target))"#,
+            r#"Ok(source)"#,
+        ),
+        (
+            "lifecycle_cleanup/driver.rs",
+            r#"CleanupPhase::Queued, CleanupPhase::Retrying"#,
+            r#"CleanupPhase::Reserved, CleanupPhase::Retrying"#,
+        ),
+        (
+            "lifecycle_cleanup/driver.rs",
+            r#"CleanupPhase::OwnerDestroyed, CleanupPhase::Completing"#,
+            r#"CleanupPhase::Publishing, CleanupPhase::Completing"#,
+        ),
+        (
+            "lifecycle_cleanup/driver.rs",
+            r#"!slot.retirement_requested.load(Ordering::Acquire)"#,
+            r#"false"#,
+        ),
+        (
+            "lifecycle_cleanup/driver.rs",
+            r#"cell.controls_bound != cell.controls.is_some()"#,
+            r#"false"#,
+        ),
+        (
+            "lifecycle_cleanup/driver.rs",
+            r#"controls.close_after_owner_destruction()"#,
+            r#"foreign_controls.close_after_owner_destruction()"#,
+        ),
+        (
+            "lifecycle_cleanup/queued_owner.rs",
+            r#"service.queued_owner_borrowed = true; drop(cell); drop(service);"#,
+            r#"service.queued_owner_borrowed = true;"#,
+        ),
+        (
+            "lifecycle_cleanup/queued_owner.rs",
+            r#"service.queued_owner = Some(owner);"#,
+            r#"drop(owner);"#,
+        ),
+        (
+            "lifecycle_cleanup/queued_owner.rs",
+            r#"owner.retry_cleanup()"#,
+            r#"foreign_owner.retry_cleanup()"#,
+        ),
+        (
+            "lifecycle_cleanup/queued_owner.rs",
+            r#"owner.take_post_body()"#,
+            r#"foreign_owner.take_post_body()"#,
+        ),
+        (
+            "lifecycle_cleanup/queued_owner.rs",
+            r#"terminal::destroy_payload(slot, owner)"#,
+            r#"terminal::destroy_payload(slot, foreign_owner)"#,
+        ),
+        (
+            "lifecycle_cleanup/queued_owner.rs",
+            r#"slot.body_destroyed_epoch.store(epoch, Ordering::Release)"#,
+            r#"slot.completed_epoch.store(epoch, Ordering::Release)"#,
+        ),
+        (
+            "source_construction/retained.rs",
+            r#"owner.retry_reserved_publication()?"#,
+            r#"foreign_owner.retry_reserved_publication()?"#,
+        ),
+        (
+            "source_construction/retained.rs",
+            r#"let Some(receipt) = published else { return Err(""); };"#,
+            r#"let Some(receipt) = published else { return Ok(()); };"#,
+        ),
+        (
+            "source_construction/retained.rs",
+            r#"*slot = Some(SourceCleanupHandoff::new(receipt)); Ok(())"#,
+            r#"drop(receipt); Ok(())"#,
+        ),
+        (
+            "source_construction/retained.rs",
+            r#"if owner.handoff_mut().is_none()"#,
+            r#"if owner.handoff_mut().is_some()"#,
+        ),
+        (
+            "source_construction/retained.rs",
+            r#"let attempt = receipt.retry(); let stage = receipt.stage();"#,
+            r#"let stage = Ok(ProductionVmCleanupStage::Complete); let attempt = Ok(());"#,
+        ),
+        (
+            "source_construction/retained.rs",
+            r#"&& !matches!(handoff.stage(), Ok(ProductionVmCleanupStage::Complete))"#,
+            r#"&& false"#,
+        ),
+        (
+            "source_construction/retained.rs",
+            r#"&& !handoff.retain_post_body()"#,
+            r#"&& false"#,
+        ),
+        (
+            "source_construction/retained.rs",
+            r#"self.retry_retained_source_installation()"#,
+            r#"Ok(())"#,
+        ),
+        (
+            "pending_construction/prepared.rs",
+            r#"reservation.attach_controls(controls)"#,
+            r#"reservation.attach_controls(foreign_controls)"#,
+        ),
+        (
+            "pending_construction/prepared.rs",
+            r#"self.reservation.as_ref().is_none_or(|reservation| !reservation.is_reserved())"#,
+            r#"self.reservation.is_none()"#,
+        ),
+        (
+            "pending_construction/prepared.rs",
+            r#"*self.controls = Some(controls);"#,
+            r#"drop(controls);"#,
+        ),
+        (
+            "pending_construction/prepared.rs",
+            r#".with_cleanup_reservation(reservation)"#,
+            r#".with_cleanup_reservation(foreign_token)"#,
+        ),
+        (
+            "pending_construction/prepared.rs",
+            r#"self.world.take()"#,
+            r#"foreign_world.take()"#,
+        ),
+        (
+            "pending_construction/prepared.rs",
+            r#"self.world.is_none()"#,
+            r#"false"#,
+        ),
+        (
+            "pending_construction/prepared.rs",
+            r#".with_world_cleanup_loan(world)"#,
+            r#".with_world_cleanup_loan(foreign_world)"#,
+        ),
+        (
+            "pending_construction/prepared.rs",
+            r#"drop(self.not_started.take());"#,
+            r#""#,
+        ),
+        (
+            "pending_construction/prepared.rs",
+            r#"self.returned_guard = guard;"#,
+            r#"drop(guard);"#,
+        ),
+        (
+            "pending_construction/prepared.rs",
+            r#"self.generation_storage = storage;"#,
+            r#"drop(storage);"#,
+        ),
+        (
+            "pending_construction/prepared.rs",
+            r#"self.factory = factory;"#,
+            r#"drop(factory);"#,
+        ),
+        (
+            "pending_construction/prepared.rs",
+            r#"self.reservation = reservation;"#,
+            r#"drop(reservation);"#,
+        ),
+        (
+            "pending_construction/prepared.rs",
+            r#"self.construction_custody = custody;"#,
+            r#"drop(custody);"#,
+        ),
+        (
+            "pending_construction/prepared.rs",
+            r#"self.world = world;"#,
+            r#"drop(world);"#,
+        ),
+        (
+            "pending_construction/prepared.rs",
+            r#"self.target_storage = targets;"#,
+            r#"drop(targets);"#,
+        ),
+        (
+            "qemu_lifecycle_launcher/pending_construction.rs",
+            r#"Self::new_prepaid(factory, reservation)"#,
+            r#"Self::new_prepaid(foreign_factory, reservation)"#,
+        ),
+        (
+            "qemu_lifecycle_launcher/pending_construction.rs",
+            r#"self.controls = Some(controls);"#,
+            r#"drop(controls);"#,
+        ),
+        (
+            "crucible-daemon/src/qemu_campaign_lifecycle/source_construction.rs",
+            r#"self.require_install_vacancy()"#,
+            r#"Ok(())"#,
+        ),
+        (
+            "crucible-daemon/src/qemu_campaign_lifecycle/source_construction.rs",
+            r#"self.resources.retain_fork_target_factory()"#,
+            r#"foreign_resources.retain_fork_target_factory()"#,
+        ),
+        (
+            "crucible-daemon/src/qemu_campaign_lifecycle/source_construction.rs",
+            r#"self.resources.source_main_producer()"#,
+            r#"foreign_resources.source_main_producer()"#,
+        ),
+        (
+            "crucible-daemon/src/qemu_campaign_lifecycle/source_construction.rs",
+            r#"(factory, input), bytes, build,"#,
+            r#"(foreign_factory, input), bytes, build,"#,
+        ),
+        (
+            "crucible-daemon/src/qemu_campaign_lifecycle/source_construction.rs",
+            r#"Err(((_, input), first))"#,
+            r#"Err(((_, foreign_input), first))"#,
+        ),
+        (
+            "crucible-daemon/src/qemu_lifecycle_launcher.rs",
+            r#"self.cleanup_reservation.take()"#,
+            r#"Some(foreign_token)"#,
+        ),
+        (
+            "crucible-daemon/src/qemu_lifecycle_launcher.rs",
+            r#"self._world_cleanup_loan = Some(world)"#,
+            r#"drop(world)"#,
+        ),
+        (
+            "crucible-daemon/src/qemu_lifecycle_launcher.rs",
+            r#"reservation.service_preclaim().handle().prepared_selector()"#,
+            r#"foreign_reservation.service_preclaim().handle().prepared_selector()"#,
+        ),
+        (
+            "crucible-daemon/src/qemu_resource_guard.rs",
+            r#"self.cleanup.as_ref().map(|cleanup| cleanup.source_main_producer())"#,
+            r#"foreign_cleanup.as_ref().map(|cleanup| cleanup.source_main_producer())"#,
+        ),
+        (
+            "linux_attempt_host/normal_pool.rs",
+            r#"self.worlds[index] = Some(world);"#,
+            r#"drop(world);"#,
+        ),
+        (
+            "linux_attempt_host/normal_pool.rs",
+            r#"admission_failure.take(), retained,"#,
+            r#"None, retained,"#,
+        ),
+        (
+            "linux_attempt_host/normal_pool.rs",
+            r#"return Err(report(first, retained.err()));"#,
+            r#"return prepare();"#,
+        ),
+        (
+            "linux_attempt_host/normal_pool.rs",
+            r#"original.wait_slice().map_err(|first| original_roster::original_error(first.into()))?; before_effects.prepare_world()"#,
+            r#"other_guard.wait_slice().map_err(|first| original_roster::original_error(first.into()))?; before_effects.prepare_world()"#,
+        ),
+        (
+            "native_pool/refusal.rs",
+            r#"self._retained.as_mut()?._world.take()"#,
+            r#"None"#,
+        ),
+        (
+            "native_pool/refusal.rs",
+            r#"retained.delivery.get_or_insert(error);"#,
+            r#"drop(error);"#,
+        ),
+        (
+            "native_pool/refusal.rs",
+            r#"retained.receiver.get_or_insert(operation);"#,
+            r#"drop(operation);"#,
+        ),
+        (
+            "lifecycle_cleanup/body_return.rs",
+            r#"cell.owner = Some(owner);"#,
+            r#"cell.owner = Some(foreign_owner);"#,
+        ),
+        (
+            "lifecycle_cleanup/body_return.rs",
+            r#"slot.external_return_reserved.store(false, Ordering::Release);"#,
+            r#"slot.external_return_reserved.store(true, Ordering::Release);"#,
+        ),
+        (
+            "lifecycle_cleanup/body_return.rs",
+            r#"if poisoned || phase == CleanupPhase::DestructionRefused as u8"#,
+            r#"if false"#,
+        ),
+        (
+            "lifecycle_cleanup/body_return.rs",
+            r#"drop(queue); reservation"#,
+            r#"drop(queue); foreign_reservation"#,
+        ),
+        (
+            "lifecycle_cleanup/report_refs.rs",
+            r#"(state < MAX_REFERENCES).then(|| state + 1)"#,
+            r#"Some(state + 1)"#,
+        ),
+        (
+            "lifecycle_cleanup/report_refs.rs",
+            r#"if actual_epoch != epoch"#,
+            r#"if false"#,
+        ),
+        (
+            "lifecycle_cleanup/report_refs.rs",
+            r#"slot.terminal_disposed.load(Ordering::Acquire)"#,
+            r#"true"#,
+        ),
+        (
+            "lifecycle_cleanup/report_refs.rs",
+            r#".compare_exchange(0, CLOSED, Ordering::AcqRel, Ordering::Acquire)"#,
+            r#".compare_exchange(1, CLOSED, Ordering::AcqRel, Ordering::Acquire)"#,
+        ),
+        (
+            "lifecycle_cleanup/prepared_service.rs",
+            r#"Self { queue: Weak::clone(&self.queue), index: self.index, epoch: self.epoch, }"#,
+            r#"Self { queue: Weak::clone(&foreign_queue), index: self.index, epoch: self.epoch, }"#,
+        ),
+        (
+            "lifecycle_cleanup/prepared_service.rs",
+            r#"self.queue.upgrade().ok_or_else(|| unavailable(""))"#,
+            r#"foreign_queue.upgrade().ok_or_else(|| unavailable(""))"#,
         ),
     ] {
+        let index = contract
+            .companions
+            .iter()
+            .position(|binding| binding.path.ends_with(scope))
+            .unwrap_or_else(|| panic!("reviewed companion is absent: {scope}"));
         let mut changed = companions.clone();
         let evidence = crate::scrub_comments_and_strings(&changed[index]);
         changed[index] =
             replace_one_obligation(&evidence, &source_pattern(obligation), replacement);
         assert_ne!(
             changed[index], evidence,
-            "companion mutation missed: {obligation}"
+            "companion mutation missed in {scope}: {obligation}"
         );
         assert!(
             rejected(contract, &code, &changed),
-            "changed provenance was masked: {replacement}"
+            "changed provenance was masked in {scope}: {replacement}"
         );
     }
     Ok(())

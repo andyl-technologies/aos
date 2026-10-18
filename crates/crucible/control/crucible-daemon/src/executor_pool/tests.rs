@@ -2325,6 +2325,10 @@ fn recover_complete_prepared_journal(
     let status_request = GetAttemptExecutionRequest::new(&request, execution).expect("status");
     if expire_recovery {
         wait_until(Duration::from_secs(2), || {
+            // Observe the requested refusals before contending on the actor.
+            if blobs.injected_failures.load(Ordering::Acquire) < 2 {
+                return false;
+            }
             service
                 .get_attempt_execution(&status_request)
                 .is_ok_and(|status| {
@@ -2337,7 +2341,10 @@ fn recover_complete_prepared_journal(
                     )
                 })
         });
-        let report = service.report().expect("expired recovery report");
+        // Cancellation can precede the worker's final refusal accounting.
+        // Join the actual worker before reading its settled counters.
+        pool.request_shutdown();
+        let report = pool.shutdown_and_join().expect("expired recovery shutdown");
         assert_eq!(report.executions(), 0);
         assert_eq!(report.reconciled(), 0);
         assert_eq!(report.terminal_stops() + report.discarded(), 1);
@@ -2347,11 +2354,7 @@ fn recover_complete_prepared_journal(
             journal_root.exists(),
             "unpublished durable result remains retained"
         );
-        pool.request_shutdown();
-        assert_eq!(
-            pool.shutdown_and_join().expect("expired recovery shutdown"),
-            report
-        );
+        assert_eq!(service.report().expect("expired recovery report"), report);
         return;
     }
     wait_until(Duration::from_secs(2), || {

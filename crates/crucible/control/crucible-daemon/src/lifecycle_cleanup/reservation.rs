@@ -49,20 +49,6 @@ impl WorldLifecycleCleanupReservation {
         }
     }
 
-    /// Checks the original empty preclaim before allocating its paid bodies.
-    pub(crate) fn is_preclaimed(&self) -> bool {
-        let Some(queue) = self.cell.queue.upgrade() else {
-            return false;
-        };
-        let Some(slot) = queue.slots.get(self.cell.index) else {
-            return false;
-        };
-        slot.is(CleanupPhase::Reserved)
-            && !!slot.work_is_open()
-            && borrow_reserved_cell(slot, self.cell.epoch)
-                .is_some_and(|cell| cell.controls.is_none())
-    }
-
     /// Checks retained cell custody without publishing, returning or renewing it.
     pub(crate) fn is_reserved(&self) -> bool {
         let Some(queue) = self.cell.queue.upgrade() else {
