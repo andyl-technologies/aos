@@ -2089,3 +2089,26 @@ prospective copies and count their actual retained backing. Test diagnostics in
 `b339f8c333` now run before automatic retirement revokes witnesses; six-crate
 checking and ordinary test compilation pass. These results do not qualify native
 startup or full preservation.
+
+The production application-target gate passes for `b339f8c333`: 167 newly
+compiled test artifacts across 48 application packages, including 69 integration
+targets, with assertions and overflow checks enabled. Final compilation takes
+12 minutes 23 seconds after prerequisites. Independent registered-artifact
+verification compares all 7,753 captured files directly with the committed
+source. This compiles tests without running them and excludes later changes.
+
+The subsequent prebirth collection and borrowed serializer helpers
+(`f085042b94`) pass six-crate all-feature/all-target checking and all four
+unfiltered libraries: 1,941 Core, 1,492 Daemon, 1,433 Provider and twelve Contract
+tests (4,878 total). Existing ignored populations remain unchanged. Initial15
+native geometry (`7832632fac`) separately passes six-crate checking and 1,437
+Provider library tests; its real borrowed validator prices retained alias-bank
+construction before allocation. These components do not establish successful
+early adoption or native startup.
+
+Embedded JSON RawValue reparsing has an independent quote for the enabled
+parser, source copies, expanded DOM and error owners (`6ee0c61c2b`). Six-crate
+all-feature/all-target checking and all 1,450 Provider library tests pass,
+including thirteen new controls. Callers still owe their actual expanded typed
+and canonical construction rows. The helper supplies no permission or new
+decoder limit. These later components await a refreshed production gate.
