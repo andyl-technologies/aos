@@ -107,11 +107,11 @@ def role_command(uid, arguments):
             "--bounding-set=-all", "--inh-caps=-all", "--ambient-caps=-all", *map(str, arguments)]
 
 
-def publisher_descriptor_budget():
-    """Bounds this expanded fixture's retained publisher directories and bodies."""
-    # All configured domains coexist in one real publisher. The inherited 1024
-    # soft ceiling leaves no room for probing after earlier controls retain their
-    # actual backing descriptors; this changes only this child's file budget.
+def native_descriptor_budget():
+    """Bounds retained roots and bodies in this fixture's configured native roles."""
+    # Provisioning, quota queries and publication retain all configured domains.
+    # The inherited 1024 soft ceiling cannot cover this expanded inventory; set
+    # a finite allowance only in each dedicated child, before its role bootstrap.
     resource.setrlimit(resource.RLIMIT_NOFILE, (4096, 4096))
 
 
@@ -967,7 +967,8 @@ def main():
     quota_config, publisher_config = configurations()
     ledger = ADMIN / "ledger.toml"
     helper_bin = IMAGE / "bin/aos-terrane-host"
-    run(admin_command(PROVISION_CAPS, [helper_bin, "provision", "--config", quota_config, "--ledger", ledger]))
+    run(admin_command(PROVISION_CAPS, [helper_bin, "provision", "--config", quota_config, "--ledger", ledger]),
+        preexec_fn=native_descriptor_budget)
     cold_candidates()
     uuid = subprocess.check_output(["blkid", "-s", "UUID", "-o", "value",
                                     os.environ["TERRANE_CACHE_VM_IMAGE"]], text=True, timeout=5).strip().replace("-", "")
@@ -978,7 +979,9 @@ def main():
     try:
         for name in ["helper", "publisher"]:
             logs.append((RUNTIME / (name + ".log")).open("wb"))
-        helper = subprocess.Popen(admin_command(QUERY_CAPS, [helper_bin, "serve", "--config", quota_config, "--ledger", ledger]), stdout=logs[0], stderr=subprocess.STDOUT)
+        helper = subprocess.Popen(admin_command(QUERY_CAPS, [helper_bin, "serve", "--config", quota_config, "--ledger", ledger]),
+                                  stdout=logs[0], stderr=subprocess.STDOUT,
+                                  preexec_fn=native_descriptor_budget)
         children.append(helper)
         deadline = time.monotonic() + 10
         while True:
@@ -989,7 +992,7 @@ def main():
             time.sleep(0.02)
         publisher = subprocess.Popen(role_command(841, [IMAGE / "bin/terrane", "--config", publisher_config, "--role", "publish"]),
                                      stdout=logs[1], stderr=subprocess.STDOUT,
-                                     preexec_fn=publisher_descriptor_budget)
+                                     preexec_fn=native_descriptor_budget)
         children.append(publisher)
         deadline = time.monotonic() + 15
         while True:
