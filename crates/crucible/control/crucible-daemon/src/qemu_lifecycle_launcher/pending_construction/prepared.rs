@@ -18,6 +18,19 @@ pub(super) enum SourcePreparationFirst {
     Selection(#[from] crate::executor_worker::SelectedCheckpointSlotError),
 }
 
+impl SourcePreparationFirst {
+    fn failure_ref(&self) -> crate::LifecycleFailureRef<'_> {
+        use crate::LifecycleFailureRef as Failure;
+
+        match self {
+            Self::Lifecycle(first) => Failure::Lifecycle(first),
+            Self::Role(first) => Failure::Role(first),
+            Self::Selection(first) => Failure::Selection(first),
+            Self::WorkerGeometry(first) => Failure::Backend(first),
+        }
+    }
+}
+
 /// Preserves a refusal to use or restore the same canonical Service context.
 #[derive(Debug, thiserror::Error)]
 pub enum CanonicalContextError {
@@ -64,18 +77,8 @@ impl SourcePreparationHistory {
         use crate::LifecycleFailureRef as Failure;
         use crate::vm_lifecycle::ProductionVmHotForkSourcePreparationError as First;
 
-        match self.first.as_ref() {
-            Some(SourcePreparationFirst::Lifecycle(first)) => {
-                return Some(Failure::Lifecycle(first));
-            }
-            Some(SourcePreparationFirst::Role(first)) => return Some(Failure::Role(first)),
-            Some(SourcePreparationFirst::Selection(first)) => {
-                return Some(Failure::Selection(first));
-            }
-            Some(SourcePreparationFirst::WorkerGeometry(first)) => {
-                return Some(Failure::Backend(first));
-            }
-            None => {}
+        if let Some(first) = &self.first {
+            return Some(first.failure_ref());
         }
         if let Some(history) = &self.preparation {
             match history.first_error() {
@@ -100,25 +103,19 @@ impl SourcePreparationHistory {
             .or_else(|| self.context_restore.as_ref().map(Failure::Context))
             .or_else(|| self.body_acceptance.as_ref().map(Failure::Role))
     }
-}
 
-impl std::fmt::Display for SourcePreparationHistory {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            formatter,
-            "Source first: {:?}; native cleanup: {:?}; Cleanup first: {:?}; Cleanup post: {:?}; selection restoration: {:?}; external body acceptance: {:?}; capture: {:?}",
-            self.first,
-            self.native,
-            self.cleanup_first,
-            self.cleanup_post,
-            self.context_restore,
-            self.body_acceptance,
-            self.preparation
-        )
+    fn history(&self) -> crate::LifecycleHistoryRef<'_> {
+        crate::LifecycleHistoryRef::SourcePreparation {
+            first: self.first.as_ref().map(SourcePreparationFirst::failure_ref),
+            native: self.native.as_ref(),
+            cleanup_first: self.cleanup_first.as_ref(),
+            cleanup_post: self.cleanup_post.as_ref(),
+            context_restore: self.context_restore.as_ref(),
+            body_acceptance: self.body_acceptance.as_ref(),
+            capture: self.preparation.as_ref(),
+        }
     }
 }
-
-impl std::error::Error for SourcePreparationHistory {}
 
 impl<F> PendingSourceConstruction<F>
 where
@@ -736,10 +733,12 @@ where
     /// Borrows every independent cause without moving the retained body.
     pub(crate) fn project_history(
         owner: &(dyn std::any::Any + Send),
-    ) -> Option<&(dyn std::error::Error + 'static)> {
-        owner
-            .downcast_ref::<Self>()
-            .map(|owner| &owner.history as &(dyn std::error::Error + 'static))
+        apply: &mut dyn FnMut(&'static str, crate::LifecycleHistoryRef<'_>),
+    ) {
+        let Some(owner) = owner.downcast_ref::<Self>() else {
+            return;
+        };
+        apply("Source preparation", owner.history.history());
     }
 
     pub(super) fn record_unavailable(&mut self) {
@@ -1038,6 +1037,21 @@ mod history_tests {
         };
         assert_eq!(pointer(original), constructor_pointer);
         assert_eq!(pointer(history.native.as_ref().unwrap()), cleanup_pointer);
+
+        let crate::LifecycleHistoryRef::SourcePreparation {
+            first: Some(crate::LifecycleFailureRef::Lifecycle(first)),
+            native: Some(native),
+            ..
+        } = history.history()
+        else {
+            panic!("the original first and independent cleanup remain observable together");
+        };
+        let crate::QemuAttemptProductionVmLifecycleError::ResourceInstallation(first) = first
+        else {
+            panic!("the typed constructor cause changed");
+        };
+        assert_eq!(pointer(first), constructor_pointer);
+        assert_eq!(pointer(native), cleanup_pointer);
     }
 
     #[test]

@@ -337,11 +337,24 @@ mod history_tests {
             assert_eq!(first_message.as_ptr(), first_pointer);
             let retained_cleanup = history.cleanup.as_ref().unwrap();
             assert_eq!(message(retained_cleanup).as_ptr(), cleanup_pointer);
-            // Trait-object vtables may be duplicated across codegen units.
-            assert!(std::ptr::addr_eq(
-                history.cleanup_error().unwrap(),
-                retained_cleanup.as_error()
-            ));
+            history
+                .with_cleanup_error(|observed| {
+                    use crate::LifecycleFailureRef as Failure;
+
+                    match (retained_cleanup, observed) {
+                        (SourceCleanupCause::Cleanup(expected), Failure::BodyCleanup(actual)) => {
+                            assert!(std::ptr::eq(expected, actual));
+                        }
+                        (SourceCleanupCause::Native(expected), Failure::Realization(actual)) => {
+                            assert!(std::ptr::eq(expected, actual));
+                        }
+                        (SourceCleanupCause::Body(expected), Failure::ServiceBirth(actual)) => {
+                            assert!(std::ptr::eq(expected, actual));
+                        }
+                        _ => panic!("the original concrete cleanup cause changed"),
+                    }
+                })
+                .expect("the original cleanup cause remains observable");
             assert!(!history.is_empty());
         }
     }
@@ -370,17 +383,19 @@ mod history_tests {
             .unwrap()
             .downcast_ref::<SchedulerError>()
             .unwrap();
-        let cleanup = history
-            .cleanup_error()
-            .unwrap()
-            .downcast_ref::<crate::ProductionVmConstructionCleanupError>()
-            .unwrap()
-            .source()
-            .unwrap()
-            .downcast_ref::<SchedulerError>()
-            .unwrap();
-
-        assert!(std::ptr::eq(source, cleanup));
+        history
+            .with_cleanup_error(|observed| {
+                let crate::LifecycleFailureRef::BodyCleanup(cleanup) = observed else {
+                    panic!("the actual body cleanup cause remains selected");
+                };
+                let cleanup = cleanup
+                    .source()
+                    .unwrap()
+                    .downcast_ref::<SchedulerError>()
+                    .unwrap();
+                assert!(std::ptr::eq(source, cleanup));
+            })
+            .expect("the original cleanup cause remains observable");
         assert!(!history.is_empty());
     }
 
@@ -407,15 +422,17 @@ mod history_tests {
             matches!(original, QemuVmRealizationError::ExecutorUnavailable { message, .. }
             if message == "constructor first")
         );
-        let cleanup = history
-            .cleanup_error()
-            .unwrap()
-            .downcast_ref::<QemuVmRealizationError>()
-            .unwrap();
-        assert!(
-            matches!(cleanup, QemuVmRealizationError::ExecutorUnavailable { message, .. }
-            if message == "cleanup first")
-        );
+        history
+            .with_cleanup_error(|observed| {
+                let crate::LifecycleFailureRef::Realization(cleanup) = observed else {
+                    panic!("the actual native cleanup cause remains selected");
+                };
+                assert!(
+                    matches!(cleanup, QemuVmRealizationError::ExecutorUnavailable { message, .. }
+                if message == "cleanup first")
+                );
+            })
+            .expect("the independent cleanup cause remains observable");
         assert_eq!(
             history.cleanup_post_error(),
             Some(&HostSupervisionError::Terminal {

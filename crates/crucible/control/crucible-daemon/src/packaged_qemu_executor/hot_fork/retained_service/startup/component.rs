@@ -174,10 +174,10 @@ impl std::fmt::Display for ComponentServiceFailure {
 
 impl std::error::Error for ComponentServiceFailure {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.owner
-            .startup
-            .first()
-            .map(|first| first as &dyn std::error::Error)
+        match self.owner.startup.first() {
+            Some(first) => Some(first),
+            None => None,
+        }
     }
 }
 

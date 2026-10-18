@@ -4,6 +4,8 @@
 //! Formatting borrows the actual retained cause; it allocates no replacement
 //! report. Cleanup and terminal extraction continue through the same role.
 
+use crate::LifecycleFailureRef as Failure;
+
 use std::error::Error;
 use std::fmt;
 
@@ -172,18 +174,28 @@ impl PreparedSourceFailure {
         {
             return result;
         }
-        self.access.as_ref().and_then(|first| {
-            apply
-                .take()
-                .map(|apply| apply(LifecycleFailureRef::Role(first)))
-        })
+        self.access
+            .as_ref()
+            .and_then(|first| apply.take().map(|apply| apply(Failure::Role(first))))
     }
 
     /// Borrows each stored history without moving it outside its paid role.
     ///
     /// The callback must not reenter this role. Returns `false` if the exact
     /// role cannot currently be borrowed; that does not erase stored evidence.
-    pub fn with_history(&self, apply: impl FnMut(&'static str, &(dyn Error + 'static))) -> bool {
+    ///
+    /// ```compile_fail
+    /// use crucible_daemon::{LifecycleHistoryRef, PreparedSourceFailure};
+    /// fn escape(failure: &PreparedSourceFailure) -> Option<LifecycleHistoryRef<'_>> {
+    ///     let mut escaped = None;
+    ///     failure.with_history(|_, cause| escaped = Some(cause));
+    ///     escaped
+    /// }
+    /// ```
+    pub fn with_history(
+        &self,
+        apply: impl FnMut(&'static str, crate::LifecycleHistoryRef<'_>),
+    ) -> bool {
         self.retirement.with_history(apply)
     }
 
@@ -274,7 +286,7 @@ impl PreparedSourceRetirement {
         if service.epoch == self.key.epoch
             && let Some(first) = service.start.as_ref().and_then(|start| start.first())
         {
-            return Some(apply(LifecycleFailureRef::Service(first)));
+            return Some(apply(Failure::Service(first)));
         }
         if service.epoch == self.key.epoch
             && let Some(first) = service
@@ -282,7 +294,7 @@ impl PreparedSourceRetirement {
                 .as_ref()
                 .and_then(|start| start.adopted_semantic_shutdown_failure())
         {
-            return Some(apply(LifecycleFailureRef::Scheduler(first)));
+            return Some(apply(Failure::Scheduler(first)));
         }
         drop(service);
         let prepared = slot.prepared.try_lock().ok()?;
@@ -298,7 +310,7 @@ impl PreparedSourceRetirement {
         if prepared.epoch == self.key.epoch
             && let Some(first) = &prepared.terminal_access
         {
-            return Some(apply(LifecycleFailureRef::Role(first)));
+            return Some(apply(Failure::Role(first)));
         }
         drop(prepared);
         let service = slot.service.try_lock().ok()?;
@@ -327,7 +339,7 @@ impl PreparedSourceRetirement {
     /// custody is unavailable or borrowed, rather than that its history is empty.
     pub fn with_history(
         &self,
-        mut apply: impl FnMut(&'static str, &(dyn Error + 'static)),
+        mut apply: impl FnMut(&'static str, crate::LifecycleHistoryRef<'_>),
     ) -> bool {
         let Some(queue) = self.key.queue.upgrade() else {
             return false;
@@ -356,29 +368,30 @@ impl PreparedSourceRetirement {
         if let Some(start) = &service.start {
             terminal::visit_service_history(start, &mut apply);
         }
-        if let (Some(owner), Some(project)) = (&prepared.owner, prepared.history_projection)
-            && let Some(history) = project(owner.as_ref())
-        {
-            apply("Source preparation", history);
+        if let (Some(owner), Some(project)) = (&prepared.owner, prepared.history_projection) {
+            project(owner.as_ref(), &mut apply);
         }
         if let Some(first) = &prepared.cleanup_failure {
-            apply("prepared body cleanup", first);
+            apply("prepared body cleanup", Failure::BodyCleanup(first).into());
         }
         if let Some(first) = &prepared.terminal_access {
-            apply("terminal role access", first);
+            apply("terminal role access", Failure::Role(first).into());
         }
         if let Some(first) = &cell.first_failure {
-            apply("published body cleanup", first);
+            apply("published body cleanup", Failure::BodyCleanup(first).into());
         }
         if let Some(first) = &cell.control_failure {
-            apply("containing controls", first);
+            apply("containing controls", Failure::ServiceBirth(first).into());
         }
         if let Some(first) = cell
             .retirement_input
             .as_ref()
             .and_then(|input| input.semantic_shutdown_failure())
         {
-            apply("receiving semantic shutdown", first);
+            apply(
+                "receiving semantic shutdown",
+                Failure::Scheduler(first).into(),
+            );
         }
         if let Some(body) = &cell.post_body {
             body.visit_history(&mut apply);
@@ -387,7 +400,7 @@ impl PreparedSourceRetirement {
             body.visit_history(&mut apply);
         }
         if let Some(first) = &self.access {
-            apply("Source role access", first);
+            apply("Source role access", Failure::Role(first).into());
         }
         true
     }

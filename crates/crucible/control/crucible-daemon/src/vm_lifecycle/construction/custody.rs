@@ -482,7 +482,10 @@ impl fmt::Display for ProductionVmConstructionFailure {
 
 impl Error for ProductionVmConstructionFailure {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
-        self.first().map(|first| first as &dyn Error)
+        match self.first() {
+            Some(first) => Some(first),
+            None => None,
+        }
     }
 }
 
@@ -580,10 +583,10 @@ impl Error for ProductionVmConstructionCleanupError {
             Self::GuardHistory { first, .. } => Some(first),
             Self::GuardPair {
                 first, first_guard, ..
-            } => first
-                .as_ref()
-                .map(|first| first as &dyn Error)
-                .or(Some(first_guard)),
+            } => match first.as_ref() {
+                Some(first) => Some(first),
+                None => Some(first_guard),
+            },
             Self::Poisoned | Self::Pending | Self::SharedAliasesPending | Self::Retained(_) => None,
         }
     }

@@ -4,6 +4,8 @@
 //! effect. It moves with that original cell; a report, empty node ledger or
 //! missing World callback never supplies physical-return authority.
 
+use crate::LifecycleFailureRef as Failure;
+
 use super::*;
 use crate::supervision::ServiceWatchdogStop;
 use thiserror::Error;
@@ -337,8 +339,6 @@ impl RetainedServiceStart {
 
     /// Borrows the actual first watchdog failure without moving its stop body.
     pub(crate) fn watchdog_first_failure(&self) -> Option<crate::LifecycleFailureRef<'_>> {
-        use crate::LifecycleFailureRef as Failure;
-
         let stop = self.watchdog_stop()?;
         stop.watcher_failure
             .as_ref()
@@ -371,38 +371,59 @@ impl RetainedServiceStart {
     /// with_watchdog_stop. Its retained body prevents actor credit from closing.
     pub(crate) fn visit_watchdog_history(
         &self,
-        mut apply: impl FnMut(&'static str, &(dyn std::error::Error + 'static)),
+        mut apply: impl FnMut(&'static str, crate::LifecycleHistoryRef<'_>),
     ) {
         let Some(stop) = self.watchdog_stop() else {
             return;
         };
         if let Some(first) = &stop.completion {
-            apply("Service watchdog completion", first);
+            apply(
+                "Service watchdog completion",
+                Failure::Supervision(first).into(),
+            );
         }
         if let Some(first) = &stop.caller {
-            apply("Service watchdog caller", first);
+            apply(
+                "Service watchdog caller",
+                Failure::Supervision(first).into(),
+            );
         }
         if let Some(first) = &stop.cancellation {
-            apply("Service watchdog cancellation", first);
+            apply(
+                "Service watchdog cancellation",
+                Failure::Supervision(first).into(),
+            );
         }
         if let Some(first) = &stop.pager_cancellation {
-            apply("Service watchdog pager cancellation", first);
+            apply(
+                "Service watchdog pager cancellation",
+                Failure::Operational(first).into(),
+            );
         }
         if let Some(history) = &stop.watcher_failure {
             match &history.trigger {
                 Some(crate::supervision::ServiceWatchdogTrigger::Original(first)) => {
-                    apply("Service watcher Original", first);
+                    apply(
+                        "Service watcher Original",
+                        Failure::Supervision(first).into(),
+                    );
                 }
                 Some(crate::supervision::ServiceWatchdogTrigger::Caller(first)) => {
-                    apply("Service watcher caller", first);
+                    apply("Service watcher caller", Failure::Supervision(first).into());
                 }
                 Some(crate::supervision::ServiceWatchdogTrigger::Cancellation) | None => {}
             }
             if let Some(first) = &history.cancellation {
-                apply("Service watcher cancellation", first);
+                apply(
+                    "Service watcher cancellation",
+                    Failure::Supervision(first).into(),
+                );
             }
             if let Some(first) = &history.pager_cancellation {
-                apply("Service watcher pager cancellation", first);
+                apply(
+                    "Service watcher pager cancellation",
+                    Failure::Operational(first).into(),
+                );
             }
         }
     }
@@ -426,16 +447,22 @@ impl RetainedServiceStart {
     /// Visits both independent completions without copying their raw leaves.
     pub(crate) fn visit_retained_completion_history(
         &self,
-        mut apply: impl FnMut(&'static str, &(dyn std::error::Error + 'static)),
+        mut apply: impl FnMut(&'static str, crate::LifecycleHistoryRef<'_>),
     ) {
         if let Some(first) = &self.authentication_completion {
-            apply("Service authentication completion", first);
+            apply(
+                "Service authentication completion",
+                Failure::Supervision(first).into(),
+            );
         }
         if let ServiceStartPhase::Partial(partial) | ServiceStartPhase::Closing(partial) =
             &self.phase
             && let Some(first) = &partial.completion
         {
-            apply("Service outer completion", first);
+            apply(
+                "Service outer completion",
+                Failure::Supervision(first).into(),
+            );
         }
     }
 

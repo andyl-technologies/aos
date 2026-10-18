@@ -42,7 +42,7 @@ impl<E> RetainedSourceCaptureFailure<E> {
     /// callback must not reenter this report's history projection.
     pub fn with_retirement_history(
         &self,
-        apply: impl FnMut(&'static str, &(dyn std::error::Error + 'static)),
+        apply: impl FnMut(&'static str, crate::LifecycleHistoryRef<'_>),
     ) -> bool {
         if let Some(retirement) = &self.retirement {
             return retirement.with_history(apply);
@@ -95,19 +95,16 @@ impl<E: std::fmt::Display> std::fmt::Display for RetainedSourceCaptureFailure<E>
 
 impl<E: std::error::Error + 'static> std::error::Error for RetainedSourceCaptureFailure<E> {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.first
-            .as_ref()
-            .map(|first| first as &dyn std::error::Error)
-            .or_else(|| {
-                self.receiver_return
-                    .as_ref()
-                    .map(|first| first as &dyn std::error::Error)
-            })
-            .or_else(|| {
-                self.retirement_refusal
-                    .as_ref()
-                    .map(|first| first as &dyn std::error::Error)
-            })
+        if let Some(first) = &self.first {
+            return Some(first);
+        }
+        if let Some(first) = &self.receiver_return {
+            return Some(first);
+        }
+        match &self.retirement_refusal {
+            Some(first) => Some(first),
+            None => None,
+        }
     }
 }
 

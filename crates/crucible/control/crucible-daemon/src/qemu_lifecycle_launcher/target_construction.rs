@@ -82,25 +82,38 @@ struct MemberHistory<'a>(&'a TargetConstructionStorage);
 impl std::fmt::Debug for MemberHistory<'_> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut rows = formatter.debug_list();
-        for row in &self.0.members {
-            #[cfg(target_os = "linux")]
-            if row.first_admission.is_some()
-                || row.first_cleanup.is_some()
-                || row.first_reconciliation.is_some()
-            {
-                rows.entry(&(
-                    &row.node,
-                    &row.first_admission,
-                    &row.first_cleanup,
-                    &row.first_reconciliation,
-                ));
-            }
-        }
+        self.0.visit_history(|_, history| {
+            rows.entry(&history);
+        });
         rows.finish()
     }
 }
 
 impl TargetConstructionStorage {
+    /// Visits each original row that retains independent native failures.
+    pub(crate) fn visit_history(
+        &self,
+        mut apply: impl FnMut(&'static str, crate::LifecycleHistoryRef<'_>),
+    ) {
+        for row in &self.members {
+            #[cfg(target_os = "linux")]
+            if row.first_admission.is_some()
+                || row.first_cleanup.is_some()
+                || row.first_reconciliation.is_some()
+            {
+                apply(
+                    "Target member",
+                    crate::LifecycleHistoryRef::TargetMember {
+                        node: &row.node,
+                        admission: row.first_admission.as_ref(),
+                        cleanup: row.first_cleanup.as_ref(),
+                        reconciliation: row.first_reconciliation.as_ref(),
+                    },
+                );
+            }
+        }
+    }
+
     /// Borrows every selected member's independent retained causes.
     pub(crate) fn history(&self) -> impl std::fmt::Debug + '_ {
         MemberHistory(self)

@@ -10,6 +10,8 @@
 //! physical resume path; newly selected continuation control cold executes
 //! because a checkpoint captured before selection cannot contain that input.
 
+use crate::LifecycleFailureRef as Failure;
+
 use crate::{
     ProductionFaultEvidenceSnapshot, ProductionVmExactHotForkSourceBoundary,
     ProductionVmLifecycleConfig, ProductionVmLifecycleLoop, ProductionVmNodeReplayLaunchProfile,
@@ -173,13 +175,10 @@ impl SourceCleanupHandoff {
             .flatten()
     }
 
-    fn visit_history(
-        &self,
-        apply: &mut impl FnMut(&'static str, &(dyn std::error::Error + 'static)),
-    ) {
+    fn visit_history(&self, apply: &mut impl FnMut(&'static str, crate::LifecycleHistoryRef<'_>)) {
         let _observed = self.with_receipt(|receipt| {
             if let Some(first) = receipt.first_failure() {
-                apply("Source receipt cleanup", first);
+                apply("Source receipt cleanup", Failure::BodyCleanup(first).into());
             }
             if let Some(body) = receipt.retained_post_body() {
                 body.visit_history(apply);
@@ -239,11 +238,11 @@ pub(crate) enum SourceCleanupCause {
 }
 
 impl SourceCleanupCause {
-    pub(crate) fn as_error(&self) -> &(dyn std::error::Error + 'static) {
+    pub(crate) fn failure_ref(&self) -> crate::LifecycleFailureRef<'_> {
         match self {
-            Self::Cleanup(first) => first,
-            Self::Native(first) => first,
-            Self::Body(first) => first,
+            Self::Cleanup(first) => Failure::BodyCleanup(first),
+            Self::Native(first) => Failure::Realization(first),
+            Self::Body(first) => Failure::ServiceBirth(first),
         }
     }
 }
@@ -255,20 +254,38 @@ enum SourceInstallationFirst {
 }
 
 impl SourceCleanupHistory {
-    /// Borrows the actual cleanup error independently of the constructor error.
+    /// Borrows the actual cleanup cause independently of the constructor error.
     ///
     /// The primary error source remains the original constructor refusal when
-    /// present. This accessor also exposes a later physical cleanup refusal.
-    pub fn cleanup_error(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.cleanup
-            .as_ref()
-            .map(SourceCleanupCause::as_error)
-            .or_else(|| {
-                self.terminal_receipt
-                    .as_ref()
-                    .filter(|held| held.has_failure())
-                    .map(|held| held as &dyn std::error::Error)
+    /// present. The callback also observes later cleanup retained under the
+    /// original receipt lock. It must not reenter this history.
+    ///
+    /// ```compile_fail
+    /// use crucible_daemon::{LifecycleFailureRef, SourceCleanupHistory};
+    /// fn escape(history: &SourceCleanupHistory) -> Option<LifecycleFailureRef<'_>> {
+    ///     history.with_cleanup_error(|cause| cause)
+    /// }
+    /// ```
+    pub fn with_cleanup_error<R>(
+        &self,
+        apply: impl FnOnce(crate::LifecycleFailureRef<'_>) -> R,
+    ) -> Option<R> {
+        if let Some(first) = &self.cleanup {
+            return Some(apply(first.failure_ref()));
+        }
+        self.terminal_receipt
+            .as_ref()?
+            .with_receipt(|receipt| {
+                if let Some(first) = receipt.first_failure() {
+                    Some(apply(Failure::BodyCleanup(first)))
+                } else {
+                    receipt
+                        .retained_post_body()
+                        .and_then(|body| body.first_failure())
+                        .map(apply)
+                }
             })
+            .flatten()
     }
 
     /// Borrows the independent post-check of the same retained World Cleanup.
@@ -293,18 +310,25 @@ impl SourceCleanupHistory {
     /// Visits every retained raw cause without extracting or formatting it.
     pub fn visit_history(
         &self,
-        mut apply: impl FnMut(&'static str, &(dyn std::error::Error + 'static)),
+        mut apply: impl FnMut(&'static str, crate::LifecycleHistoryRef<'_>),
     ) {
         match &self.first {
-            Some(SourceInstallationFirst::Api(first)) => apply("Source constructor", first),
-            Some(SourceInstallationFirst::Native(first)) => apply("Source constructor", first),
+            Some(SourceInstallationFirst::Api(first)) => {
+                apply("Source constructor", Failure::Control(first).into())
+            }
+            Some(SourceInstallationFirst::Native(first)) => {
+                apply("Source constructor", Failure::Realization(first).into())
+            }
             None => {}
         }
         if let Some(first) = &self.cleanup {
-            apply("Source cleanup", first.as_error());
+            apply("Source cleanup", first.failure_ref().into());
         }
         if let Some(first) = &self.cleanup_post {
-            apply("Source cleanup postcheck", first);
+            apply(
+                "Source cleanup postcheck",
+                Failure::Supervision(first).into(),
+            );
         }
         if let Some(receipt) = &self.terminal_receipt {
             receipt.visit_history(&mut apply);
@@ -312,7 +336,9 @@ impl SourceCleanupHistory {
     }
 
     fn is_empty(&self) -> bool {
-        self.first.is_none() && self.cleanup_error().is_none() && self.cleanup_post.is_none()
+        self.first.is_none()
+            && self.with_cleanup_error(|_| ()).is_none()
+            && self.cleanup_post.is_none()
     }
 
     pub(crate) fn from_native(first: QemuVmRealizationError) -> Self {
@@ -338,12 +364,26 @@ impl std::fmt::Display for SourceCleanupHistory {
 impl std::error::Error for SourceCleanupHistory {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match &self.first {
-            Some(SourceInstallationFirst::Api(first)) => Some(first),
-            Some(SourceInstallationFirst::Native(first)) => Some(first),
-            None => self.cleanup_error().or_else(|| {
-                self.cleanup_post_error()
-                    .map(|first| first as &dyn std::error::Error)
-            }),
+            Some(SourceInstallationFirst::Api(first)) => return Some(first),
+            Some(SourceInstallationFirst::Native(first)) => return Some(first),
+            None => {}
+        }
+        match &self.cleanup {
+            Some(SourceCleanupCause::Cleanup(first)) => return Some(first),
+            Some(SourceCleanupCause::Native(first)) => return Some(first),
+            Some(SourceCleanupCause::Body(first)) => return Some(first),
+            None => {}
+        }
+        if let Some(held) = self
+            .terminal_receipt
+            .as_ref()
+            .filter(|held| held.has_failure())
+        {
+            return Some(held);
+        }
+        match &self.cleanup_post {
+            Some(first) => Some(first),
+            None => None,
         }
     }
 }

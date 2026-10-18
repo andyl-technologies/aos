@@ -156,9 +156,9 @@ pub mod imported_checkpoint;
 mod lifecycle_cleanup;
 pub use lifecycle_cleanup::{
     PreparedSourceFailure, PreparedSourceRefusal, PreparedSourceRetirement, PreparedSourceSelector,
-    LifecycleFailureRef, ProductionVmConstructionPostBody, ServiceInputReturn,
-    ServiceMainPreclaimError, ServiceMainReceiver, SourceBodyReturn, SourceMainProducer,
-    WorldLifecycleCleanupReservation,
+    LifecycleFailureRef, LifecycleHistoryRef, LifecyclePanicRef, ProductionVmConstructionPostBody,
+    ServiceInputReturn, ServiceMainPreclaimError, ServiceMainReceiver, SourceBodyReturn,
+    SourceMainProducer, WorldLifecycleCleanupReservation,
 };
 pub use packaged_qemu_executor::{RetainedServiceAdmissionError, RetainedServiceStartCause};
 pub use qemu_hot_fork_world_factory::{TargetMainAdmissionError, TargetSetupFailure};

@@ -15,7 +15,7 @@ pub(crate) type PreparedSourceProjection =
     for<'a> fn(&'a (dyn Any + Send)) -> Option<super::LifecycleFailureRef<'a>>;
 
 pub(crate) type PreparedSourceHistoryProjection =
-    for<'a> fn(&'a (dyn Any + Send)) -> Option<&'a (dyn std::error::Error + 'static)>;
+    fn(&(dyn Any + Send), &mut dyn FnMut(&'static str, super::LifecycleHistoryRef<'_>));
 
 /// Returns terminal metadata without extracting its body or issuing native work.
 pub(crate) type TerminalMetadataReturn = fn(&mut ProductionVmConstructionPostBody) -> bool;

@@ -5,6 +5,8 @@
 //! destruction runs outside every queue mutex; only observed success can make
 //! the exact epoch reusable.
 
+use crate::LifecycleFailureRef as Failure;
+
 use std::any::Any;
 
 use super::prepared_service::{PreparedSourceHistoryProjection, PreparedSourceProjection};
@@ -41,7 +43,7 @@ impl TerminalCustody {
 
     pub(super) fn visit_history(
         &self,
-        apply: &mut impl FnMut(&'static str, &(dyn std::error::Error + 'static)),
+        apply: &mut impl FnMut(&'static str, crate::LifecycleHistoryRef<'_>),
     ) {
         self.fields.visit_history(apply);
     }
@@ -70,8 +72,6 @@ impl TerminalFields {
     }
 
     pub(super) fn first_failure(&self) -> Option<LifecycleFailureRef<'_>> {
-        use LifecycleFailureRef as Failure;
-
         self.service
             .as_ref()
             .and_then(RetainedServiceStart::first)
@@ -103,28 +103,43 @@ impl TerminalFields {
 /// Projects stored Service causes while their actual actor/body remains retained.
 pub(super) fn visit_service_history(
     start: &RetainedServiceStart,
-    apply: &mut impl FnMut(&'static str, &(dyn std::error::Error + 'static)),
+    apply: &mut impl FnMut(&'static str, crate::LifecycleHistoryRef<'_>),
 ) {
     if let Some(first) = start.first() {
-        apply("Service initiation", first);
+        apply("Service initiation", Failure::Service(first).into());
     }
     if let Some(first) = start.admission_post_failure() {
-        apply("Service admission postcheck", first);
+        apply(
+            "Service admission postcheck",
+            Failure::Supervision(first).into(),
+        );
     }
     if let Some(first) = start.admission_completion_failure() {
-        apply("Service admission completion", first);
+        apply(
+            "Service admission completion",
+            Failure::Supervision(first).into(),
+        );
     }
     if let Some(first) = start.projection_post_failure() {
-        apply("Service projection postcheck", first);
+        apply(
+            "Service projection postcheck",
+            Failure::Supervision(first).into(),
+        );
     }
     if let Some(first) = start.imported_genesis_post_failure() {
-        apply("imported genesis projection postcheck", first);
+        apply(
+            "imported genesis projection postcheck",
+            Failure::Supervision(first).into(),
+        );
     }
     if let Some(first) = start.cleanup_failure() {
-        apply("Service cleanup", first);
+        apply("Service cleanup", Failure::Operational(first).into());
     }
     if let Some(first) = start.adopted_semantic_shutdown_failure() {
-        apply("receiving semantic shutdown", first);
+        apply(
+            "receiving semantic shutdown",
+            Failure::Scheduler(first).into(),
+        );
     }
     start.visit_retained_completion_history(&mut *apply);
     start.visit_watchdog_history(&mut *apply);
@@ -210,46 +225,44 @@ fn first_imported_return_failure(
 fn visit_imported_return_history(
     history: &crate::imported_checkpoint::ImportedCheckpointReturn,
     labels: [&'static str; 4],
-    apply: &mut impl FnMut(&'static str, &(dyn std::error::Error + 'static)),
+    apply: &mut impl FnMut(&'static str, crate::LifecycleHistoryRef<'_>),
 ) {
     if let Some(first) = &history.first {
-        apply(labels[0], first);
+        apply(labels[0], Failure::Supervision(first).into());
     }
     if let Some(first) = &history.launch_post {
-        apply(labels[1], first);
+        apply(labels[1], Failure::Supervision(first).into());
     }
     if let Some(first) = &history.completion {
-        apply(labels[2], first);
+        apply(labels[2], Failure::Supervision(first).into());
     }
     if let Some(first) = &history.return_post {
-        apply(labels[3], first);
+        apply(labels[3], Failure::Supervision(first).into());
     }
 }
 
 impl TerminalFields {
     pub(super) fn visit_history(
         &self,
-        apply: &mut impl FnMut(&'static str, &(dyn std::error::Error + 'static)),
+        apply: &mut impl FnMut(&'static str, crate::LifecycleHistoryRef<'_>),
     ) {
         if let Some(start) = &self.service {
             visit_service_history(start, apply);
         }
-        if let (Some(owner), Some(project)) = (&self.prepared, self.history_projection)
-            && let Some(history) = project(owner.as_ref())
-        {
-            apply("Source preparation", history);
+        if let (Some(owner), Some(project)) = (&self.prepared, self.history_projection) {
+            project(owner.as_ref(), apply);
         }
         if let Some(first) = &self.prepared_cleanup_first {
-            apply("prepared body cleanup", first);
+            apply("prepared body cleanup", Failure::BodyCleanup(first).into());
         }
         if let Some(first) = &self.cleanup_first {
-            apply("published body cleanup", first);
+            apply("published body cleanup", Failure::BodyCleanup(first).into());
         }
         if let Some(first) = &self.control_failure {
-            apply("containing controls", first);
+            apply("containing controls", Failure::ServiceBirth(first).into());
         }
         if let Some(first) = &self.access {
-            apply("Source role access", first);
+            apply("Source role access", Failure::Role(first).into());
         }
     }
 }

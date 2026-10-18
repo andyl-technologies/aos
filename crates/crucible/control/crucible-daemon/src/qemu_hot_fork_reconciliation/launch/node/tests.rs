@@ -160,6 +160,26 @@ fn independent_worker_panics_keep_both_actual_file_owners_until_row_destruction(
         rows.iter()
             .all(|row| row.worker_panic().unwrap().is::<PanicFile>())
     );
+    for row in &rows {
+        let crate::LifecycleHistoryRef::TargetLaunch {
+            node,
+            worker_panic: Some(panic),
+            ..
+        } = row.history()
+        else {
+            panic!("the actual worker panic remains in the typed row history");
+        };
+        assert!(std::ptr::eq(node, &row.node));
+        let actual = panic.payload.downcast_ref::<PanicFile>().unwrap();
+        let expected = row
+            .worker_panic()
+            .unwrap()
+            .downcast_ref::<PanicFile>()
+            .unwrap();
+        assert!(std::ptr::eq(actual, expected));
+        assert_eq!(panic.message(), None);
+        assert!(format!("{:?}", row.history()).contains("worker_panic: Some"));
+    }
     assert!(rows.iter_mut().all(|row| !row.reset_returned()));
     assert!(
         descriptors
@@ -201,11 +221,40 @@ fn retained_row_history_keeps_both_launch_and_cleanup_causes() {
     let rendered = format!("{:?}", rows[0].history());
     assert!(rendered.contains("original launch refusal"));
     assert!(rendered.contains("independent cleanup refusal"));
+    let crate::LifecycleHistoryRef::TargetLaunch {
+        launch, rollback, ..
+    } = rows[0].history()
+    else {
+        panic!("the actual selected row remains observable");
+    };
+    assert!(std::ptr::eq(
+        launch.unwrap(),
+        rows[0].first.as_ref().unwrap()
+    ));
+    assert!(std::ptr::eq(
+        rollback.unwrap(),
+        rows[0].first_rollback.as_ref().unwrap()
+    ));
     assert!(!rows[0].reset_returned());
     let Some(QemuVmRealizationError::Executor { message, .. }) = &rows[0].first_rollback else {
         panic!("the actual typed cleanup cause was lost");
     };
     assert_eq!(message.as_ptr(), allocation);
+
+    let panic = String::from("original launch worker panic");
+    let panic_allocation = panic.as_ptr();
+    rows[0].record_worker_panic(Box::new(panic));
+
+    let crate::LifecycleHistoryRef::TargetLaunch {
+        worker_panic: Some(panic),
+        ..
+    } = rows[0].history()
+    else {
+        panic!("the original string panic remains observable");
+    };
+    let message = panic.message().unwrap();
+    assert_eq!(message, "original launch worker panic");
+    assert_eq!(message.as_ptr(), panic_allocation);
 }
 
 #[test]

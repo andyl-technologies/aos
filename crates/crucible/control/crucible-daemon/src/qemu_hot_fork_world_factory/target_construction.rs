@@ -232,15 +232,43 @@ where
 
 fn project_history<F>(
     owner: &(dyn std::any::Any + Send),
-) -> Option<&(dyn std::error::Error + 'static)>
-where
+    mut apply: &mut dyn FnMut(&'static str, crate::LifecycleHistoryRef<'_>),
+) where
     F: QemuAttemptResourceGuardFactory + Send + 'static,
     F::Guard: QemuAttemptProcessResourceGuard + Send + 'static,
 {
-    let pending = owner.downcast_ref::<PendingTargetConstruction<F>>()?;
-    pending
-        .has_history()
-        .then_some(pending as &dyn std::error::Error)
+    let Some(pending) = owner.downcast_ref::<PendingTargetConstruction<F>>() else {
+        return;
+    };
+    if !pending.has_history() {
+        return;
+    }
+    apply(
+        "Source preparation",
+        crate::LifecycleHistoryRef::TargetConstruction {
+            first_main: pending.first_main.as_ref(),
+            first_setup: pending.first_setup.as_ref(),
+            first_preparation: pending.first_preparation.as_ref(),
+            first_begin: pending.first_begin.as_ref(),
+            first_reconciliation: pending.first_reconciliation.as_ref(),
+            first_aggregate: pending.first_aggregate.as_ref(),
+            first_readiness: pending.first_readiness.as_ref(),
+            members_present: pending.members.is_some(),
+            launch_rows_present: pending.nodes.is_some(),
+            body_destroyed: pending.body_destroyed,
+            physically_returned: pending.physically_returned,
+        },
+    );
+    if let Some(members) = &pending.members {
+        members.visit_history(&mut apply);
+    }
+    if let Some(rows) = &pending.nodes {
+        for row in rows {
+            if row.has_history() {
+                apply("Target launch", row.history());
+            }
+        }
+    }
 }
 
 /// Preserves an actual setup refusal beside the still-canonical owners.
@@ -896,13 +924,6 @@ where
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(formatter, "retained Target construction: {self:?}")
     }
-}
-
-impl<F> std::error::Error for PendingTargetConstruction<F>
-where
-    F: QemuAttemptResourceGuardFactory + Send + 'static,
-    F::Guard: QemuAttemptProcessResourceGuard + Send + 'static,
-{
 }
 
 impl<F> crucible_control_api::ProductionVmCleanupOwner for PendingTargetConstruction<F>

@@ -4,6 +4,8 @@
 //! role's World-return requirement. Two actual body obligations fit inline;
 //! the existing Target Pending Box is moved by operation-only upcast.
 
+use crate::LifecycleFailureRef as Failure;
+
 use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
@@ -377,34 +379,43 @@ impl ProductionVmConstructionPostBody {
     ///
     /// Each callback borrows the original typed leaf or the original finite
     /// history report. No callback may reenter the containing role.
-    pub fn visit_history(&self, mut apply: impl FnMut(&'static str, &(dyn Error + 'static))) {
+    pub fn visit_history(
+        &self,
+        mut apply: impl FnMut(&'static str, crate::LifecycleHistoryRef<'_>),
+    ) {
         if let Some(terminal) = &self.terminal {
             terminal.visit_history(&mut apply);
         }
         if let Some(history) = &self.source_retirement_history
             && !history.is_empty()
         {
-            apply("Source retirement", history);
+            apply(
+                "Source retirement",
+                Failure::SourceRetirement(history).into(),
+            );
         }
         if let Some(history) = &self.source_history {
-            apply("Source cleanup", history);
+            apply("Source cleanup", Failure::SourceCleanup(history).into());
         }
         for first in self.constructor_first.iter().flatten() {
-            apply("construction", first);
+            apply("construction", Failure::Control(first).into());
         }
         if let Some(first) = &self.cleanup_first {
-            apply("body cleanup", first);
+            apply("body cleanup", Failure::BodyCleanup(first).into());
         }
         for body in self.returns.iter().flatten() {
             if let NativeReturn::World(world) = body {
                 if let Some(first) = &world.first {
-                    apply("World return", first);
+                    apply("World return", Failure::NativeReturn(first).into());
                 }
                 if let Some(first) = &world.observation {
-                    apply("World return observation", first);
+                    apply(
+                        "World return observation",
+                        Failure::ServiceBirth(first).into(),
+                    );
                 }
                 if let Some(first) = &world.observer_first {
-                    apply("Source observer", first);
+                    apply("Source observer", Failure::Operational(first).into());
                 }
             }
         }
@@ -412,8 +423,6 @@ impl ProductionVmConstructionPostBody {
 
     /// Borrows the actual first owned report after its protected terminal move.
     pub fn first_failure(&self) -> Option<super::LifecycleFailureRef<'_>> {
-        use super::LifecycleFailureRef as Failure;
-
         self.terminal
             .as_ref()
             .and_then(super::terminal::TerminalCustody::first_failure)
@@ -486,8 +495,6 @@ impl WorldReturn {
 
 impl NativeReturn {
     fn first_failure(&self) -> Option<super::LifecycleFailureRef<'_>> {
-        use super::LifecycleFailureRef as Failure;
-
         match self {
             Self::Target(_) => None,
             Self::World(world) => world

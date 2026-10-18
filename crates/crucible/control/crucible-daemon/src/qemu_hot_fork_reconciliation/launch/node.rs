@@ -43,28 +43,6 @@ struct TargetLaunchOrigin {
     node: NodeId,
 }
 
-struct RowHistory<'a, G: crate::QemuAttemptResourceGuard>(&'a TargetNodeConstruction<G>);
-
-impl<G: crate::QemuAttemptResourceGuard> std::fmt::Debug for RowHistory<'_, G> {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let row = self.0;
-        let panic_message = row.worker_panic.as_ref().and_then(|payload| {
-            payload
-                .downcast_ref::<String>()
-                .map(String::as_str)
-                .or_else(|| payload.downcast_ref::<&'static str>().copied())
-        });
-        formatter
-            .debug_struct("TargetLaunchHistory")
-            .field("node", &row.node)
-            .field("launch", &row.first)
-            .field("rollback", &row.first_rollback)
-            .field("worker_panicked", &row.worker_panic.is_some())
-            .field("panic_message", &panic_message)
-            .finish()
-    }
-}
-
 impl<G: crate::QemuAttemptResourceGuard> TargetNodeConstruction<G> {
     /// Measures the actual row payload and copied identities without allocation.
     pub(crate) fn control_bytes<'a>(
@@ -279,8 +257,16 @@ impl<G: crate::QemuAttemptResourceGuard> TargetNodeConstruction<G> {
     }
 
     /// Borrows every independent report; formatting allocates no new owner.
-    pub(crate) fn history(&self) -> impl std::fmt::Debug + '_ {
-        RowHistory(self)
+    pub(crate) fn history(&self) -> crate::LifecycleHistoryRef<'_> {
+        crate::LifecycleHistoryRef::TargetLaunch {
+            node: &self.node,
+            launch: self.first.as_ref(),
+            rollback: self.first_rollback.as_ref(),
+            worker_panic: self
+                .worker_panic
+                .as_deref()
+                .map(|payload| crate::LifecyclePanicRef { payload }),
+        }
     }
 
     /// Resets only vacant metadata after the caller's exact terminal receipts.

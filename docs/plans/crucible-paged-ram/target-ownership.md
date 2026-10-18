@@ -74,9 +74,17 @@ The protected callback cannot return a borrowed cause beyond its observation,
 and recursive inspection of the same Main remains terminal. Owners, report pins,
 locks and epoch checks are unchanged; the view allocates no replacement report.
 Aggregate standard error chains end at their retained body, whose typed first
-projection remains available. Complete history visitors still use erased error
-references and require a separate streaming cutover; this change does not waive
-the remaining source-policy findings.
+projection remains available. Complete histories stream `LifecycleHistoryRef`
+records under those same locks. Source records retain the independent capture
+postcheck, native cleanup, context restoration and external-body acceptance.
+Target records expose aggregate failures, storage presence and observed body
+state, followed by each selected member and launch row's independent reports.
+Worker panic records borrow the actual payload, including non-string payloads.
+Public inspection exposes borrowed string messages; resource-owning payloads
+remain opaque. Observation neither destroys a payload nor closes its owning row.
+Source cleanup's scoped accessor borrows its actual cause under the original
+receipt lock. Borrowed records cannot escape a protected callback. Observed
+status remains diagnostic data and grants no cleanup or native-return authority.
 
 Promoted children retain their original return pair and a bounded-step lineage
 controller. Descendant retirement keeps each parent checkout until exclusive

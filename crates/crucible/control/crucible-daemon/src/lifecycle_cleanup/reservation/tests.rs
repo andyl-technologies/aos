@@ -924,8 +924,8 @@ impl ProductionVmCleanupOwner for ComponentPanicOwner {
 
 fn no_component_history(
     _owner: &(dyn std::any::Any + Send),
-) -> Option<&(dyn std::error::Error + 'static)> {
-    None
+    _apply: &mut dyn FnMut(&'static str, crate::LifecycleHistoryRef<'_>),
+) {
 }
 
 fn no_component_first(

@@ -22,6 +22,8 @@ pub use body_return::SourceBodyReturn;
 mod prepared_driver;
 mod failure_ref;
 pub use failure_ref::LifecycleFailureRef;
+mod history_ref;
+pub use history_ref::{LifecycleHistoryRef, LifecyclePanicRef};
 mod prepared_producer;
 mod queued_owner;
 mod report_refs;
