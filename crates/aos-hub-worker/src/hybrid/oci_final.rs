@@ -27,6 +27,12 @@ pub(super) async fn is_empty(original: &Request) -> Result<bool> {
     Ok(first.length() == 0 && done)
 }
 
+/// Returns a chunk URL without the later final PUT's digest query.
+pub(super) fn chunk_url(mut url: url::Url) -> url::Url {
+    url.set_query(None);
+    url
+}
+
 /// Produces a streaming PATCH or confirms actual clean EOF of an empty body.
 pub(super) async fn patch(original: &Request) -> Result<Option<Request>> {
     let Some(source) = original.inner().body() else {
@@ -83,8 +89,7 @@ pub(super) async fn patch(original: &Request) -> Result<Option<Request>> {
         .with_redirect(RequestRedirect::Manual).with_body(Some(body));
     // The final digest belongs to the later PUT. This intermediate PATCH
     // uses the ordinary bodyless chunk preflight/completion contract.
-    let mut patch_url = original.url()?;
-    patch_url.set_query(None);
+    let patch_url = chunk_url(original.url()?);
     let request = Request::new_with_init(patch_url.as_str(), &init)?;
     body_owner.disarm();
     Ok(Some(request))

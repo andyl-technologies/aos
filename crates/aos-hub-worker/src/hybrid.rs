@@ -776,8 +776,15 @@ async fn finalize_oci_upload(mut request: Request, env: &Env) -> Result<Response
         return Response::error("final OCI chunk body is too large", 413);
     };
     if !final_bytes.is_empty() {
-        let patch =
-            upload_phase_request_with_method(&request, &final_bytes, worker::Method::Patch)?;
+        // Native accepts a digest query only for final authorization and PUT.
+        // The internal chunk PATCH must keep its ordinary query-free contract.
+        let patch_url = oci_final::chunk_url(request.url()?);
+        let patch = upload_phase_request_with_url(
+            &request,
+            &final_bytes,
+            worker::Method::Patch,
+            patch_url.as_str(),
+        )?;
         let appended = append_oci_upload_chunk(patch, env).await?;
         if appended.status_code() != 202 {
             return Ok(appended);
