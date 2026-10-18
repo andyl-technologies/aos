@@ -306,6 +306,8 @@ fn selected_campaign_fault_drops_frames_across_successive_route_calls() -> Resul
     let replay =
         crucible::NetworkFaultCampaignReplayPlan::new(branch.selected().clone(), vec![branch])?;
     replay.validate_topology(&topology)?;
+    // The selected 1_000 us outage ends at this exclusive exact tick.
+    let outage_end = 1_000 * 1_000 * crucible::model::SIM_TICKS_PER_NS;
 
     let mut expected_records = None;
     for exact_replay in [false, true] {
@@ -350,7 +352,8 @@ fn selected_campaign_fault_drops_frames_across_successive_route_calls() -> Resul
         // The outage is selected and checkpointable before any frame reaches
         // the interceptor. Its interval ends at the exact virtual deadline.
         assert_eq!(interceptor.active_outages(0)?.len(), 1);
-        assert!(interceptor.active_outages(1_000_000)?.is_empty());
+        assert_eq!(interceptor.active_outages(outage_end - 1)?.len(), 1);
+        assert!(interceptor.active_outages(outage_end)?.is_empty());
         let checkpoint =
             interceptor.checkpoint(&scheduler, VirtualTime { ticks: 0 }, &[], &mut nodes)?;
         let (_, _, _, adapter_bytes, _) = checkpoint
@@ -428,13 +431,13 @@ fn selected_campaign_fault_drops_frames_across_successive_route_calls() -> Resul
         interceptor.intercept_network_outputs(
             &mut scheduler,
             &mut nodes,
-            VirtualTime { ticks: 1_000_000 },
+            VirtualTime { ticks: outage_end },
             &mut pending,
             &mut after_deadline,
         )?;
         assert_eq!(after_deadline.len(), 1, "selected availability restored");
         assert_eq!(interceptor.campaign_effect_records().len(), 2);
-        assert!(interceptor.active_outages(1_000_000)?.is_empty());
+        assert!(interceptor.active_outages(outage_end)?.is_empty());
         if exact_replay {
             interceptor.verify_campaign_effect_replay_exhausted()?;
             assert_eq!(

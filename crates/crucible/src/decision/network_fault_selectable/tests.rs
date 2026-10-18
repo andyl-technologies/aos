@@ -299,11 +299,76 @@ fn selected_link_fault_projects_exact_typed_path_and_duration() -> Result<(), Bo
             )?
             .is_empty()
     );
-    assert!(
+    // The selected 1_000 us window is 1_000_000_000 exact ticks long and
+    // excludes its end. A nanosecond-scaled window would close 1_000x early.
+    let end = at.ticks + 1_000 * 1_000 * crate::model::SIM_TICKS_PER_NS;
+    assert_eq!(
         replay
             .actions_for_opportunity(
                 &topology,
                 &opportunity("segment-primary", FaultDirection::AToB, 1_010_000)?
+            )?
+            .len(),
+        1
+    );
+    assert_eq!(
+        replay
+            .actions_for_opportunity(
+                &topology,
+                &opportunity("segment-primary", FaultDirection::AToB, end - 1)?
+            )?
+            .len(),
+        1
+    );
+    assert!(
+        replay
+            .actions_for_opportunity(
+                &topology,
+                &opportunity("segment-primary", FaultDirection::AToB, end)?
+            )?
+            .is_empty()
+    );
+    Ok(())
+}
+
+#[test]
+fn selected_outage_stays_active_for_its_full_microsecond_duration() -> Result<(), Box<dyn Error>> {
+    let scenario = scenario()?;
+    let topology = topology()?;
+    let at = VirtualTime {
+        ticks: 2_083_000_000_000,
+    };
+    let duration_us = 30_000_000;
+    let value = NetworkFaultSelectable::selected_value("link_down", "primary", duration_us, 0, 0)?;
+    let parent = Configuration::genesis(scenario.scenario_def());
+    let branch = select_next(&scenario, &parent, NetworkFaultPhase::First, at, &[], value)?;
+    let replay = NetworkFaultCampaignReplayPlan::new(branch.selected().clone(), vec![branch])?;
+
+    // Thirty seconds of outage is 30_000_000_000_000 ticks. One virtual
+    // second after selection lies well inside it.
+    let one_second_later = at.ticks + 1_000_000_000_000;
+    let end = at.ticks + 30_000_000_000_000;
+
+    let outages = replay.active_outages(&topology, one_second_later)?;
+    assert_eq!(outages.len(), 2, "both primary directions are down");
+    assert!(outages.iter().all(|(_, until)| *until == end));
+    assert_eq!(
+        replay
+            .actions_for_opportunity(
+                &topology,
+                &opportunity("segment-primary", FaultDirection::AToB, one_second_later)?,
+            )?
+            .len(),
+        1
+    );
+
+    assert_eq!(replay.active_outages(&topology, end - 1)?.len(), 2);
+    assert!(replay.active_outages(&topology, end)?.is_empty());
+    assert!(
+        replay
+            .actions_for_opportunity(
+                &topology,
+                &opportunity("segment-primary", FaultDirection::AToB, end)?,
             )?
             .is_empty()
     );

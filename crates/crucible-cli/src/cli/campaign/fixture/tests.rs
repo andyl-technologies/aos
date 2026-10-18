@@ -544,9 +544,17 @@ fn generated_network_fault_group_discovers_both_phases_and_projects_typed_paths(
             .expect("outage activates without traffic")
             .is_empty()
     );
+    assert!(
+        !first_replay
+            .active_outages(topology, first_at.ticks + 29_000_000_000_000)
+            .expect("outage remains active for its selected duration")
+            .is_empty()
+    );
 
+    // The first 30_000_000 us outage ends 30 virtual seconds (in exact
+    // picosecond ticks) after it starts; the follow-up arrives one second later.
     let followup_at = VirtualTime {
-        ticks: 31_000_000_000,
+        ticks: 31_000_000_000_000,
     };
     let followup = NetworkFaultSelectable::next(
         &scenario,

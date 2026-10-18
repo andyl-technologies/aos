@@ -21,7 +21,7 @@ use crate::model::{
     EffectSpecification, FaultContractError, FaultDirection, FaultObjectId, FaultOpportunity,
     FaultPhase, NetworkAvailabilityState, NetworkEffectSpecification, NetworkInFlightPolicy,
     PositiveU64, ProbabilityMillionths, ResolvedBindingAction, ResolvedFaultTarget,
-    ResolvedMappingOutput, WorldFaultTargetRef, WorldFaultTopology,
+    ResolvedMappingOutput, SimDuration, WorldFaultTargetRef, WorldFaultTopology,
 };
 use crate::{
     Configuration, ContentHash, Decision, EngineError, ScenarioDefForm, SelectionDecision,
@@ -44,6 +44,7 @@ const AFFECTED_PATH: &str = "fault.affected_path";
 const DURATION_US: &str = "fault.duration_us";
 const LOSS_BPS: &str = "fault.loss_bps";
 const LATENCY_US: &str = "fault.latency_us";
+const NANOS_PER_MICROSECOND: u64 = 1_000;
 
 /// Which scenario disruption a network fault choice configures.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -336,14 +337,9 @@ impl NetworkFaultSelectable {
             self.opportunity.branch_point_id(parent),
         )?;
         let parameters = selected_parameters(&self.domain, selection.value())?;
-        let duration_nanos = parameters
-            .duration_us
-            .checked_mul(1_000)
-            .ok_or(NetworkFaultSelectableError::ProducerContractMismatch)?;
-        self.at
-            .ticks
-            .checked_add(duration_nanos)
-            .ok_or(NetworkFaultSelectableError::ProducerContractMismatch)?;
+        // Reject a selection whose window cannot be represented before it
+        // becomes part of an authenticated branch.
+        fault_window_end(self.at, parameters.duration_us)?;
         let decision = Decision::Selection(SelectionDecision::new(selection));
         let selected = try_step(&self.parent, decision.clone())?;
         Ok(NetworkFaultCampaignBranch {
@@ -365,6 +361,20 @@ struct SelectedFaultParameters {
     duration_us: u64,
     loss_bps: u64,
     latency_us: u64,
+}
+
+/// Returns the exclusive end of a selected fault window in exact ticks.
+///
+/// The group schema publishes `fault.duration_us` in guest microseconds, while
+/// the selection time and every opportunity coordinate are exact simulation
+/// ticks. The duration therefore passes through the shared nanosecond-to-tick
+/// scale rather than being added as a raw nanosecond count.
+fn fault_window_end(at: VirtualTime, duration_us: u64) -> Result<u64, NetworkFaultSelectableError> {
+    duration_us
+        .checked_mul(NANOS_PER_MICROSECOND)
+        .and_then(|nanos| SimDuration::from_nanoseconds(nanos).ok())
+        .and_then(|duration| at.ticks.checked_add(duration.ticks))
+        .ok_or(NetworkFaultSelectableError::ProducerContractMismatch)
 }
 
 fn selected_parameters(
@@ -567,17 +577,7 @@ impl NetworkFaultCampaignReplayPlan {
             if !matches!(branch.parameters.kind, "link_down" | "asymmetric_partition") {
                 continue;
             }
-            let until = branch
-                .at
-                .ticks
-                .checked_add(
-                    branch
-                        .parameters
-                        .duration_us
-                        .checked_mul(1_000)
-                        .ok_or(NetworkFaultSelectableError::ProducerContractMismatch)?,
-                )
-                .ok_or(NetworkFaultSelectableError::ProducerContractMismatch)?;
+            let until = fault_window_end(branch.at, branch.parameters.duration_us)?;
             if now < branch.at.ticks || now >= until {
                 continue;
             }
@@ -632,15 +632,7 @@ impl NetworkFaultCampaignReplayPlan {
         let mut actions = Vec::new();
         for branch in &self.branches {
             let parameters = &branch.parameters;
-            let duration_nanos = parameters
-                .duration_us
-                .checked_mul(1_000)
-                .ok_or(NetworkFaultSelectableError::ProducerContractMismatch)?;
-            let until = branch
-                .at
-                .ticks
-                .checked_add(duration_nanos)
-                .ok_or(NetworkFaultSelectableError::ProducerContractMismatch)?;
+            let until = fault_window_end(branch.at, parameters.duration_us)?;
             if opportunity.coordinate().virtual_ticks < branch.at.ticks
                 || opportunity.coordinate().virtual_ticks >= until
             {
@@ -693,7 +685,7 @@ impl NetworkFaultCampaignReplayPlan {
                     .then(|| {
                         parameters
                             .latency_us
-                            .checked_mul(1_000)
+                            .checked_mul(NANOS_PER_MICROSECOND)
                             .ok_or(NetworkFaultSelectableError::ProducerContractMismatch)
                             .and_then(|nanos| {
                                 PositiveU64::new("campaign network latency", nanos)

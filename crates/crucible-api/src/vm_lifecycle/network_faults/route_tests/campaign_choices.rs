@@ -287,11 +287,15 @@ fn selected_link_down_is_a_typed_bounded_availability_outage() -> Result<(), Cam
         NetworkAvailabilityState::Down,
         FaultDirection::AToB
     ));
+    // The selected 1_000 us outage starts at tick 10_000 and ends at this
+    // exclusive exact tick.
+    let outage_end = 10_000 + 1_000 * 1_000 * crucible::model::SIM_TICKS_PER_NS;
     assert_eq!(
         replay.active_outages(&topology, 11_000)?,
-        vec![(frame("segment-primary")?.target().clone(), 1_010_000)]
+        vec![(frame("segment-primary")?.target().clone(), outage_end)]
     );
-    assert!(replay.active_outages(&topology, 1_010_000)?.is_empty());
+    assert_eq!(replay.active_outages(&topology, outage_end - 1)?.len(), 1);
+    assert!(replay.active_outages(&topology, outage_end)?.is_empty());
     Ok(())
 }
 
