@@ -211,10 +211,11 @@ async fn grant_inner(
     )
     .await?;
     let issued = u64::try_from(aos_hub_core::clock::now_unix_secs())?;
-    let expires = admission
-        .expires_at
-        .get()
-        .min(context.foreground.expires_at.get());
+    let maximum_lifetime = match &protected {
+        MaterialProfile::Managed { .. } => 300,
+        MaterialProfile::External { profile } => profile.maximum_grant_lifetime.get().min(300),
+    };
+    let expires = journal::grant_expiry(issued, admission.expires_at.get(), maximum_lifetime)?;
     let grant_id = journal::digest(&(
         &request.operation_id,
         &request.session,
@@ -285,7 +286,7 @@ async fn grant_inner(
                 },
                 &upload_id,
                 &record.part,
-                30,
+                u32::try_from(maximum_lifetime)?,
             )?;
             ensure!(
                 authority.latest_now()? < record.expires_at.get(),

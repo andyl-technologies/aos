@@ -155,9 +155,107 @@ pub(crate) fn digest<T: Serialize>(value: &T) -> Result<String> {
     Ok(hex::encode(hash.finalize()))
 }
 
+/// Bounds a provider capability separately from its issuing control request.
+///
+/// UploadPart capabilities can outlive the foreground invocation. Their exact
+/// horizons remain in the part journal and physical guard until closure.
+///
+/// # Errors
+/// Returns an error when the admission or configured lifetime has expired.
+pub(crate) fn grant_expiry(
+    issued_at: u64,
+    admission_expires_at: u64,
+    maximum_lifetime: u64,
+) -> Result<u64> {
+    let expires_at = admission_expires_at.min(issued_at.saturating_add(maximum_lifetime));
+    ensure!(expires_at > issued_at, "direct grant lifetime exhausted");
+    Ok(expires_at)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_grants_cover_client_dispatch_without_extending_admission() {
+        let issued_at = 1_790_000_000;
+        let admission = crate::direct_guard::fixture::reservation("fixture", "object").admission;
+        let session = DirectSessionRef {
+            session_id: admission.session_id.clone(),
+            logical_fingerprint: admission.logical_fingerprint.clone(),
+        };
+        let placement = admission.placements[0].public_ref("fixture").unwrap();
+        let part = DirectPart {
+            part_number: 1,
+            offset: WireInteger::new(0),
+            byte_size: admission.intent.byte_size,
+            sha256: admission.intent.expected_sha256.clone(),
+            checksum: DirectPartChecksum {
+                algorithm: DirectChecksumAlgorithm::Md5,
+                value: "ndTkYSaMgDT1yFZOFVxnpg==".into(),
+            },
+        };
+        let grant = |expires_at| {
+            let date = aos_hub_core::sigv4::amz_date_from_unix(issued_at as i64);
+            let signed = aos_hub_core::sigv4::presign_direct_upload_part(
+                &aos_hub_core::sigv4::PresignParams {
+                    access_key: "fixture-access",
+                    secret_key: "fixture-secret",
+                    region: "auto",
+                    service: "s3",
+                    scheme: "https",
+                    host: "provider.example",
+                    path: "/bucket/private-object",
+                    expires_secs: (expires_at - issued_at) as u32,
+                    amz_date: &date,
+                },
+                "fixture-upload",
+                &part,
+                300,
+            )
+            .unwrap();
+            DirectPartGrant {
+                session_id: session.session_id.clone(),
+                logical_fingerprint: session.logical_fingerprint.clone(),
+                placement: placement.clone(),
+                grant_id: "11".repeat(32),
+                grant_revision: WireInteger::new(1),
+                part: part.clone(),
+                method: "PUT".into(),
+                url: signed.url,
+                required_headers: signed.required_headers,
+                expires_at: WireInteger::new(expires_at),
+            }
+        };
+        let validate = |grant: DirectPartGrant| {
+            grant.validate_for(
+                &session,
+                &placement,
+                &admission.intent,
+                &part,
+                issued_at + 10,
+                30,
+            )
+        };
+        let admission_deadline = issued_at + 3_600;
+        let expires_at = grant_expiry(issued_at, admission_deadline, 300).unwrap();
+
+        // The default client reserves ten seconds of skew plus thirty seconds
+        // before dispatch. The old foreground-limited grant always failed this.
+        assert!(validate(grant(issued_at + 30)).is_err());
+        validate(grant(expires_at)).unwrap();
+        assert_eq!(
+            grant_expiry(issued_at, issued_at + 60, 300).unwrap(),
+            issued_at + 60
+        );
+        assert_eq!(
+            grant_expiry(issued_at, admission_deadline, 60).unwrap(),
+            issued_at + 60
+        );
+        assert!(grant_expiry(issued_at, issued_at, 300).is_err());
+        assert!(grant_expiry(issued_at, admission_deadline, 0).is_err());
+        assert!(grant_expiry(u64::MAX, u64::MAX, 300).is_err());
+    }
 
     #[test]
     fn old_script_probe_inspection_never_authorizes_an_effect() {
