@@ -9233,12 +9233,41 @@ Resumed qualification:
   both Running-retention controls, eight manifest/mixed recovery controls and
   all 47 selected filesystem cases pass. Independent review verifies all 3,477
   image inputs, the actual unit ELF and exact 41-selector inventory; no
-  post-result guest I/O diagnostic appears. The complete 118-case filesystem
-  run and required application target compilation are running on this revision.
+  post-result guest I/O diagnostic appears. The complete ext4 run now passes
+  all 118 nonignored filesystem cases on this revision. Independent review
+  matches every actual result and ordinal to the source-bound inventory,
+  verifies all 3,472 archive inputs and its digest, and preserves the same six
+  original privileged cases separately. Required application target compilation
+  remains running for this revision.
   Strict Clippy still reports nineteen existing findings; the diagnostic that
   reaches all targets with dead-code checks disabled passes without changing
   source lint policy. Recovered reads, source reuse in another assembly,
   consumer leases and NativeReady remain required; no complete task is accepted.
+- Resident-reassembly candidate `b97f5614b0`: ordered native source plans now
+  retain genuine completed publication jobs for existing sealed ranges alongside
+  genuinely admitted standalone inputs. Repeated shared chunks keep their
+  original residence; only new standalone chunks enter native retirement.
+  Before copying, the physical worker captures the original synchronized
+  reservation, generation, hold, owner and native root bindings. Actual byte
+  copying, native output synchronization and readonly reopening run without the
+  embedded-state lock, with original funding and pins checked again afterward.
+  A fresh quota observation checks actual charge plus distinct future holds
+  before output allocation. Existing descriptor/protocol formats, identities,
+  store traits, bucket keys and dependencies remain unchanged.
+  Two new native controls build a second real object from the first object's
+  pinned repeated range and a new admitted tail. They check exact original
+  inode, metadata, retirement-record and residence preservation. Wrong whole-file
+  hashes must retain the real anonymous output, leave the new source canonical
+  and keep an already-retained old source readable under the held policy mutex.
+  Checked storage arithmetic includes the new source and output-scope ownership.
+  Source review covers all fourteen changed files. Committed-source all-target
+  and native-only builds, eight focused regressions and the formatter pair pass.
+  Strict Clippy still reports the nineteen existing findings. Immutable image,
+  independent verification and actual guest qualification are running.
+  Each of the two isolated two-object cases has a finite policy ceiling equal to
+  its unchanged 8 MiB project hard limit; existing cases retain their policy.
+  The 512 MiB guest disk still contains the full declared 35-owner hard-limit
+  partition. No runtime pass or full task acceptance is claimed yet.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
   and all seven strict Clippy/documentation profiles pass. The interface,
   commit-path, status and schema gates pass on unchanged final source, including
