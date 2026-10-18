@@ -300,13 +300,13 @@ impl CompleteBirth {
                 selection
             } else {
                 let mut selected = vec![
-            Id::new("cnp.control-evidence/1")?,
-            Id::new("cnp.core/1")?,
-            Id::new(
-                super::super::super::super::continuation_contracts::PACKET_COMPLETE_LINEAGE_FEATURE,
-            )?,
-            Id::new(super::super::super::super::input::PACKET_INPUT_FEATURE)?,
-        ];
+                    Id::new("cnp.control-evidence/1")?,
+                    Id::new("cnp.core/1")?,
+                    Id::new(
+                        super::super::super::super::continuation_contracts::PACKET_COMPLETE_LINEAGE_FEATURE,
+                    )?,
+                    Id::new(super::super::super::super::input::PACKET_INPUT_FEATURE)?,
+                ];
                 let mut envelope_extensions = std::collections::BTreeMap::from([(
                     super::super::super::super::input::PACKET_INPUT_FEATURE.into(),
                     Id::new(super::super::super::super::input::PACKET_INPUT_FEATURE)?,
@@ -316,12 +316,12 @@ impl CompleteBirth {
                         super::super::super::confirmation::PACKET_NATIVE_AFTER_CONFIRMATION_FEATURE,
                     )?);
                     envelope_extensions.insert(
-                    super::super::super::confirmation::PACKET_NATIVE_AFTER_CONFIRMATION_EXTENSION
+                        super::super::super::confirmation::PACKET_NATIVE_AFTER_CONFIRMATION_EXTENSION
                         .into(),
-                    Id::new(
-                        super::super::super::confirmation::PACKET_NATIVE_AFTER_CONFIRMATION_FEATURE,
-                    )?,
-                );
+                        Id::new(
+                            super::super::super::confirmation::PACKET_NATIVE_AFTER_CONFIRMATION_FEATURE,
+                        )?,
+                    );
                 }
                 if self.launch.ack_emitter_selection.is_some() {
                     selected.push(Id::new(
@@ -331,35 +331,35 @@ impl CompleteBirth {
                         super::super::super::ack_emitter::PACKET_CANONICAL_ACK_ADMISSION_FEATURE,
                     )?);
                     envelope_extensions.insert(
-                    super::super::super::ack_emitter::PACKET_CANONICAL_ACK_ADMISSION_FEATURE.into(),
-                    Id::new(
-                        super::super::super::ack_emitter::PACKET_CANONICAL_ACK_ADMISSION_FEATURE,
-                    )?,
-                );
+                        super::super::super::ack_emitter::PACKET_CANONICAL_ACK_ADMISSION_FEATURE.into(),
+                        Id::new(
+                            super::super::super::ack_emitter::PACKET_CANONICAL_ACK_ADMISSION_FEATURE,
+                        )?,
+                    );
                 }
                 if self.launch.complete_restore_selection.is_some() {
                     for key in [
-                super::super::super::complete_restore::PACKET_COMPLETE_RESTORE_FEATURE,
-                super::super::super::complete_restore::PACKET_COMPLETE_RESTORE_PROOF_EXTENSION,
-                super::super::super::complete_restore::PACKET_COMPLETE_RESTORE_RECEIPT_EXTENSION,
-            ] {
-                selected.push(Id::new(key)?);
-                envelope_extensions.insert(key.into(), Id::new(key)?);
-            }
+                        super::super::super::complete_restore::PACKET_COMPLETE_RESTORE_FEATURE,
+                        super::super::super::complete_restore::PACKET_COMPLETE_RESTORE_PROOF_EXTENSION,
+                        super::super::super::complete_restore::PACKET_COMPLETE_RESTORE_RECEIPT_EXTENSION,
+                    ] {
+                        selected.push(Id::new(key)?);
+                        envelope_extensions.insert(key.into(), Id::new(key)?);
+                    }
                 }
                 if self.launch.complete_restore_selection == Some(
-            super::super::super::complete_restore::PacketNative5CompleteRestoreSelection::SourceSignedTransfer12)
-        {
-            use super::super::super::complete_restore::{*, transfer::*};
-            selected.push(Id::new(PACKET_COMPLETE_RESTORE_TRANSFER_FEATURE)?);
-            selected.push(Id::new(PACKET_NATIVE_RESTORED_RECORD_FEATURE)?);
-            for phase in [PacketCompleteRestoreTransferPhase::Prepare, PacketCompleteRestoreTransferPhase::Commit] {
-                for key in [phase.request_extension(), phase.proof_extension(), phase.receipt_extension()] {
-                    selected.push(Id::new(key)?);
-                    envelope_extensions.insert(key.into(), Id::new(key)?);
+                    super::super::super::complete_restore::PacketNative5CompleteRestoreSelection::SourceSignedTransfer12)
+                {
+                    use super::super::super::complete_restore::{*, transfer::*};
+                    selected.push(Id::new(PACKET_COMPLETE_RESTORE_TRANSFER_FEATURE)?);
+                    selected.push(Id::new(PACKET_NATIVE_RESTORED_RECORD_FEATURE)?);
+                    for phase in [PacketCompleteRestoreTransferPhase::Prepare, PacketCompleteRestoreTransferPhase::Commit] {
+                        for key in [phase.request_extension(), phase.proof_extension(), phase.receipt_extension()] {
+                            selected.push(Id::new(key)?);
+                            envelope_extensions.insert(key.into(), Id::new(key)?);
+                        }
+                    }
                 }
-            }
-        }
                 if self.boot.is_some() {
                     selected.push(Id::new(EXTENSION_NEGOTIATION_V1)?);
                     envelope_extensions.insert(
