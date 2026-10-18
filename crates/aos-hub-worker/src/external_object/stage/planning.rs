@@ -17,8 +17,8 @@ use aos_hub_core::storage_authority::{
     },
     lease::{
         control::{
-            sign_issuer_request, verify_issuer_reply_at_time, IssuerOperation, IssuerRequest,
-            ISSUER_CONTROL_PATH,
+            sign_issuer_request, verify_issuer_reply, verify_issuer_reply_at_time, IssuerOperation,
+            IssuerRequest, ISSUER_CONTROL_PATH,
         },
         EpochLeaseFloor, LeaseCohort, LeaseEffect, LeaseInteger,
     },
@@ -37,7 +37,10 @@ use super::{
     config::{self, Domain},
     executor::{call, executor_key, recovery_read, relative_key, validate_publication},
     protocol::{self, Intent, Operation, Reply},
-    renewal::{coordination_key, validate_roles, Renewals, VerifiedLease, Window, POLL_MILLIS},
+    renewal::{
+        coordination_key, validate_roles, wait_for_issuer_clock, Renewals, VerifiedLease, Window,
+        POLL_MILLIS,
+    },
 };
 use crate::direct_upload::qualification_failure::{Diagnostics, RecoveryPhase};
 
@@ -634,6 +637,15 @@ async fn issue_lease(
     ensure!(response.status_code() == 200, "issuer renewal refused");
     let bytes = crate::direct_digest::read_bounded_native(response, MAX_ISSUER_REPLY).await?;
     let verifier = object.verifier()?;
+    let authenticated = verify_issuer_reply(&verifier, &request, &bytes)?;
+    wait_for_issuer_clock(
+        authenticated.current.journal.clock_floor.get(),
+        object.timing_profile.maximum_clock_uncertainty.get(),
+        authentication,
+        || Ok(object.clock()),
+        || worker::Delay::from(std::time::Duration::from_millis(POLL_MILLIS)),
+    )
+    .await?;
     let reply = verify_issuer_reply_at_time(&verifier, &request, &bytes, || Ok(object.clock()));
     #[cfg(feature = "do-e2e")]
     if let Err(error) = &reply {

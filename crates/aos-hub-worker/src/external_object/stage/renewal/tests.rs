@@ -29,6 +29,76 @@ fn poll_once<F: Future>(future: Pin<&mut F>) -> Poll<F::Output> {
     future.poll(&mut Context::from_waker(Waker::noop()))
 }
 
+#[tokio::test]
+async fn authenticated_issuer_clock_offset_waits_without_extending_the_request() {
+    let now = Cell::new(100);
+    let waits = Cell::new(0);
+    let window = Window {
+        issued_at: 96,
+        expires_at: 126,
+    };
+
+    wait_for_issuer_clock(
+        101,
+        3,
+        window,
+        || {
+            Ok(LeaseClock {
+                observed_at: now.get(),
+                uncertainty: 1,
+            })
+        },
+        || async {
+            waits.set(waits.get() + 1);
+            now.set(101);
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(waits.get(), 1);
+    assert_eq!(now.get(), 101);
+    assert_eq!(window.expires_at, 126);
+}
+
+#[tokio::test]
+async fn issuer_clock_wait_refuses_offsets_rollback_expiry_and_a_stopped_clock() {
+    // Each case supplies a valid initial observation. Only the selected
+    // violation changes while waiting for the already authenticated reply.
+    for (floor, expiry, next, maximum_waits) in [
+        (105, 126, 101, 0),  // Outside the qualified combined uncertainty.
+        (101, 102, 101, 1),  // Conservative deadline reached while waiting.
+        (101, 126, 99, 1),   // Local rollback, even inside clock uncertainty.
+        (101, 126, 100, 80), // A stopped clock cannot create an infinite wait.
+    ] {
+        let now = Cell::new(100);
+        let waits = Cell::new(0);
+
+        let result = wait_for_issuer_clock(
+            floor,
+            3,
+            Window {
+                issued_at: 96,
+                expires_at: expiry,
+            },
+            || {
+                Ok(LeaseClock {
+                    observed_at: now.get(),
+                    uncertainty: 1,
+                })
+            },
+            || async {
+                waits.set(waits.get() + 1);
+                now.set(next);
+            },
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert_eq!(waits.get(), maximum_waits);
+    }
+}
+
 #[test]
 fn issuer_request_accepts_qualified_clock_offsets_with_a_shorter_expiry() {
     use aos_hub_core::storage_authority::lease::control::{

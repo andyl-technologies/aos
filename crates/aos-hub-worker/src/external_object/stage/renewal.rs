@@ -130,6 +130,69 @@ impl Window {
     }
 }
 
+/// Waits for an authenticated issuer's clock floor within the original request.
+///
+/// # Errors
+/// Refuses unqualified offsets, local rollback, exhausted waits or expiry of the
+/// original request. The caller authenticates the reply before supplying its floor.
+pub(super) async fn wait_for_issuer_clock<C, W, WF>(
+    issuer_floor: i64,
+    maximum_uncertainty: i64,
+    window: Window,
+    clock: C,
+    wait: W,
+) -> Result<()>
+where
+    C: Fn() -> Result<LeaseClock>,
+    W: Fn() -> WF,
+    WF: Future<Output = ()>,
+{
+    let initial = clock()?;
+    window.check(initial)?;
+    ensure!(
+        issuer_floor >= 0 && initial.uncertainty >= 0 && initial.uncertainty <= maximum_uncertainty,
+        "issuer clock wait is unqualified"
+    );
+    let margin = maximum_uncertainty
+        .checked_add(initial.uncertainty)
+        .ok_or_else(|| anyhow::anyhow!("issuer clock margin overflow"))?;
+    ensure!(
+        issuer_floor
+            <= initial
+                .observed_at
+                .checked_add(margin)
+                .ok_or_else(|| anyhow::anyhow!("issuer clock bound overflow"))?,
+        "issuer clock offset exceeds qualified bounds"
+    );
+    let polls = u64::try_from(margin)?
+        .checked_mul(1000)
+        .ok_or_else(|| anyhow::anyhow!("issuer clock wait overflow"))?
+        / POLL_MILLIS;
+
+    // Separate clocks can straddle a seconds boundary. Wait for the original
+    // signed floor; never move either clock, reissue a request or extend expiry.
+    let mut previous = initial.observed_at;
+    for attempt in 0..=polls {
+        let observed = clock()?;
+        window.check(observed)?;
+        ensure!(
+            observed.observed_at >= previous
+                && observed.uncertainty >= 0
+                && observed.uncertainty <= maximum_uncertainty,
+            "issuer clock wait rolled back or became unqualified"
+        );
+        if observed.observed_at >= issuer_floor {
+            return Ok(());
+        }
+        if attempt == polls {
+            break;
+        }
+        previous = observed.observed_at;
+        wait().await;
+    }
+    anyhow::bail!("issuer clock did not reach its authenticated floor")
+}
+
 enum Outcome {
     Pending,
     Complete(VerifiedLease),
