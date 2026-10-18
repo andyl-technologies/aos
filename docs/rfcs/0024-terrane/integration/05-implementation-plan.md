@@ -9366,7 +9366,7 @@ Resumed qualification:
   all-target diagnostic passes without changing source lint policy. Application
   target compilation and full task qualification remain pending. Consumer
   leases, complete retirement and NativeReady are not qualified by these pins.
-- Cold-policy candidate `db93de1fea`: recovery retains the original bounded
+- Cold-policy candidate `3c5b0d07bf`: recovery retains the original bounded
   pins, leases, future holds and residence candidates through its new random
   bootstrap and actual snapshot synchronization. Completion requires
   every old pin and range to reconcile with independently adopted sealed bodies
@@ -9385,8 +9385,18 @@ Resumed qualification:
   findings. Its image stops before native execution because an exact unit-count
   assertion still expects 47 after the inventory expands to 48. The failed
   image is retained. Both image and independent guest assertions now require
-  the exact 48-case inventory. Revised direct, native and complete filesystem
-  qualification is running; no native or full task success is claimed yet.
+  the exact 48-case inventory. Revision `db93de1fea` passes both direct builds,
+  twelve focused cases, formatting and the separate diagnostic; strict Clippy
+  retains the same nineteen findings. Its image and independent verification
+  pass with all 3,483 inputs and six installed files checked. Actual native
+  execution then stops at an old fixture requiring unconditional cold refusal:
+  the second physical owner instead returns recovery completion with its
+  predecessor's cold bootstrap present. That failure is retained; the new cold manifest controls and
+  full filesystem stage have not executed. The revised fixture requires two
+  real physical owners, exact original-hold preservation, a distinct new durable
+  hold and accounting of both; invalid pin, backing and ownership refusals
+  remain. Qualification on `3c5b0d07bf` is running. No complete native component
+  or full task success is claimed yet.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
   and all seven strict Clippy/documentation profiles pass. The interface,
   commit-path, status and schema gates pass on unchanged final source, including
