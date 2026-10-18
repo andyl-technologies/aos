@@ -10,6 +10,8 @@ mod actor;
 mod admission;
 #[path = "host_cache_fixture/config.rs"]
 mod config;
+#[path = "host_cache_fixture/recovery.rs"]
+mod recovery;
 
 fn main() -> std::process::ExitCode {
     let mode = std::env::args().nth(1).unwrap_or_default();
@@ -26,12 +28,21 @@ fn main() -> std::process::ExitCode {
             "admit-chunk",
             "admit-metadata",
             "admit-cancel",
+            "seed-manifest",
+            "seed-bad-manifest",
+            "recover-manifest",
+            "refuse-manifest",
         ] {
             println!("host-cache:{selector}");
         }
         return std::process::ExitCode::SUCCESS;
     }
-    match actor::run(&mode) {
+    let result = if matches!(mode.as_str(), "seed-manifest" | "seed-bad-manifest") {
+        recovery::seed(&mode)
+    } else {
+        actor::run(&mode)
+    };
+    match result {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("host-cache component proof: {error}");

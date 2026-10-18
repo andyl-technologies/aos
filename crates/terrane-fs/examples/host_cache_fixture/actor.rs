@@ -37,6 +37,8 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
             | "admit-chunk"
             | "admit-metadata"
             | "admit-cancel"
+            | "recover-manifest"
+            | "refuse-manifest"
     ) {
         return Err(io::Error::other("unknown component selector"));
     }
@@ -92,6 +94,9 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
         }
         "admit-chunk" | "admit-metadata" | "admit-cancel" => {
             super::admission::run(mode, &owner, &runtime, &inputs, original)?;
+        }
+        "recover-manifest" | "refuse-manifest" => {
+            super::recovery::run(mode, &owner, &runtime, &inputs, original)?;
         }
         "late-refuse" => late_refuse(&owner, &runtime, &inputs, original)?,
         "cancel" => cancel(&owner, &runtime, &inputs)?,

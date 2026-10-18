@@ -28,7 +28,8 @@ HARD = 8 * 1024 * 1024
 EPOCH = "00000000000000000000000000000001"
 CASES = ["empty", "pin", "lease", "reservation", "residence", "unknown",
          "state-file", "state-directory", "cancel", "edquot", "exclusive",
-         "admission-chunk", "admission-metadata", "admission-cancel"]
+         "admission-chunk", "admission-metadata", "admission-cancel",
+         "manifest-recovery", "manifest-mismatch"]
 LABELS = ["layout-root", "chunks", "objects", "sealed", "staging", "quarantine",
           "pending-delete", "state"]
 BUDGET = HARD * len(CASES)
@@ -210,6 +211,56 @@ def cold_candidates():
     sibling = root("state-directory") / "state/old-policy"
     sibling.mkdir()
     metadata(sibling, 840, 844, 0o770)
+
+
+def seed_manifests(uuid):
+    """Creates actual untrusted kernel-sealed candidates before either role starts."""
+    seeded = {}
+    for case, mode in [("manifest-recovery", "seed-manifest"),
+                       ("manifest-mismatch", "seed-bad-manifest")]:
+        result = run(admin_command(PROVISION_CAPS, [IMAGE / "bin/host_cache_fixture", mode]),
+                     env=actor_environment(case, uuid), text=True, capture_output=True)
+        require(result.stdout.splitlines() == [
+            "SEEDED actual cold manifest candidate; no publication or recovery authority"
+        ], "missing actual cold seed witness: " + case)
+        bodies = list((root(case) / "sealed").glob("*/*"))
+        packs = list((root(case) / "objects/pack").glob("*/*"))
+        require(len(bodies) == 1 and len(packs) == 2
+                and sorted(path.suffix for path in packs) == [".idx", ".pack"]
+                and list((root(case) / "state/publication").iterdir()) == []
+                and list((root(case) / "state/cache").iterdir()) == [],
+                "seed fabricated policy/publication state or omitted physical bytes")
+        body = bodies[0]
+        seeded[case] = {"body": body, "inode": body.stat().st_ino,
+                        "hash": hashlib.sha256(body.read_bytes()).hexdigest(),
+                        "packs": {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in packs}}
+    return seeded
+
+
+def manifest_recovery_cases(uuid, seeded):
+    """Checks real completion and real mismatch quarantine without granting Ready."""
+    for case, mode in [("manifest-recovery", "recover-manifest"),
+                       ("manifest-mismatch", "refuse-manifest")]:
+        output = actor(case, mode, uuid)
+        expected = ("PASS actual manifest recovery reconstructed verified residences and acknowledged Resume; no Ready"
+                    if case == "manifest-recovery" else
+                    "PASS actual manifest mismatch retained metadata funding and faulted custody; no Resume")
+        require(expected in output.splitlines(), "missing native manifest result: " + case)
+        original = seeded[case]
+        for name, digest in original["packs"].items():
+            require(hashlib.sha256(pathlib.Path(name).read_bytes()).hexdigest() == digest,
+                    "manifest recovery changed retained metadata bytes")
+        if case == "manifest-recovery":
+            retained = original["body"]
+            require(retained.stat().st_ino == original["inode"], "recovery replaced original sealed body")
+        else:
+            require(not original["body"].exists(), "mismatching body survived under canonical name")
+            quarantined = [path for path in (root(case) / "quarantine").rglob("*")
+                           if path.is_file() and path.stat().st_ino == original["inode"]]
+            require(len(quarantined) == 1, "actual mismatching inode was not retained in quarantine")
+            retained = quarantined[0]
+        require(hashlib.sha256(retained.read_bytes()).hexdigest() == original["hash"],
+                "recovery changed actual immutable body bytes")
 
 
 def process_status(process, uid):
@@ -558,6 +609,7 @@ def main():
     uuid = subprocess.check_output(["blkid", "-s", "UUID", "-o", "value",
                                     os.environ["TERRANE_CACHE_VM_IMAGE"]], text=True, timeout=5).strip().replace("-", "")
     require(len(uuid) == 32, "actual ext4 UUID unavailable")
+    manifest_candidates = seed_manifests(uuid)
     logs = []
     children = []
     try:
@@ -612,7 +664,8 @@ def main():
         exclusive_case(uuid)
         actor("edquot", "edquot", uuid)
         admission_cases(helper, uuid)
-        print("PASS bounded native cache recovery and encoded admission; sealed publication/BKT15 remain unqualified", flush=True)
+        manifest_recovery_cases(uuid, manifest_candidates)
+        print("PASS bounded native cache manifest recovery and encoded admission; Running sealed publication/BKT15 remain unqualified", flush=True)
     finally:
         for child in reversed(children):
             if child.poll() is None:
