@@ -67,7 +67,7 @@ pub struct CompletedRecovery {
         Vec<Arc<crate::host_cache::recovery_inspection::VerifiedRecoveryManifest>>,
     /// Retains the exact verified full-pack/index source closure.
     pub(super) metadata_sources: Vec<Arc<crate::host_cache::NativeManifestSource>>,
-    /// Contains only reconstructed allowed policy rows for a manifest case.
+    /// Retains exact reconstructed and preserved policy for a manifest case.
     pub(super) expected_policy: Option<terrane::host::cache::CacheState>,
 }
 
@@ -194,8 +194,8 @@ impl CompletedRecovery {
 impl NativeMetadataOwner {
     /// Runs bounded actual recovery in the retained physical command queue.
     ///
-    /// Supported cases require reconciled cold policy and an exhaustive empty,
-    /// inline-only or manifest-only verified namespace. Other cases remain unresolved;
+    /// Supported cases require reconciled cold policy and an exhaustively
+    /// verified empty, inline, manifest or mixed namespace. Other cases remain unresolved;
     /// no record is auto-cleared and no exposure is resumed. Request cancellation
     /// never cancels accepted physical work or releases its durable future hold.
     ///
