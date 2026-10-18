@@ -9238,7 +9238,8 @@ Resumed qualification:
   matches every actual result and ordinal to the source-bound inventory,
   verifies all 3,472 archive inputs and its digest, and preserves the same six
   original privileged cases separately. Required application target compilation
-  remains running for this revision.
+  also passes for this revision in 2,786 seconds: 128 unit/integration artifacts
+  across 29 packages, without application test execution.
   Strict Clippy still reports nineteen existing findings; the diagnostic that
   reaches all targets with dead-code checks disabled passes without changing
   source lint policy. Recovered reads, source reuse in another assembly,
@@ -9271,8 +9272,12 @@ Resumed qualification:
   controls, eight manifest/mixed recovery controls and all 47 selected filesystem
   cases pass. Review verifies all 3,478 image inputs, the actual unit ELF and
   all 43 exact selectors; no post-result guest I/O diagnostic appears.
-  Full filesystem qualification is now running on this revision; application
-  compilation remains required after the retained-source predecessor finishes.
+  Full ext4 filesystem qualification also passes on this revision: all 118
+  nonignored cases, with every actual result and ordinal matched to the archive
+  inventory and all 3,473 archive inputs and its digest independently verified.
+  The same six original privileged cases remain separately inventoried. Required
+  application target compilation is running now that the retained-source
+  predecessor has passed.
   Each of the two isolated two-object cases has a finite policy ceiling equal to
   its unchanged 8 MiB project hard limit; existing cases retain their policy.
   The 512 MiB guest disk still contains the full declared 35-owner hard-limit
