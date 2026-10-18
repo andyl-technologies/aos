@@ -67,6 +67,19 @@ pub(super) fn merge_reply(response: &mut DirectUploadResponse, reply: DirectUplo
     response.errors.extend(reply.errors);
 }
 
+/// Builds a part-operation reply without exposing Native's session snapshots.
+pub(super) fn part_response(
+    operation_id: String,
+    reply: &DirectUploadLogicalReply,
+) -> DirectUploadResponse {
+    DirectUploadResponse {
+        operation_id,
+        sessions: Vec::new(),
+        grants: Vec::new(),
+        errors: reply.errors.clone(),
+    }
+}
+
 pub(super) fn item_error(identity: &str, error: &anyhow::Error) -> DirectItemError {
     let code = if error.to_string().contains("unknown") {
         DirectItemErrorCode::BlockedUnknown
@@ -88,6 +101,56 @@ mod tests {
     };
 
     use super::bounded;
+
+    #[test]
+    fn part_operations_return_grants_or_refusals_without_logical_session_pages() {
+        use aos_hub_core::direct_upload::*;
+
+        let admission = crate::direct_guard::fixture::reservation(
+            "fixture-deployment",
+            ".aos-direct-guard-fixture/part-response",
+        )
+        .admission;
+        let status = DirectSessionStatus {
+            session: DirectSessionRef {
+                session_id: admission.session_id.clone(),
+                logical_fingerprint: admission.logical_fingerprint.clone(),
+            },
+            resource_version: WireInteger::new(1),
+            intent: admission.intent.clone(),
+            placements: admission
+                .placements
+                .iter()
+                .map(|placement| placement.public_ref("fixture-deployment").unwrap())
+                .collect(),
+            state: DirectSessionState::Creating,
+            parts: Vec::new(),
+            next_cursor: None,
+            outstanding_grants: true,
+        };
+        status.validate().unwrap();
+        let logical = DirectUploadLogicalReply {
+            admissions: vec![admission],
+            sessions: vec![status],
+            session_summaries: Vec::new(),
+            authorizations: Vec::new(),
+            baseline_permissions: Vec::new(),
+            errors: vec![DirectItemError {
+                item_id: "declined-part".into(),
+                code: DirectItemErrorCode::BlockedUnknown,
+            }],
+        };
+
+        let response = super::part_response("12".repeat(32), &logical);
+
+        response.validate().unwrap();
+        assert!(response.sessions.is_empty());
+        assert!(response.grants.is_empty());
+        assert_eq!(response.errors, logical.errors);
+        let wire = serde_json::to_string(&response).unwrap();
+        assert!(!wire.contains("intent"));
+        assert!(!wire.contains("admissions"));
+    }
 
     #[test]
     fn acknowledged_creation_activates_only_the_initial_logical_state() {

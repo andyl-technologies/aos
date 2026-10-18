@@ -18,6 +18,83 @@ use crate::direct_upload::{ProviderContext, ProviderError, provider::portable_pa
 
 type PartKey = (String, u64, u32);
 
+#[tokio::test]
+async fn part_refusals_use_the_part_limit_and_never_replay_unknown_controls() {
+    struct Refusals(AtomicUsize);
+
+    #[async_trait]
+    impl DirectUploadControl for Refusals {
+        async fn execute(
+            &self,
+            request: &DirectUploadRequest,
+        ) -> Result<DirectUploadResponse, DirectClientError> {
+            let DirectUploadRequest::GrantPartsBatch(batch) = request else {
+                return Err(DirectClientError::Invalid);
+            };
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(DirectUploadResponse {
+                operation_id: batch.operation_id.clone(),
+                sessions: Vec::new(),
+                grants: Vec::new(),
+                errors: batch
+                    .items
+                    .iter()
+                    .map(|part| DirectItemError {
+                        item_id: part.operation_id.clone(),
+                        code: DirectItemErrorCode::BlockedUnknown,
+                    })
+                    .collect(),
+            })
+        }
+    }
+
+    let placement = placements(1).remove(0);
+    let request = DirectUploadRequest::GrantPartsBatch(DirectBatch {
+        operation_id: "bc".repeat(32),
+        items: (1..=20)
+            .map(|number| DirectGrantPartRequest {
+                session: DirectSessionRef {
+                    session_id: "fixture-session".into(),
+                    logical_fingerprint: "12".repeat(32),
+                },
+                placement: placement.clone(),
+                operation_id: format!("{number:064x}"),
+                part: DirectPart {
+                    part_number: number,
+                    offset: WireInteger::new(u64::from(number - 1) * 8 * 1024 * 1024),
+                    byte_size: WireInteger::new(8 * 1024 * 1024),
+                    sha256: "34".repeat(32),
+                    checksum: DirectPartChecksum {
+                        algorithm: DirectChecksumAlgorithm::Md5,
+                        value: "AAAAAAAAAAAAAAAAAAAAAA==".into(),
+                    },
+                },
+            })
+            .collect(),
+    });
+    request.validate().unwrap();
+    let server = Refusals(AtomicUsize::new(0));
+    let mut limited = helpers::LimitedControl {
+        inner: &server,
+        bytes: MAX_DIRECT_CONTROL_BYTES,
+        items: 1,
+        parts: 64,
+    };
+
+    assert_eq!(
+        helpers::control(&limited, &request).await.unwrap_err(),
+        DirectClientError::Blocked
+    );
+    assert_eq!(server.0.load(Ordering::SeqCst), 1);
+
+    limited.parts = 19;
+    assert_eq!(
+        helpers::control(&limited, &request).await.unwrap_err(),
+        DirectClientError::Invalid
+    );
+    assert_eq!(server.0.load(Ordering::SeqCst), 1);
+}
+
 fn key(session: &DirectSessionRef, placement: &DirectPlacementRef, number: u32) -> PartKey {
     (
         session.session_id.clone(),

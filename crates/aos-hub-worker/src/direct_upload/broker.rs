@@ -13,7 +13,7 @@ use wasm_bindgen::JsValue;
 use worker::{Env, Headers, Method, Request, RequestInit, Response};
 
 use super::{
-    batches::{bounded, created_state, item_error, merge_reply, merge_status},
+    batches::{bounded, created_state, item_error, merge_reply, merge_status, part_response},
     complete,
     config::QualifiedConfig,
     control::{self, Transport},
@@ -201,8 +201,7 @@ async fn execute(request: &mut Request, env: &Env) -> Result<DirectUploadRespons
             )
             .await?
             .reply;
-            response.sessions = reply.sessions.clone();
-            response.errors = reply.errors.clone();
+            response = part_response(response.operation_id, &reply);
             let outcomes = bounded(
                 batch.items.iter().filter_map(|item| {
                     let admission = admitted(
@@ -243,8 +242,7 @@ async fn execute(request: &mut Request, env: &Env) -> Result<DirectUploadRespons
             )
             .await?
             .reply;
-            response.sessions = reply.sessions.clone();
-            response.errors = reply.errors.clone();
+            response = part_response(response.operation_id, &reply);
             let outcomes = bounded(
                 batch.items.iter().filter_map(|report| {
                     let admission = admitted(

@@ -125,8 +125,11 @@ impl<C: DirectUploadControl> DirectUploadControl for LimitedControl<'_, C> {
         }
         let response = self.inner.execute(request).await?;
         let bytes = encode_direct_control(&response).map_err(|_| DirectClientError::Invalid)?;
+        // A snapshot and a refusal may describe the same file. Part refusals
+        // use the part-wave limit, which can exceed the advertised file limit.
         if bytes.len() > self.bytes
-            || response.sessions.len() + response.errors.len() > self.items
+            || response.sessions.len() > self.items
+            || response.errors.len() > maximum
             || response.grants.len() > self.parts
             || response
                 .sessions
