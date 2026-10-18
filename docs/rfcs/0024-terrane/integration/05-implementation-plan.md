@@ -9276,8 +9276,9 @@ Resumed qualification:
   nonignored cases, with every actual result and ordinal matched to the archive
   inventory and all 3,473 archive inputs and its digest independently verified.
   The same six original privileged cases remain separately inventoried. Required
-  application target compilation is running now that the retained-source
-  predecessor has passed.
+  application target compilation also passes in 2,555 seconds: 128 artifacts
+  across 29 packages, independently checked against the immutable build-message
+  inventory. This supplies no application test execution.
   Each of the two isolated two-object cases has a finite policy ceiling equal to
   its unchanged 8 MiB project hard limit; existing cases retain their policy.
   The 512 MiB guest disk still contains the full declared 35-owner hard-limit
@@ -9309,12 +9310,28 @@ Resumed qualification:
   failed run is preserved. The corrected ext4 component passes six held-policy
   recovered-read controls around three real Running admissions, all eight
   refusals without Resume and all 47 selected filesystem cases. Independent review
-  verifies the actual unit ELF and all 3,479 image inputs. Full filesystem
-  qualification is running; application compilation remains pending.
+  verifies the actual unit ELF and all 3,479 image inputs. Full ext4 filesystem
+  qualification also passes on this revision: all 118 actual passing cases and
+  ordinals match the exact archive inventory, all 3,474 inputs and the archive
+  digest verify, and the same six privileged cases remain separately inventoried.
+  Application compilation remains pending for the recovered-source changes.
   Identities, formats, bucket keys, store traits and dependencies remain
   unchanged. Recovered-range reuse
   in another actual assembly, inline recovery sources, consumer leases and
   completed retirement remain required; no complete task is accepted.
+- Recovered-reassembly candidate `41c407d794`: a new native control attempts a
+  second sealed object from a genuine recovered manifest and one newly admitted
+  nonfinal prefix, using the existing production source path. It checks every
+  original pin, lease, reservation and residence plus the exact additional
+  funding and new prefix residence. Retained old and new sources are read under
+  the actual policy mutex. The independent guest supervisor compares the new
+  sealed bytes with the original recovered body and actual retired prefix,
+  including the original prefix inode and synchronized retirement registration.
+  All five changed files are fixtures or supervisor code; production Rust,
+  interfaces, formats and dependencies remain unchanged. Source review and the
+  formatter pair pass. The direct Cargo build is waiting for the shared target
+  lock; independent hermetic image/native qualification is running. No new
+  native or full-task success is credited before those results complete.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
   and all seven strict Clippy/documentation profiles pass. The interface,
   commit-path, status and schema gates pass on unchanged final source, including
