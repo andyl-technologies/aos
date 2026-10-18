@@ -1,4 +1,5 @@
-//! Guest marker identity and coincident terminal-action stop precedence.
+//! Guest marker identity, semantic-marker boundaries, and coincident
+//! terminal-action stop precedence.
 
 use super::*;
 use crucible::{Action, ConditionEvaluationPass, EventGraph, EventGraphState};
@@ -135,4 +136,102 @@ fn completion_action_pass_preempts_the_same_quantum_marker_stop() {
 
     assert!(matches!(pending.stop, ModeledStop::TerminalPassed));
     assert_eq!(owner.drives, 1);
+}
+
+/// Evaluates one stop against a single quantum that logged `events`.
+fn stop_after_events(
+    input: &CrucibleAttemptExecution,
+    stop: &StopCondition,
+    events: Vec<ObservableEvent>,
+) -> Option<ModeledStop> {
+    let mut log = EventLog::new();
+    let append = log
+        .append_observable_events(events)
+        .expect("boundary events");
+    let outcome = outcome(
+        starting_configuration(input),
+        append.entries,
+        append.offset,
+        1,
+    );
+    let discoveries = BTreeMap::new();
+    let prior = retained_log(Vec::new());
+    let evidence = QuantumStopEvidence {
+        world: input.scenario().world(),
+        properties: input.scenario().properties(),
+        outcome: &outcome,
+        observed_event_count: 0,
+        quantum_start_completed_quanta: 0,
+        completed_quanta: 1,
+        discoveries: &discoveries,
+        prior: &prior,
+    };
+    reached_requested_stop(stop, &evidence).expect("named boundary evaluation")
+}
+
+fn semantic_marker(node: &NodeId, marker: &str) -> ObservableEvent {
+    ObservableEvent::guest_semantic_marker(
+        Icount { retired: 1 },
+        node.clone(),
+        marker,
+        "instance-1",
+        Vec::new(),
+    )
+}
+
+#[test]
+fn semantic_marker_reaches_its_named_boundary() {
+    let stop = bounded_marker("campaign.complete");
+    let (input, node) = input_with_guest_selectable(stop.clone());
+
+    let reached = stop_after_events(
+        &input,
+        &stop,
+        vec![semantic_marker(&node, "campaign.complete")],
+    );
+
+    assert!(matches!(
+        reached,
+        Some(ModeledStop::BoundedPrimaryReached { proof, .. })
+            if proof.frontier_picoseconds() == 1 && proof.completed_quanta() == 1
+    ));
+    assert!(matches!(
+        stop_after_events(
+            &input,
+            &StopCondition::NamedBoundary(String::from("campaign.complete")),
+            vec![semantic_marker(&node, "campaign.complete")],
+        ),
+        Some(ModeledStop::Reached(StopCondition::NamedBoundary(name)))
+            if name == "campaign.complete"
+    ));
+}
+
+#[test]
+fn semantic_marker_with_another_name_does_not_reach_the_boundary() {
+    let stop = StopCondition::NamedBoundary(String::from("campaign.complete"));
+    let (input, node) = input_with_guest_selectable(stop.clone());
+
+    let reached = stop_after_events(
+        &input,
+        &stop,
+        vec![semantic_marker(&node, "fault.followup.ready")],
+    );
+
+    assert!(reached.is_none());
+}
+
+#[test]
+fn semantic_marker_from_a_node_without_white_box_does_not_reach_the_boundary() {
+    // The empty World declares no node, so no white-box policy admits the
+    // marker. The event-graph evaluator ignores it for the same reason.
+    let stop = StopCondition::NamedBoundary(String::from("campaign.complete"));
+    let input = input(stop.clone());
+
+    let reached = stop_after_events(
+        &input,
+        &stop,
+        vec![semantic_marker(&node("node-a"), "campaign.complete")],
+    );
+
+    assert!(reached.is_none());
 }

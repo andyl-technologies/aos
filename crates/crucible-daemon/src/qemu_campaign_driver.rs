@@ -1686,6 +1686,7 @@ fn drive_modeled_attempt_inner(
                 StopCondition::Observation(_)
             ) {
             let evidence = QuantumStopEvidence {
+                world: input.scenario().world(),
                 properties: input.scenario().properties(),
                 outcome: &outcome,
                 observed_event_count,
@@ -1716,6 +1717,7 @@ fn drive_modeled_attempt_inner(
             observation_stop
         } else {
             let evidence = QuantumStopEvidence {
+                world: input.scenario().world(),
                 properties: input.scenario().properties(),
                 outcome: &outcome,
                 observed_event_count,
@@ -2050,6 +2052,7 @@ fn classify_scheduler_error(
 }
 
 struct QuantumStopEvidence<'a> {
+    world: &'a crucible::World,
     properties: &'a crucible::Properties,
     outcome: &'a QuantumOutcome,
     observed_event_count: usize,

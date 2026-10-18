@@ -2934,7 +2934,10 @@ runner-owned checkpoint capability rather than constructing an observation.
 An unsafe boundary continues under the sticky request until capture becomes
 safe or the attempt reaches a terminal verdict. It stops on the first exact
 requested choice, named guest marker, virtual-time deadline, modeled event-count
-boundary, or scenario terminal verdict. A terminal verdict takes precedence
+boundary, or scenario terminal verdict. A named boundary is reached by either a
+plain guest marker or a guest semantic marker with that name, as in event-graph
+evaluation; a semantic marker counts only from a World node whose white-box
+policy is enabled. A terminal verdict takes precedence
 over a coincident checkpoint request, and no modeled stop is accepted while a
 network output remains globally uncommitted.
 

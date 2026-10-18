@@ -1285,6 +1285,7 @@ fn policy_timeout_prefers_virtual_time_at_a_shared_completed_quantum() {
     let outcome = outcome(configuration, Vec::new(), EventLogOffset::default(), 10);
     let discoveries = BTreeMap::new();
     let evidence = QuantumStopEvidence {
+        world: input.scenario().world(),
         properties: input.scenario().properties(),
         outcome: &outcome,
         observed_event_count: 0,
@@ -1380,6 +1381,7 @@ fn bounded_primary_retains_its_exact_predeadline_coordinate() {
     let outcome = outcome(configuration, Vec::new(), EventLogOffset::default(), 4);
     let discoveries = BTreeMap::new();
     let evidence = QuantumStopEvidence {
+        world: input.scenario().world(),
         properties: input.scenario().properties(),
         outcome: &outcome,
         observed_event_count: 0,
@@ -1410,6 +1412,7 @@ fn bounded_next_choice_intrinsic_fallback_is_not_a_choice() {
     let outcome = outcome(configuration, Vec::new(), EventLogOffset::default(), 4);
     let discoveries = BTreeMap::new();
     let evidence = QuantumStopEvidence {
+        world: input.scenario().world(),
         properties: input.scenario().properties(),
         outcome: &outcome,
         observed_event_count: 0,
@@ -1443,6 +1446,7 @@ fn bounded_next_choice_reaches_an_actual_choice_before_intrinsic_fallback() {
         .push(choice_discovery(input.lineage().scenario()));
     let discoveries = BTreeMap::new();
     let evidence = QuantumStopEvidence {
+        world: input.scenario().world(),
         properties: input.scenario().properties(),
         outcome: &outcome,
         observed_event_count: 0,
@@ -1491,6 +1495,7 @@ fn bounded_next_choice_intrinsic_fallback_wins_a_same_quantum_choice() {
         .push(choice_discovery(input.lineage().scenario()));
     let discoveries = BTreeMap::new();
     let evidence = QuantumStopEvidence {
+        world: input.scenario().world(),
         properties: input.scenario().properties(),
         outcome: &outcome,
         observed_event_count: 0,
@@ -1529,6 +1534,7 @@ fn next_choice_ignores_a_discovery_defaulted_in_the_same_quantum() {
     outcome.discovered_choices.push(discovery);
     let discoveries = BTreeMap::new();
     let evidence = QuantumStopEvidence {
+        world: input.scenario().world(),
         properties: input.scenario().properties(),
         outcome: &outcome,
         observed_event_count: 0,
