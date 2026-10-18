@@ -8959,33 +8959,48 @@ Resumed qualification:
   later schema-invalid body. Earlier failures remain archived. This is component
   evidence, not sealed Running publication, live R, NativeReady, BKT-15 or full
   host-task acceptance.
-- Publisher custody candidate `f3f88f2128`: the image, independent completed-image
-  verifier, native ext4 lifecycle and multi-UID transport checks all pass on
-  unchanged source, as does the required formatter pair. All nineteen builder
-  cases execute, followed by the three original socket mode/replacement cases
-  under measured UID 841/GID 845, no supplementary groups, empty capabilities
-  and no-new-privileges. Both native parent cases and the multi-UID parent with
-  its three child roles pass. An earlier lifecycle failure exposed valid retained
-  retirement leases being parsed as binding records. The fix validates their
-  existing bounded schema and typed keys and retains checked inode/byte custody
-  without granting body, pin or expiry authority. All four public parser
-  regressions pass in a separate integration target; the preceding all-target
-  build and typed-key development-profile test also pass. The monolithic parser
-  diagnostic was stopped before execution; moving the same assertions to the
-  public target permits their complete isolated check in 69.7 seconds. Native
-  cache admission and cancellation are being requalified on this combined source.
-  This accepts the transport component only: full host tasks, sealed Running
-  publication, process network sandboxing, NativeReady and BKT-15 remain open.
-- Surface candidate `db293cd9f8`: review of the complete forty-one-file task diff,
-  the formatter pair, and the interface, commit-path and status gates pass on
-  unchanged final source. The interface gate executes the late-list unknown-policy
-  regressions: whole-configuration loading refuses the name, and caller-built
-  exposure lists refuse it before any credential resolution. Schema qualification
-  remains running. The superseded `6cb1fcf235` aggregate was stopped after the
-  policy fix; its passing application unit/integration target compilation remains
-  evidence for that older source only. Final-source strict profiles, feature
-  matrix, application target compilation and the full current-trunk aggregate
-  remain required before formal task acceptance.
+- Publisher custody candidate `21a9d3394e`: all six qualification stages pass:
+  four public retirement-parser cases, the formatter pair, image construction,
+  independent completed-image verification, actual ext4 lifecycle and multi-UID
+  transport. The nineteen builder cases, three socket cases, two native parent
+  cases, and multi-UID parent with three child roles all execute successfully.
+  A new native control retains a valid historical retirement record whose stored
+  device hint differs from the actual filesystem device. Inventory exposes no
+  ghost body and preserves the record bytes. Current record inode, project and
+  ownership checks remain mandatory; historical fields grant no deadline, body
+  or pin authority. This checks stale metadata on a real filesystem, not reboot.
+- Combined cache candidate `f3f88f2128`: image, independent completed-image
+  verification and actual ext4 execution pass on unchanged source. All 47
+  selected filesystem unit cases execute individually with none ignored under
+  measured UID/GID 842, no supplementary groups, empty capabilities and
+  no-new-privileges. Genuine empty recovery, Resume, encoded admission,
+  cancellation, the existing refusal controls and kernel EDQUOT remain green.
+  These results belong to this exact source; later publisher and recovery
+  follow-ups still require their own cache qualification.
+- Host recovery candidate `83ab9b287d`: failure carriers are allocated before
+  publisher effects so original metadata, body and response observations survive
+  errors. The committed native fixture seeds ordinary canonical metadata packs
+  and an actual fs-verity cold candidate without embedded or publication records.
+  It requires genuine residence reconstruction and Resume, paired with a
+  mismatching plaintext case requiring quarantine and funded faulted custody.
+  Formatting and source review pass; compilation and native execution remain
+  pending. No nonempty recovery result is claimed yet.
+- Surface candidate `f8da5b4293`: the complete task source review, formatter pair
+  and all seven strict Clippy/documentation profiles pass. The interface,
+  commit-path and status gates pass on unchanged final source, including unknown
+  policies refused before credential resolution. The final schema gate and
+  required application unit/integration target compilation are running. The
+  earlier `db293cd9f8` source passes all four owning gates; its native-profile
+  lint findings are corrected by precisely scoped SDK-only test helpers and an
+  existing test module's intentional panic assertions. Final-source configured
+  SDK components, feature matrix and the full current-trunk aggregate remain
+  required before formal task acceptance. The superseded `6cb1fcf235` aggregate
+  was stopped after the policy fix and supplies no aggregate success.
+
+All five T2 task checkboxes remain open. The transport and cache results above
+accept components only. Running sealed publication, full host isolation,
+NativeReady, BKT-15 and actual four-role deployment remain unqualified. The
+zero-wipe requirement conflict remains stopped; T3 and branch work stay deferred.
 
 The shared glue dependency now names
 the existing Core types directly, and the crate-graph audit includes the current
