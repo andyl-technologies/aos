@@ -10,12 +10,12 @@ use super::*;
 
 #[path = "retained/future_control.rs"]
 mod future_control;
+use crate::node_contract::RuntimeError;
+use crate::node_state::CompleteOriginalRestorationSource;
 pub(crate) use future_control::{
     OriginalInitial15FutureControlAttempt, OriginalInitial15FutureControlConstructionData,
     OriginalInitial15FutureControlLoan,
 };
-use crate::node_contract::RuntimeError;
-use crate::node_state::CompleteOriginalRestorationSource;
 use std::{
     cell::{Cell, OnceCell, Ref, RefCell},
     rc::Rc,
