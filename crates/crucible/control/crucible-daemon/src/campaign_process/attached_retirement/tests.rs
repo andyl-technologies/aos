@@ -84,10 +84,12 @@ fn first_body_post_is_shared_without_reordering_the_initiating_phase()
     ));
 
     assert_eq!(history.cleanup.original_post(), Some(first_post));
-    let first = std::error::Error::source(&history.cleanup)
-        .unwrap()
-        .downcast_ref::<ServiceBirthError>()
-        .unwrap();
+    let Some(crate::PackagedQemuExecutorRetirementFailure::Admission(first)) =
+        history.cleanup.first_failure()
+    else {
+        panic!("the original admission phase remains selected");
+    };
+    assert!(std::ptr::eq(first, history.cleanup.admission().unwrap()));
     assert!(matches!(first, ServiceBirthError::Supervision(error) if *error == first_post));
     Ok(())
 }

@@ -51,6 +51,9 @@ body before saved Target cleanup settles that disposition and returns native loa
 Terminal metadata handback returns the exact original checkout; Source supervision
 is restored outside pure terminal projections before provider reuse. Construction
 and cleanup failures report by borrowing their original protected Main histories.
+Attached-retirement diagnostics expose a closed borrowed first-cause view and
+concrete phase getters. The first published phase remains selected as later
+errors arrive; the existing Main history owns each cause.
 
 Promoted children retain their original return pair and a bounded-step lineage
 controller. Descendant retirement keeps each parent checkout until exclusive
@@ -72,15 +75,14 @@ reconciliation passes on the ordinary test stack after separating fixture setup
 from execution. Semantic fresh-request validation precedes Main selection and
 runs once on each launch path.
 
-Full-suite qualification still fails under descriptor pressure: the test process
-inherits a 1,024-descriptor limit, and accumulated retained fixture resources
-cause open-file refusals in later tests. Isolated whole-world atomicity, member
-resource cleanup and the full 512 MiB unique-page RAM/GC vector pass. Those
-isolated results do not waive the full-suite failures. A complete serial daemon
-run at the ownership checkpoint also passes within the original limits; the
-combined parallel run still exhausts descriptors. Deployed genuine-Main flights,
-simultaneous native families, promoted-parent admission and performance parity
-also remain outstanding.
+All daemon targets pass with the established four-worker test setting, including
+the full 512 MiB unique-page RAM/GC vector. The default-concurrency run still
+fails with SQLite allocation and follow-on connection failures. Store fixtures
+share a fixed process-wide 8 MiB native SQLite heap; restoring the established
+worker setting does not qualify unrestricted test concurrency. No heap ceiling,
+test predicate or resource limit was increased. The test-support source-policy
+checks also remain failing. Deployed genuine-Main flights, simultaneous native
+families, promoted-parent admission and performance parity remain outstanding.
 
 A dropped Target terminal now attempts the same metadata handback used by an
 observed terminal. If the parent is temporarily unavailable, it returns the

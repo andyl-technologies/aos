@@ -20,12 +20,53 @@ enum RetirementCause {
     Post,
 }
 
+/// Borrows the first published concrete retirement cause from its retained Main.
+///
+/// The view owns no report or cleanup authority. Its references point into the
+/// original fixed history, and later phase reports preserve the selected cause.
+#[derive(Clone, Copy, Debug)]
+pub enum PackagedQemuExecutorRetirementFailure<'a> {
+    /// The original Cleanup admission refused.
+    Admission(&'a crucible_host_resources::host_services::process_birth::ServiceBirthError),
+    /// The exact-pin materializer could not retire.
+    Materializer(&'a OriginalMaterializerRetirementError),
+    /// The retained source-world provider could not retire.
+    Sources(&'a PackagedQemuHotForkSourceShutdownError),
+    /// The worker and lifecycle controls could not retire.
+    Controls(&'a crate::campaign_process::ExecutorControlRetirementError),
+    /// The original lifecycle cleanup cell refused.
+    Lifecycle(&'a crucible_control_api::LifecycleApiError),
+    /// The same Original refused before dispatcher effects.
+    BeforeDispatcher(&'a HostSupervisionError),
+    /// The actual dispatcher retirement refused.
+    Dispatcher(&'a QemuVmRealizationError),
+    /// The independent post on the same Cleanup Original refused.
+    Post(&'a HostSupervisionError),
+}
+
+impl std::fmt::Display for PackagedQemuExecutorRetirementFailure<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Admission(error) => std::fmt::Display::fmt(error, formatter),
+            Self::Materializer(error) => std::fmt::Display::fmt(error, formatter),
+            Self::Sources(error) => std::fmt::Display::fmt(error, formatter),
+            Self::Controls(error) => std::fmt::Display::fmt(error, formatter),
+            Self::Lifecycle(error) => std::fmt::Display::fmt(error, formatter),
+            Self::BeforeDispatcher(error) | Self::Post(error) => {
+                std::fmt::Display::fmt(error, formatter)
+            }
+            Self::Dispatcher(error) => std::fmt::Display::fmt(error, formatter),
+        }
+    }
+}
+
 /// Retains independent attached cleanup failures in the actual priced Main.
 ///
 /// Each phase publishes at most its first typed cause. Later attempts can add
 /// another phase without replacing prior failures. The first published phase
-/// remains the error-chain source. These fields contain no resource owner,
-/// factory, account, or cleanup reservation.
+/// remains selected by [`Self::first_failure`]. The aggregate is an error
+/// boundary; typed cause inspection uses that view and the phase getters.
+/// These fields contain no resource owner, factory, account, or cleanup reservation.
 #[derive(Debug)]
 pub struct PackagedQemuExecutorRetirementError {
     first: OnceLock<RetirementCause>,
@@ -87,6 +128,25 @@ impl PackagedQemuExecutorRetirementError {
 
     pub(crate) fn has_failure(&self) -> bool {
         self.first.get().is_some()
+    }
+
+    /// Borrows the first published cause without changing any retirement phase.
+    #[must_use]
+    pub fn first_failure(&self) -> Option<PackagedQemuExecutorRetirementFailure<'_>> {
+        use PackagedQemuExecutorRetirementFailure as Failure;
+
+        match self.first.get()? {
+            RetirementCause::Admission => self.admission.get().map(Failure::Admission),
+            RetirementCause::Materializer => self.materializer.get().map(Failure::Materializer),
+            RetirementCause::Sources => self.sources.get().map(Failure::Sources),
+            RetirementCause::Controls => self.controls.get().map(Failure::Controls),
+            RetirementCause::Lifecycle => self.lifecycle.get().map(Failure::Lifecycle),
+            RetirementCause::BeforeDispatch => {
+                self.before_dispatch.get().map(Failure::BeforeDispatcher)
+            }
+            RetirementCause::Dispatcher => self.dispatcher.get().map(Failure::Dispatcher),
+            RetirementCause::Post => self.post.get().map(Failure::Post),
+        }
     }
 
     /// Borrows the same Main's saved Cleanup admission refusal.
@@ -157,41 +217,7 @@ impl std::fmt::Display for PackagedQemuExecutorRetirementError {
     }
 }
 
-impl std::error::Error for PackagedQemuExecutorRetirementError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self.first.get()? {
-            RetirementCause::Admission => self
-                .admission
-                .get()
-                .map(|error| error as &dyn std::error::Error),
-            RetirementCause::Materializer => self
-                .materializer
-                .get()
-                .map(|error| error as &dyn std::error::Error),
-            RetirementCause::Sources => self
-                .sources
-                .get()
-                .map(|error| error as &dyn std::error::Error),
-            RetirementCause::Controls => self
-                .controls
-                .get()
-                .map(|error| error as &dyn std::error::Error),
-            RetirementCause::Lifecycle => self
-                .lifecycle
-                .get()
-                .map(|error| error as &dyn std::error::Error),
-            RetirementCause::BeforeDispatch => self
-                .before_dispatch
-                .get()
-                .map(|error| error as &dyn std::error::Error),
-            RetirementCause::Dispatcher => self
-                .dispatcher
-                .get()
-                .map(|error| error as &dyn std::error::Error),
-            RetirementCause::Post => self.post.get().map(|error| error as &dyn std::error::Error),
-        }
-    }
-}
+impl std::error::Error for PackagedQemuExecutorRetirementError {}
 
 /// Moves an attempt's existing diagnostics into Main without a heap carrier.
 pub(crate) struct AttachedRetirementReport {

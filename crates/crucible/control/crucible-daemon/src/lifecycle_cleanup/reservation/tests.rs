@@ -591,6 +591,51 @@ fn loop_failure_message(error: &LifecycleApiError) -> &str {
 }
 
 #[test]
+fn typed_retirement_view_keeps_the_first_phase_across_later_history()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::packaged_qemu_executor::retirement::{
+        AttachedRetirementReport, PackagedQemuExecutorRetirementError,
+        PackagedQemuExecutorRetirementFailure,
+    };
+    use crucible_host_resources::host_supervision::{
+        HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
+    };
+    let supervisor = HostOperationSupervisor::new(
+        HostOperationBudgets::default(),
+        Some(std::time::Duration::from_secs(2)),
+    )?;
+    let original = supervisor.begin(HostOperationClass::Cleanup)?;
+    let report = PackagedQemuExecutorRetirementError::new();
+    assert!(report.first_failure().is_none());
+    expire_component_cleanup(&supervisor, &original);
+    let post = original.wait_slice().unwrap_err();
+
+    report.retain(AttachedRetirementReport::from_post(post));
+    let Some(PackagedQemuExecutorRetirementFailure::Post(first)) = report.first_failure() else {
+        panic!("the original post remains typed");
+    };
+    assert_eq!(*first, post);
+    let later = LifecycleApiError::LoopFactory {
+        message: String::from("later component cleanup history"),
+    };
+    let later_message = loop_failure_message(&later).as_ptr();
+    report.retain(AttachedRetirementReport::new(
+        None, None, None, Some(later), Default::default(),
+    ));
+
+    let Some(PackagedQemuExecutorRetirementFailure::Post(retained)) = report.first_failure() else {
+        panic!("later history cannot replace the first phase");
+    };
+    assert!(std::ptr::eq(first, retained));
+    assert_eq!(report.original_post(), Some(post));
+    assert_eq!(
+        loop_failure_message(report.lifecycle().unwrap()).as_ptr(),
+        later_message
+    );
+    Ok(())
+}
+
+#[test]
 fn actual_cell_failure_survives_same_original_refusal_before_dispatch()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::packaged_qemu_executor::retirement::{
@@ -716,13 +761,11 @@ fn dispatcher_refusal_and_independent_post_preserve_actual_cell_history()
         })
     ));
     assert!(report.original_post().is_some());
-    assert!(std::ptr::eq(
-        std::error::Error::source(&report)
-            .unwrap()
-            .downcast_ref::<LifecycleApiError>()
-            .unwrap(),
-        report.lifecycle().unwrap(),
-    ));
+    let Some(crate::PackagedQemuExecutorRetirementFailure::Lifecycle(first)) = report.first_failure()
+    else {
+        panic!("the original lifecycle cause remains selected");
+    };
+    assert!(std::ptr::eq(first, report.lifecycle().unwrap()));
     assert!(selected.dropped.load(Ordering::Acquire));
     dispose_file_receipt(&mut handoff, &selected.slot)?;
     assert!(selected.slot.is(CleanupPhase::Free));

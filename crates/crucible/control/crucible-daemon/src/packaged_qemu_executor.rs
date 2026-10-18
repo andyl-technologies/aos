@@ -123,7 +123,9 @@ pub use guarded::{
 pub(crate) mod original_campaign;
 pub(crate) mod original_retirement;
 pub(crate) mod retirement;
-pub use retirement::PackagedQemuExecutorRetirementError;
+pub use retirement::{
+    PackagedQemuExecutorRetirementError, PackagedQemuExecutorRetirementFailure,
+};
 mod preparation;
 mod promotion_plan;
 pub use preparation::PreparationExpiredCause;
