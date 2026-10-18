@@ -1883,3 +1883,19 @@ The actual staged terminal reader, native Capture issuer, final historical
 conjunction and fresh adopter remain required. This ledger does not enable
 them. The production application-target build currently running is pinned to
 the earlier `268284137c` source; it does not cover this subsequent batch.
+
+
+### Production compilation for scoped Capture construction
+
+The production application-target gate passes for `268284137c`. All 7,664
+captured source files matched that commit before subsequent archive work began.
+The selected source includes 152 of the construction checkpoint's 159 changed
+crate roles; its seven Daemon roles are outside this application dependency
+closure and receive separate all-target/library qualification.
+
+The final derivation freshly compiles 167 test artifacts across 48 packages:
+69 integration targets, 53 binaries, 42 libraries and three combined cdylib/rlib
+targets. Debug assertions and overflow checks remain enabled. Final compilation
+takes 12 minutes 10 seconds after the production prerequisites. This gate
+compiles tests without executing them and excludes the subsequent archive
+checkpoint at `019e07ac58`.
