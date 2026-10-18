@@ -723,6 +723,23 @@ impl PacketCompleteExecutionActor {
         &mut self,
     ) -> Result<(), PacketCompleteExecutionError> {
         self.require(Phase::Attached)?;
+        let sources = &self.scene.authority.roster().sources;
+        assert_eq!(
+            self.retained_runtime_construction_storage_precredit_data(Some(sources), 0),
+            Err(crucible::node_contract::RuntimeError::ResourceLimit),
+        );
+
+        // Change only the actual attached owner's creator field for this adverse
+        // check, and restore it before assertions or the later runtime walk.
+        let original_process = self.process;
+        self.process = original_process.wrapping_add(1);
+        let foreign = self.retained_runtime_construction_storage_precredit_data(Some(sources), 0);
+        self.process = original_process;
+        assert_eq!(
+            foreign,
+            Err(crucible::node_contract::RuntimeError::ForeignAuthority),
+        );
+
         self.runtime
             .as_mut()
             .ok_or(PacketCompleteExecutionError::Phase)?

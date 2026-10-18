@@ -87,6 +87,44 @@ impl PacketCompleteExecutionActor {
         self.inactive_storage_selected_precredit_data(maximum, Some(sources))
     }
 
+    /// Selects the actual retained owner for an inactive construction census.
+    ///
+    /// A dormant actor has never received a runtime. After attachment, the same
+    /// runtime's complete census is mandatory and its original error is retained.
+    /// Selecting this data walk grants no construction or execution permission.
+    ///
+    /// # Errors
+    /// Preserves foreign creators, unsupported phases, busy or unknown retained
+    /// owners, and the original census's requested-storage refusal.
+    pub(in crate::node_qualification::packet_collection::complete) fn retained_runtime_construction_storage_precredit_data(
+        &self,
+        sources: Option<&[Rc<PacketCompleteSemanticSource>; 3]>,
+        maximum: usize,
+    ) -> Result<usize, RuntimeError> {
+        self.original_creator()
+            .map_err(|_| RuntimeError::ForeignAuthority)?;
+        let observed = if self.phase == Phase::Reserved
+            && !self.attachment_attempted
+            && self.runtime.is_none()
+        {
+            self.dormant_construction_storage_data(maximum)
+        } else {
+            self.inactive_storage_selected_precredit_data(maximum, sources)
+        };
+
+        #[cfg(test)]
+        if let Err(error) = &observed {
+            eprintln!(
+                "native control: actor construction census refused: phase={:?} attachment_attempted={} runtime={} initial_sources={} error={error:?}",
+                self.phase,
+                self.attachment_attempted,
+                self.runtime.is_some(),
+                sources.is_some(),
+            );
+        }
+        observed
+    }
+
     /// Names actual actor/runtime and initial Source loan controls.
     pub(in crate::node_qualification::packet_collection::complete) fn original_initial_preparation_counter_scratch_data()
     -> usize {
@@ -102,5 +140,12 @@ impl PacketCompleteExecutionActor {
             + size_of::<Option<&ConformanceRuntime>>()
             + size_of::<Result<bool, RuntimeError>>()
             + size_of::<Result<(), RuntimeError>>()
+            // The construction selector retains its actual phase, state tests
+            // and returned census while choosing between these existing owners.
+            + size_of::<Phase>()
+            + 3 * size_of::<bool>()
+            + size_of::<Result<usize, RuntimeError>>()
+            + size_of::<Result<(), PacketCompleteExecutionError>>()
+            + size_of::<PacketCompleteExecutionError>()
     }
 }

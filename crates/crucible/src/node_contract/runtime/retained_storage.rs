@@ -264,7 +264,14 @@ impl NodeRuntime {
         scheduler.charge_original_retained_storage(&mut counter)?;
         if let Some(graph) = collecting {
             if counter.rc(graph)? {
-                graph.charge_original_retained_storage(&mut counter)?;
+                // Only the authenticated initial roster uses the distinct
+                // initial-lifecycle Source census below. Its graph follows the
+                // same precredit authority walk as the pre-runtime graph owner.
+                if precredit && initial_sources.is_some() {
+                    graph.charge_original_retained_storage_precredit_data(&mut counter)?;
+                } else {
+                    graph.charge_original_retained_storage(&mut counter)?;
+                }
             }
         }
 

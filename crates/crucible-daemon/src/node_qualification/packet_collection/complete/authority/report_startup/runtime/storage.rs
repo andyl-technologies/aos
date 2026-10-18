@@ -116,24 +116,11 @@ impl PacketCompleteReportStartupHolder {
             c.rc(factory).map_err(storage_error)?;
         }
         if let Some(actor) = &owners.actor {
-            c.add(
-                if owners.complete
-                    || self.runtime_in_flight.get()
-                        == Some(OriginalRuntimeConstructionPhase::InactiveRuntime)
-                {
-                    let observed = if matches!(&self.purpose, StartupHolderPurpose::OriginalScene) {
-                        actor.retained_original_initial_requested_storage_precredit_data(
-                            &self.authority.roster.sources,
-                            c.remaining(),
-                        )
-                    } else {
-                        actor.original_inactive_retained_storage_precredit_data(c.remaining())
-                    };
-                    observed.or_else(|_| actor.dormant_construction_storage_data(c.remaining()))?
-                } else {
-                    actor.dormant_construction_storage_data(c.remaining())?
-                },
-            )
+            c.add(actor.retained_runtime_construction_storage_precredit_data(
+                matches!(&self.purpose, StartupHolderPurpose::OriginalScene)
+                    .then_some(&self.authority.roster.sources),
+                c.remaining(),
+            )?)
             .map_err(storage_error)?;
         }
         if let Some(graph) = &owners.graph {
