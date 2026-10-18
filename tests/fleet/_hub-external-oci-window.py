@@ -28,7 +28,8 @@ def run_external_oci_pair_window(client, native, worker, s3, database_machine, t
         review = await_direct_review("external-mirror-" + run + "-reviewer", {
             "actualImmutableArtifacts": retain_direct_flow("external-mirror-" + run + "-tuple-input.json", artifacts),
             "directReviewer": hashlib.sha256(reviewer_public_key.encode()).hexdigest(),
-            "reservedRoot": ".aos-mirror-qualification/" + run + "/final",
+            "reservedRoot": hashlib.sha256(
+                (".aos-mirror-qualification/" + run + "/final").encode()).hexdigest(),
         }, {"mirrorReviewerPublicKey", "mirrorReviewerKeyId"})["selection"]
         tools["mirrorFunctionalReviewer"] = {"publicKey": review["mirrorReviewerPublicKey"],
             "keyId": review["mirrorReviewerKeyId"]}

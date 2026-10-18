@@ -46,6 +46,31 @@ def called_labels():
 
 
 class ReviewLabelTests(unittest.TestCase):
+    def test_actual_mirror_request_supplies_hashes_to_the_private_channel(self):
+        tree = ast.parse((SOURCE_ROOT / "_hub-external-oci-window.py").read_bytes())
+        caller = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+            and node.name == "run_external_oci_pair_window")
+        call = next(node for node in ast.walk(caller) if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name) and node.func.id == "await_direct_review")
+        hashes = eval(compile(ast.Expression(call.args[1]), "actual-mirror-request", "eval"),
+            {"__builtins__": {}, "hashlib": hashlib},
+            {"run": RUN, "reviewer_public_key": "c" * 64, "artifacts": {},
+                "retain_direct_flow": lambda name, value: "b" * 64})
+        spec = importlib.util.spec_from_file_location("mirror_review_channel", SOURCE_ROOT / "_hub-direct-review.py")
+        review = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(review)
+        previous = Path.cwd()
+
+        with tempfile.TemporaryDirectory(prefix="aos-review-hashes-controlled-") as directory:
+            os.chmod(directory, 0o700)
+            os.chdir(directory)
+            try:
+                with self.assertRaisesRegex(RuntimeError, "review remains pending"):
+                    review.await_direct_review("mirror-inputs", hashes,
+                        {"mirrorReviewerPublicKey", "mirrorReviewerKeyId"}, timeout=0)
+            finally:
+                os.chdir(previous)
+
     def test_actual_called_labels_write_request_then_remain_pending(self):
         spec = importlib.util.spec_from_file_location("selected_review", SOURCE_ROOT / "_hub-direct-review.py")
         review = importlib.util.module_from_spec(spec)
