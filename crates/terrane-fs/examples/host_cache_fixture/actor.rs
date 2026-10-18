@@ -145,16 +145,28 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
         "late-refuse" => late_refuse(&owner, &runtime, &inputs, original)?,
         "cancel" => cancel(&owner, &runtime, &inputs)?,
         "empty" | "edquot" => {
+            let prior = runtime
+                .block_on(CacheState::load(
+                    &TokioLocalFs,
+                    &inputs.root.join("state/cache"),
+                    STATE,
+                ))
+                .map_err(io::Error::other)?
+                .unwrap_or_default();
+            let future = prior.reservations.iter().try_fold(HOLD, |sum, hold| {
+                sum.checked_add(hold.bytes)
+                    .ok_or_else(|| io::Error::other("fixture retained holds overflow"))
+            })?;
             let completed = runtime.block_on(owner.recover())?;
             completed.check_current()?;
             if completed.synchronized_retained_inode_bytes() == 0
                 || completed.synchronized_retained_inodes() < 8
-                || completed.future_hold_bytes() != HOLD
+                || completed.future_hold_bytes() != future
                 || completed.charged_reserved_bytes() > HARD_LIMIT
             {
                 return Err(io::Error::other("invalid actual empty recovery accounting"));
             }
-            verify_hold(&runtime, &inputs)?;
+            verify_holds(&runtime, &inputs, &prior)?;
             emit(&format!(
                 "PASS actual empty recovery retained_inode_bytes={} retained_inodes={} charged_reserved_bytes={} future_hold_bytes={}",
                 completed.synchronized_retained_inode_bytes(),
@@ -301,7 +313,7 @@ fn late_refuse(
             "unexpected late recovery refusal: {error}"
         )));
     }
-    verify_hold(runtime, inputs)?;
+    verify_holds(runtime, inputs, &CacheState::default())?;
     let funded = snapshot(inputs)?
         .ok_or_else(|| io::Error::other("late refusal lost its durable funded snapshot"))?;
     unknown.check_unchanged(inputs)?;
@@ -317,7 +329,7 @@ fn late_refuse(
             "late refusal did not retain faulted custody: {error}"
         )));
     }
-    verify_hold(runtime, inputs)?;
+    verify_holds(runtime, inputs, &CacheState::default())?;
     if snapshot(inputs)?.as_ref() != Some(&funded) {
         return Err(io::Error::other(
             "faulted owner changed its durable funded snapshot",
@@ -353,7 +365,11 @@ fn require_empty_capabilities() -> io::Result<()> {
     Ok(())
 }
 
-fn verify_hold(runtime: &tokio::runtime::Runtime, inputs: &Inputs) -> io::Result<()> {
+fn verify_holds(
+    runtime: &tokio::runtime::Runtime,
+    inputs: &Inputs,
+    prior: &CacheState,
+) -> io::Result<()> {
     let state = runtime
         .block_on(CacheState::load(
             &TokioLocalFs,
@@ -365,15 +381,27 @@ fn verify_hold(runtime: &tokio::runtime::Runtime, inputs: &Inputs) -> io::Result
     if !state.pins.is_empty()
         || !state.leases.is_empty()
         || !state.residences.is_empty()
-        || state.reservations.len() != 1
-        || state.reservations[0].owner != inputs.owner
-        || state.reservations[0].bytes != HOLD
-        || state.reservations[0].id.len() != 32
-        || !state.reservations[0]
-            .id
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        || !state.reservations[0].id.bytes().any(|byte| byte != b'0')
+        || state.reservations.len() != prior.reservations.len() + 1
+        || state.reservations.iter().any(|hold| {
+            hold.owner != inputs.owner
+                || hold.bytes != HOLD
+                || hold.id.len() != 32
+                || !hold
+                    .id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                || !hold.id.bytes().any(|byte| byte != b'0')
+        })
+        || prior.reservations.iter().any(|old| {
+            state
+                .reservations
+                .iter()
+                .filter(|hold| {
+                    hold.id == old.id && hold.owner == old.owner && hold.bytes == old.bytes
+                })
+                .count()
+                != 1
+        })
     {
         return Err(io::Error::other("actual durable bootstrap hold differs"));
     }
@@ -411,7 +439,7 @@ fn cancel(
             "cancel barrier did not reach cold-policy refusal: {error}"
         )));
     }
-    verify_hold(runtime, inputs)?;
+    verify_holds(runtime, inputs, &CacheState::default())?;
     let mut client = HostQuotaClient::connect(&inputs.quota, 0, EPOCH)?;
     let observation = client.query(&inputs.owner, &inputs.domain)?;
     if observation.observation().hard_limit_bytes != HARD_LIMIT {

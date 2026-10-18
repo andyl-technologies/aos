@@ -1034,9 +1034,19 @@ def main():
             time.sleep(0.02)
         print(process_status(publisher, 841), flush=True)
         actor("empty", "empty", uuid)
-        # The successful recovery's durable bootstrap hold is itself cold state;
-        # a restart must refuse it rather than silently clear or reuse capacity.
-        actor("empty", "refuse", uuid)
+        # A new physical owner must preserve the first owner's durable hold,
+        # synchronize a distinct bootstrap and account both without reusing H.
+        old_policy = tomllib.loads((root("empty") / "state/cache/records.toml").read_text())
+        actor("empty", "empty", uuid)
+        new_policy = tomllib.loads((root("empty") / "state/cache/records.toml").read_text())
+        require(len(old_policy["reservations"]) == 1 and len(new_policy["reservations"]) == 2
+                and all(new_policy["reservations"].count(row) == 1 for row in old_policy["reservations"])
+                and all(row["owner"] == owner("empty") and row["bytes"] == 262144
+                        for row in new_policy["reservations"])
+                and len({row["id"] for row in new_policy["reservations"]}) == 2
+                and all(new_policy[group] == [] for group in ["pins", "leases", "residences"]),
+                "second physical owner cleared, reused or lost cold bootstrap funding")
+        print("PASS actual second physical owner retained cold bootstrap funding and added a distinct durable hold", flush=True)
         for case in ["pin", "lease", "reservation", "residence", "unknown", "state-file", "state-directory"]:
             candidate = (root(case) / "state/cache/records.toml" if case in {"pin", "lease", "reservation", "residence"}
                          else root(case) / "chunks/unrecognized-name" if case == "unknown"
