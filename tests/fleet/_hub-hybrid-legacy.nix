@@ -2059,7 +2059,22 @@
       f"-c \"SELECT state || ':' || cleanup_state FROM oci_upload_sessions "
       f"WHERE id = '{upload_id}'\""
   ).strip()
-  assert upload_state == "complete:complete", upload_state
+  # This fixture installs OCI materialization without the separate checked
+  # Delete configuration. Completion must retain private staging chunks for
+  # cleanup; the direct fleet exercises deletion and recovery with that
+  # configuration installed.
+  assert upload_state == "complete:pending", upload_state
+  retained_upload_chunks = native.succeed(
+      f"{POSTGRES}/psql -h {DATABASE_HOST} -U postgres -d postgres -At "
+      f"-c \"SELECT COUNT(*) FROM oci_upload_chunks chunk "
+      "JOIN oci_upload_sessions upload ON upload.id = chunk.upload_id "
+      f"WHERE upload.id = '{upload_id}' AND upload.cleanup_finished_at IS NULL "
+      "AND upload.staging_placement_id IS NOT NULL "
+      "AND upload.staging_placement_resource_version IS NOT NULL "
+      "AND upload.staging_binding_id IS NOT NULL "
+      "AND upload.staging_binding_write_revision IS NOT NULL\""
+  ).strip()
+  assert retained_upload_chunks == "1", retained_upload_chunks
 
   final_bytes = b"hybrid-final-oci-chunk"
   final_digest = hashlib.sha256(bytes(cache_size) + final_bytes).hexdigest()
@@ -2109,7 +2124,18 @@
       f"-c \"SELECT state || ':' || cleanup_state FROM oci_upload_sessions "
       f"WHERE id = '{final_upload_id}'\""
   ).strip()
-  assert final_upload_state == "complete:complete", final_upload_state
+  assert final_upload_state == "complete:pending", final_upload_state
+  retained_final_chunks = native.succeed(
+      f"{POSTGRES}/psql -h {DATABASE_HOST} -U postgres -d postgres -At "
+      f"-c \"SELECT COUNT(*) FROM oci_upload_chunks chunk "
+      "JOIN oci_upload_sessions upload ON upload.id = chunk.upload_id "
+      f"WHERE upload.id = '{final_upload_id}' AND upload.cleanup_finished_at IS NULL "
+      "AND upload.staging_placement_id IS NOT NULL "
+      "AND upload.staging_placement_resource_version IS NOT NULL "
+      "AND upload.staging_binding_id IS NOT NULL "
+      "AND upload.staging_binding_write_revision IS NOT NULL\""
+  ).strip()
+  assert retained_final_chunks == "2", retained_final_chunks
 
   client.succeed(
       f"{CURL} -fsS -X POST -D /tmp/hybrid-oci-large-start.headers "
