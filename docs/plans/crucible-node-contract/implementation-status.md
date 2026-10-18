@@ -1662,5 +1662,20 @@ Normal all-feature/all-target provider and contract checking passes. The full
 unfiltered library run passes 1,268 provider tests and all eight contract tests;
 fifteen existing provider tests remain ignored. This includes the two previously
 aborting default-stack controls, exact preflight/build parity, one-byte-short
-credit refusal, retained partials and selected response variants. The six-crate all-feature/all-target workspace check also passes. Application-
-target, Core runtime and native checks remain separate qualifications.
+credit refusal, retained partials and selected response variants. The six-crate
+all-feature/all-target workspace check also passes in 2 minutes 12 seconds.
+
+At `eac4c1f76c`, the matching optimized provider rebuild passes in 1 minute
+17 seconds. The full Core library suite passes 1,753 tests with 32 existing
+ignored tests; all eight contract tests and all four installed-provider roster
+controls pass. The mandatory production application-target gate also passes,
+freshly compiling 167 test artifacts across 48 application packages, including
+69 integration targets. Its test profile retains debug assertions and overflow
+checks. Source verification compares all 7,426 captured files byte-for-byte
+against this checkpoint and confirms that every committed crate role is present.
+The final test-target build takes 10 minutes 43 seconds, after its prerequisite
+production package builds. This gate compiles tests without executing them.
+
+Native startup, complete Capture and fresh preservation remain separate runtime
+qualifications. Uncommitted Capture/Window integration and fresh native-adopter
+work are not covered by these results.
