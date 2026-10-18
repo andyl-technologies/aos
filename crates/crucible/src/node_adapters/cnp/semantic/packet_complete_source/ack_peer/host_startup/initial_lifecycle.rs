@@ -410,6 +410,28 @@ impl PacketCompleteSemanticSource {
             CnpSemanticLaunchGuard::original_initial_lifecycle_storage_counter_scratch_data(),
             InstalledCnpConformanceRole::retained_requested_storage_counter_scratch_data(),
             Self::original_report_startup_observer_scratch_data(),
+            crucible_node_provider::connection::OriginalProtocolSupervisor::retention_counter_scratch_data(),
+            // The retained witness owns only existing actor/supervisor Rc
+            // aliases; its Option lives in the already admitted native root.
+            // Its constructor result and mutable slot loan are separate scratch.
+            size_of::<crucible_node_provider::connection::OriginalProtocolSupervisor>(),
+            size_of::<Result<
+                crucible_node_provider::connection::OriginalProtocolSupervisor,
+                ProviderError,
+            >>(),
+            size_of::<std::cell::RefMut<
+                'static,
+                Option<crucible_node_provider::connection::OriginalProtocolSupervisor>,
+            >>(),
+            size_of::<Result<
+                std::cell::RefMut<
+                    'static,
+                    Option<crucible_node_provider::connection::OriginalProtocolSupervisor>,
+                >,
+                std::cell::BorrowMutError,
+            >>(),
+            size_of::<&CnpController>(),
+            size_of::<Result<&CnpController, RuntimeError>>(),
             size_of::<PacketCompleteInitialLifecycleIdentity>(),
             size_of::<PacketCompleteInitialLifecycleQuote>(),
             size_of::<OriginalInitialLifecycleState>(),
@@ -546,6 +568,33 @@ impl PacketCompleteOriginalHostSdk {
             .ok_or(RuntimeError::OwnerUnavailable)?
             .attach_original_initial_lifecycle_into(launch, &state.quote.sdk, supervisor, &mut sink)
             .map_err(|_| RuntimeError::OwnerUnavailable)?;
+        // Attachment already moved the real Controller into retained native
+        // custody. Keep its supervisor/actor aliases there before any later
+        // Source callback; collecting-node admission needs this SAME witness
+        // before Capture's later Owned11 path can ever run.
+        {
+            let native = guard
+                .as_ref()
+                .ok_or(RuntimeError::OwnerUnavailable)?
+                .custody()
+                .map_err(|_| RuntimeError::ForeignAuthority)?;
+            let controller = native
+                .controller
+                .as_ref()
+                .ok_or(RuntimeError::OwnerUnavailable)?;
+            let mut witness = native
+                .protocol_supervisor
+                .try_borrow_mut()
+                .map_err(|_| RuntimeError::OwnerBusy)?;
+            if witness.is_some() {
+                return Err(RuntimeError::DuplicateOperation);
+            }
+            *witness = Some(
+                controller
+                    .retain_original_protocol_supervisor()
+                    .map_err(|_| RuntimeError::ForeignAuthority)?,
+            );
+        }
         state.phase = InitialPhase::Attached;
 
         // The registry alias comes from the same actual attached typed

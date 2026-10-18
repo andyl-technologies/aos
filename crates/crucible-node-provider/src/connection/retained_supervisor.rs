@@ -65,6 +65,18 @@ impl OriginalRetainedSupervisor {
             + std::mem::size_of::<std::cell::Ref<'static, Option<ConnectionIncident>>>()
     }
 
+    // Retention invokes the real callback wrapper, whereas the ordinary direct
+    // metadata walk above deliberately invokes no erased callback. Keep their
+    // fixed working views separate so old metadata quotes retain their meaning.
+    pub(super) const fn retention_callback_counter_scratch_data() -> usize {
+        Self::metadata_counter_scratch_data()
+            + std::mem::size_of::<&RetainedSupervisor>()
+            + std::mem::size_of::<
+                &mut dyn FnMut(OriginalSupervisorProtocolView<'static>) -> Result<(), ProviderError>,
+            >()
+            + std::mem::size_of::<Result<(), ProviderError>>()
+    }
+
     /// Observes the actual known retained supervisor before a connection exists.
     ///
     /// Charges its real shared payload/header view and actual incident bank

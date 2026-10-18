@@ -211,7 +211,47 @@ pub struct OriginalProtocolSupervisor {
     supervisor: Rc<dyn ConnectionSupervisor>,
 }
 
+// Name the actual callback working state so its fixed admission follows the
+// same fields as the implementation rather than an estimated erased closure.
+struct OriginalProtocolInspection<'a> {
+    called: bool,
+    original_error: Option<ProviderError>,
+    inspect: &'a mut dyn FnMut(OriginalSupervisorProtocolView<'_>) -> Result<(), ProviderError>,
+}
+
+impl OriginalProtocolInspection<'_> {
+    fn observe(&mut self, view: OriginalSupervisorProtocolView<'_>) -> Result<(), ProviderError> {
+        if self.called {
+            return Err(ProviderError::Conflict("supervisor inspection repeated"));
+        }
+        self.called = true;
+        match (self.inspect)(view) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.original_error = Some(error);
+                Err(ProviderError::Correlation("supervisor inspection refused"))
+            }
+        }
+    }
+}
+
 impl OriginalProtocolSupervisor {
+    /// Counts fixed witness retention and known-supervisor inspection working state.
+    ///
+    /// The actual witness contains aliases of already retained actor/supervisor
+    /// allocations, not new heap ownership. This names its local/result headers,
+    /// the actual callback state and capture, and the concrete retained family's
+    /// incident/view/phase loans. Other supervisor implementations require their
+    /// own independently admitted callback work. No witness or owner is created.
+    pub const fn retention_counter_scratch_data() -> usize {
+        std::mem::size_of::<Self>()
+            + std::mem::size_of::<Result<Self, ProviderError>>()
+            + std::mem::size_of::<OriginalProtocolInspection<'static>>()
+            + std::mem::size_of::<&mut OriginalProtocolInspection<'static>>()
+            + std::mem::size_of::<Result<(), ProviderError>>()
+            + OriginalRetainedSupervisor::retention_callback_counter_scratch_data()
+    }
+
     /// Authenticates the actual operational handle retained beside this witness.
     ///
     /// This read-only identity check clones no owner and invokes no supervisor
@@ -291,26 +331,19 @@ impl OriginalProtocolSupervisor {
         inspect: &mut dyn FnMut(OriginalSupervisorProtocolView<'_>) -> Result<(), ProviderError>,
     ) -> Result<(), ProviderError> {
         self.actor.ensure_current()?;
-        let mut called = false;
-        let mut original_error = None;
-        let result = self.supervisor.with_original_protocol_state(&mut |view| {
-            if called {
-                return Err(ProviderError::Conflict("supervisor inspection repeated"));
-            }
-            called = true;
-            match inspect(view) {
-                Ok(()) => Ok(()),
-                Err(error) => {
-                    original_error = Some(error);
-                    Err(ProviderError::Correlation("supervisor inspection refused"))
-                }
-            }
-        });
-        if let Some(error) = original_error {
+        let mut inspection = OriginalProtocolInspection {
+            called: false,
+            original_error: None,
+            inspect,
+        };
+        let result = self
+            .supervisor
+            .with_original_protocol_state(&mut |view| inspection.observe(view));
+        if let Some(error) = inspection.original_error {
             return Err(error);
         }
         result?;
-        if !called {
+        if !inspection.called {
             return Err(ProviderError::Correlation("supervisor inspection missing"));
         }
         Ok(())
@@ -461,3 +494,52 @@ pub(crate) use retained_supervisor::{
 };
 
 pub use retained_supervisor::RetainedSupervisorHistoricalData;
+
+
+#[cfg(test)]
+mod retention_working_state_tests {
+    use super::*;
+
+    #[test]
+    fn actual_retained_inspection_preserves_first_error_and_refuses_repeated_callback() {
+        let (operational, owner) = OriginalRetainedSupervisor::reserve().unwrap();
+        let calls = Cell::new(0usize);
+        let mut inspect = |view: OriginalSupervisorProtocolView<'_>| {
+            view.authenticate()?;
+            calls.set(calls.get() + 1);
+            Err(ProviderError::Conflict("original retention refusal"))
+        };
+        let mut working = OriginalProtocolInspection {
+            called: false,
+            original_error: None,
+            inspect: &mut inspect,
+        };
+
+        let refused = operational.with_original_protocol_state(&mut |view| working.observe(view));
+        assert!(matches!(
+            refused,
+            Err(ProviderError::Correlation("supervisor inspection refused"))
+        ));
+        assert!(working.called);
+        assert!(matches!(
+            working.original_error.as_ref(),
+            Some(ProviderError::Conflict("original retention refusal"))
+        ));
+        assert_eq!(calls.get(), 1);
+        assert!(owner.is_empty_data().unwrap());
+
+        // A second genuine view cannot repeat the callback or overwrite its
+        // retained error; the real inspection phase is still released normally.
+        let repeated = operational.with_original_protocol_state(&mut |view| working.observe(view));
+        assert!(matches!(
+            repeated,
+            Err(ProviderError::Conflict("supervisor inspection repeated"))
+        ));
+        assert_eq!(calls.get(), 1);
+        assert!(matches!(
+            working.original_error.as_ref(),
+            Some(ProviderError::Conflict("original retention refusal"))
+        ));
+        assert!(owner.is_empty_data().unwrap());
+    }
+}

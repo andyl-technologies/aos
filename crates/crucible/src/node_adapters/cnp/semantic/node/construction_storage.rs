@@ -60,6 +60,16 @@ impl CnpSemanticPreparation {
             .custody
             .as_ref()
             .ok_or(RuntimeError::OwnerUnavailable)?;
+        // The initial lifecycle must have retained its actual witness before
+        // this prospective node census. A later Capture path cannot supply it.
+        if native
+            .protocol_supervisor
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?
+            .is_none()
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
         if native.runtime.is_some()
             || !native.completed_ack_protocol_started
             || native
@@ -135,7 +145,17 @@ impl CnpSemanticPreparation {
             + super::super::initial_lifecycle_diagnostics::OriginalInitialLifecycleDiagnostics::counter_scratch_bytes()
             + size_of::<[u8; 20]>()
             + crucible_node_provider::client::CnpController::original_restoration_host_metadata_counter_scratch_data()
-            + size_of::<std::cell::Ref<'static, Option<Rc<dyn crucible_node_provider::connection::ConnectionSupervisor>>>>()
+            + size_of::<std::cell::Ref<
+                'static,
+                Option<crucible_node_provider::connection::OriginalProtocolSupervisor>,
+            >>()
+            + size_of::<Result<
+                std::cell::Ref<
+                    'static,
+                    Option<crucible_node_provider::connection::OriginalProtocolSupervisor>,
+                >,
+                std::cell::BorrowError,
+            >>()
             + size_of::<Option<&crucible_node_provider::connection::OriginalRetainedSupervisor>>()
     }
 
