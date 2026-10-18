@@ -5,6 +5,9 @@
 //! a replacement Value. Compiler frames/thread stack and allocator rounding are
 //! separate unknown terms; no continuous physical-peak claim follows.
 
+#[path = "retained_values/edition18_tokens.rs"]
+pub(crate) mod edition18_tokens;
+
 use super::*;
 use crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::StorageError;
 use serde_json::Value;
