@@ -103,13 +103,14 @@ pub(super) fn compare_boundaries(
     variant: &str,
     reference: &[BoundaryEvidence],
     candidate: &[BoundaryEvidence],
-) -> Result<(), String> {
+) -> Result<(), NativeObservationError> {
     if reference.len() != candidate.len() {
         return Err(format!(
             "{variant}: boundary count differs: {} != {}",
             reference.len(),
             candidate.len()
-        ));
+        )
+        .into());
     }
     for (index, (left, right)) in reference.iter().zip(candidate).enumerate() {
         let lower_bound = index
@@ -120,31 +121,34 @@ pub(super) fn compare_boundaries(
             return Err(format!(
                 "{variant}: boundary {index} window ({lower_bound},{}]: target differs",
                 left.target
-            ));
+            )
+            .into());
         }
         if left.outcome != right.outcome {
             return Err(format!(
                 "{variant}: boundary {index} window ({lower_bound},{}]: outcome differs",
                 left.target
-            ));
+            )
+            .into());
         }
         if left.fingerprint != right.fingerprint {
             return Err(format!(
                 "{variant}: boundary {index} window ({lower_bound},{}]: execution_fingerprint differs",
                 left.target
-            ));
+            ).into());
         }
         if let Some(component) = first_sample_difference(&left.sample, &right.sample) {
             return Err(format!(
                 "{variant}: boundary {index} window ({lower_bound},{}]: {component} differs",
                 left.target
-            ));
+            )
+            .into());
         }
         if left.calibration != right.calibration {
             return Err(format!(
                 "{variant}: boundary {index} window ({lower_bound},{}]: logical/raw calibration differs",
                 left.target
-            ));
+            ).into());
         }
     }
     Ok(())
@@ -152,7 +156,7 @@ pub(super) fn compare_boundaries(
 
 pub(super) fn instruction_exact_evidence(
     boundaries: &[BoundaryEvidence],
-) -> Result<InstructionExactEvidence, String> {
+) -> Result<InstructionExactEvidence, NativeObservationError> {
     let lower = boundaries
         .iter()
         .find(|boundary| boundary.target == INSTRUCTION_EXACT_LOWER_TARGET)
@@ -176,7 +180,7 @@ pub(super) fn instruction_exact_evidence(
     {
         return Err(format!(
             "instruction-exact samples do not bind adjacent requested coordinates: lower={lower:?}, upper={upper:?}"
-        ));
+        ).into());
     }
     let fractional_differences = sample_differences(&fractional_lower.sample, &lower.sample);
     let mut expected_fractional_sample = fractional_lower.sample;
@@ -192,12 +196,12 @@ pub(super) fn instruction_exact_evidence(
     {
         return Err(format!(
             "fractional-phase sample changed retired state or omitted timer projection: lower={fractional_lower:?}, upper={lower:?}, changed_components={fractional_differences:?}"
-        ));
+        ).into());
     }
     if Some(upper.calibration.raw_icount) != lower.calibration.raw_icount.checked_add(1) {
         return Err(format!(
             "instruction-exact samples do not advance raw retirement by one: lower={lower:?}, upper={upper:?}"
-        ));
+        ).into());
     }
     if lower.sample.rr_switch_quantum != RR_SWITCH_QUANTUM
         || upper.sample.rr_switch_quantum != RR_SWITCH_QUANTUM
@@ -205,7 +209,7 @@ pub(super) fn instruction_exact_evidence(
     {
         return Err(format!(
             "instruction-exact samples do not describe one exact RR successor: lower={lower:?}, upper={upper:?}"
-        ));
+        ).into());
     }
     if lower.fingerprint == upper.fingerprint {
         return Err(
@@ -225,8 +229,7 @@ pub(super) fn instruction_exact_evidence(
         .ok_or_else(|| {
             String::from("adjacent instruction samples have no differing state component")
         })?;
-    let owner_index = usize::try_from(lower.sample.rr_current_vcpu)
-        .map_err(|_| String::from("instruction-exact owner index does not fit usize"))?;
+    let owner_index = usize::try_from(lower.sample.rr_current_vcpu)?;
     let expected_register_projection =
         format!("vcpu[{}].register_digest", lower.sample.rr_current_vcpu);
     let lower_owner = lower
@@ -242,7 +245,8 @@ pub(super) fn instruction_exact_evidence(
     if lower_owner.register_digest == upper_owner.register_digest {
         return Err(format!(
             "adjacent instruction samples did not change the owning {expected_register_projection}"
-        ));
+        )
+        .into());
     }
     validate_instruction_exact_shape_stability(&lower.sample, &upper.sample, owner_index)?;
     let owning_vcpu_state_projection = expected_register_projection;
@@ -264,7 +268,7 @@ pub(super) fn validate_instruction_exact_shape_stability(
     lower: &FingerprintSample,
     upper: &FingerprintSample,
     owner_index: usize,
-) -> Result<(), String> {
+) -> Result<(), NativeObservationError> {
     if lower.vcpu_count != upper.vcpu_count
         || lower.component_failures != upper.component_failures
         || lower.ram_bytes != upper.ram_bytes
@@ -275,7 +279,8 @@ pub(super) fn validate_instruction_exact_shape_stability(
         return Err(format!(
             "adjacent instruction samples changed invariant fingerprint shape: {:?}",
             sample_differences(lower, upper)
-        ));
+        )
+        .into());
     }
 
     for (index, (lower_vcpu, upper_vcpu)) in lower.vcpus.iter().zip(&upper.vcpus).enumerate() {
@@ -285,7 +290,8 @@ pub(super) fn validate_instruction_exact_shape_stability(
         {
             return Err(format!(
                 "adjacent instruction samples changed invariant vCPU {index} state"
-            ));
+            )
+            .into());
         }
     }
     Ok(())

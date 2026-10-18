@@ -242,8 +242,9 @@ fn comparator_reports_first_differing_boundary_component() {
 
     let error = compare_boundaries("negative", &reference, &candidate)
         .expect_err("changed RAM digest must be reported");
+    assert!(matches!(error, NativeObservationError::Assertion(_)));
     assert_eq!(
-        error,
+        error.to_string(),
         "negative: boundary 1 window (2000001,2000051]: ram_digest differs"
     );
 }
@@ -372,7 +373,12 @@ fn fractional_phase_rejects_retired_state_change() {
 
     let error = instruction_exact_evidence(&boundaries)
         .expect_err("one picosecond must not retire an instruction");
-    assert!(error.contains("fractional-phase sample changed retired state"));
+    assert!(matches!(error, NativeObservationError::Assertion(_)));
+    assert!(
+        error
+            .to_string()
+            .contains("fractional-phase sample changed retired state")
+    );
 }
 
 #[test]
@@ -385,7 +391,7 @@ fn fractional_phase_requires_a_timer_projection_change() {
 
     let error = instruction_exact_evidence(&boundaries)
         .expect_err("one picosecond must advance the timer projection");
-    assert!(error.contains("omitted timer projection"));
+    assert!(error.to_string().contains("omitted timer projection"));
 }
 
 #[test]
@@ -413,7 +419,7 @@ fn adjacent_samples_reject_a_nonadvancing_rr_cursor() {
 
     let error = instruction_exact_evidence(&boundaries)
         .expect_err("an unchanged RR cursor cannot certify one retired instruction");
-    assert!(error.contains("one exact RR successor"));
+    assert!(error.to_string().contains("one exact RR successor"));
 }
 
 #[test]
@@ -425,7 +431,7 @@ fn adjacent_samples_reject_the_wrong_terminal_owner() {
 
     let error = instruction_exact_evidence(&boundaries)
         .expect_err("a terminal handoff that skips the next owner must fail");
-    assert!(error.contains("one exact RR successor"));
+    assert!(error.to_string().contains("one exact RR successor"));
 }
 
 #[test]
@@ -436,7 +442,7 @@ fn adjacent_samples_reject_a_changed_quantum() {
 
     let error = instruction_exact_evidence(&boundaries_with_fractional_phase(lower, upper))
         .expect_err("a changed RR quantum cannot certify one instruction");
-    assert!(error.contains("one exact RR successor"));
+    assert!(error.to_string().contains("one exact RR successor"));
 }
 
 #[test]
@@ -447,8 +453,12 @@ fn adjacent_samples_reject_changed_ram_shape() {
 
     let error = instruction_exact_evidence(&boundaries_with_fractional_phase(lower, upper))
         .expect_err("a changed RAM shape must not certify one instruction");
-    assert!(error.contains("changed invariant fingerprint shape: ["));
-    assert!(error.contains("ram_bytes"));
+    assert!(
+        error
+            .to_string()
+            .contains("changed invariant fingerprint shape: [")
+    );
+    assert!(error.to_string().contains("ram_bytes"));
 }
 
 #[test]
@@ -478,8 +488,9 @@ fn readiness_marker_authenticates_the_exact_pre_request_event() {
     );
 
     assert_eq!(
-        authenticate_readiness_marker(&[event], Icount { retired: 74 }),
-        Ok(73)
+        authenticate_readiness_marker(&[event], Icount { retired: 74 })
+            .expect("the exact pre-request marker is authenticated"),
+        73
     );
 }
 

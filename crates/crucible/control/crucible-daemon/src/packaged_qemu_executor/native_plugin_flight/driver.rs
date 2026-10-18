@@ -738,12 +738,13 @@ fn probe_idle_wake(
 fn authenticate_readiness_marker(
     events: &[ObservableEvent],
     readiness_at: Icount,
-) -> Result<u64, String> {
+) -> Result<u64, NativeObservationError> {
     let [event] = events else {
         return Err(format!(
             "readiness boundary carried {} observable events instead of one setup marker",
             events.len()
-        ));
+        )
+        .into());
     };
     let ObservableEventPayload::GuestMarker {
         retired_icount,
@@ -751,9 +752,9 @@ fn authenticate_readiness_marker(
         marker,
     } = event.payload()
     else {
-        return Err(format!(
-            "readiness boundary carried a non-marker observable event: {event:?}"
-        ));
+        return Err(
+            format!("readiness boundary carried a non-marker observable event: {event:?}").into(),
+        );
     };
     if node.name != FLIGHT_NODE_ID
         || marker.name != SETUP_COMPLETE_MARKER
@@ -762,7 +763,7 @@ fn authenticate_readiness_marker(
     {
         return Err(format!(
             "readiness boundary carried an unauthenticated setup marker: event={event:?}, paused={readiness_at:?}"
-        ));
+        ).into());
     }
     Ok(retired_icount.retired)
 }
