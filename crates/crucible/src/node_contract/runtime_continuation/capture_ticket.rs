@@ -41,6 +41,9 @@ mod serialization;
 
 #[path = "capture_ticket/restored_identity.rs"]
 mod restored_identity;
+
+#[path = "capture_ticket/restored_terminal17.rs"]
+mod restored_terminal17;
 pub use geometry::PreparedCompleteOriginalCaptureGeometry;
 
 /// Borrows an unchanged-cut world for separately owned administrative capture.

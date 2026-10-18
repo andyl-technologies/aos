@@ -105,8 +105,10 @@ pub(super) struct OriginalDependencyStorageScope {
 /// Early factory admission includes this term while no Source plan exists.
 /// Recursive callbacks/compiler frames and allocator residency remain separate;
 /// this reports actual compiled value layouts, not a measured stack bound.
-pub(super) const fn requested_scratch_bytes() -> usize {
-    size_of::<OriginalDependencyStorageScope>()
+pub(super) fn requested_scratch_bytes() -> usize {
+    super::host17::selection_counter_scratch_data()
+        + super::super::records::host_capture17_counter_scratch_data()
+        + size_of::<OriginalDependencyStorageScope>()
         + size_of::<OriginalRuntimeIdentity>()
         + size_of::<[PacketCompleteCaptureDependencyStorageData; 3]>()
         + size_of::<[Option<PacketCompleteCaptureDependencyLookupData>; 3]>()
@@ -202,9 +204,7 @@ impl PacketCompleteCaptureFactory {
                     .into(),
             ],
             host: self
-                .host
-                .original_complete_capture_dependency_preflight_data(&runtime_object.reference)
-                .map_err(error)?
+                .host_capture_dependency_preflight_data(&runtime_object.reference)?
                 .into(),
         };
         if observed
@@ -248,10 +248,7 @@ impl PacketCompleteCaptureFactory {
                 .original_complete_capture_dependency_lookup_data(reference, maximum_objects)
                 .map_err(operation_failure)?;
         }
-        let host_lookup = self
-            .host
-            .original_complete_capture_dependency_lookup_data(reference, maximum_objects)
-            .map_err(error)?;
+        let host_lookup = self.host_capture_dependency_lookup_data(reference, maximum_objects)?;
         if host_lookup.is_none() && lookups.iter().all(Option::is_none) {
             return Ok(None);
         }
@@ -309,14 +306,12 @@ impl PacketCompleteCaptureFactory {
         }
         if host_lookup.is_some() {
             let row = self
-                .host
-                .original_complete_capture_dependencies_data(
+                .host_capture_dependencies_data(
                     reference,
                     bytes,
                     maximum_objects.min(original.host.count),
                     original.host.lookup,
-                )
-                .map_err(error)?
+                )?
                 .ok_or_else(|| refused("complete original Host2 dependency row disappeared"))?;
             if let Some(original) = result.as_ref() {
                 if original != &row {

@@ -180,19 +180,134 @@ fn ordered_merge_places_new_rows_before_between_and_after_actual_entries()
 #[test]
 fn normative_hash_matches_original_and_refuses_changed_full_original() -> Result<(), ProviderError>
 {
-    let (_, _, original) = inputs()?;
+    let (_, _, mut original) = inputs()?;
+    original
+        .body
+        .insert("extensions".into(), json!({"raw_identity": 1}));
+    original
+        .extensions
+        .insert("retained-values".into(), json!({"raw_identity": 1}));
+    original.validate()?;
+
     let storage = PacketControl::quote_pending_capture17_request_hash_data(&original, usize::MAX)?;
     let mut attempt = None;
     PacketControl::complete_pending_capture17_request_hash_into_data(&storage, &mut attempt)?;
     let complete = attempt.as_ref().ok_or_else(refused)?;
-    assert_eq!(
-        complete.completed_data(&original)?,
-        &original.request_hash(RequestOrigin::Controller)?
-    );
-    let mut foreign = original.clone();
-    assert!(complete.completed_data(&foreign).is_ok());
-    foreign.sequence = U64::new(2);
-    assert!(complete.completed_data(&foreign).is_err());
+    let normative = original.request_hash(RequestOrigin::Controller)?;
+    assert_eq!(complete.completed_data(&original)?, &normative);
+    assert_eq!(complete.completed_data(&original.clone())?, &normative);
+
+    type Mutation = fn(&mut Envelope) -> Result<(), ProviderError>;
+    let mutations: [(&str, Mutation); 13] = [
+        ("protocol", |frame| {
+            frame.protocol = "CNP/2".into();
+            Ok(())
+        }),
+        ("message", |frame| {
+            frame.message = MessageKind::Response;
+            Ok(())
+        }),
+        ("session_id", |frame| {
+            frame.session_id = Nullable(Some(Id::new("session-2")?));
+            Ok(())
+        }),
+        ("incarnation_id", |frame| {
+            frame.incarnation_id = Nullable(Some(Id::new("provider-2")?));
+            Ok(())
+        }),
+        ("node_id", |frame| {
+            frame.node_id = Nullable(Some(Id::new("node-2")?));
+            Ok(())
+        }),
+        ("execution_owner_id", |frame| {
+            frame.execution_owner_id = Nullable(Some(Id::new("execution-owner-2")?));
+            Ok(())
+        }),
+        ("capture_owner_id", |frame| {
+            frame.capture_owner_id = Nullable(Some(Id::new("capture-owner-2")?));
+            Ok(())
+        }),
+        ("request_id", |frame| {
+            frame.request_id = Nullable(Some(Id::new("request-2")?));
+            Ok(())
+        }),
+        ("operation_id", |frame| {
+            frame.operation_id = Nullable(Some(Id::new("operation-2")?));
+            Ok(())
+        }),
+        ("sequence", |frame| {
+            frame.sequence = U64::new(2);
+            Ok(())
+        }),
+        ("method", |frame| {
+            frame.method = Method::Poll;
+            Ok(())
+        }),
+        ("body", |frame| {
+            frame.body.get_mut("extensions").ok_or_else(refused)?["raw_identity"] = json!(2);
+            Ok(())
+        }),
+        ("extensions", |frame| {
+            frame
+                .extensions
+                .get_mut("retained-values")
+                .ok_or_else(refused)?["raw_identity"] = json!(2);
+            Ok(())
+        }),
+    ];
+    for (field, mutate) in mutations {
+        let mut foreign = original.clone();
+        mutate(&mut foreign)?;
+
+        assert!(
+            complete.completed_data(&foreign).is_err(),
+            "accepted changed {field}"
+        );
+        assert_eq!(complete.completed_data(&original)?, &normative);
+    }
+
+    // Sequence and distinct raw numeric Values preserve the normative request
+    // hash. The sticky owner still binds the complete original Envelope.
+    let same_normative: [(&str, Mutation); 3] = [
+        ("sequence", |frame| {
+            frame.sequence = U64::new(2);
+            Ok(())
+        }),
+        ("raw body Value", |frame| {
+            frame.body.get_mut("extensions").ok_or_else(refused)?["raw_identity"] = json!(1.0);
+            Ok(())
+        }),
+        ("raw extension Value", |frame| {
+            frame
+                .extensions
+                .get_mut("retained-values")
+                .ok_or_else(refused)?["raw_identity"] = json!(1.0);
+            Ok(())
+        }),
+    ];
+    let original_bytes =
+        serde_json::to_vec(&original).map_err(crucible_node_contract::ContractError::from)?;
+    for (field, mutate) in same_normative {
+        let mut foreign = original.clone();
+        mutate(&mut foreign)?;
+        let foreign_bytes =
+            serde_json::to_vec(&foreign).map_err(crucible_node_contract::ContractError::from)?;
+
+        assert_ne!(
+            original_bytes, foreign_bytes,
+            "unchanged fixture for {field}"
+        );
+        assert_eq!(
+            foreign.request_hash(RequestOrigin::Controller)?,
+            normative,
+            "normative hash changed for {field}"
+        );
+        assert!(
+            complete.completed_data(&foreign).is_err(),
+            "accepted changed {field} with the same normative hash"
+        );
+        assert_eq!(complete.completed_data(&original)?, &normative);
+    }
     assert!(
         PacketControl::complete_pending_capture17_request_hash_into_data(&storage, &mut attempt)
             .is_err()

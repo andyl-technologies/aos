@@ -109,6 +109,7 @@ pub(crate) struct CaptureMaterializationOwner {
     key: Option<NativeStateKey>,
     slots: [PayloadCopy; OUTPUT_COUNT],
     evidence: Vec<crate::node_scheduling::InputPayload>,
+    born: CaptureBornOwner,
 }
 
 impl CaptureMaterializationOwner {
@@ -122,6 +123,7 @@ impl CaptureMaterializationOwner {
             key: None,
             slots: std::array::from_fn(|_| PayloadCopy::empty()),
             evidence: Vec::new(),
+            born: CaptureBornOwner::empty(),
         }
     }
 
@@ -136,6 +138,7 @@ impl CaptureMaterializationOwner {
             key,
             slots,
             evidence,
+            born,
         } = self;
         let mut total = participants
             .capacity()
@@ -185,7 +188,10 @@ impl CaptureMaterializationOwner {
                 maximum,
             )?;
         }
-        Ok(total)
+        super::super::construction_quote::sum(
+            &[total, born.retained_storage_data(maximum)?],
+            maximum,
+        )
     }
 
     fn copy_metadata_data(
@@ -233,7 +239,8 @@ impl CaptureMaterializationOwner {
             std::array::from_fn::<_, OUTPUT_COUNT, _>(|index| self.slots[index].take_data());
         let owner = self.owner.take();
         let key = self.key.take();
-        match (owner, key, values) {
+        let index = self.born.take_index_payload_data();
+        match (owner, key, values, index) {
             (
                 Some(owner),
                 Some(key),
@@ -250,6 +257,7 @@ impl CaptureMaterializationOwner {
                     Some(prefix),
                     Some(journal),
                 ],
+                Some(index),
             ) => {
                 self.evidence.push(control);
                 self.evidence.push(before);
@@ -260,6 +268,9 @@ impl CaptureMaterializationOwner {
                 self.evidence.push(node);
                 self.evidence.push(scope);
                 self.evidence.push(prefix);
+                // The imported Index3 is an independently funded twelfth body.
+                // Its complete bank was checked before this atomic move.
+                self.evidence.push(index);
                 *completed = Some(InstalledOriginalLineageCapture {
                     native: InstalledNativeCapture {
                         owner,
@@ -276,7 +287,8 @@ impl CaptureMaterializationOwner {
                 self.failed = false;
                 Ok(())
             }
-            (owner, key, values) => {
+            (owner, key, values, index) => {
+                self.born.restore_index_payload_data(index);
                 self.owner = owner;
                 self.key = key;
                 for (slot, value) in self.slots.iter_mut().zip(values) {
@@ -301,6 +313,7 @@ impl CaptureMaterializationOwner {
                 Option<Id>,
                 Option<NativeStateKey>,
                 [Option<crate::node_scheduling::InputPayload>; OUTPUT_COUNT],
+                Option<crate::node_scheduling::InputPayload>,
             )>()
             + size_of::<crucible_node_contract::HashRef>()
             + size_of::<Ref<'static, Self>>()
@@ -333,6 +346,7 @@ impl CaptureMaterializationOwner {
             + size_of::<blake3::Hash>()
             + returned_header(|| blake3::Hash::from_bytes([0; 32]).to_hex())
             + CaptureMaterializationStorage::counter_scratch_data()
+            + CaptureBornOwner::counter_scratch_data()
     }
 }
 
@@ -426,6 +440,8 @@ impl OriginalSourceRestoredCaptureCompletion<'_> {
             return Err(RuntimeError::ForeignAuthority);
         }
         owner.copy_metadata_data(source, maximum)?;
+        owner.born.prepare_data(self, source, maximum)?;
+        owner.retained_storage_data(maximum)?;
 
         let payloads = self.materialization_payloads_data()?;
         let media = media_types();
@@ -500,3 +516,8 @@ mod tests {
         );
     }
 }
+
+#[path = "materialization/born.rs"]
+mod born;
+use born::CaptureBornOwner;
+pub(in super::super) use born::CaptureBornStorage;

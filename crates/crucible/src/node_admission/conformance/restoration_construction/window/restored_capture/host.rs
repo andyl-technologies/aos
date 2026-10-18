@@ -124,6 +124,26 @@ impl RetainedHost17Capture {
         Ok(())
     }
 
+    /// Lends the actual writer-owned capsule without copying its shared handle.
+    ///
+    /// # Errors
+    /// Refuses another phase, busy ownership or an absent prepared occurrence.
+    pub(super) fn with_prepared_writing_data<R>(
+        &self,
+        inspect: impl FnOnce(&Rc<PreparedRestoredHost17Capture>) -> Result<R, RuntimeError>,
+    ) -> Result<R, RuntimeError> {
+        self.require_writing_data()?;
+        let owners = self
+            .owners
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        let prepared = owners
+            .prepared
+            .as_ref()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        inspect(prepared)
+    }
+
     /// Requires a successfully consumed Host producer before final publication.
     ///
     /// # Errors
@@ -163,6 +183,7 @@ impl<'a> HostMutationGuard<'a> {
     ) -> Result<Self, RuntimeError> {
         if attempt.host.phase.get() != expected {
             attempt.host.phase.set(HostPhase::Failed);
+            attempt.terminal.fail_data();
             attempt.stage.set(Stage::Failed);
             window.whole_observation.require_observation();
             return Err(RuntimeError::OutstandingObligations);
@@ -185,6 +206,7 @@ impl Drop for HostMutationGuard<'_> {
     fn drop(&mut self) {
         if !self.completed {
             self.attempt.host.phase.set(HostPhase::Failed);
+            self.attempt.terminal.fail_data();
             self.attempt.stage.set(Stage::Failed);
             self.window.whole_observation.require_observation();
         }
@@ -557,6 +579,7 @@ impl CompleteOriginalRestorationWindow {
             prepared,
         );
         if result.is_ok() {
+            attempt.terminal.require_completed_data()?;
             prepared.authenticate_spent_data()?;
             prepared.authenticate_runtime_data(runtime, world, runtime_object)?;
             phase.finish_data(HostPhase::Spent);

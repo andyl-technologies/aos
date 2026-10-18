@@ -346,6 +346,24 @@ impl PacketCompleteSemanticSource {
         maximum_objects: usize,
     ) -> Result<Option<PacketCompleteCaptureDependencyLookupData>, OperationFailure> {
         self.ensure_origin()?;
+        if crate::node_adapters::cnp::CnpSemanticSource::requires_restored_capture17_scope_data(
+            self,
+        )
+        .map_err(unknown)?
+        {
+            return self
+                .with_original_capture17_dependency_row_data(reference, |row| {
+                    row.map(|dependencies| {
+                        PacketCompleteCaptureDependencyLookupData::from_borrowed_capture17_data(
+                            reference,
+                            dependencies,
+                            maximum_objects,
+                        )
+                    })
+                    .transpose()
+                })
+                .map_err(unknown);
+        }
         let slot = self
             .capture_execution
             .try_borrow()
@@ -557,5 +575,162 @@ mod selected_report_tests {
 impl OriginalDependencyPlan {
     pub(super) fn maximum_lookup_scratch_data(&self) -> usize {
         self.data.maximum_lookup_scratch
+    }
+}
+
+impl PacketCompleteCaptureDependencyLookupData {
+    /// Prices one concrete already-owned row and its independent verification.
+    ///
+    /// # Errors
+    /// Refuses excessive edge population or checked requested-layout overflow.
+    pub(crate) fn from_borrowed_capture17_data(
+        reference: &ContentRef,
+        dependencies: &[ContentRef],
+        maximum_objects: usize,
+    ) -> Result<Self, RuntimeError> {
+        if dependencies.len() > maximum_objects {
+            return Err(RuntimeError::ResourceLimit);
+        }
+        let mut returned_row_bytes = dependencies
+            .len()
+            .checked_mul(size_of::<ContentRef>())
+            .ok_or(RuntimeError::ResourceLimit)?;
+        for dependency in dependencies {
+            returned_row_bytes = returned_row_bytes
+                .checked_add(NodeRuntime::capture_reference_storage(dependency)?)
+                .ok_or(RuntimeError::ResourceLimit)?;
+        }
+        Ok(Self {
+            returned_row_bytes,
+            verification_bytes: NodeRuntime::capture_hash_storage(&reference.hash)?,
+        })
+    }
+}
+
+impl PacketCompleteCaptureDependencyStorageData {
+    /// Carries a defining finite Capture17 row quote without granting admission.
+    pub(crate) const fn from_capture17_data(
+        source_born_growth: usize,
+        returned_row_growth: usize,
+        maximum_lookup_scratch: usize,
+        maximum_dependency_count: usize,
+    ) -> Self {
+        Self {
+            source_born_growth,
+            returned_row_growth,
+            maximum_lookup_scratch,
+            maximum_dependency_count,
+        }
+    }
+}
+
+/// Copies one concrete row inside its independently admitted return/hash window.
+///
+/// # Errors
+/// Refuses short row/hash credit, a different supplied body or allocation excess.
+pub(super) fn copy_capture17_dependencies_data(
+    reference: &ContentRef,
+    bytes: &[u8],
+    dependencies: &[ContentRef],
+    maximum_objects: usize,
+    maximum_scratch_bytes: usize,
+) -> Result<Vec<ContentRef>, RuntimeError> {
+    let quote = PacketCompleteCaptureDependencyLookupData::from_borrowed_capture17_data(
+        reference,
+        dependencies,
+        maximum_objects,
+    )?;
+    if quote
+        .requested_bytes()
+        .map_err(|_| RuntimeError::ResourceLimit)?
+        > maximum_scratch_bytes
+    {
+        return Err(RuntimeError::ResourceLimit);
+    }
+
+    let mut copied = Vec::new();
+    copied
+        .try_reserve_exact(dependencies.len())
+        .map_err(|_| RuntimeError::ResourceLimit)?;
+    if copied.capacity() > dependencies.len() {
+        return Err(RuntimeError::ResourceLimit);
+    }
+    copied.extend(dependencies.iter().cloned());
+    reference
+        .verify(bytes)
+        .map_err(|_| RuntimeError::InvalidReceipt)?;
+    Ok(copied)
+}
+
+#[cfg(test)]
+mod capture17_lookup_tests {
+    use super::*;
+    use crucible_node_contract::canonical;
+
+    #[test]
+    fn concrete_lookup_prices_full_reference_backing_and_independent_hash_window() {
+        let output = canonical::content_ref(b"actual retained output", "application/json").unwrap();
+        let dependency =
+            canonical::content_ref(b"actual imported dependency", "application/json").unwrap();
+        let mut other_media = dependency.clone();
+        other_media.media_type = "application/vnd.example.longer-imported-body+json".into();
+        let dependencies = [dependency.clone(), other_media.clone()];
+
+        let lookup = PacketCompleteCaptureDependencyLookupData::from_borrowed_capture17_data(
+            &output,
+            &dependencies,
+            2,
+        )
+        .unwrap();
+        let cloned = dependencies.to_vec();
+        let actual = cloned.capacity() * size_of::<ContentRef>()
+            + cloned
+                .iter()
+                .map(|reference| NodeRuntime::capture_reference_storage(reference).unwrap())
+                .sum::<usize>();
+
+        assert!(lookup.returned_row_bytes() >= actual);
+        assert_eq!(
+            lookup.verification_bytes,
+            NodeRuntime::capture_hash_storage(&output.hash).unwrap()
+        );
+        assert!(lookup.requested_bytes().unwrap() > lookup.returned_row_bytes());
+        assert!(
+            PacketCompleteCaptureDependencyLookupData::from_borrowed_capture17_data(
+                &output,
+                &dependencies,
+                1,
+            )
+            .is_err()
+        );
+        assert_ne!(dependencies[0], dependencies[1]);
+    }
+    #[test]
+    fn actual_row_copy_requires_exact_hash_and_full_independent_lookup_credit() {
+        let bytes = b"actual body accepted by the defining content contract";
+        let output = canonical::content_ref(bytes, "application/json").unwrap();
+        let dependency =
+            canonical::content_ref(b"actual signed dependency", "application/json").unwrap();
+        let dependencies = [dependency];
+        let quote = PacketCompleteCaptureDependencyLookupData::from_borrowed_capture17_data(
+            &output,
+            &dependencies,
+            1,
+        )
+        .unwrap()
+        .requested_bytes()
+        .unwrap();
+
+        let copied =
+            copy_capture17_dependencies_data(&output, bytes, &dependencies, 1, quote).unwrap();
+
+        assert_eq!(copied.as_slice(), dependencies);
+        assert!(
+            copy_capture17_dependencies_data(&output, bytes, &dependencies, 1, quote - 1).is_err()
+        );
+        assert!(
+            copy_capture17_dependencies_data(&output, b"substituted body", &dependencies, 1, quote)
+                .is_err()
+        );
     }
 }

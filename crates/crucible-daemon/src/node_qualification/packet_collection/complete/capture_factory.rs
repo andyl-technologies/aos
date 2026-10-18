@@ -9,6 +9,7 @@ use std::{cell::RefCell, mem::size_of, rc::Rc};
 mod archive_code;
 mod archive_validation;
 mod dependencies;
+mod host17;
 mod key;
 mod restoration_prebirth;
 mod restoration_source;
@@ -431,8 +432,16 @@ impl PacketCompleteCaptureFactory {
                 (
                     &host.binding.compatibility.implementation.implementation_id,
                     "source-owned.host-scheduling-original-lineage/2",
-                    "source-owned.host-scheduling-continuation/2",
-                    2,
+                    if self.selected_host_capture17_data()? {
+                        "source-owned.host-scheduling-continuation/17"
+                    } else {
+                        "source-owned.host-scheduling-continuation/2"
+                    },
+                    if self.selected_host_capture17_data()? {
+                        17
+                    } else {
+                        2
+                    },
                     &host.binding.compatibility.implementation.formats,
                 )
             } else {

@@ -21,13 +21,14 @@ use crucible_node_provider::reference_packet::{
 use std::mem::size_of;
 
 pub(super) const OUTPUT_COUNT: usize = 11;
-pub(super) const EVIDENCE_COUNT: usize = 9;
+pub(super) const EVIDENCE_COUNT: usize = 10;
 
 // Ordered as state; control, before, anchor, after, Controller, semantic, Node,
 // scope, prefix; and the independently owned final journal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct CaptureMaterializationStorage {
     bounds: [usize; OUTPUT_COUNT],
+    pub(super) born: super::effect::CaptureBornStorage,
     pub(super) retained: usize,
     pub(super) transient: usize,
     pub(super) scratch: usize,
@@ -76,6 +77,10 @@ impl CaptureMaterializationStorage {
         finalization: &FinalizationStorage,
         semantic: usize,
         prefix: usize,
+        ancestry: &super::ancestry::OriginalRestoredCaptureAncestry17Data<'_>,
+        inherited: Option<&super::logical::OriginalSourceRestoredSettled17Read>,
+        archive: &crate::node_state::CompleteOriginalRestorationSource,
+        original_runtime_reference_bytes: usize,
         maximum: usize,
     ) -> Result<Self, RuntimeError> {
         native
@@ -104,6 +109,14 @@ impl CaptureMaterializationStorage {
         let metadata = NodeRuntime::capture_native_output_metadata_clone_storage_data(
             metadata.0, metadata.1, metadata.2, metadata.3, metadata.4,
         )?;
+        let born = super::effect::CaptureBornStorage::quote_data(
+            source,
+            ancestry,
+            inherited,
+            archive,
+            original_runtime_reference_bytes,
+            maximum,
+        )?;
         let body_bytes = sum(&bounds, maximum)?;
         // Valid full ContentRef always uses blake3-256/cnp.blob.v1/64 hex.
         // Each role is checked against this exact media before its clone.
@@ -111,6 +124,7 @@ impl CaptureMaterializationStorage {
         let retained = sum(
             &[
                 body_bytes,
+                born.retained,
                 reference_bytes,
                 metadata,
                 EVIDENCE_COUNT
@@ -122,11 +136,15 @@ impl CaptureMaterializationStorage {
         )?;
         // Copies write directly to their final retained Vec. Hash verification
         // allocates only one fixed HashRef spelling, never another body buffer.
-        let transient = "blake3-256".len() + "cnp.blob.v1".len() + 64;
-        let scratch = Self::counter_scratch_data();
+        let transient = sum(
+            &["blake3-256".len() + "cnp.blob.v1".len() + 64, born.transient],
+            maximum,
+        )?;
+        let scratch = sum(&[Self::counter_scratch_data(), born.scratch], maximum)?;
         sum(&[retained, transient, scratch], maximum)?;
         Ok(Self {
             bounds,
+            born,
             retained,
             transient,
             scratch,
@@ -145,7 +163,8 @@ impl CaptureMaterializationStorage {
         &self,
         limits: NativeCaptureLimits,
     ) -> Result<(), RuntimeError> {
-        if limits.maximum_objects < OUTPUT_COUNT
+        if limits.maximum_objects < OUTPUT_COUNT + 1
+            || self.born.index_encoded > limits.maximum_record_bytes
             || self
                 .bounds
                 .iter()
@@ -153,7 +172,11 @@ impl CaptureMaterializationStorage {
         {
             return Err(RuntimeError::ResourceLimit);
         }
-        sum(&self.bounds, limits.maximum_total_record_bytes)?;
+        let bodies = sum(&self.bounds, limits.maximum_total_record_bytes)?;
+        sum(
+            &[bodies, self.born.index_encoded],
+            limits.maximum_total_record_bytes,
+        )?;
         // This family returns no streamed artifacts. Both artifact debits are
         // exactly zero; neither supplied artifact ceiling is raised or reused.
         Ok(())
@@ -208,6 +231,7 @@ mod tests {
     fn row() -> CaptureMaterializationStorage {
         CaptureMaterializationStorage {
             bounds: [3; OUTPUT_COUNT],
+            born: super::super::effect::CaptureBornStorage::data_test_index_bound(3),
             retained: 0,
             transient: 0,
             scratch: 0,
@@ -218,8 +242,8 @@ mod tests {
     fn every_output_role_and_total_requires_independent_native_credit() {
         let limits = NativeCaptureLimits {
             maximum_record_bytes: 3,
-            maximum_total_record_bytes: 33,
-            maximum_objects: OUTPUT_COUNT,
+            maximum_total_record_bytes: 36,
+            maximum_objects: OUTPUT_COUNT + 1,
             maximum_artifact_bytes: 0,
             maximum_total_artifact_bytes: 0,
         };
@@ -229,10 +253,14 @@ mod tests {
             changed.bounds[index] = 4;
             assert!(changed.authenticate_limits_data(limits).is_err());
         }
+        let mut larger_index = row();
+        larger_index.born.index_encoded = 4;
+        assert!(larger_index.authenticate_limits_data(limits).is_err());
+
         assert!(
             row()
                 .authenticate_limits_data(NativeCaptureLimits {
-                    maximum_total_record_bytes: 32,
+                    maximum_total_record_bytes: 35,
                     ..limits
                 })
                 .is_err()
@@ -240,7 +268,7 @@ mod tests {
         assert!(
             row()
                 .authenticate_limits_data(NativeCaptureLimits {
-                    maximum_objects: OUTPUT_COUNT - 1,
+                    maximum_objects: OUTPUT_COUNT,
                     ..limits
                 })
                 .is_err()

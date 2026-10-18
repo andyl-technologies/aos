@@ -17,6 +17,13 @@ use serde::de::DeserializeOwned;
 
 use super::{PacketCompleteGraphRequest, QualificationError, refused};
 
+#[path = "records/host_capture17.rs"]
+mod host_capture17;
+
+pub(super) fn host_capture17_counter_scratch_data() -> usize {
+    host_capture17::counter_scratch_data()
+}
+
 pub(super) struct Validated {
     pub(super) requirements: HashRef,
     pub(super) schemas: Vec<SchemaRef>,
@@ -288,13 +295,7 @@ pub(super) fn validate(
         || host.owner.node_bindings != [request.world.node_bindings[3].clone()]
         || host.owner.owner.participant_ids != [host.descriptor.id.clone()]
         || !host.descriptor.ports.is_empty()
-        || host.binding.compatibility.implementation.formats.as_slice()
-            != [
-                crucible::node_contract::host_scheduling_complete_owner_preparation_schema()
-                    .map_err(|error| QualificationError::Evidence(error.reason))?,
-                crucible::node_contract::host_scheduling_complete_continuation_schema()
-                    .map_err(|error| QualificationError::Evidence(error.reason))?,
-            ]
+        || !host_capture17::authenticate_formats_data(request)?
         || !owners.insert(host.owner.owner.id.clone())
     {
         return Err(refused());

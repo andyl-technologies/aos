@@ -30,6 +30,8 @@ mod claims;
 mod host;
 #[path = "restored_capture/member.rs"]
 mod member;
+#[path = "restored_capture/terminal.rs"]
+mod terminal;
 
 #[path = "restored_capture/inputs.rs"]
 mod inputs;
@@ -59,6 +61,7 @@ struct Attempt {
     checkpoint_inputs: checkpoint_inputs::OriginalRestoredCaptureCheckpointInputs17,
     counting_banks: [banks::CountingBanks; 3],
     host: host::RetainedHost17Capture,
+    terminal: terminal::RetainedTerminal17,
     writer_join: Cell<checkpoint::WriterJoinStage>,
     window_work: (usize, usize, usize),
     prequote: [Option<(usize, usize, usize)>; 3],
@@ -91,6 +94,7 @@ impl Attempt {
                 self.window_work.1,
                 self.window_work.2,
                 self.host.future_requested_bytes_data(maximum)?,
+                self.terminal.future_requested_bytes_data(maximum)?,
             ],
             maximum,
         )?;
@@ -153,6 +157,7 @@ impl Ledger {
                     requested,
                     attempt.capture_id.allocated_capacity(),
                     attempt.host.retained_requested_backing_data()?,
+                    attempt.terminal.retained_requested_backing_data()?,
                     attempt.checkpoint.retained_requested_storage_data()?,
                     attempt
                         .checkpoint_inputs
@@ -251,6 +256,7 @@ impl CompleteOriginalRestorationWindow {
                 checkpoint_inputs::OriginalRestoredCaptureCheckpointInputs17::default(),
             counting_banks: std::array::from_fn(|_| banks::CountingBanks::default()),
             host: host::RetainedHost17Capture::default(),
+            terminal: terminal::RetainedTerminal17::default(),
             writer_join: Cell::new(checkpoint::WriterJoinStage::Waiting),
             window_work,
             prequote: [None; 3],
@@ -326,16 +332,21 @@ impl CompleteOriginalRestorationWindow {
             .restored_captures
             .try_borrow_mut()
             .map_err(|_| RuntimeError::OwnerBusy)?;
+        let source = self
+            .sources
+            .get(selected)
+            .ok_or(RuntimeError::ForeignAuthority)?;
         let attempt = ledger
             .pending
             .as_mut()
             .ok_or(RuntimeError::OwnerUnavailable)?;
-        let slot = attempt
+        let occupied = attempt
             .rows
-            .get_mut(selected)
-            .ok_or(RuntimeError::ForeignAuthority)?;
+            .get(selected)
+            .ok_or(RuntimeError::ForeignAuthority)?
+            .is_some();
         if attempt.stage.get() != Stage::Preparing
-            || slot.is_some()
+            || occupied
             || attempt.prequote.iter().any(Option::is_none)
         {
             return Err(RuntimeError::OutstandingObligations);
@@ -345,10 +356,15 @@ impl CompleteOriginalRestorationWindow {
             .get(selected)
             .ok_or(RuntimeError::ForeignAuthority)?
             .require_quoted_data()?;
-        *slot = Some(row);
+        let provenance = row.authenticate_source_data(source.as_ref(), &attempt.request_data());
+        *attempt
+            .rows
+            .get_mut(selected)
+            .ok_or(RuntimeError::ForeignAuthority)? = Some(row);
         // Retain even a refused row before validation; no earlier whole
         // observation remains current after this new future commitment.
         self.whole_observation.require_observation();
+        provenance?;
         row.requested_bytes_data()?;
         if attempt.rows.iter().all(Option::is_some) {
             attempt.stage.set(Stage::Quoted);
@@ -585,6 +601,10 @@ impl CompleteOriginalRestorationWindow {
             attempt.stage.set(Stage::Failed);
             return Err(RuntimeError::OutstandingObligations);
         }
+        if let Err(error) = attempt.terminal.require_completed_data() {
+            attempt.stage.set(Stage::Failed);
+            return Err(error);
+        }
         if let Err(error) = attempt.host.require_spent_data() {
             attempt.stage.set(Stage::Failed);
             return Err(error);
@@ -800,5 +820,6 @@ pub(super) fn counter_scratch_data() -> usize {
         + PacketCompleteSemanticSource::original_restored_capture_counter_scratch_data()
         + banks::counter_scratch_data()
         + host::counter_scratch_data()
+        + terminal::counter_scratch_data()
         + crate::node_contract::RestoredCollectingCaptureScope17::launch_operand_counter_scratch_data()
 }

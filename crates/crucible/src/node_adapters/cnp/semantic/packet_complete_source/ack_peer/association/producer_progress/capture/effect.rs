@@ -28,6 +28,7 @@ use crate::{
 use crucible_node_contract::canonical;
 use crucible_node_provider::{
     client::CnpController,
+    protocol_snapshot::restored_journal17::PacketRestoredSettledAncestry17,
     reference_packet::service::{
         complete_restore::activation::PacketRestorationActivationScope,
         native_startup::original_restored_settled_capture_auxiliary_geometry_for_lengths_data,
@@ -312,6 +313,9 @@ impl CaptureConstructionOwners {
 /// accepts completion; the complete archive still owns joint persistence.
 pub struct OriginalSourceRestoredCaptureCompletion<'a> {
     row: &'a Row,
+    ancestry: &'a PacketRestoredSettledAncestry17,
+    inherited: Option<&'a super::logical::OriginalSourceRestoredSettled17Read>,
+    archive: &'a crate::node_state::CompleteOriginalRestorationSource,
     world: &'a WorldActivation,
     ticket: &'a OriginalLineageOwnerCaptureTicket<'a>,
     pub(super) record: &'a OriginalLineageRuntimeRecord,
@@ -718,6 +722,12 @@ impl PacketCompleteSemanticSource {
             let state = &owner.construction;
             let completion = OriginalSourceRestoredCaptureCompletion {
                 row: &row,
+                ancestry: state
+                    .ancestry
+                    .as_ref()
+                    .ok_or(RuntimeError::OwnerUnavailable)?,
+                inherited: encoding.inherited,
+                archive: inputs.archive,
                 finalization: &state.finalization,
                 materialization: &owner.materialization,
                 world: inputs.world,
@@ -797,7 +807,7 @@ pub(super) fn counter_scratch_data() -> usize {
 
 #[path = "effect/materialization.rs"]
 mod materialization;
-pub(super) use materialization::CaptureMaterializationOwner;
+pub(super) use materialization::{CaptureMaterializationOwner, CaptureBornStorage};
 
 fn same_prior_data(
     a: Option<&super::logical::OriginalSourceRestoredSettled17Read>,

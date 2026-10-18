@@ -8,9 +8,13 @@ use super::*;
 use crate::node_adapters::cnp::PacketCompleteSemanticSource;
 use crate::node_contract::{
     HostSchedulingContinuationLimits, HostSchedulingSource, NodeRuntime,
-    OriginalLineageRuntimeRecord, PreparedRestoredHost17Capture,
+    OriginalLineageRuntimeRecord, OriginalLineageWorldCapture, PreparedRestoredHost17Capture,
 };
 use crate::node_scheduling::{InputPayload, SchedulingSnapshot};
+use crate::node_state::{
+    NativeArchiveRecord, RestoredArchive17ValidationConstructionData,
+    RestoredArchive17ValidationPrewalkData, RestoredArchive17ValidationStep,
+};
 use crucible_node_provider::reference_packet::service::PacketNative5SourceLaunch;
 use crucible_node_provider::reference_packet::service::complete_restore::settled_recapture::CoordinatorCommitmentCheckpoint17;
 
@@ -106,7 +110,9 @@ impl<'a> RestoredCollectingCaptureScope17<'a> {
                 self.runtime,
             )?;
         self.window
-            .authenticate_restored_host17_phase_data(self.slot)
+            .authenticate_restored_host17_phase_data(self.slot)?;
+        self.window
+            .authenticate_restored_terminal17_phase_data(self.slot)
     }
 
     /// Borrows this current member's actual synchronous launch operands.
@@ -134,6 +140,36 @@ impl<'a> RestoredCollectingCaptureScope17<'a> {
             .ok_or(RuntimeError::ForeignAuthority)?;
         self.authenticate_current_data()?;
         Ok((launch, encoded))
+    }
+
+    /// Borrows this Source's admitted imported-closure geometry before effects.
+    ///
+    /// The eight counts describe objects, body bytes, reference backing, edge
+    /// occurrences, adjacency backing, largest body, largest returned row, and
+    /// largest row plus hash work. They come from the same retained Source row;
+    /// no closure walk, object body, read owner or native permission is created.
+    ///
+    /// # Errors
+    /// Refuses stale Scope/Window/World custody, a foreign Source, unadmitted or
+    /// advanced attempt state, a started member, or a failed/reentrant writer.
+    pub(crate) fn original_source_imported_closure_storage_data(
+        &self,
+        source: &PacketCompleteSemanticSource,
+    ) -> Result<(usize, usize, usize, usize, usize, usize, usize, usize), RuntimeError> {
+        self.authenticate_current_data()?;
+        let storage = self
+            .window
+            .original_restored_capture_imported_closure_storage_data(
+                self.graph.plan(),
+                self.world,
+                self.slot,
+                &self.capture_id,
+                self.runtime,
+                source,
+            )?;
+        // The Window's ledger loan is released before currentness callbacks.
+        self.authenticate_current_data()?;
+        Ok(storage)
     }
 
     /// Commits fixed Host counter work before its independently observed quote.
@@ -218,6 +254,115 @@ impl<'a> RestoredCollectingCaptureScope17<'a> {
         )
     }
 
+    /// Compares the same retained Window while holding genuine current scope custody.
+    pub(crate) fn same_window_data(&self, window: &CompleteOriginalRestorationWindow) -> bool {
+        std::ptr::eq(self.window, window)
+    }
+
+    /// Retains real terminal prewalk and next-ledger-bank credit after all owners.
+    ///
+    /// # Errors
+    /// Refuses incomplete real outputs, stale scope, repeated stages or policy excess.
+    pub(crate) fn retain_terminal_validation_prewalk_data(
+        &self,
+        runtime: &NodeRuntime,
+        capture: &OriginalLineageWorldCapture,
+        archive: &NativeArchiveRecord,
+        prewalk: RestoredArchive17ValidationPrewalkData,
+    ) -> Result<(), RuntimeError> {
+        self.authenticate_runtime_data(runtime)?;
+        self.window.retain_terminal_validation_prewalk_data(
+            self.slot, self, runtime, capture, archive, prewalk,
+        )
+    }
+
+    /// Appends the actual pending numeric phase after its bank was fully observed.
+    ///
+    /// # Errors
+    /// Refuses unobserved credit, stale custody, reuse or failed bank allocation.
+    pub(crate) fn append_terminal_validation_phase_data(
+        &self,
+        runtime: &NodeRuntime,
+        capture: &OriginalLineageWorldCapture,
+        archive: &NativeArchiveRecord,
+    ) -> Result<(), RuntimeError> {
+        self.authenticate_runtime_data(runtime)?;
+        self.window
+            .append_terminal_validation_phase_data(self.slot, self, runtime, capture, archive)
+    }
+
+    /// Retains a complete real constructor row including all prior live cache work.
+    ///
+    /// # Errors
+    /// Refuses missing prewalk admission, changed geometry or policy excess.
+    pub(crate) fn retain_terminal_validation_row_data(
+        &self,
+        runtime: &NodeRuntime,
+        capture: &OriginalLineageWorldCapture,
+        archive: &NativeArchiveRecord,
+        row: RestoredArchive17ValidationConstructionData,
+    ) -> Result<(), RuntimeError> {
+        self.authenticate_runtime_data(runtime)?;
+        self.window
+            .retain_terminal_validation_row_data(self.slot, self, runtime, capture, archive, row)
+    }
+
+    /// Starts one actual pure constructor after genuine full row observation.
+    ///
+    /// # Errors
+    /// Refuses another step, stale output custody, reuse or pending observation.
+    pub(crate) fn begin_terminal_validation_constructor_data(
+        &self,
+        runtime: &NodeRuntime,
+        capture: &OriginalLineageWorldCapture,
+        archive: &NativeArchiveRecord,
+        step: RestoredArchive17ValidationStep,
+    ) -> Result<(), RuntimeError> {
+        self.authenticate_runtime_data(runtime)?;
+        self.window.begin_terminal_validation_constructor_data(
+            self.slot, self, runtime, capture, archive, step,
+        )
+    }
+
+    /// Retains a constructor's genuine completed-cache census and spent step.
+    ///
+    /// # Errors
+    /// Refuses stale custody, another step, reuse or actual retained cache excess.
+    pub(crate) fn finish_terminal_validation_stage_data(
+        &self,
+        runtime: &NodeRuntime,
+        capture: &OriginalLineageWorldCapture,
+        archive: &NativeArchiveRecord,
+        step: RestoredArchive17ValidationStep,
+        actual_cache_retained: usize,
+    ) -> Result<(), RuntimeError> {
+        self.authenticate_runtime_data(runtime)?;
+        self.window.finish_terminal_validation_stage_data(
+            self.slot,
+            self,
+            runtime,
+            capture,
+            archive,
+            step,
+            actual_cache_retained,
+        )
+    }
+
+    /// Requires the completed terminal conjunction before the actual final signer.
+    ///
+    /// # Errors
+    /// Refuses stale complete-output custody, unfinished stages or pending census.
+    pub(crate) fn require_terminal_validation_completed_data(
+        &self,
+        runtime: &NodeRuntime,
+        capture: &OriginalLineageWorldCapture,
+        archive: &NativeArchiveRecord,
+    ) -> Result<(), RuntimeError> {
+        self.authenticate_runtime_data(runtime)?;
+        self.window
+            .require_terminal_validation_completed_data(self.slot, self, runtime, capture, archive)
+    }
+
     /// Names the scope and borrowed member-operand controls before their loan.
     pub(crate) const fn launch_operand_counter_scratch_data() -> usize {
         use std::mem::size_of;
@@ -237,6 +382,15 @@ impl<'a> RestoredCollectingCaptureScope17<'a> {
             + size_of::<&CoordinatorCommitmentCheckpoint17>()
             + size_of::<[&InputPayload; 3]>()
             + size_of::<&Rc<PreparedRestoredHost17Capture>>()
+            + size_of::<&OriginalLineageWorldCapture>()
+            + size_of::<&NativeArchiveRecord>()
+            + size_of::<RestoredArchive17ValidationPrewalkData>()
+            + size_of::<RestoredArchive17ValidationConstructionData>()
+            + size_of::<RestoredArchive17ValidationStep>()
+            + size_of::<(usize, usize, usize, usize, usize, usize, usize, usize)>()
+            + size_of::<
+                Result<(usize, usize, usize, usize, usize, usize, usize, usize), RuntimeError>,
+            >()
     }
 
     pub(crate) fn authenticate_runtime_data(

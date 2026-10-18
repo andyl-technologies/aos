@@ -262,3 +262,21 @@ impl CompleteOriginalNativeTicket {
             .native_import_geometry_data())
     }
 }
+
+impl CompleteOriginalNativeTicket {
+    /// Borrows the actual retained original archive for inert Index3 data only.
+    ///
+    /// This lends no fresh mapping, target, Source, admission or native authority.
+    /// The existing ticket remains the sole owner of this same verified source.
+    ///
+    /// # Errors
+    /// Refuses changed original actor custody.
+    pub(crate) fn original_capture_parent_archive17_data(
+        &self,
+    ) -> Result<&super::NativeArchiveRecord, RuntimeError> {
+        self.source.authenticate_birth()?;
+        let archive = self.source.archive();
+        self.source.authenticate_birth()?;
+        Ok(archive)
+    }
+}

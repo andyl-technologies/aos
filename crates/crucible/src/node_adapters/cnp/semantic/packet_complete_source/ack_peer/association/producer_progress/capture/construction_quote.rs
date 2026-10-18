@@ -61,6 +61,7 @@ impl PacketCompleteSemanticSource {
                     controller, launch,
                 )?,
                 demand.historical_serialization_transient_bytes_data(),
+                crate::node_state::NativeArchiveRecord::complete_original_index_identity_counter_transient_data(),
                 node.original_controller_history_serialization_transient_data(controller)?,
                 launch_pass
                     .canonical_pass_requested_bytes()
@@ -75,6 +76,8 @@ impl PacketCompleteSemanticSource {
         let scratch = sum(
             &[
                 Self::original_restored_capture_counter_scratch_data(),
+                crate::node_state::NativeArchiveRecord::complete_original_index_identity_counter_scratch_data(),
+                crate::node_state::NativeArchiveRecord::complete_original_index_body17_counter_scratch_data(),
                 demand.counter_scratch_bytes_data(),
                 CnpController::settled_history_counter_scratch_data(),
                 super::finalization::FinalizationStorage::counter_scratch_data(),
@@ -124,7 +127,7 @@ impl PacketCompleteSemanticSource {
                 .source_output_validation_data()
                 .map_err(|_| RuntimeError::ResourceLimit)
         })?;
-        let (prefix, frozen, frontier) = self.with_latest_original_checkpoint17_geometry_data(
+        let (prefix, frozen, frontier, original_runtime_reference_bytes) = self.with_latest_original_checkpoint17_geometry_data(
             controller,
             inputs.world,
             |current| {
@@ -159,7 +162,12 @@ impl PacketCompleteSemanticSource {
                     request.maximum_coordinator_checkpoint_encoded_bytes,
                     maximum,
                 )?;
-                Ok((prefix, frozen, current.completed_frontier_data()))
+                Ok((
+                    prefix,
+                    frozen,
+                    current.completed_frontier_data(),
+                    NodeRuntime::capture_reference_storage(&current.scope_data().source_runtime)?,
+                ))
             },
         )?;
         if frontier.get() == 0 || prefix > self.installation().maximum_semantic_bytes {
@@ -236,6 +244,10 @@ impl PacketCompleteSemanticSource {
                 &finalization,
                 semantic,
                 prefix,
+                quote.ancestry,
+                quote.inherited,
+                inputs.archive,
+                original_runtime_reference_bytes,
                 maximum,
             )?;
         let retained = sum(
@@ -336,6 +348,7 @@ impl PacketCompleteSemanticSource {
     pub(crate) fn original_restored_capture_counter_scratch_data() -> usize {
         use std::mem::size_of;
         size_of::<Row>()
+            + Row::authenticate_source_counter_scratch_data()
             + size_of::<Result<Row, RuntimeError>>()
             + size_of::<OriginalRestoredSettledCaptureProspectiveData<'static>>()
             + size_of::<super::quote_context::OriginalSourceRestoredCaptureQuoteInputs<'static>>()

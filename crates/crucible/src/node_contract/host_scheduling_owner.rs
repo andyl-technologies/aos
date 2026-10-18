@@ -43,6 +43,7 @@ pub use restored_continuation::{
     RestoredHostAncestry17, RestoredHostSemanticAncestor,
     authenticate_host_scheduling_restored_continuation_schema17_data,
     host_scheduling_restored_continuation_definition17,
+    host_scheduling_restored_continuation_definition17_bytes_data,
     host_scheduling_restored_continuation_schema17,
     host_scheduling_restored_continuation_schema17_counter_scratch_data,
 };

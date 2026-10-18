@@ -929,3 +929,21 @@ impl OriginalCompleteRestoreAttempt {
         })
     }
 }
+
+impl OriginalAckPeerAssociation {
+    /// Borrows the actually retained original ticket without issuing authority.
+    ///
+    /// # Errors
+    /// Refuses a missing original attempt/ticket or changed ticket actor custody.
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn original_capture_parent_ticket17_data(
+        &self,
+    ) -> Result<&CompleteOriginalNativeTicket, RuntimeError> {
+        let ticket = self
+            .restore
+            .as_ref()
+            .and_then(|restore| restore.ticket.as_ref())
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        ticket.owner()?;
+        Ok(ticket)
+    }
+}

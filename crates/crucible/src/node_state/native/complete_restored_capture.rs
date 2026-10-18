@@ -18,6 +18,15 @@ use std::thread::ThreadId;
 #[path = "complete_restored_capture/validation.rs"]
 mod validation;
 
+#[path = "complete_restored_capture/terminal.rs"]
+mod terminal;
+pub(crate) use terminal::{
+    RestoredArchive17ParentIdentity, RestoredArchive17ParentStep, RestoredArchive17ParentWork,
+    RestoredArchive17SourceIndex, RestoredArchive17ValidationAdmission,
+    RestoredArchive17ValidationConstructionData, RestoredArchive17ValidationPrewalkData,
+    RestoredArchive17ValidationStage, RestoredArchive17ValidationStep,
+};
+
 #[path = "complete_restored_capture/coordinator_ancestry17.rs"]
 mod coordinator_ancestry17;
 

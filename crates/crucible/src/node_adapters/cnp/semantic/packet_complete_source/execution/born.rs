@@ -178,6 +178,29 @@ impl PacketCompleteSemanticSource {
         maximum_scratch_bytes: usize,
     ) -> Result<Option<Vec<ContentRef>>, OperationFailure> {
         self.ensure_origin()?;
+        if crate::node_adapters::cnp::CnpSemanticSource::requires_restored_capture17_scope_data(
+            self,
+        )
+        .map_err(unknown)?
+        {
+            return self
+                .with_original_capture17_dependency_row_data(reference, |row| {
+                    let Some(dependencies) = row else {
+                        return Ok(None);
+                    };
+                    // Unknown objects never become a leaf. Concrete rows use the
+                    // same separately priced fullref/body copy path as the tests.
+                    super::dependency_credit::copy_capture17_dependencies_data(
+                        reference,
+                        bytes,
+                        dependencies,
+                        maximum_objects,
+                        maximum_scratch_bytes,
+                    )
+                    .map(Some)
+                })
+                .map_err(unknown);
+        }
         let execution = self
             .capture_execution
             .try_borrow()

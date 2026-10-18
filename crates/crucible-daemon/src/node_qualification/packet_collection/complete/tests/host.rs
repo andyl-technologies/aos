@@ -37,6 +37,18 @@ fn put(content: &mut BTreeMap<ContentRef, Vec<u8>>, value: &impl Serialize) -> C
 
 impl Host {
     pub(super) fn new(executable: ContentRef, proof: ContentRef) -> Self {
+        Self::with_capture17_selection(executable, proof, false)
+    }
+
+    pub(super) fn new_restored17(executable: ContentRef, proof: ContentRef) -> Self {
+        Self::with_capture17_selection(executable, proof, true)
+    }
+
+    fn with_capture17_selection(
+        executable: ContentRef,
+        proof: ContentRef,
+        selected17: bool,
+    ) -> Self {
         let mut content = BTreeMap::new();
         let definition_bytes = host_scheduling_complete_owner_definition().unwrap();
         let definition = canonical::content_ref(&definition_bytes, "application/json").unwrap();
@@ -60,6 +72,19 @@ impl Host {
             "versioned Host2 continuation fixture differs from its actual schema"
         );
         content.insert(continuation_reference, continuation_bytes);
+        let mut formats = vec![preparation, continuation];
+        if selected17 {
+            let schema =
+                crucible::node_contract::host_scheduling_restored_continuation_schema17().unwrap();
+            let bytes =
+                crucible::node_contract::host_scheduling_restored_continuation_definition17()
+                    .unwrap();
+            schema.definition.verify(&bytes).unwrap();
+            content.insert(schema.definition.clone(), bytes);
+            formats.push(schema);
+            formats
+                .sort_by(|left, right| (&left.id, left.version).cmp(&(&right.id, right.version)));
+        }
         let domains = HostSchedulingDomains {
             coordinator: id("zz-packet-coordinator-state"),
             connections: (0..2)
@@ -138,7 +163,7 @@ impl Host {
                         extensions: Extensions::new(),
                     }],
                     model_definitions: vec![definition.clone()],
-                    formats: vec![preparation, continuation],
+                    formats,
                     extensions: Extensions::new(),
                 },
                 profile_ref: definition.clone(),
@@ -241,4 +266,32 @@ impl Host {
             content,
         }
     }
+}
+
+#[test]
+fn explicit17_fixture_emits_definition_and_binding_before_world_birth() {
+    let proof = canonical::content_ref(b"inert proof", "text/plain").unwrap();
+    let old = Host::new(proof.clone(), proof.clone());
+    let new = Host::new_restored17(proof.clone(), proof);
+    let old_formats = &old.selection.binding.compatibility.implementation.formats;
+    let new_formats = &new.selection.binding.compatibility.implementation.formats;
+    assert_eq!(old_formats.len(), 2);
+    assert_eq!(new_formats[0], old_formats[0]);
+    assert_eq!(new_formats[2], old_formats[1]);
+    assert_eq!(new_formats.len(), 3);
+    new.selection
+        .binding
+        .compatibility
+        .implementation
+        .validate()
+        .unwrap();
+    assert!(new.content.contains_key(&new_formats[1].definition));
+    assert_ne!(
+        old.selection.binding.identity().unwrap(),
+        new.selection.binding.identity().unwrap()
+    );
+    assert_eq!(
+        new.selection.owner.node_bindings[0].binding_hash,
+        new.selection.binding.identity().unwrap()
+    );
 }

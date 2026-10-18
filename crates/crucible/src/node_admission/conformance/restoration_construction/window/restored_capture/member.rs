@@ -8,6 +8,74 @@ use super::*;
 use crate::node_contract::OriginalLineageNativeScope;
 
 impl CompleteOriginalRestorationWindow {
+    /// Borrows stored imported-closure geometry before any member starts.
+    ///
+    /// The actual Scope supplies its retained plan, World, attempt identity and
+    /// Runtime comparison pointer. The fixed Source slot and the row's original
+    /// Source/request provenance are checked without borrowing a Controller or
+    /// read owner. These counts grant neither those loans nor native effects.
+    ///
+    /// # Errors
+    /// Refuses foreign current custody, a pending/failed/advanced attempt, a
+    /// started member, failed/reentrant writer, unobserved storage, or absent
+    /// admitted geometry.
+    pub(crate) fn original_restored_capture_imported_closure_storage_data(
+        &self,
+        plan: &InstalledConformancePlan,
+        world: &WorldActivation,
+        slot: usize,
+        capture_id: &Id,
+        runtime: *const NodeRuntime,
+        source: &PacketCompleteSemanticSource,
+    ) -> Result<(usize, usize, usize, usize, usize, usize, usize, usize), RuntimeError> {
+        self.origin()?;
+        let selected = self.original_installed_source_index_data(source)?;
+        // Retain the genuine Window plan without allocating an expired-Weak
+        // diagnostic, including when a foreign caller supplied another plan.
+        let original_plan = crate::node_admission::conformance::InstalledConformancePlan(
+            self.plan
+                .0
+                .upgrade()
+                .ok_or(RuntimeError::ForeignAuthority)?,
+        );
+        if !original_plan.is_same_original_plan_data(plan) {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        self.authenticate_restored_capture_archive_identity_data(
+            &original_plan,
+            world,
+            slot,
+            capture_id,
+            runtime,
+        )?;
+
+        let ledger = self
+            .restored_captures
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        if ledger.pending.is_some() {
+            return Err(RuntimeError::OutstandingObligations);
+        }
+        let attempt = ledger.active(slot)?;
+        if attempt.stage.get() != Stage::Admitted
+            || attempt.members.iter().any(|member| member.get() != 0)
+            || !matches!(
+                attempt.writer_join.get(),
+                checkpoint::WriterJoinStage::Waiting | checkpoint::WriterJoinStage::Verified
+            )
+        {
+            return Err(RuntimeError::OutstandingObligations);
+        }
+        let row = attempt
+            .rows
+            .get(selected)
+            .and_then(Option::as_ref)
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        row.authenticate_source_data(source, &attempt.request_data())?;
+        row.requested_bytes_data()?;
+        Ok(row.capture_imported_closure_storage_data())
+    }
+
     /// Borrows the actual admitted Source row before the archive writer joins.
     ///
     /// The current Window, Source/read/controller owners, complete checkpoint
@@ -216,6 +284,7 @@ impl CompleteOriginalRestorationWindow {
 /// Names the preflight's genuine plan upgrade, borrowed ledger and DATA result.
 pub(super) fn counter_scratch_data() -> usize {
     type PlanOwner = Rc<crate::node_admission::conformance::Plan>;
+    type ImportedClosureStorage = (usize, usize, usize, usize, usize, usize, usize, usize);
     size_of::<PlanOwner>()
         + size_of::<Option<PlanOwner>>()
         + size_of::<Result<PlanOwner, RuntimeError>>()
@@ -235,5 +304,12 @@ pub(super) fn counter_scratch_data() -> usize {
         + size_of::<*const NodeRuntime>()
         + size_of::<std::slice::Iter<'static, Cell<u8>>>()
         + size_of::<Option<usize>>()
+        + size_of::<&PacketCompleteSemanticSource>()
+        + size_of::<&InstalledConformancePlan>()
+        + size_of::<&WorldActivation>()
+        + size_of::<&Id>()
+        + size_of::<ImportedClosureStorage>()
+        + size_of::<Result<ImportedClosureStorage, RuntimeError>>()
+        + OriginalSourceRestoredCaptureConstructionData::authenticate_source_counter_scratch_data()
         + size_of::<Result<(), RuntimeError>>()
 }

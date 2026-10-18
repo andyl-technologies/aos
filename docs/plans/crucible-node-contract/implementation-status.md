@@ -1852,3 +1852,34 @@ producers remain supported; explicit nulls, unknown nested fields, incomplete
 pairs and qualification promotions are refused. All five new metadata controls
 and the actual installed-profile epoch control pass. These source bindings do
 not widen the fixed profile’s execution or device qualification.
+
+
+### Retained dependencies and terminal verifier admission
+
+Current17 Source materialization retains its actual signed parent Index3 body
+and exact dependency rows, including a separate twelfth Core output copy.
+Imported closure geometry comes from the genuine retained original ticket and
+completed Source copies. The Window checks Source/request provenance before
+using the stored eight-field geometry loan; a refused row remains retained.
+
+Host format selection now precedes World construction and requires the actual
+three Sources' immutable declarations. The separate terminal verifier ledger
+retains independently admitted prewalk, bank and constructor commitments in
+actual dependency order. Prior live pure-parser caches are fully funded as
+transient overlap; failure preserves numeric debits, capacities, genuine owner
+outputs and once state. Numeric phase completion cannot replace signed-reader
+validation or authorize publication.
+
+The ordinary unfiltered library runs pass 1,908 Core, 1,482 Daemon, 1,367 Provider
+and twelve Contract tests. Existing ignored populations remain 33, 162, fifteen
+and one. The full Daemon run takes 342.68 seconds. All-feature/all-target checking
+passes across the six integration crates in 1 minute 33 seconds. Matching
+reference-provider and reference-device development binaries rebuild in
+17.15 seconds. The full-original identity control checks all thirteen Envelope
+fields and changes that preserve the normative request hash while changing raw
+original Values.
+
+The actual staged terminal reader, native Capture issuer, final historical
+conjunction and fresh adopter remain required. This ledger does not enable
+them. The production application-target build currently running is pinned to
+the earlier `268284137c` source; it does not cover this subsequent batch.

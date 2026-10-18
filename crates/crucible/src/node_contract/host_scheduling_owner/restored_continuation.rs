@@ -224,6 +224,14 @@ impl HostSchedulingRestoredContinuationRecord17 {
     }
 }
 
+/// Borrows the exact compiled Host17 contract bytes without constructing owners.
+///
+/// This immutable format DATA loan grants no Source, World or capture authority.
+/// Its borrowed bytes are identical to the owning definition producer's output.
+pub fn host_scheduling_restored_continuation_definition17_bytes_data() -> &'static [u8] {
+    CONTRACT_BYTES
+}
+
 /// Encodes the distinct current Host17 contract for immutable implementation binding.
 ///
 /// # Errors
