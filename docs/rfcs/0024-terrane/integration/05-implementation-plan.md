@@ -9262,12 +9262,23 @@ Resumed qualification:
   Checked storage arithmetic includes the new source and output-scope ownership.
   Source review covers all fourteen changed files. Committed-source all-target
   and native-only builds, eight focused regressions and the formatter pair pass.
-  Strict Clippy still reports the nineteen existing findings. Immutable image,
-  independent verification and actual guest qualification are running.
+  Strict Clippy still reports the nineteen existing findings; the diagnostic
+  reaching all targets with dead-code checks disabled passes without changing
+  source lint policy. The immutable image, independent source/image verifier
+  and actual ext4 component now pass. Both new resident-reassembly controls
+  execute successfully, including independent observation of the failed copy's
+  actual anonymous output. All six manifest controls, both Running-retention
+  controls, eight manifest/mixed recovery controls and all 47 selected filesystem
+  cases pass. Review verifies all 3,478 image inputs, the actual unit ELF and
+  all 43 exact selectors; no post-result guest I/O diagnostic appears.
+  Full filesystem qualification is now running on this revision; application
+  compilation remains required after the retained-source predecessor finishes.
   Each of the two isolated two-object cases has a finite policy ceiling equal to
   its unchanged 8 MiB project hard limit; existing cases retain their policy.
   The 512 MiB guest disk still contains the full declared 35-owner hard-limit
-  partition. No runtime pass or full task acceptance is claimed yet.
+  partition. This accepts the tested Running-source component only. Recovered
+  sources, completed retirement, consumer leases and NativeReady remain required;
+  no full task is accepted.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
   and all seven strict Clippy/documentation profiles pass. The interface,
   commit-path, status and schema gates pass on unchanged final source, including
