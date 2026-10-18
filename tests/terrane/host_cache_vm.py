@@ -11,6 +11,7 @@ import json
 import os
 import pathlib
 import re
+import resource
 import shutil
 import select
 import signal
@@ -102,6 +103,14 @@ def role_command(uid, arguments):
     groups = "844,845" if uid == 840 else "845"
     return ["setpriv", "--reuid", str(uid), "--regid", str(uid), "--groups", groups,
             "--bounding-set=-all", "--inh-caps=-all", "--ambient-caps=-all", *map(str, arguments)]
+
+
+def publisher_descriptor_budget():
+    """Bounds this expanded fixture's retained publisher directories and bodies."""
+    # All configured domains coexist in one real publisher. The inherited 1024
+    # soft ceiling leaves no room for probing after earlier controls retain their
+    # actual backing descriptors; this changes only this child's file budget.
+    resource.setrlimit(resource.RLIMIT_NOFILE, (4096, 4096))
 
 
 def admin_command(caps, arguments):
@@ -966,7 +975,9 @@ def main():
                 break
             require(helper.poll() is None and time.monotonic() < deadline, "actual quota helper failed readiness")
             time.sleep(0.02)
-        publisher = subprocess.Popen(role_command(841, [IMAGE / "bin/terrane", "--config", publisher_config, "--role", "publish"]), stdout=logs[1], stderr=subprocess.STDOUT)
+        publisher = subprocess.Popen(role_command(841, [IMAGE / "bin/terrane", "--config", publisher_config, "--role", "publish"]),
+                                     stdout=logs[1], stderr=subprocess.STDOUT,
+                                     preexec_fn=publisher_descriptor_budget)
         children.append(publisher)
         deadline = time.monotonic() + 15
         while True:
