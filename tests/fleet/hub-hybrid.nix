@@ -312,6 +312,9 @@
           proxy_set_header Host $http_host;
           proxy_http_version 1.1;
           proxy_request_buffering off;
+          # Preserve the held response owner's backpressure through to Worker.
+          # Spooling multi-GiB reads here hides that stream's actual lifetime.
+          proxy_buffering off;
         }
       }
     }
