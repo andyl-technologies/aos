@@ -128,7 +128,7 @@ manufacture QEMU readiness or infer it from process state. Unknown schema
 versions, fields, resource classes, proof bits, and outcome variants fail
 closed.
 
-The current template protocol is schema 29. It has four operations:
+The current template protocol is schema 30. It has four operations:
 
 ```text
 crucible-hot-fork-template prepare
@@ -203,7 +203,7 @@ per record, and 16 MiB in aggregate. Inputs must be strictly sorted,
 nonoverlapping, pairwise non-aliasing where required, and complete in both
 directions.
 
-The public fork command uses schema 3 and binds the exact template and staged
+The public fork command uses schema 4 and binds the exact template and staged
 resource generations:
 
 ```text
@@ -463,7 +463,7 @@ A missing or changed handoff quarantines the child before world publication.
 ## 05.9 Exact durable closure
 
 The RFC-0014 exact closure is retained as the portable representation. The
-current schema is version nine. It contains a manifest and authenticated
+current schema is version eleven. It contains a manifest and authenticated
 objects for scenario/configuration, scheduler, logs, signal artifacts,
 trigger/assertion/lifecycle/fault state, per-node snapshots, disk overlays,
 QEMU direct-plus-delta RAM layers, final device state, generations, and service
@@ -524,12 +524,12 @@ reconciliation then retires the ancestor leases. This capture-time rebase bounds
 the runtime chain without changing configuration identity or requiring a
 separate offline compaction path.
 
-Only version-nine manifests are decoded and authenticated. There is no
+Only version-eleven manifests are decoded and authenticated. There is no
 alternate monolithic VMState reader or restore path.
 `crucible.qemu.vmstate@device-state.1` is the opaque QEMU qcow2 VMState byte
 stream. Production publication uses
 `crucible.executor.exact-checkpoint-root@exact-manifest.5`. The root commits to
-the version-nine closure manifest and its direct-or-delta RAM layers, device
+the version-eleven closure manifest and its direct-or-delta RAM layers, device
 state, scheduler continuation and the sealed event-log segments it references
 (RFC section 15.12), immutable backing, fault checkpoint, and the
 replay closure of choice records discovered before the pause: a version 2
@@ -615,7 +615,7 @@ requires `object_count * 32 <= manifest_bytes`; every deduplicated object must
 occur as at least one 32-byte identity in the canonical manifest, so this
 conservative relation bounds hostile zero-length inventories by the 64 MiB
 manifest ceiling. Noncurrent production closure versions are rejected during
-decode; runtime restore requires the version-nine descriptor set.
+decode; runtime restore requires the version-eleven descriptor set.
 
 For a packaged fresh attempt, the modeled driver yields checkpoint ownership
 only at an exact safe boundary. The production lifecycle first retains the
@@ -635,12 +635,15 @@ synchronizes the parent again before the final paused-state CAS. Abort, stale,
 and promotion-revert paths retain the same cleanup authority and retry without
 guest work. At restart, the exclusive assignment-ledger writer first
 authenticates the complete retained checkpoint-root inventory, then applies the
-same crash-safe retirement protocol to the dedicated `campaign-workers` and
-`campaign-checkpoint-promotions` namespaces before creating any worker. The
-separate baked-genesis catalog is not retired by this recovery pass.
+same crash-safe retirement protocol to the packaged executor's eight native
+namespaces (`campaign-workers`, `campaign-attempt-event-logs`,
+`campaign-finding-replays`, `campaign-checkpoint-promotions`,
+`campaign-baked-genesis`, `campaign-debug`, `campaign-hot-fork-sources`, and
+`campaign-hot-fork-demanded`) before creating any worker. Baked genesis is
+captured before this pass, and its native catalog is retired with the others.
 
-The single-host restore transaction accepts a current version-nine exact-pin
-selection or the version-nine root retained by a paused execution origin. The
+The single-host restore transaction accepts a current version-eleven exact-pin
+selection or the version-eleven root retained by a paused execution origin. The
 latter must name the attempt's pre-selection or post-selection configuration;
 a foreign root is rejected before the first destination write. Before any
 root-overlay write or memfd creation, the transaction checks the aggregate
@@ -654,20 +657,20 @@ cannot fall back to a provisioned image, a monolithic VMState file, or a
 previous generation.
 
 Production process reconstruction and resume-driver selection require a
-version-nine manifest with descriptor-backed exact RAM and device state. The
+version-eleven manifest with descriptor-backed exact RAM and device state. The
 installer requires the branch post-selection configuration (or the discovery
 start) as an exact schedule prefix and rejects any later campaign branch edge
 as a different attempt before native-catalog publication. The resume-only
 admission rejects `NotRun` before native publication or resource installation,
 restores the complete scheduler/evidence continuation, and never falls back to
 fresh replay. The concrete node-specific replay factory shares one completely
-authenticated compact target catalog, opens only the requested version-nine
+authenticated compact target catalog, opens only the requested version-eleven
 snapshot, streams the selected exact and baked descriptor sets into separate
 pinned generations under one attempt guard, and launches them through disjoint
 exact and thin profile capabilities. Packaged startup captures that baked
 source before binding the endpoint, installs one fixed promotion owner per
 semantic worker, and advertises `ExactRestore` only when that nonempty owner set
-contains a current version-nine root.
+contains a current version-eleven root.
 Assignment-root-aware cleanup of abandoned attempt and promotion native
 catalogs is implemented by the crash-safe retirement protocol above. A
 `checkpoint-publishing(root)` record interrupted before immutable publication
@@ -676,7 +679,7 @@ must reproduce that root. Once the root is complete in campaign CAS, the native
 catalog is redundant and may be retired without weakening recovery or GC
 reachability.
 
-A newly captured version-nine exact root records replay-oracle state `NotRun`
+A newly captured version-eleven exact root records replay-oracle state `NotRun`
 and is not eligible for resume. The single-host owner authenticates the
 selected root and compares that descriptor-backed exact snapshot with an
 independently realized thin path. The comparison returns a capability bound to

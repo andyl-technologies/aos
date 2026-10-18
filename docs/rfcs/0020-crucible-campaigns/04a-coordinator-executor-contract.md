@@ -1763,8 +1763,8 @@ capture cannot race with an ordinary modeled quantum.
 and cancellation requests carry that scope explicitly and bind it into their
 request and execution-basis digests. An executor uses the explicit scope for
 direct lookup and never scans or infers a scope from a lineage and attempt ID.
-Attempt-state record v11 persists the scope and uses a separate storage-key
-domain for nonsemantic state.
+The attempt-state record (version 15 at the time of writing) persists the
+scope and uses a separate storage-key domain for nonsemantic state.
 
 The canonical `AttemptId` names the immutable `Attempt` record and is itself
 the execution specification; the protocol deliberately does not create a
@@ -1924,7 +1924,7 @@ exactly once when
 resuming the pre-selection parent and skips that application when resuming the
 post-selection boundary; a resumed attempt cannot traverse the edge twice. The
 checkpoint store and pinned run-directory transaction install the complete
-version-nine device-state, direct-plus-delta RAM, and overlay descriptors for
+current-version device-state, direct-plus-delta RAM, and overlay descriptors for
 that operation.
 The guarded replay-validation session, source-bound promotion preparation,
 linear publication phases, version-5 ledger transition, restart
@@ -2538,7 +2538,7 @@ to configured non-root values. Admission requires both IDs to differ from every
 real, effective, and saved supervisor user/group identity and its bounded
 supplementary-group set. `no_new_privs` is set before the credential switch so a
 later `exec` cannot regain privilege. Guarded spawn refuses implicit `qemu-img`
-work. Exact restore requires authenticated version-nine device-state and
+work. Exact restore requires authenticated current-version device-state and
 direct-plus-delta RAM descriptors plus any writable-root overlay. Before
 revalidating the prepared authority or allocating child descriptors, it checks
 the launch command's exact vCPU, guest-memory, writable-byte baseline, and
@@ -2842,18 +2842,18 @@ provisioning, and a real ext4 project-quota enforcement VM gate remain mandatory
 before this host owner is selected by the production executor.
 
 The packaged production executor binds its endpoint only after baked genesis
-and the version-nine exact-checkpoint capability are admitted. The guarded
+and the current-version exact-checkpoint capability are admitted. The guarded
 launch/session path transfers retained pre-install and active-node children into
 the attempt guard. The daemon guard composes cancellation, quantum accounting,
 descriptor-pinned preparation, and all-or-quarantine cleanup around the Linux
 host owner. Current exact launch authenticates the complete per-node checkpoint
 identity, writable-root binding, device-state descriptor, and ordered
-direct-plus-delta RAM descriptors before spawn. Missing version-nine descriptors
+direct-plus-delta RAM descriptors before spawn. Missing current-version descriptors
 fail closed; every noncurrent production manifest is rejected.
 
 The current lifecycle has no local process-replacement or descriptorless
 VMState cloning branch. A modeled crash or power-off that lacks a new admitted
-version-nine checkpoint remains terminal before launch. Final shutdown asks all
+current-version checkpoint remains terminal before launch. Final shutdown asks all
 retained nodes to reap and transfers any unattested child and resource authority
 to quarantine. The production lifecycle requires every injected launch
 authority to admit and charge each scheduler quantum before any scheduler,
@@ -2918,7 +2918,7 @@ exhaustion fails closed and still tears down the lifecycle. The runner MUST NOT
 substitute seed changes or a post-hoc schedule append for a `CampaignBranch`
 selection.
 The daemon-packaged executor now selects the concrete fresh driver, the
-version-nine exact-resume driver, and one concrete packaged replay-oracle
+current-version exact-resume driver, and one concrete packaged replay-oracle
 factory per semantic worker in a fixed worker pool with a shared aggregate
 resource owner and disjoint stable worker recovery roots. The exact-origin
 router never sends a retained root through fresh reconstruction. An
@@ -2990,7 +2990,7 @@ the modeled driver. The runner rejects retained log suffixes, performs final
 drain and teardown itself, and reports `ExactRestore` only after sealing. The
 guarded fresh lifecycle now provides the baked-genesis bootstrap capture: at
 exact scenario genesis it executes no modeled quantum, captures through the
-same bounded version-nine native store, tears every process down, and admits
+same bounded current-version native store, tears every process down, and admits
 the result only when its exact World live-node set authenticates. This
 read-only capability grants neither campaign publication nor replay admission
 by itself. Fresh exact-cache and packaged thin-image materialization remain
@@ -3042,14 +3042,14 @@ metadata, the complete `SingleSchedulerCheckpoint` from that same paused
 boundary, and reopenable byte-stable device and RAM sources. The guarded live
 session records successful capture as the backend reap attestation and releases
 the host resource guard only during `finish`; it cannot issue a second shutdown
-or hand modeled code mutable source authority. The version-nine publication
+or hand modeled code mutable source authority. The current-version publication
 path stages the exact root in the assignment ledger before the first immutable
 write, publishes every authenticated child before the root, and requires exact
 durable placement receipts.
 
 The complete production lifecycle exports its native multi-node manifest and
 exact object inventory through a bounded read-only streaming capability. The
-daemon's version-nine exact store authenticates the
+daemon's current-version exact store authenticates the
 complete production continuation, maps every native object identity to a typed
 CAS object through bounded 4,096-entry child-index pages, binds exact scenario,
 configuration, production identity, counts, and aggregate bytes in the root,
@@ -3058,7 +3058,7 @@ lazy portable source; the production installer then runs the complete
 scenario-aware semantic restore in private storage before launch. The packaged
 fresh runner now honors the sticky request at a safe boundary, captures this
 complete source closure, exact-checks its scenario against the admitted
-lineage, prepares the version-nine campaign root without campaign-CAS writes,
+lineage, prepares the current-version campaign root without campaign-CAS writes,
 and uses a pool-owned callback to persist `checkpoint-publishing(root)` while
 the production lifecycle is still live. Only then does it shut down the
 lifecycle, return the opaque prepared token, publish children and root, and
@@ -3066,7 +3066,7 @@ reconcile durable pause. The handoff callback is absent from modeled input,
 cannot be minted by an external model, and never releases capacity before the
 runner attests teardown.
 
-The version-nine installation boundary observes the exact attempt cancellation
+The current-version installation boundary observes the exact attempt cancellation
 before and between at-most-one-MiB source reads, destination writes, semantic
 validation reads, and durable publication operations. It reconstructs the
 complete configuration and scheduler continuation and binds them to the
@@ -3092,7 +3092,7 @@ before retiring stale worker and promotion namespaces. This cleanup never
 permits an unstaged campaign root to become visible and never touches the
 separate baked-genesis source catalog.
 
-The version-nine portable closure now supports source-bound replay-oracle
+The current-version portable closure now supports source-bound replay-oracle
 promotion without destination writes. Preparation completely reauthenticates
 the raw closure, requires one check bound to every live node's exact raw
 snapshot, regenerates only the corresponding `NotRun` to `Match` snapshot
@@ -3120,7 +3120,7 @@ retries only classified availability failures, restores incomplete staged work
 to its raw root, and never holds supervisor ownership across repository,
 comparison, or publication work. The ordinary guarded lifecycle now constructs
 the adapter's independent baked-genesis source candidate at exact scenario
-genesis and admits only a complete version-nine native closure with exactly the
+genesis and admits only a complete current-version native closure with exactly the
 World live-node set. Constructing the packaged node-specific materializer and
 real-node replay factory over that source is now implemented: a shared compact
 catalog avoids complete-closure rescans, one target snapshot is decoded at a
@@ -3133,7 +3133,7 @@ catalog retirement uses the durable ordering above.
 Concrete production-loop process reconstruction and exact-resume modeled-driver
 selection are implemented: a resume-only installer rejects `NotRun` before
 native publication or resource installation, the guarded lifecycle restores the
-complete version-nine loop, and the packaged worker routes retained roots only
+complete current-version loop, and the packaged worker routes retained roots only
 to the exact-resume runner. Native-catalog cleanup uses the crash-safe
 attempt-owned retirement protocol above. The packaged
 executor installs the concrete replay owners during startup and advertises exact
@@ -3149,7 +3149,7 @@ reservation until the executor reports durable pause. Attempt resume takes the
 exact root retained in that execution's durable paused origin, authenticates
 the complete immutable root, and requires its configuration to equal either
 the attempt's pre-selection boundary or its post-selection boundary before any
-destination write. The version-nine path installs and restores the complete
+destination write. The current-version path installs and restores the complete
 production scheduler, trigger/assertion, fault/network, lifecycle, overlay,
 device-state, RAM, generation, and service-state closure. The modeled driver receives authenticated continuation
 separately from the QEMU live capability; it cannot silently restart scheduler
@@ -3157,14 +3157,14 @@ state from a reduced runtime projection. Exact-pin restoration instead loads
 the selected root under
 the exact-pin inventory fence, releases that fence, and reauthenticates the
 recorded pin fact against the current semantic projection. Both operations
-use the same pinned run-directory transaction: version nine installs every
-target's exact overlay, device-state, and direct-plus-delta RAM artifacts from
-the validated production closure. A
+use the same pinned run-directory transaction: the current closure version
+installs every target's exact overlay, device-state, and direct-plus-delta
+RAM artifacts from the validated production closure. A
 destination becomes unlaunchable before its first truncate, accepts no more
 than the declared/admitted bytes, and becomes
 eligible for exact restore only after authenticated EOF, exact length, file
 sync, sealed-descriptor validation, and binding to the selected
-`ExactCheckpointId` root, which must cover the complete version-nine
+`ExactCheckpointId` root, which must cover the complete current-version
 production closure. Cancellation, corruption, a short copy, or a dropped
 writer leaves the authority unready; a later exact retry must replace it
 completely. Guarded spawn separately requires the same launch-resource ceiling
@@ -3176,7 +3176,7 @@ authenticated direct-plus-delta RAM layers, device state, and, when the launch
 profile uses one, a writable-root overlay carrying one common artifact binding.
 A merely provisioned file, mixed descriptor set, short stream, or foreign
 binding remains unlaunchable. A noncurrent manifest cannot mint a runtime
-launch capability. The version-nine owner applies the source-bound rule
+launch capability. The current-version owner applies the source-bound rule
 independently to every live-node snapshot, reuses unchanged RAM, device, and
 overlay objects, and authenticates the raw/promoted closure pair on restart.
 The comparison session owns one
@@ -3230,7 +3230,7 @@ discards vanished readers and callbacks, installs every branch-private
 resource, starts fresh classified workers, and releases input only after the
 complete child resource transaction commits.
 
-Template schema 29, resource-stage schema 13, and fork schema 3 expose that
+Template schema 30, resource-stage schema 14, and fork schema 4 expose that
 transaction through the public `crucible-hot-fork` QMP command. Its request is
 derived from the prepared template and binds all fifteen template, resource,
 process, runtime, descriptor, monitor, child-file, and branch-private channel
