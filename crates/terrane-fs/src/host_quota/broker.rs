@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 use std::fs::File;
 use std::io;
 use std::os::unix::fs::MetadataExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Identifies every allocation class in a single compatible project.
 pub const ROOT_LABELS: [&str; 8] = [
@@ -304,19 +304,22 @@ impl VerifiedQuotaObservation {
     }
 }
 
-/// Retains an authenticated query connection with one outstanding request.
+/// Retains a configured authenticated endpoint for bounded read-only queries.
+///
+/// Each query authenticates its own connection. Idle periods therefore retain no
+/// socket that the helper's bounded receive loop may have closed. A connection
+/// carries exactly one request and response; request IDs remain client-wide.
 pub struct HostQuotaClient {
-    socket: PacketSocket,
+    endpoint: PathBuf,
     epoch: [u8; 16],
     request_id: u64,
-    sequence: u64,
 }
 
 impl HostQuotaClient {
     /// Authenticates a host helper using kernel peer identity.
     ///
     /// # Errors
-    /// Returns connection errors or a helper identity mismatch.
+    /// Returns unsafe host/parent custody, connection errors or a helper identity mismatch.
     pub fn connect(path: &Path, helper_uid: u32, epoch: [u8; 16]) -> io::Result<Self> {
         if helper_uid != 0 {
             return Err(io::Error::new(
@@ -324,36 +327,21 @@ impl HostQuotaClient {
                 "native quota helper must be root",
             ));
         }
-        super::require_host_root_namespace_boundary()?;
-        let parent = path
-            .parent()
-            .ok_or_else(|| io::Error::other("quota socket has no parent"))?;
-        let parent = super::open_host_path(parent, true)?;
-        let metadata = parent.metadata()?;
-        if metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
-            return Err(io::Error::other(
-                "quota socket parent lacks protected host custody",
-            ));
-        }
-        let socket = PacketSocket::connect(path)?;
-        if socket.peer_uid()? != helper_uid {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "quota helper identity mismatch",
-            ));
-        }
+        // Authenticate startup before retaining only host configuration. Query
+        // custody is acquired separately immediately before its actual send.
+        authenticated_query_socket(path)?;
         Ok(Self {
-            socket,
+            endpoint: path.to_owned(),
             epoch,
             request_id: 0,
-            sequence: 0,
         })
     }
 
     /// Queries an authorized owner without accepting caller paths or project IDs.
     ///
     /// # Errors
-    /// Returns transport, correlation, stale-epoch or unavailable-quota errors.
+    /// Returns fresh connection/authentication, transport, correlation,
+    /// stale-epoch or unavailable-quota errors.
     pub fn query(&mut self, owner_id: &str, domain: &str) -> io::Result<VerifiedQuotaObservation> {
         self.request_id = self
             .request_id
@@ -367,20 +355,48 @@ impl HostQuotaClient {
             domain: domain.to_owned(),
         };
         QuotaQuery::decode_strict(&request.encode_to_vec())?;
-        self.socket.send(&request.encode_to_vec())?;
-        let response = QuotaObservation::decode_strict(&self.socket.receive()?)?;
+        // Acquire a fresh authenticated channel before submission. A failed
+        // send or receive propagates directly; this query is never resubmitted.
+        let socket = authenticated_query_socket(&self.endpoint)?;
+        socket.send(&request.encode_to_vec())?;
+        let response = QuotaObservation::decode_strict(&socket.receive()?)?;
+        // Sequences increase within a connection/epoch. This fresh connection
+        // admits one response; the client-wide request ID correlates it across
+        // queries, while the sequence must be nonzero on this connection.
         if response.request_id != self.request_id
             || response.configuration_epoch != self.epoch
             || response.owner_id != owner_id
             || response.domain != domain
-            || response.query_sequence <= self.sequence
+            || response.query_sequence == 0
         {
             return Err(io::Error::other("quota response correlation mismatch"));
         }
-        self.sequence = response.query_sequence;
         if response.result != 0 {
             return Err(io::Error::other("host quota observation unavailable"));
         }
         Ok(VerifiedQuotaObservation(response))
     }
+}
+
+/// Authenticates the protected host endpoint for one actual query lifetime.
+fn authenticated_query_socket(path: &Path) -> io::Result<PacketSocket> {
+    super::require_host_root_namespace_boundary()?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::other("quota socket has no parent"))?;
+    let parent = super::open_host_path(parent, true)?;
+    let metadata = parent.metadata()?;
+    if metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
+        return Err(io::Error::other(
+            "quota socket parent lacks protected host custody",
+        ));
+    }
+    let socket = PacketSocket::connect(path)?;
+    if socket.peer_uid()? != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "quota helper identity mismatch",
+        ));
+    }
+    Ok(socket)
 }
