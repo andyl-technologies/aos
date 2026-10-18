@@ -233,6 +233,7 @@ where
             crate::lifecycle_cleanup::PreparedSourceProjections {
                 first: PendingSourceConstruction::<R>::project_first_error,
                 history: PendingSourceConstruction::<R>::project_history,
+                terminal_metadata_return: None,
             },
         ) {
             Ok(installed) => installed,

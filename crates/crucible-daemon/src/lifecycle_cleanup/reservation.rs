@@ -604,42 +604,12 @@ pub(crate) fn component_owner_history_for_test(
     >,
     observe_retained: impl FnOnce(),
 ) -> crate::ProductionVmConstructionCleanupError {
-    let slot = CleanupSlot {
-        export_abandoned: AtomicBool::new(false),
-        work_gate: crate::lifecycle_cleanup::work_gate::WorkGate::new(),
-        transport_return_sequence: AtomicU64::new(0),
-        controls_closed_epoch: AtomicU64::new(0),
-        worlds_returned_epoch: AtomicU64::new(0),
-
-        epoch: AtomicU64::new(1),
-        retirement_requested: AtomicBool::new(false),
-        external_return_reserved: AtomicBool::new(false),
-        external_receivers: AtomicUsize::new(0),
-        report_references: AtomicUsize::new(0),
-        terminal_disposed: AtomicBool::new(false),
-        phase: AtomicU8::new(CleanupPhase::Queued as u8),
-        body_destroyed_epoch: AtomicU64::new(0),
-        completed_epoch: AtomicU64::new(0),
-        prepared: Mutex::new(prepared_service::PreparedCell::empty()),
-        service: Mutex::new(prepared_service::ServiceCell::installed(1, None)),
-        cell: Mutex::new(CleanupCell {
-            controls_bound: false,
-            retirement_input: None,
-            retirement_input_reserved: false,
-            panic_payload: None,
-            post_body: None,
-            incoming_post_body: None,
-            owner_cleanup_complete: false,
-            owner_post_body_taken: false,
-            control_failure: None,
-
-            epoch: 1,
-            owner: Some(owner),
-            controls: None,
-            first_failure: None,
-            handoff: true,
-        }),
-    };
+    let slot = CleanupSlot::unissued_for_test(1, CleanupPhase::Queued);
+    {
+        let mut cell = slot.cell.lock().unwrap();
+        cell.owner = Some(owner);
+        cell.handoff = true;
+    }
     let mut receipt = CleanupReservation {
         queue: Weak::new(),
         index: 0,

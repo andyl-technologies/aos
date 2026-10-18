@@ -171,6 +171,7 @@ where
             crate::lifecycle_cleanup::PreparedSourceProjections {
                 first: project_first::<F>,
                 history: project_history::<F>,
+                terminal_metadata_return: Some(return_target_terminal_metadata::<F>),
             },
         )
         .map_err(|(input, first)| TargetMainAdmissionFailure {
@@ -746,14 +747,17 @@ where
         }
     }
 
+    fn terminal_metadata_returned(&self) -> bool {
+        self.physically_returned
+            && self.history_disposed
+            && self.nodes.is_none()
+            && self.spare_rows.is_none()
+            && self.members.is_none()
+            && self.source_backends.is_none()
+    }
+
     fn take_terminal_checkout(&mut self) -> Option<QemuHotForkSourceWorldLease> {
-        if !self.physically_returned
-            || !self.history_disposed
-            || self.nodes.is_some()
-            || self.spare_rows.is_some()
-            || self.members.is_some()
-            || self.source_backends.is_some()
-        {
+        if !self.terminal_metadata_returned() {
             return None;
         }
         // Managed providers retain their own Arc/Weak. Drop this redundant
@@ -1221,19 +1225,35 @@ where
     F: QemuAttemptResourceGuardFactory + Send + 'static,
     F::Guard: QemuAttemptProcessResourceGuard + Send + 'static,
 {
-    if !body.with_terminal_prepared::<PendingTargetConstruction<F>, _>(|target| {
-        target.prepare_terminal_handback()
-    })? {
-        return None;
-    }
-    if !body.with_terminal_target_parent_metadata::<
-        PendingTargetConstruction<F>,
-        crate::qemu_lifecycle_launcher::PendingSourceConstruction<F>,
-        _,
-    >(|target, source| target.return_terminal_rows(source))? {
+    if !return_target_terminal_metadata::<F>(body) {
         return None;
     }
     body.with_terminal_prepared::<PendingTargetConstruction<F>, _>(|target| {
         target.take_terminal_checkout()
     })?
+}
+
+/// Returns existing metadata before either observed or abandoned terminal disposal.
+fn return_target_terminal_metadata<F>(body: &mut crate::ProductionVmConstructionPostBody) -> bool
+where
+    F: QemuAttemptResourceGuardFactory + Send + 'static,
+    F::Guard: QemuAttemptProcessResourceGuard + Send + 'static,
+{
+    if body.with_terminal_prepared::<PendingTargetConstruction<F>, _>(|target| {
+        target.terminal_metadata_returned()
+    }) == Some(true)
+    {
+        return true;
+    }
+    if body.with_terminal_prepared::<PendingTargetConstruction<F>, _>(|target| {
+        target.prepare_terminal_handback()
+    }) != Some(true)
+    {
+        return false;
+    }
+    body.with_terminal_target_parent_metadata::<
+        PendingTargetConstruction<F>,
+        crate::qemu_lifecycle_launcher::PendingSourceConstruction<F>,
+        _,
+    >(|target, source| target.return_terminal_rows(source)) == Some(true)
 }

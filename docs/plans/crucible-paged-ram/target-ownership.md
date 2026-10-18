@@ -82,11 +82,23 @@ combined parallel run still exhausts descriptors. Deployed genuine-Main flights,
 simultaneous native families, promoted-parent admission and performance parity
 also remain outstanding.
 
-Two retirement cases also need stronger ownership coverage. A dropped Target
-terminal must preserve pending Source metadata handback in canonical custody.
-Cleanup error folding must retain a later independent Main report as well as
-the guard leaves covered by the existing two-body component controls. A passing
-component suite does not establish either native ownership guarantee.
+A dropped Target terminal now attempts the same metadata handback used by an
+observed terminal. If the parent is temporarily unavailable, it returns the
+original constructor, reports and released Service tail to the same Main header.
+The existing terminal-ready pass retries disposal; no replacement allocation,
+native cleanup entry or new resource reservation is introduced. The original
+report pin is returned without marking terminal disposal, so the role stays
+occupied. A callback panic or poisoned metadata retains the actual payload and
+refuses further disposal. New reports cannot enroll during outside terminal
+ownership or disposal.
+
+Unissued field/pin controls verify repeated return of the same Box and real file,
+preserved raw errors, stale-epoch refusal, panic retention, poisoned metadata and
+late-report rejection. These controls establish neither native Main return nor
+the deployed parent/child handback path. A retiring parent and differing concrete
+Source/Target factory types still need end-to-end coverage. Cleanup error folding
+must also retain a later independent Main report as well as the guard leaves
+covered by the existing two-body component controls.
 
 ## Factory and runtime integration
 

@@ -97,42 +97,7 @@ struct CellFixture {
 }
 
 fn fixture(epoch: u64, refuse_once: bool) -> Result<CellFixture, std::io::Error> {
-    let slot = Arc::new(CleanupSlot {
-        epoch: AtomicU64::new(epoch),
-        retirement_requested: AtomicBool::new(false),
-        external_return_reserved: AtomicBool::new(false),
-        export_abandoned: AtomicBool::new(false),
-        work_gate: crate::lifecycle_cleanup::work_gate::WorkGate::new(),
-        external_receivers: AtomicUsize::new(0),
-        transport_return_sequence: AtomicU64::new(0),
-        report_references: AtomicUsize::new(0),
-        terminal_disposed: AtomicBool::new(false),
-        controls_closed_epoch: AtomicU64::new(0),
-        worlds_returned_epoch: AtomicU64::new(0),
-
-        phase: AtomicU8::new(CleanupPhase::Queued as u8),
-        body_destroyed_epoch: AtomicU64::new(0),
-        completed_epoch: AtomicU64::new(0),
-        prepared: Mutex::new(prepared_service::PreparedCell::empty()),
-        service: Mutex::new(prepared_service::ServiceCell::installed(epoch, None)),
-        cell: Mutex::new(CleanupCell {
-            controls_bound: false,
-            retirement_input: None,
-            retirement_input_reserved: false,
-            panic_payload: None,
-            post_body: None,
-            incoming_post_body: None,
-            owner_cleanup_complete: false,
-            owner_post_body_taken: false,
-            control_failure: None,
-
-            epoch,
-            owner: None,
-            controls: None,
-            first_failure: None,
-            handoff: true,
-        }),
-    });
+    let slot = Arc::new(CleanupSlot::unissued_for_test(epoch, CleanupPhase::Queued));
     let attempts = Arc::new(AtomicUsize::new(0));
     let dropped = Arc::new(AtomicBool::new(false));
     let drop_outside_lock = Arc::new(AtomicBool::new(false));
@@ -148,7 +113,11 @@ fn fixture(epoch: u64, refuse_once: bool) -> Result<CellFixture, std::io::Error>
         drop_outside_lock: Arc::clone(&drop_outside_lock),
         refuse_once,
     };
-    slot.cell.lock().unwrap().owner = Some(Box::new(owner));
+    {
+        let mut cell = slot.cell.lock().unwrap();
+        cell.owner = Some(Box::new(owner));
+        cell.handoff = true;
+    }
     Ok(CellFixture {
         descriptor,
         identity,
@@ -384,42 +353,7 @@ fn one_cell_reuses_actual_reservation_and_owner_for_twenty_four_epochs()
 -> Result<(), Box<dyn std::error::Error>> {
     // Reuses the real publication and body/control primitives in one file-only
     // cell. This fixture does not issue a Main role or a native return proof.
-    let slot = Arc::new(CleanupSlot {
-        epoch: AtomicU64::new(0),
-        retirement_requested: AtomicBool::new(false),
-        external_return_reserved: AtomicBool::new(false),
-        export_abandoned: AtomicBool::new(false),
-        work_gate: crate::lifecycle_cleanup::work_gate::WorkGate::new(),
-        external_receivers: AtomicUsize::new(0),
-        transport_return_sequence: AtomicU64::new(0),
-        report_references: AtomicUsize::new(0),
-        terminal_disposed: AtomicBool::new(false),
-        controls_closed_epoch: AtomicU64::new(0),
-        worlds_returned_epoch: AtomicU64::new(0),
-
-        phase: AtomicU8::new(CleanupPhase::Free as u8),
-        body_destroyed_epoch: AtomicU64::new(0),
-        completed_epoch: AtomicU64::new(0),
-        prepared: Mutex::new(prepared_service::PreparedCell::empty()),
-        service: Mutex::new(prepared_service::ServiceCell::empty()),
-        cell: Mutex::new(CleanupCell {
-            controls_bound: false,
-            retirement_input: None,
-            retirement_input_reserved: false,
-            panic_payload: None,
-            post_body: None,
-            incoming_post_body: None,
-            owner_cleanup_complete: false,
-            owner_post_body_taken: false,
-            control_failure: None,
-
-            epoch: 0,
-            owner: None,
-            controls: None,
-            first_failure: None,
-            handoff: false,
-        }),
-    });
+    let slot = Arc::new(CleanupSlot::unissued_for_test(0, CleanupPhase::Free));
 
     for expected_epoch in 1..=24 {
         assert!(slot.claim(CleanupPhase::Free, CleanupPhase::Reserving));
@@ -967,6 +901,7 @@ fn actual_prepared_panic_retains_its_file_and_does_not_repeat_cleanup()
         prepared_service::PreparedSourceProjections {
             first: no_component_history,
             history: no_component_history,
+            terminal_metadata_return: None,
         },
         prepared_driver::PreparedBodyOperations::for_owner::<ComponentPanicOwner>(),
     );
@@ -1007,6 +942,7 @@ fn actual_prepared_postbody_panic_keeps_payload_without_a_second_transfer()
         prepared_service::PreparedSourceProjections {
             first: no_component_history,
             history: no_component_history,
+            terminal_metadata_return: None,
         },
         prepared_driver::PreparedBodyOperations::for_owner::<ComponentPanicOwner>(),
     );

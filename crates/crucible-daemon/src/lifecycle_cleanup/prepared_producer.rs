@@ -94,6 +94,13 @@ impl SourceMainProducer {
                 PostBody = ProductionVmConstructionPostBody,
             > + 'static,
     {
+        if (prepared_role == PreparedRole::Target) != projections.terminal_metadata_return.is_some()
+        {
+            return Err((
+                input,
+                role("terminal metadata return does not match the prepared role"),
+            ));
+        }
         let Some(queue) = self.queue.upgrade() else {
             return Err((input, role("prepared containing Main is unavailable")));
         };

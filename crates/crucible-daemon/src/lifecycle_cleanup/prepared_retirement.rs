@@ -258,6 +258,9 @@ impl PreparedSourceRetirement {
             return None;
         }
         let service = slot.service.try_lock().ok()?;
+        if slot.is(CleanupPhase::TerminalOwned) || slot.is(CleanupPhase::TerminalDisposing) {
+            return None;
+        }
         if service.epoch == self.key.epoch
             && let Some(first) = service.start.as_ref().and_then(|start| start.first())
         {
@@ -273,14 +276,28 @@ impl PreparedSourceRetirement {
         }
         drop(service);
         let prepared = slot.prepared.try_lock().ok()?;
+        if slot.is(CleanupPhase::TerminalOwned) || slot.is(CleanupPhase::TerminalDisposing) {
+            return None;
+        }
         if prepared.epoch == self.key.epoch
             && let (Some(owner), Some(project)) = (&prepared.owner, prepared.projection)
             && let Some(first) = project(owner.as_ref())
         {
             return Some(apply(first));
         }
+        if prepared.epoch == self.key.epoch
+            && let Some(first) = &prepared.terminal_access
+        {
+            return Some(apply(first));
+        }
         drop(prepared);
         let service = slot.service.try_lock().ok()?;
+        if service.epoch != self.key.epoch
+            || slot.is(CleanupPhase::TerminalOwned)
+            || slot.is(CleanupPhase::TerminalDisposing)
+        {
+            return None;
+        }
         service
             .start
             .as_ref()
@@ -321,6 +338,8 @@ impl PreparedSourceRetirement {
             || prepared.epoch != self.key.epoch
             || service.epoch != self.key.epoch
             || cell.epoch != self.key.epoch
+            || slot.is(CleanupPhase::TerminalOwned)
+            || slot.is(CleanupPhase::TerminalDisposing)
         {
             return false;
         }
@@ -334,6 +353,9 @@ impl PreparedSourceRetirement {
         }
         if let Some(first) = &prepared.cleanup_failure {
             apply("prepared body cleanup", first);
+        }
+        if let Some(first) = &prepared.terminal_access {
+            apply("terminal role access", first);
         }
         if let Some(first) = &cell.first_failure {
             apply("published body cleanup", first);
@@ -402,12 +424,12 @@ impl PreparedSourceRetirement {
         if !self.report_reference {
             return Err(self);
         }
-        match terminal::take_terminal_body(&self.key) {
-            Ok(mut body) => {
-                if let Some(terminal) = body.terminal.as_mut() {
-                    terminal.access = self.access.take();
-                    terminal.receiver = self.receiver.take();
-                }
+        match terminal::take_terminal_body_with_reports(
+            &self.key,
+            &mut self.access,
+            &mut self.receiver,
+        ) {
+            Ok(body) => {
                 self.report_reference = false;
                 Ok(body)
             }

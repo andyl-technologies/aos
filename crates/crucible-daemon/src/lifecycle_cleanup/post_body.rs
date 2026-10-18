@@ -318,7 +318,7 @@ impl ProductionVmConstructionPostBody {
         apply: impl FnOnce(&mut T) -> R,
     ) -> Option<R> {
         let terminal = self.terminal.as_mut()?;
-        let owner = terminal.prepared.as_mut()?.downcast_mut::<T>()?;
+        let owner = terminal.fields.prepared.as_mut()?.downcast_mut::<T>()?;
         Some(apply(owner))
     }
 
@@ -344,7 +344,7 @@ impl ProductionVmConstructionPostBody {
         apply: impl FnOnce(&mut T, &mut S) -> R,
     ) -> Option<R> {
         let terminal = self.terminal.as_mut()?;
-        let target = terminal.prepared.as_mut()?.downcast_mut::<T>()?;
+        let target = terminal.fields.prepared.as_mut()?.downcast_mut::<T>()?;
         if !target.is_physically_returned() {
             return None;
         }
@@ -533,6 +533,29 @@ impl Error for ProductionVmConstructionPostBody {
 
 impl Drop for ProductionVmConstructionPostBody {
     fn drop(&mut self) {
+        if let Some(return_metadata) = self
+            .terminal
+            .as_ref()
+            .and_then(|terminal| terminal.fields.metadata_return)
+        {
+            // The callback only returns this original Target's metadata. It
+            // cannot extract the terminal or reenter native work. All history
+            // destruction here runs outside the queue's metadata mutexes.
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| return_metadata(self))) {
+                Ok(true) => {}
+                Ok(false) => {
+                    super::terminal::return_pending_terminal(self);
+                    return;
+                }
+                Err(payload) => {
+                    if let Some(terminal) = self.terminal.as_mut() {
+                        terminal.fields.panic_payload = Some(payload);
+                    }
+                    super::terminal::return_pending_terminal(self);
+                    return;
+                }
+            }
+        }
         let Some(terminal) = self.terminal.take() else {
             return;
         };

@@ -22,7 +22,12 @@ pub(super) fn register(slot: &CleanupSlot, epoch: u64) -> bool {
         return false;
     }
     let actual_epoch = slot.epoch.load(Ordering::Acquire);
-    if actual_epoch != epoch || slot.is(CleanupPhase::Free) || slot.is(CleanupPhase::Reserving) {
+    if actual_epoch != epoch
+        || slot.is(CleanupPhase::Free)
+        || slot.is(CleanupPhase::Reserving)
+        || slot.is(CleanupPhase::TerminalOwned)
+        || slot.is(CleanupPhase::TerminalDisposing)
+    {
         // A stale selector may briefly pin an occupied newer header. It gains
         // no operation or projection, and returns only that acquired count.
         release(slot, actual_epoch, false);

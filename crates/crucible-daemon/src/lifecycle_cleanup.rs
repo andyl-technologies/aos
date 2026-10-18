@@ -138,6 +138,56 @@ enum CleanupPhase {
 }
 
 impl CleanupSlot {
+    /// Creates fixed empty metadata without issuing a Main or native purpose.
+    fn empty() -> Self {
+        Self {
+            epoch: AtomicU64::new(0),
+            retirement_requested: AtomicBool::new(false),
+            external_return_reserved: AtomicBool::new(false),
+            export_abandoned: AtomicBool::new(false),
+            work_gate: work_gate::WorkGate::new(),
+            external_receivers: AtomicUsize::new(0),
+            transport_return_sequence: AtomicU64::new(0),
+            report_references: AtomicUsize::new(report_refs::CLOSED),
+            terminal_disposed: AtomicBool::new(false),
+            phase: AtomicU8::new(CleanupPhase::Free as u8),
+            body_destroyed_epoch: AtomicU64::new(0),
+            controls_closed_epoch: AtomicU64::new(0),
+            worlds_returned_epoch: AtomicU64::new(0),
+            completed_epoch: AtomicU64::new(0),
+            prepared: Mutex::new(prepared_service::PreparedCell::empty()),
+            service: Mutex::new(prepared_service::ServiceCell::empty()),
+            cell: Mutex::new(CleanupCell {
+                epoch: 0,
+                owner: None,
+                controls: None,
+                controls_bound: false,
+                retirement_input: None,
+                retirement_input_reserved: false,
+                panic_payload: None,
+                first_failure: None,
+                handoff: false,
+                post_body: None,
+                incoming_post_body: None,
+                owner_cleanup_complete: false,
+                owner_post_body_taken: false,
+                control_failure: None,
+            }),
+        }
+    }
+
+    /// Selects only an unissued component header for ownership controls.
+    #[cfg(test)]
+    fn unissued_for_test(epoch: u64, phase: CleanupPhase) -> Self {
+        let mut slot = Self::empty();
+        slot.epoch.store(epoch, Ordering::Release);
+        slot.report_references.store(0, Ordering::Release);
+        slot.phase.store(phase as u8, Ordering::Release);
+        slot.service = Mutex::new(prepared_service::ServiceCell::installed(epoch, None));
+        slot.cell.get_mut().unwrap().epoch = epoch;
+        slot
+    }
+
     fn claim(&self, from: CleanupPhase, to: CleanupPhase) -> bool {
         self.phase
             .compare_exchange(from as u8, to as u8, Ordering::AcqRel, Ordering::Acquire)
@@ -197,40 +247,7 @@ impl LifecycleCleanupQueue {
         cells
             .try_reserve_exact(slots)
             .map_err(|_| refusal("cleanup cell allocation refused"))?;
-        cells.resize_with(slots, || CleanupSlot {
-            epoch: AtomicU64::new(0),
-            retirement_requested: AtomicBool::new(false),
-            external_return_reserved: AtomicBool::new(false),
-            export_abandoned: AtomicBool::new(false),
-            work_gate: work_gate::WorkGate::new(),
-            external_receivers: AtomicUsize::new(0),
-            transport_return_sequence: AtomicU64::new(0),
-            report_references: AtomicUsize::new(report_refs::CLOSED),
-            terminal_disposed: AtomicBool::new(false),
-            phase: AtomicU8::new(CleanupPhase::Free as u8),
-            body_destroyed_epoch: AtomicU64::new(0),
-            controls_closed_epoch: AtomicU64::new(0),
-            worlds_returned_epoch: AtomicU64::new(0),
-            completed_epoch: AtomicU64::new(0),
-            prepared: Mutex::new(prepared_service::PreparedCell::empty()),
-            service: Mutex::new(prepared_service::ServiceCell::empty()),
-            cell: Mutex::new(CleanupCell {
-                epoch: 0,
-                owner: None,
-                controls: None,
-                controls_bound: false,
-                retirement_input: None,
-                retirement_input_reserved: false,
-                panic_payload: None,
-                first_failure: None,
-                handoff: false,
-                post_body: None,
-                incoming_post_body: None,
-                owner_cleanup_complete: false,
-                owner_post_body_taken: false,
-                control_failure: None,
-            }),
-        });
+        cells.resize_with(slots, CleanupSlot::empty);
         Ok(Arc::new(Self {
             slots: cells,
             constructor_bytes,

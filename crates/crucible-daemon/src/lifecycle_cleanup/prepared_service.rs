@@ -14,16 +14,23 @@ use crate::packaged_qemu_executor::{RetainedServiceStart, RetainedTemplateServic
 pub(crate) type PreparedSourceProjection =
     for<'a> fn(&'a (dyn Any + Send)) -> Option<&'a (dyn std::error::Error + 'static)>;
 
+/// Returns terminal metadata without extracting its body or issuing native work.
+pub(crate) type TerminalMetadataReturn = fn(&mut ProductionVmConstructionPostBody) -> bool;
+
 /// Borrows initiating identity and the same owner's complete stored history.
 #[derive(Clone, Copy)]
 pub(crate) struct PreparedSourceProjections {
     pub(crate) first: PreparedSourceProjection,
     pub(crate) history: PreparedSourceProjection,
+    pub(crate) terminal_metadata_return: Option<TerminalMetadataReturn>,
 }
 
 pub(super) struct PreparedCell {
     pub(super) projection: Option<PreparedSourceProjection>,
     pub(super) history_projection: Option<PreparedSourceProjection>,
+    pub(super) terminal_metadata_return: Option<TerminalMetadataReturn>,
+    pub(super) terminal_access: Option<ServiceMainPreclaimError>,
+    pub(super) terminal_receiver: Option<ServiceMainReceiver>,
     pub(super) epoch: u64,
     pub(super) owner: Option<Box<dyn Any + Send>>,
     pub(super) operations: Option<super::prepared_driver::PreparedBodyOperations>,
@@ -66,6 +73,9 @@ impl PreparedCell {
             owner: Some(owner),
             projection: Some(projections.first),
             history_projection: Some(projections.history),
+            terminal_metadata_return: projections.terminal_metadata_return,
+            terminal_access: None,
+            terminal_receiver: None,
             operations: Some(operations),
             cleanup_failure: None,
             panic_payload: None,
@@ -79,6 +89,9 @@ impl PreparedCell {
         Self {
             projection: None,
             history_projection: None,
+            terminal_metadata_return: None,
+            terminal_access: None,
+            terminal_receiver: None,
             epoch: 0,
             owner: None,
             operations: None,
@@ -92,6 +105,8 @@ impl PreparedCell {
 
     pub(super) fn is_empty(&self) -> bool {
         self.owner.is_none()
+            && self.terminal_access.is_none()
+            && self.terminal_receiver.is_none()
             && self.pending_post_body.is_none()
             && self.cleanup_failure.is_none()
             && self.panic_payload.is_none()
@@ -329,18 +344,9 @@ mod tests {
         file.write_all(b"same prepared body").unwrap();
         let body = Box::new(file);
         let identity = std::ptr::from_ref(body.as_ref());
-        let mut cell = PreparedCell {
-            projection: None,
-            history_projection: None,
-            epoch: 7,
-            owner: Some(body),
-            operations: None,
-            cleanup_failure: None,
-            panic_payload: None,
-            body_closed: false,
-            post_body_taken: false,
-            pending_post_body: None,
-        };
+        let mut cell = PreparedCell::empty();
+        cell.epoch = 7;
+        cell.owner = Some(body);
 
         let mismatched = cell.with_owner::<String, _>(7, |_| panic!("foreign type was borrowed"));
         assert!(mismatched.is_err());

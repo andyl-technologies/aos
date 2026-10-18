@@ -14,6 +14,13 @@ use crate::packaged_qemu_executor::RetainedServiceStart;
 pub(super) struct TerminalCustody {
     pub(super) key: ServiceMainPreclaim,
     pub(super) queue: Arc<LifecycleCleanupQueue>,
+    pub(super) fields: TerminalFields,
+}
+
+/// Moves the original payload independently of its outside queue pin.
+pub(super) struct TerminalFields {
+    pub(super) role: Option<PreparedRole>,
+    pub(super) metadata_return: Option<super::prepared_service::TerminalMetadataReturn>,
     pub(super) prepared: Option<Box<dyn Any + Send>>,
     pub(super) projection: Option<PreparedSourceProjection>,
     pub(super) history_projection: Option<PreparedSourceProjection>,
@@ -24,9 +31,44 @@ pub(super) struct TerminalCustody {
     pub(super) cleanup_first: Option<crate::ProductionVmConstructionCleanupError>,
     pub(super) access: Option<ServiceMainPreclaimError>,
     pub(super) receiver: Option<prepared_service::ServiceMainReceiver>,
+    pub(super) panic_payload: Option<Box<dyn Any + Send>>,
 }
 
 impl TerminalCustody {
+    pub(super) fn first_failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.fields.first_failure()
+    }
+
+    pub(super) fn visit_history(
+        &self,
+        apply: &mut impl FnMut(&'static str, &(dyn std::error::Error + 'static)),
+    ) {
+        self.fields.visit_history(apply);
+    }
+}
+
+impl TerminalFields {
+    fn take(
+        prepared: &mut prepared_service::PreparedCell,
+        service: &mut prepared_service::ServiceCell,
+        cell: &mut CleanupCell,
+    ) -> Self {
+        Self {
+            role: service.role.take(),
+            metadata_return: prepared.terminal_metadata_return.take(),
+            prepared: prepared.owner.take(),
+            projection: prepared.projection.take(),
+            history_projection: prepared.history_projection.take(),
+            service: service.start.take(),
+            cleanup_first: cell.first_failure.take(),
+            prepared_cleanup_first: prepared.cleanup_failure.take(),
+            control_failure: cell.control_failure.take(),
+            access: prepared.terminal_access.take(),
+            receiver: prepared.terminal_receiver.take(),
+            panic_payload: prepared.panic_payload.take(),
+        }
+    }
+
     pub(super) fn first_failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
         self.service
             .as_ref()
@@ -213,7 +255,7 @@ fn visit_imported_return_history(
     }
 }
 
-impl TerminalCustody {
+impl TerminalFields {
     pub(super) fn visit_history(
         &self,
         apply: &mut impl FnMut(&'static str, &(dyn std::error::Error + 'static)),
@@ -245,6 +287,15 @@ impl TerminalCustody {
 pub(super) fn take_terminal_body(
     key: &ServiceMainPreclaim,
 ) -> Result<ProductionVmConstructionPostBody, PreparedSourceRefusal> {
+    take_terminal_body_with_reports(key, &mut None, &mut None)
+}
+
+/// Joins outside observations only if neither original terminal slot is occupied.
+pub(super) fn take_terminal_body_with_reports(
+    key: &ServiceMainPreclaim,
+    access: &mut Option<ServiceMainPreclaimError>,
+    receiver: &mut Option<prepared_service::ServiceMainReceiver>,
+) -> Result<ProductionVmConstructionPostBody, PreparedSourceRefusal> {
     let queue = key
         .queue
         .upgrade()
@@ -273,7 +324,9 @@ pub(super) fn take_terminal_body(
     {
         return Err(PreparedSourceRefusal::Pending);
     }
-    if service.role.is_none()
+    if (access.is_some() && prepared.terminal_access.is_some())
+        || (receiver.is_some() && prepared.terminal_receiver.is_some())
+        || service.role.is_none()
         || cell.retirement_input.is_some()
         || cell.retirement_input_reserved
         || cell.panic_payload.is_some()
@@ -320,25 +373,125 @@ pub(super) fn take_terminal_body(
         slot.publish(CleanupPhase::DestructionRefused);
         return Err(PreparedSourceRefusal::DestructionUncertain);
     };
-    service.role = None;
     cell.handoff = false;
     cell.controls_bound = false;
     cell.owner_cleanup_complete = false;
     cell.owner_post_body_taken = false;
+    let mut fields = TerminalFields::take(&mut prepared, &mut service, &mut cell);
+    if fields.access.is_none() {
+        fields.access = access.take();
+    }
+    if fields.receiver.is_none() {
+        fields.receiver = receiver.take();
+    }
     body.terminal = Some(TerminalCustody {
         key: key.copy_selection(),
         queue: Arc::clone(&queue),
-        prepared: prepared.owner.take(),
-        projection: prepared.projection.take(),
-        history_projection: prepared.history_projection.take(),
-        service: service.start.take(),
-        cleanup_first: cell.first_failure.take(),
-        prepared_cleanup_first: prepared.cleanup_failure.take(),
-        control_failure: cell.control_failure.take(),
-        access: None,
-        receiver: None,
+        fields,
     });
     Ok(body)
+}
+
+/// Returns only fixed terminal fields, without claiming native or Service closure.
+///
+/// TerminalOwned excludes native work and payload writers. The remaining mutex
+/// users can only inspect fixed metadata, so taking these short locks cannot
+/// wait on a native callback. Poison is recovered for containment and never
+/// permits another work or disposal attempt.
+fn return_terminal_fields(
+    slot: &CleanupSlot,
+    epoch: u64,
+    body: &mut ProductionVmConstructionPostBody,
+    fields: TerminalFields,
+) -> Result<(), TerminalFields> {
+    let (mut prepared, prepared_poisoned) = match slot.prepared.lock() {
+        Ok(guard) => (guard, false),
+        Err(poison) => (poison.into_inner(), true),
+    };
+    let (mut service, service_poisoned) = match slot.service.lock() {
+        Ok(guard) => (guard, false),
+        Err(poison) => (poison.into_inner(), true),
+    };
+    let (mut cell, cell_poisoned) = match slot.cell.lock() {
+        Ok(guard) => (guard, false),
+        Err(poison) => (poison.into_inner(), true),
+    };
+    if slot.epoch.load(Ordering::Acquire) != epoch
+        || prepared.epoch != epoch
+        || service.epoch != epoch
+        || cell.epoch != epoch
+        || !slot.is(CleanupPhase::TerminalOwned)
+        || slot.terminal_disposed.load(Ordering::Acquire)
+        || !matches!(
+            slot.report_references.load(Ordering::Acquire),
+            1..report_refs::CLOSED
+        )
+        || body.terminal.is_some()
+        || !prepared.is_empty()
+        || prepared.projection.is_some()
+        || prepared.history_projection.is_some()
+        || prepared.terminal_metadata_return.is_some()
+        || !service.is_empty()
+        || service.return_body.is_some()
+        || cell.first_failure.is_some()
+        || cell.control_failure.is_some()
+        || cell.panic_payload.is_some()
+    {
+        return Err(fields);
+    }
+
+    let quarantined =
+        prepared_poisoned || service_poisoned || cell_poisoned || fields.panic_payload.is_some();
+    prepared.owner = fields.prepared;
+    prepared.projection = fields.projection;
+    prepared.history_projection = fields.history_projection;
+    prepared.terminal_metadata_return = fields.metadata_return;
+    prepared.terminal_access = fields.access;
+    prepared.terminal_receiver = fields.receiver;
+    prepared.panic_payload = fields.panic_payload;
+    prepared.cleanup_failure = fields.prepared_cleanup_first;
+    service.role = fields.role;
+    service.start = fields.service;
+    cell.first_failure = fields.cleanup_first;
+    cell.control_failure = fields.control_failure;
+    service.return_body = Some(std::mem::replace(
+        body,
+        ProductionVmConstructionPostBody::history_only(),
+    ));
+    drop(cell);
+    drop(service);
+    drop(prepared);
+    slot.publish(if quarantined {
+        CleanupPhase::DestructionRefused
+    } else {
+        CleanupPhase::TerminalReady
+    });
+    Ok(())
+}
+
+/// Keeps a deferred terminal under its same original role without a queue cycle.
+pub(super) fn return_pending_terminal(body: &mut ProductionVmConstructionPostBody) {
+    let Some(terminal) = body.terminal.take() else {
+        return;
+    };
+    let TerminalCustody { key, queue, fields } = terminal;
+    let slot = &queue.slots[key.index];
+    match return_terminal_fields(slot, key.epoch, body, fields) {
+        Ok(()) => report_refs::release(slot, key.epoch, false),
+        Err(fields) => {
+            // A held terminal pin makes header replacement impossible. Preserve
+            // the entire charged payload on contradictory/corrupted storage;
+            // neither an overwrite nor a credit return can be justified.
+            if slot.epoch.load(Ordering::Acquire) == key.epoch {
+                slot.publish(CleanupPhase::DestructionRefused);
+            }
+            body.terminal = Some(TerminalCustody { key, queue, fields });
+            std::mem::forget(std::mem::replace(
+                body,
+                ProductionVmConstructionPostBody::history_only(),
+            ));
+        }
+    }
 }
 
 /// Releases one actual outside report only after its owned leaves were dropped.
@@ -372,3 +525,6 @@ pub(super) fn destroy_payload<T>(slot: &CleanupSlot, payload: T) -> bool {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
