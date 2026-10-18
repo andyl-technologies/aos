@@ -1014,7 +1014,7 @@ impl QemuFreshAttemptDriver for QemuFreshModeledDriver {
     fn retention_boundary(
         &self,
         pending: &Self::Pending,
-    ) -> Option<(Configuration, QemuSavepointReplayProof)> {
+    ) -> Result<(Configuration, QemuSavepointReplayProof), &'static str> {
         pending.retention_boundary()
     }
 
@@ -1090,7 +1090,7 @@ impl QemuFreshAttemptDriver for QemuFreshSupplementalModeledDriver {
     fn retention_boundary(
         &self,
         pending: &Self::Pending,
-    ) -> Option<(Configuration, QemuSavepointReplayProof)> {
+    ) -> Result<(Configuration, QemuSavepointReplayProof), &'static str> {
         pending.retention_boundary()
     }
 

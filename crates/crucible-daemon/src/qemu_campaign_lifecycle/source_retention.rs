@@ -53,8 +53,14 @@ pub enum QemuFinalBoundaryDrain {
     /// Entries were appended and must precede shutdown's entries when sealing.
     Drained(Vec<SchedulerEventLogEntry>),
     /// Nothing changed; ordinary shutdown must run as before.
-    Ineligible,
+    ///
+    /// The stable kebab-case token names the first check that refused, for
+    /// the retention diagnostic.
+    Ineligible(&'static str),
 }
+
+/// Token for lifecycle owners that cannot keep their world at all.
+pub(crate) const RETENTION_UNSUPPORTED_OWNER: &str = "lifecycle-owner-cannot-retain";
 
 /// Result of preparing a drained lifecycle as a retained source.
 pub(crate) enum QemuRetainedSourcePreparation<L> {
@@ -215,7 +221,8 @@ where
     ///
     /// Only ordinary executions of an authenticated discovery or branch start,
     /// with no continuation input, resume checkpoint, cancellation, or
-    /// property failure, may keep their world.
+    /// property failure, may keep their world. With retention enabled, every
+    /// refusal writes one skipped diagnostic naming the failed check.
     pub(super) fn published_root_plan(
         &self,
         input: &CrucibleAttemptExecution,
@@ -224,28 +231,14 @@ where
         pending: &D::Pending,
     ) -> Option<QemuPublishedRootPlan> {
         let sink = self.published_root_retention.as_ref()?;
-        let ordinary_start = matches!(
-            input.start(),
-            CrucibleResolvedAttemptStart::Discover { .. }
-                | CrucibleResolvedAttemptStart::Branch { .. }
-        );
-        if !continuation_free
-            || !ordinary_start
-            || context.start_mode() != AttemptStartMode::Execute
-            || context.resume_checkpoint().is_some()
-            || context.cancellation().is_canceled()
-            || self
-                .driver
-                .has_terminal_assertion_failure(pending)
-                .unwrap_or(true)
-        {
-            return None;
-        }
-        let lineage = input.lineage().id().ok()?;
-        if context.runtime_basis()?.key().lineage() != lineage {
-            return None;
-        }
-        let (boundary, proof) = self.driver.retention_boundary(pending)?;
+        let (lineage, boundary, proof) =
+            match self.published_root_boundary(input, context, continuation_free, pending) {
+                Ok(eligible) => eligible,
+                Err(reason) => {
+                    record_retention_decision("skipped", reason);
+                    return None;
+                }
+            };
         if !sink.may_admit() {
             record_retention_decision("declined", "hot-fork pool has no free template slot");
             return None;
@@ -258,6 +251,53 @@ where
             boundary,
             proof,
         })
+    }
+
+    /// Returns the retainable boundary or the stable token of the first refusal.
+    fn published_root_boundary(
+        &self,
+        input: &CrucibleAttemptExecution,
+        context: &AttemptExecutionContext,
+        continuation_free: bool,
+        pending: &D::Pending,
+    ) -> Result<(CampaignLineageId, Configuration, QemuSavepointReplayProof), &'static str> {
+        let ordinary_start = matches!(
+            input.start(),
+            CrucibleResolvedAttemptStart::Discover { .. }
+                | CrucibleResolvedAttemptStart::Branch { .. }
+        );
+        let start_refusal = [
+            (!continuation_free, "continuation-input"),
+            (!ordinary_start, "not-ordinary-start"),
+            (
+                context.start_mode() != AttemptStartMode::Execute,
+                "start-mode-not-execute",
+            ),
+            (context.resume_checkpoint().is_some(), "resume-checkpoint"),
+            (context.cancellation().is_canceled(), "attempt-canceled"),
+        ]
+        .into_iter()
+        .find_map(|(refused, reason)| refused.then_some(reason));
+        if let Some(reason) = start_refusal {
+            return Err(reason);
+        }
+        // An assertion check that cannot run refuses retention as a failure.
+        match self.driver.has_terminal_assertion_failure(pending) {
+            Ok(false) => {}
+            Ok(true) => return Err("terminal-assertion-failure"),
+            Err(_error) => return Err("assertion-check-unavailable"),
+        }
+
+        let lineage = input
+            .lineage()
+            .id()
+            .map_err(|_| "lineage-identity-unavailable")?;
+        let basis = context.runtime_basis().ok_or("runtime-basis-absent")?;
+        if basis.key().lineage() != lineage {
+            return Err("runtime-basis-lineage-mismatch");
+        }
+        let (boundary, proof) = self.driver.retention_boundary(pending)?;
+        Ok((lineage, boundary, proof))
     }
 
     /// Settles the final boundary and, when it is empty, keeps the world.
@@ -280,7 +320,8 @@ where
                     drained,
                 };
             }
-            Ok(QemuFinalBoundaryDrain::Ineligible) => {
+            Ok(QemuFinalBoundaryDrain::Ineligible(reason)) => {
+                record_retention_decision("skipped", reason);
                 return QemuPublishedRootAttempt::Declined {
                     lifecycle,
                     pending,

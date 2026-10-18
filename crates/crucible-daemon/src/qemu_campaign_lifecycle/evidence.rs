@@ -452,7 +452,7 @@ where
             QemuFinalBoundaryDrain::Drained(entries) => {
                 self.drained_final_events.clone_from(entries);
             }
-            QemuFinalBoundaryDrain::Ineligible => {}
+            QemuFinalBoundaryDrain::Ineligible(_) => {}
         }
         Ok(drained)
     }

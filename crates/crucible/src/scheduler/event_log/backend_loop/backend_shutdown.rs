@@ -11,6 +11,45 @@
 
 use super::*;
 
+/// Owner state that keeps the final boundary unsettled until teardown.
+///
+/// Ordinary shutdown discards this state through its cleanup-only path, so a
+/// world holding any of it cannot be settled and kept running as a template.
+/// Each variant names one condition and maps to a stable diagnostic token.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FinalBoundaryRefusal {
+    /// A failed settlement poisoned the physical continuation.
+    PoisonedContinuation,
+    /// A committed guest selectable stop awaits its authenticated host reply.
+    HeldGuestSelectableStop,
+    /// A committed campaign-marker stop awaits its atomic choice release.
+    HeldCampaignMarkerStop,
+    /// Physically completed peer RUNs remain private behind a network choice.
+    HeldPeerEvidence,
+    /// A fixed host input remains staged for the next RUN.
+    PendingFixedInput,
+    /// A device-group selection remains retained for publication.
+    RetainedDeviceGroupSelection,
+    /// A live World-network choice reservation remains unresolved.
+    LiveNetworkPreselection,
+}
+
+impl FinalBoundaryRefusal {
+    /// Returns the stable kebab-case token naming this refusal in diagnostics.
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::PoisonedContinuation => "poisoned-continuation",
+            Self::HeldGuestSelectableStop => "held-guest-selectable-stop",
+            Self::HeldCampaignMarkerStop => "held-campaign-marker-stop",
+            Self::HeldPeerEvidence => "held-peer-evidence",
+            Self::PendingFixedInput => "pending-fixed-input",
+            Self::RetainedDeviceGroupSelection => "retained-device-group-selection",
+            Self::LiveNetworkPreselection => "live-network-preselection",
+        }
+    }
+}
+
 /// Settlement of the final committed boundary, before teardown.
 struct FinalBoundarySettlement {
     network: Result<Vec<SchedulerEventLogEntry>, BackendError>,
@@ -53,10 +92,44 @@ where
     pub fn drain_final_boundary(
         &mut self,
     ) -> Result<Option<Vec<SchedulerEventLogEntry>>, SchedulerError> {
-        if self.requires_cleanup_only_shutdown() || self.preselection.is_some() {
+        if self.final_boundary_refusal().is_some() {
             return Ok(None);
         }
         self.settle_final_boundary().into_entries().map(Some)
+    }
+
+    /// Names the first owner state that keeps the final boundary unsettled.
+    ///
+    /// Returns `None` exactly when [`Self::drain_final_boundary`] would settle
+    /// the boundary, and reads state only. A held guest stop is a live
+    /// controller capability that never enters a checkpoint or process
+    /// protocol, so a world paused at an unanswered guest choice is refused.
+    #[must_use]
+    pub fn final_boundary_refusal(&self) -> Option<FinalBoundaryRefusal> {
+        if self.continuation_poisoned {
+            return Some(FinalBoundaryRefusal::PoisonedContinuation);
+        }
+        if let Some(held) = &self.held_host_continuation {
+            return Some(match held.source_stop.as_ref().map(|stop| stop.kind) {
+                Some(HeldHostStopKind::GuestSelectable) => {
+                    FinalBoundaryRefusal::HeldGuestSelectableStop
+                }
+                Some(HeldHostStopKind::CampaignMarker) => {
+                    FinalBoundaryRefusal::HeldCampaignMarkerStop
+                }
+                None => FinalBoundaryRefusal::HeldPeerEvidence,
+            });
+        }
+        if self.pending_fixed_input.is_some() {
+            return Some(FinalBoundaryRefusal::PendingFixedInput);
+        }
+        if self.device_group_selection.is_retained() {
+            return Some(FinalBoundaryRefusal::RetainedDeviceGroupSelection);
+        }
+        if self.preselection.is_some() {
+            return Some(FinalBoundaryRefusal::LiveNetworkPreselection);
+        }
+        None
     }
 
     fn requires_cleanup_only_shutdown(&self) -> bool {

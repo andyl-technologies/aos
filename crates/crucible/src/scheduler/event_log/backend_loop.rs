@@ -24,6 +24,7 @@ mod preselection;
 mod settlement;
 use crate::scheduler::device_group_selection::DeviceGroupSelectionController;
 use admission::{BackendBoundaryEvidence, BackendOutcomeAdmission, complete_backend_outcome_on};
+pub use backend_shutdown::FinalBoundaryRefusal;
 pub use cap_boundary::FailedCapNegotiation;
 pub use dispatch_boundary::FailedDispatchResolution;
 pub(in crate::scheduler) use held_delivery::HeldDeliveryCeiling;

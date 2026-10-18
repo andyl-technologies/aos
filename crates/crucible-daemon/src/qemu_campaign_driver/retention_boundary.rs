@@ -16,8 +16,11 @@ impl QemuFreshPendingObservation {
     /// preselection to the observation. Terminal stops, timeouts, private
     /// replay boundaries, and observation-condition stops are never retained.
     /// A proof that cannot be sealed declines retention instead of failing
-    /// the attempt.
-    pub(super) fn retention_boundary(&self) -> Option<(Configuration, QemuSavepointReplayProof)> {
+    /// the attempt. A declined stop reports the stable token of the first
+    /// refused condition.
+    pub(super) fn retention_boundary(
+        &self,
+    ) -> Result<(Configuration, QemuSavepointReplayProof), &'static str> {
         let next_choice_stop = match &self.stop {
             ModeledStop::Reached(stop) | ModeledStop::BoundedPrimaryReached { stop, .. } => {
                 stop.accepts_next_choice()
@@ -30,12 +33,19 @@ impl QemuFreshPendingObservation {
             | ModeledStop::TerminalPassed
             | ModeledStop::TerminalFailed(_) => false,
         };
-        if !next_choice_stop
-            || !self.stop.continues_run()
-            || self.discoveries.is_empty()
-            || self.preselection.is_some()
-        {
-            return None;
+        let refusal = [
+            (!next_choice_stop, "stop-not-next-choice"),
+            (!self.stop.continues_run(), "stop-ends-run"),
+            (self.discoveries.is_empty(), "no-discovered-choices"),
+            (
+                self.preselection.is_some(),
+                "live-network-preselection-handoff",
+            ),
+        ]
+        .into_iter()
+        .find_map(|(refused, reason)| refused.then_some(reason));
+        if let Some(reason) = refusal {
+            return Err(reason);
         }
 
         let proof = QemuSavepointReplayProof::from_retained_boundary(
@@ -44,7 +54,7 @@ impl QemuFreshPendingObservation {
             self.terminal_at,
             &self.event_log,
         )
-        .ok()?;
-        Some((self.configuration.clone(), proof))
+        .map_err(|_| "replay-proof-unsealed")?;
+        Ok((self.configuration.clone(), proof))
     }
 }

@@ -35,8 +35,8 @@ impl QemuFreshAttemptDriver for RetentionDriver {
     fn retention_boundary(
         &self,
         _pending: &Self::Pending,
-    ) -> Option<(Configuration, QemuSavepointReplayProof)> {
-        self.boundary.clone()
+    ) -> Result<(Configuration, QemuSavepointReplayProof), &'static str> {
+        self.boundary.clone().ok_or("stop-not-next-choice")
     }
 
     fn drive(
@@ -374,7 +374,10 @@ fn ineligible_final_drain_keeps_ordinary_teardown() {
         "retention.ineligible",
     ));
     let mut fixture = Fixture::new(
-        Script::new(QemuFinalBoundaryDrain::Ineligible).with_shutdown_events(&[9]),
+        Script::new(QemuFinalBoundaryDrain::Ineligible(
+            "held-guest-selectable-stop",
+        ))
+        .with_shutdown_events(&[9]),
         Some(boundary.clone()),
         published_observation(&input, &boundary.0),
         Some(Arc::new(RecordingRootSink::default())),

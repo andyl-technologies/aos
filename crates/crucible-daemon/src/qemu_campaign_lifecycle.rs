@@ -16,6 +16,7 @@ use crucible::{
     ScenarioDefForm, Schedule, SchedulerError, SchedulerEventLogEntry,
     SchedulerOperationalFailureClass, SchedulerQuiescence, Seed, SelectionDecision, VirtualTime,
 };
+use crucible_api::vm_lifecycle::RetentionDrain;
 use crucible_api::{
     LifecycleApiError, ProductionFaultEvidenceSnapshot, ProductionVmExactHotForkSourceBoundary,
     ProductionVmLifecycleConfig, ProductionVmLifecycleLoop, ProductionVmNodeReplayLaunchProfile,
@@ -545,7 +546,8 @@ pub trait QemuFreshAttemptLifecycleOwner {
     /// no new entries; a later [`Self::shutdown`] then publishes none either.
     /// [`QemuFinalBoundaryDrain::Drained`] entries were appended and precede
     /// whatever shutdown returns. [`QemuFinalBoundaryDrain::Ineligible`]
-    /// changes nothing. Owners that cannot retain their world use the default.
+    /// changes nothing and names the refusing check. Owners that cannot
+    /// retain their world use the default.
     ///
     /// # Errors
     ///
@@ -554,7 +556,9 @@ pub trait QemuFreshAttemptLifecycleOwner {
     fn drain_final_events_for_retention(
         &mut self,
     ) -> Result<QemuFinalBoundaryDrain, SchedulerError> {
-        Ok(QemuFinalBoundaryDrain::Ineligible)
+        Ok(QemuFinalBoundaryDrain::Ineligible(
+            source_retention::RETENTION_UNSUPPORTED_OWNER,
+        ))
     }
 
     /// Performs final drain, process reap, lease release, and aggregate release.
@@ -786,9 +790,13 @@ impl QemuFreshAttemptLifecycleOwner for ProductionVmLifecycleLoop {
     ) -> Result<QemuFinalBoundaryDrain, SchedulerError> {
         Ok(
             match ProductionVmLifecycleLoop::drain_final_boundary_for_retention(self)? {
-                None => QemuFinalBoundaryDrain::Ineligible,
-                Some(entries) if entries.is_empty() => QemuFinalBoundaryDrain::Retainable,
-                Some(entries) => QemuFinalBoundaryDrain::Drained(entries),
+                RetentionDrain::Declined(refusal) => {
+                    QemuFinalBoundaryDrain::Ineligible(refusal.token())
+                }
+                RetentionDrain::Settled(entries) if entries.is_empty() => {
+                    QemuFinalBoundaryDrain::Retainable
+                }
+                RetentionDrain::Settled(entries) => QemuFinalBoundaryDrain::Drained(entries),
             },
         )
     }
@@ -1199,11 +1207,16 @@ pub trait QemuFreshAttemptDriver {
     /// boundary with discovered choices, no live-network preselection, and no
     /// terminal verdict, so the runner may keep its stopped world as a
     /// reusable source. Drivers without that projection use the default.
+    ///
+    /// # Errors
+    ///
+    /// Returns the stable kebab-case token of the first refused condition
+    /// when the stop is not retainable.
     fn retention_boundary(
         &self,
         _pending: &Self::Pending,
-    ) -> Option<(Configuration, QemuSavepointReplayProof)> {
-        None
+    ) -> Result<(Configuration, QemuSavepointReplayProof), &'static str> {
+        Err("driver-has-no-retention-projection")
     }
 
     /// Checks whether the pending modeled stop has a declared property failure.

@@ -18,8 +18,8 @@ mod observation_append;
 mod sealed_segments;
 pub use backend_loop::{
     BackendNetworkOutputInterceptor, BackendNetworkSettlement, BackendQuantumLoop,
-    FailedCapNegotiation, FailedDispatchResolution, FailedInputResolution, HeldHostStopKind,
-    HeldHostStopWitness, NoopBackendNetworkOutputInterceptor,
+    FailedCapNegotiation, FailedDispatchResolution, FailedInputResolution, FinalBoundaryRefusal,
+    HeldHostStopKind, HeldHostStopWitness, NoopBackendNetworkOutputInterceptor,
 };
 pub use coverage_fold::{EventLogCoverageFold, EventLogCoverageSet};
 pub(super) use sealed_segments::{ConditionBatcher, entry_encodings, validate_segment_refs};

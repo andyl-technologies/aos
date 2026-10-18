@@ -2173,6 +2173,7 @@ use process_owners::{
 };
 mod quantum_loop;
 mod retention_drain;
+pub use retention_drain::{RetentionDrain, RetentionDrainRefusal};
 mod runtime;
 mod search;
 mod storage_faults;
