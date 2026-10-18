@@ -46,10 +46,13 @@ fn public_five_node_envoy_network_retains_known_failure() -> Result<(), Box<dyn 
     } = envoy_network::start_envoy_campaign(&fixture, false)?;
     let scenario =
         ScenarioDefForm::from_compact_binary(&fs::read(fixture.fixture.join("scenario.bin"))?)?;
+    // The primary outage isolates router-b, which must still poll router-a
+    // and acknowledge the follow-up boundary over A-B. Three virtual seconds
+    // lets it rejoin well before follow-up readiness and the policy deadline.
     let fault = envoy_network::group_argument(NetworkFaultSelectable::selected_value(
         "link_down",
         "primary",
-        30_000_000,
+        3_000_000,
         0,
         0,
     )?);

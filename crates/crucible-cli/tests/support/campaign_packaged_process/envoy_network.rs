@@ -190,10 +190,13 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
         .declaration("fault.network")
         .ok_or("Envoy scenario omits fault.network")?;
     assert_eq!(fault_declaration, &NetworkFaultSelectable::declaration()?);
+    // The primary outage isolates router-b, which must still poll router-a
+    // and acknowledge the follow-up boundary over A-B. Three virtual seconds
+    // lets it rejoin well before follow-up readiness and the policy deadline.
     let fault = group_argument(NetworkFaultSelectable::selected_value(
         "link_down",
         "primary",
-        30_000_000,
+        3_000_000,
         0,
         0,
     )?);
