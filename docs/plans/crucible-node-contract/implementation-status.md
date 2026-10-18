@@ -2050,3 +2050,18 @@ destination owners before this control can pass. No native preservation result
 or overall performance improvement follows from these library results. The
 production application-target gate above covers the earlier source checkpoint;
 the new checkpoint requires its own refreshed gate.
+
+The subsequent Control projection component (`7ff72b5e15`) retains both actual
+decoded DOM owners and a separate provenance wrapper for the exact body and full
+content reference. A spent ColdGroup attempt retains its raw bytes, reference,
+decoded owner and failures. This later Window cut cannot fund earlier native
+birth or modify a sealed startup carrier. Early Source/ticket construction is
+a separate remaining implementation.
+
+This component passes six-crate all-feature/all-target checking in 1 minute
+28 seconds, plus 1,940 Core and 1,433 Provider library tests in 8.04 and 11.49
+seconds after 4 minutes 24 seconds of ordinary optimized test compilation.
+Existing ignored tests remain unchanged. New controls exercise actual fullref
+and body provenance, complete retained backing, exact/one-byte-short ceilings,
+foreign creators and failed partial ownership. These results establish neither
+successful native restoration nor a refreshed production application gate.

@@ -1,8 +1,9 @@
-//! Lends exact Initial15 Control and SDK/native custody before fresh native birth.
+//! Lends exact Initial15 Control custody at the installed Window's cold cut.
 //!
-//! This metadata borrower performs no parser, hash, serializer or schema factory.
-//! The caller independently admits the existing defining Control decoder before
-//! constructing a prospective model-shape owner and its actual formatter work.
+//! This metadata borrower requires an already constructed genuine ColdGroup. It
+//! cannot fund an earlier native process birth or alter a sealed startup carrier.
+//! It performs no parser, hash, serializer or schema factory. Later prospective
+//! visitors independently admit the defining decoder and their formatter work.
 
 use super::*;
 use crucible_node_provider::envelope::Envelope;
