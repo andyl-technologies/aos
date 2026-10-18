@@ -911,14 +911,11 @@ pub(crate) use ordinary_bytes_formatter::{
 #[path = "retained_metadata/native_oracle_geometry.rs"]
 mod native_oracle_geometry;
 pub use native_oracle_geometry::{
-    OriginalNativeOracleTypedLayoutsData,
-    original_native_oracle_typed_layouts_data,
+    OriginalNativeOracleTypedLayoutsData, original_native_oracle_body_decode_storage_data,
     original_native_oracle_expanded_decode_storage_data,
-    original_native_oracle_body_decode_storage_data,
-    original_native_oracle_value_reference_matches_data,
-    original_native_oracle_underlying_reference_data,
-    original_native_oracle_raw_reference_matches_data,
-    original_native_oracle_initial_inputs_data,
-    original_native_oracle_value_decode_storage_data,
     original_native_oracle_geometry_counter_scratch_data,
+    original_native_oracle_initial_inputs_data, original_native_oracle_raw_reference_matches_data,
+    original_native_oracle_typed_layouts_data, original_native_oracle_underlying_reference_data,
+    original_native_oracle_value_decode_storage_data,
+    original_native_oracle_value_reference_matches_data,
 };

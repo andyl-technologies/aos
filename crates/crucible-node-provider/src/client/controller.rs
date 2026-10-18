@@ -1305,9 +1305,7 @@ impl CnpController {
     /// This performs no hash check, DTO decode, source callback or transport.
     /// It provides no content/native authority. The real witness reader still
     /// authenticates the selected reference and its unchanged bytes separately.
-    pub fn original_completed_content_data(
-        &self,
-    ) -> impl Iterator<Item = (&ContentRef, &[u8])> {
+    pub fn original_completed_content_data(&self) -> impl Iterator<Item = (&ContentRef, &[u8])> {
         self.custody.content().original_completed_objects_data()
     }
 
