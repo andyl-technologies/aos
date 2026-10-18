@@ -21,6 +21,7 @@
 
 mod manifest;
 mod source;
+pub(in crate::node_qualification::packet_collection::complete) use source::HostSource17SetupBorrow;
 pub use source::{InstalledCompleteRestoration, PreparedCompleteRestoration};
 
 use std::{cell::RefCell, path::PathBuf, rc::Rc, task::Poll};

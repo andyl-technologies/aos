@@ -8,6 +8,9 @@ use std::{os::unix::net::UnixDatagram, path::Path, rc::Rc, thread::ThreadId};
 
 use super::{OperationFailure, refused};
 
+#[path = "effects/host_setup17.rs"]
+mod host_setup17;
+
 /// Retains the original three receiver descriptors behind inspection-only aliases.
 ///
 /// The group has no source or oracle backreference. Its original creator process

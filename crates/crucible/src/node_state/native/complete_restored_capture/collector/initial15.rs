@@ -109,11 +109,11 @@ impl RetainedCold17Collection {
 }
 
 fn historical_member_data(
-    member: &Option<RetainedCold17Member>,
+    member: &[RetainedCold17Member],
 ) -> Result<Initial15ScopeMember17<'_>, StateError> {
-    let member = member
-        .as_ref()
-        .ok_or_else(|| refused("cold17 historical member absent"))?;
+    let [member] = member else {
+        return Err(refused("cold17 historical member absent"));
+    };
     Ok(Initial15ScopeMember17 {
         node: member
             .node

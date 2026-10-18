@@ -667,6 +667,9 @@ impl crate::node_contract::NodeRuntime {
 #[path = "retained_typed.rs"]
 mod retained_typed;
 
+#[path = "typed_counter.rs"]
+mod typed_counter;
+
 impl NodeRuntime {
     pub(crate) fn capture_serialization_counter_scratch_data() -> usize {
         super::serialization::counter_scratch_data()

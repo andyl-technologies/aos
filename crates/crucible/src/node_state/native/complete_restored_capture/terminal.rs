@@ -39,6 +39,7 @@ pub(crate) enum RestoredArchive17ValidationStage {
     RuntimeIdentity,
     SchedulingIdentity,
     OwnerReceipts,
+    FactoryPreparation,
     Journal(RestoredArchive17SourceIndex),
     Controller(RestoredArchive17SourceIndex),
     SdkCapture(RestoredArchive17SourceIndex),
@@ -47,11 +48,12 @@ pub(crate) enum RestoredArchive17ValidationStage {
     Node(RestoredArchive17SourceIndex),
     Parent(RestoredArchive17SourceIndex),
     Source(RestoredArchive17SourceIndex),
+    FactoryNativeGeometry(RestoredArchive17SourceIndex),
     FinalConjunction,
 }
 
 impl RestoredArchive17ValidationStage {
-    pub(crate) const STAGE_COUNT: usize = 34;
+    pub(crate) const STAGE_COUNT: usize = 38;
 
     pub(crate) fn slot_data(self) -> usize {
         match self {
@@ -64,15 +66,17 @@ impl RestoredArchive17ValidationStage {
             Self::RuntimeIdentity => 6,
             Self::SchedulingIdentity => 7,
             Self::OwnerReceipts => 8,
-            Self::Journal(index) => 9 + index.index_data() * 6,
-            Self::Controller(index) => 10 + index.index_data() * 6,
-            Self::SdkCapture(index) => 11 + index.index_data() * 6,
-            Self::Native(index) => 12 + index.index_data() * 6,
-            Self::SemanticEnvelope(index) => 13 + index.index_data() * 6,
-            Self::Node(index) => 14 + index.index_data() * 6,
-            Self::Parent(index) => 27 + index.index_data(),
-            Self::Source(index) => 30 + index.index_data(),
-            Self::FinalConjunction => 33,
+            Self::FactoryPreparation => 9,
+            Self::Journal(index) => 10 + index.index_data() * 6,
+            Self::Controller(index) => 11 + index.index_data() * 6,
+            Self::SdkCapture(index) => 12 + index.index_data() * 6,
+            Self::Native(index) => 13 + index.index_data() * 6,
+            Self::SemanticEnvelope(index) => 14 + index.index_data() * 6,
+            Self::Node(index) => 15 + index.index_data() * 6,
+            Self::Parent(index) => 28 + index.index_data(),
+            Self::Source(index) => 31 + index.index_data(),
+            Self::FactoryNativeGeometry(index) => 34 + index.index_data(),
+            Self::FinalConjunction => 37,
         }
     }
 
@@ -85,7 +89,8 @@ impl RestoredArchive17ValidationStage {
             | Self::SemanticEnvelope(index)
             | Self::Node(index)
             | Self::Parent(index)
-            | Self::Source(index) => Some(index),
+            | Self::Source(index)
+            | Self::FactoryNativeGeometry(index) => Some(index),
             _ => None,
         }
     }
@@ -112,6 +117,7 @@ pub(crate) enum RestoredArchive17ParentWork {
     SchedulingDecode,
     AdministrativeDecode,
     Initial15(RestoredArchive17Initial15Work),
+    Current17Header(RestoredArchive17Current17HeaderWork),
     Journal,
     SdkCapture,
     SemanticEnvelope,
@@ -119,6 +125,16 @@ pub(crate) enum RestoredArchive17ParentWork {
     Controller,
     Node,
     Source,
+    Join,
+}
+
+/// Names actual inert header constructors of one authenticated current17 parent.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RestoredArchive17Current17HeaderWork {
+    Header,
+    Coordinator,
+    Host,
+    Administrative,
     Join,
 }
 
@@ -483,44 +499,103 @@ mod controls {
         let last = RestoredArchive17SourceIndex::from_data(2).unwrap();
         assert_eq!(
             RestoredArchive17ValidationStage::Journal(first).slot_data(),
-            9
-        );
-        assert_eq!(
-            RestoredArchive17ValidationStage::Controller(first).slot_data(),
             10
         );
         assert_eq!(
-            RestoredArchive17ValidationStage::SdkCapture(first).slot_data(),
+            RestoredArchive17ValidationStage::Controller(first).slot_data(),
             11
         );
         assert_eq!(
-            RestoredArchive17ValidationStage::Native(first).slot_data(),
+            RestoredArchive17ValidationStage::SdkCapture(first).slot_data(),
             12
         );
         assert_eq!(
+            RestoredArchive17ValidationStage::Native(first).slot_data(),
+            13
+        );
+        assert_eq!(
             RestoredArchive17ValidationStage::Source(last).slot_data(),
-            32
+            33
         );
         assert_eq!(
             RestoredArchive17ValidationStage::FinalConjunction.slot_data(),
-            33
+            37
         );
         assert_eq!(
             RestoredArchive17ValidationStage::Journal(
                 RestoredArchive17SourceIndex::from_data(1).unwrap()
             )
             .slot_data(),
-            15
+            16
         );
         assert_eq!(
             RestoredArchive17ValidationStage::Parent(first).slot_data(),
-            27
+            28
         );
         assert_eq!(
             RestoredArchive17ValidationStage::Source(first).slot_data(),
-            30
+            31
         );
-        assert_eq!(RestoredArchive17ValidationStage::STAGE_COUNT, 34);
+        assert_eq!(
+            RestoredArchive17ValidationStage::FactoryPreparation.slot_data(),
+            9
+        );
+        assert_eq!(
+            RestoredArchive17ValidationStage::FactoryNativeGeometry(first).slot_data(),
+            34
+        );
+        assert_eq!(
+            RestoredArchive17ValidationStage::FactoryNativeGeometry(last).slot_data(),
+            36
+        );
+        assert_eq!(RestoredArchive17ValidationStage::STAGE_COUNT, 38);
+    }
+
+    #[test]
+    fn factory_census_and_each_native_geometry_are_mandatory_boundaries() {
+        let first = RestoredArchive17SourceIndex::from_data(0).unwrap();
+        let last = RestoredArchive17SourceIndex::from_data(2).unwrap();
+        let ordinary = |stage| RestoredArchive17ValidationStep::ordinary_data(stage).unwrap();
+        let receipts = ordinary(RestoredArchive17ValidationStage::OwnerReceipts);
+        let factory = ordinary(RestoredArchive17ValidationStage::FactoryPreparation);
+        let journal = ordinary(RestoredArchive17ValidationStage::Journal(first));
+        assert!(
+            journal
+                .authenticate_transition_data(Some(receipts))
+                .is_err()
+        );
+        assert!(factory.authenticate_transition_data(Some(receipts)).is_ok());
+        assert!(journal.authenticate_transition_data(Some(factory)).is_ok());
+
+        let source = ordinary(RestoredArchive17ValidationStage::Source(last));
+        let final_step = ordinary(RestoredArchive17ValidationStage::FinalConjunction);
+        assert!(
+            final_step
+                .authenticate_transition_data(Some(source))
+                .is_err()
+        );
+        let mut previous = source;
+        for index in 0..3 {
+            let geometry = ordinary(RestoredArchive17ValidationStage::FactoryNativeGeometry(
+                RestoredArchive17SourceIndex::from_data(index).unwrap(),
+            ));
+            assert!(
+                geometry
+                    .authenticate_transition_data(Some(previous))
+                    .is_ok()
+            );
+            assert!(
+                geometry
+                    .authenticate_transition_data(Some(geometry))
+                    .is_err()
+            );
+            previous = geometry;
+        }
+        assert!(
+            final_step
+                .authenticate_transition_data(Some(previous))
+                .is_ok()
+        );
     }
 
     #[test]

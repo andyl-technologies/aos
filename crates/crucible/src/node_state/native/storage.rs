@@ -856,6 +856,35 @@ pub(super) mod pages {
 }
 
 impl NativeArchiveRecord {
+    /// Names this archive/index visitor and its concrete typed Manifest child.
+    ///
+    /// Every owning iterator is priced by its actual element type. Descriptor,
+    /// content, Source and loader counters remain separate enclosing terms.
+    pub(crate) fn original_archive_owned_counter_scratch_data() -> usize {
+        use crate::node_contract::{NodeRuntime, RuntimeError};
+        use std::mem::size_of;
+        NodeRuntime::capture_complete_archive_typed_counter_scratch_data()
+            + size_of::<&Self>()
+            + size_of::<&Index>()
+            + size_of::<[usize; 2]>()
+            + size_of::<Result<usize, RuntimeError>>()
+            + size_of::<Option<usize>>()
+            + size_of::<[Option<&ContentRef>; 2]>()
+            + size_of::<std::iter::Flatten<std::array::IntoIter<Option<&ContentRef>, 2>>>()
+            + size_of::<std::slice::Iter<'static, Object>>()
+            + size_of::<&Object>()
+            + size_of::<std::slice::Iter<'static, ContentRef>>()
+            + size_of::<&ContentRef>()
+            + size_of::<std::slice::Iter<'static, NativeOwnerState>>()
+            + size_of::<&NativeOwnerState>()
+            + size_of::<[&Id; 4]>()
+            + size_of::<std::array::IntoIter<&Id, 4>>()
+            + size_of::<&Id>()
+            + size_of::<std::slice::Iter<'static, Id>>()
+            + size_of::<std::slice::Iter<'static, NativeArtifactState>>()
+            + size_of::<&NativeArtifactState>()
+    }
+
     pub(crate) fn capture_owned_storage(
         &self,
     ) -> Result<usize, crate::node_contract::RuntimeError> {

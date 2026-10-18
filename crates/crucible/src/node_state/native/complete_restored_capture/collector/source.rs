@@ -3,13 +3,13 @@
 //! The Source attempt keeps initialized parse and typed products on refusal.
 //! Moving its completed result remains separate from all-owner publication.
 
-use super::*;
-use crate::node_adapters::cnp::OriginalInitial15ArchivedGroup;
 use super::super::initial15_history::{
     HistoricalInitial15Scope17, authenticate_initial15_source_member17_data,
     initial15_source_member17_counter_scratch_data,
 };
 use super::super::parent_index::ParentArchive17ReadScope;
+use super::*;
+use crate::node_adapters::cnp::OriginalInitial15ArchivedGroup;
 
 impl RetainedCold17Collection {
     /// Completes a real Source and its full original Initial15 correspondence.
@@ -78,6 +78,12 @@ impl RetainedCold17Collection {
             row_scratch,
         )?;
 
+        self.member_mut(selected)?.source_decode_axes = Some([
+            quote.retained_requested_bytes_data(),
+            quote.maximum_simultaneous_transient_bytes_data(),
+            quote.declared_counter_scratch_bytes_data(),
+        ]);
+
         let prior_cache = self.terminal_cache;
         let Self {
             members,
@@ -99,7 +105,10 @@ impl RetainedCold17Collection {
             .ok_or_else(|| refused("cold17 original historical scope absent"))?;
         let member = members
             .get_mut(selected)
-            .and_then(Option::as_mut)
+            .and_then(|bank| match bank.as_mut_slice() {
+                [member] => Some(member),
+                _ => None,
+            })
             .ok_or_else(|| refused("cold17 Source member absent"))?;
         let objects = member
             .objects

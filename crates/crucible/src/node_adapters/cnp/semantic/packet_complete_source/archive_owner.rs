@@ -49,7 +49,7 @@ pub(crate) use retained::{OriginalRestorationColdGroup, OriginalRestorationColdO
 pub use settled::CompleteHistoricalArchiveFamily;
 pub(crate) use settled::{
     OriginalCompleteHistoricalColdGroup, OriginalRestoredSettledColdGroup,
-    OriginalRestoredSettledColdOwnerView,
+    OriginalRestoredSettledColdOwnerMetadata, OriginalRestoredSettledColdOwnerView,
 };
 
 /// Retains one bounded owner linked to the actual immutable archive closure.

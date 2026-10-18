@@ -408,6 +408,29 @@ impl PacketCompleteSemanticSource {
 }
 
 impl PacketCompleteSemanticSource {
+    /// Observes the actual live Source with raw precredit failures.
+    ///
+    /// This uses the same defining holder/component visitors as the ordinary
+    /// report and retains every failed or busy owner. It creates no serialized
+    /// metadata, renewed SDK cut or native authority.
+    ///
+    /// # Errors
+    /// Refuses foreign custody, unsupported or busy backing, incomplete reads,
+    /// arithmetic overflow or actual requested storage beyond `maximum`.
+    pub fn original_complete_retained_storage_precredit_data(
+        self: &Rc<Self>,
+        maximum: usize,
+    ) -> Result<usize, crate::node_contract::RuntimeError> {
+        use crate::node_contract::RuntimeError;
+        self.storage_origin_with_error::<RuntimeError>()?;
+        let holders =
+            self.original_complete_holder_storage_data_with_error::<RuntimeError>(maximum)?;
+        self.original_complete_storage_with_holders_data_with_error::<RuntimeError>(
+            holders, maximum,
+        )?
+        .complete_requested_bytes_precredit_data()
+    }
+
     /// Observes actual never-born code selection owners with raw failures.
     ///
     /// # Errors

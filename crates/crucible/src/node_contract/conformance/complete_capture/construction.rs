@@ -162,3 +162,51 @@ impl CollectingCompleteRestorationSource {
             + 2 * size_of::<usize>()
     }
 }
+
+impl CollectingCompleteRestorationSource {
+    /// Counts the same completed archive before creating its distinct Host17 source.
+    ///
+    /// No fresh source, native owner, node, runtime or World is created by this
+    /// independently admitted census. Actual external code/holder backing and
+    /// source-constructor demand remain separate terms in the caller's action.
+    ///
+    /// # Errors
+    /// Refuses another actual ticket, a non-current17 or bound archive, missing
+    /// original issuance, busy ownership, overflow or the supplied bound.
+    pub fn retained_original_host17_preconstruction_storage_data(
+        &self,
+        ticket: &crate::node_state::CompleteOriginalHostTicket,
+        maximum: usize,
+    ) -> Result<usize, RuntimeError> {
+        self.original
+            .retained_original_host17_preconstruction_storage_data(ticket, maximum)
+    }
+
+    /// Names the complete archived Source and actual preconstruction loan views.
+    pub fn original_host17_preconstruction_counter_scratch_data() -> usize {
+        crate::node_state::CompleteOriginalRestorationSource::original_host17_preconstruction_counter_scratch_data()
+            + size_of::<&Self>()
+            + size_of::<&crate::node_state::CompleteOriginalHostTicket>()
+            + size_of::<Result<usize, RuntimeError>>()
+    }
+}
+
+impl CollectingCompleteRestorationSource {
+    /// Counts the actual current17 Source retained before a prebirth completes.
+    ///
+    /// The caller keeps this output through loader guards and ticket transfers.
+    /// This observes complete backing and once state without requiring every
+    /// ticket to have been issued; it grants no target or native permission.
+    /// Its wrapper header is already part of the caller's owning slot.
+    ///
+    /// # Errors
+    /// Refuses another creator/family, busy backing, overflow or the supplied
+    /// finite retained-storage bound.
+    pub fn retained_restored_settled_prebirth_output_storage_data(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, RuntimeError> {
+        self.original
+            .retained_restored_settled_prebirth_output_storage_data(maximum)
+    }
+}

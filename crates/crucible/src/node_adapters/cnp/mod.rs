@@ -158,7 +158,7 @@ pub(crate) use semantic::{OriginalInitial15ArchivedGroup, OriginalInitial15Archi
 pub use semantic::CompleteHistoricalArchiveFamily;
 pub(crate) use semantic::{
     OriginalCompleteHistoricalColdGroup, OriginalRestoredSettledColdGroup,
-    OriginalRestoredSettledColdOwnerView,
+    OriginalRestoredSettledColdOwnerMetadata, OriginalRestoredSettledColdOwnerView,
 };
 
 pub(crate) use semantic::OriginalRestoredSettledNodeHistoryView;

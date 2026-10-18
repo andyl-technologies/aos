@@ -6,12 +6,19 @@
 //! later uses new Sources and the actual ticketed Host with those same DATA.
 //! Plan equality never replaces the distinct authorities or original tickets.
 
+#[path = "prepared/host_setup17.rs"]
+mod host_setup17;
+
 use super::*;
 use crate::node_qualification::packet_collection::complete::PacketCompleteArchiveCodeFactory;
 use crucible::node_adapters::cnp::PacketCompleteEffectReceiverReader;
 use crucible::node_admission::{AdmissionLimits, AdmissionRequest, CompleteArchiveCodeGraph};
-use crucible::node_contract::{HostSchedulingContinuationLimits, HostSchedulingSource};
-use crucible::node_state::{NativeArchiveLimits, NativeArchiveRecord};
+use crucible::node_contract::{
+    CollectingCompleteRestorationSource, HostSchedulingContinuationLimits, HostSchedulingSource,
+};
+use crucible::node_state::{
+    CompleteRestoredSettledSourceLoadAttempt, NativeArchiveLimits, NativeArchiveRecord,
+};
 use std::collections::BTreeMap;
 
 /// Keeps the neverborn code policy and actual unattached Host alive.
@@ -45,6 +52,9 @@ pub struct PreparedCompleteRestoration {
     code_plan: Rc<InstalledConformancePlan>,
     code_graph: Option<Rc<CompleteArchiveCodeGraph>>,
     prebirth: Option<Rc<RefCell<PacketCompleteRestorationPrebirth>>>,
+    restored_prebirth_source: Option<CollectingCompleteRestorationSource>,
+    restored_prebirth_archive: Option<NativeArchiveRecord>,
+    restored_prebirth_attempt: Option<CompleteRestoredSettledSourceLoadAttempt>,
     prebirth_attempted: bool,
     prebirth_completed: bool,
     installation_attempted: bool,
@@ -187,6 +197,9 @@ impl PreparedCompleteRestoration {
             code_plan,
             code_graph: None,
             prebirth: None,
+            restored_prebirth_source: None,
+            restored_prebirth_archive: None,
+            restored_prebirth_attempt: None,
             prebirth_attempted: false,
             prebirth_completed: false,
             installation_attempted: false,
@@ -255,6 +268,13 @@ impl PreparedCompleteRestoration {
         if output.is_some() || self.prebirth_attempted || self.installation_attempted {
             return Err(refused());
         }
+        // This is family routing only. The distinct loader must still validate
+        // the signed closure and all four actual owners before issuing tickets.
+        if archive.manifest().coordinator_state_ref.media_type
+            == crucible_node_provider::reference_packet::service::complete_restore::settled_recapture::COORDINATOR_CHECKPOINT17_MEDIA
+        {
+            return self.prepare_restored_settled_prebirth_into(archive, limits, output);
+        }
 
         self.prebirth_attempted = true;
         let graph = self.code_graph.as_ref().ok_or_else(refused)?;
@@ -272,6 +292,51 @@ impl PreparedCompleteRestoration {
             let original = Rc::new(RefCell::new(capsule));
             self.prebirth = Some(Rc::clone(&original));
             *output = Some(original);
+        }
+
+        result.map_err(|_| refused())?;
+        if self.prebirth.is_none() {
+            return Err(refused());
+        }
+        self.prebirth_completed = true;
+        Ok(())
+    }
+
+    fn prepare_restored_settled_prebirth_into(
+        &mut self,
+        archive: NativeArchiveRecord,
+        limits: HostSchedulingContinuationLimits,
+        output: &mut Option<Rc<RefCell<PacketCompleteRestorationPrebirth>>>,
+    ) -> Result<(), QualificationError> {
+        self.prebirth_attempted = true;
+        self.restored_prebirth_archive = Some(archive);
+
+        // Observe the whole real setup before the Source loader allocates any
+        // decoder/output. The original archive is already retained in this owner;
+        // a failed admission cannot discard it or renew this attempt.
+        let maximum =
+            usize::try_from(self.selected.resources.memory_bytes.get()).map_err(|_| refused())?;
+        let scratch = HostSource17SetupBorrow::counter_scratch_data().map_err(|_| refused())?;
+        let mut counter = super::super::super::super::retained::Counter::new(
+            maximum.checked_sub(scratch).ok_or_else(refused)?,
+        );
+        HostSource17SetupBorrow::prepared_data(self)
+            .charge_data(&mut counter, None)
+            .map_err(|_| refused())?;
+        let additional = counter.bytes().checked_add(scratch).ok_or_else(refused)?;
+        let graph = Rc::clone(self.code_graph.as_ref().ok_or_else(refused)?);
+        let factory = Rc::clone(&self.code_factory);
+        let result = factory.prepare_restored_settled_restoration_prebirth_into(
+            graph,
+            &mut self.restored_prebirth_archive,
+            limits,
+            additional,
+            &mut self.restored_prebirth_attempt,
+            &mut self.restored_prebirth_source,
+            &mut self.prebirth,
+        );
+        if let Some(original) = &self.prebirth {
+            *output = Some(Rc::clone(original));
         }
 
         result.map_err(|_| refused())?;
@@ -311,11 +376,13 @@ impl PreparedCompleteRestoration {
         }
 
         owner.installation_attempted = true;
-        prebirth
-            .try_borrow_mut()
-            .map_err(|_| refused())?
-            .prepare_original_host(owner.selected.host.clone())
-            .map_err(|_| refused())?;
+        PacketCompleteRestorationPrebirth::prepare_original_host_for_target(
+            &prebirth,
+            &owner.selected.host,
+            &owner.selected.resources,
+            &HostSource17SetupBorrow::prepared_data(owner),
+        )
+        .map_err(|_| refused())?;
         let host = prebirth
             .try_borrow()
             .map_err(|_| refused())?
@@ -570,6 +637,7 @@ mod tests {
         assert!(!owner.prebirth_completed);
         assert!(!owner.installation_attempted);
         assert!(owner.prebirth.is_none());
+        super::host_setup17::assert_actual_setup_census_data(owner);
         let [mut first, second, third] = duplicate_launch_data(&owner.launches).unwrap();
         assert_eq!(
             encoded(&[&first, &second, &third]).unwrap(),
@@ -581,6 +649,37 @@ mod tests {
             .code_factory
             .retained_host_precredit_data(usize::MAX)
             .unwrap();
+
+        // The actual code factory cannot mint current17 tickets without an
+        // original signed archive. Refusal keeps every caller-owned slot empty
+        // and does not spend this Prepared owner's real prebirth attempt.
+        let mut missing_archive = None;
+        let mut retained_load = None;
+        let mut current_source = None;
+        let mut current_capsule = None;
+        assert!(
+            owner
+                .code_factory
+                .prepare_restored_settled_restoration_prebirth_into(
+                    Rc::clone(owner.code_graph.as_ref().unwrap()),
+                    &mut missing_archive,
+                    HostSchedulingContinuationLimits {
+                        maximum_record_bytes: limits.state.maximum_record_bytes,
+                        lineage: Default::default(),
+                    },
+                    0,
+                    &mut retained_load,
+                    &mut current_source,
+                    &mut current_capsule,
+                )
+                .is_err()
+        );
+        assert!(missing_archive.is_none());
+        assert!(retained_load.is_none());
+        assert!(current_source.is_none());
+        assert!(current_capsule.is_none());
+        assert!(!owner.prebirth_attempted);
+        assert!(owner.prebirth.is_none());
 
         // This calls the real target constructors with an unattached genuine
         // Host solely to inspect DATA correspondence, not to register a target.

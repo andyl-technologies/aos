@@ -15,6 +15,10 @@ use crucible_node_provider::reference_packet::service::complete_restore::settled
 use std::cell::{Cell, RefCell};
 use std::thread::ThreadId;
 
+#[path = "complete_restored_capture/production.rs"]
+mod production;
+pub use production::CompletedRestoredSettledArchive17Declaration;
+
 #[path = "complete_restored_capture/validation.rs"]
 mod validation;
 
@@ -24,12 +28,12 @@ mod terminal;
 #[path = "complete_restored_capture/terminal_construction.rs"]
 mod terminal_construction;
 pub(crate) use terminal::{
-    RestoredArchive17Initial15QualificationRole, RestoredArchive17Initial15Role,
-    RestoredArchive17Initial15Work, RestoredArchive17ParentIdentity, RestoredArchive17ParentStep,
-    RestoredArchive17ParentWork, RestoredArchive17SourceIndex,
-    RestoredArchive17ValidationAdmission, RestoredArchive17ValidationConstructionData,
-    RestoredArchive17ValidationPrewalkData, RestoredArchive17ValidationStage,
-    RestoredArchive17ValidationStep,
+    RestoredArchive17Current17HeaderWork, RestoredArchive17Initial15QualificationRole,
+    RestoredArchive17Initial15Role, RestoredArchive17Initial15Work,
+    RestoredArchive17ParentIdentity, RestoredArchive17ParentStep, RestoredArchive17ParentWork,
+    RestoredArchive17SourceIndex, RestoredArchive17ValidationAdmission,
+    RestoredArchive17ValidationConstructionData, RestoredArchive17ValidationPrewalkData,
+    RestoredArchive17ValidationStage, RestoredArchive17ValidationStep,
 };
 
 #[path = "complete_restored_capture/coordinator_ancestry17.rs"]
@@ -61,6 +65,8 @@ pub struct CompleteRestoredSettledArchiveValidation<'a> {
     // Captured under the preceding Core phase's actual admitted census. The
     // collector adds its own independently retained root, partials and members.
     terminal_prefix_retained_bytes: usize,
+    // Exact external owners already included in the defining Core admission.
+    validation_additional_retained_bytes: usize,
     collection: &'a RefCell<Option<RetainedCold17Collection>>,
     collection_phase: &'a Cell<collector::CollectorPhase17>,
     validation_origin:
@@ -105,7 +111,11 @@ impl CompleteRestoredSettledArchiveValidation<'_> {
     /// The defining captured scalar is returned without allocating or checking
     /// live authority. Actual signed/native/Source joins remain independent.
     pub(crate) fn terminal_prefix_retained_storage_data(&self) -> Result<usize, StateError> {
-        Ok(self.terminal_prefix_retained_bytes)
+        Ok(if self.terminal_admission.is_some() {
+            self.terminal_prefix_retained_bytes
+        } else {
+            0
+        })
     }
 
     /// Retains actual validated17 reconstruction DATA for this exact signed owner.
@@ -608,6 +618,7 @@ pub fn complete_restored_settled_archive_validation_counter_scratch_data() -> us
         + terms.into_iter().sum::<usize>()
         + crate::node_contract::host_scheduling_restored_continuation_schema17_counter_scratch_data(
         )
+        + production::production_counter_scratch_data()
         + collector::counter_scratch_data()
         + parent_index::counter_scratch_data()
 }

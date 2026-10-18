@@ -468,6 +468,31 @@ mod payload_tests {
 }
 
 impl VerifiedStateContent {
+    /// Names the actual immutable-content owning iterator and child views.
+    ///
+    /// Requested map-node layouts are constants; no JSON decode, hash or
+    /// descriptor operation is performed by the owning census itself.
+    pub(crate) fn capture_owned_counter_scratch_data() -> usize {
+        use crate::node_contract::RuntimeError;
+        use std::mem::size_of;
+        size_of::<&Self>()
+            + size_of::<usize>()
+            + size_of::<std::collections::btree_map::Iter<
+                'static,
+                HashRef,
+                (ContentRef, Vec<u8>),
+            >>()
+            + size_of::<(&HashRef, &(ContentRef, Vec<u8>))>()
+            + size_of::<&Vec<u8>>()
+            + size_of::<std::collections::btree_set::Iter<'static, ContentRef>>()
+            + size_of::<&ContentRef>()
+            + size_of::<&HashRef>()
+            // ContentRef and HashRef owned_fields each retain their accumulator.
+            + size_of::<[usize; 2]>()
+            + size_of::<Result<usize, RuntimeError>>()
+            + size_of::<Option<usize>>()
+    }
+
     pub(crate) fn capture_owned_storage(
         &self,
     ) -> Result<usize, crate::node_contract::RuntimeError> {

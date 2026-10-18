@@ -8,6 +8,9 @@
 use std::thread::{self, ThreadId};
 
 use super::*;
+
+#[path = "complete_original_loader/retained_setup17.rs"]
+mod retained_setup17;
 use crate::node_contract::{NodeRuntime, RuntimeError};
 use crate::node_state::native::{core_decode_credit, typed_index};
 

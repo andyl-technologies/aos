@@ -5,10 +5,12 @@
 //! retains partial preparation on refusal, and issues no native birth/report,
 //! whole-preparation context, readiness or restoration installation permission.
 
+mod host_source17;
 mod precredit;
 mod producer_publication;
 pub(in crate::node_qualification::packet_collection::complete) mod publication;
 mod restoration_storage;
+mod restored_source17;
 
 use super::*;
 use crucible::node_admission::{CompleteArchiveCodeGraph, ConformanceGraph};
@@ -32,6 +34,10 @@ pub struct PacketCompleteRestorationPrebirth {
     host_ticket: Option<CompleteOriginalHostTicket>,
     host: Option<HostSchedulingOwner>,
     host_attempted: bool,
+    // None preserves the initial-family path. A current17 partial capsule stays
+    // false until its actual loader, ticket transfers and final code fence pass.
+    source17_ticket_completion: Option<bool>,
+    host_source17_admission: Option<host_source17::HostSource17Admission>,
     fresh_graph: Option<Rc<ConformanceGraph>>,
     fresh_factory: Option<Rc<PacketCompleteCaptureFactory>>,
     binding_attempted: bool,
@@ -83,6 +89,8 @@ impl PacketCompleteArchiveCodeFactory {
             host_ticket: None,
             host: None,
             host_attempted: false,
+            source17_ticket_completion: None,
+            host_source17_admission: None,
             fresh_graph: None,
             fresh_factory: None,
             binding_attempted: false,
@@ -121,6 +129,16 @@ impl PacketCompleteRestorationPrebirth {
     }
 
     fn authenticate_code_owner(&self) -> Result<(), StateError> {
+        self.authenticate_creator()?;
+        if self.source17_ticket_completion == Some(false) {
+            return Err(refused(
+                "restored17 Source and ticket transfer did not complete",
+            ));
+        }
+        self.authenticate_code_selection_data()
+    }
+
+    fn authenticate_code_selection_data(&self) -> Result<(), StateError> {
         self.authenticate_creator()?;
         self.factory.authenticate_code_owner()?;
         self.code_graph.plan().reauthenticate().map_err(error)?;

@@ -220,5 +220,5 @@ mod tests {
 mod cold;
 pub(crate) use cold::{
     OriginalCompleteHistoricalColdGroup, OriginalRestoredSettledColdGroup,
-    OriginalRestoredSettledColdOwnerView,
+    OriginalRestoredSettledColdOwnerMetadata, OriginalRestoredSettledColdOwnerView,
 };

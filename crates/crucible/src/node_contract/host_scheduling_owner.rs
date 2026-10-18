@@ -31,6 +31,9 @@ pub use capture_dependencies::{HostCaptureDependencyLookupData, HostCaptureDepen
 mod construction_storage;
 pub use construction_storage::HostCollectionNodeConstructionStorageData;
 
+mod restored_source17;
+pub use restored_source17::HostRestoredSource17ConstructionData;
+
 mod continuation;
 mod restored_continuation;
 pub(crate) use restored_continuation::{

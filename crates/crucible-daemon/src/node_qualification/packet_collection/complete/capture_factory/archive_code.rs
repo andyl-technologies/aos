@@ -320,6 +320,25 @@ impl PacketCompleteArchiveCodeFactory {
 }
 
 impl NativeWorldFactory for PacketCompleteArchiveCodeFactory {
+    fn authenticate_complete_restored_settled_archive(
+        &self,
+        scope: crucible::node_state::CompleteRestoredSettledArchiveValidation<'_>,
+    ) -> Result<(), StateError> {
+        if scope.original_write_runtime_data()?.is_some() {
+            return Err(refused(
+                "archive code factory cannot validate a current17 writer",
+            ));
+        }
+        let graph = self.original_code_graph()?;
+        self.inner.authenticate_restored17_archive_data(
+            scope,
+            super::restored17_validation::FactoryPurpose17::ArchiveCode {
+                factory: self,
+                graph: &graph,
+            },
+        )
+    }
+
     fn authenticate_source(
         &self,
         _: &AdmittedGraph,

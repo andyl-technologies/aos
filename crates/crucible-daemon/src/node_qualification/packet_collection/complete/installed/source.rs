@@ -676,6 +676,7 @@ impl Drop for Namespace {
 
 #[path = "source/fresh_target.rs"]
 mod fresh_target;
+pub(in crate::node_qualification::packet_collection::complete) use fresh_target::HostSource17SetupBorrow;
 pub use fresh_target::{InstalledCompleteRestoration, PreparedCompleteRestoration};
 
 #[cfg(test)]

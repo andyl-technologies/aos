@@ -497,7 +497,7 @@ impl NativeArchiveRecord {
             cursor.finish(RestoredArchive17ValidationStage::OwnerReceipts, self, owner)?;
         }
         admit(self, owner, additional_retained_bytes, 0)?;
-        let terminal_prefix_retained_bytes = if terminal.is_some() {
+        let terminal_prefix_retained_bytes = {
             owner
                 .retained_requested_storage_data()
                 .map_err(schema)?
@@ -508,8 +508,6 @@ impl NativeArchiveRecord {
                     >())
                 })
                 .ok_or_else(|| refused("terminal Core prefix census overflow"))?
-        } else {
-            0
         };
         factory.authenticate_complete_restored_settled_archive(
             CompleteRestoredSettledArchiveValidation {
@@ -520,6 +518,7 @@ impl NativeArchiveRecord {
                 terminal_admission: terminal
                     .map(|cursor| cursor as &dyn RestoredArchive17ValidationAdmission),
                 terminal_prefix_retained_bytes,
+                validation_additional_retained_bytes: additional_retained_bytes,
                 validation_origin: origin,
                 graph,
                 archive: self,

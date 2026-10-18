@@ -19,6 +19,9 @@ use crucible_node_provider::{
     },
 };
 
+#[path = "packet_complete_source/archive_declaration17.rs"]
+mod archive_declaration17;
+
 #[path = "packet_complete_source/archive_semantics.rs"]
 mod archive_semantics;
 pub use archive_semantics::PacketCompleteArchivedSemantics;
@@ -1218,7 +1221,7 @@ pub use archive_owner::CompleteHistoricalArchiveFamily;
 pub use archive_owner::PacketCompleteArchivedOwnerData;
 pub(crate) use archive_owner::{
     OriginalCompleteHistoricalColdGroup, OriginalRestoredSettledColdGroup,
-    OriginalRestoredSettledColdOwnerView,
+    OriginalRestoredSettledColdOwnerMetadata, OriginalRestoredSettledColdOwnerView,
 };
 pub(crate) use archive_owner::{OriginalRestorationColdGroup, OriginalRestorationColdOwnerView};
 

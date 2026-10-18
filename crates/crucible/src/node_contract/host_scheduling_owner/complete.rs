@@ -658,6 +658,12 @@ mod tests {
 }
 
 impl SelectedPreservation {
+    pub(super) fn cloned_metadata_data(&self) -> Self {
+        Self {
+            profile: self.profile.clone(),
+        }
+    }
+
     pub(super) fn retained_requested_storage(&self) -> usize {
         self.profile.allocated_capacity()
     }

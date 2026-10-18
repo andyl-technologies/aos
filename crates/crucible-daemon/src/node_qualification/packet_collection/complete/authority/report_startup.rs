@@ -148,6 +148,11 @@ impl PacketCompleteReportStartupHolder {
             .map_err(|_| refused())?
             .authenticate_report_startup_target_data(&authority, &plan)
             .map_err(|_| refused())?;
+        capsule
+            .try_borrow()
+            .map_err(|_| refused())?
+            .authenticate_host_source17_resources_data(&resources)
+            .map_err(|_| refused())?;
         let holder = Self::install(
             graph_owner,
             authority,

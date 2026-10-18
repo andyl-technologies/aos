@@ -4,12 +4,16 @@
 //! group additionally requires the independently validated parent lineage and
 //! completed Source reader for every member. No stored stage bit supplies them.
 
+use super::terminal::{
+    RestoredArchive17ParentWork, RestoredArchive17SourceIndex, RestoredArchive17ValidationStage,
+    RestoredArchive17ValidationStep,
+};
 use super::*;
 use crate::node_adapters::cnp::{
     CnpRestoredNode17DecodeAttempt, CnpRestoredNode17DecodeConstructionData,
-    CnpRestoredSettledValidatedNode17, OriginalSourceRestoredSettled17Read,
-    OriginalSourceRestoredSettled17DecodeAttempt, OriginalSourceRestoredSettled17ReadInputs,
-    PacketCompleteSemanticSource, OriginalSourceRestoredSettled17Prelude,
+    CnpRestoredSettledValidatedNode17, OriginalSourceRestoredSettled17DecodeAttempt,
+    OriginalSourceRestoredSettled17Prelude, OriginalSourceRestoredSettled17Read,
+    OriginalSourceRestoredSettled17ReadInputs, PacketCompleteSemanticSource,
 };
 use crate::node_contract::{NodeRoute, RuntimeError};
 use crucible_node_contract::{ContentRef, canonical};
@@ -34,10 +38,6 @@ use crucible_node_provider::protocol_snapshot::{
         restored_settled_native17_decode_construction_transient_bytes_data,
     },
 };
-use super::terminal::{
-    RestoredArchive17ParentWork, RestoredArchive17SourceIndex, RestoredArchive17ValidationStage,
-    RestoredArchive17ValidationStep,
-};
 use serde_json::Value;
 use std::mem::size_of;
 
@@ -50,11 +50,15 @@ pub(crate) struct RetainedCold17Collection {
     archive_index: *const storage::Index,
     process: u32,
     thread: ThreadId,
-    members: [Option<RetainedCold17Member>; 3],
+    // Only a selected, independently admitted Journal allocates its one member.
+    // Unstarted Source/Prepared headers contain three empty Vecs, not decoder
+    // and output payloads for six future member views in validation/publication.
+    members: [Vec<RetainedCold17Member>; 3],
     parents: Vec<Option<parent_index::ParentIndex17Attempt>>,
     initial15_group: Option<crate::node_adapters::cnp::OriginalInitial15ArchivedGroup>,
     historical_scope: Option<super::initial15_history::HistoricalInitial15Scope17>,
     terminal_cache: usize,
+    production_declaration: Option<[usize; 3]>,
 }
 
 /// Preserves successful children and failed raw/typed partials independently.
@@ -77,13 +81,19 @@ struct RetainedCold17Member {
     prelude: Option<OriginalSourceRestoredSettled17Prelude>,
     source_attempt: Option<OriginalSourceRestoredSettled17DecodeAttempt>,
     source: Option<OriginalSourceRestoredSettled17Read>,
+    // Exact final Source-history decoder axes, saved before that constructor.
+    source_decode_axes: Option<[usize; 3]>,
 }
 
 /// Borrows already completed cold DATA without creating restoration authority.
 pub(crate) struct RetainedCold17MemberView<'a> {
     pub(crate) owner_index: usize,
+    pub(crate) controller_reference: &'a ContentRef,
+    pub(crate) native_before_reference: &'a ContentRef,
     pub(crate) references: [&'a ContentRef; 5],
     pub(crate) native: &'a SealedHistoricalRestoredSettledNative17,
+    pub(crate) native_limits: RestoredSettledNative17Limits,
+    pub(crate) source_decode_axes: [usize; 3],
     pub(crate) controller: &'a ValidatedControllerSettledHistory17,
     pub(crate) node: &'a CnpRestoredSettledValidatedNode17,
     pub(crate) source_history: &'a OriginalSourceRestoredSettled17Read,
@@ -96,11 +106,12 @@ impl RetainedCold17Collection {
             archive_index: std::sync::Arc::as_ptr(&scope.archive.index),
             process: std::process::id(),
             thread: std::thread::current().id(),
-            members: std::array::from_fn(|_| None),
+            members: std::array::from_fn(|_| Vec::new()),
             parents: Vec::new(),
             initial15_group: None,
             historical_scope: None,
             terminal_cache: terminal_cache_seed(scope, 0)?,
+            production_declaration: None,
         })
     }
 
@@ -200,7 +211,8 @@ impl RetainedCold17Collection {
             || snapshot != &owner.state
             || record.participants != owner.participants
             || !owner.evidence.contains(journal)
-            || self.members[selected].is_some()
+            || !self.members[selected].is_empty()
+            || self.members[selected].capacity() != 0
         {
             return Err(refused("cold17 native and administrative roles differ"));
         }
@@ -238,49 +250,35 @@ impl RetainedCold17Collection {
             maximum,
         )
         .map_err(super::super::super::schema)?;
+        let member_slot = member_bank_requested_storage_data(1)
+            .map_err(super::super::super::schema)?;
+        let member_work = member_construction_transient_storage_data()?;
+        let retained = quote
+            .checked_add(
+                NodeRuntime::capture_reference_storage(journal)
+                    .map_err(super::super::super::schema)?,
+            )
+            .and_then(|bytes| bytes.checked_add(member_slot))
+            .ok_or_else(|| refused("cold17 Journal member storage overflow"))?;
         admit(
             scope,
             Some(self),
             additional,
-            quote
-                .checked_add(
-                    NodeRuntime::capture_reference_storage(journal)
-                        .map_err(super::super::super::schema)?,
-                )
-                .ok_or_else(|| refused("cold17 Journal reference clone overflow"))?,
+            retained.checked_add(member_work)
+                .ok_or_else(|| refused("cold17 Journal member work overflow"))?,
         )?;
         self.construct_terminal_stage_data(
             scope,
             journal_step,
-            quote
-                .checked_add(
-                    NodeRuntime::capture_reference_storage(journal)
-                        .map_err(super::super::super::schema)?,
-                )
-                .ok_or_else(|| refused("cold17 Journal constructor overflow"))?,
-            0,
+            retained,
+            member_work,
             counter_scratch_data(),
         )?;
-        self.members[selected] = Some(RetainedCold17Member {
-            owner_index,
-            journal_reference: Some(journal.as_ref().clone()),
-            journal: None,
-            objects: None,
-            ancestry: None,
-            cut: None,
-            controller: None,
-            sdk_capture: None,
-            native_limits: None,
-            native_attempt: None,
-            native: None,
-            node_reference: None,
-            route: None,
-            node_attempt: None,
-            node: None,
-            prelude: None,
-            source_attempt: None,
-            source: None,
-        });
+        // Both the new bank and actual by-value construction/push work were
+        // admitted above. The bank stays in this collection even if reservation
+        // or its actual-capacity check refuses before a member is initialized.
+        reserve_member_slot_data(&mut self.members[selected])?;
+        initialize_member_data(&mut self.members[selected], owner_index, journal);
         {
             let member = self.member_mut(selected)?;
             member.journal = Some(
@@ -796,15 +794,68 @@ impl RetainedCold17Collection {
     fn member(&self, selected: usize) -> Result<&RetainedCold17Member, StateError> {
         self.members
             .get(selected)
-            .and_then(Option::as_ref)
+            .and_then(|bank| match bank.as_slice() {
+                [member] => Some(member),
+                _ => None,
+            })
             .ok_or_else(|| refused("cold17 retained member absent"))
     }
 
     fn member_mut(&mut self, selected: usize) -> Result<&mut RetainedCold17Member, StateError> {
         self.members
             .get_mut(selected)
-            .and_then(Option::as_mut)
+            .and_then(|bank| match bank.as_mut_slice() {
+                [member] => Some(member),
+                _ => None,
+            })
             .ok_or_else(|| refused("cold17 retained member absent"))
+    }
+
+    pub(super) fn production_cache_data(&self) -> usize {
+        self.terminal_cache
+    }
+
+    pub(super) fn production_owner_indices_data(&self) -> Result<[usize; 3], RuntimeError> {
+        // The opaque declaration loan is issued only after this real private
+        // field has passed authenticate_production_declaration_data.
+        self.production_declaration
+            .ok_or(RuntimeError::OutstandingObligations)
+    }
+
+    pub(crate) fn authenticate_production_declaration_data(
+        &self,
+        archive: &NativeArchiveRecord,
+    ) -> Result<(), RuntimeError> {
+        self.authenticate_completed_data(archive)?;
+        let indices = self
+            .production_declaration
+            .ok_or(RuntimeError::OutstandingObligations)?;
+        for (index, owner_index) in indices.into_iter().enumerate() {
+            if indices[..index].contains(&owner_index) {
+                return Err(RuntimeError::ForeignAuthority);
+            }
+            self.member_data(archive, owner_index)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn complete_production_declaration_data(
+        &mut self,
+        archive: &NativeArchiveRecord,
+        indices: [usize; 3],
+    ) -> Result<(), RuntimeError> {
+        self.authenticate_completed_data(archive)?;
+        if self.production_declaration.is_some() {
+            return Err(RuntimeError::DuplicateOperation);
+        }
+        for (index, owner_index) in indices.into_iter().enumerate() {
+            if indices[..index].contains(&owner_index) {
+                return Err(RuntimeError::ForeignAuthority);
+            }
+            self.member_data(archive, owner_index)?;
+        }
+        self.production_declaration = Some(indices);
+        Ok(())
     }
 
     pub(crate) fn member_data(
@@ -828,6 +879,8 @@ impl RetainedCold17Collection {
             .ok_or(RuntimeError::OwnerUnavailable)?;
         Ok(RetainedCold17MemberView {
             owner_index,
+            controller_reference: &objects.host_protocol,
+            native_before_reference: &objects.before,
             references: [
                 &objects.snapshot,
                 &objects.after,
@@ -838,6 +891,10 @@ impl RetainedCold17Collection {
                     .as_ref()
                     .ok_or(RuntimeError::OwnerUnavailable)?,
             ],
+            native_limits: member.native_limits.ok_or(RuntimeError::OwnerUnavailable)?,
+            source_decode_axes: member
+                .source_decode_axes
+                .ok_or(RuntimeError::OwnerUnavailable)?,
             native: member
                 .native
                 .as_ref()
@@ -868,9 +925,9 @@ impl RetainedCold17Collection {
             return Err(RuntimeError::OutstandingObligations);
         }
         for member in &self.members {
-            let member = member
-                .as_ref()
-                .ok_or(RuntimeError::OutstandingObligations)?;
+            let [member] = member.as_slice() else {
+                return Err(RuntimeError::OutstandingObligations);
+            };
             if member.native.is_none()
                 || member.controller.is_none()
                 || member.node.is_none()
@@ -881,6 +938,75 @@ impl RetainedCold17Collection {
         }
         Ok(())
     }
+}
+
+// The single requested Vec slot is an independent retained allocation. Actual
+// capacity, including a failed constructor's empty bank, is counted separately.
+fn member_bank_requested_storage_data(capacity: usize) -> Result<usize, RuntimeError> {
+    capacity
+        .checked_mul(size_of::<RetainedCold17Member>())
+        .ok_or(RuntimeError::ResourceLimit)
+}
+
+fn member_construction_transient_storage_data() -> Result<usize, StateError> {
+    // Conservatively retain each by-value header along the defining path:
+    // the literal, Vec::push, its push_mut delegate, and ptr::write. The latter
+    // returns (), while push_mut returns a borrowed member rather than an
+    // additional owning value. No push can grow the already reserved bank.
+    size_of::<RetainedCold17Member>()
+        .checked_add(size_of::<RetainedCold17Member>())
+        .and_then(|bytes| bytes.checked_add(size_of::<RetainedCold17Member>()))
+        .and_then(|bytes| bytes.checked_add(size_of::<RetainedCold17Member>()))
+        .and_then(|bytes| bytes.checked_add(size_of::<&mut RetainedCold17Member>()))
+        .and_then(|bytes| bytes.checked_add(size_of::<*mut RetainedCold17Member>()))
+        .and_then(|bytes| {
+            bytes.checked_add(size_of::<Result<(), std::collections::TryReserveError>>())
+        })
+        .and_then(|bytes| bytes.checked_add(size_of::<()>()))
+        .ok_or_else(|| refused("cold17 member construction work overflow"))
+}
+
+fn reserve_member_slot_data(bank: &mut Vec<RetainedCold17Member>) -> Result<(), StateError> {
+    if !bank.is_empty() || bank.capacity() != 0 {
+        return Err(refused("cold17 member bank was already attempted"));
+    }
+    bank.try_reserve_exact(1)
+        .map_err(|_| refused("cold17 member bank allocation refused"))?;
+    if bank.capacity() != 1 {
+        return Err(refused("cold17 member bank exceeds admitted slot"));
+    }
+    Ok(())
+}
+
+// Keep the owning literal out of the already large component decoder frame.
+// There is no Box::new of a complete future Attempt or Collection here.
+#[inline(never)]
+fn initialize_member_data(
+    bank: &mut Vec<RetainedCold17Member>,
+    owner_index: usize,
+    journal: &ContentRef,
+) {
+    bank.push(RetainedCold17Member {
+        owner_index,
+        journal_reference: Some(journal.clone()),
+        journal: None,
+        objects: None,
+        ancestry: None,
+        cut: None,
+        controller: None,
+        sdk_capture: None,
+        native_limits: None,
+        native_attempt: None,
+        native: None,
+        node_reference: None,
+        route: None,
+        node_attempt: None,
+        node: None,
+        prelude: None,
+        source_attempt: None,
+        source: None,
+        source_decode_axes: None,
+    });
 }
 
 fn native_input<'a>(
@@ -1061,8 +1187,10 @@ mod storage_census;
 pub(crate) fn counter_scratch_data() -> usize {
     size_of::<RetainedCold17Collection>()
         + size_of::<Option<RetainedCold17Collection>>()
-        + size_of::<RetainedCold17Member>()
-        + size_of::<Option<RetainedCold17Member>>()
+        + size_of::<Vec<RetainedCold17Member>>()
+        + size_of::<&mut Vec<RetainedCold17Member>>()
+        + size_of::<Result<(), std::collections::TryReserveError>>()
+        + size_of::<[usize; 3]>()
         + size_of::<NodeRoute>()
         + size_of::<ContentRef>()
         + size_of::<Result<(), StateError>>()
@@ -1081,6 +1209,7 @@ pub(crate) fn counter_scratch_data() -> usize {
         + restored_settled_native17_counter_scratch_data()
         + NodeRuntime::capture_selected_json_decode_counter_scratch_data()
         + NodeRuntime::original_json_value_counter_scratch_data()
+        + RetainedCold17Collection::retained_counter_scratch_data()
         + terminal_admission::counter_scratch_data()
         + custody::counter_scratch_data()
         + native_admission::counter_scratch_data()

@@ -498,3 +498,7 @@ mod tests;
 #[path = "complete_original_index/parent15.rs"]
 mod parent15;
 pub(super) use parent15::authenticate_initial15_parent_parts_data;
+
+#[path = "complete_original_index/parent17.rs"]
+mod parent17;
+pub(super) use parent17::authenticate_current17_parent_parts_data;

@@ -16,16 +16,18 @@ mod complete_original_capture;
 mod complete_restored_capture;
 pub use complete_restored_capture::{
     CompleteRestoredSettledArchiveValidation, CompleteRestoredSettledArchiveValidationAttempt,
+    CompletedRestoredSettledArchive17Declaration,
     complete_restored_settled_archive_validation_counter_scratch_data,
 };
 pub(crate) use complete_restored_capture::{
     CompleteRestoredSettledValidatedArchiveData, ParentArchive17ReadScope,
-    RestoredArchive17Initial15QualificationRole, RestoredArchive17Initial15Role,
-    RestoredArchive17Initial15Work, RestoredArchive17ParentIdentity, RestoredArchive17ParentStep,
-    RestoredArchive17ParentWork, RestoredArchive17SourceIndex,
-    RestoredArchive17ValidationAdmission, RestoredArchive17ValidationConstructionData,
-    RestoredArchive17ValidationPrewalkData, RestoredArchive17ValidationStage,
-    RestoredArchive17ValidationStep, RetainedCold17Collection, RetainedCold17MemberView,
+    RestoredArchive17Current17HeaderWork, RestoredArchive17Initial15QualificationRole,
+    RestoredArchive17Initial15Role, RestoredArchive17Initial15Work,
+    RestoredArchive17ParentIdentity, RestoredArchive17ParentStep, RestoredArchive17ParentWork,
+    RestoredArchive17SourceIndex, RestoredArchive17ValidationAdmission,
+    RestoredArchive17ValidationConstructionData, RestoredArchive17ValidationPrewalkData,
+    RestoredArchive17ValidationStage, RestoredArchive17ValidationStep, RetainedCold17Collection,
+    RetainedCold17MemberView,
 };
 mod complete_original_dependency_storage;
 mod complete_original_factory_storage;
@@ -71,7 +73,9 @@ use crate::{
     },
 };
 
-use super::{NativeRestoreStaging, RestoreReservations, StateError, StateLimits, VerifiedStateContent};
+use super::{
+    NativeRestoreStaging, RestoreReservations, StateError, StateLimits, VerifiedStateContent,
+};
 
 pub use complete_original_capture::{
     CompleteOriginalArchiveValidation, ImportedClosureGeometry17,

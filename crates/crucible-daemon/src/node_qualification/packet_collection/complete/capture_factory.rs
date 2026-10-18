@@ -14,6 +14,7 @@ mod imported17;
 mod key;
 mod restoration_prebirth;
 mod restoration_source;
+mod restored17_validation;
 pub use archive_code::PacketCompleteArchiveCodeFactory;
 pub use restoration_prebirth::PacketCompleteRestorationPrebirth;
 mod construction;
@@ -44,7 +45,9 @@ use crucible_node_provider::reference_packet::continuation_contracts::PACKET_COM
 
 use super::super::fixture::PacketFixtureMeasurements;
 use super::capture_records::{error, operation_failure, refused};
-use super::{InstalledPacketCompleteCollectionAuthority, capture_records::PacketCompleteCaptureRecords};
+use super::{
+    InstalledPacketCompleteCollectionAuthority, capture_records::PacketCompleteCaptureRecords,
+};
 
 /// Retains the original complete source installation and its opaque collection plan.
 ///
@@ -498,6 +501,16 @@ pub struct PacketCompleteWorldCapture<'a> {
 }
 
 impl NativeWorldFactory for PacketCompleteCaptureFactory {
+    fn authenticate_complete_restored_settled_archive(
+        &self,
+        scope: crucible::node_state::CompleteRestoredSettledArchiveValidation<'_>,
+    ) -> Result<(), StateError> {
+        self.authenticate_restored17_archive_data(
+            scope,
+            restored17_validation::FactoryPurpose17::OriginalWrite,
+        )
+    }
+
     fn complete_restored_capture_imported_closure_geometry_data(
         &self,
         scope: &crucible::node_contract::RestoredCollectingCaptureScope17<'_>,

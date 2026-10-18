@@ -11,7 +11,8 @@ use crate::node_contract::{HostSchedulingRestoredContinuationRecord17, RuntimeEr
 use crate::node_state::{CompleteOriginalNativeTicket, CompleteOriginalRestorationSource};
 use crucible_node_provider::protocol_snapshot::current_controller17::ValidatedControllerSettledHistory17;
 use crucible_node_provider::protocol_snapshot::restored_settled17::{
-    RestoredSettledNative17Input, SealedHistoricalRestoredSettledNative17,
+    RestoredSettledNative17Input, RestoredSettledNative17Limits,
+    SealedHistoricalRestoredSettledNative17,
 };
 use std::{rc::Rc, thread::ThreadId};
 
@@ -52,6 +53,9 @@ impl OriginalCompleteHistoricalColdGroup {
         std::mem::size_of::<Self>()
             + std::mem::size_of::<&Self>()
             + std::mem::size_of::<CompleteHistoricalArchiveFamily>()
+            + std::mem::size_of::<Result<&super::super::OriginalRestorationColdGroup, RuntimeError>>(
+            )
+            + std::mem::size_of::<Result<&OriginalRestoredSettledColdGroup, RuntimeError>>()
             + super::super::OriginalRestorationColdGroup::counter_scratch_data()
             + OriginalRestoredSettledColdGroup::counter_scratch_data()
     }
@@ -76,6 +80,30 @@ pub(crate) struct OriginalRestoredSettledColdOwnerView<'a> {
     pub(crate) node: &'a CnpRestoredSettledValidatedNode17,
     pub(crate) source_history: &'a OriginalSourceRestoredSettled17Read,
     pub(crate) input: RestoredSettledNative17Input<'a>,
+    pub(crate) controller_reference: &'a ContentRef,
+    pub(crate) native_before_reference: &'a ContentRef,
+    pub(crate) native_limits: RestoredSettledNative17Limits,
+    pub(crate) source_decode_axes: [usize; 3],
+}
+
+/// Borrows same-custody archived operands before funded semantic revalidation.
+///
+/// This distinct DATA loan performs no canonical serialization, parser or model
+/// comparison. A quote may inspect actual retained layouts; signing still needs
+/// the separate full owner loan and genuine fresh Window/Source claim.
+pub(crate) struct OriginalRestoredSettledColdOwnerMetadata<'a> {
+    pub(crate) source: &'a PacketCompleteSemanticSource,
+    pub(crate) owner: &'a NativeOwnerState,
+    pub(crate) host: &'a HostSchedulingRestoredContinuationRecord17,
+    pub(crate) native: &'a SealedHistoricalRestoredSettledNative17,
+    pub(crate) controller: &'a ValidatedControllerSettledHistory17,
+    pub(crate) node: &'a CnpRestoredSettledValidatedNode17,
+    pub(crate) source_history: &'a OriginalSourceRestoredSettled17Read,
+    pub(crate) input: RestoredSettledNative17Input<'a>,
+    pub(crate) controller_reference: &'a ContentRef,
+    pub(crate) native_before_reference: &'a ContentRef,
+    pub(crate) native_limits: RestoredSettledNative17Limits,
+    pub(crate) source_decode_axes: [usize; 3],
 }
 
 impl OriginalRestoredSettledColdGroup {
@@ -175,6 +203,11 @@ impl OriginalRestoredSettledColdGroup {
             + size_of::<crate::node_state::RetainedCold17Collection>()
             + size_of::<crate::node_state::RetainedCold17MemberView<'static>>()
             + size_of::<OriginalRestoredSettledColdOwnerView<'static>>()
+            + size_of::<OriginalRestoredSettledColdOwnerMetadata<'static>>()
+            + size_of::<Result<OriginalRestoredSettledColdOwnerMetadata<'static>, RuntimeError>>()
+            + size_of::<RestoredSettledNative17Limits>()
+            + size_of::<[usize; 3]>()
+            + crate::node_state::CompleteOriginalNativeRestorationData::reference_counter_scratch_data()
             + size_of::<Result<OriginalRestoredSettledColdOwnerView<'static>, RuntimeError>>()
             + size_of::<RestoredSettledNative17Input<'static>>()
             + size_of::<[&ContentRef; 5]>()
@@ -203,12 +236,22 @@ impl OriginalRestoredSettledColdGroup {
         self.archive.inner.authenticate_birth()
     }
 
-    pub(crate) fn original_owner_data<'a>(
+    /// Borrows original custody metadata before independent construction admission.
+    ///
+    /// The caller separately admits the defining fixed counter. Cached identity,
+    /// full-reference and extent checks allocate no replacement owners. This
+    /// method deliberately leaves current checkpoint semantic revalidation to
+    /// `original_owner_data`, after its independent canonical work is funded.
+    ///
+    /// # Errors
+    /// Refuses foreign Source/ticket/archive custody, incomplete component or
+    /// production validation, changed references, or unequal logical limits.
+    pub(crate) fn original_owner_metadata_data<'a>(
         &'a self,
         selected: usize,
         source: &Rc<PacketCompleteSemanticSource>,
         ticket: &'a CompleteOriginalNativeTicket,
-    ) -> Result<OriginalRestoredSettledColdOwnerView<'a>, RuntimeError> {
+    ) -> Result<OriginalRestoredSettledColdOwnerMetadata<'a>, RuntimeError> {
         if self.process != std::process::id() || self.thread != std::thread::current().id() {
             return Err(RuntimeError::ForeignAuthority);
         }
@@ -218,6 +261,7 @@ impl OriginalRestoredSettledColdGroup {
             .as_ref()
             .ok_or(RuntimeError::OwnerUnavailable)?;
         collection.authenticate_completed_data(self.archive.archive())?;
+        collection.authenticate_production_declaration_data(self.archive.archive())?;
         let expected = self
             .sources
             .get(selected)
@@ -297,11 +341,7 @@ impl OriginalRestoredSettledColdGroup {
         {
             return Err(RuntimeError::ResourceLimit);
         }
-        let checkpoint = source_history.current_checkpoint_data()?;
-        native
-            .authenticate_current_checkpoint_data(checkpoint.0, checkpoint.1, checkpoint.2)
-            .map_err(|_| RuntimeError::InvalidReceipt)?;
-        Ok(OriginalRestoredSettledColdOwnerView {
+        Ok(OriginalRestoredSettledColdOwnerMetadata {
             source: expected,
             owner,
             host: self.archive.restored_host_record_data()?,
@@ -310,6 +350,48 @@ impl OriginalRestoredSettledColdGroup {
             node,
             source_history,
             input,
+            controller_reference: retained.controller_reference,
+            native_before_reference: retained.native_before_reference,
+            native_limits: retained.native_limits,
+            source_decode_axes: retained.source_decode_axes,
+        })
+    }
+
+    /// Revalidates the actual current checkpoint under separately admitted work.
+    ///
+    /// The canonical DTO/byte temporaries required by the native defining
+    /// validator must be independently funded before entry. The returned loan
+    /// remains archived DATA; fresh Window, Source and SDK custody are separate.
+    ///
+    /// # Errors
+    /// Refuses any metadata-custody mismatch or failed full native/current
+    /// checkpoint correspondence. Failure creates no alternate or older loan.
+    pub(crate) fn original_owner_data<'a>(
+        &'a self,
+        selected: usize,
+        source: &Rc<PacketCompleteSemanticSource>,
+        ticket: &'a CompleteOriginalNativeTicket,
+    ) -> Result<OriginalRestoredSettledColdOwnerView<'a>, RuntimeError> {
+        let metadata = self.original_owner_metadata_data(selected, source, ticket)?;
+        let checkpoint = metadata.source_history.current_checkpoint_data()?;
+        metadata
+            .native
+            .authenticate_current_checkpoint_data(checkpoint.0, checkpoint.1, checkpoint.2)
+            .map_err(|_| RuntimeError::InvalidReceipt)?;
+
+        Ok(OriginalRestoredSettledColdOwnerView {
+            source: metadata.source,
+            owner: metadata.owner,
+            host: metadata.host,
+            native: metadata.native,
+            controller: metadata.controller,
+            node: metadata.node,
+            source_history: metadata.source_history,
+            input: metadata.input,
+            controller_reference: metadata.controller_reference,
+            native_before_reference: metadata.native_before_reference,
+            native_limits: metadata.native_limits,
+            source_decode_axes: metadata.source_decode_axes,
         })
     }
 }

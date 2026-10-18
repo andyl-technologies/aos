@@ -5,6 +5,10 @@
 //! prebirth capsule before any native startup action. It never creates an
 //! OriginalScene, changes a backend key, or interprets manifest DATA as a grant.
 
+#[path = "fresh_target/host_setup17.rs"]
+mod host_setup17;
+pub(in crate::node_qualification::packet_collection::complete) use host_setup17::HostSource17SetupBorrow;
+
 use super::*;
 use crate::node_qualification::packet_collection::complete::PacketCompleteRestorationPrebirth;
 use crucible::node_admission::InstalledConformancePlan;
@@ -49,6 +53,15 @@ impl InstalledCompleteRestoration {
     ) -> Result<(), QualificationError> {
         if output.is_some() {
             return Err(refused());
+        }
+
+        if prebirth
+            .try_borrow()
+            .map_err(|_| refused())?
+            .host_requires_restored_settled_construction_data()
+            .map_err(|_| refused())?
+        {
+            return Self::install_restored_settled_into(manifest, directory, prebirth, output);
         }
 
         let selected = super::super::manifest::load(&manifest)?;
@@ -324,3 +337,6 @@ impl InstalledCompleteRestoration {
 #[path = "fresh_target/prepared.rs"]
 mod prepared;
 pub use prepared::PreparedCompleteRestoration;
+
+#[path = "fresh_target/restored_host17.rs"]
+mod restored_host17;

@@ -19,6 +19,10 @@ use super::terminal::{
 mod terminal_admission;
 use terminal_admission::ParentTerminal17;
 
+#[path = "parent_index/current17.rs"]
+mod current17;
+pub(super) use current17::{ParentCurrent17ArchiveData, ParentCurrent17HeaderAttempt};
+
 const INDEX_MEDIA: &str = "application/vnd.crucible.native-signed-index-body.v3+json";
 
 /// Retains each completed or refused parent decode before following its lineage.
@@ -563,6 +567,31 @@ impl ParentIndex17Attempt {
         Ok(owner)
     }
 
+    /// Names the concrete retained parent census and its typed Index visitor.
+    ///
+    /// The local checked-adder captures the total and ceiling by reference.
+    /// Both optional two-slot iterators stay independently priced; archive/index
+    /// and Manifest child views come from their defining owning counters.
+    pub(super) fn owning_counter_scratch_data() -> usize {
+        size_of::<&Self>()
+            + size_of::<[usize; 2]>()
+            + size_of::<(&mut usize, &usize)>()
+            + size_of::<Result<usize, RuntimeError>>()
+            + size_of::<Result<(), RuntimeError>>()
+            + size_of::<Option<usize>>()
+            + size_of::<[&Option<Value>; 2]>()
+            + size_of::<std::iter::Flatten<std::array::IntoIter<&Option<Value>, 2>>>()
+            + size_of::<[&Option<Vec<u8>>; 2]>()
+            + size_of::<std::iter::Flatten<std::array::IntoIter<&Option<Vec<u8>>, 2>>>()
+            + size_of::<&Value>()
+            + size_of::<&Vec<u8>>()
+            + size_of::<&ContentRef>()
+            + size_of::<&storage::Index>()
+            + size_of::<&CaptureManifest>()
+            + NativeArchiveRecord::original_archive_owned_counter_scratch_data()
+            + NodeRuntime::original_json_value_counter_scratch_data()
+    }
+
     /// Counts actual retained products, independently of their validation stage.
     pub(super) fn retained_requested_storage_data(
         &self,
@@ -774,6 +803,7 @@ pub(super) fn counter_scratch_data() -> usize {
         + 5 * size_of::<Fields<'static>>()
         + size_of::<Result<Option<&'static [u8]>, crucible_node_provider::ProviderError>>()
         + NodeRuntime::original_json_value_counter_scratch_data()
+        + ParentIndex17Attempt::owning_counter_scratch_data()
         + terminal_admission::counter_scratch_data()
         + crucible_node_provider::protocol_snapshot::borrowed_json::counter_scratch_data()
 }

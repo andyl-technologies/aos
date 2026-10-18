@@ -60,7 +60,11 @@ impl CompleteRestoredSettledNativeRestorationData {
         self.input_lengths
     }
 
-    /// Returns the complete independently computed Source cold demand.
+    /// Returns the exact archived Source-history decoder demand.
+    ///
+    /// This scalar is the saved final Source constructor R+T+S. It excludes
+    /// Controller, Node, native, parent-group and fresh installation work, each
+    /// of which requires its own independently admitted construction row.
     pub const fn source_cold_construction_requested_bytes_data(&self) -> usize {
         self.source_cold_requested_bytes
     }

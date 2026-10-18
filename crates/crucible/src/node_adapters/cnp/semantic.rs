@@ -217,7 +217,7 @@ pub(crate) use packet_complete_source::{
 pub use packet_complete_source::CompleteHistoricalArchiveFamily;
 pub(crate) use packet_complete_source::{
     OriginalCompleteHistoricalColdGroup, OriginalRestoredSettledColdGroup,
-    OriginalRestoredSettledColdOwnerView,
+    OriginalRestoredSettledColdOwnerMetadata, OriginalRestoredSettledColdOwnerView,
 };
 
 pub(crate) use node::OriginalRestoredSettledNodeHistoryView;

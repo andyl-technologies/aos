@@ -13,6 +13,7 @@
 //! older editions omit the field entirely.
 
 mod mechanism;
+mod retained_setup17;
 pub(super) use mechanism::CompleteMechanism;
 
 use super::*;
