@@ -8,10 +8,14 @@ import signal
 import subprocess
 import sys
 import tempfile
+import textwrap
+import threading
 import time
 from unittest.mock import patch
 from pathlib import Path
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 
 
 spec = importlib.util.spec_from_file_location("mixed", Path(__file__).with_name("_hub-direct-mixed-admission.py"))
@@ -133,6 +137,57 @@ class MixedAdmission(unittest.TestCase):
 
     def test_barrier_commands_reject_unsupported_file_before_guest_transport(self):
         with self.assertRaises(ValueError): mixed.publish_mixed_barrier(None, {}, "/unused", "another.json", {}, cutoff=time.monotonic() + 1)
+
+
+class MixedBarrierPublication(unittest.TestCase):
+    def publish(self, directory, value):
+        def guest(worker, python, program, selected, **kwargs):
+            exec(textwrap.dedent(program), {"selected": selected, "json": json})
+
+        with patch.object(mixed, "direct_guest_python", create=True, side_effect=guest):
+            mixed.publish_mixed_barrier(None, {"python": sys.executable}, str(directory),
+                "mixed-admission-release.json", value, cutoff=time.monotonic() + 10)
+
+    def test_reader_sees_only_complete_private_release_and_existing_release_is_preserved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "mixed-admission-release.json"
+            value = {"version": 1, "runId": "a" * 64, "readySha256": "b" * 64,
+                "heldReceiptSha256": "c" * 64}
+            opened = threading.Event()
+            release = threading.Event()
+            real_fdopen = os.fdopen
+
+            @contextmanager
+            def paused_output(*args, **kwargs):
+                with real_fdopen(*args, **kwargs) as output:
+                    opened.set()
+                    if not release.wait(5):
+                        raise TimeoutError("controlled publication was not released")
+                    yield output
+
+            with (
+                patch.object(os, "fdopen", side_effect=paused_output),
+                ThreadPoolExecutor(max_workers=1) as pool,
+            ):
+                future = pool.submit(self.publish, root, value)
+                try:
+                    self.assertTrue(opened.wait(3))
+                    self.assertFalse(target.exists(), "a concurrent reader must not see an unfinished release")
+                finally:
+                    release.set()
+                    future.result(timeout=5)
+
+            expected = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+            self.assertEqual(target.read_bytes(), expected)
+            self.assertEqual(target.stat().st_nlink, 1)
+            self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+
+            with self.assertRaises(FileExistsError):
+                self.publish(root, {**value, "readySha256": "d" * 64})
+
+            self.assertEqual(target.read_bytes(), expected)
+            self.assertEqual(list(root.iterdir()), [target])
 
 
 class SupervisorOwnership(unittest.TestCase):

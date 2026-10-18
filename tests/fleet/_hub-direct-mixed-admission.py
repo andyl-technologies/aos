@@ -364,17 +364,36 @@ def publish_mixed_barrier(worker, tools, root, filename, value, *, cutoff):
     if filename not in {"mixed-arm-release.json", "mixed-admission-release.json"}:
         raise ValueError("mixed barrier filename differs")
     direct_guest_python(worker, tools["python"], r"""
-        import os, stat
+        import ctypes, os, stat, tempfile
         fd = os.open(selected['root'], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
             metadata = os.fstat(fd)
             if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) != 0o700:
                 raise ValueError('mixed release directory custody differs')
             body = json.dumps(selected['value'], sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False).encode()
-            output_fd = os.open(selected['filename'], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd)
-            with os.fdopen(output_fd, 'wb') as output:
-                output.write(body); output.flush(); os.fsync(output.fileno())
-            os.fsync(fd)
+            output_fd, temporary = tempfile.mkstemp(
+                prefix='.' + selected['filename'] + '-pending-', dir='/proc/self/fd/' + str(fd))
+            temporary_name = os.path.basename(temporary)
+            try:
+                with os.fdopen(output_fd, 'wb') as output:
+                    output.write(body)
+                    output.flush()
+                    os.fsync(output.fileno())
+
+                # The concurrent reader must see the complete single-link inode.
+                # RENAME_NOREPLACE preserves create-only publication on Linux.
+                rename = ctypes.CDLL(None, use_errno=True).renameat2
+                rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+                rename.restype = ctypes.c_int
+                if rename(fd, os.fsencode(temporary_name), fd, os.fsencode(selected['filename']), 1) != 0:
+                    code = ctypes.get_errno()
+                    raise OSError(code, os.strerror(code), selected['filename'])
+                os.fsync(fd)
+            finally:
+                try:
+                    os.unlink(temporary_name, dir_fd=fd)
+                except FileNotFoundError:
+                    pass
         finally: os.close(fd)
     """, {"root": root, "filename": filename, "value": value}, timeout=mixed_remaining(cutoff))
 
