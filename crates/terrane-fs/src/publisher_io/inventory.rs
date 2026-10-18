@@ -693,7 +693,7 @@ mod tests {
             assert!(lease_records::validate_key(&malformed).is_err());
         }
 
-        let tree = TERRANE_V1.calculate(IdentityKind::Tree, b"lease").unwrap();
+        let tree = TERRANE_V1.calculate(IdentityKind::Node, b"lease").unwrap();
         let tree = Descriptor::from_identity(&TERRANE_V1, &tree, b"lease").unwrap();
         assert!(lease_records::validate_key(&tree.encode()).is_err());
     }
