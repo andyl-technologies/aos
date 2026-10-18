@@ -298,3 +298,5 @@ historical_struct!(crate::handshake::Limits {
     journal_entries: U64,
     blob_chunk_bytes: U64,
 });
+
+mod native17_build;

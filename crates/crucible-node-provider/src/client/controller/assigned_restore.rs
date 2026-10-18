@@ -97,11 +97,13 @@ pub struct CompletedOriginalCompleteRestore<'a> {
     original: &'a Envelope,
     response: &'a Envelope,
 }
+
 impl CompletedOriginalCompleteRestore<'_> {
     /// Borrows the exact sequence-assigned request, including its sole proof.
     pub fn original(&self) -> &Envelope {
         self.original
     }
+
     /// Borrows the actual correlated response, including its original receipt.
     pub fn response(&self) -> &Envelope {
         self.response
@@ -286,6 +288,7 @@ impl CnpController {
     }
 
     pub(super) fn ensure_no_pending_original_complete_restore(&self) -> Result<(), ProviderError> {
+        self.ensure_no_pending_original_restored_settled_capture()?;
         self.ensure_no_pending_original_installed_restoration_activation()?;
         if [
             self.original_complete_restore.as_ref(),
@@ -313,6 +316,7 @@ impl PreparedOriginalCompleteRestore<'_> {
                 "assigned complete restore owner absent",
             ))
     }
+
     /// Reauthenticates the same actual emitter before signing or publishing.
     ///
     /// # Errors
@@ -330,6 +334,7 @@ impl PreparedOriginalCompleteRestore<'_> {
         }
         Ok(())
     }
+
     /// Rechecks this actual fresh mapping and its retained request binding.
     ///
     /// # Errors
@@ -349,6 +354,7 @@ impl PreparedOriginalCompleteRestore<'_> {
         }
         Ok(())
     }
+
     /// Borrows the exact assigned envelope before or after proof sealing.
     ///
     /// # Errors
@@ -363,6 +369,7 @@ impl PreparedOriginalCompleteRestore<'_> {
         }
         Ok(&state.original)
     }
+
     /// Borrows digests from this actual retained original Hello journal.
     ///
     /// # Errors
@@ -374,6 +381,7 @@ impl PreparedOriginalCompleteRestore<'_> {
         self.controller
             .original_canonical_ack_hello_frame_digests(journal)
     }
+
     /// Seals only the separate proof extension into the same original slot.
     ///
     /// # Errors
@@ -415,6 +423,7 @@ impl PreparedOriginalCompleteRestore<'_> {
         state.phase = Phase::Sealed;
         Ok(())
     }
+
     /// Writes the same sealed original and retains its reply before returning.
     ///
     /// # Errors
@@ -455,5 +464,94 @@ impl PreparedOriginalCompleteRestore<'_> {
         *completed = Some(decode_response(&request, &response.body)?);
         state.phase = Phase::Complete;
         Ok(())
+    }
+}
+
+impl AssignedOriginalCompleteRestore {
+    pub(super) fn borrowed_settled_history_data(&self) -> impl serde::Serialize + '_ {
+        let Self {
+            original,
+            bytes,
+            literal_slot,
+            cut: _,
+            phase,
+            response,
+            mapping,
+            mapping_identity: _,
+            nonce,
+        } = self;
+        (
+            "source-private.sdk-assigned-restore-current/17",
+            original,
+            crate::protocol_snapshot::compact_bytes::BorrowedCompactBytes::new(bytes),
+            bytes.capacity(),
+            literal_slot,
+            match phase {
+                Phase::Unsigned => "unsigned",
+                Phase::Sealing => "sealing",
+                Phase::Sealed => "sealed",
+                Phase::Publishing => "publishing",
+                Phase::Complete => "complete",
+            },
+            response,
+            "historical-nonrenewable-operational-cut",
+            mapping,
+            nonce,
+            "same-prepared-mapping-identity",
+        )
+    }
+
+    pub(super) fn observe_settled_history_metadata_data(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver<'_>,
+    ) -> Result<(), ProviderError> {
+        observer.observe(&self.original)?;
+        observer.vector::<u8>(self.bytes.capacity())?;
+        observer.observe(&self.response)?;
+        observer.observe(&self.mapping)?;
+        observer.shared_original(
+            crate::retained_metadata::aliases::MetadataSharedKind::ArchivedMapping,
+            self.mapping_identity.as_ref(),
+        )?;
+        Ok(())
+    }
+}
+
+fn settled_field_views<T>(_: impl FnOnce(&'static AssignedOriginalCompleteRestore) -> T) -> usize {
+    std::mem::size_of::<T>()
+}
+
+impl AssignedOriginalCompleteRestore {
+    pub(super) fn settled_history_counter_scratch_data() -> usize {
+        settled_field_views(|value| {
+            let projected = value.borrowed_settled_history_data();
+            (projected, Some(value.borrowed_settled_history_data()))
+        }) + settled_field_views(|value| {
+            let AssignedOriginalCompleteRestore {
+                original,
+                bytes,
+                literal_slot,
+                cut,
+                phase,
+                response,
+                mapping,
+                mapping_identity,
+                nonce,
+            } = value;
+            (
+                original,
+                bytes,
+                literal_slot,
+                cut,
+                phase,
+                response,
+                mapping,
+                mapping_identity,
+                nonce,
+            )
+        }) + std::mem::size_of::<&Self>()
+            + std::mem::size_of::<Option<&Self>>()
+            + std::mem::size_of::<&mut crate::retained_metadata::MetadataObserver<'static>>()
+            + std::mem::size_of::<Result<(), ProviderError>>()
     }
 }

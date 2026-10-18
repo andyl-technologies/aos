@@ -201,6 +201,7 @@ impl ClientContent {
     pub(super) fn byte_ceiling(&self) -> usize {
         self.maximum_bytes
     }
+
     /// Reserves positive finite transfer and immutable object ceilings.
     ///
     /// # Errors
@@ -875,6 +876,132 @@ mod selected_restore_layout_tests {
                 .selected_restore_held_content_storage_data(usize::MAX)
                 .is_err()
         );
+    }
+}
+
+impl ClientContent {
+    // The SDK future row names this private owner's real tree/Transfer layouts.
+    // It grants no capacity in the existing receiver and creates no byte bank.
+    pub(crate) fn restored_settled_capture_future_content_storage_data(
+        lengths: [usize; 4],
+        maximum_reference_bytes: usize,
+    ) -> Result<usize, ProviderError> {
+        use crate::retained_metadata::requested_storage::{
+            shared_header_storage_data, tree_storage_data,
+        };
+        use std::mem::{align_of, size_of};
+        let overflow = || ProviderError::ResourceExhausted("settled Capture future content");
+        let bytes = lengths.into_iter().try_fold(0usize, |n, length| {
+            n.checked_add(length).ok_or_else(overflow)
+        })?;
+        // Transfer and object roots may alias. Two separately charged views
+        // conservatively cover both; no equality-based alias discount is used.
+        let payload = bytes.checked_mul(2).ok_or_else(overflow)?;
+        let reference_backing = maximum_reference_bytes
+            .checked_mul(8)
+            .ok_or_else(overflow)?;
+        let terms = [
+            payload,
+            reference_backing,
+            8 * size_of::<Vec<u8>>(),
+            shared_header_storage_data(8, align_of::<Vec<u8>>())?,
+            tree_storage_data(
+                1,
+                4,
+                size_of::<Id>() + size_of::<Transfer>(),
+                align_of::<(Id, Transfer)>(),
+            )?,
+            tree_storage_data(
+                1,
+                4,
+                size_of::<String>() + size_of::<(ContentRef, Rc<Vec<u8>>)>(),
+                align_of::<(String, (ContentRef, Rc<Vec<u8>>))>(),
+            )?,
+        ];
+        terms
+            .into_iter()
+            .try_fold(0usize, |n, term| n.checked_add(term).ok_or_else(overflow))
+    }
+
+    pub(crate) fn restored_settled_capture_future_content_counter_scratch_data() -> usize {
+        use std::mem::size_of;
+        size_of::<[usize; 4]>()
+            + size_of::<std::array::IntoIter<usize, 4>>()
+            + size_of::<[usize; 6]>()
+            + size_of::<std::array::IntoIter<usize, 6>>()
+            + size_of::<Result<usize, ProviderError>>()
+            + size_of::<Option<usize>>()
+            + size_of::<usize>()
+    }
+}
+
+impl ClientContent {
+    /// Prices all permitted receiver growth during selected Capture exchanges.
+    ///
+    /// Provider originals reach the unchanged generic receiver before terminal
+    /// validation, so wrong-role/incomplete transfers must fit as well. The full
+    /// original ceilings also cover already-reserved transfers whose byte banks
+    /// can still grow; subtracting only `reserved` would miss those owners.
+    /// Existing current allocations are independently counted by raw census.
+    pub(crate) fn restored_settled_capture_receiver_storage_data(
+        &self,
+        maximum_reference_bytes: usize,
+    ) -> Result<usize, ProviderError> {
+        use crate::retained_metadata::requested_storage::{
+            shared_header_storage_data, tree_storage_data,
+        };
+        use std::mem::{align_of, size_of};
+        let add = |left: usize, right: usize| {
+            left.checked_add(right)
+                .ok_or(ProviderError::ResourceExhausted(
+                    "settled Capture receiver geometry",
+                ))
+        };
+        let multiply = |left: usize, right: usize| {
+            left.checked_mul(right)
+                .ok_or(ProviderError::ResourceExhausted(
+                    "settled Capture receiver geometry",
+                ))
+        };
+
+        // Vec<u8> amortized growth requests at most twice the required extent,
+        // with an eight-byte minimum. Count both retained Rc views without an
+        // alias discount, including the maps' independent keys/full references.
+        let one_view = add(
+            multiply(2, self.maximum_bytes)?,
+            multiply(8, self.maximum_objects)?,
+        )?;
+        let payload = multiply(2, one_view)?;
+        let handles = multiply(
+            multiply(2, self.maximum_objects)?,
+            add(
+                size_of::<Vec<u8>>(),
+                shared_header_storage_data(1, align_of::<Vec<u8>>())?,
+            )?,
+        )?;
+        let metadata = multiply(self.maximum_objects, multiply(4, maximum_reference_bytes)?)?;
+        let transfers = tree_storage_data(
+            1,
+            self.maximum_objects,
+            size_of::<Id>() + size_of::<Transfer>(),
+            align_of::<(Id, Transfer)>(),
+        )?;
+        let objects = tree_storage_data(
+            1,
+            self.maximum_objects,
+            size_of::<String>() + size_of::<(ContentRef, Rc<Vec<u8>>)>(),
+            align_of::<(String, (ContentRef, Rc<Vec<u8>>))>(),
+        )?;
+        [payload, handles, metadata, transfers, objects]
+            .into_iter()
+            .try_fold(0usize, add)
+    }
+
+    pub(crate) fn restored_settled_capture_receiver_counter_scratch_data() -> usize {
+        std::mem::size_of::<&Self>()
+            + std::mem::size_of::<[usize; 5]>()
+            + std::mem::size_of::<std::array::IntoIter<usize, 5>>()
+            + std::mem::size_of::<Result<usize, ProviderError>>()
     }
 }
 

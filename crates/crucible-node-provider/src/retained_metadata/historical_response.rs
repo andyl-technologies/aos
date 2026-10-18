@@ -56,6 +56,13 @@ pub fn historical_response_body_data(
 }
 
 impl HistoricalResponseBodyData<'_> {
+    pub(crate) fn observe_retained_metadata_data(
+        &self,
+        observer: &mut MetadataObserver<'_>,
+    ) -> Result<(), ProviderError> {
+        observe_response(self.original, observer)
+    }
+
     /// Walks the identical owning field traversal used by its existing family.
     ///
     /// # Errors

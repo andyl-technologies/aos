@@ -81,6 +81,37 @@ impl PacketNativeRestoredRecord {
     }
 }
 
+impl crate::retained_metadata::ObserveMetadata for PacketNativeRestoredRecord {
+    fn observe_metadata(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver<'_>,
+    ) -> Result<(), ProviderError> {
+        use crate::protocol_snapshot::restored_settled17::current_contracts::CurrentContract17;
+
+        let Self {
+            schema,
+            native_receipt,
+            captured_owner_state,
+            captured_journal,
+            mapping,
+            restore_commit,
+            restore_response,
+            context_digest,
+            physical_gate_held,
+        } = self;
+
+        observer.observe(schema)?;
+        native_receipt.observe_current(observer)?;
+        observer.observe(captured_owner_state)?;
+        observer.observe(captured_journal)?;
+        observer.observe(mapping)?;
+        observer.observe(restore_commit)?;
+        observer.observe(restore_response)?;
+        observer.observe(context_digest)?;
+        observer.observe(physical_gate_held)
+    }
+}
+
 /// Encodes the complete distinct restored proof and physical gate contract.
 ///
 /// # Errors

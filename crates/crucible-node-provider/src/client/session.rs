@@ -1986,3 +1986,10 @@ mod installed_activation;
 mod installed_observation;
 #[path = "session/restored_suffix_host.rs"]
 mod restored_suffix_host;
+
+#[path = "session/settled_association.rs"]
+mod settled_association;
+
+#[path = "session/settled_history.rs"]
+mod settled_history;
+pub(in crate::client) use settled_history::SessionSettledHistoryData;

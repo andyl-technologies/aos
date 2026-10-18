@@ -33,6 +33,8 @@ mod packet_projection;
 
 #[path = "exchange_restored_input17.rs"]
 mod restored_input17;
+#[path = "exchange_restored_observation17.rs"]
+mod restored_observation17;
 pub(crate) use packet_projection::{
     OriginalNativeObservePreparationStorageData, OriginalPacketPrefixProjectionInput,
     OriginalPacketPrefixProjectionStorageData,
@@ -42,6 +44,7 @@ pub(crate) use packet_projection::{
     quote_original_packet_baseline_prefix_startup_storage_data,
     quote_original_packet_prefix_startup_storage_data,
     quote_original_restored_input17_prefix_startup_storage_data,
+    quote_original_restored_observation17_prefix_startup_storage_data,
 };
 
 #[path = "exchange_report_query.rs"]

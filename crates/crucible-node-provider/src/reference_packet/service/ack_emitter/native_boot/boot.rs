@@ -12,6 +12,9 @@ use std::{cell::RefCell, rc::Rc, thread::ThreadId};
 #[path = "owned11.rs"]
 mod owned11;
 
+#[path = "boot_settled_current.rs"]
+mod settled_current;
+
 #[path = "restore.rs"]
 mod restore;
 pub(crate) use restore::{
@@ -99,6 +102,7 @@ pub(crate) struct NativeAckBoot {
     restoration_activation: [Option<Rc<RefCell<NativeRestorationActivationAttempt>>>; 2],
     restoration_uploads: [Option<Rc<RefCell<NativeRestorationUploadAttempt>>>; 2],
     restoration_observation: Option<Rc<RefCell<NativeRestorationObservationAttempt>>>,
+    restored_settled: Option<super::restored_settled::NativeRestoredSettledCaptureOwner>,
 }
 
 /// Returns the actual shared boot payload layout for historical row validation.
@@ -210,6 +214,7 @@ impl NativeAckBoot {
             restoration_activation: std::array::from_fn(|_| None),
             restoration_uploads: std::array::from_fn(|_| None),
             restoration_observation: None,
+            restored_settled: None,
             transfer: None,
             startup,
         }));
@@ -695,3 +700,11 @@ pub(crate) use restored_suffix::{
     original_restored_suffix_native_counter_scratch_data,
     original_restored_suffix_native_header_data,
 };
+
+pub(crate) use restore::{HistoricalCommitToken17, HistoricalHeldToken17};
+
+pub(crate) use report_startup::HistoricalReportStartupAllocation17;
+pub(crate) use restore_prepare::HistoricalPrepareStartupAllocation17;
+
+#[path = "boot/settled_token.rs"]
+mod settled_token_history;

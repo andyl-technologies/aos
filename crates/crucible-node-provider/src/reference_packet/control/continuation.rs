@@ -318,7 +318,8 @@ pub(super) struct ControlRecord {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ControlState {
+/// Retains the control state shared with its enclosing historical record.
+pub(super) struct ControlState {
     selection: PacketControlSelection,
     originals: Vec<OriginalRecord>,
     begins: BTreeMap<Id, BeginRequest>,
@@ -366,7 +367,8 @@ struct ControlState {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct OriginalRecord {
+/// Retains an original control response and all of its evidence children.
+pub(super) struct OriginalRecord {
     request: Id,
     identity: HashRef,
     response_body: Map<String, Value>,
@@ -872,3 +874,5 @@ mod settled_reader;
 pub(crate) use settled_reader::{
     PacketSettledControlRecord17Data, settled_control_record17_counter_scratch_data,
 };
+
+mod pending_settled17;

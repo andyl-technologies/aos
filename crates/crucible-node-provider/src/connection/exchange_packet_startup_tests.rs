@@ -311,3 +311,91 @@ fn input17_five_object_projection_is_separate_from_the_old_three_object_class() 
     assert!(quote(exact - 1).is_err());
     Ok(())
 }
+
+#[test]
+fn signed_observe17_two_object_class_prices_its_own_validation_axes() -> TestResult {
+    let (_, authority) =
+        crate::handshake::tests::authority_with_scope("observe17-two-object-quote");
+    let (original, terminal) = original_and_terminal(&authority)?;
+    let objects: [_; 2] = std::array::from_fn(|_| OriginalContinuationContentExtent {
+        maximum_payload_bytes: 257,
+        media_type: "application/json",
+    });
+    let quote = |maximum, class| {
+        quote_startup_parts_for::<2>(
+            (authority.session_id(), authority.incarnation_id()),
+            authority.limits(),
+            0,
+            OriginalPacketPrefixProjectionInput {
+                original: &original,
+                terminal: &terminal,
+                objects: &objects,
+                maximum_requested_bytes: maximum,
+            },
+            false,
+            class,
+        )
+    };
+    // Closed component DATA only; the live constructor independently checks
+    // the full selected17 schema and actual current native action/connection.
+    let legacy = quote(MAXIMUM, PrefixClass::Observe)?;
+    let selected = quote(MAXIMUM, PrefixClass::RestoredObserve17)?;
+    assert_eq!(selected.exchange.frames, 7);
+    assert_eq!(selected.exchange.requests, 6);
+    assert_eq!(selected.objects.iter().flatten().count(), 2);
+    assert!(selected.class != legacy.class);
+    assert_eq!(
+        selected.exchange.construction_transient_requested_bytes,
+        legacy.exchange.construction_transient_requested_bytes
+            + super::super::super::restored_observation17::validation_transient_storage_data()
+    );
+    assert_eq!(
+        selected.exchange.declared_quote_scratch_bytes,
+        legacy.exchange.declared_quote_scratch_bytes
+            + super::super::super::restored_observation17::counter_scratch_data()
+    );
+    let transport = selected.observation17_transport_storage_data()?;
+    assert!(legacy.observation17_transport_storage_data().is_err());
+    assert!(legacy.exchange.native_retained_backing_bytes.is_none());
+    assert!(legacy.native_source_backing_bytes.is_none());
+    assert_eq!(
+        transport.retained_requested_bytes.get(),
+        u64::try_from(
+            selected
+                .exchange
+                .native_retained_backing_bytes
+                .ok_or_else(refused)?
+                + selected.exchange.one_open_ack_requested_bytes,
+        )?
+    );
+    assert_eq!(
+        transport.maximum_simultaneous_transient_bytes.get(),
+        u64::try_from(selected.exchange.requested_bytes()?)?
+    );
+    assert_eq!(
+        transport.declared_counter_scratch_bytes.get(),
+        u64::try_from(
+            selected.declared_counter_scratch_bytes
+                + selected.exchange.declared_quote_scratch_bytes
+        )?
+    );
+    assert!(selected.native_source_backing_bytes.ok_or_else(refused)? > 0);
+    for axis in 0..3 {
+        let mut short = transport;
+        let field = match axis {
+            0 => &mut short.retained_requested_bytes,
+            1 => &mut short.maximum_simultaneous_transient_bytes,
+            _ => &mut short.declared_counter_scratch_bytes,
+        };
+        *field = U64::new(field.get() - 1);
+        assert!(short.authenticate_actual_data(&transport).is_err());
+    }
+    transport.authenticate_actual_data(&transport)?;
+    let exact = selected.requested_bytes()?;
+    assert_eq!(
+        quote(exact, PrefixClass::RestoredObserve17)?.requested_bytes()?,
+        exact
+    );
+    assert!(quote(exact - 1, PrefixClass::RestoredObserve17).is_err());
+    Ok(())
+}

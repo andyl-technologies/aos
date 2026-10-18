@@ -348,3 +348,19 @@ impl ExchangeDeadline {
             ))
     }
 }
+
+impl DeadlineStream {
+    pub(crate) fn authenticate_settled_history_deadline_data(
+        &self,
+        deadline: &ExchangeDeadline,
+    ) -> Result<(), crate::ProviderError> {
+        if !Rc::ptr_eq(&self.deadline.0, &deadline.0)
+            || self.deadline.original_cut() != deadline.original_cut()
+        {
+            return Err(crate::ProviderError::Correlation(
+                "current17 stream deadline parent differs",
+            ));
+        }
+        Ok(())
+    }
+}

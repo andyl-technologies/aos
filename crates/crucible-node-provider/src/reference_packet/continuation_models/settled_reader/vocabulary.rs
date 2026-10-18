@@ -346,3 +346,7 @@ pub(super) fn counter_scratch_data() -> usize {
         + size_of::<Result<Option<PacketInventory>, ProviderError>>()
         + size_of::<Result<(), ProviderError>>()
 }
+
+// The new17 owning path keeps typed children in the outer attempt on errors.
+#[path = "vocabulary/retained.rs"]
+pub(in crate::reference_packet) mod retained;

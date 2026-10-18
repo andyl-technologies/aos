@@ -449,3 +449,6 @@ pub(crate) fn validate_scope_data(
 pub(crate) use retained::observe_response as observe_retained_response_metadata_data;
 
 pub use retained::HistoricalRestorationActivationData;
+
+/// Exposes the actual signed upload request without creating an upload permit.
+pub use upload::PacketRestorationActivationUploadRequest;

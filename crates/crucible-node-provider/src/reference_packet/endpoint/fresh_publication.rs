@@ -421,3 +421,6 @@ fn refused() -> ProviderError {
 fn exhausted() -> ProviderError {
     ProviderError::ResourceExhausted("native fresh report publication storage")
 }
+
+mod settled17;
+pub(crate) use settled17::HistoricalFreshReportPublication17;

@@ -479,3 +479,8 @@ pub(crate) fn original_invocation_fresh_current_counter_scratch_data() -> usize 
         super::super::service::OriginalNativeCaptureContext::invocation_additional_counter_scratch_data(),
     )
 }
+
+mod settled17;
+pub(crate) use settled17::{
+    HistoricalFreshCurrentCensus17, HistoricalFreshQueryInput17, HistoricalFreshRestoreAttempt17,
+};

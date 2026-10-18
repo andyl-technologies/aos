@@ -440,3 +440,6 @@ pub use input_emitter::{
 
 pub(crate) use contract::complete_restore_contract_storage_data;
 pub(crate) use restored_record::native_restored_record_contract_storage_data;
+
+/// Defines the closed immutable settled17 declaration and output policy DATA.
+pub mod settled_recapture;

@@ -1634,3 +1634,33 @@ runtime dependencies and code/data/relocation correspondence. Separately waited
 process CPU falls from 76.67 to 40.14 ms. The earlier 8 KiB streaming experiment
 remains a negative result: mean call time rose from 71.72 to 193.96 ms despite
 lower RSS. All raw samples, compiler evidence and binaries remain local.
+
+
+### Retained current17 provider reconstruction
+
+The provider now has distinct typed current17 readers for retained Controller,
+SDK, native Control/model, authority, lineage and mapping evidence. Their
+outputs are historical DATA. The original source, administrative reservation,
+fresh native adopter and whole-owner observation remain separate requirements;
+this checkpoint does not enable the live signed17 effect or restore route.
+Old mapping classes and the old11 admission vocabulary remain closed.
+
+The reader constructors retain decoded children, completed siblings, spare
+capacity and once state through refusal. Each lazy child bank requires an
+independently admitted target ledger, is charged before reservation, and stays
+in the actual census after failure or output transfer. This replaces recursively
+inline attempt trees that overflowed the ordinary test-thread stack. No larger
+stack, unsafe initialization or higher policy ceiling is used.
+
+Shared-view row hashing now excludes the bank separator preceding a selected
+span, while preserving all row contents and internal separators. Repeated equal
+views therefore retain the same identity at the first or a later bank position.
+Identifier validation also offers an owning refusal result so a decoder can keep
+the invalid String and its exact spare allocation instead of dropping it.
+
+Normal all-feature/all-target provider and contract checking passes. The full
+unfiltered library run passes 1,268 provider tests and all eight contract tests;
+fifteen existing provider tests remain ignored. This includes the two previously
+aborting default-stack controls, exact preflight/build parity, one-byte-short
+credit refusal, retained partials and selected response variants. The six-crate all-feature/all-target workspace check also passes. Application-
+target, Core runtime and native checks remain separate qualifications.

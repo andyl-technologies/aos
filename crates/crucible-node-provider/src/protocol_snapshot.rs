@@ -1013,6 +1013,7 @@ impl OriginalProtocolSnapshot {
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
     }
+
     /// Borrows the independently frozen original literal frames when reserved.
     pub fn literal_frames(
         &self,
@@ -1052,6 +1053,7 @@ impl OriginalProtocolSnapshot {
     pub fn cut(&self) -> ProtocolCaptureCut {
         self.cut
     }
+
     /// Reports exhaustion of the retained original physical cut without renewing it.
     pub fn original_physical_cut_expired(&self) -> bool {
         self.deadline.is_expired()
@@ -1674,3 +1676,26 @@ pub mod restored_suffix_history;
 
 /// Reads exact restoration-stage history as DATA, independently of live Capture.
 pub mod native_restoration_stage_history;
+
+/// Provides the separate current native17 reader and explicit immutable-DAG bounds.
+pub mod restored_settled17;
+
+pub(crate) mod settled_reservation17;
+
+pub mod restored_journal17;
+
+pub(crate) mod native_wholegraph17;
+
+/// Reads current logical Connection17 state without creating live protocol owners.
+pub mod current_connection17;
+
+/// Reads the complete current Controller17 logical DATA component.
+pub mod current_controller17;
+
+#[path = "protocol_snapshot/current_sdk_capture17.rs"]
+mod current_sdk_capture17;
+#[path = "protocol_snapshot/current_transport17.rs"]
+mod current_transport17;
+
+#[path = "protocol_snapshot/current_native_connection17.rs"]
+mod current_native_connection17;

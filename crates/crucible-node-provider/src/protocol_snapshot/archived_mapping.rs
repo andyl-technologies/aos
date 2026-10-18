@@ -5,7 +5,7 @@
 //! retains actual fresh owners but carries no native installation permission.
 
 use super::*;
-use crucible_node_contract::ContentRef;
+use crucible_node_contract::{ContentRef, Validate};
 
 /// Describes only the exact historical native grammar retained by this mapping.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -295,6 +295,53 @@ impl PreparedArchivedProtocolMapping {
             self.nonce,
             "original-fresh-request-cut-retained",
         )
+    }
+
+    /// Checks the retained mapping's exact current parent allocations as DATA.
+    ///
+    /// The private mapping constructor already bound the complete archive/native
+    /// bodies, normalization class, nonce and original request cut. This loan
+    /// rechecks its actual controller, connection, registration and codec; equal
+    /// portable fields cannot replace those owners. Assigned request identity,
+    /// signed normalization and journal frontier remain separate SDK/Source joins.
+    /// The retained cut is historical here: this check neither renews it nor
+    /// supplies the live-cut proof required by `authenticate_target`.
+    ///
+    /// # Errors
+    /// Refuses a foreign or revoked actor/registration, absent or replaced codec,
+    /// malformed retained body commitments or a missing original mapping nonce.
+    pub(crate) fn authenticate_history_target_data(
+        &self,
+        fresh: &ConnectionAuthority,
+        controller: &Rc<ProtocolCaptureOwner>,
+        connection: &Rc<ProtocolCaptureOwner>,
+        codec: Option<&Rc<crate::connection::Native5CodecOwner>>,
+    ) -> Result<(), ProviderError> {
+        self.controller_owner.ensure_current()?;
+        self.connection_owner.ensure_current()?;
+        controller.ensure_current()?;
+        connection.ensure_current()?;
+        self.fresh.ensure_live()?;
+        fresh.ensure_live()?;
+
+        if !self.fresh.same_registration(fresh)
+            || !Rc::ptr_eq(&self.controller_owner, controller)
+            || !Rc::ptr_eq(&self.connection_owner, connection)
+            || codec.is_none_or(|codec| !Rc::ptr_eq(&self.codec, codec))
+        {
+            return Err(ProviderError::Correlation(
+                "archived mapping historical parent changed",
+            ));
+        }
+
+        self.archive_protocol.validate()?;
+        self.native_protocol.validate()?;
+        if self.nonce.iter().all(|byte| *byte == 0) {
+            return Err(ProviderError::Correlation(
+                "archived mapping original nonce absent",
+            ));
+        }
+        Ok(())
     }
 
     pub(crate) fn authenticate_target(

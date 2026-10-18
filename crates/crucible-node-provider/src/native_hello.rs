@@ -929,3 +929,6 @@ mod capture_metadata_tests {
         assert_eq!(roots.finish().unwrap(), (0, 0));
     }
 }
+
+pub(crate) mod settled17;
+pub(crate) use settled17::HistoricalNativeHello17;

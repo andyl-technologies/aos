@@ -298,3 +298,6 @@ impl<S: ProviderStream> Connection<S> {
 #[path = "prepare_startup_receive.rs"]
 mod prepare_startup_receive;
 pub(crate) use prepare_startup_receive::authenticate_original_native_prepare_header_data;
+
+#[path = "restore_identity/settled.rs"]
+mod settled_history;

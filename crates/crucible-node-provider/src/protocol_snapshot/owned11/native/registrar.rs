@@ -271,3 +271,5 @@ super::super::retained_storage::fields!(
     installed_registry_group,
     selected
 );
+
+pub(crate) mod current17;

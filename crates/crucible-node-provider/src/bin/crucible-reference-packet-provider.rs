@@ -34,6 +34,7 @@ enum PrivateBootstrap {
     Startup14,
     Invocation15,
     RestoredSuffix16,
+    RestoredSettled17,
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -46,6 +47,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some(flag) if flag == "--original-native-startup15" => Some(PrivateBootstrap::Invocation15),
         Some(flag) if flag == "--original-native-startup16" => {
             Some(PrivateBootstrap::RestoredSuffix16)
+        }
+        Some(flag) if flag == "--original-native-startup17" => {
+            Some(PrivateBootstrap::RestoredSettled17)
         }
         Some(_) => return Err("unexpected private packet argument".into()),
     };
@@ -68,6 +72,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             PrivateBootstrap::RestoredSuffix16 => {
                 PacketSourceService::accept_original_restored_suffix_bootstrap(&socket)?
+            }
+            PrivateBootstrap::RestoredSettled17 => {
+                PacketSourceService::accept_original_restored_settled_bootstrap(&socket)?
             }
         };
         return drive(&mut service);

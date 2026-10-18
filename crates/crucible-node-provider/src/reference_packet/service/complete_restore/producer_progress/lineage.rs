@@ -78,11 +78,11 @@ pub(super) fn record(
     Ok(())
 }
 
-pub(super) fn pair(
-    attempt: &OriginalRestoredSuffixHostAttempt,
+pub(super) fn pair_data(
+    pair: super::pair_views::PairOwner<'_>,
     method: Method,
-) -> Result<(&Envelope, &Envelope, &ResponseBody), ProviderError> {
-    let (original, terminal, typed) = attempt.completed_pair_data()?;
+) -> Result<super::pair_views::Pair<'_>, ProviderError> {
+    let (original, terminal, typed) = pair.completed_pair_data()?;
     original.validate()?;
     terminal.validate()?;
     if original.message != MessageKind::Request

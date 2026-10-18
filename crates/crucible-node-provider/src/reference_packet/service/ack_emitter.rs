@@ -212,3 +212,30 @@ pub(crate) use native_boot::{
     original_restored_suffix_native_counter_scratch_data,
     original_restored_suffix_native_header_data,
 };
+
+pub(crate) use native_boot::{
+    original_restored_settled_bootstrap_counter_scratch_data,
+    original_restored_settled_bootstrap_header_data,
+};
+
+pub(crate) use native_boot::original_restored_settled_native_owner_header_data;
+
+pub(crate) use native_boot::original_restored_settled_bootstrap_accept_header_data;
+
+pub(in crate::reference_packet::service) use native_boot::borrow_current_settled_bootstrap_data;
+
+pub(crate) use native_boot::{HistoricalCommitToken17, HistoricalHeldToken17};
+
+pub(crate) use native_boot::{
+    HistoricalPrepareStartupAllocation17, HistoricalReportStartupAllocation17,
+};
+
+pub(in crate::reference_packet::service) use native_boot::SettledBootstrapHistory17;
+pub(crate) use native_boot::{
+    CurrentBootstrap17GroupIds, HistoricalCurrentBootstrap17,
+    read_current_native17_bootstrap_fields_data,
+};
+
+pub(crate) use native_boot::{
+    BorrowedBootstrap17LineageData, borrow_current_bootstrap17_lineage_data,
+};

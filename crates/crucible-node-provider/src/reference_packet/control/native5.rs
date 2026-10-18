@@ -668,3 +668,24 @@ impl PacketControl {
 
 #[path = "native5/restore_input_emitter.rs"]
 mod restore_input_emitter;
+
+/// Constructs a genuine finite model Control for sibling inert-history tests.
+#[cfg(test)]
+pub(super) fn current_control17_fixture_data(
+    reactive: bool,
+) -> Result<PacketControl, ProviderError> {
+    let coordinator = tests::fixture::five();
+    if reactive {
+        PacketControl::new_complete_reactive(
+            coordinator.participants[1].clone(),
+            tests::reactive(&coordinator, 1),
+            coordinator,
+        )
+    } else {
+        PacketControl::new_complete_producer(
+            coordinator.participants[0].clone(),
+            tests::producer(),
+            coordinator,
+        )
+    }
+}

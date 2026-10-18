@@ -87,6 +87,10 @@ mod held;
 pub(crate) use held::NativeRestoredControlEvidence;
 use held::prepare_gate_evidence;
 
+#[path = "restore/settled_tokens17.rs"]
+mod settled_tokens17;
+pub(crate) use settled_tokens17::{HistoricalCommitToken17, HistoricalHeldToken17};
+
 #[path = "restoration_activation.rs"]
 mod restoration_activation;
 pub(crate) use restoration_activation::{
@@ -686,3 +690,9 @@ fn quoted_commit_decode_storage(
     }
     Ok(total)
 }
+
+#[path = "restore/settled_current.rs"]
+mod settled_current;
+
+#[path = "restore/settled_token.rs"]
+mod settled_token_history;

@@ -353,3 +353,6 @@ pub(super) fn held_proof_geometry(
 
     Ok((frames, requested_bytes))
 }
+
+#[path = "restore_proof_quote/settled.rs"]
+mod settled_history;

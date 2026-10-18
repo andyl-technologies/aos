@@ -586,3 +586,5 @@ super::super::retained_storage::fields!(
     native_issued,
     failed
 );
+
+pub(crate) mod current17;

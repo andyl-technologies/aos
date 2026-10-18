@@ -43,7 +43,9 @@ pub use installed_observation::{
     CompletedOriginalInstalledRestorationObservation,
     PreparedOriginalInstalledRestorationObservation,
 };
-pub use restored_suffix_host::PreparedOriginalRestoredInputReactive17HostAttempt;
+pub use restored_suffix_host::{
+    OriginalCompletedRestoredObservation17Data, PreparedOriginalRestoredInputReactive17HostAttempt,
+};
 pub use restored_suffix_host::{
     OriginalRestoredSuffixBody, OriginalRestoredSuffixHostAttempt,
     OriginalRestoredSuffixHostHistoricalData, PreparedOriginalRestoredSuffixHostAttempt,
@@ -106,6 +108,7 @@ pub struct CnpController {
     original_installed_restoration_upload: [Option<installed_activation::AssignedUpload>; 2],
     original_installed_restoration_observation:
         Option<installed_observation::AssignedOriginalInstalledRestorationObservation>,
+    original_restored_settled_capture: Option<settled_capture::AssignedRestoredSettledCapture>,
 }
 
 impl CnpController {
@@ -152,8 +155,10 @@ impl CnpController {
             original_installed_restoration_activation,
             original_installed_restoration_upload,
             original_installed_restoration_observation,
+            original_restored_settled_capture,
         } = self;
-        if original_installed_restoration_observation.is_some()
+        if original_restored_settled_capture.is_some()
+            || original_installed_restoration_observation.is_some()
             || original_installed_restoration_upload
                 .iter()
                 .any(Option::is_some)
@@ -1171,6 +1176,7 @@ impl CnpController {
             installed_complete_restore: None,
             original_installed_restoration_activation: [None, None],
             original_installed_restoration_observation: None,
+            original_restored_settled_capture: None,
             original_installed_restoration_upload: [None, None],
             protocol_owner: std::rc::Rc::new(crate::protocol_snapshot::ProtocolCaptureOwner::new()),
         })
@@ -1233,6 +1239,7 @@ impl CnpController {
                 installed_complete_restore: None,
                 original_installed_restoration_activation: [None, None],
                 original_installed_restoration_observation: None,
+                original_restored_settled_capture: None,
                 original_installed_restoration_upload: [None, None],
                 protocol_owner: std::rc::Rc::new(
                     crate::protocol_snapshot::ProtocolCaptureOwner::new(),
@@ -1861,9 +1868,11 @@ impl CnpController {
             original_installed_restoration_activation,
             original_installed_restoration_upload,
             original_installed_restoration_observation,
+            original_restored_settled_capture,
         } = self;
         protocol_owner.ensure_current()?;
         if *fenced
+            || original_restored_settled_capture.is_some()
             || original_ack_admit.is_some()
             || original_installed_restoration_observation.is_some()
             || original_complete_restore.is_some()
@@ -2024,3 +2033,41 @@ impl CnpController {
 
 #[path = "controller/archived_restoration_mapping.rs"]
 mod archived_restoration_mapping;
+
+#[path = "controller/settled_capture.rs"]
+mod settled_capture;
+pub use settled_capture::{
+    OriginalCompletedRestoredSettledCaptureData, OriginalRestoredSettledCaptureData,
+    PreparedOriginalRestoredSettledCapture, PreparedRestoredSettledCaptureAuxiliaryOriginal,
+    RestoredSettledCaptureAuxiliaryBody,
+};
+
+pub use settled_capture::{
+    OriginalRestoredSettledCaptureConstructionData, OriginalRestoredSettledCaptureProspectiveData,
+    RestoredSettledCaptureTypedOwnerData,
+};
+
+#[path = "controller/settled_history17.rs"]
+mod settled_history17;
+pub use settled_history17::ControllerSettledHistoryData;
+
+/// Reuses the defining live suffix traversal for a historical raw terminal.
+pub(crate) fn original_suffix_response_references_data(
+    terminal: &Envelope,
+    output: &mut Vec<ContentRef>,
+) -> Result<(), ProviderError> {
+    for value in terminal.body.values() {
+        references(value, output)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn original_suffix_response_references_counter_scratch_data() -> usize {
+    std::mem::size_of::<&Envelope>()
+        + std::mem::size_of::<&mut Vec<ContentRef>>()
+        + std::mem::size_of::<serde_json::map::Values<'static>>()
+        + std::mem::size_of::<std::slice::Iter<'static, Value>>()
+        + std::mem::size_of::<Result<ContentRef, serde_json::Error>>()
+        + std::mem::size_of::<Result<ContentRef, crucible_node_contract::ContractError>>()
+        + std::mem::size_of::<Result<(), ProviderError>>()
+}

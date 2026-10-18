@@ -149,6 +149,7 @@ impl Serialize for InvocationBaseView<'_> {
             restoration_activation: _,
             restoration_uploads: _,
             restoration_observation: _,
+            restored_settled: _,
             transfer: _,
             startup: _,
         } = self.0;

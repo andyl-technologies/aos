@@ -540,6 +540,7 @@ impl PreparedOriginalInstalledRestorationUpload<'_> {
 fn refused() -> ProviderError {
     ProviderError::Correlation("selected restoration upload original differs")
 }
+
 fn credit() -> ProviderError {
     ProviderError::ResourceExhausted("selected restoration upload construction")
 }
@@ -834,3 +835,6 @@ impl CnpController {
             + size_of::<[usize; 4]>()
     }
 }
+
+#[path = "upload/current.rs"]
+mod current;

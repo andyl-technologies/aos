@@ -509,3 +509,5 @@ mod source_syntax_tests {
         assert_eq!(canonical::canonical_json(&original).unwrap(), raw);
     }
 }
+
+pub(crate) mod current17;

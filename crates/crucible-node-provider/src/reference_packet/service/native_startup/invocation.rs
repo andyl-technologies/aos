@@ -730,3 +730,6 @@ impl PacketNativeInvocationPurposeData {
             + std::mem::size_of::<[&[u8]; 3]>()
     }
 }
+
+#[path = "invocation/settled17.rs"]
+mod settled17;

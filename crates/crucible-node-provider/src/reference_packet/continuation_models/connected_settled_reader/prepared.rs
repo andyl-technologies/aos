@@ -51,6 +51,19 @@ impl ObserveMetadata for ReactiveProgram17Data {
 
 impl Serialize for ReactiveProgram17Data {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize_program17_data(serializer)
+    }
+}
+
+impl ReactiveModel17Data {
+    /// Serializes the complete inert program fields and its closed socket role.
+    ///
+    /// # Errors
+    /// Propagates errors reported by the destination serializer.
+    pub(in crate::reference_packet) fn serialize_program17_data<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
         let ConnectedState {
             definition,
             native_pid,
@@ -66,7 +79,7 @@ impl Serialize for ReactiveProgram17Data {
             reactions_completed,
             packet_effects,
             failed,
-        } = &self.0.0;
+        } = &self.0;
         let mut fields = serializer.serialize_struct("InertReactiveProgram17", 15)?;
         fields.serialize_field("definition", definition)?;
         fields.serialize_field("native_pid", native_pid)?;
@@ -308,3 +321,7 @@ mod tests {
         assert_eq!(observed.finish(), facts);
     }
 }
+
+// The new17 owning path keeps typed children in the outer attempt on errors.
+#[path = "prepared/retained.rs"]
+pub(in crate::reference_packet) mod retained;

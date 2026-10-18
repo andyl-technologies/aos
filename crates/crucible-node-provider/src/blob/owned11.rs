@@ -545,3 +545,12 @@ mod capture_pin_tests {
         assert_eq!(roots.finish().unwrap(), (1, 1));
     }
 }
+
+/// Reports exact original ledger/tree alignments for explicit17 recorded views.
+pub(crate) fn original_blob_alignment17_data() -> (usize, usize, usize) {
+    (
+        std::mem::align_of::<RefCell<ReceiverState>>(),
+        std::mem::align_of::<TransferKey>().max(std::mem::align_of::<TransferRecord>()),
+        std::mem::align_of::<u64>().max(std::mem::align_of::<PinRecord>()),
+    )
+}

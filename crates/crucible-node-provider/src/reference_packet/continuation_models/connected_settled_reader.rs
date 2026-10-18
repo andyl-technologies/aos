@@ -382,3 +382,10 @@ mod tests {
         assert_eq!(decoded.0.stages.capacity(), actual.stages.capacity());
     }
 }
+
+// The new17 owning path keeps typed children in the outer attempt on errors.
+#[path = "connected_settled_reader/retained.rs"]
+pub(in crate::reference_packet) mod retained;
+
+#[path = "connected_settled_reader/output_pair17.rs"]
+mod output_pair17;

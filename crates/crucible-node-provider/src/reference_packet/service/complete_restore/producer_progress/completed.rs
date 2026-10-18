@@ -22,6 +22,13 @@ use crucible_node_contract::{BoundKind, OperatingMode, U64, Validate};
 pub fn authenticate_restored_producer_completed_data(
     input: &PacketRestoredProducerCompletedData<'_>,
 ) -> Result<(), ProviderError> {
+    let view = super::pair_views::Completed::from_live(input);
+    authenticate_completed_view_data(&view)
+}
+
+pub(super) fn authenticate_completed_view_data(
+    input: &super::pair_views::Completed<'_>,
+) -> Result<(), ProviderError> {
     let crate::reference_packet::service::PacketConnectedSourceProgram::Producer { program } =
         &input.launch.program
     else {
@@ -56,8 +63,8 @@ pub fn authenticate_restored_producer_completed_data(
     {
         return Err(invalid());
     }
-    let (begin, begin_terminal, begin_response) = lineage::pair(input.begin, Method::Begin)?;
-    let (poll, _, poll_response) = lineage::pair(input.poll, Method::Poll)?;
+    let (begin, begin_terminal, begin_response) = lineage::pair_data(input.begin, Method::Begin)?;
+    let (poll, _, poll_response) = lineage::pair_data(input.poll, Method::Poll)?;
     lineage::same_route(begin, poll)?;
     if begin.operation_id.0.as_ref() != Some(input.operation.operation)
         || poll.operation_id != begin.operation_id

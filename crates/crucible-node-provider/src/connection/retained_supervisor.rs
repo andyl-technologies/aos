@@ -344,3 +344,11 @@ impl OriginalRetainedSupervisor {
         Ok(())
     }
 }
+
+#[path = "retained_supervisor_settled.rs"]
+mod settled;
+pub use settled::RetainedSupervisorHistoricalData;
+pub(crate) use settled::{
+    ConnectionIncidentHistoryData, connection_incident_settled_history_data,
+    observe_settled_connection_incident_metadata_data,
+};

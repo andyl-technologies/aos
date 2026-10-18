@@ -19,7 +19,7 @@ pub(in crate::reference_packet::service::ack_emitter::native_boot) struct Native
 {
     creator: u32,
     thread: ThreadId,
-    preamble: [u8; ORIGINAL_NATIVE_RESTORED_SUFFIX_PREAMBLE_BYTES],
+    preamble: RestoredSuffixPreamble,
     reservation: PacketRestoredSuffixReservationData,
     ledger: OriginalRestoredSuffixBudget,
     observe_attempts: Vec<Rc<RefCell<NativeRestoredSuffixObserveAttempt>>>,
@@ -373,10 +373,7 @@ impl NativeAckBoot {
         // Every error or unwind after this point leaves the new native owner
         // poisoned. Sealing never refunds or rewrites the finite ledger.
         state.failed = true;
-        authenticate_original_native_suffix_preamble_data(
-            &state.preamble,
-            &state.preamble[328..360],
-        )?;
+        state.preamble.authenticate_data()?;
         let nested = nested_launch6_data(launch_body)?;
         if nested.len() != state.raw5_bytes || blake3::hash(nested).as_bytes() != &state.raw5 {
             return Err(refused());
@@ -573,7 +570,7 @@ impl NativeAckBoot {
             let suffix_owner = NativeRestoredSuffixStartupOwner {
                 creator: std::process::id(),
                 thread: std::thread::current().id(),
-                preamble: startup.preamble,
+                preamble: RestoredSuffixPreamble::Original16(startup.preamble),
                 reservation: suffix,
                 ledger: OriginalRestoredSuffixBudget::new_data(suffix)?,
                 observe_attempts: Vec::new(),
@@ -1302,3 +1299,36 @@ pub(crate) use producer::OriginalRestoredProducerRead;
 
 #[path = "restored_suffix/settled.rs"]
 mod settled;
+
+#[path = "restored_suffix/settled_startup.rs"]
+mod settled_startup;
+
+/// Keeps the actual authenticated prefix family instead of forging an old MAC.
+enum RestoredSuffixPreamble {
+    Original16([u8; ORIGINAL_NATIVE_RESTORED_SUFFIX_PREAMBLE_BYTES]),
+    Settled17([u8; ORIGINAL_NATIVE_RESTORED_SETTLED_PREAMBLE_BYTES]),
+}
+
+impl RestoredSuffixPreamble {
+    fn authenticate_data(&self) -> Result<(), ProviderError> {
+        match self {
+            Self::Original16(bytes) => {
+                authenticate_original_native_suffix_preamble_data(bytes, &bytes[328..360])
+            }
+            Self::Settled17(bytes) => {
+                authenticate_original_native_settled_preamble_data(bytes, &bytes[504..536])
+            }
+        }
+    }
+
+    fn bytes_data(&self) -> &[u8] {
+        match self {
+            Self::Original16(bytes) => bytes,
+            Self::Settled17(bytes) => bytes,
+        }
+    }
+
+    fn is_settled17_data(&self) -> bool {
+        matches!(self, Self::Settled17(_))
+    }
+}

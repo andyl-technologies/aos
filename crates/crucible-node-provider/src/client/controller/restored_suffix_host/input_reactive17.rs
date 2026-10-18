@@ -6,6 +6,9 @@
 //! separately selected artifact and never creates a Core or native action claim.
 
 use super::*;
+
+#[path = "input_reactive17/observation.rs"]
+mod observation;
 use crate::reference_packet::service::restored_input_reactive17::{
     PacketRestoredInputReactive17Artifact, PacketRestoredInputReactive17Context,
     PacketRestoredInputReactive17Request, RESTORED_INPUT_REACTIVE17_FEATURE,
@@ -13,6 +16,7 @@ use crate::reference_packet::service::restored_input_reactive17::{
     restored_input_reactive17_assigned_request_digest_data,
     restored_input_reactive17_context_schema_data,
 };
+pub use observation::OriginalCompletedRestoredObservation17Data;
 
 /// Keeps the actual assigned action and its retained Source destination borrowed.
 ///

@@ -70,3 +70,35 @@ pub(crate) use boot::{
     original_restored_suffix_native_counter_scratch_data,
     original_restored_suffix_native_header_data,
 };
+
+#[path = "native_boot/bootstrap_settled.rs"]
+pub(super) mod bootstrap_settled;
+
+pub(crate) use bootstrap_settled::{
+    original_restored_settled_bootstrap_counter_scratch_data,
+    original_restored_settled_bootstrap_header_data,
+};
+
+#[path = "native_boot/restored_settled.rs"]
+mod restored_settled;
+
+pub(crate) use restored_settled::original_restored_settled_native_owner_header_data;
+
+pub(in crate::reference_packet::service) use bootstrap_settled::accept as accept_restored_settled;
+pub(crate) use bootstrap_settled::original_restored_settled_bootstrap_accept_header_data;
+
+pub(in crate::reference_packet::service) use bootstrap_settled::borrow_current_settled_bootstrap_data;
+
+pub(crate) use boot::{HistoricalCommitToken17, HistoricalHeldToken17};
+
+pub(crate) use boot::{HistoricalPrepareStartupAllocation17, HistoricalReportStartupAllocation17};
+
+pub(in crate::reference_packet::service) use bootstrap_settled::SettledBootstrapHistory17;
+pub(crate) use bootstrap_settled::{
+    CurrentBootstrap17GroupIds, HistoricalCurrentBootstrap17,
+    read_current_native17_bootstrap_fields_data,
+};
+
+pub(crate) use bootstrap_settled::{
+    BorrowedBootstrap17LineageData, borrow_current_bootstrap17_lineage_data,
+};

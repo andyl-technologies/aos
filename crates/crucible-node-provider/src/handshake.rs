@@ -376,3 +376,7 @@ pub(crate) mod tests;
 pub(crate) use extension_handshake::{
     OriginalEmptyExtensionRegistry, OriginalExtensionNegotiationOwned11,
 };
+
+pub(crate) use negotiation::{
+    HistoricalAuthority17, read_settled17_authority_data, read_settled17_authority_fields_data,
+};

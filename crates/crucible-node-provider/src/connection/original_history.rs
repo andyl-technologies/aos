@@ -547,3 +547,8 @@ mod canonical_reference_tests {
         assert_eq!(snapshot(&bank), before);
     }
 }
+
+mod input17_prefix;
+pub use input17_prefix::{
+    OriginalRestoredInput17LiteralPrefixData, OriginalRestoredInput17LiteralPrefixIdentityData,
+};

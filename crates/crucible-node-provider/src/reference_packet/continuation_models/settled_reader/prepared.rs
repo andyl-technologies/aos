@@ -631,3 +631,112 @@ mod tests {
         assert!(completed.effect_socket_role.is_none());
     }
 }
+
+/// Retains a prepared owner and its exact separately defined physical Hold group.
+pub(crate) struct CurrentPreparedModel17Data<C> {
+    pub(crate) hold_group: usize,
+    pub(crate) data: PacketSettledPreparedModel17Data<C>,
+}
+
+/// Reads the current bare prepared payload using the same aggregate ledger.
+///
+/// # Errors
+/// Refuses another field roster, mismatched native Shared rows or an undefined Hold.
+pub(crate) fn read_current_prepared_model17_data<C: PreparedControlHistory17>(
+    input: &[u8],
+    ledger: &mut Ledger<'_, '_, '_>,
+    build: bool,
+) -> Result<Option<CurrentPreparedModel17Data<C>>, ProviderError> {
+    let mut fields = Fields::object(input)?;
+    let schema = ledger.read::<PreparedSchema>(fields.named("schema")?, build)?;
+    let creator = ledger.read::<u32>(fields.named("creator")?, build)?;
+    let thread = ledger.read::<ThreadRole>(fields.named("thread")?, build)?;
+    let hold_role = ledger.read::<HoldRole>(fields.named("hold_role")?, build)?;
+    let hold_group =
+        crate::protocol_snapshot::restored_settled17::current_shared::read_reference17(
+            ledger,
+            crate::retained_metadata::aliases::MetadataSharedKind::NativeRestoredPhysicalHold,
+            (
+                std::mem::size_of::<
+                    crate::reference_packet::control::PacketCompleteRestorePhysicalHold,
+                >(),
+                std::mem::align_of::<
+                    crate::reference_packet::control::PacketCompleteRestorePhysicalHold,
+                >(),
+            ),
+        )?;
+    let control = ledger.read::<Option<C>>(fields.named("control")?, build)?;
+    let model = ledger.read::<Option<ModelRecord>>(fields.named("model")?, build)?;
+    let producer =
+        ledger.read::<Option<ProducerAdoption17Data>>(fields.named("producer")?, build)?;
+    let reactive =
+        ledger.read::<Option<ReactiveAdoption17Data>>(fields.named("reactive")?, build)?;
+    let original_program =
+        ledger.read::<Option<OriginalProgram17Data>>(fields.named("original_program")?, build)?;
+    let displaced_producer =
+        ledger.read::<Option<ProducerState>>(fields.named("displaced_producer")?, build)?;
+    let displaced_reactive =
+        ledger.read::<Option<ReactiveModel17Data>>(fields.named("displaced_reactive")?, build)?;
+    let original_producer =
+        ledger.read::<Option<ProducerProgram17Data>>(fields.named("original_producer")?, build)?;
+    let original_reactive =
+        ledger.read::<Option<ReactiveProgram17Data>>(fields.named("original_reactive")?, build)?;
+    let restored_producer =
+        ledger.read::<Option<ProducerProgram17Data>>(fields.named("restored_producer")?, build)?;
+    let restored_reactive =
+        ledger.read::<Option<ReactiveProgram17Data>>(fields.named("restored_reactive")?, build)?;
+    let effect_socket_role =
+        ledger.read::<Option<SocketRole>>(fields.named("effect_socket_role")?, build)?;
+    fields.finish()?;
+    if !build {
+        return Ok(None);
+    }
+    Ok(Some(CurrentPreparedModel17Data {
+        hold_group,
+        data: PacketSettledPreparedModel17Data {
+            schema: schema.ok_or_else(invalid)?,
+            creator: creator.ok_or_else(invalid)?,
+            thread: thread.ok_or_else(invalid)?,
+            hold_role: hold_role.ok_or_else(invalid)?,
+            control: control.ok_or_else(invalid)?,
+            model: model.ok_or_else(invalid)?,
+            producer: producer.ok_or_else(invalid)?,
+            reactive: reactive.ok_or_else(invalid)?,
+            original_program: original_program.ok_or_else(invalid)?,
+            displaced_producer: displaced_producer.ok_or_else(invalid)?,
+            displaced_reactive: displaced_reactive.ok_or_else(invalid)?,
+            original_producer: original_producer.ok_or_else(invalid)?,
+            original_reactive: original_reactive.ok_or_else(invalid)?,
+            restored_producer: restored_producer.ok_or_else(invalid)?,
+            restored_reactive: restored_reactive.ok_or_else(invalid)?,
+            effect_socket_role: effect_socket_role.ok_or_else(invalid)?,
+        },
+    }))
+}
+
+/// Retains a decoded model record without any live program or adoption handle.
+#[derive(Serialize)]
+#[serde(transparent)]
+pub(crate) struct CurrentDecodedModelRecord17Data(ModelRecord);
+
+impl HistoricalType for CurrentDecodedModelRecord17Data {
+    fn read(
+        input: &[u8],
+        ledger: &mut Ledger<'_, '_, '_>,
+        build: bool,
+    ) -> Result<Option<Self>, ProviderError> {
+        ledger
+            .read::<ModelRecord>(input, build)
+            .map(|record| record.map(Self))
+    }
+}
+
+impl ObserveMetadata for CurrentDecodedModelRecord17Data {
+    fn observe_metadata(&self, observer: &mut MetadataObserver<'_>) -> Result<(), ProviderError> {
+        observer.observe(&self.0)
+    }
+}
+
+// The new17 owning path keeps typed children in the outer attempt on errors.
+#[path = "prepared/retained.rs"]
+pub(in crate::reference_packet) mod retained;

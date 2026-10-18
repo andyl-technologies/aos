@@ -197,3 +197,5 @@ super::super::retained_storage::fields!(
     boot,
     startup
 );
+
+pub(crate) mod current17;

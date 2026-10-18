@@ -153,6 +153,14 @@ fn read(
 }
 
 impl<'a, 'scratch> ValidatedNativeOwnedProtocol11<'a, 'scratch> {
+    pub(crate) const fn validated_input_bytes_data(&self) -> &'a [u8] {
+        self.input
+    }
+
+    pub(crate) const fn validated_data_limits_data(&self) -> OwnedProtocol11DataLimits {
+        self.limits
+    }
+
     /// Checks complete framing, all typed owners, alias views and capacity rows.
     ///
     /// # Errors
@@ -892,3 +900,5 @@ impl SealedHistoricalNativeState {
             >()
     }
 }
+
+pub(crate) mod current17;

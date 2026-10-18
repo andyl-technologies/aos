@@ -55,8 +55,12 @@ impl<'a> Fields<'a> {
             original_installed_restoration_activation,
             original_installed_restoration_upload,
             original_installed_restoration_observation,
+            original_restored_settled_capture,
         } = controller;
-        if original_complete_restore.is_some() || installed_complete_restore.is_some() {
+        if original_complete_restore.is_some()
+            || installed_complete_restore.is_some()
+            || original_restored_settled_capture.is_some()
+        {
             return Err(ProviderError::Correlation(
                 "selected transfer raw owner class differs",
             ));

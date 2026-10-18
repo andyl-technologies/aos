@@ -26,7 +26,18 @@ impl Id {
     /// Rejects empty identifiers, lengths over 128 bytes, and characters outside
     /// `[A-Za-z0-9][A-Za-z0-9._:/-]*`.
     pub fn new(value: impl Into<String>) -> Result<Self, ContractError> {
-        let value = value.into();
+        Self::try_from_owned(value.into()).map_err(|(_, error)| error)
+    }
+
+    /// Constructs an identifier while preserving invalid owned input on refusal.
+    ///
+    /// The original String and its spare capacity are returned unchanged. This
+    /// lets an enclosing decoder retain its current child when validation fails.
+    ///
+    /// # Errors
+    /// Returns the original backing and validation error for the same invalid
+    /// identifiers rejected by [`Self::new`].
+    pub fn try_from_owned(value: String) -> Result<Self, (String, ContractError)> {
         let mut bytes = value.bytes();
         if value.len() > 128
             || !bytes
@@ -34,9 +45,9 @@ impl Id {
                 .is_some_and(|byte| byte.is_ascii_alphanumeric())
             || !bytes.all(|byte| byte.is_ascii_alphanumeric() || b"._:/-".contains(&byte))
         {
-            return Err(invalid(
-                "id",
-                "expected 1–128 bounded ASCII identifier bytes",
+            return Err((
+                value,
+                invalid("id", "expected 1–128 bounded ASCII identifier bytes"),
             ));
         }
         Ok(Self(value))
@@ -491,5 +502,26 @@ mod allocated_capacity_tests {
         assert_eq!(serde_json::to_string(&id).unwrap(), "\"capture/owner\"");
         let decoded: Id = serde_json::from_str("\"capture/owner\"").unwrap();
         assert_eq!(decoded, id);
+    }
+}
+
+#[cfg(test)]
+mod retained_identifier_refusal_tests {
+    use super::Id;
+
+    #[test]
+    fn invalid_owned_identifier_returns_the_same_spare_backing() {
+        let mut text = String::with_capacity(97);
+        text.push_str("contains space");
+        let pointer = text.as_ptr();
+        let capacity = text.capacity();
+
+        let Err((returned, _)) = Id::try_from_owned(text) else {
+            panic!("invalid identifier was accepted");
+        };
+
+        assert_eq!(returned, "contains space");
+        assert_eq!(returned.as_ptr(), pointer);
+        assert_eq!(returned.capacity(), capacity);
     }
 }

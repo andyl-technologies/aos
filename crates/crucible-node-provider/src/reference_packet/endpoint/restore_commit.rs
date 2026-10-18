@@ -15,6 +15,8 @@ use std::cell::RefCell;
 
 mod frames;
 
+pub(super) mod settled17;
+
 pub(super) struct RestoreCommitFlight<S: ProviderStream> {
     mapping: Option<Rc<RefCell<PreparedArchivedNativeProtocolMapping>>>,
     admission: Option<VerifiedCompleteRestoration>,
@@ -165,3 +167,5 @@ impl PacketEndpoint<DeadlineStream> {
 fn refused() -> ProviderError {
     ProviderError::Correlation("original selected Commit held")
 }
+
+mod settled_capture_cut17;

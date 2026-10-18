@@ -263,6 +263,14 @@ impl<T: ObserveMetadata> ObserveMetadata for Vec<T> {
     }
 }
 
+// Pair headers belong to their enclosing container; only child backing is walked.
+impl<A: ObserveMetadata, B: ObserveMetadata> ObserveMetadata for (A, B) {
+    fn observe_metadata(&self, observer: &mut MetadataObserver) -> Result<(), ProviderError> {
+        observer.observe(&self.0)?;
+        observer.observe(&self.1)
+    }
+}
+
 impl<T: ObserveMetadata> ObserveMetadata for Option<T> {
     fn observe_metadata(&self, observer: &mut MetadataObserver) -> Result<(), ProviderError> {
         if let Some(value) = self {

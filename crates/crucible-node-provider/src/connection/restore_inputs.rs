@@ -864,3 +864,7 @@ impl<S: ProviderStream> Connection<S> {
             .original_selected_native_class_data(self)
     }
 }
+
+#[path = "restore_inputs/current17.rs"]
+mod current17;
+mod settled;

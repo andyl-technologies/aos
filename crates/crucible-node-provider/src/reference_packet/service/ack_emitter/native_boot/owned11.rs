@@ -109,6 +109,12 @@ impl NativeAckBoot {
         observer: &mut MetadataObserver,
     ) -> Result<(), ProviderError> {
         self.authenticate_base_admitted_boot_state()?;
+        // The legacy codec cannot account for the selected17 reserve. Its full
+        // custody is walked by the defining current17 observer instead.
+        if self.restored_settled.is_some() {
+            return Err(ProviderError::Correlation("native whole11 boot unresolved"));
+        }
+
         let Self {
             creator,
             thread: _,
@@ -131,6 +137,7 @@ impl NativeAckBoot {
             restoration_observation: _,
             transfer: _,
             startup: _,
+            restored_settled: _,
         } = self;
         observer.observe(creator)?;
         let BootData {
@@ -300,6 +307,7 @@ impl Serialize for BootView<'_> {
             restoration_activation: _,
             restoration_uploads: _,
             restoration_observation: _,
+            restored_settled: _,
             transfer: _,
             startup: _,
         } = self.boot;
@@ -518,6 +526,12 @@ impl NativeAckBoot {
         roots: &mut crate::retained_metadata::NativeCaptureMetadataRoots,
         observer: &mut MetadataObserver,
     ) -> Result<(), ProviderError> {
+        // A selected17 reserve is never omitted from a successful legacy walk.
+        // Its complete current graph uses the separate aggregate observer.
+        if self.restored_settled.is_some() {
+            return Err(ProviderError::Correlation("native whole11 boot unresolved"));
+        }
+
         let Self {
             creator,
             thread: _,
@@ -540,6 +554,7 @@ impl NativeAckBoot {
             restoration_observation: _,
             transfer: _,
             startup: _,
+            restored_settled: _,
         } = self;
         observer.observe(creator)?;
         let BootData {

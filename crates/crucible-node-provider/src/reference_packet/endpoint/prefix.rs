@@ -13,6 +13,7 @@ pub(super) struct Acknowledgements {
     contents: BTreeMap<Id, ContentRef>,
     chunk: u64,
     restored_input17: bool,
+    restored_observation17: bool,
 }
 
 impl Acknowledgements {
@@ -21,6 +22,11 @@ impl Acknowledgements {
         original: &Envelope,
         received: &ReceivedFrame,
     ) -> Result<(), ProviderError> {
+        if self.restored_input17 && self.restored_observation17 {
+            return Err(ProviderError::Correlation(
+                "two selected proof prefix classes",
+            ));
+        }
         let ReceivedBody::Response(response) = &received.body else {
             return Err(ProviderError::Correlation("packet proof requires response"));
         };
@@ -39,10 +45,10 @@ impl Acknowledgements {
                         >= self.chunk.min(request.content.length.get())
             }
             (RequestBody::BlobChunk(request), Some(MethodResult::BlobChunk(result))) => {
-                !self.restored_input17
+                !(self.restored_input17 || self.restored_observation17)
                     || request.offset.get().checked_add(
                         u64::try_from(request.bytes.as_slice().len()).map_err(|_| {
-                            ProviderError::ResourceExhausted("Input17 chunk ACK offset")
+                            ProviderError::ResourceExhausted("selected17 chunk ACK offset")
                         })?,
                     ) == Some(result.next_offset.get())
             }
@@ -93,6 +99,7 @@ pub(super) fn prepare<S: ProviderStream>(
             reply,
             storage: None,
             restored_input17: false,
+            restored_observation17: false,
         },
     )
 }
@@ -121,6 +128,7 @@ pub(super) fn prepare_with_storage_data<S: ProviderStream>(
             reply,
             storage: Some(storage),
             restored_input17: false,
+            restored_observation17: false,
         },
     )
 }
@@ -200,6 +208,53 @@ pub(super) fn prepare_with_restored_input17_projection_storage_data<S: ProviderS
             reply,
             storage: Some(&actual),
             restored_input17: true,
+            restored_observation17: false,
+        },
+    )
+}
+
+/// Builds the exact selected Observe17 terminal and two immutable proofs.
+///
+/// The defining native action has already spent its own source-authenticated
+/// row. This builder reconciles the same actual reply, connection and literal
+/// banks before installing the ordinary failure-retaining prepared capsule.
+///
+/// # Errors
+/// Refuses another selected class/owner, wrong two-role reply, changed quote,
+/// insufficient literal/transport capacity or any ordinary preparation failure.
+pub(super) fn prepare_with_restored_observation17_projection_storage_data<S: ProviderStream>(
+    transport: &mut Option<Transport<S>>,
+    next_sequence: &mut u64,
+    retained_credit: &mut usize,
+    authority: &ConnectionAuthority,
+    request: &Envelope,
+    reply: &PacketControlReply,
+    projection: &OriginalPacketPrefixProjectionStorageData<2>,
+) -> Result<(), ProviderError> {
+    let Some(Transport::Connected(connection)) = transport.as_ref() else {
+        return Err(ProviderError::Conflict(
+            "Observe17 prefix connection absent",
+        ));
+    };
+    connection.authenticate_original_packet_prefix_builder_authority_data(authority)?;
+    let actual = projection.authenticate_actual_inputs(
+        connection,
+        *next_sequence,
+        request,
+        &reply.body,
+        &reply.evidence,
+    )?;
+    prepare_inner(
+        transport,
+        next_sequence,
+        retained_credit,
+        PrefixInput {
+            authority,
+            request,
+            reply,
+            storage: Some(&actual),
+            restored_input17: false,
+            restored_observation17: true,
         },
     )
 }
@@ -210,6 +265,7 @@ struct PrefixInput<'a> {
     reply: &'a PacketControlReply,
     storage: Option<&'a OriginalPacketPrefixStorageData>,
     restored_input17: bool,
+    restored_observation17: bool,
 }
 
 fn prepare_inner<S: ProviderStream>(
@@ -224,6 +280,7 @@ fn prepare_inner<S: ProviderStream>(
         reply,
         storage,
         restored_input17,
+        restored_observation17,
     } = input;
     if let Some(storage) = storage {
         let Some(Transport::Connected(connection)) = transport.as_ref() else {
@@ -232,7 +289,20 @@ fn prepare_inner<S: ProviderStream>(
             ));
         };
         connection.authenticate_original_packet_prefix_builder_authority_data(authority)?;
-        if restored_input17 {
+        if restored_observation17 {
+            if restored_input17 {
+                return Err(ProviderError::Correlation(
+                    "two selected proof prefix classes",
+                ));
+            }
+            connection.authenticate_requoted_original_restored_observation17_prefix_storage_data(
+                *next_sequence,
+                request,
+                &reply.body,
+                &reply.evidence,
+                storage,
+            )?;
+        } else if restored_input17 {
             connection.authenticate_requoted_original_restored_input17_prefix_storage_data(
                 *next_sequence,
                 request,
@@ -253,6 +323,7 @@ fn prepare_inner<S: ProviderStream>(
     }
     let (frames, mut acknowledgements, next) = frames(*next_sequence, authority, request, reply)?;
     acknowledgements.restored_input17 = restored_input17;
+    acknowledgements.restored_observation17 = restored_observation17;
     // Retain complete outgoing envelopes/canonical/correlation copies plus the
     // worst negotiated incoming acknowledgement extents for this whole prefix.
     // This encoded-storage account is separate from native content/pin credit;
@@ -414,6 +485,7 @@ fn frames(
             contents,
             chunk: chunk as u64,
             restored_input17: false,
+            restored_observation17: false,
         },
         next,
     ))
@@ -604,5 +676,85 @@ mod input17_transport_tests {
         }
         assert_eq!(accepted, 15);
         assert!(checked_changed_chunk);
+    }
+
+    #[test]
+    fn two_actual_observe17_proofs_require_every_exact_ack_and_one_class() {
+        let (_, authority) =
+            crate::handshake::tests::authority_with_scope("observe17-two-proof-acks");
+        let mut original = crate::envelope::tests::request();
+        original.method = Method::Observe;
+        original.session_id = Nullable(Some(authority.session_id().clone()));
+        original.incarnation_id = Nullable(Some(authority.incarnation_id().clone()));
+        let evidence = ["model", "restored"]
+            .into_iter()
+            .map(|role| {
+                let bytes = crucible_node_contract::canonical::canonical_json(
+                    &serde_json::json!({"transport_test_role":role}),
+                )
+                .unwrap();
+                (
+                    crucible_node_contract::canonical::content_ref(&bytes, "application/json")
+                        .unwrap(),
+                    bytes,
+                )
+            })
+            .collect::<Vec<_>>();
+        let reply = PacketControlReply {
+            body: completed(serde_json::json!({"transport_data_only":true})).unwrap(),
+            evidence,
+        };
+        // This is the actual ordinary frame/ACK producer, with DATA-only proof
+        // banks. Native/Source action permission remains a separate prerequisite.
+        let (planned, mut acknowledgements, next) =
+            frames(10, &authority, &original, &reply).unwrap();
+        acknowledgements.restored_observation17 = true;
+        assert_eq!(planned.len(), 7);
+        assert_eq!(next, 17);
+        let mut checked = 0;
+        for sent in &planned[1..] {
+            let request = decode_request(sent.method, &sent.body).unwrap();
+            let result = match &request {
+                RequestBody::BlobBegin(request) => object(BlobBeginResult {
+                    transfer_id: request.transfer_id.clone(),
+                    next_offset: U64::new(0),
+                    maximum_chunk_bytes: U64::new(acknowledgements.chunk),
+                })
+                .unwrap(),
+                RequestBody::BlobChunk(request) => object(BlobChunkResult {
+                    transfer_id: request.transfer_id.clone(),
+                    next_offset: U64::new(
+                        request.offset.get() + request.bytes.as_slice().len() as u64,
+                    ),
+                })
+                .unwrap(),
+                RequestBody::BlobFinish(request) => object(BlobFinishResult {
+                    transfer_id: request.transfer_id.clone(),
+                    content: acknowledgements.contents[&request.transfer_id].clone(),
+                })
+                .unwrap(),
+                _ => panic!("unexpected proof request"),
+            };
+            let body = completed(result).unwrap();
+            let mut envelope = sent.clone();
+            envelope.message = MessageKind::Response;
+            envelope.body = body.clone();
+            let mut received = ReceivedFrame {
+                envelope,
+                body: ReceivedBody::Response(Box::new(decode_response(&request, &body).unwrap())),
+            };
+            acknowledgements.validate(sent, &received).unwrap();
+            acknowledgements.restored_input17 = true;
+            assert!(acknowledgements.validate(sent, &received).is_err());
+            acknowledgements.restored_input17 = false;
+            if let ReceivedBody::Response(body) = &mut received.body
+                && let Some(MethodResult::BlobChunk(result)) = &mut body.result
+            {
+                result.next_offset = U64::new(result.next_offset.get() + 1);
+                assert!(acknowledgements.validate(sent, &received).is_err());
+            }
+            checked += 1;
+        }
+        assert_eq!(checked, 6);
     }
 }

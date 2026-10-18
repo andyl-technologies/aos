@@ -97,3 +97,6 @@ impl<S: ProviderStream> Connection<S> {
             .map_err(|_| ProviderError::Correlation("native installed historical owner incomplete"))
     }
 }
+
+#[path = "complete_installation/settled.rs"]
+mod settled_history;

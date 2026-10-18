@@ -227,3 +227,8 @@ impl PreparedArchivedNativeProtocolMapping {
         Ok(())
     }
 }
+
+#[path = "native_archived_mapping/settled.rs"]
+mod settled;
+
+pub(crate) mod current17;

@@ -20,9 +20,20 @@ pub(crate) trait HistoricalType: Sized {
     ) -> Result<Option<Self>, ProviderError>;
 }
 
+pub(crate) mod native17_build;
+mod native17_targets;
+pub(crate) use native17_build::Native17Build;
+
 pub(crate) struct Ledger<'a, 'scratch, 'input> {
     pub(crate) rows: MetadataRecordRows<'a>,
     pub(crate) aliases: Option<super::aliases::HistoricalAliasViews<'scratch, 'input>>,
+    /// Uses the explicit17 vocabulary without changing old11 alias admission.
+    pub(crate) settled_aliases: Option<
+        crate::protocol_snapshot::restored_settled17::aliases::RestoredSettledNative17AliasViews<
+            'scratch,
+            'input,
+        >,
+    >,
     pub(crate) selected_groups: Option<
         &'scratch mut [Option<std::sync::Arc<[crucible_node_contract::ExtensionSelection]>>],
     >,
@@ -32,6 +43,8 @@ pub(crate) struct Ledger<'a, 'scratch, 'input> {
     pub(crate) content_group_lookup_bytes: usize,
     pub(crate) selected_slice_staging_bytes: usize,
     pub(crate) maximum_literal_bytes: usize,
+    native17_targets: Option<native17_targets::Native17Targets>,
+    native17_target_groups: Option<&'scratch mut [bool]>,
     nodes: usize,
     depth: usize,
 }
@@ -41,6 +54,7 @@ impl<'a, 'scratch, 'input> Ledger<'a, 'scratch, 'input> {
         Self {
             rows,
             aliases: None,
+            settled_aliases: None,
             selected_groups: None,
             limits,
             content_limits: None,
@@ -48,6 +62,8 @@ impl<'a, 'scratch, 'input> Ledger<'a, 'scratch, 'input> {
             content_group_lookup_bytes: 0,
             selected_slice_staging_bytes: 0,
             maximum_literal_bytes: 0,
+            native17_targets: None,
+            native17_target_groups: None,
             nodes: 0,
             depth: 0,
         }
@@ -58,6 +74,7 @@ impl<'a, 'scratch, 'input> Ledger<'a, 'scratch, 'input> {
         input: &[u8],
         build: bool,
     ) -> Result<Option<T>, ProviderError> {
+        self.validate_alias_backend()?;
         self.nodes = self.nodes.checked_add(1).ok_or_else(invalid)?;
         if self.nodes > self.limits.maximum_nodes
             || input.len() > self.limits.maximum_input_bytes
@@ -68,6 +85,9 @@ impl<'a, 'scratch, 'input> Ledger<'a, 'scratch, 'input> {
         self.depth += 1;
         let result = T::read(input, self, build);
         self.depth -= 1;
+        if result.is_err() {
+            self.fail_native17_targets_data();
+        }
         result
     }
 
@@ -78,10 +98,122 @@ impl<'a, 'scratch, 'input> Ledger<'a, 'scratch, 'input> {
         view: &[u8],
         capacity_rows: &[u8],
     ) -> Result<usize, ProviderError> {
-        self.aliases
+        match (&mut self.aliases, &mut self.settled_aliases) {
+            (Some(aliases), None) => aliases.observe(kind, layout, view, capacity_rows),
+            (None, Some(aliases)) => aliases.observe(kind, layout, view, capacity_rows),
+            _ => Err(invalid()),
+        }
+    }
+
+    /// Consumes the shared row before walking children in source order.
+    ///
+    /// # Errors
+    /// Refuses absent or mixed backends, wrong kinds, cycles or exhausted rows.
+    pub(crate) fn shared_begin(
+        &mut self,
+        kind: crate::retained_metadata::aliases::MetadataSharedKind,
+    ) -> Result<usize, ProviderError> {
+        match (&mut self.aliases, &mut self.settled_aliases) {
+            (Some(aliases), None) => aliases.begin(kind),
+            (None, Some(aliases)) => aliases.begin(kind),
+            _ => Err(invalid()),
+        }
+    }
+
+    /// Conjoins the complete parent view and capacity rows after its children.
+    ///
+    /// # Errors
+    /// Refuses absent or mixed backends and inconsistent or unfinished groups.
+    pub(crate) fn shared_finish(
+        &mut self,
+        group: usize,
+        layout: usize,
+        view: &[u8],
+        capacity_rows: &[u8],
+    ) -> Result<(), ProviderError> {
+        match (&mut self.aliases, &mut self.settled_aliases) {
+            (Some(aliases), None) => aliases.finish_group(group, layout, view, capacity_rows),
+            (None, Some(aliases)) => aliases.finish_group(group, layout, view, capacity_rows),
+            _ => Err(invalid()),
+        }
+    }
+
+    /// Conjoins compact-content first groups with the enclosing shared roster.
+    ///
+    /// # Errors
+    /// Refuses absent or mixed backends and inconsistent content or alias edges.
+    pub(crate) fn shared_content(
+        &mut self,
+        edge: crate::client::compact_cursor::ContentGroupEdge,
+        layout: usize,
+        digest: &[u8],
+        capacity_rows: &[u8],
+    ) -> Result<usize, ProviderError> {
+        match (&mut self.aliases, &mut self.settled_aliases) {
+            (Some(aliases), None) => aliases.observe_content(edge, layout, digest, capacity_rows),
+            (None, Some(aliases)) => aliases.observe_content(edge, layout, digest, capacity_rows),
+            _ => Err(invalid()),
+        }
+    }
+
+    /// Consumes an explicit17 role edge to an already completed full group.
+    ///
+    /// The child separately consumes the exact aligned Shared capacity record.
+    /// Old11 archives have no role-only references and are refused here.
+    ///
+    /// # Errors
+    /// Refuses other backends and undefined, unfinished or mismatching groups.
+    pub(crate) fn shared_reference(
+        &mut self,
+        kind: crate::retained_metadata::aliases::MetadataSharedKind,
+        layout: usize,
+    ) -> Result<usize, ProviderError> {
+        match (&mut self.aliases, &mut self.settled_aliases) {
+            (None, Some(aliases)) => aliases.reference(kind, layout),
+            _ => Err(invalid()),
+        }
+    }
+
+    /// Requires exactly one backend and a completely consumed alias pass.
+    ///
+    /// # Errors
+    /// Refuses absent or mixed backends and failed, short or unfinished passes.
+    /// Consumes an explicit17 role-only edge to the currently parsed Boot.
+    ///
+    /// The caller consumes its actual Shared capacity row separately and
+    /// supplies the exact group returned by this enclosing Boot's begin. Old11
+    /// alias backends cannot use this rule; no native Rc or permission is made.
+    pub(crate) fn shared_native_boot_parent_reference(
+        &mut self,
+        expected_group: usize,
+        layout: usize,
+    ) -> Result<usize, ProviderError> {
+        self.validate_alias_backend()?;
+        if self.aliases.is_some() {
+            return Err(invalid());
+        }
+        self.settled_aliases
             .as_mut()
             .ok_or_else(invalid)?
-            .observe(kind, layout, view, capacity_rows)
+            .native_boot_parent_reference(expected_group, layout)
+    }
+
+    pub(crate) fn finish_aliases(&mut self) -> Result<(), ProviderError> {
+        self.validate_alias_backend()?;
+        match (self.aliases.take(), self.settled_aliases.take()) {
+            (Some(aliases), None) => aliases.finish(),
+            (None, Some(aliases)) => aliases.finish(),
+            _ => Err(invalid()),
+        }
+    }
+
+    fn validate_alias_backend(&self) -> Result<(), ProviderError> {
+        // Old callers assign aliases directly. Refuse a mixed backend before
+        // consuming typed children instead of silently preferring either era.
+        if self.aliases.is_some() && self.settled_aliases.is_some() {
+            return Err(invalid());
+        }
+        Ok(())
     }
 
     pub(crate) fn row_aligned(
@@ -120,6 +252,7 @@ impl HistoricalType for String {
         if input.first() != Some(&b'"') {
             return Err(invalid());
         }
+        ledger.native17_target_json_data(&plan)?;
         ledger.rows = plan.remaining_records();
         if !build {
             return Ok(None);
@@ -223,6 +356,7 @@ impl<T: HistoricalType> HistoricalType for Vec<T> {
             std::mem::size_of::<T>(),
             std::mem::align_of::<T>(),
         )?;
+        ledger.native17_target_vector_data::<T>(capacity)?;
         let mut cursor = Fields::array(input)?;
         let mut result = Vec::new();
         if build {
@@ -255,6 +389,7 @@ impl HistoricalType for Map<String, Value> {
         if input.first() != Some(&b'{') {
             return Err(invalid());
         }
+        ledger.native17_target_json_data(&plan)?;
         ledger.rows = plan.remaining_records();
         if !build {
             return Ok(None);
@@ -276,6 +411,7 @@ impl HistoricalType for BTreeMap<String, Value> {
         if input.first() != Some(&b'{') {
             return Err(invalid());
         }
+        ledger.native17_target_json_data(&plan)?;
         ledger.rows = plan.remaining_records();
         if !build {
             return Ok(None);
@@ -291,6 +427,7 @@ impl HistoricalType for Value {
         build: bool,
     ) -> Result<Option<Self>, ProviderError> {
         let plan = ValidatedHistoricalJson::validate(input, ledger.rows.clone(), ledger.limits)?;
+        ledger.native17_target_json_data(&plan)?;
         ledger.rows = plan.remaining_records();
         if build {
             Ok(Some(plan.reconstruct()?))
@@ -311,6 +448,7 @@ impl HistoricalType for BTreeMap<String, Id> {
             std::mem::size_of::<String>() + std::mem::size_of::<Id>(),
             std::mem::align_of::<String>().max(std::mem::align_of::<Id>()),
         )?;
+        ledger.native17_target_tree_data::<String, Id>(entries)?;
         let mut fields = Fields::object(input)?;
         let mut result = BTreeMap::new();
         let mut count = 0usize;
@@ -349,6 +487,7 @@ impl<V: HistoricalType> HistoricalType for BTreeMap<Id, V> {
             std::mem::size_of::<Id>() + std::mem::size_of::<V>(),
             std::mem::align_of::<Id>().max(std::mem::align_of::<V>()),
         )?;
+        ledger.native17_target_tree_data::<Id, V>(entries)?;
         let mut fields = Fields::object(input)?;
         let mut result = BTreeMap::new();
         let mut count = 0usize;
@@ -387,6 +526,7 @@ impl HistoricalType for BTreeSet<String> {
             std::mem::size_of::<String>(),
             std::mem::align_of::<String>(),
         )?;
+        ledger.native17_target_tree_data::<String, ()>(entries)?;
         let mut fields = Fields::array(input)?;
         let mut result = BTreeSet::new();
         let mut count = 0usize;
@@ -424,6 +564,7 @@ impl HistoricalType for BTreeSet<Id> {
             std::mem::size_of::<Id>(),
             std::mem::align_of::<Id>(),
         )?;
+        ledger.native17_target_tree_data::<Id, ()>(entries)?;
         let mut fields = Fields::array(input)?;
         let mut result = BTreeSet::new();
         let mut count = 0usize;
@@ -631,3 +772,11 @@ mod position;
 #[path = "typed/bytes.rs"]
 mod bytes;
 pub(crate) use bytes::historical_bytes_counter_scratch_data;
+
+#[cfg(test)]
+#[expect(
+    clippy::unwrap_used,
+    reason = "actual DATA backing identity fixture observations"
+)]
+#[path = "typed/alias_dispatch.rs"]
+mod alias_dispatch;

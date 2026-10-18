@@ -235,7 +235,8 @@ pub struct PacketConnectedNativeRecord {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct OriginalStage {
+/// Retains an original staged input and its optional commit as inert history.
+pub(super) struct OriginalStage {
     record: PacketStageRecord,
     record_ref: ContentRef,
     reply: PacketInputReply,
@@ -244,7 +245,8 @@ struct OriginalStage {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct OriginalCommit {
+/// Retains the original commit record and reply beneath its staged input.
+pub(super) struct OriginalCommit {
     record: PacketCommitRecord,
     record_ref: ContentRef,
     reply: PacketInputReply,

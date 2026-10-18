@@ -36,6 +36,7 @@ pub(crate) use storage::{
     quote_original_packet_baseline_prefix_startup_storage_data,
     quote_original_packet_prefix_startup_storage_data,
     quote_original_restored_input17_prefix_startup_storage_data,
+    quote_original_restored_observation17_prefix_startup_storage_data,
 };
 
 const MAXIMUM_EXCHANGE_BYTES: usize = 32 * 1024 * 1024;
@@ -738,3 +739,7 @@ impl PreparedExchange<crate::client::DeadlineStream> {
 
 #[path = "exchange/native_startup_after.rs"]
 mod native_startup_after;
+
+pub(crate) use snapshot::settled17;
+
+pub(crate) use snapshot::HistoricalExchangeRecord17;

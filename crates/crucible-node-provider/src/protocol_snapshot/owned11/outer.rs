@@ -240,7 +240,7 @@ impl HistoricalType for HistoricalClientCustody {
                 let shared = rows.next().ok_or_else(invalid)??;
                 let vector = rows.next().ok_or_else(invalid)??;
                 if shared.kind != MetadataRecordKind::Shared || vector.kind != MetadataRecordKind::Vector { return Err(invalid()); }
-                ledger.aliases.as_mut().ok_or_else(invalid)?.observe_content(row.edge, shared.extent,
+                ledger.shared_content(row.edge, shared.extent,
                     row.reference.digest().as_bytes(), rows.encoded_between(start)?)?;
                 Ok(())
             };

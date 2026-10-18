@@ -70,6 +70,7 @@ pub(crate) use exchange::{
     quote_original_packet_baseline_prefix_startup_storage_data,
     quote_original_packet_prefix_startup_storage_data,
     quote_original_restored_input17_prefix_startup_storage_data,
+    quote_original_restored_observation17_prefix_startup_storage_data,
 };
 mod fresh_restore_receive;
 mod native5_codec;
@@ -1081,3 +1082,68 @@ mod restored_producer;
 pub(crate) use restored_producer::original_restored_producer_receive_counter_scratch_data;
 
 mod observation_receive;
+
+pub(crate) use exchange::settled17;
+
+mod native_settled17;
+pub(crate) use native_settled17::{
+    HistoricalAckIdentity17, HistoricalCurrentNativeConnection17, HistoricalRestoreIdentity17,
+    NativeConnection17GroupIds, read_native17_connection_data,
+    read_native17_connection_fields_data,
+};
+
+pub(crate) use native_settled17::{
+    HistoricalAckToken17, HistoricalNativeBlobReceiver17, HistoricalNativeFrameRoot17,
+    HistoricalOperationPin17, HistoricalPrepareToken17, NativeBlobReceiver17GroupIds,
+    read_native17_blob_receiver_data, read_native17_frame_root_data,
+    read_native17_operation_pin_data,
+};
+
+pub(crate) use native_settled17::authenticate_native17_policy_content_data;
+
+pub(crate) use exchange::HistoricalExchangeRecord17;
+
+/// Reports the defining codec shared payload size and alignment as DATA.
+pub(crate) const fn native_codec_shared_layout17_data() -> (usize, usize) {
+    (
+        std::mem::size_of::<Native5CodecOwner>(),
+        std::mem::align_of::<Native5CodecOwner>(),
+    )
+}
+
+pub(crate) use native_settled17::{
+    read_native17_codec_root_data, read_rooted_native17_connection_fields_data,
+};
+
+pub(crate) mod current17;
+
+mod native_wholegraph17;
+pub(crate) use native_settled17::logical17::bytes as native17_borrowed_bytes;
+pub(crate) use native_settled17::logical17::custody as native17_borrowed_custody;
+pub(crate) use native_settled17::logical17::native17_logical_projection_scratch_data;
+pub(crate) use native_settled17::logical17::{
+    BorrowedAdmission17Kind, BorrowedAdmission17Lineage, BorrowedAuthority17Lineage,
+    BorrowedCorrelationLedger17, BorrowedNativeConnection17LogicalData,
+    borrow_native17_connection_logical_data,
+};
+pub(crate) use native_settled17::{
+    preflight_rooted_native17_connection_authority_data,
+    read_rooted_native17_connection_authority_into_data,
+};
+
+pub(crate) use native_wholegraph17::NativeConnectionPrelude17;
+
+#[path = "connection/settled_history.rs"]
+mod settled_history;
+pub(crate) use settled_history::ConnectionSettledHistoryData;
+
+pub(crate) use supervisor_state::{
+    ConnectionIncidentHistoryData, connection_incident_settled_history_data,
+    observe_settled_connection_incident_metadata_data,
+};
+
+pub use supervisor_state::RetainedSupervisorHistoricalData;
+
+pub use original_history::{
+    OriginalRestoredInput17LiteralPrefixData, OriginalRestoredInput17LiteralPrefixIdentityData,
+};

@@ -1448,3 +1448,7 @@ pub(crate) fn original_host_initial_codec_layout_data() -> Result<usize, Provide
     }
     Ok(total)
 }
+
+#[path = "codec_settled_history.rs"]
+mod settled_history;
+pub(crate) use settled_history::Native5CodecHistoricalData;

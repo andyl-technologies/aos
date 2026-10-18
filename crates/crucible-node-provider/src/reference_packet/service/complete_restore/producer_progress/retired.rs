@@ -20,7 +20,15 @@ use crucible_node_contract::{Validate, Visibility, canonical};
 pub fn authenticate_restored_producer_retired_data(
     input: &PacketRestoredProducerRetiredData<'_>,
 ) -> Result<(), ProviderError> {
-    authenticate_restored_producer_completed_data(input.completed)?;
+    let completed = super::pair_views::Completed::from_live(input.completed);
+    let view = super::pair_views::Retired::from_live(input, &completed);
+    authenticate_retired_view_data(&view)
+}
+
+pub(super) fn authenticate_retired_view_data(
+    input: &super::pair_views::Retired<'_, '_>,
+) -> Result<(), ProviderError> {
+    super::completed::authenticate_completed_view_data(input.completed)?;
     lineage::lineage(
         input.completed.held,
         input.completed.restored,
@@ -51,8 +59,8 @@ pub fn authenticate_restored_producer_retired_data(
     input.measurement.validate()?;
     let (begin, _, _) = input.completed.begin.completed_pair_data()?;
     let (poll, _, _) = input.completed.poll.completed_pair_data()?;
-    let (retire, _, reply) = lineage::pair(input.retire, Method::Retire)?;
-    let (observe, _, observation) = lineage::pair(input.observe, Method::Observe)?;
+    let (retire, _, reply) = lineage::pair_data(input.retire, Method::Retire)?;
+    let (observe, _, observation) = lineage::pair_data(input.observe, Method::Observe)?;
     lineage::same_route(poll, retire)?;
     lineage::same_route(retire, observe)?;
     let RequestBody::Retire(request) = decode_request(Method::Retire, &retire.body)? else {

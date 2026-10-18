@@ -1964,3 +1964,33 @@ pub(crate) use restored_suffix_observation::original_restored_suffix_observation
 pub(crate) use continuation::{
     PacketSettledControlRecord17Data, settled_control_record17_counter_scratch_data,
 };
+
+mod restored_settled_history;
+
+mod current17_reader;
+pub(crate) use current17_reader::{
+    CurrentControl17Data, CurrentControlHold17Data, current_control17_counter_scratch_data,
+    read_current_control_hold_root17_data, read_current_control_identity17_data,
+};
+
+pub(crate) use current17_reader::read_current_rooted_control17_data;
+
+pub(crate) use current17_reader::{
+    CurrentControl17GroupIds, CurrentControlHold17GroupIds,
+    read_current_control_hold_root17_fields_data, read_current_rooted_control17_fields_data,
+};
+
+pub(crate) use current17_reader::{
+    CurrentControl17ReadAttempt, CurrentControlHold17ReadAttempt,
+    read_current_control_hold_root17_into_data, read_current_rooted_control17_into_data,
+};
+
+pub(crate) use current17_reader::preflight_current_rooted_control17_fields_data;
+
+#[path = "control/restored_settled_capture.rs"]
+mod restored_settled_capture;
+pub(crate) use restored_settled_capture::NativeRestoredSettledCheckpointAttempt;
+
+#[path = "control/restored_input_reactive17.rs"]
+mod restored_input_reactive17;
+pub(crate) use restored_input_reactive17::NativeInputReactive17CheckpointAttempt;

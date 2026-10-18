@@ -617,3 +617,8 @@ fn input_geometry(
         custody_layout_bytes,
     })
 }
+
+#[path = "restore_input_quote/current17.rs"]
+mod current17;
+#[path = "restore_input_quote/settled.rs"]
+mod settled;

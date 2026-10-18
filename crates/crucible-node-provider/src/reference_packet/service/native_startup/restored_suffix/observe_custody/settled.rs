@@ -47,3 +47,30 @@ impl NativeRestoredSuffixObserveAttempt {
         size_of::<History<'static>>()
     }
 }
+
+impl NativeRestoredSuffixObserveAttempt {
+    /// Appends the selected17 emitted field order without resetting aggregate banks.
+    ///
+    /// # Errors
+    /// Refuses finite metadata exhaustion or checked backing-layout overflow.
+    pub(crate) fn observe_current_settled17_metadata_data(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver<'_>,
+    ) -> Result<(), ProviderError> {
+        use crate::protocol_snapshot::restored_settled17::current_contracts::CurrentContract17;
+
+        let Self {
+            ordinal,
+            original,
+            body,
+            terminal,
+            stage: _,
+        } = self;
+        observer.observe(ordinal)?;
+        observer.observe(original)?;
+        if let Some(body) = body {
+            body.observe_current(observer)?;
+        }
+        observer.observe(terminal)
+    }
+}

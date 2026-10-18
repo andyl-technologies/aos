@@ -94,3 +94,6 @@ mod tests {
         }
     }
 }
+
+#[path = "position/native17_build.rs"]
+mod native17_build;

@@ -560,3 +560,8 @@ pub(crate) fn settled_control_record17_counter_scratch_data() -> usize {
 #[cfg(test)]
 #[path = "settled_reader/tests.rs"]
 mod tests;
+
+mod native17_request_build;
+
+// The archived typed owner uses concrete retained field companions in whole17.
+mod retained;

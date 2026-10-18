@@ -71,3 +71,45 @@ impl NativeRestoredControlEvidence {
             + std::mem::size_of::<Result<(), ProviderError>>()
     }
 }
+
+impl NativeRestoredControlEvidence {
+    /// Appends all three actual evidence edges without resetting aggregate banks.
+    ///
+    /// # Errors
+    /// Refuses foreign or borrowed owners, another attempt/Hold, or exhausted banks.
+    pub(crate) fn observe_settled_history_metadata_data(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver<'_>,
+    ) -> Result<(), ProviderError> {
+        let Self {
+            boot,
+            attempt,
+            hold,
+        } = self;
+        let owner = boot.try_borrow().map_err(|_| borrowed())?;
+        let flight = attempt.try_borrow().map_err(|_| borrowed())?;
+        owner.ensure_origin()?;
+        flight.ensure_origin()?;
+        if owner
+            .restoration
+            .as_ref()
+            .is_none_or(|actual| !Rc::ptr_eq(actual, attempt))
+            || flight
+                .physical_hold
+                .as_ref()
+                .is_none_or(|actual| !Rc::ptr_eq(actual, hold))
+        {
+            return Err(refused());
+        }
+        use crate::retained_metadata::aliases::MetadataSharedKind;
+        observer.shared_original(MetadataSharedKind::NativeBoot, boot.as_ref())?;
+        observer.shared_original(
+            MetadataSharedKind::NativeRestoreCommitAttempt,
+            attempt.as_ref(),
+        )?;
+        observer.shared_original(
+            MetadataSharedKind::NativeRestoredPhysicalHold,
+            hold.as_ref(),
+        )
+    }
+}

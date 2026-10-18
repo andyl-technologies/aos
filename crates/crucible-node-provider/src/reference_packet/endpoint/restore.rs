@@ -347,3 +347,5 @@ impl PacketEndpoint<DeadlineStream> {
 fn refused() -> ProviderError {
     ProviderError::Correlation("native selected restore preparation held")
 }
+
+mod settled_quote17;

@@ -675,3 +675,69 @@ mod admitted_axis_tests {
         }
     }
 }
+
+impl AssignedOriginalInstalledRestorationActivation {
+    pub(super) fn borrowed_settled_history_data(&self) -> impl serde::Serialize + '_ {
+        let Self {
+            command,
+            request,
+            unsigned_request,
+            original,
+            bytes,
+            literal_slot,
+            cut: _,
+            state,
+            response,
+        } = self;
+        (
+            "source-private.sdk-activation-current/17",
+            crate::reference_packet::service::complete_restore::activation::HistoricalRestorationActivationData::Command(command),
+            request, unsigned_request, original,
+            crate::protocol_snapshot::compact_bytes::BorrowedCompactBytes::new(bytes),
+            bytes.capacity(), literal_slot,
+            match state { ActivationState::Preparing => "preparing", ActivationState::Unsigned => "unsigned", ActivationState::Sealing => "sealing", ActivationState::Sealed => "sealed", ActivationState::Publishing => "publishing", ActivationState::Complete => "complete" },
+            response, "historical-nonrenewable-operational-cut",
+        )
+    }
+}
+
+fn settled_field_views<T>(
+    _: impl FnOnce(&'static AssignedOriginalInstalledRestorationActivation) -> T,
+) -> usize {
+    std::mem::size_of::<T>()
+}
+
+impl AssignedOriginalInstalledRestorationActivation {
+    pub(super) fn settled_history_counter_scratch_data() -> usize {
+        settled_field_views(|value| {
+            let projected = value.borrowed_settled_history_data();
+            (projected, Some(value.borrowed_settled_history_data()))
+        }) + settled_field_views(|value| {
+            let AssignedOriginalInstalledRestorationActivation {
+                command,
+                request,
+                unsigned_request,
+                original,
+                bytes,
+                literal_slot,
+                cut,
+                state,
+                response,
+            } = value;
+            (
+                command,
+                request,
+                unsigned_request,
+                original,
+                bytes,
+                literal_slot,
+                cut,
+                state,
+                response,
+            )
+        }) + std::mem::size_of::<&Self>()
+            + std::mem::size_of::<Option<&Self>>()
+            + std::mem::size_of::<&mut crate::retained_metadata::MetadataObserver<'static>>()
+            + std::mem::size_of::<Result<(), ProviderError>>()
+    }
+}

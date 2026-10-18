@@ -40,6 +40,8 @@ pub struct CompletedOriginalInstalledRestorationObservation<'a> {
     response: &'a Envelope,
     decoded: &'a ResponseBody,
     completed_frontier: U64,
+    request: &'a PacketRestorationObservationRequest,
+    body: &'a ObserveRequest,
 }
 
 impl CompletedOriginalInstalledRestorationObservation<'_> {
@@ -515,6 +517,8 @@ impl CnpController {
             response,
             decoded: state.decoded.as_ref().ok_or_else(refused)?,
             completed_frontier: state.completed_frontier.ok_or_else(refused)?,
+            request: &state.request,
+            body: &state.body,
         })
     }
 
@@ -943,8 +947,107 @@ mod suffix_data_tests {
     }
 }
 
+impl AssignedOriginalInstalledRestorationObservation {
+    pub(super) fn borrowed_settled_history_data(
+        &self,
+    ) -> Result<impl serde::Serialize + '_, ProviderError> {
+        let Self {
+            body,
+            request,
+            unsigned_request,
+            original,
+            bytes,
+            literal_slot,
+            cut: _,
+            state,
+            response,
+            decoded,
+            completed_frontier,
+        } = self;
+        let decoded = decoded
+            .as_ref()
+            .map(crate::retained_metadata::historical_response_body_data)
+            .transpose()?;
+        Ok((
+            "source-private.sdk-first-observation-current/17",
+            body,
+            request,
+            unsigned_request,
+            original,
+            crate::protocol_snapshot::compact_bytes::BorrowedCompactBytes::new(bytes),
+            bytes.capacity(),
+            literal_slot,
+            match state {
+                ObservationState::Preparing => "preparing",
+                ObservationState::Unsigned => "unsigned",
+                ObservationState::Sealing => "sealing",
+                ObservationState::Sealed => "sealed",
+                ObservationState::Publishing => "publishing",
+                ObservationState::Complete => "complete",
+            },
+            response,
+            decoded,
+            "historical-nonrenewable-operational-cut",
+            completed_frontier,
+        ))
+    }
+}
+
+fn settled_field_views<T>(
+    _: impl FnOnce(&'static AssignedOriginalInstalledRestorationObservation) -> T,
+) -> usize {
+    std::mem::size_of::<T>()
+}
+
+impl AssignedOriginalInstalledRestorationObservation {
+    pub(super) fn settled_history_counter_scratch_data() -> usize {
+        settled_field_views(|value| {
+            (
+                value.borrowed_settled_history_data(),
+                Some(value.borrowed_settled_history_data()),
+                Some(value)
+                    .map(|value| value.borrowed_settled_history_data())
+                    .transpose(),
+            )
+        }) + settled_field_views(|value| {
+            let AssignedOriginalInstalledRestorationObservation {
+                body,
+                request,
+                unsigned_request,
+                original,
+                bytes,
+                literal_slot,
+                cut,
+                state,
+                response,
+                decoded,
+                completed_frontier,
+            } = value;
+            (
+                body,
+                request,
+                unsigned_request,
+                original,
+                bytes,
+                literal_slot,
+                cut,
+                state,
+                response,
+                decoded,
+                completed_frontier,
+            )
+        }) + std::mem::size_of::<&Self>()
+            + std::mem::size_of::<Option<&Self>>()
+            + std::mem::size_of::<&mut crate::retained_metadata::MetadataObserver<'static>>()
+            + std::mem::size_of::<Result<(), ProviderError>>()
+    }
+}
+
 #[cfg(all(test, unix))]
 #[path = "installed_observation/evidence_tests.rs"]
 mod evidence_tests;
 
 mod receive_storage;
+
+#[path = "installed_observation/checkpoint_cache17.rs"]
+mod checkpoint_cache17;

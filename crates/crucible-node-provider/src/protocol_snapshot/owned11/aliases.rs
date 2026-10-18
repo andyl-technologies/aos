@@ -352,3 +352,6 @@ super::retained_storage::fields!(
     in_progress,
     content_edge
 );
+
+#[path = "aliases/current17.rs"]
+mod current17;

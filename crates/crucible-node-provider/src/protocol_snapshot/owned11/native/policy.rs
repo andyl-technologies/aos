@@ -374,3 +374,5 @@ super::super::retained_storage::fields!(
     fresh_restore_allocation_definitions,
     protocol_metadata_limits
 );
+
+pub(crate) mod current17;

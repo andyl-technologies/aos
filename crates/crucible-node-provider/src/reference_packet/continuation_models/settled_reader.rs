@@ -219,6 +219,63 @@ impl PacketSettledModel17Data {
     }
 }
 
+impl PacketSettledModel17Data {
+    /// Borrows the exact current program tuple, including its inert socket role.
+    pub(crate) fn borrowed_program17_data(&self) -> impl Serialize + '_ {
+        CurrentProgram17View(self)
+    }
+}
+
+struct CurrentProgram17View<'a>(&'a PacketSettledModel17Data);
+struct CurrentProgram17Body<'a>(&'a CurrentModel);
+
+impl Serialize for CurrentProgram17View<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let kind = match &self.0.state {
+            CurrentModel::Producer(_) => "producer",
+            CurrentModel::Reactive(_) => "reactive",
+        };
+        (kind, CurrentProgram17Body(&self.0.state)).serialize(serializer)
+    }
+}
+
+impl Serialize for CurrentProgram17Body<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        match self.0 {
+            CurrentModel::Reactive(state) => state.serialize_program17_data(serializer),
+            CurrentModel::Producer(state) => {
+                let ProducerState {
+                    events,
+                    next_event,
+                    reached,
+                    gate_closed,
+                    outputs,
+                    grants,
+                    private_mutations,
+                    packet_effects,
+                    retired,
+                    failed,
+                } = state;
+                let mut fields =
+                    serializer.serialize_struct("InertCurrentProducerProgram17", 11)?;
+                fields.serialize_field("effect_socket_role", "model-effect-socket")?;
+                fields.serialize_field("events", events)?;
+                fields.serialize_field("next_event", next_event)?;
+                fields.serialize_field("reached", reached)?;
+                fields.serialize_field("gate_closed", gate_closed)?;
+                fields.serialize_field("outputs", outputs)?;
+                fields.serialize_field("grants", grants)?;
+                fields.serialize_field("private_mutations", private_mutations)?;
+                fields.serialize_field("packet_effects", packet_effects)?;
+                fields.serialize_field("retired", retired)?;
+                fields.serialize_field("failed", failed)?;
+                fields.end()
+            }
+        }
+    }
+}
+
 struct CurrentModelView<'a>(&'a PacketSettledModel17Data);
 impl Serialize for CurrentModelView<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -299,7 +356,9 @@ fn authenticate_producer(state: &ProducerState) -> Result<(), ProviderError> {
 /// Names the fixed current-model parser, typed result and direct child views.
 pub(crate) fn settled_model17_counter_scratch_data() -> usize {
     use std::mem::size_of;
-    size_of::<PacketSettledModel17Data>()
+    size_of::<CurrentProgram17View<'static>>()
+        + size_of::<CurrentProgram17Body<'static>>()
+        + size_of::<PacketSettledModel17Data>()
         + size_of::<CurrentModel>()
         + size_of::<ProducerState>()
         + size_of::<CurrentModelView<'static>>()
@@ -576,3 +635,10 @@ mod tests {
         assert_eq!(state.events, actual.events);
     }
 }
+
+// The new17 owning path keeps typed children in the outer attempt on errors.
+#[path = "settled_reader/retained.rs"]
+pub(in crate::reference_packet) mod retained;
+
+#[path = "settled_reader/output_pair17.rs"]
+mod output_pair17;

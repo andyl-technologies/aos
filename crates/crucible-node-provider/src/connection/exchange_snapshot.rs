@@ -463,3 +463,17 @@ mod tests {
         assert_eq!(record.canonical[0], b"actual-planned-original");
     }
 }
+
+#[path = "exchange_snapshot/settled_record17.rs"]
+mod settled_record17;
+pub(crate) use settled_record17::HistoricalExchangeRecord17;
+
+#[path = "exchange_snapshot/settled17.rs"]
+pub(crate) mod settled17;
+
+impl ReceivedFrame {
+    /// Borrows raw envelope and independent typed cache as retained history.
+    pub(crate) fn borrowed_settled17_data(&self) -> impl Serialize + '_ {
+        (&self.envelope, DecodedBodyView(&self.body))
+    }
+}

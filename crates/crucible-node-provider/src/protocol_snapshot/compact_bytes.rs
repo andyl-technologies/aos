@@ -178,6 +178,7 @@ fn encode_chunk(bytes: &[u8], buffer: &mut [u8; ENCODED_CHUNK_BYTES]) -> usize {
 /// extent. This is a data plan, not source custody, alias identity, capture or
 /// adoption authority. A caller may validate first, precharge and allocate its
 /// original capacity once, then fill that very allocation without another buffer.
+#[derive(Clone, Copy)]
 pub struct ValidatedCompactBytes<'a> {
     input: &'a [u8],
     decoded_length: usize,

@@ -844,3 +844,10 @@ pub(crate) fn original_history_guard_counter_scratch_data() -> usize {
         + std::mem::size_of::<Option<usize>>()
         + std::mem::size_of::<bool>()
 }
+
+/// Reports the actual native descriptor alignment for explicit17 capacity rows.
+pub(crate) const fn original_frame_slot_alignment_data() -> usize {
+    std::mem::align_of::<Slot>()
+}
+
+pub(crate) mod current17;

@@ -105,12 +105,7 @@ impl NativeLedger<'_, '_, '_, '_, '_> {
         if layout != expected_layout {
             return Err(invalid());
         }
-        let group = self
-            .ledger
-            .aliases
-            .as_mut()
-            .ok_or_else(invalid)?
-            .begin(kind)?;
+        let group = self.ledger.shared_begin(kind)?;
         Ok((start, group))
     }
 
@@ -123,10 +118,7 @@ impl NativeLedger<'_, '_, '_, '_, '_> {
     ) -> Result<(), ProviderError> {
         let rows = self.ledger.rows.encoded_between(start)?;
         self.ledger
-            .aliases
-            .as_mut()
-            .ok_or_else(invalid)?
-            .finish_group(group, expected_layout, view, rows)
+            .shared_finish(group, expected_layout, view, rows)
     }
 
     pub(super) fn policy(

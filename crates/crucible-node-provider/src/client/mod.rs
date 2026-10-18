@@ -21,8 +21,8 @@ pub use controller::{
     OriginalCanonicalBlobAckEmitter, OriginalCanonicalRestoreInputEmitter,
     OriginalCompleteRestoreInputUpload, OriginalCompleteRestoreInputUploadProspectiveStorageData,
     OriginalCompleteRestoreInputUploadStorageData, OriginalCompleteRestoreUploadBeforeMappingData,
-    OriginalFreshRestorePrepareBindingStorageData, OriginalFreshRestoreQuery,
-    OriginalFreshRestoreQueryStorageData,
+    OriginalCompletedRestoredObservation17Data, OriginalFreshRestorePrepareBindingStorageData,
+    OriginalFreshRestoreQuery, OriginalFreshRestoreQueryStorageData,
 };
 pub use controller::{CompletedOriginalCanonicalAckAdmit, PreparedOriginalCanonicalAckAdmit};
 pub use controller::{
@@ -88,11 +88,26 @@ pub use controller::{
     CompletedOriginalInstalledRestorationUpload, PreparedOriginalInstalledRestorationUpload,
 };
 
-/// Exposes a separately assigned Input17 SDK marker without issuing a claim.
-pub use controller::PreparedOriginalRestoredInputReactive17HostAttempt;
-
 /// Exposes retained ordinary suffix originals without issuing execution claims.
 pub use controller::{
     OriginalRestoredSuffixBody, OriginalRestoredSuffixHostAttempt,
     OriginalRestoredSuffixHostHistoricalData, PreparedOriginalRestoredSuffixHostAttempt,
+};
+
+pub use controller::{
+    OriginalCompletedRestoredSettledCaptureData, OriginalRestoredSettledCaptureData,
+    PreparedOriginalRestoredSettledCapture, PreparedRestoredSettledCaptureAuxiliaryOriginal,
+    RestoredSettledCaptureAuxiliaryBody,
+};
+
+pub use controller::{
+    OriginalRestoredSettledCaptureConstructionData, OriginalRestoredSettledCaptureProspectiveData,
+    RestoredSettledCaptureTypedOwnerData,
+};
+
+pub use controller::ControllerSettledHistoryData;
+
+pub(crate) use controller::{
+    original_suffix_response_references_counter_scratch_data,
+    original_suffix_response_references_data,
 };

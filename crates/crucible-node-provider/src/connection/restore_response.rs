@@ -740,3 +740,6 @@ impl<S: ProviderStream> Connection<S> {
             + std::mem::size_of::<std::cell::Ref<'static, crate::reference_packet::service::complete_restore::transfer::PacketCompleteRestorePrepareRequest>>()
     }
 }
+
+#[path = "restore_response/settled.rs"]
+mod settled_history;

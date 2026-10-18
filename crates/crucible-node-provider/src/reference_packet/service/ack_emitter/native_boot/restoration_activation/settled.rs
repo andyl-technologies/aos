@@ -200,3 +200,72 @@ impl NativeAckBoot {
             + size_of::<Result<Vec<u8>, crucible_node_contract::ContractError>>()
     }
 }
+
+/// Borrows only stage payloads; aggregate banks belong to the enclosing graph.
+struct CurrentStages17<'a> {
+    boot: &'a NativeAckBoot,
+}
+
+impl Serialize for CurrentStages17<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.boot
+            .ensure_origin()
+            .map_err(serde::ser::Error::custom)?;
+        let mut state = serializer.serialize_struct("NativeCurrentRestorationStages17", 4)?;
+        state.serialize_field(
+            "schema",
+            "source-private.native-current-restoration-stages/17",
+        )?;
+        state.serialize_field("activation", &Slots(&self.boot.restoration_activation))?;
+        state.serialize_field("uploads", &Slots(&self.boot.restoration_uploads))?;
+        state.serialize_field(
+            "first_observation",
+            &Slot(&self.boot.restoration_observation),
+        )?;
+        state.end()
+    }
+}
+
+impl NativeAckBoot {
+    /// Borrows current stages under the enclosing graph's existing bank pass.
+    ///
+    /// This lender never creates a recording observer or clears a bank. The
+    /// caller walks these stages once with its own aggregate observer.
+    ///
+    /// # Errors
+    /// Refuses a foreign originating process or thread.
+    pub(in crate::reference_packet::service::ack_emitter::native_boot) fn borrowed_current_restoration_stages17_data(
+        &self,
+    ) -> Result<impl Serialize + '_, ProviderError> {
+        self.ensure_origin()?;
+        Ok(CurrentStages17 { boot: self })
+    }
+}
+
+impl NativeAckBoot {
+    /// Names exact native shared payload layouts, separate from historical data.
+    pub(crate) const fn current_stage_layouts17_data() -> [(usize, usize); 3] {
+        use std::mem::{align_of, size_of};
+        [
+            (
+                size_of::<RefCell<NativeRestorationActivationAttempt>>(),
+                align_of::<RefCell<NativeRestorationActivationAttempt>>(),
+            ),
+            (
+                size_of::<RefCell<NativeRestorationUploadAttempt>>(),
+                align_of::<RefCell<NativeRestorationUploadAttempt>>(),
+            ),
+            (
+                size_of::<RefCell<NativeRestorationObservationAttempt>>(),
+                align_of::<RefCell<NativeRestorationObservationAttempt>>(),
+            ),
+        ]
+    }
+}
+
+impl NativeAckBoot {
+    /// Names the payload-only current-stage writer header used by native17.
+    pub(crate) const fn current_stages17_writer_header_data() -> usize {
+        std::mem::size_of::<CurrentStages17<'static>>()
+    }
+}

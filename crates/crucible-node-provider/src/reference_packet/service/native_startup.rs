@@ -355,3 +355,74 @@ pub(crate) use restored_suffix::{
     NativeRestoredProducerAttempt, native_closed_producer_action_counter_scratch_data,
     native_closed_producer_action_row_data, original_restored_producer_ingress_row_data,
 };
+
+#[path = "native_startup/restored_settled_capture_ingress.rs"]
+mod restored_settled_capture_ingress;
+
+#[path = "native_startup/restored_action17.rs"]
+mod restored_action17;
+
+mod restored_settled_capture_storage;
+pub use restored_settled_capture_storage::{
+    PacketRestoredSettledNativeCarrierData, PacketRestoredSettledNativeConstructionInputs,
+    PacketRestoredSettledNativeExistingRowsData,
+    PacketRestoredSettledNativeOutputValidationStorageData, PacketRestoredSettledNativeStorageData,
+};
+
+mod restored_settled_capture_output;
+
+pub use restored_settled_capture_storage::{
+    original_restored_settled_native_storage_counter_scratch_data,
+    original_restored_settled_native_storage_data,
+};
+
+pub use restored_settled_capture_ingress::{
+    PacketRestoredSettledCaptureUploadGeometryData,
+    original_restored_settled_capture_auxiliary_geometry_counter_scratch_data,
+    original_restored_settled_capture_auxiliary_geometry_for_lengths_data,
+    original_restored_settled_capture_auxiliary_geometry_for_limits_data,
+    original_restored_settled_capture_negotiated_geometry_counter_scratch_data,
+};
+
+pub(crate) use restored_action17::{
+    NativeRestoredSettledActionAttempt, NativeRestoredSettledActionCurrent17,
+    original_restored_settled_action_ingress_row_data,
+    original_restored_settled_action_counter_scratch_data,
+};
+pub(crate) use restored_settled_capture_output::NativeCaptureOutputCut17;
+
+pub(crate) use restored_settled_capture_ingress::{
+    NativeRestoredSettledCaptureAttempt,
+    original_restored_settled_capture_ingress_counter_scratch_data,
+    original_restored_settled_capture_ingress_row_data,
+};
+
+#[path = "native_startup/restored_input_reactive17_ingress.rs"]
+mod restored_input_reactive17_ingress;
+pub(crate) use restored_input_reactive17_ingress::{
+    NativeRestoredInputReactive17Attempt,
+    original_restored_input_reactive17_ingress_row_data,
+};
+
+// Pure defining wrapper, sizing and correspondence leaves; none installs credit.
+#[path = "native_startup/restored_settled/construction.rs"]
+mod settled_construction17;
+#[path = "native_startup/restored_settled_data17.rs"]
+mod settled_data17;
+#[path = "native_startup/restored_settled_final_rows17.rs"]
+mod settled_final_rows17;
+
+pub use settled_construction17::{
+    PacketNativeSettledConstructionStorageData, original_native_settled_construction_storage_data,
+};
+pub use settled_data17::{
+    ORIGINAL_NATIVE_RESTORED_SETTLED_PREAMBLE_BYTES, PacketNative8RestoredSettledLaunch,
+    PacketNativeSettledPreambleData, authenticate_original_native_settled_preamble_data,
+    authenticate_restored_settled_startup_schema_data,
+    decode_original_native_settled_preamble_data, encode_original_native_settled_preamble_data,
+    original_native_settled_carrier_counter_scratch_data,
+    original_native_settled_launch_identity_data, restored_settled_startup_contract_data,
+    restored_settled_startup_schema_counter_scratch_data, restored_settled_startup_schema_data,
+    write_original_native_settled_launch_data,
+};
+pub use settled_final_rows17::authenticate_original_native_settled_final_rows_data;

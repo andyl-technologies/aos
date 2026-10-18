@@ -11,7 +11,9 @@ use std::mem::size_of;
 
 #[path = "restored_suffix_host/input_reactive17.rs"]
 mod input_reactive17;
-pub use input_reactive17::PreparedOriginalRestoredInputReactive17HostAttempt;
+pub use input_reactive17::{
+    OriginalCompletedRestoredObservation17Data, PreparedOriginalRestoredInputReactive17HostAttempt,
+};
 
 /// Borrows one closed ordinary request without creating execution authority.
 pub enum OriginalRestoredSuffixBody<'a> {
@@ -307,6 +309,18 @@ impl OriginalRestoredSuffixHostAttempt {
         ))
     }
 
+    /// Returns the saved completed frontier without checking currentness.
+    ///
+    /// This inert DATA selects a later exact validator; an old or failed attempt
+    /// cannot become current merely because its saved sequence is greatest.
+    pub fn completed_frontier_data(&self) -> Option<U64> {
+        if self.stage == Stage::Complete {
+            self.completed_frontier
+        } else {
+            None
+        }
+    }
+
     /// Authenticates the complete pair at the unchanged current SDK frontier.
     ///
     /// Historical operation outcomes use `completed_pair_data` instead. Any
@@ -358,7 +372,9 @@ impl OriginalRestoredSuffixHostAttempt {
 
     /// Names the fixed assignment, retained owner and actual Session return views.
     pub fn counter_scratch_data() -> usize {
-        size_of::<Self>()
+        size_of::<Option<U64>>()
+            + size_of::<&Self>()
+            + size_of::<Self>()
             + size_of::<Option<Self>>()
             + size_of::<&Self>()
             + size_of::<&mut Self>()
@@ -577,3 +593,6 @@ impl OriginalRestoredSuffixHostAttempt {
 #[path = "restored_suffix_host/history.rs"]
 mod history;
 pub use history::OriginalRestoredSuffixHostHistoricalData;
+
+#[path = "restored_suffix_host/checkpoint_cache17.rs"]
+mod checkpoint_cache17;

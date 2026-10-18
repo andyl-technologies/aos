@@ -14,6 +14,9 @@ use ack_emitter::{NativeAckBoot, OriginalNativeBootstrapOwned11};
 use serde::{Serialize, Serializer};
 use std::cell::RefCell;
 
+#[path = "settled_current_service.rs"]
+mod settled_current;
+
 pub(crate) struct OriginalNativeServiceCaptureContext<'a> {
     handshake: &'a OriginalServiceHandshake,
     bootstrap: Option<&'a dyn std::any::Any>,
@@ -540,3 +543,15 @@ impl OriginalNativeServiceOwned11<'_> {
 
 #[path = "restore_allocation.rs"]
 mod restore_allocation;
+
+mod settled_quote17;
+pub(in crate::reference_packet) use settled_current::CurrentServiceHistory17;
+pub(crate) use settled_current::{
+    CurrentNativeService17GroupIds, HistoricalCurrentNativeService17, HistoricalNativeRegistrar17,
+    NativeRegistrar17GroupIds, read_current_native17_registrar_root_data,
+    read_current_native17_service_fields_data, read_rooted_current_native17_service_fields_data,
+};
+
+pub(crate) use settled_current::{
+    BorrowedCurrentNativeService17LineageData, borrow_current_native17_service_lineage_data,
+};

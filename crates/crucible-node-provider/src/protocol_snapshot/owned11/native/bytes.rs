@@ -29,6 +29,7 @@ pub(super) fn bank(
     {
         return Err(invalid());
     }
+    ledger.native17_target_vector_data::<u8>(capacity)?;
     if !build {
         return Ok(None);
     }

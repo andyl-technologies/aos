@@ -15,13 +15,20 @@ use crucible_node_contract::{ContentRef, Id, Position};
 use super::{PacketNativeRestoredCommitHold, PacketNativeRestoredRecord};
 
 mod completed;
+mod historical;
 mod lineage;
+mod pair_views;
 mod report;
 pub(crate) mod report_storage;
 mod retired;
 mod typed_owners;
 
 pub use completed::authenticate_restored_producer_completed_data;
+pub use historical::{
+    PacketRestoredProducerHistoricalCompletedData, PacketRestoredProducerHistoricalRetiredData,
+    authenticate_restored_producer_historical_completed_data,
+    authenticate_restored_producer_historical_retired_data,
+};
 pub use report::PacketRestoredProducerOperationReportData;
 pub use report_storage::{
     PacketRestoredProducerReportStorageData,
@@ -107,7 +114,10 @@ pub fn original_restored_producer_progress_counter_scratch_data() -> usize {
     };
     use crate::envelope::Envelope;
     use std::mem::size_of;
-    size_of::<retired::Consumption>()
+    pair_views::counter_scratch_data()
+        + size_of::<PacketRestoredProducerHistoricalCompletedData<'static>>()
+        + size_of::<PacketRestoredProducerHistoricalRetiredData<'static>>()
+        + size_of::<retired::Consumption>()
         + size_of::<Result<retired::Consumption, serde_json::Error>>()
         + size_of::<PacketRestoredProducerCompletedData<'static>>()
         + size_of::<PacketRestoredProducerRetiredData<'static>>()

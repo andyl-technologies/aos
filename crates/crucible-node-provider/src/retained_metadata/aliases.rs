@@ -15,6 +15,19 @@ use serde::{Serialize, Serializer, ser::SerializeSeq};
 /// Identifies a closed shared backing category in the whole-eleven graph.
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub enum MetadataSharedKind {
+    /// Names an actual reconstructed historical policy allocation.
+    HistoricalImportPolicy,
+    /// Names an actual reconstructed historical Boot allocation.
+    HistoricalImportBoot,
+    /// Names an actual reconstructed historical literal-bank allocation.
+    HistoricalImportFrames,
+    /// Names an actual reconstructed historical blob-ledger allocation.
+    HistoricalImportBlobLedger,
+    /// Names an actual reconstructed historical selected-extension slice.
+    HistoricalImportExtensions,
+
+    /// Names one actual retained native restore-response allocation.
+    NativeRestoreResponse,
     /// Names one same-process physical restoration hold, never a portable gate.
     NativeRestoredPhysicalHold,
     /// Names one retained native complete Commit attempt allocation.
@@ -27,6 +40,8 @@ pub enum MetadataSharedKind {
     NativeRestoredSuffixObservationAttempt,
     /// Names an independently owned closed Producer raw/typed receive partial.
     NativeRestoredProducerAttempt,
+    /// Names one separately funded recurring native17 action attempt.
+    NativeRestoredSettledActionAttempt,
     /// Names an original protocol-capture actor header.
     ProtocolOwner,
     /// Names the original registrar's epoch counter backing.
@@ -86,6 +101,13 @@ impl MetadataSharedKind {
 
     fn name(self) -> &'static str {
         match self {
+            Self::HistoricalImportPolicy => "historical-import-policy",
+            Self::HistoricalImportBoot => "historical-import-boot",
+            Self::HistoricalImportFrames => "historical-import-frames",
+            Self::HistoricalImportBlobLedger => "historical-import-blob-ledger",
+            Self::HistoricalImportExtensions => "historical-import-extensions",
+
+            Self::NativeRestoreResponse => "native_restore_response",
             Self::NativeRestoredPhysicalHold => "native-restored-physical-hold",
             Self::NativeRestoreCommitAttempt => "native-restore-commit-attempt",
             Self::NativeRestoreInputCustody => "native-restore-input-custody",
@@ -94,6 +116,7 @@ impl MetadataSharedKind {
                 "native-restored-suffix-observe-attempt"
             }
             Self::NativeRestoredProducerAttempt => "native-restored-producer-attempt",
+            Self::NativeRestoredSettledActionAttempt => "native-restored-settled-action-attempt",
             Self::ProtocolOwner => "protocol-owner",
             Self::RegistrarEpoch => "registrar-epoch",
             Self::RegistrarGate => "registrar-gate",
@@ -384,4 +407,82 @@ fn maximum_alias_row_width_matches_actual_current_kind_and_usize() {
     assert_eq!(kind.maximum_row_encoded_bytes_data().unwrap(), row.len());
     let smaller = serde_json::to_vec(&(kind.name(), 0usize)).unwrap();
     assert!(smaller.len() <= row.len());
+}
+
+impl MetadataAliasBank {
+    /// Borrows the complete alias-bank state without encoding process addresses.
+    ///
+    /// Lookup positions retain only their closed kind and local order. They
+    /// cannot recreate live backing identities or continue a native walk.
+    pub(crate) fn borrowed_settled17_bank_data(&self) -> impl Serialize + '_ {
+        (
+            self.maximum,
+            self.rows.capacity(),
+            self.keys.capacity(),
+            self,
+            crate::protocol_snapshot::Sequence(|| self.keys.iter().map(|key| key.kind.name())),
+            self.comparisons,
+        )
+    }
+
+    /// Records both actual typed vector capacities without observing addresses.
+    ///
+    /// # Errors
+    /// Refuses metadata bank exhaustion or checked capacity overflow.
+    pub(crate) fn observe_settled17_bank_metadata_data(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver<'_>,
+    ) -> Result<(), ProviderError> {
+        observer.vector::<AliasRow>(self.rows.capacity())?;
+        observer.vector::<AliasKey>(self.keys.capacity())
+    }
+}
+
+/// Reports alias row/key size and alignment for their exact historical banks.
+pub(crate) const fn settled17_alias_bank_layouts_data() -> [(usize, usize); 2] {
+    [
+        (
+            std::mem::size_of::<AliasRow>(),
+            std::mem::align_of::<AliasRow>(),
+        ),
+        (
+            std::mem::size_of::<AliasKey>(),
+            std::mem::align_of::<AliasKey>(),
+        ),
+    ]
+}
+
+impl MetadataAliasBank {
+    /// Reports initialized walk-only lookup entries without exposing addresses.
+    pub(crate) fn current17_initialized_lookup_entries_data(&self) -> usize {
+        self.keys.len()
+    }
+
+    /// Observes the actual row and lookup capacities as historical storage DATA.
+    ///
+    /// # Errors
+    /// Refuses exhausted metadata banks or checked native-layout overflow.
+    pub(crate) fn observe_current17_storage_data(
+        &self,
+        observer: &mut super::MetadataObserver<'_>,
+    ) -> Result<(), ProviderError> {
+        Self::observe_current17_capacities_data(
+            self.rows.capacity(),
+            self.keys.capacity(),
+            observer,
+        )
+    }
+
+    /// Observes copied capacities from a defining active-recorder cut.
+    ///
+    /// # Errors
+    /// Refuses exhausted metadata banks or checked native-layout overflow.
+    pub(crate) fn observe_current17_capacities_data(
+        rows: usize,
+        lookups: usize,
+        observer: &mut super::MetadataObserver<'_>,
+    ) -> Result<(), ProviderError> {
+        observer.vector::<AliasRow>(rows)?;
+        observer.vector::<AliasKey>(lookups)
+    }
 }

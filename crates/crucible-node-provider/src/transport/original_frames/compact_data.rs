@@ -647,3 +647,19 @@ impl DecodedCompactOriginalFrames {
         self.bank.observe_owned11_metadata(observer)
     }
 }
+
+impl ValidatedCompactOriginalFrames<'_> {
+    /// Adds the exact final byte/descriptor vectors to the optional native17 plan.
+    ///
+    /// # Errors
+    /// Refuses overflow or target backing beyond the caller's finite admission.
+    pub(crate) fn native17_target_data(
+        &self,
+        ledger: &mut crate::protocol_snapshot::owned11::typed::Ledger<'_, '_, '_>,
+    ) -> Result<(), ProviderError> {
+        ledger.native17_target_vector_data::<u8>(self.byte_capacity)?;
+        ledger.native17_target_vector_data::<Slot>(self.slot_capacity)
+    }
+}
+
+pub(crate) mod current17;

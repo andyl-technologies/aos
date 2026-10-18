@@ -182,7 +182,17 @@ fn quote_startup_parts_for<const OBJECTS: usize>(
             super::super::restored_input17::validation_transient_storage_data(),
         )?;
     }
-    if allow_empty_baseline {
+    if class == PrefixClass::RestoredObserve17 {
+        data.declared_quote_scratch_bytes = add(
+            data.declared_quote_scratch_bytes,
+            super::super::restored_observation17::counter_scratch_data(),
+        )?;
+        data.construction_transient_requested_bytes = add(
+            data.construction_transient_requested_bytes,
+            super::super::restored_observation17::validation_transient_storage_data(),
+        )?;
+    }
+    if allow_empty_baseline || class == PrefixClass::RestoredObserve17 {
         // The legacy containment projection mixes the original DOM and
         // canonical work. Replace that one named component by backing only;
         // all other actual guard/authority/map/root banks remain unchanged.
@@ -291,7 +301,9 @@ fn quote_startup_parts_for<const OBJECTS: usize>(
     let result = OriginalPacketPrefixProjectionStorageData {
         exchange: data,
         source_owner_requested_bytes: source_owner,
-        native_source_backing_bytes: allow_empty_baseline.then_some(native_source_backing),
+        native_source_backing_bytes: (allow_empty_baseline
+            || class == PrefixClass::RestoredObserve17)
+            .then_some(native_source_backing),
         declared_counter_scratch_bytes: startup_counter_additional_scratch_data_for::<OBJECTS>(),
         terminal: copy_storage(input.terminal),
         original: copy_storage(input.original),
@@ -406,5 +418,38 @@ pub(crate) fn quote_original_restored_input17_prefix_startup_storage_data(
         input,
         false,
         PrefixClass::RestoredInput17,
+    )
+}
+
+/// Quotes the closed selected Observe17 two-object producer before allocation.
+///
+/// # Errors
+/// Refuses incomplete selected schemas, a non-Reactive launch, a changed two
+/// object/JSON roster or any original frame, cardinality or storage ceiling.
+pub(crate) fn quote_original_restored_observation17_prefix_startup_storage_data(
+    launch: &PacketNative5SourceLaunch,
+    input: OriginalPacketPrefixProjectionInput<'_>,
+) -> Result<OriginalPacketPrefixProjectionStorageData<2>, ProviderError> {
+    super::super::restored_input17::authenticate_launch_data(launch)?;
+    if input.objects.len() != 2
+        || input.objects.iter().any(|object| {
+            object.media_type != "application/json" || object.maximum_payload_bytes == 0
+        })
+    {
+        return Err(refused());
+    }
+    let [binding] = launch.selection.realization.bindings.as_slice() else {
+        return Err(refused());
+    };
+    quote_startup_parts_for::<2>(
+        (
+            &binding.authority.session_id,
+            &binding.authority.incarnation_id,
+        ),
+        launch.limits,
+        launch.selection.provider.extensions_supported.len(),
+        input,
+        false,
+        PrefixClass::RestoredObserve17,
     )
 }

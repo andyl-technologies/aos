@@ -189,6 +189,7 @@ fn chunks(
     build: bool,
 ) -> Result<Option<BTreeMap<usize, usize>>, ProviderError> {
     let count = ledger.row(MetadataRecordKind::Tree, std::mem::size_of::<usize>() * 2)?;
+    ledger.native17_target_tree_data::<usize, usize>(count)?;
     let mut fields = Fields::array(input)?;
     let mut actual = 0usize;
     let mut previous = None;
@@ -233,6 +234,7 @@ fn pins(
         MetadataRecordKind::Tree,
         crate::blob::original_blob_layouts().pin_tree,
     )?;
+    ledger.native17_target_tree_data::<u64, HistoricalNativeBlobPin>(count)?;
     let mut fields = Fields::array(input)?;
     let mut actual = 0usize;
     let mut previous = None;
@@ -294,6 +296,9 @@ pub(super) fn read_ledger(
         MetadataRecordKind::Tree,
         crate::blob::original_blob_layouts().record_tree,
     )?;
+    ledger
+        .ledger
+        .native17_target_tree_data::<TransferKey, HistoricalNativeBlobRecord>(count)?;
     ledger.historical_payload_layout_bytes = ledger
         .historical_payload_layout_bytes
         .checked_add(
@@ -590,3 +595,61 @@ super::super::retained_storage::fields!(
     state,
     supervisor_group
 );
+
+/// Reads the stable complete Blob-ledger leaf using the enclosing17 ledger.
+///
+/// The adapter borrows the same cursor and alias backend. Its separate numeric
+/// count reports historical map payload layouts to the caller's admission.
+///
+/// # Errors
+/// Refuses the exact leaf grammar, missing rows or unavailable final backing.
+pub(crate) fn read_native17_blob_leaf_data(
+    input: &[u8],
+    ledger: &mut Ledger<'_, '_, '_>,
+    build: bool,
+) -> Result<(Option<HistoricalNativeBlobLedger>, usize), ProviderError> {
+    let mut exact_rows = ledger.rows.clone();
+    let mut adapter = NativeLedger {
+        class: None,
+        ledger,
+        groups: None,
+        historical_payload_layout_bytes: 0,
+        correlation_capacity_span: None,
+    };
+    let value = read_ledger(input, &mut adapter, build)?;
+    let end = adapter.ledger.rows.encoded_position();
+    let layouts = crate::blob::original_blob_layouts();
+    let (_, record_alignment, pin_alignment) = crate::blob::original_blob_alignment17_data();
+    let mut entries = 0usize;
+    while exact_rows.encoded_position() < end {
+        let row = exact_rows.next().ok_or_else(invalid)??;
+        let expected_alignment = match row.kind {
+            MetadataRecordKind::String | MetadataRecordKind::Vector if row.element_bytes == 1 => 1,
+            MetadataRecordKind::Tree => {
+                entries = entries
+                    .checked_add(row.extent)
+                    .filter(|entries| *entries <= adapter.ledger.limits.maximum_tree_entries)
+                    .ok_or_else(invalid)?;
+                if row.element_bytes == layouts.record_tree {
+                    record_alignment
+                } else if row.element_bytes == layouts.pin_tree {
+                    pin_alignment
+                } else if row.element_bytes == 2 * std::mem::size_of::<usize>() {
+                    std::mem::align_of::<usize>()
+                } else {
+                    return Err(invalid());
+                }
+            }
+            _ => return Err(invalid()),
+        };
+        if row.alignment != expected_alignment {
+            return Err(invalid());
+        }
+    }
+    Ok((value, adapter.historical_payload_layout_bytes))
+}
+
+// The whole17 owning path retains exact transfer/pin partials in typed slots.
+pub(crate) mod native17_retained;
+
+pub(crate) mod current17;

@@ -267,6 +267,21 @@ impl PacketSourceService {
         ack_emitter::native_boot::accept_restored_suffix(socket)
     }
 
+    /// Authenticates the distinct independently prepaid settled17 bootstrap.
+    ///
+    /// The genuine inherited prefix17 and complete wrapper8 bind the same
+    /// private birth, nested launch and independent native Capture reserve.
+    /// This entry alone issues no Source Capture ticket or action permission.
+    ///
+    /// # Errors
+    /// Refuses another edition, foreign peer/key/birth, changed full bodies or
+    /// rows, an expired original cut, or insufficient independent construction.
+    pub fn accept_original_restored_settled_bootstrap(
+        socket: &std::path::Path,
+    ) -> Result<Self, ProviderError> {
+        ack_emitter::native_boot::accept_restored_settled(socket)
+    }
+
     /// Installs a complete original native source after actual peer authentication.
     ///
     /// # Errors
@@ -411,4 +426,28 @@ pub use native_snapshot::{
 pub use ack_emitter::{
     PacketNativePrepareStartupStorageData, original_native_prepare_startup_counter_scratch_data,
     original_native_prepare_startup_storage_data,
+};
+
+/// Defines the separately negotiated Source-signed Capture17 protocol.
+pub mod restored_settled_capture;
+
+/// Defines inert fourth-object confirmation for selected settled Capture17.
+pub mod restored_settled_confirmation;
+
+pub(crate) use native5_policy::{HistoricalNativePolicy17, read_native17_policy_root_data};
+
+pub(crate) use security::original_native_supervisor_alignment17_data;
+
+pub(in crate::reference_packet) use owned11::CurrentServiceHistory17;
+pub(crate) use owned11::{
+    CurrentNativeService17GroupIds, HistoricalCurrentNativeService17, HistoricalNativeRegistrar17,
+    NativeRegistrar17GroupIds, read_current_native17_registrar_root_data,
+    read_current_native17_service_fields_data, read_rooted_current_native17_service_fields_data,
+};
+pub(crate) use security::{
+    HistoricalNativeSupervisor17, read_current_native17_supervisor_root_data,
+};
+
+pub(crate) use owned11::{
+    BorrowedCurrentNativeService17LineageData, borrow_current_native17_service_lineage_data,
 };

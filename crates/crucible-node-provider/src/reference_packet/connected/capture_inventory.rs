@@ -131,6 +131,103 @@ impl PacketConnectedProgram {
     }
 }
 
+impl PacketConnectedProgram {
+    /// Compares the complete retained inventory with this genuine stopped owner.
+    ///
+    /// Queue equality includes every nested payload and causal coordinate.
+    /// Stage and Commit references follow the exact original inventory order;
+    /// no queue, grant, input record or pending publication is consumed here.
+    ///
+    /// # Errors
+    /// Refuses an unavailable live Capture cut or any inventory disagreement.
+    pub(crate) fn authenticate_original_settled_inventory_data(
+        &self,
+        inventory: &PacketConnectedInventory,
+    ) -> Result<(), ProviderError> {
+        self.observe_original_live_capture_metadata(&mut MetadataObserver::new())?;
+        let PacketConnectedInventory {
+            reached,
+            gate_closed,
+            reactions,
+            delivered_inputs,
+            publications,
+            retained_outputs,
+            reactions_completed,
+            packet_effects,
+            stages,
+            commits,
+        } = inventory;
+
+        if *reached != self.reached
+            || *gate_closed != self.gate_closed
+            || reactions.as_slice() != self.reactions.as_slice()
+            || delivered_inputs.as_slice() != self.delivered_inputs.as_slice()
+            || publications.as_slice() != self.publications.as_slice()
+            || retained_outputs.as_slice() != self.outputs.as_slice()
+            || reactions_completed.get() != self.reactions_completed
+            || packet_effects.get() != self.packet_effects
+            || stages.len() != self.stages.len()
+        {
+            return Err(settled_inventory_mismatch());
+        }
+
+        for (expected, actual) in stages.iter().zip(&self.stages) {
+            if expected != &actual.record_ref {
+                return Err(settled_inventory_mismatch());
+            }
+        }
+
+        let mut expected_commits = commits.iter();
+        for stage in &self.stages {
+            if let Some(commit) = &stage.commit {
+                if expected_commits.next() != Some(&commit.record_ref) {
+                    return Err(settled_inventory_mismatch());
+                }
+            }
+        }
+        if expected_commits.next().is_some() {
+            return Err(settled_inventory_mismatch());
+        }
+        Ok(())
+    }
+
+    /// Quotes the actual borrowed fields, comparison iterators and census views.
+    ///
+    /// Inventory payloads remain in their existing owners. This fixed counter
+    /// supplies no credit for copied vectors, serialization or model effects.
+    pub(crate) const fn original_settled_inventory_counter_scratch_data() -> usize {
+        use std::mem::size_of;
+        use std::{iter::Zip, slice::Iter};
+
+        size_of::<&Self>()
+            + size_of::<&PacketConnectedInventory>()
+            + size_of::<&Position>()
+            + size_of::<&bool>()
+            + size_of::<&Vec<PacketReaction>>()
+            + size_of::<&Vec<PacketDeliveredInput>>()
+            + size_of::<&Vec<PacketPendingPublication>>()
+            + size_of::<&Vec<PacketConnectedPublication>>()
+            + 2 * size_of::<&U64>()
+            + 2 * size_of::<&Vec<ContentRef>>()
+            + 2 * size_of::<&[PacketReaction]>()
+            + 2 * size_of::<&[PacketDeliveredInput]>()
+            + 2 * size_of::<&[PacketPendingPublication]>()
+            + 2 * size_of::<&[PacketConnectedPublication]>()
+            + size_of::<Zip<Iter<'static, ContentRef>, Iter<'static, OriginalStage>>>()
+            + size_of::<Iter<'static, ContentRef>>()
+            + size_of::<Iter<'static, OriginalStage>>()
+            + size_of::<Option<&OriginalCommit>>()
+            + size_of::<Option<&ContentRef>>()
+            + size_of::<MetadataObserver<'static>>()
+            + size_of::<Result<Position, ProviderError>>()
+            + size_of::<Result<(), ProviderError>>()
+    }
+}
+
+fn settled_inventory_mismatch() -> ProviderError {
+    ProviderError::Correlation("native17 reactive checkpoint differs from live inventory")
+}
+
 // crucible-lint: allow panic-shortcut -- actual native construction and byte equality are the observations.
 #[cfg(test)]
 mod tests {
@@ -180,6 +277,135 @@ mod tests {
         assert_eq!(
             canonical::json_hash("source-owned.packet-connected-inventory/4", &actual)?,
             canonical::json_hash("source-owned.packet-connected-inventory/4", &original)?
+        );
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod settled_inventory_tests {
+    use super::*;
+
+    #[test]
+    fn full_pending_queue_correspondence_refuses_changes_without_consuming_work()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (socket, _peer) = UnixDatagram::pair()?;
+        let endpoint = |node| -> Result<Endpoint, ContractError> {
+            Ok(Endpoint {
+                node_id: Id::new(node)?,
+                port_id: Id::new("packet")?,
+                lane_id: Id::new("lane")?,
+            })
+        };
+        let definition = PacketConnectedDefinition {
+            schema: "source-owned.packet-connected-program/4".into(),
+            connections: vec![PacketInputConnection {
+                id: Id::new("settled-inventory-route")?,
+                policy: canonical::content_ref(b"retained policy", "application/json")?,
+                producer: endpoint("source")?,
+                consumer: endpoint("target")?,
+                delay_ps: U64::new(3),
+            }],
+            output: None,
+        };
+        let mut model = PacketConnectedProgram::new(definition, socket)?;
+        let inactive = model.inventory()?;
+        assert!(
+            model
+                .authenticate_original_settled_inventory_data(&inactive)
+                .is_err()
+        );
+        model.open_gate()?;
+        let reaction = PacketReaction {
+            input_event: Id::new("pending-input")?,
+            input_producer: Id::new("source")?,
+            input_sequence: U64::new(7),
+            stage_operation: Id::new("stage")?,
+            commit_request: Id::new("commit")?,
+            payload: Bytes::new(b"complete retained payload".to_vec()),
+            parent: Position::new(U64::new(5), U64::new(0), Phase::BoundaryControl),
+            evaluation: Position::new(U64::new(5), U64::new(1), Phase::BoundaryControl),
+        };
+        model.reactions.push(reaction.clone());
+        model.delivered_inputs.push(PacketDeliveredInput {
+            reaction: reaction.clone(),
+            delivery_operation: Id::new("delivery")?,
+        });
+        model.publications.push(PacketPendingPublication {
+            event: Id::new("pending-publication")?,
+            reaction,
+            reaction_operation: Id::new("reaction")?,
+            publication: Position::new(U64::new(5), U64::new(2), Phase::BoundaryControl),
+        });
+        let expected = model.inventory()?;
+        let capacities = (
+            model.reactions.capacity(),
+            model.delivered_inputs.capacity(),
+            model.publications.capacity(),
+        );
+
+        model.authenticate_original_settled_inventory_data(&expected)?;
+        let mut changed = expected.clone();
+        changed.reactions[0].payload = Bytes::new(b"changed retained payload".to_vec());
+        assert!(
+            model
+                .authenticate_original_settled_inventory_data(&changed)
+                .is_err()
+        );
+        let mut changed = expected.clone();
+        changed.delivered_inputs[0].delivery_operation = Id::new("other-delivery")?;
+        assert!(
+            model
+                .authenticate_original_settled_inventory_data(&changed)
+                .is_err()
+        );
+        let mut changed = expected.clone();
+        changed.publications[0].reaction.payload = Bytes::new(b"changed nested payload".to_vec());
+        assert!(
+            model
+                .authenticate_original_settled_inventory_data(&changed)
+                .is_err()
+        );
+        let mut changed = expected.clone();
+        changed.packet_effects = U64::new(1);
+        assert!(
+            model
+                .authenticate_original_settled_inventory_data(&changed)
+                .is_err()
+        );
+        let mut changed = expected.clone();
+        changed
+            .stages
+            .push(canonical::content_ref(b"extra stage", "application/json")?);
+        assert!(
+            model
+                .authenticate_original_settled_inventory_data(&changed)
+                .is_err()
+        );
+        let mut changed = expected.clone();
+        changed
+            .commits
+            .push(canonical::content_ref(b"extra commit", "application/json")?);
+        assert!(
+            model
+                .authenticate_original_settled_inventory_data(&changed)
+                .is_err()
+        );
+
+        assert_eq!(model.inventory()?, expected);
+        assert_eq!(
+            capacities,
+            (
+                model.reactions.capacity(),
+                model.delivered_inputs.capacity(),
+                model.publications.capacity()
+            )
+        );
+        model.failed = true;
+        assert!(
+            model
+                .authenticate_original_settled_inventory_data(&expected)
+                .is_err()
         );
         Ok(())
     }

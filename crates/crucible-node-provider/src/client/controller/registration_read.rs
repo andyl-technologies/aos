@@ -21,6 +21,69 @@ pub struct CnpRegistrarRead {
 }
 
 impl CnpRegistrarRead {
+    /// Borrows inert saved and sampled registrar epochs with their alias roles.
+    ///
+    /// This projection may describe a revoked or contended original. The owning
+    /// capture boundary separately fences currentness and records the actual
+    /// shared gate and epoch edges; decoding never creates a registration.
+    /// Serialization uses only inline sampled data and borrowed static labels.
+    pub fn borrowed_settled_history_data(&self) -> impl serde::Serialize + '_ {
+        self.registration.borrowed_settled_history_data()
+    }
+
+    /// Records the original shared backing edges without resetting the observer.
+    pub(crate) fn observe_settled_history_metadata_data(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver<'_>,
+    ) -> Result<(), ProviderError> {
+        let Self { registration } = self;
+        registration.observe_retained_metadata_data(observer)
+    }
+
+    /// Records inert original capacities and aliases in caller-precharged banks.
+    ///
+    /// Both banks are cleared before this independent owner pass. A whole SDK
+    /// graph uses the internal nonresetting walker instead. Walking never grows
+    /// either bank, locks the registrar, or renews its saved epoch.
+    ///
+    /// # Errors
+    /// Refuses insufficient admitted rows or checked metadata overflow, retaining
+    /// already recorded partial rows in the supplied banks.
+    pub fn record_settled_history_metadata_data(
+        &self,
+        records: &mut crate::retained_metadata::records::MetadataRecordBank,
+        aliases: &mut crate::retained_metadata::aliases::MetadataAliasBank,
+    ) -> Result<crate::retained_metadata::RetainedProtocolMetadataFacts, ProviderError> {
+        let mut observer =
+            crate::retained_metadata::MetadataObserver::recording_with_aliases(records, aliases);
+        self.observe_settled_history_metadata_data(&mut observer)?;
+        Ok(observer.finish())
+    }
+
+    /// Reports fixed borrowed projection and recorder views before walking.
+    ///
+    /// Caller-owned dynamic record/alias banks, serializer output and aggregate
+    /// graph traversal are independent terms; this getter grants no admission.
+    pub fn settled_history_counter_scratch_data() -> usize {
+        use std::mem::{size_of, size_of_val};
+
+        let terms = [
+            size_of::<CnpRegistrarRead>(),
+            size_of::<&CnpRegistrarRead>(),
+            size_of::<&RegistrationRead>(),
+            size_of::<crate::retained_metadata::RetainedProtocolMetadataFacts>(),
+            size_of::<Result<crate::retained_metadata::RetainedProtocolMetadataFacts, ProviderError>>(
+            ),
+            size_of::<&mut crate::retained_metadata::MetadataObserver<'_>>(),
+            size_of::<&mut crate::retained_metadata::records::MetadataRecordBank>(),
+            size_of::<&mut crate::retained_metadata::aliases::MetadataAliasBank>(),
+            RegistrationRead::settled_history_counter_scratch_data(),
+        ];
+        size_of_val(&terms)
+            + size_of::<std::array::IntoIter<usize, 9>>()
+            + terms.into_iter().sum::<usize>()
+    }
+
     /// Reports actual retained original registrar allocation data after revocation.
     ///
     /// This reads the two real Arc payload views and inline saved epoch without
@@ -37,6 +100,14 @@ impl CnpRegistrarRead {
         let mut observer = crate::retained_metadata::MetadataObserver::new();
         registration.observe_retained_metadata_data(&mut observer)?;
         Ok(observer.finish())
+    }
+
+    /// Checks historical parent identity without requiring a still-live epoch.
+    pub(crate) fn same_authority_data(
+        &self,
+        authority: &crate::handshake::ConnectionAuthority,
+    ) -> bool {
+        self.registration.same_authority_data(authority)
     }
 
     /// Compares the actual original gate and epoch without authorizing effects.
@@ -103,5 +174,35 @@ impl CnpController {
         Ok(CnpRegistrarRead {
             registration: self.authority().original_registration_read()?,
         })
+    }
+}
+
+impl CnpController {
+    /// Authenticates this actual Session and Connection's historical registrar.
+    ///
+    /// This checks the two retained authority copies without locking a gate,
+    /// cloning registration handles, renewing a deadline or requiring live
+    /// currentness. The capture owner separately holds its SourceRead fence.
+    ///
+    /// # Errors
+    /// Refuses another actual gate, epoch backing, saved registration or
+    /// controller role; matching portable values never replace these edges.
+    pub fn authenticate_source_registrar_history_data(
+        &self,
+        read: &CnpRegistrarRead,
+    ) -> Result<(), ProviderError> {
+        self.session
+            .authenticate_source_registrar_history_data(read)
+    }
+
+    /// Reports the defining two-copy historical registration comparison views.
+    ///
+    /// The leaf registrar counter never calls Session, preserving an acyclic
+    /// quote. Whole owner output and dynamic metadata banks remain separate.
+    pub fn source_registrar_history_counter_scratch_data() -> usize {
+        std::mem::size_of::<&Self>()
+            + std::mem::size_of::<&CnpRegistrarRead>()
+            + std::mem::size_of::<Result<(), ProviderError>>()
+            + crate::client::ClientSession::source_registrar_history_counter_scratch_data()
     }
 }

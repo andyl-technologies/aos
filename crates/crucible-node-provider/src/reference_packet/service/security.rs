@@ -510,3 +510,19 @@ impl HistoricalNativeSupervisorBanks {
         observer.vector::<BlobQuarantine>(blobs.capacity())
     }
 }
+
+mod settled;
+
+pub(in crate::reference_packet::service) use settled::NativeSupervisorHistory;
+
+/// Reports the actual retained native supervisor payload alignment.
+pub(crate) const fn original_native_supervisor_alignment17_data() -> usize {
+    std::mem::align_of::<Supervisor>()
+}
+
+mod settled17_reader;
+pub(crate) use settled17_reader::{
+    HistoricalNativeSupervisor17, read_current_native17_supervisor_root_data,
+};
+
+pub(crate) mod current17;

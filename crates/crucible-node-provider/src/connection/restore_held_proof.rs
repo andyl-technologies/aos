@@ -582,3 +582,6 @@ mod tests {
         assert_eq!(guard.pending_requests().count(), 0);
     }
 }
+
+#[path = "restore_held_proof/settled.rs"]
+mod settled_history;

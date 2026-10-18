@@ -15,6 +15,7 @@ pub(crate) use startup::{
     quote_original_packet_baseline_prefix_startup_storage_data,
     quote_original_packet_prefix_startup_storage_data,
     quote_original_restored_input17_prefix_startup_storage_data,
+    quote_original_restored_observation17_prefix_startup_storage_data,
 };
 
 // The class is private to the defining closed constructors. An array size or
@@ -23,12 +24,13 @@ pub(crate) use startup::{
 enum PrefixClass {
     Observe,
     RestoredInput17,
+    RestoredObserve17,
 }
 
 impl PrefixClass {
     const fn method_data(self) -> Method {
         match self {
-            Self::Observe => Method::Observe,
+            Self::Observe | Self::RestoredObserve17 => Method::Observe,
             Self::RestoredInput17 => Method::Input,
         }
     }
@@ -121,6 +123,57 @@ impl<const OBJECTS: usize> OriginalPacketPrefixProjectionStorageData<OBJECTS> {
         ])
     }
 
+    /// Separates the new Observe17 transport owners from its existing producer.
+    ///
+    /// The producer independently owns the borrowed body/evidence. This row
+    /// counts only new plan/canonical/guard/ACK/record owners. Raw literals and
+    /// descriptors must also fit the existing Boot banks; their required
+    /// subextents are not allocated or credited again here. A rejected partial
+    /// ACK may remain in its open reader and therefore belongs to retained R.
+    /// The full actual preparation work remains a separately admitted T phase.
+    /// This closed DATA method cannot grant a native action or select a class.
+    ///
+    /// # Errors
+    /// Refuses every other private prefix class, absent backing census, checked
+    /// overflow or an independently short complete requested-storage ceiling.
+    pub(crate) fn observation17_transport_storage_data(
+        &self,
+    ) -> Result<
+        crate::reference_packet::service::native_startup::PacketNativeStartupAllocationRow,
+        ProviderError,
+    > {
+        if self.class != PrefixClass::RestoredObserve17 {
+            return Err(refused());
+        }
+        let retained = sum(&[
+            self.exchange
+                .native_retained_backing_bytes
+                .ok_or_else(refused)?,
+            self.exchange.one_open_ack_requested_bytes,
+        ])?;
+        let transient = self.exchange.requested_bytes()?;
+        let scratch = add(
+            self.exchange.declared_quote_scratch_bytes,
+            self.declared_counter_scratch_bytes,
+        )?;
+        let row =
+            crate::reference_packet::service::native_startup::PacketNativeStartupAllocationRow {
+                retained_requested_bytes: U64::new(u64::try_from(retained).map_err(|_| credit())?),
+                maximum_simultaneous_transient_bytes: U64::new(
+                    u64::try_from(transient).map_err(|_| credit())?,
+                ),
+                declared_counter_scratch_bytes: U64::new(
+                    u64::try_from(scratch).map_err(|_| credit())?,
+                ),
+            };
+        if row.requested_peak_data()?
+            > u64::try_from(self.maximum_requested_bytes).map_err(|_| credit())?
+        {
+            return Err(credit());
+        }
+        Ok(row)
+    }
+
     /// Recounts current owners before any actual frame/canonical plan is built.
     pub(crate) fn authenticate_actual_inputs<S: ProviderStream>(
         &self,
@@ -140,6 +193,11 @@ impl<const OBJECTS: usize> OriginalPacketPrefixProjectionStorageData<OBJECTS> {
         }
         if self.class == PrefixClass::RestoredInput17 {
             super::restored_input17::authenticate_actual_inputs_data(
+                connection, request, body, evidence,
+            )?;
+        }
+        if self.class == PrefixClass::RestoredObserve17 {
+            super::restored_observation17::authenticate_actual_inputs_data(
                 connection, request, body, evidence,
             )?;
         }
@@ -194,6 +252,14 @@ impl<const OBJECTS: usize> OriginalPacketPrefixProjectionStorageData<OBJECTS> {
                 evidence,
                 self.maximum_requested_bytes,
             )?,
+            PrefixClass::RestoredObserve17 => connection
+                .quote_original_restored_observation17_prefix_storage_data(
+                    first,
+                    request,
+                    body,
+                    evidence,
+                    self.maximum_requested_bytes,
+                )?,
             PrefixClass::RestoredInput17 => connection
                 .quote_original_restored_input17_prefix_storage_data(
                     first,
@@ -248,6 +314,33 @@ impl<S: ProviderStream> Connection<S> {
             original,
             input,
             PrefixClass::RestoredInput17,
+        )
+    }
+
+    /// Quotes one separately selected two-object signed Observe17 publication.
+    ///
+    /// # Errors
+    /// Refuses another current selected header, extent roster, literal cut or
+    /// independent storage component. This DATA never grants a native action.
+    pub(crate) fn quote_original_restored_observation17_prefix_projection_storage_data(
+        &self,
+        first: u64,
+        original: &Envelope,
+        input: OriginalPacketPrefixProjectionInput<'_>,
+    ) -> Result<OriginalPacketPrefixProjectionStorageData<2>, ProviderError> {
+        super::restored_observation17::authenticate_original_data(self, original)?;
+        if input.objects.len() != 2
+            || input.objects.iter().any(|object| {
+                object.media_type != "application/json" || object.maximum_payload_bytes == 0
+            })
+        {
+            return Err(refused());
+        }
+        self.quote_original_packet_prefix_projection_storage_inner_data::<2>(
+            first,
+            original,
+            input,
+            PrefixClass::RestoredObserve17,
         )
     }
 
@@ -375,6 +468,37 @@ impl<S: ProviderStream> Connection<S> {
                 super::restored_input17::validation_transient_storage_data(),
             )?;
         }
+        if class == PrefixClass::RestoredObserve17 {
+            data.declared_quote_scratch_bytes = add(
+                data.declared_quote_scratch_bytes,
+                super::restored_observation17::counter_scratch_data(),
+            )?;
+            data.construction_transient_requested_bytes = add(
+                data.construction_transient_requested_bytes,
+                super::restored_observation17::validation_transient_storage_data(),
+            )?;
+        }
+        if class == PrefixClass::RestoredObserve17 {
+            // Current containment is already a backing-only metadata census;
+            // unlike the startup bound it contains no formatter allowance.
+            data.native_retained_backing_bytes = Some(sum(&[
+                data.original_plan_requested_bytes,
+                data.acknowledgement_index_requested_bytes,
+                data.record_slots_requested_bytes,
+                data.outgoing_guard_requested_bytes,
+                data.response_iterator_requested_bytes,
+                data.containment_requested_bytes,
+            ])?);
+        }
+        let mut native_source_backing = sum(&[
+            input.terminal.retained_value_backing_bytes,
+            payload,
+            mul(
+                add(mul(2, input.objects.len())?, 4)?,
+                size_of::<(ContentRef, Vec<u8>)>(),
+            )?,
+            size_of::<crate::reference_packet::control::PacketControlReply>(),
+        ])?;
         let mut source_owner = sum(&[
             input.terminal.dom_and_canonical_scratch_bytes,
             payload,
@@ -397,6 +521,16 @@ impl<S: ProviderStream> Connection<S> {
             let reference =
                 continuation::reference_projection(object, input.maximum_requested_bytes)?;
             source_owner = add(source_owner, reference.dom_and_canonical_scratch_bytes)?;
+            native_source_backing = add(
+                native_source_backing,
+                reference.retained_value_backing_bytes,
+            )?;
+            if let Some(retained) = data.native_retained_backing_bytes.as_mut() {
+                *retained = add(
+                    *retained,
+                    add(reference.retained_value_backing_bytes, growth(transfer)?)?,
+                )?;
+            }
             data.acknowledgement_index_requested_bytes = add(
                 data.acknowledgement_index_requested_bytes,
                 add(reference.dom_and_canonical_scratch_bytes, growth(transfer)?)?,
@@ -462,7 +596,8 @@ impl<S: ProviderStream> Connection<S> {
         let result = OriginalPacketPrefixProjectionStorageData {
             exchange: data,
             source_owner_requested_bytes: source_owner,
-            native_source_backing_bytes: None,
+            native_source_backing_bytes: (class == PrefixClass::RestoredObserve17)
+                .then_some(native_source_backing),
             declared_counter_scratch_bytes: sum(&[
                 size_of::<&Self>(),
                 size_of::<OriginalPacketPrefixProjectionStorageData<OBJECTS>>(),

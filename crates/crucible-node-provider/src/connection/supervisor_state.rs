@@ -394,3 +394,70 @@ mod operational_handle_tests {
         assert_eq!(Rc::strong_count(&operational), count + 1);
     }
 }
+
+impl OriginalSupervisorState {
+    /// Borrows actual historical phase data without changing the live state.
+    ///
+    /// The creator process is historical DATA. The Rust thread identity is an
+    /// explicitly nonportable role, never a decoder input for a new owner.
+    pub fn borrowed_settled_history_data(&self) -> impl serde::Serialize + '_ {
+        let Self {
+            creator,
+            thread: _,
+            inspection_in_progress,
+            callback_in_progress,
+        } = self;
+        (
+            "source-private.supervisor-phase-restored-settled/17",
+            *creator,
+            "nonportable-original-thread",
+            inspection_in_progress.get(),
+            callback_in_progress.get(),
+        )
+    }
+
+    /// Names the fixed phase projection and its actual borrowed fields.
+    pub fn settled_history_counter_scratch_data() -> usize {
+        std::mem::size_of::<&Self>()
+            + std::mem::size_of::<(&u32, &ThreadId, &Cell<bool>, &Cell<bool>)>()
+            + std::mem::size_of::<(&str, u32, &str, bool, bool)>()
+    }
+}
+
+impl OriginalProtocolSupervisor {
+    pub(crate) fn authenticate_settled_history_parent_data<S: ProviderStream>(
+        &self,
+        connection: &Connection<S>,
+    ) -> Result<(), ProviderError> {
+        if !Rc::ptr_eq(&self.actor, &connection.protocol_owner)
+            || !Rc::ptr_eq(&self.supervisor, &connection.supervisor)
+        {
+            return Err(ProviderError::Correlation(
+                "historical supervisor parent differs",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn observe_settled_history_metadata_data(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver<'_>,
+    ) -> Result<(), ProviderError> {
+        let Self { actor, supervisor } = self;
+        observer.shared_original(
+            crate::retained_metadata::aliases::MetadataSharedKind::ProtocolOwner,
+            actor.as_ref(),
+        )?;
+        observer.shared_original(
+            crate::retained_metadata::aliases::MetadataSharedKind::HostSupervisor,
+            supervisor.as_ref(),
+        )
+    }
+}
+
+pub(crate) use retained_supervisor::{
+    ConnectionIncidentHistoryData, connection_incident_settled_history_data,
+    observe_settled_connection_incident_metadata_data,
+};
+
+pub use retained_supervisor::RetainedSupervisorHistoricalData;

@@ -629,3 +629,7 @@ impl OriginalNativePrepareStartupAllocation {
         Ok(())
     }
 }
+
+#[path = "prepare_startup/settled17.rs"]
+mod settled17;
+pub(crate) use settled17::HistoricalPrepareStartupAllocation17;

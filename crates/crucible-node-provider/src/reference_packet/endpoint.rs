@@ -993,3 +993,53 @@ mod capture_invocation;
 pub(crate) use capture_quote::original_invocation_capture_report_additional_scratch_data;
 
 pub(crate) use restored_suffix_observation::original_restored_suffix_observation_endpoint_counter_scratch_data;
+
+mod settled17;
+
+pub(crate) use settled17::{
+    CurrentEndpoint17Data, CurrentEndpoint17GroupIds, read_endpoint17_data,
+    read_endpoint17_fields_data,
+};
+
+pub(crate) use fresh_publication::HistoricalFreshReportPublication17;
+pub(crate) use fresh_restore::{
+    HistoricalFreshCurrentCensus17, HistoricalFreshQueryInput17, HistoricalFreshRestoreAttempt17,
+};
+
+mod native_wholegraph17;
+pub(in crate::reference_packet) use native_wholegraph17::{
+    NativeCurrentGraph17ActionPlan, NativeCurrentGraph17Borrowed,
+};
+
+pub(crate) use settled17::read_rooted_endpoint17_fields_data;
+pub(crate) use settled17::{
+    BorrowedCommitFlight17Lineage, BorrowedHello17Lineage, BorrowedNativeEndpoint17LogicalData,
+    BorrowedSpentFresh17, borrow_native17_endpoint_logical_data,
+};
+pub(crate) use settled17::{BorrowedTerminal17, BorrowedTerminal17Location};
+
+pub(crate) use settled17::authenticate_native17_retained_terminal_data;
+
+mod settled_capture_cut17;
+
+impl<S: ProviderStream> PacketEndpoint<S> {
+    /// Checks actual Blob custody at the settled Capture/output safe point.
+    ///
+    /// Completed immutable evidence and discharged wrappers remain retained.
+    /// This DATA predicate grants no Source, native, transport or Capture right.
+    /// It never inspects or drains modeled event/input queues.
+    ///
+    /// # Errors
+    /// Refuses unresolved ordinary uploads, quarantine, unsettled operation pins,
+    /// foreign/stale pin wrappers, conflicting ledger loans or inconsistent
+    /// retained custody. Every original owner remains untouched on refusal.
+    pub(in crate::reference_packet) fn authenticate_settled_capture17_custody_data(
+        &self,
+    ) -> Result<(), ProviderError> {
+        self.uploads.authenticate_settled_capture17_custody_data()?;
+        for pin in &self.pins {
+            pin.authenticate_settled_capture17_custody_data(&self.uploads)?;
+        }
+        Ok(())
+    }
+}

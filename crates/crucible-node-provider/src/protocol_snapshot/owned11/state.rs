@@ -129,6 +129,12 @@ pub(crate) fn selected_extensions(
             return Err(invalid());
         }
         // Complete borrowed child admission precedes shared-owner lookup.
+        let native17_targets = ledger.has_native17_targets_data();
+        let pause = if native17_targets {
+            Some(ledger.suspend_native17_targets_data()?)
+        } else {
+            None
+        };
         let mut borrowed = Fields::array(selected)?;
         let mut actual = 0usize;
         let original_rows = ledger.rows.clone();
@@ -142,6 +148,9 @@ pub(crate) fn selected_extensions(
         if actual != count {
             return Err(invalid());
         }
+        if let Some(pause) = pause {
+            ledger.resume_native17_targets_data(pause)?;
+        }
         let after_rows = ledger.rows.clone();
         let capacity_rows = ledger.rows.encoded_between(start)?;
         let group = ledger.shared(
@@ -150,7 +159,22 @@ pub(crate) fn selected_extensions(
             selected,
             capacity_rows,
         )?;
+        let target_children = if native17_targets {
+            ledger.native17_target_shared_slice_data::<ExtensionSelection>(group, count)?
+        } else {
+            false
+        };
         if !build {
+            // No target Arc exists in preflight. Rewalk just its first concrete
+            // construction site to charge recursively owned child backing.
+            if target_children {
+                ledger.rows = original_rows;
+                let mut items = Fields::array(selected)?;
+                while let Some(item) = items.next()? {
+                    ledger.read::<ExtensionSelection>(item, false)?;
+                }
+                ledger.rows = after_rows;
+            }
             None
         } else {
             if let Some(existing) = ledger
@@ -349,3 +373,5 @@ super::retained_storage::fields!(
     input_epoch,
     binding_hash
 );
+
+pub(crate) mod current17;

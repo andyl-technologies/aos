@@ -240,11 +240,19 @@ impl<'a> MetadataRecordRows<'a> {
         self.cursor.position
     }
 
+    /// Borrows consumed row bytes independently of their position in the bank.
+    ///
+    /// The start comes from an earlier `encoded_position` on this row cursor.
+    /// Subsequent rows consume a bank separator before their own encoding. That
+    /// one leading comma is outside the selected span; separators between its
+    /// rows remain part of the shared-view identity.
     pub(crate) fn encoded_between(&self, start: usize) -> Result<&'a [u8], ProviderError> {
-        self.cursor
+        let encoded = self
+            .cursor
             .input
             .get(start..self.cursor.position)
-            .ok_or_else(invalid)
+            .ok_or_else(invalid)?;
+        Ok(encoded.strip_prefix(b",").unwrap_or(encoded))
     }
 }
 
@@ -388,4 +396,68 @@ fn invalid() -> ProviderError {
 }
 fn credit() -> ProviderError {
     ProviderError::ResourceExhausted("owned metadata capacity roster")
+}
+
+impl MetadataRecordBank {
+    /// Observes the actual retained capacity without visiting a growing walk.
+    ///
+    /// # Errors
+    /// Refuses exhausted metadata banks or checked native-layout overflow.
+    pub(crate) fn observe_current17_storage_data(
+        &self,
+        observer: &mut super::MetadataObserver<'_>,
+    ) -> Result<(), ProviderError> {
+        observer.vector::<MetadataCapacityRecord>(self.rows.capacity())
+    }
+}
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "capacity-row span fixture assertions")]
+mod encoded_span_tests {
+    use super::*;
+
+    #[test]
+    fn first_and_later_single_row_spans_have_the_same_identity() {
+        let input = br#"[["shared",24,1,8],["shared",24,1,8],["shared",24,1,8]]"#;
+        let bank = ValidatedMetadataRecords::validate(input, 3, 0).unwrap();
+        let mut rows = bank.rows();
+        let mut first = None;
+        for _ in 0..3 {
+            let start = rows.encoded_position();
+            assert_eq!(rows.encoded_between(start).unwrap(), b"");
+            rows.next().unwrap().unwrap();
+            let span = rows.encoded_between(start).unwrap();
+            assert_eq!(span, br#"["shared",24,1,8]"#);
+            if let Some(first) = first {
+                assert_eq!(span, first);
+            } else {
+                first = Some(span);
+            }
+        }
+        assert!(rows.next().is_none());
+        assert!(rows.encoded_between(usize::MAX).is_err());
+    }
+
+    #[test]
+    fn multi_row_spans_keep_internal_separators_and_complete_row_bytes() {
+        let input = br#"[["shared",24,1,8],["vector",19,1,1],["shared",24,1,8],["vector",19,1,1],["vector",20,1,1]]"#;
+        let bank = ValidatedMetadataRecords::validate(input, 5, 58).unwrap();
+        let mut rows = bank.rows();
+        let first_start = rows.encoded_position();
+        rows.next().unwrap().unwrap();
+        rows.next().unwrap().unwrap();
+        let first = rows.encoded_between(first_start).unwrap();
+        assert_eq!(first, br#"["shared",24,1,8],["vector",19,1,1]"#);
+
+        let later_start = rows.encoded_position();
+        rows.next().unwrap().unwrap();
+        rows.next().unwrap().unwrap();
+        assert_eq!(rows.encoded_between(later_start).unwrap(), first);
+        rows.next().unwrap().unwrap();
+        assert_eq!(
+            rows.encoded_between(later_start).unwrap(),
+            br#"["shared",24,1,8],["vector",19,1,1],["vector",20,1,1]"#,
+        );
+        assert!(rows.next().is_none());
+    }
 }

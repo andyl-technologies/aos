@@ -853,3 +853,37 @@ impl OriginalRestoreProofRegistration {
 
 #[path = "session/prepared_blob_proof.rs"]
 mod prepared_blob_proof;
+
+impl CorrelationGuard {
+    /// Checks the sole current request lent by the private native17 action cut.
+    ///
+    /// This does not widen the older capture-cut grammar or accept a caller's
+    /// arbitrary Envelope as a current native request.
+    pub(crate) fn authenticate_native17_current_action_cut_data(
+        &self,
+        current: &crate::reference_packet::service::native_startup::NativeRestoredSettledActionCurrent17<'_>,
+    ) -> Result<(), ProviderError> {
+        let original = current.current_capture_cut_original17_data()?;
+        self.check_live()?;
+        self.check_scope(original)?;
+        let id = original
+            .request_id
+            .0
+            .as_ref()
+            .ok_or(ProviderError::Correlation(
+                "native17 current action has no request identity",
+            ))?;
+        if original.message != MessageKind::Request
+            || original.sequence.get().checked_add(1) != Some(self.next_received)
+            || self.received_requests.len() != 1
+            || self.received_requests.get(id) != Some(original)
+            || !self.pending.is_empty()
+            || !self.writing_responses.is_empty()
+        {
+            return Err(ProviderError::Correlation(
+                "native17 current action correlation mismatch",
+            ));
+        }
+        Ok(())
+    }
+}

@@ -514,3 +514,71 @@ impl<'a> CompletedOriginalCanonicalAckAdmit<'a> {
         self.response
     }
 }
+
+impl AssignedOriginalCanonicalAckAdmit {
+    pub(super) fn borrowed_settled_history_data(&self) -> impl serde::Serialize + '_ {
+        let Self {
+            original,
+            bytes,
+            literal_slot,
+            cut: _,
+            phase,
+            response,
+        } = self;
+        (
+            "source-private.sdk-assigned-admit-current/17",
+            original,
+            crate::protocol_snapshot::compact_bytes::BorrowedCompactBytes::new(bytes),
+            bytes.capacity(),
+            literal_slot,
+            match phase {
+                Phase::Unsigned => "unsigned",
+                Phase::Sealing => "sealing",
+                Phase::Sealed => "sealed",
+                Phase::Publishing => "publishing",
+                Phase::Complete => "complete",
+            },
+            response,
+            "historical-nonrenewable-operational-cut",
+        )
+    }
+
+    pub(super) fn observe_settled_history_metadata_data(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver<'_>,
+    ) -> Result<(), ProviderError> {
+        observer.observe(&self.original)?;
+        observer.vector::<u8>(self.bytes.capacity())?;
+        observer.observe(&self.response)?;
+
+        Ok(())
+    }
+}
+
+fn settled_field_views<T>(
+    _: impl FnOnce(&'static AssignedOriginalCanonicalAckAdmit) -> T,
+) -> usize {
+    std::mem::size_of::<T>()
+}
+
+impl AssignedOriginalCanonicalAckAdmit {
+    pub(super) fn settled_history_counter_scratch_data() -> usize {
+        settled_field_views(|value| {
+            let projected = value.borrowed_settled_history_data();
+            (projected, Some(value.borrowed_settled_history_data()))
+        }) + settled_field_views(|value| {
+            let AssignedOriginalCanonicalAckAdmit {
+                original,
+                bytes,
+                literal_slot,
+                cut,
+                phase,
+                response,
+            } = value;
+            (original, bytes, literal_slot, cut, phase, response)
+        }) + std::mem::size_of::<&Self>()
+            + std::mem::size_of::<Option<&Self>>()
+            + std::mem::size_of::<&mut crate::retained_metadata::MetadataObserver<'static>>()
+            + std::mem::size_of::<Result<(), ProviderError>>()
+    }
+}

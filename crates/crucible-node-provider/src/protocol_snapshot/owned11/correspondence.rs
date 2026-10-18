@@ -108,7 +108,7 @@ pub(crate) fn content_reference(
 }
 
 /// Compares a complete retained Value without constructing another DOM or buffer.
-pub(super) fn json_value(original: &Value, bytes: &[u8]) -> Result<(), ProviderError> {
+pub(crate) fn json_value(original: &Value, bytes: &[u8]) -> Result<(), ProviderError> {
     let mut work = MAXIMUM_COMPARISON_WORK;
     value(bytes, original, 0, &mut work)
 }

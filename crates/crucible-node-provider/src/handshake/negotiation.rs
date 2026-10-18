@@ -983,3 +983,12 @@ impl Handshake {
             ))
     }
 }
+
+#[path = "negotiation/settled_history.rs"]
+mod settled_history;
+
+#[path = "negotiation/settled17_reader.rs"]
+mod settled17_reader;
+pub(crate) use settled17_reader::{
+    HistoricalAuthority17, read_settled17_authority_data, read_settled17_authority_fields_data,
+};

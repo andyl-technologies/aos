@@ -18,6 +18,9 @@ use crate::retained_metadata::records::{
     MetadataCapacityRecord, MetadataRecordKind, MetadataRecordRows,
 };
 
+mod native17_build;
+pub(crate) use native17_build::{HistoricalJsonBuildAttempt, HistoricalStringBuildAttempt};
+
 const MAXIMUM_DEPTH: usize = 64;
 const MAXIMUM_NUMBER_BYTES: usize = 32;
 
@@ -1106,4 +1109,70 @@ mod tests {
 pub(crate) fn original_reconstruction_stack_bytes() -> usize {
     std::mem::size_of::<[Option<ValidationFrame<'static>>; MAXIMUM_DEPTH]>()
         + std::mem::size_of::<[Option<OwnedFrame>; MAXIMUM_DEPTH]>()
+}
+
+/// Compares one complete JSON string with borrowed decoded text without allocation.
+///
+/// This uses the same bounded escape/UTF-8/surrogate decoder as the historical
+/// reader. It creates no String, Value, metadata row or reconstruction authority.
+///
+/// # Errors
+/// Refuses invalid JSON string framing, escapes, Unicode or trailing bytes.
+pub(crate) fn borrowed_json_string_matches_data(
+    input: &[u8],
+    expected: &str,
+) -> Result<bool, ProviderError> {
+    let mut cursor = Cursor::new(input);
+    let token = cursor.string()?;
+    if cursor.position != input.len() {
+        return Err(invalid());
+    }
+    let mut decoder = Cursor::new(token.encoded);
+    let mut actual = expected.chars();
+    while decoder.position < token.encoded.len() {
+        if actual.next() != Some(decoder.character()?) {
+            return Ok(false);
+        }
+    }
+    Ok(actual.next().is_none())
+}
+
+/// Names the borrowed string comparator's actual fixed cursor/character views.
+pub(crate) const fn borrowed_json_string_comparison_counter_scratch_data() -> usize {
+    std::mem::size_of::<[Cursor<'static>; 2]>()
+        + std::mem::size_of::<StringToken<'static>>()
+        + std::mem::size_of::<std::str::Chars<'static>>()
+        + std::mem::size_of::<Option<char>>()
+        + std::mem::size_of::<Result<char, ProviderError>>()
+        + std::mem::size_of::<Result<bool, ProviderError>>()
+        + std::mem::size_of::<[u32; 3]>()
+        + std::mem::size_of::<[usize; 3]>()
+}
+
+#[cfg(test)]
+mod borrowed_string_comparison_tests {
+    use super::*;
+
+    #[test]
+    fn borrowed_comparison_decodes_controls_quotes_unicode_and_surrogate_pairs() {
+        for (encoded, decoded) in [
+            (
+                r#""application/quote\"slash\\""#,
+                "application/quote\"slash\\",
+            ),
+            (r#""domain\n\u0000""#, "domain\n\0"),
+            (r#""\ud83d\ude00""#, "😀"),
+            (r#""é/δ""#, "é/δ"),
+        ] {
+            assert!(borrowed_json_string_matches_data(encoded.as_bytes(), decoded).unwrap());
+            assert!(!borrowed_json_string_matches_data(encoded.as_bytes(), "different").unwrap());
+        }
+        for malformed in [
+            br#""\ud83d""#.as_slice(),
+            br#""\x""#.as_slice(),
+            br#""ok"0"#.as_slice(),
+        ] {
+            assert!(borrowed_json_string_matches_data(malformed, "anything").is_err());
+        }
+    }
 }

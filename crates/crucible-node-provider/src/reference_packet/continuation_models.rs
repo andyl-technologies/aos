@@ -228,7 +228,8 @@ struct ProducerView<'a> {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ProducerState {
+/// Retains the producer model fields shared by its bounded historical readers.
+pub(super) struct ProducerState {
     events: Vec<PacketEvent>,
     next_event: usize,
     reached: Position,

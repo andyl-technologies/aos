@@ -338,3 +338,6 @@ impl OriginalNativeAckConnectionIdentity {
 #[path = "native_fresh_frontier.rs"]
 mod fresh_frontier;
 pub(crate) use fresh_frontier::OriginalNativeFreshFrontierData;
+
+#[path = "ack_admission/settled.rs"]
+mod settled_history;

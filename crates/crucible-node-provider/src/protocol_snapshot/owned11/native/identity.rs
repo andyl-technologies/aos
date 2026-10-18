@@ -138,3 +138,5 @@ super::super::retained_storage::fields!(
     literal_length,
     literal_digest
 );
+
+pub(crate) mod current17;

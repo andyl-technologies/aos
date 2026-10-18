@@ -118,3 +118,44 @@ impl NativeRestoredProducerAttempt {
             + size_of::<Option<BodyView<'static>>>()
     }
 }
+
+impl NativeRestoredProducerAttempt {
+    /// Appends the selected17 emitted field order without resetting aggregate banks.
+    ///
+    /// # Errors
+    /// Refuses finite metadata exhaustion or checked backing-layout overflow.
+    pub(crate) fn observe_current_settled17_metadata_data(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver<'_>,
+    ) -> Result<(), ProviderError> {
+        use crate::protocol_snapshot::restored_settled17::current_contracts::CurrentContract17;
+
+        let Self {
+            ordinal,
+            original,
+            body,
+            arguments,
+            terminal,
+            prepared_reply,
+            stage: _,
+        } = self;
+        observer.observe(ordinal)?;
+        observer.observe(original)?;
+        if let Some(body) = body {
+            match body {
+                Body::Begin(value) => value.observe_current(observer)?,
+                Body::Poll(value) => value.observe_current(observer)?,
+                Body::Retire(value) => value.observe_current(observer)?,
+                Body::Observe(value) => value.observe_current(observer)?,
+                Body::BlobBegin(value) => value.observe_current(observer)?,
+                Body::BlobChunk(value) => value.observe_current(observer)?,
+                Body::BlobFinish(value) => value.observe_current(observer)?,
+            }
+        }
+        if let Some(arguments) = arguments {
+            arguments.observe_current(observer)?;
+        }
+        observer.observe(terminal)?;
+        observer.observe(prepared_reply)
+    }
+}

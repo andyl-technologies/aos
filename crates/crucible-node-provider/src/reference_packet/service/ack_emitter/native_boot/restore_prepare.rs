@@ -858,3 +858,11 @@ mod allocation_geometry_tests {
         assert!(known_backing_bytes(overflow).is_err());
     }
 }
+
+#[path = "restore_prepare/settled_current.rs"]
+mod settled_current;
+
+pub(crate) use prepare_startup::HistoricalPrepareStartupAllocation17;
+
+#[path = "restore_prepare/settled_token.rs"]
+mod settled_token_history;

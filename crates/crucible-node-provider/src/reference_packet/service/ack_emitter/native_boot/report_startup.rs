@@ -646,3 +646,7 @@ mod tests {
 #[path = "fresh_query_frontier.rs"]
 mod fresh_query_frontier;
 pub(crate) use fresh_query_frontier::OriginalNativeFreshQueryFrontierData;
+
+#[path = "report_startup/settled17.rs"]
+mod settled17;
+pub(crate) use settled17::HistoricalReportStartupAllocation17;

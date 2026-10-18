@@ -67,6 +67,18 @@ impl PacketNative7RestoredSuffixLaunch {
         retained.purpose.authenticate_target_data(&retained.launch)
     }
 
+    // A completed outer8 owner can move this exact child without a second
+    // decode or Clone. This DATA decomposition issues no native permission.
+    pub(in crate::reference_packet::service::native_startup) fn into_parts_data(
+        self,
+    ) -> (
+        PacketNativeInvocationPurposeData,
+        PacketNative5SourceLaunch,
+        PacketRestoredSuffixReservationData,
+    ) {
+        (self.purpose, self.launch, self.suffix)
+    }
+
     /// Borrows the complete unchanged nested launch.
     pub fn launch_data(&self) -> &PacketNative5SourceLaunch {
         &self.launch
