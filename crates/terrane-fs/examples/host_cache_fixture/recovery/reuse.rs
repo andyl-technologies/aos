@@ -21,6 +21,42 @@ pub(super) fn run(
     inputs: &Inputs,
 ) -> io::Result<()> {
     let recovered = Fixture::new()?;
+    run_body(
+        owner,
+        runtime,
+        inputs,
+        &recovered.plaintext,
+        recovered.chunks,
+    )
+}
+
+/// Reuses original pinned inline recovery as the final source of another object.
+///
+/// # Errors
+/// Refuses invalid bytes, absent real source custody or any actual assembly,
+/// metadata, native retirement or synchronized funding failure.
+pub(super) fn run_inline(
+    owner: &NativeMetadataOwner,
+    runtime: &tokio::runtime::Runtime,
+    inputs: &Inputs,
+) -> io::Result<()> {
+    let identity = TERRANE_V1
+        .calculate(IdentityKind::Chunk, INLINE_BYTES)
+        .map_err(io::Error::other)?;
+    let chunks = vec![ChunkRef {
+        digest: identity.terrane_v1_digest().map_err(io::Error::other)?,
+        length: INLINE_BYTES.len() as u64,
+    }];
+    run_body(owner, runtime, inputs, INLINE_BYTES, chunks)
+}
+
+fn run_body(
+    owner: &NativeMetadataOwner,
+    runtime: &tokio::runtime::Runtime,
+    inputs: &Inputs,
+    recovered_plaintext: &[u8],
+    recovered_chunks: Vec<ChunkRef>,
+) -> io::Result<()> {
     let original = load_state(runtime, inputs)?;
     let prefix = super::super::manifest_publication::nonfinal_fixture_chunk()?;
     let profile = ChunkProfile::cdc_1m([0; 32]);
@@ -40,14 +76,14 @@ pub(super) fn run(
         .join(format!("{}.0", hex(prefix_identity.digest())));
     let prefix_inode = canonical_prefix.metadata()?.ino();
 
-    let plaintext = [prefix.as_slice(), recovered.plaintext.as_slice()].concat();
+    let plaintext = [prefix.as_slice(), recovered_plaintext].concat();
     let mut chunks = vec![ChunkRef {
         digest: prefix_identity
             .terrane_v1_digest()
             .map_err(io::Error::other)?,
         length: prefix.len() as u64,
     }];
-    chunks.extend(recovered.chunks.clone());
+    chunks.extend(recovered_chunks);
     let canonical = Manifest {
         size: plaintext.len() as u64,
         chunks,
@@ -65,10 +101,10 @@ pub(super) fn run(
     let metadata_bytes = admit_metadata(owner, runtime, &canonical)?;
     let before = fs::read(inputs.root.join("state/cache/records.toml"))?;
     let first = profile
-        .ranges(&recovered.plaintext)
+        .ranges(recovered_plaintext)
         .next()
         .ok_or_else(|| invalid("recovered assembly has no actual source range"))?;
-    let old_bytes = &recovered.plaintext[first];
+    let old_bytes = &recovered_plaintext[first];
     let old_identity = TERRANE_V1
         .calculate(IdentityKind::Chunk, old_bytes)
         .map_err(io::Error::other)?;

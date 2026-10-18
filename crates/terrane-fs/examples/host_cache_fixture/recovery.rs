@@ -6,6 +6,8 @@
 //! actor invokes the genuine owner, Inspector and publisher channel; only their
 //! actual result permits Resume.
 
+#[path = "recovery/inline.rs"]
+mod inline;
 #[path = "recovery/reuse.rs"]
 mod reuse;
 
@@ -348,6 +350,9 @@ pub(super) fn run(
             ));
         }
         refuse_resident_source(owner, runtime, inputs)?;
+        if case.mixed() {
+            inline::refuse(owner, runtime, inputs)?;
+        }
         println!(
             "PASS actual {} retained metadata funding and faulted custody; no Resume",
             case.refusal_label()
@@ -364,6 +369,9 @@ pub(super) fn run(
     }
     check_policy(runtime, inputs, case, true)?;
     refuse_resident_source(owner, runtime, inputs)?;
+    if case.mixed() {
+        inline::refuse(owner, runtime, inputs)?;
+    }
     let before = fs::read(inputs.root.join("state/cache/records.toml"))?;
     runtime
         .block_on(owner.resume_recovered(completed))
@@ -381,6 +389,8 @@ pub(super) fn run(
     );
     if case == FixtureCase::Verified {
         reuse::run(owner, runtime, inputs)?;
+    } else if case == FixtureCase::MixedVerified {
+        inline::run(owner, runtime, inputs)?;
     }
     if case.mixed() {
         println!(

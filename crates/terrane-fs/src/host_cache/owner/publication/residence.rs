@@ -23,6 +23,10 @@ use terrane_core::identity::{Identity, IdentityKind, TERRANE_V1};
 use tokio::sync::oneshot;
 
 mod recovered;
+mod recovered_inline;
+
+pub(in crate::host_cache::owner) use recovered_inline::RecoveredInlineJob;
+pub(super) use recovered_inline::prepare as prepare_recovered_inline;
 
 use super::super::{
     RETAINED_LEASE_DEADLINE,
@@ -100,8 +104,10 @@ impl NativeMetadataOwner {
     /// Preparation resolves the exact durable residence through the original
     /// job registry and checks current synchronized funding and canonical
     /// metadata. Recovered manifests require independently inspected backing
-    /// and the actual acknowledged Resume. Subsequent reads use only retained
-    /// immutable resources and never enter the queue or embedded state.
+    /// and the actual acknowledged Resume. Recovered inline bodies acquire a
+    /// synchronized operation pin, lease and future hold before acknowledgment.
+    /// Subsequent reads use only retained immutable resources and never enter
+    /// the queue or embedded state.
     ///
     /// # Errors
     /// Refuses a full/stopped queue, absent Resume, missing current publication,
@@ -143,14 +149,15 @@ struct Source {
 enum Origin {
     Publication(Arc<Mutex<PublicationJob>>),
     Recovery(recovered::RecoveredSource),
+    RecoveredInline(Arc<Mutex<RecoveredInlineJob>>),
 }
 
 /// Prepares only a registered physical publication on the retained worker thread.
 ///
 /// # Errors
 /// Refuses unverified/stale policy, missing physical resources or invalid bytes.
-pub(in crate::host_cache::owner) fn retain(
-    executor: &NativeOwnerExecutor,
+pub(in crate::host_cache::owner) async fn retain(
+    executor: &mut NativeOwnerExecutor,
     identity: Identity,
 ) -> io::Result<NativeResidentChunkSource> {
     let context = executor.admission_context()?;
@@ -160,6 +167,7 @@ pub(in crate::host_cache::owner) fn retain(
             "resident source requires a registered chunk identity",
         ));
     }
+    recovered_inline::prepare(executor, &identity).await?;
     let source = select(executor, &identity)?;
     check_native(&source)?;
     context.check_current().map_err(io::Error::other)?;
@@ -300,6 +308,9 @@ fn select_locked(
             allocation_limit: owner.preparation.config.reads.max_allocation_bytes,
         });
     }
+    if let Some(source) = recovered_inline::select(executor, owner, identity, &row)? {
+        return Ok(source);
+    }
     recovered::select(executor, owner, identity, row)
 }
 
@@ -319,6 +330,10 @@ fn check_origin(owner: &Custody, source: &Source, identity: &Identity) -> io::Re
             registration(owner, &job, identity, &source.row)?
         }
         Origin::Recovery(recovered) => recovered.check_registration(owner, source, identity)?,
+        Origin::RecoveredInline(resource) => resource
+            .lock()
+            .map_err(|_| invalid("recovered inline source poisoned"))?
+            .check_registration(owner, source, identity)?,
     };
     if span != source.span {
         return Err(invalid("resident source range changed"));
@@ -426,20 +441,28 @@ fn claim_span(
 }
 
 fn check_native(source: &Source) -> io::Result<()> {
-    let layout = source.body.layout();
+    check_native_body(&source.body, source.project, source.publisher_uid)
+}
+
+fn check_native_body(
+    published: &PeerPublishedObject<HostDomainLocation>,
+    project: u32,
+    publisher_uid: u32,
+) -> io::Result<()> {
+    let layout = published.layout();
     layout.recheck()?;
-    let body = source.body.handle();
+    let body = published.handle();
     let metadata = body.metadata()?;
     let flags = rustix::fs::fcntl_getfl(body)?;
     if !metadata.is_file()
-        || metadata.uid() != source.publisher_uid
+        || metadata.uid() != publisher_uid
         || metadata.nlink() != 1
         || metadata.mode() & 0o7777 != 0o400
-        || metadata.len() != source.body.claim().plaintext_size()
+        || metadata.len() != published.claim().plaintext_size()
         || metadata.dev() != layout.directory_binding("layout-root")?.0
         || flags.intersects(OFlags::WRONLY | OFlags::RDWR | OFlags::PATH)
-        || NativeProject::inspect(body)?.project_id != source.project
-        || crate::verity::measure(body)? != *source.body.binding()
+        || NativeProject::inspect(body)?.project_id != project
+        || crate::verity::measure(body)? != *published.binding()
     {
         return Err(invalid(
             "resident source changed retained inode or kernel seal",

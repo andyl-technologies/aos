@@ -13,6 +13,7 @@ mod state;
 pub use manifest::NativeManifestPublication;
 pub(super) use manifest::run as run_manifest;
 pub use residence::NativeResidentChunkSource;
+pub(super) use residence::RecoveredInlineJob;
 pub(super) use residence::retain as retain_resident_chunk;
 
 use super::{

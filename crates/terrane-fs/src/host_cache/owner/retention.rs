@@ -274,8 +274,9 @@ impl NativeMetadataOwner {
                             }
                         }
                         Command::RetainResidentChunk { identity, response } => {
-                            let result =
-                                super::publication::retain_resident_chunk(&executor, identity);
+                            let result = runtime.block_on(
+                                super::publication::retain_resident_chunk(&mut executor, identity),
+                            );
                             let _ = response.send(result);
                         }
                         Command::PublishManifest { identity, response } => {

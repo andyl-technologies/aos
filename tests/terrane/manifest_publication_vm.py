@@ -7,7 +7,82 @@ import time
 import tomllib
 
 
-def check_recovered_reassembly(driver, case, output, original):
+def run_mixed_source_pin(driver, helper, uuid, original):
+    """Drops a real inline source waiter with Q stopped, then checks unique durable custody."""
+    case = "manifest-mixed"
+    process = driver.controlled_actor(case, "recover-mixed-manifest", uuid)
+    stopped = False
+    lines = driver.Lines(process)
+    try:
+        lines.until("READY actual mixed recovery and old source retained; wait for inline pin control")
+        print(driver.process_status(process, 840), flush=True)
+        snapshot = driver.root(case) / "state/cache/records.toml"
+        before = tomllib.loads(snapshot.read_text())
+        helper.send_signal(signal.SIGSTOP)
+        stopped = True
+        deadline = time.monotonic() + 2
+        while True:
+            status = (pathlib.Path("/proc") / str(helper.pid) / "status").read_text()
+            if any(line.startswith("State:\tT") for line in status.splitlines()):
+                break
+            driver.require(helper.poll() is None and time.monotonic() < deadline,
+                           "actual quota helper did not enter stopped state")
+            time.sleep(0.005)
+        process.stdin.write(b"pin\n")
+        process.stdin.flush()
+        lines.until("CANCELLED accepted inline source waiter; original sealed source read while quota helper stopped")
+        helper.send_signal(signal.SIGCONT)
+        stopped = False
+        # The first command must write its actual pin before a second request
+        # can conceal cancellation by independently doing the work itself.
+        deadline = time.monotonic() + 10
+        while True:
+            pending = tomllib.loads(snapshot.read_text())
+            source_pins = [row for row in pending["pins"] if row["owner"].startswith("source:")]
+            if len(source_pins) == 1:
+                break
+            driver.require(process.poll() is None and time.monotonic() < deadline,
+                           "dropped source waiter cancelled actual physical pin work")
+            time.sleep(0.01)
+        process.stdin.write(b"resumed\n")
+        process.stdin.flush()
+        lines.until("READY original recovered inline pin checked; wait for assembly control")
+        full = lines.bytes.decode()
+        result = "PASS actual recovered inline source retained its durable pin after a dropped waiter and read with policy held; repeated preparation preserved the original hold; no Ready"
+        driver.require(full.splitlines().count(result) == 1, "missing actual retained inline source result")
+        after = tomllib.loads(snapshot.read_text())
+        driver.require(after["residences"] == before["residences"],
+                       "source pin changed actual original recovered residences")
+        added = {}
+        for group in ["pins", "leases", "reservations"]:
+            driver.require(all(row in after[group] for row in before[group])
+                           and len(after[group]) == len(before[group]) + 1,
+                           "inline source pin lost original durable " + group)
+            added[group] = [row for row in after[group] if row not in before[group]]
+            driver.require(len(added[group]) == 1, "inline source duplicated actual " + group)
+        pin, lease, hold = added["pins"][0], added["leases"][0], added["reservations"][0]
+        body = original["companions"][0][0]
+        driver.require(pin["hash"] == body.name and pin["owner"] == lease["owner"] == "source:" + hold["id"]
+                       and pin["expires"] == lease["expires"] == 9223372036854775807
+                       and hold["owner"] == driver.owner(case) and hold["bytes"] == 256 * 1024,
+                       "inline source lacks original object, lease, future hold or expiry")
+        print("PASS actual dropped inline waiter completed one durable source pin before re-request; original custody and repeated hold verified", flush=True)
+        output, _ = process.communicate(b"assemble\n", timeout=15)
+        print(output.decode(), end="", flush=True)
+        driver.require(process.returncode == 0, "actual recovered inline reassembly actor failed")
+        full = (lines.bytes + output).decode()
+        check_recovered_reassembly(driver, case, full, {"body": body}, prior=after)
+        print("PASS actual new assembly reused original pinned inline recovery and retained its original residence; no Ready", flush=True)
+        return full
+    finally:
+        if stopped and helper.poll() is None:
+            helper.send_signal(signal.SIGCONT)
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+
+
+def check_recovered_reassembly(driver, case, output, original, prior=None):
     """Compares actual new sealed bytes and retirement against original recovery custody."""
     rows = [line.split() for line in output.splitlines()
             if line.startswith("RECOVERED_ASSEMBLY ")]
@@ -44,12 +119,19 @@ def check_recovered_reassembly(driver, case, output, original):
                    and leases[0]["changed_nanoseconds"] == observed.st_ctime_ns % 1_000_000_000,
                    "new prefix lost actual original-inode retirement registration")
     state = tomllib.loads((root / "state/cache/records.toml").read_text())
-    driver.require(len(state["reservations"]) == 7 and len(state["leases"]) == 6
-                   and len(state["pins"]) == 9, "recovered reassembly lost exact policy closure")
+    expected = {"reservations": 7, "leases": 6, "pins": 9} if prior is None else {
+        "reservations": len(prior["reservations"]) + 4,
+        "leases": len(prior["leases"]) + 4, "pins": len(prior["pins"]) + 6}
+    driver.require(all(len(state[group]) == count for group, count in expected.items()),
+                   "recovered reassembly lost exact policy closure")
     new = [row for row in state["residences"] if row["chunk"] == prefix]
     old = [row for row in state["residences"] if row["chunk"] != prefix]
+    old_match = old and (all(row["object"] == original["body"].name for row in old)
+                        if prior is None else
+                        sorted(old, key=lambda row: row["chunk"]) ==
+                        sorted(prior["residences"], key=lambda row: row["chunk"]))
     driver.require(new == [{"chunk": prefix, "object": manifest, "offset": 0, "length": length}]
-                   and old and all(row["object"] == original["body"].name for row in old),
+                   and old_match,
                    "recovered reassembly replaced original residences with new offsets")
     driver.require(all(not list((root / "chunks" / row["chunk"][:2]).glob(row["chunk"] + ".*"))
                        for row in old), "recovered range gained another encoded canonical body")

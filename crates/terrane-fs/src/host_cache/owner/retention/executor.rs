@@ -25,6 +25,7 @@ pub(in crate::host_cache::owner) struct NativeOwnerExecutor {
     failed_resume: Option<(ResumeFailureStage, Box<CompletedRecovery>)>,
     admission_jobs: Vec<Arc<Mutex<super::super::admission::AdmissionJob>>>,
     publications: Vec<Arc<Mutex<super::super::publication::PublicationJob>>>,
+    inline_sources: Vec<Arc<Mutex<super::super::publication::RecoveredInlineJob>>>,
     adopted_inline: Vec<super::super::recovery_inline::AdoptedInline>,
     manifest_sources: Vec<Arc<crate::host_cache::NativeManifestSource>>,
     manifest_bodies: Vec<
@@ -49,6 +50,7 @@ impl NativeOwnerExecutor {
             failed_resume: None,
             admission_jobs: Vec::new(),
             publications: Vec::new(),
+            inline_sources: Vec::new(),
             adopted_inline: Vec::new(),
             manifest_sources: Vec::new(),
             manifest_bodies: Vec::new(),
@@ -143,6 +145,7 @@ impl NativeOwnerExecutor {
             .admission_jobs
             .len()
             .saturating_add(self.publications.len())
+            .saturating_add(self.inline_sources.len())
             >= limit
         {
             return Err(io::Error::new(
@@ -211,6 +214,7 @@ impl NativeOwnerExecutor {
             .admission_jobs
             .len()
             .saturating_add(self.publications.len())
+            .saturating_add(self.inline_sources.len())
             >= limit
         {
             return Err(io::Error::new(
@@ -247,6 +251,70 @@ impl NativeOwnerExecutor {
         &self,
     ) -> &[Arc<Mutex<super::super::publication::PublicationJob>>] {
         &self.publications
+    }
+
+    /// Registers actual recovered source custody before its durable pin effects.
+    ///
+    /// # Errors
+    /// Refuses another worker, an exhausted joint registry or unavailable allocation.
+    pub(in crate::host_cache::owner) fn register_inline_source(
+        &mut self,
+        job: super::super::publication::RecoveredInlineJob,
+    ) -> io::Result<Arc<Mutex<super::super::publication::RecoveredInlineJob>>> {
+        self.check_physical_worker()?;
+        let limit = self
+            .custody
+            .lock()
+            .map_err(|_| io::Error::other("inline source custody poisoned"))?
+            .preparation
+            .config
+            .state
+            .records;
+        if self
+            .admission_jobs
+            .len()
+            .saturating_add(self.publications.len())
+            .saturating_add(self.inline_sources.len())
+            >= limit
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::StorageFull,
+                "native source registry capacity exhausted",
+            ));
+        }
+        self.inline_sources
+            .try_reserve(1)
+            .map_err(io::Error::other)?;
+        let resource = Arc::new(Mutex::new(job));
+        self.inline_sources.push(Arc::clone(&resource));
+        Ok(resource)
+    }
+
+    /// Borrows only source jobs retained by this actual physical executor.
+    pub(in crate::host_cache::owner) fn inline_source_jobs(
+        &self,
+    ) -> &[Arc<Mutex<super::super::publication::RecoveredInlineJob>>] {
+        &self.inline_sources
+    }
+
+    /// Releases rejected source preparation only before any pin mutation attempt.
+    ///
+    /// # Errors
+    /// Refuses another worker or poisoned job; uncertain effects remain owned.
+    pub(in crate::host_cache::owner) fn reclaim_inline_source(
+        &mut self,
+        resource: &Arc<Mutex<super::super::publication::RecoveredInlineJob>>,
+    ) -> io::Result<()> {
+        self.check_physical_worker()?;
+        let effect_free = resource
+            .lock()
+            .map_err(|_| io::Error::other("inline source job poisoned"))?
+            .is_effect_free();
+        if effect_free {
+            self.inline_sources
+                .retain(|entry| !Arc::ptr_eq(entry, resource));
+        }
+        Ok(())
     }
 
     /// Borrows this executor exclusively for one durably funded publication.

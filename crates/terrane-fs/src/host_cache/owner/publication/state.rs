@@ -252,7 +252,11 @@ pub(super) fn check_charge(owner: &Custody) -> io::Result<u64> {
     Ok(future)
 }
 
-fn check_total(owner: &Custody, future: u64) -> io::Result<()> {
+/// Checks fresh project charge against distinct total future holds.
+///
+/// # Errors
+/// Refuses overflow or actual charge plus future holds beyond policy capacity.
+pub(super) fn check_total(owner: &Custody, future: u64) -> io::Result<()> {
     if owner
         .preparation
         .quota()

@@ -319,10 +319,14 @@ def seed_manifests(uuid):
     return seeded
 
 
-def manifest_recovery_cases(uuid, seeded):
+def manifest_recovery_cases(uuid, seeded, helper):
     """Checks actual recovery, final read-only mode and quarantine of rejected files."""
     for case, _, mode, recovers, label in MANIFEST_CASES:
-        output = actor(case, mode, uuid)
+        if case == "manifest-mixed":
+            output = runpy.run_path(str(IMAGE / "share/manifest_publication_vm.py"))[
+                "run_mixed_source_pin"](sys.modules[__name__], helper, uuid, seeded[case])
+        else:
+            output = actor(case, mode, uuid)
         expected = ("PASS actual manifest recovery reconstructed verified residences and acknowledged Resume; no Ready"
                     if recovers else
                     f"PASS actual {label} retained metadata funding and faulted custody; no Resume")
@@ -341,6 +345,10 @@ def manifest_recovery_cases(uuid, seeded):
             require("PASS actual recovered ranges survived a new Running admission; original metadata retained"
                     in output.splitlines(), "recovered source reused the cold completion predicate: " + case)
         original = seeded[case]
+        if case in MIXED_CASES:
+            require(output.splitlines().count(
+                "PASS actual adopted inline source refused before complete recovery and Resume; policy unchanged") == 1,
+                "adopted inline registry bypassed complete recovery and Resume")
         for path, inode in original["companions"]:
             require(path.stat().st_ino == inode and path.read_bytes() == INLINE_BYTES
                     and path.stat().st_mode & 0o7777 == 0o400,
@@ -383,6 +391,7 @@ class Lines:
     def __init__(self, process):
         self.process = process
         self.bytes = b""
+        self.printed = 0
 
     def until(self, expected, timeout=10):
         deadline = time.monotonic() + timeout
@@ -395,7 +404,8 @@ class Lines:
             chunk = os.read(self.process.stdout.fileno(), 4096)
             require(chunk, "actor stdout closed before handshake")
             self.bytes += chunk
-        print(self.bytes.decode(), end="", flush=True)
+        print(self.bytes[self.printed:].decode(), end="", flush=True)
+        self.printed = len(self.bytes)
 
 
 def controlled_actor(case, mode, uuid):
@@ -1063,7 +1073,7 @@ def main():
             print("PUBLISHER_PREPARATION_RESOURCES unavailable: " + str(error), flush=True)
         running_retention_cases(helper, uuid)
         runpy.run_path(str(IMAGE / "share/manifest_publication_vm.py"))["run"](sys.modules[__name__], publisher, uuid)
-        manifest_recovery_cases(uuid, manifest_candidates)
+        manifest_recovery_cases(uuid, manifest_candidates, helper)
         print("PASS bounded native cache recovery, encoded admission and inline publication; full Running publication/BKT15 remain unqualified", flush=True)
     finally:
         for child in reversed(children):

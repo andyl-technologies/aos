@@ -352,6 +352,20 @@ pub(in crate::host_cache::owner) async fn run(
     let context = executor.admission_context()?;
     context.check_current().map_err(io::Error::other)?;
     let retained = executor.retain_metadata(identity).await?;
+    let (layout, limit) = {
+        let owner = executor
+            .custody()
+            .lock()
+            .map_err(|_| invalid("publication custody poisoned"))?;
+        (
+            Arc::clone(owner.preparation.layout()),
+            owner.preparation.config.inventory_entries,
+        )
+    };
+    let residences = crate::host_cache::NativeResidencePlan::new(&layout, retained.claim(), limit)?;
+    for identity in residences.identities()? {
+        super::residence::prepare_recovered_inline(executor, &identity).await?;
+    }
     let custody = Arc::clone(executor.custody());
     let input = {
         let owner = custody

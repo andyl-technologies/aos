@@ -183,6 +183,8 @@ fn check_parts(
     // never copied from a caller path. Descriptor/job headers are not payloads.
     let physical = size_of::<AdmissionJob>()
         + size_of::<super::super::publication::PublicationJob>()
+        + size_of::<super::super::publication::RecoveredInlineJob>()
+        + 256 // Generated source token, row hashes and retained Arc headers.
         + 2 * size_of::<PendingFile>()
         + 3 * size_of::<DirectoryProgress>()
         + 24 * size_of::<std::fs::File>()
