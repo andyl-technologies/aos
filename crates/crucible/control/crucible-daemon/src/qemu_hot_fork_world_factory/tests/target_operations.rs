@@ -8,9 +8,7 @@
 
 use super::*;
 use crate::qemu_hot_fork_world_factory::target_construction::TargetSetupFailure;
-use crate::qemu_hot_fork_world_factory::target_operations::{
-    TargetBeginFailure, WorldTargetOperations,
-};
+use crate::qemu_hot_fork_world_factory::target_operations::{TargetBeginFailure, WorldTargetOperations};
 use crucible_control_api::host_operational::HostRamAdmissionError;
 use crucible_host_resources::host_supervision::HostOperationSupervisor;
 
@@ -52,15 +50,15 @@ impl WorldTargetOperations<ScriptedWorldGuardFactory> for ComponentTargetOperati
         let _retained_component = Box::leak(Box::new(lifecycle));
     }
 
-    fn bind_world(
+    fn bind_world<'a>(
         &self,
         _guard: &mut ScriptedWorldGuard,
-        _ram: &dyn crate::vm_lifecycle::ProductionHostRamRegistrationFactory,
-        _input: &CrucibleAttemptExecution,
+        ram: &dyn crate::vm_lifecycle::ProductionHostRamRegistrationFactory,
+        nodes: impl Iterator<Item = &'a NodeId> + Clone,
     ) -> Result<(), TargetSetupFailure> {
         // No native controller exists in this model. In particular this does
         // not publish a controller or return successful native admission.
-        Ok(())
+        Ok(validate_selected_nodes(ram, nodes)?)
     }
 
     fn prepare_member(
@@ -105,6 +103,71 @@ impl WorldTargetOperations<ScriptedWorldGuardFactory> for ComponentTargetOperati
                 message: source.to_string(),
             })?;
         Ok(directory)
+    }
+}
+
+/// Checks the configured roster without creating a native controller.
+fn validate_selected_nodes<'a>(
+    ram: &dyn crate::vm_lifecycle::ProductionHostRamRegistrationFactory,
+    nodes: impl Iterator<Item = &'a NodeId> + Clone,
+) -> Result<(), HostRamAdmissionError> {
+    let mut configured = 0;
+    ram.visit_native_nodes(&mut |name, _| {
+        if nodes.clone().filter(|node| node.name == name).count() != 1 {
+            return Err(HostRamAdmissionError::contract(
+                "component controller roster must include each RAM node exactly once",
+            ));
+        }
+        configured += 1;
+        Ok(())
+    })?;
+    if nodes.count() != configured {
+        return Err(HostRamAdmissionError::contract(
+            "component controller roster includes an unconfigured RAM node",
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn controller_selection_matches_the_configured_ram_roster_exactly() {
+    let _metadata_scope = component_metadata_scope();
+    let input = execution_input();
+    let context = execution_context(&input, 0x9e);
+    let ram = crate::qemu_campaign_lifecycle::create_host_ram_registration_factory(&context)
+        .expect("component RAM allocator");
+    let declared = input.scenario().world().vm_nodes();
+    assert!(declared.len() > 2);
+    let mut declared_nodes = declared.iter();
+    let selected = [
+        &declared_nodes.next().expect("first declared node").id,
+        &declared_nodes.next().expect("second declared node").id,
+    ];
+    let shapes = selected
+        .iter()
+        .map(
+            |node| crucible_control_api::host_operational::ProductionHostRamLaunchShape {
+                node: node.name.clone(),
+                declared_ram_bytes: 1 << 20,
+                vcpus: 1,
+            },
+        )
+        .collect::<Vec<_>>();
+    ram.configure_world(&shapes)
+        .expect("two configured RAM nodes");
+    let selected_nodes = selected.iter().copied();
+
+    assert!(validate_selected_nodes(ram.as_ref(), selected_nodes.clone()).is_ok());
+    assert!(validate_selected_nodes(ram.as_ref(), selected_nodes.clone().rev()).is_ok());
+    for refusal in [
+        validate_selected_nodes(ram.as_ref(), selected_nodes.take(1)),
+        validate_selected_nodes(ram.as_ref(), std::iter::repeat_n(selected[0], 2)),
+        validate_selected_nodes(ram.as_ref(), declared.iter().map(|node| &node.id)),
+    ] {
+        assert!(matches!(
+            refusal,
+            Err(HostRamAdmissionError::Contract { .. })
+        ));
     }
 }
 

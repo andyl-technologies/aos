@@ -237,7 +237,6 @@ where
             pending.bind_auxiliary(auxiliary)
                 && pending.launch_prepared(
                     &NativeTargetOperations,
-                    input,
                     context,
                     limits,
                     ram.as_ref(),

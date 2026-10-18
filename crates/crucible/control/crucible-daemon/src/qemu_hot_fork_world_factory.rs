@@ -2000,9 +2000,16 @@ where
                 QemuProductionHotForkWorldLifecycleFactoryError::ResourceContractMismatch,
             ));
         }
+        let nodes = continuation
+            .nodes()
+            .iter()
+            .filter(|node| {
+                node.service_state() != ProductionVmHotForkNodeServiceState::PermanentlyFailed
+            })
+            .map(|node| node.node());
         let bound = self
             .target_operations
-            .bind_world(&mut guard, ram_factory.as_ref(), input);
+            .bind_world(&mut guard, ram_factory.as_ref(), nodes);
         if let Err(first) = bound {
             guard.quarantine();
             drop(source_world);

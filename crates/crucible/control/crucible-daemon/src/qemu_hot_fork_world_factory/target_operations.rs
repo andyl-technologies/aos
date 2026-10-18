@@ -52,15 +52,18 @@ where
     /// Abandons a caller while preserving its backend's real cleanup owner.
     fn abandon_runtime(lifecycle: Self::Lifecycle);
 
-    /// Binds each backend controller before any member launch.
+    /// Binds controllers for the captured live roster before any member launch.
+    ///
+    /// Permanently failed members have no RAM partition or controller. The
+    /// caller borrows selected identities from its existing construction state.
     ///
     /// # Errors
     /// Reports the first controller reservation or binding refusal.
-    fn bind_world(
+    fn bind_world<'a>(
         &self,
         guard: &mut R::Guard,
         ram: &dyn crate::vm_lifecycle::ProductionHostRamRegistrationFactory,
-        input: &CrucibleAttemptExecution,
+        nodes: impl Iterator<Item = &'a crucible_engine::NodeId> + Clone,
     ) -> Result<(), TargetSetupFailure>;
 
     /// Prepares one member's supervision and backend RAM ownership.
@@ -125,17 +128,17 @@ where
         drop(lifecycle);
     }
 
-    fn bind_world(
+    fn bind_world<'a>(
         &self,
         guard: &mut R::Guard,
         ram: &dyn crate::vm_lifecycle::ProductionHostRamRegistrationFactory,
-        input: &CrucibleAttemptExecution,
+        nodes: impl Iterator<Item = &'a crucible_engine::NodeId> + Clone,
     ) -> Result<(), TargetSetupFailure> {
-        for node in input.scenario().world().vm_nodes() {
+        for node in nodes {
             // A sibling's controller cannot pay this member's descriptor window.
-            ram.reserve_native_controller_resources(&node.id.name)?;
-            let controller = guard.native_resource_controller_for_node(&node.id)?;
-            ram.bind_native_resource_controller(&node.id.name, controller)?;
+            ram.reserve_native_controller_resources(&node.name)?;
+            let controller = guard.native_resource_controller_for_node(node)?;
+            ram.bind_native_resource_controller(&node.name, controller)?;
         }
         Ok(())
     }

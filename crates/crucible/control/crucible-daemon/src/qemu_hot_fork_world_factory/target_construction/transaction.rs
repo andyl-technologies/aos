@@ -43,7 +43,6 @@ where
     pub(crate) fn launch_prepared<O: WorldTargetOperations<F>>(
         &mut self,
         operations: &O,
-        input: &CrucibleAttemptExecution,
         context: &AttemptExecutionContext,
         limits: AttemptResourceLimits,
         ram: &dyn crate::vm_lifecycle::ProductionHostRamRegistrationFactory,
@@ -55,7 +54,6 @@ where
         };
         self.launch_selected(
             operations,
-            input,
             context,
             continuation,
             limits,
@@ -73,7 +71,6 @@ where
     pub(crate) fn launch_selected<O: WorldTargetOperations<F>>(
         &mut self,
         operations: &O,
-        input: &CrucibleAttemptExecution,
         context: &AttemptExecutionContext,
         continuation: crate::ProductionVmHotForkWorldContinuation,
         limits: AttemptResourceLimits,
@@ -132,7 +129,7 @@ where
         {
             return false;
         }
-        let Some(guard) = self.guard.as_mut() else {
+        let (Some(guard), Some(rows)) = (self.guard.as_mut(), self.nodes.as_ref()) else {
             return false;
         };
         if guard.resource_limits() != limits
@@ -142,7 +139,11 @@ where
         {
             return self.refuse_setup("Target resource contract differs from its admitted request");
         }
-        if let Err(first) = operations.bind_world(guard, ram, input) {
+        let nodes = rows
+            .iter()
+            .filter(|row| row.is_live_boundary())
+            .map(|row| &row.node);
+        if let Err(first) = operations.bind_world(guard, ram, nodes) {
             self.first_setup.get_or_insert(first);
             return false;
         }
