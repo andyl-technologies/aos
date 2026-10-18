@@ -4,6 +4,8 @@
 //! Its peer supplies a separate modeled physical-return receipt after the ACK
 //! assertions. None of these types constructs a Source binding or native loan.
 
+#![cfg(test)]
+
 use super::action_scope::ControlActionScope;
 use super::control::PendingControlBoundary;
 use super::*;

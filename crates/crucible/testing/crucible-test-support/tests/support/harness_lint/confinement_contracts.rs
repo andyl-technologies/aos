@@ -119,6 +119,168 @@ const CONTRACTS: &[ExportContract] = &[
         path: "crucible/host/crucible-host-resources/src/measurement_origin.rs",
         source: r#"pub use actor_family::AuthenticatedActorFamily;"#,
     },
+    ExportContract {
+        path: "crucible/host/crucible-host-resources/src/host_supervision.rs",
+        source: r#"pub use prepared_start::PreparedHostOperationSupervisor;"#,
+    },
+    ExportContract {
+        path: "crucible/host/crucible-host-resources/src/host_supervision.rs",
+        source: r#"pub fn belongs_to_supervisor(&self, supervisor: &HostOperationSupervisor) -> bool {
+        self.supervisor == *supervisor
+    }"#,
+    },
+    ExportContract {
+        path: "crucible/host/crucible-host-resources/src/host_supervision.rs",
+        source: r#"pub fn complete_observed(&self) -> (bool, Result<HostOperationStatus, HostSupervisionError>) {
+        self.complete_observed_with(|| {})
+    }"#,
+    },
+    ExportContract {
+        path: "crucible/host/crucible-host-resources/src/host_supervision/prepared_start.rs",
+        source: r#"pub struct PreparedHostOperationSupervisor {
+    budgets: HostOperationBudgets,
+    outer: Option<Duration>,
+    started: Instant,
+    original_monotonic_ns: u64,
+    cap_id: [u8; 32],
+}"#,
+    },
+    ExportContract {
+        path: "crucible/host/crucible-host-resources/src/host_supervision/prepared_start.rs",
+        source: r#"pub fn prepare(
+        budgets: HostOperationBudgets,
+        outer: Option<Duration>,
+    ) -> Result<PreparedHostOperationSupervisor, HostSupervisionError> {
+        if outer.is_some_and(|duration| {
+            duration.is_zero() || host_now().checked_add(duration).is_none()
+        }) {
+            return Err(HostSupervisionError::InvalidBudget);
+        }
+        budgets.validate(outer.is_some())?;
+        let ordinal = NEXT_CAP_ID
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |ordinal| {
+                ordinal.checked_add(1)
+            })
+            .map_err(|_| HostSupervisionError::IdentityExhausted)?;
+        let mut cap_id = [0; 32];
+        cap_id[24..].copy_from_slice(&ordinal.to_be_bytes());
+        // Sampling before the Instant origin cannot extend the native cap.
+        let original_monotonic_ns = kernel_monotonic_ns()?;
+        Ok(PreparedHostOperationSupervisor {
+            budgets,
+            outer,
+            started: host_now(),
+            original_monotonic_ns,
+            cap_id,
+        })
+    }"#,
+    },
+    ExportContract {
+        path: "crucible/host/crucible-host-resources/src/host_supervision/prepared_start.rs",
+        source: r#"pub const fn cap_id(&self) -> [u8; 32] {
+        self.cap_id
+    }"#,
+    },
+    ExportContract {
+        path: "crucible/host/crucible-host-resources/src/host_supervision/prepared_start.rs",
+        source: r#"pub fn publish(self) -> Result<HostOperationSupervisor, HostSupervisionError> {
+        let changed = Arc::new(Condvar::new());
+        HostOperationSupervisor::publish(
+            self.budgets,
+            self.outer,
+            self.started,
+            self.original_monotonic_ns,
+            self.cap_id,
+            changed,
+            None,
+        )
+    }"#,
+    },
+    ExportContract {
+        path: "crucible/control/crucible-daemon/src/supervision.rs",
+        source: r#"pub(crate) struct ServiceWatchdogFailure {
+    pub(crate) trigger: Option<ServiceWatchdogTrigger>,
+    pub(crate) cancellation:
+        Option<crucible_host_resources::host_supervision::HostSupervisionError>,
+    pub(crate) pager_cancellation: Option<crucible_control_api::host_operational::HostOperationalError>,
+}"#,
+    },
+    ExportContract {
+        path: "crucible/control/crucible-daemon/src/supervision.rs",
+        source: r#"pub(crate) enum ServiceWatchdogTrigger {
+    Cancellation,
+    Original(crucible_host_resources::host_supervision::HostSupervisionError),
+    Caller(crucible_host_resources::host_supervision::HostSupervisionError),
+}"#,
+    },
+    ExportContract {
+        path: "crucible/control/crucible-daemon/src/supervision.rs",
+        source: r#"pub(crate) struct ServiceWatchdogStop {
+    pub(crate) completion_attempted: bool,
+    pub(crate) completion: Option<crucible_host_resources::host_supervision::HostSupervisionError>,
+    pub(crate) join_attempted: bool,
+    pub(crate) join_failure: Option<Box<dyn std::any::Any + Send>>,
+    pub(crate) caller: Option<crucible_host_resources::host_supervision::HostSupervisionError>,
+    pub(crate) cancellation:
+        Option<crucible_host_resources::host_supervision::HostSupervisionError>,
+    pub(crate) pager_cancellation: Option<crucible_control_api::host_operational::HostOperationalError>,
+    pub(crate) expired: bool,
+    pub(crate) watcher_failure: Option<ServiceWatchdogFailure>,
+    pub(crate) watcher_history_poisoned: bool,
+}"#,
+    },
+    ExportContract {
+        path: "crucible/control/crucible-daemon/src/supervision.rs",
+        source: r#"pub(crate) fn stop_service_owned(mut self) -> ServiceWatchdogStop {
+        // Record consumption before any effect, including original completion.
+        self.service_stop_expired = Some(true);
+        self.stopped.store(true, Ordering::Release);
+        let completion_attempted = self.complete_outer;
+        let completion = self
+            .complete_outer
+            .then(|| self.state.supervisor.complete().err())
+            .flatten();
+        let join_attempted = self.watcher.is_some();
+        let join_failure = self.watcher.take().and_then(|watcher| watcher.join().err());
+        let caller = self
+            .caller
+            .as_ref()
+            .and_then(|caller| caller.wait_for_active_work_change().err());
+        let expired = caller.is_some()
+            || join_failure.is_some()
+            || self.state.expired()
+            || self.operation_expired.is_expired();
+
+        let mut cancellation = None;
+        let mut pager_cancellation = None;
+        if expired {
+            self.cancellation.cancel();
+            if !self.operation_expired.is_expired()
+                && let Some(registry) = &self.registry
+            {
+                cancellation = self.state.supervisor.cancel().err();
+                pager_cancellation = registry
+                    .cancel_registered_pagers(&self.state.supervisor)
+                    .err();
+            }
+        }
+        let (watcher_failure, watcher_history_poisoned) =
+            self.operation_expired.take_service_failure();
+        self.service_stop_expired = Some(expired);
+        ServiceWatchdogStop {
+            completion_attempted,
+            completion,
+            join_attempted,
+            join_failure,
+            caller,
+            cancellation,
+            pager_cancellation,
+            expired,
+            watcher_failure,
+            watcher_history_poisoned,
+        }
+    }"#,
+    },
 ];
 
 pub(super) fn reviewed_export(path: &Path, content: &str, tokens: &[Token], index: usize) -> bool {

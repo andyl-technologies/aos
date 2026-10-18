@@ -137,6 +137,161 @@ fn neighboring_same_line_export_cannot_borrow_an_exact_contract() {
 }
 
 #[test]
+fn prepared_supervision_cannot_renew_origins_or_expose_private_clocks() {
+    let declaration = |needle: &str| {
+        CONTRACTS
+            .iter()
+            .find(|contract| {
+                contract
+                    .path
+                    .ends_with("host_supervision/prepared_start.rs")
+                    && contract.source.contains(needle)
+            })
+            .unwrap()
+    };
+
+    for (item, before, after) in [
+        (
+            "pub struct PreparedHostOperationSupervisor",
+            "started: Instant",
+            "pub started: Instant",
+        ),
+        ("pub fn prepare(", "budgets.validate(outer.is_some())?;", ""),
+        ("pub fn prepare(", "checked_add(1)", "wrapping_add(1)"),
+        (
+            "pub fn prepare(",
+            "-> Result<PreparedHostOperationSupervisor, HostSupervisionError>",
+            "-> Result<Instant, HostSupervisionError>",
+        ),
+        ("pub fn publish(", "self.started,", "host_now(),"),
+        (
+            "pub fn publish(",
+            "self.original_monotonic_ns,",
+            "kernel_monotonic_ns()?,",
+        ),
+        ("pub fn publish(", "self.cap_id,", "foreign_cap_id,"),
+        ("pub const fn cap_id(", "self.cap_id", "self.started"),
+    ] {
+        let contract = declaration(item);
+        assert!(contract.source.contains(before), "missing target: {before}");
+        let changed = contract.source.replacen(before, after, 1);
+        assert!(
+            !export_findings(contract.path, &changed).is_empty(),
+            "changed prepared supervision accepted: {before} -> {after}"
+        );
+    }
+}
+
+#[test]
+fn exact_guard_checks_and_completion_cannot_substitute_other_work() {
+    for (item, before, after) in [
+        (
+            "pub fn belongs_to_supervisor(",
+            "self.supervisor == *supervisor",
+            "self.supervisor.shares_outer_cap(supervisor)",
+        ),
+        (
+            "pub fn belongs_to_supervisor(",
+            "self.supervisor == *supervisor",
+            "true",
+        ),
+        (
+            "pub fn complete_observed(",
+            "self.complete_observed_with(|| {})",
+            "self.complete_observed_with(|| perform_work())",
+        ),
+    ] {
+        let contract = CONTRACTS
+            .iter()
+            .find(|contract| contract.source.contains(item))
+            .unwrap();
+        assert!(contract.source.contains(before), "missing target: {before}");
+        let changed = contract.source.replacen(before, after, 1);
+        assert!(
+            !export_findings(contract.path, &changed).is_empty(),
+            "changed guard operation accepted: {after}"
+        );
+    }
+}
+
+#[test]
+fn watchdog_results_cannot_become_clock_exports_or_replay_join_ownership() {
+    for item in [
+        "pub(crate) struct ServiceWatchdogFailure",
+        "pub(crate) enum ServiceWatchdogTrigger",
+        "pub(crate) struct ServiceWatchdogStop",
+    ] {
+        let contract = CONTRACTS
+            .iter()
+            .find(|contract| contract.source.contains(item))
+            .unwrap();
+        for changed in [
+            contract.source.replacen("pub(crate)", "pub", 1),
+            contract
+                .source
+                .replacen('{', "{ pub clock: std::time::Instant,", 1),
+        ] {
+            assert!(!export_findings(contract.path, &changed).is_empty());
+        }
+    }
+
+    let stop = CONTRACTS
+        .iter()
+        .find(|contract| contract.source.contains("fn stop_service_owned("))
+        .unwrap();
+    for (before, after) in [
+        ("mut self", "&mut self"),
+        ("self.service_stop_expired = Some(true);", ""),
+        ("self.watcher.take()", "self.watcher.as_mut()"),
+        (
+            "self.operation_expired.take_service_failure()",
+            "foreign_history()",
+        ),
+    ] {
+        assert!(stop.source.contains(before), "missing target: {before}");
+        let changed = stop.source.replacen(before, after, 1);
+        assert!(
+            !export_findings(stop.path, &changed).is_empty(),
+            "changed owned watchdog stop accepted: {before} -> {after}"
+        );
+    }
+}
+
+#[test]
+fn prepared_clock_boundary_keeps_state_routes_and_neighboring_exports_closed() {
+    let contract = CONTRACTS
+        .iter()
+        .find(|contract| {
+            contract
+                .source
+                .contains("pub struct PreparedHostOperationSupervisor")
+        })
+        .unwrap();
+    for (addition, reason) in [
+        (
+            "use crucible_engine::State;",
+            "host nondeterminism reaching State",
+        ),
+        (
+            "use crucible_control_api::ControlClient;",
+            "host nondeterminism reaches API/session route",
+        ),
+        (
+            "pub fn clock(&self) -> std::time::Instant { self.started }",
+            "public export from nondeterministic boundary",
+        ),
+    ] {
+        let source = format!("{} {addition}", contract.source);
+        let findings = package_source_confinement_findings(
+            "crucible-host-resources",
+            Path::new("crucible/host/crucible-host-resources"),
+            &source_pairs(&[(contract.path, &source)]),
+        );
+        assert!(finding_contains(&findings, reason), "{findings:?}");
+    }
+}
+
+#[test]
 fn reviewed_owner_export_cannot_carry_a_clock_to_state_or_an_api_route() {
     let contract = CONTRACTS
         .iter()

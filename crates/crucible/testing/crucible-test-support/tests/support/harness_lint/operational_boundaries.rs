@@ -139,6 +139,10 @@ pub(super) fn operational_boundary_source(package: &str, package_dir: &Path, pat
                 "crucible-host-resources",
                 "src/host_supervision/bootstrap.rs"
             )
+            | (
+                "crucible-host-resources",
+                "src/host_supervision/prepared_start.rs"
+            )
             | ("crucible-daemon", "src/host_operational_registry.rs")
             | ("crucible-qemu-host", "src/linux_cgroup/original_finish.rs")
             | (

@@ -114,6 +114,7 @@ pub struct QemuLiveHostIoRuntime {
 mod action;
 mod action_scope;
 #[cfg(test)]
+#[path = "host_io_runtime/component_tests.rs"]
 pub(crate) mod component;
 mod servicing;
 use servicing::{BlockIoServicing, NinepIoServicing};
