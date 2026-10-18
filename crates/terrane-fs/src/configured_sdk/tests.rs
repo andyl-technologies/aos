@@ -2,6 +2,10 @@
 //!
 //! These tests never install the irreversible filter. Actual single-process
 //! startup belongs to the explicitly invoked configured SDK example fixture.
+#![allow(
+    clippy::expect_used,
+    reason = "Refusal and credential-path assertions intentionally panic on unexpected results."
+)]
 
 use std::{
     error::Error as _,
