@@ -10,6 +10,8 @@ mod actor;
 mod admission;
 #[path = "host_cache_fixture/config.rs"]
 mod config;
+#[path = "host_cache_fixture/manifest_publication.rs"]
+mod manifest_publication;
 #[path = "host_cache_fixture/network.rs"]
 mod network;
 #[path = "host_cache_fixture/publication.rs"]
@@ -60,6 +62,9 @@ fn main() -> std::process::ExitCode {
             "publish-inline-transfer-conflict",
             "retain-running",
             "retain-running-cancel",
+            "publish-manifest",
+            "publish-manifest-cancel",
+            "publish-manifest-bad-whole",
         ] {
             println!("host-cache:{selector}");
         }

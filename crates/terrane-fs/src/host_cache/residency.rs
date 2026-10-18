@@ -6,7 +6,10 @@
 
 use super::NativeHostLayout;
 use std::{collections::BTreeMap, io};
-use terrane::host::publication::{PublicationClaim, PublicationRecipe};
+use terrane::host::{
+    cache::HostReadLocation,
+    publication::{PublicationClaim, PublicationRecipe},
+};
 use terrane_core::identity::{Identity, IdentityKind, TERRANE_V1};
 
 /// Describes an exact plaintext chunk range in a verified containing manifest.
@@ -37,13 +40,13 @@ impl NativeResidencePlan {
     /// Rejects another domain, invalid canonical metadata, inconsistent lengths
     /// or offset overflow. Inventory excess returns an out-of-memory resource
     /// error, not an assertion that the encoded manifest is corrupt.
-    pub fn new(
-        layout: &NativeHostLayout,
+    pub fn new<L: HostReadLocation>(
+        layout: &NativeHostLayout<L>,
         claim: &PublicationClaim,
         max_entries: usize,
     ) -> io::Result<Self> {
         layout.recheck()?;
-        if claim.domain() != layout.layout().domain_binding().domain {
+        if claim.domain() != layout.layout().domain() {
             return Err(invalid("residence claim belongs to another domain"));
         }
         let recipe = match claim.canonical_manifest() {

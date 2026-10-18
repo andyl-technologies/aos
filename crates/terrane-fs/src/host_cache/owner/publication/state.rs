@@ -1,10 +1,10 @@
-//! Synchronizes publication funding and exact inline residence policy.
+//! Synchronizes publication funding and exact verified residence policy.
 //!
 //! Holds describe future allocation, not measured blocks. The original job
 //! retains every physical resource while a failed or uncertain command remains
 //! faulted. No error removes a pin, lease or reservation.
 
-use super::{InlineJob, invalid};
+use super::{PublicationJob, invalid};
 use crate::host_cache::owner::{
     RETAINED_LEASE_DEADLINE,
     retention::{Custody, NativeOwnerExecutor},
@@ -27,7 +27,7 @@ use terrane_core::codec::Codec;
 pub(super) fn begin(
     executor: &NativeOwnerExecutor,
     owner: &mut Custody,
-    job: &mut InlineJob,
+    job: &mut PublicationJob,
 ) -> io::Result<PreparedSnapshotWrite> {
     owner.check_current()?;
     if owner.faulted || owner.recovery_required || job.started {
@@ -93,7 +93,7 @@ pub(super) fn begin(
     crate::host_cache::owner::snapshot::prepare(executor, owner)
 }
 
-/// Adds only the independently verified inline range before final synchronization.
+/// Adds only independently verified ranges before final synchronization.
 ///
 /// # Errors
 /// Refuses absent or mismatched physical results, conflicting residences,
@@ -101,7 +101,7 @@ pub(super) fn begin(
 pub(super) fn complete(
     executor: &NativeOwnerExecutor,
     owner: &mut Custody,
-    job: &mut InlineJob,
+    job: &mut PublicationJob,
 ) -> io::Result<PreparedSnapshotWrite> {
     check_funding(
         owner,
@@ -129,10 +129,40 @@ pub(super) fn complete(
         }
         transfer.check_retired(owner)?;
     }
-    super::io::refuse_standalone(owner, job.claim.descriptor().digest())?;
     let hash = hex(job.claim.descriptor().digest());
+    if job.manifest.is_none() {
+        super::io::refuse_standalone(owner, job.claim.descriptor().digest())?;
+    }
     let mut next = owner.state.clone();
-    if let Some(row) = next.residences.iter().find(|row| row.chunk == hash) {
+    if let Some(input) = &job.manifest {
+        input.check_retired(owner)?;
+        let plan = crate::host_cache::NativeResidencePlan::new(
+            owner.preparation.layout(),
+            &job.claim,
+            owner.preparation.config.state.records,
+        )?;
+        for identity in plan.identities()? {
+            let span = plan
+                .span(&identity)?
+                .ok_or_else(|| invalid("manifest residence span absent"))?;
+            let chunk = hex(identity.digest());
+            let length = u64::try_from(span.length).map_err(io::Error::other)?;
+            if let Some(row) = next.residences.iter().find(|row| row.chunk == chunk) {
+                if row.object != hash || row.offset != span.offset || row.length != length {
+                    return Err(invalid(
+                        "manifest publication conflicts with a prior residence",
+                    ));
+                }
+            } else {
+                next.residences.push(ResidenceRecord {
+                    chunk,
+                    object: hash.clone(),
+                    offset: span.offset,
+                    length,
+                });
+            }
+        }
+    } else if let Some(row) = next.residences.iter().find(|row| row.chunk == hash) {
         if row.object != hash || row.offset != 0 || row.length != job.claim.plaintext_size() {
             return Err(invalid(
                 "inline publication conflicts with a prior residence",
@@ -239,8 +269,11 @@ fn check_total(owner: &Custody, future: u64) -> io::Result<()> {
 fn check_dictionary(
     executor: &NativeOwnerExecutor,
     owner: &Custody,
-    job: &InlineJob,
+    job: &PublicationJob,
 ) -> io::Result<()> {
+    if let Some(input) = &job.manifest {
+        return input.check(owner);
+    }
     let codec = terrane_core::codec::parse_envelope(&job.encoded)
         .map_err(io::Error::other)?
         .codec;

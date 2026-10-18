@@ -15,7 +15,7 @@ use std::{
     os::unix::fs::MetadataExt,
     sync::{Arc, Mutex},
 };
-use terrane_core::identity::Descriptor;
+use terrane_core::identity::{Descriptor, Identity, IdentityKind, TERRANE_V1};
 
 /// Keeps one original registered admission rather than accepting a source claim.
 #[derive(Clone)]
@@ -35,6 +35,35 @@ impl TransferSource {
         owner: &Custody,
         descriptor: &Descriptor,
     ) -> io::Result<Self> {
+        Self::select_matching(executor, owner, |actual| actual == descriptor)
+    }
+
+    /// Selects a manifest chunk only from this worker's completed actual inputs.
+    ///
+    /// # Errors
+    /// Refuses another identity profile or kind, absent admission, changed
+    /// descriptor length, physical bytes, pins or native inode custody.
+    pub(in crate::host_cache::owner) fn select_chunk(
+        executor: &NativeOwnerExecutor,
+        owner: &Custody,
+        identity: &Identity,
+        length: u64,
+    ) -> io::Result<Self> {
+        if identity.kind() != IdentityKind::Chunk || identity.profile() != TERRANE_V1.name() {
+            return Err(invalid(
+                "manifest transfer requires a registered chunk identity",
+            ));
+        }
+        Self::select_matching(executor, owner, |actual| {
+            actual.digest() == identity.digest() && actual.size() == length
+        })
+    }
+
+    fn select_matching(
+        executor: &NativeOwnerExecutor,
+        owner: &Custody,
+        matches: impl Fn(&Descriptor) -> bool,
+    ) -> io::Result<Self> {
         executor.check_physical_worker()?;
         for candidate in executor.admission_jobs() {
             let job = candidate
@@ -48,7 +77,7 @@ impl TransferSource {
             else {
                 continue;
             };
-            if actual != descriptor || !job.complete {
+            if !matches(actual) || !job.complete {
                 continue;
             }
             if !Arc::ptr_eq(&job.custody, executor.custody()) || job.files.len() != 1 {

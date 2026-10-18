@@ -39,7 +39,7 @@ pub use admission::{
 };
 pub use config::{IndexRepairPolicy, NativeCacheOwnerConfig};
 pub use preparation::NativeCachePreparation;
-pub use publication::NativeInlinePublication;
+pub use publication::{NativeInlinePublication, NativeManifestPublication};
 pub use recovery::CompletedRecovery;
 pub use resume_error::NativeResumeError;
 pub(crate) use retention::{

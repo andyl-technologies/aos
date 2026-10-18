@@ -1,4 +1,4 @@
-//! Transfers an actual admitted inline source under the funded Running turn.
+//! Transfers actual admitted sources under the funded Running turn.
 //!
 //! The inspection reply enters its registered job slot before verification.
 //! Native/byte checks run after releasing the RPC mutex. Retirement accepts only
@@ -20,19 +20,20 @@ impl Client<HostDomainLocation> {
     /// # Errors
     /// Refuses stale funding, another source, occupied reply custody, failed
     /// transport, or an inode/access/byte mismatch. Uncertain replies stay owned.
-    pub(crate) fn inspect_inline_transfer(
+    pub(crate) fn inspect_source_transfer(
         &self,
         body: &PeerPublishedObject<HostDomainLocation>,
         context: &PublisherRunningContext,
         turn: &mut PublisherRunningTurn<'_>,
+        index: usize,
         reply: &mut Option<ReceivedPacket>,
     ) -> Result<BodyIncarnationObservation<HostDomainLocation>, Error> {
         turn.check_replacement(context, body)?;
         let claim = body.claim();
-        let key = turn.transfer_key(context, claim)?;
+        let key = turn.transfer_key(context, claim, index)?;
         if reply.is_some() {
             return Err(Error::Invalid(
-                "inline transfer reply slot already occupied",
+                "source transfer reply slot already occupied",
             ));
         }
         let mut state = self.lock()?;
@@ -98,16 +99,17 @@ impl Client<HostDomainLocation> {
     /// # Errors
     /// Refuses foreign/stale funding or observation, failed physical retirement,
     /// and uncertain transport. Any failure requires actual owner recovery.
-    pub(crate) fn retire_inline_transfer(
+    pub(crate) fn retire_source_transfer(
         &self,
         body: &PeerPublishedObject<HostDomainLocation>,
         context: &PublisherRunningContext,
         turn: &mut PublisherRunningTurn<'_>,
+        index: usize,
         observation: &BodyIncarnationObservation<HostDomainLocation>,
     ) -> Result<(), Error> {
         turn.check_replacement(context, body)?;
         let claim = body.claim();
-        let key = turn.transfer_key(context, claim)?;
+        let key = turn.transfer_key(context, claim, index)?;
         let mut state = self.lock()?;
         self.require_running_context(&state, context)?;
         let payload = observation.checked_payload(self, &state, &key)?;

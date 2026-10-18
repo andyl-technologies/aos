@@ -33,6 +33,7 @@ pub struct NativeChunkSource {
     length: usize,
     final_chunk: bool,
     profile: ChunkProfile,
+    allocation_limit: usize,
     dictionary: Option<Box<NativeChunkSource>>,
 }
 
@@ -51,7 +52,43 @@ impl NativeChunkSource {
         length: usize,
         final_chunk: bool,
     ) -> io::Result<Self> {
-        Self::open_inner(layout, identity, Some(length), final_chunk, true)
+        Self::open_inner(
+            layout,
+            identity,
+            Some(length),
+            final_chunk,
+            true,
+            usize::MAX,
+        )
+    }
+
+    /// Opens an actual source within the physical owner's per-allocation budget.
+    ///
+    /// # Errors
+    /// Refuses zero or exceeded bounds, changed roots, invalid source bytes and
+    /// dictionary dependencies outside the same bounded read policy.
+    #[cfg(feature = "tokio")]
+    pub(in crate::host_cache) fn open_bounded<L: HostReadLocation>(
+        layout: &NativeHostLayout<L>,
+        identity: Identity,
+        length: usize,
+        final_chunk: bool,
+        allocation_limit: usize,
+    ) -> io::Result<Self> {
+        if allocation_limit == 0 || length > allocation_limit {
+            return Err(io::Error::new(
+                io::ErrorKind::OutOfMemory,
+                "chunk source exceeds owner allocation policy",
+            ));
+        }
+        Self::open_inner(
+            layout,
+            identity,
+            Some(length),
+            final_chunk,
+            true,
+            allocation_limit,
+        )
     }
 
     fn open_inner<L: HostReadLocation>(
@@ -60,6 +97,7 @@ impl NativeChunkSource {
         length: Option<usize>,
         final_chunk: bool,
         allow_dictionary: bool,
+        allocation_limit: usize,
     ) -> io::Result<Self> {
         layout.recheck()?;
         if identity.kind() != IdentityKind::Chunk || identity.profile() != TERRANE_V1.name() {
@@ -97,7 +135,7 @@ impl NativeChunkSource {
         let (mut file, codec) =
             file.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "chunk source absent"))?;
         let profile = layout.layout.chunk_profile().clone();
-        let encoded = read_bounded(&mut file, &profile)?;
+        let encoded = read_bounded(&mut file, &profile, allocation_limit)?;
         if encoded.first() != Some(&codec) {
             return Err(invalid("source codec differs from canonical filename"));
         }
@@ -107,6 +145,12 @@ impl NativeChunkSource {
         };
         if declared > profile.maximum() {
             return Err(invalid("source declaration exceeds chunk profile"));
+        }
+        if declared > allocation_limit {
+            return Err(io::Error::new(
+                io::ErrorKind::OutOfMemory,
+                "decoded source exceeds owner allocation policy",
+            ));
         }
         let envelope = terrane_core::codec::parse_envelope(&encoded).map_err(invalid)?;
         let dictionary = if let Codec::ZstdDictionary(digest) = envelope.codec {
@@ -119,7 +163,12 @@ impl NativeChunkSource {
                 .from_digest(IdentityKind::Chunk, &digest)
                 .map_err(invalid)?;
             Some(Box::new(Self::open_inner(
-                layout, identity, None, true, false,
+                layout,
+                identity,
+                None,
+                true,
+                false,
+                allocation_limit,
             )?))
         } else {
             None
@@ -131,6 +180,7 @@ impl NativeChunkSource {
             length: declared,
             final_chunk,
             profile,
+            allocation_limit,
             dictionary,
         };
         source.read_verified()?;
@@ -153,6 +203,14 @@ impl NativeChunkSource {
         self.length
     }
 
+    /// Borrows actual source and one-hop dictionary handles for owner binding.
+    #[cfg(feature = "tokio")]
+    pub(in crate::host_cache) fn handles(&self) -> impl Iterator<Item = (&Identity, usize, &File)> {
+        std::iter::once(self)
+            .chain(self.dictionary.as_deref())
+            .map(|source| (&source.identity, source.length, &source.file))
+    }
+
     pub(super) fn matches(
         &self,
         domain: &str,
@@ -169,7 +227,7 @@ impl NativeChunkSource {
     }
 
     pub(super) fn read_verified(&mut self) -> io::Result<Vec<u8>> {
-        let encoded = read_bounded(&mut self.file, &self.profile)?;
+        let encoded = read_bounded(&mut self.file, &self.profile, self.allocation_limit)?;
         let dictionary = self
             .dictionary
             .as_mut()
@@ -188,21 +246,43 @@ impl NativeChunkSource {
     }
 }
 
-fn read_bounded(file: &mut File, profile: &ChunkProfile) -> io::Result<Vec<u8>> {
-    let bound = maximum_encoded_chunk_bytes(profile).map_err(invalid)?;
+fn read_bounded(
+    file: &mut File,
+    profile: &ChunkProfile,
+    allocation_limit: usize,
+) -> io::Result<Vec<u8>> {
+    let profile_bound = maximum_encoded_chunk_bytes(profile).map_err(invalid)?;
+    let bound = profile_bound.min(allocation_limit);
     let before = file.metadata()?;
-    if !before.is_file() || before.len() > bound as u64 {
+    if !before.is_file() || before.len() > profile_bound as u64 {
         return Err(invalid("source exceeds existing encoded chunk bound"));
     }
+    if before.len() > bound as u64 {
+        return Err(io::Error::new(
+            io::ErrorKind::OutOfMemory,
+            "encoded source exceeds owner allocation policy",
+        ));
+    }
     file.seek(SeekFrom::Start(0))?;
+    let length = usize::try_from(before.len()).map_err(invalid)?;
     let mut encoded = Vec::new();
-    file.by_ref()
-        .take(
-            (bound as u64)
-                .checked_add(1)
-                .ok_or_else(|| invalid("encoded chunk bound overflow"))?,
-        )
-        .read_to_end(&mut encoded)?;
+    encoded
+        .try_reserve_exact(length)
+        .map_err(|error| io::Error::new(io::ErrorKind::OutOfMemory, error))?;
+    if encoded.capacity() > bound {
+        return Err(io::Error::new(
+            io::ErrorKind::OutOfMemory,
+            "source capacity exceeds owner allocation policy",
+        ));
+    }
+    encoded.resize(length, 0);
+    file.read_exact(&mut encoded)?;
+    // Probe growth on the stack; an adversarial file must not grow a heap
+    // allocation beyond the original checked window merely to detect overflow.
+    let mut extra = [0];
+    if file.read(&mut extra)? != 0 {
+        return Err(invalid("source grew beyond its checked allocation"));
+    }
     let after = file.metadata()?;
     if encoded.len() > bound
         || before.dev() != after.dev()
@@ -289,6 +369,26 @@ mod tests {
         fn drop(&mut self) {
             std::fs::remove_dir_all(&self.0).unwrap();
         }
+    }
+
+    #[test]
+    fn native_chunk_read_enforces_owner_window_before_allocation_or_cursor_changes() {
+        let fixture = Fixture::new();
+        let bytes = b"bounded source bytes";
+        std::fs::write(fixture.0.join("chunk"), bytes).unwrap();
+        let mut file = File::open(fixture.0.join("chunk")).unwrap();
+        let profile = ChunkProfile::cdc_1m([0; 32]);
+        file.seek(SeekFrom::Start(3)).unwrap();
+
+        let error = read_bounded(&mut file, &profile, bytes.len() - 1).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::OutOfMemory);
+        assert_eq!(file.stream_position().unwrap(), 3);
+
+        let actual = read_bounded(&mut file, &profile, bytes.len()).unwrap();
+
+        assert_eq!(actual, bytes);
+        assert!(actual.capacity() <= bytes.len());
     }
 
     #[test]

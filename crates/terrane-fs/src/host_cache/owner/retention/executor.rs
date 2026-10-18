@@ -24,7 +24,7 @@ pub(in crate::host_cache::owner) struct NativeOwnerExecutor {
     running: Option<Arc<PublisherRunningContext>>,
     failed_resume: Option<(ResumeFailureStage, Box<CompletedRecovery>)>,
     admission_jobs: Vec<Arc<Mutex<super::super::admission::AdmissionJob>>>,
-    inline_publications: Vec<Arc<Mutex<super::super::publication::InlineJob>>>,
+    publications: Vec<Arc<Mutex<super::super::publication::PublicationJob>>>,
     adopted_inline: Vec<super::super::recovery_inline::AdoptedInline>,
     manifest_sources: Vec<Arc<crate::host_cache::NativeManifestSource>>,
     manifest_bodies: Vec<
@@ -48,7 +48,7 @@ impl NativeOwnerExecutor {
             running: None,
             failed_resume: None,
             admission_jobs: Vec::new(),
-            inline_publications: Vec::new(),
+            publications: Vec::new(),
             adopted_inline: Vec::new(),
             manifest_sources: Vec::new(),
             manifest_bodies: Vec::new(),
@@ -130,7 +130,7 @@ impl NativeOwnerExecutor {
         if self
             .admission_jobs
             .len()
-            .saturating_add(self.inline_publications.len())
+            .saturating_add(self.publications.len())
             >= limit
         {
             return Err(io::Error::new(
@@ -182,10 +182,10 @@ impl NativeOwnerExecutor {
     ///
     /// # Errors
     /// Refuses a foreign thread, exhausted joint registry or allocation failure.
-    pub(in crate::host_cache::owner) fn register_inline(
+    pub(in crate::host_cache::owner) fn register_publication(
         &mut self,
-        job: super::super::publication::InlineJob,
-    ) -> io::Result<Arc<Mutex<super::super::publication::InlineJob>>> {
+        job: super::super::publication::PublicationJob,
+    ) -> io::Result<Arc<Mutex<super::super::publication::PublicationJob>>> {
         self.check_physical_worker()?;
         let limit = self
             .custody
@@ -198,7 +198,7 @@ impl NativeOwnerExecutor {
         if self
             .admission_jobs
             .len()
-            .saturating_add(self.inline_publications.len())
+            .saturating_add(self.publications.len())
             >= limit
         {
             return Err(io::Error::new(
@@ -206,11 +206,9 @@ impl NativeOwnerExecutor {
                 "native publication registry capacity exhausted",
             ));
         }
-        self.inline_publications
-            .try_reserve(1)
-            .map_err(io::Error::other)?;
+        self.publications.try_reserve(1).map_err(io::Error::other)?;
         let job = Arc::new(Mutex::new(job));
-        self.inline_publications.push(Arc::clone(&job));
+        self.publications.push(Arc::clone(&job));
         Ok(job)
     }
 
@@ -218,17 +216,16 @@ impl NativeOwnerExecutor {
     ///
     /// # Errors
     /// Refuses poisoned job custody; started resources remain retained.
-    pub(in crate::host_cache::owner) fn reclaim_inline(
+    pub(in crate::host_cache::owner) fn reclaim_publication(
         &mut self,
-        job: &Arc<Mutex<super::super::publication::InlineJob>>,
+        job: &Arc<Mutex<super::super::publication::PublicationJob>>,
     ) -> io::Result<()> {
         if !job
             .lock()
             .map_err(|_| io::Error::other("publication job poisoned"))?
             .started
         {
-            self.inline_publications
-                .retain(|entry| !Arc::ptr_eq(entry, job));
+            self.publications.retain(|entry| !Arc::ptr_eq(entry, job));
         }
         Ok(())
     }
@@ -242,7 +239,7 @@ impl NativeOwnerExecutor {
         funding: super::super::publication::Funding,
     ) -> io::Result<PublisherRunningTurn<'_>> {
         if !self
-            .inline_publications
+            .publications
             .iter()
             .any(|job| Arc::ptr_eq(job, funding.job()))
         {
@@ -267,7 +264,7 @@ impl NativeOwnerExecutor {
     /// # Errors
     /// Refuses another physical thread, a failed Resume, stale/faulted Running
     /// custody, invalid sources or failed durability and quota reconciliation.
-    pub(super) async fn retain_metadata(
+    pub(in crate::host_cache::owner) async fn retain_metadata(
         &self,
         identity: terrane_core::identity::Identity,
     ) -> io::Result<super::RetainedManifest> {
@@ -538,7 +535,7 @@ impl PublisherResumeTurn<'_> {
 
 /// Retains exclusive physical dispatch through one genuine running operation.
 ///
-/// Only actual registered, durably funded inline dispatch constructs this turn.
+/// Only actual registered, durably funded publication dispatch constructs this turn.
 pub(crate) struct PublisherRunningTurn<'executor> {
     executor: &'executor mut NativeOwnerExecutor,
     funding: super::super::publication::Funding,
@@ -595,9 +592,23 @@ impl PublisherRunningTurn<'_> {
         &mut self,
         context: &PublisherRunningContext,
         claim: &terrane::host::publication::PublicationClaim,
+        index: usize,
     ) -> io::Result<crate::publisher_local::wire::BodyKey> {
         self.check_claim(context, claim)?;
-        self.funding.transfer_key()
+        self.funding.transfer_key(index)
+    }
+
+    /// Retains only the original registered job's actual metadata pin for RPC.
+    ///
+    /// # Errors
+    /// Refuses stale running/funding custody or changed native metadata sources.
+    pub(crate) fn retained_manifest(
+        &mut self,
+        context: &PublisherRunningContext,
+        claim: &terrane::host::publication::PublicationClaim,
+    ) -> io::Result<Option<Arc<super::RetainedManifest>>> {
+        self.check_claim(context, claim)?;
+        self.funding.retained_manifest()
     }
 
     /// Verifies the actual inspected descriptor before a separate retirement RPC.

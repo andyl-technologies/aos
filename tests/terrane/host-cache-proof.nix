@@ -40,7 +40,7 @@
       mkdir -p /var/lib/terrane-cache-proof /mnt/terrane-cache-proof
       export TERRANE_CACHE_VM_IMAGE=/var/lib/terrane-cache-proof/cache.img
       export TERRANE_CACHE_VM_ROOT=/mnt/terrane-cache-proof
-      truncate -s 256M "$TERRANE_CACHE_VM_IMAGE"
+      truncate -s 512M "$TERRANE_CACHE_VM_IMAGE"
       mkfs.ext4 -F -b 4096 -O project,quota,verity -E quotatype=prjquota "$TERRANE_CACHE_VM_IMAGE"
       mount -t ext4 -o loop,prjquota "$TERRANE_CACHE_VM_IMAGE" "$TERRANE_CACHE_VM_ROOT"
       trap 'umount "$TERRANE_CACHE_VM_ROOT"; rm -f "$TERRANE_CACHE_VM_IMAGE"; rmdir "$TERRANE_CACHE_VM_ROOT" /var/lib/terrane-cache-proof' EXIT

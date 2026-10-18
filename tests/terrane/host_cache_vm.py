@@ -12,6 +12,7 @@ import os
 import pathlib
 import re
 import resource
+import runpy
 import shutil
 import select
 import signal
@@ -54,6 +55,7 @@ CASES = [
     "publication-inline", "publication-cancel", "publication-transfer",
     "publication-transfer-cancel", "publication-transfer-conflict",
     "retention-running", "retention-running-cancel",
+    "publication-manifest", "publication-manifest-cancel", "publication-manifest-bad-whole",
 ] + [row[0] for row in MANIFEST_CASES]
 
 LABELS = ["layout-root", "chunks", "objects", "sealed", "staging", "quarantine",
@@ -780,6 +782,16 @@ def verify_image():
             "installed VM supervisor differs from immutable source")
     require(pathlib.Path(__file__).read_bytes() == supervisor_source.read_bytes(),
             "executed VM supervisor differs from source")
+    helper_name = "manifest_publication_vm.py"
+    helper_source = SOURCE / "tests/terrane" / helper_name
+    helper_installed = IMAGE / "share" / helper_name
+    helper_hash = hashlib.sha256(helper_installed.read_bytes()).hexdigest()
+    require(identity["supervisor_helpers"] == {helper_name: {
+                "source_path": "tests/terrane/" + helper_name,
+                "installed_path": "share/" + helper_name, "sha256": helper_hash}}
+            and helper_hash == identity["input_sha256"]["tests/terrane/" + helper_name]
+            and helper_installed.read_bytes() == helper_source.read_bytes(),
+            "installed manifest supervisor helper differs from immutable source")
     expected = {"host_cache_fixture": ("terrane-fs", "example", ["native-test-fixtures", "tokio"]),
                 "terrane": ("terrane-cli", "bin", []), "aos-terrane-host": ("aos-terrane", "bin", []),
                 "terrane-fs-unit": ("terrane-fs", "lib", ["native-test-fixtures", "tokio"])}
@@ -1033,6 +1045,7 @@ def main():
         except OSError as error:
             print("PUBLISHER_PREPARATION_RESOURCES unavailable: " + str(error), flush=True)
         running_retention_cases(helper, uuid)
+        runpy.run_path(str(IMAGE / "share/manifest_publication_vm.py"))["run"](sys.modules[__name__], publisher, uuid)
         manifest_recovery_cases(uuid, manifest_candidates)
         print("PASS bounded native cache recovery, encoded admission and inline publication; full Running publication/BKT15 remain unqualified", flush=True)
     finally:

@@ -4,7 +4,7 @@
 //! real project, ownership, inode and writer closure remain checked under the
 //! physical owner; kernel quotas bound allocation beyond the logical hold.
 
-use super::{InlineJob, invalid, state};
+use super::{PublicationJob, invalid, state};
 use crate::{host_cache::owner::retention::Custody, host_quota::NativeProject};
 use rustix::fs::{self, AtFlags, Mode, OFlags};
 use std::{
@@ -75,7 +75,7 @@ fn scan_standalone(owner: &Custody, digest: &[u8], retained_codec: Option<u32>) 
 /// # Errors
 /// Refuses missing synchronized funding, unsupported anonymous files, changed
 /// inode/project custody, write/sync failures or missing actual writer closure.
-pub(super) fn prepare_source(owner: &Custody, job: &mut InlineJob) -> io::Result<()> {
+pub(super) fn prepare_source(owner: &Custody, job: &mut PublicationJob) -> io::Result<()> {
     state::check_funding(
         owner,
         &job.token,
@@ -100,7 +100,12 @@ pub(super) fn prepare_source(owner: &Custody, job: &mut InlineJob) -> io::Result
         .as_mut()
         .ok_or_else(|| invalid("publication writer absent"))?;
     check_source(owner, writer)?;
-    writer.write_all(&job.plaintext)?;
+    if let Some(input) = &mut job.manifest {
+        input.plan.copy_verified(writer)?;
+        input.check(owner)?;
+    } else {
+        writer.write_all(&job.plaintext)?;
+    }
     fs::fchmod(&*writer, Mode::from_raw_mode(0o400))?;
     writer.sync_all()?;
     check_source(owner, writer)?;
@@ -158,8 +163,12 @@ fn check_source(owner: &Custody, file: &File) -> io::Result<()> {
 ///
 /// # Errors
 /// Refuses changed root/body/project/verity custody or failed synchronization.
-pub(super) fn observe(owner: &Custody, job: &InlineJob) -> io::Result<u64> {
-    refuse_standalone(owner, job.claim.descriptor().digest())?;
+pub(super) fn observe(owner: &Custody, job: &PublicationJob) -> io::Result<u64> {
+    if let Some(input) = &job.manifest {
+        input.check_retired(owner)?;
+    } else {
+        refuse_standalone(owner, job.claim.descriptor().digest())?;
+    }
     if job.writer.is_some() || job.reader.is_some() {
         return Err(invalid("publication still retains a source description"));
     }

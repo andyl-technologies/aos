@@ -1,4 +1,4 @@
-//! Publishes verified inline bytes through the retained Running command owner.
+//! Publishes verified inline or manifest bytes through the Running command owner.
 //!
 //! A synchronized reservation precedes the anonymous plaintext inode and the
 //! publisher's copy. Original input, descriptors, replies and uncertain results
@@ -6,7 +6,11 @@
 //! borrow immutable fields without consulting embedded policy state.
 
 mod io;
+mod manifest;
 mod state;
+
+pub use manifest::NativeManifestPublication;
+pub(super) use manifest::run as run_manifest;
 
 use super::{
     admission::{AdmissionJob, NativeChunkAdmissionError, TransferSource},
@@ -32,12 +36,13 @@ use terrane_core::{
 use tokio::sync::oneshot;
 
 /// Retains actual physical resources independently of an external response waiter.
-pub(super) struct InlineJob {
+pub(super) struct PublicationJob {
     custody: Arc<Mutex<Custody>>,
     encoded: Vec<u8>,
     plaintext: Vec<u8>,
     claim: PublicationClaim,
     dictionary: Option<Arc<Mutex<AdmissionJob>>>,
+    manifest: Option<manifest::ManifestInput>,
     transfer: Option<TransferSource>,
     transfer_observation:
         Option<crate::publisher_local::client::BodyIncarnationObservation<HostDomainLocation>>,
@@ -54,13 +59,15 @@ pub(super) struct InlineJob {
 
 /// Retains one actual executor job's synchronized publication funding.
 pub(super) struct Funding {
-    job: Arc<Mutex<InlineJob>>,
+    job: Arc<Mutex<PublicationJob>>,
     custody: Arc<Mutex<Custody>>,
     token: String,
     hash: String,
     descriptor: Descriptor,
     source: (u64, u64, u64),
     transfer: Option<TransferSource>,
+    manifest: Option<Arc<super::RetainedManifest>>,
+    sources: Vec<TransferSource>,
     hold: u64,
     generation: u64,
 }
@@ -77,13 +84,35 @@ impl Funding {
             .map_err(|_| invalid("publication custody poisoned"))?;
         if claim.domain() != owner.preparation.config.location.domain()
             || claim.descriptor() != &self.descriptor
-            || claim.manifest().is_some()
+            || claim.canonical_manifest()
+                != self
+                    .manifest
+                    .as_ref()
+                    .and_then(|retained| retained.claim().canonical_manifest())
         {
             return Err(invalid(
                 "publication claim differs from actual funded input",
             ));
         }
+        if let Some(retained) = &self.manifest {
+            retained.check_registration(&owner)?;
+        }
         Ok(())
+    }
+
+    /// Borrows only the actual manifest pin owned by this registered job.
+    ///
+    /// # Errors
+    /// Refuses changed metadata, missing native registration or poisoned custody.
+    pub(super) fn retained_manifest(&self) -> std_io::Result<Option<Arc<super::RetainedManifest>>> {
+        let owner = self
+            .custody
+            .lock()
+            .map_err(|_| invalid("publication custody poisoned"))?;
+        if let Some(retained) = &self.manifest {
+            retained.check_registration(&owner)?;
+        }
+        Ok(self.manifest.as_ref().map(Arc::clone))
     }
 
     /// Checks the original anonymous source inode before passing its descriptor.
@@ -138,17 +167,29 @@ impl Funding {
     ///
     /// # Errors
     /// Refuses absent transfer custody, altered source bytes or lost actual pins.
-    pub(super) fn transfer_key(&self) -> std_io::Result<crate::publisher_local::wire::BodyKey> {
+    pub(super) fn transfer_key(
+        &self,
+        index: usize,
+    ) -> std_io::Result<crate::publisher_local::wire::BodyKey> {
         let owner = self
             .custody
             .lock()
             .map_err(|_| invalid("publication custody poisoned"))?;
         let transfer = self
-            .transfer
-            .as_ref()
+            .transfer_at(index)
             .ok_or_else(|| invalid("publication has no standalone transfer"))?;
         transfer.check_current(&owner)?;
         Ok(transfer.key().clone())
+    }
+
+    fn transfer_at(&self, index: usize) -> Option<&TransferSource> {
+        if self.manifest.is_some() {
+            self.sources.get(index)
+        } else if index == 0 {
+            self.transfer.as_ref()
+        } else {
+            None
+        }
     }
 
     /// Checks the actual same-response descriptor before permitting retirement.
@@ -165,8 +206,10 @@ impl Funding {
             .lock()
             .map_err(|_| invalid("publication custody poisoned"))?;
         let transfer = self
-            .transfer
-            .as_ref()
+            .sources
+            .iter()
+            .chain(self.transfer.iter())
+            .find(|source| source.key() == key)
             .ok_or_else(|| invalid("publication has no standalone transfer"))?;
         if transfer.key() != key {
             return Err(invalid("transfer reply names another actual source"));
@@ -176,7 +219,7 @@ impl Funding {
     }
 
     /// Borrows the actual registered resource identity without locking it.
-    pub(super) fn job(&self) -> &Arc<Mutex<InlineJob>> {
+    pub(super) fn job(&self) -> &Arc<Mutex<PublicationJob>> {
         &self.job
     }
 
@@ -197,6 +240,15 @@ impl Funding {
     }
 }
 
+/// Retains an actual completed publication independently of its public wrapper.
+struct PublicationCompletion {
+    body: Arc<PeerPublishedObject<HostDomainLocation>>,
+    _job: Arc<Mutex<PublicationJob>>,
+    allocated: u64,
+    charged: u64,
+    future: u64,
+}
+
 /// Owns a completed inline publication and its original physical funding.
 ///
 /// The handle is independently verified, kernel-sealed and read-only. This
@@ -204,37 +256,33 @@ impl Funding {
 /// physical owner retains its pin and future hold until actual retirement;
 /// dropping a waiter or this receipt does not release them.
 pub struct NativeInlinePublication {
-    body: Arc<PeerPublishedObject<HostDomainLocation>>,
-    _job: Arc<Mutex<InlineJob>>,
-    allocated: u64,
-    charged: u64,
-    future: u64,
+    completion: PublicationCompletion,
 }
 
 impl NativeInlinePublication {
     /// Borrows verified read-only sealed bytes without an embedded-state lock.
     pub fn handle(&self) -> &File {
-        self.body.handle()
+        self.completion.body.handle()
     }
 
     /// Borrows the independently verified content declaration.
     pub fn claim(&self) -> &PublicationClaim {
-        self.body.claim()
+        self.completion.body.claim()
     }
 
     /// Returns synchronized allocation of this sealed inode alone.
     pub fn synchronized_sealed_inode_bytes(&self) -> u64 {
-        self.allocated
+        self.completion.allocated
     }
 
     /// Returns separate fresh full-project kernel charged-and-reserved bytes.
     pub fn charged_reserved_bytes(&self) -> u64 {
-        self.charged
+        self.completion.charged
     }
 
     /// Returns distinct durable future policy holds at acknowledgment.
     pub fn future_hold_bytes(&self) -> u64 {
-        self.future
+        self.completion.future
     }
 }
 
@@ -323,12 +371,12 @@ pub(super) async fn run(
     context.check_current().map_err(std_io::Error::other)?;
     let custody = Arc::clone(executor.custody());
     let prepared = prepare(executor, &custody, descriptor, encoded)?;
-    let job = executor.register_inline(prepared)?;
+    let job = executor.register_publication(prepared)?;
     let outcome = execute(executor, &job, &context).await;
     if outcome.is_err() {
-        executor.reclaim_inline(&job)?;
+        executor.reclaim_publication(&job)?;
     }
-    outcome
+    outcome.map(|completion| NativeInlinePublication { completion })
 }
 
 fn prepare(
@@ -336,7 +384,7 @@ fn prepare(
     custody: &Arc<Mutex<Custody>>,
     descriptor: Descriptor,
     encoded: Vec<u8>,
-) -> std_io::Result<InlineJob> {
+) -> std_io::Result<PublicationJob> {
     let owner = custody
         .lock()
         .map_err(|_| invalid("publication custody poisoned"))?;
@@ -386,12 +434,13 @@ fn prepare(
         }
         Err(error) => return Err(error),
     };
-    Ok(InlineJob {
+    Ok(PublicationJob {
         custody: Arc::clone(custody),
         encoded,
         plaintext,
         claim,
         dictionary: dependency,
+        manifest: None,
         transfer,
         transfer_observation: None,
         transfer_retired: false,
@@ -408,9 +457,9 @@ fn prepare(
 
 async fn execute(
     executor: &mut NativeOwnerExecutor,
-    job: &Arc<Mutex<InlineJob>>,
+    job: &Arc<Mutex<PublicationJob>>,
     context: &crate::publisher_local::client::PublisherRunningContext,
-) -> std_io::Result<NativeInlinePublication> {
+) -> std_io::Result<PublicationCompletion> {
     let custody = Arc::clone(executor.custody());
     let ticket = {
         let mut physical = job
@@ -447,6 +496,14 @@ async fn execute(
             descriptor: physical.claim.descriptor().clone(),
             source: (source.dev(), source.ino(), source.len()),
             transfer: physical.transfer.clone(),
+            manifest: physical
+                .manifest
+                .as_ref()
+                .map(|input| Arc::clone(&input.retained)),
+            sources: physical
+                .manifest
+                .as_ref()
+                .map_or_else(|| Ok(Vec::new()), |input| input.transfer_sources())?,
             hold: physical.hold,
             generation: physical.generation,
         }
@@ -458,12 +515,12 @@ async fn execute(
             .lock()
             .map_err(|_| invalid("publication job poisoned"))?;
         let claim = physical.claim.clone();
-        let InlineJob { reader, reply, .. } = &mut *physical;
+        let PublicationJob { reader, reply, .. } = &mut *physical;
         let source = reader
             .as_ref()
             .ok_or_else(|| invalid("publication source absent"))?;
         let body = session
-            .publish_inline_running(source, claim.clone(), context, &mut turn, reply)
+            .publish_running(source, claim.clone(), context, &mut turn, reply)
             .map_err(std_io::Error::other)?;
         // The actual accepted result is retained before any later fallible
         // synchronization, state write or fresh quota reconciliation.
@@ -477,7 +534,7 @@ async fn execute(
                     .ok_or_else(|| invalid("transfer replacement absent"))?,
             );
             let observation = session
-                .inspect_inline_transfer(&published, context, &mut turn, &mut physical.reply)
+                .inspect_source_transfer(&published, context, &mut turn, 0, &mut physical.reply)
                 .map_err(std_io::Error::other)?;
             physical.transfer_observation = Some(observation);
             let observation = physical
@@ -485,9 +542,18 @@ async fn execute(
                 .as_ref()
                 .ok_or_else(|| invalid("transfer observation absent"))?;
             session
-                .retire_inline_transfer(&published, context, &mut turn, observation)
+                .retire_source_transfer(&published, context, &mut turn, 0, observation)
                 .map_err(std_io::Error::other)?;
             physical.transfer_retired = true;
+        }
+        let published = Arc::clone(
+            physical
+                .body
+                .as_ref()
+                .ok_or_else(|| invalid("publication replacement absent"))?,
+        );
+        if let Some(input) = &mut physical.manifest {
+            input.retire_sources(&session, &published, context, &mut turn)?;
         }
     }
     let ticket = {
@@ -531,13 +597,23 @@ async fn execute(
     owner.faulted = false;
     physical.plaintext.clear();
     physical.plaintext.shrink_to_fit();
-    Ok(NativeInlinePublication {
+    Ok(PublicationCompletion {
         body,
         _job: Arc::clone(job),
         allocated,
         charged,
         future,
     })
+}
+
+/// Counts retained manifest headers and actual per-source ownership slots.
+pub(super) fn manifest_source_header_bytes() -> usize {
+    std::mem::size_of::<manifest::ManifestInput>()
+        + std::mem::size_of::<manifest::SourceTransfer>()
+        + 2 * std::mem::size_of::<crate::host_cache::NativeChunkSource>()
+        + 4 * std::mem::size_of::<TransferSource>()
+        + std::mem::size_of::<crate::host_cache::NativeManifestSource>()
+        + std::mem::size_of::<super::RetainedManifest>()
 }
 
 fn invalid(message: &'static str) -> std_io::Error {

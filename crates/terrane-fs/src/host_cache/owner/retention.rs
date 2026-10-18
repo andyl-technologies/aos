@@ -66,6 +66,11 @@ pub struct NativeMetadataOwner {
 
 /// Transfers complete command ownership to the retained physical executor.
 pub(super) enum Command {
+    /// Transfers a manifest identity to actual retained native reassembly.
+    PublishManifest {
+        identity: Identity,
+        response: oneshot::Sender<io::Result<super::NativeManifestPublication>>,
+    },
     /// Transfers bounded encoded inline content to actual sealed publication.
     PublishInline {
         descriptor: terrane_core::identity::Descriptor,
@@ -244,6 +249,13 @@ impl NativeMetadataOwner {
                 }
                 while let Ok(command) = receive.recv() {
                     match command {
+                        Command::PublishManifest { identity, response } => {
+                            let result = runtime.block_on(super::publication::run_manifest(
+                                &mut executor,
+                                identity,
+                            ));
+                            let _ = response.send(result);
+                        }
                         Command::PublishInline {
                             descriptor,
                             encoded,
@@ -572,7 +584,13 @@ impl RetainedManifest {
     }
 
     /// Checks actual durable retention records without changing owner phase.
-    fn check_registration(&self, custody: &Custody) -> io::Result<()> {
+    ///
+    /// # Errors
+    /// Refuses a foreign source/session, missing pin/lease/hold or changed files.
+    pub(in crate::host_cache::owner) fn check_registration(
+        &self,
+        custody: &Custody,
+    ) -> io::Result<()> {
         if custody.snapshot.is_none()
             || !custody
                 .sources

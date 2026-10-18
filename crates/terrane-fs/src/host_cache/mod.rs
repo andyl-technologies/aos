@@ -33,7 +33,8 @@ pub(crate) use owner::{
 pub use owner::{
     CompletedRecovery, IndexRepairPolicy, NativeCacheOwnerConfig, NativeCachePreparation,
     NativeChunkAdmissionError, NativeIndexRepairReport, NativeInlinePublication,
-    NativeMetadataAdmissionError, NativeMetadataOwner, NativeResumeError, RetainedManifest,
+    NativeManifestPublication, NativeMetadataAdmissionError, NativeMetadataOwner,
+    NativeResumeError, RetainedManifest,
 };
 pub use quota::ProjectQuota;
 pub use reassembly::NativeReassemblyPlan;
