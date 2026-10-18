@@ -97,6 +97,24 @@ fn exposures_preserve_order_and_reject_partial_configuration() {
     ] {
         assert!(Config::parse(&format!("{text}{}", exposure(id, endpoint, extra))).is_err());
     }
+
+    for target in [
+        "refs/heads/main@unregistered".to_owned(),
+        format!("commit:{}@unregistered", "ab".repeat(32)),
+    ] {
+        assert!(surface::View::parse(&target).is_ok());
+        let named = exposure("third", "/tmp/other", "mode={reader='pinned'}")
+            .replace("view='refs/heads/main'", &format!("view='{target}'"));
+        for configured in [
+            format!("store='disk(/tmp)'\n{named}"),
+            format!("{text}{named}"),
+        ] {
+            assert!(matches!(
+                Config::parse(&configured),
+                Err(terrane::config::ConfigError::Invalid("unknown view policy"))
+            ));
+        }
+    }
 }
 
 #[test]

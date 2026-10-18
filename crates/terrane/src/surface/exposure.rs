@@ -54,6 +54,9 @@ impl PreparedExposures {
         let mut identifiers = std::collections::BTreeSet::new();
         let mut endpoints = std::collections::BTreeSet::new();
         for exposure in exposures {
+            if exposure.view.policy.is_some() {
+                return Err(Error::UnavailableOperation("unregistered view policy"));
+            }
             if exposure.id.is_empty()
                 || !identifiers.insert(&exposure.id)
                 || !crate::config::absolute_path(&exposure.endpoint.address)

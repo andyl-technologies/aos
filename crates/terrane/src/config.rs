@@ -43,7 +43,7 @@ impl Config {
     /// # Errors
     ///
     /// Returns a typed error for malformed TOML, unknown keys or roles, invalid
-    /// store syntax, or any exposure naming a missing surface.
+    /// store syntax, or any exposure naming a missing surface or view policy.
     pub fn parse(input: &str) -> Result<Self, ConfigError> {
         let raw: RawConfig = toml::from_str(input).map_err(ConfigError::Toml)?;
         let store = expression::StoreExpression::parse(&raw.store).map_err(ConfigError::Store)?;
