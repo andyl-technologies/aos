@@ -2047,9 +2047,21 @@ runtime phase begins, and its normal retirement path reclaims the children.
 Source review locates a stale initial-lifecycle census after preparation owners
 have moved into those nodes. A correction must authenticate and count the actual
 destination owners before this control can pass. No native preservation result
-or overall performance improvement follows from these library results. The
-production application-target gate above covers the earlier source checkpoint;
-the new checkpoint requires its own refreshed gate.
+or overall performance improvement follows from these library results.
+
+The refreshed production application-target gate passes for the committed,
+formatted `2788ced205` checkpoint. Independent registered-artifact verification
+matches all 7,744 captured files to that commit. The source includes 48 of the
+69 changed crate roles; all 21 excluded roles belong to the Daemon, which has
+separate all-target and library coverage. The installed compiler record contains
+167 freshly compiled optimized test artifacts across 48 application packages,
+including 69 integration targets, with assertions and overflow checks enabled.
+Final test-target compilation takes 11 minutes 34 seconds after prerequisites.
+The gate compiles tests without running them. The installed output contains
+compiler metadata, and its identical normalized hash across checkpoints does
+not establish source identity. The registered derivation and full captured-source
+comparison establish which committed input was compiled. This gate excludes
+subsequent changes.
 
 The subsequent Control projection component (`7ff72b5e15`) retains both actual
 decoded DOM owners and a separate provenance wrapper for the exact body and full
