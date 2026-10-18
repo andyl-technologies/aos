@@ -23,6 +23,8 @@ mod source;
 pub use manifest_source::NativeManifestSource;
 #[cfg(feature = "tokio")]
 pub use metadata::NativeHostMetadataReader;
+#[cfg(feature = "native-test-fixtures")]
+pub use owner::NativePolicyStall;
 #[cfg(feature = "tokio")]
 pub(crate) use owner::{
     AcceptedRecoveryManifestEffect, PublisherResumeTurn, PublisherRunningTurn,
@@ -34,7 +36,7 @@ pub use owner::{
     CompletedRecovery, IndexRepairPolicy, NativeCacheOwnerConfig, NativeCachePreparation,
     NativeChunkAdmissionError, NativeIndexRepairReport, NativeInlinePublication,
     NativeManifestPublication, NativeMetadataAdmissionError, NativeMetadataOwner,
-    NativeResidentChunkRead, NativeResumeError, RetainedManifest,
+    NativeResidentChunkSource, NativeResumeError, RetainedManifest,
 };
 pub use quota::ProjectQuota;
 pub use reassembly::NativeReassemblyPlan;

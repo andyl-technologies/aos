@@ -66,10 +66,16 @@ pub struct NativeMetadataOwner {
 
 /// Transfers complete command ownership to the retained physical executor.
 pub(super) enum Command {
-    /// Reads one bounded chunk from a genuinely completed retained publication.
-    ReadResidentChunk {
+    /// Holds actual embedded policy only in explicitly enabled native fixtures.
+    #[cfg(feature = "native-test-fixtures")]
+    HoldPolicyForFixture {
+        started: oneshot::Sender<io::Result<()>>,
+        released: mpsc::Receiver<()>,
+    },
+    /// Retains one pinned range from a genuinely completed publication.
+    RetainResidentChunk {
         identity: Identity,
-        response: oneshot::Sender<io::Result<super::NativeResidentChunkRead>>,
+        response: oneshot::Sender<io::Result<super::NativeResidentChunkSource>>,
     },
     /// Transfers a manifest identity to actual retained native reassembly.
     PublishManifest {
@@ -254,9 +260,22 @@ impl NativeMetadataOwner {
                 }
                 while let Ok(command) = receive.recv() {
                     match command {
-                        Command::ReadResidentChunk { identity, response } => {
+                        #[cfg(feature = "native-test-fixtures")]
+                        Command::HoldPolicyForFixture { started, released } => {
+                            match executor.custody().lock() {
+                                Ok(_held) => {
+                                    let _ = started.send(Ok(()));
+                                    let _ = released.recv();
+                                }
+                                Err(_) => {
+                                    let _ = started
+                                        .send(Err(io::Error::other("fixture policy poisoned")));
+                                }
+                            }
+                        }
+                        Command::RetainResidentChunk { identity, response } => {
                             let result =
-                                super::publication::read_resident_chunk(&executor, identity);
+                                super::publication::retain_resident_chunk(&executor, identity);
                             let _ = response.send(result);
                         }
                         Command::PublishManifest { identity, response } => {

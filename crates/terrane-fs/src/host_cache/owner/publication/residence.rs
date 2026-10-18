@@ -2,7 +2,8 @@
 //!
 //! Durable residence rows locate candidates. Only the physical worker's genuine
 //! completed job, current synchronized pins and actual sealed descriptor permit
-//! a read. Plaintext and kernel-seal reads run outside embedded policy locks.
+//! source preparation. Subsequent plaintext and seal reads never lock embedded
+//! state.
 //! This grants no consumer lease, Store readiness or caller-selected backing.
 
 use super::{PublicationJob, invalid, state};
@@ -11,9 +12,8 @@ use crate::{
     host_quota::NativeProject,
     publisher_local::client::PeerPublishedObject,
 };
-use rustix::fs::{Mode, OFlags, openat};
+use rustix::fs::OFlags;
 use std::{
-    fs::File,
     io,
     os::unix::fs::{FileExt, MetadataExt},
     sync::{Arc, Mutex, mpsc},
@@ -27,58 +27,92 @@ use super::super::{
     retention::{Command, Custody, NativeMetadataOwner, NativeOwnerExecutor},
 };
 
-/// Retains bounded verified plaintext and its original physical publication job.
+/// Retains an original pinned sealed range for reads outside embedded state.
 ///
-/// The worker retains the actual publication pin and backing independently of
-/// this value. These bytes grant no native handle, new consumer lease or writable
-/// cache authority. Cold/recovered publications use their separate retained
-/// recovery registry and are not accepted by this Running-publication path.
-pub struct NativeResidentChunkRead {
+/// The physical job keeps the actual publication pin and backing alive after
+/// receipt or owner destruction. This source grants no native handle, new
+/// consumer lease or writable cache authority. Its immutable read operations
+/// never consult the command queue or lock embedded state.
+pub struct NativeResidentChunkSource {
     identity: Identity,
-    span: NativeChunkSpan,
-    plaintext: Vec<u8>,
-    _job: Arc<Mutex<PublicationJob>>,
+    source: Source,
 }
 
-impl NativeResidentChunkRead {
-    /// Borrows the registered chunk identity verified against the actual bytes.
+impl NativeResidentChunkSource {
+    /// Borrows the registered chunk identity checked against its containing claim.
     pub fn identity(&self) -> &Identity {
         &self.identity
     }
 
     /// Returns the independently derived first occurrence in its sealed object.
     pub fn span(&self) -> NativeChunkSpan {
-        self.span
+        self.source.span
     }
 
-    /// Borrows only the bounded plaintext read from that checked sealed range.
-    pub fn plaintext(&self) -> &[u8] {
-        &self.plaintext
+    /// Reads bounded verified plaintext without a queue or embedded-store lock.
+    ///
+    /// Each call checks the retained inode and kernel seal before and after a
+    /// positioned read, then verifies the actual chunk identity and boundary.
+    /// Original physical job ownership keeps its durable pin and descriptor
+    /// alive throughout use. Concurrent readers never share a file cursor.
+    ///
+    /// # Errors
+    /// Refuses changed native inode, project, root or seal, invalid chunk bytes
+    /// or boundary, native I/O failure, and unavailable bounded allocation.
+    pub fn read_verified(&self) -> io::Result<Vec<u8>> {
+        check_native(&self.source)?;
+        let mut plaintext = Vec::new();
+        plaintext
+            .try_reserve_exact(self.source.span.length)
+            .map_err(|error| io::Error::new(io::ErrorKind::OutOfMemory, error))?;
+        if plaintext.capacity() > self.source.allocation_limit {
+            return Err(io::Error::new(
+                io::ErrorKind::OutOfMemory,
+                "resident buffer exceeds operator bound",
+            ));
+        }
+        plaintext.resize(self.source.span.length, 0);
+        self.source
+            .body
+            .handle()
+            .read_exact_at(&mut plaintext, self.source.span.offset)?;
+        TERRANE_V1
+            .verify(&self.identity, &plaintext)
+            .map_err(io::Error::other)?;
+        let profile = self.source.body.layout().layout().chunk_profile();
+        if profile.first_boundary(&plaintext) != plaintext.len()
+            || (!self.source.span.final_chunk && !profile.valid_nonfinal_chunk(&plaintext))
+        {
+            return Err(invalid(
+                "resident plaintext has another object chunk boundary",
+            ));
+        }
+        check_native(&self.source)?;
+        Ok(plaintext)
     }
 }
 
 impl NativeMetadataOwner {
-    /// Reads one chunk from this worker's genuinely completed Running publication.
+    /// Retains a pinned source from this worker's completed Running publication.
     ///
-    /// The owner resolves the exact durable residence through its original job
-    /// registry. It checks current pins, canonical metadata, native inode and seal
-    /// before and after a bounded positioned read, then revalidates the actual
-    /// bytes in the containing manifest's chunk-boundary context. No path, raw
-    /// descriptor, policy hold or caller assertion can substitute for custody.
+    /// Preparation resolves the exact durable residence through the original
+    /// job registry and checks current synchronized funding and canonical
+    /// metadata. Subsequent reads use only the retained immutable source and
+    /// never enter the queue or embedded state. Cold/recovered publications
+    /// require their separate verified recovery registry.
     ///
     /// # Errors
     /// Refuses a full/stopped queue, absent Resume, missing current publication,
-    /// stale policy/native custody, invalid chunk identity or boundary, and an
-    /// operator allocation bound. An error returns no plaintext or native handle.
-    pub async fn read_resident_chunk(
+    /// stale policy/native custody, invalid chunk identity or operator bounds.
+    pub async fn retain_resident_chunk(
         &self,
         identity: Identity,
-    ) -> io::Result<NativeResidentChunkRead> {
+    ) -> io::Result<NativeResidentChunkSource> {
         let (response, receive) = oneshot::channel();
         self.commands
             .as_ref()
             .ok_or_else(|| invalid("resident read owner stopped"))?
-            .try_send(Command::ReadResidentChunk { identity, response })
+            .try_send(Command::RetainResidentChunk { identity, response })
             .map_err(|error| match error {
                 mpsc::TrySendError::Full(_) => {
                     io::Error::new(io::ErrorKind::WouldBlock, "resident read queue full")
@@ -104,49 +138,22 @@ struct Source {
     allocation_limit: usize,
 }
 
-/// Reads only a registered physical publication on the retained worker thread.
+/// Prepares only a registered physical publication on the retained worker thread.
 ///
 /// # Errors
 /// Refuses unverified/stale policy, missing physical resources or invalid bytes.
-pub(in crate::host_cache::owner) fn read(
+pub(in crate::host_cache::owner) fn retain(
     executor: &NativeOwnerExecutor,
     identity: Identity,
-) -> io::Result<NativeResidentChunkRead> {
+) -> io::Result<NativeResidentChunkSource> {
     let context = executor.admission_context()?;
     context.check_current().map_err(io::Error::other)?;
     if identity.kind() != IdentityKind::Chunk || identity.profile() != TERRANE_V1.name() {
         return Err(invalid(
-            "resident read requires a registered chunk identity",
+            "resident source requires a registered chunk identity",
         ));
     }
     let source = select(executor, &identity)?;
-    check_native(&source)?;
-    let mut plaintext = Vec::new();
-    plaintext
-        .try_reserve_exact(source.span.length)
-        .map_err(|error| io::Error::new(io::ErrorKind::OutOfMemory, error))?;
-    if plaintext.capacity() > source.allocation_limit {
-        return Err(io::Error::new(
-            io::ErrorKind::OutOfMemory,
-            "resident buffer exceeds operator bound",
-        ));
-    }
-    plaintext.resize(source.span.length, 0);
-    source
-        .body
-        .handle()
-        .read_exact_at(&mut plaintext, source.span.offset)?;
-    TERRANE_V1
-        .verify(&identity, &plaintext)
-        .map_err(io::Error::other)?;
-    let profile = source.body.layout().layout().chunk_profile();
-    if profile.first_boundary(&plaintext) != plaintext.len()
-        || (!source.span.final_chunk && !profile.valid_nonfinal_chunk(&plaintext))
-    {
-        return Err(invalid(
-            "resident plaintext has another object chunk boundary",
-        ));
-    }
     check_native(&source)?;
     context.check_current().map_err(io::Error::other)?;
     {
@@ -166,15 +173,10 @@ pub(in crate::host_cache::owner) fn read(
                 .any(|row| same_row(row, &source.row))
             || registration(&owner, &job, &identity, &source.row)? != source.span
         {
-            return Err(invalid("resident read registration changed"));
+            return Err(invalid("resident source registration changed"));
         }
     }
-    Ok(NativeResidentChunkRead {
-        identity,
-        span: source.span,
-        plaintext,
-        _job: source.job,
-    })
+    Ok(NativeResidentChunkSource { identity, source })
 }
 
 fn select(executor: &NativeOwnerExecutor, identity: &Identity) -> io::Result<Source> {
@@ -321,37 +323,19 @@ fn check_native(source: &Source) -> io::Result<()> {
     layout.recheck()?;
     let body = source.body.handle();
     let metadata = body.metadata()?;
-    let hash = state::hex(source.body.claim().descriptor().digest());
-    let directory = layout
-        .directories
-        .get("sealed")
-        .ok_or_else(|| invalid("sealed directory absent"))?;
-    let shard = openat(
-        directory,
-        &hash[..2],
-        OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    )?;
-    let canonical = File::from(openat(
-        &shard,
-        hash.as_str(),
-        OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    )?);
-    let named = canonical.metadata()?;
     let flags = rustix::fs::fcntl_getfl(body)?;
     if !metadata.is_file()
         || metadata.uid() != source.publisher_uid
         || metadata.nlink() != 1
         || metadata.mode() & 0o7777 != 0o400
         || metadata.len() != source.body.claim().plaintext_size()
-        || (metadata.dev(), metadata.ino()) != (named.dev(), named.ino())
+        || metadata.dev() != layout.directory_binding("layout-root")?.0
         || flags.intersects(OFlags::WRONLY | OFlags::RDWR | OFlags::PATH)
         || NativeProject::inspect(body)?.project_id != source.project
         || crate::verity::measure(body)? != *source.body.binding()
     {
         return Err(invalid(
-            "resident read changed canonical inode or kernel seal",
+            "resident source changed retained inode or kernel seal",
         ));
     }
     Ok(())

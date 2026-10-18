@@ -170,7 +170,7 @@ pub(super) fn run(
         .calculate(IdentityKind::Chunk, &data.first)
         .map_err(io::Error::other)?;
     if runtime
-        .block_on(owner.read_resident_chunk(first_identity))
+        .block_on(owner.retain_resident_chunk(first_identity))
         .is_ok()
     {
         return Err(invalid("resident read acknowledged before actual Resume"));
@@ -312,9 +312,9 @@ pub(super) fn run(
         drop(receipt);
         check_resident_reads(owner, runtime, inputs, &data)?;
         let message = if data.dictionary.is_some() {
-            "PASS actual dictionary-backed manifest publication retained its original dictionary inode, pins and holds while retiring repeated sources; checked retained range reads; no Ready"
+            "PASS actual dictionary-backed manifest publication retained its original dictionary inode, pins and holds while retiring repeated sources; checked retained range reads with embedded state locked; no Ready"
         } else {
-            "PASS actual manifest publication retained metadata, repeated-chunk ranges and pending original sources across later work; checked retained range reads; no Ready"
+            "PASS actual manifest publication retained metadata, repeated-chunk ranges and pending original sources across later work; checked retained range reads with embedded state locked; no Ready"
         };
         emit(message)?;
     }
@@ -333,12 +333,12 @@ fn check_resident_reads(
         .calculate(IdentityKind::Chunk, b"unseen resident source")
         .map_err(io::Error::other)?;
     let error = runtime
-        .block_on(owner.read_resident_chunk(missing))
+        .block_on(owner.retain_resident_chunk(missing))
         .err()
         .ok_or_else(|| invalid("absent resident source unexpectedly read"))?;
     if error.kind() != io::ErrorKind::NotFound
         || runtime
-            .block_on(owner.read_resident_chunk(data.identity.clone()))
+            .block_on(owner.retain_resident_chunk(data.identity.clone()))
             .is_ok()
     {
         return Err(invalid(
@@ -352,9 +352,12 @@ fn check_resident_reads(
         let identity = TERRANE_V1
             .calculate(IdentityKind::Chunk, bytes)
             .map_err(io::Error::other)?;
-        let read = runtime.block_on(owner.read_resident_chunk(identity.clone()))?;
+        let read = runtime.block_on(owner.retain_resident_chunk(identity.clone()))?;
+        let stalled = runtime.block_on(owner.stall_policy_for_fixture())?;
+        let plaintext = read.read_verified()?;
+        drop(stalled);
         if read.identity() != &identity
-            || read.plaintext() != bytes
+            || plaintext != bytes
             || read.span().offset != offset as u64
             || read.span().length != bytes.len()
             || read.span().final_chunk != final_chunk

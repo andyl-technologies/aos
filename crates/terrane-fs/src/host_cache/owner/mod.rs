@@ -8,6 +8,8 @@
 mod admission;
 mod config;
 mod index_io;
+#[cfg(feature = "native-test-fixtures")]
+mod policy_stall_fixture;
 mod preparation;
 mod publication;
 mod recovery;
@@ -38,9 +40,11 @@ pub use admission::{
     NativeMetadataAdmissionError,
 };
 pub use config::{IndexRepairPolicy, NativeCacheOwnerConfig};
+#[cfg(feature = "native-test-fixtures")]
+pub use policy_stall_fixture::NativePolicyStall;
 pub use preparation::NativeCachePreparation;
 pub use publication::{
-    NativeInlinePublication, NativeManifestPublication, NativeResidentChunkRead,
+    NativeInlinePublication, NativeManifestPublication, NativeResidentChunkSource,
 };
 pub use recovery::CompletedRecovery;
 pub use resume_error::NativeResumeError;

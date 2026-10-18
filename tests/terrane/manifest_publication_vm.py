@@ -123,9 +123,9 @@ def run(driver, publisher, uuid):
                 print(error.decode(), end="", flush=True)
             expected_result = ("PASS actual wrong whole-file hash retained the funded anonymous output without publisher submission; no Ready"
                                if suffix == "-bad-whole" else
-                               "PASS actual dictionary-backed manifest publication retained its original dictionary inode, pins and holds while retiring repeated sources; checked retained range reads; no Ready"
+                               "PASS actual dictionary-backed manifest publication retained its original dictionary inode, pins and holds while retiring repeated sources; checked retained range reads with embedded state locked; no Ready"
                                if dictionary_backed else
-                               "PASS actual manifest publication retained metadata, repeated-chunk ranges and pending original sources across later work; checked retained range reads; no Ready")
+                               "PASS actual manifest publication retained metadata, repeated-chunk ranges and pending original sources across later work; checked retained range reads with embedded state locked; no Ready")
             driver.require(process.returncode == 0 and output.decode().splitlines() == [expected_result],
                            "missing exact actual manifest publication result: " + case)
             state = tomllib.loads(snapshot.read_text())

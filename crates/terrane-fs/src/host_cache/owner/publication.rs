@@ -12,8 +12,8 @@ mod state;
 
 pub use manifest::NativeManifestPublication;
 pub(super) use manifest::run as run_manifest;
-pub use residence::NativeResidentChunkRead;
-pub(super) use residence::read as read_resident_chunk;
+pub use residence::NativeResidentChunkSource;
+pub(super) use residence::retain as retain_resident_chunk;
 
 use super::{
     admission::{AdmissionJob, NativeChunkAdmissionError, TransferSource},
