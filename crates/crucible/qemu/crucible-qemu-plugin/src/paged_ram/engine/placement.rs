@@ -266,7 +266,7 @@ impl PhysicalPlacement<'_> {
         };
         self.operation = Some(operation.clone());
         loop {
-            operation.wait_slice()?;
+            self.check_budget()?;
             let status = (self.service.native.run)(physical_placement, (self as *mut Self).cast());
             if status == 0 {
                 break;
@@ -293,9 +293,7 @@ impl PhysicalPlacement<'_> {
                 status,
             }));
         }
-        if !self.activate {
-            self.check_budget()?;
-        }
+        self.check_budget()?;
         if complete_here {
             operation.complete()?;
         }
@@ -399,6 +397,7 @@ impl PhysicalPlacement<'_> {
         } else {
             self.apply_placement(locks)?;
         }
+        self.check_budget()?;
         let status = (native.end)(self.token);
         if status != 0 {
             return Err(RamError::Native {
@@ -563,11 +562,16 @@ impl PhysicalPlacement<'_> {
     }
 
     pub(super) fn check_budget(&self) -> Result<(), RamError> {
-        self.operation
+        let operation = self
+            .operation
             .as_ref()
-            .ok_or("physical placement supervisor absent")?
-            .wait_slice()?;
-        Ok(())
+            .ok_or("physical placement supervisor absent")?;
+        check_placement_operation(
+            operation.as_ref(),
+            &self.owner.failed,
+            &self.service.failed,
+            &self.service.stop,
+        )
     }
 
     fn prefetch_pages(
@@ -635,6 +639,31 @@ impl PhysicalPlacement<'_> {
     }
 }
 
+/// Refuses already-known operational failure without taking the actor's locks.
+///
+/// These local checks do not replace native validation of the physical hold or
+/// atomically exclude an actor failure racing with its eventual release.
+fn check_placement_operation(
+    operation: &dyn SourceOperation,
+    owner_failed: &AtomicBool,
+    service_failed: &AtomicBool,
+    stopping: &AtomicBool,
+) -> Result<(), RamError> {
+    let check_health = || {
+        if owner_failed.load(Ordering::Acquire) || service_failed.load(Ordering::Acquire) {
+            return Err(RamError::Invariant("physical placement authority failed"));
+        }
+        if stopping.load(Ordering::Acquire) {
+            return Err(RamError::Invariant("physical placement worker is stopping"));
+        }
+        Ok(())
+    };
+
+    check_health()?;
+    operation.wait_slice()?;
+    check_health()
+}
+
 fn prefault_original_page(address: u64) {
     // SAFETY: the caller retains complete physical exclusion for this private
     // writable anonymous page. The identical volatile store resolves its PTE
@@ -673,6 +702,9 @@ extern "C" fn physical_placement(opaque: *mut c_void) -> c_int {
         }
     }
 }
+
+#[cfg(test)]
+mod health_tests;
 
 pub(super) extern "C" fn placement_before_resume() -> c_int {
     let owner = OPERATIONAL_OWNER

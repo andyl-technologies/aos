@@ -150,6 +150,14 @@ Cleanup deadline check. That check uses the same operation and stores its own
 failure separately; failed worker disposition never commits successful operation
 accounting. The worker-slot mutex remains held through both publications.
 
+Placement checks known owner failure, service failure and worker stop requests
+before and after its original supervision check, before native dispatch, before
+physical-hold release and after dispatch returns. Activation uses the same final
+check as reclaim. These checks take no actor lock and add no allocation. They
+prevent a known failure from passing a later cut; they do not atomically close
+the race between the final check and native release. That remaining race still
+requires the native actor-health and certificate contract.
+
 ## Factory and runtime integration
 
 1. Use `retain_fork_target_factory` to retain the real shared factory facade.
