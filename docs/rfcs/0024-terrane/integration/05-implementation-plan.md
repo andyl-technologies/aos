@@ -9047,13 +9047,14 @@ Resumed qualification:
   process-confinement controls. The supervisor checks the exact existing private
   publisher staging directory and original inode; no post-result I/O diagnostic
   appears in this run. Local nextest on identical crate bytes executes 111
-  cases with 110 passing;
-  the non-UTF-8-name fixture fails during setup on the host ZFS filesystem.
-  That unchanged case passes in the selected native ext4 suite. A separate full
-  ext4 nextest runner is still under review: archive creation and extraction
-  succeed, but its first successful exit supplies no per-test results and is
-  not accepted as execution evidence. Six existing privileged VM cases remain
-  ignored in the ordinary nextest inventory. Existing standalone
+  cases with 110 passing; the non-UTF-8-name fixture fails during setup on
+  the host ZFS filesystem. The unchanged full suite now passes on ext4: all 111
+  nonignored cases execute under UID/GID 842 with empty capabilities and
+  NoNewPrivs. Independent review matches every passing case to the exact archive
+  inventory and verifies all 3,463 source inputs and the archive digest. Earlier
+  extraction-only exits supply no test-execution evidence. Six existing
+  privileged VM cases remain ignored in the ordinary nextest inventory. These
+  111 results apply to this candidate, not later changed sources. Existing standalone
   residence transfer, manifest Running publication, retirement, consumer leases
   and bucket readiness remain open. No frozen identity, encoding, bucket key,
   store trait, dependency or wire format changes.
@@ -9065,7 +9066,9 @@ Resumed qualification:
   pass on unchanged source. Both original real-signal deadline assertions pass.
   Strict Clippy now reports 23 remaining errors: twenty unused integration or
   lifetime-retention findings and three large-value layout findings. Required
-  application target compilation is running; no strict-Clippy pass is claimed.
+  application target compilation passes in 2,591 seconds, producing 128 test
+  artifacts across 29 packages. This compiles unit and integration targets
+  without executing them; no strict-Clippy pass is claimed.
   Follow-up `49972406ae` carries the original queued completion box through
   either Resume outcome, boxes large repair/inspection values and counts command
   pointees in the checked storage envelope. Full diff and syntax review pass.
@@ -9085,11 +9088,29 @@ Resumed qualification:
   the supervisor independently checks original pending inodes, bytes and durable
   publisher retirement leases. Seventeen-file source review, provisional
   all-target and native-only builds, Rust formatting and Python syntax checks
-  pass. Exact committed-source image/guest qualification is queued; the three
-  controls have not executed. A strict attempt still fails nineteen unused
-  integration or retention findings, so no clean-Clippy claim is made.
+  pass. Exact committed-source all-target build, five focused nextest cases,
+  formatter pair, immutable image, independent source/image verification and
+  actual ext4 guest all pass. All 47 selected filesystem cases, eight manifest
+  recovery cases, both original publication controls, all three transfer
+  controls and three process-confinement controls execute successfully; no
+  post-result guest I/O diagnostic appears. Required application target
+  compilation is running. Strict Clippy still fails nineteen unused integration
+  or retention findings, so no clean-Clippy claim is made.
   Pending deletion completion, manifest Running publication, consumer leases,
   NativeReady, BKT-15 and complete host task acceptance remain open.
+- Running metadata-retention candidate `1aa1c86f96`: the physical worker now
+  distinguishes its acknowledged Running context from recovery when retaining
+  ordinary manifest metadata. Actual pack/index synchronization, reservation,
+  manifest and pack pins, fresh quota checks and source registration remain
+  mandatory; no old completed-recovery predicate substitutes for Running
+  custody. Both original inodes and independently registered holds must survive
+  subsequent retention and abandoned waiters. All-target build, five focused
+  nextest cases, formatter pair, immutable image and independent source/image
+  verification pass. The actual guest fails at the first new retention actor
+  with publisher-local Unavailable; neither new retention control is accepted.
+  Candidate `060b101869` adds physical-stage diagnostics for a fresh native run
+  without weakening any assertion. Manifest Running publication, consumer leases,
+  readiness and the complete host tasks remain open.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
   and all seven strict Clippy/documentation profiles pass. The interface,
   commit-path, status and schema gates pass on unchanged final source, including
