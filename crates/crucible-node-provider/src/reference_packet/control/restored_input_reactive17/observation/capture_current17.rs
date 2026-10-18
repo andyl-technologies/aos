@@ -19,6 +19,7 @@ pub(super) struct CheckpointFields17<'a> {
     current_record: &'a ContentRef,
     current_model: &'a ContentRef,
     history_next_sequence: U64,
+    capture: bool,
 }
 
 impl<'a> CheckpointFields17<'a> {
@@ -39,6 +40,7 @@ impl<'a> CheckpointFields17<'a> {
             current_record,
             current_model,
             history_next_sequence: *history_next_sequence,
+            capture: false,
         }
     }
 
@@ -65,6 +67,7 @@ impl<'a> CheckpointFields17<'a> {
             current_record,
             current_model,
             history_next_sequence: *history_next_sequence,
+            capture: true,
         }
     }
 }
@@ -133,7 +136,6 @@ impl PacketControl {
             || self.complete_restored_evidence.is_none()
             || self.original_physical_gate_held()?
             || self.current_operation.is_some()
-            || !matches!(self.program, NativeProgram::Connected(_))
             || self.active.as_ref().is_none_or(|active| {
                 active.activation_id != request.scope.target.activation
                     || active.world_generation != request.scope.target.generation
@@ -204,7 +206,11 @@ impl PacketControl {
         maximum: usize,
     ) -> Result<NativeObservation17CheckpointStorageData<'previous>, ProviderError> {
         self.authenticate_current_checkpoint17_fields_data(previous, fields)?;
-        let model = self.observation17_model_storage_data(previous, maximum)?;
+        let model = if fields.capture {
+            self.capture17_model_storage_data(previous, maximum)?
+        } else {
+            self.observation17_model_storage_data(previous, maximum)?
+        };
         let restored =
             self.project_observation17_restored_data(previous, fields.current_record, maximum)?;
         let copied = self.observation17_receipt_backing_data(previous, fields.scope)?;
@@ -245,7 +251,11 @@ impl PacketControl {
             row: quote_row(
                 retained,
                 transient,
-                observation17_producer_counter_scratch_data(),
+                if fields.capture {
+                    capture17_checkpoint_counter_scratch_data()
+                } else {
+                    observation17_producer_counter_scratch_data()
+                },
                 maximum,
             )?,
             model,
@@ -288,22 +298,26 @@ impl PacketControl {
             .model_bytes
             .try_reserve_exact(storage.model.maximum_encoded_bytes)
             .map_err(|_| exhausted())?;
-        let NativeProgram::Connected(program) = &self.program else {
-            return Err(refused());
-        };
-        let inventory =
-            program.borrow_original_observation17_inventory_data(&mut MetadataObserver::new())?;
-        encode_original_precharged_serialization_into(
-            &BorrowedReactiveObservation17 {
-                schema: "source-owned.packet-native/4",
-                native_pid: U64::new(u64::from(self.capture_creator)),
-                original: previous,
-                inventory,
-                grant: None,
-            },
-            &storage.model,
-            &mut attempt.model_bytes,
-        )?;
+        if fields.capture {
+            self.encode_capture17_model_data(previous, &storage.model, &mut attempt.model_bytes)?;
+        } else {
+            let NativeProgram::Connected(program) = &self.program else {
+                return Err(refused());
+            };
+            let inventory = program
+                .borrow_original_observation17_inventory_data(&mut MetadataObserver::new())?;
+            encode_original_precharged_serialization_into(
+                &BorrowedReactiveObservation17 {
+                    schema: "source-owned.packet-native/4",
+                    native_pid: U64::new(u64::from(self.capture_creator)),
+                    original: previous,
+                    inventory,
+                    grant: None,
+                },
+                &storage.model,
+                &mut attempt.model_bytes,
+            )?;
+        }
         fields.current_model.verify(&attempt.model_bytes)?;
         if self.content.get(fields.current_model).map(Vec::as_slice)
             != Some(attempt.model_bytes.as_slice())
@@ -341,7 +355,7 @@ impl PacketControl {
 
 /// Names actual defining comparison views before its noallocation quote walk.
 pub(crate) fn capture17_checkpoint_counter_scratch_data() -> usize {
-    observation17_producer_counter_scratch_data()
+    observation17_producer_counter_scratch_data() + capture_model17::counter_scratch_data()
 }
 
 /// Counts new borrowed views independently of the defining existing controls.
@@ -354,3 +368,6 @@ pub(super) const fn field_counter_scratch_data() -> usize {
         + size_of::<Position>()
         + size_of::<Result<Position, ProviderError>>()
 }
+
+#[path = "capture_current17/model.rs"]
+mod capture_model17;
