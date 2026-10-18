@@ -170,8 +170,12 @@ impl CnpSemanticConformanceNode {
             .source
             .as_ref()
             .ok_or(crate::node_contract::RuntimeError::OwnerUnavailable)?;
-        let expected: &dyn super::CnpSemanticSource = source.as_ref();
-        if !std::ptr::eq(actual.as_ref(), expected) {
+        let expected = super::CnpSemanticSource::installation(source.as_ref());
+        // An erased Source can have duplicated vtables across codegen units.
+        // Its data allocation and actual installation identify this occurrence.
+        if std::rc::Rc::as_ptr(actual).cast::<()>() != std::rc::Rc::as_ptr(source).cast::<()>()
+            || !std::ptr::eq(actual.installation(), expected)
+        {
             return Err(crate::node_contract::RuntimeError::ForeignAuthority);
         }
         Ok(super::CnpSemanticSource::installation(source.as_ref())
