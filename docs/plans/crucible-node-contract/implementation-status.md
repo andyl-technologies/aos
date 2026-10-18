@@ -2077,3 +2077,15 @@ Existing ignored tests remain unchanged. New controls exercise actual fullref
 and body provenance, complete retained backing, exact/one-byte-short ceilings,
 foreign creators and failed partial ownership. These results establish neither
 successful native restoration nor a refreshed production application gate.
+
+The moved-preparation correction (`971a054f24`) authenticates actual destination
+owners against the original ticket, Source and plan. Six-crate checking and all
+four unfiltered libraries pass: 1,940 Core, 1,492 Daemon, 1,433 Provider and twelve
+Contract tests, with existing ignored populations unchanged. The native startup
+control still refuses after graph/node construction; retirement and reclamation
+pass. Source review identifies a separate Oracle observer that requires an empty
+journal after mandatory validation has populated it. Its repair must fund the
+prospective copies and count their actual retained backing. Test diagnostics in
+`b339f8c333` now run before automatic retirement revokes witnesses; six-crate
+checking and ordinary test compilation pass. These results do not qualify native
+startup or full preservation.
