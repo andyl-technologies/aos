@@ -1709,3 +1709,40 @@ Native startup remains unqualified. The previous committed source refuses scene
 creation after 66.94 seconds; the corrected heap-bank candidate refuses after
 42.51 seconds without a stack overflow. Failure-path elapsed times establish
 neither startup success nor an overall performance improvement.
+
+
+### Unsigned decimal serialization without a formatter allocation
+
+U64 keeps its canonical decimal JSON string while writing digits through a
+fixed twenty-byte stack buffer. A static two-digit table avoids an owning
+formatter String and shortens the wide-value loop. I64 and all wire grammars
+retain their existing behavior. Independent controls compare the old formatter
+bytes and round-trip every decimal and binary boundary, small values, zero and
+the full-width maximum; a short output writer still refuses.
+
+The ordinary optimized Contract test executable measures both implementations
+with the same prefunded 22-byte output cursor. Every case uses thirty alternating
+pairs of 200,000 calls, equal 4,096-call warmups and independent byte checks
+before and after measurement. All 240 pairs improve; all samples are retained.
+
+| Value | Previous ns/call | Current ns/call | Mean reduction |
+| --- | ---: | ---: | ---: |
+| 0 | 18.47 | 9.75 | 47.24% |
+| 50 | 19.15 | 10.32 | 46.12% |
+| 1,024 | 20.64 | 11.30 | 45.22% |
+| 1,000,000,000 | 24.94 | 16.34 | 34.48% |
+| 2^32 | 25.00 | 16.49 | 34.04% |
+| 2^53 | 29.71 | 21.57 | 27.41% |
+| 10^19 | 32.79 | 22.44 | 31.57% |
+| u64::MAX | 32.59 | 22.65 | 30.49% |
+
+The first single-digit-loop candidate improved small values but regressed wide
+values by about 7-8%; the two-digit loop removes that regression. This is a
+scalar serialization comparison, excluding output allocation and VM execution.
+It cannot be added arithmetically to the separate executable-hash result. Raw
+samples remain local.
+
+The final ordinary Contract test executable passes all twelve library controls;
+the benchmark remains opt-in and passes separately. The expanded compiler and
+production application-target gates are reported with the Capture integration
+checkpoint, which remains separate from this component measurement.

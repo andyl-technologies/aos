@@ -202,12 +202,6 @@ macro_rules! decimal_integer {
             }
         }
 
-        impl Serialize for $name {
-            fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-                serializer.serialize_str(&self.0.to_string())
-            }
-        }
-
         impl<'de> Deserialize<'de> for $name {
             fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
                 String::deserialize(deserializer)?
@@ -230,6 +224,52 @@ decimal_integer!(
     "Encodes a signed 64-bit offset as a canonical decimal JSON string.",
     true
 );
+
+impl Serialize for U64 {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // The lookup table is static data; only the twenty-digit output bank
+        // is per call. Two digits per division reduce wide-value loop iterations.
+        const DIGIT_PAIRS: &[u8; 200] = b"00010203040506070809\
+            10111213141516171819\
+            20212223242526272829\
+            30313233343536373839\
+            40414243444546474849\
+            50515253545556575859\
+            60616263646566676869\
+            70717273747576777879\
+            80818283848586878889\
+            90919293949596979899";
+        let mut buffer = [b'0'; 20];
+        let mut remaining = self.0;
+        let mut start = buffer.len();
+        while remaining >= 100 {
+            let pair = (remaining % 100) as usize * 2;
+            remaining /= 100;
+            start -= 2;
+            buffer[start] = DIGIT_PAIRS[pair];
+            buffer[start + 1] = DIGIT_PAIRS[pair + 1];
+        }
+        if remaining < 10 {
+            start -= 1;
+            buffer[start] = b'0' + remaining as u8;
+        } else {
+            let pair = remaining as usize * 2;
+            start -= 2;
+            buffer[start] = DIGIT_PAIRS[pair];
+            buffer[start + 1] = DIGIT_PAIRS[pair + 1];
+        }
+        // Each written byte is an ASCII digit; checked UTF-8 keeps this safe
+        // without changing the canonical serialize_str representation.
+        let digits = std::str::from_utf8(&buffer[start..]).map_err(serde::ser::Error::custom)?;
+        serializer.serialize_str(digits)
+    }
+}
+
+impl Serialize for I64 {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.0.to_string())
+    }
+}
 
 impl Validate for U64 {
     fn validate(&self) -> Result<(), ContractError> {
@@ -525,3 +565,7 @@ mod retained_identifier_refusal_tests {
         assert_eq!(returned.capacity(), capacity);
     }
 }
+
+#[cfg(test)]
+#[path = "values/u64_serialize_tests.rs"]
+mod u64_serialize_tests;
