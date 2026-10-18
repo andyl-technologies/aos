@@ -56,6 +56,7 @@ CASES = [
     "publication-transfer-cancel", "publication-transfer-conflict",
     "retention-running", "retention-running-cancel",
     "publication-manifest", "publication-manifest-cancel", "publication-manifest-bad-whole",
+    "publication-manifest-dictionary",
 ] + [row[0] for row in MANIFEST_CASES]
 
 LABELS = ["layout-root", "chunks", "objects", "sealed", "staging", "quarantine",

@@ -55,6 +55,7 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
             | "publish-manifest"
             | "publish-manifest-cancel"
             | "publish-manifest-bad-whole"
+            | "publish-manifest-dictionary"
     ) {
         return Err(io::Error::other("unknown component selector"));
     }
@@ -92,7 +93,10 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
         .enable_all()
         .build()?;
     match mode {
-        "publish-manifest" | "publish-manifest-cancel" | "publish-manifest-bad-whole" => {
+        "publish-manifest"
+        | "publish-manifest-cancel"
+        | "publish-manifest-bad-whole"
+        | "publish-manifest-dictionary" => {
             super::manifest_publication::run(mode, &owner, &runtime, &inputs, original)?;
         }
         "retain-running" | "retain-running-cancel" => {

@@ -10,7 +10,8 @@ import tomllib
 def run(driver, publisher, uuid):
     """Checks actual original inodes, repeated ranges, cancellation and failed output."""
     published = []
-    for suffix in ["", "-cancel", "-bad-whole"]:
+    reference = None
+    for suffix in ["", "-cancel", "-bad-whole", "-dictionary"]:
         case = "publication-manifest" + suffix
         process = driver.controlled_actor(case, "publish-manifest" + suffix, uuid)
         stopped = False
@@ -22,24 +23,46 @@ def run(driver, publisher, uuid):
             staging = root / "staging" / str(publisher.pid)
             staged_inode = (staging.stat().st_dev, staging.stat().st_ino)
             sources = list((root / "chunks").glob("*/*"))
-            driver.require(len(sources) == 2, "manifest requires two original admitted source inodes")
+            dictionary_backed = suffix == "-dictionary"
+            driver.require(len(sources) == (3 if dictionary_backed else 2),
+                           "manifest lacks its original admitted source/dependency inodes")
             original = {}
             for path in sources:
                 metadata = path.stat()
                 digest, separator, codec = path.name.partition(".")
                 content = path.read_bytes()
-                driver.require(separator and len(digest) == 64 and codec == "0" and content[0] == 0
+                driver.require(separator and len(digest) == 64 and codec in (["0", "2"] if dictionary_backed else ["0"])
+                               and content[0] == int(codec)
                                and path.parent.name == digest[:2] and metadata.st_uid == 840
                                and metadata.st_gid == 845 and metadata.st_nlink == 1
                                and metadata.st_mode & 0o7777 == 0o640,
                                "manifest source has another canonical/native custody")
                 original[digest] = (path, metadata.st_dev, metadata.st_ino, content)
-            ordered = sorted(original.items(), key=lambda item: len(item[1][3]), reverse=True)
-            first_hash, first = ordered[0]
-            tail_hash, tail = ordered[1]
-            driver.require(len(first[3]) > 256 * 1024 and len(tail[3]) == 32,
-                           "manifest fixture lacks its honest nonfinal and bounded final chunks")
-            expected_bytes = first[3][1:] * 2 + tail[3][1:]
+            if dictionary_backed:
+                driver.require(reference is not None, "dictionary publication lacks an independent raw reference")
+                first_hash, first_length, tail_hash, expected_bytes = reference
+                first, tail = original[first_hash], original[tail_hash]
+                dependencies = {digest: value for digest, value in original.items()
+                                if digest not in [first_hash, tail_hash]}
+                driver.require(len(dependencies) == 1 and first[3][0] == 2
+                               and first[0].name == first_hash + ".2" and len(first[3]) < first_length * 97 // 100,
+                               "dictionary case does not use actual compressed source custody")
+                dictionary_hash, dictionary = next(iter(dependencies.items()))
+                driver.require(first[3][1:33].hex() == dictionary_hash
+                               and dictionary[3] == b"\x00" + expected_bytes[1:first_length],
+                               "compressed source does not name its actual independently admitted dictionary")
+            else:
+                ordered = sorted(original.items(), key=lambda item: len(item[1][3]), reverse=True)
+                first_hash, first = ordered[0]
+                tail_hash, tail = ordered[1]
+                first_length = len(first[3]) - 1
+                driver.require(first_length > 256 * 1024 and len(tail[3]) == 32,
+                               "manifest fixture lacks its honest nonfinal and bounded final chunks")
+                expected_bytes = first[3][1:] * 2 + tail[3][1:]
+                if suffix == "":
+                    reference = (first_hash, first_length, tail_hash, expected_bytes)
+                dependencies = {}
+            transferred = {digest: value for digest, value in original.items() if digest not in dependencies}
             metadata_files = list((root / "objects/pack").glob("*/*"))
             driver.require(len(metadata_files) == 2, "manifest lacks one ordinary pack/index pair")
             metadata = {path: (path.stat().st_ino, path.read_bytes()) for path in metadata_files}
@@ -100,6 +123,8 @@ def run(driver, publisher, uuid):
                 print(error.decode(), end="", flush=True)
             expected_result = ("PASS actual wrong whole-file hash retained the funded anonymous output without publisher submission; no Ready"
                                if suffix == "-bad-whole" else
+                               "PASS actual dictionary-backed manifest publication retained its original dictionary inode, pins and holds while retiring repeated sources; no Ready"
+                               if dictionary_backed else
                                "PASS actual manifest publication retained metadata, repeated-chunk ranges and pending original sources across later work; no Ready")
             driver.require(process.returncode == 0 and output.decode().splitlines() == [expected_result],
                            "missing exact actual manifest publication result: " + case)
@@ -124,15 +149,25 @@ def run(driver, publisher, uuid):
                 object_hash = bodies[0].name
                 driver.require(state["residences"] == [
                     {"chunk": row[0], "object": object_hash, "offset": row[1], "length": row[2]}
-                    for row in sorted([(first_hash, 0, len(first[3]) - 1),
-                                       (tail_hash, 2 * (len(first[3]) - 1), len(tail[3]) - 1)])
+                    for row in sorted([(first_hash, 0, first_length),
+                                       (tail_hash, 2 * first_length, len(tail[3]) - 1)])
                 ], "manifest ranges do not select the exact first repeated occurrence")
-                driver.require(list((root / "chunks").glob("*/*")) == [],
-                               "manifest publication left duplicate canonical standalone copies")
+                driver.require(set((root / "chunks").glob("*/*")) == {value[0] for value in dependencies.values()},
+                               "manifest publication lost a dependency or left duplicate standalone chunks")
+                for digest, (path, device, inode, content) in dependencies.items():
+                    observed = path.stat()
+                    driver.require((observed.st_dev, observed.st_ino, path.read_bytes()) == (device, inode, content),
+                                   "manifest publication changed its original dictionary inode")
+                    owners = {row["owner"] for row in state["pins"] if row["hash"] == digest
+                              and row["expires"] == 9223372036854775807}
+                    driver.require(len(owners) == 2 and all(any(
+                        lease["owner"] == owner and lease["expires"] == 9223372036854775807
+                        for lease in state["leases"]) for owner in owners),
+                        "dictionary lost either original admission pin/lease")
                 pending = list((root / "pending-delete").iterdir())
                 leases = [tomllib.loads(path.read_text()) for path in (root / "state/publication").glob("retirement-*.toml")]
                 driver.require(len(pending) == len(leases) == 2, "manifest lost actual paired retirement custody")
-                for digest, (path, device, inode, content) in original.items():
+                for digest, (path, device, inode, content) in transferred.items():
                     retired = root / "pending-delete" / digest
                     observed = retired.stat()
                     driver.require(not path.exists() and (observed.st_dev, observed.st_ino, retired.read_bytes()) == (device, inode, content)
@@ -152,5 +187,5 @@ def run(driver, publisher, uuid):
             if process.poll() is None:
                 process.kill()
                 process.wait(timeout=5)
-    driver.require(len(published) == len(set(published)) == 2,
+    driver.require(len(published) == len(set(published)) == 3,
                    "manifest sealed inodes were unexpectedly shared across distinct domains")

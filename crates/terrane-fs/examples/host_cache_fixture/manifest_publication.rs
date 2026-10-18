@@ -29,6 +29,8 @@ use terrane_fs::{
 
 struct Data {
     first: Vec<u8>,
+    encoded_first: Vec<u8>,
+    dictionary: Option<Vec<u8>>,
     tail: Vec<u8>,
     plaintext: Vec<u8>,
     canonical: Vec<u8>,
@@ -50,7 +52,7 @@ fn descriptor(bytes: &[u8], kind: IdentityKind) -> io::Result<Descriptor> {
     Descriptor::from_identity(&TERRANE_V1, &identity, bytes).map_err(io::Error::other)
 }
 
-fn data(bad_whole: bool) -> io::Result<Data> {
+fn data(bad_whole: bool, dictionary_backed: bool) -> io::Result<Data> {
     let profile = ChunkProfile::cdc_1m([0; 32]);
     let mut first = None;
     // Search bounded deterministic input for an honest early cut. Repetition
@@ -72,6 +74,22 @@ fn data(bad_whole: bool) -> io::Result<Data> {
         }
     }
     let first = first.ok_or_else(|| invalid("bounded fixture lacks an honest nonfinal cut"))?;
+    // A distinct ordinary chunk supplies the actual dictionary. Its suffix
+    // overlaps the random first source, so the public encoder must really choose
+    // dictionary compression rather than silently fall back to raw bytes.
+    let dictionary = dictionary_backed.then(|| first[1..].to_vec());
+    let encoded_first = if let Some(dictionary) = &dictionary {
+        let encoded = terrane::codec::encode_chunk(&first, profile.maximum(), 3, Some(dictionary))
+            .map_err(io::Error::other)?;
+        if encoded.first() != Some(&2) {
+            return Err(invalid(
+                "manifest fixture did not select dictionary compression",
+            ));
+        }
+        encoded
+    } else {
+        [vec![0], first.clone()].concat()
+    };
     let tail = vec![99; 31];
     let plaintext = [first.as_slice(), first.as_slice(), tail.as_slice()].concat();
     let chunks = [first.as_slice(), first.as_slice(), tail.as_slice()]
@@ -105,6 +123,8 @@ fn data(bad_whole: bool) -> io::Result<Data> {
         .map_err(io::Error::other)?;
     Ok(Data {
         first,
+        encoded_first,
+        dictionary,
         tail,
         plaintext,
         canonical,
@@ -128,6 +148,7 @@ pub(super) fn run(
         "publish-manifest" => "tenant:publication-manifest",
         "publish-manifest-cancel" => "tenant:publication-manifest-cancel",
         "publish-manifest-bad-whole" => "tenant:publication-manifest-bad-whole",
+        "publish-manifest-dictionary" => "tenant:publication-manifest-dictionary",
         _ => return Err(invalid("unknown manifest publication selector")),
     };
     if inputs.domain != case || original.is_some() {
@@ -136,7 +157,7 @@ pub(super) fn run(
         ));
     }
     let bad = mode == "publish-manifest-bad-whole";
-    let data = data(bad)?;
+    let data = data(bad, mode == "publish-manifest-dictionary")?;
     if runtime
         .block_on(owner.publish_manifest(data.identity.clone()))
         .is_ok()
@@ -155,22 +176,43 @@ pub(super) fn run(
     runtime
         .block_on(owner.resume_recovered(completed))
         .map_err(io::Error::other)?;
-    for (bytes, position) in [
-        (&data.first, ChunkPosition::NonFinal),
-        (&data.tail, ChunkPosition::Final),
-    ] {
-        let declared = descriptor(bytes, IdentityKind::Chunk)?;
-        let mut encoded = vec![0];
-        encoded.extend_from_slice(bytes);
-        let receipt = runtime
-            .block_on(owner.admit_chunk(declared.clone(), position, encoded))
-            .map_err(io::Error::other)?;
-        if receipt.descriptor() != &declared || receipt.synchronized_chunk_bytes() == 0 {
+    if let Some(dictionary) = &data.dictionary {
+        let before = fs::read(inputs.root.join("state/cache/records.toml"))?;
+        if runtime
+            .block_on(owner.admit_chunk(
+                descriptor(&data.first, IdentityKind::Chunk)?,
+                ChunkPosition::NonFinal,
+                data.encoded_first.clone(),
+            ))
+            .is_ok()
+            || fs::read(inputs.root.join("state/cache/records.toml"))? != before
+        {
             return Err(invalid(
-                "manifest source lacks actual admission acknowledgment",
+                "unadmitted dictionary gained native admission custody",
             ));
         }
+        admit(
+            owner,
+            runtime,
+            dictionary,
+            ChunkPosition::Final,
+            [vec![0], dictionary.clone()].concat(),
+        )?;
     }
+    admit(
+        owner,
+        runtime,
+        &data.first,
+        ChunkPosition::NonFinal,
+        data.encoded_first.clone(),
+    )?;
+    admit(
+        owner,
+        runtime,
+        &data.tail,
+        ChunkPosition::Final,
+        [vec![0], data.tail.clone()].concat(),
+    )?;
     let mut random = [0; 16];
     File::open("/dev/urandom")?.read_exact(&mut random)?;
     let id = PackId::from_random_bytes(random);
@@ -256,11 +298,43 @@ pub(super) fn run(
         if let Some(receipt) = &receipt {
             check_receipt(receipt, &data, pack.len() + index.len())?;
         }
-        emit(
-            "PASS actual manifest publication retained metadata, repeated-chunk ranges and pending original sources across later work; no Ready",
-        )?;
+        let message = if data.dictionary.is_some() {
+            "PASS actual dictionary-backed manifest publication retained its original dictionary inode, pins and holds while retiring repeated sources; no Ready"
+        } else {
+            "PASS actual manifest publication retained metadata, repeated-chunk ranges and pending original sources across later work; no Ready"
+        };
+        emit(message)?;
     }
     Ok(())
+}
+
+fn admit(
+    owner: &NativeMetadataOwner,
+    runtime: &tokio::runtime::Runtime,
+    bytes: &[u8],
+    position: ChunkPosition,
+    encoded: Vec<u8>,
+) -> io::Result<()> {
+    let declared = descriptor(bytes, IdentityKind::Chunk)?;
+    let receipt = runtime
+        .block_on(owner.admit_chunk(declared.clone(), position, encoded))
+        .map_err(io::Error::other)?;
+    if receipt.descriptor() != &declared || receipt.synchronized_chunk_bytes() == 0 {
+        return Err(invalid(
+            "manifest source lacks actual admission acknowledgment",
+        ));
+    }
+    Ok(())
+}
+
+fn admission_bytes(data: &Data) -> usize {
+    data.encoded_first.len()
+        + data.tail.len()
+        + 1
+        + data
+            .dictionary
+            .as_ref()
+            .map_or(0, |dictionary| dictionary.len() + 1)
 }
 
 fn check_receipt(
@@ -280,8 +354,8 @@ fn check_receipt(
         || receipt.synchronized_sealed_inode_bytes() == 0
         || receipt.charged_reserved_bytes() == 0
         || receipt.future_hold_bytes()
-            != 6 * HOLD
-                + (data.first.len() + data.tail.len() + 2 + metadata_bytes) as u64
+            != (6 + u64::from(data.dictionary.is_some())) * HOLD
+                + (admission_bytes(data) + metadata_bytes) as u64
                 + 2 * data.plaintext.len() as u64
         || metadata.uid() != 841
         || metadata.gid() != 841
@@ -316,9 +390,10 @@ fn check_state(
         .map_err(io::Error::other)?
         .ok_or_else(|| invalid("manifest publication snapshot absent"))?;
     let retained = if success { 2 } else { 1 };
-    if state.reservations.len() != 5 + retained
-        || state.leases.len() != 4 + retained
-        || state.pins.len() != 5 + 2 * retained
+    let dictionaries = usize::from(data.dictionary.is_some());
+    if state.reservations.len() != 5 + retained + dictionaries
+        || state.leases.len() != 4 + retained + dictionaries
+        || state.pins.len() != 5 + 2 * retained + 2 * dictionaries
         || state.residences.len() != if success { 2 } else { 0 }
     {
         return Err(invalid(
@@ -329,6 +404,15 @@ fn check_state(
     let metadata_hashes = BTreeSet::from([object.clone(), hex(pack_identity.digest())]);
     let first = hex(descriptor(&data.first, IdentityKind::Chunk)?.digest());
     let tail = hex(descriptor(&data.tail, IdentityKind::Chunk)?.digest());
+    let dictionary = data
+        .dictionary
+        .as_ref()
+        .map(|bytes| descriptor(bytes, IdentityKind::Chunk).map(|value| hex(value.digest())))
+        .transpose()?;
+    let mut first_pins = BTreeSet::from([first.clone()]);
+    if let Some(dictionary) = &dictionary {
+        first_pins.insert(dictionary.clone());
+    }
     let mut kinds = [0; 4];
     for reservation in &state.reservations {
         if reservation.owner != inputs.owner {
@@ -362,8 +446,13 @@ fn check_state(
                     .collect::<BTreeSet<_>>();
                 let bytes = if hashes == metadata_hashes {
                     metadata_bytes
-                } else if hashes == BTreeSet::from([first.clone()]) {
-                    data.first.len() + 1
+                } else if hashes == first_pins {
+                    data.encoded_first.len()
+                } else if dictionary
+                    .as_ref()
+                    .is_some_and(|hash| hashes == BTreeSet::from([hash.clone()]))
+                {
+                    data.dictionary.as_ref().map_or(0, |bytes| bytes.len() + 1)
                 } else if hashes == BTreeSet::from([tail.clone()]) {
                     data.tail.len() + 1
                 } else {
@@ -384,7 +473,7 @@ fn check_state(
             ));
         }
     }
-    if kinds != [1, retained, 3, 1] {
+    if kinds != [1, retained, 3 + dictionaries, 1] {
         return Err(invalid("manifest reservation classes differ"));
     }
     if success {
@@ -446,9 +535,47 @@ mod tests {
     use terrane::host::publication::{PublicationClaim, PublicationRecipe};
 
     #[test]
+    fn dictionary_manifest_fixture_requires_its_distinct_verified_dependency() {
+        let data = data(false, true).unwrap();
+        let dictionary = data.dictionary.as_ref().unwrap();
+        let identity = TERRANE_V1
+            .calculate(IdentityKind::Chunk, &data.first)
+            .unwrap();
+        assert_ne!(
+            identity,
+            TERRANE_V1
+                .calculate(IdentityKind::Chunk, dictionary)
+                .unwrap()
+        );
+        assert_eq!(data.encoded_first[0], 2);
+        let profile = ChunkProfile::cdc_1m([0; 32]);
+        assert!(
+            terrane::codec::decode_verified(
+                &data.encoded_first,
+                data.first.len(),
+                &profile,
+                false,
+                &identity,
+                None,
+            )
+            .is_err()
+        );
+        let verified = terrane::codec::decode_verified(
+            &data.encoded_first,
+            data.first.len(),
+            &profile,
+            false,
+            &identity,
+            Some(dictionary),
+        )
+        .unwrap();
+        assert_eq!(verified.plaintext(), data.first);
+    }
+
+    #[test]
     fn manifest_fixture_repeats_an_honest_cut_and_checks_independent_whole_hashes() {
         for bad in [false, true] {
-            let data = data(bad).unwrap();
+            let data = data(bad, false).unwrap();
             let profile = ChunkProfile::cdc_1m([0; 32]);
             assert!(profile.valid_nonfinal_chunk(&data.first));
             let claim = PublicationClaim::new(
