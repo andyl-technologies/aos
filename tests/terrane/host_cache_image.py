@@ -90,7 +90,7 @@ def unit_inventory(output):
                    and len(names) == len(set(names)) and 0 < len(names) <= 4096
                    and int(lines[-1].split()[0]) == len(names), "invalid FS unit inventory")
     selected = sorted(name for name in names if name.startswith(UNIT_PREFIXES))
-    shared.require(selected == sorted(UNIT_TESTS) and len(selected) == 47,
+    shared.require(selected == sorted(UNIT_TESTS) and len(selected) == 48,
                    "FS unit module-prefix inventory changed")
     return sorted(names)
 
