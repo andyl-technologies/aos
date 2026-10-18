@@ -14,6 +14,8 @@ pub(in crate::paged_ram::engine) struct ActorLifetime {
 impl ActorLifetime {
     pub(in crate::paged_ram::engine) fn admitted(&mut self, thread_id: u64) {
         self.thread_id = thread_id;
+        // Native admission starts a new membership without erasing failure history.
+        self.membership_released = false;
     }
 
     pub(in crate::paged_ram::engine) fn request_exit(&mut self) -> Result<(), RamError> {
@@ -69,6 +71,44 @@ impl ActorLifetime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clean_fork_restarts_publish_the_current_live_thread() {
+        let mut state = ActorLifetime::default();
+        assert!(state.report(7).is_none());
+
+        for thread_id in [123, 124, 125] {
+            state.admitted(thread_id);
+
+            let report = state.report(7).expect("current actor remains observable");
+            assert_eq!(report.worker_generation, 7);
+            assert_eq!(report.thread_id, thread_id);
+            assert!(!report.membership_released);
+            assert!(!report.exit_requested);
+            assert!(report.failure.is_none());
+            assert!(state.poll().is_ok());
+
+            state.released();
+            assert!(state.report(7).is_none());
+        }
+
+        state.admitted(126);
+        state.request_exit().expect("restarted actor is live");
+        assert!(matches!(state.poll(), Err(RamError::FaultActorTestExit)));
+        state.failed(std::io::Error::from_raw_os_error(libc::EIO).into());
+        state.failed(RamError::FaultActorTestExit);
+        state.released();
+
+        let report = state.report(7).expect("failure remains observable");
+        assert_eq!(report.thread_id, 126);
+        assert!(report.membership_released);
+        assert!(report.exit_requested);
+        assert_eq!(
+            report.failure,
+            Some(RamControlFaultActorFailure::Io { errno: libc::EIO })
+        );
+        assert!(state.request_exit().is_err());
+    }
 
     #[test]
     fn terminal_report_keeps_original_io_cause_until_role_release() {
