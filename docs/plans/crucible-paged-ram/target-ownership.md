@@ -127,6 +127,15 @@ reconstruction separately requires a fresh child startup Source. Those paths
 remain explicit refusals. Local admission controls issue none of these native
 owners and do not qualify a successful cold fork or promoted parent.
 
+Inactive restore rollback now polls worker return under the same Cleanup
+operation used for fork shutdown. Cleanup refusal keeps the actual join handle;
+the original restore failure and first cleanup failure remain separately owned.
+An unreleased native preflight token stays in the existing service certificate
+slot. These changes do not qualify a strict native thread-exit deadline:
+[Rust's return check](https://doc.rust-lang.org/std/thread/struct.JoinHandle.html#method.is_finished)
+can precede complete thread termination, and the actual join still follows it.
+Native join and whole-owner return qualification remain required.
+
 ## Factory and runtime integration
 
 1. Use `retain_fork_target_factory` to retain the real shared factory facade.

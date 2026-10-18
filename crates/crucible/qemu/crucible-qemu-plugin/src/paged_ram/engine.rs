@@ -749,31 +749,27 @@ impl RestoreMappingOwner for PausedPagingOwner {
             (&mut preflight as *mut PhysicalPreflight).cast(),
         );
         if status != 0 {
-            if preflight.token == 0 {
-                service.stop_before_activation()?;
-                *self
-                    .active
-                    .lock()
-                    .map_err(|_| "paging authority owner is poisoned")? = None;
-            } else {
-                service.failed.store(true, Ordering::Release);
-            }
-            return Err(preflight.error.take().unwrap_or(RamError::Native {
+            let first = preflight.error.take().unwrap_or(RamError::Native {
                 operation: "physical RAM preflight",
                 status,
-            }));
+            });
+            if preflight.token == 0 {
+                return Err(self.cleanup_failed_prepare(&service, first));
+            }
+            // Preserve the actual unreleased certificate beyond this stack frame.
+            service
+                .retained_token
+                .store(preflight.token, Ordering::Release);
+            service.failed.store(true, Ordering::Release);
+            self.retain_operational_failure(SourceOperationClass::ControlSetup, &first);
+            return Err(first);
         }
         // Reset is allowed between prepare and commit. Its writes cannot use
         // restored pages, and no physical hold survives that transition.
         let cache = match source.prepare_cache(service.worker_generation) {
             Ok(cache) => cache,
             Err(error) => {
-                service.stop_before_activation()?;
-                *self
-                    .active
-                    .lock()
-                    .map_err(|_| "paging authority owner is poisoned")? = None;
-                return Err(error);
+                return Err(self.cleanup_failed_prepare(&service, error));
             }
         };
         Ok(Box::new(PreparedArenas {
@@ -786,6 +782,32 @@ impl RestoreMappingOwner for PausedPagingOwner {
             completed: false,
             commit_error: None,
         }))
+    }
+}
+
+impl PausedPagingOwner {
+    fn cleanup_failed_prepare(&self, service: &Arc<FaultService>, first: RamError) -> RamError {
+        let cleanup: Result<(), RamError> = (|| {
+            service.stop_before_activation()?;
+            let mut active = self
+                .active
+                .try_lock()
+                .map_err(|_| RamError::Invariant("paging authority owner unavailable"))?;
+            if !active
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, service))
+            {
+                return Err(RamError::Invariant("restore cleanup source changed"));
+            }
+            *active = None;
+            Ok(())
+        })();
+        if let Err(cleanup) = cleanup {
+            self.retain_operational_failure(SourceOperationClass::ControlSetup, &first);
+            service.failed.store(true, Ordering::Release);
+            service.lifetime.cleanup_failed(cleanup);
+        }
+        first
     }
 }
 

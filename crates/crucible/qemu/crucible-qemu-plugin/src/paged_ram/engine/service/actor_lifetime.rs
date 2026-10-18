@@ -13,6 +13,7 @@ struct ActorState {
     thread_id: u64,
     exit_requested: bool,
     failure: Option<RamError>,
+    cleanup_failure: Option<RamError>,
     membership_released: bool,
 }
 
@@ -66,6 +67,16 @@ impl ActorLifetime {
         self.disposition_history().membership_released = true;
     }
 
+    pub(in crate::paged_ram::engine) fn cleanup_failed(&self, failure: RamError) {
+        let mut state = self.disposition_history();
+        if state.cleanup_failure.is_none() {
+            state.cleanup_failure = Some(failure.clone());
+        }
+        if state.failure.is_none() {
+            state.failure = Some(failure);
+        }
+    }
+
     // Recording failure or actual release must not bypass native cleanup when
     // the journal is poisoned. Entry, polling and observation still refuse it.
     fn disposition_history(&self) -> std::sync::MutexGuard<'_, ActorState> {
@@ -106,6 +117,22 @@ impl ActorLifetime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cleanup_cause_remains_independent_of_the_original_actor_failure() {
+        let state = ActorLifetime::default();
+        state.admitted(123).unwrap();
+        let first = RamError::from(std::io::Error::from_raw_os_error(libc::EIO));
+        let cleanup = RamError::from(std::io::Error::from_raw_os_error(libc::ETIMEDOUT));
+
+        state.failed(first.clone());
+        state.cleanup_failed(cleanup.clone());
+        state.cleanup_failed(RamError::Invariant("later cleanup refusal"));
+
+        let retained = state.state.lock().unwrap();
+        assert_eq!(retained.failure.as_ref(), Some(&first));
+        assert_eq!(retained.cleanup_failure.as_ref(), Some(&cleanup));
+    }
 
     #[test]
     fn original_failure_terminates_later_actor_polls() {

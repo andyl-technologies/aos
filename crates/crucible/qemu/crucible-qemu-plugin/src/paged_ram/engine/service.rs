@@ -177,36 +177,36 @@ impl FaultService {
     }
 
     pub(super) fn stop_for_fork(&self) -> Result<(), RamError> {
-        let operation = self.operations.begin(SourceOperationClass::Cleanup)?;
-        self.stop.store(true, Ordering::Release);
-        loop {
-            let finished = self
-                .worker
-                .try_lock()
-                .map_err(|_| RamError::Invariant("paging worker owner unavailable"))?
-                .as_ref()
-                .is_none_or(JoinHandle::is_finished);
-            if finished {
-                break;
-            }
-            let slice = operation.wait_slice()?;
-            std::thread::sleep(slice.min(std::time::Duration::from_millis(10)));
-        }
-        let worker = self
-            .worker
-            .try_lock()
-            .map_err(|_| RamError::Invariant("paging worker owner unavailable"))?
-            .take();
-        if let Some(worker) = worker {
-            worker
-                .join()
-                .map_err(|_| RamError::Invariant("paging worker panicked during fork hold"))??;
-        }
-        operation.complete()?;
+        self.stop_and_join()?;
         if self.failed.load(Ordering::Acquire) {
             return Err(RamError::Invariant("paging worker failed during fork hold"));
         }
         Ok(())
+    }
+
+    fn stop_and_join(&self) -> Result<(), RamError> {
+        let result: Result<(), RamError> = (|| {
+            let operation = self.operations.begin(SourceOperationClass::Cleanup)?;
+            self.stop.store(true, Ordering::Release);
+            wait_for_worker_return(&self.worker, operation.as_ref())?;
+            let worker = self
+                .worker
+                .try_lock()
+                .map_err(|_| RamError::Invariant("paging worker owner unavailable"))?
+                .take();
+            if let Some(worker) = worker {
+                worker
+                    .join()
+                    .map_err(|_| RamError::Invariant("paging worker panicked during shutdown"))??;
+            }
+            operation.complete()?;
+            Ok(())
+        })();
+        if let Err(error) = &result {
+            self.failed.store(true, Ordering::Release);
+            self.lifetime.cleanup_failed(error.clone());
+        }
+        result
     }
 
     pub(super) fn resume_after_fork(self: &Arc<Self>) -> Result<(), RamError> {
@@ -233,18 +233,7 @@ impl FaultService {
                 "active paging worker requires a cold-source lifecycle handoff",
             ));
         }
-        self.stop.store(true, Ordering::Release);
-        let worker = self
-            .worker
-            .lock()
-            .map_err(|_| "paging worker owner is poisoned")?
-            .take();
-        if let Some(worker) = worker {
-            worker
-                .join()
-                .map_err(|_| "paging worker panicked before activation")??;
-        }
-        Ok(())
+        self.stop_and_join()
     }
 
     fn run(&self) -> Result<(), RamError> {
@@ -490,6 +479,24 @@ impl FaultService {
             dependency.wait_slice()?;
         }
         Ok(())
+    }
+}
+
+fn wait_for_worker_return(
+    worker: &Mutex<Option<JoinHandle<Result<(), RamError>>>>,
+    operation: &dyn SourceOperation,
+) -> Result<(), RamError> {
+    loop {
+        let slice = operation.wait_slice()?;
+        let finished = worker
+            .try_lock()
+            .map_err(|_| RamError::Invariant("paging worker owner unavailable"))?
+            .as_ref()
+            .is_none_or(JoinHandle::is_finished);
+        if finished {
+            return Ok(());
+        }
+        std::thread::sleep(slice.min(std::time::Duration::from_millis(10)));
     }
 }
 
@@ -742,3 +749,94 @@ fn read_operational_page<const ROOT_SCRATCH: bool>(
 
 #[cfg(test)]
 mod operational_read_tests;
+
+#[cfg(test)]
+mod worker_join_tests {
+    //! Checks local Rust handle retention, without issuing native membership.
+
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+    use std::time::Duration;
+    use crate::paged_ram::source::ObservationOperationError;
+
+    struct CleanupSlices {
+        allowed: usize,
+        checked: AtomicUsize,
+    }
+
+    impl SourceOperation for CleanupSlices {
+        fn wait_slice(&self) -> io::Result<Duration> {
+            if self.checked.fetch_add(1, Ordering::SeqCst) < self.allowed {
+                Ok(Duration::ZERO)
+            } else {
+                Err(io::Error::from_raw_os_error(libc::ETIMEDOUT))
+            }
+        }
+
+        fn complete(&self) -> io::Result<()> {
+            panic!("waiting cannot claim completion");
+        }
+
+        fn wait_slice_for_observation(&self) -> Result<Duration, ObservationOperationError> {
+            self.wait_slice().map_err(Into::into)
+        }
+
+        fn complete_observation(&self) -> Result<(), ObservationOperationError> {
+            panic!("waiting cannot claim observation completion");
+        }
+    }
+
+    #[test]
+    fn expired_cleanup_refuses_even_without_a_worker_to_wait_for() {
+        let worker = Mutex::new(None);
+        let operation = CleanupSlices {
+            allowed: 0,
+            checked: AtomicUsize::new(0),
+        };
+
+        let result = wait_for_worker_return(&worker, &operation);
+
+        assert!(
+            matches!(result, Err(RamError::Io(error)) if error.raw_os_error() == Some(libc::ETIMEDOUT))
+        );
+        assert_eq!(operation.checked.load(Ordering::SeqCst), 1);
+        assert!(worker.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn cleanup_refusal_keeps_the_same_blocked_worker_handle() {
+        for allowed in 0..=2 {
+            let (release, waiting) = std::sync::mpsc::channel();
+            let handle = std::thread::spawn(move || {
+                waiting.recv().unwrap();
+                Ok(())
+            });
+            let identity = handle.thread().id();
+            let worker = Mutex::new(Some(handle));
+            let operation = CleanupSlices {
+                allowed,
+                checked: AtomicUsize::new(0),
+            };
+
+            let result = wait_for_worker_return(&worker, &operation);
+
+            assert!(
+                matches!(result, Err(RamError::Io(error)) if error.raw_os_error() == Some(libc::ETIMEDOUT))
+            );
+            assert_eq!(operation.checked.load(Ordering::SeqCst), allowed + 1);
+            assert_eq!(
+                worker.lock().unwrap().as_ref().unwrap().thread().id(),
+                identity
+            );
+
+            release.send(()).unwrap();
+            worker
+                .into_inner()
+                .unwrap()
+                .unwrap()
+                .join()
+                .unwrap()
+                .unwrap();
+        }
+    }
+}
