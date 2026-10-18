@@ -9108,9 +9108,26 @@ Resumed qualification:
   nextest cases, formatter pair, immutable image and independent source/image
   verification pass. The actual guest fails at the first new retention actor
   with publisher-local Unavailable; neither new retention control is accepted.
-  Candidate `060b101869` adds physical-stage diagnostics for a fresh native run
-  without weakening any assertion. Manifest Running publication, consumer leases,
-  readiness and the complete host tasks remain open.
+  Diagnostics `060b101869` and `4aaf373797` locate the refusal before retention:
+  native preparation's seal probe returns Unavailable while the publisher
+  retains 1,017 descriptors against its inherited 1,024 soft ceiling. The actual
+  guest still has 202,248,192 filesystem bytes available. The combined candidate
+  `a6952e8edb` gives only this expanded fixture's publisher child a finite 4,096
+  descriptor budget; quota, seal, pin, identity and cancellation assertions
+  remain intact. Fresh exact-source qualification is running. Manifest Running
+  publication, consumer leases, readiness and the complete host tasks remain open.
+- Streamed-assembly component `7c00759f16`: the native reassembly plan can copy
+  its ordered source stream into caller-owned output through the existing chunk,
+  length and whole-file verifier without collecting the complete object. Errors
+  preserve partial unverified output and the original I/O cause; this operation
+  grants no allocation, pin, quota, seal or publication authority. Four focused
+  tests pass, including malformed input, wrong whole-file hash and partial write
+  failure; the native-only library build and formatter pair pass. Follow-up
+  `b82bb2552a` replaces existing example no-op wakers with the standard waker,
+  gives metadata-pair fields names and scopes intentional assertion lints to
+  integration-test crates. A diagnostic with dead-code checks disabled reaches
+  all targets successfully; it is not a strict-Clippy pass. These changes are
+  included in `a6952e8edb`; native and application qualification remain required.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
   and all seven strict Clippy/documentation profiles pass. The interface,
   commit-path, status and schema gates pass on unchanged final source, including
