@@ -1961,3 +1961,51 @@ mismatches and structural lints. No ABI or production-flight success follows fro
 that run. The normal gate and its source coverage remain unchanged while actual
 consumers and source defects are addressed; complete native qualification remains
 required.
+
+
+### Cold restoration, upload continuation and initial Source observation
+
+The initial preparation census now uses each member's exact original Source
+through the closed initial owner walk. It includes both Reactive peers when the
+third member starts, while ordinary Input/Capture observers retain their strict
+static-graph requirements. Exact/one-byte-short and foreign-allocation controls
+pass. The correction is committed in `acae9a0382`.
+
+The cold reader completes three actual Native construction sequences, signed
+parent occurrences, the original Initial15 group and each retained Source
+decoder before the terminal conjunction. The enclosing current17 writer retains
+actual outputs and failure custody through Index construction and persistence.
+This implements the Initial15 predecessor path; recursive current17 ancestry and
+genuine fresh adoption remain required.
+
+Upload continuation joins the actual published Begin, contiguous Chunk history,
+immediate predecessor, Source proof and current Blob receiver before its own
+quote, debit and effect. A defining future producer now prices the complete
+primitive/reply/terminal/transport/record phase, and the genuine Source signer
+uses that distinct row instead of ingress credit. The generic receiver's 64 KiB
+object limit remains unchanged. Final Capture, registration/confirmation and the
+public current17 route remain closed pending their complete producers and owners.
+This checkpoint is committed in `1cb233a8aa`; `6b477d60ad` contains separately
+reviewed import, visibility and layout-expression lint repairs.
+
+The unfiltered four-library run passes 1,928 Core, 1,488 Daemon, 1,428 Provider
+and twelve Contract tests. Existing ignored populations remain 33, 162, fifteen
+and one. Compilation takes 5 minutes 11 seconds; Core completes in 7.85 seconds,
+Daemon in 332.07 seconds and Provider in 11.45 seconds. Six-crate all-feature and
+all-target checking passes in 1 minute 13 seconds. Matching development reference
+binaries rebuild in 1 minute 2 seconds, with debug assertions and overflow checks
+enabled. No deadline, stack or production limit is increased.
+
+The subsequent native control completes the three initial preparations and
+enters inactive-runtime graph construction, then still refuses before returning
+an inactive runtime. Its normal failure path reclaims the original children.
+An attached host stack sample observes full-file hashing through graph-admission
+currentness checks while the Providers wait. This is diagnostic evidence, not a
+successful startup, preservation result or performance comparison. Temporary
+phase diagnostics are excluded from commits and qualification.
+
+The refreshed production application-target build is pinned to `6b477d60ad`.
+All 7,730 captured files match that commit. Its source includes 126 of this
+checkpoint's 129 changed crate roles; three Daemon roles are outside that
+application dependency closure. The build is still running; these source pins
+do not establish a build result or cover subsequent changes.
