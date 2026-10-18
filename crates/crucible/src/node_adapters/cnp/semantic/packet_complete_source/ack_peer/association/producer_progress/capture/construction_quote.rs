@@ -127,49 +127,56 @@ impl PacketCompleteSemanticSource {
                 .source_output_validation_data()
                 .map_err(|_| RuntimeError::ResourceLimit)
         })?;
-        let (prefix, frozen, frontier, original_runtime_reference_bytes) = self.with_latest_original_checkpoint17_geometry_data(
-            controller,
-            inputs.world,
-            |current| {
-                let facts = restoration_activation_retained_native_evidence_data(
-                    current.record_data(),
-                    Some(current.underlying_data()),
-                )
-                .map_err(|_| RuntimeError::ResourceLimit)?;
-                let frozen = sum(
-                    &[
-                        Self::complete_retained_metadata_storage_precredit_data(&facts, maximum)?,
-                        NodeRuntime::capture_reference_storage(current.measurement_data())?,
-                        NodeRuntime::capture_reference_storage(current.first_observation_data())?,
-                        Self::complete_retained_metadata_storage_precredit_data(
-                            &current
-                                .scope_data()
-                                .original_capture17_retained_metadata_data()
-                                .map_err(|_| RuntimeError::ResourceLimit)?,
-                            maximum,
+        let (prefix, frozen, frontier, original_runtime_reference_bytes) = self
+            .with_latest_original_checkpoint17_geometry_data(
+                controller,
+                inputs.world,
+                |current| {
+                    let facts = restoration_activation_retained_native_evidence_data(
+                        current.record_data(),
+                        Some(current.underlying_data()),
+                    )
+                    .map_err(|_| RuntimeError::ResourceLimit)?;
+                    let frozen = sum(
+                        &[
+                            Self::complete_retained_metadata_storage_precredit_data(
+                                &facts, maximum,
+                            )?,
+                            NodeRuntime::capture_reference_storage(current.measurement_data())?,
+                            NodeRuntime::capture_reference_storage(
+                                current.first_observation_data(),
+                            )?,
+                            Self::complete_retained_metadata_storage_precredit_data(
+                                &current
+                                    .scope_data()
+                                    .original_capture17_retained_metadata_data()
+                                    .map_err(|_| RuntimeError::ResourceLimit)?,
+                                maximum,
+                            )?,
+                        ],
+                        maximum,
+                    )?;
+                    let prefix = accounting::extent_data(
+                        self,
+                        controller,
+                        launch,
+                        inputs,
+                        node,
+                        quote,
+                        current.completed_frontier_data(),
+                        request.maximum_coordinator_checkpoint_encoded_bytes,
+                        maximum,
+                    )?;
+                    Ok((
+                        prefix,
+                        frozen,
+                        current.completed_frontier_data(),
+                        NodeRuntime::capture_reference_storage(
+                            &current.scope_data().source_runtime,
                         )?,
-                    ],
-                    maximum,
-                )?;
-                let prefix = accounting::extent_data(
-                    self,
-                    controller,
-                    launch,
-                    inputs,
-                    node,
-                    quote,
-                    current.completed_frontier_data(),
-                    request.maximum_coordinator_checkpoint_encoded_bytes,
-                    maximum,
-                )?;
-                Ok((
-                    prefix,
-                    frozen,
-                    current.completed_frontier_data(),
-                    NodeRuntime::capture_reference_storage(&current.scope_data().source_runtime)?,
-                ))
-            },
-        )?;
+                    ))
+                },
+            )?;
         if frontier.get() == 0 || prefix > self.installation().maximum_semantic_bytes {
             return Err(RuntimeError::ResourceLimit);
         }

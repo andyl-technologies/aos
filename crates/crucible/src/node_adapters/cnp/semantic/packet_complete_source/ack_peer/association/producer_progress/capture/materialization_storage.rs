@@ -137,7 +137,10 @@ impl CaptureMaterializationStorage {
         // Copies write directly to their final retained Vec. Hash verification
         // allocates only one fixed HashRef spelling, never another body buffer.
         let transient = sum(
-            &["blake3-256".len() + "cnp.blob.v1".len() + 64, born.transient],
+            &[
+                "blake3-256".len() + "cnp.blob.v1".len() + 64,
+                born.transient,
+            ],
             maximum,
         )?;
         let scratch = sum(&[Self::counter_scratch_data(), born.scratch], maximum)?;

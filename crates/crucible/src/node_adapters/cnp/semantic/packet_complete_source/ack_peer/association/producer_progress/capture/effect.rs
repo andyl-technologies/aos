@@ -807,7 +807,7 @@ pub(super) fn counter_scratch_data() -> usize {
 
 #[path = "effect/materialization.rs"]
 mod materialization;
-pub(super) use materialization::{CaptureMaterializationOwner, CaptureBornStorage};
+pub(super) use materialization::{CaptureBornStorage, CaptureMaterializationOwner};
 
 fn same_prior_data(
     a: Option<&super::logical::OriginalSourceRestoredSettled17Read>,
