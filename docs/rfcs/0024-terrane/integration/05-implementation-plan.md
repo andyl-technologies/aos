@@ -9338,9 +9338,33 @@ Resumed qualification:
   actual unit ELF. All 118 filesystem cases also pass on this revision: the
   exact actual results, 3,475 archive inputs and archive digest verify, with the
   same six privileged cases separately inventoried. Required application target
-  compilation is running on this exact source. This qualifies the tested reuse
-  component only; recovered inline source pins, consumer leases, completed
-  retirement and full task acceptance remain pending.
+  compilation passes on this exact source in 2,447.859 seconds; immutable Cargo
+  records verify 128 test artifacts across 29 packages, without claiming test
+  execution. This qualifies the tested reuse component only; recovered inline
+  source pins, consumer leases, completed retirement and full task acceptance
+  remain separate obligations.
+- Recovered-inline candidate `53da97bfb3`: native Running custody now retains a
+  bounded source job for an actually recovered inline residence. Preparation
+  persists the original source pin, lease and reservation through real quota
+  checks and filesystem barriers before returning an immutable source. An
+  uncertain or cancelled caller retains its actual job; repeated acquisition
+  reuses the existing completed pin. Admission and publication include these
+  jobs in their common checked memory and count bounds. Reads retain the
+  original sealed body and do not acquire the embedded policy mutex. Existing
+  identities, encodings, bucket keys, store traits and dependencies are unchanged.
+  The native ext4 component passes in 91.868 seconds, including an actual
+  helper stop, dropped source waiter, independently observed durable pin before
+  a second request, reads under the real policy mutex and a second sealed
+  object assembled from the original recovered inline residence. Independent
+  review verifies 3,482 image inputs, all 47 selected filesystem cases, six
+  recovered manifest read controls, three intervening Running admissions,
+  eight refusals without Resume and two inline-before-Resume refusals. All
+  118 filesystem cases also pass; 3,477 archive inputs and the archive digest
+  verify, with the same six privileged cases separately inventoried. Both
+  direct builds, eight focused cases and the formatter pair pass. Strict
+  Clippy retains the same nineteen findings as its parent; application target
+  compilation and full task qualification remain pending. Consumer leases,
+  complete retirement and NativeReady are not qualified by these source pins.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
   and all seven strict Clippy/documentation profiles pass. The interface,
   commit-path, status and schema gates pass on unchanged final source, including
@@ -9354,10 +9378,18 @@ Resumed qualification:
   log, and four separate-process guest controls covering snapshots, late denial
   and actual CLI success/refusal under UID/GID 840 with empty capabilities.
   Final-source feature matrix and the full current-trunk aggregate remain
-  required before formal task acceptance. The running matrix has reported a
-  failure in the local-deletion unlink/directory/progress-sync fault-prefix
-  regression during its later 1,057-case suite. That case passed in an earlier
-  profile; the complete run and eventual failure diagnostics are retained, and
+  required before formal task acceptance. The matrix terminates with failure
+  after 30,565.945 seconds: its Tokio (`send`, `std`, `tokio`) suite records
+  1,056 passes and one failure out of 1,057 cases. The local-deletion
+  unlink/directory/progress-sync fault-prefix case is refused while acquiring
+  the recovery collector lease; the subsequent aggregate never starts. The
+  exact retained failing executable passes that single case in a focused
+  diagnostic run in 144.92 seconds. This supports timing sensitivity and does
+  not qualify the failed matrix. Candidate `bf3c74517e` pauses only quiescent
+  recovery fixture setup on the same injected clock, resuming real progression
+  before deletion; lease durations, full D waits, renewal checks and fault
+  assertions remain unchanged. Focused fault and expiry controls are running
+  before any broader requalification. The original failure remains retained;
   no matrix or aggregate success is claimed. The superseded `6cb1fcf235` aggregate
   was stopped after the policy fix and supplies no aggregate success.
 
