@@ -75,14 +75,16 @@ impl Fixture {
 /// Seeds actual untrusted files through an explicit administrative fixture action.
 ///
 /// # Errors
-/// Refuses a non-root caller, another domain, existing names, wrong project
-/// inheritance, failed native writes, synchronization or kernel fs-verity.
+/// Refuses a non-root caller, unexpected administrative capabilities, another
+/// domain, existing names, wrong project inheritance, failed native writes,
+/// synchronization or kernel fs-verity.
 pub(super) fn seed(mode: &str) -> io::Result<()> {
     if rustix::process::geteuid().as_raw() != 0 {
         return Err(invalid(
             "cold fixture seeding requires explicit root administration",
         ));
     }
+    require_seed_capabilities()?;
     let inputs = Inputs::load()?;
     require_domain(&inputs, mode == "seed-bad-manifest")?;
     let mut fixture = Fixture::new()?;
@@ -135,6 +137,27 @@ pub(super) fn seed(mode: &str) -> io::Result<()> {
     File::open(&sealed_parent)?.sync_all()?;
     File::open(inputs.root.join("sealed"))?.sync_all()?;
     println!("SEEDED actual cold manifest candidate; no publication or recovery authority");
+    Ok(())
+}
+
+fn require_seed_capabilities() -> io::Result<()> {
+    let status = fs::read_to_string("/proc/self/status")?;
+    // CAP_CHOWN, CAP_DAC_OVERRIDE, CAP_FOWNER and CAP_FSETID permit this
+    // root-only administrative seed. No quota mutation capability is present.
+    for (field, expected) in [
+        ("CapInh", "0000000000000000"),
+        ("CapPrm", "000000000000001b"),
+        ("CapEff", "000000000000001b"),
+        ("CapBnd", "000000000000001b"),
+        ("CapAmb", "0000000000000000"),
+    ] {
+        let expected_line = format!("{field}:\t{expected}");
+        if !status.lines().any(|line| line == expected_line) {
+            return Err(invalid(
+                "unexpected actual administrative seed capabilities",
+            ));
+        }
+    }
     Ok(())
 }
 

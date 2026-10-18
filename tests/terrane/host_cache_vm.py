@@ -35,6 +35,8 @@ LABELS = ["layout-root", "chunks", "objects", "sealed", "staging", "quarantine",
 BUDGET = HARD * len(CASES)
 PROVISION_CAPS = "-all,+sys_admin,+dac_read_search,+fowner,+chown,+fsetid"
 QUERY_CAPS = "-all,+sys_admin,+dac_read_search"
+# Root administration writes across role-owned directories before role startup.
+SEED_CAPS = "-all,+dac_override,+fowner,+chown,+fsetid"
 
 
 def require(condition, message):
@@ -218,8 +220,13 @@ def seed_manifests(uuid):
     seeded = {}
     for case, mode in [("manifest-recovery", "seed-manifest"),
                        ("manifest-mismatch", "seed-bad-manifest")]:
-        result = run(admin_command(PROVISION_CAPS, [IMAGE / "bin/host_cache_fixture", mode]),
-                     env=actor_environment(case, uuid), text=True, capture_output=True)
+        try:
+            result = run(admin_command(SEED_CAPS, [IMAGE / "bin/host_cache_fixture", mode]),
+                         env=actor_environment(case, uuid), text=True, capture_output=True)
+        except subprocess.CalledProcessError as error:
+            print(error.stdout or "", end="", flush=True)
+            print(error.stderr or "", end="", flush=True)
+            raise
         require(result.stdout.splitlines() == [
             "SEEDED actual cold manifest candidate; no publication or recovery authority"
         ], "missing actual cold seed witness: " + case)
