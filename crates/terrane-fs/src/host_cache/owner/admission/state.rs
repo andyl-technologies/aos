@@ -1,6 +1,7 @@
 //! Persists future admission holds before any content allocation effects.
 
 use super::{super::retention::Custody, backing::AdmissionJob};
+use crate::host_cache::owner::RETAINED_LEASE_DEADLINE;
 use std::{collections::BTreeSet, fs::File, io, io::Read};
 use terrane::host::cache::{LeaseRecord, PinRecord, ReservationRecord};
 
@@ -44,13 +45,13 @@ pub(super) fn begin(
     });
     next.leases.push(LeaseRecord {
         owner: pin_owner.clone(),
-        expires: u64::MAX,
+        expires: RETAINED_LEASE_DEADLINE,
     });
     for hash in hashes.iter().collect::<BTreeSet<_>>() {
         next.pins.push(PinRecord {
             owner: pin_owner.clone(),
             hash: hash.clone(),
-            expires: u64::MAX,
+            expires: RETAINED_LEASE_DEADLINE,
         });
     }
     next.encoded_len(owner.preparation.config.state)
@@ -114,13 +115,13 @@ pub(super) fn check_registration(owner: &Custody, job: &AdmissionJob) -> io::Res
             .state
             .leases
             .iter()
-            .any(|row| row.owner == pin_owner && row.expires == u64::MAX)
+            .any(|row| row.owner == pin_owner && row.expires == RETAINED_LEASE_DEADLINE)
         || job.hashes.iter().any(|hash| {
-            !owner
-                .state
-                .pins
-                .iter()
-                .any(|row| row.owner == pin_owner && &row.hash == hash && row.expires == u64::MAX)
+            !owner.state.pins.iter().any(|row| {
+                row.owner == pin_owner
+                    && &row.hash == hash
+                    && row.expires == RETAINED_LEASE_DEADLINE
+            })
         })
     {
         return Err(io::Error::other(

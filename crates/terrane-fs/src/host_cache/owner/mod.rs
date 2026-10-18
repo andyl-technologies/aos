@@ -23,6 +23,13 @@ mod resume_error;
 mod retention;
 mod snapshot;
 
+/// Selects the latest Unix deadline encodable by existing TOML policy snapshots.
+///
+/// TOML integers are signed. Using `u64::MAX` makes even the first retained pin
+/// fail preflight serialization. Native operation custody and reservations remain
+/// retained through actual retirement; this value grants no release authority.
+pub(super) const RETAINED_LEASE_DEADLINE: u64 = i64::MAX as u64;
+
 pub(super) use index_io::open_regular_at;
 
 pub use admission::{

@@ -274,6 +274,24 @@ mod tests {
                 owner: "owner".into(),
                 bytes: 1024,
             });
+        state.pins.push(terrane::host::cache::PinRecord {
+            owner: "retained-operation".into(),
+            hash: "ab".repeat(32),
+            expires: u64::MAX,
+        });
+        state.leases.push(terrane::host::cache::LeaseRecord {
+            owner: "retained-operation".into(),
+            expires: u64::MAX,
+        });
+        let limits = StateLimits {
+            bytes: 4096,
+            records: 16,
+        };
+        // The frozen numeric representation cannot encode unsigned maxima.
+        assert!(state.encoded_len(limits).is_err());
+        state.pins[0].expires = super::super::RETAINED_LEASE_DEADLINE;
+        state.leases[0].expires = super::super::RETAINED_LEASE_DEADLINE;
+
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -285,10 +303,7 @@ mod tests {
             .block_on(write_snapshot(SnapshotIo {
                 state: &state,
                 path: &scratch.0,
-                limits: StateLimits {
-                    bytes: 4096,
-                    records: 16,
-                },
+                limits,
                 directory: &directory,
                 state_parent: &directory,
                 layout_root: &directory,

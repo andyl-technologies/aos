@@ -5,6 +5,7 @@
 //! length estimates. No record is cleared to force a supported recovery case.
 
 use super::retention::{Custody, RecoveryManifestBodyRetention};
+use crate::host_cache::owner::RETAINED_LEASE_DEADLINE;
 use std::io;
 use terrane::host::cache::{
     CacheState, LeaseRecord, PinRecord, ReservationRecord, ResidenceRecord,
@@ -47,7 +48,7 @@ pub(super) fn reconstruct(
         });
         expected.leases.push(LeaseRecord {
             owner: pin_owner.clone(),
-            expires: u64::MAX,
+            expires: RETAINED_LEASE_DEADLINE,
         });
         for hash in [
             token(backing.claim().descriptor().digest()),
@@ -56,7 +57,7 @@ pub(super) fn reconstruct(
             expected.pins.push(PinRecord {
                 owner: pin_owner.clone(),
                 hash,
-                expires: u64::MAX,
+                expires: RETAINED_LEASE_DEADLINE,
             });
         }
     }

@@ -1,6 +1,7 @@
 //! Synchronizes native reconstruction metadata under retained physical custody.
 
 use super::*;
+use crate::host_cache::owner::RETAINED_LEASE_DEADLINE;
 
 /// Synchronizes verified metadata under the ordinary recovered-owner phase.
 ///
@@ -174,13 +175,13 @@ async fn retain_with_authority(
         let mut pinned = next.clone();
         pinned.leases.push(LeaseRecord {
             owner: pin_owner.clone(),
-            expires: u64::MAX,
+            expires: RETAINED_LEASE_DEADLINE,
         });
         for hash in [hex(identity.digest()), hex(source.pack_identity().digest())] {
             pinned.pins.push(PinRecord {
                 owner: pin_owner.clone(),
                 hash,
-                expires: u64::MAX,
+                expires: RETAINED_LEASE_DEADLINE,
             });
         }
         next.encoded_len(owner.preparation.config.state)

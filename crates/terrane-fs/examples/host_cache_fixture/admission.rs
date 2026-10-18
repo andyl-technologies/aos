@@ -39,6 +39,8 @@ use terrane_fs::{
 const WINDOW: usize = 2 * 1024 * 1024;
 const CAPACITY: u64 = 6 * 1024 * 1024;
 const REJECTIONS: usize = 65;
+// Ordinary expected policy data, matching the existing signed TOML integer range.
+const RETAINED_LEASE_DEADLINE: u64 = i64::MAX as u64;
 
 fn invalid(message: &'static str) -> io::Error {
     io::Error::other(message)
@@ -175,11 +177,11 @@ fn check_state(
             .position(|value| value.bytes == row.bytes && value.hashes == hashes)
             .ok_or_else(|| invalid("admission hold or protected hash closure differs"))?;
         unmatched.remove(index);
-        expected_leases.insert((pin_owner.clone(), u64::MAX));
+        expected_leases.insert((pin_owner.clone(), RETAINED_LEASE_DEADLINE));
         expected_pins.extend(
             hashes
                 .into_iter()
-                .map(|hash| (pin_owner.clone(), hash, u64::MAX)),
+                .map(|hash| (pin_owner.clone(), hash, RETAINED_LEASE_DEADLINE)),
         );
     }
     if bootstrap != 1

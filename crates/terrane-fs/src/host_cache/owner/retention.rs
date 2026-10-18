@@ -9,6 +9,7 @@ use super::{
     NativeCachePreparation,
     index_io::{IndexWriteCompletion, PendingIndexWrite, open_regular_at, write_missing_index},
 };
+use crate::host_cache::owner::RETAINED_LEASE_DEADLINE;
 use crate::{
     host_cache::{
         DerivedIndexRepair, DetachedIndexStatus, NativeHostLayout, NativeHostMetadataReader,
@@ -566,7 +567,7 @@ impl RetainedManifest {
             .state
             .leases
             .iter()
-            .any(|lease| lease.owner == pin_owner && lease.expires == u64::MAX)
+            .any(|lease| lease.owner == pin_owner && lease.expires == RETAINED_LEASE_DEADLINE)
             || [
                 hex(self.claim().descriptor().digest()),
                 hex(self.pack_identity().digest()),
@@ -574,7 +575,9 @@ impl RetainedManifest {
             .iter()
             .any(|hash| {
                 !custody.state.pins.iter().any(|pin| {
-                    pin.owner == pin_owner && &pin.hash == hash && pin.expires == u64::MAX
+                    pin.owner == pin_owner
+                        && &pin.hash == hash
+                        && pin.expires == RETAINED_LEASE_DEADLINE
                 })
             })
         {
@@ -862,12 +865,12 @@ async fn repair_index(
         });
         next.leases.push(LeaseRecord {
             owner: pin_owner.clone(),
-            expires: u64::MAX,
+            expires: RETAINED_LEASE_DEADLINE,
         });
         next.pins.push(PinRecord {
             owner: pin_owner,
             hash: hex(source.pack_identity().digest()),
-            expires: u64::MAX,
+            expires: RETAINED_LEASE_DEADLINE,
         });
         next.encoded_len(owner.preparation.config.state)
             .map_err(io::Error::other)?;

@@ -6,6 +6,7 @@ use super::{
     backing::{self, AdmissionJob},
     io as native, reconcile, state,
 };
+use crate::host_cache::owner::RETAINED_LEASE_DEADLINE;
 use std::{
     io,
     sync::{Arc, Mutex},
@@ -153,12 +154,14 @@ fn dictionary(
         state::check_registration(owner, &job)?;
         let pin_owner = format!("admission:{}", job.token);
         if !owner.state.pins.iter().any(|pin| {
-            pin.owner == pin_owner && pin.hash == state::hex(digest) && pin.expires == u64::MAX
+            pin.owner == pin_owner
+                && pin.hash == state::hex(digest)
+                && pin.expires == RETAINED_LEASE_DEADLINE
         }) || !owner
             .state
             .leases
             .iter()
-            .any(|lease| lease.owner == pin_owner && lease.expires == u64::MAX)
+            .any(|lease| lease.owner == pin_owner && lease.expires == RETAINED_LEASE_DEADLINE)
         {
             return Err(io::Error::other("admitted dictionary lost its durable pin"));
         }
