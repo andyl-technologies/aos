@@ -5,6 +5,8 @@
 //! preserves GET and verity operations while refusing project setters, alternate
 //! ABIs, rings and operations that could undo non-dumpability. Installation is
 //! irreversible; any failure requires process termination, not fallback.
+//! [`install_publisher`] additionally fixes Unix-only socket creation and audits
+//! inherited descriptors before configured publisher resources are opened.
 //!
 //! This boundary does not isolate Unix identities. The trusted host must reserve
 //! each role identity, exclude unconfined peers and inherited writable cache
@@ -14,6 +16,9 @@
 //! do not call this API. Confined roles do not execute other programs.
 
 mod policy;
+mod publisher;
+
+pub use publisher::{PublisherInstalled, install_publisher};
 
 use std::{fs, io, os::fd::AsRawFd};
 

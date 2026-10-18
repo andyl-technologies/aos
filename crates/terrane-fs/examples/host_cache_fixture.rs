@@ -10,6 +10,8 @@ mod actor;
 mod admission;
 #[path = "host_cache_fixture/config.rs"]
 mod config;
+#[path = "host_cache_fixture/network.rs"]
+mod network;
 #[path = "host_cache_fixture/recovery.rs"]
 mod recovery;
 
@@ -40,6 +42,9 @@ fn main() -> std::process::ExitCode {
             "refuse-unsealed-writable-manifest",
             "refuse-truncated-manifest",
             "recover-writable-manifest",
+            "publisher-confinement",
+            "publisher-reject-descriptor",
+            "publisher-reject-stdio",
         ] {
             println!("host-cache:{selector}");
         }
@@ -55,6 +60,11 @@ fn main() -> std::process::ExitCode {
             | "seed-writable-manifest"
     ) {
         recovery::seed(&mode)
+    } else if matches!(
+        mode.as_str(),
+        "publisher-confinement" | "publisher-reject-descriptor" | "publisher-reject-stdio"
+    ) {
+        network::run(&mode)
     } else {
         actor::run(&mode)
     };

@@ -52,15 +52,19 @@ use crate::{
 /// socket ancestry, unsupported wipe, failed confinement, unavailable quota
 /// evidence, root/project/budget mismatches, preparation/recovery errors, a
 /// failed actual seal probe or listener/connection-owner startup failures.
+/// Publisher confinement also rejects inherited undeclared or network descriptors
+/// and a kernel socket restriction that fails its actual startup probes.
 pub fn run_configured_publisher(host: &HostTier) -> io::Result<()> {
     let config = preflight(host)?;
-    let confinement = Arc::new(crate::quota_confinement::install()?);
+    let network = Arc::new(crate::quota_confinement::install_publisher()?);
+    let confinement = Arc::clone(network.quota());
     let socket_ancestors =
         retain_listener_parent(&config.endpoint.socket_path, config.endpoint.identities)
             .map_err(io::Error::other)?;
     let quotas = check_quotas(&config)?;
     let custody = Arc::new(ConfiguredPublisherCustody {
         confinement: confinement.clone(),
+        network,
         quotas,
         _socket_ancestors: socket_ancestors,
     });
@@ -156,6 +160,7 @@ struct CheckedQuota {
 /// listening service exits first.
 pub(crate) struct ConfiguredPublisherCustody {
     confinement: Arc<crate::quota_confinement::Installed>,
+    network: Arc<crate::quota_confinement::PublisherInstalled>,
     quotas: Vec<CheckedQuota>,
     _socket_ancestors: Vec<OwnedFd>,
 }
@@ -176,7 +181,7 @@ impl ConfiguredPublisherCustody {
         if !Arc::ptr_eq(&self.confinement, confinement) {
             return Err(invalid("prepared owner uses another confinement receipt"));
         }
-        self.confinement.check_current()?;
+        self.network.check_current()?;
         let checked = self
             .quotas
             .iter()

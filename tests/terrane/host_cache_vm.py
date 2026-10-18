@@ -14,6 +14,7 @@ import re
 import shutil
 import select
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -227,6 +228,33 @@ def cold_candidates():
     sibling = root("state-directory") / "state/old-policy"
     sibling.mkdir()
     metadata(sibling, 840, 844, 0o770)
+
+
+def publisher_confinement_cases():
+    """Exercises actual kernel enforcement and preexisting descriptor rejection."""
+    cases = [
+        ("publisher-confinement",
+         "PASS actual publisher kernel denies Internet sockets and permits Unix transport; no Ready"),
+        ("publisher-reject-descriptor",
+         "PASS actual publisher rejects an undeclared preexisting network descriptor"),
+        ("publisher-reject-stdio",
+         "PASS actual publisher rejects a network socket inherited as standard input"),
+    ]
+    for mode, expected in cases:
+        # The socket remains unbound; passing it as stdin exercises the actual
+        # inherited descriptor, with no interface or external service involved.
+        inherited = (socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                     if mode == "publisher-reject-stdio" else None)
+        try:
+            result = subprocess.run(role_command(841, [IMAGE / "bin/host_cache_fixture", mode]),
+                                    stdin=inherited, capture_output=True, text=True, timeout=20)
+        finally:
+            if inherited is not None:
+                inherited.close()
+        print(result.stdout, end="", flush=True)
+        print(result.stderr, end="", flush=True)
+        require(result.returncode == 0 and result.stdout.splitlines() == [expected],
+                "actual publisher confinement control failed: " + mode)
 
 
 def seed_manifests(uuid):
@@ -619,6 +647,7 @@ def main():
     require(os.geteuid() == 0, "VM supervisor requires explicit root administration")
     verify_image()
     filesystem_unit_cases()
+    publisher_confinement_cases()
     administrative_preflight("before")
     scaffold()
     administrative_preflight("after")

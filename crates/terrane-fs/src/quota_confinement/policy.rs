@@ -114,8 +114,35 @@ fn program() -> Vec<libc::sock_filter> {
     program
 }
 
+/// Installs the fixed quota policy with synchronized kernel enforcement.
+///
+/// # Errors
+/// Returns invalid program length, kernel installation or TSYNC failures.
 pub(super) fn install() -> io::Result<()> {
-    let instructions = program();
+    install_program(&program())
+}
+
+/// Adds fixed Unix-only socket creation to the already installed quota policy.
+///
+/// The base program rejects alternate ABIs, rings and cross-process descriptor
+/// import. The additional policy cannot weaken those restrictions.
+///
+/// # Errors
+/// Returns invalid program length, kernel installation or TSYNC failures.
+pub(super) fn install_publisher() -> io::Result<()> {
+    let instructions = [
+        statement(LOAD, 0),
+        equal(libc::SYS_socket as u32, 1, 0),
+        equal(libc::SYS_socketpair as u32, 0, 3),
+        statement(LOAD, 16),
+        equal(libc::AF_UNIX as u32, 1, 0),
+        statement(RET, DENY),
+        statement(RET, ALLOW),
+    ];
+    install_program(&instructions)
+}
+
+fn install_program(instructions: &[libc::sock_filter]) -> io::Result<()> {
     let filter = libc::sock_fprog {
         len: u16::try_from(instructions.len()).map_err(io::Error::other)?,
         filter: instructions.as_ptr().cast_mut(),
