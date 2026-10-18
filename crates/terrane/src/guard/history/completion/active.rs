@@ -233,7 +233,7 @@ fn index_failure(error: crate::indexing::Error) -> StoreFailure {
     StoreFailure::with_source(kind, error)
 }
 
-#[cfg(all(test, feature = "tokio", unix))]
+#[cfg(all(test, feature = "tokio", feature = "surface-sdk", unix))]
 impl<S: crate::store::Store, C: crate::store::Clock> Guard<S, C> {
     /// Borrows exact staged namespace evidence for strict loader diagnostics.
     ///

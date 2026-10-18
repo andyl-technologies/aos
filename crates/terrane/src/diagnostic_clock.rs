@@ -73,7 +73,7 @@ impl Clock for DiagnosticClock {
     }
 }
 
-#[cfg(feature = "tokio")]
+#[cfg(all(feature = "tokio", feature = "surface-sdk", unix))]
 impl DiagnosticClock {
     fn cancel(&self) {
         // Recover cancellation state only, never authority or collector state.
@@ -103,30 +103,44 @@ pub(crate) fn elapsed(started: Tick) -> Duration {
 #[cfg(feature = "tokio")]
 mod bounded {
     use super::{Clock, DiagnosticClock, Duration, Mutex};
+    #[cfg(all(feature = "surface-sdk", unix))]
     use std::io::{self, Write};
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Weak};
 
     macro_rules! groups {
-        ($($variant:ident => $name:literal),+ $(,)?) => {
+        ($($(#[$attribute:meta])* $variant:ident => $name:literal),+ $(,)?) => {
             /// Names the fixed inclusive diagnostic groups.
             #[derive(Clone, Copy)]
-            pub(crate) enum Group { $(#[doc = concat!("Records the inclusive diagnostic group `", $name, "`.")] $variant),+ }
+            pub(crate) enum Group {
+                $($(#[$attribute])*
+                #[doc = concat!("Records the inclusive diagnostic group `", $name, "`.")]
+                $variant),+
+            }
 
             impl Group {
-                const NAMES: &'static [&'static str] = &[$($name),+];
+                // Conditional labels must follow the same discriminant indexes.
+                const NAMES: &'static [&'static str] = &[$($(#[$attribute])* $name),+];
             }
         };
     }
 
     groups! {
+        #[cfg(all(feature = "surface-sdk", unix))]
         PhaseBaseline => "phase-baseline",
+        #[cfg(all(feature = "surface-sdk", unix))]
         PhaseOracle => "phase-oracle",
+        #[cfg(all(feature = "surface-sdk", unix))]
         PhaseMaintainedBegin => "phase-maintained-begin",
+        #[cfg(all(feature = "surface-sdk", unix))]
         PhaseMaintainedTree => "phase-maintained-tree",
+        #[cfg(all(feature = "surface-sdk", unix))]
         PhaseMaintainedCommit => "phase-maintained-commit",
+        #[cfg(all(feature = "surface-sdk", unix))]
         PhaseReopen => "phase-reopen",
+        #[cfg(all(feature = "surface-sdk", unix))]
         PhaseOutput => "phase-output",
+        #[cfg(all(feature = "surface-sdk", unix))]
         PhaseAccounting => "phase-accounting",
         DirectTree => "direct-tree",
         DirectHistory => "direct-history",
@@ -327,6 +341,7 @@ mod bounded {
     }
 
     /// Names the fixture's fixed phase boundaries.
+    #[cfg(all(feature = "surface-sdk", unix))]
     #[derive(Clone, Copy)]
     pub(crate) enum Phase {
         /// Covers initial model preparation, publication and output verification.
@@ -347,6 +362,7 @@ mod bounded {
         Accounting,
     }
 
+    #[cfg(all(feature = "surface-sdk", unix))]
     impl Phase {
         fn group(self) -> Group {
             match self {
@@ -388,7 +404,9 @@ mod bounded {
     }
 
     struct State {
+        #[cfg(all(feature = "surface-sdk", unix))]
         phase: Phase,
+        #[cfg(all(feature = "surface-sdk", unix))]
         phase_started: Duration,
         groups: [Totals; Group::NAMES.len()],
     }
@@ -397,6 +415,7 @@ mod bounded {
         clock: Arc<DiagnosticClock>,
         state: Mutex<State>,
         lost: AtomicU64,
+        #[cfg(all(feature = "surface-sdk", unix))]
         registry_loss_origin: u64,
     }
 
@@ -427,6 +446,7 @@ mod bounded {
             }
         }
 
+        #[cfg(all(feature = "surface-sdk", unix))]
         fn summary(&self, boundary: &str, snapshot: usize) {
             let now = self.clock.monotonic();
             let copied = match self.state.try_lock() {
@@ -555,12 +575,14 @@ mod bounded {
     }
 
     /// Owns activation, fixed phase summaries and prompt reporter cancellation.
+    #[cfg(all(feature = "surface-sdk", unix))]
     pub(crate) struct FixtureScope {
         collector: Option<Arc<Collector>>,
         reporter: Option<std::thread::JoinHandle<()>>,
         phase_span: Option<Span>,
     }
 
+    #[cfg(all(feature = "surface-sdk", unix))]
     impl FixtureScope {
         /// Opts into only the unchanged 4096 ordinary growth population.
         ///
@@ -657,6 +679,7 @@ mod bounded {
         }
     }
 
+    #[cfg(all(feature = "surface-sdk", unix))]
     impl Drop for FixtureScope {
         fn drop(&mut self) {
             let Some(collector) = &self.collector else {
@@ -686,7 +709,7 @@ mod bounded {
     }
 }
 
+#[cfg(all(feature = "tokio", feature = "surface-sdk", unix))]
+pub(crate) use bounded::{FixtureScope, Phase};
 #[cfg(feature = "tokio")]
-pub(crate) use bounded::{
-    FixtureScope, Group, NativeKind, Phase, Span, check_group, count, native_group, span,
-};
+pub(crate) use bounded::{Group, NativeKind, Span, check_group, count, native_group, span};
