@@ -9416,6 +9416,29 @@ Resumed qualification:
   immutable Cargo records verify 128 test artifacts across 29 packages, with no
   execution claim. Consumer lease implementation is in progress on a separate
   worktree; no full task acceptance or lifecycle qualification follows.
+- Consumer-lease candidate `206a698eb9` adds independent durable consumer pins
+  and future holds, bounded reads without embedded or job locks, renewal through
+  actual completion, release grace and periodic expiry. Original native backing
+  remains owned through abandoned waiters and started reads. Both direct builds,
+  fifteen focused tests and the formatter pair pass. Strict Clippy retains the
+  same nineteen existing findings; the separate all-target diagnostic passes
+  without changing source lint policy. The image builds, but independent
+  verification stops before native execution at a stale 48-case assertion after
+  three new expiry tests expand the explicit inventory to 51. That failure is
+  retained. Correction `9b2a8b1393` preserves the exact case list and all Rust,
+  Cargo and Nix inputs, removing only the duplicate count assertion. Its image,
+  independent verification of 3,490 inputs and six installed files, and formatter
+  pair pass. Actual ext4 execution passes all 51 selected unit cases and exercises
+  synchronized consumer pinning, reads with the actual policy mutex held,
+  foreign-owner refusal, completion after dropping a renewal waiter, release,
+  immediate re-pin without duplicating backing, and expired-renewal refusal.
+  The final periodic grace-cleanup assertion fails; the complete native run is
+  not qualified. Full filesystem and required application compilation do not
+  execute on this source. Diagnostic candidate `6966726253` preserves the failure
+  assertion and deadlines, exposing actual background sweep errors and bounded
+  policy snapshots to distinguish a refused mutation from a missing timer.
+  HOST-18/22/23/24/30 implementation and native qualification remain in progress;
+  producer handoff, eviction, complete retirement and NativeReady remain pending.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
   and all seven strict Clippy/documentation profiles pass. The interface,
   commit-path, status and schema gates pass on unchanged final source, including
