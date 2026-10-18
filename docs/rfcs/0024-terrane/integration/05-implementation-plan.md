@@ -9437,8 +9437,25 @@ Resumed qualification:
   execute on this source. Diagnostic candidate `6966726253` preserves the failure
   assertion and deadlines, exposing actual background sweep errors and bounded
   policy snapshots to distinguish a refused mutation from a missing timer.
-  HOST-18/22/23/24/30 implementation and native qualification remain in progress;
-  producer handoff, eviction, complete retirement and NativeReady remain pending.
+  Its real run confirms repeated `Broken pipe` at quota preflight, preserving
+  both consumer records and holds: the helper closes idle connections after
+  five seconds while the owner retains its connection through 30-second grace.
+  Candidate `e829fdb0af` authenticates a fresh bounded connection for each actual
+  query. Client-wide request IDs, per-connection sequence validation, epochs,
+  native root bindings and active receive deadlines remain enforced. Failed
+  submissions propagate; protocol bytes, traits and dependencies stay unchanged.
+  Both direct builds, all 21 focused cases, formatting and the separate
+  diagnostic pass. Strict Clippy retains exactly the same nineteen findings.
+  Its source-bound image and independent verification pass, followed by actual
+  native ext4 qualification in 113.948 seconds. All 51 selected cases and every
+  prior recovery control pass. The consumer scenario durably removes exactly
+  its own pins, leases and holds after original grace, preserving producer
+  records and the native inode. The full filesystem run passes all 122
+  nonignored cases; independent review verifies all 3,485 source inputs, the
+  archive and the same six privileged exclusions. Required application target
+  compilation is running. This qualifies the tested consumer lifecycle
+  component; producer handoff, eviction, complete retirement, NativeReady and
+  full task acceptance remain pending.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
   and all seven strict Clippy/documentation profiles pass. The interface,
   commit-path, status and schema gates pass on unchanged final source, including
