@@ -6,6 +6,7 @@
 
 use super::*;
 use crate::handshake::{HelloRequest, HelloResult, ResumeSession};
+use crate::reference_packet::service::server::complete::hello_selection;
 use crate::retained_metadata::serialization_storage::{
     OriginalSerializationStorageData, OriginalSerializationStorageProjection as Projection,
 };
@@ -17,10 +18,6 @@ pub(super) struct HelloStorage {
     pub(super) scratch: usize,
 }
 
-// Actual maximum: base4 + confirmation1 + ACK2 + complete3 + transfer(2+6)
-// + boot1. This prices the existing subset; it advertises no feature.
-const MAXIMUM_NATIVE_FEATURES: usize = 19;
-
 fn generated_result(
     launch: &PacketNative5SourceLaunch,
     maximum: usize,
@@ -28,6 +25,7 @@ fn generated_result(
     let [binding] = launch.selection.realization.bindings.as_slice() else {
         return Err(refused());
     };
+    let feature_count = hello_selection::feature_count_bound(&launch.selection.provider)?;
     let mut result = Projection::new(maximum)?;
     result.add_object()?;
     for field in [
@@ -49,8 +47,8 @@ fn generated_result(
     result.add_value(&binding.authority.incarnation_id)?;
     result.add_unescaped_ascii_extent(43)?;
     result.add_unescaped_ascii_extent(43)?;
-    result.add_array_extent(MAXIMUM_NATIVE_FEATURES)?;
-    for _ in 0..MAXIMUM_NATIVE_FEATURES {
+    result.add_array_extent(feature_count)?;
+    for _ in 0..feature_count {
         result.add_string_extent(128)?;
     }
     result.add_value(&launch.limits)?;
@@ -141,15 +139,20 @@ pub(super) fn project_with_raw(
     let [binding] = launch.selection.realization.bindings.as_slice() else {
         return Err(refused());
     };
+    let feature_count = hello_selection::feature_count_bound(&launch.selection.provider)?;
+    let roster_capacity = feature_count
+        .checked_mul(2)
+        .and_then(|count| count.checked_add(4))
+        .ok_or_else(refused)?;
     let mut rosters = MetadataObserver::new();
     for _ in 0..6 {
-        rosters.vector::<Id>(MAXIMUM_NATIVE_FEATURES * 2 + 4)?;
+        rosters.vector::<Id>(roster_capacity)?;
     }
     let retained = sum(
         &[
             registration.checked_mul(11).ok_or_else(refused)?,
             requested_metadata_backing_storage_data(&rosters.finish())?,
-            6 * MAXIMUM_NATIVE_FEATURES * 128,
+            feature_count.checked_mul(6 * 128).ok_or_else(refused)?,
             metadata_backing(&launch.selection.provider)?,
             metadata_backing(&binding.compatibility.guarantees_ref)?,
             128, // Independent Admit Id; the nonce clone is transient below.
@@ -197,6 +200,7 @@ pub(super) fn project_with_raw(
     let scratch = sum(
         &[
             size_of::<HelloStorage>(),
+            hello_selection::counter_scratch_data(),
             size_of::<
                 crate::retained_metadata::serialization_storage::OriginalJsonValueStorageExtentData,
             >(),

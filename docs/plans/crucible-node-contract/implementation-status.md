@@ -1370,13 +1370,31 @@ refusal remains under investigation. The application-target refresh also passes
 for this measurement change at `5285b8095f`; native runtime qualification remains
 separate.
 
-Failure-only diagnostics on the subsequent checkpoint isolate startup refusal
-to the first node's Hello reply: its retained SDK error is a socket read expiring
-with `WouldBlock`. The ordinary optimized test-profile provider also refuses;
-the latest probe records zero passes and one failure in 70.60 seconds, with
-original resources reclaimed. The provider's reason for withholding the reply
-remains under investigation. Temporary logging is removed after each probe;
-this diagnostic result does not qualify native startup or preservation.
+### Invocation Hello selection
+
+Failure-only diagnostics isolate the earlier Hello timeout to the child's old
+fixed feature subset. The host requires the full immutable installed roster;
+the child's handshake refuses that request before writing its reply.
+
+Invocation births now select exactly the authenticated private registration and
+installed provider declaration. Changed feature membership/order and undeclared
+or duplicate envelope keys refuse. The private registration was independently
+digest-checked at birth; its borrowed getter rechecks the original creator,
+issued birth and retained Source/launch bodies. Other birth editions retain
+their existing selection. The shared Hello quote prices the complete roster and
+validation scratch under the same policy limits and original deadline.
+
+Independent source review and formatting pass. All 1,079 provider tests pass,
+with fifteen ignored; the two focused selection controls also pass on the final
+source. Six-crate all-feature/all-target checking passes in 34.91 seconds.
+All four full-roster definition/admission controls pass in 23.86 seconds.
+
+The real optimized native startup still records zero passes and one failure.
+The latest member-level probe takes 14.82 seconds and confirms that node zero
+passes socket acquisition and Hello, then refuses in Prepare with
+`OwnerUnavailable`. Original resources are reclaimed. This is diagnostic phase
+progress, not a successful startup or a performance comparison. All temporary
+logging is removed after the probes. Native preservation remains unqualified.
 
 ## Known gaps and exit criteria
 

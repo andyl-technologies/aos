@@ -5,6 +5,7 @@ use super::*;
 use crate::transport::original_frames::OriginalFrameReservation;
 
 pub(in crate::reference_packet::service) mod birth;
+pub(in crate::reference_packet::service) mod hello_selection;
 
 pub(in super::super) fn accept_complete(
     socket: &Path,

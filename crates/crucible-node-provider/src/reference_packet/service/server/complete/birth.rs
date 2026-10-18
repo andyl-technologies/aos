@@ -278,7 +278,28 @@ impl CompleteBirth {
                     "native5 original initial frame is not Hello",
                 ));
             };
-            let mut selected = vec![
+            let invocation = self
+                .boot
+                .as_ref()
+                .map(|boot| {
+                    let boot = boot
+                        .try_borrow()
+                        .map_err(|_| ProviderError::Conflict("native Hello boot borrowed"))?;
+                    boot.original_invocation_hello_registration_data()?
+                        .map(|registration| {
+                            super::hello_selection::invocation_selection(
+                                &self.launch.selection.provider,
+                                registration,
+                            )
+                        })
+                        .transpose()
+                })
+                .transpose()?
+                .flatten();
+            let (mut selected, envelope_extensions) = if let Some(selection) = invocation {
+                selection
+            } else {
+                let mut selected = vec![
             Id::new("cnp.control-evidence/1")?,
             Id::new("cnp.core/1")?,
             Id::new(
@@ -286,38 +307,38 @@ impl CompleteBirth {
             )?,
             Id::new(super::super::super::super::input::PACKET_INPUT_FEATURE)?,
         ];
-            let mut envelope_extensions = std::collections::BTreeMap::from([(
-                super::super::super::super::input::PACKET_INPUT_FEATURE.into(),
-                Id::new(super::super::super::super::input::PACKET_INPUT_FEATURE)?,
-            )]);
-            if self.launch.confirmation_selection.is_some() {
-                selected.push(Id::new(
-                    super::super::super::confirmation::PACKET_NATIVE_AFTER_CONFIRMATION_FEATURE,
-                )?);
-                envelope_extensions.insert(
+                let mut envelope_extensions = std::collections::BTreeMap::from([(
+                    super::super::super::super::input::PACKET_INPUT_FEATURE.into(),
+                    Id::new(super::super::super::super::input::PACKET_INPUT_FEATURE)?,
+                )]);
+                if self.launch.confirmation_selection.is_some() {
+                    selected.push(Id::new(
+                        super::super::super::confirmation::PACKET_NATIVE_AFTER_CONFIRMATION_FEATURE,
+                    )?);
+                    envelope_extensions.insert(
                     super::super::super::confirmation::PACKET_NATIVE_AFTER_CONFIRMATION_EXTENSION
                         .into(),
                     Id::new(
                         super::super::super::confirmation::PACKET_NATIVE_AFTER_CONFIRMATION_FEATURE,
                     )?,
                 );
-            }
-            if self.launch.ack_emitter_selection.is_some() {
-                selected.push(Id::new(
-                    super::super::super::ack_emitter::PACKET_NATIVE_CANONICAL_ACK_FEATURE,
-                )?);
-                selected.push(Id::new(
-                    super::super::super::ack_emitter::PACKET_CANONICAL_ACK_ADMISSION_FEATURE,
-                )?);
-                envelope_extensions.insert(
+                }
+                if self.launch.ack_emitter_selection.is_some() {
+                    selected.push(Id::new(
+                        super::super::super::ack_emitter::PACKET_NATIVE_CANONICAL_ACK_FEATURE,
+                    )?);
+                    selected.push(Id::new(
+                        super::super::super::ack_emitter::PACKET_CANONICAL_ACK_ADMISSION_FEATURE,
+                    )?);
+                    envelope_extensions.insert(
                     super::super::super::ack_emitter::PACKET_CANONICAL_ACK_ADMISSION_FEATURE.into(),
                     Id::new(
                         super::super::super::ack_emitter::PACKET_CANONICAL_ACK_ADMISSION_FEATURE,
                     )?,
                 );
-            }
-            if self.launch.complete_restore_selection.is_some() {
-                for key in [
+                }
+                if self.launch.complete_restore_selection.is_some() {
+                    for key in [
                 super::super::super::complete_restore::PACKET_COMPLETE_RESTORE_FEATURE,
                 super::super::super::complete_restore::PACKET_COMPLETE_RESTORE_PROOF_EXTENSION,
                 super::super::super::complete_restore::PACKET_COMPLETE_RESTORE_RECEIPT_EXTENSION,
@@ -325,8 +346,8 @@ impl CompleteBirth {
                 selected.push(Id::new(key)?);
                 envelope_extensions.insert(key.into(), Id::new(key)?);
             }
-            }
-            if self.launch.complete_restore_selection == Some(
+                }
+                if self.launch.complete_restore_selection == Some(
             super::super::super::complete_restore::PacketNative5CompleteRestoreSelection::SourceSignedTransfer12)
         {
             use super::super::super::complete_restore::{*, transfer::*};
@@ -339,13 +360,15 @@ impl CompleteBirth {
                 }
             }
         }
-            if self.boot.is_some() {
-                selected.push(Id::new(EXTENSION_NEGOTIATION_V1)?);
-                envelope_extensions.insert(
-                    EXTENSION_NEGOTIATION_V1.into(),
-                    Id::new(EXTENSION_NEGOTIATION_V1)?,
-                );
-            }
+                if self.boot.is_some() {
+                    selected.push(Id::new(EXTENSION_NEGOTIATION_V1)?);
+                    envelope_extensions.insert(
+                        EXTENSION_NEGOTIATION_V1.into(),
+                        Id::new(EXTENSION_NEGOTIATION_V1)?,
+                    );
+                }
+                (selected, envelope_extensions)
+            };
             selected.sort();
             let binding = &self.launch.selection.realization.bindings[0];
             let mut token = [0; 32];

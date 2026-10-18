@@ -7,6 +7,26 @@ use crate::reference_packet::service::native_startup::{
 };
 
 impl NativeAckBoot {
+    /// Borrows the original invocation's authenticated Hello registration.
+    ///
+    /// The private birth and both retained body digests remain independent of
+    /// the public Hello request. Birth admission separately checked this
+    /// immutable registration's digest before marking the original ready.
+    /// Other boot editions keep their existing plan.
+    ///
+    /// # Errors
+    /// Refuses another creator or a changed, incomplete invocation birth.
+    pub(crate) fn original_invocation_hello_registration_data(
+        &self,
+    ) -> Result<Option<&serde_json::Value>, ProviderError> {
+        self.ensure_origin()?;
+        if self.data.schema != PACKET_NATIVE_INVOCATION_PRIVATE_BOOT_SCHEMA {
+            return Ok(None);
+        }
+        self.authenticate_original_invocation_body_data()?;
+        Ok(Some(&self.data.expected_host_registration))
+    }
+
     pub(in crate::reference_packet::service::ack_emitter::native_boot) fn prepare_original_invocation_into(
         value: &serde_json::Value,
         launch: &PacketNative5SourceLaunch,
