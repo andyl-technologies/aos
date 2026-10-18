@@ -5,7 +5,9 @@
 //! cannot construct a native permit or select the model in a production build.
 //! Checkout, launch, adoption, rollback and publication remain in the factory.
 
+use super::target_construction::TargetSetupFailure;
 use super::*;
+use crucible_control_api::host_operational::HostRamAdmissionError;
 use crucible_host_resources::host_supervision::HostOperationSupervisor;
 use crucible_qemu_host::QemuLaunchResourceRequirements;
 
@@ -59,7 +61,7 @@ where
         guard: &mut R::Guard,
         ram: &dyn crate::vm_lifecycle::ProductionHostRamRegistrationFactory,
         input: &CrucibleAttemptExecution,
-    ) -> Result<(), String>;
+    ) -> Result<(), TargetSetupFailure>;
 
     /// Prepares one member's supervision and backend RAM ownership.
     ///
@@ -73,7 +75,7 @@ where
         node: &crucible_engine::NodeId,
         generation: u64,
         requirements: QemuLaunchResourceRequirements,
-    ) -> Result<HostOperationSupervisor, String>;
+    ) -> Result<HostOperationSupervisor, TargetSetupFailure>;
 
     /// Prepares and provisions the member's privately owned child files.
     ///
@@ -128,16 +130,12 @@ where
         guard: &mut R::Guard,
         ram: &dyn crate::vm_lifecycle::ProductionHostRamRegistrationFactory,
         input: &CrucibleAttemptExecution,
-    ) -> Result<(), String> {
+    ) -> Result<(), TargetSetupFailure> {
         for node in input.scenario().world().vm_nodes() {
             // A sibling's controller cannot pay this member's descriptor window.
-            ram.reserve_native_controller_resources(&node.id.name)
-                .map_err(|error| error.to_string())?;
-            let controller = guard
-                .native_resource_controller_for_node(&node.id)
-                .map_err(|error| error.to_string())?;
-            ram.bind_native_resource_controller(&node.id.name, controller)
-                .map_err(|error| error.to_string())?;
+            ram.reserve_native_controller_resources(&node.id.name)?;
+            let controller = guard.native_resource_controller_for_node(&node.id)?;
+            ram.bind_native_resource_controller(&node.id.name, controller)?;
         }
         Ok(())
     }
@@ -150,33 +148,29 @@ where
         node: &crucible_engine::NodeId,
         generation: u64,
         requirements: QemuLaunchResourceRequirements,
-    ) -> Result<HostOperationSupervisor, String> {
+    ) -> Result<HostOperationSupervisor, TargetSetupFailure> {
         #[cfg(test)]
         {
             target.component_ram_facts = context.uses_component_ram_facts();
         }
-        let owner = context
-            .host_operation_supervisor()
-            .ok_or_else(|| String::from("hot-fork child has no admitted operational supervisor"))?;
-        let (_, budgets) = owner.budgets().map_err(|error| error.to_string())?;
+        let owner = context.host_operation_supervisor().ok_or_else(|| {
+            HostRamAdmissionError::contract("hot-fork child has no admitted operational supervisor")
+        })?;
+        let (_, budgets) = owner.budgets().map_err(HostRamAdmissionError::from)?;
         let supervisor = owner
             .new_budget_owner(budgets)
-            .map_err(|error| error.to_string())?;
-        let registration = ram
-            .prepare(
-                &node.name,
-                generation,
-                requirements.guest_memory_bytes(),
-                requirements.virtual_cpus(),
-            )
-            .map_err(|error| error.to_string())?;
-        target
-            .install_host_ram_registration(
-                registration,
-                supervisor.clone(),
-                requirements.guest_memory_bytes(),
-            )
-            .map_err(|error| error.to_string())?;
+            .map_err(HostRamAdmissionError::from)?;
+        let registration = ram.prepare(
+            &node.name,
+            generation,
+            requirements.guest_memory_bytes(),
+            requirements.virtual_cpus(),
+        )?;
+        target.install_host_ram_registration(
+            registration,
+            supervisor.clone(),
+            requirements.guest_memory_bytes(),
+        )?;
         Ok(supervisor)
     }
 

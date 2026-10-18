@@ -260,6 +260,15 @@ pub(crate) enum TargetSetupFailure {
     /// The actual host returned an independent concrete setup failure.
     #[error(transparent)]
     Native(#[from] QemuVmRealizationError),
+    /// RAM registration or original supervision refused its admitted ownership.
+    #[error(transparent)]
+    Ram(#[from] crucible_control_api::host_operational::HostRamAdmissionError),
+    /// The execution has no remaining admitted process-driving allowance.
+    #[error(transparent)]
+    ExecutionBudget(#[from] crate::executor_worker::ExecutionQuantumBudgetError),
+    /// The complete native resource geometry cannot form a valid contract.
+    #[error(transparent)]
+    ResourceLimits(#[from] crucible_campaign::CampaignCodecError),
     /// The existing child refused its actual protocol admission.
     #[error(transparent)]
     Child(

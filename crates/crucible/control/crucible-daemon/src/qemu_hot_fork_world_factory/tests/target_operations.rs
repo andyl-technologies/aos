@@ -7,9 +7,11 @@
 //! existing rollback, adoption and reuse assertion without forging an issuer.
 
 use super::*;
+use crate::qemu_hot_fork_world_factory::target_construction::TargetSetupFailure;
 use crate::qemu_hot_fork_world_factory::target_operations::{
     TargetBeginFailure, WorldTargetOperations,
 };
+use crucible_control_api::host_operational::HostRamAdmissionError;
 use crucible_host_resources::host_supervision::HostOperationSupervisor;
 
 pub(super) struct ComponentTargetOperations;
@@ -55,7 +57,7 @@ impl WorldTargetOperations<ScriptedWorldGuardFactory> for ComponentTargetOperati
         _guard: &mut ScriptedWorldGuard,
         _ram: &dyn crate::vm_lifecycle::ProductionHostRamRegistrationFactory,
         _input: &CrucibleAttemptExecution,
-    ) -> Result<(), String> {
+    ) -> Result<(), TargetSetupFailure> {
         // No native controller exists in this model. In particular this does
         // not publish a controller or return successful native admission.
         Ok(())
@@ -69,21 +71,22 @@ impl WorldTargetOperations<ScriptedWorldGuardFactory> for ComponentTargetOperati
         _node: &NodeId,
         _generation: u64,
         _requirements: QemuLaunchResourceRequirements,
-    ) -> Result<HostOperationSupervisor, String> {
+    ) -> Result<HostOperationSupervisor, TargetSetupFailure> {
         if !context.uses_component_ram_facts() {
-            return Err(String::from(
+            return Err(HostRamAdmissionError::contract(
                 "component target requires component RAM facts",
-            ));
+            )
+            .into());
         }
-        let owner = context
-            .host_operation_supervisor()
-            .ok_or_else(|| String::from("hot-fork child has no admitted operational supervisor"))?;
-        let (_, budgets) = owner.budgets().map_err(|error| error.to_string())?;
+        let owner = context.host_operation_supervisor().ok_or_else(|| {
+            HostRamAdmissionError::contract("hot-fork child has no admitted operational supervisor")
+        })?;
+        let (_, budgets) = owner.budgets().map_err(HostRamAdmissionError::from)?;
         // Reuse the existing component supervision path. No RAM registration,
         // Source purpose or native launch-custody object is constructed here.
-        owner
+        Ok(owner
             .new_budget_owner(budgets)
-            .map_err(|error| error.to_string())
+            .map_err(HostRamAdmissionError::from)?)
     }
 
     fn prepare_directory(

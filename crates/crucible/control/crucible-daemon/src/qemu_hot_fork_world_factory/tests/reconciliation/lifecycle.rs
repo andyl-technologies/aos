@@ -1,6 +1,7 @@
 //! Source checkout, child launch, and failure-recovery regressions.
 
 use super::*;
+use crate::qemu_hot_fork_world_factory::target_construction::TargetSetupFailure;
 
 fn assert_scripted_child_owned_or_reaped(expected: &QemuProcessIdentity) {
     let process = expected.process_id;
@@ -566,8 +567,14 @@ fn target_directory_rejection_restores_the_source_without_invoking_qemu() {
     assert!(matches!(
         factory.try_start(&input, &execution_context(&input, 0x79)),
         Err(AttemptWorkerFailure::Retryable(
-            QemuProductionHotForkWorldLifecycleFactoryError::Assembly(_)
-        ))
+            QemuProductionHotForkWorldLifecycleFactoryError::ComponentSetup {
+                first: TargetSetupFailure::Native(
+                    QemuVmRealizationError::Executor { operation: "construct scripted whole-world fixture", ref message }
+                ),
+                cleanup: None,
+                ref diagnostics,
+            }
+        )) if message == "scripted target run-directory rejection" && diagnostics.is_empty()
     ));
     assert!(factory.sources.available());
     assert_eq!(observations.finishes.load(Ordering::SeqCst), 1);
@@ -616,12 +623,19 @@ fn failed_target_cleanup_after_first_child_rejection_keeps_the_source_unavailabl
         .err()
         .expect("preflight and actual cleanup both refuse");
     let AttemptWorkerFailure::Retryable(
-        QemuProductionHotForkWorldLifecycleFactoryError::AssemblyCleanup { message, cleanup },
+        QemuProductionHotForkWorldLifecycleFactoryError::ComponentSetup {
+            first:
+                TargetSetupFailure::Native(QemuVmRealizationError::Executor { operation, message }),
+            diagnostics,
+            cleanup: Some(cleanup),
+        },
     ) = failure
     else {
         panic!("preflight must retain both original and cleanup causes");
     };
-    assert!(message.contains("scripted target run-directory rejection"));
+    assert_eq!(operation, "construct scripted whole-world fixture");
+    assert_eq!(message, "scripted target run-directory rejection");
+    assert!(diagnostics.contains("aggregate target release failed after preflight rejection"));
     let crate::ProductionVmConstructionCleanupError::Guard(cleanup) = cleanup else {
         panic!("aggregate cleanup must retain its actual guard leaf");
     };
@@ -838,12 +852,17 @@ fn world_fork_preflight_failure_restores_source_world() {
         Err(failure) => failure,
         Ok(_) => panic!("fault build must reject the second world VM"),
     };
-    let AttemptWorkerFailure::Retryable(QemuProductionHotForkWorldLifecycleFactoryError::Assembly(
-        message,
-    )) = failure
+    let AttemptWorkerFailure::Retryable(
+        QemuProductionHotForkWorldLifecycleFactoryError::ComponentSetup {
+            first: TargetSetupFailure::Native(first),
+            cleanup: None,
+            ..
+        },
+    ) = failure
     else {
         panic!("world-fork fault must be a retryable assembly failure: {failure:?}")
     };
+    let message = first.to_string();
     assert!(message.contains("fault-injected failure while reserving the next hot-fork world VM"));
     assert_eq!(hot_fork_adoption_count_for_test(), 0);
     // All node reservations precede every launch, so this fault is provably

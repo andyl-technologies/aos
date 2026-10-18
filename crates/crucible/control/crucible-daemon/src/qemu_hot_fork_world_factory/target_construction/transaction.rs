@@ -15,18 +15,28 @@ where
         + Send
         + 'static,
 {
-    /// Borrows the original selected inputs before any Target physical work.
-    pub(crate) fn with_launch_basis<T>(
-        &self,
+    /// Keeps preflight failure in this same Main-owned body before returning.
+    ///
+    /// Returns `None` when the original launch inputs are absent. A unit
+    /// refusal reports either an existing failure or this preflight's failure;
+    /// the concrete cause remains in this body across the caller's borrow cut.
+    pub(crate) fn prepare_launch_basis<T>(
+        &mut self,
         apply: impl FnOnce(
             &Arc<Mutex<ProductionVmHotForkSourceWorld>>,
             &crate::ProductionVmHotForkWorldContinuation,
-        ) -> T,
-    ) -> Option<T> {
-        Some(apply(
+        ) -> Result<T, TargetSetupFailure>,
+    ) -> Option<Result<T, ()>> {
+        if self.first_failure().is_some() {
+            return Some(Err(()));
+        }
+        let result = apply(
             self.source_world.as_ref()?,
             self.launch_continuation.as_ref()?,
-        ))
+        );
+        Some(result.map_err(|first| {
+            self.first_setup = Some(first);
+        }))
     }
 
     /// Consumes only this constructor's retained continuation for its launch.
@@ -132,8 +142,9 @@ where
         {
             return self.refuse_setup("Target resource contract differs from its admitted request");
         }
-        if let Err(message) = operations.bind_world(guard, ram, input) {
-            return self.refuse_setup(message);
+        if let Err(first) = operations.bind_world(guard, ram, input) {
+            self.first_setup.get_or_insert(first);
+            return false;
         }
         let (Some(members), Some(source)) = (self.members.as_ref(), self.source_world.as_ref())
         else {
@@ -439,10 +450,8 @@ where
                 requirements,
             ) {
                 Ok(supervisor) => row.supervisor = Some(supervisor),
-                Err(message) => {
-                    self.first_setup = Some(TargetSetupFailure::Assembly(
-                        LifecycleApiError::LoopFactory { message },
-                    ));
+                Err(first) => {
+                    self.first_setup.get_or_insert(first);
                     return false;
                 }
             }

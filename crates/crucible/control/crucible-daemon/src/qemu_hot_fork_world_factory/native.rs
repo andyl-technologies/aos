@@ -5,8 +5,11 @@
 //! API frame is published in an owning error allocated after native effects.
 
 use super::runtime::{PreparedTargetRuntime, TargetRetirement};
-use super::target_construction::{TargetConstructionInput, TargetService, reserve_target_main};
+use super::target_construction::{
+    TargetConstructionInput, TargetService, TargetSetupFailure, reserve_target_main,
+};
 use super::*;
+use crucible_control_api::host_operational::HostRamAdmissionError;
 
 /// Selects one already installed Target across independent Service startup.
 #[must_use = "the original Main constructor remains occupied until retirement"]
@@ -197,7 +200,7 @@ where
             .selector
             .typed::<super::target_construction::PendingTargetConstruction<R>>();
         let preflight = prepared.with_prepared(|pending| {
-            pending.with_launch_basis(|source, continuation| {
+            pending.prepare_launch_basis(|source, continuation| {
                 self.prepare_native_target_ram(context, source, continuation, launch.service)
             })
         });
@@ -220,12 +223,7 @@ where
         };
         let (ram, limits) = match preflight {
             Ok(preflight) => preflight,
-            Err(message) => {
-                let _retained = prepared.with_prepared(|pending| {
-                    pending.retain_api_failure(crucible_control_api::LifecycleApiError::LoopFactory {
-                        message,
-                    });
-                });
+            Err(()) => {
                 return Err(AttemptWorkerFailure::Terminal(
                     FactoryError::TargetConstruction(
                         prepared.failure("prepare original Target RAM"),
@@ -305,7 +303,7 @@ where
             Arc<dyn crate::vm_lifecycle::ProductionHostRamRegistrationFactory>,
             AttemptResourceLimits,
         ),
-        String,
+        TargetSetupFailure,
     > {
         #[cfg(test)]
         let ram = if let Some(mode) = self.native_qualification_ram_mode {
@@ -314,28 +312,28 @@ where
             )
         } else {
             crate::qemu_campaign_lifecycle::create_host_ram_registration_factory(context)
-        }
-        .map_err(|first| first.to_string())?;
+        }?;
         #[cfg(not(test))]
-        let ram = crate::qemu_campaign_lifecycle::create_host_ram_registration_factory(context)
-            .map_err(|first| first.to_string())?;
+        let ram = crate::qemu_campaign_lifecycle::create_host_ram_registration_factory(context)?;
         let mut shapes = Vec::new();
         {
             let mut source = source.try_lock().map_err(|_| {
-                String::from(
-                    "original Source ownership lock is unavailable during Target RAM preflight",
-                )
+                TargetSetupFailure::Assembly(crucible_control_api::LifecycleApiError::LoopFactory {
+                    message: String::from(
+                        "original Source ownership lock is unavailable during Target RAM preflight",
+                    ),
+                })
             })?;
             if matches!(service, TargetService::Independent) {
                 // Preclaim used the original caller before this Service
                 // existed. Native work must borrow the actual child's
                 // supervision, while the Source retains its physical charge.
                 let supervisor = context.host_operation_supervisor().ok_or_else(|| {
-                    String::from("independent Target has no admitted host operation supervisor")
+                    HostRamAdmissionError::contract(
+                        "independent Target has no admitted host operation supervisor",
+                    )
                 })?;
-                source
-                    .attach_borrowed_host_operation_supervisor(supervisor)
-                    .map_err(|first| first.to_string())?;
+                source.attach_borrowed_host_operation_supervisor(supervisor)?;
             }
             for boundary in continuation.nodes() {
                 if boundary.service_state()
@@ -343,9 +341,7 @@ where
                 {
                     continue;
                 }
-                let launch = source
-                    .prepared_launch_resources(boundary.node())
-                    .map_err(|first| first.to_string())?;
+                let launch = source.prepared_launch_resources(boundary.node())?;
                 shapes.push(
                     crucible_control_api::host_operational::ProductionHostRamLaunchShape {
                         node: boundary.node().name.clone(),
@@ -355,21 +351,15 @@ where
                 );
             }
         }
-        ram.configure_world(&shapes)
-            .map_err(|first| first.to_string())?;
-        let native = ram
-            .native_world_limits()
-            .map_err(|first| first.to_string())?;
-        let remaining = context
-            .process_resources()
-            .map_err(|first| first.to_string())?;
+        ram.configure_world(&shapes)?;
+        let native = ram.native_world_limits()?;
+        let remaining = context.process_resources()?;
         let limits = AttemptResourceLimits::new(
             native.cpu_slots,
             native.resident_bytes,
             native.writable_bytes,
             remaining.maximum_execution_quanta(),
-        )
-        .map_err(|first| first.to_string())?;
+        )?;
         Ok((ram, limits))
     }
 }
