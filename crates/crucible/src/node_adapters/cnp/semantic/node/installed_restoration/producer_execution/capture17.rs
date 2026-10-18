@@ -9,8 +9,8 @@ use crate::node_adapters::cnp::semantic::{CnpSemanticNode, CnpSemanticSource, re
 use crate::{
     node_admission::CompleteOriginalRestorationWindow,
     node_contract::{
-        EffectKnowledge, InstalledOriginalLineageCapture, NativeCaptureLimits,
-        OriginalLineageOwnerCaptureTicket, OriginalLineageRuntimeRecord, OperationFailure,
+        EffectKnowledge, InstalledOriginalLineageCapture, NativeCaptureLimits, OperationFailure,
+        OriginalLineageOwnerCaptureTicket, OriginalLineageRuntimeRecord,
         RestoredCollectingCaptureScope17, RuntimeError, WorldActivation,
     },
     node_scheduling::InputPayload,

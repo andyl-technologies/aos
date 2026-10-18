@@ -10,7 +10,9 @@ use super::{
     quote_context::OriginalSourceRestoredCaptureQuoteInputs, transport_quote,
 };
 use crate::node_adapters::cnp::semantic::node::OriginalRestoredSettledNodeHistoryView;
-use crate::node_admission::{OriginalRestoredCaptureRequestData, OriginalRestoredCaptureSigningInputs};
+use crate::node_admission::{
+    OriginalRestoredCaptureRequestData, OriginalRestoredCaptureSigningInputs,
+};
 use crucible_node_provider::{
     client::{CnpController, OriginalRestoredSettledCaptureProspectiveData},
     reference_packet::service::complete_restore::activation::{

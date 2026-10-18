@@ -593,7 +593,9 @@ pub(super) fn retained_data(
 }
 
 pub(super) fn counter_scratch_data() -> usize {
-    use crate::node_contract::{NodeRuntime, RetainedCoreOwnerStorage, RetainedCoreSharedAllocation};
+    use crate::node_contract::{
+        NodeRuntime, RetainedCoreOwnerStorage, RetainedCoreSharedAllocation,
+    };
     use std::{iter::Chain, option, slice};
     type Attempts = Chain<option::Iter<'static, Attempt>, slice::Iter<'static, Attempt>>;
     NodeRuntime::capture_opaque_owner_observer_scratch_data()

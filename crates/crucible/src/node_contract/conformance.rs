@@ -637,7 +637,10 @@ impl ConformanceRuntime {
         maximum: usize,
     ) -> Result<crate::node_admission::OriginalRestorationNodeConstructionData, RuntimeError> {
         inputs.authenticate_original_group_data()?;
-        if !inputs.runtime.is_original_runtime_data(std::ptr::from_ref(self)) {
+        if !inputs
+            .runtime
+            .is_original_runtime_data(std::ptr::from_ref(self))
+        {
             return Err(RuntimeError::ForeignAuthority);
         }
         self.authenticate_original_restoration_target_data(
@@ -684,7 +687,10 @@ impl ConformanceRuntime {
     ) -> Result<[crate::node_admission::OriginalRestorationNodeConstructionData; 3], RuntimeError>
     {
         inputs.authenticate_original_group_data()?;
-        if !inputs.runtime.is_original_runtime_data(std::ptr::from_ref(self)) {
+        if !inputs
+            .runtime
+            .is_original_runtime_data(std::ptr::from_ref(self))
+        {
             return Err(RuntimeError::ForeignAuthority);
         }
         self.authenticate_original_restoration_target_data(
@@ -740,7 +746,10 @@ impl ConformanceRuntime {
             OriginalRestorationNodeInputs,
         };
         inputs.authenticate_original_group_data()?;
-        if !inputs.runtime.is_original_runtime_data(std::ptr::from_ref(self)) {
+        if !inputs
+            .runtime
+            .is_original_runtime_data(std::ptr::from_ref(self))
+        {
             return Err(RuntimeError::ForeignAuthority);
         }
         self.authenticate_original_restoration_target_data(
@@ -835,7 +844,10 @@ impl ConformanceRuntime {
         maximum: usize,
     ) -> Result<crate::node_admission::OriginalRestorationNodeConstructionData, RuntimeError> {
         inputs.authenticate_original_group_data()?;
-        if !inputs.runtime.is_original_runtime_data(std::ptr::from_ref(self)) {
+        if !inputs
+            .runtime
+            .is_original_runtime_data(std::ptr::from_ref(self))
+        {
             return Err(RuntimeError::ForeignAuthority);
         }
         self.authenticate_original_restoration_target_data(
@@ -937,7 +949,8 @@ impl ConformanceRuntime {
         ),
         RuntimeError,
     > {
-        self.observation_data().original_restoration_coordinator_sources_data(plan)
+        self.observation_data()
+            .original_restoration_coordinator_sources_data(plan)
     }
 }
 

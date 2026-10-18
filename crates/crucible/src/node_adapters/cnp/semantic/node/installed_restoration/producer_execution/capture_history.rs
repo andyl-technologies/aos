@@ -1035,7 +1035,7 @@ impl super::super::super::super::CnpSemanticNode {
 #[path = "capture_history/metadata17.rs"]
 mod metadata17;
 
-#[path = "capture_history/source17.rs"]
-mod source17;
 #[path = "capture_history/controller_baseline17.rs"]
 mod controller_baseline17;
+#[path = "capture_history/source17.rs"]
+mod source17;

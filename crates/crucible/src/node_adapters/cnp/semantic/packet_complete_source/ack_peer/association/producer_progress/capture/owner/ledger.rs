@@ -82,7 +82,9 @@ impl CapturePreEncoderCut<'_> {
             .original_restored_settled_capture_is_retained_data(self.emitter)
             .map_err(|_| RuntimeError::InvalidReceipt)?
             || controller
-                .original_restored_settled_capture_history_next_sequence_precredit_data(self.emitter)
+                .original_restored_settled_capture_history_next_sequence_precredit_data(
+                    self.emitter,
+                )
                 .map_err(|_| RuntimeError::InvalidReceipt)?
                 != self.prefix_frontier
         {

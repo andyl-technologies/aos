@@ -10,8 +10,8 @@ mod content;
 mod controller;
 pub(crate) use controller::maximum_canonical_ack_framed_bytes;
 mod deadline;
-pub(crate) mod history_encoding17;
 pub(crate) mod history_credit;
+pub(crate) mod history_encoding17;
 mod reference;
 mod session;
 
