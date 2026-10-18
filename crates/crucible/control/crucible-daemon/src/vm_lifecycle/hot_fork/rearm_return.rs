@@ -17,8 +17,12 @@ pub(in crate::vm_lifecycle) struct SourceRearmBody {
 }
 
 /// Keeps original rearm diagnostics after actual native body destruction.
+///
+/// The accessors borrow the same retained causes and diagnostics; this history
+/// grants no cleanup or Source rearm authority. Typed inspection uses
+/// [`Self::first_error`] rather than a dynamic error chain.
 #[derive(Debug)]
-pub(super) struct SourceRearmHistory {
+pub struct SourceRearmHistory {
     first: Option<preparation::ProductionVmHotForkSourcePreparationError>,
     message: String,
     unreconciled_nodes: Vec<NodeId>,
@@ -26,11 +30,37 @@ pub(super) struct SourceRearmHistory {
 }
 
 impl SourceRearmHistory {
-    pub(super) fn is_empty(&self) -> bool {
+    /// Reports whether every retained cause and diagnostic is absent.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
         self.first.is_none()
             && self.message.is_empty()
             && self.unreconciled_nodes.is_empty()
             && self.rollback_diagnostics.is_empty()
+    }
+
+    /// Borrows the original typed rearm refusal without following another owner.
+    #[must_use]
+    pub fn first_error(&self) -> Option<&ProductionVmHotForkSourcePreparationError> {
+        self.first.as_ref()
+    }
+
+    /// Borrows the retained preparation diagnostic.
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    /// Borrows the original list of nodes whose rollback remains unresolved.
+    #[must_use]
+    pub fn unreconciled_nodes(&self) -> &[NodeId] {
+        &self.unreconciled_nodes
+    }
+
+    /// Borrows the original per-node rollback diagnostics without copying them.
+    #[must_use]
+    pub fn rollback_diagnostics(&self) -> &BTreeMap<NodeId, String> {
+        &self.rollback_diagnostics
     }
 }
 
@@ -49,11 +79,7 @@ impl fmt::Display for SourceRearmHistory {
     }
 }
 
-impl Error for SourceRearmHistory {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        self.first.as_ref().map(|first| first as &dyn Error)
-    }
-}
+impl Error for SourceRearmHistory {}
 
 impl SourceRearmBody {
     pub(in crate::vm_lifecycle) fn new(
@@ -162,3 +188,6 @@ impl ProductionVmHotForkSourceWorldPreparationFailure {
         true
     }
 }
+
+#[cfg(test)]
+mod tests;

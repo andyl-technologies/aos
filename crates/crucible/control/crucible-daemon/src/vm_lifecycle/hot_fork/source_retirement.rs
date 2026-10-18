@@ -11,6 +11,9 @@ use crucible_host_resources::host_supervision::{HostOperationGuard, HostSupervis
 use std::error::Error;
 use std::fmt;
 
+mod cause;
+pub use cause::SourceRetirementCause;
+
 type CleanupError = crate::ProductionVmConstructionCleanupError;
 type PostBody = crate::ProductionVmConstructionPostBody;
 type Reservation = dyn crucible_control_api::ProductionVmCleanupReservation<
@@ -38,6 +41,9 @@ pub enum SourceRetirementRefusal {
 }
 
 /// Retains independent Source rollback and physical-body cleanup evidence.
+///
+/// Typed inspection uses [`Self::first_failure`] and [`Self::visit_history`].
+/// Formatting includes every retained phase; this aggregate is an error boundary.
 #[derive(Debug, Default)]
 pub struct ProductionVmHotForkSourceRetirementHistory {
     pub(super) rearm: Option<super::rearm_return::SourceRearmHistory>,
@@ -57,30 +63,43 @@ pub struct ProductionVmHotForkSourceRetirementHistory {
 impl fmt::Display for ProductionVmHotForkSourceRetirementHistory {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("Source retirement")?;
-        self.visit(|label, first| write!(formatter, "; {label}: {first}"))
+        self.visit_history(|label, first| write!(formatter, "; {label}: {first}"))
     }
 }
 
-impl Error for ProductionVmHotForkSourceRetirementHistory {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
+impl Error for ProductionVmHotForkSourceRetirementHistory {}
+
+impl ProductionVmHotForkSourceRetirementHistory {
+    /// Borrows the first retained failure in Source retirement phase order.
+    ///
+    /// Managed Park and rearm precede Cleanup admission, rollback, scheduler
+    /// shutdown and physical-body retirement. Later phases remain available
+    /// through [`Self::visit_history`]; this view grants no new cleanup attempt.
+    #[must_use]
+    pub fn first_failure(&self) -> Option<SourceRetirementCause<'_>> {
+        use SourceRetirementCause as Cause;
+
         self.managed_park_first()
-            .or_else(|| self.rearm.as_ref().map(|history| history as &dyn Error))
+            .or_else(|| {
+                self.rearm
+                    .as_ref()
+                    .filter(|history| !history.is_empty())
+                    .map(Cause::Rearm)
+            })
             .or_else(|| {
                 self.admission
                     .as_ref()
-                    .map(|first| first as &dyn Error)
-                    .or_else(|| self.original.as_ref().map(|first| first as &dyn Error))
-                    .or_else(|| self.rollback.as_ref().map(|first| first as &dyn Error))
-                    .or_else(|| self.rollback_post.as_ref().map(|first| first as &dyn Error))
-                    .or_else(|| self.shutdown.as_ref().map(|first| first as &dyn Error))
-                    .or_else(|| self.shutdown_post.as_ref().map(|first| first as &dyn Error))
-                    .or_else(|| self.body.as_ref().map(|first| first as &dyn Error))
-                    .or_else(|| self.body_post.as_ref().map(|first| first as &dyn Error))
+                    .map(Cause::Admission)
+                    .or_else(|| self.original.as_ref().map(Cause::Original))
+                    .or_else(|| self.rollback.as_ref().map(Cause::Rollback))
+                    .or_else(|| self.rollback_post.as_ref().map(Cause::RollbackPost))
+                    .or_else(|| self.shutdown.as_ref().map(Cause::Shutdown))
+                    .or_else(|| self.shutdown_post.as_ref().map(Cause::ShutdownPost))
+                    .or_else(|| self.body.as_ref().map(Cause::Body))
+                    .or_else(|| self.body_post.as_ref().map(Cause::BodyPost))
             })
     }
-}
 
-impl ProductionVmHotForkSourceRetirementHistory {
     /// Reports whether every independently retained Source cause is absent.
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -99,7 +118,7 @@ impl ProductionVmHotForkSourceRetirementHistory {
             && self.body_post.is_none()
     }
 
-    fn managed_park_first(&self) -> Option<&(dyn Error + 'static)> {
+    fn managed_park_first(&self) -> Option<SourceRetirementCause<'_>> {
         #[cfg(feature = "private-measurement-domain")]
         if let Some(gate) = &self.managed_parent_park {
             return gate.first_failure();
@@ -107,44 +126,56 @@ impl ProductionVmHotForkSourceRetirementHistory {
         None
     }
 
-    fn visit(
-        &self,
-        mut apply: impl FnMut(&'static str, &(dyn Error + 'static)) -> fmt::Result,
+    /// Visits each retained concrete cause in Source retirement phase order.
+    ///
+    /// The labels match the formatted history. The callback borrows each cause
+    /// from this same owner without changing any cleanup or return disposition.
+    ///
+    /// # Errors
+    /// Returns the first error produced by the callback.
+    pub fn visit_history<'history>(
+        &'history self,
+        mut apply: impl FnMut(&'static str, SourceRetirementCause<'history>) -> fmt::Result,
     ) -> fmt::Result {
+        use SourceRetirementCause as Cause;
+
         #[cfg(feature = "private-measurement-domain")]
         if let Some(gate) = &self.managed_parent_park {
             gate.visit_history(&mut apply)?;
         }
-        if let Some(history) = &self.rearm {
-            apply("Source rearm", history)?;
+        if let Some(history) = self.rearm.as_ref().filter(|history| !history.is_empty()) {
+            apply("Source rearm", Cause::Rearm(history))?;
         }
         if let Some(first) = &self.admission {
-            apply("Cleanup admission", first)?;
+            apply("Cleanup admission", Cause::Admission(first))?;
         }
         if let Some(first) = &self.original {
-            apply("Cleanup precheck", first)?;
+            apply("Cleanup precheck", Cause::Original(first))?;
         }
         if let Some(first) = &self.rollback {
-            apply("rollback", first)?;
+            apply("rollback", Cause::Rollback(first))?;
         }
         if let Some(first) = &self.rollback_post {
-            apply("rollback postcheck", first)?;
+            apply("rollback postcheck", Cause::RollbackPost(first))?;
         }
         if let Some(first) = &self.shutdown {
-            apply("shutdown", first)?;
+            apply("shutdown", Cause::Shutdown(first))?;
         }
         if let Some(first) = &self.shutdown_post {
-            apply("shutdown postcheck", first)?;
+            apply("shutdown postcheck", Cause::ShutdownPost(first))?;
         }
         if let Some(first) = &self.body {
-            apply("physical body", first)?;
+            apply("physical body", Cause::Body(first))?;
         }
         if let Some(first) = &self.body_post {
-            apply("physical postcheck", first)?;
+            apply("physical postcheck", Cause::BodyPost(first))?;
         }
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests;
 
 pub(super) struct SourceRetirementState {
     post_body: Option<PostBody>,

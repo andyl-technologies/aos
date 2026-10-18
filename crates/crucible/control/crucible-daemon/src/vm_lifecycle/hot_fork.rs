@@ -13,9 +13,12 @@ pub(super) mod disk_basis;
 mod native_disk_seal;
 mod preparation;
 pub(crate) use preparation::ProductionVmHotForkSourcePreparationError as HotForkSourcePreparationError;
-pub use preparation::ProductionVmHotForkSourcePreparationHistory;
+pub use preparation::{
+    ProductionVmHotForkSourcePreparationError, ProductionVmHotForkSourcePreparationHistory,
+};
 pub(crate) use preparation::{SourcePreparationBoundary, SourceWorldPreparation};
 pub(in crate::vm_lifecycle) mod rearm_return;
+pub use rearm_return::SourceRearmHistory;
 mod resource_usage;
 pub(super) mod shared_source;
 pub(crate) use shared_source::{MainSharedSource, PreparedSharedSource};
@@ -31,7 +34,7 @@ pub use resource_usage::ProductionVmHotForkSourceWorldResourceUsage;
 #[cfg(target_os = "linux")]
 pub use source_retirement::{
     ProductionVmHotForkSourceRetirement, ProductionVmHotForkSourceRetirementFailure,
-    ProductionVmHotForkSourceRetirementHistory, SourceRetirementRefusal,
+    ProductionVmHotForkSourceRetirementHistory, SourceRetirementCause, SourceRetirementRefusal,
 };
 
 const MAXIMUM_HOT_FORK_RING_IMAGE_BYTES: usize = 64 * 1024 * 1024;

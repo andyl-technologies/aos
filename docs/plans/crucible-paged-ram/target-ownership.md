@@ -54,6 +54,11 @@ and cleanup failures report by borrowing their original protected Main histories
 Attached-retirement diagnostics expose a closed borrowed first-cause view and
 concrete phase getters. The first published phase remains selected as later
 errors arrive; the existing Main history owns each cause.
+Source retirement exposes concrete borrowed phase causes in its existing Park,
+rearm, admission, rollback, shutdown and physical-body order. Its typed visitor
+keeps independent later causes visible, and rearm diagnostics borrow their
+original preparation error, node list and rollback allocations. These views
+grant no cleanup, native return or rearm authority.
 
 Promoted children retain their original return pair and a bounded-step lineage
 controller. Descendant retirement keeps each parent checkout until exclusive

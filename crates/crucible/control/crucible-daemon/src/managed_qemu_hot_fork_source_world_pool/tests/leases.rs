@@ -690,6 +690,17 @@ fn managed_parent_park_refusal_keeps_exact_pool_record_and_reservation() {
         "{refusal:?}"
     );
     assert!(std::error::Error::source(&refusal).is_some());
+    let parent_park::ManagedParentParkError::Retained(gate) = &refusal else {
+        panic!("the same pool retains its actual gate");
+    };
+    let Some(crate::vm_lifecycle::SourceRetirementCause::ManagedPark(first)) = gate.first_failure() else {
+        panic!("the original managed Park refusal remains typed");
+    };
+    let original = std::error::Error::source(&refusal)
+        .unwrap()
+        .downcast_ref::<crate::ProductionVmParentParkDrainRefusal>()
+        .unwrap();
+    assert!(std::ptr::eq(first, original));
     assert!(sibling.checkout(&key).expect("gate refusal").is_none());
     provider.restore(lease);
     provider.abandon();

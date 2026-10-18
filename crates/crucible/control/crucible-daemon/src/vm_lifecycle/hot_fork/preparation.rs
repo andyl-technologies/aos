@@ -8,7 +8,7 @@ use super::*;
 
 /// Preserves the typed cause of the first source-preparation refusal.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum ProductionVmHotForkSourcePreparationError {
+pub enum ProductionVmHotForkSourcePreparationError {
     /// A scheduler capture, validation or disk operation refused.
     #[error("{operation}: {source}")]
     Scheduler {

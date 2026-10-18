@@ -110,7 +110,9 @@ pub use fault_implementation::{
 #[cfg(target_os = "linux")]
 mod hot_fork;
 #[cfg(target_os = "linux")]
-pub use hot_fork::ProductionVmHotForkSourcePreparationHistory;
+pub use hot_fork::{
+    ProductionVmHotForkSourcePreparationError, ProductionVmHotForkSourcePreparationHistory,
+};
 #[cfg(target_os = "linux")]
 pub(crate) use hot_fork::TargetSourceBackends;
 #[cfg(target_os = "linux")]
@@ -2960,5 +2962,6 @@ pub use parent_park_drain::{
 #[cfg(target_os = "linux")]
 pub use hot_fork::{
     ProductionVmHotForkSourceRetirement, ProductionVmHotForkSourceRetirementFailure,
-    ProductionVmHotForkSourceRetirementHistory, SourceRetirementRefusal,
+    ProductionVmHotForkSourceRetirementHistory, SourceRearmHistory, SourceRetirementCause,
+    SourceRetirementRefusal,
 };

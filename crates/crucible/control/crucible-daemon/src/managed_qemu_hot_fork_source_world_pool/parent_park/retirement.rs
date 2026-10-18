@@ -5,8 +5,8 @@
 //! No source-allocation strong or Weak edge lives in a production gate.
 
 use super::*;
-use std::error::Error;
 use std::fmt;
+use crate::vm_lifecycle::SourceRetirementCause;
 
 impl ManagedParentParkGate {
     pub(crate) fn matches_selection(&self, selection: &crate::PreparedSourceSelector) -> bool {
@@ -86,46 +86,59 @@ impl ManagedParentParkGate {
         self.is_physically_returned()
     }
 
-    pub(crate) fn first_failure(&self) -> Option<&(dyn Error + 'static)> {
+    pub(crate) fn first_failure(&self) -> Option<SourceRetirementCause<'_>> {
+        use SourceRetirementCause as Cause;
+
         self.body
             .first
             .get()
-            .map(|first| first as &dyn Error)
+            .map(Cause::ManagedPark)
             .or_else(|| {
                 self.body
                     .original_after
                     .get()
-                    .map(|first| first as &dyn Error)
+                    .map(Cause::ManagedParkCallerPost)
             })
             .or_else(|| {
                 self.body
                     .host_return_after
                     .get()
-                    .map(|first| first as &dyn Error)
+                    .map(Cause::ManagedParkMembershipPost)
             })
             .or_else(|| {
                 self.body
                     .cleanup_after
                     .get()
-                    .map(|first| first as &dyn Error)
+                    .map(Cause::ManagedParkCleanupPost)
             })
     }
 
-    pub(crate) fn visit_history(
-        &self,
-        mut apply: impl FnMut(&'static str, &(dyn Error + 'static)) -> fmt::Result,
+    pub(crate) fn visit_history<'history>(
+        &'history self,
+        mut apply: impl FnMut(&'static str, SourceRetirementCause<'history>) -> fmt::Result,
     ) -> fmt::Result {
+        use SourceRetirementCause as Cause;
+
         if let Some(first) = self.body.first.get() {
-            apply("managed Park first", first)?;
+            apply("managed Park first", Cause::ManagedPark(first))?;
         }
         if let Some(post) = self.body.original_after.get() {
-            apply("managed Park caller post", post)?;
+            apply(
+                "managed Park caller post",
+                Cause::ManagedParkCallerPost(post),
+            )?;
         }
         if let Some(first) = self.body.host_return_after.get() {
-            apply("managed Park membership post", first)?;
+            apply(
+                "managed Park membership post",
+                Cause::ManagedParkMembershipPost(first),
+            )?;
         }
         if let Some(post) = self.body.cleanup_after.get() {
-            apply("managed Park Cleanup post", post)?;
+            apply(
+                "managed Park Cleanup post",
+                Cause::ManagedParkCleanupPost(post),
+            )?;
         }
         Ok(())
     }
