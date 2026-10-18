@@ -199,12 +199,8 @@ impl StateInventory {
     ) -> io::Result<()> {
         let claim = verified.claim();
         verified.recheck(inventory)?;
-        inventory.check(file, Custody::Publisher, InodeKind::File)?;
+        inventory.check_sealed_candidate(file)?;
         let observed = file.metadata()?;
-        if observed.mode() & 0o222 != 0 || observed.len() != claim.plaintext_size() {
-            return Err(invalid("unsafe canonical inventory inode"));
-        }
-        let measured = crate::verity::measure(&*file)?;
         // Only the actual retained private directory supplies this parser path.
         // No request path or private record bytes can create a claim authority.
         let state = FsPublicationState::new(
@@ -225,9 +221,7 @@ impl StateInventory {
             // reconstructed binding. Actual funded adoption must verify its
             // plaintext and quarantine a mismatch while retaining metadata.
             verified.recheck(inventory)?;
-            if !same_inode_snapshot(&observed, &file.metadata()?)
-                || crate::verity::measure(&*file)? != measured
-            {
+            if !same_inode_snapshot(&observed, &file.metadata()?) {
                 return Err(invalid("unbound inventory candidate changed"));
             }
             return Ok(());
@@ -237,6 +231,11 @@ impl StateInventory {
                 "publication-state record matched multiple canonical bodies",
             ));
         }
+        inventory.check(file, Custody::Publisher, InodeKind::File)?;
+        if observed.mode() & 0o222 != 0 || observed.len() != claim.plaintext_size() {
+            return Err(invalid("unsafe canonical inventory inode"));
+        }
+        let measured = crate::verity::measure(&*file)?;
         file.seek(SeekFrom::Start(0))?;
         // The manifest identity authenticates canonical metadata, never assembled
         // bytes. This separately checks exact length, ordered chunks and every

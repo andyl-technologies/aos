@@ -336,13 +336,26 @@ impl NativeInventory {
         self.check_project(file, kind)
     }
 
+    // Candidate keys grant no content authority. A missing seal, wrong length or
+    // permissive file mode is decided by funded adoption, which can quarantine
+    // the actual inode. Directory, state-record and adopted-body checks stay strict.
+    fn check_sealed_candidate(&self, file: &File) -> io::Result<()> {
+        let metadata = file.metadata()?;
+        if !metadata.is_file()
+            || metadata.uid() != rustix::process::geteuid().as_raw()
+            || metadata.dev() != self.root.metadata()?.dev()
+        {
+            return Err(invalid("sealed candidate inode custody changed"));
+        }
+        self.check_project(file, InodeKind::File)
+    }
+
     async fn sealed(&self, name: &str, file: &mut File) -> io::Result<SealedClaim> {
-        self.check(file, Custody::Publisher, InodeKind::File)?;
+        self.check_sealed_candidate(file)?;
         let claimed_digest = digest(name, 32)?;
         // Actual Chunk identity verification proves the inline kind; length by
         // itself never establishes the kind of a manifest-named sealed inode.
         if file.metadata()?.len() <= self.location.chunk_profile().minimum() as u64 {
-            crate::verity::measure(&*file)?;
             let plaintext = bytes(file, self.location.chunk_profile().minimum())?;
             let identity = TERRANE_V1
                 .from_digest(IdentityKind::Chunk, &claimed_digest)

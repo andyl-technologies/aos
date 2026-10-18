@@ -282,7 +282,10 @@ def main():
     expected = ["host-cache:" + name for name in [
         "prepare", "empty", "refuse", "late-refuse", "cancel", "edquot", "hold", "start-refuse",
         "admit-chunk", "admit-metadata", "admit-cancel",
-        "seed-manifest", "seed-bad-manifest", "recover-manifest", "refuse-manifest",
+        "seed-manifest", "seed-bad-manifest", "seed-unsealed-manifest",
+        "seed-unsealed-writable-manifest", "seed-truncated-manifest", "seed-writable-manifest",
+        "recover-manifest", "refuse-manifest", "refuse-unsealed-manifest",
+        "refuse-unsealed-writable-manifest", "refuse-truncated-manifest", "recover-writable-manifest",
     ]]
     shared.require(listed == expected, "cache fixture exact selector inventory mismatch")
     unit_elf = output / "bin" / UNIT_NAME

@@ -26,10 +26,24 @@ RUNTIME = pathlib.Path("/run/terrane-cache-proof")
 PUB_RUNTIME = pathlib.Path("/run/terrane-publish")
 HARD = 8 * 1024 * 1024
 EPOCH = "00000000000000000000000000000001"
-CASES = ["empty", "pin", "lease", "reservation", "residence", "unknown",
-         "state-file", "state-directory", "cancel", "edquot", "exclusive",
-         "admission-chunk", "admission-metadata", "admission-cancel",
-         "manifest-recovery", "manifest-mismatch"]
+MANIFEST_CASES = [
+    ("manifest-recovery", "seed-manifest", "recover-manifest", True, "valid manifest"),
+    ("manifest-mismatch", "seed-bad-manifest", "refuse-manifest", False, "manifest mismatch"),
+    ("manifest-unsealed", "seed-unsealed-manifest",
+     "refuse-unsealed-manifest", False, "unsealed manifest"),
+    ("manifest-unsealed-writable", "seed-unsealed-writable-manifest",
+     "refuse-unsealed-writable-manifest", False, "unsealed writable manifest"),
+    ("manifest-truncated", "seed-truncated-manifest",
+     "refuse-truncated-manifest", False, "truncated manifest"),
+    ("manifest-sealed-writable", "seed-writable-manifest",
+     "recover-writable-manifest", True, "valid manifest"),
+]
+CASES = [
+    "empty", "pin", "lease", "reservation", "residence", "unknown",
+    "state-file", "state-directory", "cancel", "edquot", "exclusive",
+    "admission-chunk", "admission-metadata", "admission-cancel",
+] + [row[0] for row in MANIFEST_CASES]
+
 LABELS = ["layout-root", "chunks", "objects", "sealed", "staging", "quarantine",
           "pending-delete", "state"]
 BUDGET = HARD * len(CASES)
@@ -216,10 +230,9 @@ def cold_candidates():
 
 
 def seed_manifests(uuid):
-    """Creates actual untrusted kernel-sealed candidates before either role starts."""
+    """Creates untrusted sealed and unsealed candidates before either role starts."""
     seeded = {}
-    for case, mode in [("manifest-recovery", "seed-manifest"),
-                       ("manifest-mismatch", "seed-bad-manifest")]:
+    for case, mode, _, _, _ in MANIFEST_CASES:
         try:
             result = run(admin_command(SEED_CAPS, [IMAGE / "bin/host_cache_fixture", mode]),
                          env=actor_environment(case, uuid), text=True, capture_output=True)
@@ -245,29 +258,30 @@ def seed_manifests(uuid):
 
 
 def manifest_recovery_cases(uuid, seeded):
-    """Checks real completion and real mismatch quarantine without granting Ready."""
-    for case, mode in [("manifest-recovery", "recover-manifest"),
-                       ("manifest-mismatch", "refuse-manifest")]:
+    """Checks actual recovery, final read-only mode and quarantine of rejected files."""
+    for case, _, mode, recovers, label in MANIFEST_CASES:
         output = actor(case, mode, uuid)
         expected = ("PASS actual manifest recovery reconstructed verified residences and acknowledged Resume; no Ready"
-                    if case == "manifest-recovery" else
-                    "PASS actual manifest mismatch retained metadata funding and faulted custody; no Resume")
+                    if recovers else
+                    f"PASS actual {label} retained metadata funding and faulted custody; no Resume")
         require(expected in output.splitlines(), "missing native manifest result: " + case)
         original = seeded[case]
         for name, digest in original["packs"].items():
             require(hashlib.sha256(pathlib.Path(name).read_bytes()).hexdigest() == digest,
                     "manifest recovery changed retained metadata bytes")
-        if case == "manifest-recovery":
+        if recovers:
             retained = original["body"]
-            require(retained.stat().st_ino == original["inode"], "recovery replaced original sealed body")
+            require(retained.stat().st_ino == original["inode"]
+                    and retained.stat().st_mode & 0o7777 == 0o400,
+                    "recovery replaced original sealed body or omitted final read-only mode")
         else:
-            require(not original["body"].exists(), "mismatching body survived under canonical name")
+            require(not original["body"].exists(), "rejected body survived under canonical name")
             quarantined = [path for path in (root(case) / "quarantine").rglob("*")
                            if path.is_file() and path.stat().st_ino == original["inode"]]
-            require(len(quarantined) == 1, "actual mismatching inode was not retained in quarantine")
+            require(len(quarantined) == 1, "actual rejected inode was not retained in quarantine")
             retained = quarantined[0]
         require(hashlib.sha256(retained.read_bytes()).hexdigest() == original["hash"],
-                "recovery changed actual immutable body bytes")
+                "recovery changed actual candidate body bytes")
 
 
 def process_status(process, uid):

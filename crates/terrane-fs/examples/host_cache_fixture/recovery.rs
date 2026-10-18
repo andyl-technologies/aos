@@ -1,9 +1,10 @@
 //! Seeds untrusted cold files and exercises actual manifest recovery in the guest.
 //!
-//! Explicit root administration seeds canonical metadata and a kernel-sealed
-//! candidate before either role starts. These files confer no publication or
-//! recovery authority. A separate confined actor invokes the genuine owner,
-//! Inspector and publisher channel; only their actual result permits Resume.
+//! Explicit root administration seeds canonical metadata and actual candidate
+//! files, including malformed or unsealed controls, before either role starts.
+//! These files confer no publication or recovery authority. A separate confined
+//! actor invokes the genuine owner, Inspector and publisher channel; only their
+//! actual result permits Resume.
 
 use super::config::{HARD_LIMIT, HOLD, Inputs, STATE};
 use rustix::process::{Gid, Uid};
@@ -25,6 +26,57 @@ use terrane_core::{
     manifest::{ChunkRef, Manifest},
 };
 use terrane_fs::{host_cache::NativeMetadataOwner, host_quota::NativeProject};
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FixtureCase {
+    Verified,
+    Mismatch,
+    Unsealed,
+    WritableUnsealed,
+    Truncated,
+    WritableVerified,
+}
+
+impl FixtureCase {
+    fn from_mode(mode: &str) -> io::Result<Self> {
+        match mode {
+            "seed-manifest" | "recover-manifest" => Ok(Self::Verified),
+            "seed-bad-manifest" | "refuse-manifest" => Ok(Self::Mismatch),
+            "seed-unsealed-manifest" | "refuse-unsealed-manifest" => Ok(Self::Unsealed),
+            "seed-unsealed-writable-manifest" | "refuse-unsealed-writable-manifest" => {
+                Ok(Self::WritableUnsealed)
+            }
+            "seed-truncated-manifest" | "refuse-truncated-manifest" => Ok(Self::Truncated),
+            "seed-writable-manifest" | "recover-writable-manifest" => Ok(Self::WritableVerified),
+            _ => Err(invalid("unknown manifest fixture selector")),
+        }
+    }
+
+    fn domain(self) -> &'static str {
+        match self {
+            Self::Verified => "tenant:manifest-recovery",
+            Self::Mismatch => "tenant:manifest-mismatch",
+            Self::Unsealed => "tenant:manifest-unsealed",
+            Self::WritableUnsealed => "tenant:manifest-unsealed-writable",
+            Self::Truncated => "tenant:manifest-truncated",
+            Self::WritableVerified => "tenant:manifest-sealed-writable",
+        }
+    }
+
+    fn refusal_label(self) -> &'static str {
+        match self {
+            Self::Mismatch => "manifest mismatch",
+            Self::Unsealed => "unsealed manifest",
+            Self::WritableUnsealed => "unsealed writable manifest",
+            Self::Truncated => "truncated manifest",
+            Self::Verified | Self::WritableVerified => "valid manifest",
+        }
+    }
+
+    fn recovers(self) -> bool {
+        matches!(self, Self::Verified | Self::WritableVerified)
+    }
+}
 
 struct Fixture {
     plaintext: Vec<u8>,
@@ -86,7 +138,8 @@ pub(super) fn seed(mode: &str) -> io::Result<()> {
     }
     require_seed_capabilities()?;
     let inputs = Inputs::load()?;
-    require_domain(&inputs, mode == "seed-bad-manifest")?;
+    let case = FixtureCase::from_mode(mode)?;
+    require_domain(&inputs, case)?;
     let mut fixture = Fixture::new()?;
     let mut random = [0; 16];
     File::open("/dev/urandom")?.read_exact(&mut random)?;
@@ -126,13 +179,46 @@ pub(super) fn seed(mode: &str) -> io::Result<()> {
     let sealed_parent = inputs.root.join("sealed").join(&fixture.manifest_hash[..2]);
     directory(&sealed_parent, 841, 841, 0o755)?;
     let sealed = sealed_parent.join(&fixture.manifest_hash);
-    if mode == "seed-bad-manifest" {
+    if case == FixtureCase::Mismatch {
         fixture.plaintext[0] ^= 1;
+    } else if case == FixtureCase::Truncated {
+        fixture
+            .plaintext
+            .pop()
+            .ok_or_else(|| invalid("cannot truncate an empty fixture"))?;
     }
-    write(&inputs, &sealed, &fixture.plaintext, 841, 841, 0o400)?;
-    // The only writer is closed before the actual permanent kernel seal.
+    let mode = if matches!(
+        case,
+        FixtureCase::WritableUnsealed | FixtureCase::WritableVerified
+    ) {
+        0o600
+    } else {
+        0o400
+    };
+    write(&inputs, &sealed, &fixture.plaintext, 841, 841, mode)?;
+    // The only writer is closed before any actual permanent kernel seal.
     let retained = File::open(&sealed)?;
-    terrane_fs::verity::enable(&retained)?;
+    if matches!(case, FixtureCase::Unsealed | FixtureCase::WritableUnsealed) {
+        match terrane_fs::verity::measure(&retained) {
+            Err(error) if error.raw_os_error() == Some(libc::ENODATA) => {}
+            Err(error) => return Err(error),
+            Ok(_) => return Err(invalid("unsealed fixture already has a kernel seal")),
+        }
+    } else {
+        terrane_fs::verity::enable(&retained)?;
+    }
+    if case == FixtureCase::WritableVerified {
+        // Mode0600 and root DAC_OVERRIDE permit this open; fs-verity itself
+        // must deny it. Permission bits never substitute for the kernel seal.
+        match OpenOptions::new().write(true).open(&sealed) {
+            Err(error) if error.raw_os_error() == Some(libc::EPERM) => {}
+            Err(error) => return Err(error),
+            Ok(_) => return Err(invalid("kernel-sealed fixture permitted a write open")),
+        }
+    } else if case == FixtureCase::WritableUnsealed {
+        // Close this actual writer before any role starts or recovery runs.
+        drop(OpenOptions::new().write(true).open(&sealed)?);
+    }
     retained.sync_all()?;
     File::open(&sealed_parent)?.sync_all()?;
     File::open(inputs.root.join("sealed"))?.sync_all()?;
@@ -192,7 +278,7 @@ fn write(
     file.sync_all()
 }
 
-/// Exercises genuine manifest reconciliation, including a plaintext mismatch control.
+/// Exercises genuine manifest reconciliation and actual rejected-file controls.
 ///
 /// # Errors
 /// Refuses unexpected policy, missing retained funding, changed faulted custody,
@@ -204,17 +290,17 @@ pub(super) fn run(
     inputs: &Inputs,
     original: Option<Vec<u8>>,
 ) -> io::Result<()> {
-    let bad = mode == "refuse-manifest";
-    require_domain(inputs, bad)?;
+    let case = FixtureCase::from_mode(mode)?;
+    require_domain(inputs, case)?;
     if original.is_some() {
         return Err(invalid("manifest recovery requires absent embedded state"));
     }
     let result = runtime.block_on(owner.recover());
-    if bad {
+    if !case.recovers() {
         let error = result
             .err()
-            .ok_or_else(|| invalid("mismatching plaintext completed recovery"))?;
-        println!("REFUSED actual mismatching manifest candidate: {error}");
+            .ok_or_else(|| invalid("rejected manifest candidate completed recovery"))?;
+        println!("REFUSED actual {} candidate: {error}", case.refusal_label());
         check_policy(runtime, inputs, false)?;
         let funded = fs::read(inputs.root.join("state/cache/records.toml"))?;
         let error = runtime
@@ -230,7 +316,8 @@ pub(super) fn run(
             ));
         }
         println!(
-            "PASS actual manifest mismatch retained metadata funding and faulted custody; no Resume"
+            "PASS actual {} retained metadata funding and faulted custody; no Resume",
+            case.refusal_label()
         );
         return Ok(());
     }
@@ -343,13 +430,8 @@ fn metadata_pack_hash(inputs: &Inputs) -> io::Result<String> {
     Ok(hex(identity.digest()))
 }
 
-fn require_domain(inputs: &Inputs, bad: bool) -> io::Result<()> {
-    let expected = if bad {
-        "tenant:manifest-mismatch"
-    } else {
-        "tenant:manifest-recovery"
-    };
-    if inputs.domain != expected {
+fn require_domain(inputs: &Inputs, case: FixtureCase) -> io::Result<()> {
+    if inputs.domain != case.domain() {
         return Err(invalid("manifest fixture requires its dedicated domain"));
     }
     Ok(())

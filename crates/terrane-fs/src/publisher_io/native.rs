@@ -16,6 +16,9 @@ use terrane_core::properties::Domain;
 
 use crate::verity;
 
+#[path = "native_adoption.rs"]
+mod adoption;
+
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
@@ -870,21 +873,7 @@ impl PublicationKernel for NativePublisher {
 
     fn open(&mut self, claim: &PublicationClaim) -> io::Result<File> {
         let shard = self.shard(claim)?;
-        let file = File::from(fs::openat(
-            &shard,
-            name(claim).as_str(),
-            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
-            Mode::empty(),
-        )?);
-        let metadata = file.metadata()?;
-        if !metadata.is_file()
-            || metadata.uid() != rustix::process::geteuid().as_raw()
-            || metadata.mode() & 0o222 != 0
-            || metadata.len() != claim.plaintext_size()
-        {
-            return Err(invalid("unsafe canonical publisher inode"));
-        }
-        Ok(file)
+        adoption::open_candidate(&shard, &name(claim), &self.sealed)
     }
 
     fn measure(&mut self, handle: &File) -> io::Result<VerityBinding> {
@@ -904,7 +893,7 @@ impl PublicationKernel for NativePublisher {
 
     fn sync_handle(&mut self, handle: &File) -> io::Result<()> {
         self.confinement.check_current()?;
-        handle.sync_all()
+        adoption::synchronize_verified(handle, &self.sealed)
     }
 
     fn quarantine_adoption_failure(

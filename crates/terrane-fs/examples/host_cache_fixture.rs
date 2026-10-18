@@ -30,14 +30,30 @@ fn main() -> std::process::ExitCode {
             "admit-cancel",
             "seed-manifest",
             "seed-bad-manifest",
+            "seed-unsealed-manifest",
+            "seed-unsealed-writable-manifest",
+            "seed-truncated-manifest",
+            "seed-writable-manifest",
             "recover-manifest",
             "refuse-manifest",
+            "refuse-unsealed-manifest",
+            "refuse-unsealed-writable-manifest",
+            "refuse-truncated-manifest",
+            "recover-writable-manifest",
         ] {
             println!("host-cache:{selector}");
         }
         return std::process::ExitCode::SUCCESS;
     }
-    let result = if matches!(mode.as_str(), "seed-manifest" | "seed-bad-manifest") {
+    let result = if matches!(
+        mode.as_str(),
+        "seed-manifest"
+            | "seed-bad-manifest"
+            | "seed-unsealed-manifest"
+            | "seed-unsealed-writable-manifest"
+            | "seed-truncated-manifest"
+            | "seed-writable-manifest"
+    ) {
         recovery::seed(&mode)
     } else {
         actor::run(&mode)
