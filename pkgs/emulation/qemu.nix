@@ -2095,6 +2095,7 @@ in
               grep -q '^PASS production-body differential rule-presence fixture' fault-rule-presence.result
               cat rr-sim-barriers.result
               grep -q '^PASS healthy ordinary 8->3 cycles per CPU' rr-sim-barriers.result
+              grep -q '^PASS all-halted control claim settles its own IDLE/ACTIVE wake' rr-sim-barriers.result
               # Use each changed translation unit's actual configured command,
               # then compare the reconstructed prior production bodies. Every
               # negative must compile and fail a native ownership assertion.
@@ -2855,9 +2856,32 @@ in
                    r"RR_TCG_EXEC_IDLE\);\s*"
                    r"qemu_plugin_time_advance_settle_at_rr_idle\(\);\s*"
                    r"continue;\s*\}\s*"
-                   r"if \(rr_crucible_sim_mode\(\) &&\s*"
-                   r"qemu_plugin_crucible_rr_control_boundary_pending\(\)"
-                   r".*?if \(qemu_plugin_crucible_vmstop_pending\(\)\)", 1),
+                   r"if \(rr_crucible_sim_settle_control_claim\(\)\) \{\s*"
+                   r"rr_replay_mutex_unlock\(\);\s*"
+                   r"rr_crucible_sim_acknowledge_control_boundary\(\);\s*"
+                   r"continue;\s*\}\s*"
+                   r"if \(qemu_plugin_crucible_vmstop_pending\(\)\)", 1),
+                  # A request's own kick leaves a wake pending. Every claim
+                  # settles it at an all-halted seam, and the wait claims
+                  # before it fires any plugin idle callback.
+                  ("control claim settles its own wake only when all halted",
+                   rr,
+                   r"static bool rr_crucible_sim_settle_control_claim\(void\)\s*"
+                   r"\{\s*if \(!rr_crucible_sim_mode\(\) \|\|\s*"
+                   r"!qemu_plugin_crucible_rr_control_boundary_pending\(\)\) "
+                   r"\{\s*return false;\s*\}\s*"
+                   r"if \(qatomic_read\(&rr_tcg_exec_state\) != "
+                   r"RR_TCG_EXEC_IDLE &&\s*"
+                   r"rr_crucible_sim_all_vcpus_halted\(\)\) \{\s*"
+                   r"rr_crucible_sim_complete_wake_boundary\(\);\s*\}\s*"
+                   r"return qatomic_read\(&rr_tcg_exec_state\) == "
+                   r"RR_TCG_EXEC_IDLE;\s*\}", 1),
+                  ("idle wait claims control before idle callbacks",
+                   wait_io_event,
+                   r"rr_crucible_sim_drain_vcpu_work\(\);\s*/\*.*?\*/\s*"
+                   r"if \(rr_crucible_sim_settle_control_claim\(\)\) \{\s*"
+                   r"return;\s*\}\s*"
+                   r"if \(rr_crucible_sim_sync_vcpu_halt_callbacks\(\) ==", 1),
                   ("pending time-advance batch uses level-triggered park",
                    run_tcg_batch,
                    r"if \(rr_crucible_sim_mode\(\) &&\s*"
@@ -4053,9 +4077,11 @@ in
                   ("stale alternate HLT park", idle_test,
                    r"allow_idle_park|return \"idle-futex\"", 0),
                   ("settled request escape", rr,
+                   r"if \(rr_crucible_sim_settle_control_claim\(\)\) \{", 3),
+                  ("stale IDLE-only control claim", rr,
                    r"rr_control_boundary_pending\(\)\s*&&\s*"
                    r"qatomic_read\(&rr_tcg_exec_state\) == RR_TCG_EXEC_IDLE",
-                   2),
+                   0),
                   ("terminal lifecycle service", rr,
                    r"static void rr_crucible_sim_service_force_shutdown"
                    r"\(void\)\s*\{[^}]*"

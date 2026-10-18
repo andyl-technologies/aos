@@ -1,16 +1,20 @@
-From 94720b4f693fdaa064b3bb6744d1089265665407 Mon Sep 17 00:00:00 2001
+From 87a5fa7ab41a212d277365d3f70e50787505e893 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Sat, 17 Oct 2026 02:49:28 +0000
-Subject: [PATCH] Re-deliver coalesced RR control wakes and re-bind cancelled
- idle targets
+Date: Sun, 18 Oct 2026 02:54:25 +0000
+Subject: [PATCH] Re-deliver coalesced RR control wakes and claim them before
+ idle waits
 
 A host doorbell becomes an RR control request. While the RR thread has not claimed the outstanding request, later doorbells coalesce into it, but the coalesced path returned before notifying the dispatch ceiling or kicking the CPU. The outstanding generation got exactly one kick, so a kick that reached the RR thread before it could claim the request was never repeated, and the host's periodic doorbell could not repair it.
 
+The request's own kick also publishes an RR wake, which moves the RR state from IDLE to IDLE_WAKE_PENDING or from ACTIVE to ACTIVE_WAKE_PENDING. Both control claims required IDLE, and only the wake boundary or TCG preparation collapses that state. The icount retry, the main-loop handoff and the VM-stop park loop back to the outer claim without either one, which left the request unclaimable. rr_wait_io_event also fired the plugin idle callback before it collapsed the wake or checked for a control request.
+
 The idle control-boundary bridge also bound its target request once per idle callback. Cancellation completes a request without delivering a callback, so the control-boundary generation does not advance. A bridge bound to a cancelled target ignored the newer request, parked again on the scheduler clamp, and every later doorbell coalesced behind the unclaimed request: the node stopped publishing while the host waited for it.
 
-A coalesced request now re-delivers the dispatch notification and the CPU kick without advancing the generation. Sim RR defers kicks to its deterministic boundary, so a repeated kick cannot move a guest coordinate. The bridge re-binds a completed target to the newest outstanding request only when no callback was delivered in that bridge; a delivered callback keeps its original exit. Idle arm refuses to wait while an RR request is unclaimed, because in sim RR the request's kick sets no exit_request and has no armed futex word to wake, and the bridge then claims the request first.
+A coalesced request now re-delivers the dispatch notification and the CPU kick without advancing the generation. Sim RR defers kicks to its deterministic boundary, so a repeated kick cannot move a guest coordinate. When every vCPU is halted, the outer claim and rr_wait_io_event settle a pending request's own wake and claim it at IDLE, and rr_wait_io_event does so before any idle callback. No translation block can run at that seam and the idle wait consumes the same wake anyway, so no guest-visible coordinate moves; a runnable vCPU keeps its wake for the TCG boundary. The bridge re-binds a completed target to the newest outstanding request only when no callback was delivered in that bridge; a delivered callback keeps its original exit. Idle arm refuses to wait while an RR request is unclaimed, because in sim RR the request's kick sets no exit_request and has no armed futex word to wake, and the bridge then claims the request first.
 
 test-crucible-control-deferred runs the production arm and bridge over one halted CPU. Each new case fails without its fix: two doorbells before acknowledge kick twice at request generation one; arm refuses a pending request; and a clamped bridge whose target is cancelled claims the next request instead of parking behind it.
+
+test-crucible-rr-sim-barriers now also extracts the RR wake boundary, the claim settlement and the outer loop's claim statement, and takes the wake state machine from its header. A request is published with its own IDLE or ACTIVE kick while every vCPU is halted and the idle callback provider aborts. The wait returns at IDLE without a callback, and the outer claim acknowledges the request; a runnable vCPU keeps its wake. Without the settlement the wait reaches the idle callback and the outer loop never claims, which the new unsettled-control-claim negative control reproduces.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -4215,10 +4219,10 @@ index 0000000000000000000000000000000000000000..76140d303d1b89512472ebc4f0d0577a
 +    }
 +}
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index cdaa3e118082d7f100dd7655e57e28b55418d294..5162bc272b99719923f3e53b968367729e20517a 100644
+index cdaa3e118082d7f100dd7655e57e28b55418d294..b2e8979eec3717f62f959e38033b7313b7e222f6 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
-@@ -27,45 +27,1910 @@
+@@ -27,45 +27,1940 @@
  #include "qemu/lockable.h"
  #include "system/tcg.h"
  #include "system/replay.h"
@@ -5389,6 +5393,36 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..5162bc272b99719923f3e53b96836772
 +    return true;
 +}
 +
++/*
++ * Settle a pending RR control request's own wake so the RR thread can claim it.
++ *
++ * The kick that announces a request publishes an RR wake, which moves IDLE to
++ * IDLE_WAKE_PENDING and ACTIVE to ACTIVE_WAKE_PENDING. A claim requires IDLE,
++ * and only the wake boundary or TCG preparation collapses the state. A path
++ * that loops back without either one would leave the request unclaimable,
++ * while every later doorbell coalesces behind it.
++ *
++ * Collapse only when every vCPU is halted. No translation block can run
++ * then, and rr_wait_io_event() consumes the same wake at that idle boundary
++ * anyway, so settling it here moves no guest-visible coordinate. A runnable
++ * vCPU keeps its wake for the deterministic TCG boundary.
++ *
++ * Returns true when a request is pending and the RR state is IDLE, so the
++ * caller may claim the request.
++ */
++static bool rr_crucible_sim_settle_control_claim(void)
++{
++    if (!rr_crucible_sim_mode() ||
++        !qemu_plugin_crucible_rr_control_boundary_pending()) {
++        return false;
++    }
++    if (qatomic_read(&rr_tcg_exec_state) != RR_TCG_EXEC_IDLE &&
++        rr_crucible_sim_all_vcpus_halted()) {
++        rr_crucible_sim_complete_wake_boundary();
++    }
++    return qatomic_read(&rr_tcg_exec_state) == RR_TCG_EXEC_IDLE;
++}
++
 +static bool rr_crucible_sim_stop_or_unplug_pending(void)
 +{
 +    CPUState *cpu;
@@ -6148,7 +6182,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..5162bc272b99719923f3e53b96836772
  }
  
  /* Kick the currently round-robin scheduled vCPU to next */
-@@ -84,18 +1949,30 @@ static void rr_kick_next_cpu(void)
+@@ -84,18 +1979,30 @@ static void rr_kick_next_cpu(void)
  
  static void rr_kick_thread(void *opaque)
  {
@@ -6181,7 +6215,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..5162bc272b99719923f3e53b96836772
      }
  }
  
-@@ -110,15 +1987,131 @@ static void rr_wait_io_event(void)
+@@ -110,15 +2017,138 @@ static void rr_wait_io_event(void)
  {
      CPUState *cpu;
  
@@ -6193,6 +6227,14 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..5162bc272b99719923f3e53b96836772
 +     * evaluated.
 +     */
 +    rr_crucible_sim_drain_vcpu_work();
++    /*
++     * Claim an RR control request before any idle callback runs. The plugin's
++     * idle wait cannot see a sim RR request's kick, so a callback fired ahead
++     * of the claim could park on a request that only this thread can claim.
++     */
++    if (rr_crucible_sim_settle_control_claim()) {
++        return;
++    }
 +    if (rr_crucible_sim_sync_vcpu_halt_callbacks() ==
 +            QEMU_PLUGIN_CRUCIBLE_IDLE_CALLBACK_RESCAN) {
 +        rr_start_kick_timer();
@@ -6215,8 +6257,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..5162bc272b99719923f3e53b96836772
 +        if (rr_crucible_sim_complete_wake_boundary()) {
 +            return;
 +        }
-+        if (qemu_plugin_crucible_rr_control_boundary_pending() &&
-+            qatomic_read(&rr_tcg_exec_state) == RR_TCG_EXEC_IDLE) {
++        if (rr_crucible_sim_settle_control_claim()) {
 +            /* The outer loop claims control requests at the settled boundary. */
 +            return;
 +        }
@@ -6315,7 +6356,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..5162bc272b99719923f3e53b96836772
      }
  }
  
-@@ -140,6 +2133,18 @@ static void rr_deal_with_unplugged_cpus(void)
+@@ -140,6 +2170,18 @@ static void rr_deal_with_unplugged_cpus(void)
  
  static void rr_force_rcu(Notifier *notify, void *data)
  {
@@ -6334,7 +6375,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..5162bc272b99719923f3e53b96836772
      rr_kick_next_cpu();
  }
  
-@@ -184,6 +2189,8 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -184,6 +2226,8 @@ static void *rr_cpu_thread_fn(void *arg)
      CPUState *cpu = arg;
  
      assert(tcg_enabled());
@@ -6343,7 +6384,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..5162bc272b99719923f3e53b96836772
      rcu_register_thread();
      force_rcu.notify = rr_force_rcu;
      rcu_add_force_rcu_notifier(&force_rcu);
-@@ -204,41 +2211,199 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -204,41 +2248,202 @@ static void *rr_cpu_thread_fn(void *arg)
          /* process any pending work */
          CPU_FOREACH(cpu) {
              current_cpu = cpu;
@@ -6542,9 +6583,12 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..5162bc272b99719923f3e53b96836772
  
 -        rr_wait_io_event();
 -        rr_deal_with_unplugged_cpus();
-+        if (rr_crucible_sim_mode() &&
-+            qemu_plugin_crucible_rr_control_boundary_pending() &&
-+            qatomic_read(&rr_tcg_exec_state) == RR_TCG_EXEC_IDLE) {
++        /*
++         * The request's own kick may leave a wake pending. The icount retry,
++         * the main-loop handoff and the VM-stop park all return here without
++         * collapsing it, so settle it before the claim at an all-halted seam.
++         */
++        if (rr_crucible_sim_settle_control_claim()) {
 +            rr_replay_mutex_unlock();
 +            rr_crucible_sim_acknowledge_control_boundary();
 +            continue;
@@ -6561,7 +6605,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..5162bc272b99719923f3e53b96836772
  
          if (icount_enabled()) {
              int cpu_count = rr_cpu_count();
-@@ -254,11 +2419,31 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -254,11 +2459,31 @@ static void *rr_cpu_thread_fn(void *arg)
              cpu_budget = icount_percpu_budget(cpu_count);
          }
  
@@ -6594,7 +6638,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..5162bc272b99719923f3e53b96836772
  
          while (cpu && cpu_work_list_empty(cpu)) {
              /*
-@@ -276,28 +2461,141 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -276,28 +2501,141 @@ static void *rr_cpu_thread_fn(void *arg)
              qemu_clock_enable(QEMU_CLOCK_VIRTUAL,
                                (cpu->singlestep_flags & SSTEP_NOTIMER) == 0);
  
@@ -6751,7 +6795,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..5162bc272b99719923f3e53b96836772
              } else if (cpu->stop) {
                  if (cpu->unplug) {
                      cpu = CPU_NEXT(cpu);
-@@ -305,11 +2603,137 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -305,11 +2643,137 @@ static void *rr_cpu_thread_fn(void *arg)
                  break;
              }
  
@@ -6891,7 +6935,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..5162bc272b99719923f3e53b96836772
      }
  
      g_assert_not_reached();
-@@ -318,13 +2742,34 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -318,13 +2782,34 @@ static void *rr_cpu_thread_fn(void *arg)
  void rr_start_vcpu_thread(CPUState *cpu)
  {
      char thread_name[VCPU_THREAD_NAME_SIZE];
@@ -187652,18 +187696,20 @@ index 0000000000000000000000000000000000000000..47c5b0de1b13d148c6b19af3e0bacdf5
 +    main()
 diff --git a/tests/unit/test-crucible-rr-sim-barriers.py b/tests/unit/test-crucible-rr-sim-barriers.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..68da52cf9a0dcc41ab9b45adf5bc212b2f09fe34
+index 0000000000000000000000000000000000000000..0c0a655e7d27bc1fd7836dc79430db2a42347afe
 --- /dev/null
 +++ b/tests/unit/test-crucible-rr-sim-barriers.py
-@@ -0,0 +1,633 @@
+@@ -0,0 +1,764 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise production RR FIFO barriers and ordinary CPU event processing.
 +
 +The wrapper, global drain, wait path, common events, FIFO implementation,
 +accelerator getter, plugin pending predicates, pause/resume and kick bodies are
-+extracted from this source tree. GLib mutexes and QEMU queue/atomic macros are
-+real. CPU topology, BQL/exclusive arbitration, host wake scheduling, plugin halt
-+callbacks and timers are bounded providers. This proves local ordering and
++extracted from this source tree, as are the RR wake boundary, the control-claim
++settlement and the outer loop's control-claim statement. The RR wake state
++machine comes from its real header. GLib mutexes and QEMU queue/atomic macros
++are real. CPU topology, BQL/exclusive arbitration, host wake scheduling, plugin
++halt callbacks and timers are bounded providers. This proves local ordering and
 +progress under those providers, not running guests, migration streams, a full
 +QEMU process, concurrent producers or latency. No Git metadata or generated
 +protocol header is required; the default works in a source archive.
@@ -187681,7 +187727,8 @@ index 0000000000000000000000000000000000000000..68da52cf9a0dcc41ab9b45adf5bc212b
 +ROOT = Path(__file__).resolve().parents[2]
 +RR = "accel/tcg/tcg-accel-ops-rr.c"
 +NEGATIVES = ["wrong-mode", "skipped-common", "missing-pre-drain",
-+             "missing-fixed-point", "missing-owner-restoration"]
++             "missing-fixed-point", "missing-owner-restoration",
++             "unsettled-control-claim"]
 +BASELINE_COMMIT = "f9a79a88ac52a502fd174c263a8a749debc4dbdd"
 +BASELINE_HASHES = {
 +    "rr_crucible_sim_process_vcpu_events":
@@ -187756,12 +187803,12 @@ index 0000000000000000000000000000000000000000..68da52cf9a0dcc41ab9b45adf5bc212b
 +#define QEMU_CLOCK_VIRTUAL 1
 +#define QEMU_PLUGIN_TIME_ADVANCE_ARMED 2
 +#define QEMU_PLUGIN_CRUCIBLE_VMSTOP_IDLE 0
-+#define RR_TCG_EXEC_IDLE 0
 +#define CPU_FOREACH(cpu) for ((cpu) = first_cpu; (cpu); (cpu) = (cpu)->next)
 +
 +typedef GMutex QemuMutex;
 +typedef struct { int kind; } QemuCond;
 +typedef struct CPUState CPUState;
++#include "accel/tcg/tcg-accel-ops-rr.h"
 +typedef union { unsigned long host_ulong; } run_on_cpu_data;
 +typedef void (*run_on_cpu_func)(CPUState *, run_on_cpu_data);
 +struct qemu_work_item {
@@ -187800,6 +187847,9 @@ index 0000000000000000000000000000000000000000..68da52cf9a0dcc41ab9b45adf5bc212b
 +static unsigned timer_starts, timer_stops, warps, deadlines, timers;
 +static unsigned qemu_plugin_time_advance_pending;
 +static unsigned qemu_plugin_crucible_vmstop_state, rr_tcg_exec_state;
++static uint64_t rr_wake_publish_generation, rr_wake_consumed_generation;
++static bool halt_callbacks_forbidden;
++static unsigned acknowledgements;
 +static bool qemu_plugin_control_boundary_deferred;
 +static uint64_t qemu_plugin_rr_control_request_generation;
 +static uint64_t qemu_plugin_rr_control_complete_generation;
@@ -187821,6 +187871,8 @@ index 0000000000000000000000000000000000000000..68da52cf9a0dcc41ab9b45adf5bc212b
 +bool qemu_plugin_crucible_vmstop_pending(void);
 +bool qemu_plugin_crucible_rr_control_boundary_pending(void);
 +static bool rr_crucible_sim_vcpu_work_pending(void);
++static bool rr_crucible_sim_complete_wake_boundary(void);
++static bool rr_crucible_sim_settle_control_claim(void);
 +static void rr_crucible_sim_process_vcpu_events(CPUState *cpu);
 +static void rr_crucible_sim_drain_vcpu_work(void);
 +static void work_callback(CPUState *cpu, run_on_cpu_data data);
@@ -187918,7 +187970,6 @@ index 0000000000000000000000000000000000000000..68da52cf9a0dcc41ab9b45adf5bc212b
 +static bool all_cpu_threads_idle(void) { return host_idle; }
 +static bool qemu_force_shutdown_requested(void) { return false; }
 +static bool rr_crucible_sim_all_vcpus_halted(void) { return host_idle; }
-+static bool rr_crucible_sim_complete_wake_boundary(void) { return false; }
 +static void rr_hot_fork_note_parked(void) { }
 +static void rr_crucible_sim_prepark(bool advance, bool control)
 +{
@@ -187930,7 +187981,26 @@ index 0000000000000000000000000000000000000000..68da52cf9a0dcc41ab9b45adf5bc212b
 +static QemuPluginCrucibleIdleCallbackDisposition
 +rr_crucible_sim_sync_vcpu_halt_callbacks(void)
 +{
++    /* No idle callback may run while an RR control request is unclaimed. */
++    if (halt_callbacks_forbidden) {
++        g_assert_not_reached();
++    }
 +    return QEMU_PLUGIN_CRUCIBLE_IDLE_CALLBACK_COMPLETE;
++}
++
++static void rr_replay_mutex_unlock(void)
++{
++    record('r');
++}
++
++static void rr_crucible_sim_acknowledge_control_boundary(void)
++{
++    /* The production claim asserts a settled IDLE state before it waits. */
++    assert(qatomic_read(&rr_tcg_exec_state) == RR_TCG_EXEC_IDLE);
++    assert(++acknowledgements == 1);
++    record('A');
++    qemu_plugin_rr_control_complete_generation =
++        qemu_plugin_rr_control_request_generation;
 +}
 +
 +static void rr_start_kick_timer(void) { timer_starts++; }
@@ -187992,6 +188062,10 @@ index 0000000000000000000000000000000000000000..68da52cf9a0dcc41ab9b45adf5bc212b
 +    qemu_plugin_control_boundary_deferred = false;
 +    qemu_plugin_rr_control_request_generation = 0;
 +    qemu_plugin_rr_control_complete_generation = 0;
++    rr_tcg_exec_state = RR_TCG_EXEC_IDLE;
++    rr_wake_publish_generation = rr_wake_consumed_generation = 0;
++    halt_callbacks_forbidden = false;
++    acknowledgements = 0;
 +    wait_action = 0;
 +    event_count = 0;
 +    events[0] = '\0';
@@ -188154,6 +188228,74 @@ index 0000000000000000000000000000000000000000..68da52cf9a0dcc41ab9b45adf5bc212b
 +    puts("PASS bounded ordinary idle kick/pause/resume, control/stop and time-advance branch progression; retained timer effects");
 +}
 +
++/* Publish a request's own kick exactly as rr_kick_vcpu_thread() does. */
++static void publish_request_wake(void)
++{
++    unsigned int claimed;
++
++    assert(rr_crucible_sim_wake_try_claim(&rr_tcg_exec_state, &claimed));
++    rr_crucible_sim_wake_publish(&rr_tcg_exec_state, claimed,
++                                 &rr_wake_publish_generation);
++}
++
++static void check_control_claim_settles(void)
++{
++    static const unsigned int settled[] = {
++        RR_TCG_EXEC_IDLE, RR_TCG_EXEC_ACTIVE,
++    };
++    static const unsigned int woken[] = {
++        RR_TCG_EXEC_IDLE_WAKE_PENDING, RR_TCG_EXEC_ACTIVE_WAKE_PENDING,
++    };
++
++    for (unsigned index = 0; index < 2; index++) {
++        /* An all-halted wait claims before any idle callback can park. */
++        reset(true, ICOUNT_PRECISE);
++        host_idle = true;
++        rr_tcg_exec_state = settled[index];
++        qemu_plugin_rr_control_request_generation = 1;
++        publish_request_wake();
++        assert(rr_tcg_exec_state == woken[index]);
++
++        halt_callbacks_forbidden = true;
++        rr_wait_io_event();
++
++        assert(rr_tcg_exec_state == RR_TCG_EXEC_IDLE);
++        assert(rr_wake_consumed_generation == rr_wake_publish_generation);
++        assert(qemu_plugin_crucible_rr_control_boundary_pending());
++        assert(!waits && !timer_starts && !acknowledgements);
++
++        /* A loop-back that skipped the collapse still claims at the top. */
++        rr_tcg_exec_state = settled[index];
++        publish_request_wake();
++        assert(rr_tcg_exec_state == woken[index]);
++
++        outer_control_claim();
++
++        assert(acknowledgements == 1 && strstr(events, "rA"));
++        assert(rr_tcg_exec_state == RR_TCG_EXEC_IDLE);
++        assert(rr_wake_consumed_generation == rr_wake_publish_generation);
++        assert(!qemu_plugin_crucible_rr_control_boundary_pending());
++    }
++
++    /* A runnable vCPU keeps its wake for the deterministic TCG boundary. */
++    reset(true, ICOUNT_PRECISE);
++    rr_tcg_exec_state = RR_TCG_EXEC_ACTIVE;
++    qemu_plugin_rr_control_request_generation = 1;
++    publish_request_wake();
++    outer_control_claim();
++    assert(!acknowledgements);
++    assert(rr_tcg_exec_state == RR_TCG_EXEC_ACTIVE_WAKE_PENDING);
++    assert(rr_wake_consumed_generation != rr_wake_publish_generation);
++
++    /* Without a request, the settlement leaves every wake to its own path. */
++    reset(true, ICOUNT_PRECISE);
++    host_idle = true;
++    publish_request_wake();
++    assert(!rr_crucible_sim_settle_control_claim());
++    assert(rr_tcg_exec_state == RR_TCG_EXEC_IDLE_WAKE_PENDING);
++    puts("PASS all-halted control claim settles its own IDLE/ACTIVE wake before idle callbacks; runnable vCPUs keep theirs");
++}
++
 +int main(void)
 +{
 +    for (unsigned index = 0; index < 2; index++) {
@@ -188168,6 +188310,7 @@ index 0000000000000000000000000000000000000000..68da52cf9a0dcc41ab9b45adf5bc212b
 +    check_fixed_point();
 +    check_healthy();
 +    check_generic_progress();
++    check_control_claim_settles();
 +
 +    for (unsigned index = 0; index < 2; index++) {
 +        g_mutex_clear(&cpus[index].work_mutex);
@@ -188175,6 +188318,25 @@ index 0000000000000000000000000000000000000000..68da52cf9a0dcc41ab9b45adf5bc212b
 +    return 0;
 +}
 +"""
++
++
++# The negative removes the pre-callback claim and restores the IDLE-only test.
++UNSETTLED_EARLY_CLAIM = """    if (rr_crucible_sim_settle_control_claim()) {
++        return;
++    }
++"""
++UNSETTLED_PREDICATE = (
++    "(rr_crucible_sim_mode() &&\n"
++    "            qemu_plugin_crucible_rr_control_boundary_pending() &&\n"
++    "            qatomic_read(&rr_tcg_exec_state) == RR_TCG_EXEC_IDLE)")
++
++
++def control_claim_block(source):
++    """Extract the outer loop's control-claim statement around its claim call."""
++    loop = source[source.index("static G_NORETURN void rr_cpu_thread_loop("):]
++    claim = loop.index("rr_crucible_sim_acknowledge_control_boundary();")
++    start = loop.rindex("\n        if (", 0, claim) + 1
++    return definition(loop[start:], "if (")
 +
 +
 +def extracted_parts():
@@ -188198,6 +188360,8 @@ index 0000000000000000000000000000000000000000..68da52cf9a0dcc41ab9b45adf5bc212b
 +              "static bool rr_crucible_sim_vcpu_work_pending(void)\n{",
 +              "static void rr_crucible_sim_process_vcpu_events(CPUState *cpu)\n{",
 +              "static void rr_crucible_sim_drain_vcpu_work(void)\n{",
++              "static bool rr_crucible_sim_complete_wake_boundary(void)\n{",
++              "static bool rr_crucible_sim_settle_control_claim(void)\n{",
 +              "static void rr_wait_io_event(void)\n{"]),
 +    ]
 +    return {(path, signature): definition((ROOT / path).read_text(), signature)
@@ -188218,6 +188382,10 @@ index 0000000000000000000000000000000000000000..68da52cf9a0dcc41ab9b45adf5bc212b
 +                            "} while (false);")
 +    if negative == "missing-owner-restoration" and "process_vcpu_events(" in body:
 +        return body.replace("    current_cpu = saved_cpu;", "    (void)saved_cpu;")
++    if negative == "unsettled-control-claim":
++        # Restore the claims that required IDLE without settling the wake.
++        return body.replace(UNSETTLED_EARLY_CLAIM, "").replace(
++            "rr_crucible_sim_settle_control_claim()", UNSETTLED_PREDICATE)
 +    return body
 +
 +
@@ -188256,17 +188424,24 @@ index 0000000000000000000000000000000000000000..68da52cf9a0dcc41ab9b45adf5bc212b
 +    changes = 0
 +    for (path, signature), body in parts.items():
 +        if path == RR and ("process_vcpu_events" in signature or
-+                           "drain_vcpu_work(void)" in signature):
++                           "drain_vcpu_work(void)" in signature or
++                           "rr_wait_io_event" in signature):
 +            changed = mutated(body, arguments.negative_control)
 +            changes += changed != body
 +            body = changed
 +        bodies.append(body)
++    claim_block = control_claim_block((ROOT / RR).read_text())
++    changed = mutated(claim_block, arguments.negative_control)
++    changes += changed != claim_block
++    # The extracted block's continue repeats the same top-of-loop claim scan.
++    outer_claim = ("static void outer_control_claim(void)\n{\n    while (true) {\n"
++                   "        " + changed + "\n        break;\n    }\n}")
 +    if arguments.negative_control:
 +        assert changes > 0, "negative must mutate an extracted production body"
 +    generated = output / "rr-sim-barriers.c"
 +    generated.write_text("\n\n".join([
 +        "/* SPDX-License-Identifier: GPL-2.0-or-later */", PRELUDE,
-+        *bodies, BASELINE, old_wait, CHECKS,
++        *bodies, BASELINE, old_wait, outer_claim, CHECKS,
 +    ]))
 +    binary = output / "rr-sim-barriers"
 +    flags = shlex.split(os.environ.get("CFLAGS", ""))
@@ -188278,7 +188453,7 @@ index 0000000000000000000000000000000000000000..68da52cf9a0dcc41ab9b45adf5bc212b
 +        links = shlex.split(subprocess.check_output(
 +            [*pkg_config, "--libs", "glib-2.0"], text=True))
 +    command = [*shlex.split(os.environ.get("CC", "cc")), "-std=gnu11",
-+               *flags, f"-I{ROOT / 'include'}", str(generated),
++               *flags, f"-I{ROOT}", f"-I{ROOT / 'include'}", str(generated),
 +               "-o", str(binary), *links]
 +    (output / "compile-command.json").write_text(json.dumps({
 +        "cwd": str(ROOT), "argv": command}, indent=2) + "\n")
