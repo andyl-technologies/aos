@@ -41,7 +41,6 @@ mod manifest;
 mod recovery_manifest;
 pub(super) use executor::NativeOwnerExecutor;
 pub(crate) use executor::{PublisherResumeTurn, PublisherRunningTurn};
-use manifest::retain;
 pub(crate) use recovery_manifest::{
     AcceptedRecoveryManifestEffect, RecoveryManifestBackingRetention, RecoveryManifestBodyFailure,
     RecoveryManifestBodyRetention, RecoveryManifestEffect, RecoveryManifestEffectFailure,
@@ -298,9 +297,7 @@ impl NativeMetadataOwner {
                             let _ = response.send(result);
                         }
                         Command::Retain { identity, response } => {
-                            let result = executor
-                                .check_recovery_phase()
-                                .and_then(|()| runtime.block_on(retain(&executor, identity)));
+                            let result = runtime.block_on(executor.retain_metadata(identity));
                             // An abandoned reply never releases the registry's source,
                             // durable pins, future hold or exclusive state custody.
                             let _ = response.send(result);
@@ -390,6 +387,8 @@ impl NativeMetadataOwner {
     /// Requests use the actual configured domain and profile; callers supply no
     /// paths, source files, callback or validity assertion. A full queue returns
     /// immediately. Cancellation after enqueue leaves physical execution owned.
+    /// After Resume, the worker uses its original acknowledged Running context;
+    /// it never reuses the completed recovery snapshot as a currentness predicate.
     ///
     /// # Errors
     /// Returns capacity, unavailable owner, metadata verification, synchronization,

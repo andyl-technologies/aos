@@ -531,7 +531,11 @@ fn random_id() -> io::Result<PackId> {
     Ok(PackId::from_random_bytes(bytes))
 }
 
-fn manifest(value: u8) -> io::Result<Vec<u8>> {
+/// Builds canonical reconstruction metadata with actual ordered chunk identities.
+///
+/// # Errors
+/// Refuses unsupported identity/profile data or canonical manifest encoding.
+pub(super) fn manifest(value: u8) -> io::Result<Vec<u8>> {
     let profile = ChunkProfile::cdc_1m([0; 32]);
     let plaintext = vec![value; profile.minimum() + 1];
     let chunks = plaintext

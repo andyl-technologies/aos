@@ -262,6 +262,24 @@ impl NativeOwnerExecutor {
         })
     }
 
+    /// Retains metadata under the actual worker's current recovered or Running phase.
+    ///
+    /// # Errors
+    /// Refuses another physical thread, a failed Resume, stale/faulted Running
+    /// custody, invalid sources or failed durability and quota reconciliation.
+    pub(super) async fn retain_metadata(
+        &self,
+        identity: terrane_core::identity::Identity,
+    ) -> io::Result<super::RetainedManifest> {
+        self.check_physical_worker()?;
+        if self.running.is_some() {
+            super::manifest::retain_running(self, identity).await
+        } else {
+            self.check_recovery_phase()?;
+            super::manifest::retain(self, identity).await
+        }
+    }
+
     /// Retains actual source handles outside embedded state before write effects.
     ///
     /// # Errors

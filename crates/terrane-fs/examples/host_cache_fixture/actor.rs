@@ -50,6 +50,8 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
             | "publish-inline-transfer"
             | "publish-inline-transfer-cancel"
             | "publish-inline-transfer-conflict"
+            | "retain-running"
+            | "retain-running-cancel"
     ) {
         return Err(io::Error::other("unknown component selector"));
     }
@@ -87,6 +89,9 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
         .enable_all()
         .build()?;
     match mode {
+        "retain-running" | "retain-running-cancel" => {
+            super::running_retention::run(mode, &owner, &runtime, &inputs, original)?;
+        }
         "publish-inline"
         | "publish-inline-cancel"
         | "publish-inline-transfer"

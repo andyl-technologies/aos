@@ -15,6 +15,19 @@ pub(super) async fn retain(
     retain_with_authority(identity, Authority::Ordinary(executor)).await
 }
 
+/// Captures this physical worker's actual acknowledged Running context.
+///
+/// # Errors
+/// Refuses a stale/faulted owner, absent Resume acknowledgment, corrupt metadata,
+/// unavailable capacity or failed native synchronization and quota reconciliation.
+pub(super) async fn retain_running(
+    executor: &NativeOwnerExecutor,
+    identity: Identity,
+) -> io::Result<RetainedManifest> {
+    let context = executor.admission_context()?;
+    retain_with_authority(identity, Authority::Running { executor, context }).await
+}
+
 /// Retains actual metadata under the unforgeable exclusive recovery turn.
 ///
 /// # Errors
@@ -33,27 +46,61 @@ pub(super) async fn retain_recovery(
     retain_with_authority(identity, Authority::Recovery(live)).await
 }
 
-/// Keeps ordinary and live-recovery authority distinct through source awaits.
+/// Keeps recovered, acknowledged Running and live-recovery custody distinct.
 enum Authority<'phase, 'executor> {
     Ordinary(&'phase NativeOwnerExecutor),
+    Running {
+        executor: &'phase NativeOwnerExecutor,
+        context: Arc<crate::publisher_local::client::PublisherRunningContext>,
+    },
     Recovery(&'phase mut super::recovery_manifest::LiveManifestRecoveryContext<'executor>),
 }
 
 impl Authority<'_, '_> {
     fn executor(&self) -> &NativeOwnerExecutor {
         match self {
-            Self::Ordinary(executor) => executor,
+            Self::Ordinary(executor) | Self::Running { executor, .. } => executor,
             Self::Recovery(live) => live.snapshot_executor(),
         }
     }
 
+    // Publisher-phase checks precede each embedded-owner lock. Holding the
+    // physical executor borrow keeps metadata commands from interleaving across
+    // source or snapshot awaits; no publisher RPC lock nests under embedded state.
+    fn check_context(&self) -> io::Result<()> {
+        self.executor().check_physical_worker()?;
+        if let Self::Running { context, .. } = self {
+            context.check_current().map_err(io::Error::other)?;
+        }
+        Ok(())
+    }
+
+    fn check_session(&self, owner: &Custody) -> io::Result<()> {
+        if let Self::Running { context, .. } = self
+            && !Arc::ptr_eq(
+                context.publisher_session(),
+                &owner.preparation.publisher_session(),
+            )
+        {
+            return Err(io::Error::other(
+                "running retention belongs to another actual session",
+            ));
+        }
+        Ok(())
+    }
+
     fn check_owner(&self, owner: &Custody) -> io::Result<()> {
+        self.check_session(owner)?;
         match self {
             Self::Recovery(live) => live.check_producer_owner(owner),
-            Self::Ordinary(_) if owner.faulted || owner.recovery_required => Err(io::Error::other(
-                "metadata owner requires failed-operation recovery",
-            )),
-            Self::Ordinary(_) => Ok(()),
+            Self::Ordinary(_) | Self::Running { .. }
+                if owner.faulted || owner.recovery_required =>
+            {
+                Err(io::Error::other(
+                    "metadata owner requires failed-operation recovery",
+                ))
+            }
+            Self::Ordinary(_) | Self::Running { .. } => Ok(()),
         }
     }
 
@@ -64,6 +111,7 @@ impl Authority<'_, '_> {
         id: &[u8; 16],
         generation: u64,
     ) -> io::Result<()> {
+        self.check_session(owner)?;
         if let Self::Recovery(live) = self {
             live.check_producer_owner(owner)?;
         } else if owner.recovery_required || !owner.faulted {
@@ -94,7 +142,7 @@ async fn retain_with_authority(
     identity: Identity,
     mut authority: Authority<'_, '_>,
 ) -> io::Result<RetainedManifest> {
-    authority.executor().check_physical_worker()?;
+    authority.check_context()?;
     let custody = Arc::clone(authority.executor().custody());
     let (layout, limits, original_generation) = {
         let mut owner = custody
@@ -115,6 +163,7 @@ async fn retain_with_authority(
         .await
         .map_err(io::Error::other)?;
     let source = Arc::new(NativeManifestSource::open(&reader, &identity, limits).await?);
+    authority.check_context()?;
     let (pinned, retention_id, future, registered_generation, reservation_write) = {
         let mut owner = custody
             .lock()
@@ -206,6 +255,7 @@ async fn retain_with_authority(
         (pinned, retention_id, future, owner.generation, write)
     };
     super::super::snapshot::persist(authority.executor(), reservation_write).await?;
+    authority.check_context()?;
     let pinned_write = {
         let mut owner = custody
             .lock()
@@ -217,6 +267,7 @@ async fn retain_with_authority(
         super::super::snapshot::prepare(authority.executor(), &mut owner)?
     };
     super::super::snapshot::persist(authority.executor(), pinned_write).await?;
+    authority.check_context()?;
     let mut owner = custody
         .lock()
         .map_err(|_| io::Error::other("metadata custody poisoned"))?;
@@ -259,7 +310,7 @@ async fn retain_with_authority(
     // The policy hold remains durable for the dependent metadata's entire
     // lifetime. Only actual retirement/recovery can release it; waiter or receipt
     // destruction never does. Allocation and kernel charge remain separate.
-    if matches!(&authority, Authority::Ordinary(_)) {
+    if !matches!(&authority, Authority::Recovery(_)) {
         owner.faulted = false;
     }
     let cache_incarnation = *owner.preparation.publisher().cache_incarnation();

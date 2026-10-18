@@ -52,6 +52,7 @@ CASES = [
     "admission-chunk", "admission-metadata", "admission-cancel",
     "publication-inline", "publication-cancel", "publication-transfer",
     "publication-transfer-cancel", "publication-transfer-conflict",
+    "retention-running", "retention-running-cancel",
 ] + [row[0] for row in MANIFEST_CASES]
 
 LABELS = ["layout-root", "chunks", "objects", "sealed", "staging", "quarantine",
@@ -700,6 +701,61 @@ def inline_transfer_cases(publisher, uuid):
                 process.wait(timeout=5)
 
 
+def running_retention_cases(helper, uuid):
+    """Requires actual post-Resume metadata pins, including an abandoned waiter."""
+    output = actor("retention-running", "retain-running", uuid)
+    require(output.splitlines() == [
+        "PASS actual Running metadata retention kept both original inodes and distinct durable pins across later work; no Ready"
+    ], "missing actual Running metadata retention completion")
+    case = "retention-running-cancel"
+    process = controlled_actor(case, "retain-running-cancel", uuid)
+    stopped = False
+    try:
+        lines = Lines(process)
+        lines.until("READY actual metadata admission and Resume; wait for stopped-helper retention control")
+        print(process_status(process, 840), flush=True)
+        members = list((root(case) / "objects/pack").glob("*/*"))
+        require(len(members) == 2 and {path.suffix for path in members} == {".pack", ".idx"},
+                "Running retention lacks its actual canonical metadata pair")
+        original = {str(path): (path.stat().st_dev, path.stat().st_ino, path.read_bytes()) for path in members}
+        helper.send_signal(signal.SIGSTOP)
+        stopped = True
+        deadline = time.monotonic() + 4
+        while True:
+            status = (pathlib.Path("/proc") / str(helper.pid) / "status").read_text()
+            require(helper.poll() is None, "helper exited before Running retention cancellation")
+            if any(line.startswith("State:\tT") or line.startswith("State:\tt") for line in status.splitlines()):
+                break
+            require(time.monotonic() < deadline, "retention helper stop was not acknowledged")
+            time.sleep(0.005)
+        process.stdin.write(b"enqueue\n")
+        process.stdin.flush()
+        lines.until("CANCELLED accepted metadata retention waiter; physical owner retained",
+                    timeout=max(0, deadline - time.monotonic()))
+        require(time.monotonic() < deadline, "metadata waiter cancellation exceeded stopped interval")
+        helper.send_signal(signal.SIGCONT)
+        stopped = False
+        output, _ = process.communicate(b"resumed\n", timeout=20)
+        print(output.decode(), end="", flush=True)
+        require(process.returncode == 0 and output.decode().splitlines() == [
+            "PASS actual Running metadata retention kept both original inodes and distinct durable pins across later work; no Ready"
+        ], "dropped metadata waiter lacks actual physical completion and a later valid acknowledgment")
+        for path in members:
+            require((path.stat().st_dev, path.stat().st_ino, path.read_bytes()) == original[str(path)],
+                    "Running retention replaced or altered a canonical metadata member")
+        state = tomllib.loads((root(case) / "state/cache/records.toml").read_text())
+        require(len(state["reservations"]) == 4 and len(state["pins"]) == 6
+                and len(state["leases"]) == 3 and state["residences"] == []
+                and len([lease for lease in state["leases"] if lease["owner"].startswith("metadata:")]) == 2,
+                "abandoned retention lost a distinct physical command's durable pin closure")
+    finally:
+        if stopped and helper.poll() is None:
+            helper.send_signal(signal.SIGCONT)
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+
+
 def verify_image():
     """Independently checks final ELF bytes and retained original Cargo events."""
     identity = json.loads((IMAGE / "share/identity.json").read_text())
@@ -952,6 +1008,7 @@ def main():
         admission_cases(helper, uuid)
         publication_cases(publisher, uuid)
         inline_transfer_cases(publisher, uuid)
+        running_retention_cases(helper, uuid)
         manifest_recovery_cases(uuid, manifest_candidates)
         print("PASS bounded native cache recovery, encoded admission and inline publication; full Running publication/BKT15 remain unqualified", flush=True)
     finally:

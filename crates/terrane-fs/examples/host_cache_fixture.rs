@@ -16,6 +16,8 @@ mod network;
 mod publication;
 #[path = "host_cache_fixture/recovery.rs"]
 mod recovery;
+#[path = "host_cache_fixture/running_retention.rs"]
+mod running_retention;
 
 fn main() -> std::process::ExitCode {
     let mode = std::env::args().nth(1).unwrap_or_default();
@@ -56,6 +58,8 @@ fn main() -> std::process::ExitCode {
             "publish-inline-transfer",
             "publish-inline-transfer-cancel",
             "publish-inline-transfer-conflict",
+            "retain-running",
+            "retain-running-cancel",
         ] {
             println!("host-cache:{selector}");
         }
