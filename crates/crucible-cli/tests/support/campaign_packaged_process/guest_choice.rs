@@ -1381,7 +1381,7 @@ pub(crate) fn wait_for_initial_discovery(
     // This host-clock wait is a panic guard; five-guest boot can take longer
     // than five minutes under load before a selectable becomes visible.
     let deadline = Instant::now() + Duration::from_secs(900);
-    let discovery = wait_for_process_observation(deadline, || {
+    let discovery = wait_for_long_process_observation(deadline, || {
         for (key, state) in attempt_states(fixture)? {
             if state.origin() != AttemptExecutionOrigin::Initial
                 || !matches!(
@@ -1804,7 +1804,7 @@ fn wait_for_new_attempt(
     predicate: impl Fn(AttemptRuntimeState) -> bool,
 ) -> Result<AttemptExecutionKey, Box<dyn Error>> {
     let deadline = Instant::now() + timeout;
-    let attempt = wait_for_process_observation(deadline, || {
+    let attempt = wait_for_long_process_observation(deadline, || {
         let states = attempt_states(fixture)?;
         if let Some((key, _)) = states
             .into_iter()

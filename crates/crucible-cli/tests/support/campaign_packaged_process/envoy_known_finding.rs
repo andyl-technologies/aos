@@ -400,7 +400,7 @@ fn wait_for_finding(
     Box<dyn Error>,
 > {
     let deadline = Instant::now() + Duration::from_secs(900);
-    wait_for_process_observation(deadline, || {
+    wait_for_long_process_observation(deadline, || {
         if let Some(status) = service.child.try_wait()? {
             return Err(format!("Envoy campaign service exited before finding: {status}").into());
         }

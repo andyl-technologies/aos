@@ -601,7 +601,7 @@ fn wait_for_capture_ready(
     request: &str,
 ) -> Result<Value, Box<dyn Error>> {
     let deadline = Instant::now() + ATTEMPT_WAIT;
-    wait_for_process_observation(deadline, || {
+    wait_for_long_process_observation(deadline, || {
         if let Some(status) = service.child.try_wait()? {
             return Err(format!(
                 "Envoy campaign service exited before capture {request}: {status}"
@@ -648,7 +648,7 @@ fn wait_for_public_completed_attempt(
     attempt: AttemptId,
 ) -> Result<Value, Box<dyn Error>> {
     let deadline = Instant::now() + ATTEMPT_WAIT;
-    wait_for_process_observation(deadline, || {
+    wait_for_long_process_observation(deadline, || {
         if let Some(status) = service.child.try_wait()? {
             return Err(format!(
                 "Envoy campaign service exited before exact continuation {attempt}: {status}"
@@ -741,7 +741,7 @@ pub(super) fn wait_for_public_attempt(
     let mut next_progress = started + Duration::from_secs(30);
     let mut last_status = None;
     let mut last_explanation = None;
-    let explanation = wait_for_process_observation(deadline, || {
+    let explanation = wait_for_long_process_observation(deadline, || {
         if let Some(status) = service.child.try_wait()? {
             return Err(format!(
                 "Envoy campaign service exited before attempt {attempt}: {status}"
@@ -903,7 +903,7 @@ pub(super) fn wait_for_request_attempt(
     timeout: Duration,
 ) -> Result<Value, Box<dyn Error>> {
     let deadline = Instant::now() + timeout;
-    let completed = wait_for_process_observation(deadline, || {
+    let completed = wait_for_long_process_observation(deadline, || {
         if let Some(status) = service.child.try_wait()? {
             return Err(format!(
                 "Envoy campaign service exited before request {request}: {status}"
