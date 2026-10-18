@@ -18,6 +18,25 @@ struct ActorState {
 }
 
 impl ActorLifetime {
+    // This checks local disposition only; native constructor custody is separate.
+    pub(in crate::paged_ram::engine) fn check_clean_disposition(&self) -> Result<(), RamError> {
+        let state = self
+            .state
+            .try_lock()
+            .map_err(|_| RamError::Invariant("fault actor disposition unavailable"))?;
+        if state.thread_id == 0
+            || !state.membership_released
+            || state.exit_requested
+            || state.failure.is_some()
+            || state.cleanup_failure.is_some()
+        {
+            return Err(RamError::Invariant(
+                "fault actor clean release is not recorded",
+            ));
+        }
+        Ok(())
+    }
+
     pub(in crate::paged_ram::engine) fn admitted(&self, thread_id: u64) -> Result<(), RamError> {
         let mut state = self
             .state
@@ -117,6 +136,20 @@ impl ActorLifetime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unadmitted_live_and_failed_histories_refuse_clean_disposition() {
+        let state = ActorLifetime::default();
+        assert!(state.check_clean_disposition().is_err());
+        state.admitted(123).unwrap();
+        assert!(state.check_clean_disposition().is_err());
+
+        state.released();
+
+        assert!(state.check_clean_disposition().is_ok());
+        state.cleanup_failed(RamError::from(std::io::Error::from_raw_os_error(libc::EIO)));
+        assert!(state.check_clean_disposition().is_err());
+    }
 
     #[test]
     fn cleanup_cause_remains_independent_of_the_original_actor_failure() {

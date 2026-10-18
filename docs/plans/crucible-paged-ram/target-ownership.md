@@ -136,6 +136,13 @@ slot. These changes do not qualify a strict native thread-exit deadline:
 can precede complete thread termination, and the actual join still follows it.
 Native join and whole-owner return qualification remain required.
 
+The existing worker-slot mutex covers startup readiness and its post, actual
+join, and Cleanup completion or failure publication. The actor itself never
+locks that slot; competing constructors use nonblocking admission. Rearm also
+checks the prior clean membership-release history. An empty slot during join
+cannot authorize another worker, and these local checks issue no native Source
+or parent constructor custody.
+
 ## Factory and runtime integration
 
 1. Use `retain_fork_target_factory` to retain the real shared factory facade.

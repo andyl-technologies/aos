@@ -69,7 +69,18 @@ pub(super) struct FaultService {
 
 impl FaultService {
     pub(super) fn start(self: &Arc<Self>) -> Result<(), RamError> {
-        let result = self.start_worker();
+        let mut worker = self
+            .worker
+            .try_lock()
+            .map_err(|_| RamError::Invariant("paging worker owner unavailable"))?;
+        self.start_with_worker(&mut worker)
+    }
+
+    fn start_with_worker(
+        self: &Arc<Self>,
+        worker: &mut Option<JoinHandle<Result<(), RamError>>>,
+    ) -> Result<(), RamError> {
+        let result = self.start_worker(worker);
         if let Err(error) = &result {
             self.failed.store(true, Ordering::Release);
             self.stop.store(true, Ordering::Release);
@@ -78,15 +89,17 @@ impl FaultService {
         result
     }
 
-    fn start_worker(self: &Arc<Self>) -> Result<(), RamError> {
+    fn start_worker(
+        self: &Arc<Self>,
+        worker: &mut Option<JoinHandle<Result<(), RamError>>>,
+    ) -> Result<(), RamError> {
+        if self.failed.load(Ordering::Acquire) {
+            return Err(RamError::Invariant("failed paging authority cannot start"));
+        }
         let operation = self
             .operations
             .begin(SourceOperationClass::ControlSetup)
             .map_err(RamError::from)?;
-        let mut worker = self
-            .worker
-            .lock()
-            .map_err(|_| "paging worker owner is poisoned")?;
         if worker.is_some() {
             return Err(RamError::Invariant("paging worker is already running"));
         }
@@ -99,7 +112,6 @@ impl FaultService {
                 .spawn(move || service.run_worker(ready_tx))
                 .map_err(RamError::from)?,
         );
-        drop(worker);
         loop {
             let slice = operation.wait_slice().map_err(RamError::from)?;
             match ready_rx.recv_timeout(slice) {
@@ -185,46 +197,41 @@ impl FaultService {
     }
 
     fn stop_and_join(&self) -> Result<(), RamError> {
-        let result: Result<(), RamError> = (|| {
-            let operation = self.operations.begin(SourceOperationClass::Cleanup)?;
-            self.stop.store(true, Ordering::Release);
-            wait_for_worker_return(&self.worker, operation.as_ref())?;
-            let worker = self
-                .worker
-                .try_lock()
-                .map_err(|_| RamError::Invariant("paging worker owner unavailable"))?
-                .take();
-            if let Some(worker) = worker {
-                worker
-                    .join()
-                    .map_err(|_| RamError::Invariant("paging worker panicked during shutdown"))??;
+        let operation = match self.operations.begin(SourceOperationClass::Cleanup) {
+            Ok(operation) => operation,
+            Err(error) => {
+                let error = RamError::from(error);
+                self.retain_cleanup_failure(&error);
+                return Err(error);
             }
-            operation.complete()?;
-            Ok(())
-        })();
-        if let Err(error) = &result {
-            self.failed.store(true, Ordering::Release);
-            self.lifetime.cleanup_failed(error.clone());
-        }
-        result
+        };
+        self.stop.store(true, Ordering::Release);
+        join_stopped_worker(&self.worker, operation.as_ref(), |error| {
+            self.retain_cleanup_failure(error);
+        })
+    }
+
+    fn retain_cleanup_failure(&self, error: &RamError) {
+        self.failed.store(true, Ordering::Release);
+        self.lifetime.cleanup_failed(error.clone());
     }
 
     pub(super) fn resume_after_fork(self: &Arc<Self>) -> Result<(), RamError> {
+        let mut worker = self
+            .worker
+            .try_lock()
+            .map_err(|_| RamError::Invariant("paging worker owner unavailable"))?;
         if self.failed.load(Ordering::Acquire) {
             return Err(RamError::Invariant("failed paging authority cannot resume"));
         }
-        if self
-            .worker
-            .try_lock()
-            .map_err(|_| RamError::Invariant("paging worker owner unavailable"))?
-            .is_some()
-        {
+        if worker.is_some() {
             return Err(RamError::Invariant(
                 "paging worker has no completed fork disposition",
             ));
         }
+        self.lifetime.check_clean_disposition()?;
         self.stop.store(false, Ordering::Release);
-        self.start()
+        self.start_with_worker(&mut worker)
     }
 
     pub(super) fn stop_before_activation(&self) -> Result<(), RamError> {
@@ -483,21 +490,48 @@ impl FaultService {
 }
 
 fn wait_for_worker_return(
-    worker: &Mutex<Option<JoinHandle<Result<(), RamError>>>>,
+    worker: Option<&JoinHandle<Result<(), RamError>>>,
     operation: &dyn SourceOperation,
 ) -> Result<(), RamError> {
     loop {
         let slice = operation.wait_slice()?;
-        let finished = worker
-            .try_lock()
-            .map_err(|_| RamError::Invariant("paging worker owner unavailable"))?
-            .as_ref()
-            .is_none_or(JoinHandle::is_finished);
+        let finished = worker.is_none_or(JoinHandle::is_finished);
         if finished {
             return Ok(());
         }
         std::thread::sleep(slice.min(std::time::Duration::from_millis(10)));
     }
+}
+
+fn join_stopped_worker(
+    worker: &Mutex<Option<JoinHandle<Result<(), RamError>>>>,
+    operation: &dyn SourceOperation,
+    retain_failure: impl FnOnce(&RamError),
+) -> Result<(), RamError> {
+    let mut worker = match worker.try_lock() {
+        Ok(worker) => worker,
+        Err(_) => {
+            let error = RamError::Invariant("paging worker owner unavailable");
+            retain_failure(&error);
+            return Err(error);
+        }
+    };
+    // The actor never locks this slot. Keep it exclusive until the actual join
+    // and Cleanup post complete, so empty cannot expose a half-finished stop.
+    let result: Result<(), RamError> = (|| {
+        wait_for_worker_return(worker.as_ref(), operation)?;
+        if let Some(worker) = worker.take() {
+            worker
+                .join()
+                .map_err(|_| RamError::Invariant("paging worker panicked during shutdown"))??;
+        }
+        operation.complete()?;
+        Ok(())
+    })();
+    if let Err(error) = &result {
+        retain_failure(error);
+    }
+    result
 }
 
 pub(super) extern "C" fn operational_rearm(generation: u64) -> c_int {
@@ -755,6 +789,7 @@ mod worker_join_tests {
     //! Checks local Rust handle retention, without issuing native membership.
 
     use super::*;
+    use std::cell::Cell;
     use std::sync::atomic::AtomicUsize;
     use std::time::Duration;
     use crate::paged_ram::source::ObservationOperationError;
@@ -794,7 +829,7 @@ mod worker_join_tests {
             checked: AtomicUsize::new(0),
         };
 
-        let result = wait_for_worker_return(&worker, &operation);
+        let result = join_stopped_worker(&worker, &operation, |_| {});
 
         assert!(
             matches!(result, Err(RamError::Io(error)) if error.raw_os_error() == Some(libc::ETIMEDOUT))
@@ -818,7 +853,7 @@ mod worker_join_tests {
                 checked: AtomicUsize::new(0),
             };
 
-            let result = wait_for_worker_return(&worker, &operation);
+            let result = join_stopped_worker(&worker, &operation, |_| {});
 
             assert!(
                 matches!(result, Err(RamError::Io(error)) if error.raw_os_error() == Some(libc::ETIMEDOUT))
@@ -837,6 +872,67 @@ mod worker_join_tests {
                 .join()
                 .unwrap()
                 .unwrap();
+        }
+    }
+
+    struct CompletionCheck<'a> {
+        worker: &'a Mutex<Option<JoinHandle<Result<(), RamError>>>>,
+        refuse: bool,
+        completed: AtomicUsize,
+    }
+
+    impl SourceOperation for CompletionCheck<'_> {
+        fn wait_slice(&self) -> io::Result<Duration> {
+            Ok(Duration::ZERO)
+        }
+
+        fn complete(&self) -> io::Result<()> {
+            assert!(matches!(
+                self.worker.try_lock(),
+                Err(std::sync::TryLockError::WouldBlock)
+            ));
+            self.completed.fetch_add(1, Ordering::SeqCst);
+            if self.refuse {
+                return Err(io::Error::from_raw_os_error(libc::ECANCELED));
+            }
+            Ok(())
+        }
+
+        fn wait_slice_for_observation(&self) -> Result<Duration, ObservationOperationError> {
+            self.wait_slice().map_err(Into::into)
+        }
+
+        fn complete_observation(&self) -> Result<(), ObservationOperationError> {
+            self.complete().map_err(Into::into)
+        }
+    }
+
+    #[test]
+    fn cleanup_post_and_failure_publication_keep_the_worker_slot_exclusive() {
+        for refuse in [false, true] {
+            let worker = Mutex::new(None);
+            let operation = CompletionCheck {
+                worker: &worker,
+                refuse,
+                completed: AtomicUsize::new(0),
+            };
+            let failure_retained = Cell::new(false);
+
+            let result = join_stopped_worker(&worker, &operation, |error| {
+                assert!(matches!(
+                    worker.try_lock(),
+                    Err(std::sync::TryLockError::WouldBlock)
+                ));
+                assert!(
+                    matches!(error, RamError::Io(error) if error.raw_os_error() == Some(libc::ECANCELED))
+                );
+                failure_retained.set(true);
+            });
+
+            assert_eq!(result.is_err(), refuse);
+            assert_eq!(failure_retained.get(), refuse);
+            assert_eq!(operation.completed.load(Ordering::SeqCst), 1);
+            assert!(worker.try_lock().unwrap().is_none());
         }
     }
 }
