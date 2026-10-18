@@ -1158,11 +1158,18 @@ root = {objects:?}
         mut command: Command,
         timeout: Duration,
     ) -> Result<CampaignServiceChild, Box<dyn Error>> {
-        let stderr = NamedTempFile::new_in(self._temporary.path())?;
+        let stderr_directory = service_stderr_directory();
+        let stderr = service_stderr_file(stderr_directory.as_deref(), self._temporary.path())?;
         command
             .stdout(Stdio::piped())
             .stderr(Stdio::from(stderr.reopen()?));
         let child = command.spawn()?;
+        if let Some(directory) = &stderr_directory {
+            // Advisory: without the live name, Drop still copies the final log.
+            if let Err(error) = publish_service_stderr(directory, child.id(), &stderr) {
+                eprintln!("campaign service stderr is not visible live: {error}");
+            }
+        }
         let mut child = CampaignServiceChild {
             child,
             #[cfg(feature = "packaged-midpoint-flight")]
@@ -1390,19 +1397,72 @@ impl Drop for CampaignServiceChild {
     }
 }
 
-/// Copies a service's complete stderr into an opt-in diagnostic directory.
+/// Names the opt-in directory that keeps each service's complete stderr.
 ///
 /// Failure reports carry only a bounded stderr tail, and the temporary file
 /// disappears with its fixture. A long VM flight sets
-/// `CRUCIBLE_CAMPAIGN_SERVICE_STDERR_DIR` so the whole service log survives
-/// the test process; the copy is advisory and never affects the result.
+/// `CRUCIBLE_CAMPAIGN_SERVICE_STDERR_DIR` so the whole service log is
+/// readable while the service runs and survives the test process. Both are
+/// advisory and never affect the result.
+fn service_stderr_directory() -> Option<PathBuf> {
+    std::env::var_os("CRUCIBLE_CAMPAIGN_SERVICE_STDERR_DIR").map(PathBuf::from)
+}
+
+/// Creates a service's stderr capture inside the opt-in directory when set.
+///
+/// The capture must share that directory's filesystem so it can be linked
+/// under the service PID once the process exists.
+fn service_stderr_file(
+    directory: Option<&Path>,
+    fallback: &Path,
+) -> std::io::Result<NamedTempFile> {
+    match directory {
+        Some(directory) => {
+            fs::create_dir_all(directory)?;
+            NamedTempFile::new_in(directory)
+        }
+        None => NamedTempFile::new_in(fallback),
+    }
+}
+
+/// Returns the stable per-service name of a retained stderr log.
+fn service_stderr_path(directory: &Path, service_pid: u32) -> PathBuf {
+    directory.join(format!("campaign-service-{service_pid}.stderr"))
+}
+
+/// Links a running service's stderr capture under its stable name.
+///
+/// A stall sampler watches these names for host wait rows while QEMU is
+/// still alive; the link keeps the complete log after the capture closes.
+fn publish_service_stderr(
+    directory: &Path,
+    service_pid: u32,
+    stderr: &NamedTempFile,
+) -> std::io::Result<()> {
+    fs::hard_link(stderr.path(), service_stderr_path(directory, service_pid))
+}
+
+/// Keeps a service's complete stderr in the opt-in diagnostic directory.
 fn retain_service_stderr(service_pid: u32, stderr: &NamedTempFile) {
-    let Some(directory) = std::env::var_os("CRUCIBLE_CAMPAIGN_SERVICE_STDERR_DIR") else {
-        return;
+    if let Some(directory) = service_stderr_directory() {
+        retain_service_stderr_in(&directory, service_pid, stderr);
+    }
+}
+
+/// Copies the final stderr unless the live link already names the capture.
+fn retain_service_stderr_in(directory: &Path, service_pid: u32, stderr: &NamedTempFile) {
+    let destination = service_stderr_path(directory, service_pid);
+    // Copying onto a hard link of the source would truncate the log first.
+    let same_file = match (fs::metadata(&destination), stderr.as_file().metadata()) {
+        (Ok(retained), Ok(capture)) => {
+            retained.dev() == capture.dev() && retained.ino() == capture.ino()
+        }
+        _ => false,
     };
-    let directory = std::path::PathBuf::from(directory);
-    let destination = directory.join(format!("campaign-service-{service_pid}.stderr"));
-    let _ = fs::create_dir_all(&directory).and_then(|()| fs::copy(stderr.path(), destination));
+    if same_file {
+        return;
+    }
+    let _ = fs::create_dir_all(directory).and_then(|()| fs::copy(stderr.path(), destination));
 }
 
 fn connected_campaign(fixture: &FlightFixture) -> Command {
@@ -1591,6 +1651,37 @@ fn wait_for_campaign_socket(
         }
         thread::sleep(Duration::from_millis(10));
     }
+}
+
+#[test]
+fn service_stderr_is_readable_live_and_retained_after_its_capture_closes()
+-> Result<(), Box<dyn Error>> {
+    const ROW: &str = "CRUCIBLE-HOST-WAIT-V1 phase=advance-pending node=probe\n";
+    let directory = tempfile::tempdir()?;
+    let unused_fallback = directory.path().join("unused");
+    let stderr = service_stderr_file(Some(directory.path()), &unused_fallback)?;
+    publish_service_stderr(directory.path(), 4242, &stderr)?;
+    let published = service_stderr_path(directory.path(), 4242);
+
+    // A sampler sees the row while the service still holds its stderr.
+    let mut writer = stderr.reopen()?;
+    writer.write_all(ROW.as_bytes())?;
+    assert_eq!(fs::read_to_string(&published)?, ROW);
+
+    // Retention at Drop must not truncate the live link it would copy onto.
+    retain_service_stderr_in(directory.path(), 4242, &stderr);
+    drop(stderr);
+    assert_eq!(fs::read_to_string(&published)?, ROW);
+
+    // Without a live link, retention still copies the final log.
+    let unlinked = service_stderr_file(Some(directory.path()), &unused_fallback)?;
+    unlinked.reopen()?.write_all(ROW.as_bytes())?;
+    retain_service_stderr_in(directory.path(), 4343, &unlinked);
+    assert_eq!(
+        fs::read_to_string(service_stderr_path(directory.path(), 4343))?,
+        ROW
+    );
+    Ok(())
 }
 
 #[test]

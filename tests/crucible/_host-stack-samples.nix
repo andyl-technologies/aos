@@ -5,6 +5,9 @@
 # backend RUNs. Samples perturb the service while it is stopped; they explain
 # throughput and are never evidence for an assertion or a deadline.
 {pkgs}: let
+  serviceStderrDir = "/tmp/campaign-service-stderr";
+  stallStopFile = "/tmp/crucible-qemu-stall-stop";
+
   commands = pkgs.writeTextFile {
     name = "crucible-host-stack-sample";
     destination = "/share/crucible/host-stack-sample.gdb";
@@ -72,23 +75,36 @@ in {
     ) > /tmp/crucible-host-stack-samples.txt 2>&1 &
   '';
 
-  # Samples every QEMU thread once the host reports a pending-advance stall.
+  # The flight harness links each campaign service's live stderr here.
+  inherit serviceStderrDir;
+
+  # Samples every QEMU thread while the host reports a pending-advance stall.
   #
-  # Attaching stops a QEMU child, which can perturb host wall-clock deadlines,
-  # so nothing attaches until the service has already waited on an advance.
-  # Thread stacks are not filtered: a stalled vCPU is itself a parked waiter.
-  startQemuStall = envoyLog: ''
+  # Host wait rows go only to the service's stderr. The bounded test log
+  # receives a tail of it after QEMU is gone, so the sampler watches the live
+  # per-service links instead. Attaching stops a QEMU child, which can perturb
+  # host wall-clock deadlines, so nothing attaches until the service has
+  # already waited on an advance. Each round needs a newer wait row and rounds
+  # stay at least 15 seconds apart, so a wait that recovered cannot spend the
+  # whole budget. Thread stacks are not filtered: a stalled vCPU is itself a
+  # parked waiter.
+  startQemuStall = ''
+    ${pkgs.coreutils}/bin/rm -f ${stallStopFile}
     (
-      qemu_stall_waited=0
-      until ${pkgs.grep}/bin/grep -q '^CRUCIBLE-HOST-WAIT-V1 phase=advance-pending ' "${envoyLog}" 2>/dev/null; do
-        if [ "$qemu_stall_waited" -ge 3600 ]; then
-          exit 0
+      qemu_stall_seen=0
+      qemu_stall_round=0
+      qemu_stall_idle=0
+      while [ "$qemu_stall_round" -lt 3 ] && [ "$qemu_stall_idle" -lt 3600 ] &&
+        [ ! -e ${stallStopFile} ]; do
+        qemu_stall_rows=$(${pkgs.coreutils}/bin/cat ${serviceStderrDir}/campaign-service-*.stderr 2>/dev/null \
+          | ${pkgs.grep}/bin/grep -c '^CRUCIBLE-HOST-WAIT-V1 phase=advance-pending ' || true)
+        if [ "''${qemu_stall_rows:-0}" -le "$qemu_stall_seen" ]; then
+          ${pkgs.coreutils}/bin/sleep 1
+          qemu_stall_idle=$((qemu_stall_idle + 1))
+          continue
         fi
-        ${pkgs.coreutils}/bin/sleep 5
-        qemu_stall_waited=$((qemu_stall_waited + 5))
-      done
-      ${pkgs.coreutils}/bin/sleep 20
-      for qemu_stall_sample in 1 2; do
+        qemu_stall_seen=$qemu_stall_rows
+        qemu_stall_round=$((qemu_stall_round + 1))
         for qemu_stall_proc in /proc/[0-9]*; do
           qemu_stall_argv=$(${pkgs.coreutils}/bin/tr '\0' ' ' < "$qemu_stall_proc/cmdline" 2>/dev/null || true)
           case "$qemu_stall_argv" in
@@ -96,8 +112,8 @@ in {
             *) continue ;;
           esac
           qemu_stall_pid=''${qemu_stall_proc#/proc/}
-          printf 'qemu_stall_sample=%s pid=%s uptime=%s\n' "$qemu_stall_sample" "$qemu_stall_pid" \
-            "$(${pkgs.coreutils}/bin/cut -d' ' -f1 /proc/uptime)"
+          printf 'qemu_stall_sample=%s pid=%s wait_rows=%s uptime=%s\n' "$qemu_stall_round" \
+            "$qemu_stall_pid" "$qemu_stall_rows" "$(${pkgs.coreutils}/bin/cut -d' ' -f1 /proc/uptime)"
           ${pkgs.coreutils}/bin/timeout -k 2 40 ${pkgs.gdb}/bin/gdb -nx -nh -batch \
             -iex 'set auto-load off' -iex 'set debuginfod enabled off' \
             -ex 'set pagination off' -ex 'set print frame-arguments none' \
@@ -105,12 +121,22 @@ in {
             | ${pkgs.grep}/bin/grep -E '^(Thread |#)' \
             | ${pkgs.coreutils}/bin/head -c 16384
         done
-        ${pkgs.coreutils}/bin/sleep 15
+        qemu_stall_pause=0
+        while [ "$qemu_stall_pause" -lt 15 ] && [ ! -e ${stallStopFile} ]; do
+          ${pkgs.coreutils}/bin/sleep 1
+          qemu_stall_pause=$((qemu_stall_pause + 1))
+        done
       done
     ) > /tmp/crucible-qemu-stall-stacks.txt 2>&1 &
+    qemu_stall_sampler=$!
   '';
 
   report = ''
+    # Stop the stall sampler and let a round in progress finish its samples.
+    : > ${stallStopFile}
+    if [ -n "''${qemu_stall_sampler:-}" ]; then
+      wait "$qemu_stall_sampler" 2>/dev/null || true
+    fi
     # The newest samples cover the slowest, final attempts, so keep the tail.
     printf '%s\n' 'host-stack-samples-begin max_bytes=1048576'
     ${pkgs.coreutils}/bin/tail -c 1048576 /tmp/crucible-host-stack-samples.txt 2>/dev/null || true

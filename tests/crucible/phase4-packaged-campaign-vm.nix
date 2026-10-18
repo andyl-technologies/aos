@@ -955,15 +955,16 @@ assert !interruptedTransfer
             /tmp/campaign-envoy-network-list.log
           : > "$envoy_log"
           ${lib.optionalString hostStackSamples ''
-            # Keep every service's complete stderr beside the bounded test log.
-            export CRUCIBLE_CAMPAIGN_SERVICE_STDERR_DIR=/tmp/campaign-service-stderr
+            # Keep every service's complete stderr beside the bounded test log,
+            # readable while the service runs so the stall sampler sees it.
+            export CRUCIBLE_CAMPAIGN_SERVICE_STDERR_DIR=${hostStacks.serviceStderrDir}
           ''}
           ${pkgs.coreutils}/bin/timeout -k 5 3600 \
             ${flight}/bin/campaign-store-process-flight --ignored --exact \
             "$envoy_selector" --nocapture > "$envoy_log" 2>&1 &
           envoy_test=$!
           ${lib.optionalString hostStackSamples (hostStacks.start "${flight}/bin/crucible")}
-          ${lib.optionalString hostStackSamples (hostStacks.startQemuStall "$envoy_log")}
+          ${lib.optionalString hostStackSamples hostStacks.startQemuStall}
           ${pkgs.coreutils}/bin/timeout -k 5 3610 \
             ${pkgs.coreutils}/bin/tail --pid="$envoy_test" -n +1 -F "$envoy_log" \
             | ${pkgs.grep}/bin/grep --line-buffered '^CRUCIBLE-ENVOY-WAIT-V1 ' \
