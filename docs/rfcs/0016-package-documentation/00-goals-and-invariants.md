@@ -109,7 +109,7 @@ inventory has been verified.
 
 ### Native and Worker parity
 
-The same `aos-hub-core` logic parses, verifies, normalizes, tokenizes, ranks, and
+The same `aos-hub-service` logic parses, verifies, normalizes, tokenizes, ranks, and
 renders documentation on native and `wasm32-unknown-unknown`. Runtime adapters
 only fetch bounded byte streams and persist typed projections.
 

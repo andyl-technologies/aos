@@ -64,7 +64,7 @@ documentation Nix object and two isolated publications produce identical bytes.
 ## Phase 2: shared Hub ingestion, search, and retention
 
 - [x] Implement the bounded streaming single-regular-file NAR decoder in
-      `aos-hub-core` with native/Worker adversarial fixtures.
+      `aos-hub-service` with native/Worker adversarial fixtures.
 - [x] Fetch and verify documentation through `SurfaceFetch` without Nix/FFI or
       general archive extraction.
 - [x] Add documentation artifact locators and disposable option/search tables to

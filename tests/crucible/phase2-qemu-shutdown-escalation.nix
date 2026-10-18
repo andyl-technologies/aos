@@ -18,7 +18,7 @@
 
   qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
   defaultChecks = builtins.readFile ./default.nix;
-  shutdownTest = builtins.readFile ../../crates/crucible-qemu/tests/shutdown.rs;
+  shutdownTest = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/tests/shutdown.rs;
   lifecycleSource = builtins.readFile ./phase0-lifecycle.c;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -36,7 +36,7 @@
         needle = "**[QEMU-31]** The host MUST `waitpid`/reap every QEMU child";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/tests/shutdown.rs" shutdownTest [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/tests/shutdown.rs" shutdownTest [
       {
         label = "shutdown order test";
         needle = "shutdown_order_matches_protocol_spec";

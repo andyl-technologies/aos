@@ -209,7 +209,7 @@
           cargo build --frozen --offline --release \
             --target-dir "$TMPDIR/live-whitebox-target" \
             --manifest-path crates/Cargo.toml \
-            -p crucible-qemu \
+            -p crucible-qemu-host \
             --example crucible-qemu-live-plugin-install \
             --example crucible-qemu-whitebox-map-validate
           mkdir -p "$out/bin"

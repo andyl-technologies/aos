@@ -346,7 +346,7 @@ in {
           # (2) body format — the server pipes the body into
           # nix-store --import, which expects raw NAR + ExportTrailer,
           # not compressed NAR. See the TODO block in
-          # crates/aos-cache/src/backend/http.rs::put_nar. When someone
+          # crates/aos/packages/aos-nix-cache/src/backend/http.rs::put_nar. When someone
           # fixes that path, the `if cmd; then exit 1` below fires in
           # CI and the fixer must delete this block (or flip `if` →
           # `if !`). The check is intentionally exit-code only — a
@@ -436,7 +436,7 @@ in {
           raise
       # `extract_packages` strips the leading `packages/` and lands TOMLs
       # under `cache_path()/<registry>/packages/` —
-      # `crates/aos-package/src/{update,registry/git}.rs::extract_packages`.
+      # `crates/aos/packages/aos-package-manager/src/{update,registry/git}.rs::extract_packages`.
       # `cache_path()` is `$HOME/.local/share/apm/remote` for the user scope
       # (see `types.rs::cache_path`), not `.../registries` (which holds the
       # bare git clone metadata).
@@ -475,7 +475,7 @@ in {
       )
 
       # ── 6. Server's cache logged at least one NAR fetch ───────────
-      # `nar_handler` in crates/aos-server/src/routes.rs:272 logs the
+      # `nar_handler` in crates/aos/packages/aos-build-server/src/routes.rs:272 logs the
       # event with structured fields (view, hash, compression) and
       # the message "NAR streamed" — *not* the URL path. Asserting on
       # `hash=<testPkg.storeHash>` ties the assertion to exactly the

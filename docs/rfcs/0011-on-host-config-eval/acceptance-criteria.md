@@ -22,7 +22,7 @@ specification.
       expose options, declared/provided/required roots, feature negotiation,
       realization metadata, and references-as-strings enforcement.
   - Gates: `checks.package-expose`, `checks.config-parity`, and the
-    `aos-package` Rust suite built by `pkgs.aos`.
+    `aos-package-manager` Rust suite built by `pkgs.aos`.
 
 ## Module authority and provenance
 

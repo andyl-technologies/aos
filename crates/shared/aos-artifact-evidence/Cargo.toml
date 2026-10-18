@@ -1,0 +1,16 @@
+[package]
+name = "aos-artifact-evidence"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Portable immutable artifact identities and checked consumption evidence"
+
+[dependencies]
+anyhow.workspace = true
+aos-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

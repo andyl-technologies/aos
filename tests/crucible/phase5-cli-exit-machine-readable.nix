@@ -12,8 +12,8 @@
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = import ./_cli-source.nix {inherit lib;};
-  cliProcessTest = builtins.readFile ../../crates/crucible-cli/tests/machine_readable.rs;
-  campaignProcessTest = builtins.readFile ../../crates/crucible-cli/tests/campaign_process.rs;
+  cliProcessTest = builtins.readFile ../../crates/crucible/control/crucible-cli/tests/machine_readable.rs;
+  campaignProcessTest = builtins.readFile ../../crates/crucible/control/crucible-cli/tests/campaign_process.rs;
   packagedCampaignVm = builtins.readFile ./phase4-packaged-campaign-vm.nix;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -72,7 +72,7 @@
         needle = "command-behavior gates `T-CLI-7 … T-CLI-13` so the same contract can be";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
+    ++ failuresFor "crates/crucible/control/crucible-cli/src/main.rs" cliMain [
       {
         label = "machine-readable format classifier";
         needle = "fn is_machine_readable";
@@ -182,7 +182,7 @@
         needle = "cli_interactive_stop_uses_terminal_snapshot_after_registry_cleanup";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/tests/machine_readable.rs" cliProcessTest [
+    ++ failuresFor "crates/crucible/control/crucible-cli/tests/machine_readable.rs" cliProcessTest [
       {
         label = "process stdout regression";
         needle = "cli_exit_machine_readable_process_stdout_is_pure_json";
@@ -280,7 +280,7 @@
         needle = "stdout must not contain human text";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/tests/campaign_process.rs" campaignProcessTest [
+    ++ failuresFor "crates/crucible/control/crucible-cli/tests/campaign_process.rs" campaignProcessTest [
       {
         label = "packaged interactive capture and replay regression";
         needle = "interactive_session_captures_and_replays_exact_live_artifact";

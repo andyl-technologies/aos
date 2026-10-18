@@ -114,7 +114,7 @@
         needle = "discovery_hint=runtime-environment-wrapper";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
+    ++ failuresFor "crates/crucible/control/crucible-cli/src/main.rs" cliMain [
       {
         label = "flag QEMU option";
         needle = "qemu: Option<PathBuf>";
@@ -236,7 +236,7 @@
         needle = ''received: "E[0-9a-f]+"'';
       }
     ]
-    ++ forbiddenFor "crates/crucible-cli/src/main.rs" cliMain [
+    ++ forbiddenFor "crates/crucible/control/crucible-cli/src/main.rs" cliMain [
       {
         label = "host PATH QEMU discovery";
         needle = "std::env::var(\"PATH\")";

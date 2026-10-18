@@ -1140,7 +1140,7 @@ application of explorer-supplied preemption decisions
   records one `SchedulerRunCeilingPublication` for each RUN after PICK has chosen
   its candidate and after conservative overshoot validation has fixed the target.
   That publication carries the shmem ABI `max_advance_icount` value, can be
-  authorized as a `crucible_shmem::AdvanceCeiling` under `test-double`, and is
+  authorized as a `crucible_qemu_shmem::AdvanceCeiling` under `test-double`, and is
   consumed by the node advance path as the RUN target. Focused regressions cover
   one ceiling per RUN, no intermediate publication across consecutive quanta, no
   publication for a no-RUN quantum, target consumption from the published ceiling,

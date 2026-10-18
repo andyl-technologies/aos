@@ -92,7 +92,7 @@ in
               --offline \
               --target-dir "$TMPDIR/fingerprint-projection-manifest-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible-qemu \
+              -p crucible-qemu-host \
               --lib \
               fingerprint_projection \
               -- --test-threads=1

@@ -17,7 +17,7 @@
   [`open-questions.md`](open-questions.md) §"Why anything is still out of scope".
 - **Date:** 2026-06-08
 - **PR:** [#28](https://github.com/andyl-technologies/aos/pull/28)
-- **Audience:** anyone working on `pkgs/`, `crates/aos-package/`,
+- **Audience:** anyone working on `pkgs/`, `crates/aos/packages/aos-package-manager/`,
   `lib/testing/`, `lib/modules/systemd/`, `modules/services/ignition.nix`,
   `modules/security/firewall.nix`, or `modules/`.
 
@@ -47,7 +47,7 @@ settings — see [`config.md`](config.md).
 
 AOS already has a **registry/apm** system: a package is fetched and imported
 into `/nix/store`, then merged into a profile generation under
-`/var/lib/profiles/`. This lives in `crates/aos-package/` (`PackageMeta`,
+`/var/lib/profiles/`. This lives in `crates/aos/packages/aos-package-manager/` (`PackageMeta`,
 `install.rs`, the profile/generation model) and ships on every image via
 `modules/base/apm.nix`. The legacy path for software that needed systemd units
 + kernel modules + sysctls + firewall openings was the module system under
@@ -72,7 +72,7 @@ not only baked into the image. The `modules/roles/` machinery has dissolved into
 
 | Term | Meaning |
 |---|---|
-| **package** | The registry-installable unit. Resolvable by `apm install <name>`; described by `PackageMeta` in `crates/aos-package/src/types.rs`. |
+| **package** | The registry-installable unit. Resolvable by `apm install <name>`; described by `PackageMeta` in `crates/aos/packages/aos-package-manager/src/types.rs`. |
 | **package target** | `aos-pkg-<name>.target` — the single systemd handle for the package's effects (the sandbox of [`activation.md`](activation.md)). |
 | **`[permissions]` manifest** | The declared, signed privilege list on a package (see [`permissions.md`](permissions.md)). Empty = a tight sandbox; entries grant host network, capabilities, devices, host-paths, cgroup-delegate, kernel-modules, etc. The single source of truth for a package's privilege. |
 | **per-unit sandboxing** | The default materialization: a confined non-verity service runs from a per-service volatile overlay `RootDirectory=` whose immutable lower layer is the authenticated payload store path, with `PrivateNetwork=`, `PrivateUsers=`, `CapabilityBoundingSet=`, `SystemCallFilter=`, and `DeviceAllow=` generated from the manifest (Decision 17, [`container-model.md`](container-model.md)). |

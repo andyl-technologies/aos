@@ -68,7 +68,7 @@ in
             --offline \
             --target-dir "$TMPDIR/crucible-io-subnode-suite-target" \
             --manifest-path crates/Cargo.toml \
-            -p crucible \
+            -p crucible-engine \
             --lib \
             device \
             -- --test-threads=1

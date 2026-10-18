@@ -7,9 +7,9 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  protocolLib = builtins.readFile ../../crates/crucible-protocol/src/lib.rs;
-  lifecycleTest = builtins.readFile ../../crates/crucible-protocol/tests/lifecycle.rs;
-  layer1InjectionTest = builtins.readFile ../../crates/crucible-protocol/tests/gate_layer1_injection.rs;
+  protocolLib = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs;
+  lifecycleTest = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-protocol/tests/lifecycle.rs;
+  layer1InjectionTest = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-protocol/tests/gate_layer1_injection.rs;
   protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -18,7 +18,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "crates/crucible-protocol/src/lib.rs" protocolLib [
+    failuresFor "crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs" protocolLib [
       {
         label = "lifecycle state enum";
         needle = "pub enum ControlLifecycleState";
@@ -152,7 +152,7 @@
         needle = "control_channel_silent_between_setup_ack_and_quit: true";
       }
     ]
-    ++ failuresFor "crates/crucible-protocol/tests/lifecycle.rs" lifecycleTest [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-protocol/tests/lifecycle.rs" lifecycleTest [
       {
         label = "normal lifecycle test";
         needle = "normal_lifecycle_connects_handshakes_runs_via_shmem_and_quits";
@@ -222,7 +222,7 @@
         needle = "ControlLifecycleEvent::HostQuit";
       }
     ]
-    ++ failuresFor "crates/crucible-protocol/tests/gate_layer1_injection.rs" layer1InjectionTest [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-protocol/tests/gate_layer1_injection.rs" layer1InjectionTest [
       {
         label = "control channel silent hot-path gate test";
         needle = "gate_layer1_injection_control_protocol_is_silent_on_hot_path";
@@ -305,7 +305,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-protocol-lifecycle-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible-protocol \
+              -p crucible-qemu-protocol \
               --test lifecycle \
               -- --test-threads=1
             cargo test \
@@ -313,7 +313,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-protocol-lifecycle-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible-protocol \
+              -p crucible-qemu-protocol \
               --test gate_layer1_injection \
               -- --test-threads=1
           '';
@@ -328,7 +328,7 @@ in
             check=${attrPath}
             tasks=${taskList}
             gates=gate:abi-conformance,gate:control-responsive
-            rust_tests=crucible-protocol::lifecycle,crucible-protocol::gate_layer1_injection
+            rust_tests=crucible_qemu_protocol::lifecycle,crucible_qemu_protocol::gate_layer1_injection
             lifecycle=connect,Hello,HelloAck,Setup,SetupAck,run-via-shmem,Quit
             run_control_channel=silent-until-Quit
             transport=connected-Unix-stream-socket-pair

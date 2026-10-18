@@ -15,21 +15,21 @@ in
         name = "basic-block-coverage";
         sqliteRequired = true;
         cargoBuildCommands = [
-          "test --frozen --offline --release --no-run -p crucible --features test-support --test gate_basic_block_coverage"
-          "test --frozen --offline --release --no-run -p crucible-qemu --lib"
+          "test --frozen --offline --release --no-run -p crucible-engine --features test-support --test gate_basic_block_coverage"
+          "test --frozen --offline --release --no-run -p crucible-qemu-host --lib"
           "test --frozen --offline --release --no-run -p crucible-qemu-plugin --lib"
         ];
         installedTests = [
           {
             targetName = "gate_basic_block_coverage";
             targetKind = "test";
-            crateDir = "crucible";
+            crateDir = "crucible-engine";
             destination = "crucible-gate-basic-block-coverage";
           }
           {
-            targetName = "crucible_qemu";
+            targetName = "crucible_qemu_host";
             targetKind = "lib";
-            crateDir = "crucible-qemu";
+            crateDir = "crucible-qemu-host";
             destination = "crucible-qemu-lib";
           }
           {

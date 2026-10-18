@@ -7,14 +7,14 @@
   agents = builtins.readFile ../../AGENTS.md;
   standards = builtins.readFile ../../docs/rfcs/0010-crucible/28-engineering-standards.md;
   documentationHygieneRust =
-    builtins.readFile ../../crates/crucible-harness/tests/documentation_hygiene.rs;
+    builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/documentation_hygiene.rs;
   rfcConsistencyRust =
-    builtins.readFile ../../crates/crucible-harness/tests/rfc_consistency.rs;
+    builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/rfc_consistency.rs;
   rfcConsistencyTasks =
-    builtins.readFile ../../crates/crucible-harness/tests/support/rfc_consistency_tasks.rs;
+    builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/support/rfc_consistency_tasks.rs;
   rfcConsistencyMisc =
-    builtins.readFile ../../crates/crucible-harness/tests/support/rfc_consistency_misc.rs;
-  gateCatalogRust = builtins.readFile ../../crates/crucible-harness/tests/gate_catalog.rs;
+    builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/support/rfc_consistency_misc.rs;
+  gateCatalogRust = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/gate_catalog.rs;
   crucibleSourceNix = builtins.readFile ../../pkgs/tools/crucible/_source.nix;
   defaultNix = builtins.readFile ./default.nix;
   rfcConsistencyNix = builtins.readFile ./phase1-rfc-consistency.nix;
@@ -202,7 +202,7 @@ in
             set -eu
             test -f ${crucibleSrc}/AGENTS.md
             test -f ${crucibleSrc}/docs/rfcs/0010-crucible/28-engineering-standards.md
-            test -f ${crucibleSrc}/crates/crucible-harness/tests/documentation_hygiene.rs
+            test -f ${crucibleSrc}/crates/crucible/testing/crucible-test-support/tests/documentation_hygiene.rs
             test -f ${crucibleSrc}/tests/crucible/phase1-documentation-hygiene.nix
             mkdir -p "$out"
             cat > "$out/result" <<'RESULT'

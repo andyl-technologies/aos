@@ -33,8 +33,8 @@ in
 
     inherit version cargoDeps;
     cargoRoot = "crates";
-    cargoFlags = "-p aos-filesystem-provider";
-    cargoTestFlags = "-p aos-filesystem-provider";
+    cargoFlags = "-p aos-activation-filesystem";
+    cargoTestFlags = "-p aos-activation-filesystem";
     doCheck = true;
 
     module = ./_aos-filesystem-provider;

@@ -867,11 +867,11 @@ is authenticated as `BackendRngEvidence`, then represented by the seeded
 - [x] **T-EXEC-6** Implement recursive `instantiate` with the three-branch
   resolution (version-nine descriptor restore / ancestor-replay / genesis) and termination at the
   baked snapshot. — satisfies [EXEC-15], [EXEC-16], [EXEC-17]; spec §5.
-  - Completed by `crates/crucible/src/model.rs`: `instantiate` now resolves exact
+  - Completed by `crates/crucible/engine/crucible-engine/src/model.rs`: `instantiate` now resolves exact
     cached snapshots, recursively materializes the nearest cached ancestor and
     explicitly replays the suffix, and terminates at a registered baked genesis
     checkpoint.
-    `crates/crucible/src/lib.rs` covers exact-checkpoint, ancestor-replay,
+    `crates/crucible/engine/crucible-engine/src/lib.rs` covers exact-checkpoint, ancestor-replay,
     baked-genesis, missing-genesis, cached-checkpoint, and baked-genesis
     checkpoint validation cases;
     `checks.crucible.phase1.executionInstantiate` gates the surface.
@@ -888,11 +888,11 @@ is authenticated as `BackendRngEvidence`, then represented by the seeded
   snapshot, content-address as the shared genesis checkpoint; assert it is the
   only cold-boot in the codebase (lint). — satisfies [EXEC-18], [EXEC-19];
   spec §6.
-  - Completed by `crates/crucible/src/model.rs`: `bake` now derives the model
+  - Completed by `crates/crucible/engine/crucible-engine/src/model.rs`: `bake` now derives the model
     genesis definition from `World::scenario_def()`, content-addresses a fat
     genesis checkpoint from the world and genesis configuration ids, and feeds
     `TemporalGraph::with_baked_genesis` without weakening checkpoint/configuration
-    validation. `crates/crucible/src/lib.rs` covers deterministic sharing for the
+    validation. `crates/crucible/engine/crucible-engine/src/lib.rs` covers deterministic sharing for the
     same world-derived model definition, different checkpoint ids for different
     worlds, and first-run genesis realization through baked checkpoint load. The
     full `ScenarioDef = (World, Plan, Properties, Seed)` schema will broaden this
@@ -904,20 +904,20 @@ is authenticated as `BackendRngEvidence`, then represented by the seeded
   network-idle / console marker / agent signal) in `World` config and pin that
   `bake` reaches a content-identical genesis snapshot per policy. — satisfies
   [EXEC-20]; spec §6.
-  - Completed by `crates/crucible/src/model.rs`: `World::from_nodes` builds
+  - Completed by `crates/crucible/engine/crucible-engine/src/model.rs`: `World::from_nodes` builds
     canonical `WorldNode` ready-point configuration, exposes the fixed-icount,
     network-idle, console-marker, and agent-signal `ReadyPoint` variants, and
     validates that `AgentSignal` requires `WhiteBoxPolicy::Enabled`. `bake` and
-    `crates/crucible-qemu/src/realization.rs` QEMU bake both validate the world;
+    `crates/crucible/qemu/crucible-qemu-host/src/realization.rs` QEMU bake both validate the world;
     model bake hashes canonical ready-point material into the genesis checkpoint
-    input. `crates/crucible/src/lib.rs` covers canonical node ordering,
+    input. `crates/crucible/engine/crucible-engine/src/lib.rs` covers canonical node ordering,
     ready-point material sensitivity, white-box opt-in rejection, and
     content-identical repeated bake output for each ready-point policy;
     `checks.crucible.phase1.executionReadyPoint` gates the task.
 - [x] **T-EXEC-10** Implement the homogeneous `NodeBlobRef` (baked vs CoW-delta)
   so no code path distinguishes initial from materialized VM state. — satisfies
   [EXEC-21], [EXEC-22]; spec §7.
-  - Completed by `crates/crucible/src/model.rs`: `NodeBlobRef` now represents
+  - Completed by `crates/crucible/engine/crucible-engine/src/model.rs`: `NodeBlobRef` now represents
     both baked ready-point blobs and CoW deltas with an explicit resolved
     content hash, normalizes both shapes through `content_hash()`, and is
     carried by every `Checkpoint` in the same `node_blobs` map. Model bake and
@@ -925,7 +925,7 @@ is authenticated as `BackendRngEvidence`, then represented by the seeded
     QEMU baked-genesis validation rejects missing baked node refs, and the sim
     backend, replay-oracle test double, and QEMU cached-checkpoint helpers
     materialize `CowDelta` refs via `Checkpoint::with_node_blobs`.
-    `crates/crucible/src/lib.rs` covers baked-genesis refs and uniform baked/CoW
+    `crates/crucible/engine/crucible-engine/src/lib.rs` covers baked-genesis refs and uniform baked/CoW
     content comparison; `checks.crucible.phase1.executionNodeBlobRef` gates the
     task.
 - [x] **T-EXEC-11** Implement the replay-oracle equality check
@@ -941,8 +941,8 @@ is authenticated as `BackendRngEvidence`, then represented by the seeded
 - [x] **T-EXEC-12** Implement divergence bisection on oracle failure (localize to
   first differing decision/instruction) and the `gate:divergence-bisect` check;
   assert no silent-repair path exists. — satisfies [EXEC-24]; spec §8.
-  - Completed by `crates/crucible-harness/src/divergence.rs` and
-    `crates/crucible-harness/src/replay_oracle.rs`: the strict sampled
+  - Completed by `crates/crucible/testing/crucible-test-support/src/divergence.rs` and
+    `crates/crucible/testing/crucible-test-support/src/replay_oracle.rs`: the strict sampled
     replay-oracle path now calls `localize_replay_oracle_mismatch`, which
     compares the fat/materialized path against the thin replay path through the
     divergence bisector and reports the first differing schedule decision and
@@ -954,7 +954,7 @@ is authenticated as `BackendRngEvidence`, then represented by the seeded
   (fat-checkpoint materialization keyed by `config.id()`, on-demand oracle replay,
   frontier `step` enumeration) with content-addressed temporal-graph dedup. —
   satisfies [EXEC-25], [EXEC-26], [G-6]; spec §9.
-  - Completed by `crates/crucible/src/model.rs`: `TemporalGraph::save_checkpoint`
+  - Completed by `crates/crucible/engine/crucible-engine/src/model.rs`: `TemporalGraph::save_checkpoint`
     materializes non-genesis configurations as fat checkpoints keyed by
     `Configuration::id`, `TemporalGraph::replay_checkpoint` performs on-demand
     thin replay and reports `ReplayOracleMismatch` when the fat oracle diverges,
@@ -965,7 +965,7 @@ is authenticated as `BackendRngEvidence`, then represented by the seeded
 - [x] **T-EXEC-14** Implement the `Engine` async state machine (closed run-states,
   poll-then-step actor loop) inside the `Session` actor with bounded quanta and
   inter-quantum yields. — satisfies [EXEC-27], [EXEC-28]; spec §10.
-  - Completed by `crates/crucible-session/src/lib.rs`: `Engine` now owns the
+  - Completed by `crates/crucible/control/crucible-session/src/lib.rs`: `Engine` now owns the
     source-of-truth `Configuration`, rebuildable `RuntimeState` cache,
     `TemporalGraph`, closed `EngineState` set, and the `QuantumLoop` boundary.
     `SessionActor::run` consumes a Tokio mailbox, services pending commands
@@ -976,7 +976,7 @@ is authenticated as `BackendRngEvidence`, then represented by the seeded
 - [x] **T-EXEC-15** Implement the lock-free run-state mirror so observers read
   virtual time / log length / run-state without the engine lock; add a
   `gate:control-responsive` latency check. — satisfies [EXEC-29]; spec §10.
-  - Completed by `crates/crucible-session/src/lib.rs`: `LiveSnapshot`
+  - Completed by `crates/crucible/control/crucible-session/src/lib.rs`: `LiveSnapshot`
     publishes `LiveStateKind`, virtual time, event-log length, and monotone
     quanta counters through atomics written by the `SessionActor` after command
     transitions and scheduler quanta, while observers read through
@@ -988,7 +988,7 @@ is authenticated as `BackendRngEvidence`, then represented by the seeded
 - [x] **T-EXEC-16** Make the `Engine` able to drop and re-`instantiate` its
   runtime at any quantum boundary with no observable change (cache-eviction
   safety). — satisfies [EXEC-30]; spec §10.
-  - Completed by `crates/crucible-session/src/lib.rs`: `Engine::evict_runtime_cache`
+  - Completed by `crates/crucible/control/crucible-session/src/lib.rs`: `Engine::evict_runtime_cache`
     drops only the rebuildable `RuntimeState`, `Engine::reinstantiate_runtime_cache`
     rebuilds it from the source-of-truth `Configuration` and `TemporalGraph`
     without changing the boundary snapshot, and `Engine::refresh_runtime_cache`
@@ -1009,7 +1009,7 @@ is authenticated as `BackendRngEvidence`, then represented by the seeded
   preemption sequence is recomputable from `(def, Seed, schedule)` and
   audit-only, and that an explorer-supplied preemption (including `InterruptAt`
   at N = 1) is stored and replayed. — satisfies [EXEC-33], [G-11]; spec §12.
-  - Completed by `crates/crucible/src/decision.rs`: `default_rr_preemption`
+  - Completed by `crates/crucible/engine/crucible-engine/src/decision.rs`: `default_rr_preemption`
     derives nonzero RR-boundary default switches without appending a schedule
     entry, while `record_preemption_override` stores explorer-supplied
     `VcpuSwitch` and single-vCPU `InterruptAt` choices as
@@ -1020,7 +1020,7 @@ is authenticated as `BackendRngEvidence`, then represented by the seeded
   re-derive a non-overridden draw from the seeded stream and serve an overridden
   draw from the recorded value (never re-roll); test stream isolation under
   unrelated `World` edits. — satisfies [EXEC-34]; spec §12.
-  - Completed by `crates/crucible/src/decision.rs`: `serve_app_random` records
+  - Completed by `crates/crucible/engine/crucible-engine/src/decision.rs`: `serve_app_random` records
     the seeded `RngDraw` plus `BackendRngEvidence`, `serve_app_random_request`
     preserves a caller-supplied request id for doorbell/protocol requests,
     hydrated replay resumes stream positions from the recorded schedule, and

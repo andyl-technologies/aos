@@ -9,27 +9,27 @@
 
   protocolLib = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-protocol/src/lib.rs;
+    entry = ../../crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs;
   };
   protocolDoorbellFrame = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-protocol/src/doorbell_frame.rs;
+    entry = ../../crates/crucible/protocol/crucible-qemu-protocol/src/doorbell_frame.rs;
   };
   protocolGateAbi = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-protocol/tests/gate_abi_conformance.rs;
+    entry = ../../crates/crucible/protocol/crucible-qemu-protocol/tests/gate_abi_conformance.rs;
   };
   protocolGoldenTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-protocol/tests/golden_vectors.rs;
+    entry = ../../crates/crucible/protocol/crucible-qemu-protocol/tests/golden_vectors.rs;
   };
   pluginLib = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/lib.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs;
   };
   pluginWhitebox = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell.rs;
   };
   appRandomGate = builtins.readFile ./phase2-plugin-app-random-doorbell.nix;
   abiConformanceGate = builtins.readFile ./phase2-abi-conformance.nix;
@@ -59,7 +59,7 @@
         needle = "GOLDEN_WHITEBOX_DOORBELL_FRAME_VECTORS";
       }
     ]
-    ++ failuresFor "crates/crucible-protocol/src/lib.rs" protocolLib [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs" protocolLib [
       {
         label = "doorbell frame module";
         needle = "mod doorbell_frame;";
@@ -73,7 +73,7 @@
         needle = "GOLDEN_WHITEBOX_DOORBELL_FRAME_VECTORS";
       }
     ]
-    ++ failuresFor "crates/crucible-protocol/src/doorbell_frame.rs" protocolDoorbellFrame [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-protocol/src/doorbell_frame.rs" protocolDoorbellFrame [
       {
         label = "frame magic";
         needle = "pub const WHITEBOX_DOORBELL_FRAME_MAGIC";
@@ -139,7 +139,7 @@
         needle = "random-request-kind-5";
       }
     ]
-    ++ failuresFor "crates/crucible-protocol/tests/gate_abi_conformance.rs" protocolGateAbi [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-protocol/tests/gate_abi_conformance.rs" protocolGateAbi [
       {
         label = "ABI gate doorbell test";
         needle = "protocol_doorbell_frame_golden_vectors_match_live_codec_bytes";
@@ -153,7 +153,7 @@
         needle = "assert_doorbell_vector_bytes";
       }
     ]
-    ++ failuresFor "crates/crucible-protocol/tests/golden_vectors.rs" protocolGoldenTest [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-protocol/tests/golden_vectors.rs" protocolGoldenTest [
       {
         label = "golden vector doorbell test";
         needle = "doorbell_frame_golden_vectors_match_canonical_codec_bytes";
@@ -163,7 +163,7 @@
         needle = "GOLDEN_WHITEBOX_DOORBELL_FRAME_VECTORS";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs" pluginLib [
       {
         label = "plugin frame export";
         needle = "WhiteboxDoorbellFrame";
@@ -177,7 +177,7 @@
         needle = "GOLDEN_WHITEBOX_DOORBELL_FRAME_VECTORS";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhitebox [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhitebox [
       {
         label = "plugin re-exports protocol frame";
         needle = "WhiteboxDoorbellFrameDecodeError";
@@ -227,7 +227,7 @@
         needle = "taskIds = [\"T-GHC-7\"]";
       }
     ]
-    ++ forbiddenFor "crates/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhitebox [
+    ++ forbiddenFor "crates/crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhitebox [
       {
         label = "plugin-local frame owner";
         needle = "pub struct WhiteboxDoorbellFrame";
@@ -245,7 +245,9 @@ in
       pname = "crucible-phase4-guest-host-doorbell-frame";
       version = "0";
       src = crucibleSrc;
-      buildDeps = [pkgs.coreutils pkgs.rust pkgs.sed];
+      runtimeDeps = [pkgs.sqlite];
+
+      buildDeps = [pkgs.sqlite pkgs.coreutils pkgs.rust pkgs.sed];
       phases = [
         {
           name = "unpack";
@@ -285,7 +287,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-guest-host-doorbell-frame-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible-protocol \
+              -p crucible-qemu-protocol \
               --test gate_abi_conformance \
               protocol_doorbell_frame_golden_vectors_match_live_codec_bytes \
               -- --test-threads=1
@@ -294,7 +296,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-guest-host-doorbell-frame-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible-protocol \
+              -p crucible-qemu-protocol \
               --test golden_vectors \
               doorbell_frame_golden_vectors_match_canonical_codec_bytes \
               -- --test-threads=1

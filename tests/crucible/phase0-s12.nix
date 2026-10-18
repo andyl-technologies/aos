@@ -97,8 +97,8 @@ in
           require_fixed qemu-patches/crucible-qemu-11.1.1.patch 'qemu_plugin_inject_preemption'
           require_fixed qemu-patches/crucible-qemu-11.1.1.patch 'crucible_sim_preemption_clamp_cpu_budget'
           require_present_regex qemu-patches "$preemption_regex" "preemption-injection API"
-          require_fixed crates/crucible-qemu-plugin/src/preemption.rs 'QEMU_PLUGIN_INJECT_PREEMPTION_SYMBOL'
-          require_fixed crates/crucible-qemu-plugin/src/preemption.rs 'preemption_injector_rejects_out_of_window_without_clamping_or_calling_qemu'
+          require_fixed crates/crucible/qemu/crucible-qemu-plugin/src/preemption.rs 'QEMU_PLUGIN_INJECT_PREEMPTION_SYMBOL'
+          require_fixed crates/crucible/qemu/crucible-qemu-plugin/src/preemption.rs 'preemption_injector_rejects_out_of_window_without_clamping_or_calling_qemu'
 
           # The commanded-preemption discrimination is now demonstrated at the
           # deterministic model layer: a known two-vCPU last-writer-wins race
@@ -107,8 +107,8 @@ in
           # variation yields distinct replayable schedules. This is the model
           # witness; the QEMU injection surface (phase2.qemuPreemptionInject) is
           # the landing witness. Live campaign-explorer enablement remains gated.
-          require_fixed crates/crucible/tests/preemption_discrimination.rs 'commanded_preemption_discriminates_a_known_two_vcpu_race'
-          require_fixed crates/crucible/tests/preemption_discrimination.rs 'single_vcpu_interrupt_timing_variation_is_distinct'
+          require_fixed crates/crucible/engine/crucible-engine/tests/preemption_discrimination.rs 'commanded_preemption_discriminates_a_known_two_vcpu_race'
+          require_fixed crates/crucible/engine/crucible-engine/tests/preemption_discrimination.rs 'single_vcpu_interrupt_timing_variation_is_distinct'
 
           require_fixed "$S11_RESULT" "PASS"
           require_fixed "$S11_RESULT" "accelerator=sim,thread=single"
@@ -155,7 +155,7 @@ in
             echo known_race_manifested_under_one_choice=modeled
             echo known_race_absent_under_another_choice=modeled
             echo single_vcpu_interrupt_variation_distinct=modeled
-            echo commanded_preemption_discrimination_witness=crates/crucible/tests/preemption_discrimination.rs::commanded_preemption_discriminates_a_known_two_vcpu_race
+            echo commanded_preemption_discrimination_witness=crates/crucible/engine/crucible-engine/tests/preemption_discrimination.rs::commanded_preemption_discriminates_a_known_two_vcpu_race
             echo commanded_preemption_injection_witness=gate:single-vm-fingerprint
             echo default_determinism_prereqs_green=true
             echo default_determinism_prereqs_source=production-fingerprint-and-s11

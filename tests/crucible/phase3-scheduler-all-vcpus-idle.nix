@@ -8,8 +8,8 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
-  focusedTest = builtins.readFile ../../crates/crucible/tests/scheduler_all_vcpus_idle.rs;
+  libSource = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/lib.rs;
+  focusedTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/scheduler_all_vcpus_idle.rs;
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -39,7 +39,7 @@
         needle = "one scheduler node candidate";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "vCPU idle state type";
         needle = "pub struct SchedulerVcpuIdleState";
@@ -105,7 +105,7 @@
         needle = "state.next_deadline = None";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" libSource [
       {
         label = "vCPU idle state exported";
         needle = "SchedulerVcpuIdleState";
@@ -115,7 +115,7 @@
         needle = "SchedulerNodeVcpuIdleSnapshot";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/scheduler_all_vcpus_idle.rs" focusedTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/scheduler_all_vcpus_idle.rs" focusedTest [
       {
         label = "focused all-vCPUs-idle test";
         needle = "all-vCPUs-idle quiescence";
@@ -165,7 +165,7 @@
         needle = "SimInstant { nanos: 7 }";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/scheduler_all_vcpus_idle.rs" focusedTest [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/scheduler_all_vcpus_idle.rs" focusedTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -190,7 +190,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
@@ -234,7 +237,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-scheduler-all-vcpus-idle-target" \
-              -p crucible \
+              -p crucible-engine \
               --test scheduler_all_vcpus_idle \
               -- --test-threads=1
           '';

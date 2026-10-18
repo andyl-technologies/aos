@@ -7,13 +7,13 @@
 }: let
   dceDoc = builtins.readFile ../../docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md;
   casSource =
-    builtins.readFile ../../crates/crucible-cas/src/lib.rs
-    + builtins.readFile ../../crates/crucible-cas/src/cas/campaign_codec.rs
-    + builtins.readFile ../../crates/crucible-cas/src/cas/campaign_model.rs
-    + builtins.readFile ../../crates/crucible-cas/src/cas/campaign_store.rs
-    + builtins.readFile ../../crates/crucible-cas/src/cas/invalidation.rs
-    + builtins.readFile ../../crates/crucible-cas/src/cas/tests.rs;
-  fleetStoreProbe = builtins.readFile ../../crates/crucible-cas/src/bin/crucible-fleet-store.rs;
+    builtins.readFile ../../crates/crucible/storage/crucible-store/src/lib.rs
+    + builtins.readFile ../../crates/crucible/storage/crucible-store/src/cas/campaign_codec.rs
+    + builtins.readFile ../../crates/crucible/storage/crucible-store/src/cas/campaign_model.rs
+    + builtins.readFile ../../crates/crucible/storage/crucible-store/src/cas/campaign_store.rs
+    + builtins.readFile ../../crates/crucible/storage/crucible-store/src/cas/invalidation.rs
+    + builtins.readFile ../../crates/crucible/storage/crucible-store/src/cas/tests.rs;
+  fleetStoreProbe = builtins.readFile ../../crates/crucible/storage/crucible-store/src/bin/crucible-fleet-store.rs;
   fleetStorePackage = builtins.readFile ../../pkgs/tools/crucible-fleet-store.nix;
   rootDefault = builtins.readFile ../../default.nix;
   defaultChecks = builtins.readFile ./default.nix;
@@ -48,7 +48,7 @@
     ]
     ++ forbiddenFor "docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md" dceDoc [
     ]
-    ++ failuresFor "crates/crucible-cas/src/lib.rs" casSource [
+    ++ failuresFor "crates/crucible/storage/crucible-store/src/lib.rs" casSource [
       {
         label = "shared frontier public type";
         needle = "pub struct SharedFrontier";
@@ -126,7 +126,7 @@
         needle = "store.put(b\"frontier-node\")?, node";
       }
     ]
-    ++ failuresFor "crates/crucible-cas/src/bin/crucible-fleet-store.rs" fleetStoreProbe [
+    ++ failuresFor "crates/crucible/storage/crucible-store/src/bin/crucible-fleet-store.rs" fleetStoreProbe [
       {
         label = "lease probe function";
         needle = "prove_frontier_claim_leases";

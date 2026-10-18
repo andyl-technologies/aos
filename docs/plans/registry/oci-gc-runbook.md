@@ -367,7 +367,7 @@ reconciliation interval:
 - GC reports completion while any candidate placement action is nonterminal.
 
 Native deployments can load the checked
-[`oci-alerts.rules.yml`](../../../crates/aos-hub/monitoring/oci-alerts.rules.yml)
+[`oci-alerts.rules.yml`](../../../crates/hub/aos-hub-native/monitoring/oci-alerts.rules.yml)
 Prometheus rule group directly. Its alert labels are limited to fixed severity
 and component values; tenant, repository, digest, actor, and operation
 identities never become metric labels.

@@ -7,8 +7,8 @@
 }: let
   packagingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/26-packaging-aos-integration.md;
   dceDoc = builtins.readFile ../../docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md;
-  casSource = builtins.readFile ../../crates/crucible-cas/src/lib.rs;
-  casManifest = builtins.readFile ../../crates/crucible-cas/Cargo.toml;
+  casSource = builtins.readFile ../../crates/crucible/storage/crucible-store/src/lib.rs;
+  casManifest = builtins.readFile ../../crates/crucible/storage/crucible-store/Cargo.toml;
   defaultChecks = builtins.readFile ./default.nix;
   gateCiWiring = builtins.readFile ./phase7-crucible-gate-ci-wiring.nix;
   fleetStoreGate = builtins.readFile ./phase7-crucible-fleet-store.nix;
@@ -38,7 +38,7 @@
         needle = "documented text, not a";
       }
     ]
-    ++ failuresFor "crates/crucible-cas/src/lib.rs" casSource [
+    ++ failuresFor "crates/crucible/storage/crucible-store/src/lib.rs" casSource [
       {
         label = "fleet-visible same seam docs";
         needle = "the fleet-visible backend for that same seam";
@@ -72,7 +72,7 @@
         needle = "no RFC-0007 dependency exists";
       }
     ]
-    ++ forbiddenFor "crates/crucible-cas/Cargo.toml" casManifest [
+    ++ forbiddenFor "crates/crucible/storage/crucible-store/Cargo.toml" casManifest [
       {
         label = "ratchet dependency prefix";
         needle = "ratchet-";
@@ -141,7 +141,7 @@ in
             PASS
             check=${attrPath}
             tasks=${builtins.concatStringsSep "," taskIds}
-            seam=crucible-cas::dag-store
+            seam=crucible_store::dag-store
             shared_seam=SharedDagStore+InvalidationQuery::evaluate
             interface=DagStore::put,DagStore::get,DagStore::has,SharedDagStore,InvalidationQuery::evaluate
             merge_plan=thin-adapter-behind-unchanged-interface

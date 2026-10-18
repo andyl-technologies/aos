@@ -8,8 +8,8 @@
   testing ? import ../../lib/testing {inherit pkgs lib;},
 }: let
   taskList = builtins.concatStringsSep "," taskIds;
-  workerSource = builtins.readFile ../../crates/crucible-qemu-plugin/src/runtime/live_callbacks/fingerprint_worker.rs;
-  callbackSource = builtins.readFile ../../crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs;
+  workerSource = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/runtime/live_callbacks/fingerprint_worker.rs;
+  callbackSource = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/runtime/live_callbacks.rs;
   inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
 
   failures =

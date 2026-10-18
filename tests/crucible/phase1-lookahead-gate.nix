@@ -10,16 +10,16 @@
 
   shmemSource = builtins.concatStringsSep "\n" [
     (import ./_crucible-shmem-source.nix {inherit lib;})
-    (builtins.readFile ../../crates/crucible-shmem/src/shmem/delivery_errors.rs)
+    (builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/delivery_errors.rs)
   ];
-  lookaheadTest = builtins.readFile ../../crates/crucible-shmem/tests/lookahead_gate.rs;
+  lookaheadTest = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/tests/lookahead_gate.rs;
   determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "crates/crucible-shmem/src/lib.rs + shmem/delivery_errors.rs" shmemSource [
+    failuresFor "crates/crucible/protocol/crucible-qemu-shmem/src/lib.rs + shmem/delivery_errors.rs" shmemSource [
       {
         label = "opaque advance ceiling type";
         needle = "pub struct AdvanceCeiling";
@@ -57,7 +57,7 @@
         needle = "frame.delivery_icount < consumer_current_icount";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/tests/lookahead_gate.rs" lookaheadTest [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/tests/lookahead_gate.rs" lookaheadTest [
       {
         label = "authorized ceiling test";
         needle = "lookahead_gate_authorizes_ceiling_before_possible_delivery";
@@ -87,13 +87,13 @@
         needle = "lookahead_gate_allows_future_frame_to_deliver_at_exact_icount";
       }
     ]
-    ++ forbiddenFor "crates/crucible-shmem/tests/lookahead_gate.rs" lookaheadTest [
+    ++ forbiddenFor "crates/crucible/protocol/crucible-qemu-shmem/tests/lookahead_gate.rs" lookaheadTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
       }
     ]
-    ++ forbiddenFor "crates/crucible-shmem/src/lib.rs + shmem/delivery_errors.rs" shmemSource [
+    ++ forbiddenFor "crates/crucible/protocol/crucible-qemu-shmem/src/lib.rs + shmem/delivery_errors.rs" shmemSource [
       {
         label = "public current icount field bypass";
         needle = "pub struct AdvanceCeiling {\n    pub current_icount: u64";

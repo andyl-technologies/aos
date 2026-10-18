@@ -106,7 +106,7 @@
         needle = "`T-TRI-8` is green through";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/src/main.rs" cliSource [
+    ++ failuresFor "crates/crucible/control/crucible-cli/src/main.rs" cliSource [
       {
         label = "command factory help rendering";
         needle = "use clap::CommandFactory;";

@@ -7,13 +7,13 @@
 }: let
   dceDoc = builtins.readFile ../../docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md;
   casSource =
-    builtins.readFile ../../crates/crucible-cas/src/lib.rs
-    + builtins.readFile ../../crates/crucible-cas/src/cas/campaign_codec.rs
-    + builtins.readFile ../../crates/crucible-cas/src/cas/campaign_model.rs
-    + builtins.readFile ../../crates/crucible-cas/src/cas/campaign_store.rs
-    + builtins.readFile ../../crates/crucible-cas/src/cas/invalidation.rs
-    + builtins.readFile ../../crates/crucible-cas/src/cas/tests.rs;
-  fleetStoreProbe = builtins.readFile ../../crates/crucible-cas/src/bin/crucible-fleet-store.rs;
+    builtins.readFile ../../crates/crucible/storage/crucible-store/src/lib.rs
+    + builtins.readFile ../../crates/crucible/storage/crucible-store/src/cas/campaign_codec.rs
+    + builtins.readFile ../../crates/crucible/storage/crucible-store/src/cas/campaign_model.rs
+    + builtins.readFile ../../crates/crucible/storage/crucible-store/src/cas/campaign_store.rs
+    + builtins.readFile ../../crates/crucible/storage/crucible-store/src/cas/invalidation.rs
+    + builtins.readFile ../../crates/crucible/storage/crucible-store/src/cas/tests.rs;
+  fleetStoreProbe = builtins.readFile ../../crates/crucible/storage/crucible-store/src/bin/crucible-fleet-store.rs;
   fleetStorePackage = builtins.readFile ../../pkgs/tools/crucible-fleet-store.nix;
   rootDefault = builtins.readFile ../../default.nix;
   defaultChecks = builtins.readFile ./default.nix;
@@ -58,7 +58,7 @@
     ]
     ++ forbiddenFor "docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md" dceDoc [
     ]
-    ++ failuresFor "crates/crucible-cas/src/lib.rs" casSource [
+    ++ failuresFor "crates/crucible/storage/crucible-store/src/lib.rs" casSource [
       {
         label = "shared campaign store type";
         needle = "pub struct SharedCampaignStore";
@@ -152,7 +152,7 @@
         needle = "campaign_head_compare_and_swap_loop_advances_union_manifest";
       }
     ]
-    ++ forbiddenFor "crates/crucible-cas/src/lib.rs" casSource [
+    ++ forbiddenFor "crates/crucible/storage/crucible-store/src/lib.rs" casSource [
       {
         label = "sidecar campaign head lock path";
         needle = "head-locks";
@@ -166,7 +166,7 @@
         needle = "lock.file.set_len(0)";
       }
     ]
-    ++ failuresFor "crates/crucible-cas/src/bin/crucible-fleet-store.rs" fleetStoreProbe [
+    ++ failuresFor "crates/crucible/storage/crucible-store/src/bin/crucible-fleet-store.rs" fleetStoreProbe [
       {
         label = "campaign probe function";
         needle = "prove_campaign_manifest_store";

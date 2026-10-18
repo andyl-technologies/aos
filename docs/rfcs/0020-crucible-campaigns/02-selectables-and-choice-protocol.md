@@ -497,8 +497,8 @@ implements scenario lookup, narrowed-domain validation, opportunity derivation,
 
 The wire protocol contains no Rust-native layouts, pointers, callbacks, or
 QEMU-private objects. The version-1 codec is owned by
-`crucible-protocol::selectable`; the deferred transport is owned by
-`crucible-protocol::selectable_transport`; `crucible-guest` exposes typed
+`crucible_qemu_protocol::selectable`; the deferred transport is owned by
+`crucible_qemu_protocol::selectable_transport`; `crucible-guest` exposes typed
 emission and reply-validation helpers over the architecture-specific doorbell
 transport.
 

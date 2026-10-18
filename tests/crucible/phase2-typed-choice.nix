@@ -64,7 +64,7 @@ in
           exact_selection_test=tests::model_core::campaign_selection_decision_is_strict_and_changes_schedule_identity
           selection_listing=$(cargo test --frozen --offline --manifest-path crates/Cargo.toml \
             --target-dir "$TMPDIR/typed-choice-target" \
-            -p crucible --lib "$exact_selection_test" -- --exact --list 2>&1)
+            -p crucible-engine --lib "$exact_selection_test" -- --exact --list 2>&1)
           printf '%s\n' "$selection_listing"
           selection_match_count=$(printf '%s\n' "$selection_listing" \
             | grep -Fxc "$exact_selection_test: test" || true)
@@ -76,7 +76,7 @@ in
 
           selection_output=$(cargo test --frozen --offline --manifest-path crates/Cargo.toml \
             --target-dir "$TMPDIR/typed-choice-target" \
-            -p crucible --lib "$exact_selection_test" -- --exact --test-threads=1 2>&1)
+            -p crucible-engine --lib "$exact_selection_test" -- --exact --test-threads=1 2>&1)
           printf '%s\n' "$selection_output"
           if ! printf '%s\n' "$selection_output" \
             | grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;'; then
@@ -86,14 +86,14 @@ in
           fi
           cargo test --frozen --offline --manifest-path crates/Cargo.toml \
             --target-dir "$TMPDIR/typed-choice-target" \
-            -p crucible --test backend_node_routing live_world_network_ -- --test-threads=1
+            -p crucible-engine --test backend_node_routing live_world_network_ -- --test-threads=1
           cargo test --frozen --offline --manifest-path crates/Cargo.toml \
             --target-dir "$TMPDIR/typed-choice-target" \
-            -p crucible --test gate_guided_adaptive_exploration gate_preemption_branching_ \
+            -p crucible-engine --test gate_guided_adaptive_exploration gate_preemption_branching_ \
             -- --test-threads=1
           cargo test --frozen --offline --manifest-path crates/Cargo.toml \
             --target-dir "$TMPDIR/typed-choice-target" \
-            -p crucible-protocol --lib selectable -- --test-threads=1
+            -p crucible-qemu-protocol --lib selectable -- --test-threads=1
           cargo test --frozen --offline --manifest-path crates/Cargo.toml \
             --target-dir "$TMPDIR/typed-choice-target" \
             -p crucible-guest --lib selectable -- --test-threads=1

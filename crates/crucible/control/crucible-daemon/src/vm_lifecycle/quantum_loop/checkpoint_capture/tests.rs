@@ -1,0 +1,105 @@
+//! Exact-checkpoint capture ownership regressions.
+
+use super::*;
+
+#[test]
+fn preparation_is_all_or_nothing_before_live_capture() {
+    let source = crucible_engine::crash_restart_scenario()
+        .unwrap_or_else(|error| panic!("built-in scenario should validate: {error}"))
+        .scenario;
+    let configuration = Configuration::genesis(source.scenario_def());
+    let node_a = NodeId {
+        name: String::from("node-a"),
+    };
+    let node_b = NodeId {
+        name: String::from("node-b"),
+    };
+    let node_icounts = BTreeMap::from([
+        (node_a.clone(), crucible_engine::Icount { retired: 17 }),
+        (node_b.clone(), crucible_engine::Icount { retired: 19 }),
+    ]);
+    let boundaries = || {
+        vec![
+            (node_a.clone(), 17, ProductionNodeServiceState::Running),
+            (node_b.clone(), 19, ProductionNodeServiceState::PoweredOff),
+        ]
+    };
+    let indexes = BTreeMap::from([(node_a.clone(), 0), (node_b.clone(), 1)]);
+    let directories = BTreeMap::from([
+        (node_a.clone(), PathBuf::from("generation-a")),
+        (node_b.clone(), PathBuf::from("generation-b")),
+    ]);
+    let staging = tempfile::tempdir()
+        .unwrap_or_else(|error| panic!("checkpoint staging should build: {error}"));
+
+    let prepared = prepare_exact_checkpoint_targets(
+        &configuration,
+        VirtualTime { ticks: 23 },
+        &node_icounts,
+        boundaries(),
+        &indexes,
+        &directories,
+        staging.path(),
+    )
+    .unwrap_or_else(|error| panic!("every target should prepare: {error}"));
+    assert_eq!(prepared.len(), 2);
+    assert_eq!(prepared[0].node, node_a);
+    assert_eq!(prepared[0].checkpoint.node_icounts, node_icounts);
+    // Both nodes may be ahead of or behind the shared frontier in physical
+    // icount, but QEMU capture provenance uses the checkpoint's global time.
+    assert_eq!(prepared[0].counter, 17);
+    assert_eq!(prepared[1].counter, 19);
+    assert_eq!(prepared[0].scheduler_time, VirtualTime { ticks: 23 });
+    assert_eq!(prepared[1].scheduler_time, VirtualTime { ticks: 23 });
+    assert_eq!(
+        prepared[0].checkpoint.virtual_time,
+        prepared[0].scheduler_time
+    );
+    assert_eq!(
+        prepared[1].checkpoint.virtual_time,
+        prepared[1].scheduler_time
+    );
+    assert_eq!(
+        prepared[1].ram_output,
+        staging.path().join("node-1-ram.crucram")
+    );
+    assert_eq!(
+        prepared[1].device_output,
+        staging.path().join("node-1-device.vmstate")
+    );
+    assert_eq!(
+        prepared[1].staged_ram_chunks,
+        staging.path().join("node-1-ram-objects")
+    );
+    assert_eq!(
+        prepared[1].staged_device_chunks,
+        staging.path().join("node-1-device-objects")
+    );
+
+    let single = prepare_exact_checkpoint_targets(
+        &configuration,
+        VirtualTime { ticks: 17 },
+        &BTreeMap::from([(node_a.clone(), crucible_engine::Icount { retired: 17 })]),
+        vec![(node_a.clone(), 17, ProductionNodeServiceState::Running)],
+        &indexes,
+        &directories,
+        staging.path(),
+    )
+    .unwrap_or_else(|error| panic!("single-node target should prepare: {error}"));
+    assert_eq!(single[0].scheduler_time, VirtualTime { ticks: 17 });
+    assert_eq!(single[0].counter, 17);
+
+    let incomplete_directories = BTreeMap::from([(node_a.clone(), PathBuf::from("generation-a"))]);
+    let error = prepare_exact_checkpoint_targets(
+        &configuration,
+        VirtualTime { ticks: 23 },
+        &node_icounts,
+        boundaries(),
+        &indexes,
+        &incomplete_directories,
+        staging.path(),
+    )
+    .err()
+    .unwrap_or_else(|| panic!("a missing later target owner should fail preparation"));
+    assert!(error.to_string().contains("node-b"));
+}

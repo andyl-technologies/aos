@@ -1,0 +1,1265 @@
+//! Runtime observation and trigger settlement for production VM lifecycles.
+
+use super::*;
+use crucible_engine::SchedulerOperationalFailureClass;
+
+#[path = "runtime/debug_evidence.rs"]
+mod debug_evidence;
+#[path = "runtime/observation.rs"]
+mod observation;
+
+#[path = "runtime/progress.rs"]
+pub(super) mod progress;
+
+use debug_evidence::*;
+use observation::*;
+
+fn release_then_record_campaign_marker(
+    release: impl FnOnce() -> Result<(), SchedulerError>,
+    record: impl FnOnce() -> Result<(), SchedulerError>,
+) -> Result<(), SchedulerError> {
+    release()?;
+    record()
+}
+
+#[path = "runtime/control_boundary.rs"]
+mod control_boundary;
+
+#[path = "runtime/held_host_stop.rs"]
+mod held_host_stop;
+
+use control_boundary::*;
+
+impl ProductionVmLifecycleLoop {
+    // Terminal firings already live in the checkpointed trigger state, so a
+    // restored lifecycle can recover the settlement point without new state.
+    fn terminal_settlement_target(&self) -> Option<VirtualTime> {
+        self.terminal_verdict.as_ref()?;
+
+        self.trigger_graph
+            .events()
+            .iter()
+            .filter_map(|event| {
+                let mut passed = false;
+                let mut violations = Vec::new();
+                collect_terminal_actions(&event.action, &mut passed, &mut violations);
+                (passed || !violations.is_empty())
+                    .then(|| self.trigger_state.last_firing(&event.id))
+                    .flatten()
+            })
+            .max()
+    }
+
+    pub(super) fn terminal_stop_ready(&self) -> bool {
+        self.terminal_verdict.is_some()
+            && self
+                .terminal_settlement_target()
+                .is_some_and(|at| self.inner.loop_impl().frontier() >= at)
+    }
+
+    /// Copies the exact scenario-aware live-node profiles for background replay.
+    ///
+    /// The returned values contain immutable launch inputs only. They retain no
+    /// process, run-directory, lease, checkpoint-store, or scheduler authority,
+    /// and a caller must install a new attempt-owned generation before launch.
+    /// Profiles are returned in World node order and omit permanently failed
+    /// nodes, matching the live-target set captured by an exact checkpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError::LoopFactory`] when one live World node has
+    /// no exact launch profile in the lifecycle.
+    pub fn replay_launch_profiles(
+        &self,
+    ) -> Result<Vec<ProductionVmNodeReplayLaunchProfile>, LifecycleApiError> {
+        let selectable_catalog_plans = self.inner.backend().selectable_catalog_plans();
+        let mut profiles = Vec::new();
+        profiles
+            .try_reserve_exact(self.source.world().vm_nodes().len())
+            .map_err(|_error| loop_factory_error("reserve production replay launch profiles"))?;
+        for node in self.source.world().vm_nodes() {
+            if self.node_service_states.get(&node.id)
+                == Some(&ProductionNodeServiceState::PermanentlyFailed)
+            {
+                continue;
+            }
+            let launch = self.launch_configs.get(&node.id).ok_or_else(|| {
+                loop_factory_error(format!(
+                    "production lifecycle has no replay launch profile for `{}`",
+                    node.id.name
+                ))
+            })?;
+            let mut launch = launch.clone();
+            if let Some(plan) = selectable_catalog_plans.get(&node.id) {
+                launch = launch.with_selectable_catalog_plan(plan.clone());
+            }
+            profiles.push(ProductionVmNodeReplayLaunchProfile::new(
+                node.id.clone(),
+                launch,
+            ));
+        }
+        Ok(profiles)
+    }
+
+    /// Captures the exact modeled evidence boundary restored with this lifecycle.
+    ///
+    /// The returned entries copy the scheduler-owned log. Complete-evidence callers
+    /// must reject a nonzero base event count instead of treating a suffix as the
+    /// whole attempt history.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the restored scheduler cannot project a
+    /// coherent quiescence boundary.
+    pub fn resume_state(&self) -> Result<ProductionVmLifecycleResumeState, SchedulerError> {
+        let scheduler = self.inner.loop_impl();
+        Ok(ProductionVmLifecycleResumeState::new(
+            scheduler.configuration().clone(),
+            scheduler.event_log().retained_entries().to_vec(),
+            scheduler.event_log().retained_base_events(),
+            scheduler.quanta(),
+            scheduler.frontier(),
+            scheduler.quiescence()?,
+            self.terminal_verdict.clone(),
+        ))
+    }
+
+    /// Returns operational evidence from the latest host-concurrent QEMU round.
+    #[must_use]
+    pub fn host_parallelism_evidence(
+        &self,
+    ) -> Option<&crucible_qemu_host::QemuHostParallelismEvidence> {
+        self.inner.backend().last_host_parallelism()
+    }
+
+    /// Quarantines one live node and synchronously reaps its QEMU process.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the node is absent or cannot be killed
+    /// and synchronously reaped.
+    pub fn quarantine_node(&mut self, node: &NodeId) -> Result<(), SchedulerError> {
+        let mut backend = self.inner.backend_mut().take(node).ok_or_else(|| {
+            SchedulerError::BoundaryViolation {
+                message: format!("production lifecycle node `{}` is absent", node.name),
+            }
+        })?;
+        let result = backend.force_quarantine_and_reap().map_err(|error| {
+            SchedulerError::BoundaryViolation {
+                message: format!(
+                    "force-quarantine production lifecycle node `{}`: {error}",
+                    node.name
+                ),
+            }
+        });
+        self.inner.backend_mut().insert(node.clone(), backend);
+        result
+    }
+
+    /// Returns canonical scheduler bytes and ordered log-segment identities.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the scheduler is at a transient boundary
+    /// or cannot encode a retained device or network continuation.
+    pub fn canonical_scheduler_evidence(
+        &self,
+    ) -> Result<(Vec<u8>, Vec<ContentHash>), SchedulerError> {
+        let checkpoint = self.inner.loop_impl().checkpoint().map_err(|error| {
+            SchedulerError::BoundaryViolation {
+                message: format!("encode production scheduler checkpoint evidence: {error}"),
+            }
+        })?;
+        let segments = checkpoint.event_log_segment_dependencies().to_vec();
+        let bytes =
+            checkpoint
+                .canonical_bytes()
+                .map_err(|error| SchedulerError::BoundaryViolation {
+                    message: format!("encode production scheduler checkpoint bytes: {error}"),
+                })?;
+        Ok((bytes, segments))
+    }
+
+    /// Returns the exact segmented event-log offset at the current boundary.
+    #[must_use]
+    pub fn event_log_offset(&self) -> crucible_engine::EventLogOffset {
+        self.inner.loop_impl().event_log().offset()
+    }
+
+    /// Returns the absolute scheduler-quantum coordinate at the current boundary.
+    #[must_use]
+    pub fn completed_quanta(&self) -> u64 {
+        self.inner.loop_impl().quanta()
+    }
+
+    /// Reports whether every live node can enter an exact checkpoint now.
+    ///
+    /// A false result means an already-admitted device coroutine crosses the
+    /// current scheduler boundary, a selectable catalog outside the initial
+    /// execution boundary has not frozen, or emitted network output is still
+    /// ahead of the shared frontier. The caller may drive another ordinary
+    /// quantum and retry; checkpoint capture itself never advances through the
+    /// deterministic completion coordinate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when a live node is missing from the backend
+    /// set or its shared device-I/O state cannot be inspected consistently.
+    pub fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError> {
+        // A World-network preselection is published by thin replay from an
+        // earlier admitted ancestor; its withheld TX suffix is not snapshot state.
+        if self.pending_held_host_outcomes.is_some()
+            || self.inner.live_network_preselection().is_some()
+            || self.inner.loop_impl().pending_branch_effect_choice_count() != 0
+            || !self.signal_fault_branches.is_empty()
+            || self.inner.pending_network_output_count() != 0
+        {
+            return Ok(false);
+        }
+        let _pending = self
+            .inner
+            .backend_mut()
+            .drain_pending_selectable_requests()?;
+        let configuration = self.inner.loop_impl().configuration().clone();
+        let event_log_events = self.inner.loop_impl().event_log().offset().events;
+        let selectable_catalog_plans = self.inner.backend().selectable_catalog_plans();
+        let live_nodes = self
+            .source
+            .world()
+            .vm_nodes()
+            .iter()
+            .filter(|node| {
+                self.node_service_states.get(&node.id) == Some(&ProductionNodeServiceState::Running)
+            })
+            .map(|node| node.id.clone())
+            .collect::<Vec<_>>();
+        if !selectable_catalogs_checkpoint_ready(
+            &configuration,
+            self.initial_lifecycle_observations_pending,
+            event_log_events,
+            &live_nodes,
+            &selectable_catalog_plans,
+        ) {
+            return Ok(false);
+        }
+        for node in live_nodes {
+            if !self
+                .inner
+                .backend_mut()
+                .checkpoint_device_io_is_quiescent(&node)?
+            {
+                return Ok(false);
+            }
+            if !self
+                .inner
+                .backend_mut()
+                .selectable_reply_is_checkpoint_quiescent(&node)?
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// Authenticates that one selected VM marker was already released on this branch.
+    #[must_use]
+    pub fn campaign_marker_release_committed(
+        &self,
+        node: &NodeId,
+        marker: &str,
+        selected: ContentHash,
+    ) -> bool {
+        self.inner
+            .network_output_interceptor()
+            .campaign_marker_release_committed(node, marker, selected)
+    }
+
+    /// Reports whether no adapter-owned network frame remains queued at activation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if queue continuations cannot be authenticated.
+    pub fn campaign_network_queues_empty(&self) -> Result<bool, SchedulerError> {
+        Ok(self
+            .inner
+            .network_output_interceptor()
+            .active_queue_evidence()?
+            .is_empty())
+    }
+
+    /// Captures a portable exact checkpoint under an operational boundary.
+    ///
+    /// The callback is observed between bounded file-hash and persistence
+    /// chunks and between live-node operations. Cleanup of already-paused QEMU
+    /// snapshots remains mandatory even when the boundary stops preparation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the current boundary is not checkpoint
+    /// ready, a node or continuation cannot be captured, publication or cleanup
+    /// is indeterminate, reopening the closure fails, or `boundary` rejects an
+    /// operational chunk boundary.
+    pub fn capture_portable_exact_checkpoint_with_boundary(
+        &mut self,
+        boundary: &mut dyn FnMut() -> Result<(), SchedulerError>,
+    ) -> Result<ProductionExactCheckpointClosure, SchedulerError> {
+        boundary()?;
+        if !self.exact_checkpoint_ready()? {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "production lifecycle is not at an exact checkpoint-ready boundary",
+                ),
+            });
+        }
+        boundary()?;
+        let configuration = self.inner.loop_impl().configuration().clone();
+        let identity = if matches!(
+            self.checkpoint_terminal_cause,
+            Some(CheckpointTerminalCause::Failed(_))
+        ) {
+            // A previous Snapshot may share this configuration but predate
+            // the failed observation's terminal scheduler events.
+            self.capture_fresh_exact_checkpoint_set_with_boundary(&configuration, boundary)?
+        } else {
+            self.capture_exact_checkpoint_set_with_boundary(&configuration, boundary)?
+        };
+        boundary()?;
+        let mut boundary_error = None;
+        let closure = checkpoint_store::open_exact_checkpoint_closure_with_boundary(
+            &self.config.run_state_root,
+            &self.source,
+            identity,
+            &mut || match boundary() {
+                Ok(()) => Ok(()),
+                Err(error) => {
+                    let class = match &error {
+                        SchedulerError::OperationalBoundary { class, .. } => *class,
+                        _ => SchedulerOperationalFailureClass::Terminal,
+                    };
+                    let message = error.to_string();
+                    boundary_error = Some(error);
+                    Err(LifecycleApiError::AttemptOperational { class, message })
+                }
+            },
+        );
+        if let Some(error) = boundary_error {
+            return Err(error);
+        }
+        closure.map_err(|error| SchedulerError::BoundaryViolation {
+            message: format!("open captured portable exact checkpoint: {error}"),
+        })
+    }
+
+    /// Captures read-only evidence from every production fault adapter.
+    ///
+    /// The snapshot is intended for gates, diagnostics, and artifact capture.
+    /// It does not checkpoint, drain, or otherwise advance any continuation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when a shared runtime or device lock is
+    /// poisoned, or the committed resolved-effect trace is invalid.
+    pub fn fault_evidence_snapshot(
+        &self,
+    ) -> Result<ProductionFaultEvidenceSnapshot, SchedulerError> {
+        let frontier = self.inner.loop_impl().frontier();
+        let runtime = self
+            .fault_runtime
+            .lock()
+            .map_err(|_| SchedulerError::BoundaryViolation {
+                message: String::from("production fault runtime lock is poisoned"),
+            })?;
+        let resolved_effect_trace = match runtime
+            .recorded_trace(crucible_engine::model::FaultReplayMode::RecomputedCause)
+        {
+            Ok(trace) => Some(trace),
+            Err(crucible_qemu_host::ProductionFaultRuntimeError::Execution(
+                crucible_engine::model::FaultExecutionError::CheckpointPresence,
+            )) => None,
+            Err(error) => {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!("capture production resolved-effect trace: {error}"),
+                });
+            }
+        };
+        let locked_effect_trace =
+            match runtime.recorded_trace(crucible_engine::model::FaultReplayMode::LockedEffect) {
+                Ok(trace) => Some(trace),
+                Err(crucible_qemu_host::ProductionFaultRuntimeError::Execution(
+                    crucible_engine::model::FaultExecutionError::CheckpointPresence,
+                )) => None,
+                Err(error) => {
+                    return Err(SchedulerError::BoundaryViolation {
+                        message: format!("capture production locked-effect trace: {error}"),
+                    });
+                }
+            };
+        let emitted_events = runtime.emitted_events().to_vec();
+        drop(runtime);
+
+        let network = self.inner.network_output_interceptor();
+        let resolved_effect_trace = super::network_faults::trace_with_campaign_network_records(
+            resolved_effect_trace,
+            network.campaign_effect_records(),
+            network.resource_limits(),
+            crucible_engine::model::FaultReplayMode::RecomputedCause,
+        )?;
+        let locked_effect_trace = super::network_faults::trace_with_campaign_network_records(
+            locked_effect_trace,
+            network.campaign_effect_records(),
+            network.resource_limits(),
+            crucible_engine::model::FaultReplayMode::LockedEffect,
+        )?;
+        let network_outages = self
+            .inner
+            .network_output_interceptor()
+            .active_outages(frontier.ticks)?
+            .into_iter()
+            .map(
+                |(target, unavailable_until_nanos)| ProductionNetworkOutageEvidence {
+                    target,
+                    unavailable_until_nanos,
+                },
+            )
+            .collect();
+        let network_queues = self
+            .inner
+            .network_output_interceptor()
+            .active_queue_evidence()?;
+        let devices = self
+            .block_devices
+            .lock()
+            .map_err(|_| SchedulerError::BoundaryViolation {
+                message: String::from("production block-device map lock is poisoned"),
+            })?;
+        let mut block_devices = Vec::with_capacity(devices.len() + self.failed_host_io.len());
+        for (device, handle) in devices.iter() {
+            let (volatile_entries, volatile_entries_digest) = handle
+                .volatile_cache_evidence()
+                .map_err(|error| SchedulerError::BoundaryViolation {
+                    message: format!("inspect production volatile cache: {error}"),
+                })?;
+            let actual_durable_frontier = handle.actual_durable_frontier().map_err(|error| {
+                SchedulerError::BoundaryViolation {
+                    message: format!("inspect production durable frontier: {error}"),
+                }
+            })?;
+            let length =
+                handle
+                    .storage_length()
+                    .map_err(|error| SchedulerError::BoundaryViolation {
+                        message: format!("inspect production storage length: {error}"),
+                    })?;
+            let count = u32::try_from(length.min(4_096)).map_err(|_error| {
+                SchedulerError::BoundaryViolation {
+                    message: String::from("production visible-prefix length conversion failed"),
+                }
+            })?;
+            let visible = handle.inspect_storage_visible(0, count).map_err(|error| {
+                SchedulerError::BoundaryViolation {
+                    message: format!("inspect production visible storage: {error}"),
+                }
+            })?;
+            block_devices.push(ProductionBlockFaultEvidence {
+                device: *device,
+                volatile_entries,
+                volatile_entries_digest: ContentHash {
+                    bytes: volatile_entries_digest,
+                },
+                actual_durable_frontier,
+                visible_prefix_bytes: count,
+                visible_prefix_digest: ContentHash::from_bytes(&visible),
+            });
+        }
+        drop(devices);
+
+        for (node, failed) in &self.failed_host_io {
+            let Some(block) = failed.host_io.block() else {
+                continue;
+            };
+            let binding =
+                self.block_bindings
+                    .get(node)
+                    .ok_or_else(|| SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "failed node `{}` retains block continuation without a World binding",
+                            node.name
+                        ),
+                    })?;
+            let device =
+                block
+                    .storage_device()
+                    .ok_or_else(|| SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "failed node `{}` block continuation has no World device identity",
+                            node.name
+                        ),
+                    })?;
+            if device != binding.device_hash()
+                || block.base_image()
+                    != (ContentHash {
+                        bytes: binding.base.hash(),
+                    })
+                || block.device_length() != binding.base.len()
+            {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "failed node `{}` block continuation differs from its World binding",
+                        node.name
+                    ),
+                });
+            }
+            if block_devices
+                .iter()
+                .any(|evidence| evidence.device == device)
+            {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "failed node `{}` duplicates a live block-device identity",
+                        node.name
+                    ),
+                });
+            }
+
+            let mut restored = crucible_device::block::BlockDevice::restore(
+                block.device_snapshot(),
+                binding.base.clone(),
+                None,
+            )
+            .map_err(|error| SchedulerError::BoundaryViolation {
+                message: format!("restore failed-node block continuation for diagnostics: {error}"),
+            })?;
+            let state = restored.storage_fault_state();
+            let volatile_entries = state.volatile_entries().len();
+            let volatile_entries_digest = ContentHash {
+                bytes: state.volatile_entries_digest(),
+            };
+            let actual_durable_frontier = state.actual_durable_frontier();
+            let count = u32::try_from(restored.length().min(4_096)).map_err(|_error| {
+                SchedulerError::BoundaryViolation {
+                    message: String::from("production visible-prefix length conversion failed"),
+                }
+            })?;
+            let visible = restored
+                .inspect_storage_visible(0, count)
+                .map_err(|error| SchedulerError::BoundaryViolation {
+                    message: format!("inspect failed-node visible storage: {error}"),
+                })?;
+            block_devices.push(ProductionBlockFaultEvidence {
+                device,
+                volatile_entries,
+                volatile_entries_digest,
+                actual_durable_frontier,
+                visible_prefix_bytes: count,
+                visible_prefix_digest: ContentHash::from_bytes(&visible),
+            });
+        }
+        block_devices.sort_by_key(|evidence| evidence.device);
+
+        let nodes = self
+            .source
+            .world()
+            .vm_nodes()
+            .iter()
+            .map(|node| self.production_node_fault_evidence(&node.id))
+            .collect::<Result<Vec<_>, SchedulerError>>()?;
+        Ok(ProductionFaultEvidenceSnapshot {
+            frontier,
+            resolved_effect_trace,
+            locked_effect_trace,
+            emitted_events,
+            network_outages,
+            network_queues,
+            block_devices,
+            nodes,
+        })
+    }
+
+    /// Returns the number of guest-emitted frames not yet globally committed.
+    ///
+    /// A nonzero result means a clean shutdown would discard a frame whose
+    /// source-local emission coordinate is ahead of the conservative world
+    /// frontier. Callers that need a clean terminal boundary should drive more
+    /// ordinary quanta until this count reaches zero.
+    #[must_use]
+    pub fn pending_network_output_count(&self) -> usize {
+        self.inner.pending_network_output_count()
+    }
+
+    pub(super) fn reposition_debug_world(
+        &mut self,
+        request: DebugRuntimeRepositionRequest,
+    ) -> Result<DebugRuntimeRepositionReport, SchedulerError> {
+        self.reconcile_indeterminate_debug_ownership()?;
+        if !request.proves_target_oracle() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "debug runtime replacement request has no valid target replay-oracle proof",
+                ),
+            });
+        }
+        let attach = self
+            .debug_attach
+            .as_ref()
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: String::from("production debugger runtime is not attached"),
+            })?
+            .clone();
+        if attach.node != request.node {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "debug runtime replacement targets `{}`, but the gateway owns `{}`",
+                    request.node.name, attach.node.name
+                ),
+            });
+        }
+        let active_endpoint =
+            DebugGdbEndpoint::new("production_qemu_gdbstub", attach.qemu_endpoint.clone())
+                .map_err(|error| SchedulerError::BoundaryViolation {
+                    message: format!("validate active production debugger endpoint: {error}"),
+                })?;
+        if active_endpoint != request.current_qemu_gdbstub {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "debug runtime replacement does not name the gateway's active backend",
+                ),
+            });
+        }
+        if self.inner.loop_impl().configuration().id() != request.current_configuration {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("debug runtime replacement current configuration is stale"),
+            });
+        }
+
+        let target_evidence = self
+            .debug_runtime_evidence
+            .iter()
+            .find(|evidence| evidence.matches_target(&request))
+            .cloned()
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "debug runtime target has no fingerprint evidence from the original live execution",
+                ),
+            })?;
+
+        let mut candidate = self.replay_debug_candidate(&request)?;
+        let mut verifier = match self.replay_debug_candidate(&request) {
+            Ok(verifier) => verifier,
+            Err(error) => {
+                let _ = candidate.shutdown();
+                return Err(error);
+            }
+        };
+        if let Err(error) = verify_debug_replay_pair(&mut candidate, &mut verifier) {
+            let _ = verifier.shutdown();
+            let _ = candidate.shutdown();
+            return Err(error);
+        }
+        verifier.shutdown()?;
+        if let Err(error) =
+            verify_debug_replay_against_live_evidence(&mut candidate, &target_evidence)
+        {
+            let _ = candidate.shutdown();
+            return Err(error);
+        }
+        let candidate_path = candidate
+            .debug_backend_paths
+            .get(&request.node)
+            .cloned()
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: format!(
+                    "debug replay candidate has no private endpoint for `{}`",
+                    request.node.name
+                ),
+            })?;
+        let candidate_endpoint = DebugGdbEndpoint::new(
+            "production_qemu_gdbstub",
+            candidate_path.to_string_lossy().into_owned(),
+        )
+        .map_err(|error| SchedulerError::BoundaryViolation {
+            message: format!("validate candidate production debugger endpoint: {error}"),
+        })?;
+
+        let promotion = self
+            .debug_gateway
+            .as_mut()
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: String::from("production debugger gateway process is unavailable"),
+            })?
+            .promote_backend(&candidate_path);
+        let generation = match promotion {
+            Ok(generation) => generation,
+            Err(error) => {
+                if error.promotion_requires_gateway_teardown() {
+                    self.debug_gateway_teardown_required = true;
+                    self.indeterminate_debug_candidate = Some(Box::new(candidate));
+                    let teardown = self.reconcile_indeterminate_debug_ownership();
+                    return Err(SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "promote replayed debugger backend: {error}; gateway quarantine reconciliation: {}",
+                            teardown.map_or_else(
+                                |failure| failure.to_string(),
+                                |()| String::from("gateway termination observed")
+                            )
+                        ),
+                    });
+                }
+                let _ = candidate.shutdown();
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!("promote replayed debugger backend: {error}"),
+                });
+            }
+        };
+
+        let mut refreshed_attach = attach;
+        refreshed_attach.qemu_endpoint = candidate_path.to_string_lossy().into_owned();
+        candidate.debug_attach = Some(refreshed_attach);
+        candidate.debug_gateway = self.debug_gateway.take();
+        candidate.debug_runtime_evidence = self.debug_runtime_evidence.clone();
+        let mut previous = std::mem::replace(self, candidate);
+        let retired_world_cleanup = match previous.shutdown() {
+            Ok(_) => DebugRetiredWorldCleanup::Reaped,
+            Err(error) => DebugRetiredWorldCleanup::DetachedCleanupPending {
+                diagnostic: error.to_string().chars().take(512).collect(),
+            },
+        };
+        drop(previous);
+
+        Ok(DebugRuntimeRepositionReport::completed_with_cleanup(
+            &request,
+            candidate_endpoint,
+            generation,
+            retired_world_cleanup,
+        ))
+    }
+
+    fn replay_debug_candidate(
+        &self,
+        request: &DebugRuntimeRepositionRequest,
+    ) -> Result<ProductionVmLifecycleLoop, SchedulerError> {
+        let replay_config = self.config.clone();
+        let replay_launcher = self.node_launcher.replay_candidate().map_err(|error| {
+            SchedulerError::BoundaryViolation {
+                message: format!("admit whole-world debug replay launch authority: {error}"),
+            }
+        })?;
+        let mut replay = build_production_vm_lifecycle_loop_with_restore(
+            &self.scenario,
+            &self.source,
+            &replay_config,
+            None,
+            replay_launcher,
+            None,
+        )
+        .map_err(|error| SchedulerError::BoundaryViolation {
+            message: format!("construct whole-world debug replay candidate: {error}"),
+        })?;
+        let target = &request.target;
+        let controls = self.recorded_controls.clone();
+        let mut control_index = 0_usize;
+        let mut configuration = Configuration::genesis(self.scenario.clone());
+        let max_quanta =
+            replay_config.maximum_scheduler_quanta(self.source.world().vm_nodes().len());
+        for _ in 0..=max_quanta {
+            if configuration == *target && debug_candidate_matches_target_runtime(&replay, request)?
+            {
+                return Ok(replay);
+            }
+            if configuration.schedule.len() > target.schedule.len() {
+                let _ = replay.shutdown();
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "whole-world debug replay bypassed target configuration {}",
+                        target.id().to_hex()
+                    ),
+                });
+            }
+            let prefix = target
+                .schedule
+                .prefix(configuration.schedule.len())
+                .map_err(|error| SchedulerError::BoundaryViolation {
+                    message: format!("validate whole-world debug replay prefix: {error}"),
+                })?;
+            if prefix != configuration.schedule {
+                let _ = replay.shutdown();
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "whole-world debug replay diverged before target configuration {}",
+                        target.id().to_hex()
+                    ),
+                });
+            }
+            let control = match controls.get(control_index) {
+                Some(recorded) if recorded.configuration == configuration => {
+                    let mut observed = BTreeMap::new();
+                    for node in recorded.node_times.keys() {
+                        if replay.inner.backend().node_now(node).is_err() {
+                            let _ = replay.shutdown();
+                            return Err(SchedulerError::BoundaryViolation {
+                                message: format!(
+                                    "whole-world debug replay cannot observe node `{}` for control {}",
+                                    node.name, control_index
+                                ),
+                            });
+                        }
+                        let at = match replay.inner.loop_impl().scheduler_time_for_node(node) {
+                            Ok(at) => at,
+                            Err(error) => {
+                                let _ = replay.shutdown();
+                                return Err(error);
+                            }
+                        };
+                        observed.insert(node.clone(), at);
+                    }
+                    match classify_recorded_control_boundary(&recorded.node_times, &observed) {
+                        RecordedControlBoundary::Pending => Vec::new(),
+                        RecordedControlBoundary::Ready => recorded.control.clone(),
+                        RecordedControlBoundary::Bypassed => {
+                            let _ = replay.shutdown();
+                            return Err(SchedulerError::BoundaryViolation {
+                                message: format!(
+                                    "whole-world debug replay bypassed control {} node-time boundary",
+                                    control_index
+                                ),
+                            });
+                        }
+                    }
+                }
+                Some(recorded)
+                    if recorded.configuration.schedule.len() <= configuration.schedule.len() =>
+                {
+                    let _ = replay.shutdown();
+                    return Err(SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "whole-world debug replay bypassed recorded control {} at configuration {}",
+                            control_index,
+                            recorded.configuration.id().to_hex()
+                        ),
+                    });
+                }
+                _ => Vec::new(),
+            };
+            if !control.is_empty() {
+                control_index = control_index.saturating_add(1);
+            }
+            configuration = crucible_session::drive_engine_quantum(
+                &mut replay,
+                QuantumRequest {
+                    configuration,
+                    control,
+                },
+            )?
+            .configuration;
+        }
+        let _ = replay.shutdown();
+        Err(SchedulerError::BoundaryViolation {
+            message: format!(
+                "whole-world debug replay did not reach target configuration {} within {max_quanta} quanta",
+                target.id().to_hex()
+            ),
+        })
+    }
+
+    pub(super) fn reconcile_indeterminate_debug_ownership(&mut self) -> Result<(), SchedulerError> {
+        if !self.debug_gateway_teardown_required {
+            return Ok(());
+        }
+        let gateway =
+            self.debug_gateway
+                .as_mut()
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: String::from(
+                        "debug gateway teardown is required but its process handle is unavailable",
+                    ),
+                })?;
+        gateway
+            .terminate()
+            .map_err(|error| SchedulerError::BoundaryViolation {
+                message: format!(
+                    "debug gateway ownership remains indeterminate; candidate runtime retained: {error}"
+                ),
+            })?;
+        self.debug_gateway = None;
+        self.debug_attach = None;
+        self.debug_gateway_teardown_required = false;
+        if let Some(mut candidate) = self.indeterminate_debug_candidate.take() {
+            candidate.debug_gateway = None;
+            candidate.debug_attach = None;
+            candidate
+                .shutdown()
+                .map_err(|error| SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "shutdown quarantined debugger replay candidate after gateway termination: {error}"
+                    ),
+                })?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn capture_debug_runtime_evidence(&mut self) -> Result<(), SchedulerError> {
+        if self.config.debug.is_none() {
+            return Ok(());
+        }
+        let nodes = self
+            .source
+            .world()
+            .vm_nodes()
+            .iter()
+            .map(|vm| vm.id.clone())
+            .collect::<Vec<_>>();
+        let mut node_icounts = BTreeMap::new();
+        let mut node_times = BTreeMap::new();
+        // A later node's clock error must not hide an earlier fingerprint error.
+        // Sample the valid prefix before reporting its first metadata failure.
+        let mut sampled_nodes = Vec::with_capacity(nodes.len());
+        let mut first_metadata_error = None;
+        for node in &nodes {
+            let now = match self.inner.backend().node_now(node) {
+                Ok(now) => now,
+                Err(error) => {
+                    first_metadata_error = Some(SchedulerError::Backend(error));
+                    break;
+                }
+            };
+            let scheduler_time = match self.inner.loop_impl().scheduler_time_for_node(node) {
+                Ok(time) => time,
+                Err(error) => {
+                    first_metadata_error = Some(error);
+                    break;
+                }
+            };
+            if let Err(error) = self.inner.backend().validate_fingerprint_node(node) {
+                first_metadata_error = Some(SchedulerError::Backend(error));
+                break;
+            }
+
+            node_icounts.insert(node.clone(), Icount { retired: now.ticks });
+            node_times.insert(node.clone(), scheduler_time);
+            sampled_nodes.push(node.clone());
+        }
+        let maximum_host_workers = sampled_nodes
+            .len()
+            .min(self.config.maximum_host_workers)
+            .max(1);
+        let fingerprints = self
+            .inner
+            .backend_mut()
+            .fingerprints_at_boundary(&sampled_nodes, maximum_host_workers)?;
+        if let Some(error) = first_metadata_error {
+            return Err(error);
+        }
+        let evidence = ProductionVmDebugRuntimeEvidence {
+            configuration: self.inner.loop_impl().configuration().id(),
+            event_log: self.inner.loop_impl().event_log_offset(),
+            scheduler: self.inner.loop_impl().materialized_scheduler_state(),
+            node_icounts,
+            node_times,
+            fingerprints,
+            graph_runtimes: Vec::new(),
+            runtime: None,
+        };
+        if self
+            .debug_runtime_evidence
+            .last()
+            .is_none_or(|last| !last.same_sample(&evidence))
+        {
+            self.debug_runtime_evidence.push(evidence);
+        }
+        Ok(())
+    }
+
+    pub(super) fn bind_latest_debug_runtime_evidence(
+        &mut self,
+        configuration: &Configuration,
+        runtime: &RuntimeState,
+    ) -> Result<RuntimeState, SchedulerError> {
+        if self.config.debug.is_none() {
+            return Ok(runtime.clone());
+        }
+        let reduced = crucible_engine::reduce(&configuration.def, &configuration.schedule)
+            .map_err(|error| SchedulerError::BoundaryViolation {
+                message: format!("reduce graph runtime before debugger evidence binding: {error}"),
+            })?;
+        let latest_index = self
+            .debug_runtime_evidence
+            .len()
+            .checked_sub(1)
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "production debugger runtime has no sampled boundary evidence to bind",
+                ),
+            })?;
+        let evidence = &self.debug_runtime_evidence[latest_index];
+        evidence.validate_graph_runtime(configuration.id(), reduced.id, runtime)?;
+        let bound_runtime = evidence.bind_graph_runtime(runtime);
+        let evidence = &mut self.debug_runtime_evidence[latest_index];
+        if !evidence.graph_runtimes.contains(runtime) {
+            evidence.graph_runtimes.push(runtime.clone());
+        }
+        evidence.runtime = Some(bound_runtime.clone());
+        Ok(bound_runtime)
+    }
+
+    pub(super) fn resolve_recorded_debug_runtime_evidence(
+        &self,
+        runtime: &RuntimeState,
+    ) -> Result<RuntimeState, SchedulerError> {
+        if self.config.debug.is_none() {
+            return Ok(runtime.clone());
+        }
+        let evidence = self
+            .debug_runtime_evidence
+            .iter()
+            .rev()
+            .find(|evidence| evidence.matches_graph_runtime(runtime))
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "graph debug target has no matching production runtime evidence",
+                ),
+            })?;
+        evidence
+            .runtime
+            .clone()
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "production runtime evidence was not bound to graph materialization",
+                ),
+            })
+    }
+
+    pub(super) fn resolve_recorded_debug_coordinate_runtime_evidence(
+        &self,
+        coordinate: &crucible_engine::DebugCoordinate,
+        runtime: &RuntimeState,
+    ) -> Result<RuntimeState, SchedulerError> {
+        let evidence = match coordinate {
+            crucible_engine::DebugCoordinate::EventSequence(sequence) => self
+                .debug_runtime_evidence
+                .iter()
+                .filter(|evidence| {
+                    evidence.matches_graph_runtime(runtime) && evidence.runtime.is_some()
+                })
+                .find(|evidence| evidence.event_log.events > *sequence),
+            crucible_engine::DebugCoordinate::VirtualTime(time) => self
+                .debug_runtime_evidence
+                .iter()
+                .rev()
+                .filter(|evidence| {
+                    evidence.matches_graph_runtime(runtime) && evidence.runtime.is_some()
+                })
+                .find(|evidence| evidence.scheduler_frontier(*time) <= *time),
+            crucible_engine::DebugCoordinate::NodeIcount { node, icount } => self
+                .debug_runtime_evidence
+                .iter()
+                .rev()
+                .filter(|evidence| {
+                    evidence.matches_graph_runtime(runtime) && evidence.runtime.is_some()
+                })
+                .find(|evidence| {
+                    evidence
+                        .node_icounts
+                        .get(node)
+                        .is_some_and(|observed| observed <= icount)
+                }),
+            crucible_engine::DebugCoordinate::Configuration(_)
+            | crucible_engine::DebugCoordinate::Checkpoint(_) => self
+                .debug_runtime_evidence
+                .iter()
+                .find(|evidence| evidence.runtime.as_ref() == Some(runtime))
+                .or_else(|| {
+                    self.debug_runtime_evidence.iter().rev().find(|evidence| {
+                        evidence.matches_graph_runtime(runtime) && evidence.runtime.is_some()
+                    })
+                }),
+        }
+        .ok_or_else(|| SchedulerError::BoundaryViolation {
+            message: format!(
+                "debug coordinate {coordinate:?} has no matching production runtime boundary evidence"
+            ),
+        })?;
+        evidence
+            .runtime
+            .clone()
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "production coordinate evidence was not bound to graph materialization",
+                ),
+            })
+    }
+
+    /// Resolves the production scheduler frontier recorded for a debug target.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when the resolved runtime
+    /// has no corresponding production evidence sample.
+    pub(super) fn resolve_recorded_debug_coordinate_frontier(
+        &self,
+        coordinate: &crucible_engine::DebugCoordinate,
+        runtime: &RuntimeState,
+        graph_fallback: VirtualTime,
+    ) -> Result<VirtualTime, SchedulerError> {
+        let evidence = self
+            .debug_runtime_evidence
+            .iter()
+            .find(|evidence| evidence.runtime.as_ref() == Some(runtime))
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: format!(
+                    "debug coordinate {coordinate:?} has no matching production frontier evidence"
+                ),
+            })?;
+        Ok(evidence.scheduler_frontier(graph_fallback))
+    }
+
+    /// Fires authored entrypoints before any record leaves the genesis prefix.
+    pub(super) fn settle_genesis_entrypoints(
+        &mut self,
+    ) -> Result<Option<SchedulerEventLogAppend>, SchedulerError> {
+        if !self.initial_lifecycle_observations_pending {
+            return Ok(None);
+        }
+        // Initial node-state and fault observations turn the prefix into an
+        // event boundary. Entrypoints must run first; conditional events still
+        // wait for the ordinary pass over those initial observations.
+        let entrypoints = EventGraph::new_for_world(
+            self.trigger_graph
+                .events()
+                .iter()
+                .filter(|event| event.trigger.is_none())
+                .cloned()
+                .collect(),
+            &self.trigger_world,
+        )
+        .map_err(|error| SchedulerError::BoundaryViolation {
+            message: format!("isolate initial trigger entrypoints: {error}"),
+        })?;
+        if entrypoints.events().is_empty() {
+            return Ok(None);
+        }
+        let scheduler = self.inner.loop_impl();
+        let prefix = scheduler.condition_event_log_prefix();
+        if prefix.point().kind() != crucible_engine::EventEvaluationKind::Genesis {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("initial trigger entrypoints lost their genesis boundary"),
+            });
+        }
+        let mut pass = ConditionEvaluationPass::from_log_prefix_ref(prefix, no_named_trigger_leaf)
+            .with_timer_fires(scheduler.trigger_actions().armed_timers.clone())
+            .with_scheduler_quiescence(scheduler.quiescence()?)
+            .with_world_white_box_policies(&self.trigger_world);
+        let firings = pass.evaluate_event_graph(&entrypoints, &mut self.trigger_state);
+        if firings.is_empty() {
+            return Ok(None);
+        }
+        merge_terminal_verdict(&mut self.terminal_verdict, &firings);
+        let append = self.inner.loop_impl_mut().apply_trigger_firings(&firings)?;
+        self.inner
+            .loop_impl_mut()
+            .apply_queued_topology_changes_at_boundary()?;
+        Ok(Some(append))
+    }
+
+    pub(super) fn settle_trigger_graph(
+        &mut self,
+    ) -> Result<Vec<SchedulerEventLogAppend>, SchedulerError> {
+        let mut appends = Vec::new();
+        if self.initial_lifecycle_observations_pending {
+            let at = self.inner.loop_impl().frontier();
+            let initial_events = initial_node_state_events(&self.source, at);
+            appends.push(
+                self.inner
+                    .loop_impl_mut()
+                    .append_observable_events(initial_events)?,
+            );
+            self.initial_lifecycle_observations_pending = false;
+        }
+        for _ in 0..MAX_TRIGGER_SETTLE_BATCHES {
+            // Rebuild this derived horizon from restored/settled authority before
+            // quiescence evaluation. In particular, a consumed deadline must not
+            // remain a stale blocker, and a newly armed timer must cap the next RUN.
+            let scheduler = self.inner.loop_impl();
+            let (wakeup, activation) = if self.terminal_verdict.is_some() {
+                let target = self.terminal_settlement_target().ok_or_else(|| {
+                    SchedulerError::BoundaryViolation {
+                        message: String::from(
+                            "terminal verdict has no checkpointed trigger firing",
+                        ),
+                    }
+                })?;
+                let wakeup = (target > scheduler.frontier()).then_some(target);
+                // A terminal pulse from a leading node is observable before the
+                // shared frontier reaches it. Keep the scheduler capped at that
+                // point until earlier network outputs are committed.
+                (wakeup, None)
+            } else {
+                let wakeup = self.trigger_state.next_evaluation_deadline(
+                    &self.trigger_graph,
+                    &scheduler.trigger_actions().armed_timers,
+                    scheduler.frontier(),
+                )?;
+                let activation = self.trigger_state.next_activation_deadline(
+                    &self.trigger_graph,
+                    &scheduler.trigger_actions().armed_timers,
+                    scheduler.frontier(),
+                )?;
+                (wakeup, activation)
+            };
+            self.inner
+                .loop_impl_mut()
+                .set_trigger_wakeup(wakeup, activation)?;
+            if self.terminal_verdict.is_some() {
+                return Ok(appends);
+            }
+            let assertion_outcomes = self.assertion_evaluator.observe_prefix(
+                self.inner.loop_impl().condition_event_log_prefix(),
+                &mut self.assertion_oracle,
+            );
+            let assertion_events = assertion_outcomes
+                .iter()
+                .filter_map(assertion_state_event_from_outcome)
+                .collect::<Vec<_>>();
+            let assertions_changed = !assertion_events.is_empty();
+            if assertions_changed {
+                appends.push(
+                    self.inner
+                        .loop_impl_mut()
+                        .append_observable_events(assertion_events)?,
+                );
+            }
+
+            let scheduler = self.inner.loop_impl();
+            let mut pass = ConditionEvaluationPass::from_log_prefix_ref(
+                scheduler.condition_event_log_prefix(),
+                no_named_trigger_leaf,
+            )
+            .with_timer_fires(scheduler.trigger_actions().armed_timers.clone())
+            .with_scheduler_quiescence(scheduler.quiescence()?)
+            .with_world_white_box_policies(&self.trigger_world);
+            let firings = pass.evaluate_event_graph_at_frontier(
+                &self.trigger_graph,
+                &mut self.trigger_state,
+                scheduler.frontier(),
+            );
+            if firings.is_empty() && !assertions_changed {
+                return Ok(appends);
+            }
+            if !firings.is_empty() {
+                merge_terminal_verdict(&mut self.terminal_verdict, &firings);
+                let append = self.inner.loop_impl_mut().apply_trigger_firings(&firings)?;
+                appends.push(append);
+                self.inner
+                    .loop_impl_mut()
+                    .apply_queued_topology_changes_at_boundary()?;
+            }
+        }
+        Err(SchedulerError::BoundaryViolation {
+            message: format!(
+                "trigger graph did not settle within {MAX_TRIGGER_SETTLE_BATCHES} batches"
+            ),
+        })
+    }
+}
+
+#[cfg(test)]
+#[path = "runtime/tests.rs"]
+pub(super) mod tests;

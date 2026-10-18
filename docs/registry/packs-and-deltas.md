@@ -250,7 +250,7 @@ of releases). Object correctness is the root `/objects/` store's job.
 
 ## 7. CURRENT implementation status
 
-`crates/aos-package/src/registry/pack.rs` implements the core pack primitives:
+`crates/aos/registry/aos-registry-authoring/src/registry/pack.rs` implements the core pack primitives:
 
 - release-kind classification and the guaranteed delta-base scheme;
 - libgit2 full-pack generation plus producer-side `.idx` emission;
@@ -262,7 +262,7 @@ of releases). Object correctness is the root `/objects/` store's job.
 sha256 object-format checks, release object-dir mapping, root loose-object path
 validation, relative alternates, and `git update-server-info`.
 
-`crates/aos-package/src/registry/fetch.rs` implements the consumer resolution
+`crates/aos/registry/aos-registry-client/src/registry/fetch.rs` implements the consumer resolution
 layer: retained-base delta selection, target-anchor full-pack fallback, and a
 final `git fetch` fallback for the dumb-HTTP loose-object correctness floor.
 Channel sync calls this resolver after the signed tag chain and semver floor
@@ -297,7 +297,7 @@ REGISTRY_PERF_METRIC reconstruct_ns=2568679
 ```
 
 A lower-level opt-in Rust harness lives in
-[`crates/aos-package/tests/registry_perf.rs`](../../crates/aos-package/tests/registry_perf.rs)
+[`crates/aos/registry/aos-registry-authoring/tests/registry_perf.rs`](../../crates/aos/registry/aos-registry-authoring/tests/registry_perf.rs)
 for local debugging and parameter experiments.
 
 ---

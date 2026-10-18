@@ -39,7 +39,7 @@
         needle = "`T-SESS-1` is green through `checks.crucible.phase5.sessionActor`";
       }
     ]
-    ++ failuresFor "crates/crucible-session/src/lib.rs" sessionLib [
+    ++ failuresFor "crates/crucible/control/crucible-session/src/lib.rs" sessionLib [
       {
         label = "engine type";
         needle = "pub struct Engine";
@@ -101,7 +101,7 @@
         needle = "session_actor_source_does_not_lock_engine_across_run";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible-session/src/lib.rs" sessionLib [
+    ++ forbiddenFailuresFor "crates/crucible/control/crucible-session/src/lib.rs" sessionLib [
       {
         label = "engine behind Arc";
         needle = "engine: Arc<";
@@ -178,8 +178,11 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps =
         [
+          pkgs.sqlite
           pkgs.coreutils
           pkgs.rust
           pkgs.sed

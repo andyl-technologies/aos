@@ -20,13 +20,13 @@
     inherit pkgs lib campaignComposition testing;
   };
 
-  deviceManifest = builtins.readFile ../../crates/crucible-device/Cargo.toml;
-  deviceGate = builtins.readFile ../../crates/crucible-device/tests/gate_layer1_injection.rs;
-  protocolLib = builtins.readFile ../../crates/crucible-protocol/src/lib.rs;
-  protocolGate = builtins.readFile ../../crates/crucible-protocol/tests/gate_layer1_injection.rs;
-  gateTargets = builtins.readFile ../../crates/crucible-harness/src/gate_targets.rs;
-  gateCatalog = builtins.readFile ../../crates/crucible-harness/src/lib.rs;
-  gateCatalogTest = builtins.readFile ../../crates/crucible-harness/tests/gate_catalog.rs;
+  deviceManifest = builtins.readFile ../../crates/crucible/engine/crucible-device/Cargo.toml;
+  deviceGate = builtins.readFile ../../crates/crucible/engine/crucible-device/tests/gate_layer1_injection.rs;
+  protocolLib = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs;
+  protocolGate = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-protocol/tests/gate_layer1_injection.rs;
+  gateTargets = builtins.readFile ../../crates/crucible/testing/crucible-test-support/src/gate_targets.rs;
+  gateCatalog = builtins.readFile ../../crates/crucible/testing/crucible-test-support/src/lib.rs;
+  gateCatalogTest = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/gate_catalog.rs;
   gateTargetMapping = builtins.readFile ./phase1-gate-target-mapping.nix;
   determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
   harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
@@ -37,13 +37,13 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "crates/crucible-device/Cargo.toml" deviceManifest [
+    failuresFor "crates/crucible/engine/crucible-device/Cargo.toml" deviceManifest [
       {
         label = "shmem dev dependency for Contract B double";
-        needle = "crucible-shmem = { path = \"../crucible-shmem\" }";
+        needle = "crucible-qemu-shmem = { path = \"../../protocol/crucible-qemu-shmem\" }";
       }
     ]
-    ++ failuresFor "crates/crucible-device/tests/gate_layer1_injection.rs" deviceGate [
+    ++ failuresFor "crates/crucible/engine/crucible-device/tests/gate_layer1_injection.rs" deviceGate [
       {
         label = "run-twice observed vector gate test";
         needle = "gate_layer1_injection_run_twice_observed_vectors_match";
@@ -101,19 +101,19 @@
         needle = "assert_ne!(producer_skewed, consumer_skewed);";
       }
     ]
-    ++ forbiddenFor "crates/crucible-device/tests/gate_layer1_injection.rs" deviceGate [
+    ++ forbiddenFor "crates/crucible/engine/crucible-device/tests/gate_layer1_injection.rs" deviceGate [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
       }
     ]
-    ++ forbiddenFor "crates/crucible-device/tests/gate_layer1_injection.rs" deviceGate [
+    ++ forbiddenFor "crates/crucible/engine/crucible-device/tests/gate_layer1_injection.rs" deviceGate [
       {
         label = "placeholder panic";
         needle = "implementation is pending";
       }
     ]
-    ++ failuresFor "crates/crucible-protocol/src/lib.rs" protocolLib [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs" protocolLib [
       {
         label = "runtime data-plane contract";
         needle = "pub const RUNTIME_DATA_PLANE_CONTRACT";
@@ -131,7 +131,7 @@
         needle = "control_channel_silent_between_setup_ack_and_quit: true";
       }
     ]
-    ++ failuresFor "crates/crucible-protocol/tests/gate_layer1_injection.rs" protocolGate [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-protocol/tests/gate_layer1_injection.rs" protocolGate [
       {
         label = "protocol no runtime injection data test";
         needle = "gate_layer1_injection_control_protocol_carries_no_runtime_injection_data";
@@ -141,7 +141,7 @@
         needle = "gate_layer1_injection_control_protocol_is_silent_on_hot_path";
       }
     ]
-    ++ forbiddenFor "crates/crucible-protocol/tests/gate_layer1_injection.rs" protocolGate [
+    ++ forbiddenFor "crates/crucible/protocol/crucible-qemu-protocol/tests/gate_layer1_injection.rs" protocolGate [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -151,23 +151,23 @@
         needle = "implementation is pending";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/src/gate_targets.rs" gateTargets [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/src/gate_targets.rs" gateTargets [
       {
         label = "crucible-device layer1 target implemented";
         needle = "package: \"crucible-device\",\n        test_target: \"gate_layer1_injection\",\n        required_features: &[],";
       }
       {
         label = "crucible-protocol layer1 target implemented";
-        needle = "package: \"crucible-protocol\",\n        test_target: \"gate_layer1_injection\",\n        required_features: &[],";
+        needle = "package: \"crucible-qemu-protocol\",\n        test_target: \"gate_layer1_injection\",\n        required_features: &[],";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/src/lib.rs" gateCatalog [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/src/lib.rs" gateCatalog [
       {
         label = "implemented canonical layer1 injection gate status";
         needle = "name: \"gate:layer1-injection\",\n        phase: GatePhase::Phase2,\n        owner: \"crucible-device\",\n        status: GateStatus::Implemented,";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/tests/gate_catalog.rs" gateCatalogTest [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/tests/gate_catalog.rs" gateCatalogTest [
       {
         label = "layer1 implemented status assertion";
         needle = "find_gate(\"gate:layer1-injection\").map(|spec| spec.status),\n        Some(GateStatus::Implemented)";

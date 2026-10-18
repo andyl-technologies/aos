@@ -138,9 +138,9 @@ buildable spec, not a slogan.
 
 ### 2.1 The banned-pattern set
 
-- **[STD-10]** In every **engine and scheduler crate** (L0 `crucible-sim`,
-  `crucible-assert`; L1 `crucible-shmem`, `crucible-protocol`, `crucible-device`;
-  L3 `crucible`; and any host code on an ordering-significant path), the
+- **[STD-10]** In every **engine and scheduler crate** (L0 `crucible-determinism`;
+  L1 `crucible-qemu-shmem`, `crucible-qemu-protocol`, `crucible-device`;
+  L3 `crucible-engine`; and any host code on an ordering-significant path), the
   following patterns are **banned** and a single occurrence fails
   `gate:harness-lint`:
 
@@ -264,7 +264,7 @@ atomics with explicit orderings — and nowhere else. The root `AGENTS.md` rule
   crate root; the [`27-crate-structure.md`](27-crate-structure.md) crate table is
   the source of truth for which crates carry the fence and which are exempt. The
   set of `unsafe`-permitted crates is limited to those that genuinely need it:
-  the shmem/transport crate(s) (`crucible-shmem` for the mmap'd `#[repr(C)]`
+  the shmem/transport crate(s) (`crucible-qemu-shmem` for the mmap'd `#[repr(C)]`
   region and the SPSC ring's atomics), and the QEMU-plugin crate
   (`crucible-qemu-plugin`, the in-VM `cdylib` that crosses the C plugin ABI).
   Adding `unsafe` to any other crate requires removing its `forbid` fence, which
@@ -445,11 +445,11 @@ layer's gate and MUST NOT be "covered" from a higher layer ([HARN-3]).
   [`00-conventions.md`](00-conventions.md).
 
 - **[STD-34]** **License-boundary review.** Code and documentation that touch
-  QEMU integration, `crucible-qemu-plugin`, `crucible-protocol`,
-  `crucible-shmem`, packaging, or guest doorbells MUST preserve the component,
+  QEMU integration, `crucible-qemu-plugin`, `crucible-qemu-protocol`,
+  `crucible-qemu-shmem`, packaging, or guest doorbells MUST preserve the component,
   dependency, and public-protocol rules in
   [`37-licensing-process-boundary.md`](37-licensing-process-boundary.md). The
-  `gate:license-boundary` Always gate owned by `crucible-harness` MUST fail
+  `gate:license-boundary` Always gate owned by `crucible-test-support` MUST fail
   closed on a violation. *Gate:* `gate:license-boundary`. *Spec:* §37.
 
 ---
@@ -457,8 +457,8 @@ layer's gate and MUST NOT be "covered" from a higher layer ([HARN-3]).
 ## 6. The determinism review checklist
 
 Every PR that touches an **engine, scheduler, or transport** crate (L0
-`crucible-sim`/`crucible-assert`; L1 `crucible-shmem`/`crucible-protocol`/
-`crucible-device`; L3 `crucible`), or any host code on an ordering-significant
+`crucible-determinism`; L1 `crucible-qemu-shmem`/`crucible-qemu-protocol`/
+`crucible-device`; L3 `crucible-engine`), or any host code on an ordering-significant
 path, MUST have this checklist applied by the reviewer before merge. It is the
 human backstop behind the lint ([STD-15]) and the runtime gates: the lint catches
 the mechanical cases, the gates catch what runs, and this checklist catches the
@@ -619,9 +619,9 @@ the conditions under which feature code can be trusted to stay deterministic
   — satisfies [STD-22], [STD-23]; spec §4.
   - Defect (audit 2026-07-28): [T-STD-9] requires "loom + proptest on the SPSC
     ring", but neither crate appears in any `Cargo.toml` in the workspace and
-    `crucible-shmem` declares no `[dev-dependencies]` at all. The actual
+    `crucible-qemu-shmem` declares no `[dev-dependencies]` at all. The actual
     implementation, `assert_spsc_ring_loom_model` in
-    `crucible-shmem/tests/gate_layer1_injection.rs`, is a hand-rolled exhaustive
+    `crucible/protocol/crucible-qemu-shmem/tests/gate_layer1_injection.rs`, is a hand-rolled exhaustive
     checker over the RFC 13.6 orderings with genuine negative controls proving
     that relaxed orderings admit torn frames — substantive work, but not loom and
     not property-based. `checks.crucible.phase1.concurrencyAbiOracleStandards`

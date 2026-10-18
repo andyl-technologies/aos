@@ -11,7 +11,7 @@
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
   sessionGateTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-session/tests/gate_control_responsive.rs;
+    entry = ../../crates/crucible/control/crucible-session/tests/gate_control_responsive.rs;
   };
   sessionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/20-session-control-plane.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
@@ -34,7 +34,7 @@
         needle = "`T-SESS-10` is green through `checks.crucible.phase5.sessionLockFreeObservation`";
       }
     ]
-    ++ failuresFor "crates/crucible-session/src/lib.rs" sessionLib [
+    ++ failuresFor "crates/crucible/control/crucible-session/src/lib.rs" sessionLib [
       {
         label = "lock-free live snapshot type";
         needle = "pub struct LiveSnapshot";
@@ -192,7 +192,7 @@
         needle = "session_state_transition_stream_reports_lag_without_backpressure";
       }
     ]
-    ++ failuresFor "crates/crucible-session/tests/gate_control_responsive.rs" sessionGateTest [
+    ++ failuresFor "crates/crucible/control/crucible-session/tests/gate_control_responsive.rs" sessionGateTest [
       {
         label = "live snapshot gate";
         needle = "gate_control_responsive_reads_live_snapshot_without_mailbox_roundtrip";
@@ -257,8 +257,11 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps =
         [
+          pkgs.sqlite
           pkgs.coreutils
           pkgs.rust
           pkgs.sed

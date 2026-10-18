@@ -1,12 +1,13 @@
 # RFC-0010: Crucible — a hermetically deterministic multi-VM simulation harness
 
-- **Status:** Proposed (design-only; no implementation yet). This RFC is
-  written in the present tense to describe the *target* system; nothing here
-  ships until the phased plan in [`32-implementation-plan.md`](32-implementation-plan.md)
-  is worked through and each phase's gate is green.
+- **Status:** Architectural specification with implemented workspace components.
+  Requirements describe the target guarantees; implementation and qualification
+  are tracked in [`32-implementation-plan.md`](32-implementation-plan.md) and the
+  [validation record](../../architecture/crate-migration-validation.md). The current
+  package map does not claim that every phase's gate is green.
 - **Date:** 2026-06-18
 - **PR:** [#112](https://github.com/andyl-technologies/aos/pull/112) (draft)
-- **Audience:** anyone working on `crates/crucible-*`, the AOS QEMU package
+- **Audience:** anyone working on `crates/crucible/`, the AOS QEMU package
   (`pkgs/emulation/qemu*`) and its atomic patch, the AOS kernel/rootfs builders,
   or CI determinism gates.
 
@@ -104,11 +105,12 @@ Underneath, the runtime is layered (L0–L4, [`27-crate-structure.md`](27-crate-
 each layer with its own determinism gate:
 
 ```text
-  L4  control plane      crucible-session (actor) · crucible-api · crucible-daemon · crucible (CLI)
-  L3  engine             crucible — scenario model, scheduler, faults, assertions, temporal graph
-  L2  QEMU integration   crucible-qemu (host) · crucible-qemu-plugin (in-VM cdylib) · crucible-guest
-  L1  co-sim transport   crucible-shmem (ABI) · crucible-protocol · crucible-device (disk/9p/net sub-nodes)
-  L0  deterministic core  crucible-sim (runtime/scheduler primitives) · crucible-assert
+  L4  control plane      crucible-session (actor) · crucible-control-api/client/server
+                         crucible-daemon · crucible-cli (installed command: crucible)
+  L3  engine             crucible-engine — scenario model, scheduler, faults, assertions, temporal graph
+  L2  QEMU integration   crucible-qemu-host (host) · crucible-qemu-plugin (in-VM cdylib) · crucible-guest
+  L1  co-sim transport   crucible-qemu-shmem (ABI) · crucible-qemu-protocol · crucible-device (disk/9p/net sub-nodes)
+  L0  deterministic core  crucible-determinism (runtime/scheduler primitives)
 ```
 
 The hard determinism work concentrates at L0–L2: eliminate every entropy source

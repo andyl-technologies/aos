@@ -134,14 +134,14 @@
     builtins.filter (name: name == "aos" || lib.hasPrefix "aos-" name) workspacePackageNames
   ));
   applicationTestFlags =
-    "--features aos/release-fleet-fixture "
+    "--features aos-cli/release-fleet-fixture "
     + builtins.concatStringsSep " " (
       map (package: "-p ${package}") applicationTestPackages
     );
   # Build both command surfaces in one feature-unified Cargo invocation so
   # their shared dependencies are compiled only once.
   releaseBuildCommands = [
-    "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos -p aos-package -p aos-image-finalizer --bins --features aos/release-fleet-fixture"
+    "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-cli -p aos-package-manager -p aos-image-finalizer --bins --features aos-cli/release-fleet-fixture"
   ];
   cargoDeps = aosWorkspaceVendor;
   cargoArtifactContract = {
@@ -501,7 +501,7 @@
         cargo test \
           --frozen \
           --offline \
-          -p aos-systemd \
+          -p aos-systemd-client \
           --test pinned_bus \
           -- \
           --ignored \
@@ -580,7 +580,7 @@
           export AOS_TEST_IDENTITY_PRELOAD="$NIX_BUILD_TOP/aos-test-identity.so"
           cc -shared -fPIC -O2 -Wall -Wextra -Werror \
             -o "$AOS_TEST_IDENTITY_PRELOAD" \
-            aos-hub/tests/nix_builder_identity.c
+            hub/aos-hub-native/tests/nix_builder_identity.c
         ''
       }
     '';
@@ -713,7 +713,7 @@
           # Give the shared binary the private entry-point name so
           # current_exe() resolves to the exact signed handler path. The public
           # and split-output private links preserve their own argv[0], which
-          # selects the corresponding parser in crates/aos/src/apm.rs.
+          # selects the corresponding parser in crates/aos/cli/aos-cli/src/apm.rs.
           mv \
             "$apm/bin/.apm-unwrapped" \
             "$apm/bin/.aos-package-runtime-unwrapped"

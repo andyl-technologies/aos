@@ -4,7 +4,7 @@
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   standards = builtins.readFile ../../docs/rfcs/0010-crucible/28-engineering-standards.md;
-  reviewRust = builtins.readFile ../../crates/crucible-harness/tests/determinism_review.rs;
+  reviewRust = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/determinism_review.rs;
   defaultNix = builtins.readFile ./default.nix;
   expectedDeterminismChecklistItems = 15;
 

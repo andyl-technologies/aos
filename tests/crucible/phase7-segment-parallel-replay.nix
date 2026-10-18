@@ -9,15 +9,15 @@
 }: let
   taskList = lib.concatStringsSep "," taskIds;
   segmentReplaySource = builtins.path {
-    path = ../../crates/crucible-harness/src/segment_replay.rs;
+    path = ../../crates/crucible/testing/crucible-test-support/src/segment_replay.rs;
     name = "crucible-segment-replay.rs";
   };
   segmentDivergenceSource = builtins.path {
-    path = ../../crates/crucible-harness/src/divergence/segment.rs;
+    path = ../../crates/crucible/testing/crucible-test-support/src/divergence/segment.rs;
     name = "crucible-segment-divergence.rs";
   };
   divergenceGateSource = builtins.path {
-    path = ../../crates/crucible-harness/tests/gate_divergence_bisect.rs;
+    path = ../../crates/crucible/testing/crucible-test-support/tests/gate_divergence_bisect.rs;
     name = "crucible-gate-divergence-bisect.rs";
   };
   dependencyResult = dependency:

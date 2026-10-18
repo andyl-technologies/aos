@@ -40,10 +40,10 @@ in
           set -eu
           target="$TMPDIR/basic-block-coverage-target"
           cargo test --frozen --offline --target-dir "$target" \
-            --manifest-path crates/Cargo.toml -p crucible \
+            --manifest-path crates/Cargo.toml -p crucible-engine \
             --test gate_basic_block_coverage -- --test-threads=1
           cargo test --frozen --offline --target-dir "$target" \
-            --manifest-path crates/Cargo.toml -p crucible-qemu \
+            --manifest-path crates/Cargo.toml -p crucible-qemu-host \
             mapped_quantum::coverage_tests --lib -- --test-threads=1
           cargo test --frozen --offline --target-dir "$target" \
             --manifest-path crates/Cargo.toml -p crucible-qemu-plugin \

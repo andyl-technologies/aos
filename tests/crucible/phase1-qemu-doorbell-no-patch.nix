@@ -13,8 +13,8 @@
   phase0S2Plugin = builtins.readFile ./phase0-s2-io-idle-plugin.c;
   phase0S5Plugin = builtins.readFile ./phase0-s5-virtual-memory-plugin.c;
   phase0S5Check = builtins.readFile ./phase0-s5.nix;
-  pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
-  pluginWhiteboxDoorbell = builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs;
+  pluginLib = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs;
+  pluginWhiteboxDoorbell = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell.rs;
   defaultChecks = builtins.readFile ./default.nix;
   atomicPatch = import ../../pkgs/emulation/qemu-patches/_atomic-patch.nix;
   phase0S2 = import ./phase0-s2.nix {inherit pkgs lib;};
@@ -142,7 +142,7 @@
         needle = "side_effect_free_fingerprint_match=true";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs" pluginLib [
       {
         label = "doorbell execution callback symbol exported";
         needle = "QEMU_PLUGIN_DOORBELL_EXEC_CB_SYMBOL";
@@ -152,7 +152,7 @@
         needle = "QEMU_PLUGIN_GUEST_MEMORY_READ_SYMBOL";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhiteboxDoorbell [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhiteboxDoorbell [
       {
         label = "translated-instruction callback symbol";
         needle = "qemu_plugin_register_vcpu_insn_exec_cb";

@@ -1,0 +1,16 @@
+[package]
+name = "aos-core"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Portable strict JSON, content identities, decoding limits, and scoped names"
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

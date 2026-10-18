@@ -40,7 +40,7 @@ invented for this doc.
 ### 1.1 Registry metadata
 
 A package version is described by `PackageMeta`
-(`crates/aos-package/src/types.rs`). The current fields:
+(`crates/aos/packages/aos-package-manager/src/types.rs`). The current fields:
 
 ```rust
 pub struct PackageMeta {
@@ -92,7 +92,7 @@ Two fields matter a lot for this design and are worth calling out:
 
 ### 1.2 The real `apm install` path
 
-`crates/aos-package/src/install.rs::run()` does this, in order:
+`crates/aos/packages/aos-package-manager/src/install.rs::run()` does this, in order:
 
 1. **Resolve** the closure via `resolve_multiple()` walking `closures/<hash>`
    adjacency lists.
@@ -110,7 +110,7 @@ Two fields matter a lot for this design and are worth calling out:
    - `build_fhs_tree(new_gen, roots, …)` — synthesize the FHS merge
 6. **`profile.switch_to(new_gen)`** — atomically move the `current` symlink.
 
-Profile layout (`crates/aos-package/src/profile/mod.rs`):
+Profile layout (`crates/aos/packages/aos-package-manager/src/profile/mod.rs`):
 
 ```
 /var/lib/profiles/{scope}/
@@ -128,7 +128,7 @@ targets, or start services. The RFC-0001 expose phase is the added step that
 materializes generated units without disturbing steps 1–6.
 
 One favorable ground-truth update: the systemd client surface already exists —
-`crates/aos-systemd` is a complete async zbus D-Bus client (start / stop /
+`crates/shared/aos-systemd-client` is a complete async zbus D-Bus client (start / stop /
 restart / reload / isolate, job tracking, `settle`), currently exercised only
 by the `apm _test-systemd-client` test shim. The expose/enable phase is
 wiring, not greenfield.
@@ -156,8 +156,8 @@ separate store path.
 
 ### 2.2 `PackageMeta` additions
 
-These fields are implemented in `crates/aos-package/src/types.rs` and
-`crates/aos-package/src/registry/parse.rs`. All are `#[serde(default)]` so
+These fields are implemented in `crates/aos/packages/aos-package-manager/src/types.rs` and
+`crates/aos/registry/aos-registry-client/src/registry/parse.rs`. All are `#[serde(default)]` so
 existing registries parse unchanged.
 
 > **Fail-closed capability gate.**
@@ -244,7 +244,7 @@ pub struct ExposeMeta {
 > [`open-questions.md`](open-questions.md), now resolved by this model.
 
 `requires` is **package-name resolver surface**: current resolution
-(`crates/aos-package/src/resolve.rs`) finds the root package by name, walks the
+(`crates/aos/packages/aos-package-manager/src/resolve.rs`) finds the root package by name, walks the
 store-path reference graph for closure edges, and also pulls in package names
 listed in `expose.requires`. Typed capability consumers in `expose.uses`
 resolve their provider packages through the same package index. The target-level
@@ -424,8 +424,8 @@ Service packages ride the **existing** generation model (§1.2) with the package
 root treated as one more gc-rooted closure member. (The `{scope}` parameter in
 the profile path distinguishes the runtime apm package profile/scope from the
 system profile that holds the toplevel + baked packages; verified in
-`crates/aos-package/src/types.rs` and
-`crates/aos-package/src/profile/mod.rs`: system-scope runtime package
+`crates/aos/packages/aos-package-manager/src/types.rs` and
+`crates/aos/packages/aos-package-manager/src/profile/mod.rs`: system-scope runtime package
 generations use `/var/lib/profiles/system-packages/`, separate from the sysroot
 `/var/lib/profiles/system/` — see [`boot-activation.md`](boot-activation.md)
 §4.3.)
@@ -542,7 +542,7 @@ tag-signed metadata.
    package-root NAR against the `nar_hash` from the signed metadata. The bytes
    cannot be tampered with in transit or at the cache.
 3. **The cache may add a second signature.** Generated narinfo can be Nix-cache
-   signed (`aos-core::nar::cache::NarInfoSigner`,
+   signed (`aos_nar::cache::NarInfoSigner`,
    [`../../registry/current-state.md`](../../registry/current-state.md) §7), so a
    stock-Nix substituter with `require-sigs = true` also accepts it.
 4. **TOFU + anti-rollback still apply.** First sync pins the registry's Ed25519

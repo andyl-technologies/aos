@@ -2,7 +2,15 @@
   lib,
   entry,
   fragmentDirs ? [],
+  includeTests ? true,
 }: let
+  isTestPath = path:
+    lib.hasInfix "/tests/" (toString path)
+    || lib.hasSuffix "/tests" (toString path)
+    || lib.hasSuffix "/tests.rs" (toString path)
+    || lib.hasSuffix "_tests.rs" (toString path)
+    || lib.hasSuffix "_test.rs" (toString path);
+
   rustFilesInTree = path: let
     entries = builtins.readDir path;
     names = builtins.sort builtins.lessThan (builtins.attrNames entries);
@@ -10,7 +18,9 @@
       kind = entries.${name};
       child = path + "/${name}";
     in
-      if kind == "directory"
+      if !includeTests && isTestPath child
+      then []
+      else if kind == "directory"
       then rustFilesInTree child
       else if kind == "regular" && lib.hasSuffix ".rs" name
       then [child]
@@ -26,7 +36,7 @@
       matched = builtins.match ''[[:space:]]*#[[]path[[:space:]]*=[[:space:]]*"([^"]+)"[]][[:space:]]*'' line;
       referenced = builtins.toPath (builtins.dirOf path + "/${builtins.head matched}");
     in
-      if matched != null && builtins.pathExists referenced && lib.hasSuffix ".rs" referenced
+      if matched != null && builtins.pathExists referenced && lib.hasSuffix ".rs" referenced && (includeTests || !isTestPath referenced)
       then [(toString referenced)]
       else [])
     (lib.splitString "\n" (builtins.readFile path));

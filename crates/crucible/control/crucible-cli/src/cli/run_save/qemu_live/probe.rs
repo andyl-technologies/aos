@@ -1,0 +1,432 @@
+//! Packaged QEMU probing and delegated debug admission.
+
+use super::*;
+
+#[cfg(all(target_os = "linux", not(any(test, feature = "test-double"))))]
+use crucible_daemon::{
+    LinuxQemuAttemptHostConfig, ProductionPluginProbeRequest, run_guarded_production_plugin_probe,
+};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LiveQemuProbeEvidence {
+    pub(crate) qemu_build_id: String,
+    pub(crate) plugin_abi: String,
+    pub(crate) completed_icount: u64,
+    pub(crate) execution_fingerprint: String,
+}
+
+pub(crate) trait LiveQemuProbeRunner {
+    fn run_probe(
+        &mut self,
+        backend: &ResolvedLocalBackend,
+    ) -> Result<LiveQemuProbeEvidence, CliError>;
+}
+
+#[cfg(any(test, feature = "test-double"))]
+pub(super) struct TestDoubleSelftestProbeRunner;
+
+#[cfg(any(test, feature = "test-double"))]
+impl LiveQemuProbeRunner for TestDoubleSelftestProbeRunner {
+    fn run_probe(
+        &mut self,
+        _backend: &ResolvedLocalBackend,
+    ) -> Result<LiveQemuProbeEvidence, CliError> {
+        Err(backend_error(
+            "test-double QEMU selftest requires an explicitly injected probe runner",
+        ))
+    }
+}
+
+#[cfg(not(any(test, feature = "test-double")))]
+pub(super) struct ProductionLiveQemuProbeRunner {
+    #[cfg(target_os = "linux")]
+    deployment_path: Option<PathBuf>,
+    #[cfg(target_os = "linux")]
+    host: Option<LinuxQemuAttemptHostConfig>,
+}
+
+#[cfg(all(target_os = "linux", not(any(test, feature = "test-double"))))]
+impl ProductionLiveQemuProbeRunner {
+    pub(super) fn new(deployment_path: Option<PathBuf>) -> Self {
+        Self {
+            deployment_path,
+            host: None,
+        }
+    }
+}
+
+#[cfg(not(any(test, feature = "test-double")))]
+impl LiveQemuProbeRunner for ProductionLiveQemuProbeRunner {
+    fn run_probe(
+        &mut self,
+        backend: &ResolvedLocalBackend,
+    ) -> Result<LiveQemuProbeEvidence, CliError> {
+        let (qemu_build_id, plugin_abi) = match backend {
+            ResolvedLocalBackend::Qemu {
+                qemu_build_id,
+                plugin_abi,
+                ..
+            } => (qemu_build_id, plugin_abi),
+            #[cfg(any(test, feature = "test-double"))]
+            ResolvedLocalBackend::Double => {
+                return Err(backend_error("live QEMU probe requires the QEMU backend"));
+            }
+        };
+        #[cfg(target_os = "linux")]
+        let report = {
+            if self.host.is_none() {
+                let deployment = load_guarded_campaign_deployment(self.deployment_path.as_deref())
+                    .map_err(|error| {
+                        backend_error(format!("load guarded selftest host deployment: {error}"))
+                    })?;
+                self.host = Some(deployment.host);
+            }
+            let host = self.host.clone().ok_or_else(|| {
+                backend_error("live QEMU selftest has no guarded host deployment")
+            })?;
+            run_live_qemu_backend_probe(backend, host)?
+        };
+        #[cfg(not(target_os = "linux"))]
+        let report = run_live_qemu_backend_probe(backend)?;
+        let execution_fingerprint = report.execution_fingerprint.ok_or_else(|| {
+            backend_error("live QEMU probe did not publish an execution fingerprint")
+        })?;
+        Ok(LiveQemuProbeEvidence {
+            qemu_build_id: qemu_build_id.clone(),
+            plugin_abi: plugin_abi.clone(),
+            completed_icount: report.completed_icount,
+            execution_fingerprint: format_content_hash_ref(execution_fingerprint),
+        })
+    }
+}
+
+/// Executes the live backend admission required by the delegated debug wrapper.
+pub(crate) fn run_local_qemu_debug_workflow(
+    _backend: &ResolvedLocalBackend,
+    plan: &DebugInvocationPlan,
+) -> Result<Vec<String>, CliError> {
+    let artifact_context = artifact_debug_context(plan)?;
+    let target = match &plan.target {
+        DebugPlanTarget::Artifact(path) => {
+            format!(
+                "artifact:{}",
+                escape_debug_plan_field(&path.display().to_string())
+            )
+        }
+        DebugPlanTarget::Savepoint(hash) => {
+            format!("savepoint:{}", format_content_hash_ref(*hash))
+        }
+        DebugPlanTarget::Session(address) => {
+            format!("session:{}", escape_debug_plan_field(address))
+        }
+    };
+    let coordinate = match &plan.coordinate {
+        DebugPlanCoordinate::Current => String::from("current"),
+        DebugPlanCoordinate::At(coordinate) => debug_coordinate_label(coordinate),
+        DebugPlanCoordinate::AtEvent(sequence) => format!("event:{sequence}"),
+        DebugPlanCoordinate::AtFailure => {
+            let context = artifact_context.as_ref().ok_or_else(|| {
+                artifact_error("failure coordinate requires a reproduction artifact")
+            })?;
+            format!(
+                "failure:vtime:{}:quanta:{}",
+                context.frontier_ticks, context.quanta
+            )
+        }
+        DebugPlanCoordinate::AtCheckpoint(hash) => {
+            format!("checkpoint:{}", format_content_hash_ref(*hash))
+        }
+    };
+    let requested_operation = match &plan.verb {
+        DebugInteractiveVerbPlan::AttachGdb => String::from("attach-gdb"),
+        DebugInteractiveVerbPlan::ForkDebug => String::from("fork-debug"),
+        DebugInteractiveVerbPlan::Goto(coordinate) => {
+            format!("goto:{}", debug_coordinate_label(coordinate))
+        }
+        DebugInteractiveVerbPlan::ReverseStep { grain } => {
+            format!("reverse-step:{}", reverse_step_grain_label(*grain))
+        }
+        DebugInteractiveVerbPlan::ReverseContinue { condition } => {
+            format!("reverse-continue:{}", escape_debug_plan_field(condition))
+        }
+        DebugInteractiveVerbPlan::Exec { .. } => String::from("exec"),
+        DebugInteractiveVerbPlan::Pty { .. } => String::from("pty"),
+        DebugInteractiveVerbPlan::Ssh => String::from("ssh"),
+    };
+    Err(backend_error(format!(
+        "local debugger execution is unavailable for requested_operation={requested_operation} target={target} coordinate={coordinate}; no debug operation was executed; use an authenticated live daemon session, or use replay/verify for artifact evidence"
+    )))
+}
+
+struct ArtifactFailureContext {
+    frontier_ticks: u64,
+    quanta: u64,
+}
+
+fn artifact_debug_context(
+    plan: &DebugInvocationPlan,
+) -> Result<Option<ArtifactFailureContext>, CliError> {
+    let DebugPlanTarget::Artifact(path) = &plan.target else {
+        return Ok(None);
+    };
+    let bytes = std::fs::read(path).map_err(|error| {
+        artifact_error(format!(
+            "debug artifact `{}` could not be read: {error}",
+            path.display()
+        ))
+    })?;
+    let artifact = decode_reproduction_artifact(&bytes)?;
+    if !matches!(plan.coordinate, DebugPlanCoordinate::AtFailure) {
+        return Ok(None);
+    }
+    let component = artifact
+        .components
+        .iter()
+        .find(|component| component.media_type == LIVE_QEMU_REPLAY_CONTRACT_MEDIA_TYPE)
+        .ok_or_else(|| artifact_error("debug artifact has no live-QEMU replay contract"))?;
+    let payload = artifact
+        .payloads
+        .iter()
+        .find(|payload| payload.digest == component.digest)
+        .ok_or_else(|| artifact_error("debug artifact has no embedded live-QEMU contract"))?;
+    let contract = LiveQemuReplayContract::decode(&payload.bytes)?;
+    Ok(Some(ArtifactFailureContext {
+        frontier_ticks: contract.final_frontier_ticks,
+        quanta: contract.final_quanta,
+    }))
+}
+
+fn reverse_step_grain_label(grain: crucible_engine::DebugReverseStepGrain) -> &'static str {
+    match grain {
+        crucible_engine::DebugReverseStepGrain::Instruction => "instruction",
+        crucible_engine::DebugReverseStepGrain::Quantum => "quantum",
+        crucible_engine::DebugReverseStepGrain::Event => "event",
+        crucible_engine::DebugReverseStepGrain::Assertion => "assertion",
+        crucible_engine::DebugReverseStepGrain::Timer => "timer",
+    }
+}
+
+fn debug_coordinate_label(coordinate: &crucible_engine::DebugCoordinate) -> String {
+    match coordinate {
+        crucible_engine::DebugCoordinate::Configuration(configuration) => {
+            format!(
+                "configuration:{}",
+                format_content_hash_ref(configuration.id())
+            )
+        }
+        crucible_engine::DebugCoordinate::Checkpoint(checkpoint) => {
+            format!("checkpoint:{}", format_content_hash_ref(*checkpoint))
+        }
+        crucible_engine::DebugCoordinate::EventSequence(sequence) => format!("event:{sequence}"),
+        crucible_engine::DebugCoordinate::VirtualTime(at) => format!("vtime:{}", at.ticks),
+        crucible_engine::DebugCoordinate::NodeIcount { node, icount } => format!(
+            "icount:{}:{}",
+            escape_debug_plan_field(&node.name),
+            icount.retired
+        ),
+    }
+}
+
+fn escape_debug_plan_field(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('\t', "\\t")
+        .replace('\r', "\\r")
+        .replace('\n', "\\n")
+}
+
+/// Boots one bounded live QEMU/plugin probe and returns its observed proof.
+#[cfg(all(target_os = "linux", not(any(test, feature = "test-double"))))]
+pub(crate) fn run_live_qemu_backend_probe(
+    backend: &ResolvedLocalBackend,
+    host: LinuxQemuAttemptHostConfig,
+) -> Result<crucible_daemon::ProductionPluginProbeReport, CliError> {
+    let (qemu, plugin) = match backend {
+        ResolvedLocalBackend::Qemu { qemu, plugin, .. } => (qemu, plugin),
+        #[cfg(any(test, feature = "test-double"))]
+        ResolvedLocalBackend::Double => {
+            return Err(backend_error("live QEMU probe requires the QEMU backend"));
+        }
+    };
+    let kernel = required_live_qemu_asset(
+        "CRUCIBLE_KERNEL",
+        option_env!("CRUCIBLE_AOS_KERNEL"),
+        "kernel",
+    )?;
+    let root_image = required_live_qemu_asset(
+        "CRUCIBLE_ROOT_IMAGE",
+        option_env!("CRUCIBLE_AOS_ROOT_IMAGE"),
+        "root image",
+    )?;
+    let architecture = live_qemu_native_guest_architecture()?;
+    let mut request =
+        ProductionPluginProbeRequest::new(qemu, plugin, kernel, root_image, architecture, host);
+    if let Some(cmdline) = live_qemu_kernel_cmdline() {
+        request = request.with_kernel_cmdline(cmdline);
+    }
+    run_guarded_production_plugin_probe(request).map_err(|error| {
+        backend_error(format!(
+            "live local QEMU/plugin execution failed after hermetic discovery: {error}"
+        ))
+    })
+}
+
+#[cfg(all(not(target_os = "linux"), not(any(test, feature = "test-double"))))]
+pub(crate) fn run_live_qemu_backend_probe(
+    _backend: &ResolvedLocalBackend,
+) -> Result<crucible_daemon::ProductionPluginProbeReport, CliError> {
+    Err(backend_error(
+        "live local QEMU/plugin execution requires a Linux host",
+    ))
+}
+
+pub(super) fn required_live_qemu_asset(
+    environment_name: &'static str,
+    package_hint: Option<&'static str>,
+    label: &'static str,
+) -> Result<PathBuf, CliError> {
+    let path = std::env::var_os(environment_name)
+        .map(PathBuf::from)
+        .or_else(|| package_hint.map(PathBuf::from))
+        .ok_or_else(|| {
+            backend_error(format!(
+                "live local QEMU execution requires the AOS {label}; set {environment_name} or use the packaged CLI closure"
+            ))
+        })?;
+    validate_readable_file_artifact(label, &path)?;
+    Ok(path)
+}
+
+pub(super) fn optional_live_qemu_asset(
+    environment_name: &'static str,
+    package_hint: Option<&'static str>,
+    label: &'static str,
+) -> Result<Option<PathBuf>, CliError> {
+    let Some(path) = std::env::var_os(environment_name)
+        .map(PathBuf::from)
+        .or_else(|| package_hint.map(PathBuf::from))
+    else {
+        return Ok(None);
+    };
+    validate_readable_file_artifact(label, &path)?;
+    Ok(Some(path))
+}
+
+pub(super) fn live_qemu_kernel_cmdline() -> Option<String> {
+    std::env::var("CRUCIBLE_KERNEL_CMDLINE")
+        .ok()
+        .or_else(|| option_env!("CRUCIBLE_AOS_KERNEL_CMDLINE").map(str::to_owned))
+}
+
+/// Resolves the architecture of the package-native guest artifact triplet.
+pub(super) fn live_qemu_native_guest_architecture()
+-> Result<crucible_engine::VmArchitecture, CliError> {
+    match std::env::var("CRUCIBLE_NATIVE_GUEST_ARCHITECTURE").as_deref() {
+        Ok("aarch64") => Ok(crucible_engine::VmArchitecture::Aarch64),
+        Ok("x86_64") | Err(std::env::VarError::NotPresent) => {
+            Ok(crucible_engine::VmArchitecture::X86_64)
+        }
+        Ok(value) => Err(backend_error(format!(
+            "CRUCIBLE_NATIVE_GUEST_ARCHITECTURE has unsupported value `{value}`"
+        ))),
+        Err(std::env::VarError::NotUnicode(_)) => Err(backend_error(
+            "CRUCIBLE_NATIVE_GUEST_ARCHITECTURE is not valid UTF-8",
+        )),
+    }
+}
+
+/// Resolves the packaged AArch64 guest artifact triplet when it is available.
+///
+/// # Errors
+///
+/// Returns an error when an override asset is unreadable or the architecture-specific
+/// kernel, root image, and kernel command line are not configured together.
+pub(super) fn live_qemu_aarch64_assets()
+-> Result<Option<(PathBuf, PathBuf, Option<String>)>, CliError> {
+    let kernel = optional_live_qemu_asset(
+        "CRUCIBLE_KERNEL_AARCH64",
+        option_env!("CRUCIBLE_AOS_KERNEL_AARCH64"),
+        "AArch64 kernel",
+    )?;
+    let root_image = optional_live_qemu_asset(
+        "CRUCIBLE_ROOT_IMAGE_AARCH64",
+        option_env!("CRUCIBLE_AOS_ROOT_IMAGE_AARCH64"),
+        "AArch64 root image",
+    )?;
+    let kernel_cmdline = std::env::var("CRUCIBLE_KERNEL_CMDLINE_AARCH64")
+        .ok()
+        .or_else(|| option_env!("CRUCIBLE_AOS_KERNEL_CMDLINE_AARCH64").map(str::to_owned));
+
+    resolve_aarch64_guest_assets(kernel, root_image, kernel_cmdline)
+}
+
+fn resolve_aarch64_guest_assets(
+    kernel: Option<PathBuf>,
+    root_image: Option<PathBuf>,
+    kernel_cmdline: Option<String>,
+) -> Result<Option<(PathBuf, PathBuf, Option<String>)>, CliError> {
+    match (kernel, root_image, kernel_cmdline) {
+        (Some(kernel), Some(root_image), Some(kernel_cmdline)) => {
+            Ok(Some((kernel, root_image, Some(kernel_cmdline))))
+        }
+        (None, None, None) => Ok(None),
+        _ => Err(backend_error(
+            "AArch64 guest support requires CRUCIBLE_KERNEL_AARCH64, CRUCIBLE_ROOT_IMAGE_AARCH64, and CRUCIBLE_KERNEL_CMDLINE_AARCH64 together",
+        )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn absent_aarch64_assets_disable_cross_architecture_support() {
+        let assets = resolve_aarch64_guest_assets(None, None, None);
+
+        assert!(matches!(assets, Ok(None)));
+    }
+
+    #[test]
+    fn complete_aarch64_assets_preserve_the_architecture_specific_cmdline() {
+        let kernel = PathBuf::from("aarch64-kernel");
+        let root_image = PathBuf::from("aarch64-root-image");
+        let kernel_cmdline = String::from("console=ttyAMA0 root=/dev/vda");
+
+        let assets = match resolve_aarch64_guest_assets(
+            Some(kernel.clone()),
+            Some(root_image.clone()),
+            Some(kernel_cmdline.clone()),
+        ) {
+            Ok(assets) => assets,
+            Err(error) => panic!("complete AArch64 assets did not resolve: {error}"),
+        };
+
+        assert_eq!(assets, Some((kernel, root_image, Some(kernel_cmdline))));
+    }
+
+    #[test]
+    fn incomplete_aarch64_assets_fail_closed() {
+        let configurations = [
+            (Some(PathBuf::from("kernel")), None, None),
+            (None, Some(PathBuf::from("root-image")), None),
+            (None, None, Some(String::from("console=ttyAMA0"))),
+            (
+                Some(PathBuf::from("kernel")),
+                Some(PathBuf::from("root-image")),
+                None,
+            ),
+        ];
+
+        for (kernel, root_image, kernel_cmdline) in configurations {
+            let error = match resolve_aarch64_guest_assets(kernel, root_image, kernel_cmdline) {
+                Ok(assets) => panic!("incomplete AArch64 assets resolved as {assets:?}"),
+                Err(error) => error,
+            };
+
+            assert!(error.to_string().contains(
+                "CRUCIBLE_KERNEL_AARCH64, CRUCIBLE_ROOT_IMAGE_AARCH64, and CRUCIBLE_KERNEL_CMDLINE_AARCH64 together"
+            ));
+        }
+    }
+}

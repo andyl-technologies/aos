@@ -8820,8 +8820,8 @@ in {
   # ---------------------------------------------------------------------------
   # apr origin upload → s3:// against a real SigV4 endpoint (garage)
   # ---------------------------------------------------------------------------
-  # The s3:// scheme of the cache/upload backend (crates/aos-cache/src/
-  # backend/s3.rs over crates/aos-net/src/protocol/s3.rs, aws-sdk-s3 with
+  # The s3:// scheme of the cache/upload backend (crates/aos/packages/aos-nix-cache/src/
+  # backend/s3.rs over crates/shared/aos-transfer/src/protocol/s3.rs, aws-sdk-s3 with
   # a custom endpoint + forced path style) had no end-to-end coverage —
   # every other test uploads via file:// and reads via http://. This test
   # stands up a single-node garage, uploads a registry's static origin

@@ -1,0 +1,92 @@
+# AOS Hub Worker
+
+`aos-hub-worker` is the Cloudflare shell for the shared `aos-hub-service`
+application. It serves the same Connect API, producer console, authentication,
+machine surfaces, topology controllers, and write path as the native Hub.
+
+Platform-specific adapters provide:
+
+- `HubDb`, a Durable Object with colocated SQLite, as the relational system of
+  record;
+- resource-affine control, tenant, registry, and cache Durable Objects for
+  concurrent request execution;
+- R2 for registry/cache surface objects;
+- KV for cache-aside session state and revocation tombstones;
+- Durable Objects/Queues for coordination and deferred work;
+- edge rate-limit bindings; and
+- Worker Fetch for external HTTP operations, with an optional authenticated
+  `aos-hub-egress` router for installations requiring pinned DNS and signed
+  connected-peer evidence.
+
+`HubDb` applies the shared schema on first use, and administrative mutations
+use the typed Hub API.
+
+The execution objects retain no relational copy. They run the same shared
+router over a seal-gated remote backend, and `HubDb` executes every short SQL
+operation and checked transaction. `HUB_REQUEST_SHARDING=off|read|on` provides a
+data-migration-free staged cutover and rollback path. Resource keys are used
+only for deterministic load affinity; authorization always re-resolves the
+resource from authoritative state.
+
+Queue messages use a versioned envelope with a stable operation ID. The
+consumer leases that identity in `HubDb`, performs provider and network I/O in
+the queue isolate, and sends only short SQL operations through a seal-gated
+remote backend; checked batches remain atomic in colocated SQLite. Cron is a
+database-only dispatcher for bounded registry, cache, GC, probe, directory,
+and webhook jobs. Webhook delivery also retains its domain-specific fencing
+token and stable `X-AOS-Delivery-ID`; receivers should deduplicate retries by
+that header.
+
+## Outbound security boundary
+
+Worker Fetch is the default outbound transport and needs no separately deployed
+service. AOS validates targets, rebuilds a closed request, bounds redirects, and
+prevents credentials from crossing origins. The optional packaged
+`aos-hub-egress` router adds connect-time DNS pinning and signs its final-URL,
+peer, status, and nonce evidence under `aos-hardened-egress-v3`. Missing, stale,
+or invalid evidence fails closed whenever that transport is selected.
+See [`deploy/DEPLOY.md`](deploy/DEPLOY.md).
+
+## Build and deploy
+
+Production deployment uses the hermetically built Worker artifact packaged with
+`aos-hub-cloudflare`; the installer renders `wrangler.toml` and deploys it
+without a host rebuild. The checked-in `wrangler.toml` exists for manual
+development and documents required binding names.
+
+```sh
+nix build .#pkg-aos-hub-cloudflare
+./result/bin/aos-hub worker install \
+  --name aos-hub \
+  --cloudflare-api-token "$HUB_CLOUDFLARE_API_TOKEN" \
+  --domain reg.example.com \
+  --root-email ops@example.com \
+  --root-password-stdin
+```
+
+The Worker feature is target-gated so native workspace checks do not compile
+Workers-only bindings. Runtime validation additionally requires workerd or a
+Cloudflare account; database and shared-domain behavior is exercised through
+the runtime-neutral core tests.
+
+The canonical user guide is [Deploy AOS Hub to
+Cloudflare](../../../docs/users/aos-hub/cloudflare.md). It covers the supported
+installer, provider resources, secrets, domains, updates, email, and
+observability.
+
+This crate's checked-in `wrangler.toml` is an implementation fixture. The
+packaged installer generates deployment configuration from the current command
+options and bundled Worker artifact; it is the supported operational path.
+
+### Layer 7 delivery hosts
+
+Set `HUB_LAYER7_DELIVERY_HOSTS` to a comma-separated list of bare DNS hostnames
+when Cloudflare serves those names through delivery endpoints configured with
+`layer7` ingress. For example, `cdn.example.test` can serve OCI Worker routes
+alongside direct static storage delivery. Configure the provider routes and
+verified endpoint observations separately.
+
+The Worker selects ingress from deployment configuration and the edge-verified
+request URL. Other hosts keep `hub` ingress. Client headers cannot select the
+ingress kind; the shared router still checks endpoint identity, readiness,
+route capabilities, and access policy.

@@ -41,14 +41,14 @@ Keep this file current as work lands.
       `docs/registry/packs-and-deltas.md`,
       `docs/registry/signing-and-trust.md`,
       `docs/registry/versioning-and-channels.md`,
-      `crates/aos-package/src/registry/nixcache.rs`,
-      `crates/aos-package/src/registry/static_upload.rs`,
-      `crates/aos-package/src/registry/fetch.rs`,
-      `crates/aos-package/src/registry/git.rs`,
-      `crates/aos-cache/src/backend/s3.rs`,
-      `crates/aos-cache/src/backend/sftp.rs`,
-      `crates/aos-net/src/protocol/s3.rs`,
-      `crates/aos-net/src/protocol/sftp.rs`,
+      `crates/aos/registry/aos-registry-authoring/src/registry/nixcache.rs`,
+      `crates/aos/registry/aos-registry-authoring/src/registry/static_upload.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/fetch.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/git.rs`,
+      `crates/aos/packages/aos-nix-cache/src/backend/s3.rs`,
+      `crates/aos/packages/aos-nix-cache/src/backend/sftp.rs`,
+      `crates/shared/aos-transfer/src/protocol/s3.rs`,
+      `crates/shared/aos-transfer/src/protocol/sftp.rs`,
       `tests/vm/apm/default.nix`, and
       `tests/vm/apm/registry_validation.nix`.
 - [x] Add a pinned minimum Git package for the stock-Git floor matrix. Context:
@@ -106,22 +106,22 @@ Keep this file current as work lands.
 ## APM Command And Activity Coverage
 
 - [x] Add exhaustive Rust coverage for build activity event types across both
-      active transports. `crates/aos-server/src/build.rs` now covers every
+      active transports. `crates/aos/packages/aos-build-server/src/build.rs` now covers every
       internal SSE event emitted by `BuildEventKind`: `status`, `log`,
       `complete`, `error`, `daemon-unavailable`, and `drain`.
-      `crates/aos-server/src/services/build.rs` covers every ConnectRPC
+      `crates/aos/packages/aos-build-server/src/services/build.rs` covers every ConnectRPC
       `BuildEvent.event_type` mapping and the `BuildClosure` derivation
-      override behavior. `crates/aos-server/src/routes.rs` covers the legacy
+      override behavior. `crates/aos/packages/aos-build-server/src/routes.rs` covers the legacy
       SSE `build-closure` wrapper event, and
-      `crates/aos-proto/src/proto/aos/build/v1/build.proto` now documents that
+      `api/proto/aos/build/v1/build.proto` now documents that
       `build-closure` is an outer SSE wrapper rather than an internal
       ConnectRPC activity kind. Local evidence from 2026-06-08:
       `cargo test --manifest-path crates/Cargo.toml -p aos-server` passed with
-      10 tests. Context: `crates/aos-server/src/build.rs`,
-      `crates/aos-server/src/services/build.rs`,
-      `crates/aos-server/src/routes.rs`,
-      `crates/aos-proto/src/proto/aos/build/v1/build.proto`,
-      `crates/aos/src/commands/build.rs`, and `crates/aos-remote/src/client.rs`.
+      10 tests. Context: `crates/aos/packages/aos-build-server/src/build.rs`,
+      `crates/aos/packages/aos-build-server/src/services/build.rs`,
+      `crates/aos/packages/aos-build-server/src/routes.rs`,
+      `api/proto/aos/build/v1/build.proto`,
+      `crates/aos/cli/aos-cli/src/commands/build.rs`, and `crates/aos/packages/aos-build-client/src/client.rs`.
 - [x] Add APM package command-surface VM coverage for commands that were not
       already strongly covered by install/remove/update/system flows.
       `checks.vm.apm.command-surface` creates a real local registry cache and
@@ -139,14 +139,14 @@ Keep this file current as work lands.
       `/nix/store/4sq0pa2na132r2ibap89mgfk9wf4sqyr-aos-vm-test-apm-command-surface-0`.
       Context: `tests/vm/apm/packages.nix`,
       `tests/vm/apm/fixtures.nix`, `tests/vm/apm/default.nix`,
-      `crates/aos-package/src/lib.rs`, `crates/aos-package/src/query.rs`,
-      `crates/aos-package/src/deps.rs`, `crates/aos-package/src/source.rs`,
-      `crates/aos-package/src/clean.rs`,
-      `crates/aos-package/src/install.rs`,
-      `crates/aos-package/src/upgrade.rs`,
-      `crates/aos-package/src/remove.rs`,
-      `crates/aos-package/src/rollback.rs`, and
-      `crates/aos-package/src/hold.rs`.
+      `crates/aos/packages/aos-package-manager/src/lib.rs`, `crates/aos/packages/aos-package-manager/src/query.rs`,
+      `crates/aos/packages/aos-package-manager/src/deps.rs`, `crates/aos/packages/aos-package-manager/src/source.rs`,
+      `crates/aos/packages/aos-package-manager/src/clean.rs`,
+      `crates/aos/packages/aos-package-manager/src/install.rs`,
+      `crates/aos/packages/aos-package-manager/src/upgrade.rs`,
+      `crates/aos/packages/aos-package-manager/src/remove.rs`,
+      `crates/aos/packages/aos-package-manager/src/rollback.rs`, and
+      `crates/aos/packages/aos-package-manager/src/hold.rs`.
 - [x] Inventory the remaining APM/APR production command coverage by file so
       future agents can trace every command family. Package install/remove,
       upgrade, rollback, hold/unhold, query, source/verify, clean, and command
@@ -164,13 +164,13 @@ Keep this file current as work lands.
       `tests/vm/apm/tracking.nix`, `tests/vm/apm/cache.nix`,
       `tests/vm/apm/multi_registry.nix`, `tests/vm/apm/rpc.nix`,
       `tests/vm/apm/e2e.nix`, `tests/vm/apm/registry_validation.nix`,
-      `crates/aos/tests/apr_cache_cli.rs`,
-      `crates/aos/tests/apr_keys_cli.rs`,
-      `crates/aos/tests/apr_trust_cli.rs`,
-      `crates/aos-package/tests/registry_e2e.rs`,
-      `crates/aos-package/tests/registry_cache_e2e.rs`,
-      `crates/aos-package/tests/registry_perf.rs`, and
-      `crates/aos-cache/tests/backend_matrix.rs`.
+      `crates/aos/cli/aos-cli/tests/apr_cache_cli.rs`,
+      `crates/aos/cli/aos-cli/tests/apr_keys_cli.rs`,
+      `crates/aos/cli/aos-cli/tests/apr_trust_cli.rs`,
+      `crates/aos/registry/aos-registry-authoring/tests/registry_e2e.rs`,
+      `crates/aos/packages/aos-package-manager/tests/registry_cache_e2e.rs`,
+      `crates/aos/registry/aos-registry-authoring/tests/registry_perf.rs`, and
+      `crates/aos/packages/aos-nix-cache/tests/backend_matrix.rs`.
 - [x] Run the full `checks.vm.apm` aggregate on a remote KVM builder
       after adding `checks.vm.apm.command-surface`. Builder evidence from
       2026-06-08: the aggregate command
@@ -277,32 +277,32 @@ read before editing code or docs.
 
 - [x] Inventory the registry-adjacent Rust test surface before assigning the
       remaining e2e work. Current coverage is mostly focused unit/module tests
-      embedded in source files. `crates/aos-cache/tests/backend_matrix.rs` now
-      starts the cache backend matrix; `crates/aos-package/tests/common/mod.rs`
-      and `crates/aos-package/tests/registry_e2e.rs` now start the
+      embedded in source files. `crates/aos/packages/aos-nix-cache/tests/backend_matrix.rs` now
+      starts the cache backend matrix; `crates/aos/packages/aos-package-manager/tests/common/mod.rs`
+      and `crates/aos/registry/aos-registry-authoring/tests/registry_e2e.rs` now start the
       git-native registry integration harness. Existing context:
-      `crates/aos-package/src/registry/objectstore.rs`,
-      `crates/aos-package/src/registry/pack.rs`,
-      `crates/aos-package/src/registry/channel.rs`,
-      `crates/aos-package/src/registry/keys.rs`,
-      `crates/aos-package/src/registry/verify.rs`,
-      `crates/aos-package/src/registry/fetch.rs`,
-      `crates/aos-package/src/registry/git.rs`,
-      `crates/aos-package/src/registry/nixcache.rs`,
-      `crates/aos-package/src/registry/parse.rs`,
-      `crates/aos-package/src/registry/state.rs`,
-      `crates/aos-package/src/registry/mod.rs`,
-      `crates/aos-package/src/download.rs`,
-      `crates/aos-package/src/config.rs`,
-      `crates/aos-package/src/types.rs`,
-      `crates/aos-package/src/lib.rs`,
-      `crates/aos-package/src/registry_ops.rs`,
-      `crates/aos-core/src/nar/info.rs`,
-      `crates/aos-core/src/nar/cache.rs`,
-      `crates/aos-cache/src/backend/http.rs`,
-      `crates/aos-cache/tests/backend_matrix.rs`,
-      `crates/aos-cache/src/resolve.rs`, and the only existing crate-level tests
-      directory currently found, `crates/aos-systemd/tests/`.
+      `crates/aos/registry/aos-registry-client/src/registry/objectstore.rs`,
+      `crates/aos/registry/aos-registry-authoring/src/registry/pack.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/channel.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/keys.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/verify.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/fetch.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/git.rs`,
+      `crates/aos/registry/aos-registry-authoring/src/registry/nixcache.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/parse.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/state.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/mod.rs`,
+      `crates/aos/packages/aos-package-manager/src/download.rs`,
+      `crates/aos/registry/aos-registry-client/src/config.rs`,
+      `crates/aos/packages/aos-package-manager/src/types.rs`,
+      `crates/aos/packages/aos-package-manager/src/lib.rs`,
+      `crates/aos/registry/aos-registry-authoring/src/registry_ops.rs`,
+      `crates/shared/aos-nar/src/info.rs`,
+      `crates/shared/aos-nar/src/cache.rs`,
+      `crates/aos/packages/aos-nix-cache/src/backend/http.rs`,
+      `crates/aos/packages/aos-nix-cache/tests/backend_matrix.rs`,
+      `crates/aos/packages/aos-nix-cache/src/resolve.rs`, and the only existing crate-level tests
+      directory currently found, `crates/shared/aos-systemd-client/tests/`.
 - [x] Create shared integration-test fixture utilities for git-native registry
       tests: temporary sha256 source repos and bare origins, signed tag/key
       material, static HTTP serving, cache directory construction, git command
@@ -314,17 +314,17 @@ read before editing code or docs.
       `docs/registry/current-state.md`, `docs/registry/http-layout.md`,
       `docs/registry/signing-and-trust.md`,
       `docs/registry/publishing.md`,
-      `crates/aos-package/src/lib.rs`,
-      `crates/aos-package/src/registry_ops.rs`,
-      `crates/aos-package/src/registry/git.rs`,
-      `crates/aos-package/src/registry/objectstore.rs`,
-      `crates/aos-package/src/registry/channel.rs`,
-      `crates/aos-package/src/registry/verify.rs`,
-      `crates/aos-package/src/registry/fetch.rs`,
-      `crates/aos-package/src/registry/nixcache.rs`, and new files such as
-      `crates/aos-package/tests/common/mod.rs`,
-      `crates/aos-package/tests/registry_e2e.rs`, and future
-      `crates/aos-package/tests/registry_cache_e2e.rs`.
+      `crates/aos/packages/aos-package-manager/src/lib.rs`,
+      `crates/aos/registry/aos-registry-authoring/src/registry_ops.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/git.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/objectstore.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/channel.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/verify.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/fetch.rs`,
+      `crates/aos/registry/aos-registry-authoring/src/registry/nixcache.rs`, and new files such as
+      `crates/aos/packages/aos-package-manager/tests/common/mod.rs`,
+      `crates/aos/registry/aos-registry-authoring/tests/registry_e2e.rs`, and future
+      `crates/aos/packages/aos-package-manager/tests/registry_cache_e2e.rs`.
 
 ### Cross-Cutting Rust Integration / E2E Tests
 
@@ -333,7 +333,7 @@ read before editing code or docs.
       channel partition, serve the static tree over HTTP, and run the consumer
       sync path through bucket selection, tag-chain verification, object fetch,
       package extraction, and persisted state updates. The coverage now lives in
-      `crates/aos-package/tests/registry_e2e.rs`:
+      `crates/aos/registry/aos-registry-authoring/tests/registry_e2e.rs`:
       `signed_channel_http_e2e_advances_persisted_bucket` publishes 1.0.0 and
       1.1.0, serves a dumb-HTTP origin plus mutable `channels/stable/<bucket>`
       files, verifies signed channel-tag -> signed semver-tag -> commit
@@ -343,14 +343,14 @@ read before editing code or docs.
       `docs/registry/http-layout.md`,
       `docs/registry/versioning-and-channels.md`,
       `docs/registry/signing-and-trust.md`, `docs/registry/publishing.md`,
-      `crates/aos-package/src/lib.rs`,
-      `crates/aos-package/src/registry_ops.rs`,
-      `crates/aos-package/src/registry/git.rs`,
-      `crates/aos-package/src/registry/objectstore.rs`,
-      `crates/aos-package/src/registry/channel.rs`,
-      `crates/aos-package/src/registry/verify.rs`,
-      `crates/aos-package/src/registry/fetch.rs`, and a new integration file
-      such as `crates/aos-package/tests/registry_e2e.rs`.
+      `crates/aos/packages/aos-package-manager/src/lib.rs`,
+      `crates/aos/registry/aos-registry-authoring/src/registry_ops.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/git.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/objectstore.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/channel.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/verify.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/fetch.rs`, and a new integration file
+      such as `crates/aos/registry/aos-registry-authoring/tests/registry_e2e.rs`.
 - [x] Add committed-tree layout integration coverage: verify the signed
       tag->commit->tree path authenticates and extracts the root `registry.toml`,
       committed `keys.toml`, `packages/<letter>/<name>.toml`, `closures/<hash>`,
@@ -367,21 +367,21 @@ read before editing code or docs.
       `docs/registry/current-state.md`,
       `docs/registry/nix-cache-compatibility.md`,
       `docs/registry/signing-and-trust.md`,
-      `crates/aos-package/src/registry/parse.rs`,
-      `crates/aos-package/src/registry/closures.rs`,
-      `crates/aos-package/src/registry/git.rs`,
-      `crates/aos-package/src/registry/verify.rs`,
-      `crates/aos-package/src/config.rs`,
-      `crates/aos-package/src/types.rs`,
-      `crates/aos-package/src/download.rs`,
-      `crates/aos-package/src/registry_ops.rs`, and
-      `crates/aos-package/tests/registry_e2e.rs`.
+      `crates/aos/registry/aos-registry-client/src/registry/parse.rs`,
+      `crates/aos/packages/aos-package-manager/src/registry/closures.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/git.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/verify.rs`,
+      `crates/aos/registry/aos-registry-client/src/config.rs`,
+      `crates/aos/packages/aos-package-manager/src/types.rs`,
+      `crates/aos/packages/aos-package-manager/src/download.rs`,
+      `crates/aos/registry/aos-registry-authoring/src/registry_ops.rs`, and
+      `crates/aos/registry/aos-registry-authoring/tests/registry_e2e.rs`.
 - [x] Add channel rollout e2e coverage for all trust and safety gates: signed
       partition tag -> signed semver tag -> commit, embedded tag-name
       name-binding failures, probe-forward order, retained-release persistence,
       semver precedence including prerelease/build metadata, anti-rollback floor
       rejection, fix-forward behavior, and stale/missing partition surfaces. The
-      coverage now lives in `crates/aos-package/tests/registry_e2e.rs`:
+      coverage now lives in `crates/aos/registry/aos-registry-authoring/tests/registry_e2e.rs`:
       `signed_channel_http_e2e_advances_persisted_bucket` covers the successful
       signed chain, bucket/floor/retained persistence, and package extraction;
       `channel_rollout_e2e_enforces_safety_gates_and_fix_forward` covers
@@ -392,19 +392,19 @@ read before editing code or docs.
       `docs/registry/versioning-and-channels.md`,
       `docs/registry/signing-and-trust.md`,
       `docs/plans/registry/open-questions.md`,
-      `crates/aos-package/src/types.rs`,
-      `crates/aos-package/src/config.rs`,
-      `crates/aos-package/src/registry/channel.rs`,
-      `crates/aos-package/src/registry/git.rs`,
-      `crates/aos-package/src/registry/verify.rs`,
-      `crates/aos-package/src/registry/fetch.rs`, and
-      `crates/aos-package/tests/registry_e2e.rs`.
+      `crates/aos/packages/aos-package-manager/src/types.rs`,
+      `crates/aos/registry/aos-registry-client/src/config.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/channel.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/git.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/verify.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/fetch.rs`, and
+      `crates/aos/registry/aos-registry-authoring/tests/registry_e2e.rs`.
 - [x] Add executable pack/delta e2e coverage for full packs, thin deltas,
       zstd-compressed thin-delta artifacts, libgit2 pack indexing, fallback from
       missing/corrupt delta to full pack, fallback from missing/corrupt full pack
       to loose-object git fetch, and pruning behavior after retained releases
       change. The coverage now lives in
-      `crates/aos-package/tests/registry_e2e.rs`:
+      `crates/aos/registry/aos-registry-authoring/tests/registry_e2e.rs`:
       `pack_delta_e2e_fetches_full_pack_and_compressed_thin_delta` builds a real
       full pack, publishes a zstd-compressed thin delta, resolves both over
       static HTTP, and verifies the target commit exists after local pack
@@ -418,16 +418,16 @@ read before editing code or docs.
       Context: `docs/registry/packs-and-deltas.md`,
       `docs/registry/http-layout.md`, `docs/registry/publishing.md`,
       `docs/plans/registry/open-questions.md`,
-      `crates/aos-package/src/registry/pack.rs`,
-      `crates/aos-package/src/registry/fetch.rs`,
-      `crates/aos-package/src/registry/objectstore.rs`, and
-      `crates/aos-package/tests/registry_e2e.rs`.
+      `crates/aos/registry/aos-registry-client/src/registry/pack.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/fetch.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/objectstore.rs`, and
+      `crates/aos/registry/aos-registry-authoring/tests/registry_e2e.rs`.
 - [x] Add a static Nix-cache e2e test that uses real Nix-store fixtures:
       generate static cache files, serve `nix-cache-info`,
       `<storehash>.narinfo`, and `nar/*.nar.zst` over static HTTP, download
       through the `apm` narinfo path, and compare the downloaded/decompressed
       NAR bytes with `nix-store --dump`. This coverage now lives in
-      `crates/aos-package/tests/registry_cache_e2e.rs`:
+      `crates/aos/packages/aos-package-manager/tests/registry_cache_e2e.rs`:
       `static_nix_cache_e2e_generates_serves_and_downloads_real_store_path`.
       Because the fixture uses `nix-store --add-fixed` and mutates the host Nix
       store, normal Rust test runs skip it unless
@@ -442,14 +442,14 @@ read before editing code or docs.
       `docs/registry/nix-cache-compatibility.md`,
       `docs/registry/current-state.md`, `docs/registry/publishing.md`,
       `docs/plans/registry/open-questions.md`,
-      `crates/aos-package/src/registry/nixcache.rs`,
-      `crates/aos-core/src/nar/info.rs`,
-      `crates/aos-core/src/nar/cache.rs`,
-      `crates/aos-package/src/download.rs`,
-      `crates/aos-cache/src/backend/mod.rs`, and
-      `crates/aos-package/tests/registry_cache_e2e.rs`.
+      `crates/aos/registry/aos-registry-authoring/src/registry/nixcache.rs`,
+      `crates/shared/aos-nar/src/info.rs`,
+      `crates/shared/aos-nar/src/cache.rs`,
+      `crates/aos/packages/aos-package-manager/src/download.rs`,
+      `crates/aos/packages/aos-nix-cache/src/backend/mod.rs`, and
+      `crates/aos/packages/aos-package-manager/tests/registry_cache_e2e.rs`.
 - [x] Add CLI-level static-cache compatibility coverage that actually drives
-      `apr cache generate` end to end. `crates/aos/tests/apr_cache_cli.rs`
+      `apr cache generate` end to end. `crates/aos/cli/aos-cli/tests/apr_cache_cli.rs`
       creates a temporary user APM config/registry, runs the real Cargo-built
       `apr` binary against a real Nix-store fixture when
       `AOS_PACKAGE_TEST_REAL_NIX_CACHE=1` is set, verifies generated
@@ -458,20 +458,20 @@ read before editing code or docs.
       files. Context: `docs/registry/nix-cache-compatibility.md`,
       `docs/registry/publishing.md`,
       `docs/plans/registry/workstream-06-nix-cache.md`,
-      `crates/aos/Cargo.toml`,
-      `crates/aos/src/main.rs`,
-      `crates/aos-package/src/lib.rs`,
-      `crates/aos-package/src/registry_ops.rs`,
-      `crates/aos-package/src/registry/nixcache.rs`,
-      `crates/aos/tests/apr_cache_cli.rs`, and
-      `crates/aos-package/tests/registry_cache_e2e.rs`.
+      `crates/aos/cli/aos-cli/Cargo.toml`,
+      `crates/aos/cli/aos-cli/src/main.rs`,
+      `crates/aos/packages/aos-package-manager/src/lib.rs`,
+      `crates/aos/registry/aos-registry-authoring/src/registry_ops.rs`,
+      `crates/aos/registry/aos-registry-authoring/src/registry/nixcache.rs`,
+      `crates/aos/cli/aos-cli/tests/apr_cache_cli.rs`, and
+      `crates/aos/packages/aos-package-manager/tests/registry_cache_e2e.rs`.
 - [x] Validate stock Nix substituter behavior under `require-sigs` in the VM
       test-suite PR. `registry-validation-stock-nix-backend-array` creates a
       fixed-output store path inside the VM, generates signed static cache
       files with `apr cache generate`, serves those files over dumb HTTP, and
       runs stock `nix path-info --store http://...` with
       `require-sigs = true` and the generated trusted public key. The opt-in
-      Rust path remains in `crates/aos-package/tests/registry_cache_e2e.rs`
+      Rust path remains in `crates/aos/packages/aos-package-manager/tests/registry_cache_e2e.rs`
       behind `AOS_PACKAGE_TEST_REAL_NIX_CACHE=1` plus
       `AOS_PACKAGE_TEST_STOCK_NIX_CACHE=1`, but the VM check is the controlled
       external validation gate. Builder evidence from 2026-06-08:
@@ -482,9 +482,9 @@ read before editing code or docs.
       `docs/plans/registry/workstream-06-nix-cache.md`,
       `docs/plans/registry/validation-runbook.md`,
       `tests/vm/apm/registry_validation.nix`,
-      `crates/aos-package/tests/registry_cache_e2e.rs`,
-      `crates/aos-package/src/registry/nixcache.rs`, and
-      `crates/aos-package/src/download.rs`.
+      `crates/aos/packages/aos-package-manager/tests/registry_cache_e2e.rs`,
+      `crates/aos/registry/aos-registry-authoring/src/registry/nixcache.rs`, and
+      `crates/aos/packages/aos-package-manager/src/download.rs`.
 - [x] Add one-key projection coverage for git tag signatures and Nix narinfo
       signatures: prove the same Ed25519 key material can produce the
       `registry:Ed25519:<base64>` AOS trust form and the `<name>:<base64>` Nix
@@ -497,11 +497,11 @@ read before editing code or docs.
       `docs/registry/signing-and-trust.md`,
       `docs/registry/nix-cache-compatibility.md`,
       `docs/registry/repo-layout.md`,
-      `crates/aos-package/src/security.rs`,
-      `crates/aos-package/src/registry/keys.rs`,
-      `crates/aos-core/src/nar/cache.rs`,
-      `crates/aos-package/src/registry/nixcache.rs`, and
-      `crates/aos-package/tests/registry_cache_e2e.rs`.
+      `crates/aos/registry/aos-registry-client/src/security.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/keys.rs`,
+      `crates/shared/aos-nar/src/cache.rs`,
+      `crates/aos/registry/aos-registry-authoring/src/registry/nixcache.rs`, and
+      `crates/aos/packages/aos-package-manager/tests/registry_cache_e2e.rs`.
 - [x] Add cache URL-key compatibility coverage for generated narinfo `URL:`
       fields and uploaded object paths. Prove the colon-free
       `nar/{store_hash}-sha256-{hex}` path generated by `nar_url` is exactly the
@@ -513,67 +513,67 @@ read before editing code or docs.
       explicit config and cover both forms. Context:
       `docs/registry/nix-cache-compatibility.md`,
       `docs/plans/registry/open-questions.md`,
-      `crates/aos-core/src/nar/cache.rs`,
-      `crates/aos-package/src/registry/nixcache.rs`,
-      `crates/aos-package/src/download.rs`,
-      `crates/aos-cache/src/backend/mod.rs`,
-      `crates/aos-cache/src/backend/fs.rs`,
-      `crates/aos-cache/src/backend/http.rs`,
-      `crates/aos-cache/src/backend/s3.rs`,
-      `crates/aos-cache/src/backend/sftp.rs`, and
-      `crates/aos-package/tests/registry_cache_e2e.rs`.
+      `crates/shared/aos-nar/src/cache.rs`,
+      `crates/aos/registry/aos-registry-authoring/src/registry/nixcache.rs`,
+      `crates/aos/packages/aos-package-manager/src/download.rs`,
+      `crates/aos/packages/aos-nix-cache/src/backend/mod.rs`,
+      `crates/aos/packages/aos-nix-cache/src/backend/fs.rs`,
+      `crates/aos/packages/aos-nix-cache/src/backend/http.rs`,
+      `crates/aos/packages/aos-nix-cache/src/backend/s3.rs`,
+      `crates/aos/packages/aos-nix-cache/src/backend/sftp.rs`, and
+      `crates/aos/packages/aos-package-manager/tests/registry_cache_e2e.rs`.
 - [x] Add the first `aos-cache` backend integration harness. The new
-      `crates/aos-cache/tests/backend_matrix.rs` covers a hermetic local
+      `crates/aos/packages/aos-nix-cache/tests/backend_matrix.rs` covers a hermetic local
       filesystem write/read round trip and a static HTTP read round trip for
       `nix-cache-info`, `<storehash>.narinfo`, and `nar/` objects, including
       exact `nix-cache-info` body upload with a non-default priority for
       writable backends. Context:
       `docs/registry/nix-cache-compatibility.md`,
-      `crates/aos-cache/src/backend/mod.rs`,
-      `crates/aos-cache/src/backend/fs.rs`,
-      `crates/aos-cache/src/backend/http.rs`, and
-      `crates/aos-cache/tests/backend_matrix.rs`.
+      `crates/aos/packages/aos-nix-cache/src/backend/mod.rs`,
+      `crates/aos/packages/aos-nix-cache/src/backend/fs.rs`,
+      `crates/aos/packages/aos-nix-cache/src/backend/http.rs`, and
+      `crates/aos/packages/aos-nix-cache/tests/backend_matrix.rs`.
 - [x] Add ignored, env-gated backend matrix hooks for external S3-compatible and
       SFTP write/read validation. They are not production evidence until run
       against real or containerized services, but they define the same round-trip
       contract as the hermetic filesystem test. Context:
-      `crates/aos-cache/tests/backend_matrix.rs`,
-      `crates/aos-cache/src/backend/s3.rs`, and
-      `crates/aos-cache/src/backend/sftp.rs`.
+      `crates/aos/packages/aos-nix-cache/tests/backend_matrix.rs`,
+      `crates/aos/packages/aos-nix-cache/src/backend/s3.rs`, and
+      `crates/aos/packages/aos-nix-cache/src/backend/sftp.rs`.
 - [x] Preserve generated `nix-cache-info` metadata during static-cache uploads
       and cover generated cache upload/readback through a repeatable filesystem
       destination array. `upload_static_cache` now uploads the exact generated
       `nix-cache-info` body instead of asking each backend to synthesize a
-      default-priority stub. `crates/aos-package/tests/registry_cache_e2e.rs`
+      default-priority stub. `crates/aos/packages/aos-package-manager/tests/registry_cache_e2e.rs`
       uploads the generated real-store fixture cache to two `file://`
       destinations through `upload_static_cache_to_all`, reads the uploaded
       narinfo/NAR back through the `aos-cache` backend trait, and verifies the
       uploaded `nix-cache-info` body matches the generated output. Context:
       `docs/registry/nix-cache-compatibility.md`,
       `docs/registry/publishing.md`,
-      `crates/aos-cache/src/backend/mod.rs`,
-      `crates/aos-cache/src/backend/fs.rs`,
-      `crates/aos-cache/src/backend/s3.rs`,
-      `crates/aos-cache/src/backend/sftp.rs`,
-      `crates/aos-cache/src/backend/http.rs`,
-      `crates/aos-package/src/registry/nixcache.rs`,
-      `crates/aos-cache/tests/backend_matrix.rs`, and
-      `crates/aos-package/tests/registry_cache_e2e.rs`.
+      `crates/aos/packages/aos-nix-cache/src/backend/mod.rs`,
+      `crates/aos/packages/aos-nix-cache/src/backend/fs.rs`,
+      `crates/aos/packages/aos-nix-cache/src/backend/s3.rs`,
+      `crates/aos/packages/aos-nix-cache/src/backend/sftp.rs`,
+      `crates/aos/packages/aos-nix-cache/src/backend/http.rs`,
+      `crates/aos/registry/aos-registry-authoring/src/registry/nixcache.rs`,
+      `crates/aos/packages/aos-nix-cache/tests/backend_matrix.rs`, and
+      `crates/aos/packages/aos-package-manager/tests/registry_cache_e2e.rs`.
 - [x] Add an env-gated generated static-cache upload/readback matrix hook for
       service-backed destinations. When
       `AOS_PACKAGE_TEST_REAL_NIX_CACHE=1` and
       `AOS_PACKAGE_TEST_GENERATED_CACHE_UPLOAD_URLS` are set,
-      `crates/aos-package/tests/registry_cache_e2e.rs` uploads the actual
+      `crates/aos/packages/aos-package-manager/tests/registry_cache_e2e.rs` uploads the actual
       generated Nix-cache output to a mixed destination array containing a local
       `file://` target plus the supplied URLs, then reads back narinfo and NAR
       payloads through the `aos-cache` backend trait. Context:
       `docs/registry/nix-cache-compatibility.md`,
-      `crates/aos-package/src/registry/nixcache.rs`,
-      `crates/aos-cache/src/backend/mod.rs`,
-      `crates/aos-cache/src/backend/fs.rs`,
-      `crates/aos-cache/src/backend/s3.rs`,
-      `crates/aos-cache/src/backend/sftp.rs`, and
-      `crates/aos-package/tests/registry_cache_e2e.rs`.
+      `crates/aos/registry/aos-registry-authoring/src/registry/nixcache.rs`,
+      `crates/aos/packages/aos-nix-cache/src/backend/mod.rs`,
+      `crates/aos/packages/aos-nix-cache/src/backend/fs.rs`,
+      `crates/aos/packages/aos-nix-cache/src/backend/s3.rs`,
+      `crates/aos/packages/aos-nix-cache/src/backend/sftp.rs`, and
+      `crates/aos/packages/aos-package-manager/tests/registry_cache_e2e.rs`.
 - [x] Validate service-backed generated static-cache upload/readback for an
       array of `file://`, `s3://`, and `sftp://` destinations in the VM test
       suite. `registry-validation-stock-nix-backend-array` starts a local
@@ -590,30 +590,30 @@ read before editing code or docs.
       Context:
       `docs/registry/nix-cache-compatibility.md`,
       `docs/registry/publishing.md`,
-      `crates/aos-package/src/lib.rs`,
-      `crates/aos-package/src/registry_ops.rs`,
-      `crates/aos-cache/src/backend/mod.rs`,
-      `crates/aos-cache/src/backend/fs.rs`,
-      `crates/aos-cache/src/backend/http.rs`,
-      `crates/aos-cache/src/backend/s3.rs`,
-      `crates/aos-cache/src/backend/sftp.rs`,
-      `crates/aos-package/src/registry/nixcache.rs`, and
-      `crates/aos-cache/tests/backend_matrix.rs`,
-      `crates/aos-package/tests/registry_cache_e2e.rs`,
-      `crates/aos-net/src/protocol/s3.rs`,
-      `crates/aos-net/src/protocol/sftp.rs`, and
+      `crates/aos/packages/aos-package-manager/src/lib.rs`,
+      `crates/aos/registry/aos-registry-authoring/src/registry_ops.rs`,
+      `crates/aos/packages/aos-nix-cache/src/backend/mod.rs`,
+      `crates/aos/packages/aos-nix-cache/src/backend/fs.rs`,
+      `crates/aos/packages/aos-nix-cache/src/backend/http.rs`,
+      `crates/aos/packages/aos-nix-cache/src/backend/s3.rs`,
+      `crates/aos/packages/aos-nix-cache/src/backend/sftp.rs`,
+      `crates/aos/registry/aos-registry-authoring/src/registry/nixcache.rs`, and
+      `crates/aos/packages/aos-nix-cache/tests/backend_matrix.rs`,
+      `crates/aos/packages/aos-package-manager/tests/registry_cache_e2e.rs`,
+      `crates/shared/aos-transfer/src/protocol/s3.rs`,
+      `crates/shared/aos-transfer/src/protocol/sftp.rs`, and
       `tests/vm/apm/registry_validation.nix`.
 - [x] Add current-stock-git compatibility coverage for the pinned minimum git
-      version and sha256 dumb-HTTP behavior. `crates/aos-package/tests/
+      version and sha256 dumb-HTTP behavior. `crates/aos/packages/aos-package-manager/tests/
       registry_e2e.rs` now includes
       `stock_git_current_version_syncs_sha256_dumb_http_registry`, which asserts
       the host `git --version` is at least 2.42.0, verifies the fixture origin is
       a sha256 repository, serves it over static HTTP, and runs the actual
       `registry::git::sync_git` consumer path. Context:
       `docs/registry/http-layout.md`, `docs/registry/signing-and-trust.md`,
-      `crates/aos-package/src/registry/git.rs`,
-      `crates/aos-package/src/registry/objectstore.rs`, and
-      `crates/aos-package/tests/registry_e2e.rs`.
+      `crates/aos/registry/aos-registry-client/src/registry/git.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/objectstore.rs`, and
+      `crates/aos/registry/aos-registry-authoring/tests/registry_e2e.rs`.
 - [x] Add an env-gated supported-version stock Git compatibility matrix harness
       for the pinned minimum Git version and newer clients.
       `stock_git_configured_version_matrix_syncs_sha256_dumb_http_registry`
@@ -624,9 +624,9 @@ read before editing code or docs.
       `--test-threads=1`. Context:
       `docs/registry/http-layout.md`,
       `docs/plans/registry/open-questions.md`,
-      `crates/aos-package/src/registry/git.rs`,
-      `crates/aos-package/src/registry/objectstore.rs`, and
-      `crates/aos-package/tests/registry_e2e.rs`.
+      `crates/aos/registry/aos-registry-client/src/registry/git.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/objectstore.rs`, and
+      `crates/aos/registry/aos-registry-authoring/tests/registry_e2e.rs`.
 - [x] Run and publish the supported-version stock Git compatibility matrix for
       the pinned minimum Git version and newer clients in the VM test-suite PR.
       `registry-validation-stock-git-matrix` includes the pinned
@@ -644,11 +644,11 @@ read before editing code or docs.
       `docs/plans/registry/open-questions.md`,
       `pkgs/tools/git-2_42.nix`,
       `tests/vm/apm/registry_validation.nix`,
-      `crates/aos-package/src/security.rs`,
-      `crates/aos-package/src/registry/objectstore.rs`,
-      `crates/aos-package/src/registry/pack.rs`,
-      `crates/aos-package/src/registry/git.rs`, and
-      `crates/aos-package/tests/registry_e2e.rs`.
+      `crates/aos/registry/aos-registry-client/src/security.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/objectstore.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/pack.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/git.rs`, and
+      `crates/aos/registry/aos-registry-authoring/tests/registry_e2e.rs`.
 
 ### Producer / Publishing Target State
 
@@ -664,7 +664,7 @@ read before editing code or docs.
       `--dry-run`, `--resume`, clear existing-artifact errors, and a local
       publisher lock in the git dir. Coverage includes
       `release_orchestrator_e2e_uploads_channel_origin_and_syncs_consumer` in
-      `crates/aos-package/tests/registry_e2e.rs`, which releases a committed
+      `crates/aos/registry/aos-registry-authoring/tests/registry_e2e.rs`, which releases a committed
       sha256 registry tree, uploads it to `file://`, serves that uploaded
       origin, and syncs a channel consumer from it. The VM validation PR items
       above cover stock-Nix substituter behavior, service-backed S3/SFTP upload
@@ -674,12 +674,12 @@ read before editing code or docs.
       `docs/registry/http-layout.md`, `docs/registry/packs-and-deltas.md`,
       `docs/registry/versioning-and-channels.md`,
       `docs/registry/nix-cache-compatibility.md`,
-      `docs/plans/registry/open-questions.md`, `crates/aos-package/src/lib.rs`,
-      `crates/aos-package/src/registry_ops.rs`,
-      `crates/aos-package/src/registry/objectstore.rs`,
-      `crates/aos-package/src/registry/pack.rs`,
-      `crates/aos-package/src/registry/channel.rs`, and
-      `crates/aos-package/src/registry/nixcache.rs`.
+      `docs/plans/registry/open-questions.md`, `crates/aos/packages/aos-package-manager/src/lib.rs`,
+      `crates/aos/registry/aos-registry-authoring/src/registry_ops.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/objectstore.rs`,
+      `crates/aos/registry/aos-registry-authoring/src/registry/pack.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/channel.rs`, and
+      `crates/aos/registry/aos-registry-authoring/src/registry/nixcache.rs`.
 - [x] Add upload support for the full git-native static origin, not only the
       generated static Nix cache files. `apr origin upload --upload-url ...`
       now refreshes the local static git view and uploads `HEAD`, `info/refs`,
@@ -691,7 +691,7 @@ read before editing code or docs.
       `Cache-Control` metadata. Coverage includes
       `registry::static_upload` unit tests for ordering and filesystem upload,
       plus `static_origin_upload_e2e_syncs_uploaded_filesystem_destination` in
-      `crates/aos-package/tests/registry_e2e.rs`, which uploads a real
+      `crates/aos/registry/aos-registry-authoring/tests/registry_e2e.rs`, which uploads a real
       sha256 dumb-HTTP origin to `file://`, serves that uploaded tree, and syncs
       a consumer from it. The VM validation PR item above covers service-backed
       S3/SFTP execution against in-VM endpoints. Context:
@@ -700,21 +700,21 @@ read before editing code or docs.
       `docs/registry/current-state.md`,
       `docs/registry/packs-and-deltas.md`,
       `docs/plans/registry/open-questions.md`,
-      `crates/aos-package/src/lib.rs`,
-      `crates/aos-package/src/registry_ops.rs`,
-      `crates/aos-package/src/registry/static_upload.rs`,
-      `crates/aos-package/src/registry/objectstore.rs`,
-      `crates/aos-package/src/registry/pack.rs`,
-      `crates/aos-package/src/registry/channel.rs`,
-      `crates/aos-package/src/registry/nixcache.rs`,
-      `crates/aos-package/tests/registry_e2e.rs`,
-      `crates/aos-cache/src/backend/mod.rs`,
-      `crates/aos-cache/src/backend/fs.rs`,
-      `crates/aos-cache/src/backend/http.rs`,
-      `crates/aos-cache/src/backend/s3.rs`,
-      `crates/aos-cache/src/backend/sftp.rs`,
-      `crates/aos-net/src/types.rs`, and
-      `crates/aos-net/src/protocol/s3.rs`.
+      `crates/aos/packages/aos-package-manager/src/lib.rs`,
+      `crates/aos/registry/aos-registry-authoring/src/registry_ops.rs`,
+      `crates/aos/registry/aos-registry-authoring/src/registry/static_upload.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/objectstore.rs`,
+      `crates/aos/registry/aos-registry-authoring/src/registry/pack.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/channel.rs`,
+      `crates/aos/registry/aos-registry-authoring/src/registry/nixcache.rs`,
+      `crates/aos/registry/aos-registry-authoring/tests/registry_e2e.rs`,
+      `crates/aos/packages/aos-nix-cache/src/backend/mod.rs`,
+      `crates/aos/packages/aos-nix-cache/src/backend/fs.rs`,
+      `crates/aos/packages/aos-nix-cache/src/backend/http.rs`,
+      `crates/aos/packages/aos-nix-cache/src/backend/s3.rs`,
+      `crates/aos/packages/aos-nix-cache/src/backend/sftp.rs`,
+      `crates/shared/aos-transfer/src/types.rs`, and
+      `crates/shared/aos-transfer/src/protocol/s3.rs`.
 - [x] Replace the single optional cache `--upload-url` with repeatable or
       array-style upload destinations, and define partial-failure semantics for
       a destination set such as `(s3, local filesystem path, SFTP)`. The CLI now
@@ -727,31 +727,31 @@ read before editing code or docs.
       `s3://`, and `sftp://`/`ssh://`.
       Context: `docs/registry/publishing.md`,
       `docs/registry/nix-cache-compatibility.md`,
-      `crates/aos-package/src/lib.rs`,
-      `crates/aos-package/src/registry_ops.rs`,
-      `crates/aos-package/src/registry/static_upload.rs`,
-      `crates/aos-package/src/registry/nixcache.rs`,
-      `crates/aos-cache/src/backend/mod.rs`,
-      `crates/aos-cache/src/backend/fs.rs`,
-      `crates/aos-cache/src/backend/http.rs`,
-      `crates/aos-cache/src/backend/s3.rs`, and
-      `crates/aos-cache/src/backend/sftp.rs`.
+      `crates/aos/packages/aos-package-manager/src/lib.rs`,
+      `crates/aos/registry/aos-registry-authoring/src/registry_ops.rs`,
+      `crates/aos/registry/aos-registry-authoring/src/registry/static_upload.rs`,
+      `crates/aos/registry/aos-registry-authoring/src/registry/nixcache.rs`,
+      `crates/aos/packages/aos-nix-cache/src/backend/mod.rs`,
+      `crates/aos/packages/aos-nix-cache/src/backend/fs.rs`,
+      `crates/aos/packages/aos-nix-cache/src/backend/http.rs`,
+      `crates/aos/packages/aos-nix-cache/src/backend/s3.rs`, and
+      `crates/aos/packages/aos-nix-cache/src/backend/sftp.rs`.
 - [x] Expose production auth/env flags for upload backends in the registry
       command surface: S3 region/profile/endpoint, SFTP key/password/agent
       behavior, and HTTP token/basic/header credentials. `apr cache generate`
       now flattens backend upload auth flags into the `Generate` command,
-      maps them into `aos_cache::AuthOptions`, and threads those options through
+      maps them into `aos_nix_cache::AuthOptions`, and threads those options through
       `upload_static_cache_to_all`. Coverage includes
       `cache_upload_auth_args_map_to_backend_options` plus
-      `crates/aos/tests/apr_cache_cli.rs`, which exercises the flags on the real
+      `crates/aos/cli/aos-cli/tests/apr_cache_cli.rs`, which exercises the flags on the real
       `apr` binary while uploading to a safe `file://` destination. Context:
       `docs/registry/publishing.md`,
       `docs/registry/nix-cache-compatibility.md`,
-      `crates/aos/tests/apr_cache_cli.rs`,
-      `crates/aos-package/src/lib.rs`,
-      `crates/aos-package/src/registry_ops.rs`,
-      `crates/aos-package/src/registry/nixcache.rs`, and
-      `crates/aos-cache/src/backend/mod.rs`.
+      `crates/aos/cli/aos-cli/tests/apr_cache_cli.rs`,
+      `crates/aos/packages/aos-package-manager/src/lib.rs`,
+      `crates/aos/registry/aos-registry-authoring/src/registry_ops.rs`,
+      `crates/aos/registry/aos-registry-authoring/src/registry/nixcache.rs`, and
+      `crates/aos/packages/aos-nix-cache/src/backend/mod.rs`.
 - [x] Add persistent config-file precedence for registry upload backend auth.
       `registries.d/<name>.toml` now accepts an optional
       `[registry.upload_auth]` table with the same auth shape as
@@ -764,13 +764,13 @@ read before editing code or docs.
       `docs/registry/publishing.md`,
       `docs/registry/nix-cache-compatibility.md`,
       `docs/registry/current-state.md`,
-      `crates/aos-package/src/types.rs`,
-      `crates/aos-package/src/config.rs`,
-      `crates/aos-package/src/lib.rs`,
-      `crates/aos-package/src/registry_ops.rs`, and
-      `crates/aos-cache/src/backend/mod.rs`.
+      `crates/aos/packages/aos-package-manager/src/types.rs`,
+      `crates/aos/registry/aos-registry-client/src/config.rs`,
+      `crates/aos/packages/aos-package-manager/src/lib.rs`,
+      `crates/aos/registry/aos-registry-authoring/src/registry_ops.rs`, and
+      `crates/aos/packages/aos-nix-cache/src/backend/mod.rs`.
 - [x] Add tests for torn-publish and concurrent-publisher failure modes:
-      `crates/aos-package/tests/registry_e2e.rs` now includes
+      `crates/aos/registry/aos-registry-authoring/tests/registry_e2e.rs` now includes
       `channel_torn_publish_keeps_old_floor_when_partition_leads_objects`,
       which exposes an updated channel partition before its immutable release
       tag/object graph is published and proves the consumer probes forward to
@@ -783,12 +783,12 @@ read before editing code or docs.
       `docs/registry/versioning-and-channels.md`,
       `docs/registry/current-state.md`,
       `docs/plans/registry/open-questions.md`,
-      `crates/aos-package/src/registry/git.rs`,
-      `crates/aos-package/src/registry_ops.rs`,
-      `crates/aos-package/src/registry/channel.rs`,
-      `crates/aos-package/src/registry/fetch.rs`,
-      `crates/aos-package/tests/common/mod.rs`, and
-      `crates/aos-package/tests/registry_e2e.rs`.
+      `crates/aos/registry/aos-registry-client/src/registry/git.rs`,
+      `crates/aos/registry/aos-registry-authoring/src/registry_ops.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/channel.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/fetch.rs`,
+      `crates/aos/packages/aos-package-manager/tests/common/mod.rs`, and
+      `crates/aos/registry/aos-registry-authoring/tests/registry_e2e.rs`.
 
 ### Consumer Production Hardening
 
@@ -800,9 +800,9 @@ read before editing code or docs.
       Context: `docs/registry/http-layout.md`,
       `docs/registry/signing-and-trust.md`,
       `docs/plans/registry/open-questions.md`,
-      `crates/aos-package/src/registry/git.rs`,
-      `crates/aos-package/src/registry/objectstore.rs`, and
-      `crates/aos-package/tests/registry_e2e.rs`.
+      `crates/aos/registry/aos-registry-client/src/registry/git.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/objectstore.rs`, and
+      `crates/aos/registry/aos-registry-authoring/tests/registry_e2e.rs`.
 - [x] Revisit bucket selection so rollout assignment uses a registry-local salt,
       survives cloned images and missing `/etc/machine-id`, and does not flap
       after the first sync. Add migration tests for existing persisted buckets.
@@ -813,9 +813,9 @@ read before editing code or docs.
       bucket migration, and probe order.
       Context: `docs/registry/versioning-and-channels.md`,
       `docs/plans/registry/open-questions.md`,
-      `crates/aos-package/src/registry/git.rs`,
-      `crates/aos-package/src/registry/channel.rs`, and
-      `crates/aos-package/tests/registry_e2e.rs`.
+      `crates/aos/registry/aos-registry-client/src/registry/git.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/channel.rs`, and
+      `crates/aos/registry/aos-registry-authoring/tests/registry_e2e.rs`.
 - [x] Implement and test consumer max-staleness/freshness policy for frozen but
       validly signed mirrors. Channel refresh failures are evaluated against
       `[registry.state].last_update`, with a 14-day default and a per-registry
@@ -833,10 +833,10 @@ read before editing code or docs.
       `docs/registry/versioning-and-channels.md`,
       `docs/registry/apt-comparison.md`,
       `docs/plans/registry/open-questions.md`,
-      `crates/aos-package/src/registry/git.rs`,
-      `crates/aos-package/src/registry/channel.rs`,
-      `crates/aos-package/src/registry/verify.rs`, and
-      `crates/aos-package/tests/registry_e2e.rs`.
+      `crates/aos/registry/aos-registry-client/src/registry/git.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/channel.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/verify.rs`, and
+      `crates/aos/registry/aos-registry-authoring/tests/registry_e2e.rs`.
 - [x] Keep production `max_staleness_seconds` default tuning as an operator
       rollout policy, not a repository implementation blocker. The
       implementation deliberately uses the local freshness clock because signed
@@ -851,26 +851,26 @@ read before editing code or docs.
       `docs/plans/registry/open-questions.md`,
       `docs/registry/versioning-and-channels.md`,
       `docs/registry/http-layout.md`,
-      `crates/aos-package/src/registry/git.rs`, and
-      `crates/aos-package/tests/registry_e2e.rs`.
+      `crates/aos/registry/aos-registry-client/src/registry/git.rs`, and
+      `crates/aos/registry/aos-registry-authoring/tests/registry_e2e.rs`.
 - [x] Add an explicit trust-management CLI for local registry trust keys,
       including pin, re-pin, rotation overlap, unpin, and compromised-key
       recovery workflows. `apr trust pin <registry> <registry:Ed25519:base64>`
       pins a local trust anchor, a second pin appends a rotation-overlap key,
       `--replace` performs explicit re-pin/recovery, `apr trust list` reports
       pinned keys, and `apr trust remove` / `apr trust unpin` removes local
-      pins. `crates/aos/tests/apr_trust_cli.rs` covers the real CLI flow and
+      pins. `crates/aos/cli/aos-cli/tests/apr_trust_cli.rs` covers the real CLI flow and
       rejects registry/key name mismatches. Producer-side committed `keys.toml`
       lifecycle remains tracked separately below. Context:
       `docs/registry/repo-layout.md`,
       `docs/registry/signing-and-trust.md`,
       `docs/plans/registry/open-questions.md`,
-      `crates/aos/tests/apr_trust_cli.rs`,
-      `crates/aos-package/src/lib.rs`,
-      `crates/aos-package/src/registry_ops.rs`,
-      `crates/aos-package/src/security.rs`,
-      `crates/aos-package/src/registry/keys.rs`, and
-      `crates/aos-package/src/registry/verify.rs`.
+      `crates/aos/cli/aos-cli/tests/apr_trust_cli.rs`,
+      `crates/aos/packages/aos-package-manager/src/lib.rs`,
+      `crates/aos/registry/aos-registry-authoring/src/registry_ops.rs`,
+      `crates/aos/registry/aos-registry-client/src/security.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/keys.rs`, and
+      `crates/aos/registry/aos-registry-client/src/registry/verify.rs`.
 - [x] Emit the initial committed `keys.toml` trust roster from `apr create`.
       `apr create` now writes a schema-1 roster, optionally with an active
       `--trust-key registry:Ed25519:<base64>` and optional `--trust-key-id`
@@ -878,10 +878,10 @@ read before editing code or docs.
       `docs/registry/repo-layout.md`,
       `docs/registry/signing-and-trust.md`,
       `docs/registry/architecture.md`,
-      `crates/aos-package/src/registry_ops.rs`,
-      `crates/aos-package/src/lib.rs`,
-      `crates/aos-package/src/registry/keys.rs`, and
-      `crates/aos-package/src/security.rs`.
+      `crates/aos/registry/aos-registry-authoring/src/registry_ops.rs`,
+      `crates/aos/packages/aos-package-manager/src/lib.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/keys.rs`, and
+      `crates/aos/registry/aos-registry-client/src/security.rs`.
 - [x] Maintain the committed `keys.toml` trust roster through producer key
       add/list/retire operations. `apr keys list`, `apr keys add <id> <key>`,
       and `apr keys retire <id>` now operate on the committed schema-1 roster,
@@ -889,17 +889,17 @@ read before editing code or docs.
       duplicate or already-revoked ids, require an active survivor for planned
       retirement, require/derive the survivor `--vouched-by` id, and commit +
       refresh dumb-HTTP metadata unless `--no-commit` is passed.
-      `crates/aos/tests/apr_keys_cli.rs` drives the real `apr` binary against a
+      `crates/aos/cli/aos-cli/tests/apr_keys_cli.rs` drives the real `apr` binary against a
       temporary sha256 git registry and verifies commits plus `keys.toml`
       content. Context: `docs/registry/repo-layout.md`,
       `docs/registry/signing-and-trust.md`,
       `docs/registry/architecture.md`,
       `docs/registry/publishing.md`, `docs/registry/current-state.md`,
-      `crates/aos-package/src/lib.rs`,
-      `crates/aos-package/src/registry_ops.rs`,
-      `crates/aos-package/src/registry/keys.rs`,
-      `crates/aos-package/src/security.rs`, and
-      `crates/aos/tests/apr_keys_cli.rs`.
+      `crates/aos/packages/aos-package-manager/src/lib.rs`,
+      `crates/aos/registry/aos-registry-authoring/src/registry_ops.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/keys.rs`,
+      `crates/aos/registry/aos-registry-client/src/security.rs`, and
+      `crates/aos/cli/aos-cli/tests/apr_keys_cli.rs`.
 - [x] Add producer signing-key-id selection for release and channel signing.
       `apr tag`, `apr sign`, `apr channel init`, and `apr channel advance`
       now accept `--key-id <id>` as a mutually exclusive alternative to direct
@@ -907,32 +907,32 @@ read before editing code or docs.
       `keys.toml` active roster, rejected if revoked or registry-mismatched,
       and resolved through the selected local `registries.d/<name>.toml`
       `[registry.signing_keys]` private-key map. Unit coverage in
-      `crates/aos-package/src/registry_ops.rs` checks direct-key bypass,
+      `crates/aos/registry/aos-registry-authoring/src/registry_ops.rs` checks direct-key bypass,
       ambiguous source rejection, key-id resolution, missing local mapping,
       revoked-key rejection, and a real git SSH signed tag verified through
       `verify_tag_signature`. Config coverage in
-      `crates/aos-package/src/config.rs` checks `signing_keys` parsing, and the
-      shared fixture serializer in `crates/aos-package/tests/common/mod.rs`
+      `crates/aos/registry/aos-registry-client/src/config.rs` checks `signing_keys` parsing, and the
+      shared fixture serializer in `crates/aos/packages/aos-package-manager/tests/common/mod.rs`
       preserves the table for future integration/e2e fixtures. Context:
       `docs/registry/repo-layout.md`,
       `docs/registry/signing-and-trust.md`,
       `docs/registry/publishing.md`,
       `docs/registry/current-state.md`,
-      `crates/aos-package/src/lib.rs`,
-      `crates/aos-package/src/types.rs`,
-      `crates/aos-package/src/config.rs`,
-      `crates/aos-package/src/registry_ops.rs`,
-      `crates/aos-package/src/registry/keys.rs`,
-      `crates/aos-package/src/security.rs`,
-      `crates/aos-package/tests/common/mod.rs`, and
-      `crates/aos-package/tests/registry_e2e.rs`.
+      `crates/aos/packages/aos-package-manager/src/lib.rs`,
+      `crates/aos/packages/aos-package-manager/src/types.rs`,
+      `crates/aos/registry/aos-registry-client/src/config.rs`,
+      `crates/aos/registry/aos-registry-authoring/src/registry_ops.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/keys.rs`,
+      `crates/aos/registry/aos-registry-client/src/security.rs`,
+      `crates/aos/packages/aos-package-manager/tests/common/mod.rs`, and
+      `crates/aos/registry/aos-registry-authoring/tests/registry_e2e.rs`.
 - [x] Add migration/capability tests for clean-break behavior. The policy is now
       ratified as a clean break: plain `http(s)://` origins must expose the
       git-native dumb-HTTP `HEAD` + `info/refs` surface; legacy-only
       `bundle-list.toml` origins fail with a clear clean-break error; if both
       surfaces exist, the git-native surface wins; git-native producers do not
       emit `bundle-list.toml`, so bundle-mode clients are EOL at registry
-      cutover. Coverage in `crates/aos-package/tests/registry_e2e.rs` includes
+      cutover. Coverage in `crates/aos/registry/aos-registry-authoring/tests/registry_e2e.rs` includes
       `legacy_bundle_only_http_origin_fails_with_clean_break_error`,
       `dual_surface_http_origin_prefers_git_native_over_legacy_manifest`, the
       existing git-native fixture assertion that no `bundle-list.toml` is
@@ -942,14 +942,14 @@ read before editing code or docs.
       `docs/registry/http-layout.md`,
       `docs/plans/registry/open-questions.md`,
       `docs/plans/registry/gap-analysis.md`,
-      `crates/aos-package/src/registry/git.rs`,
-      `crates/aos-package/src/registry/fetch.rs`, and
-      `crates/aos-package/tests/registry_e2e.rs`.
+      `crates/aos/registry/aos-registry-client/src/registry/git.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/fetch.rs`, and
+      `crates/aos/registry/aos-registry-authoring/tests/registry_e2e.rs`.
 
 ### Performance / Compatibility Validation
 
 - [x] Add an opt-in producer/consumer performance harness for registry pack and
-      delta metrics. `crates/aos-package/tests/registry_perf.rs` builds a
+      delta metrics. `crates/aos/registry/aos-registry-authoring/tests/registry_perf.rs` builds a
       multi-package fixture, measures full-pack generation, thin-delta
       generation, zstd compression, full-pack reconstruction, and compressed
       delta reconstruction, then prints byte/time metrics. It is ignored by
@@ -957,9 +957,9 @@ read before editing code or docs.
       `AOS_PACKAGE_TEST_REGISTRY_PERF_PACKAGES=<n>`. Context:
       `docs/registry/packs-and-deltas.md`,
       `docs/registry/publishing.md`,
-      `crates/aos-package/src/registry/pack.rs`,
-      `crates/aos-package/src/registry/fetch.rs`, and
-      `crates/aos-package/tests/registry_perf.rs`.
+      `crates/aos/registry/aos-registry-authoring/src/registry/pack.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/fetch.rs`, and
+      `crates/aos/registry/aos-registry-authoring/tests/registry_perf.rs`.
 - [x] Run the registry performance harness in the VM validation PR. The Rust
       harness exists in the implementation PR, and
       `registry-validation-pack-delta-perf` now records VM-side
@@ -979,19 +979,19 @@ read before editing code or docs.
       `docs/registry/publishing.md`,
       `docs/plans/registry/open-questions.md`,
       `tests/vm/apm/registry_validation.nix`,
-      `crates/aos-package/src/registry/pack.rs`,
-      `crates/aos-package/src/registry/fetch.rs`, and
-      `crates/aos-package/tests/registry_perf.rs`.
+      `crates/aos/registry/aos-registry-authoring/src/registry/pack.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/fetch.rs`, and
+      `crates/aos/registry/aos-registry-authoring/tests/registry_perf.rs`.
 - [x] Add hermetic CDN/mirror layout regression coverage for the pieces we can
       prove without external infrastructure: byte-stable relative
       `objects/info/alternates`, immutable-vs-mutable static-origin
       cache-control/content-type metadata, loose-object fallback planning, and
       corrupt-pack fallback to Git's dumb-HTTP fetch. Context:
       `docs/registry/http-layout.md`,
-      `crates/aos-package/src/registry/objectstore.rs`,
-      `crates/aos-package/src/registry/static_upload.rs`,
-      `crates/aos-package/src/registry/fetch.rs`, and
-      `crates/aos-package/tests/registry_e2e.rs`.
+      `crates/aos/registry/aos-registry-client/src/registry/objectstore.rs`,
+      `crates/aos/registry/aos-registry-authoring/src/registry/static_upload.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/fetch.rs`, and
+      `crates/aos/registry/aos-registry-authoring/tests/registry_e2e.rs`.
 - [x] Validate the CDN/mirror HTTP layout against a service-like object backend
       in the VM validation PR. `registry-validation-origin-cdn-layout` uploads a
       git-native origin plus generated static-cache files to an S3-compatible
@@ -1008,9 +1008,9 @@ read before editing code or docs.
       `docs/registry/publishing.md`,
       `docs/registry/signing-and-trust.md`,
       `tests/vm/apm/registry_validation.nix`,
-      `crates/aos-package/src/registry/objectstore.rs`,
-      `crates/aos-package/src/registry/fetch.rs`, and
-      `crates/aos-package/tests/registry_e2e.rs`.
+      `crates/aos/registry/aos-registry-client/src/registry/objectstore.rs`,
+      `crates/aos/registry/aos-registry-client/src/registry/fetch.rs`, and
+      `crates/aos/registry/aos-registry-authoring/tests/registry_e2e.rs`.
 
 ### Documentation Re-Grounding
 
@@ -1061,9 +1061,9 @@ read before editing code or docs.
       resolved and cites the producer/upload/consumer coverage. Context:
       `docs/registry/nix-cache-compatibility.md`,
       `docs/plans/registry/open-questions.md`,
-      `crates/aos-core/src/nar/cache.rs`,
-      `crates/aos-package/src/registry/nixcache.rs`, and
-      `crates/aos-package/src/download.rs`.
+      `crates/shared/aos-nar/src/cache.rs`,
+      `crates/aos/registry/aos-registry-authoring/src/registry/nixcache.rs`, and
+      `crates/aos/packages/aos-package-manager/src/download.rs`.
 - [x] Update the external-validation runbook so agents/operators have one place
       to run the stock-Nix, S3/SFTP, stock-Git, performance, CDN/mirror, and
       max-staleness policy gates before claiming production validation.

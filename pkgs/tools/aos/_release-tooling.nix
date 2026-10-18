@@ -4,7 +4,7 @@
 # qualification executors it may drive and the file-backed release signer.
 # `aos maintain release` discovers all of them from this layout instead of
 # reading store paths from the maintainer configuration (see
-# crates/aos/src/commands/release/tooling.rs):
+# crates/aos/release/aos-release-coordinator/src/tooling.rs):
 #
 #   bin/{aos,apm,apr}                                 wrappers exporting AOS_RELEASE_TOOLING
 #   bin/aos-release-signer                            link to the bundled signer, for operators

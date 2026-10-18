@@ -8,7 +8,7 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
-  timingTest = builtins.readFile ../../crates/crucible/tests/assertion_evaluation_timing.rs;
+  timingTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/assertion_evaluation_timing.rs;
   assertionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -22,7 +22,7 @@
         needle = "Completed by `checks.crucible.phase4.assertionEvaluationTiming`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/trigger.rs" trigger [
       {
         label = "previous real prefix tracking";
         needle = "last_prefix: Option<ConditionEventLogPrefix>";
@@ -52,7 +52,7 @@
         needle = "Property::AfterQuiescence { predicate }";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/assertion_evaluation_timing.rs" timingTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/assertion_evaluation_timing.rs" timingTest [
       {
         label = "synthetic deadline point test";
         needle = "eventually_evaluates_deadline_point_between_recorded_prefixes";
@@ -84,7 +84,7 @@
         needle = "attrPath = \"checks.crucible.phase4.assertionEvaluationTiming\"";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/assertion_evaluation_timing.rs" timingTest [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/assertion_evaluation_timing.rs" timingTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -107,7 +107,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
@@ -151,7 +154,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-assertion-evaluation-timing-target" \
-              -p crucible \
+              -p crucible-engine \
               --test assertion_evaluation_timing \
               --test host_side_assertions \
               --test assertion_log_fold \

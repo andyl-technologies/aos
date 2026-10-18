@@ -10,18 +10,18 @@
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   eventCatalog = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/src/event_catalog.rs;
+    entry = ../../crates/crucible/engine/crucible-engine/src/event_catalog.rs;
   };
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
   libSource = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/src/lib.rs;
+    entry = ../../crates/crucible/engine/crucible-engine/src/lib.rs;
   };
   payloadTest =
-    builtins.readFile ../../crates/crucible/tests/event_log_payload.rs
-    + builtins.readFile ../../crates/crucible/tests/fault_observation_log.rs;
-  formalTraceTest = builtins.readFile ../../crates/crucible/tests/formal_trace_export.rs;
-  reproductionTest = builtins.readFile ../../crates/crucible/tests/assertion_violation_reproduction.rs;
+    builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/event_log_payload.rs
+    + builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/fault_observation_log.rs;
+  formalTraceTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/formal_trace_export.rs;
+  reproductionTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/assertion_violation_reproduction.rs;
   observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -39,7 +39,7 @@
         needle = "`diagnostic` escape hatch";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "open payload struct";
         needle = "pub struct EventPayload";
@@ -109,13 +109,13 @@
         needle = "SchedulerEventLogPayload::Diagnostic(diagnostic) => diagnostic.level";
       }
     ]
-    ++ failuresFor "crates/crucible/src/event_catalog.rs" eventCatalog [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/event_catalog.rs" eventCatalog [
       {
         label = "diagnostic observational catalog class";
         needle = "kind: \"diagnostic\",\n        class: SchedulerEventLogClass::Observational,";
       }
     ]
-    ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/trigger.rs" trigger [
       {
         label = "replay compares causal projection";
         needle = "fn event_log_causal_projections_match";
@@ -157,7 +157,7 @@
         needle = "causal_projection_comparison_ignores_observational_entries";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" libSource [
       {
         label = "EventPayload export";
         needle = "EventPayload";
@@ -171,7 +171,7 @@
         needle = "EventDiagnosticPayload";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/event_log_payload.rs" payloadTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/event_log_payload.rs" payloadTest [
       {
         label = "payload attribute test";
         needle = "payload_attributes_are_read_by_name_and_type";
@@ -209,7 +209,7 @@
         needle = "diagnostic_error.class(),\n        SchedulerEventLogClass::Observational";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/formal_trace_export.rs" formalTraceTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/formal_trace_export.rs" formalTraceTest [
       {
         label = "typed diagnostic formal trace test";
         needle = "formal_trace_export_includes_typed_diagnostic_details";
@@ -223,7 +223,7 @@
         needle = "diagnostic.name.bytes=646961670a6e616d65";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/assertion_violation_reproduction.rs" reproductionTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/assertion_violation_reproduction.rs" reproductionTest [
       {
         label = "diagnostic replay nonperturbation regression";
         needle = "violation_reproduction_ignores_observational_diagnostic_replay_entries";
@@ -239,7 +239,7 @@
         needle = "eventLogPayload = import ./phase4-event-log-payload.nix";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/event_log_payload.rs" payloadTest [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/event_log_payload.rs" payloadTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -249,7 +249,7 @@
         needle = "todo!";
       }
     ]
-    ++ forbiddenFor "crates/crucible/src/trigger.rs" trigger [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/src/trigger.rs" trigger [
       {
         label = "raw diagnostic name export";
         needle = "diagnostic.name={}";
@@ -268,7 +268,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
@@ -312,7 +315,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-event-log-payload-target" \
-              -p crucible \
+              -p crucible-engine \
               --test event_log_payload \
               --test fault_observation_log \
               --test assertion_violation_reproduction \
@@ -322,7 +325,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-event-log-payload-target" \
-              -p crucible \
+              -p crucible-engine \
               --lib causal_projection_comparison_ignores_observational_entries \
               -- --test-threads=1
           '';

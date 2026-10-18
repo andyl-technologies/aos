@@ -7,19 +7,19 @@
   targets = [
     {
       gate = "gate:harness-lint";
-      package = "crucible-harness";
+      package = "crucible-test-support";
       testTarget = "harness_lint";
       requiredFeatures = [];
     }
     {
       gate = "gate:layer0-determinism";
-      package = "crucible-qemu";
+      package = "crucible-qemu-host";
       testTarget = "deterministic_launch";
       requiredFeatures = [];
     }
     {
       gate = "gate:single-vm-fingerprint";
-      package = "crucible-qemu";
+      package = "crucible-qemu-host";
       testTarget = "deterministic_launch";
       requiredFeatures = [];
     }
@@ -43,37 +43,37 @@
     }
     {
       gate = "gate:layer1-injection";
-      package = "crucible-protocol";
+      package = "crucible-qemu-protocol";
       testTarget = "gate_layer1_injection";
       requiredFeatures = [];
     }
     {
       gate = "gate:layer1-injection";
-      package = "crucible-shmem";
+      package = "crucible-qemu-shmem";
       testTarget = "gate_layer1_injection";
       requiredFeatures = [];
     }
     {
       gate = "gate:abi-conformance";
-      package = "crucible-harness";
+      package = "crucible-test-support";
       testTarget = "gate_abi_conformance";
       requiredFeatures = [];
     }
     {
       gate = "gate:abi-conformance";
-      package = "crucible-shmem";
+      package = "crucible-qemu-shmem";
       testTarget = "gate_abi_conformance";
       requiredFeatures = [];
     }
     {
       gate = "gate:abi-conformance";
-      package = "crucible-protocol";
+      package = "crucible-qemu-protocol";
       testTarget = "gate_abi_conformance";
       requiredFeatures = [];
     }
     {
       gate = "gate:abi-conformance";
-      package = "crucible-api";
+      package = "crucible-control-api";
       testTarget = "gate_abi_conformance";
       requiredFeatures = [];
     }
@@ -91,25 +91,25 @@
     }
     {
       gate = "gate:abi-conformance";
-      package = "crucible";
+      package = "crucible-engine";
       testTarget = "gate_abi_conformance";
       requiredFeatures = ["test-double"];
     }
     {
       gate = "gate:replay-oracle";
-      package = "crucible";
+      package = "crucible-engine";
       testTarget = "gate_replay_oracle";
       requiredFeatures = ["test-double"];
     }
     {
       gate = "gate:content-address";
-      package = "crucible";
+      package = "crucible-engine";
       testTarget = "gate_content_address";
       requiredFeatures = [];
     }
     {
       gate = "gate:content-address";
-      package = "crucible-sim";
+      package = "crucible-determinism";
       testTarget = "gate_content_address";
       requiredFeatures = [];
     }
@@ -121,7 +121,7 @@
     }
     {
       gate = "gate:scheduler-liveness";
-      package = "crucible-qemu";
+      package = "crucible-qemu-host";
       testTarget = "deterministic_launch";
       requiredFeatures = [];
     }
@@ -133,7 +133,7 @@
     }
     {
       gate = "gate:control-responsive";
-      package = "crucible-api";
+      package = "crucible-control-server";
       testTarget = "gate_control_responsive";
       requiredFeatures = [];
     }
@@ -145,13 +145,13 @@
     }
     {
       gate = "gate:any-guest";
-      package = "crucible-qemu";
+      package = "crucible-qemu-host";
       testTarget = "deterministic_launch";
       requiredFeatures = [];
     }
     {
       gate = "gate:qemu-inert";
-      package = "crucible-qemu";
+      package = "crucible-qemu-host";
       testTarget = "gate_qemu_inert";
       requiredFeatures = [];
     }
@@ -169,19 +169,19 @@
     }
     {
       gate = "gate:divergence-bisect";
-      package = "crucible-harness";
+      package = "crucible-test-support";
       testTarget = "gate_divergence_bisect";
       requiredFeatures = [];
     }
     {
       gate = "gate:adversarial-determinism";
-      package = "crucible";
+      package = "crucible-engine";
       testTarget = "gate_adversarial_determinism";
       requiredFeatures = [];
     }
     {
       gate = "gate:e2e-determinism";
-      package = "crucible";
+      package = "crucible-engine";
       testTarget = "gate_e2e_determinism_concurrency";
       requiredFeatures = ["test-double"];
     }
@@ -193,37 +193,37 @@
     }
     {
       gate = "gate:checkpoint-materialization";
-      package = "crucible";
+      package = "crucible-engine";
       testTarget = "gate_checkpoint_materialization";
       requiredFeatures = [];
     }
     {
       gate = "gate:state-space-search";
-      package = "crucible";
+      package = "crucible-engine";
       testTarget = "gate_state_space_search";
       requiredFeatures = [];
     }
     {
       gate = "gate:fleet-equivalence";
-      package = "crucible";
+      package = "crucible-engine";
       testTarget = "gate_fleet_equivalence";
       requiredFeatures = [];
     }
     {
       gate = "gate:campaign-continuity";
-      package = "crucible-cas";
+      package = "crucible-store";
       testTarget = "gate_campaign_continuity";
       requiredFeatures = [];
     }
     {
       gate = "gate:signal-fault-system";
-      package = "crucible";
+      package = "crucible-engine";
       testTarget = "gate_signal_fault_system";
       requiredFeatures = [];
     }
     {
       gate = "gate:perf-bench";
-      package = "crucible-harness";
+      package = "crucible-test-support";
       testTarget = "gate_perf_bench";
       requiredFeatures = [];
     }
@@ -266,7 +266,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix;
 
   targetFailuresWithManifest = target: manifest: let
-    packageDir = cratesDir + "/${target.package}";
+    packageDir = (import ./_workspace-packages.nix {inherit lib;}).packageDir target.package;
     testPath = packageDir + "/tests/${target.testTarget}.rs";
     content =
       if builtins.pathExists testPath
@@ -274,7 +274,7 @@
       else "";
     requiresTestDouble =
       target.package
-      == "crucible"
+      == "crucible-engine"
       && builtins.elem target.gate crucibleTestDoubleGates;
     manifestTargetHasRequiredFeature =
       builtins.any (
@@ -326,7 +326,7 @@
     ];
 
   targetFailures = target: let
-    packageDir = cratesDir + "/${target.package}";
+    packageDir = (import ./_workspace-packages.nix {inherit lib;}).packageDir target.package;
     manifest = builtins.fromTOML (builtins.readFile (packageDir + "/Cargo.toml"));
   in
     targetFailuresWithManifest target manifest;
@@ -335,7 +335,7 @@
     findings =
       targetFailuresWithManifest {
         gate = "gate:replay-oracle";
-        package = "crucible";
+        package = "crucible-engine";
         testTarget = "gate_replay_oracle";
         requiredFeatures = ["test-double"];
       } {
@@ -344,13 +344,13 @@
       ++ lib.concatMap targetFailures [
         {
           gate = "gate:replay-oracle";
-          package = "crucible";
+          package = "crucible-engine";
           testTarget = "gate_replay_oracle";
           requiredFeatures = [];
         }
         {
           gate = "gate:unknown";
-          package = "crucible-harness";
+          package = "crucible-test-support";
           testTarget = "unknown_gate";
           requiredFeatures = [];
         }

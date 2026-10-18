@@ -11,15 +11,23 @@ the shared examples rather than another set of declarations.
 | Fixed-point operation reference | `lib/effects/documentation.nix` |
 | Package recipe module retention and artifact companions | `lib/build/package-modules.nix`, package builder integration |
 | Package-scope evaluation and documentation envelope | `lib/packages/evaluate.nix` |
-| Portable graph validation | `aos-ability-plan::module_graph` |
-| Effect state machine and typed results | `aos-ability-runtime::activation` |
-| Module resolution and restricted Nix evaluation | `aos-package::deployment::evaluation` |
-| Original store identities and private source read views | `aos-package::deployment::source_views` |
-| Process dispatch and artifact admission | `aos-package::deployment::{handler,process,retention}` |
-| Durable generations and recovery | `aos-package::deployment::transaction` |
-| Native reference and graph rendering | `aos-doc-model::runtime` |
+| Immutable artifact identity and realized consumption evidence | `aos_artifact_evidence::{identity,consumption}` |
+| Portable module options and declarations | `aos_module_format::{option,schema}` |
+| Portable graph validation | `aos_module_format::graph` |
+| Effect state machine and typed results | `aos_activation::activation` |
+| Module resolution and restricted Nix evaluation | `aos_package_manager::deployment::evaluation` |
+| Original store identities and private source read views | `aos_package_manager::deployment::source_views` |
+| Process dispatch and artifact admission | `aos_package_manager::deployment::{handler,process,retention}` |
+| Durable generations and recovery | `aos_package_manager::deployment::transaction` |
+| Native reference and graph rendering | `aos_module_docs::runtime` |
 | Local artifact documentation | `aos docs runtime` |
-| Read-only Hub artifact inspection | `aos-hub-core::web::runtime_documentation` |
+| Read-only Hub artifact inspection | `aos_hub_service::web::runtime_documentation` |
+
+The module format owns portable declarations and checked graphs; activation owns
+execution, and module documentation owns rendering, search, and comparison.
+Artifact evidence has its own canonical codec and admission bounds. It does not
+depend on the module or activation framework. Moving these implementations does
+not change their schema discriminators, digest domains, or required features.
 
 No layer may introduce package-specific OS lowering into the generic library,
 copy a schema into a documentation table, or reimplement graph semantics in a

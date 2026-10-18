@@ -1,0 +1,998 @@
+//! Private construction and event-log helpers for production VM lifecycles.
+
+use super::*;
+use std::fmt::Write as _;
+use std::io::Read;
+
+pub(super) struct ExactCheckpointTargetManifestBasis<'a> {
+    pub(super) configuration: ContentHash,
+    pub(super) immutable_backing: ContentHash,
+    pub(super) node: &'a NodeId,
+    pub(super) counter: u64,
+    pub(super) scheduler_time: VirtualTime,
+    pub(super) snapshot: ContentHash,
+    pub(super) fault_identity: ContentHash,
+    pub(super) overlay: ContentHash,
+    pub(super) device_state: ContentHash,
+}
+
+pub(super) fn exact_checkpoint_fault_object_identity(
+    checkpoint: &ProductionFaultRuntimeCheckpoint,
+    limits: FaultResourceLimits,
+) -> Result<ContentHash, LifecycleApiError> {
+    let bytes = checkpoint
+        .to_canonical_bytes_with_limit(limits.fat_checkpoint_bytes)
+        .map_err(|error| loop_factory_error(format!("encode fault continuation: {error}")))?;
+    Ok(ContentHash::from_bytes(&bytes))
+}
+
+pub(super) fn exact_checkpoint_snapshot_object_identity(
+    snapshot: &ExactSnapshotHandle,
+    limits: FaultResourceLimits,
+) -> Result<ContentHash, LifecycleApiError> {
+    let bytes = snapshot
+        .to_canonical_bytes_with_limit(limits.fat_checkpoint_bytes)
+        .map_err(|error| loop_factory_error(format!("encode QEMU snapshot: {error}")))?;
+    Ok(ContentHash::from_bytes(&bytes))
+}
+
+pub(super) fn validate_exact_checkpoint_target(
+    node: &NodeId,
+    target: &ProductionVmExactCheckpointTarget,
+    fault_identity: ContentHash,
+    snapshot_identity: ContentHash,
+) -> Result<(), LifecycleApiError> {
+    let Some((overlay_artifact, exact_ram, manifest_identity)) = target.native_materialization()
+    else {
+        // Repository-backed targets were already authenticated as one relation
+        // by the lower exact-checkpoint verifier. Repeating only part of that
+        // relation here would recreate a second canonical implementation.
+        return Ok(());
+    };
+    validate_exact_checkpoint_artifact(overlay_artifact, "root overlay")?;
+    let basis = ExactCheckpointTargetManifestBasis {
+        configuration: target.configuration.id(),
+        immutable_backing: target.immutable_backing,
+        node,
+        counter: target.counter,
+        scheduler_time: target.scheduler_time,
+        snapshot: snapshot_identity,
+        fault_identity,
+        overlay: overlay_artifact.identity,
+        device_state: exact_ram.device_artifact.identity,
+    };
+    exact_ram
+        .validate()
+        .map_err(|error| loop_factory_error(error.to_string()))?;
+    validate_exact_checkpoint_artifact(&exact_ram.device_artifact, "device state")?;
+    for layer in &exact_ram.layers {
+        validate_exact_checkpoint_artifact(&layer.artifact, "RAM checkpoint layer")?;
+    }
+    let observed = exact_ram_checkpoint_target_manifest_identity(basis, exact_ram);
+    if observed != manifest_identity {
+        return Err(loop_factory_error(format!(
+            "exact checkpoint target for `{}` failed manifest authentication",
+            node.name
+        )));
+    }
+    Ok(())
+}
+
+pub(super) fn exact_ram_checkpoint_target_manifest_identity(
+    basis: ExactCheckpointTargetManifestBasis<'_>,
+    checkpoint: &ProductionExactRamCheckpoint,
+) -> ContentHash {
+    let target = exact_checkpoint_target_manifest_identity(basis);
+    let mut material = format!(
+        "target={}\nparent_closure={}\ndevice_sha256={}",
+        target.to_hex(),
+        checkpoint
+            .parent_closure
+            .map_or_else(String::new, ContentHash::to_hex),
+        checkpoint.device_content_sha256.to_hex(),
+    );
+    for (index, layer) in checkpoint.layers.iter().enumerate() {
+        let parent = layer
+            .parent
+            .map_or_else(String::new, exact_checkpoint_identity_material);
+        let _ = write!(
+            material,
+            "\nlayer.{index}.kind={}\nlayer.{index}.checkpoint={}\nlayer.{index}.target={}\nlayer.{index}.frontier={}\nlayer.{index}.parent={}\nlayer.{index}.topology={}\nlayer.{index}.regions={}\nlayer.{index}.records={}\nlayer.{index}.sha256={}\nlayer.{index}.artifact={}\nlayer.{index}.length={}",
+            match layer.kind {
+                ProductionExactRamKind::Direct => "direct",
+                ProductionExactRamKind::Delta => "delta",
+            },
+            layer.identity.checkpoint.to_hex(),
+            layer.identity.target.to_hex(),
+            layer.identity.frontier.to_hex(),
+            parent,
+            layer.topology.to_hex(),
+            layer.ram_regions,
+            layer.ram_records,
+            layer.content_sha256.to_hex(),
+            layer.artifact.identity.to_hex(),
+            layer.artifact.length,
+        );
+    }
+    ContentHash::from_canonical_material("crucible.production-vm-exact-checkpoint.v2", &material)
+}
+
+fn exact_checkpoint_identity_material(identity: ProductionExactCheckpointIdentity) -> String {
+    format!(
+        "{}/{}/{}",
+        identity.checkpoint.to_hex(),
+        identity.target.to_hex(),
+        identity.frontier.to_hex(),
+    )
+}
+
+pub(super) fn exact_checkpoint_target_manifest_identity(
+    basis: ExactCheckpointTargetManifestBasis<'_>,
+) -> ContentHash {
+    let ExactCheckpointTargetManifestBasis {
+        configuration,
+        immutable_backing,
+        node,
+        counter,
+        scheduler_time,
+        snapshot,
+        fault_identity,
+        overlay,
+        device_state,
+    } = basis;
+    ContentHash::from_canonical_material(
+        "crucible.production-vm-exact-checkpoint.v3",
+        &format!(
+            "configuration={}\nimmutable_backing={}\nnode={}\ncounter={}\nscheduler_time={}\nsnapshot={}\nfault={}\noverlay={}\ndevice_state={}",
+            configuration.to_hex(),
+            immutable_backing.to_hex(),
+            node.name,
+            counter,
+            scheduler_time.ticks,
+            snapshot.to_hex(),
+            fault_identity.to_hex(),
+            overlay.to_hex(),
+            device_state.to_hex(),
+        ),
+    )
+}
+
+pub(super) struct ExactRamCheckpointQmpIdentityBasis<'a> {
+    pub(super) configuration: &'a Configuration,
+    pub(super) immutable_backing: ContentHash,
+    pub(super) node: &'a NodeId,
+    pub(super) counter: u64,
+    pub(super) scheduler_time: VirtualTime,
+    pub(super) checkpoint: &'a Checkpoint,
+    pub(super) fault_identity: ContentHash,
+    pub(super) scheduler: &'a SingleSchedulerCheckpoint,
+}
+
+pub(super) fn exact_ram_checkpoint_qmp_identity(
+    basis: ExactRamCheckpointQmpIdentityBasis<'_>,
+) -> Result<QmpCheckpointIdentity, SchedulerError> {
+    let node_counter = basis
+        .checkpoint
+        .node_icounts
+        .get(basis.node)
+        .map(|icount| icount.retired);
+    if basis.checkpoint.configuration != basis.configuration.id()
+        || basis.checkpoint.scenario_ref != basis.configuration.def.id()
+        || basis.checkpoint.virtual_time != basis.scheduler_time
+        || node_counter != Some(basis.counter)
+    {
+        return Err(SchedulerError::BoundaryViolation {
+            message: String::from(
+                "exact checkpoint RAM identity does not match the modeled boundary",
+            ),
+        });
+    }
+    let scheduler_configuration = basis
+        .scheduler
+        .configuration_for(&basis.configuration.def)
+        .map_err(|error| SchedulerError::BoundaryViolation {
+            message: format!("authenticate exact RAM scheduler continuation: {error}"),
+        })?;
+    if scheduler_configuration.id() != basis.configuration.id()
+        || basis.scheduler.frontier() != basis.scheduler_time
+    {
+        return Err(SchedulerError::BoundaryViolation {
+            message: String::from(
+                "exact checkpoint RAM scheduler continuation does not match the modeled boundary",
+            ),
+        });
+    }
+
+    let target = ContentHash::from_canonical_material(
+        "crucible.production-vm-exact-ram-target.v1",
+        &format!(
+            "configuration={}\nimmutable_backing={}\nnode={}\ncounter={}\nscheduler_time={}\nfault={}",
+            basis.configuration.id().to_hex(),
+            basis.immutable_backing.to_hex(),
+            basis.node.name,
+            basis.counter,
+            basis.scheduler_time.ticks,
+            basis.fault_identity.to_hex(),
+        ),
+    );
+    let scheduler_bytes =
+        basis
+            .scheduler
+            .canonical_bytes()
+            .map_err(|error| SchedulerError::BoundaryViolation {
+                message: format!("encode exact RAM scheduler frontier: {error}"),
+            })?;
+    let scheduler_hex = scheduler_bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let frontier = ContentHash::from_canonical_material(
+        "crucible.production-vm-exact-ram-frontier.v1",
+        &scheduler_hex,
+    );
+    Ok(QmpCheckpointIdentity::new(
+        basis.checkpoint.id,
+        target,
+        frontier,
+    ))
+}
+
+/// Re-derives the final QMP identity from authenticated host-side state.
+pub(super) fn validate_exact_ram_checkpoint_qmp_identity(
+    node: &NodeId,
+    target: &ProductionVmExactCheckpointTarget,
+    fault_identity: ContentHash,
+    scheduler: &SingleSchedulerCheckpoint,
+) -> Result<(), SchedulerError> {
+    let Some(exact_ram) = target.native_exact_ram() else {
+        return Ok(());
+    };
+    let expected = exact_ram_checkpoint_qmp_identity(ExactRamCheckpointQmpIdentityBasis {
+        configuration: &target.configuration,
+        immutable_backing: target.immutable_backing,
+        node,
+        counter: target.counter,
+        scheduler_time: target.scheduler_time,
+        checkpoint: target.snapshot.checkpoint(),
+        fault_identity,
+        scheduler,
+    })?;
+    if exact_ram.identity != expected.into() {
+        return Err(SchedulerError::BoundaryViolation {
+            message: format!(
+                "exact RAM checkpoint target for `{}` failed QMP identity authentication",
+                node.name
+            ),
+        });
+    }
+    Ok(())
+}
+
+pub(super) const fn production_guest_architecture(
+    architecture: crucible_engine::VmArchitecture,
+) -> LivePluginGuestArchitecture {
+    match architecture {
+        crucible_engine::VmArchitecture::X86_64 => LivePluginGuestArchitecture::X86_64,
+        crucible_engine::VmArchitecture::Aarch64 => LivePluginGuestArchitecture::Aarch64,
+    }
+}
+
+pub(super) fn production_qemu_executable(
+    configured: &Path,
+    architecture: crucible_engine::VmArchitecture,
+) -> PathBuf {
+    let executable_name = match architecture {
+        crucible_engine::VmArchitecture::X86_64 => "qemu-system-x86_64",
+        crucible_engine::VmArchitecture::Aarch64 => "qemu-system-aarch64",
+    };
+    configured.with_file_name(executable_name)
+}
+
+pub(super) const fn production_whitebox_switch(
+    policy: crucible_engine::WhiteBoxPolicy,
+) -> QemuLaunchPluginSwitch {
+    match policy {
+        crucible_engine::WhiteBoxPolicy::Disabled => QemuLaunchPluginSwitch::Off,
+        crucible_engine::WhiteBoxPolicy::Enabled => QemuLaunchPluginSwitch::On,
+    }
+}
+
+pub(super) fn production_app_random_launch_config(
+    scenario: &ScenarioDef,
+    branches: &[ProductionVmBranchConfig],
+    node: &NodeId,
+) -> QemuLaunchAppRandomConfig {
+    let mut config = QemuLaunchAppRandomConfig::from_seed(
+        scenario.seed(),
+        scenario.app_random_draw_cap(),
+        node.name.clone(),
+    );
+    let reseeds = branches
+        .iter()
+        .filter_map(|branch| {
+            branch
+                .seed
+                .map(|seed| (seed, app_random_request_count(&branch.base, node)))
+        })
+        .collect::<Vec<_>>();
+    if !reseeds.is_empty() {
+        config = config.with_branch_seed_sequence(reseeds);
+    }
+    config
+}
+
+pub(super) fn production_app_random_checkpoint_config(
+    scheduler: &SingleSchedulerCheckpoint,
+    scenario: &ScenarioDef,
+    branches: &[ProductionVmBranchConfig],
+    node: &NodeId,
+) -> Result<QemuLaunchAppRandomConfig, SchedulerError> {
+    let branches = if scheduler.branch_frontier_cap().is_some() {
+        branches
+    } else {
+        &[]
+    };
+    let configuration = scheduler.configuration_for(scenario).map_err(|error| {
+        SchedulerError::BoundaryViolation {
+            message: format!("decode scheduler checkpoint configuration: {error}"),
+        }
+    })?;
+    let decisions = configuration.schedule.decisions();
+    let streams = decisions
+        .iter()
+        .enumerate()
+        .filter_map(|(index, _decision)| app_random_request_stream(decisions, index, node))
+        .collect::<std::collections::BTreeSet<_>>();
+    let positions = scheduler
+        .future_decision_rng_state()
+        .positions
+        .iter()
+        .filter(|(stream, _position)| streams.contains(stream))
+        .map(|(stream, position)| (stream.name.clone(), position.draws))
+        .collect::<BTreeMap<_, _>>();
+    let draw_offset = app_random_request_count(&configuration, node);
+    let mut config = QemuLaunchAppRandomConfig::from_seed(
+        scheduler.future_decision_seed(),
+        scenario.app_random_draw_cap(),
+        node.name.clone(),
+    )
+    .with_continuation(draw_offset, positions);
+    let reseeds = branches
+        .iter()
+        .filter_map(|branch| {
+            branch
+                .seed
+                .map(|seed| (seed, app_random_request_count(&branch.base, node)))
+        })
+        .collect::<Vec<_>>();
+    if !reseeds.is_empty() {
+        config = config.with_branch_seed_sequence(reseeds);
+    }
+    Ok(config)
+}
+
+fn app_random_request_count(configuration: &Configuration, node: &NodeId) -> u64 {
+    let decisions = configuration.schedule.decisions();
+    decisions
+        .iter()
+        .enumerate()
+        .filter(|(index, _decision)| app_random_request_stream(decisions, *index, node).is_some())
+        .count() as u64
+}
+
+fn app_random_request_stream<'a>(
+    decisions: &'a [Decision],
+    index: usize,
+    node: &NodeId,
+) -> Option<&'a crucible_engine::RngStreamId> {
+    match decisions.get(index)? {
+        Decision::Selection(selection)
+            if selection.is_app_random_model_sample() || selection.is_campaign_branch() =>
+        {
+            let Decision::RngDraw(draw) = decisions.get(index.checked_sub(1)?)? else {
+                return None;
+            };
+            crucible_engine::app_random_stream_belongs_to_node(&draw.stream, node)
+                .then_some(&draw.stream)
+        }
+        _ => None,
+    }
+}
+
+pub(super) fn private_backend_gdbstub_path(node_directory: &Path) -> PathBuf {
+    node_directory.join("debug-rsp.sock")
+}
+
+pub(super) fn live_unix_gdbstub_endpoint(path: &Path) -> Result<String, LifecycleApiError> {
+    let text = path.to_str().ok_or_else(|| {
+        loop_factory_error(format!(
+            "QEMU gdbstub path is not valid UTF-8: {}",
+            path.display()
+        ))
+    })?;
+    if text.contains([',', '\n', '\0']) {
+        return Err(loop_factory_error(format!(
+            "QEMU gdbstub path contains unsupported syntax: {text}"
+        )));
+    }
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| loop_factory_error("QEMU gdbstub path must name a private socket file"))?;
+
+    // Like QMP, QEMU binds this name relative to its actual working directory.
+    // Guarded launch may replace the proposed lifecycle directory with a pinned
+    // resource-owned directory. An absolute endpoint would retain the old
+    // authority and can exceed sockaddr_un's path limit before QEMU starts.
+    // The gateway separately resolves the name against the returned directory.
+    Ok(format!("unix:{file_name},server=on,wait=off"))
+}
+
+pub(super) fn no_named_trigger_leaf(_leaf: ConditionLeaf<'_>) -> bool {
+    false
+}
+
+pub(super) fn merge_event_log_append(
+    outcome: &mut QuantumOutcome,
+    append: SchedulerEventLogAppend,
+) {
+    outcome.event_log_entries.extend(append.entries);
+    outcome.event_log_segment_bytes = append.segment_bytes;
+    outcome.event_log_segment_text = append.segment_text;
+    outcome.event_log_segment_hash = append.segment_hash;
+    outcome.event_log_offset = append.offset;
+}
+
+pub(super) fn prepend_event_log_appends(
+    outcome: &mut QuantumOutcome,
+    appends: Vec<SchedulerEventLogAppend>,
+) {
+    let mut entries = appends
+        .iter()
+        .flat_map(|append| append.entries.iter().cloned())
+        .collect::<Vec<_>>();
+    entries.append(&mut outcome.event_log_entries);
+    outcome.event_log_entries = entries;
+    if outcome.event_log_segment_hash.is_none()
+        && let Some(append) = appends.last()
+    {
+        outcome.event_log_segment_bytes = append.segment_bytes.clone();
+        outcome.event_log_segment_text = append.segment_text.clone();
+        outcome.event_log_segment_hash = append.segment_hash;
+        outcome.event_log_offset = append.offset;
+    }
+}
+
+pub(super) fn merge_terminal_verdict(
+    terminal_verdict: &mut Option<QuantumTerminalVerdict>,
+    firings: &EventFirings,
+) {
+    let mut passed = false;
+    let mut violations = Vec::new();
+    for firing in firings.iter() {
+        collect_terminal_actions(firing.action(), &mut passed, &mut violations);
+    }
+    match (passed, violations.is_empty()) {
+        (_, false) => match terminal_verdict {
+            Some(QuantumTerminalVerdict::Failed(existing)) => existing.extend(violations),
+            _ => *terminal_verdict = Some(QuantumTerminalVerdict::Failed(violations)),
+        },
+        (true, true) if terminal_verdict.is_none() => {
+            *terminal_verdict = Some(QuantumTerminalVerdict::Passed);
+        }
+        _ => {}
+    }
+}
+
+pub(super) fn collect_terminal_actions(
+    action: &Action,
+    passed: &mut bool,
+    violations: &mut Vec<String>,
+) {
+    match action {
+        Action::Pass => *passed = true,
+        Action::Fail { reason } => violations.push(reason.clone()),
+        Action::Group(actions) => {
+            for action in actions {
+                collect_terminal_actions(action, passed, violations);
+            }
+        }
+        Action::ArmTimer { .. }
+        | Action::CancelTimer { .. }
+        | Action::StartNode { .. }
+        | Action::StopNode { .. }
+        | Action::CreateSavepoint { .. }
+        | Action::Fork { .. }
+        | Action::Log { .. } => {}
+    }
+}
+
+pub(super) fn hash_file(path: &Path) -> Result<crucible_engine::ContentHash, std::io::Error> {
+    let mut file = fs::File::open(path)?;
+    let mut hasher = blake3::Hasher::new();
+
+    // Checkpoint staging can hash files while another copy frame remains live.
+    let mut buffer = Vec::new();
+    buffer.try_reserve_exact(1024 * 1024).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::OutOfMemory,
+            "reserve file hashing buffer",
+        )
+    })?;
+    buffer.resize(1024 * 1024, 0);
+
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    Ok(crucible_engine::ContentHash {
+        bytes: *hasher.finalize().as_bytes(),
+    })
+}
+
+pub(super) fn loop_factory_error(message: impl Into<String>) -> LifecycleApiError {
+    LifecycleApiError::LoopFactory {
+        message: message.into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct RecordedLaunch {
+        node: String,
+        generation: u64,
+        router: String,
+        crash_detector: String,
+        preparation: &'static str,
+        exact: Option<(ContentHash, bool)>,
+    }
+
+    struct RecordingRejectingLauncher {
+        calls: Arc<std::sync::Mutex<Vec<RecordedLaunch>>>,
+    }
+
+    impl ProductionVmNodeLauncher for RecordingRejectingLauncher {
+        fn begin_execution_quantum(&mut self) -> Result<(), LifecycleApiError> {
+            Ok(())
+        }
+
+        fn check_operational_boundary(&mut self) -> Result<(), LifecycleApiError> {
+            Ok(())
+        }
+
+        fn launch_fresh(
+            &mut self,
+            request: ProductionVmNodeLaunchRequest<'_>,
+            _qemu_executable: &Path,
+            _root_image: &Path,
+        ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
+            self.calls
+                .lock()
+                .unwrap_or_else(|_| panic!("launch recorder lock should remain healthy"))
+                .push(RecordedLaunch {
+                    node: request.node_name().to_owned(),
+                    generation: request.generation(),
+                    router: request.router_name().to_owned(),
+                    crash_detector: request.crash_detector().to_owned(),
+                    preparation: "fresh",
+                    exact: None,
+                });
+            Err(loop_factory_error(
+                "recording launcher rejects process spawn",
+            ))
+        }
+
+        fn launch_restored(
+            &mut self,
+            request: ProductionVmNodeLaunchRequest<'_>,
+            exact: ProductionVmExactNodeRestoreAdmission,
+        ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
+            self.calls
+                .lock()
+                .unwrap_or_else(|_| panic!("launch recorder lock should remain healthy"))
+                .push(RecordedLaunch {
+                    node: request.node_name().to_owned(),
+                    generation: request.generation(),
+                    router: request.router_name().to_owned(),
+                    crash_detector: request.crash_detector().to_owned(),
+                    preparation: "exact",
+                    exact: Some((exact.basis.snapshot.id(), exact.basis.paused)),
+                });
+            Err(loop_factory_error(
+                "recording launcher rejects process spawn",
+            ))
+        }
+
+        fn replay_candidate(&self) -> Result<Box<dyn ProductionVmNodeLauncher>, LifecycleApiError> {
+            Err(loop_factory_error(
+                "recording launcher rejects replay authority",
+            ))
+        }
+
+        fn finish(&mut self) -> Result<(), LifecycleApiError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn production_lifecycle_routes_fresh_launch_through_one_authority() {
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut launcher = RecordingRejectingLauncher {
+            calls: Arc::clone(&calls),
+        };
+        let profile = QemuLiveNodeStepGateConfig::new_with_root_image(
+            "qemu",
+            "plugin",
+            "kernel",
+            "root",
+            "run-directory",
+        );
+        let node = NodeId {
+            name: String::from("node-a"),
+        };
+
+        let error = launch_production_node_generation(
+            &mut launcher,
+            ProductionVmNodeLaunchBasis::new(&profile, Path::new("run-directory"), &node, 7),
+            "fresh",
+            ProductionVmNodePreparationKind::Fresh {
+                qemu_executable: Path::new("qemu"),
+                root_image: Path::new("root"),
+            },
+            ProductionVmNodeLaunchKind::Fresh,
+        )
+        .err()
+        .unwrap_or_else(|| panic!("recording launcher should reject process spawn"));
+        assert!(error.to_string().contains("recording launcher rejects"));
+
+        let zero_generation = launch_production_node_generation(
+            &mut launcher,
+            ProductionVmNodeLaunchBasis::new(&profile, Path::new("run-directory"), &node, 0),
+            "invalid-generation",
+            ProductionVmNodePreparationKind::Fresh {
+                qemu_executable: Path::new("qemu"),
+                root_image: Path::new("root"),
+            },
+            ProductionVmNodeLaunchKind::Fresh,
+        )
+        .err()
+        .unwrap_or_else(|| panic!("zero process generation should fail before launch"));
+        assert!(zero_generation.to_string().contains("must be positive"));
+
+        assert!(launcher.replay_candidate().is_err());
+        assert_eq!(
+            *calls
+                .lock()
+                .unwrap_or_else(|_| panic!("launch recorder lock should remain healthy")),
+            vec![RecordedLaunch {
+                node: String::from("node-a"),
+                generation: 7,
+                router: String::from("crucible-router"),
+                crash_detector: String::from("fresh"),
+                preparation: "fresh",
+                exact: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn scheduler_step_bound_counts_quanta_instead_of_instruction_slices() {
+        let config =
+            ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", "run-state")
+                .with_run_ceiling_ticks(12_000_000_000)
+                .with_quantum_budget(16);
+
+        assert_eq!(config.maximum_scheduler_quanta(2), 19);
+    }
+
+    #[test]
+    fn production_whitebox_switch_follows_the_authored_node_policy() {
+        assert_eq!(
+            production_whitebox_switch(crucible_engine::WhiteBoxPolicy::Disabled),
+            QemuLaunchPluginSwitch::Off
+        );
+        assert_eq!(
+            production_whitebox_switch(crucible_engine::WhiteBoxPolicy::Enabled),
+            QemuLaunchPluginSwitch::On
+        );
+    }
+
+    #[test]
+    fn production_guest_architecture_follows_the_authored_node_architecture() {
+        assert_eq!(
+            production_guest_architecture(crucible_engine::VmArchitecture::X86_64),
+            LivePluginGuestArchitecture::X86_64
+        );
+        assert_eq!(
+            production_guest_architecture(crucible_engine::VmArchitecture::Aarch64),
+            LivePluginGuestArchitecture::Aarch64
+        );
+    }
+
+    #[test]
+    fn production_qemu_executable_selects_the_guest_architecture_sibling() {
+        let configured = Path::new("/aos/bin/qemu-system-x86_64");
+
+        assert_eq!(
+            production_qemu_executable(configured, crucible_engine::VmArchitecture::X86_64),
+            Path::new("/aos/bin/qemu-system-x86_64")
+        );
+        assert_eq!(
+            production_qemu_executable(configured, crucible_engine::VmArchitecture::Aarch64),
+            Path::new("/aos/bin/qemu-system-aarch64")
+        );
+    }
+
+    #[test]
+    fn typed_app_random_checkpoint_restores_node_stream_cursors() {
+        let scenario = ScenarioDef::from_canonical_material_with_seed_and_app_random_draw_cap(
+            "crucible.test.production-app-random-checkpoint",
+            "scenario=typed-app-random-checkpoint",
+            Seed::from_u64(0x5eed),
+            8,
+        );
+        let runtime = SchedulerLivenessScenario::from_canonical_material(
+            "typed-app-random-checkpoint-runtime",
+            8,
+            SimInstant { ticks: 8 },
+            Vec::new(),
+            Vec::new(),
+        )
+        .with_scenario_def(scenario.clone());
+        let Ok(mut scheduler) = SingleScheduler::new(runtime) else {
+            panic!("scheduler should build");
+        };
+        let node = NodeId {
+            name: String::from("node-a"),
+        };
+        let stream =
+            crucible_engine::RngStreamId::from_name("app-random/node:6:node-a/stream:4:test");
+        let mut expected = scenario
+            .seed()
+            .decision_rng()
+            .fork_in_domain(&stream.domain, &stream.name);
+        let raw = expected.next_u64();
+
+        let Ok((recorded, discoveries, _configuration, _append)) =
+            QuantumLoop::append_backend_rng_evidence(
+                &mut scheduler,
+                vec![crucible_engine::BackendRngEvidence {
+                    node: node.clone(),
+                    stream: stream.clone(),
+                    request_id: 7,
+                    width: 8,
+                    value: raw & 0xff,
+                }],
+            )
+        else {
+            panic!("live backend RNG evidence should be admitted");
+        };
+        assert_eq!(discoveries.len(), 1);
+
+        let Ok(checkpoint) = scheduler.checkpoint() else {
+            panic!("scheduler should checkpoint");
+        };
+        let Ok(resumed) =
+            production_app_random_checkpoint_config(&checkpoint, &scenario, &[], &node)
+        else {
+            panic!("typed app-random cursor should restore");
+        };
+        assert_eq!(resumed.draw_offset, 1);
+        assert_eq!(resumed.stream_positions.get(&stream.name), Some(&1));
+
+        let [
+            Decision::RngDraw(recorded_draw),
+            Decision::Selection(recorded_selection),
+        ] = recorded.as_slice()
+        else {
+            panic!("live evidence admission should return one draw and one selection");
+        };
+        let Ok(selection) = recorded_selection.selection() else {
+            panic!("recorded selection should decode");
+        };
+        let Ok(selectable) = crucible_engine::AppRandomSelectable::from_model_sample_records(
+            recorded_draw.stream.clone(),
+            &selection,
+            discoveries[0].declaration(),
+            discoveries[0].opportunity(),
+            discoveries[0].domain(),
+        ) else {
+            panic!("recorded app-random discovery should resolve");
+        };
+        let parent = crucible_engine::try_step(
+            &Configuration::genesis(scenario.clone()),
+            Decision::RngDraw(recorded_draw.clone()),
+        )
+        .unwrap_or_else(|error| panic!("test raw draw should be accepted: {error}"));
+        let Ok(branch_selection) = selectable.branch_selection(&parent, (raw & 0xff) ^ 1) else {
+            panic!("typed app-random branch should build");
+        };
+        let typed_branch = crucible_engine::try_step(
+            &parent,
+            Decision::Selection(crucible_engine::SelectionDecision::new(&branch_selection)),
+        )
+        .unwrap_or_else(|error| panic!("test typed branch should be accepted: {error}"));
+        assert_eq!(app_random_request_count(&typed_branch, &node), 1);
+
+        let branch = ProductionVmBranchConfig {
+            base: typed_branch,
+            frontier: scheduler.frontier(),
+            seed: Some(Seed::from_u64(0x00b1_2ac4)),
+        };
+        let relaunched =
+            production_app_random_launch_config(&scenario, std::slice::from_ref(&branch), &node);
+        assert_eq!(
+            relaunched.branch_seed_sequence(),
+            &[(Seed::from_u64(0x00b1_2ac4), 1)]
+        );
+    }
+
+    #[test]
+    fn app_random_restart_between_reseeds_keeps_global_boundary_and_active_seed_cursors() {
+        let scenario = ScenarioDef::from_canonical_material_with_seed_and_app_random_draw_cap(
+            "crucible.test.production-app-random-reseed-restart",
+            "scenario=typed-app-random-reseed-restart",
+            Seed::from_u64(11),
+            8,
+        );
+        let runtime = SchedulerLivenessScenario::from_canonical_material(
+            "typed-app-random-reseed-restart-runtime",
+            8,
+            SimInstant { ticks: 8 },
+            Vec::new(),
+            Vec::new(),
+        )
+        .with_scenario_def(scenario.clone());
+        let Ok(mut scheduler) = SingleScheduler::new(runtime) else {
+            panic!("scheduler should build");
+        };
+        let node = NodeId {
+            name: String::from("node-a"),
+        };
+        let stream =
+            crucible_engine::RngStreamId::from_name("app-random/node:6:node-a/stream:4:test");
+
+        let mut scenario_rng = scenario
+            .seed()
+            .decision_rng()
+            .fork_in_domain(&stream.domain, &stream.name);
+        let first = scenario_rng.next_u64();
+        let Ok(_) = QuantumLoop::append_backend_rng_evidence(
+            &mut scheduler,
+            vec![crucible_engine::BackendRngEvidence {
+                node: node.clone(),
+                stream: stream.clone(),
+                request_id: 1,
+                width: 8,
+                value: first & 0xff,
+            }],
+        ) else {
+            panic!("scenario-seed backend RNG evidence should be admitted");
+        };
+
+        let active_seed = Seed::from_u64(29);
+        let Ok(()) = scheduler.reseed_future_decisions(active_seed) else {
+            panic!("first continuation seed should apply");
+        };
+        let mut active_rng = active_seed
+            .decision_rng()
+            .fork_in_domain(&stream.domain, &stream.name);
+        let second = active_rng.next_u64();
+        let Ok(_) = QuantumLoop::append_backend_rng_evidence(
+            &mut scheduler,
+            vec![crucible_engine::BackendRngEvidence {
+                node: node.clone(),
+                stream: stream.clone(),
+                request_id: 2,
+                width: 8,
+                value: second & 0xff,
+            }],
+        ) else {
+            panic!("active-seed backend RNG evidence should be admitted");
+        };
+
+        let remaining = ProductionVmBranchConfig {
+            base: scheduler.configuration().clone(),
+            frontier: scheduler.frontier(),
+            seed: Some(Seed::from_u64(47)),
+        };
+        let Ok(()) = scheduler.set_branch_frontier_cap(remaining.frontier) else {
+            panic!("remaining controlled generation should cap the scheduler");
+        };
+        let Ok(checkpoint) = scheduler.checkpoint() else {
+            panic!("scheduler should checkpoint between controlled generations");
+        };
+        let resumed = production_app_random_checkpoint_config(
+            &checkpoint,
+            &scenario,
+            std::slice::from_ref(&remaining),
+            &node,
+        )
+        .unwrap_or_else(|error| {
+            panic!("app-random replacement configuration should reconstruct: {error}")
+        });
+
+        assert_eq!(
+            resumed.decision_rng_root_seed,
+            active_seed.decision_rng_root_seed()
+        );
+        assert_eq!(resumed.draw_offset, 2);
+        assert_eq!(resumed.stream_positions.get(&stream.name), Some(&1));
+        assert_eq!(resumed.branch_seed_sequence(), &[(Seed::from_u64(47), 2)]);
+    }
+
+    #[test]
+    fn private_gdbstub_endpoint_uses_the_node_run_directory() {
+        let directory = Path::new("/tmp/crucible-node");
+        let path = private_backend_gdbstub_path(directory);
+
+        assert_eq!(path, directory.join("debug-rsp.sock"));
+        let Ok(endpoint) = live_unix_gdbstub_endpoint(&path) else {
+            panic!("ordinary private socket path must be accepted");
+        };
+        assert_eq!(endpoint, "unix:debug-rsp.sock,server=on,wait=off");
+    }
+
+    #[test]
+    fn private_gdbstub_endpoint_survives_guarded_directory_rebinding()
+    -> Result<(), LifecycleApiError> {
+        let proposed = PathBuf::from("/tmp/campaign-baked-genesis")
+            .join("a".repeat(64))
+            .join("b".repeat(32))
+            .join("run-00000000000000000000/node-0");
+        let guarded = Path::new("/tmp/attempts/run/generation-1");
+        let old_path = private_backend_gdbstub_path(&proposed);
+        let actual_path = private_backend_gdbstub_path(guarded);
+        assert!(old_path.as_os_str().len() > 108);
+        assert_ne!(old_path, actual_path);
+        assert_eq!(
+            live_unix_gdbstub_endpoint(&old_path)?,
+            live_unix_gdbstub_endpoint(&actual_path)?
+        );
+        assert_eq!(actual_path, guarded.join("debug-rsp.sock"));
+        Ok(())
+    }
+
+    #[test]
+    fn private_gdbstub_endpoint_rejects_qemu_option_delimiters() {
+        let Err(error) = live_unix_gdbstub_endpoint(Path::new("/tmp/node,server=off")) else {
+            panic!("comma must not enter the QEMU character-device syntax");
+        };
+
+        assert!(error.to_string().contains("unsupported syntax"));
+    }
+
+    #[test]
+    fn grouped_terminal_actions_collect_failures_before_pass() {
+        let action = Action::Group(vec![
+            Action::Pass,
+            Action::Group(vec![
+                Action::Fail {
+                    reason: String::from("first violation"),
+                },
+                Action::Fail {
+                    reason: String::from("second violation"),
+                },
+            ]),
+        ]);
+        let mut passed = false;
+        let mut violations = Vec::new();
+
+        collect_terminal_actions(&action, &mut passed, &mut violations);
+
+        assert!(passed);
+        assert_eq!(
+            violations,
+            vec![
+                String::from("first violation"),
+                String::from("second violation")
+            ]
+        );
+    }
+}

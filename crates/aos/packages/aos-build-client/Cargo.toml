@@ -1,0 +1,19 @@
+[package]
+name = "aos-build-client"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Typed client for AOS build server, Nix cache, garbage collection, and authentication"
+
+[dependencies]
+aos-nar.workspace = true
+aos-build-api = { workspace = true }
+anyhow = { workspace = true }
+connectrpc = { workspace = true }
+buffa = { workspace = true }
+http = { workspace = true }
+prost = { workspace = true }
+webpki-roots = { workspace = true }
+rustls-native-certs = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }

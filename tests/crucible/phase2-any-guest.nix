@@ -10,8 +10,8 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  gateCatalog = builtins.readFile ../../crates/crucible-harness/src/lib.rs;
-  gateTargets = builtins.readFile ../../crates/crucible-harness/src/gate_targets.rs;
+  gateCatalog = builtins.readFile ../../crates/crucible/testing/crucible-test-support/src/lib.rs;
+  gateTargets = builtins.readFile ../../crates/crucible/testing/crucible-test-support/src/gate_targets.rs;
   gateTargetMapping = builtins.readFile ./phase1-gate-target-mapping.nix;
   defaultChecks = builtins.readFile ./default.nix;
   determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
@@ -48,20 +48,20 @@
         needle = "Broader off-the-shelf guest image coverage remains outside";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/src/lib.rs" gateCatalog [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/src/lib.rs" gateCatalog [
       {
         label = "gate:any-guest implemented catalog status";
         needle = ''          name: "gate:any-guest",
                   phase: GatePhase::Phase2,
-                  owner: "crucible-qemu",
+                  owner: "crucible-qemu-host",
                   status: GateStatus::Implemented,'';
       }
     ]
-    ++ failuresFor "crates/crucible-harness/src/gate_targets.rs" gateTargets [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/src/gate_targets.rs" gateTargets [
       {
         label = "gate:any-guest non-placeholder target";
         needle = ''          gate: "gate:any-guest",
-                  package: "crucible-qemu",
+                  package: "crucible-qemu-host",
                   test_target: "deterministic_launch",
                   required_features: &[],'';
       }
@@ -70,7 +70,7 @@
       {
         label = "gate:any-guest mapping non-placeholder";
         needle = ''          gate = "gate:any-guest";
-                package = "crucible-qemu";
+                package = "crucible-qemu-host";
                 testTarget = "deterministic_launch";
                 requiredFeatures = [];'';
       }

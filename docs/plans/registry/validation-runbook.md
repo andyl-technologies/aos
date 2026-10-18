@@ -71,9 +71,9 @@ Primary files:
 - [`../../registry/nix-cache-compatibility.md`](../../registry/nix-cache-compatibility.md)
 - [`../../registry/publishing.md`](../../registry/publishing.md)
 - [`../../../tests/vm/apm/registry_validation.nix`](../../../tests/vm/apm/registry_validation.nix)
-- [`../../../crates/aos-package/src/registry/nixcache.rs`](../../../crates/aos-package/src/registry/nixcache.rs)
-- [`../../../crates/aos-cache/src/backend/s3.rs`](../../../crates/aos-cache/src/backend/s3.rs)
-- [`../../../crates/aos-cache/src/backend/sftp.rs`](../../../crates/aos-cache/src/backend/sftp.rs)
+- [`../../../crates/aos/registry/aos-registry-authoring/src/registry/nixcache.rs`](../../../crates/aos/registry/aos-registry-authoring/src/registry/nixcache.rs)
+- [`../../../crates/aos/packages/aos-nix-cache/src/backend/s3.rs`](../../../crates/aos/packages/aos-nix-cache/src/backend/s3.rs)
+- [`../../../crates/aos/packages/aos-nix-cache/src/backend/sftp.rs`](../../../crates/aos/packages/aos-nix-cache/src/backend/sftp.rs)
 
 Passing builder evidence: output
 `/nix/store/bwp2ayp8r199n32s2csndcv43qmi38xr-aos-vm-test-apm-registry-validation-stock-nix-backend-array-0`.
@@ -107,8 +107,8 @@ Primary files:
 - [`../../registry/http-layout.md`](../../registry/http-layout.md)
 - [`../../registry/publishing.md`](../../registry/publishing.md)
 - [`../../../tests/vm/apm/registry_validation.nix`](../../../tests/vm/apm/registry_validation.nix)
-- [`../../../crates/aos-package/src/registry/static_upload.rs`](../../../crates/aos-package/src/registry/static_upload.rs)
-- [`../../../crates/aos-package/src/registry/objectstore.rs`](../../../crates/aos-package/src/registry/objectstore.rs)
+- [`../../../crates/aos/registry/aos-registry-authoring/src/registry/static_upload.rs`](../../../crates/aos/registry/aos-registry-authoring/src/registry/static_upload.rs)
+- [`../../../crates/aos/registry/aos-registry-client/src/registry/objectstore.rs`](../../../crates/aos/registry/aos-registry-client/src/registry/objectstore.rs)
 
 Passing builder evidence: output
 `/nix/store/xfzd1yim7sx5cq9gsg6nx8kvh1hi551s-aos-vm-test-apm-registry-validation-origin-cdn-layout-0`.
@@ -139,7 +139,7 @@ Primary files:
 - [`../../../pkgs/tools/git-2_42.nix`](../../../pkgs/tools/git-2_42.nix)
 - [`../../../pkgs/tools/git.nix`](../../../pkgs/tools/git.nix)
 - [`../../../tests/vm/apm/registry_validation.nix`](../../../tests/vm/apm/registry_validation.nix)
-- [`../../../crates/aos-package/src/registry/git.rs`](../../../crates/aos-package/src/registry/git.rs)
+- [`../../../crates/aos/registry/aos-registry-client/src/registry/git.rs`](../../../crates/aos/registry/aos-registry-client/src/registry/git.rs)
 
 Passing builder evidence: output
 `/nix/store/yx7wm7m63l6smij5k57dbjlz22y3ql74-aos-vm-test-apm-registry-validation-stock-git-matrix-0`.
@@ -174,9 +174,9 @@ Primary files:
 
 - [`../../registry/packs-and-deltas.md`](../../registry/packs-and-deltas.md)
 - [`../../../tests/vm/apm/registry_validation.nix`](../../../tests/vm/apm/registry_validation.nix)
-- [`../../../crates/aos-package/src/registry/pack.rs`](../../../crates/aos-package/src/registry/pack.rs)
-- [`../../../crates/aos-package/src/registry/fetch.rs`](../../../crates/aos-package/src/registry/fetch.rs)
-- [`../../../crates/aos-package/tests/registry_perf.rs`](../../../crates/aos-package/tests/registry_perf.rs)
+- [`../../../crates/aos/registry/aos-registry-authoring/src/registry/pack.rs`](../../../crates/aos/registry/aos-registry-authoring/src/registry/pack.rs)
+- [`../../../crates/aos/registry/aos-registry-client/src/registry/fetch.rs`](../../../crates/aos/registry/aos-registry-client/src/registry/fetch.rs)
+- [`../../../crates/aos/registry/aos-registry-authoring/tests/registry_perf.rs`](../../../crates/aos/registry/aos-registry-authoring/tests/registry_perf.rs)
 
 Passing builder evidence: output
 `/nix/store/c6lg01w5ks8f2h4ginav0wfdhlf12az9-aos-vm-test-apm-registry-validation-pack-delta-perf-0`.
@@ -197,8 +197,8 @@ REGISTRY_PERF_METRIC reconstruct_ns=2568679
 `max_staleness_seconds` default tuning is not a VM-testable implementation
 property because it depends on production update cadence, quiet-channel duration,
 and CDN incident behavior. Repository behavior is covered by Rust unit/e2e tests
-in [`../../../crates/aos-package/src/registry/git.rs`](../../../crates/aos-package/src/registry/git.rs)
+in [`../../../crates/aos/registry/aos-registry-client/src/registry/git.rs`](../../../crates/aos/registry/aos-registry-client/src/registry/git.rs)
 and
-[`../../../crates/aos-package/tests/registry_e2e.rs`](../../../crates/aos-package/tests/registry_e2e.rs);
+[`../../../crates/aos/registry/aos-registry-authoring/tests/registry_e2e.rs`](../../../crates/aos/registry/aos-registry-authoring/tests/registry_e2e.rs);
 the VM CDN-layout check covers the mutable-path TTL side. Fleet default tuning
 belongs in deployment rollout notes.

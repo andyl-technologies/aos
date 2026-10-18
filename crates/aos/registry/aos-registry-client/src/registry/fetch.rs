@@ -1,0 +1,696 @@
+//! Consumer-side object fetch resolution for the git-native registry.
+//!
+//! Given a target release, this module decides how to bring the release's
+//! git objects into the local registry repo with the least transfer. A complete,
+//! content-verified local release needs no transfer. Otherwise three mechanisms
+//! are tried in order:
+//!
+//! 1. **AOS thin deltas** -- producer-published `delta-<base>.pack.zst`
+//!    files under `releases/<release>/objects/pack/`, usable when the
+//!    client retains the base release (see [`retained_set`]).
+//! 2. **Full-pack anchors** -- a stock-git self-contained pack at the
+//!    release's `X.Y.0` anchor, optionally followed by an anchor-to-target
+//!    delta.
+//! 3. **`git fetch` fallback** -- a plain tag fetch over the dumb-HTTP
+//!    loose-object floor, which always works but transfers the most.
+//!
+//! [`plan_from_artifacts`] is the pure planning core; [`resolve_objects`]
+//! performs the same decisions against a live origin and actually downloads
+//! and indexes the packs.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result};
+
+use crate::registry::pack;
+use crate::registry::transport::{RegistryRead, RegistryTransport};
+use aos_transfer::progress::{TransferObserver, TransferProgress};
+
+/// The ordered fetch steps chosen to materialize a target release.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchPlan {
+    /// The release the plan materializes.
+    pub target: semver::Version,
+    /// Steps to execute in order; later steps may depend on earlier ones
+    /// (e.g. a delta applied on top of a full-pack anchor). Empty when the
+    /// complete release is already available locally.
+    pub steps: Vec<FetchStep>,
+}
+
+/// One step of a [`FetchPlan`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FetchStep {
+    /// Apply an AOS thin delta pack from `base` to `target`.
+    Delta {
+        /// Release the delta produces.
+        target: semver::Version,
+        /// Retained release the delta builds on.
+        base: semver::Version,
+        /// Whether the pack was fetched in zstd-compressed form.
+        compressed: bool,
+    },
+    /// Download and index a self-contained full pack for `version`.
+    Full {
+        /// Release the pack covers.
+        version: semver::Version,
+        /// Pack filename (`pack-<hash>.pack`) under the release's pack dir.
+        pack: String,
+    },
+    /// Fall back to `git fetch` of the release tag over the loose-object
+    /// dumb-HTTP floor.
+    GitFetchFallback {
+        /// The `refs/tags/X.Y.Z:refs/tags/X.Y.Z` refspec that was fetched.
+        refspec: String,
+    },
+}
+
+/// Inventory of producer-published artifacts used by [`plan_from_artifacts`].
+#[derive(Debug, Default, Clone)]
+pub struct AvailableArtifacts {
+    /// Published `(target, base)` thin-delta pairs.
+    pub deltas: BTreeSet<(semver::Version, semver::Version)>,
+    /// Published full packs, mapping release version to pack filename.
+    pub full_packs: BTreeMap<semver::Version, String>,
+}
+
+/// Return the delta bases a producer publishes at `target`, nearest first.
+///
+/// Patch releases fan out to the previous three patches plus the `X.Y.0`
+/// anchor; minor releases to the previous minor and `X.0.0`; major releases
+/// to the previous major. This mirrors the producer scheme in
+/// [`pack::scheme_deltas`].
+pub fn deltas_at(target: &semver::Version) -> Vec<semver::Version> {
+    let mut bases = Vec::new();
+    if target.patch > 0 {
+        for offset in 1..=3 {
+            if target.patch >= offset {
+                push_unique(
+                    &mut bases,
+                    semver::Version::new(target.major, target.minor, target.patch - offset),
+                );
+            }
+        }
+        push_unique(
+            &mut bases,
+            semver::Version::new(target.major, target.minor, 0),
+        );
+    } else if target.minor > 0 {
+        push_unique(
+            &mut bases,
+            semver::Version::new(target.major, target.minor - 1, 0),
+        );
+        push_unique(&mut bases, semver::Version::new(target.major, 0, 0));
+    } else if target.major > 0 {
+        push_unique(&mut bases, semver::Version::new(target.major - 1, 0, 0));
+    }
+    bases
+}
+
+/// Return the minimum release set a client must retain for `target`.
+///
+/// Retaining `X.0.0`, `X.Y.0`, and the target itself guarantees a usable
+/// delta base exists for the next release a channel can advance to.
+pub fn retained_set(target: &semver::Version) -> Vec<semver::Version> {
+    let mut retained = Vec::new();
+    push_unique(&mut retained, semver::Version::new(target.major, 0, 0));
+    push_unique(
+        &mut retained,
+        semver::Version::new(target.major, target.minor, 0),
+    );
+    push_unique(&mut retained, target.clone());
+    retained
+}
+
+/// Parse the persisted `retained` release strings into semver versions.
+///
+/// # Errors
+///
+/// Returns an error if any entry is not valid semver.
+pub fn parse_retained(retained: &[String]) -> Result<Vec<semver::Version>> {
+    retained
+        .iter()
+        .map(|release| {
+            semver::Version::parse(release)
+                .with_context(|| format!("parsing retained release {release}"))
+        })
+        .collect()
+}
+
+/// Render a release version as its static origin path segment.
+///
+/// `1.2.3-rc.1+build.5` maps to `1/2/3-rc.1+build.5`; pre-release and build
+/// metadata stay on the patch segment.
+pub fn release_path(version: &semver::Version) -> String {
+    let mut patch = version.patch.to_string();
+    if !version.pre.is_empty() {
+        patch.push('-');
+        patch.push_str(version.pre.as_str());
+    }
+    if !version.build.is_empty() {
+        patch.push('+');
+        patch.push_str(version.build.as_str());
+    }
+    format!("{}/{}/{}", version.major, version.minor, patch)
+}
+
+/// Pure planner used by tests and by operators inspecting a registry layout.
+///
+/// Selects the cheapest plan from `artifacts` without touching the network:
+/// a retained-base delta if one exists, otherwise the `X.Y.0` full-pack
+/// anchor (plus an anchor-to-target delta when published), otherwise the
+/// `git fetch` fallback.
+pub fn plan_from_artifacts(
+    target: &semver::Version,
+    retained: &[semver::Version],
+    artifacts: &AvailableArtifacts,
+) -> FetchPlan {
+    for base in deltas_at(target) {
+        if retained.contains(&base) && artifacts.deltas.contains(&(target.clone(), base.clone())) {
+            return FetchPlan {
+                target: target.clone(),
+                steps: vec![FetchStep::Delta {
+                    target: target.clone(),
+                    base,
+                    compressed: false,
+                }],
+            };
+        }
+    }
+
+    let anchor = anchor_for(target);
+    if let Some(pack) = artifacts.full_packs.get(&anchor) {
+        let mut steps = vec![FetchStep::Full {
+            version: anchor.clone(),
+            pack: pack.clone(),
+        }];
+        if anchor != *target && artifacts.deltas.contains(&(target.clone(), anchor.clone())) {
+            steps.push(FetchStep::Delta {
+                target: target.clone(),
+                base: anchor,
+                compressed: false,
+            });
+        }
+        return FetchPlan {
+            target: target.clone(),
+            steps,
+        };
+    }
+
+    FetchPlan {
+        target: target.clone(),
+        steps: vec![FetchStep::GitFetchFallback {
+            refspec: release_refspec(target),
+        }],
+    }
+}
+
+/// Resolve and fetch objects for a target release.
+///
+/// A complete, content-verified local release returns without network access.
+/// Otherwise the resolver tries AOS-only thin deltas, then a stock-git full-pack
+/// anchor, and finally delegates to `git fetch` for the dumb-HTTP loose-object
+/// correctness floor. Unusable artifacts (corrupt download, failed index)
+/// are reported as warnings and the next mechanism is tried; fetched packs
+/// are written and indexed under the repo's `objects/pack/` directory.
+///
+/// # Errors
+///
+/// Returns an error when every mechanism fails, the final `git fetch`
+/// fallback included, or when a fetched pack cannot be written to disk.
+pub async fn resolve_objects(
+    repo_dir: &Path,
+    origin: &str,
+    target: &semver::Version,
+    retained: &[semver::Version],
+    observer: &dyn TransferObserver,
+) -> Result<FetchPlan> {
+    resolve_objects_with_progress(repo_dir, origin, target, retained, observer, None).await
+}
+
+/// Resolves release objects while reporting into a caller-owned transfer.
+///
+/// # Errors
+///
+/// Returns an error under the same download, indexing, and fallback conditions
+/// as [`resolve_objects`].
+pub async fn resolve_objects_with_progress(
+    repo_dir: &Path,
+    origin: &str,
+    target: &semver::Version,
+    retained: &[semver::Version],
+    observer: &dyn TransferObserver,
+    progress: Option<&TransferProgress>,
+) -> Result<FetchPlan> {
+    // Ref synchronization may already have fetched this complete release.
+    // Check the content-addressed graph, not just the tag or retained-version
+    // marker, so an incomplete or damaged local cache still gets repaired.
+    let repo_path = repo_dir.to_path_buf();
+    let release_ref = format!("refs/tags/{target}");
+    let missing = tokio::task::spawn_blocking(move || {
+        super::repo::missing_objects_blocking(&repo_path, &[release_ref])
+    })
+    .await
+    .context("release object-walk task panicked")??;
+    if missing.is_empty() {
+        return Ok(FetchPlan {
+            target: target.clone(),
+            steps: Vec::new(),
+        });
+    }
+
+    let transport = match RegistryTransport::new(origin) {
+        Ok(transport) => transport,
+        Err(_) => {
+            let fallback = git_fetch_release(repo_dir, origin, target, progress).await?;
+            return Ok(FetchPlan {
+                target: target.clone(),
+                steps: vec![fallback],
+            });
+        }
+    };
+
+    for base in deltas_at(target) {
+        if !retained.contains(&base) {
+            continue;
+        }
+        set_phase(progress, "Downloading registry delta");
+        match fetch_delta(repo_dir, &transport, target, &base, progress).await {
+            Ok(Some(step)) => {
+                observer.info(&format!(
+                    "Fetched registry delta {base} -> {target} via AOS pack"
+                ));
+                return Ok(FetchPlan {
+                    target: target.clone(),
+                    steps: vec![step],
+                });
+            }
+            Ok(None) => {}
+            Err(err) => {
+                observer.warning(&format!(
+                    "Skipping unusable registry delta {base} -> {target}: {err:#}"
+                ));
+            }
+        }
+    }
+
+    let anchor = anchor_for(target);
+    set_phase(progress, "Downloading registry release pack");
+    match fetch_full_pack(repo_dir, &transport, &anchor, progress).await {
+        Ok(Some(full_step)) => {
+            let mut steps = vec![full_step];
+            if anchor != *target {
+                set_phase(progress, "Downloading registry delta");
+                match fetch_delta(repo_dir, &transport, target, &anchor, progress).await {
+                    Ok(Some(delta_step)) => steps.push(delta_step),
+                    Ok(None) => {
+                        let fallback =
+                            git_fetch_release(repo_dir, origin, target, progress).await?;
+                        steps.push(fallback);
+                    }
+                    Err(err) => {
+                        observer.warning(&format!(
+                            "Skipping unusable registry delta {anchor} -> {target}: {err:#}"
+                        ));
+                        let fallback =
+                            git_fetch_release(repo_dir, origin, target, progress).await?;
+                        steps.push(fallback);
+                    }
+                }
+            }
+            observer.info(&format!("Fetched registry full-pack anchor {anchor}"));
+            return Ok(FetchPlan {
+                target: target.clone(),
+                steps,
+            });
+        }
+        Ok(None) => {}
+        Err(err) => {
+            observer.warning(&format!(
+                "Skipping unusable registry full-pack anchor {anchor}: {err:#}"
+            ));
+        }
+    }
+
+    let fallback = git_fetch_release(repo_dir, origin, target, progress).await?;
+    Ok(FetchPlan {
+        target: target.clone(),
+        steps: vec![fallback],
+    })
+}
+
+/// Try to download and apply the `base -> target` thin delta pack.
+///
+/// Prefers the `.pack.zst` variant; returns `Ok(None)` when the producer
+/// published neither variant.
+async fn fetch_delta(
+    repo_dir: &Path,
+    transport: &dyn RegistryRead,
+    target: &semver::Version,
+    base: &semver::Version,
+    progress: Option<&TransferProgress>,
+) -> Result<Option<FetchStep>> {
+    let release = release_path(target);
+    for compressed in [true, false] {
+        let suffix = if compressed { ".pack.zst" } else { ".pack" };
+        let relative = format!("releases/{release}/objects/pack/delta-{base}{suffix}");
+        let pack_path = local_pack_path(repo_dir, &format!("delta-{target}-from-{base}.pack"))?;
+        let download_path = if compressed {
+            pack_path.with_extension("pack.zst")
+        } else {
+            pack_path.clone()
+        };
+        if !download_optional_to_file(transport, &relative, &download_path, progress).await? {
+            continue;
+        }
+        if let Some(progress) = progress {
+            progress.activity_phase("Indexing registry delta");
+        }
+        if compressed {
+            pack::zstd_decompress(&download_path, None)
+                .await
+                .context("decompressing delta pack")?;
+        }
+        pack::index_pack_fix_thin(repo_dir, &pack_path).await?;
+        return Ok(Some(FetchStep::Delta {
+            target: target.clone(),
+            base: base.clone(),
+            compressed,
+        }));
+    }
+    Ok(None)
+}
+
+/// Try to download and index the self-contained full pack for `version`.
+///
+/// Reads the release's `objects/info/packs` listing, downloads the first
+/// pack and indexes it (regenerating its `.idx`), and returns `Ok(None)` when
+/// the release publishes no full pack.
+async fn fetch_full_pack(
+    repo_dir: &Path,
+    transport: &dyn RegistryRead,
+    version: &semver::Version,
+    progress: Option<&TransferProgress>,
+) -> Result<Option<FetchStep>> {
+    let release = release_path(version);
+    let info_path = format!("releases/{release}/objects/info/packs");
+    let Some(info) = get_optional(transport, &info_path, progress).await? else {
+        return Ok(None);
+    };
+    let info = String::from_utf8(info).context("release objects/info/packs is not UTF-8")?;
+    let Some(pack_name) = parse_info_packs(&info).into_iter().next() else {
+        return Ok(None);
+    };
+
+    let pack_relative = format!("releases/{release}/objects/pack/{pack_name}");
+    let pack_path = local_pack_path(repo_dir, &pack_name)?;
+    if !download_optional_to_file(transport, &pack_relative, &pack_path, progress).await? {
+        return Ok(None);
+    }
+
+    if let Some(progress) = progress {
+        progress.activity_phase("Indexing registry release pack");
+    }
+
+    // libgit2's pack writer regenerates and verifies the index, so the
+    // server-published `.idx` is neither downloaded nor trusted.
+    pack::index_pack(repo_dir, &pack_path).await?;
+
+    Ok(Some(FetchStep::Full {
+        version: version.clone(),
+        pack: pack_name,
+    }))
+}
+
+/// Fetch the release tag with plain `git fetch` (the correctness floor).
+async fn git_fetch_release(
+    repo_dir: &Path,
+    origin: &str,
+    target: &semver::Version,
+    progress: Option<&TransferProgress>,
+) -> Result<FetchStep> {
+    set_phase(progress, "Fetching registry release objects");
+    let refspec = release_refspec(target);
+    // Leading `+` forces the ref update (the historical `git fetch --force`);
+    // the stored FetchStep keeps the logical, unforced refspec.
+    let forced = format!("+{refspec}");
+    crate::registry::repo::fetch_with_progress(
+        repo_dir,
+        origin,
+        std::slice::from_ref(&forced),
+        progress.cloned(),
+    )
+    .await
+    .with_context(|| format!("git fetch {refspec}"))?;
+    Ok(FetchStep::GitFetchFallback { refspec })
+}
+
+/// Reads optional pack metadata through the shared registry byte transport.
+async fn get_optional(
+    transport: &dyn RegistryRead,
+    relative: &str,
+    progress: Option<&TransferProgress>,
+) -> Result<Option<Vec<u8>>> {
+    let bytes = transport.read_optional(relative, 1024 * 1024).await?;
+    if let (Some(progress), Some(bytes)) = (progress, bytes.as_ref()) {
+        progress.inc(bytes.len() as u64);
+    }
+    Ok(bytes)
+}
+
+/// Streams an optional pack using the shared registry byte transport.
+async fn download_optional_to_file(
+    transport: &dyn RegistryRead,
+    relative: &str,
+    dest: &Path,
+    progress: Option<&TransferProgress>,
+) -> Result<bool> {
+    transport.download_optional(relative, dest, progress).await
+}
+
+fn set_phase(progress: Option<&TransferProgress>, phase: &str) {
+    if let Some(progress) = progress {
+        progress.phase(phase);
+    }
+}
+
+/// Parse pack names from a git `objects/info/packs` listing (`P <name>` lines).
+fn parse_info_packs(content: &str) -> Vec<String> {
+    content
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("P "))
+        .filter(|name| {
+            name.strip_prefix("pack-")
+                .and_then(|hash| hash.strip_suffix(".pack"))
+                .is_some_and(|hash| {
+                    hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+                })
+        })
+        .map(ToString::to_string)
+        .collect()
+}
+
+/// Return (and create) the local `objects/pack/<name>` destination path.
+fn local_pack_path(repo_dir: &Path, name: &str) -> Result<PathBuf> {
+    let pack_dir = repo_dir.join("objects").join("pack");
+    std::fs::create_dir_all(&pack_dir)
+        .with_context(|| format!("creating {}", pack_dir.display()))?;
+    Ok(pack_dir.join(name))
+}
+
+/// Return the `X.Y.0` full-pack anchor release for a target.
+fn anchor_for(target: &semver::Version) -> semver::Version {
+    semver::Version::new(target.major, target.minor, 0)
+}
+
+/// Build the tag-to-tag refspec used by the `git fetch` fallback.
+fn release_refspec(target: &semver::Version) -> String {
+    format!("refs/tags/{target}:refs/tags/{target}")
+}
+
+fn push_unique(versions: &mut Vec<semver::Version>, version: semver::Version) {
+    if !versions.contains(&version) {
+        versions.push(version);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn version(input: &str) -> semver::Version {
+        semver::Version::parse(input).unwrap()
+    }
+
+    #[test]
+    fn deltas_at_patch_bases() {
+        assert_eq!(
+            deltas_at(&version("1.4.5")),
+            vec![
+                version("1.4.4"),
+                version("1.4.3"),
+                version("1.4.2"),
+                version("1.4.0"),
+            ]
+        );
+    }
+
+    fn local_release(repo_dir: &Path) -> git2::Oid {
+        let repo = git2::Repository::init_bare(repo_dir).unwrap();
+        let blob = repo.blob(b"package metadata").unwrap();
+        let mut builder = repo.treebuilder(None).unwrap();
+        builder.insert("package.toml", blob, 0o100644).unwrap();
+        let tree = repo.find_tree(builder.write().unwrap()).unwrap();
+        let signature = git2::Signature::now("Test", "test@example.test").unwrap();
+        let commit = repo
+            .commit(Some("HEAD"), &signature, &signature, "release", &tree, &[])
+            .unwrap();
+        let object = repo.find_object(commit, None).unwrap();
+        repo.tag_lightweight("1.0.0", &object, false).unwrap();
+        blob
+    }
+
+    #[tokio::test]
+    async fn complete_local_release_needs_no_origin_requests() {
+        let tmp = tempfile::tempdir().unwrap();
+        local_release(tmp.path());
+        let observer = aos_transfer::progress::NoopObserver;
+
+        let plan = resolve_objects(
+            tmp.path(),
+            "http://127.0.0.1:1",
+            &version("1.0.0"),
+            &[],
+            &observer,
+        )
+        .await
+        .unwrap();
+
+        assert!(plan.steps.is_empty());
+    }
+
+    #[tokio::test]
+    async fn existing_release_tag_does_not_hide_missing_objects() {
+        let tmp = tempfile::tempdir().unwrap();
+        let blob = local_release(tmp.path()).to_string();
+        std::fs::remove_file(tmp.path().join("objects").join(&blob[..2]).join(&blob[2..])).unwrap();
+        let observer = aos_transfer::progress::NoopObserver;
+
+        let result = resolve_objects(
+            tmp.path(),
+            "http://127.0.0.1:1",
+            &version("1.0.0"),
+            &[version("1.0.0")],
+            &observer,
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "an incomplete release must still require an origin"
+        );
+    }
+
+    #[test]
+    fn deltas_at_minor_bases() {
+        assert_eq!(
+            deltas_at(&version("1.4.0")),
+            vec![version("1.3.0"), version("1.0.0")]
+        );
+    }
+
+    #[test]
+    fn deltas_at_major_base() {
+        assert_eq!(deltas_at(&version("2.0.0")), vec![version("1.0.0")]);
+    }
+
+    #[test]
+    fn retained_set_dedups_when_minor_is_zero() {
+        assert_eq!(retained_set(&version("1.0.0")), vec![version("1.0.0")]);
+    }
+
+    #[test]
+    fn retained_set_three_distinct() {
+        assert_eq!(
+            retained_set(&version("1.4.2")),
+            vec![version("1.0.0"), version("1.4.0"), version("1.4.2")]
+        );
+    }
+
+    #[test]
+    fn release_path_keeps_prerelease_and_build_on_patch_segment() {
+        assert_eq!(
+            release_path(&version("1.2.3-rc.1+build.5")),
+            "1/2/3-rc.1+build.5"
+        );
+    }
+
+    #[test]
+    fn parse_info_packs_reads_git_format_lines() {
+        let pack = format!("pack-{}.pack", "a".repeat(64));
+        assert_eq!(
+            parse_info_packs(&format!(
+                "P {pack}\nP pack-def.idx\nP pack-../escape.pack\n\n"
+            )),
+            vec![pack]
+        );
+    }
+
+    #[test]
+    fn plan_prefers_retained_delta() {
+        let target = version("1.4.2");
+        let mut artifacts = AvailableArtifacts::default();
+        artifacts.deltas.insert((target.clone(), version("1.4.1")));
+        artifacts
+            .full_packs
+            .insert(version("1.4.0"), "pack-full.pack".to_string());
+
+        let plan = plan_from_artifacts(&target, &[version("1.4.1")], &artifacts);
+        assert_eq!(
+            plan.steps,
+            vec![FetchStep::Delta {
+                target,
+                base: version("1.4.1"),
+                compressed: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn plan_uses_full_anchor_then_delta_to_patch() {
+        let target = version("1.4.2");
+        let mut artifacts = AvailableArtifacts::default();
+        artifacts
+            .full_packs
+            .insert(version("1.4.0"), "pack-full.pack".to_string());
+        artifacts.deltas.insert((target.clone(), version("1.4.0")));
+
+        let plan = plan_from_artifacts(&target, &[], &artifacts);
+        assert_eq!(
+            plan.steps,
+            vec![
+                FetchStep::Full {
+                    version: version("1.4.0"),
+                    pack: "pack-full.pack".to_string(),
+                },
+                FetchStep::Delta {
+                    target,
+                    base: version("1.4.0"),
+                    compressed: false,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn plan_falls_to_git_fetch_loose_floor() {
+        let target = version("1.4.2");
+        let plan = plan_from_artifacts(&target, &[], &AvailableArtifacts::default());
+        assert_eq!(
+            plan.steps,
+            vec![FetchStep::GitFetchFallback {
+                refspec: "refs/tags/1.4.2:refs/tags/1.4.2".to_string(),
+            }]
+        );
+    }
+}

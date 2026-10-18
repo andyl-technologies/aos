@@ -52,8 +52,8 @@
     };
     cargoRoot = "crates";
     cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-configuration-lower --bins"
-      "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-configuration-lower"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-configuration-image --bins"
+      "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-configuration-image"
     ];
     preBuild = staticBuildSetup;
     buildDeps = [patchelf];
@@ -86,8 +86,8 @@ in
     inherit version cargoDeps cargoEnv cargoArtifacts cargoArtifactContract;
     cargoRoot = "crates";
     cargoNextest = true;
-    cargoFlags = "-p aos-configuration-lower --bins";
-    cargoTestFlags = "-p aos-configuration-lower";
+    cargoFlags = "-p aos-configuration-image --bins";
+    cargoTestFlags = "-p aos-configuration-image";
     doCheck = true;
     buildDeps = [patchelf];
     runtimeDeps = [erofs-utils util-linux aos.packageRuntime];

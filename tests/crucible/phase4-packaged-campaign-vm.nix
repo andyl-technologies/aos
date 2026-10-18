@@ -44,6 +44,7 @@
     cargoArtifactContract = controllerArtifactContract;
     cargoEnv = controllerArtifactContract.cargoEnv;
     cargoRoot = "crates";
+    cargoWorkspaceMembers = import ../../pkgs/tools/crucible/_workspace.nix {inherit lib;};
     cargoBuildCommands = campaignFlightBuildCommands;
 
     buildDeps = [pkgs.rust.dev pkgs.pkg-config pkgs.openssl pkgs.protobuf pkgs.sqlite];
@@ -61,6 +62,7 @@
     cargoArtifactContract = controllerArtifactContract;
     cargoEnv = controllerArtifactContract.cargoEnv;
     cargoRoot = "crates";
+    cargoWorkspaceMembers = import ../../pkgs/tools/crucible/_workspace.nix {inherit lib;};
     cargoBuildCommands = campaignFlightBuildCommands;
     installBins = false;
     doCheck = false;
@@ -260,6 +262,7 @@
       ++ (lib.optional twoNodeHttp httpRootImage)
       ++ (lib.optionals storageRecovery [storageRecoveryRunner pkgs.garage pkgs.bash pkgs.gawk])
       ++ (lib.optional (findingExactBundle || findingSignalBundle || findingForkWrite || envoyKnownFinding) pkgs.crucible)
+      ++ (lib.optional maintenanceTransfer choiceInitramfs)
       ++ (
         if guestChoice || hotForkFlight
         then [networkChoiceInitramfs]

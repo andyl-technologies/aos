@@ -11,19 +11,19 @@
 
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
-  apiServer = import ./_rust-module-source.nix {
+  apiServer = import ./_crucible-control-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-api/src/server.rs;
+    component = "server";
   };
-  apiLib = import ./_rust-module-source.nix {
+  apiLib = import ./_crucible-control-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-api/src/lib.rs;
+    component = "exports";
   };
-  cliCargo = builtins.readFile ../../crates/crucible-cli/Cargo.toml;
+  cliCargo = builtins.readFile ../../crates/crucible/control/crucible-cli/Cargo.toml;
   cliMain = import ./_cli-source.nix {inherit lib;};
   serveProcessTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-cli/tests/serve_process.rs;
+    entry = ../../crates/crucible/control/crucible-cli/tests/serve_process.rs;
   };
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -46,7 +46,7 @@
         needle = "real process exits 0 after an external shutdown signal";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/server.rs" apiServer [
+    ++ failuresFor "crates/crucible/control/crucible-control-server/src/server.rs" apiServer [
       {
         label = "shutdown-aware HTTP/2 server helper";
         needle = "serve_lifecycle_http2_with_mode_until_shutdown";
@@ -64,15 +64,15 @@
         needle = "shutdown: watch::Receiver<bool>";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/lib.rs" apiLib [
+    ++ failuresFor "crates/crucible/control/crucible-control-api/src/lib.rs" apiLib [
       {
         label = "shutdown helper public export";
         needle = "serve_lifecycle_http2_with_mode_until_shutdown";
       }
     ]
-    ++ failuresFor "crates/crucible-api/tests/gate_control_client.rs" (import ./_rust-module-source.nix {
+    ++ failuresFor "crates/crucible/control/crucible-control-client/tests/gate_control_client.rs" (import ./_rust-module-source.nix {
       inherit lib;
-      entry = ../../crates/crucible-api/tests/gate_control_client.rs;
+      entry = ../../crates/crucible/control/crucible-control-client/tests/gate_control_client.rs;
     }) [
       {
         label = "active Watch shutdown regression";
@@ -83,7 +83,7 @@
         needle = "server should finish after shutdown with active Watch";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
+    ++ failuresFor "crates/crucible/control/crucible-cli/src/main.rs" cliMain [
       {
         label = "serve-specific error variant";
         needle = "Serve(String)";
@@ -129,13 +129,13 @@
         needle = "serve bind error";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/Cargo.toml" cliCargo [
+    ++ failuresFor "crates/crucible/control/crucible-cli/Cargo.toml" cliCargo [
       {
         label = "libc dev dependency for signal harness";
         needle = "libc = { workspace = true }";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/tests/serve_process.rs" serveProcessTest [
+    ++ failuresFor "crates/crucible/control/crucible-cli/tests/serve_process.rs" serveProcessTest [
       {
         label = "external serve signal-process harness";
         needle = "serve_process_exits_zero_on_sigterm";
@@ -234,7 +234,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-cli-serve-shutdown-target" \
-              -p crucible-api \
+              -p crucible-control-api \
               production_http2_lifecycle_server_shutdown_completes_with_active_watch_stream \
               -- --test-threads=1
             cargo test \

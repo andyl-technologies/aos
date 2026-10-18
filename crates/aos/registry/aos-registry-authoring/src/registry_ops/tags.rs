@@ -1,0 +1,307 @@
+//! Release tag creation, verification, and SSH signature formatting.
+
+use crate::registry_ops::config::resolve_registry_name;
+use crate::registry_ops::git::{
+    ensure_commit_identity, git, git2_identity, refresh_registry_object_store,
+};
+use crate::registry_ops::signing::resolve_producer_signing_key;
+use anyhow::{Context, Result, bail};
+use aos_cli_ui::output::{OutputMode, Printer};
+use aos_registry_client::config::ApmConfig;
+use aos_registry_format::consumer::validate_git_ref_name;
+use std::path::Path;
+
+/// `apr tag <NAME>` — creates an SSH-signed annotated tag at HEAD in the
+/// registry clone and refreshes the dumb-HTTP object store.
+///
+/// The tag message defaults to `AOS registry release`.
+///
+/// # Errors
+///
+/// Fails when the tag name is not a safe Git refname, when the signing key
+/// cannot be resolved, when the tag already exists, or when git tag signing
+/// fails.
+pub async fn tag(
+    config: &ApmConfig,
+    name: &str,
+    message: Option<&str>,
+    key: Option<&str>,
+    key_id: Option<&str>,
+    registry: Option<&str>,
+    printer: &Printer,
+) -> Result<()> {
+    validate_git_ref_name(name)?;
+    let registry_name = resolve_registry_name(config, registry)?;
+    let dir = config.scope.registries_path().join(&registry_name);
+    ensure_release_tag_absent(&dir, name)?;
+    let signing_key = resolve_producer_signing_key(config, &dir, &registry_name, key, key_id)?;
+    let tag_message = message.unwrap_or("AOS registry release");
+
+    if aos_registry_client::dry_run::active() {
+        printer.info(&format!(
+            "Would create signed tag '{name}' on HEAD of registry '{registry_name}'"
+        ));
+        printer.kv("Target", &git(&dir, &["rev-parse", "HEAD"])?);
+        printer.kv("Message", tag_message);
+        printer.kv("Signing key", signing_key.path());
+        printer.info("Dry run: no tag was created.");
+        return Ok(());
+    }
+
+    sign_tag(
+        &dir,
+        name,
+        "HEAD",
+        Some(tag_message),
+        signing_key.path(),
+        false,
+    )?;
+    refresh_registry_object_store(&dir).context("refreshing dumb-HTTP object store after tag")?;
+
+    if printer.mode() == OutputMode::Json {
+        let tag_object = git(&dir, &["rev-parse", &format!("{name}^{{tag}}")])
+            .with_context(|| format!("resolving tag object for '{name}'"))?;
+        let target = git(&dir, &["rev-parse", &format!("{name}^{{commit}}")])
+            .with_context(|| format!("resolving tag target for '{name}'"))?;
+        printer.json(&serde_json::json!({
+            "action": "tag",
+            "status": "tagged",
+            "registry": registry_name,
+            "tag": name,
+            "message": tag_message,
+            "target": target,
+            "tag_object": tag_object,
+        }));
+        return Ok(());
+    }
+
+    printer.success(&format!("Created signed tag '{name}'."));
+    Ok(())
+}
+
+/// `apr sign <TAG>` — re-signs an existing nonrelease tag in place.
+///
+/// The tag is force-recreated against its current target commit with a
+/// fresh SSH signature, and the dumb-HTTP object store is refreshed. Existing
+/// SemVer release tags are immutable and cannot be re-signed.
+///
+/// # Errors
+///
+/// Fails when no tag name is given, when the tag name is not a safe Git
+/// refname, when the tag cannot be resolved, when the signing key cannot be
+/// resolved, when the tag identifies an existing release, or when signing fails.
+pub async fn sign(
+    config: &ApmConfig,
+    tag: Option<&str>,
+    key: Option<&str>,
+    key_id: Option<&str>,
+    registry: Option<&str>,
+    printer: &Printer,
+) -> Result<()> {
+    let registry_name = resolve_registry_name(config, registry)?;
+    let dir = config.scope.registries_path().join(&registry_name);
+    let tag_name = tag.ok_or_else(|| {
+        anyhow::anyhow!("`apr sign` now signs tag objects; pass the existing tag name to re-sign")
+    })?;
+    validate_git_ref_name(tag_name)?;
+    ensure_release_tag_absent(&dir, tag_name)?;
+    let signing_key = resolve_producer_signing_key(config, &dir, &registry_name, key, key_id)?;
+    let previous_tag_object = git(&dir, &["rev-parse", &format!("{tag_name}^{{tag}}")])
+        .with_context(|| format!("resolving existing tag object for '{tag_name}'"))?;
+    let target = git(&dir, &["rev-list", "-n", "1", tag_name])
+        .with_context(|| format!("resolving tag '{tag_name}' target commit"))?;
+
+    if aos_registry_client::dry_run::active() {
+        printer.info(&format!(
+            "Would re-sign tag '{tag_name}' of registry '{registry_name}'"
+        ));
+        printer.kv("Target", &target);
+        printer.kv("Current tag object", &previous_tag_object);
+        printer.kv("Signing key", signing_key.path());
+        // Re-signing rewrites the tag object, so anything that pinned the old
+        // id must be refreshed; say so rather than let it surprise the operator.
+        printer.info("  The tag object id would change, replacing the existing signature.");
+        printer.info("Dry run: the tag is unchanged.");
+        return Ok(());
+    }
+
+    sign_tag(
+        &dir,
+        tag_name,
+        &target,
+        Some("AOS registry release"),
+        signing_key.path(),
+        true,
+    )?;
+    refresh_registry_object_store(&dir).context("refreshing dumb-HTTP object store after sign")?;
+    if printer.mode() == OutputMode::Json {
+        let tag_object = git(&dir, &["rev-parse", &format!("{tag_name}^{{tag}}")])
+            .with_context(|| format!("resolving re-signed tag object for '{tag_name}'"))?;
+        printer.json(&serde_json::json!({
+            "action": "sign",
+            "status": "signed",
+            "registry": registry_name,
+            "tag": tag_name,
+            "target": target,
+            "previous_tag_object": previous_tag_object,
+            "tag_object": tag_object,
+        }));
+        return Ok(());
+    }
+    printer.success(&format!("Re-signed tag '{tag_name}'."));
+
+    Ok(())
+}
+
+/// Resolves the annotated release tag for `version`, returning its object id.
+///
+/// Callers verify its signature against the applicable registry trust set.
+///
+/// # Errors
+///
+/// Returns an error when the repository cannot be read or the release does
+/// not resolve to an annotated tag object.
+pub(in crate::registry_ops) fn assert_release_tag_exists(
+    dir: &Path,
+    version: &semver::Version,
+) -> Result<String> {
+    let tag = version.to_string();
+    git(dir, &["rev-parse", &format!("{tag}^{{tag}}")])
+        .with_context(|| format!("resolving signed release tag '{tag}'"))
+}
+
+/// Resolve the commit a release tag points at.
+///
+/// # Errors
+///
+/// Returns an error when the repository cannot be read or the release tag
+/// does not resolve to a commit.
+pub(crate) fn release_commit(dir: &Path, version: &semver::Version) -> Result<String> {
+    let tag = version.to_string();
+    git(dir, &["rev-parse", &format!("{tag}^{{commit}}")])
+        .with_context(|| format!("resolving release tag '{tag}' commit"))
+}
+
+/// Reject replacement of an existing SemVer release tag reference.
+///
+/// This checks the reference itself, including lightweight and unsigned tags:
+/// repairing an invalid release requires a new version, preserving its identity.
+///
+/// # Errors
+///
+/// Returns an error when the release tag already exists, or its reference
+/// cannot be inspected.
+pub(in crate::registry_ops) fn ensure_release_tag_absent(dir: &Path, tag_name: &str) -> Result<()> {
+    if release_tag_version(tag_name).is_none() {
+        return Ok(());
+    }
+
+    let repo = git2::Repository::open(dir)
+        .with_context(|| format!("opening git repository at {}", dir.display()))?;
+    let refname = format!("refs/tags/{tag_name}");
+    match repo.find_reference(&refname) {
+        Ok(_) => bail!(
+            "release tag '{tag_name}' is immutable and cannot be replaced or re-signed; \
+             publish a replacement release with a new version"
+        ),
+        Err(error) if error.code() == git2::ErrorCode::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("inspecting release tag '{tag_name}'")),
+    }
+}
+
+/// Recognizes both canonical releases and aliases consumed by version tracking.
+pub(in crate::registry_ops) fn release_tag_version(tag_name: &str) -> Option<semver::Version> {
+    semver::Version::parse(tag_name)
+        .ok()
+        .or_else(|| aos_registry_client::registry::git::parse_tag_as_semver(tag_name))
+}
+
+/// Create an SSH-signed annotated tag object.
+///
+/// Builds the tag object directly and appends the armored SSH signature after
+/// the message — the same on-disk layout `git tag -s` produces and that
+/// [`aos_registry_client::security::verify_tag_signature`] verifies (the signed payload is
+/// everything before the signature block).
+/// Existing SemVer release references are never replaced, even with `force`.
+///
+/// # Errors
+///
+/// Returns an error when an existing release would be replaced, the tag name
+/// or target is invalid, or signing and reference creation fail.
+pub(in crate::registry_ops) fn sign_tag(
+    dir: &Path,
+    tag_name: &str,
+    target: &str,
+    message: Option<&str>,
+    signing_key: &str,
+    force: bool,
+) -> Result<()> {
+    validate_git_ref_name(tag_name)?;
+    ensure_release_tag_absent(dir, tag_name)?;
+    let message = message.unwrap_or("AOS registry release");
+    ensure_commit_identity(dir)?;
+
+    let repo = git2::Repository::open(dir)
+        .with_context(|| format!("opening git repository at {}", dir.display()))?;
+    let target_object = repo
+        .revparse_single(target)
+        .with_context(|| format!("resolving tag target {target}"))?;
+    let target_type = match target_object.kind() {
+        Some(git2::ObjectType::Commit) => "commit",
+        Some(git2::ObjectType::Tag) => "tag",
+        Some(git2::ObjectType::Tree) => "tree",
+        Some(git2::ObjectType::Blob) => "blob",
+        _ => bail!("cannot tag object {} of unknown type", target_object.id()),
+    };
+    let tagger = git2_identity(&repo)?;
+
+    // Build the unsigned tag payload, then sign exactly those bytes.
+    let mut payload = Vec::new();
+    payload.extend_from_slice(format!("object {}\n", target_object.id()).as_bytes());
+    payload.extend_from_slice(format!("type {target_type}\n").as_bytes());
+    payload.extend_from_slice(format!("tag {tag_name}\n").as_bytes());
+    payload.extend_from_slice(
+        format!(
+            "tagger {} <{}> {} {}\n",
+            tagger.name().unwrap_or(""),
+            tagger.email().unwrap_or(""),
+            tagger.when().seconds(),
+            format_git_tz(tagger.when()),
+        )
+        .as_bytes(),
+    );
+    payload.push(b'\n');
+    payload.extend_from_slice(message.as_bytes());
+    payload.push(b'\n');
+
+    let armored = crate::security::sign_payload_signature(Path::new(signing_key), "git", &payload)?;
+    payload.extend_from_slice(armored.as_bytes());
+
+    let odb = repo.odb().context("opening object database")?;
+    let oid = odb
+        .write(git2::ObjectType::Tag, &payload)
+        .context("writing tag object")?;
+    let refname = format!("refs/tags/{tag_name}");
+    // Release creation must also fail if another writer creates the reference
+    // after the preflight check and before this insertion.
+    let replace_existing = force && release_tag_version(tag_name).is_none();
+    repo.reference(
+        &refname,
+        oid,
+        replace_existing,
+        &format!("apr tag {tag_name}"),
+    )
+    .with_context(|| format!("creating tag ref '{tag_name}'"))?;
+    Ok(())
+}
+
+/// Format a git timezone offset (`+HHMM`/`-HHMM`) from a [`git2::Time`].
+pub(in crate::registry_ops) fn format_git_tz(when: git2::Time) -> String {
+    let offset = when.offset_minutes();
+    let sign = if offset < 0 { '-' } else { '+' };
+    let abs = offset.abs();
+    format!("{sign}{:02}{:02}", abs / 60, abs % 60)
+}
+
+#[cfg(test)]
+mod tests;

@@ -1,2 +1,2 @@
-# Fixed-output hash for the vendored crates/Cargo.lock dependency set.
-"sha256-Rax7Te32Xr+wazk4vF63nEGuFDBKHxAJ+lCXkRo/bxw="
+# Resolve provenance from the shared monorepo vendor rather than another pin.
+{cargoDeps}: cargoDeps.passthru.aos.fixedOutput.hash

@@ -29,7 +29,7 @@
         needle = "`T-CLI-7` is completed through `checks.crucible.phase5.cliVerifyWorkflow`";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
+    ++ failuresFor "crates/crucible/control/crucible-cli/src/main.rs" cliMain [
       {
         label = "verify arguments";
         needle = "struct VerifyArgs";

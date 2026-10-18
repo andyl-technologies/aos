@@ -27,7 +27,7 @@ The service families cover registries, organizations, projects, storage,
 packages, channels, audits, instance settings, identity and access, webhooks,
 publishing, Git surfaces, and binary caches. The complete request and response
 schema is in
-[`hub.proto`](../../../crates/aos-proto/src/proto/aos/hub/v1/hub.proto).
+[`hub.proto`](../../../api/proto/aos/hub/v1/hub.proto).
 
 ## Authentication
 

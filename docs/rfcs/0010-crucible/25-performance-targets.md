@@ -464,7 +464,7 @@ throughput, and its *absence* when disabled must be near-total.
 
 ### 25.5.3 Distributed exploration: fleet throughput scales near-linearly
 
-A guided/distributed exploration campaign ([`35-distributed-exploration.md`](35-distributed-exploration.md))
+A guided/distributed exploration campaign ([`35-distributed-continuous-exploration.md`](35-distributed-continuous-exploration.md))
 spreads the fork-and-explore work of §25.5 across **multiple explorer hosts** that
 share one content-addressed store (07, [INV-6]). The single-host throughput unit
 of [PERF-13] — scenarios per core per hour — is then a *per-host* contract that
@@ -485,7 +485,7 @@ checkpoints — becomes the bottleneck).
   near-linear-to-saturation curve. This binds `gate:perf-bench` and the new
   `gate:campaign-continuity` (added by 24 per §25.11). *Gate:* `gate:perf-bench`,
   `gate:campaign-continuity`. *Spec:* §25.5.3; routes [G-9], [G-6], references
-  [PERF-3], [PERF-13], [`35-distributed-exploration.md`](35-distributed-exploration.md).
+  [PERF-3], [PERF-13], [`35-distributed-continuous-exploration.md`](35-distributed-continuous-exploration.md).
 
 ### 25.5.4 Continuous coverage: the cumulative-coverage ratchet
 
@@ -1010,7 +1010,7 @@ run ahead on its own core.
 Completed by `checks.crucible.phase7.gates.perfBench`,
 `checks.fleet.crucible-perf`, and
 `checks.crucible.phase0.coverageOverhead`: the perf-bench regression gate runs
-the harness cost-model substrate (`crucible-harness`'s `perf` module and the
+the harness cost-model substrate (`crucible-test-support`'s `perf` module and the
 `gate_perf_bench` test target) over a hermetic reference corpus. It evaluates
 the §25.1 cost model `wall_clock ≈ (Σ busy_i) / (IPS_tcg × P)
 + T_amortized_boot + T_sync_overhead` term by term and asserts the structural and
@@ -1106,7 +1106,7 @@ worker, and coordinate-invariance evidence from `gate:replay-oracle` and
 `gate:divergence-bisect`.
 
 T-PERF-34 is completed by the fail-closed register in
-`crucible_harness::perf::admission`, enforced by
+`crucible_test_support::perf::admission`, enforced by
 `checks.crucible.phase7.gates.perfBench`. The register names every mechanism
 admitted by §25.12: scheduler host workers and device host-work overlap are Class
 B because their observable commit coordinates are fixed before dispatch;
@@ -1224,7 +1224,7 @@ the complete five-mechanism register and its reject-unclassified policy.
   near-linear scaling to shared-store-bandwidth saturation (total parallelism ≈
   hosts × per-host P), binding `gate:perf-bench` + `gate:campaign-continuity`. —
   satisfies [PERF-27]; spec §25.5.3; cross-ref
-  [`35-distributed-exploration.md`](35-distributed-exploration.md).
+  [`35-distributed-continuous-exploration.md`](35-distributed-continuous-exploration.md).
   Completed by `checks.fleet.crucible-perf`, which runs 1, 2, 4, and 8
   independent live-QEMU explorer processes against one shared
   content-addressed store, records aggregate/per-core throughput and per-host

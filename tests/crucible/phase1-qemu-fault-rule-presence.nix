@@ -3,7 +3,7 @@
 {pkgs}: let
   patchDir = ../../pkgs/emulation/qemu-patches;
   atomicPatch = import (patchDir + "/_atomic-patch.nix");
-  abiHeader = ../../crates/crucible-shmem/include/crucible_shmem_abi.h;
+  abiHeader = ../../crates/crucible/protocol/crucible-qemu-shmem/include/crucible_shmem_abi.h;
 in
   pkgs.mkDerivation {
     pname = "crucible-phase1-qemu-fault-rule-presence";

@@ -9,8 +9,8 @@
   packagingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/26-packaging-aos-integration.md;
   fixturesNix = builtins.readFile ../../pkgs/tools/crucible-fixtures.nix;
   defaultChecks = builtins.readFile ./default.nix;
-  deterministicLaunch = builtins.readFile ../../crates/crucible-qemu/src/launch.rs;
-  entropyLaunch = builtins.readFile ../../crates/crucible-qemu/src/launch/entropy.rs;
+  deterministicLaunch = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/src/launch.rs;
+  entropyLaunch = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/src/launch/entropy.rs;
   anyGuestGateSource = builtins.readFile ./phase2-any-guest.nix;
 
   fixtureName = "aos-minimal";
@@ -225,7 +225,7 @@
         needle = "spawn_index";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/launch.rs" deterministicLaunch [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/launch.rs" deterministicLaunch [
       {
         label = "deterministic fw_cfg entropy argument";
         needle = "name={GUEST_ENTROPY_FW_CFG_NAME},file={}";
@@ -239,7 +239,7 @@
         needle = "qemu_run_seed_controls=guest-random,glib-global-prng,rng-builtin";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/launch/entropy.rs" entropyLaunch [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/launch/entropy.rs" entropyLaunch [
       {
         label = "fixture seed filename alignment";
         needle = "crucible-guest-entropy-seed.bin";

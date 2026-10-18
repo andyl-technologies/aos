@@ -33,9 +33,9 @@ cannot be targeted.
 
 The manifest crosses the Apache/GPL process boundary only as explicitly
 encoded little-endian bytes. The normative constants and independent C view
-are generated in `crates/crucible-shmem/include/crucible_shmem_abi.h`; the
+are generated in `crates/crucible/protocol/crucible-qemu-shmem/include/crucible_shmem_abi.h`; the
 canonical Rust codec and rejection rules are implemented in
-`crates/crucible-shmem/src/shmem/fault_target_manifest.rs`. Neither view
+`crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_target_manifest.rs`. Neither view
 contains a native pointer, QEMU structure, callback, or host-language enum
 layout.
 
@@ -92,7 +92,7 @@ IDs strictly increase, names are unique canonical lowercase identifiers, and
 the total header plus body cannot exceed the shared fault-payload hard limit.
 Decoders reproduce the canonical encoding byte for byte or reject it. The
 frozen cross-language vector is
-`crates/crucible-shmem/tests/fixtures/fault_register_manifest_v1.hex`.
+`crates/crucible/protocol/crucible-qemu-shmem/tests/fixtures/fault_register_manifest_v1.hex`.
 
 QEMU first copies its process-private row structure into the GPL plugin. The
 plugin validates width against the redundant mask length before dereferencing

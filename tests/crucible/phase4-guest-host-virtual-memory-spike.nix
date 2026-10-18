@@ -10,11 +10,11 @@
 
   pluginLib = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/lib.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs;
   };
   pluginWhitebox = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell.rs;
   };
   guestHostDoc = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
   riskDoc = builtins.readFile ../../docs/rfcs/0010-crucible/30-risks-spikes.md;
@@ -99,7 +99,7 @@
         needle = "physical / pinned identity-mapped page remains a specified fallback";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs" pluginLib [
       {
         label = "unresolved addressing re-export";
         needle = "WHITEBOX_GUEST_MEMORY_ADDRESSING_UNRESOLVED";
@@ -113,7 +113,7 @@
         needle = "WhiteboxPayloadAddressingMode";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhitebox [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhitebox [
       {
         label = "S5 check constant";
         needle = "WHITEBOX_GUEST_MEMORY_VADDR_SPIKE_CHECK";
@@ -197,7 +197,7 @@
         needle = "phase0S5 = phase0.s5VirtualMemory;";
       }
     ]
-    ++ forbiddenFor "crates/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhitebox [
+    ++ forbiddenFor "crates/crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhitebox [
       {
         label = "unfinished todo";
         needle = "todo!";

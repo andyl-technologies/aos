@@ -34,8 +34,9 @@ versioned RPC transport and pass one conformance suite through both paths.
 
 The dependency-free semantic center is the `crucible-campaign` crate. It owns
 portable IDs, canonical campaign objects, the pure projector and planner
-contracts, and no QEMU or transport implementation. `crucible` adapts those
-types to scenario execution, `crucible-api` owns wire DTOs and adapters, and
+contracts, and no QEMU or transport implementation. `crucible-engine` adapts
+those types to scenario execution. `crucible-control-api` owns native wire DTOs,
+with transport adapters in `crucible-control-client` and `crucible-control-server`, and
 `crucible-daemon` owns the sole-writer actor and local executor. Existing
 campaign manifests, search worklists, adaptive-search structs, and explicit
 fork queues are migration inputs; none remains a second authority after its

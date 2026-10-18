@@ -9,15 +9,15 @@
   };
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  engineTest = builtins.readFile ../../crates/crucible/tests/same_icount_tie_break.rs;
-  shmemTest = builtins.readFile ../../crates/crucible-shmem/tests/icount_stamped_injection.rs;
+  engineTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/same_icount_tie_break.rs;
+  shmemTest = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/tests/icount_stamped_injection.rs;
   determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    failuresFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "scheduled event key";
         needle = "pub struct ScheduledEventKey";
@@ -71,7 +71,7 @@
         needle = "scheduled_events_resolve_by_key_not_arrival_order";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/same_icount_tie_break.rs" engineTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/same_icount_tie_break.rs" engineTest [
       {
         label = "same-icount public API test";
         needle = "same_icount_inputs_resolve_by_virtual_time_consumer_producer_sequence";
@@ -85,13 +85,13 @@
         needle = "ordered_scheduled_events";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/same_icount_tie_break.rs" engineTest [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/same_icount_tie_break.rs" engineTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/tests/icount_stamped_injection.rs" shmemTest [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/tests/icount_stamped_injection.rs" shmemTest [
       {
         label = "consumer-side same-icount tie-break";
         needle = "same_icount_frames_resolve_by_source_node_then_sequence";

@@ -104,8 +104,8 @@ mutation. Unused interface declarations remain valid without a handler.
 
 `lib.evalPackageModules` is the shared Nix entry point. Build callers may supply
 packages directly; deployment callers supply resolved module/artifact records.
-The Rust owners are `aos-ability-plan::module_graph`,
-`aos-ability-runtime::activation`, and `aos-package::deployment`.
+The Rust owners are `aos_module_format::graph`,
+`aos_activation::activation`, and `aos_package_manager::deployment`.
 
 Package, profile, container, and host scopes use the same machinery. OS boot is
 a consumer, not a separate whole-host interpreter. Alternative service managers

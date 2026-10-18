@@ -14,8 +14,8 @@ mkAosCargoPackage {
   version = "0.1.0";
   cargoDeps = aosWorkspaceVendor;
   cargoRoot = "crates";
-  cargoFlags = "-p aos-package --bin aos-deployment-check";
-  cargoTestFlags = "-p aos-package --bin aos-deployment-check";
+  cargoFlags = "-p aos-package-manager --bin aos-deployment-check";
+  cargoTestFlags = "-p aos-package-manager --bin aos-deployment-check";
   doCheck = true;
   buildDeps = [buildPackages.pkg-config buildPackages.protobuf buildPackages.cmake buildPackages.perl];
   runtimeDeps = [openssl sqlite libssh2 zlib];

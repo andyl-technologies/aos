@@ -13,8 +13,8 @@
   fixturesNix = builtins.readFile ../../pkgs/tools/crucible-fixtures.nix;
   guestNix = builtins.readFile ../../pkgs/tools/crucible-guest.nix;
   fleetStoreNix = builtins.readFile ../../pkgs/tools/crucible-fleet-store.nix;
-  cargoDepsHash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  expectedCargoDepsHash = "sha256-Rax7Te32Xr+wazk4vF63nEGuFDBKHxAJ+lCXkRo/bxw=";
+  cargoDepsHash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix {cargoDeps = pkgs.crucible-controller.passthru.cargoDeps;};
+  expectedCargoDepsHash = pkgs.crucible-controller.passthru.cargoDeps.passthru.aos.fixedOutput.hash;
   atomicPatch = import ../../pkgs/emulation/qemu-patches/_atomic-patch.nix;
   packageFiles = [
     {
@@ -198,31 +198,31 @@
     failuresFor "pkgs/emulation/crucible-qemu-plugin.nix" pluginNix [
       {
         label = "vendored cargo dependencies";
-        needle = "cargoDeps = fetchCargoVendor";
+        needle = "cargoDeps = aosWorkspaceVendor;";
       }
       {
         label = "shared cargo dependency hash";
-        needle = "hash = import ../tools/crucible/_cargo-deps-hash.nix;";
+        needle = "cargoWorkspaceMembers = import ../tools/crucible/_workspace.nix {inherit lib;};";
       }
     ]
     ++ failuresFor "pkgs/tools/crucible/crucible.nix" crucibleNix [
       {
         label = "vendored cargo dependencies";
-        needle = "cargoDeps = fetchCargoVendor";
+        needle = "cargoDeps = aosWorkspaceVendor;";
       }
       {
         label = "shared cargo dependency hash";
-        needle = "cargoDepsHash = import ./_cargo-deps-hash.nix;";
+        needle = "cargoDepsHash = import ./_cargo-deps-hash.nix {cargoDeps = aosWorkspaceVendor;};";
       }
     ]
     ++ failuresFor "pkgs/tools/crucible-guest.nix" guestNix [
       {
         label = "vendored cargo dependencies";
-        needle = "cargoDeps = fetchCargoVendor";
+        needle = "cargoDeps = aosWorkspaceVendor;";
       }
       {
         label = "shared cargo dependency hash";
-        needle = "hash = import ./crucible/_cargo-deps-hash.nix;";
+        needle = "cargoWorkspaceMembers = import ./crucible/_workspace.nix {inherit lib;};";
       }
     ]
     ++ failuresFor "pkgs/tools/crucible-fleet-store.nix" fleetStoreNix [
@@ -232,7 +232,7 @@
       }
       {
         label = "shared cargo dependency hash";
-        needle = "cargoDepsHash = import ./crucible/_cargo-deps-hash.nix;";
+        needle = "cargoWorkspaceMembers = import ./crucible/_workspace.nix {inherit lib;};";
       }
     ]
     ++ lib.optional (cargoDepsHash != expectedCargoDepsHash) "pkgs/tools/crucible/_cargo-deps-hash.nix: expected `${expectedCargoDepsHash}`, got `${cargoDepsHash}`";

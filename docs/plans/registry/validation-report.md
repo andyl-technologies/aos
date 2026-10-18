@@ -154,7 +154,7 @@ extensive `#[cfg(test)]` modules that the changes will break.
 | Step 2 loose-to-root | partial | No Rust fn body; `GIT_OBJECT_DIRECTORY` redirect-vs-move left undecided (Risk 1, deferred to WS-02); no test for the move |
 | Step 3 ensure_loose_completeness | partial | shows `git unpack-objects` shell; Rust impl (pack enumeration, error handling) not pinned |
 | Step 6 atomic ordering | partial | prose only; no orchestrator fn; no ordering-invariant test |
-| §7.2 command surface | vague | doctor verb not located in `crates/aos/src/commands`; no subcommand struct |
+| §7.2 command surface | vague | doctor verb not located in `crates/aos/cli/aos-cli/src/commands`; no subcommand struct |
 
 ### 3c. workstream-02-pack-delta-pipeline.md (0 full, 8 partial, 3 vague)
 
@@ -278,6 +278,6 @@ revision; symbols/behaviors are correct, line anchors are stale by ~12–27 line
 ### Appendix — methodology
 
 Counts derived from the 397-feature coverage set and 87 audited plan items supplied as
-input. Code references spot-verified against `crates/aos-package/src/{registry_ops.rs,
+input. Code references spot-verified against `crates/aos/packages/aos-package-manager/src/{registry_ops.rs,
 types.rs,update.rs,registry/state.rs}` at the current `docs/registry-design` branch
 HEAD; confirmations and corrections are recorded inline in §4.

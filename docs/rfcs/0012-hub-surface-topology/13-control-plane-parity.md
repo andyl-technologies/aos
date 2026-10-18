@@ -50,7 +50,7 @@ clients serialize the generated ProtoJSON request types and consume the same
 response and error contracts.
 
 Every browser and CLI unary request sends the shared
-`connect-protocol-version: 1` contract exported by `aos-proto-types`; the
+`connect-protocol-version: 1` contract exported by `aos-hub-api`; the
 native and Worker dispatchers reject a missing, repeated, or different value.
 This is one protocol constant used by all clients and servers, not parallel
 client-specific spellings.
@@ -116,13 +116,14 @@ service entries identify the audience, owning API methods, CLI command
 families, and Web workflows for one protobuf service. Native and Worker are the
 only admitted runtimes.
 
-The `aos-proto-types` build compares this manifest with the generated protobuf
-descriptor. Every API method appears exactly once. Every method owned by an
+The `aos-hub-api` `contract_inventory` integration tests compare this manifest
+with the generated protobuf descriptor. API generation itself reads only the
+canonical protobuf sources under `api/proto/`, independent of browser code. Every API method appears exactly once. Every method owned by an
 `end-user` or `public` service must also be referenced by the browser client.
 An exact method may instead have a non-empty `web_method_exceptions` reason
 when another browser call returns the same complete model or the action is an
 explicit retained authentication ceremony. Unknown, duplicate, and stale
-exceptions fail the build. The service authorization implementation remains
+exceptions fail the integration gate. The service authorization implementation remains
 the authority for each method's permission and scope; the manifest does not
 duplicate that security policy.
 
@@ -136,7 +137,7 @@ the production Worker route stack.
 ## Browser application boundary
 
 The management application is a Rust/Leptos CSR workspace member. It imports
-the wasm-clean messages and generated Connect paths from `aos-proto-types` and
+the wasm-clean messages and generated Connect paths from `aos-hub-api` and
 uses a typed transport over browser `fetch`. It does not maintain handwritten
 wire structs or method URLs.
 

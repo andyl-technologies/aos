@@ -28,10 +28,10 @@
   launchRust =
     builtins.concatStringsSep "\n"
     (map (relative: builtins.readFile (root + "/${relative}"))
-      (["crates/crucible-qemu/src/launch.rs"] ++ rustFilesUnder "crates/crucible-qemu/src/launch"));
+      (["crates/crucible/qemu/crucible-qemu-host/src/launch.rs"] ++ rustFilesUnder "crates/crucible/qemu/crucible-qemu-host/src/launch"));
   launchTest =
-    builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch.rs
-    + builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch/launch_artifacts.rs;
+    builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/tests/deterministic_launch.rs
+    + builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/tests/deterministic_launch/launch_artifacts.rs;
   timeSpec = builtins.readFile ../../docs/rfcs/0010-crucible/09-virtual-time-icount.md;
   decisionRegister = builtins.readFile ../../docs/rfcs/0010-crucible/31-decision-register.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -39,7 +39,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "crates/crucible-qemu/src/launch*.rs" launchRust [
+    failuresFor "crates/crucible/qemu/crucible-qemu-host/src/launch*.rs" launchRust [
       {
         label = "launch pins shift zero";
         needle = "const ICOUNT_SHIFT: u8 = 0;";
@@ -101,7 +101,7 @@
         needle = "DuplicateNodeId";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/tests/deterministic_launch.rs" launchTest [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/tests/deterministic_launch.rs" launchTest [
       {
         label = "per-node fixed tick scale regression test";
         needle = "launch_profile_pins_fixed_tick_scale_for_each_node";
@@ -198,7 +198,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
@@ -242,7 +245,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-fixed-icount-shift-target" \
-              -p crucible-qemu \
+              -p crucible-qemu-host \
               --test deterministic_launch \
               -- --test-threads=1
           '';

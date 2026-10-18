@@ -10,16 +10,25 @@
 
   apiDoc = builtins.readFile ../../docs/rfcs/0010-crucible/21-api.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
-  client = builtins.readFile ../../crates/crucible-api/src/client.rs;
-  lifecycle = builtins.readFile ../../crates/crucible-api/src/lifecycle.rs;
-  sessionMapping = builtins.readFile ../../crates/crucible-api/src/session_mapping.rs;
-  streaming = builtins.readFile ../../crates/crucible-api/src/streaming.rs;
+  client = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "client";
+  };
+  lifecycle = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "lifecycle_values";
+  };
+  sessionMapping = builtins.readFile ../../crates/crucible/control/crucible-control-api/src/session_mapping.rs;
+  streaming = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "streaming_values";
+  };
   controlClientTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-api/tests/gate_control_client.rs;
+    entry = ../../crates/crucible/control/crucible-control-client/tests/gate_control_client.rs;
   };
-  reproductionTest = builtins.readFile ../../crates/crucible-api/tests/gate_reproduction_context.rs;
-  streamingCursorTest = builtins.readFile ../../crates/crucible-api/tests/gate_streaming_cursor.rs;
+  reproductionTest = builtins.readFile ../../crates/crucible/control/crucible-control-server/tests/gate_reproduction_context.rs;
+  streamingCursorTest = builtins.readFile ../../crates/crucible/control/crucible-control-server/tests/gate_streaming_cursor.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   apiSources = client + lifecycle + sessionMapping + streaming;
@@ -40,7 +49,7 @@
         needle = "`T-API-14` is green through";
       }
     ]
-    ++ failuresFor "crates/crucible-api/tests/gate_control_client*.rs" controlClientTest [
+    ++ failuresFor "crates/crucible/control/crucible-control-client/tests/gate_control_client*.rs" controlClientTest [
       {
         label = "API nondeterminism gate test";
         needle = "api_nondeterminism_gate_proves_transport_observers_wall_clock_and_read_only_traffic_do_not_perturb_state";
@@ -166,7 +175,7 @@
         needle = "ControlTransportKind::Http2Rpc";
       }
     ]
-    ++ failuresFor "crates/crucible-api/tests/gate_reproduction_context.rs" reproductionTest [
+    ++ failuresFor "crates/crucible/control/crucible-control-server/tests/gate_reproduction_context.rs" reproductionTest [
       {
         label = "GetReproduction read-only proof";
         needle = "GetReproduction must not append or truncate the event-log stream";
@@ -176,7 +185,7 @@
         needle = "GetReproduction should read context";
       }
     ]
-    ++ failuresFor "crates/crucible-api/tests/gate_streaming_cursor.rs" streamingCursorTest [
+    ++ failuresFor "crates/crucible/control/crucible-control-server/tests/gate_streaming_cursor.rs" streamingCursorTest [
       {
         label = "streaming attach pure observation proof";
         needle = "attach beyond current length should skip historical replay";
@@ -186,7 +195,7 @@
         needle = "fixture.live.read().state_kind, before_state";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/session_mapping.rs" sessionMapping [
+    ++ failuresFor "crates/crucible/control/crucible-control-api/src/session_mapping.rs" sessionMapping [
       {
         label = "server observation read-only dispatch";
         needle = "Self::ServerObservation | Self::ReproductionLogRead => true";
@@ -206,7 +215,7 @@
         needle = "apiNondeterminism = import ./phase5-api-nondeterminism.nix";
       }
     ]
-    ++ forbiddenFor "crates/crucible-api/src" apiSources [
+    ++ forbiddenFor "crates/crucible/control/crucible-control-api/src" apiSources [
       {
         label = "wall-clock Instant dependency";
         needle = "Instant::now";
@@ -295,7 +304,7 @@ in
             --frozen \
             --offline \
             --target-dir "$TMPDIR/crucible-api-nondeterminism-target" \
-            -p crucible-api \
+            -p crucible-control-client \
             --test gate_control_client \
             api_nondeterminism_gate_proves_transport_observers_wall_clock_and_read_only_traffic_do_not_perturb_state \
             -- --exact --test-threads=1
@@ -303,7 +312,7 @@ in
             --frozen \
             --offline \
             --target-dir "$TMPDIR/crucible-api-nondeterminism-target" \
-            -p crucible-api \
+            -p crucible-control-server \
             --test gate_reproduction_context \
             reproduction_context_is_read_only_and_visible_on_attach_snapshot \
             -- --exact --test-threads=1
@@ -311,7 +320,7 @@ in
             --frozen \
             --offline \
             --target-dir "$TMPDIR/crucible-api-nondeterminism-target" \
-            -p crucible-api \
+            -p crucible-control-server \
             --test gate_streaming_cursor \
             streaming_cursor_replays_then_live_tails_api_events \
             -- --exact --test-threads=1

@@ -5,12 +5,12 @@
 }: let
   src = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
-  adapter = builtins.readFile ../../crates/aos-ability-crucible/src/lib.rs;
+  adapter = builtins.readFile ../../crates/aos/activation/aos-activation-crucible/src/lib.rs;
   profile = builtins.readFile ../../modules/profiles/ability-crucible.nix;
   package = builtins.readFile ../../pkgs/tools/aos-ability-crucible.nix;
   inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
   failures =
-    failuresFor "crates/aos-ability-crucible/src/lib.rs" adapter [
+    failuresFor "crates/aos/activation/aos-activation-crucible/src/lib.rs" adapter [
       {
         label = "production observer event schema";
         needle = "aos.ability-execution-boundary-event/v1";
@@ -68,7 +68,7 @@
         needle = "target-feature=+crt-static";
       }
     ]
-    ++ forbiddenFor "crates/aos-ability-crucible/src/lib.rs" adapter [
+    ++ forbiddenFor "crates/aos/activation/aos-activation-crucible/src/lib.rs" adapter [
       {
         label = "advanced campaign dependency";
         needle = "aos-campaign";
@@ -135,7 +135,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/aos-ability-crucible-target" \
-              -p aos-ability-crucible \
+              -p aos-activation-crucible \
               -- --test-threads=1
           '';
         }

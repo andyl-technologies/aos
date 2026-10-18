@@ -1,0 +1,37 @@
+//! Shared graph fixtures for search and replay tests.
+
+use super::*;
+
+pub(super) fn search_frontier_graph(
+    scenario: &crucible_engine::ScenarioDefForm,
+) -> Result<ValidationDag, Box<dyn Error>> {
+    let baked = baked_with_search_frontier_choices(scenario.world(), search_frontier_decisions())?;
+    let graph = crucible_session::validation::empty_validation_dag();
+    Ok(graph.with_baked_genesis(&scenario.scenario_def(), baked)?)
+}
+
+fn baked_with_search_frontier_choices(
+    world: &crucible_engine::World,
+    decisions: Vec<crucible_engine::Decision>,
+) -> Result<crucible_engine::GenesisCheckpoint, Box<dyn Error>> {
+    let mut baked = crucible_engine::bake(world)?;
+    let state =
+        baked.checkpoint.state.as_ref().ok_or_else(|| {
+            std::io::Error::other("search frontier genesis checkpoint missing state")
+        })?;
+    let mut scheduler = state.scheduler.clone();
+    scheduler.search_frontier = crucible_engine::SearchFrontierChoices::from_decision_sequences(
+        decisions.into_iter().map(std::iter::once),
+    );
+    baked.checkpoint.state = Some(
+        crucible_engine::MaterializedState::from_components_with_event_log_segments(
+            state.vm_snapshots.clone(),
+            state.device_overlays.clone(),
+            scheduler,
+            state.decision_rng.clone(),
+            state.event_log,
+            state.event_log_segments.clone(),
+        ),
+    );
+    Ok(baked)
+}

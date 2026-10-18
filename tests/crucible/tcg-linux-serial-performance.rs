@@ -16,22 +16,22 @@ use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crucible_protocol::app_random_branch_plan::AppRandomBranchPlan;
-use crucible_protocol::plugin_setup_plan::PluginSetupPlan;
-use crucible_protocol::selectable_catalog_plan::{
+use crucible_qemu_protocol::app_random_branch_plan::AppRandomBranchPlan;
+use crucible_qemu_protocol::plugin_setup_plan::PluginSetupPlan;
+use crucible_qemu_protocol::selectable_catalog_plan::{
     SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS, SELECTABLE_NATIVE_HANDOFF_TICKS_PS,
     SelectableCatalogPlan, SelectablePlanContinuation, SelectablePlanDeclaration,
     SelectablePlanLimits, SelectablePlanPresence,
 };
-use crucible_protocol::selectable_transport::{
+use crucible_qemu_protocol::selectable_transport::{
     SelectablePendingTransportRecord, WHITEBOX_SHMEM_KIND_SELECTABLE_PENDING,
     WHITEBOX_SHMEM_KIND_SELECTABLE_REGISTERED,
 };
-use crucible_protocol::{
+use crucible_qemu_protocol::{
     CONTROL_PROTOCOL_VERSION, ControlLifecycleStream, HostHandshakeConfig, SelectableRegister,
     SetupDescriptorFds,
 };
-use crucible_shmem::{
+use crucible_qemu_shmem::{
     ABI_VERSION, AdvanceStopCondition, NodeSlotSnapshot, RegionAllocation, RegionConfig,
     STATUS_IDLE, authorize_advance_ceiling, mmap_setup_region,
 };

@@ -38,7 +38,7 @@ in
           export AOS_BOOT_CONFIGURATION_FIXTURE=${fixture}/fixture.json
           export AOS_BOOT_HANDOFF_FIXTURE=${handoffFixture}/fixture.json
           export PATH=${pkgs.nix}/bin:$PATH
-          for executable in ${driver}/bin/aos_package-*; do
+          for executable in ${driver}/bin/aos_package_manager-*; do
             "$executable" --exact \
               boot_configuration::integration::checked_metadata_adoption_recovers_and_preserves_operator_sources \
               --ignored --nocapture

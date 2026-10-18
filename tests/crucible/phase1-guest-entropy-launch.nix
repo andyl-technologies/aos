@@ -23,10 +23,10 @@
   launchRust =
     builtins.concatStringsSep "\n"
     (map (relative: builtins.readFile (root + "/${relative}"))
-      (["crates/crucible-qemu/src/launch.rs"] ++ rustFilesUnder "crates/crucible-qemu/src/launch"));
+      (["crates/crucible/qemu/crucible-qemu-host/src/launch.rs"] ++ rustFilesUnder "crates/crucible/qemu/crucible-qemu-host/src/launch"));
   launchTest =
-    builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch.rs
-    + builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch/launch_artifacts.rs;
+    builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/tests/deterministic_launch.rs
+    + builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/tests/deterministic_launch/launch_artifacts.rs;
   kernelVirtualizationConfig = builtins.readFile ../../pkgs/kernel/config/virtualization.config;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
@@ -222,8 +222,8 @@
   ];
 
   failures =
-    failuresFor "crates/crucible-qemu/src/launch*.rs" launchRust sourceRequirements
-    ++ failuresFor "crates/crucible-qemu/tests/deterministic_launch.rs" launchTest testRequirements
+    failuresFor "crates/crucible/qemu/crucible-qemu-host/src/launch*.rs" launchRust sourceRequirements
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/tests/deterministic_launch.rs" launchTest testRequirements
     ++ failuresFor "pkgs/kernel/config/virtualization.config" kernelVirtualizationConfig [
       {
         label = "hardware RNG core";

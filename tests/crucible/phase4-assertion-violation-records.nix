@@ -8,7 +8,7 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
-  violationTest = builtins.readFile ../../crates/crucible/tests/assertion_violation_records.rs;
+  violationTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/assertion_violation_records.rs;
   assertionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -22,7 +22,7 @@
         needle = "Completed by `checks.crucible.phase4.assertionViolationRecords`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/trigger.rs" trigger [
       {
         label = "violation record type";
         needle = "pub struct HostAssertionViolation";
@@ -56,7 +56,7 @@
         needle = "evidence: Option<HostAssertionViolationEvidence>";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/assertion_violation_records.rs" violationTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/assertion_violation_records.rs" violationTest [
       {
         label = "violation record test";
         needle = "violation_records_are_derived_from_retained_log_and_reproduction_artifact";
@@ -104,7 +104,7 @@
         needle = "attrPath = \"checks.crucible.phase4.assertionViolationRecords\"";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/assertion_violation_records.rs" violationTest [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/assertion_violation_records.rs" violationTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -126,7 +126,7 @@
         needle = ".with_reproduction_artifact(";
       }
     ]
-    ++ forbiddenFor "crates/crucible/src/trigger.rs" trigger [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/src/trigger.rs" trigger [
       {
         label = "artifact override helper";
         needle = ".with_reproduction_artifact(";
@@ -149,7 +149,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
@@ -193,7 +196,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-assertion-violation-records-target" \
-              -p crucible \
+              -p crucible-engine \
               --test assertion_violation_records \
               --test offline_assertion_checker \
               -- --test-threads=1

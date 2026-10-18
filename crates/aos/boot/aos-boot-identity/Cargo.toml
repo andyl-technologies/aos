@@ -1,0 +1,13 @@
+[package]
+name = "aos-boot-identity"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Normal and recovery boot identity parsing and UKI inspection"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "aos-boot-identity"
+path = "src/main.rs"

@@ -7,8 +7,8 @@
   rust,
   stdenv,
 }: let
-  identitySource = ../../crates/aos-boot-identity;
-  recoverySource = ../../crates/aos-recovery;
+  identitySource = ../../crates/aos/boot/aos-boot-identity;
+  recoverySource = ../../crates/aos/boot/aos-recovery;
 
   # The build compiler carries the target standard library; rustc still needs
   # an explicit target and linker because these recipes do not use Cargo.

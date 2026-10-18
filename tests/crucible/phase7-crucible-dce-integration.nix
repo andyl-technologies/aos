@@ -11,23 +11,23 @@
   packagingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/26-packaging-aos-integration.md;
   phasePlanRust = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-harness/src/phase_plan.rs;
+    entry = ../../crates/crucible/testing/crucible-test-support/src/phase_plan.rs;
   };
   gateCatalogRust = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-harness/src/lib.rs;
+    entry = ../../crates/crucible/testing/crucible-test-support/src/lib.rs;
   };
   gateTargets = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-harness/src/gate_targets.rs;
+    entry = ../../crates/crucible/testing/crucible-test-support/src/gate_targets.rs;
   };
   gateCatalogTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-harness/tests/gate_catalog.rs;
+    entry = ../../crates/crucible/testing/crucible-test-support/tests/gate_catalog.rs;
   };
   gateTargetMappingTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-harness/tests/gate_target_mapping.rs;
+    entry = ../../crates/crucible/testing/crucible-test-support/tests/gate_target_mapping.rs;
   };
   defaultChecks = builtins.readFile ./default.nix;
   rootDefault = builtins.readFile ../../default.nix;
@@ -129,7 +129,7 @@
         needle = "and reproduces from its self-contained artifact), `gate:fleet-equivalence`";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/src/phase_plan.rs" phasePlanRust [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/src/phase_plan.rs" phasePlanRust [
       {
         label = "phase plan fleet equivalence target";
         needle = "\"checks.crucible.phase7.gates.fleetEquivalence\"";
@@ -143,27 +143,27 @@
         needle = "\"checks.crucible.phase7.gates.e2eDeterminism\"";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/src/lib.rs" gateCatalogRust [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/src/lib.rs" gateCatalogRust [
       {
         label = "fleet-equivalence implemented catalog spec";
-        needle = "name: \"gate:fleet-equivalence\",\n        phase: GatePhase::Phase7,\n        owner: \"crucible-harness\",\n        status: GateStatus::Implemented,";
+        needle = "name: \"gate:fleet-equivalence\",\n        phase: GatePhase::Phase7,\n        owner: \"crucible-test-support\",\n        status: GateStatus::Implemented,";
       }
       {
         label = "campaign-continuity implemented catalog spec";
-        needle = "name: \"gate:campaign-continuity\",\n        phase: GatePhase::Phase7,\n        owner: \"crucible-harness\",\n        status: GateStatus::Implemented,";
+        needle = "name: \"gate:campaign-continuity\",\n        phase: GatePhase::Phase7,\n        owner: \"crucible-test-support\",\n        status: GateStatus::Implemented,";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/src/gate_targets.rs" gateTargets [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/src/gate_targets.rs" gateTargets [
       {
         label = "fleet-equivalence Cargo gate target";
-        needle = "gate: \"gate:fleet-equivalence\",\n        package: \"crucible\",\n        test_target: \"gate_fleet_equivalence\"";
+        needle = "gate: \"gate:fleet-equivalence\",\n        package: \"crucible-engine\",\n        test_target: \"gate_fleet_equivalence\"";
       }
       {
         label = "campaign-continuity Cargo gate target";
-        needle = "gate: \"gate:campaign-continuity\",\n        package: \"crucible-cas\",\n        test_target: \"gate_campaign_continuity\"";
+        needle = "gate: \"gate:campaign-continuity\",\n        package: \"crucible-store\",\n        test_target: \"gate_campaign_continuity\"";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/tests/gate_catalog.rs" gateCatalogTest [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/tests/gate_catalog.rs" gateCatalogTest [
       {
         label = "gate catalog RFC table test";
         needle = "canonical_gate_catalog_matches_rfc_table_and_references";
@@ -177,14 +177,14 @@
         needle = "find_gate(\"gate:campaign-continuity\").map(|spec| spec.status)";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/tests/gate_target_mapping.rs" gateTargetMappingTest [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/tests/gate_target_mapping.rs" gateTargetMappingTest [
       {
         label = "fleet-equivalence target mapping test";
-        needle = "\"gate:fleet-equivalence\",\n                \"crucible\",\n                \"gate_fleet_equivalence\"";
+        needle = "\"gate:fleet-equivalence\",\n                \"crucible-engine\",\n                \"gate_fleet_equivalence\"";
       }
       {
         label = "campaign-continuity target mapping test";
-        needle = "\"gate:campaign-continuity\",\n                \"crucible-cas\",\n                \"gate_campaign_continuity\"";
+        needle = "\"gate:campaign-continuity\",\n                \"crucible-store\",\n                \"gate_campaign_continuity\"";
       }
     ]
     ++ failuresFor "tests/crucible/phase1-phase-gate-wiring.nix" phaseGateWiring [
@@ -200,11 +200,11 @@
     ++ failuresFor "tests/crucible/phase1-gate-target-mapping.nix" gateTargetMapping [
       {
         label = "gate target mapping fleet equivalence";
-        needle = "gate = \"gate:fleet-equivalence\";\n      package = \"crucible\";\n      testTarget = \"gate_fleet_equivalence\";";
+        needle = "gate = \"gate:fleet-equivalence\";\n      package = \"crucible-engine\";\n      testTarget = \"gate_fleet_equivalence\";";
       }
       {
         label = "gate target mapping campaign continuity";
-        needle = "gate = \"gate:campaign-continuity\";\n      package = \"crucible-cas\";\n      testTarget = \"gate_campaign_continuity\";";
+        needle = "gate = \"gate:campaign-continuity\";\n      package = \"crucible-store\";\n      testTarget = \"gate_campaign_continuity\";";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -388,10 +388,10 @@ in
             tasks=${builtins.concatStringsSep "," taskIds}
             canonical_gates=gate:fleet-equivalence,gate:campaign-continuity
             canonical_catalog=docs/rfcs/0010-crucible/24-determinism-harness-testing.md#1.1
-            phase_plan=crates/crucible-harness/src/phase_plan.rs
+            phase_plan=crates/crucible/testing/crucible-test-support/src/phase_plan.rs
             fleet_gate=checks.crucible.phase7.gates.fleetEquivalence
             campaign_gate=checks.crucible.phase7.gates.campaignContinuity
-            ratchet_seam=crucible-cas::SharedDagStore+InvalidationQuery::evaluate
+            ratchet_seam=crucible_store::SharedDagStore+InvalidationQuery::evaluate
             ratchet_dependency=none
             fleet_store_package=pkgs.crucible-fleet-store
             fleet_surface=checks.fleet.crucible-distributed-continuous-exploration

@@ -16,7 +16,7 @@
   # no production authority.
   caCertificate = builtins.readFile ../fixtures/release-fleet-ca.crt;
   styleHash = builtins.convertHash {
-    hash = builtins.hashFile "sha256" ../../crates/aos-hub-core/src/web/static_assets/style.css;
+    hash = builtins.hashFile "sha256" ../../crates/hub/aos-hub-service/src/web/static_assets/style.css;
     hashAlgo = "sha256";
     toHashFormat = "sri";
   };

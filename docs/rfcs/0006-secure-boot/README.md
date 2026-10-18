@@ -5,7 +5,7 @@
 - **PR:** [#102](https://github.com/andyl-technologies/aos/pull/102)
 - **Audience:** anyone working on `pkgs/boot/`, `pkgs/system/systemd.nix`,
   `pkgs/kernel/`, `modules/security/`, `modules/services/ignition.nix`,
-  `crates/aos-package/`, `lib/testing/`, or release/key operations.
+  `crates/aos/packages/aos-package-manager/`, `lib/testing/`, or release/key operations.
 
 This is a directory RFC. The README carries the status header, the trust
 model, and the phased plan; the topic files hold the detail:
@@ -143,7 +143,7 @@ the validation facts*, and neither is the role that *enforces at runtime*.
 | dm-verity | module exists, default off | `modules/security/verity.nix` |
 | disk encryption | swap only, random key, unsealed | `modules/base/filesystems.nix:272-327` |
 | registry trust | signed git tags, baked anchor | `docs/registry/signing-and-trust.md` |
-| package metadata | `PackageMeta`/`SysrootImageEntry`, no SB fields | `crates/aos-package/src/types.rs:447,1267` |
+| package metadata | `PackageMeta`/`SysrootImageEntry`, no SB fields | `crates/aos/packages/aos-package-manager/src/types.rs:447,1267` |
 
 The one real asset already in place: the UKI design itself is exactly right
 for SB — kernel, initrd, and cmdline are PE sections *inside* the UKI, so

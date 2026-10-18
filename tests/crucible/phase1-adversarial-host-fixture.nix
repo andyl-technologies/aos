@@ -7,11 +7,11 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  harnessAdversarial = builtins.readFile ../../crates/crucible-harness/src/adversarial.rs;
-  harnessFixtureTest = builtins.readFile ../../crates/crucible-harness/tests/adversarial_host_fixture.rs;
+  harnessAdversarial = builtins.readFile ../../crates/crucible/testing/crucible-test-support/src/adversarial.rs;
+  harnessFixtureTest = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/adversarial_host_fixture.rs;
   defaultChecks = builtins.readFile ./default.nix;
   determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
-  adversarialGateTest = builtins.readFile ../../crates/crucible-harness/tests/gate_adversarial_determinism.rs;
+  adversarialGateTest = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/gate_adversarial_determinism.rs;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
@@ -28,7 +28,7 @@
         needle = "adversarialHostFixture = import ./phase1-adversarial-host-fixture.nix";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/src/adversarial.rs" harnessAdversarial [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/src/adversarial.rs" harnessAdversarial [
       {
         label = "shared profile type";
         needle = "pub struct HostAdversaryProfile";
@@ -82,7 +82,7 @@
         needle = "fn splitmix64";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/tests/adversarial_host_fixture.rs" harnessFixtureTest [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/tests/adversarial_host_fixture.rs" harnessFixtureTest [
       {
         label = "matrix dimension coverage test";
         needle = "canonical_host_adversary_matrix_covers_required_dimensions";
@@ -108,7 +108,7 @@
         needle = "producer_consumer_fixture_applies_role_aware_skew";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/tests/gate_adversarial_determinism.rs" adversarialGateTest [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/tests/gate_adversarial_determinism.rs" adversarialGateTest [
       {
         label = "phase3 gate consumes shared matrix";
         needle = "canonical_host_adversary_matrix()";
@@ -122,7 +122,7 @@
         needle = "run_adversarial_determinism_gate";
       }
     ]
-    ++ forbiddenFor "crates/crucible-harness/tests/gate_adversarial_determinism.rs" adversarialGateTest [
+    ++ forbiddenFor "crates/crucible/testing/crucible-test-support/tests/gate_adversarial_determinism.rs" adversarialGateTest [
       {
         label = "ignored phase3 placeholder";
         needle = "#[ignore";
@@ -185,7 +185,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-adversarial-host-fixture-target" \
-              -p crucible-harness \
+              -p crucible-test-support \
               --test adversarial_host_fixture \
               -- --test-threads=1
           '';
@@ -201,7 +201,7 @@ in
             tasks=${builtins.concatStringsSep "," taskIds}
             fixture=canonical-host-adversary-matrix
             dimensions=seeded-scheduling,seeded-affinity,bounded-seeded-work-yield,core-counts,producer-consumer-skew
-            rust_tests=crucible-harness::adversarial_host_fixture
+            rust_tests=crucible_test_support::adversarial_host_fixture
             RESULT
           '';
         }
