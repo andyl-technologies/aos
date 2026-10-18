@@ -2001,8 +2001,11 @@
   assert replica["observation"]["state"] == "ready", replica
   assert replica["observation"]["completeness"] == "complete", replica
 
+  # Guarded uploads need a live API credential's owner pin, not the browser
+  # pseudo-subject used for console requests. Use the publisher's existing key.
+  oci_credentials = base64.b64encode(f"fleet-publisher:{publisher_secret}".encode()).decode()
   oci_token = json.loads(client.succeed(
-      f"{CURL} -fsS -H 'Authorization: Bearer {session_token}' "
+      f"{CURL} -fsS -H 'Authorization: Basic {oci_credentials}' "
       "'https://aos.fleet.test/v2/token?"
       "service=aos.fleet.test&scope=repository:aos:pull,push'",
       timeout=60,
