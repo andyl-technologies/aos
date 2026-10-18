@@ -70,6 +70,42 @@ fn identical_names_do_not_authorize_return_to_another_registry() {
     assert!(rows[0].is_vacant());
 }
 
+#[test]
+fn launch_timing_evidence_requires_the_complete_live_roster_and_fresh_epoch() {
+    use crate::ProductionVmHotForkNodeServiceState::{PermanentlyFailed, PoweredOff, Running};
+
+    let nodes = ["east", "failed", "west"].map(|name| NodeId {
+        name: name.to_owned(),
+    });
+    let registry = crate::QemuAttemptGenerationStorage::prepare(nodes.iter()).unwrap();
+    let mut rows = Row::prepare(nodes.iter(), &registry).unwrap();
+    for (row, state) in rows
+        .iter_mut()
+        .zip([Running, PermanentlyFailed, PoweredOff])
+    {
+        assert!(row.bind_boundary(state, 1));
+    }
+
+    rows[0].launch_nanoseconds = Some(10);
+    rows[0].record_world_adoption();
+    assert_eq!(Row::launch_timing_summary(&rows), None);
+    rows[2].launch_nanoseconds = Some(7);
+    assert_eq!(Row::launch_timing_summary(&rows), None);
+
+    rows[2].record_world_adoption();
+    assert_eq!(Row::launch_timing_summary(&rows), Some((17, 10)));
+    rows[1].launch_nanoseconds = Some(u64::MAX);
+    assert_eq!(Row::launch_timing_summary(&rows), Some((17, 10)));
+
+    rows[0].launch_nanoseconds = Some(u64::MAX);
+    assert_eq!(Row::launch_timing_summary(&rows), None);
+
+    assert!(rows[0].reset_returned());
+    assert!(rows[0].bind_boundary(Running, 2));
+    rows[0].record_world_adoption();
+    assert_eq!(Row::launch_timing_summary(&rows), None);
+}
+
 struct PanicFile {
     _file: std::fs::File,
     closed: Arc<AtomicUsize>,

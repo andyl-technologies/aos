@@ -356,6 +356,12 @@ where
     F: QemuAttemptResourceGuardFactory + Send + 'static,
     F::Guard: QemuAttemptProcessResourceGuard + Send + 'static,
 {
+    /// Borrows timing evidence from the same Main-owned selected rows.
+    #[cfg(test)]
+    pub(crate) fn node_launch_timing_summary(&self) -> Option<(u64, u64)> {
+        TargetNodeConstruction::launch_timing_summary(self.nodes.as_deref()?)
+    }
+
     /// Moves the existing selected payloads only after Main owns this body.
     ///
     /// Each lock protects metadata only. A refused later move leaves earlier

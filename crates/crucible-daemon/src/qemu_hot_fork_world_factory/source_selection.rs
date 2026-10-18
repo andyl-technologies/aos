@@ -48,8 +48,6 @@ where
                 QemuProductionHotForkWorldLifecycleFactoryError::RetainedInstallation,
             ));
         }
-        #[cfg(test)]
-        self.node_launch_nanoseconds.clear();
 
         if matches!(
             input.start(),

@@ -703,6 +703,16 @@ impl AttemptExecutionModel for ResumeModel<'_> {
                 };
                 let ready = operational_monotonic_nanoseconds().saturating_sub(child_started);
                 result.ready_samples.push(ready);
+                let launch_timings = if matches!(self.case, NativeEquivalenceCase::Performance) {
+                    Some(
+                        child
+                            .node_launch_timing_summary()
+                            .expect("same live Target construction")
+                            .expect("complete adopted native launch timings"),
+                    )
+                } else {
+                    None
+                };
                 let child_processes = cgroup_processes(child_config.host.cgroup_root());
                 assert_eq!(child_processes.len(), source.world().vm_nodes().len());
                 let before = process_memory_evidence(&child_processes);
@@ -770,13 +780,8 @@ impl AttemptExecutionModel for ResumeModel<'_> {
                             .private_dirty_kib
                             .saturating_sub(before.private_dirty_kib);
                         assert!((2048..=4096 + 64 * 1024).contains(&dirty));
-                        let node_times = child_factory.node_launch_nanoseconds();
-                        let sum = node_times.iter().map(|(_, elapsed)| elapsed).sum::<u64>();
-                        let maximum = node_times
-                            .iter()
-                            .map(|(_, elapsed)| *elapsed)
-                            .max()
-                            .expect("node timings");
+                        let (sum, maximum) =
+                            launch_timings.expect("original native launch timings");
                         assert!(sum > maximum);
                         assert!(ready <= maximum.saturating_add(250_000_000));
                         let corpus_index = self.sample_index;

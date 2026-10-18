@@ -178,6 +178,19 @@ where
         }
     }
 
+    /// Copies total and maximum fork durations from the live original Main body.
+    ///
+    /// # Errors
+    /// Refuses unavailable, borrowed or retiring original construction storage.
+    #[cfg(test)]
+    pub(crate) fn node_launch_timing_summary(
+        &self,
+    ) -> Result<Option<(u64, u64)>, crate::lifecycle_cleanup::ServiceMainPreclaimError> {
+        self.prepared
+            .typed::<PendingTargetConstruction<F>>()
+            .with_prepared(|pending| pending.node_launch_timing_summary())
+    }
+
     fn owner(&self) -> Result<&dyn QemuFreshAttemptLifecycleOwner, SchedulerError> {
         self.body
             .as_ref()

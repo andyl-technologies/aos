@@ -12,8 +12,6 @@ use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-#[cfg(test)]
-use std::time::Instant;
 
 // crucible-lint: allow host-nondeterminism-state -- The factory authenticates and forwards an unchanged captured scheduler continuation; operational source availability cannot mutate it.
 use crate::vm_lifecycle::ProductionVmHotForkNodeBoundary;
@@ -661,8 +659,6 @@ where
     shutdown_policy: QemuShutdownPolicy,
     async_policy: QemuAsyncDriverPolicy,
     #[cfg(test)]
-    node_launch_nanoseconds: Vec<(String, u64)>,
-    #[cfg(test)]
     native_qualification_ram_mode: Option<crucible_linux_resource::ram_policy::HostRamMode>,
 }
 
@@ -694,8 +690,6 @@ where
             shutdown_policy,
             async_policy,
             #[cfg(test)]
-            node_launch_nanoseconds: Vec::new(),
-            #[cfg(test)]
             native_qualification_ram_mode: None,
         }
     }
@@ -725,7 +719,6 @@ where
             run_state_root: self.run_state_root,
             shutdown_policy: self.shutdown_policy,
             async_policy: self.async_policy,
-            node_launch_nanoseconds: self.node_launch_nanoseconds,
             native_qualification_ram_mode: self.native_qualification_ram_mode,
         }
     }
@@ -751,12 +744,6 @@ where
     ) -> Self {
         self.terminal_checkpoints = Some(checkpoints);
         self
-    }
-
-    /// Returns per-node production launch latency from the most recent attempt.
-    #[cfg(test)]
-    pub(crate) fn node_launch_nanoseconds(&self) -> &[(String, u64)] {
-        &self.node_launch_nanoseconds
     }
 
     /// Loans the existing provider to native fixtures after child reconciliation.
@@ -867,38 +854,24 @@ where
     assembly: crate::qemu_hot_fork_world::QemuHotForkWorldAssemblyToken,
 }
 
-// Native acceptance records this operational duration only in cfg(test); it
-// never selects or mutates modeled execution.
-// crucible-lint: allow clippy-disallowed-method -- test-only monotonic timing cannot influence modeled state.
-#[cfg_attr(test, allow(clippy::disallowed_methods))]
 fn launch_concurrent_node<G>(
     source: QemuNodeSetPreparedHotForkSource<'_>,
     launch: ConcurrentNodeLaunch<G>,
-) -> (
-    Result<ProductionChild<G>, LinuxQemuHotForkSourceWorldAttemptLaunchError>,
-    u64,
-)
+) -> Result<ProductionChild<G>, LinuxQemuHotForkSourceWorldAttemptLaunchError>
 where
     G: QemuAttemptProcessResourceGuard
         + QemuHotForkChildProcessOwner<Authority = LinuxQemuHotForkChildProcessAuthority>
         + Send
         + 'static,
 {
-    #[cfg(test)]
-    let started = Instant::now();
-    let result = QemuHotForkAttemptReconciliation::launch_from_prepared_source(
+    QemuHotForkAttemptReconciliation::launch_from_prepared_source(
         launch.source_world,
         launch.node,
         source,
         launch.target,
         launch.run_directory,
         launch.assembly,
-    );
-    #[cfg(test)]
-    let elapsed = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
-    #[cfg(not(test))]
-    let elapsed = 0;
-    (result, elapsed)
+    )
 }
 
 struct ProvenNoChildLaunchRecovery<'a> {
@@ -1253,12 +1226,7 @@ where
         };
 
         let mut launch_failures = Vec::new();
-        for (node, (child, elapsed)) in launched {
-            #[cfg(not(test))]
-            let _ = elapsed;
-            #[cfg(test)]
-            self.node_launch_nanoseconds
-                .push((node.name.clone(), elapsed));
+        for (node, child) in launched {
             let mut child = match child {
                 Ok(child) => child,
                 Err(error) => {

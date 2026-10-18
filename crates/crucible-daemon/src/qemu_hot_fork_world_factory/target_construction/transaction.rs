@@ -164,7 +164,12 @@ where
                     rows,
                     geometry,
                     |row| &row.node,
-                    |source, row| row.launch(source),
+                    |source, row| {
+                        #[cfg(test)]
+                        row.launch_measured(source);
+                        #[cfg(not(test))]
+                        row.launch(source);
+                    },
                     TargetNodeConstruction::record_worker_panic,
                 )
             }

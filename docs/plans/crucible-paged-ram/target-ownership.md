@@ -76,9 +76,17 @@ Full-suite qualification still fails under descriptor pressure: the test process
 inherits a 1,024-descriptor limit, and accumulated retained fixture resources
 cause open-file refusals in later tests. Isolated whole-world atomicity, member
 resource cleanup and the full 512 MiB unique-page RAM/GC vector pass. Those
-isolated results do not waive the full-suite failures. Deployed genuine-Main
-flights, simultaneous native families, promoted-parent admission and performance
-parity also remain outstanding.
+isolated results do not waive the full-suite failures. A complete serial daemon
+run at the ownership checkpoint also passes within the original limits; the
+combined parallel run still exhausts descriptors. Deployed genuine-Main flights,
+simultaneous native families, promoted-parent admission and performance parity
+also remain outstanding.
+
+Two retirement cases also need stronger ownership coverage. A dropped Target
+terminal must preserve pending Source metadata handback in canonical custody.
+Cleanup error folding must retain a later independent Main report as well as
+the guard leaves covered by the existing two-body component controls. A passing
+component suite does not establish either native ownership guarantee.
 
 ## Factory and runtime integration
 
@@ -133,6 +141,12 @@ If moving admission or checkout relative to the ready-time timer, include that
 work in the corresponding measured cost; moving it outside the timer is not a
 performance improvement. Requested worker stack bytes are only part of the host
 peak: private thread/TLS/guard/control allocations still need their actual payer.
+
+Native fork/reconstruction samples stay in the original selected launch rows.
+The live runtime projects total and maximum duration only after every live row
+has both a sample and a completed adoption. Missing, overflowed or stale samples
+cannot establish performance evidence. The overall ready timer still includes
+admission, staging and checkout; no post-launch sample vector is allocated.
 
 Run component controls, complete default/private test-target compilation and
 local runtime suites, then the installed genuine-Main native flights. A Cargo

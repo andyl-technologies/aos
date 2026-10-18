@@ -32,6 +32,8 @@ pub(crate) struct TargetNodeConstruction<G: crate::QemuAttemptResourceGuard> {
     world_adopted: bool,
     attempted: bool,
     proven_no_child: bool,
+    #[cfg(test)]
+    launch_nanoseconds: Option<u64>,
 }
 
 // This is only the durable origin metadata. The actual event log is borrowed
@@ -112,6 +114,8 @@ impl<G: crate::QemuAttemptResourceGuard> TargetNodeConstruction<G> {
                 world_adopted: false,
                 attempted: false,
                 proven_no_child: false,
+                #[cfg(test)]
+                launch_nanoseconds: None,
             });
         }
         if rows.len() != count || remaining_names != 0 {
@@ -208,6 +212,27 @@ impl<G: crate::QemuAttemptResourceGuard> TargetNodeConstruction<G> {
         )
     }
 
+    /// Returns total and maximum fork duration for a fully adopted live roster.
+    ///
+    /// Missing samples and arithmetic overflow remain unavailable evidence.
+    /// The overall ready timer separately includes admission and staging work.
+    #[cfg(test)]
+    pub(crate) fn launch_timing_summary(rows: &[Self]) -> Option<(u64, u64)> {
+        let mut count = 0;
+        let mut total = 0_u64;
+        let mut maximum = 0;
+        for row in rows.iter().filter(|row| row.is_live_boundary()) {
+            if !row.was_world_adopted() {
+                return None;
+            }
+            let elapsed = row.launch_nanoseconds?;
+            total = total.checked_add(elapsed)?;
+            maximum = maximum.max(elapsed);
+            count += 1;
+        }
+        (count > 0).then_some((total, maximum))
+    }
+
     /// Records only the completed transfer to an actual scheduler adoption.
     pub(crate) fn record_world_adoption(&mut self) {
         self.world_adopted = true;
@@ -271,6 +296,10 @@ impl<G: crate::QemuAttemptResourceGuard> TargetNodeConstruction<G> {
         self.world_adopted = false;
         self.attempted = false;
         self.proven_no_child = false;
+        #[cfg(test)]
+        {
+            self.launch_nanoseconds = None;
+        }
         true
     }
 
@@ -399,6 +428,22 @@ where
     G: crate::QemuAttemptProcessResourceGuard
         + QemuHotForkChildProcessOwner<Authority = LinuxQemuHotForkChildProcessAuthority>,
 {
+    /// Measures the actual worker without allocating a parallel sample buffer.
+    #[cfg(test)]
+    // crucible-lint: allow clippy-disallowed-method -- qualification-only host timing cannot enter modeled state.
+    #[allow(clippy::disallowed_methods)]
+    pub(crate) fn launch_measured(&mut self, source: QemuNodeSetPreparedHotForkSource<'_>) {
+        if self.attempted {
+            return;
+        }
+        let started = std::time::Instant::now();
+        self.launch(source);
+        if self.attempted {
+            self.launch_nanoseconds =
+                Some(u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX));
+        }
+    }
+
     /// Runs the existing fork/seal/rearm order with all owners already in-row.
     ///
     /// No target or private directory moves to a fallible stack-only carrier.
