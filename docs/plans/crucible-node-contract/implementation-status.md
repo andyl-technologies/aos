@@ -1665,7 +1665,7 @@ aborting default-stack controls, exact preflight/build parity, one-byte-short
 credit refusal, retained partials and selected response variants. The six-crate
 all-feature/all-target workspace check also passes in 2 minutes 12 seconds.
 
-At `eac4c1f76c`, the matching optimized provider rebuild passes in 1 minute
+At `eac4c1f76c`, the matching provider rebuild passes in 1 minute
 17 seconds. The full Core library suite passes 1,753 tests with 32 existing
 ignored tests; all eight contract tests and all four installed-provider roster
 controls pass. The mandatory production application-target gate also passes,
@@ -1793,3 +1793,24 @@ controls pass; the original starvation control also verifies that administrative
 commitment does not deliver semantic input before causal polling. Production
 refusal defaults are unchanged. The nine packaged-input failures still require
 a correctly configured full Daemon rerun.
+
+
+### Production application compilation for the construction checkpoint
+
+At `f89845137e`, the refreshed production application-target gate passes. It
+freshly compiles 167 test artifacts across 48 application packages, including
+69 integration targets. Debug assertions and overflow checks remain enabled.
+The final test-target derivation takes 12 minutes 29 seconds after its production
+prerequisites. This gate compiles tests without executing them.
+
+All 7,612 captured source files match this checkpoint byte-for-byte. Its selected
+application dependency source contains 330 changed crate roles since `9a96e120d6`.
+The fifteen changed Daemon roles are outside this application gate; the separate
+six-crate all-target check and four shared-owner controls cover them. Neither
+this source snapshot nor these results cover later native Capture/observer
+integration changes, which require separate qualification.
+
+Provider build statements refer to the ordinary development profile unless an
+optimized measurement explicitly identifies a different executable and profile.
+Component timings retain their original pinned inputs; a later provider rebuild
+is not a new performance measurement.
