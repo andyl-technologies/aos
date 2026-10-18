@@ -34,7 +34,7 @@ pub use owner::{
     CompletedRecovery, IndexRepairPolicy, NativeCacheOwnerConfig, NativeCachePreparation,
     NativeChunkAdmissionError, NativeIndexRepairReport, NativeInlinePublication,
     NativeManifestPublication, NativeMetadataAdmissionError, NativeMetadataOwner,
-    NativeResumeError, RetainedManifest,
+    NativeResidentChunkRead, NativeResumeError, RetainedManifest,
 };
 pub use quota::ProjectQuota;
 pub use reassembly::NativeReassemblyPlan;

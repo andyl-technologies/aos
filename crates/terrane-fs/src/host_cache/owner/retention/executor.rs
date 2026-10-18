@@ -230,6 +230,13 @@ impl NativeOwnerExecutor {
         Ok(())
     }
 
+    /// Borrows only this physical worker's original publication resources.
+    pub(in crate::host_cache::owner) fn publication_jobs(
+        &self,
+    ) -> &[Arc<Mutex<super::super::publication::PublicationJob>>] {
+        &self.publications
+    }
+
     /// Borrows this executor exclusively for one durably funded publication.
     ///
     /// # Errors

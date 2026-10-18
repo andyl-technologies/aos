@@ -50,10 +50,10 @@ pub(crate) use recovery_manifest::{
 /// Retains a native queue for durable metadata pins and missing-index repair.
 ///
 /// This owner admits verified encoded chunks and metadata pairs only after
-/// actual recovery and acknowledged publisher Resume. Funded inline publication
-/// and coordinated standalone transfer use the same physical queue. Manifest
-/// publication, eviction and consumer serving readiness remain separate
-/// unsupported commands.
+/// actual recovery and acknowledged publisher Resume. Funded inline and manifest
+/// publication, coordinated standalone transfer and bounded retained-range reads
+/// use the same physical queue. Eviction and consumer serving readiness remain
+/// separate unsupported commands.
 /// Cold records remain untrusted candidates until recovery reconciles
 /// them. Dropping an awaiting request does not cancel physical execution.
 pub struct NativeMetadataOwner {
@@ -66,6 +66,11 @@ pub struct NativeMetadataOwner {
 
 /// Transfers complete command ownership to the retained physical executor.
 pub(super) enum Command {
+    /// Reads one bounded chunk from a genuinely completed retained publication.
+    ReadResidentChunk {
+        identity: Identity,
+        response: oneshot::Sender<io::Result<super::NativeResidentChunkRead>>,
+    },
     /// Transfers a manifest identity to actual retained native reassembly.
     PublishManifest {
         identity: Identity,
@@ -249,6 +254,11 @@ impl NativeMetadataOwner {
                 }
                 while let Ok(command) = receive.recv() {
                     match command {
+                        Command::ReadResidentChunk { identity, response } => {
+                            let result =
+                                super::publication::read_resident_chunk(&executor, identity);
+                            let _ = response.send(result);
+                        }
                         Command::PublishManifest { identity, response } => {
                             let result = runtime.block_on(super::publication::run_manifest(
                                 &mut executor,

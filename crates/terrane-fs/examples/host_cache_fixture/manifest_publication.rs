@@ -166,6 +166,15 @@ pub(super) fn run(
             "manifest publication acknowledged before actual Resume",
         ));
     }
+    let first_identity = TERRANE_V1
+        .calculate(IdentityKind::Chunk, &data.first)
+        .map_err(io::Error::other)?;
+    if runtime
+        .block_on(owner.read_resident_chunk(first_identity))
+        .is_ok()
+    {
+        return Err(invalid("resident read acknowledged before actual Resume"));
+    }
     if !matches!(fs::read(inputs.root.join("state/cache/records.toml")), Err(error) if error.kind() == io::ErrorKind::NotFound)
     {
         return Err(invalid(
@@ -298,12 +307,67 @@ pub(super) fn run(
         if let Some(receipt) = &receipt {
             check_receipt(receipt, &data, pack.len() + index.len())?;
         }
+        // The physical registry and durable pins, not the publication waiter or
+        // receipt, must retain the backing for subsequent sealed-range reads.
+        drop(receipt);
+        check_resident_reads(owner, runtime, inputs, &data)?;
         let message = if data.dictionary.is_some() {
-            "PASS actual dictionary-backed manifest publication retained its original dictionary inode, pins and holds while retiring repeated sources; no Ready"
+            "PASS actual dictionary-backed manifest publication retained its original dictionary inode, pins and holds while retiring repeated sources; checked retained range reads; no Ready"
         } else {
-            "PASS actual manifest publication retained metadata, repeated-chunk ranges and pending original sources across later work; no Ready"
+            "PASS actual manifest publication retained metadata, repeated-chunk ranges and pending original sources across later work; checked retained range reads; no Ready"
         };
         emit(message)?;
+    }
+    Ok(())
+}
+
+fn check_resident_reads(
+    owner: &NativeMetadataOwner,
+    runtime: &tokio::runtime::Runtime,
+    inputs: &Inputs,
+    data: &Data,
+) -> io::Result<()> {
+    let snapshot = inputs.root.join("state/cache/records.toml");
+    let before = fs::read(&snapshot)?;
+    let missing = TERRANE_V1
+        .calculate(IdentityKind::Chunk, b"unseen resident source")
+        .map_err(io::Error::other)?;
+    let error = runtime
+        .block_on(owner.read_resident_chunk(missing))
+        .err()
+        .ok_or_else(|| invalid("absent resident source unexpectedly read"))?;
+    if error.kind() != io::ErrorKind::NotFound
+        || runtime
+            .block_on(owner.read_resident_chunk(data.identity.clone()))
+            .is_ok()
+    {
+        return Err(invalid(
+            "resident read accepted an absent chunk or manifest identity",
+        ));
+    }
+    for (bytes, offset, final_chunk) in [
+        (data.first.as_slice(), 0, false),
+        (data.tail.as_slice(), 2 * data.first.len(), true),
+    ] {
+        let identity = TERRANE_V1
+            .calculate(IdentityKind::Chunk, bytes)
+            .map_err(io::Error::other)?;
+        let read = runtime.block_on(owner.read_resident_chunk(identity.clone()))?;
+        if read.identity() != &identity
+            || read.plaintext() != bytes
+            || read.span().offset != offset as u64
+            || read.span().length != bytes.len()
+            || read.span().final_chunk != final_chunk
+        {
+            return Err(invalid(
+                "actual retained resident read differs from the first verified range",
+            ));
+        }
+    }
+    if fs::read(snapshot)? != before {
+        return Err(invalid(
+            "read-only resident lookup changed durable pins or holds",
+        ));
     }
     Ok(())
 }

@@ -7,10 +7,13 @@
 
 mod io;
 mod manifest;
+mod residence;
 mod state;
 
 pub use manifest::NativeManifestPublication;
 pub(super) use manifest::run as run_manifest;
+pub use residence::NativeResidentChunkRead;
+pub(super) use residence::read as read_resident_chunk;
 
 use super::{
     admission::{AdmissionJob, NativeChunkAdmissionError, TransferSource},
@@ -51,6 +54,7 @@ pub(super) struct PublicationJob {
     hold: u64,
     generation: u64,
     pub(super) started: bool,
+    complete: bool,
     writer: Option<File>,
     reader: Option<File>,
     reply: Option<ReceivedPacket>,
@@ -448,6 +452,7 @@ fn prepare(
         hold: 0,
         generation: 0,
         started: false,
+        complete: false,
         writer: None,
         reader: None,
         reply: None,
@@ -595,6 +600,7 @@ async fn execute(
         .observation()
         .charged_reserved_bytes;
     owner.faulted = false;
+    physical.complete = true;
     physical.plaintext.clear();
     physical.plaintext.shrink_to_fit();
     Ok(PublicationCompletion {

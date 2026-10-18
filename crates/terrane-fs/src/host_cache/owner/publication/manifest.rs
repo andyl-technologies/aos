@@ -326,6 +326,7 @@ pub(in crate::host_cache::owner) async fn run(
         hold: 0,
         generation: 0,
         started: false,
+        complete: false,
         writer: None,
         reader: None,
         reply: None,
