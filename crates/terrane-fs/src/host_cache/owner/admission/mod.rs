@@ -282,7 +282,7 @@ pub(in crate::host_cache::owner) async fn metadata(
         index: Arc::new(index),
     })?;
     let mut failure = FailureGuard::new(&custody, &job)?;
-    let outcome = match metadata::run(&custody, &job).await {
+    let outcome = match metadata::run(executor, &custody, &job).await {
         Ok(outcome) => outcome,
         Err(error) => {
             executor.reclaim_rejected_admission(&job)?;

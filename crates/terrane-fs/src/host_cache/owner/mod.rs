@@ -21,6 +21,7 @@ mod recovery_state;
 mod recovery_state_parent;
 mod resume_error;
 mod retention;
+mod snapshot;
 
 pub(super) use index_io::open_regular_at;
 
@@ -34,7 +35,7 @@ pub use recovery::CompletedRecovery;
 pub use resume_error::NativeResumeError;
 pub(crate) use retention::{
     AcceptedRecoveryManifestEffect, PublisherResumeTurn, PublisherRunningTurn,
-    RecoveryManifestBackingRetention, RecoveryManifestBodyFailure, RecoveryManifestBodyRetention,
-    RecoveryManifestEffect, RecoveryManifestEffectFailure, RecoveryRetainedManifest,
+    RecoveryManifestBodyFailure, RecoveryManifestBodyRetention, RecoveryManifestEffect,
+    RecoveryManifestEffectFailure, RecoveryRetainedManifest,
 };
 pub use retention::{NativeIndexRepairReport, NativeMetadataOwner, RetainedManifest};

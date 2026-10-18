@@ -242,7 +242,7 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
     };
     // No embedded guard is held while acquiring the actual client RPC mutex.
     let context = session.recovery_context().map_err(io::Error::other)?;
-    let (id, generation) = {
+    let (id, generation, bootstrap_write) = {
         let mut owner = custody
             .lock()
             .map_err(|_| io::Error::other("recovery custody poisoned"))?;
@@ -255,9 +255,10 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
         owner.begin_mutation()?;
         owner.state = bootstrap.snapshot;
         owner.faulted = true;
-        owner.persist().await?;
-        (bootstrap.id, owner.generation)
+        let write = super::snapshot::prepare(executor, &mut owner)?;
+        (bootstrap.id, owner.generation, write)
     };
+    super::snapshot::persist(executor, bootstrap_write).await?;
     let initial_inventory = inspector.inspect()?;
     recovery_candidates::preflight(&initial_inventory)?;
     let mut has_manifest = false;
@@ -325,7 +326,7 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
     session
         .check_recovery_context(&context)
         .map_err(io::Error::other)?;
-    let (allocation, charged_reserved_bytes, future_hold_bytes) = {
+    let final_write = {
         let mut owner = custody
             .lock()
             .map_err(|_| io::Error::other("recovery custody poisoned"))?;
@@ -335,7 +336,14 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
         recovery_state::check_bootstrap(&owner.preparation.config, &owner.state, &id)?;
         let claims = recovery_inline::claims(&inventory, owner.preparation.layout())?;
         owner.state.residences = recovery_inline::residences(&claims);
-        owner.persist().await?;
+        super::snapshot::prepare(executor, &mut owner)?
+    };
+    super::snapshot::persist(executor, final_write).await?;
+    let (allocation, charged_reserved_bytes, future_hold_bytes) = {
+        let mut owner = custody
+            .lock()
+            .map_err(|_| io::Error::other("recovery custody poisoned"))?;
+        owner.check_current()?;
         let allocation = recovery_accounting::observe(
             &owner,
             &shared,

@@ -24,14 +24,28 @@ use terrane_core::{
 /// # Errors
 /// Refuses arithmetic overflow in any concurrently retained storage category.
 pub(super) fn check(config: &NativeCacheOwnerConfig) -> io::Result<()> {
-    check_parts(
+    let total = check_parts(
         config.state.records,
         config.queued_commands,
         config.reads.max_allocation_bytes,
         config.location.chunk_profile().maximum(),
         config.state.bytes,
-    )
-    .map(|_| ())
+    )?;
+    // The owned write ticket, readback path and native metadata operations each
+    // retain a path derived from the actual configured root, not a guessed max.
+    let path = config
+        .location
+        .root()
+        .as_os_str()
+        .len()
+        .checked_add(32)
+        .ok_or_else(overflow)?;
+    total
+        .checked_add(path.checked_mul(4).ok_or_else(overflow)?)
+        .and_then(|sum| sum.checked_add(size_of::<super::super::snapshot::PreparedSnapshotWrite>()))
+        .and_then(|sum| sum.checked_add(6 * size_of::<std::fs::File>()))
+        .ok_or_else(overflow)?;
+    Ok(())
 }
 
 fn check_parts(
@@ -93,14 +107,19 @@ fn check_parts(
     .try_fold(0usize, |sum, n| sum.checked_add(n).ok_or_else(overflow))?;
     add(window.checked_mul(2).ok_or_else(overflow)?, schema_element)?;
 
-    // Current/next state and serialization/preflight buffers coexist during
-    // persistence. Strings are charged separately from their record headers.
-    add(6, state)?;
+    // Up to six typed state/string sets coexist: current state, caller's next
+    // or pinned intent, retained expected state, owned write ticket, parsed
+    // readback and newly synchronized provenance. Six additional byte windows
+    // cover preflight/serialization, Tokio's writer copy, bounded encoded
+    // readback and parser/closing scratch. This is checked storage arithmetic,
+    // not an allocator/RSS guarantee; no extra clone is assumed free.
+    add(12, state)?;
     let state_record = size_of::<PinRecord>()
         + size_of::<ReservationRecord>()
         + size_of::<LeaseRecord>()
         + size_of::<ResidenceRecord>();
-    add(records.checked_mul(4).ok_or_else(overflow)?, state_record)?;
+    // Six live typed sets plus collection capacity overlap.
+    add(records.checked_mul(8).ok_or_else(overflow)?, state_record)?;
     // Incoming hashes, dedup trees, next-state pins and retained job closure.
     // A tree node's links are accounted separately from its String and bytes.
     let hash_slot = size_of::<String>() + 64 + size_of::<usize>() * 6;

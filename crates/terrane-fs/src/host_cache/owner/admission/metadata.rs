@@ -22,60 +22,78 @@ use terrane::{
 /// # Errors
 /// Refuses unavailable, changed or invalid native inputs and failed completion.
 pub(super) async fn run(
+    executor: &super::super::retention::NativeOwnerExecutor,
     custody: &Arc<Mutex<Custody>>,
     resource: &Arc<Mutex<AdmissionJob>>,
 ) -> io::Result<(u64, u64)> {
-    let mut job = backing::lock(resource)?;
-    let (expected_id, pack, index) = match &job.input {
-        Input::Metadata {
+    let (expected_id, pack, index, reservation) = {
+        let mut job = backing::lock(resource)?;
+        let (expected_id, pack, index) = match &job.input {
+            Input::Metadata {
+                expected_id,
+                pack,
+                index,
+            } => (*expected_id, Arc::clone(pack), Arc::clone(index)),
+            _ => return Err(io::Error::other("metadata admission received chunk input")),
+        };
+        let mut owner = custody
+            .lock()
+            .map_err(|_| io::Error::other("admission custody poisoned"))?;
+        owner.check_current()?;
+        let config = &owner.preparation.config;
+        super::AdmissionBounds::new(config)?.check(pack.len(), index.len())?;
+        super::AdmissionBounds::new(config)?.check(pack.capacity(), index.capacity())?;
+        let hashes = verify(
+            &pack,
+            &index,
             expected_id,
-            pack,
-            index,
-        } => (*expected_id, Arc::clone(pack), Arc::clone(index)),
-        _ => return Err(io::Error::other("metadata admission received chunk input")),
+            config.location.chunk_profile(),
+            config.reads,
+            config.inventory_entries.min(config.state.records),
+        )?;
+        let payload = pack
+            .len()
+            .checked_add(index.len())
+            .ok_or_else(|| io::Error::other("metadata payload overlap overflow"))?;
+        let prepared = state::begin(executor, &mut owner, &mut job, payload, &hashes)?;
+        (expected_id, pack, index, prepared)
     };
+    super::super::snapshot::persist(executor, reservation).await?;
+    let completion = {
+        let mut job = backing::lock(resource)?;
+        let mut owner = custody
+            .lock()
+            .map_err(|_| io::Error::other("admission custody poisoned"))?;
+        owner.check_current()?;
+        state::check_registration(&owner, &job)?;
+        let shard = format!("{:02x}", expected_id.as_bytes()[0]);
+        let parent = native::parent(
+            &owner,
+            "objects",
+            &["pack", &shard],
+            &mut job.directory_progress,
+        )?;
+        let index_name = format!("{expected_id}.idx");
+        let pack_name = format!("{expected_id}.pack");
+        native::refuse_existing(&parent, &index_name)?;
+        native::refuse_existing(&parent, &pack_name)?;
+        let index_member = native::pending(parent.try_clone()?, index_name)?;
+        let pack_member = native::pending(parent, pack_name)?;
+        job.files.push(index_member);
+        job.files.push(pack_member);
+        native::write(&owner, &mut job.files[0], &index)?;
+        native::write(&owner, &mut job.files[1], &pack)?;
+        // Readers discover packs, so publish its verified index first. No receipt is
+        // issued until both no-replace names and their parent are actually durable.
+        native::publish(&owner, &mut job.files[0], &index)?;
+        native::publish(&owner, &mut job.files[1], &pack)?;
+        super::super::snapshot::prepare(executor, &mut owner)?
+    };
+    super::super::snapshot::persist(executor, completion).await?;
+    let mut job = backing::lock(resource)?;
     let mut owner = custody
         .lock()
         .map_err(|_| io::Error::other("admission custody poisoned"))?;
-    owner.check_current()?;
-    let config = &owner.preparation.config;
-    super::AdmissionBounds::new(config)?.check(pack.len(), index.len())?;
-    super::AdmissionBounds::new(config)?.check(pack.capacity(), index.capacity())?;
-    let hashes = verify(
-        &pack,
-        &index,
-        expected_id,
-        config.location.chunk_profile(),
-        config.reads,
-        config.inventory_entries.min(config.state.records),
-    )?;
-    let payload = pack
-        .len()
-        .checked_add(index.len())
-        .ok_or_else(|| io::Error::other("metadata payload overlap overflow"))?;
-    state::begin(&mut owner, &mut job, payload, &hashes).await?;
-    let shard = format!("{:02x}", expected_id.as_bytes()[0]);
-    let parent = native::parent(
-        &owner,
-        "objects",
-        &["pack", &shard],
-        &mut job.directory_progress,
-    )?;
-    let index_name = format!("{expected_id}.idx");
-    let pack_name = format!("{expected_id}.pack");
-    native::refuse_existing(&parent, &index_name)?;
-    native::refuse_existing(&parent, &pack_name)?;
-    let index_member = native::pending(parent.try_clone()?, index_name)?;
-    let pack_member = native::pending(parent, pack_name)?;
-    job.files.push(index_member);
-    job.files.push(pack_member);
-    native::write(&owner, &mut job.files[0], &index)?;
-    native::write(&owner, &mut job.files[1], &pack)?;
-    // Readers discover packs, so publish its verified index first. No receipt is
-    // issued until both no-replace names and their parent are actually durable.
-    native::publish(&owner, &mut job.files[0], &index)?;
-    native::publish(&owner, &mut job.files[1], &pack)?;
-    owner.persist().await?;
     reconcile::finish(&mut owner, &mut job)
 }
 

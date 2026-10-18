@@ -182,7 +182,7 @@ pub(super) async fn run(
         .map_err(io::Error::other)?;
 
     let custody = Arc::clone(executor.custody());
-    let (expected, generation, allocation, charged_reserved_bytes, future_hold_bytes) = {
+    let (expected, final_write) = {
         let mut owner = custody
             .lock()
             .map_err(|_| io::Error::other("recovery custody poisoned"))?;
@@ -202,7 +202,15 @@ pub(super) async fn run(
         )?;
         owner.begin_mutation()?;
         owner.state = expected.clone();
-        owner.persist().await?;
+        let write = super::snapshot::prepare(executor, &mut owner)?;
+        (expected, write)
+    };
+    super::snapshot::persist(executor, final_write).await?;
+    let (generation, allocation, charged_reserved_bytes, future_hold_bytes) = {
+        let mut owner = custody
+            .lock()
+            .map_err(|_| io::Error::other("recovery custody poisoned"))?;
+        owner.check_current()?;
         let allocation = recovery_accounting::observe(
             &owner,
             &shared,
@@ -230,7 +238,6 @@ pub(super) async fn run(
                     .ok_or_else(|| invalid("manifest future holds overflow"))
             })?;
         (
-            expected,
             owner.generation,
             allocation,
             owner

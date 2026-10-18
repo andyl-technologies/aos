@@ -124,6 +124,13 @@ impl NativeOwnerExecutor {
 }
 
 impl<'executor> LiveManifestRecoveryContext<'executor> {
+    /// Borrows the actual executor already held exclusively by this live phase.
+    ///
+    /// This grants no allocation, Running-phase or claim authority.
+    pub(super) fn snapshot_executor(&self) -> &NativeOwnerExecutor {
+        self.executor
+    }
+
     /// Reserves real physical result and failure capacity before recovery effects.
     ///
     /// # Errors

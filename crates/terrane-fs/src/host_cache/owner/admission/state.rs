@@ -4,16 +4,17 @@ use super::{super::retention::Custody, backing::AdmissionJob};
 use std::{collections::BTreeSet, fs::File, io, io::Read};
 use terrane::host::cache::{LeaseRecord, PinRecord, ReservationRecord};
 
-/// Synchronizes the complete future hold and pin closure before file effects.
+/// Prepares the complete future hold and pin closure for mandatory synchronization.
 ///
 /// # Errors
 /// Refuses unavailable, changed or invalid native inputs and failed completion.
-pub(super) async fn begin(
+pub(super) fn begin(
+    executor: &super::super::retention::NativeOwnerExecutor,
     owner: &mut Custody,
     job: &mut AdmissionJob,
     payload: usize,
     hashes: &[String],
-) -> io::Result<()> {
+) -> io::Result<super::super::snapshot::PreparedSnapshotWrite> {
     owner.preparation.recheck()?;
     // This funds simultaneous payload and old/new state snapshot overlap. It
     // predicts neither allocation rounding nor directory/allocator metadata.
@@ -67,7 +68,7 @@ pub(super) async fn begin(
         .store(true, std::sync::atomic::Ordering::Release);
     owner.faulted = true;
     owner.state = next;
-    owner.persist().await
+    super::super::snapshot::prepare(executor, owner)
 }
 
 /// Checks fresh full-owner charge separately from every logical future hold.
