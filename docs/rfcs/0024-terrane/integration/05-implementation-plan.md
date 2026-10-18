@@ -9406,9 +9406,16 @@ Resumed qualification:
   preservation control pass, alongside six recovered held-policy reads, three
   intervening Running admissions, eight refusals without Resume, both recovered
   assemblies and the dropped inline pin waiter. This qualifies the tested cold
-  reconciliation component. The expanded complete filesystem run and required
-  application compilation on this latest source remain pending; no full task
-  acceptance or consumer lease lifecycle completion follows.
+  reconciliation component. The complete filesystem run now passes all 119
+  nonignored cases on actual ext4, with the same six privileged cases excluded
+  from this runner. Independent review verifies the archive, all 3,478 source
+  inputs and exact test identities. Its initial wrapper fails only because its
+  expected summary still names 118; that failure is retained, and the corrected
+  wrapper passes without changing repository source or case assertions.
+  Required application target compilation passes in 2,484.335 seconds;
+  immutable Cargo records verify 128 test artifacts across 29 packages, with no
+  execution claim. Consumer lease implementation is in progress on a separate
+  worktree; no full task acceptance or lifecycle qualification follows.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
   and all seven strict Clippy/documentation profiles pass. The interface,
   commit-path, status and schema gates pass on unchanged final source, including
