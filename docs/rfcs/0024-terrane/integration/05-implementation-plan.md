@@ -8694,9 +8694,10 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
 
 ### T2 — Host tier
 
-Status: paused at user request (2026-10-16). T1's 22 tasks and 89 current gates are
-complete; its identity, encoding, bucket-key and Store-trait freeze applies.
-Ten separate implementation worktrees cover the five T2 tasks, including
+Status: in progress, resumed without sub-agents (2026-10-17). T1's 22 tasks and
+89 current gates are complete; its identity, encoding, bucket-key and Store-trait
+freeze applies. Preserved implementation worktrees cover the five T2 tasks,
+including
 dedicated publisher-transport, host-quota, native confinement and recovery
 inspection components.
 Shared module declarations,
@@ -8928,6 +8929,26 @@ final surface qualification after integrating shared prerequisite `38a1ee21f6`,
 then the existing consumer and snapshot/native-admission queues. The zero-wipe
 conflict above and actual four-role deployment remain unresolved. T3 and all
 branch worklines remain unstarted.
+
+Resumed qualification:
+
+- Existing enrollment consumer `1ed19b7cce`: the all-target `aos-terrane`
+  build, strict all-target Clippy with dependency linting excluded, and local
+  Nextest run pass on unchanged source. Eighteen tests execute; five privileged
+  VM cases remain ignored. Corrections group fresh inode observations by named
+  fields, preserve epoch and ancestor validation, and scope panic assertions to
+  tests and fixtures. An inherited non-AOS linker environment was cleared before
+  the successful build. This does not qualify native existing enrollment or
+  dependency Clippy.
+- Snapshot transition `2adeb253d9`: full review of all thirteen changed files
+  finds no guard crossing a snapshot await. The actual physical executor,
+  generation and write identity remain checked through sync and bounded readback;
+  abandonment invalidates completion provenance. Compilation and runtime
+  qualification are next; no native result is inferred from source review.
+- Surface candidate `6cb1fcf235`: shared prerequisite `38a1ee21f6` is integrated
+  through a normal merge, preserving the previous frozen candidate and receipts.
+  The full current-trunk gate aggregate is running. Remaining surface checks,
+  application compilation, strict lint and formatting precede task acceptance.
 
 The shared glue dependency now names
 the existing Core types directly, and the crate-graph audit includes the current
