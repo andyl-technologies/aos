@@ -1702,3 +1702,6 @@ mod current_native_connection17;
 
 /// Lends schema-neutral JSON field DATA without constructing historical owners.
 pub mod borrowed_json;
+
+/// Quotes additional owned JSON Value reparsing without parsing or authority.
+pub mod raw_value_reparse;
