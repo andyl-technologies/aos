@@ -2004,8 +2004,12 @@ currentness checks while the Providers wait. This is diagnostic evidence, not a
 successful startup, preservation result or performance comparison. Temporary
 phase diagnostics are excluded from commits and qualification.
 
-The refreshed production application-target build is pinned to `6b477d60ad`.
-All 7,730 captured files match that commit. Its source includes 126 of this
-checkpoint's 129 changed crate roles; three Daemon roles are outside that
-application dependency closure. The build is still running; these source pins
-do not establish a build result or cover subsequent changes.
+The refreshed production application-target gate passes for `6b477d60ad`, with
+remote builders disabled. All 7,730 captured files match that commit. Its source
+includes 126 of this checkpoint's 129 changed crate roles; three Daemon roles
+are outside that application dependency closure. The installed compiler record
+contains 167 newly compiled optimized test artifacts across 48 application
+packages, including 69 integration targets. Debug assertions and overflow
+checks remain enabled. Final test-target compilation takes 10 minutes
+29 seconds after prerequisites. This gate compiles tests without running them
+and does not qualify subsequent changes or native preservation.
