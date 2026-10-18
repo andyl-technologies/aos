@@ -586,20 +586,53 @@ const CONTRACTS: &[Contract] = &[
                 1,
             ),
             (r#"if source.fork_target_is_owned()"#, 1),
-            (r#"world.source = Some(source);"#, 1),
+            (r#"world.source = Some(source);"#, 2),
+            (
+                r#"match QemuHotForkSourceWorldLease::exclusive(manager_source_key(key), source, identity) {
+                    Ok(lease) => Ok(Some(lease)),
+                    Err(source) => {
+                        if let Some(world) = self.worlds.get_mut(&manager_source_key(key)) {
+                            world.source = Some(source);
+                            world.invalidated = true;
+                        } else { drop(source); }
+                        Err(ManagedQemuHotForkSourceWorldCheckoutError::SourcePoisoned)
+                    }
+                }"#,
+                1,
+            ),
+            (
+                r#"if source.fork_target_is_owned() {
+                    if let Some((template, _, _)) = self.checked_out.get(&provider)
+                        && let Some(world) = self.worlds.get_mut(template)
+                    { world.source = Some(source); } else { drop(source); }
+                    return;
+                }"#,
+                1,
+            ),
             (
                 r#"let matching_receipt = Some(record.lease) == lease.managed_lease && record.template == lease.template && record.identity == lease.identity;"#,
                 1,
             ),
             (
-                r#"let matching_source = record.source.upgrade().is_some_and(|source| Arc::ptr_eq(&source, &lease.source));"#,
+                r#"let matching_source = record.source.upgrade().is_some_and(|source| {
+                    lease.source_owner_ref().is_some_and(|actual| Arc::ptr_eq(&source, actual))
+                });"#,
                 1,
             ),
             (r#"if !matching_receipt || !matching_source"#, 1),
+            (
+                r#"let Some(source_owner) = lease.source_owner() else {
+                    if let Some(record) = self.leased_out.get_mut(&provider)
+                        && record.returned_lease.is_none()
+                    { record.returned_lease = Some(lease); }
+                    return;
+                };"#,
+                1,
+            ),
             (r#"let mut source = match source_owner.try_lock()"#, 1),
             (
                 r#"if let Some(record) = self.leased_out.get_mut(&provider) && record.returned_lease.is_none() { record.returned_lease = Some(lease); }"#,
-                2,
+                3,
             ),
             (r#"if abandoned || source.fork_target_is_owned()"#, 1),
             (
@@ -627,7 +660,7 @@ const CONTRACTS: &[Contract] = &[
                     1,
                 ),
                 (
-                    r#"assert_eq!(returned.managed_lease, Some(sequence)); assert!(Arc::ptr_eq(&returned.source, &source_owner));"#,
+                    r#"assert_eq!(returned.managed_lease, Some(sequence)); assert!(Arc::ptr_eq(returned.source_owner_ref().unwrap(), &source_owner));"#,
                     1,
                 ),
                 (

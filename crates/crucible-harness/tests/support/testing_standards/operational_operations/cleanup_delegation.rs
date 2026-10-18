@@ -153,7 +153,15 @@ const FORWARDING_COMPANIONS: &[Companion] = &[
             ("target: QemuHotForkWorldNodeTarget<G>,", 2),
             ("pub(crate) fn into_world_node_adoption(", 1),
             (
-                "let lease = LinuxQemuHotForkWorldNodeLease { identity: identity.clone(), reconciliation: Some(self), completed, diagnostics_reported: false, live_diagnostics_enabled: diagnostics::live_diagnostics_enabled(), };",
+                "slot: &mut Option<Self>, identity: ProductionVmNodeGeneration, completed: LinuxQemuHotForkWorldReconciliationSet<G>,",
+                1,
+            ),
+            ("let Some(child) = slot.as_mut() else", 1),
+            ("backend.target.identity() != &identity", 1),
+            ("let process = match backend.installed_node.as_ref()", 1),
+            ("let Some(mut child) = slot.take() else", 1),
+            (
+                "let lease = LinuxQemuHotForkWorldNodeLease { identity: identity.clone(), reconciliation: Some(child), completed, diagnostics_reported: false, live_diagnostics_enabled: diagnostics::live_diagnostics_enabled(), };",
                 1,
             ),
         ],
