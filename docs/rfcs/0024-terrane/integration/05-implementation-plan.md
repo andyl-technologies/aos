@@ -9144,6 +9144,28 @@ Resumed qualification:
   source-bound archive inventory and verifies all 3,468 archive inputs and its
   digest. The six original privileged VM cases remain separately inventoried.
   Required application target compilation for this combined source is running.
+- Running manifest-publication candidate `f5981a7a53`: the physical command
+  owner now retains canonical metadata, original admitted chunk/dictionary
+  handles, bounded ordered reads and actual per-source retirement replies in
+  the shared publication registry. Genuine metadata pins and synchronized
+  allocation funding precede anonymous output and publisher submission. The
+  actual Running turn supplies the metadata descriptor and retention identifier;
+  verified sealed backing remains registered before retirement, exact residence
+  snapshots and fresh quota reconciliation. Repeated chunks select their first
+  verified range. Each encoded read allocates only its checked length and uses
+  a stack probe for growth; operator-window failures preserve resource errors.
+  No frozen format, identity, bucket key, store trait or dependency changes.
+  Source review covers all 21 changed files. Committed-source all-target and
+  native-only builds, eleven focused tests and the formatter pair pass. A
+  diagnostic reaching all targets with dead-code checks disabled also passes;
+  strict Clippy still fails nineteen existing integration or retention findings.
+  Immutable image/guest qualification is running. Three new controls cover
+  repeated-chunk publication, a dropped waiter and wrong whole-file hashes;
+  they have not yet executed. The image builder and verifier bind the new supervisor helper to
+  immutable source. Its finite guest disk is 512 MiB, accommodating all 32 declared
+  8 MiB project ceilings without changing any individual quota. Existing sealed
+  range sources, dictionary-specific runtime evidence, completed retirement,
+  consumer leases and NativeReady remain required; no complete task is accepted.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
   and all seven strict Clippy/documentation profiles pass. The interface,
   commit-path, status and schema gates pass on unchanged final source, including
