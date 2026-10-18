@@ -18,6 +18,7 @@ use crucible_ram::MetadataReservation;
 mod failure;
 pub(crate) use failure::RetainedOperationalFailure;
 mod admission;
+mod inactive_rollback;
 mod checkpoint_owner;
 mod checkpoint_read;
 mod ordinary_capture;
@@ -1074,31 +1075,32 @@ impl PreparedRestoreMapping for PreparedArenas {
                 "destructive arena authority must remain until containment",
             ));
         }
-        let cache = self.cache.take().ok_or("arena identity receipt absent")?;
-        if let Err(cache) = cache.abort_before_mapping_commit() {
-            self.cache = Some(cache);
-            return Err(RamError::Invariant(
-                "arena identity rollback authority uncertain",
-            ));
-        }
         if self.token != 0 {
             return Err(RamError::Invariant(
                 "physical cleanup authority remains retained",
             ));
         }
-        self.service.stop_before_activation()?;
-        let mut owner = self
-            .owner
-            .lock()
-            .map_err(|_| "paging authority owner is poisoned")?;
-        if !owner
-            .as_ref()
-            .is_some_and(|active| Arc::ptr_eq(active, &self.service))
-        {
-            return Err(RamError::Invariant(
-                "arena rollback does not own the active source",
-            ));
-        }
+        let service = &self.service;
+        let owner = &self.owner;
+        // Identity abort only observes native publication facts and uses
+        // try-locks; it cannot call back into the installed-service owner.
+        let mut owner = inactive_rollback::abort_inactive_candidate(
+            &mut self.cache,
+            || {
+                service.stop_before_activation()?;
+                let owner = owner
+                    .try_lock()
+                    .map_err(|_| RamError::Invariant("paging authority owner unavailable"))?;
+                if !owner.as_ref().is_some_and(|active| Arc::ptr_eq(active, service)) {
+                    return Err(RamError::Invariant(
+                        "arena rollback does not own the active source",
+                    ));
+                }
+                Ok(owner)
+            },
+            PreparedRestoreSource::abort_before_mapping_commit,
+        )?;
+        // Both remaining publications are infallible under the same guard.
         *owner = None;
         self.completed = true;
         Ok(())

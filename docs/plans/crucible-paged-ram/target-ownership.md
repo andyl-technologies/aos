@@ -147,6 +147,15 @@ slot. These changes do not qualify a strict native thread-exit deadline:
 can precede complete thread termination, and the actual join still follows it.
 Native join and whole-owner return qualification remain required.
 
+Inactive restore abort retains its candidate identity through the retained-token
+check, actual worker shutdown and nonblocking installed-owner validation. Only
+then may candidate abort consume that receipt, while the same owner guard stays
+held through the final infallible service clear and completion publication.
+Cleanup or candidate-abort refusal preserves the candidate; absent custody is
+never a successful prior abort. Binder failure still retains the same receipt
+in its failed phase and authorizes no local retry. Local custody controls use
+real mutex exclusion but issue no native return evidence.
+
 The existing worker-slot mutex covers startup readiness and its post, actual
 join, and Cleanup completion or failure publication. The actor itself never
 locks that slot; competing constructors use nonblocking admission. Rearm also
