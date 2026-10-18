@@ -1,7 +1,8 @@
 //! Bounds an ordinary Observe proof prefix before its owning reply exists.
 //!
 //! The closed native producer supplies full original/terminal field counters
-//! and one to three content extents. This uses the real ordinary Blob grammar;
+//! and the selected finite content roster. The distinct Capture upload class
+//! carries only its response and no evidence. This uses ordinary Blob grammar;
 //! it constructs no future Envelope, reference, Capture owner or payload. The
 //! actual owning counter must fit every component before the builder runs.
 
@@ -12,6 +13,7 @@ use continuation::{ContentExtent, ProjectedBody, copy_storage};
 mod startup;
 pub(crate) use startup::{
     original_packet_prefix_startup_counter_scratch_data,
+    quote_original_capture17_upload_prefix_startup_storage_data,
     quote_original_packet_baseline_prefix_startup_storage_data,
     quote_original_packet_prefix_startup_storage_data,
     quote_original_restored_input17_prefix_startup_storage_data,
@@ -25,6 +27,7 @@ enum PrefixClass {
     Observe,
     RestoredInput17,
     RestoredObserve17,
+    CaptureUpload17(Method),
 }
 
 impl PrefixClass {
@@ -32,7 +35,12 @@ impl PrefixClass {
         match self {
             Self::Observe | Self::RestoredObserve17 => Method::Observe,
             Self::RestoredInput17 => Method::Input,
+            Self::CaptureUpload17(method) => method,
         }
+    }
+
+    const fn is_capture17_upload_data(self) -> bool {
+        matches!(self, Self::CaptureUpload17(_))
     }
 }
 
@@ -145,6 +153,35 @@ impl<const OBJECTS: usize> OriginalPacketPrefixProjectionStorageData<OBJECTS> {
         if self.class != PrefixClass::RestoredObserve17 {
             return Err(refused());
         }
+        self.native_transport_storage_data()
+    }
+
+    /// Prices the separately selected zero-evidence Capture upload response.
+    ///
+    /// The actual Blob/result owner is independently retained by its producer.
+    /// This row covers new transport/record/guard owners and never grants an
+    /// upload, consuming schema, scheduling effect or current-model proof.
+    ///
+    /// # Errors
+    /// Refuses another class, missing backing census or a short finite ceiling.
+    pub(crate) fn capture17_upload_transport_storage_data(
+        &self,
+    ) -> Result<
+        crate::reference_packet::service::native_startup::PacketNativeStartupAllocationRow,
+        ProviderError,
+    > {
+        if !self.class.is_capture17_upload_data() {
+            return Err(refused());
+        }
+        self.native_transport_storage_data()
+    }
+
+    fn native_transport_storage_data(
+        &self,
+    ) -> Result<
+        crate::reference_packet::service::native_startup::PacketNativeStartupAllocationRow,
+        ProviderError,
+    > {
         let retained = sum(&[
             self.exchange
                 .native_retained_backing_bytes
@@ -201,6 +238,11 @@ impl<const OBJECTS: usize> OriginalPacketPrefixProjectionStorageData<OBJECTS> {
                 connection, request, body, evidence,
             )?;
         }
+        if self.class.is_capture17_upload_data() {
+            super::capture17_upload::authenticate_actual_inputs_data(
+                connection, request, body, evidence,
+            )?;
+        }
         // Source backing is independent of plan backing. Large spare payload,
         // reference, body or evidence-vector capacity must refuse here rather
         // than only at the later actual plan reconciliation.
@@ -254,6 +296,14 @@ impl<const OBJECTS: usize> OriginalPacketPrefixProjectionStorageData<OBJECTS> {
             )?,
             PrefixClass::RestoredObserve17 => connection
                 .quote_original_restored_observation17_prefix_storage_data(
+                    first,
+                    request,
+                    body,
+                    evidence,
+                    self.maximum_requested_bytes,
+                )?,
+            PrefixClass::CaptureUpload17(_) => connection
+                .quote_original_capture17_upload_prefix_storage_data(
                     first,
                     request,
                     body,
@@ -354,6 +404,32 @@ impl<S: ProviderStream> Connection<S> {
         )
     }
 
+    /// Quotes one closed native Capture upload response before its body exists.
+    ///
+    /// No evidence object or ACK receive is part of this three-method class.
+    /// Full Source/once/debit and real Blob result authority remain with the
+    /// defining native upload scope; this method binds transport DATA only.
+    ///
+    /// # Errors
+    /// Refuses another selected header, evidence extent, current cut or ceiling.
+    pub(crate) fn quote_original_capture17_upload_prefix_projection_storage_data(
+        &self,
+        first: u64,
+        original: &Envelope,
+        input: OriginalPacketPrefixProjectionInput<'_>,
+    ) -> Result<OriginalPacketPrefixProjectionStorageData<0>, ProviderError> {
+        super::capture17_upload::authenticate_original_data(self, original)?;
+        if !input.objects.is_empty() {
+            return Err(refused());
+        }
+        self.quote_original_packet_prefix_projection_storage_inner_data::<0>(
+            first,
+            original,
+            input,
+            PrefixClass::CaptureUpload17(original.method),
+        )
+    }
+
     fn quote_original_packet_prefix_projection_storage_inner_data<const OBJECTS: usize>(
         &self,
         first: u64,
@@ -369,7 +445,7 @@ impl<S: ProviderStream> Connection<S> {
                 Some(Native5CodecOwner::NativePacket(_))
             )
             || original_observe.method != class.method_data()
-            || input.objects.is_empty()
+            || (input.objects.is_empty() && !class.is_capture17_upload_data())
             || input.objects.len() > OBJECTS
         {
             return Err(refused());
@@ -414,10 +490,12 @@ impl<S: ProviderStream> Connection<S> {
             frames,
             requests,
         )?;
-        let actual_original = if class == PrefixClass::RestoredObserve17 {
-            // This quote precedes its native action debit. U64's ordinary
-            // serializer creates a decimal String, so this closed new family
-            // projects the actual retained fields without invoking Serialize.
+        let actual_original = if class == PrefixClass::RestoredObserve17
+            || class.is_capture17_upload_data()
+        {
+            // This quote precedes its native action debit. The closed
+            // projection visits the actual retained fields without invoking
+            // an ordinary Serialize pass or allocating an intermediate DOM.
             use crate::reference_packet::service::restored_input_reactive17::observation_geometry::Observation17OriginalData;
             let mut projection = crate::retained_metadata::serialization_storage::OriginalSerializationStorageProjection::new(input.maximum_requested_bytes)?;
             Observation17OriginalData::Actual(original_observe).project(&mut projection)?;
@@ -472,7 +550,11 @@ impl<S: ProviderStream> Connection<S> {
                     .max(std::mem::size_of_val(&self.guard.incoming_requests())),
             )?,
             successful_ack_cache_requested_bytes: 0,
-            one_open_ack_requested_bytes: acknowledgements::open_ack_storage(maximum_frame)?,
+            one_open_ack_requested_bytes: if requests == 0 {
+                0
+            } else {
+                acknowledgements::open_ack_storage(maximum_frame)?
+            },
             containment_requested_bytes: add(
                 current_containment(self)?,
                 mul(add(mul(2, requests)?, 8)?, size_of::<Envelope>())?,
@@ -503,7 +585,13 @@ impl<S: ProviderStream> Connection<S> {
                 super::restored_observation17::validation_transient_storage_data(),
             )?;
         }
-        if class == PrefixClass::RestoredObserve17 {
+        if class.is_capture17_upload_data() {
+            data.declared_quote_scratch_bytes = add(
+                data.declared_quote_scratch_bytes,
+                super::capture17_upload::counter_scratch_data(),
+            )?;
+        }
+        if class == PrefixClass::RestoredObserve17 || class.is_capture17_upload_data() {
             // Current containment is already a backing-only metadata census;
             // unlike the startup bound it contains no formatter allowance.
             data.native_retained_backing_bytes = Some(sum(&[
@@ -621,8 +709,9 @@ impl<S: ProviderStream> Connection<S> {
         let result = OriginalPacketPrefixProjectionStorageData {
             exchange: data,
             source_owner_requested_bytes: source_owner,
-            native_source_backing_bytes: (class == PrefixClass::RestoredObserve17)
-                .then_some(native_source_backing),
+            native_source_backing_bytes: (class == PrefixClass::RestoredObserve17
+                || class.is_capture17_upload_data())
+            .then_some(native_source_backing),
             declared_counter_scratch_bytes: sum(&[
                 size_of::<&Self>(),
                 size_of::<OriginalPacketPrefixProjectionStorageData<OBJECTS>>(),
@@ -630,7 +719,7 @@ impl<S: ProviderStream> Connection<S> {
                 size_of::<MetadataObserver<'static>>(),
                 size_of::<RetainedProtocolMetadataFacts>(),
                 mul(3, size_of::<OriginalSerializationStorageData>())?,
-                if class == PrefixClass::RestoredObserve17 {
+                if class == PrefixClass::RestoredObserve17 || class.is_capture17_upload_data() {
                     crate::reference_packet::service::restored_input_reactive17::observation_geometry::prospective_counter_scratch_data()
                 } else {
                     0

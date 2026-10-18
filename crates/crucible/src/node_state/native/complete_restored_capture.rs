@@ -21,10 +21,12 @@ mod validation;
 #[path = "complete_restored_capture/terminal.rs"]
 mod terminal;
 pub(crate) use terminal::{
-    RestoredArchive17ParentIdentity, RestoredArchive17ParentStep, RestoredArchive17ParentWork,
-    RestoredArchive17SourceIndex, RestoredArchive17ValidationAdmission,
-    RestoredArchive17ValidationConstructionData, RestoredArchive17ValidationPrewalkData,
-    RestoredArchive17ValidationStage, RestoredArchive17ValidationStep,
+    RestoredArchive17Initial15QualificationRole, RestoredArchive17Initial15Role,
+    RestoredArchive17Initial15Work, RestoredArchive17ParentIdentity, RestoredArchive17ParentStep,
+    RestoredArchive17ParentWork, RestoredArchive17SourceIndex,
+    RestoredArchive17ValidationAdmission, RestoredArchive17ValidationConstructionData,
+    RestoredArchive17ValidationPrewalkData, RestoredArchive17ValidationStage,
+    RestoredArchive17ValidationStep,
 };
 
 #[path = "complete_restored_capture/coordinator_ancestry17.rs"]

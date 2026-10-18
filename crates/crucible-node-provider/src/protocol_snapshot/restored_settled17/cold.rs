@@ -37,6 +37,32 @@ impl<'a> RestoredSettledNative17Plan<'a> {
         input: &RestoredSettledNative17Input<'a>,
         limits: &RestoredSettledNative17Limits,
     ) -> Result<Self, ProviderError> {
+        Self::validate_with_optional_admission_data(input, limits, None)
+    }
+
+    /// Checks exact cold role framing under an independently observed fixed workspace.
+    ///
+    /// # Errors
+    /// Refuses the same framing failures as [`Self::validate_data`] or admission refusal.
+    pub fn validate_with_admission_data(
+        input: &RestoredSettledNative17Input<'a>,
+        limits: &RestoredSettledNative17Limits,
+        admission: &dyn NativeCold17Admission,
+    ) -> Result<Self, ProviderError> {
+        Self::validate_with_optional_admission_data(input, limits, Some(admission))
+    }
+
+    fn validate_with_optional_admission_data(
+        input: &RestoredSettledNative17Input<'a>,
+        limits: &RestoredSettledNative17Limits,
+        admission: Option<&dyn NativeCold17Admission>,
+    ) -> Result<Self, ProviderError> {
+        let boundary = admission.map(super::cold_admission::NativeCold17Boundary::new);
+        if let Some(boundary) = &boundary {
+            let scratch = super::restored_settled_native17_counter_scratch_data();
+            boundary.begin_data(NativeCold17Work::Framing, 0, scratch)?;
+            boundary.construct_data(NativeCold17Work::Framing, 0, 0, scratch)?;
+        }
         input.authenticate_role_bytes_data(limits)?;
 
         let snapshot = PacketNativeRestoredSettled17SnapshotPlan::validate(
@@ -79,13 +105,17 @@ impl<'a> RestoredSettledNative17Plan<'a> {
         if before != snapshot.before().reference_bytes() {
             return Err(invalid());
         }
-        Ok(Self {
+        let result = Self {
             roles: input.roles_data(),
             snapshot,
             journal,
             maximum_requested: limits.maximum_requested_bytes,
             limits: *limits,
-        })
+        };
+        if let Some(boundary) = &boundary {
+            boundary.finish_data(NativeCold17Work::Framing, 0)?;
+        }
+        Ok(result)
     }
 
     /// Joins final journal literals to the genuinely completed SDK pair owner.
@@ -207,8 +237,56 @@ impl<'a> RestoredSettledNative17Plan<'a> {
         sdk: &ValidatedHistoricalRestoredSettledCapture17,
         controller: &crate::protocol_snapshot::current_controller17::ValidatedControllerSettledHistory17,
     ) -> Result<(), ProviderError> {
+        self.validate_retained_with_optional_admission_into(attempt, sealed, sdk, controller, None)
+    }
+
+    /// Validates cold native constructors under independent per-constructor admission.
+    ///
+    /// Completed graph/SDK/lineage semantics remain mandatory. Callback success
+    /// cannot seal a malformed owner or replace the original historical guards.
+    ///
+    /// # Errors
+    /// Refuses any ordinary native validation failure, stale admission or short
+    /// independently supplied constructor credit, retaining initialized partials.
+    pub fn validate_retained_with_admission_into(
+        &self,
+        attempt: &mut Option<RestoredSettledNative17DecodeAttempt>,
+        sealed: &mut Option<SealedHistoricalRestoredSettledNative17>,
+        sdk: &ValidatedHistoricalRestoredSettledCapture17,
+        controller: &crate::protocol_snapshot::current_controller17::ValidatedControllerSettledHistory17,
+        admission: &dyn NativeCold17Admission,
+    ) -> Result<(), ProviderError> {
+        self.validate_retained_with_optional_admission_into(
+            attempt,
+            sealed,
+            sdk,
+            controller,
+            Some(admission),
+        )
+    }
+
+    fn validate_retained_with_optional_admission_into(
+        &self,
+        attempt: &mut Option<RestoredSettledNative17DecodeAttempt>,
+        sealed: &mut Option<SealedHistoricalRestoredSettledNative17>,
+        sdk: &ValidatedHistoricalRestoredSettledCapture17,
+        controller: &crate::protocol_snapshot::current_controller17::ValidatedControllerSettledHistory17,
+        admission: Option<&dyn NativeCold17Admission>,
+    ) -> Result<(), ProviderError> {
         if attempt.is_some() || sealed.is_some() {
             return Err(invalid());
+        }
+        let boundary = admission.map(super::cold_admission::NativeCold17Boundary::new);
+        if let Some(boundary) = &boundary {
+            let scratch = super::restored_settled_native17_counter_scratch_data();
+            boundary.begin_data(NativeCold17Work::RawInputs, 20, scratch)?;
+            let raw = self.raw_input_construction_bytes_data()?;
+            let temporary = super::output_pair::construction::sdk_correspondence_data(
+                sdk,
+                controller,
+                self.maximum_requested,
+            )?;
+            boundary.construct_data(NativeCold17Work::RawInputs, raw, temporary, scratch)?;
         }
         self.authenticate_completed_sdk_data(sdk)?;
         let (original, terminal, _) = sdk.capture_pair_data();
@@ -219,13 +297,24 @@ impl<'a> RestoredSettledNative17Plan<'a> {
         self.retain_decode_attempt_into(attempt)?;
         let partial = attempt.as_mut().ok_or_else(invalid)?;
         partial.stage = super::sealed::DecodeStage::Failed;
-        super::reader::read_graph_pair_into_data(
+        if let Some(boundary) = &boundary {
+            boundary.finish_data(
+                NativeCold17Work::RawInputs,
+                partial.retained_requested_storage_data(self.maximum_requested)?,
+            )?;
+        }
+        super::reader::read_graph_pair_with_admission_into_data(
             partial,
             self.maximum_requested,
             self.maximum_requested,
             self.limits.maximum_nodes_data(),
+            boundary.as_ref(),
         )?;
-        self.authenticate_native_outputs_data(partial, sdk)?;
+        if let Some(boundary) = &boundary {
+            self.authenticate_outputs_with_admission_data(partial, sdk, boundary)?;
+        } else {
+            self.authenticate_native_outputs_data(partial, sdk)?;
+        }
 
         partial.retained_requested_storage_data(self.maximum_requested)?;
 
@@ -235,7 +324,104 @@ impl<'a> RestoredSettledNative17Plan<'a> {
         Ok(())
     }
 
+    fn raw_input_construction_bytes_data(&self) -> Result<usize, ProviderError> {
+        let mut bytes = self.snapshot.before().original_capacity();
+        for (reference, raw) in self.roles {
+            for extent in [
+                raw.len(),
+                reference.hash.algorithm.len(),
+                reference.hash.domain.len(),
+                reference.hash.digest.len(),
+                reference.media_type.len(),
+            ] {
+                bytes = bytes.checked_add(extent).ok_or_else(invalid)?;
+            }
+        }
+        if bytes > self.maximum_requested {
+            return Err(invalid());
+        }
+        Ok(bytes)
+    }
+
+    fn authenticate_outputs_with_admission_data(
+        &self,
+        decoded: &RestoredSettledNative17DecodeAttempt,
+        sdk: &ValidatedHistoricalRestoredSettledCapture17,
+        boundary: &super::cold_admission::NativeCold17Boundary<'_>,
+    ) -> Result<(), ProviderError> {
+        let scratch = super::restored_settled_native17_counter_scratch_data();
+        boundary.begin_data(NativeCold17Work::OutputPairQuote, 0, scratch)?;
+        let (before, after) = super::reader::completed_graph_pair_data(decoded)?;
+        let (capture_original, capture_terminal, _) = sdk.capture_pair_data();
+        let (confirmation_original, _, _) = sdk.confirmation_pair_data();
+        let sdk = super::output_pair::OutputPairSdk17Data {
+            capture_original,
+            capture_terminal,
+            confirmation_original,
+            request: sdk.request_data(),
+            confirmation_request: sdk.confirmation_request_data(),
+            receipt: sdk.receipt_data(),
+        };
+        let formatter = super::output_pair::construction::formatter_data(before, &sdk)?;
+        boundary.construct_data(NativeCold17Work::OutputPairQuote, 0, formatter, scratch)?;
+        let temporary =
+            super::output_pair::construction::quote_data(before, &sdk, self.maximum_requested)?;
+        boundary.finish_data(
+            NativeCold17Work::OutputPairQuote,
+            decoded.retained_requested_storage_data(self.maximum_requested)?,
+        )?;
+        boundary.begin_data(NativeCold17Work::OutputPair, 0, scratch)?;
+        boundary.construct_data(NativeCold17Work::OutputPair, 0, temporary, scratch)?;
+        super::output_pair::authenticate_output_pair17_data(
+            before,
+            after,
+            sdk,
+            &self.snapshot,
+            self.roles[3].1,
+            self.limits.input_roles[2],
+            before
+                .maximum_frame_bytes_data()?
+                .min(after.maximum_frame_bytes_data()?),
+        )?;
+        boundary.finish_data(
+            NativeCold17Work::OutputPair,
+            decoded.retained_requested_storage_data(self.maximum_requested)?,
+        )?;
+
+        boundary.begin_data(NativeCold17Work::RestorationHoldQuote, 0, scratch)?;
+        let held = after.restoration_hold_data()?;
+        let formatter = super::output_pair::construction::held_formatter_data(held)?;
+        boundary.construct_data(
+            NativeCold17Work::RestorationHoldQuote,
+            0,
+            formatter,
+            scratch,
+        )?;
+        let temporary =
+            super::output_pair::construction::held_quote_data(held, self.maximum_requested)?;
+        boundary.finish_data(
+            NativeCold17Work::RestorationHoldQuote,
+            decoded.retained_requested_storage_data(self.maximum_requested)?,
+        )?;
+        boundary.begin_data(NativeCold17Work::RestorationHold, 0, scratch)?;
+        boundary.construct_data(NativeCold17Work::RestorationHold, 0, temporary, scratch)?;
+        self.authenticate_restoration_hold_data(decoded)?;
+        boundary.finish_data(
+            NativeCold17Work::RestorationHold,
+            decoded.retained_requested_storage_data(self.maximum_requested)?,
+        )
+    }
+
     pub(super) fn authenticate_native_outputs_data(
+        &self,
+        decoded: &RestoredSettledNative17DecodeAttempt,
+        sdk: &ValidatedHistoricalRestoredSettledCapture17,
+    ) -> Result<(), ProviderError> {
+        self.authenticate_native_pair_data(decoded, sdk)?;
+        self.authenticate_restoration_hold_data(decoded)
+    }
+
+    fn authenticate_native_pair_data(
         &self,
         decoded: &RestoredSettledNative17DecodeAttempt,
         sdk: &ValidatedHistoricalRestoredSettledCapture17,
@@ -261,6 +447,14 @@ impl<'a> RestoredSettledNative17Plan<'a> {
                 .maximum_frame_bytes_data()?
                 .min(after.maximum_frame_bytes_data()?),
         )?;
+        Ok(())
+    }
+
+    fn authenticate_restoration_hold_data(
+        &self,
+        decoded: &RestoredSettledNative17DecodeAttempt,
+    ) -> Result<(), ProviderError> {
+        let (_, after) = super::reader::completed_graph_pair_data(decoded)?;
         let mut ancestry = Fields::object(self.journal.ancestry_bytes())?;
         for name in [
             "first_journal",
@@ -441,6 +635,77 @@ mod tests {
             65_536,
         )
         .unwrap()
+    }
+
+    struct FramingAdmission {
+        stop: usize,
+        calls: std::cell::Cell<usize>,
+    }
+
+    impl NativeCold17Admission for FramingAdmission {
+        fn begin_data(&self, row: NativeCold17PrewalkData) -> Result<(), ProviderError> {
+            assert_eq!(row.work_data(), NativeCold17Work::Framing);
+            assert_eq!(row.prior_native_cache_retained_bytes_data(), 0);
+            self.step()
+        }
+
+        fn construct_data(&self, row: NativeCold17ConstructionData) -> Result<(), ProviderError> {
+            assert_eq!(row.work_data(), NativeCold17Work::Framing);
+            assert_eq!(row.maximum_new_retained_bytes_data(), 0);
+            assert_eq!(row.constructor_transient_bytes_data(), 0);
+            self.step()
+        }
+
+        fn finish_data(&self, work: NativeCold17Work, actual: usize) -> Result<(), ProviderError> {
+            assert_eq!(work, NativeCold17Work::Framing);
+            assert_eq!(actual, 0);
+            self.step()
+        }
+    }
+
+    impl FramingAdmission {
+        fn step(&self) -> Result<(), ProviderError> {
+            let call = self.calls.get() + 1;
+            self.calls.set(call);
+            if call == self.stop {
+                Err(invalid())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn real_framing_admission_refuses_each_boundary_without_skipping_the_guard() {
+        let mut roles = roles();
+        let limits = limits(&roles);
+        for stop in 1..=4 {
+            let admission = FramingAdmission {
+                stop,
+                calls: std::cell::Cell::new(0),
+            };
+            let result = RestoredSettledNative17Plan::validate_with_admission_data(
+                &input(&roles),
+                &limits,
+                &admission,
+            );
+            assert_eq!(result.is_ok(), stop == 4);
+            assert_eq!(admission.calls.get(), stop.min(3));
+        }
+        roles[1].1[1] ^= 1;
+        let admission = FramingAdmission {
+            stop: 4,
+            calls: std::cell::Cell::new(0),
+        };
+        assert!(
+            RestoredSettledNative17Plan::validate_with_admission_data(
+                &input(&roles),
+                &limits,
+                &admission
+            )
+            .is_err()
+        );
+        assert_eq!(admission.calls.get(), 2);
     }
 
     #[test]

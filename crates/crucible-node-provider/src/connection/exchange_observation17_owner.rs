@@ -63,6 +63,63 @@ impl ExchangeRecord {
     }
 }
 
+impl ExchangeRecord {
+    /// Rejoins the sole actual upload response with complete literal custody.
+    ///
+    /// This is transport DATA only. The genuine native occurrence separately
+    /// authenticates its Source, independent row, real receiver result and once
+    /// state. A zero-evidence ACK never becomes a current-model proof.
+    ///
+    /// # Errors
+    /// Refuses partial/foreign/lost literals, another phase/body, extra frames or
+    /// ACKs, unresolved correlation, a reserved/unfinished bank or fenced owner.
+    pub(crate) fn authenticate_capture17_upload_publication_data<S: ProviderStream>(
+        &self,
+        connection: &Connection<S>,
+        original: &Envelope,
+        terminal: &Envelope,
+    ) -> Result<(), ProviderError> {
+        connection.protocol_owner.ensure_current()?;
+        connection.authenticate_native5_source_codec()?;
+        if connection.fenced
+            || connection.role != EndpointRole::Provider
+            || self.originals.as_slice() != std::slice::from_ref(terminal)
+            || self.sent != 1
+            || self.canonical.len() != 1
+            || self.original_slots.len() != 1
+            || !self.acknowledgements.is_empty()
+        {
+            return Err(refused());
+        }
+        original.matches_response(terminal)?;
+        connection.authenticate_capture17_upload_completed_body_data(original, &terminal.body)?;
+        authenticate_incoming(connection, original)?;
+        let sent = self.original_sent_frame(connection, 0)?;
+        if sent.original() != terminal {
+            return Err(refused());
+        }
+        crate::protocol_snapshot::owned11::correspondence::envelope(
+            terminal,
+            sent.canonical_body(),
+        )?;
+        if !connection
+            .original_frames
+            .as_ref()
+            .ok_or_else(refused)?
+            .try_borrow()
+            .map_err(|_| refused())?
+            .complete()
+        {
+            return Err(refused());
+        }
+        connection
+            .guard
+            .protocol_cut(crate::protocol_snapshot::ProtocolCaptureCut::HostSettled)?;
+        connection.authority.ensure_live()?;
+        connection.protocol_owner.ensure_current()
+    }
+}
+
 fn authenticate_incoming<S: ProviderStream>(
     connection: &Connection<S>,
     original: &Envelope,

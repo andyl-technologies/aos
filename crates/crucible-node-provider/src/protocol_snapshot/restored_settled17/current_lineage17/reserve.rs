@@ -23,6 +23,12 @@ pub(crate) struct BorrowedCurrentAction17<'body, 'rows> {
     pub(crate) definition: &'body [u8],
     pub(crate) selected: &'body [u8],
     pub(crate) capture: Option<BorrowedCurrentCapture17<'body, 'rows>>,
+    pub(crate) upload: Option<
+        super::super::current_capture17_upload_ingress::BorrowedCurrentCaptureUploadIngress17<
+            'body,
+            'rows,
+        >,
+    >,
     pub(crate) decoded: bool,
     pub(crate) failed: bool,
 }
@@ -53,6 +59,7 @@ fn current<'body, 'rows>(
     let failed = scalar::<bool>(f.named("failed")?, ledger)?;
     f.finish()?;
     let mut capture = None;
+    let mut upload = None;
     if selected != b"null" {
         let mut selected_fields = Fields::object(selected)?;
         let family = plain_string(selected_fields.named("family")?)?;
@@ -60,6 +67,7 @@ fn current<'body, 'rows>(
         selected_fields.finish()?;
         match family {
             "capture" => capture = Some(read_current_capture17_borrowed_data(data, ledger)?),
+            "capture_upload17" => upload = Some(super::super::current_capture17_upload_ingress::read_current_capture17_upload_ingress_data(data, ledger)?),
             "input_reactive" => discard::<CurrentInputAttempt17>(data, ledger)?,
             _ => return Err(invalid()),
         }
@@ -80,6 +88,7 @@ fn current<'body, 'rows>(
         definition: input,
         selected,
         capture,
+        upload,
         decoded,
         failed,
     })

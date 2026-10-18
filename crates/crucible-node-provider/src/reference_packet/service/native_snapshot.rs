@@ -484,6 +484,7 @@ pub use invocation_capture::{
 mod restored_settled;
 pub use restored_settled::{
     PacketNativeRestoredSettled17SnapshotPlan,
+    authenticate_native_restored_settled17_snapshot_definition_data,
     authenticate_native_restored_settled17_snapshot_schema_data,
     native_restored_settled17_snapshot_contract_data,
     native_restored_settled17_snapshot_counter_scratch_data,

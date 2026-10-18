@@ -1899,3 +1899,41 @@ targets. Debug assertions and overflow checks remain enabled. Final compilation
 takes 12 minutes 10 seconds after the production prerequisites. This gate
 compiles tests without executing them and excludes the subsequent archive
 checkpoint at `019e07ac58`.
+
+
+### Per-operation closure and Native construction phases
+
+Each quantized operation retains its own deadline from one shared monotonic
+anchor before native submission. Close requests preserve accepted, refused,
+uncertain and failed state; an unwind cannot retry the original request.
+Partial starts retain accepted tokens and unused grants. A close acceptance
+does not settle the round, publish outputs or advance simulated time.
+
+The cold Native reader exposes ten defining construction steps, with separate
+prewalk and constructor admission and complete prior-cache overlap. Terminal
+sequencing refuses missing, repeated or unkeyed Native work. Launch validation
+and Hold serialization have independent geometry helpers. Capture argument
+observation exhaustively covers every field and actual spare container capacity.
+
+The separate upload graph retains the original request, actual Blob receiver and
+transaction, native ancestry, response and terminal before publication. Its full
+phase demand precedes the one-use debit and effect. The current internal issuer
+admits Begin only. Chunk/Finish, the Source full-phase signer, final Capture
+registration and fresh adoption remain closed pending their actual integration.
+These DATA and custody changes do not establish successful native Capture.
+
+The normal unfiltered four-library run passes 1,910 Core, 1,488 Daemon, 1,410
+Provider and twelve Contract tests. Existing ignored populations remain 33,
+162, fifteen and one. Daemon completes in 333.98 seconds; all ten shared-owner
+and deadline controls pass. Debug assertions and overflow checks remain enabled,
+with the default test stack. Six-crate all-feature/all-target checking passes in
+1 minute 54 seconds, and matching reference binaries rebuild in 1 minute
+2 seconds. Production application-target qualification must be refreshed for
+this source.
+
+Earlier failed runs exposed two model errors: the parked quantum cursor used
+Publication instead of BoundaryControl, and a synthetic early completion
+bypassed Runtime's mandatory original close. Corrected controls use the genuine
+close, poll and cached-completion path; production validation remains intact.
+Failed logs remain local. Temporary startup probes are removed and excluded
+from this qualification; startup and native preservation remain unqualified.

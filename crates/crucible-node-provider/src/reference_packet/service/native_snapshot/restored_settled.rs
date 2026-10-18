@@ -11,6 +11,7 @@
 //! ```
 
 use super::*;
+use crucible_node_contract::ContentRef;
 
 const SCHEMA: &str = "source-owned.packet-native-continuation/17";
 const BEFORE_TAG: &str = "source-private.native-before-protocol/17";
@@ -43,12 +44,24 @@ pub fn native_restored_settled17_snapshot_schema() -> Result<SchemaRef, Provider
 pub fn authenticate_native_restored_settled17_snapshot_schema_data(
     schema: &SchemaRef,
 ) -> Result<(), ProviderError> {
+    if schema.id.as_str() != SCHEMA || schema.version != 17 || !schema.extensions.is_empty() {
+        return Err(invalid17());
+    }
+    authenticate_native_restored_settled17_snapshot_definition_data(&schema.definition)
+}
+
+/// Checks the entire current native17 definition using fixed borrowed hashing.
+///
+/// The defining Source signature and actual native phase owner are separate
+/// requirements. A matching reference alone creates no upload/Capture right.
+///
+/// # Errors
+/// Refuses another media, algorithm, domain, length or definition digest.
+pub fn authenticate_native_restored_settled17_snapshot_definition_data(
+    reference: &ContentRef,
+) -> Result<(), ProviderError> {
     let length = u64::try_from(CONTRACT.len()).map_err(|_| invalid17())?;
-    let reference = &schema.definition;
-    if schema.id.as_str() != SCHEMA
-        || schema.version != 17
-        || !schema.extensions.is_empty()
-        || reference.length.get() != length
+    if reference.length.get() != length
         || reference.media_type != "application/json"
         || reference.hash.algorithm != "blake3-256"
         || reference.hash.domain != "cnp.blob.v1"
@@ -326,5 +339,40 @@ mod tests {
         authenticate_native_restored_settled17_snapshot_schema_data(&schema).unwrap();
         schema.definition.length = U64::new(schema.definition.length.get() + 1);
         assert!(authenticate_native_restored_settled17_snapshot_schema_data(&schema).is_err());
+    }
+
+    #[test]
+    fn entire_current_definition_reference_is_required_independently_of_source_authority() {
+        let current = native_restored_settled17_snapshot_schema()
+            .unwrap()
+            .definition;
+        authenticate_native_restored_settled17_snapshot_definition_data(&current).unwrap();
+        for field in 0..5 {
+            let mut changed = current.clone();
+            match field {
+                0 => changed.length = U64::new(changed.length.get() + 1),
+                1 => changed.media_type = "application/octet-stream".into(),
+                2 => changed.hash.algorithm = "other-256".into(),
+                3 => changed.hash.domain = "other.blob.v1".into(),
+                4 => changed.hash.digest = "0".repeat(64),
+                _ => unreachable!(),
+            }
+            assert!(
+                authenticate_native_restored_settled17_snapshot_definition_data(&changed).is_err()
+            );
+        }
+        let previous_unissued = canonical::content_ref(
+            br#"{"schema":"source-private.native-state/17"}"#,
+            "application/json",
+        )
+        .unwrap();
+        assert!(
+            authenticate_native_restored_settled17_snapshot_definition_data(&previous_unissued)
+                .is_err()
+        );
+        // Full immutable definition correspondence creates no native owner,
+        // Source MAC, phase debit or once-action capability.
+        let definition: serde_json::Value = serde_json::from_slice(CONTRACT).unwrap();
+        assert_eq!(definition["upload_history"]["family"], "capture_upload17");
     }
 }

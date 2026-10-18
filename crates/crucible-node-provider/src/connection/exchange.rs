@@ -32,6 +32,7 @@ pub(crate) use storage::{
     original_native_observe_preparation_counter_scratch_data,
     original_packet_prefix_startup_counter_scratch_data,
     original_report_query_receive_counter_scratch_data, original_report_query_receive_storage_data,
+    quote_original_capture17_upload_prefix_startup_storage_data,
     quote_original_native_observe_prefix_startup_storage_data,
     quote_original_packet_baseline_prefix_startup_storage_data,
     quote_original_packet_prefix_startup_storage_data,
@@ -748,3 +749,6 @@ pub(crate) use snapshot::HistoricalExchangeRecord17;
 mod observation17_owner;
 
 pub(crate) use observation17_owner::counter_scratch_data as original_observation17_publication_counter_scratch_data;
+
+// Both closed17 families consume the same bounded literal correspondence scan.
+pub(crate) use observation17_owner::counter_scratch_data as original_native17_publication_literal_counter_scratch_data;

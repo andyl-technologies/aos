@@ -41,7 +41,13 @@ pub use evidence::*;
 pub use host::*;
 pub use native::*;
 pub(crate) use native::{
-    ParentArchive17ReadScope, RetainedCold17Collection, RetainedCold17MemberView,
+    ParentArchive17ReadScope, RestoredArchive17Initial15QualificationRole,
+    RestoredArchive17Initial15Role, RestoredArchive17Initial15Work,
+    RestoredArchive17ParentIdentity, RestoredArchive17ParentStep, RestoredArchive17ParentWork,
+    RestoredArchive17SourceIndex, RestoredArchive17ValidationAdmission,
+    RestoredArchive17ValidationConstructionData, RestoredArchive17ValidationPrewalkData,
+    RestoredArchive17ValidationStage, RestoredArchive17ValidationStep, RetainedCold17Collection,
+    RetainedCold17MemberView,
 };
 pub use staging_custody::{PreparedNativeCustody, PreparedRestoreAllocation};
 pub use transaction::*;

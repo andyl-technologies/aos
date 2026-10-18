@@ -66,6 +66,7 @@ pub(crate) use exchange::{
     original_native_observe_preparation_counter_scratch_data,
     original_packet_prefix_startup_counter_scratch_data,
     original_report_query_receive_counter_scratch_data, original_report_query_receive_storage_data,
+    quote_original_capture17_upload_prefix_startup_storage_data,
     quote_original_native_observe_prefix_startup_storage_data,
     quote_original_packet_baseline_prefix_startup_storage_data,
     quote_original_packet_prefix_startup_storage_data,
@@ -1160,3 +1161,5 @@ pub(crate) use exchange::original_observation17_publication_counter_scratch_data
 
 mod capture17_receive;
 pub(crate) use capture17_receive::native_capture17_receive_counter_scratch_data;
+
+pub(crate) use exchange::original_native17_publication_literal_counter_scratch_data;

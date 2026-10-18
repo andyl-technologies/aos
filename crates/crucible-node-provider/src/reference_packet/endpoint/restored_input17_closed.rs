@@ -1,12 +1,18 @@
-//! Closes every legacy Endpoint dispatch path to the distinct Input17 family.
+//! Closes legacy Endpoint dispatch to the distinct signed17 action families.
 //!
 //! The ordinary selected wire codec parses transport DATA only. Until a genuine
-//! same-Boot Source-MAC/action-row dispatcher is installed, none of that family
+//! same-Boot Source-MAC/action-row dispatcher is installed, none of these families
 //! may reach older restoration, upload, control or observation implementations.
 //! The caller retains the original literal and sticky Endpoint before this check.
 
 use super::*;
 use crate::reference_packet::service::restored_input_reactive17::RESTORED_INPUT_REACTIVE17_FEATURE;
+use crate::reference_packet::service::{
+    restored_settled_capture::{
+        RESTORED_SETTLED_CAPTURE_FEATURE, upload::RESTORED_SETTLED_CAPTURE_UPLOAD_FEATURE,
+    },
+    restored_settled_confirmation::PACKET_RESTORED_SETTLED_AFTER_CONFIRMATION_FEATURE,
+};
 #[cfg(test)]
 use serde_json::Value;
 
@@ -17,6 +23,20 @@ pub(super) fn require_legacy_dispatch_data(original: &Envelope) -> Result<(), Pr
     {
         return Err(ProviderError::Correlation(
             "Input17 native action dispatcher not installed",
+        ));
+    }
+    if original
+        .extensions
+        .contains_key(RESTORED_SETTLED_CAPTURE_FEATURE)
+        || original
+            .extensions
+            .contains_key(RESTORED_SETTLED_CAPTURE_UPLOAD_FEATURE)
+        || original
+            .extensions
+            .contains_key(PACKET_RESTORED_SETTLED_AFTER_CONFIRMATION_FEATURE)
+    {
+        return Err(ProviderError::Correlation(
+            "Capture17 native action dispatcher not installed",
         ));
     }
     Ok(())
@@ -84,6 +104,43 @@ mod tests {
                 .extensions
                 .insert("source-owned.packet-input/4".into(), json!({}));
             require_legacy_dispatch_data(&original).unwrap();
+        }
+    }
+
+    #[test]
+    fn every_capture17_feature_refuses_before_legacy_upload_or_control_effects() {
+        for feature in [
+            RESTORED_SETTLED_CAPTURE_FEATURE,
+            RESTORED_SETTLED_CAPTURE_UPLOAD_FEATURE,
+            PACKET_RESTORED_SETTLED_AFTER_CONFIRMATION_FEATURE,
+        ] {
+            for method in [
+                Method::Begin,
+                Method::Poll,
+                Method::BlobBegin,
+                Method::BlobChunk,
+                Method::BlobFinish,
+            ] {
+                for artifact in [
+                    Value::Null,
+                    json!({"request":{"native_allocation":{"retained_requested_bytes":"18446744073709551615"}},"proof":{}}),
+                ] {
+                    let mut original = crate::envelope::tests::request();
+                    original.method = method;
+                    original.extensions.clear();
+                    original.extensions.insert(feature.into(), artifact);
+                    assert!(matches!(
+                        require_legacy_dispatch_data(&original),
+                        Err(ProviderError::Correlation(
+                            "Capture17 native action dispatcher not installed"
+                        ))
+                    ));
+                    original
+                        .extensions
+                        .insert("source-owned.packet-input/4".into(), json!({}));
+                    assert!(require_legacy_dispatch_data(&original).is_err());
+                }
+            }
         }
     }
 }

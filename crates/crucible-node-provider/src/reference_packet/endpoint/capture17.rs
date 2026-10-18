@@ -82,3 +82,98 @@ pub(crate) fn native_capture17_endpoint_receive_counter_scratch_data() -> usize 
         + size_of::<Result<(), ProviderError>>()
         + restore_commit::observation17_host_cut_counter_scratch_data()
 }
+
+impl PacketEndpoint<crate::client::DeadlineStream> {
+    /// Publishes one Source-authenticated assigned upload through ordinary IO.
+    ///
+    /// The caller passes the actual raw-first retained scope; no second read or
+    /// synthetic request is performed. This private method does not select the
+    /// public17 route, issue a Window claim or authenticate a cold17 adopter.
+    ///
+    /// # Errors
+    /// Refuses another Endpoint/occurrence/phase, expired deadline, short full
+    /// prospective row, real Blob failure or incomplete terminal publication.
+    /// Every initialized raw/native/receiver/transport partial remains owned.
+    pub(super) fn dispatch_original_assigned_capture17_upload_data(
+        &mut self,
+        scope: OriginalNativeCapture17Read,
+        deadline: &crate::client::ExchangeDeadline,
+    ) -> Result<(), ProviderError> {
+        self.ensure_complete_origin()?;
+        deadline.remaining()?;
+        if !self.held || self.records.len() >= EXCHANGES {
+            return Err(refused());
+        }
+        let Some(Transport::Connected(connection)) = self.transport.as_ref() else {
+            return Err(refused());
+        };
+        let boot = self.canonical_ack_boot.as_ref().ok_or_else(refused)?;
+        self.restore_commit
+            .as_ref()
+            .ok_or_else(refused)?
+            .authenticate_observation17_host_owners_data(boot, connection)?;
+        let projection = scope.prepare_assigned_upload17_data(
+            connection,
+            &self.uploads,
+            &self.native,
+            &self.records,
+            self.next_sequence,
+        )?;
+        scope.execute_assigned_upload17_data(&mut self.uploads)?;
+        self.records.try_reserve_exact(1).map_err(|_| {
+            ProviderError::ResourceExhausted("Capture17 upload completed record slot")
+        })?;
+        {
+            let transport = &mut self.transport;
+            let sequence = &mut self.next_sequence;
+            let credit = &mut self.transport_credit;
+            let authority = &self.authority;
+            scope.with_prepared_upload17_reply_data(|original, reply| {
+                prefix::prepare_with_capture17_upload_projection_storage_data(
+                    transport,
+                    sequence,
+                    credit,
+                    authority,
+                    original,
+                    reply,
+                    &projection,
+                )
+            })?;
+        }
+        let Some(Transport::Prepared(exchange, acknowledgements)) = self.transport.as_mut() else {
+            return Err(refused());
+        };
+        scope.retain_upload17_terminal_data(exchange.record())?;
+        exchange.publish(&mut |sent, received| acknowledgements.validate(sent, received))?;
+        let Some(Transport::Prepared(exchange, _)) = self.transport.take() else {
+            return Err(refused());
+        };
+        let (connection, record) = exchange.into_parts();
+        self.records.push(record);
+        self.transport = Some(Transport::Connected(connection));
+        let Some(Transport::Connected(connection)) = self.transport.as_ref() else {
+            return Err(refused());
+        };
+        deadline.remaining()?;
+        scope.complete_upload17_publication_data(connection, &self.native, &self.records)?;
+        self.held = false;
+        Ok(())
+    }
+}
+
+/// Names actual private assigned-upload Endpoint and publication loop headers.
+pub(crate) fn native_capture17_upload_endpoint_counter_scratch_data() -> usize {
+    use std::mem::size_of;
+    type NativeTransport = Transport<crate::client::DeadlineStream>;
+    size_of::<&mut PacketEndpoint<crate::client::DeadlineStream>>()
+        + size_of::<NativeTransport>()
+        + size_of::<&mut Option<NativeTransport>>()
+        + size_of::<&mut u64>()
+        + size_of::<&mut usize>()
+        + size_of::<&ConnectionAuthority>()
+        + size_of::<&crate::client::ExchangeDeadline>()
+        + size_of::<(Connection<crate::client::DeadlineStream>, ExchangeRecord)>()
+        + size_of::<Result<(), ProviderError>>()
+        + restore_commit::observation17_host_cut_counter_scratch_data()
+        + prefix::native_capture17_upload_prefix_counter_scratch_data()
+}

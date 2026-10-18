@@ -7,9 +7,12 @@
 
 use super::{
     NativeRestoredInputReactive17Attempt, NativeRestoredSettledCaptureAttempt,
-    PacketNativeStartupAllocationRow, original_restored_input_reactive17_ingress_row_data,
+    NativeRestoredSettledCaptureUploadAttempt, PacketNativeStartupAllocationRow,
+    original_restored_input_reactive17_ingress_row_data,
     original_restored_settled_capture_ingress_counter_scratch_data,
     original_restored_settled_capture_ingress_row_data,
+    original_restored_settled_capture_upload_ingress_counter_scratch_data,
+    original_restored_settled_capture_upload_ingress_row_data,
 };
 use crate::reference_packet::service::restored_input_reactive17::RESTORED_INPUT_REACTIVE17_FEATURE;
 use crate::reference_packet::service::{
@@ -28,8 +31,10 @@ use std::{cell::RefCell, mem::size_of};
 /// Selects DATA routing only after one actual raw original chose its family.
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) enum NativeRestoredSettledActionFamily17 {
-    /// Selects the actual Capture/upload/confirmation child.
+    /// Selects the actual final Capture/confirmation child.
     Capture,
+    /// Selects the distinct Source-signed grant-free ordinary Blob child.
+    CaptureUpload17,
     /// Selects the actual staged Input or Reactive lifecycle child.
     InputReactive,
 }
@@ -38,6 +43,7 @@ pub(crate) enum NativeRestoredSettledActionFamily17 {
 #[serde(tag = "family", content = "data", rename_all = "snake_case")]
 enum Selected {
     Capture(NativeRestoredSettledCaptureAttempt),
+    CaptureUpload17(NativeRestoredSettledCaptureUploadAttempt),
     InputReactive(NativeRestoredInputReactive17Attempt),
 }
 
@@ -118,16 +124,30 @@ impl NativeRestoredSettledActionAttempt {
             }
             false
         };
-        self.selected = Some(if capture {
-            Selected::Capture(NativeRestoredSettledCaptureAttempt::new_data(self.ordinal))
-        } else {
-            Selected::InputReactive(NativeRestoredInputReactive17Attempt::new_data(self.ordinal))
-        });
+        self.selected = Some(
+            if capture
+                && matches!(
+                    original.method,
+                    Method::BlobBegin | Method::BlobChunk | Method::BlobFinish
+                )
+            {
+                Selected::CaptureUpload17(NativeRestoredSettledCaptureUploadAttempt::new_data(
+                    self.ordinal,
+                ))
+            } else if capture {
+                Selected::Capture(NativeRestoredSettledCaptureAttempt::new_data(self.ordinal))
+            } else {
+                Selected::InputReactive(NativeRestoredInputReactive17Attempt::new_data(
+                    self.ordinal,
+                ))
+            },
+        );
         // No parser, allocation, callback or validation occurs between taking
         // this raw field and installing it in the already retained child.
         let raw = self.original.take().ok_or_else(refused)?;
         match self.selected.as_mut().ok_or_else(refused)? {
             Selected::Capture(child) => child.retain_original_data(raw)?,
+            Selected::CaptureUpload17(child) => child.retain_original_data(raw)?,
             Selected::InputReactive(child) => child.retain_original_data(raw)?,
         }
         self.failed = false;
@@ -142,6 +162,7 @@ impl NativeRestoredSettledActionAttempt {
         }
         match self.selected.as_mut().ok_or_else(refused)? {
             Selected::Capture(child) => child.decode_body_data(frame)?,
+            Selected::CaptureUpload17(child) => child.decode_body_data(frame)?,
             Selected::InputReactive(child) => child.decode_body_data(frame)?,
         }
         self.decoded = true;
@@ -156,6 +177,7 @@ impl NativeRestoredSettledActionAttempt {
         }
         match self.selected.as_ref().ok_or_else(refused)? {
             Selected::Capture(child) => child.original_data(),
+            Selected::CaptureUpload17(child) => child.original_data(),
             Selected::InputReactive(child) => child.original_data(),
         }
     }
@@ -166,6 +188,9 @@ impl NativeRestoredSettledActionAttempt {
         }
         match self.selected.as_ref().ok_or_else(refused)? {
             Selected::Capture(_) => Ok(NativeRestoredSettledActionFamily17::Capture),
+            Selected::CaptureUpload17(_) => {
+                Ok(NativeRestoredSettledActionFamily17::CaptureUpload17)
+            }
             Selected::InputReactive(_) => Ok(NativeRestoredSettledActionFamily17::InputReactive),
         }
     }
@@ -195,6 +220,38 @@ impl NativeRestoredSettledActionAttempt {
         }
         match self.selected.as_ref() {
             Some(Selected::Capture(child)) => Ok(child),
+            _ => Err(refused()),
+        }
+    }
+
+    /// Borrows only the distinct typed upload child of this actual occurrence.
+    ///
+    /// # Errors
+    /// Refuses raw/failed/undecoded custody or either other selected family.
+    pub(crate) fn capture_upload17_data(
+        &self,
+    ) -> Result<&NativeRestoredSettledCaptureUploadAttempt, ProviderError> {
+        if self.failed || !self.decoded {
+            return Err(refused());
+        }
+        match self.selected.as_ref() {
+            Some(Selected::CaptureUpload17(child)) => Ok(child),
+            _ => Err(refused()),
+        }
+    }
+
+    /// Borrows the same actual upload destination without issuing a live action.
+    ///
+    /// # Errors
+    /// Refuses raw/failed/undecoded custody or either other selected family.
+    pub(crate) fn capture_upload17_data_mut(
+        &mut self,
+    ) -> Result<&mut NativeRestoredSettledCaptureUploadAttempt, ProviderError> {
+        if self.failed || !self.decoded {
+            return Err(refused());
+        }
+        match self.selected.as_mut() {
+            Some(Selected::CaptureUpload17(child)) => Ok(child),
             _ => Err(refused()),
         }
     }
@@ -230,6 +287,7 @@ impl NativeRestoredSettledActionAttempt {
         if let Some(child) = self.selected.as_mut() {
             match child {
                 Selected::Capture(child) => child.interrupt_data(),
+                Selected::CaptureUpload17(child) => child.interrupt_data(),
                 Selected::InputReactive(child) => child.interrupt_data(),
             }
         }
@@ -249,6 +307,9 @@ impl NativeRestoredSettledActionAttempt {
                 Selected::Capture(child) => {
                     child.observe_settled_history_metadata_data(observer)?
                 }
+                Selected::CaptureUpload17(child) => {
+                    child.observe_settled_history_metadata_data(observer)?
+                }
                 Selected::InputReactive(child) => child.observe_retained_data(observer)?,
             }
         }
@@ -264,6 +325,7 @@ pub(crate) fn original_restored_settled_action_ingress_row_data(
 ) -> Result<PacketNativeStartupAllocationRow, ProviderError> {
     let capture = original_restored_settled_capture_ingress_row_data(frame)?;
     let input = original_restored_input_reactive17_ingress_row_data(frame)?;
+    let upload = original_restored_settled_capture_upload_ingress_row_data(frame)?;
     let wrapper = size_of::<NativeRestoredSettledActionAttempt>()
         .checked_mul(2)
         .and_then(|n| n.checked_add(size_of::<RefCell<NativeRestoredSettledActionAttempt>>()))
@@ -286,16 +348,19 @@ pub(crate) fn original_restored_settled_action_ingress_row_data(
         .retained_requested_bytes
         .get()
         .max(input.retained_requested_bytes.get())
+        .max(upload.retained_requested_bytes.get())
         .checked_add(u64::try_from(wrapper).map_err(|_| refused())?)
         .ok_or_else(refused)?;
     let transient = capture
         .maximum_simultaneous_transient_bytes
         .get()
-        .max(input.maximum_simultaneous_transient_bytes.get());
+        .max(input.maximum_simultaneous_transient_bytes.get())
+        .max(upload.maximum_simultaneous_transient_bytes.get());
     let scratch = capture
         .declared_counter_scratch_bytes
         .get()
         .checked_add(input.declared_counter_scratch_bytes.get())
+        .and_then(|n| n.checked_add(upload.declared_counter_scratch_bytes.get()))
         .and_then(|n| {
             n.checked_add(
                 u64::try_from(original_restored_settled_action_counter_scratch_data()).ok()?,
@@ -335,15 +400,18 @@ pub(crate) fn original_restored_settled_action_counter_scratch_data() -> usize {
         + size_of::<Option<&mut Selected>>()
         + size_of::<Result<&mut Selected, ProviderError>>()
         + size_of::<Result<&mut NativeRestoredSettledCaptureAttempt, ProviderError>>()
+        + size_of::<Result<&mut NativeRestoredSettledCaptureUploadAttempt, ProviderError>>()
+        + size_of::<Result<&NativeRestoredSettledCaptureUploadAttempt, ProviderError>>()
         + size_of::<Result<&mut NativeRestoredInputReactive17Attempt, ProviderError>>()
         + size_of::<MetadataObserver<'static>>()
         + size_of::<Result<(), ProviderError>>()
-        + size_of::<PacketNativeStartupAllocationRow>() * 3
+        + size_of::<PacketNativeStartupAllocationRow>() * 4
         + size_of::<Result<PacketNativeStartupAllocationRow, ProviderError>>()
         + size_of::<Option<usize>>()
         + size_of::<Option<u64>>()
         + size_of::<Result<u64, std::num::TryFromIntError>>()
         + original_restored_settled_capture_ingress_counter_scratch_data()
+        + original_restored_settled_capture_upload_ingress_counter_scratch_data()
 }
 
 fn refused() -> ProviderError {
@@ -586,3 +654,7 @@ impl NativeRestoredSettledActionAttempt {
         )
     }
 }
+
+#[cfg(test)]
+#[path = "restored_action17/upload_tests.rs"]
+mod upload_tests;

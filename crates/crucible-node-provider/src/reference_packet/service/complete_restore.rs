@@ -21,6 +21,7 @@ mod commit_held;
 pub use commit_held::{
     PacketNativeRestoredCommitHold, maximum_complete_restore_held_evidence_bytes,
     maximum_complete_restore_held_evidence_counter_scratch_data,
+    restored_commit_hold_serialization_counter_scratch_data,
 };
 mod restored_record;
 pub use restored_record::{

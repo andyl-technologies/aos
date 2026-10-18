@@ -114,5 +114,7 @@ pub(crate) use boot::{
 };
 
 pub(crate) use boot::{
-    OriginalNativeCapture17Read, native_capture17_receive_scope_counter_scratch_data,
+    NativeCapture17UploadSpentAction, OriginalNativeCapture17Read,
+    native_capture17_receive_scope_counter_scratch_data,
+    native_capture17_upload_scope_counter_scratch_data,
 };

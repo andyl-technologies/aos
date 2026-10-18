@@ -11,6 +11,7 @@ use super::{
 use crate::ProviderError;
 use crate::handshake::HistoricalAuthority17;
 use crate::protocol_snapshot::owned11::typed::{Fields, Native17Build, invalid};
+use crate::protocol_snapshot::restored_settled17::cold_admission::NativeCold17GraphAdmission;
 use crate::protocol_snapshot::restored_settled17::{
     aliases::RestoredSettledNative17AliasSummary,
     current_lineage17::{
@@ -113,6 +114,15 @@ pub(crate) fn read_native_current_graph17_with_limits_into_data(
     destination: &mut Option<NativeCurrentGraph17DecodeAttempt>,
     limits: NativeCurrentGraph17ReadLimits,
 ) -> Result<(), ProviderError> {
+    read_native_current_graph17_with_admission_into_data(input, destination, limits, None)
+}
+
+pub(crate) fn read_native_current_graph17_with_admission_into_data(
+    input: &[u8],
+    destination: &mut Option<NativeCurrentGraph17DecodeAttempt>,
+    limits: NativeCurrentGraph17ReadLimits,
+    admission: Option<&NativeCold17GraphAdmission<'_, '_>>,
+) -> Result<(), ProviderError> {
     if destination.is_some() {
         return Err(invalid());
     }
@@ -151,6 +161,18 @@ pub(crate) fn read_native_current_graph17_with_limits_into_data(
     reserve_exact(&mut owner.selected_groups, alias_rows)?;
     owner.selected_groups.resize_with(alias_rows, || None);
 
+    if let Some(admission) = admission {
+        admission.finish_data(
+            admission.banks,
+            owner.retained_requested_storage_data(limits.maximum_requested)?,
+        )?;
+        admission.boundary.begin_data(
+            admission.targets,
+            0,
+            crate::protocol_snapshot::restored_settled17::restored_settled_native17_counter_scratch_data(),
+        )?;
+    }
+
     let selected_limits = NativeCurrentGraph17ReadLimits {
         maximum_requested: remaining,
         ..limits
@@ -170,6 +192,14 @@ pub(crate) fn read_native_current_graph17_with_limits_into_data(
             &mut owner.selected_groups,
         )?;
         owner.preflight_requested = Some(requested);
+        if let Some(admission) = admission {
+            admission.boundary.construct_data(
+                admission.targets,
+                requested,
+                0,
+                crate::protocol_snapshot::restored_settled17::restored_settled_native17_counter_scratch_data(),
+            )?;
+        }
         owner.target_groups.fill(false);
         let constructed = plan.replay_selected_control17_data(
             selected_limits,
@@ -242,7 +272,33 @@ pub(crate) fn read_native_current_graph17_with_limits_into_data(
         .ok_or_else(invalid)?
         .validate_data()?;
     owner.failed = false;
-    owner.validate_data()
+    owner.validate_data()?;
+    if let Some(admission) = admission {
+        admission.finish_data(
+            admission.targets,
+            owner.retained_requested_storage_data(limits.maximum_requested)?,
+        )?;
+    }
+    Ok(())
+}
+
+/// Quotes the actual raw and alias-bank layouts before their first reservation.
+pub(crate) fn native_current_graph17_banks_data(
+    input: &[u8],
+    limits: NativeCurrentGraph17ReadLimits,
+) -> Result<usize, ProviderError> {
+    limits.authenticate_wire_data(input)?;
+    let roots = NativeCurrentGraph17RootSpans::read(input)?;
+    let records = ValidatedMetadataRecords::validate(roots.records, 131072, usize::MAX)?;
+    let aliases = count_alias_rows(roots.aliases, records.row_count())?;
+    let element = size_of::<RestoredSettledNative17AliasSummary>()
+        .checked_add(size_of::<bool>())
+        .and_then(|bytes| bytes.checked_add(size_of::<Option<Arc<[ExtensionSelection]>>>()))
+        .ok_or_else(invalid)?;
+    input
+        .len()
+        .checked_add(aliases.checked_mul(element).ok_or_else(invalid)?)
+        .ok_or_else(invalid)
 }
 
 impl NativeCurrentGraph17DecodeAttempt {
@@ -503,6 +559,46 @@ fn count_alias_rows(input: &[u8], maximum: usize) -> Result<usize, ProviderError
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prospective_raw_alias_banks_match_real_failed_partial_backing() {
+        for count in [0, 1, 3] {
+            let mut roots = vec![serde_json::Value::Null; 16];
+            roots[0] = serde_json::json!(super::super::CURRENT_GRAPH17_FORMAT);
+            let records = vec![serde_json::json!(["string", 0, 1, 1]); count];
+            let aliases = vec![serde_json::Value::Null; count];
+            let input = serde_json::to_vec(&serde_json::json!([
+                super::super::CURRENT_PROTOCOL17_FORMAT,
+                roots,
+                records,
+                aliases,
+            ]))
+            .unwrap();
+            let limits = NativeCurrentGraph17ReadLimits {
+                maximum_requested: 1_048_576,
+                maximum_target_requested: 1_048_576,
+                maximum_nodes: 4096,
+                maximum_depth: 64,
+            };
+            let projected = native_current_graph17_banks_data(&input, limits).unwrap();
+            let mut destination = None;
+
+            // The inert component nulls cannot pass the semantic reader. Its
+            // retained raw and three alias-bank allocations remain measurable.
+            assert!(
+                read_native_current_graph17_with_limits_into_data(&input, &mut destination, limits)
+                    .is_err()
+            );
+            let actual = destination.as_ref().unwrap();
+            assert!(actual.completed_data().is_none());
+            assert_eq!(
+                actual
+                    .retained_requested_storage_data(limits.maximum_requested)
+                    .unwrap(),
+                projected
+            );
+        }
+    }
 
     #[test]
     fn parser_axis_failure_keeps_actual_raw_once_owner() {

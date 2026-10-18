@@ -4,6 +4,8 @@
 //! current action is the fourth-object Poll; the completed Capture is an earlier
 //! retained occurrence. No future native Poll terminal is required at that cut.
 
+pub(super) mod construction;
+
 use super::*;
 use crate::{
     bodies::{BeginRequest, CaptureArguments},
@@ -419,6 +421,7 @@ pub(super) fn counter_scratch_data() -> usize {
         + size_of::<Vec<u8>>()
         + size_of::<Result<(), ProviderError>>()
         + crate::protocol_snapshot::owned11::correspondence::envelope_comparison_scratch_data()
+        + construction::counter_scratch_data()
 }
 
 mod anchor;

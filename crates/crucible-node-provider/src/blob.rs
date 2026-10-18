@@ -1427,3 +1427,9 @@ pub(crate) use owned11::original_blob_alignment17_data;
 pub(crate) mod current17;
 
 mod settled_capture17;
+
+mod capture17_upload;
+pub(crate) use capture17_upload::{
+    NativeCapture17UploadAttempt, NativeCapture17UploadInput, NativeCapture17UploadKey,
+    NativeCapture17UploadStorageData, capture17_upload_counter_scratch_data,
+};

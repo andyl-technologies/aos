@@ -1082,3 +1082,15 @@ pub(crate) use current_view17::NativeCaptureAttemptCurrent17;
 #[path = "restored_settled_capture_ingress/source_occurrence17.rs"]
 mod source_occurrence17;
 pub(crate) use source_occurrence17::NativeCapture17PhaseData;
+
+#[path = "restored_settled_capture_ingress/upload17.rs"]
+mod upload17;
+pub(crate) use upload17::native_capture17_upload_action_counter_scratch_data;
+
+#[path = "restored_settled_capture_ingress/upload_ingress17.rs"]
+mod upload_ingress17;
+pub(crate) use upload_ingress17::{
+    NativeRestoredSettledCaptureUploadAttempt,
+    original_restored_settled_capture_upload_ingress_counter_scratch_data,
+    original_restored_settled_capture_upload_ingress_row_data,
+};

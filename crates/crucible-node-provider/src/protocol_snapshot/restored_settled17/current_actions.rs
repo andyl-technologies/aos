@@ -245,6 +245,15 @@ impl HistoricalType for CurrentSelectedAction17 {
             "capture" => ledger
                 .read::<CurrentCaptureAttempt17>(raw, build)
                 .map(|value| value.map(Self::Capture)),
+            "capture_upload17" => {
+                // The complete source is borrowed below; no operational upload
+                // enum payload or dummy owner is constructed by this reader.
+                if build {
+                    return Err(invalid());
+                }
+                let _ = super::current_capture17_upload_ingress::read_current_capture17_upload_ingress_data(raw, ledger)?;
+                Ok(None)
+            }
             "input_reactive" => ledger
                 .read::<CurrentInputAttempt17>(raw, build)
                 .map(|value| value.map(Self::InputReactive)),

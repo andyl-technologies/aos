@@ -100,6 +100,7 @@ pub(super) fn prepare<S: ProviderStream>(
             storage: None,
             restored_input17: false,
             restored_observation17: false,
+            capture17_upload: false,
         },
     )
 }
@@ -129,6 +130,7 @@ pub(super) fn prepare_with_storage_data<S: ProviderStream>(
             storage: Some(storage),
             restored_input17: false,
             restored_observation17: false,
+            capture17_upload: false,
         },
     )
 }
@@ -209,6 +211,7 @@ pub(super) fn prepare_with_restored_input17_projection_storage_data<S: ProviderS
             storage: Some(&actual),
             restored_input17: true,
             restored_observation17: false,
+            capture17_upload: false,
         },
     )
 }
@@ -255,6 +258,53 @@ pub(super) fn prepare_with_restored_observation17_projection_storage_data<S: Pro
             storage: Some(&actual),
             restored_input17: false,
             restored_observation17: true,
+            capture17_upload: false,
+        },
+    )
+}
+
+/// Prepares one actual completed Blob response without a proof-object suffix.
+///
+/// The defining native upload scope separately authenticates Source/current
+/// custody, spends its independent row and supplies its real primitive result.
+/// This builder verifies only the selected current transport and exact quote.
+///
+/// # Errors
+/// Refuses another selected class, evidence, actual reply or finite bank/cut.
+pub(super) fn prepare_with_capture17_upload_projection_storage_data<S: ProviderStream>(
+    transport: &mut Option<Transport<S>>,
+    next_sequence: &mut u64,
+    retained_credit: &mut usize,
+    authority: &ConnectionAuthority,
+    request: &Envelope,
+    reply: &PacketControlReply,
+    projection: &OriginalPacketPrefixProjectionStorageData<0>,
+) -> Result<(), ProviderError> {
+    let Some(Transport::Connected(connection)) = transport.as_ref() else {
+        return Err(ProviderError::Conflict(
+            "Capture upload reply connection absent",
+        ));
+    };
+    connection.authenticate_original_packet_prefix_builder_authority_data(authority)?;
+    let actual = projection.authenticate_actual_inputs(
+        connection,
+        *next_sequence,
+        request,
+        &reply.body,
+        &reply.evidence,
+    )?;
+    prepare_inner(
+        transport,
+        next_sequence,
+        retained_credit,
+        PrefixInput {
+            authority,
+            request,
+            reply,
+            storage: Some(&actual),
+            restored_input17: false,
+            restored_observation17: false,
+            capture17_upload: true,
         },
     )
 }
@@ -266,6 +316,7 @@ struct PrefixInput<'a> {
     storage: Option<&'a OriginalPacketPrefixStorageData>,
     restored_input17: bool,
     restored_observation17: bool,
+    capture17_upload: bool,
 }
 
 fn prepare_inner<S: ProviderStream>(
@@ -281,6 +332,7 @@ fn prepare_inner<S: ProviderStream>(
         storage,
         restored_input17,
         restored_observation17,
+        capture17_upload,
     } = input;
     if let Some(storage) = storage {
         let Some(Transport::Connected(connection)) = transport.as_ref() else {
@@ -289,7 +341,20 @@ fn prepare_inner<S: ProviderStream>(
             ));
         };
         connection.authenticate_original_packet_prefix_builder_authority_data(authority)?;
-        if restored_observation17 {
+        if capture17_upload {
+            if restored_input17 || restored_observation17 {
+                return Err(ProviderError::Correlation(
+                    "two selected reply prefix classes",
+                ));
+            }
+            connection.authenticate_requoted_original_capture17_upload_prefix_storage_data(
+                *next_sequence,
+                request,
+                &reply.body,
+                &reply.evidence,
+                storage,
+            )?;
+        } else if restored_observation17 {
             if restored_input17 {
                 return Err(ProviderError::Correlation(
                     "two selected proof prefix classes",
@@ -757,4 +822,15 @@ mod input17_transport_tests {
         }
         assert_eq!(checked, 6);
     }
+}
+
+/// Names the actual selected upload response builder's ephemeral fixed views.
+///
+/// The zero-evidence class adds no field to retained ACK or wire state.
+pub(crate) const fn native_capture17_upload_prefix_counter_scratch_data() -> usize {
+    std::mem::size_of::<PrefixInput<'static>>()
+        + std::mem::size_of::<&OriginalPacketPrefixProjectionStorageData<0>>()
+        + std::mem::size_of::<OriginalPacketPrefixStorageData>()
+        + std::mem::size_of::<Result<OriginalPacketPrefixStorageData, ProviderError>>()
+        + std::mem::size_of::<Result<(), ProviderError>>()
 }

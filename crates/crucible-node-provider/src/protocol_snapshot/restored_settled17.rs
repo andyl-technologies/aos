@@ -396,21 +396,23 @@ pub fn restored_settled_native17_counter_scratch_data() -> usize {
         + size_of::<blake3::Hasher>() + size_of::<blake3::Hash>()
         + sealed::counter_scratch_data() + capture_outputs::counter_scratch_data()
         + cold::counter_scratch_data()
+        + cold_admission::counter_scratch_data()
         + crate::protocol_snapshot::native_wholegraph17::native_current_graph17_counter_scratch_data()
         + output_pair::counter_scratch_data()
         + RestoredSettledNativeImportGeometryData::counter_scratch_data()
         + aliases::restored_settled_native17_alias_counter_scratch_data()
         + historical_auth::historical_auth17_counter_scratch_data()
         + current_boot::current_boot17_counter_scratch_data()
+        + current_capture17_upload_ingress::current_capture17_upload_ingress_counter_scratch_data()
         + crate::reference_packet::continuation_models::settled_reader::settled_model17_counter_scratch_data()
 }
 
 pub(crate) mod historical_auth;
-pub use historical_auth::{HistoricalCompletedPair17, HistoricalRestoredObservation17Data};
 pub use historical_auth::construction::{
     RestoredSettledSourceHistory17AuthGeometryData,
     source_history17_authentication_counter_scratch_data,
 };
+pub use historical_auth::{HistoricalCompletedPair17, HistoricalRestoredObservation17Data};
 
 pub(crate) mod current_actions;
 
@@ -453,7 +455,11 @@ pub(crate) mod current_suffix;
 pub(crate) mod current_import17;
 
 mod cold;
+pub(crate) mod cold_admission;
 pub use cold::RestoredSettledNative17Plan;
+pub use cold_admission::{
+    NativeCold17Admission, NativeCold17ConstructionData, NativeCold17PrewalkData, NativeCold17Work,
+};
 
 mod output_pair;
 mod reader;
@@ -465,3 +471,7 @@ pub(crate) mod current_capture17_borrowed;
 pub(crate) mod current_build17;
 
 pub(crate) mod current_custody;
+
+pub(crate) mod current_capture17_upload;
+
+pub(crate) mod current_capture17_upload_ingress;

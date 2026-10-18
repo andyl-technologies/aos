@@ -8,6 +8,8 @@
 
 use super::*;
 
+mod complete;
+
 struct LaunchValidationPhases {
     syntax: usize,
     validation: usize,

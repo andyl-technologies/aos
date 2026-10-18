@@ -724,5 +724,7 @@ pub(crate) use restore::{
 #[path = "boot/capture17.rs"]
 mod capture17;
 pub(crate) use capture17::{
-    OriginalNativeCapture17Read, native_capture17_receive_scope_counter_scratch_data,
+    NativeCapture17UploadSpentAction, OriginalNativeCapture17Read,
+    native_capture17_receive_scope_counter_scratch_data,
+    native_capture17_upload_scope_counter_scratch_data,
 };

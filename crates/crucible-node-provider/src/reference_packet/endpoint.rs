@@ -1049,4 +1049,7 @@ mod observation17;
 pub(crate) use observation17::native_observation17_endpoint_counter_scratch_data;
 
 mod capture17;
-pub(crate) use capture17::native_capture17_endpoint_receive_counter_scratch_data;
+pub(crate) use capture17::{
+    native_capture17_endpoint_receive_counter_scratch_data,
+    native_capture17_upload_endpoint_counter_scratch_data,
+};

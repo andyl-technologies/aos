@@ -117,6 +117,16 @@ pub(super) fn observe_response_shape(
 fields!(ErrorRecord, code, message, effect, retryable, details);
 fields!(BeginAccepted, operation_id, kind);
 fields!(
+    CaptureArguments,
+    capture_id,
+    participant_ids,
+    cut_id,
+    cut,
+    event_ordinal,
+    ordering_profile,
+    preservation_contract
+);
+fields!(
     CaptureResult,
     capture_manifest,
     owner_state_refs,
@@ -200,6 +210,39 @@ impl ObserveMetadata for Visibility {
 )]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_arguments_count_spare_roster_and_ordering_profile_backing() {
+        let mut participant_ids = Vec::with_capacity(7);
+        participant_ids.push(Id::new("data/participant").unwrap());
+        let expected_vector_bytes = participant_ids.capacity() * size_of::<Id>();
+        let mut ordering_profile = String::with_capacity(113);
+        ordering_profile.push_str("superdense-v1");
+        let arguments = CaptureArguments {
+            capture_id: Id::new("data/capture").unwrap(),
+            participant_ids,
+            cut_id: Id::new("data/cut").unwrap(),
+            cut: Position::new(U64::new(50), U64::new(0), Phase::BoundaryControl),
+            event_ordinal: U64::new(0),
+            ordering_profile,
+            preservation_contract: Id::new("data/preservation").unwrap(),
+        };
+        let expected_string_bytes = arguments.capture_id.allocated_capacity()
+            + arguments.participant_ids[0].allocated_capacity()
+            + arguments.cut_id.allocated_capacity()
+            + arguments.ordering_profile.capacity()
+            + arguments.preservation_contract.allocated_capacity();
+
+        let mut observer = MetadataObserver::new();
+        observer.observe(&arguments).unwrap();
+        let facts = observer.finish();
+
+        assert_eq!(facts.vector_capacity_bytes, expected_vector_bytes);
+        assert_eq!(facts.vector_banks, 1);
+        assert_eq!(facts.string_capacity_bytes, expected_string_bytes);
+        assert_eq!(facts.string_banks, 5);
+        assert_eq!(facts.tree_containers, 0);
+    }
 
     #[test]
     fn capture_response_counts_independent_raw_and_typed_spare_backing() {

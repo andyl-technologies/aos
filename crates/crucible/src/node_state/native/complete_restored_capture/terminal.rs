@@ -6,6 +6,7 @@
 
 use super::*;
 use crucible_node_contract::U64;
+use crucible_node_provider::protocol_snapshot::restored_settled17::NativeCold17Work;
 
 /// Identifies one actual member of the closed three-Source cohort as DATA.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -97,6 +98,10 @@ impl RestoredArchive17ValidationStage {
 /// Identifies the actual parent constructor without confusing tree depth with time.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RestoredArchive17ParentWork {
+    Slot,
+    ScopeProof,
+    ScopeHold,
+    ScopeBuild,
     IndexDecode,
     Inventory,
     ManifestDecode,
@@ -106,7 +111,7 @@ pub(crate) enum RestoredArchive17ParentWork {
     RuntimeDecode,
     SchedulingDecode,
     AdministrativeDecode,
-    Initial15,
+    Initial15(RestoredArchive17Initial15Work),
     Journal,
     SdkCapture,
     SemanticEnvelope,
@@ -115,6 +120,44 @@ pub(crate) enum RestoredArchive17ParentWork {
     Node,
     Source,
     Join,
+}
+
+/// Names actual immutable role decoders inside the initial15 parent reader.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RestoredArchive17Initial15Role {
+    Provenance,
+    Plan,
+    Descriptors,
+    Contracts,
+    Fixtures,
+    Coordinator,
+    Runtime,
+    Scheduling,
+    Administrative,
+}
+
+/// Names an independently copied qualification-reference role.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RestoredArchive17Initial15QualificationRole {
+    Descriptors,
+    Contracts,
+    Fixtures,
+}
+
+/// Names actual separately admitted initial15 constructors, including members.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RestoredArchive17Initial15Work {
+    Header,
+    RoleDecode(RestoredArchive17Initial15Role),
+    RoleTyped(RestoredArchive17Initial15Role),
+    QualificationReference(RestoredArchive17Initial15QualificationRole),
+    LaunchDecode(RestoredArchive17SourceIndex),
+    LaunchValidate(RestoredArchive17SourceIndex),
+    RuntimeJoin,
+    ProtocolPrepare(RestoredArchive17SourceIndex),
+    ProtocolReconstruct,
+    SemanticDecode(RestoredArchive17SourceIndex),
+    SemanticJoin(RestoredArchive17SourceIndex),
 }
 
 /// Stores the exact closed Index3 full-reference identity without allocating.
@@ -182,6 +225,7 @@ impl RestoredArchive17ParentStep {
 pub(crate) struct RestoredArchive17ValidationStep {
     stage: RestoredArchive17ValidationStage,
     parent: Option<RestoredArchive17ParentStep>,
+    native_work: Option<NativeCold17Work>,
 }
 
 impl RestoredArchive17ValidationStep {
@@ -193,10 +237,31 @@ impl RestoredArchive17ValidationStep {
                 "terminal parent step requires exact ancestry identity",
             ));
         }
+        if matches!(stage, RestoredArchive17ValidationStage::Native(_)) {
+            return Err(refused(
+                "terminal native step requires actual defining constructor work",
+            ));
+        }
         Ok(Self {
             stage,
             parent: None,
+            native_work: None,
         })
+    }
+
+    pub(crate) fn native_data(
+        source: RestoredArchive17SourceIndex,
+        work: NativeCold17Work,
+    ) -> Self {
+        Self {
+            stage: RestoredArchive17ValidationStage::Native(source),
+            parent: None,
+            native_work: Some(work),
+        }
+    }
+
+    pub(crate) fn native_work_data(self) -> Option<NativeCold17Work> {
+        self.native_work
     }
 
     pub(crate) fn parent_data(
@@ -212,6 +277,7 @@ impl RestoredArchive17ValidationStep {
                 identity: RestoredArchive17ParentIdentity::from_reference_data(reference)?,
                 work,
             }),
+            native_work: None,
         })
     }
 
@@ -226,6 +292,13 @@ impl RestoredArchive17ValidationStep {
         self,
         previous: Option<Self>,
     ) -> Result<(), StateError> {
+        if self.native_work.is_some()
+            && !matches!(self.stage, RestoredArchive17ValidationStage::Native(_))
+        {
+            return Err(refused(
+                "terminal native work crossed its actual constructor bucket",
+            ));
+        }
         if self.stage.is_parent_data() != self.parent.is_some() {
             return Err(refused("terminal step lost its actual parent identity"));
         }
@@ -233,7 +306,8 @@ impl RestoredArchive17ValidationStep {
             if self.stage.slot_data() < previous.stage.slot_data()
                 || self.stage.slot_data() > previous.stage.slot_data() + 1
                 || (self.stage.slot_data() == previous.stage.slot_data()
-                    && !self.stage.is_parent_data())
+                    && !self.stage.is_parent_data()
+                    && !(self.native_work.is_some() && previous.native_work.is_some()))
             {
                 return Err(refused("terminal constructor stage repeated or regressed"));
             }
@@ -241,6 +315,27 @@ impl RestoredArchive17ValidationStep {
             return Err(refused(
                 "terminal constructor sequence omitted its actual initial stage",
             ));
+        }
+        let previous_native_work = previous
+            .filter(|previous| previous.stage == self.stage)
+            .and_then(|previous| previous.native_work);
+        if let Some(work) = self.native_work {
+            if !work.follows_data(previous_native_work) {
+                return Err(refused(
+                    "terminal native constructor omitted or repeated defining work",
+                ));
+            }
+        }
+        if let Some(previous) = previous {
+            if previous.stage != self.stage
+                && previous
+                    .native_work
+                    .is_some_and(|work| !work.is_final_data())
+            {
+                return Err(refused(
+                    "terminal native constructor left an incomplete graph pair",
+                ));
+            }
         }
         // The Window also rejects an exact duplicate parent key against its
         // entire retained ledger. Signed depth/parent correspondence is checked
@@ -453,6 +548,53 @@ mod controls {
             RestoredArchive17ValidationConstructionData::new_data(initial, usize::MAX, 1, 0, 0)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn native_constructors_follow_the_defining_sequence_before_leaving_the_bucket() {
+        let source = RestoredArchive17SourceIndex::from_data(0).unwrap();
+        let before = RestoredArchive17ValidationStep::ordinary_data(
+            RestoredArchive17ValidationStage::SdkCapture(source),
+        )
+        .unwrap();
+        let after = RestoredArchive17ValidationStep::ordinary_data(
+            RestoredArchive17ValidationStage::SemanticEnvelope(source),
+        )
+        .unwrap();
+        let works = [
+            NativeCold17Work::Framing,
+            NativeCold17Work::RawInputs,
+            NativeCold17Work::BeforeGraphBanks,
+            NativeCold17Work::BeforeGraphTargets,
+            NativeCold17Work::AfterGraphBanks,
+            NativeCold17Work::AfterGraphTargets,
+            NativeCold17Work::OutputPairQuote,
+            NativeCold17Work::OutputPair,
+            NativeCold17Work::RestorationHoldQuote,
+            NativeCold17Work::RestorationHold,
+        ];
+        assert!(
+            RestoredArchive17ValidationStep::ordinary_data(
+                RestoredArchive17ValidationStage::Native(source),
+            )
+            .is_err()
+        );
+        let mut previous = before;
+        for (index, work) in works.iter().copied().enumerate() {
+            let step = RestoredArchive17ValidationStep::native_data(source, work);
+            assert!(step.authenticate_transition_data(Some(previous)).is_ok());
+            assert!(step.authenticate_transition_data(Some(step)).is_err());
+            if index + 1 < works.len() {
+                assert!(after.authenticate_transition_data(Some(step)).is_err());
+            }
+            previous = step;
+        }
+        assert!(after.authenticate_transition_data(Some(previous)).is_ok());
+        let skipped = RestoredArchive17ValidationStep::native_data(
+            source,
+            NativeCold17Work::BeforeGraphBanks,
+        );
+        assert!(skipped.authenticate_transition_data(Some(before)).is_err());
     }
 
     #[test]

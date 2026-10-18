@@ -713,6 +713,59 @@ mod tests {
     }
 
     #[test]
+    fn native_rows_follow_real_subwork_and_cannot_leave_a_partial_pair() {
+        use crate::node_state::RestoredArchive17SourceIndex;
+        use crucible_node_provider::protocol_snapshot::restored_settled17::NativeCold17Work;
+        let source = RestoredArchive17SourceIndex::from_data(0).unwrap();
+        let foreign = RestoredArchive17SourceIndex::from_data(1).unwrap();
+        let mut rows = vec![numeric_row(RestoredArchive17ValidationStage::SdkCapture(
+            source,
+        ))];
+        let after = RestoredArchive17ValidationStep::ordinary_data(
+            RestoredArchive17ValidationStage::SemanticEnvelope(source),
+        )
+        .unwrap();
+        let skipped =
+            RestoredArchive17ValidationStep::native_data(source, NativeCold17Work::RawInputs);
+        assert!(authenticate_next_step_data(&rows, skipped).is_err());
+        assert!(
+            RestoredArchive17ValidationStep::ordinary_data(
+                RestoredArchive17ValidationStage::Native(source),
+            )
+            .is_err()
+        );
+
+        for work in [
+            NativeCold17Work::Framing,
+            NativeCold17Work::RawInputs,
+            NativeCold17Work::BeforeGraphBanks,
+            NativeCold17Work::BeforeGraphTargets,
+            NativeCold17Work::AfterGraphBanks,
+            NativeCold17Work::AfterGraphTargets,
+            NativeCold17Work::OutputPairQuote,
+            NativeCold17Work::OutputPair,
+            NativeCold17Work::RestorationHoldQuote,
+            NativeCold17Work::RestorationHold,
+        ] {
+            let step = RestoredArchive17ValidationStep::native_data(source, work);
+            assert!(authenticate_next_step_data(&rows, step).is_ok());
+            rows.push(numeric_step(step));
+            assert!(authenticate_next_step_data(&rows, step).is_err());
+            assert!(
+                authenticate_next_step_data(
+                    &rows,
+                    RestoredArchive17ValidationStep::native_data(foreign, work),
+                )
+                .is_err()
+            );
+            assert_eq!(
+                authenticate_next_step_data(&rows, after).is_ok(),
+                work.is_final_data()
+            );
+        }
+    }
+
+    #[test]
     fn held_numeric_bank_loan_cannot_hide_retained_or_future_storage() {
         let terminal = RetainedTerminal17::default();
         let loan = terminal.rows.borrow_mut();

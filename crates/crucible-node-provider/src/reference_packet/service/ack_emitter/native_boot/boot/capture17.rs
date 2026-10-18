@@ -31,6 +31,12 @@ pub(crate) struct OriginalNativeCapture17Read {
     source_started: Cell<bool>,
     source_verified: Cell<bool>,
     complete: Cell<bool>,
+    upload_preparing: Cell<bool>,
+    upload_action_started: Cell<bool>,
+    upload_executing: Cell<bool>,
+    upload_publishing: Cell<bool>,
+    upload_finishing: Cell<bool>,
+    upload_storage: RefCell<Option<crate::blob::NativeCapture17UploadStorageData>>,
 }
 
 impl NativeAckBoot {
@@ -71,6 +77,12 @@ impl NativeAckBoot {
             source_started: Cell::new(false),
             source_verified: Cell::new(false),
             complete: Cell::new(false),
+            upload_preparing: Cell::new(false),
+            upload_action_started: Cell::new(false),
+            upload_executing: Cell::new(false),
+            upload_publishing: Cell::new(false),
+            upload_finishing: Cell::new(false),
+            upload_storage: RefCell::new(None),
         };
         Self::authenticate_original_observation17_ancestry_data(
             boot, connection, control, records,
@@ -136,7 +148,11 @@ impl OriginalNativeCapture17Read {
         self.authenticate_slot_data(connection)?;
         let mut attempt = self.attempt.try_borrow_mut().map_err(|_| refused())?;
         attempt.decode_body_data(self.frame)?;
-        if attempt.family_data()? != NativeRestoredSettledActionFamily17::Capture {
+        if !matches!(
+            attempt.family_data()?,
+            NativeRestoredSettledActionFamily17::Capture
+                | NativeRestoredSettledActionFamily17::CaptureUpload17
+        ) {
             return Err(refused());
         }
         Ok(())
@@ -207,10 +223,13 @@ impl OriginalNativeCapture17Read {
             .try_into()
             .map_err(|_| refused())?;
         let mut attempt = self.attempt.try_borrow_mut().map_err(|_| refused())?;
-        let capture = attempt.capture_data_mut()?;
-        match capture.original_data()?.method {
-            Method::Begin => capture.authenticate_capture_source_data(key, self.frame)?,
-            Method::BlobBegin => capture.authenticate_upload_source_data(key, self.frame)?,
+        match attempt.original_data()?.method {
+            Method::Begin => attempt
+                .capture_data_mut()?
+                .authenticate_capture_source_data(key, self.frame)?,
+            Method::BlobBegin => attempt
+                .capture_upload17_data_mut()?
+                .authenticate_upload_source_data(key, self.frame)?,
             _ => return Err(refused()),
         }
         drop(attempt);
@@ -224,8 +243,16 @@ impl OriginalNativeCapture17Read {
             |scope, first_original, first_terminal| {
                 use crate::reference_packet::service::native_startup::NativeCapture17PhaseData;
                 let attempt = self.attempt.try_borrow().map_err(|_| refused())?;
-                let child = attempt.capture_data()?;
-                let request = match child.phase17_data()? {
+                let phase = match attempt.family_data()? {
+                    NativeRestoredSettledActionFamily17::Capture => {
+                        attempt.capture_data()?.phase17_data()?
+                    }
+                    NativeRestoredSettledActionFamily17::CaptureUpload17 => {
+                        attempt.capture_upload17_data()?.phase17_data()?
+                    }
+                    _ => return Err(refused()),
+                };
+                let request = match phase {
                     NativeCapture17PhaseData::Capture { artifact, .. } => &artifact.request,
                     NativeCapture17PhaseData::UploadBegin { artifact, .. } => {
                         &artifact.request.capture
@@ -290,3 +317,9 @@ pub(crate) fn native_capture17_receive_scope_counter_scratch_data() -> usize {
         + crate::reference_packet::endpoint::native_capture17_endpoint_receive_counter_scratch_data()
         + crate::reference_packet::service::ack_emitter::original_observation17_checkpoint_owner_counter_scratch_data()
 }
+
+#[path = "capture17/upload.rs"]
+mod upload;
+pub(crate) use upload::{
+    NativeCapture17UploadSpentAction, native_capture17_upload_scope_counter_scratch_data,
+};

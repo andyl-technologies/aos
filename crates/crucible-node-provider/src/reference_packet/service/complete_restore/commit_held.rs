@@ -146,6 +146,22 @@ impl Serialize for PacketNativeRestoredCommitHold {
     }
 }
 
+/// Names the actual held-proof serializer view and formatter headers.
+///
+/// This counter describes the ordinary typed producer, independently of the
+/// maximum-evidence counter's different borrowed numeric/string view. The
+/// caller separately admits the context digest's base64 backing and its own
+/// DOM, canonical-output, serializer and retained owner windows before walking
+/// the actual Hold. No validation, serialization or allocation runs here.
+pub fn restored_commit_hold_serialization_counter_scratch_data() -> usize {
+    use crucible_node_contract::HashRef;
+    use std::mem::size_of;
+
+    size_of::<HoldView<'static, HashRef, ContentRef, Id, Position, Bytes, U64>>()
+        + size_of::<String>()
+        + size_of::<[u8; 20]>()
+}
+
 /// Counts the closed held-proof maximum using the actual producer's field view.
 ///
 /// The bound includes every 128-byte identifier, all maximum U64 counters,

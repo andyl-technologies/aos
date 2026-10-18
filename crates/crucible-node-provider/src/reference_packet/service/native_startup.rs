@@ -438,3 +438,11 @@ pub(crate) use restored_input_reactive17_ingress::{
 };
 
 pub(crate) use restored_settled_capture_ingress::NativeCapture17PhaseData;
+
+pub(crate) use restored_settled_capture_ingress::native_capture17_upload_action_counter_scratch_data;
+
+pub(crate) use restored_settled_capture_ingress::{
+    NativeRestoredSettledCaptureUploadAttempt,
+    original_restored_settled_capture_upload_ingress_counter_scratch_data,
+    original_restored_settled_capture_upload_ingress_row_data,
+};

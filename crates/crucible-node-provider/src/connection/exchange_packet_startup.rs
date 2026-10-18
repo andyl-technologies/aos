@@ -87,7 +87,9 @@ fn quote_startup_parts_for<const OBJECTS: usize>(
     class: PrefixClass,
 ) -> Result<OriginalPacketPrefixProjectionStorageData<OBJECTS>, ProviderError> {
     let (session, incarnation) = scope;
-    if (!allow_empty_baseline && input.objects.is_empty()) || input.objects.len() > OBJECTS {
+    if (!allow_empty_baseline && !class.is_capture17_upload_data() && input.objects.is_empty())
+        || input.objects.len() > OBJECTS
+    {
         return Err(refused());
     }
     let maximum_frame = allowance(limits.frame_bytes.get())?;
@@ -192,7 +194,16 @@ fn quote_startup_parts_for<const OBJECTS: usize>(
             super::super::restored_observation17::validation_transient_storage_data(),
         )?;
     }
-    if allow_empty_baseline || class == PrefixClass::RestoredObserve17 {
+    if class.is_capture17_upload_data() {
+        data.declared_quote_scratch_bytes = add(
+            data.declared_quote_scratch_bytes,
+            super::super::capture17_upload::counter_scratch_data(),
+        )?;
+    }
+    if allow_empty_baseline
+        || class == PrefixClass::RestoredObserve17
+        || class.is_capture17_upload_data()
+    {
         // The legacy containment projection mixes the original DOM and
         // canonical work. Replace that one named component by backing only;
         // all other actual guard/authority/map/root banks remain unchanged.
@@ -302,8 +313,9 @@ fn quote_startup_parts_for<const OBJECTS: usize>(
         exchange: data,
         source_owner_requested_bytes: source_owner,
         native_source_backing_bytes: (allow_empty_baseline
-            || class == PrefixClass::RestoredObserve17)
-            .then_some(native_source_backing),
+            || class == PrefixClass::RestoredObserve17
+            || class.is_capture17_upload_data())
+        .then_some(native_source_backing),
         declared_counter_scratch_bytes: startup_counter_additional_scratch_data_for::<OBJECTS>(),
         terminal: copy_storage(input.terminal),
         original: copy_storage(input.original),
@@ -451,5 +463,44 @@ pub(crate) fn quote_original_restored_observation17_prefix_startup_storage_data(
         input,
         false,
         PrefixClass::RestoredObserve17,
+    )
+}
+
+/// Projects only the closed zero-evidence Capture upload response class.
+///
+/// This DATA producer neither authenticates a current native child nor creates
+/// a Source signature, upload once owner or retained output allowance.
+///
+/// # Errors
+/// Refuses another method, nonempty evidence, invalid limits or finite overflow.
+pub(crate) fn quote_original_capture17_upload_prefix_startup_storage_data(
+    launch: &PacketNative5SourceLaunch,
+    method: Method,
+    input: OriginalPacketPrefixProjectionInput<'_>,
+) -> Result<OriginalPacketPrefixProjectionStorageData<0>, ProviderError> {
+    crucible_node_contract::Validate::validate(&launch.limits)?;
+    if !matches!(
+        method,
+        Method::BlobBegin | Method::BlobChunk | Method::BlobFinish
+    ) || !input.objects.is_empty()
+    {
+        return Err(refused());
+    }
+    let binding = launch
+        .selection
+        .realization
+        .bindings
+        .first()
+        .ok_or_else(refused)?;
+    quote_startup_parts_for::<0>(
+        (
+            &binding.authority.session_id,
+            &binding.authority.incarnation_id,
+        ),
+        launch.limits,
+        launch.selection.provider.extensions_supported.len(),
+        input,
+        false,
+        PrefixClass::CaptureUpload17(method),
     )
 }

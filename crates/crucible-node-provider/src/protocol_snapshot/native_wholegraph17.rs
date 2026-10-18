@@ -21,6 +21,7 @@ pub(crate) use limits::NativeCurrentGraph17ReadLimits;
 pub(crate) use reader::{
     NativeCurrentGraph17Data, NativeCurrentGraph17DecodeAttempt,
     read_native_current_graph17_into_data, read_native_current_graph17_with_limits_into_data,
+    read_native_current_graph17_with_admission_into_data, native_current_graph17_banks_data,
 };
 
 use super::owned11::typed::{Fields, invalid, plain_string};
@@ -145,4 +146,7 @@ pub(crate) const fn native_current_graph17_counter_scratch_data() -> usize {
         + size_of::<crate::protocol_snapshot::owned11::typed::Ledger<'static, 'static, 'static>>()
         + size_of::<[u8; 64]>()
         + crate::connection::native17_logical_projection_scratch_data()
+        + NativeCurrentGraph17DecodeAttempt::inline_header_bytes_data()
+        + size_of::<crate::retained_metadata::records::ValidatedMetadataRecords<'static>>()
+        + size_of::<crate::retained_metadata::records::MetadataRecordRows<'static>>()
 }

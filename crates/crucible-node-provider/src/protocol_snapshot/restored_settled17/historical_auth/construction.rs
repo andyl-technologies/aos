@@ -493,6 +493,44 @@ fn typed_decode_window(
     ])
 }
 
+/// Quotes the concrete assigned-Capture helper's typed body/extension decoders.
+///
+/// Unlike the postsealed Source-history conjunction, this walk borrows only
+/// the actual SDK original already available before the cold native pair join.
+/// It reuses the defining typed-layout roster, not a raw-byte heap multiplier.
+///
+/// # Errors
+/// Refuses malformed retained Value shapes, checked layout overflow or short credit.
+pub(crate) fn cold_capture17_decode_window_data(
+    original: &Envelope,
+    maximum: usize,
+) -> Result<usize, ProviderError> {
+    let typed = layouts::typed_layouts_data()?;
+    let request = original.extensions
+        .get(crate::reference_packet::service::restored_settled_capture::RESTORED_SETTLED_CAPTURE_FEATURE)
+        .and_then(Value::as_object)
+        .and_then(|extension| extension.get("request"))
+        .ok_or_else(exhausted)?;
+    let arguments = original.body.get("arguments").ok_or_else(exhausted)?;
+    let mut request_shape = HistoricalAuth17Shapes::default();
+    request_shape.include_body_data(request, maximum)?;
+    let mut begin_shape = HistoricalAuth17Shapes::default();
+    begin_shape.include_body_data(&original.body, maximum)?;
+    let mut arguments_shape = HistoricalAuth17Shapes::default();
+    arguments_shape.include_body_data(arguments, maximum)?;
+    // The request, decoded Begin and independently decoded CaptureArguments
+    // coexist in the defining assigned-request helper before its Envelope DOM.
+    let peak = sum(&[
+        typed_decode_window(&request_shape, typed)?,
+        typed_decode_window(&begin_shape, typed)?,
+        typed_decode_window(&arguments_shape, typed)?,
+    ])?;
+    if peak > maximum {
+        return Err(exhausted());
+    }
+    Ok(peak)
+}
+
 fn canonical_window(encoded: usize) -> Result<usize, ProviderError> {
     let row = original_json_value_storage_extent_data(encoded)?;
     // Actual native private bounded Bytes can format before serialized_credit

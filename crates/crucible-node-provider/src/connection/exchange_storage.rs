@@ -35,11 +35,15 @@ mod packet_projection;
 mod restored_input17;
 #[path = "exchange_restored_observation17.rs"]
 mod restored_observation17;
+
+#[path = "exchange_capture17_upload.rs"]
+mod capture17_upload;
 pub(crate) use packet_projection::{
     OriginalNativeObservePreparationStorageData, OriginalPacketPrefixProjectionInput,
     OriginalPacketPrefixProjectionStorageData,
     original_native_observe_preparation_counter_scratch_data,
     original_packet_prefix_startup_counter_scratch_data,
+    quote_original_capture17_upload_prefix_startup_storage_data,
     quote_original_native_observe_prefix_startup_storage_data,
     quote_original_packet_baseline_prefix_startup_storage_data,
     quote_original_packet_prefix_startup_storage_data,

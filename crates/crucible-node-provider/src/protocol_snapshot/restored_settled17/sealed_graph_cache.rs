@@ -6,10 +6,11 @@
 //! This spine retains zero or one actual child, including a reserved empty slot
 //! or a failed child. It changes no modeled state or historical wire format.
 
+use super::super::cold_admission::NativeCold17GraphAdmission;
 use crate::ProviderError;
 use crate::protocol_snapshot::native_wholegraph17::{
     NativeCurrentGraph17DecodeAttempt, NativeCurrentGraph17ReadLimits,
-    read_native_current_graph17_with_limits_into_data,
+    read_native_current_graph17_with_admission_into_data,
 };
 use std::alloc::Layout;
 use std::mem::size_of;
@@ -49,6 +50,15 @@ impl NativeGraph17DecodeCache {
         input: &[u8],
         limits: NativeCurrentGraph17ReadLimits,
     ) -> Result<(), ProviderError> {
+        self.read_with_admission_into_data(input, limits, None)
+    }
+
+    pub(in crate::protocol_snapshot::restored_settled17) fn read_with_admission_into_data(
+        &mut self,
+        input: &[u8],
+        limits: NativeCurrentGraph17ReadLimits,
+        admission: Option<&NativeCold17GraphAdmission<'_, '_>>,
+    ) -> Result<(), ProviderError> {
         if std::mem::replace(&mut self.started, true) || !self.slots.is_empty() {
             return Err(refused());
         }
@@ -68,7 +78,7 @@ impl NativeGraph17DecodeCache {
         }
         self.slots.resize_with(1, || None);
         let destination = self.slots.first_mut().ok_or_else(refused)?;
-        read_native_current_graph17_with_limits_into_data(
+        read_native_current_graph17_with_admission_into_data(
             input,
             destination,
             NativeCurrentGraph17ReadLimits {
@@ -78,6 +88,7 @@ impl NativeGraph17DecodeCache {
                     .ok_or_else(refused)?,
                 ..limits
             },
+            admission,
         )
     }
 
