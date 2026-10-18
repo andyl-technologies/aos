@@ -23,6 +23,10 @@ mod correspondence;
 mod observation;
 #[path = "installed_restoration/outcome.rs"]
 mod outcome;
+pub(super) use outcome::{
+    historical_outcome_correspondence17_counter_scratch_data,
+    historical_outcome_correspondence17_data,
+};
 #[path = "installed_restoration/raw_storage.rs"]
 mod raw_storage;
 #[path = "installed_restoration/runtime_dispatch.rs"]

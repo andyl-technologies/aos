@@ -59,6 +59,24 @@ pub(crate) const MAXIMUM_PACKET_TRANSPORT_BYTES: usize = 32 * 1024 * 1024;
 const CONTENT: usize = 65_536;
 const STORED_CONTENT: usize = 4 * 1024 * 1024;
 
+/// Returns the defining receiver recipe used by both actual Endpoint constructors.
+///
+/// The future native upload projection borrows this exact finite recipe before
+/// child birth. It creates no receiver, quota reservation or current-state proof.
+/// Actual constructors pass their authenticated negotiated chunk ceiling; actual
+/// per-occurrence quotes still authenticate the installed receiver and all axes.
+pub(crate) const fn original_capture17_upload_receiver_limits_data(chunk: usize) -> BlobLimits {
+    BlobLimits {
+        reserved_bytes: STORED_CONTENT,
+        content_bytes: CONTENT,
+        chunk_bytes: chunk,
+        transfers_per_origin: 256,
+        tombstones_per_origin: 256,
+        chunks_per_transfer: 256,
+        operation_pins: EXCHANGES,
+    }
+}
+
 /// Authenticates source installation separately from wire syntax and acceptance.
 ///
 /// Implementations belong to the independent local installer. They verify the
@@ -235,15 +253,7 @@ impl<S: ProviderStream> PacketEndpoint<S> {
             let uploads = BlobReceiver::new(
                 authority.session_id().clone(),
                 authority.incarnation_id().clone(),
-                BlobLimits {
-                    reserved_bytes: STORED_CONTENT,
-                    content_bytes: CONTENT,
-                    chunk_bytes: chunk,
-                    transfers_per_origin: 256,
-                    tombstones_per_origin: 256,
-                    chunks_per_transfer: 256,
-                    operation_pins: EXCHANGES,
-                },
+                original_capture17_upload_receiver_limits_data(chunk),
                 supervisor,
             )?;
             let original_authority = authority.clone();

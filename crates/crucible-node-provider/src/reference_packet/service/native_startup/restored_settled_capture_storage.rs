@@ -554,8 +554,20 @@ pub fn original_restored_settled_native_storage_data(
         decoder[1],
         decoder[2],
     ];
+    // Upload primitives and ordinary transport have different owners from
+    // ingress and the five output banks. Reserve their complete finite future
+    // demand independently before native birth; no later request can convert an
+    // output ceiling or imported backing into receiver allocation credit.
+    let uploads = super::capture_upload17_future::future_storage_data(
+        input.launch,
+        input.maximum_originals,
+        *blake3::hash(input.canonical_launch5).as_bytes(),
+        input.maximum_requested_bytes,
+    )?;
+    let upload_axes = uploads.lifetime_axes_data();
     let actions = PacketNativeStartupAllocationRow {
         retained_requested_bytes: quantity(sum(&[
+            extent(upload_axes.retained_requested_bytes)?,
             output_bytes,
             metadata_bytes,
             mul(
@@ -565,9 +577,13 @@ pub fn original_restored_settled_native_storage_data(
             size_of::<super::restored_settled_capture_output::NativeRestoredSettledCaptureOutputs>(
             ),
         ])?)?,
-        maximum_simultaneous_transient_bytes: quantity(encoding_transient)?,
+        maximum_simultaneous_transient_bytes: quantity(sum(&[
+            encoding_transient,
+            extent(upload_axes.maximum_simultaneous_transient_bytes)?,
+        ])?)?,
         declared_counter_scratch_bytes: quantity(sum(&[
             encoding_scratch,
+            extent(upload_axes.declared_counter_scratch_bytes)?,
             original_restored_settled_native_storage_counter_scratch_data(),
         ])?)?,
     };
@@ -649,6 +665,7 @@ pub fn original_restored_settled_native_storage_counter_scratch_data() -> usize 
         + size_of::<&PacketNativeStartupAllocationRow>()
         + super::original_restored_settled_action_counter_scratch_data()
         + super::restored_settled_capture_output::counter_scratch_data()
+        + super::capture_upload17_future::counter_scratch_data()
 }
 
 // This partition changes no serialized field or StorageData layout. Both real

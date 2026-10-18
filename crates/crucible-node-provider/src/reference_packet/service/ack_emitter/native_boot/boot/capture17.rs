@@ -37,6 +37,7 @@ pub(crate) struct OriginalNativeCapture17Read {
     upload_publishing: Cell<bool>,
     upload_finishing: Cell<bool>,
     upload_storage: RefCell<Option<crate::blob::NativeCapture17UploadStorageData>>,
+    upload_continuation: RefCell<Option<upload::NativeCapture17UploadContinuation>>,
 }
 
 impl NativeAckBoot {
@@ -83,6 +84,7 @@ impl NativeAckBoot {
             upload_publishing: Cell::new(false),
             upload_finishing: Cell::new(false),
             upload_storage: RefCell::new(None),
+            upload_continuation: RefCell::new(None),
         };
         Self::authenticate_original_observation17_ancestry_data(
             boot, connection, control, records,
@@ -297,7 +299,8 @@ fn refused() -> ProviderError {
 
 /// Names this actual owner, receive decoder and reused ancestry walk headers.
 pub(crate) fn native_capture17_receive_scope_counter_scratch_data() -> usize {
-    size_of::<OriginalNativeCapture17Read>()
+    upload::continuation17_counter_scratch_data()
+        + size_of::<OriginalNativeCapture17Read>()
         + size_of::<Ref<'static, NativeRestoredSettledActionAttempt>>()
         + size_of::<std::cell::RefMut<'static, NativeRestoredSettledActionAttempt>>()
         + size_of::<Ref<'static, NativeAckBoot>>()

@@ -89,6 +89,8 @@ impl PacketCompleteSemanticSource {
                 super::ancestry::OriginalRestoredCaptureAncestry17Data::counter_scratch_data(),
                 restoration_activation_retained_native_evidence_counter_scratch_data(),
                 Self::original_restored_settled_startup_counter_scratch_data()?,
+                crucible_node_provider::reference_packet::service::native_startup::
+                    PacketRestoredSettledNativeUploadFutureStorageData::counter_scratch_data(),
             ],
             maximum,
         )?;
@@ -122,6 +124,12 @@ impl PacketCompleteSemanticSource {
         inputs.authenticate_current_data()?;
         self.authenticate_original_restored_settled_source17_launch_data(launch, raw5)?;
         let native = self.original_completed_restored_settled_startup_data()?;
+        let native_upload =
+            self.with_original_completed_restored_settled_startup_data(|storage| {
+                storage
+                    .source_upload_future_storage_data(launch, raw5)
+                    .map_err(|_| RuntimeError::ResourceLimit)
+            })?;
         let validation = self.with_original_completed_restored_settled_startup_data(|storage| {
             storage
                 .source_output_validation_data()
@@ -180,6 +188,12 @@ impl PacketCompleteSemanticSource {
         if frontier.get() == 0 || prefix > self.installation().maximum_semantic_bytes {
             return Err(RuntimeError::ResourceLimit);
         }
+        native_upload
+            .authenticate_content_bounds_data([
+                prefix,
+                request.maximum_runtime_record_encoded_bytes,
+            ])
+            .map_err(|_| RuntimeError::ResourceLimit)?;
         let sdk = controller
             .original_restored_settled_capture_future_construction_data(
                 launch,
@@ -340,6 +354,7 @@ impl PacketCompleteSemanticSource {
             materialization,
             sdk,
             native,
+            native_upload,
             validation,
             retained,
             transient,
@@ -383,6 +398,11 @@ impl PacketCompleteSemanticSource {
             + size_of::<[usize; 6]>()
             + size_of::<[usize; 9]>()
             + size_of::<[usize; 13]>()
+            + size_of::<[usize; 15]>()
+            + size_of::<crucible_node_provider::reference_packet::service::native_startup::
+                PacketRestoredSettledNativeUploadFutureStorageData>()
+            + size_of::<Result<crucible_node_provider::reference_packet::service::native_startup::
+                PacketRestoredSettledNativeUploadFutureStorageData, RuntimeError>>()
             + size_of::<
                 std::cell::Ref<
                     'static,

@@ -22,6 +22,9 @@ use crucible_node_provider::{
 use serde::{Serialize, de::DeserializeOwned};
 use std::{cell::Cell, mem::size_of, ops::Deref};
 
+#[path = "archive_native_input/construction.rs"]
+mod construction;
+
 #[path = "archive_native_input/input.rs"]
 mod input;
 #[cfg(test)]
@@ -216,41 +219,7 @@ impl NativeInputData<'_> {
         reference: &ContentRef,
     ) -> Result<NativeObject<'_, T>, OperationFailure> {
         let bytes = self.body(reference)?;
-        if bytes.len() > MAXIMUM_RECORD_BYTES {
-            return Err(refused("cold native input record exceeds source bound"));
-        }
-        // Three complete records can coexist: receipt/commit/stage, plus their
-        // parser and roundtrip Value owners. The per-node layout also covers
-        // small typed vectors and the full request envelopes inside each record.
-        let slot = [
-            size_of::<PacketStageRecord>(),
-            size_of::<PacketCommitRecord>(),
-            size_of::<InputCustodyRecord>(),
-            size_of::<ControlReceipt>(),
-            size_of::<Envelope>(),
-            size_of::<PacketInputCut>(),
-            size_of::<Event>(),
-            size_of::<crate::node_scheduling::event::Delivery>(),
-            size_of::<serde_json::Value>(),
-        ]
-        .into_iter()
-        .max()
-        .ok_or_else(|| refused("cold native input layout absent"))?
-        .max(crucible_node_provider::reference_packet::control::packet_control_snapshot_validation_layouts().maximum_typed_slot_bytes);
-        let demand = NodeRuntime::capture_selected_json_decode_storage(
-            bytes,
-            slot,
-            NodeRuntime::capture_map_node_storage::<String, serde_json::Value>(),
-            self.maximum,
-        )
-        .map_err(unknown)?;
-        // The lease remains with the typed object, so nested Stage/Commit and
-        // receipt decoders add their simultaneous demand rather than reusing a
-        // per-call ceiling. Four copies cover typed/DOM/roundtrip and the bounded
-        // request/canonical comparison temporaries of this closed grammar.
-        let demand = demand
-            .checked_mul(4)
-            .ok_or_else(|| refused("cold native input parser storage overflow"))?;
+        let demand = self.object_construction_requested_data(bytes)?;
         let scratch = self
             .scratch
             .get()
@@ -299,11 +268,7 @@ impl NativeInputData<'_> {
         // This walk observes the retained full Value, before request/response
         // decoding clones any nested fields. Closed packet inputs additionally
         // cap their event population before typed decoding.
-        let bytes = NodeRuntime::capture_future_decode_storage(envelope, self.maximum)
-            .map_err(unknown)?
-            .checked_mul(8)
-            .and_then(|n| n.checked_add(size_of::<InputRequest>() + size_of::<Event>() * 4))
-            .ok_or_else(|| refused("cold original decoder scratch overflow"))?;
+        let bytes = self.envelope_construction_requested_data(envelope)?;
         let scratch = self
             .scratch
             .get()

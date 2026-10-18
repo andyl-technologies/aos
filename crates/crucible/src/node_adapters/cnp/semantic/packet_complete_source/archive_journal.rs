@@ -89,6 +89,22 @@ pub struct PacketCompleteSettledJournal {
     pub confirmation: PacketNativeAfterConfirmationReceipt,
 }
 
+#[derive(serde::Serialize)]
+struct RegistryBackendIdentityView<'a> {
+    schema: &'static str,
+    native_snapshot_class: &'static str,
+    implementation: &'a ImplementationIdentity,
+    native_key: &'a NativeStateKey,
+    journal: &'static str,
+    ancestry_class: &'static str,
+    capacity_records: &'static str,
+    controller_class: &'static str,
+    connection_class: &'static str,
+    host_extension_registry_class: &'static str,
+    native_connection_class: &'static str,
+    native_service_class: &'static str,
+}
+
 impl PacketCompleteSettledJournal {
     /// Decodes bounded closed journal data without constructing any authority.
     ///
@@ -273,12 +289,13 @@ impl PacketCompleteSettledJournal {
             } else if key.schema.id.as_str() == "source-owned.packet-native-continuation/14" {
                 if self.backend_implementation.media_type
                     != "application/vnd.source-owned.packet-complete-archive-backend.v17+json"
-                    || key.schema
-                        != super::archive_owner::CompleteNativeSnapshotClass::InvocationCapture15
-                            .schema()?
                 {
                     return Err(refused("complete invocation backend schema differs"));
                 }
+                crucible_node_provider::reference_packet::service::native_snapshot::authenticate_native_owned14_snapshot_schema_data(
+                    &key.schema,
+                )
+                .map_err(unknown)?;
                 serde_json::to_value(Self::backend_registry_identity_view_for_class_data(
                     installed,
                     key,
@@ -348,22 +365,7 @@ impl PacketCompleteSettledJournal {
         key: &'a NativeStateKey,
         class: super::archive_owner::CompleteNativeSnapshotClass,
     ) -> impl serde::Serialize + 'a {
-        #[derive(serde::Serialize)]
-        struct Backend<'a> {
-            schema: &'static str,
-            native_snapshot_class: &'static str,
-            implementation: &'a ImplementationIdentity,
-            native_key: &'a NativeStateKey,
-            journal: &'static str,
-            ancestry_class: &'static str,
-            capacity_records: &'static str,
-            controller_class: &'static str,
-            connection_class: &'static str,
-            host_extension_registry_class: &'static str,
-            native_connection_class: &'static str,
-            native_service_class: &'static str,
-        }
-        Backend {
+        RegistryBackendIdentityView {
             schema: match class {
                 super::archive_owner::CompleteNativeSnapshotClass::Legacy11 => "source-owned.packet-complete-archive-backend-before/15",
                 super::archive_owner::CompleteNativeSnapshotClass::StartupCapture14 => "source-owned.packet-complete-archive-backend-before/16",
@@ -390,6 +392,11 @@ impl PacketCompleteSettledJournal {
                 super::archive_owner::CompleteNativeSnapshotClass::InvocationCapture15 => crucible_node_provider::protocol_snapshot::owned11::native::outer::COMPLETE_NATIVE_INVOCATION_SERVICE_FORMAT,
             },
         }
+    }
+
+    /// Reports the actual borrowed tuple serializer header without constructing a schema.
+    pub(super) fn backend_registry_identity_counter_scratch_data() -> usize {
+        std::mem::size_of::<RegistryBackendIdentityView<'static>>()
     }
 
     /// Builds the explicitly registry-bearing measured backend data tuple.

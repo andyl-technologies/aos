@@ -20,6 +20,9 @@ mod validation;
 
 #[path = "complete_restored_capture/terminal.rs"]
 mod terminal;
+
+#[path = "complete_restored_capture/terminal_construction.rs"]
+mod terminal_construction;
 pub(crate) use terminal::{
     RestoredArchive17Initial15QualificationRole, RestoredArchive17Initial15Role,
     RestoredArchive17Initial15Work, RestoredArchive17ParentIdentity, RestoredArchive17ParentStep,
@@ -54,7 +57,12 @@ mod dag;
 pub struct CompleteRestoredSettledArchiveValidation<'a> {
     restoration_data: &'a RefCell<[Option<CompleteRestoredSettledNativeRestorationData>; 4]>,
     lineage_limits: OriginalInputLineageLimits,
+    terminal_admission: Option<&'a dyn RestoredArchive17ValidationAdmission>,
+    // Captured under the preceding Core phase's actual admitted census. The
+    // collector adds its own independently retained root, partials and members.
+    terminal_prefix_retained_bytes: usize,
     collection: &'a RefCell<Option<RetainedCold17Collection>>,
+    collection_phase: &'a Cell<collector::CollectorPhase17>,
     validation_origin:
         &'a storage::complete_original_validation_origin::CompleteArchiveValidationOrigin<'a>,
     /// Borrows the actual admitted historical graph and full immutable bindings.
@@ -79,6 +87,27 @@ pub struct CompleteRestoredSettledArchiveValidation<'a> {
 }
 
 impl CompleteRestoredSettledArchiveValidation<'_> {
+    /// Borrows the actual writer's phase admission callback, if this is a write.
+    pub(crate) fn terminal_admission_data(
+        &self,
+    ) -> Option<&dyn RestoredArchive17ValidationAdmission> {
+        self.terminal_admission
+    }
+
+    /// Returns the already-counted Core prefix without a recursive prewalk.
+    ///
+    /// This includes the full actual attempt, archive occurrence and borrowed
+    /// scope headers, capacities and verified content before collection birth.
+    /// It excludes caller `additional` and the collection's future owners.
+    /// Selected-load validation supplies zero and has no writer phase callback.
+    ///
+    /// # Errors
+    /// The defining captured scalar is returned without allocating or checking
+    /// live authority. Actual signed/native/Source joins remain independent.
+    pub(crate) fn terminal_prefix_retained_storage_data(&self) -> Result<usize, StateError> {
+        Ok(self.terminal_prefix_retained_bytes)
+    }
+
     /// Retains actual validated17 reconstruction DATA for this exact signed owner.
     ///
     /// # Errors
@@ -243,6 +272,9 @@ impl CompleteRestoredSettledArchiveValidation<'_> {
         additional_retained_bytes: usize,
     ) -> Result<(), StateError> {
         self.validation_origin.authenticate(self.archive)?;
+        if self.terminal_admission.is_some() {
+            return collector::collect_terminal_into_data(self, additional_retained_bytes);
+        }
         let mut output = self
             .collection
             .try_borrow_mut()
@@ -323,6 +355,7 @@ pub struct CompleteRestoredSettledArchiveValidationAttempt {
     checkpoint_reference: Option<ContentRef>,
     restoration_data: RefCell<[Option<CompleteRestoredSettledNativeRestorationData>; 4]>,
     collection: RefCell<Option<RetainedCold17Collection>>,
+    collection_phase: Cell<collector::CollectorPhase17>,
     lineage_limits: OriginalInputLineageLimits,
 }
 
@@ -359,6 +392,7 @@ impl CompleteRestoredSettledArchiveValidationAttempt {
             checkpoint_reference: None,
             restoration_data: RefCell::new(std::array::from_fn(|_| None)),
             collection: RefCell::new(None),
+            collection_phase: Cell::new(collector::CollectorPhase17::Pending),
             lineage_limits,
         }
     }
@@ -577,3 +611,10 @@ pub fn complete_restored_settled_archive_validation_counter_scratch_data() -> us
         + collector::counter_scratch_data()
         + parent_index::counter_scratch_data()
 }
+
+#[path = "complete_restored_capture/initial15_history.rs"]
+mod initial15_history;
+pub(crate) use initial15_history::{
+    HistoricalInitial15Scope17, Initial15ScopeMember17,
+    authenticate_initial15_source_member17_data, initial15_source_member17_counter_scratch_data,
+};

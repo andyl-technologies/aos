@@ -1002,7 +1002,7 @@ pub(super) struct CoreCaptureMetadataGeometry<'a> {
 // elsewhere; these are the temporary artifact owner, filename/temporary-name
 // String requests, fixed streaming hash stack, and digest output. The archive's
 // original directory Arc is counted once by the writer's current-core term.
-fn projected_archive_io_storage() -> Result<usize, RuntimeError> {
+pub(super) fn projected_archive_io_storage() -> Result<usize, RuntimeError> {
     use crate::node_contract::NativeCaptureArtifact;
     let object_name = add(64, ".native-object-v1".len())?;
     let pending_name = add(object_name, ".pending".len())?;

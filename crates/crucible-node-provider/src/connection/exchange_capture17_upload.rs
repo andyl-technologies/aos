@@ -319,6 +319,37 @@ impl<S: ProviderStream> Connection<S> {
         self.protocol_owner.ensure_current()
     }
 
+    /// Derives the existing finite upload grid under this actual selected peer.
+    ///
+    /// Source proof, actual seed custody and native resource/once admission are
+    /// independent. The fixed 256 is the unchanged format ceiling; the actual
+    /// native reservation separately accounts every original without renewal.
+    ///
+    /// # Errors
+    /// Refuses another live selected header, invalid full references/limits or
+    /// a transfer pair that cannot fit the unchanged finite original ceiling.
+    pub(crate) fn quote_current_capture17_upload_geometry_data(
+        &self,
+        original: &Envelope,
+        history: &ContentRef,
+        runtime: &ContentRef,
+    ) -> Result<crate::reference_packet::service::native_startup::PacketRestoredSettledCaptureUploadGeometryData, ProviderError>{
+        authenticate_original_data(self, original)?;
+        let geometry = crate::reference_packet::service::native_startup::original_restored_settled_capture_auxiliary_geometry_for_limits_data(
+            &self.authority.limits(), history, runtime, 256,
+        )?;
+        authenticate_original_data(self, original)?;
+        Ok(geometry)
+    }
+
+    /// Names the actual selected-header and closed-reply correspondence checks.
+    ///
+    /// This fixed DATA is separately admitted before a predecessor/seed walk;
+    /// it grants no Source, native effect or transport allocation permission.
+    pub(crate) fn capture17_upload_correspondence_counter_scratch_data() -> usize {
+        counter_scratch_data()
+    }
+
     /// Names fixed defining quote/closed-validator/actual-original headers.
     ///
     /// This bound is checked before quotation; the resulting projection and
@@ -334,6 +365,7 @@ impl<S: ProviderStream> Connection<S> {
 
 pub(super) fn counter_scratch_data() -> usize {
     size_of::<&Envelope>() + size_of::<&Map<String, Value>>()
+        + size_of::<crate::handshake::Limits>()
         + size_of::<&[(ContentRef, Vec<u8>)]>()
         + size_of::<&[&str]>() + size_of::<std::slice::Iter<'static, &str>>()
         + size_of::<std::str::Bytes<'static>>() + size_of::<Option<u8>>()

@@ -15,6 +15,7 @@ use crucible_node_provider::{
         native_startup::{
             PacketRestoredSettledNativeCarrierData,
             PacketRestoredSettledNativeOutputValidationStorageData,
+            PacketRestoredSettledNativeUploadFutureStorageData,
         },
     },
 };
@@ -44,6 +45,7 @@ pub struct OriginalSourceRestoredCaptureConstructionData {
     pub(super) materialization: super::materialization_storage::CaptureMaterializationStorage,
     pub(super) sdk: OriginalRestoredSettledCaptureConstructionData,
     pub(super) native: PacketRestoredSettledNativeCarrierData,
+    pub(super) native_upload: PacketRestoredSettledNativeUploadFutureStorageData,
     pub(super) validation: PacketRestoredSettledNativeOutputValidationStorageData,
     pub(super) retained: usize,
     pub(super) transient: usize,

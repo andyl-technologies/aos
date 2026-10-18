@@ -366,3 +366,6 @@ mod source_join;
 
 #[path = "restored_settled17/decoded_storage.rs"]
 mod decoded_storage;
+
+#[path = "restored_settled17/initial15.rs"]
+mod initial15;

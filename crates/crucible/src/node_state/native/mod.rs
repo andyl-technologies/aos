@@ -71,11 +71,12 @@ use crate::{
     },
 };
 
-use super::{
-    NativeRestoreStaging, RestoreReservations, StateError, StateLimits, VerifiedStateContent,
-};
+use super::{NativeRestoreStaging, RestoreReservations, StateError, StateLimits, VerifiedStateContent};
 
-pub use complete_original_capture::CompleteOriginalArchiveValidation;
+pub use complete_original_capture::{
+    CompleteOriginalArchiveValidation, ImportedClosureGeometry17,
+    imported_closure17_counter_scratch_data,
+};
 pub use complete_original_geometry::{
     CompleteOriginalCaptureGeometry, CompleteOriginalOwnerCaptureGeometry,
     CompleteOriginalOwnerCapturePreflight,
@@ -183,6 +184,59 @@ impl AuthenticatedNativeSource<'_> {
 /// complete native ledgers and every image/resource dependency. Source image
 /// certificates never qualify a fresh live peer or grant execution authority.
 pub trait NativeWorldFactory {
+    /// Borrows exact imported-closure geometry from the actual three Source rows.
+    ///
+    /// This nonallocating metadata callback runs under the actual current scope,
+    /// before owner effects. The caller separately admits returned maps, cloned
+    /// references, dependency rows, finished Index backing and store verification.
+    ///
+    /// # Errors
+    /// Defaults to refusal for an unsupported Source family or missing real row.
+    fn complete_restored_capture_imported_closure_geometry_data(
+        &self,
+        _scope: &crate::node_contract::RestoredCollectingCaptureScope17<'_>,
+    ) -> Result<ImportedClosureGeometry17, StateError> {
+        Err(refused(
+            "installed imported current17 closure geometry is unsupported",
+        ))
+    }
+
+    /// Rechecks completed imported geometry against its pre-effects bound.
+    ///
+    /// # Errors
+    /// Defaults to refusal; rejects incomplete Source outputs or changed custody.
+    fn complete_restored_capture_completed_imported_closure_geometry_data(
+        &self,
+        _scope: &crate::node_contract::RestoredCollectingCaptureScope17<'_>,
+    ) -> Result<ImportedClosureGeometry17, StateError> {
+        Err(refused(
+            "installed completed current17 closure geometry is unsupported",
+        ))
+    }
+
+    /// Visits each actual parent Index body followed by its exact signed objects.
+    ///
+    /// The caller has independently admitted all returned reference/adjacency
+    /// copies before effects. Bodies remain borrowed from completed Source
+    /// custody; a reference alone never supplies missing octets or dependencies.
+    ///
+    /// # Errors
+    /// Defaults to refusal; propagates any changed owner, missing body, stale
+    /// current scope or callback failure without treating failure as success.
+    fn visit_complete_restored_capture_imported_objects_data(
+        &self,
+        _scope: &crate::node_contract::RestoredCollectingCaptureScope17<'_>,
+        _inspect: &mut dyn FnMut(
+            &crucible_node_contract::ContentRef,
+            &[u8],
+            &[crucible_node_contract::ContentRef],
+        ) -> Result<(), StateError>,
+    ) -> Result<(), StateError> {
+        Err(refused(
+            "installed imported current17 body visitor is unsupported",
+        ))
+    }
+
     /// Authenticates the distinct current17 archive and retains all cold owners.
     ///
     /// # Errors

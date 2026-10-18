@@ -493,6 +493,7 @@ pub(crate) fn native_capture17_upload_scope_counter_scratch_data() -> usize {
         + crate::reference_packet::endpoint::native_capture17_upload_endpoint_counter_scratch_data()
         + crate::connection::original_native17_publication_literal_counter_scratch_data()
         + crate::reference_packet::service::native_startup::native_capture17_upload_action_counter_scratch_data()
+        + continuation17_counter_scratch_data()
         + capture17_upload_counter_scratch_data()
         + crate::reference_packet::service::native_startup::original_restored_settled_capture_upload_ingress_counter_scratch_data()
         + prospective_counter_scratch_data()
@@ -568,4 +569,12 @@ mod tests {
             .is_err()
         );
     }
+}
+
+#[path = "upload/continuation17.rs"]
+mod continuation17;
+pub(super) use continuation17::NativeCapture17UploadContinuation;
+
+pub(super) fn continuation17_counter_scratch_data() -> usize {
+    continuation17::native_capture17_upload_continuation_counter_scratch_data()
 }

@@ -154,6 +154,7 @@ pub(crate) enum RestoredArchive17Initial15Work {
     LaunchDecode(RestoredArchive17SourceIndex),
     LaunchValidate(RestoredArchive17SourceIndex),
     RuntimeJoin,
+    ProtocolJournal(RestoredArchive17SourceIndex),
     ProtocolPrepare(RestoredArchive17SourceIndex),
     ProtocolReconstruct,
     SemanticDecode(RestoredArchive17SourceIndex),

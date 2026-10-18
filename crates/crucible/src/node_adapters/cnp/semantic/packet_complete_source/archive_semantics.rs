@@ -173,3 +173,6 @@ pub(super) mod decoded_storage;
 
 #[path = "archive_semantics/initial15.rs"]
 pub(super) mod initial15;
+
+#[path = "archive_semantics/terminal_quote.rs"]
+mod terminal_quote;

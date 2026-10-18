@@ -546,15 +546,7 @@ impl<S: ProviderStream> PacketEndpoint<S> {
             let uploads = BlobReceiver::new(
                 authority.session_id().clone(),
                 authority.incarnation_id().clone(),
-                BlobLimits {
-                    reserved_bytes: STORED_CONTENT,
-                    content_bytes: CONTENT,
-                    chunk_bytes: chunk,
-                    transfers_per_origin: 256,
-                    tombstones_per_origin: 256,
-                    chunks_per_transfer: 256,
-                    operation_pins: EXCHANGES,
-                },
+                original_capture17_upload_receiver_limits_data(chunk),
                 original.supervisor.clone(),
             )?;
             let authority = authority.clone();

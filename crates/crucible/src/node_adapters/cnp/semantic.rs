@@ -187,9 +187,11 @@ pub use packet_complete_source::{
 pub(crate) use packet_complete_source::OriginalSourceRestoredProducerPhaseCompletion;
 
 pub(crate) use packet_complete_source::{
+    OriginalSourceRestoredFirstObservationHistory17Read, OriginalSourceRestoredInstallation17,
     OriginalSourceRestoredInstallationExpected17, OriginalSourceRestoredLimits17,
     OriginalSourceRestoredProducerCheckpoint17, OriginalSourceRestoredSettled17DecodeAttempt,
-    OriginalSourceRestoredSettled17Read, OriginalSourceRestoredSettled17ReadInputs,
+    OriginalSourceRestoredSettled17Prelude, OriginalSourceRestoredSettled17Read,
+    OriginalSourceRestoredSettled17ReadInputs,
 };
 
 pub(crate) use node::{

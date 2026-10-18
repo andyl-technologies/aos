@@ -8,7 +8,8 @@ use super::*;
 use crate::node_adapters::cnp::{
     CnpRestoredNode17DecodeAttempt, CnpRestoredNode17DecodeConstructionData,
     CnpRestoredSettledValidatedNode17, OriginalSourceRestoredSettled17Read,
-    PacketCompleteSemanticSource,
+    OriginalSourceRestoredSettled17DecodeAttempt, OriginalSourceRestoredSettled17ReadInputs,
+    PacketCompleteSemanticSource, OriginalSourceRestoredSettled17Prelude,
 };
 use crate::node_contract::{NodeRoute, RuntimeError};
 use crucible_node_contract::{ContentRef, canonical};
@@ -17,7 +18,9 @@ use crucible_node_provider::protocol_snapshot::{
         ControllerSettledHistory17DecodePlan, ValidatedControllerSettledHistory17,
         ValidatedHistoricalRestoredSettledCapture17, current_controller17_counter_scratch_data,
         historical_restored_settled_capture17_counter_scratch_data,
-        historical_restored_settled_capture17_validation_transient_bytes_data,
+        historical_restored_settled_capture17_selected_counter_scratch_data,
+        historical_restored_settled_capture17_selected_retained_construction_bytes_data,
+        historical_restored_settled_capture17_selected_validation_transient_bytes_data,
     },
     restored_journal17::{
         PacketRestoredSettledAncestry17, PacketRestoredSettledHistoryCut17,
@@ -31,8 +34,12 @@ use crucible_node_provider::protocol_snapshot::{
         restored_settled_native17_decode_construction_transient_bytes_data,
     },
 };
+use super::terminal::{
+    RestoredArchive17ParentWork, RestoredArchive17SourceIndex, RestoredArchive17ValidationStage,
+    RestoredArchive17ValidationStep,
+};
 use serde_json::Value;
-use std::{mem::size_of, rc::Rc};
+use std::mem::size_of;
 
 /// Retains distinct actual decoder slots beneath their selected archive origin.
 ///
@@ -45,6 +52,9 @@ pub(crate) struct RetainedCold17Collection {
     thread: ThreadId,
     members: [Option<RetainedCold17Member>; 3],
     parents: Vec<Option<parent_index::ParentIndex17Attempt>>,
+    initial15_group: Option<crate::node_adapters::cnp::OriginalInitial15ArchivedGroup>,
+    historical_scope: Option<super::initial15_history::HistoricalInitial15Scope17>,
+    terminal_cache: usize,
 }
 
 /// Preserves successful children and failed raw/typed partials independently.
@@ -64,7 +74,8 @@ struct RetainedCold17Member {
     route: Option<NodeRoute>,
     node_attempt: Option<CnpRestoredNode17DecodeAttempt>,
     node: Option<CnpRestoredSettledValidatedNode17>,
-    semantic: Option<Rc<Value>>,
+    prelude: Option<OriginalSourceRestoredSettled17Prelude>,
+    source_attempt: Option<OriginalSourceRestoredSettled17DecodeAttempt>,
     source: Option<OriginalSourceRestoredSettled17Read>,
 }
 
@@ -87,6 +98,9 @@ impl RetainedCold17Collection {
             thread: std::thread::current().id(),
             members: std::array::from_fn(|_| None),
             parents: Vec::new(),
+            initial15_group: None,
+            historical_scope: None,
+            terminal_cache: terminal_cache_seed(scope, 0)?,
         })
     }
 
@@ -117,11 +131,13 @@ impl RetainedCold17Collection {
             return Err(refused("cold17 collection attempt is already spent"));
         }
         scope.validation_origin.authenticate(scope.archive)?;
-        admit(scope, None, additional, counter_scratch_data())?;
+        // Installing this inline pure-cache root performs no owning allocation.
+        // The first Journal prewalk admits its counter before any census walk.
         *output = Some(Self::new(scope)?);
         let collection = output
             .as_mut()
             .ok_or_else(|| refused("cold17 collection absent"))?;
+        collection.terminal_cache = terminal_cache_seed(scope, additional)?;
         let mut member = 0usize;
         for (owner_index, owner) in scope.archive.owners().iter().enumerate() {
             if owner.owner == scope.host.source.owner.owner.id {
@@ -135,6 +151,13 @@ impl RetainedCold17Collection {
         }
         if member != 3 {
             return Err(refused("cold17 native member roster is incomplete"));
+        }
+        for selected in 0..3 {
+            collection.read_parent_index_data(scope, selected, additional)?;
+        }
+        collection.read_initial15_group_data(scope)?;
+        for selected in 0..3 {
+            collection.read_completed_source_data(scope, selected, additional)?;
         }
         collection
             .authenticate_archive_data(scope.archive)
@@ -181,6 +204,18 @@ impl RetainedCold17Collection {
         {
             return Err(refused("cold17 native and administrative roles differ"));
         }
+        let source_index = RestoredArchive17SourceIndex::from_data(selected)?;
+        let journal_step = RestoredArchive17ValidationStep::ordinary_data(
+            RestoredArchive17ValidationStage::Journal(source_index),
+        )?;
+        self.begin_terminal_stage_data(
+            scope,
+            journal_step,
+            0,
+            counter_scratch_data()
+                .checked_add(core_decode_credit::scanner_storage())
+                .ok_or_else(|| refused("cold17 Journal prewalk overflow"))?,
+        )?;
         let bytes = body(scope, journal)?;
         let maximum = maximum(scope)?;
         admit(
@@ -214,6 +249,18 @@ impl RetainedCold17Collection {
                 )
                 .ok_or_else(|| refused("cold17 Journal reference clone overflow"))?,
         )?;
+        self.construct_terminal_stage_data(
+            scope,
+            journal_step,
+            quote
+                .checked_add(
+                    NodeRuntime::capture_reference_storage(journal)
+                        .map_err(super::super::super::schema)?,
+                )
+                .ok_or_else(|| refused("cold17 Journal constructor overflow"))?,
+            0,
+            counter_scratch_data(),
+        )?;
         self.members[selected] = Some(RetainedCold17Member {
             owner_index,
             journal_reference: Some(journal.as_ref().clone()),
@@ -230,7 +277,8 @@ impl RetainedCold17Collection {
             route: None,
             node_attempt: None,
             node: None,
-            semantic: None,
+            prelude: None,
+            source_attempt: None,
             source: None,
         });
         {
@@ -253,6 +301,7 @@ impl RetainedCold17Collection {
                     .map_err(super::super::super::schema)?,
             );
         }
+        self.finish_terminal_stage_data(scope, journal_step, additional)?;
         let objects = self
             .member(selected)?
             .objects
@@ -286,6 +335,10 @@ impl RetainedCold17Collection {
             return Err(refused("cold17 Journal common checkpoint roles differ"));
         }
         let controller_bytes = body(scope, &objects.host_protocol)?;
+        let controller_step = RestoredArchive17ValidationStep::ordinary_data(
+            RestoredArchive17ValidationStage::Controller(source_index),
+        )?;
+        self.begin_terminal_stage_data(scope, controller_step, 0, counter_scratch_data())?;
         admit(scope, Some(self), additional, counter_scratch_data())?;
         let controller = ControllerSettledHistory17DecodePlan::validate(
             controller_bytes,
@@ -301,17 +354,64 @@ impl RetainedCold17Collection {
             additional,
             controller.demand_data().requested_bytes_data(),
         )?;
+        self.construct_terminal_stage_data(
+            scope,
+            controller_step,
+            controller.demand_data().retained_requested_bytes_data(),
+            controller
+                .demand_data()
+                .maximum_simultaneous_transient_bytes_data(),
+            controller
+                .demand_data()
+                .counter_scratch_bytes_data()
+                .checked_add(counter_scratch_data())
+                .ok_or_else(|| refused("cold17 Controller census workspace overflow"))?,
+        )?;
         controller
             .reconstruct_into(
                 controller.demand_data(),
                 &mut self.member_mut(selected)?.controller,
             )
             .map_err(super::super::super::schema)?;
-        let sdk = historical_restored_settled_capture17_validation_transient_bytes_data(
-            controller_bytes.len(),
-        )
-        .map_err(super::super::super::schema)?;
-        admit(scope, Some(self), additional, sdk)?;
+        self.finish_terminal_stage_data(scope, controller_step, additional)?;
+        let sdk_step = RestoredArchive17ValidationStep::ordinary_data(
+            RestoredArchive17ValidationStage::SdkCapture(source_index),
+        )?;
+        let sdk_scratch = historical_restored_settled_capture17_selected_counter_scratch_data()
+            .checked_add(counter_scratch_data())
+            .ok_or_else(|| refused("cold17 SDK Capture workspace overflow"))?;
+        self.begin_terminal_stage_data(scope, sdk_step, 0, sdk_scratch)?;
+        let controller = self
+            .member(selected)?
+            .controller
+            .as_ref()
+            .ok_or_else(|| refused("cold17 Controller output absent"))?;
+        let sdk_retained =
+            historical_restored_settled_capture17_selected_retained_construction_bytes_data(
+                controller, maximum,
+            )
+            .map_err(super::super::super::schema)?;
+        let sdk_transient =
+            historical_restored_settled_capture17_selected_validation_transient_bytes_data(
+                controller, maximum,
+            )
+            .map_err(super::super::super::schema)?;
+        self.construct_terminal_stage_data(
+            scope,
+            sdk_step,
+            sdk_retained,
+            sdk_transient,
+            sdk_scratch,
+        )?;
+        admit(
+            scope,
+            Some(self),
+            additional,
+            sdk_retained
+                .checked_add(sdk_transient)
+                .and_then(|bytes| bytes.checked_add(sdk_scratch))
+                .ok_or_else(|| refused("cold17 SDK Capture constructor overflow"))?,
+        )?;
         let member = self.member_mut(selected)?;
         member.sdk_capture = Some(
             ValidatedHistoricalRestoredSettledCapture17::validate_data(
@@ -322,9 +422,18 @@ impl RetainedCold17Collection {
             )
             .map_err(super::super::super::schema)?,
         );
+        self.finish_terminal_stage_data(scope, sdk_step, additional)?;
 
         let member = self.member(selected)?;
         let input = native_input(scope, member)?;
+        let native_maximum = remaining(scope, self, additional)?
+            .checked_sub(counter_scratch_data())
+            .and_then(|remaining| {
+                remaining.checked_sub(
+                    restored_settled_native17_decode_construction_transient_bytes_data(),
+                )
+            })
+            .ok_or_else(|| refused("cold17 native construction and scratch exceed admission"))?;
         let limits = RestoredSettledNative17Limits::new(
             input.roles_data().map(|(_, bytes)| bytes.len()),
             scope
@@ -338,20 +447,27 @@ impl RetainedCold17Collection {
                 .into_iter()
                 .try_fold(0usize, |nodes, (_, bytes)| nodes.checked_add(bytes.len()))
                 .ok_or_else(|| refused("cold17 native syntax-node bound overflow"))?,
-            remaining(scope, self, additional)?
-                .checked_sub(counter_scratch_data())
-                .and_then(|remaining| {
-                    remaining.checked_sub(
-                        restored_settled_native17_decode_construction_transient_bytes_data(),
-                    )
-                })
-                .ok_or_else(|| {
-                    refused("cold17 native construction and scratch exceed admission")
-                })?,
+            native_maximum,
         )
         .map_err(super::super::super::schema)?;
-        let native_plan = RestoredSettledNative17Plan::validate_data(&input, &limits)
-            .map_err(super::super::super::schema)?;
+        let native_terminal = scope
+            .terminal_admission_data()
+            .is_some()
+            .then(|| {
+                native_admission::NativeTerminal17::new_data(
+                    scope,
+                    source_index,
+                    self.terminal_cache,
+                )
+            })
+            .transpose()?;
+        let native_plan = match &native_terminal {
+            Some(admission) => RestoredSettledNative17Plan::validate_with_admission_data(
+                &input, &limits, admission,
+            ),
+            None => RestoredSettledNative17Plan::validate_data(&input, &limits),
+        }
+        .map_err(super::super::super::schema)?;
         // The native defining decoder checks actual retained graph ownership
         // against this same independently available remainder before each copy.
         admit(
@@ -364,21 +480,54 @@ impl RetainedCold17Collection {
         )?;
         let member = self.member_mut(selected)?;
         member.native_limits = Some(limits);
-        native_plan
-            .validate_retained_into(
+        let sdk = member
+            .sdk_capture
+            .as_ref()
+            .ok_or_else(|| refused("cold17 SDK Capture absent"))?;
+        let controller = member
+            .controller
+            .as_ref()
+            .ok_or_else(|| refused("cold17 Controller absent"))?;
+        match &native_terminal {
+            Some(admission) => native_plan.validate_retained_with_admission_into(
                 &mut member.native_attempt,
                 &mut member.native,
-                member
-                    .sdk_capture
-                    .as_ref()
-                    .ok_or_else(|| refused("cold17 SDK Capture absent"))?,
-                member
-                    .controller
-                    .as_ref()
-                    .ok_or_else(|| refused("cold17 Controller absent"))?,
+                sdk,
+                controller,
+                admission,
+            ),
+            None => native_plan.validate_retained_into(
+                &mut member.native_attempt,
+                &mut member.native,
+                sdk,
+                controller,
+            ),
+        }
+        .map_err(super::super::super::schema)?;
+        // Every scoped constructor reports its actual retained cache only after
+        // its own guards and admitted census. The limit above is a ceiling,
+        // never a terminal construction row or a completed-demand substitute.
+        self.terminal_cache = match &native_terminal {
+            Some(admission) => admission.completed_cache_data()?,
+            None => terminal_cache_seed(scope, additional)?
+                .checked_add(
+                    self.retained_requested_storage_data(maximum)
+                        .map_err(super::super::super::schema)?,
+                )
+                .ok_or_else(|| refused("cold17 loaded native cache overflow"))?,
+        };
+        let semantic_step = RestoredArchive17ValidationStep::ordinary_data(
+            RestoredArchive17ValidationStage::SemanticEnvelope(source_index),
+        )?;
+        let semantic_scratch = counter_scratch_data()
+            .checked_add(
+                OriginalSourceRestoredSettled17Read::completed_decode_counter_scratch_data(),
             )
-            .map_err(super::super::super::schema)?;
-
+            .and_then(|bytes| {
+                bytes.checked_add(OriginalSourceRestoredSettled17Prelude::counter_scratch_data())
+            })
+            .ok_or_else(|| refused("cold17 semantic prelude workspace overflow"))?;
+        self.begin_terminal_stage_data(scope, semantic_step, 0, semantic_scratch)?;
         let member = self.member(selected)?;
         let objects = member
             .objects
@@ -389,6 +538,24 @@ impl RetainedCold17Collection {
             PacketRestoredSettledSemantic17Plan::validate(semantic_bytes, record_maximum(scope)?)
                 .map_err(super::super::super::schema)?;
         let node_bytes = semantic.node_bytes();
+        let prelude_quote =
+            OriginalSourceRestoredSettled17Read::first_component_decode_construction_data(
+                semantic_bytes,
+                member
+                    .controller
+                    .as_ref()
+                    .ok_or_else(|| refused("cold17 Controller absent"))?,
+                member
+                    .native
+                    .as_ref()
+                    .ok_or_else(|| refused("cold17 native owner absent"))?,
+                member
+                    .sdk_capture
+                    .as_ref()
+                    .ok_or_else(|| refused("cold17 SDK Capture absent"))?,
+                maximum,
+            )
+            .map_err(super::super::super::schema)?;
         let owner_identity = scope
             .runtime
             .source_activation
@@ -410,6 +577,45 @@ impl RetainedCold17Collection {
         admit(scope, Some(self), additional, route_clone)?;
         // This route comes from the authenticated owner roster and Runtime7,
         // never from a caller-supplied route or a deserialized live authority.
+        let semantic_retained = route_clone
+            .checked_add(prelude_quote.retained_requested_bytes_data())
+            .ok_or_else(|| refused("cold17 semantic constructor retained overflow"))?;
+        let semantic_transient = prelude_quote.maximum_simultaneous_transient_bytes_data();
+        let semantic_scratch = semantic_scratch
+            .checked_add(prelude_quote.declared_counter_scratch_bytes_data())
+            .ok_or_else(|| refused("cold17 semantic constructor workspace overflow"))?;
+        self.construct_terminal_stage_data(
+            scope,
+            semantic_step,
+            semantic_retained,
+            semantic_transient,
+            semantic_scratch,
+        )?;
+        admit(
+            scope,
+            Some(self),
+            additional,
+            semantic_retained
+                .checked_add(semantic_transient)
+                .and_then(|bytes| bytes.checked_add(semantic_scratch))
+                .ok_or_else(|| refused("cold17 semantic constructor overflow"))?,
+        )?;
+        let member = self.member(selected)?;
+        let prelude = OriginalSourceRestoredSettled17Prelude::read_data(
+            semantic_bytes,
+            member
+                .controller
+                .as_ref()
+                .ok_or_else(|| refused("cold17 Controller absent"))?,
+            member
+                .native
+                .as_ref()
+                .ok_or_else(|| refused("cold17 native owner absent"))?,
+            &scope.runtime.source_activation,
+            record_maximum(scope)?,
+        )
+        .map_err(super::super::super::schema)?;
+        self.member_mut(selected)?.prelude = Some(prelude);
         let route = NodeRoute {
             node: owner.participants[0].clone(),
             owners: vec![owner_identity.clone()],
@@ -431,6 +637,11 @@ impl RetainedCold17Collection {
                 "cold17 standalone Node body differs from semantic Node",
             ));
         }
+        self.finish_terminal_stage_data(scope, semantic_step, additional)?;
+        let node_step = RestoredArchive17ValidationStep::ordinary_data(
+            RestoredArchive17ValidationStage::Node(source_index),
+        )?;
+        self.begin_terminal_stage_data(scope, node_step, 0, counter_scratch_data())?;
         let node_maximum = remaining(scope, self, additional)?
             .checked_sub(counter_scratch_data())
             .ok_or_else(|| refused("cold17 Node defining scratch exceeds admission"))?;
@@ -454,6 +665,16 @@ impl RetainedCold17Collection {
             .and_then(|n| n.checked_add(quote.declared_counter_scratch_bytes_data()))
             .ok_or_else(|| refused("cold17 Node constructor credit overflow"))?;
         admit(scope, Some(self), additional, demand)?;
+        self.construct_terminal_stage_data(
+            scope,
+            node_step,
+            quote.retained_requested_bytes_data(),
+            quote.maximum_simultaneous_transient_bytes_data(),
+            quote
+                .declared_counter_scratch_bytes_data()
+                .checked_add(counter_scratch_data())
+                .ok_or_else(|| refused("cold17 Node census workspace overflow"))?,
+        )?;
         let member = self.member_mut(selected)?;
         CnpRestoredSettledValidatedNode17::decode_current_into_data(
             member
@@ -472,7 +693,103 @@ impl RetainedCold17Collection {
             &mut member.node,
         )
         .map_err(super::super::super::schema)?;
+        let member = self.member(selected)?;
+        if member
+            .prelude
+            .as_ref()
+            .ok_or_else(|| refused("cold17 first component absent"))?
+            .first_observation_data()
+            .scheduling_data()
+            != member
+                .node
+                .as_ref()
+                .ok_or_else(|| refused("cold17 Node absent"))?
+                .first_observation_data()
+                .map_err(super::super::super::schema)?
+        {
+            return Err(refused(
+                "cold17 first observation and actual Node mapping differ",
+            ));
+        }
         admit(scope, Some(self), additional, counter_scratch_data())?;
+        self.finish_terminal_stage_data(scope, node_step, additional)
+    }
+
+    /// Retains one exact signed parent occurrence beneath this member's lineage.
+    fn read_parent_index_data(
+        &mut self,
+        scope: &CompleteRestoredSettledArchiveValidation<'_>,
+        selected: usize,
+        additional: usize,
+    ) -> Result<(), StateError> {
+        let source = RestoredArchive17SourceIndex::from_data(selected)?;
+        let ancestry = self
+            .member(selected)?
+            .ancestry
+            .as_ref()
+            .ok_or_else(|| refused("cold17 parent ancestry absent"))?;
+        let reference = pair(scope, &ancestry.parent_archive_index)?.0;
+        let slot_step = RestoredArchive17ValidationStep::parent_data(
+            source,
+            0,
+            reference,
+            RestoredArchive17ParentWork::Slot,
+        )?;
+        self.begin_terminal_stage_data(
+            scope,
+            slot_step,
+            0,
+            counter_scratch_data()
+                .checked_add(parent_index::counter_scratch_data())
+                .ok_or_else(|| refused("cold17 parent slot prewalk overflow"))?,
+        )?;
+        let target = self
+            .parents
+            .len()
+            .checked_add(1)
+            .ok_or_else(|| refused("cold17 parent slot length overflow"))?;
+        let new_backing = target
+            .checked_mul(size_of::<Option<parent_index::ParentIndex17Attempt>>())
+            .ok_or_else(|| refused("cold17 parent slot backing overflow"))?;
+        self.construct_terminal_stage_data(
+            scope,
+            slot_step,
+            new_backing,
+            0,
+            counter_scratch_data(),
+        )?;
+        admit(scope, Some(self), additional, new_backing)?;
+        self.parents
+            .try_reserve_exact(1)
+            .map_err(|_| refused("cold17 parent slot allocation refused"))?;
+        if self.parents.capacity() > target {
+            return Err(refused("cold17 parent slot capacity exceeds its exact row"));
+        }
+        self.parents.push(None);
+        self.finish_terminal_stage_data(scope, slot_step, additional)?;
+
+        // All prior component/parent caches coexist with the new parent. This
+        // immutable accounting value is DATA; native keys stay in their actual
+        // independently decoded parent owners.
+        let parent_additional = self
+            .terminal_cache
+            .checked_sub(scope.terminal_prefix_retained_storage_data()?)
+            .ok_or_else(|| refused("cold17 parent enclosing cache overflow"))?;
+        let prior_cache = self.terminal_cache;
+        let output = self
+            .parents
+            .last_mut()
+            .ok_or_else(|| refused("cold17 parent slot absent"))?;
+        let completed_cache = parent_index::ParentIndex17Attempt::read_into(
+            scope,
+            reference,
+            0,
+            source,
+            prior_cache,
+            parent_additional,
+            output,
+        )?;
+        self.terminal_cache = completed_cache;
         scope.validation_origin.authenticate(scope.archive)
     }
 
@@ -543,6 +860,13 @@ impl RetainedCold17Collection {
         archive: &NativeArchiveRecord,
     ) -> Result<(), RuntimeError> {
         self.authenticate_archive_data(archive)?;
+        if self.parents.len() != 3
+            || self.parents.iter().any(Option::is_none)
+            || self.initial15_group.is_none()
+            || self.historical_scope.is_none()
+        {
+            return Err(RuntimeError::OutstandingObligations);
+        }
         for member in &self.members {
             let member = member
                 .as_ref()
@@ -714,6 +1038,23 @@ fn admit(
     Ok(())
 }
 
+#[path = "collector/native_admission.rs"]
+mod native_admission;
+
+#[path = "collector/initial15.rs"]
+mod original_group;
+
+#[path = "collector/source.rs"]
+mod completed_source;
+
+#[path = "collector/custody.rs"]
+mod custody;
+pub(super) use custody::{CollectorPhase17, collect_terminal_into_data};
+
+#[path = "collector/terminal.rs"]
+mod terminal_admission;
+use terminal_admission::terminal_cache_seed;
+
 #[path = "collector/storage.rs"]
 mod storage_census;
 
@@ -740,4 +1081,9 @@ pub(crate) fn counter_scratch_data() -> usize {
         + restored_settled_native17_counter_scratch_data()
         + NodeRuntime::capture_selected_json_decode_counter_scratch_data()
         + NodeRuntime::original_json_value_counter_scratch_data()
+        + terminal_admission::counter_scratch_data()
+        + custody::counter_scratch_data()
+        + native_admission::counter_scratch_data()
+        + crate::node_adapters::cnp::OriginalInitial15ArchivedGroup::terminal_counter_scratch_data()
+        + super::initial15_history::HistoricalInitial15Scope17::counter_scratch_data()
 }

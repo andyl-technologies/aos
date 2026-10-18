@@ -15,6 +15,13 @@ use crate::node_scheduling::{
 };
 use crucible_node_contract::{ContentRef, Id, Position};
 
+#[path = "outcome/history17.rs"]
+mod history17;
+pub(in crate::node_adapters::cnp::semantic::node) use history17::{
+    historical_outcome_correspondence17_counter_scratch_data,
+    historical_outcome_correspondence17_data,
+};
+
 impl super::super::super::CnpSemanticNode {
     pub(in crate::node_adapters::cnp::semantic) fn validate_installed_restoration_outcome(
         &self,

@@ -16,6 +16,9 @@ use super::lineage_source::OriginalLineageCoordinator;
 use super::storage::Index;
 use super::{NativeArchiveRecord, StateError, decode_record, refused};
 
+#[path = "complete_original_index/current17.rs"]
+mod current17;
+
 pub(super) const JOURNAL_MEDIA: &str =
     "application/vnd.crucible.runtime-original-capture-journal+json;version=1";
 
@@ -139,26 +142,55 @@ fn authenticate_inner(
         )?,
         None => record.object(&manifest.coordinator_state_ref, maximum)?,
     };
-    if let Some(total) = admitted {
-        super::storage::admit_decode(
-            &coordinator_bytes,
-            retained
-                .checked_add(journal_storage)
-                .ok_or_else(|| refused("coordinator decode overflow"))?,
-            total,
-        )?;
-    }
-    let coordinator: OriginalLineageCoordinator = decode_record(&coordinator_bytes, maximum)?;
-    coordinator.runtime.validate().map_err(schema)?;
-    coordinator.scheduler.validate().map_err(schema)?;
-    if coordinator.schema_version != 7
-        || coordinator.runtime != current.source_runtime
-        || coordinator.scheduler.media_type != "application/json"
-    {
+    if current17::selected_inventory(&record.index)? != current17::selected_record(record) {
         return Err(refused(
-            "administrative source differs from unchanged Runtime7 coordinator",
+            "administrative coordinator and exact owner codec families differ",
         ));
     }
+    let current_coordinator;
+    let legacy_coordinator;
+    let current_coordinator_storage;
+    let (coordinator_runtime, coordinator_scheduler) = if current17::selected_record(record) {
+        current_coordinator = current17::decode_coordinator(
+            record,
+            &coordinator_bytes,
+            &journal,
+            retained,
+            journal_storage,
+            admitted,
+        )?;
+        current_coordinator_storage = std::mem::size_of::<crucible_node_provider::reference_packet::service::complete_restore::settled_recapture::CoordinatorCommitmentCheckpoint17>()
+            .checked_add(current_coordinator.retained_backing_requested_bytes_data().map_err(schema)?)
+            .ok_or_else(|| refused("current17 administrative coordinator storage overflow"))?;
+        (
+            &current_coordinator.safe_point.runtime,
+            &current_coordinator.safe_point.scheduling,
+        )
+    } else {
+        current_coordinator_storage = 0;
+        if let Some(total) = admitted {
+            super::storage::admit_decode(
+                &coordinator_bytes,
+                retained
+                    .checked_add(journal_storage)
+                    .ok_or_else(|| refused("coordinator decode overflow"))?,
+                total,
+            )?;
+        }
+        let coordinator: OriginalLineageCoordinator = decode_record(&coordinator_bytes, maximum)?;
+        coordinator.runtime.validate().map_err(schema)?;
+        coordinator.scheduler.validate().map_err(schema)?;
+        if coordinator.schema_version != 7
+            || coordinator.runtime != current.source_runtime
+            || coordinator.scheduler.media_type != "application/json"
+        {
+            return Err(refused(
+                "administrative source differs from unchanged Runtime7 coordinator",
+            ));
+        }
+        legacy_coordinator = coordinator;
+        (&legacy_coordinator.runtime, &legacy_coordinator.scheduler)
+    };
     for (saved, native) in current.owners.iter().zip(&record.index.owners) {
         let OriginalCaptureOwnerState::Settled { snapshot, journal } = &saved.state else {
             return Err(refused(
@@ -202,16 +234,21 @@ fn authenticate_inner(
                 >(),
             )
             .ok_or_else(|| refused("administrative reference set overflow"))?;
-        let coordinator_storage =
-            crate::node_contract::NodeRuntime::capture_reference_storage(&coordinator.runtime)
-                .map_err(schema)?
-                .checked_add(
-                    crate::node_contract::NodeRuntime::capture_reference_storage(
-                        &coordinator.scheduler,
+        let coordinator_storage = if current17::selected_record(record) {
+            current_coordinator_storage
+        } else {
+            let requested =
+                crate::node_contract::NodeRuntime::capture_reference_storage(coordinator_runtime)
+                    .map_err(schema)?
+                    .checked_add(
+                        crate::node_contract::NodeRuntime::capture_reference_storage(
+                            coordinator_scheduler,
+                        )
+                        .map_err(schema)?,
                     )
-                    .map_err(schema)?,
-                )
-                .ok_or_else(|| refused("coordinator metadata overflow"))?;
+                    .ok_or_else(|| refused("coordinator metadata overflow"))?;
+            requested
+        };
         super::storage::admit(
             retained
                 .checked_add(journal_storage)
@@ -265,6 +302,9 @@ pub(super) fn validate_inventory(index: &Index) -> Result<(), StateError> {
         return Err(refused(
             "complete original index requires journal and exact closed four-owner world",
         ));
+    }
+    if current17::selected_inventory(index)? {
+        return Ok(());
     }
     let mut native = 0;
     let mut host = 0;

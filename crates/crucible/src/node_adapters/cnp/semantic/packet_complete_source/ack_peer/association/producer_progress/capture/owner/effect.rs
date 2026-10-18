@@ -99,6 +99,24 @@ impl CaptureOnceOwner {
         }
 
         let prefix = self.prefix.payload_data()?;
+        // Recompute under the genuine retained startup loan before any owning
+        // request is built. A copied carrier, output-only allowance or generic
+        // ingress row cannot substitute for these complete future phase axes.
+        let native_upload =
+            source.with_original_completed_restored_settled_startup_data(|storage| {
+                storage
+                    .source_upload_future_storage_data(launch, raw5)
+                    .map_err(|_| RuntimeError::ResourceLimit)
+            })?;
+        if native_upload != row.native_upload {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        native_upload
+            .authenticate_content_bounds_data([
+                prefix.1.len(),
+                claim.runtime_object_data().bytes.len(),
+            ])
+            .map_err(|_| RuntimeError::ResourceLimit)?;
         let installation = source.installation();
         self.construction.capture = Some(PacketRestoredSettledCaptureRequest {
             schema: RESTORED_SETTLED_CAPTURE_REQUEST.into(),
@@ -196,7 +214,7 @@ impl CaptureOnceOwner {
                     .ok_or(RuntimeError::OwnerUnavailable)?
                     .clone(),
                 content: reference.clone(),
-                native_allocation: row.native.ingress,
+                native_allocation: row.native_upload.per_original_requested_axes_data(),
             });
         }
 

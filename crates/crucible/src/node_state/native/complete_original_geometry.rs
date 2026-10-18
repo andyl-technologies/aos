@@ -139,6 +139,35 @@ impl crate::node_contract::NodeRuntime {
             .total()
     }
 
+    /// Separates raw decoder work from later adjacent String-key clones.
+    ///
+    /// Both terms come from the same actual lexical preflight. The second term
+    /// independently covers two decoded strings without assuming equality with
+    /// an already retained typed projection; it is never a record-byte factor.
+    ///
+    /// # Errors
+    /// Refuses unsupported layout, malformed raw framing, arithmetic overflow
+    /// or a decoder/string projection beyond the caller's finite ceiling.
+    pub(crate) fn capture_selected_json_decode_and_string_clone_storage_data(
+        bytes: &[u8],
+        typed_slot: usize,
+        typed_map_node: usize,
+        maximum: usize,
+    ) -> Result<(usize, usize), crate::node_contract::RuntimeError> {
+        let data = super::core_decode_credit::preflight_selected(
+            bytes,
+            typed_slot,
+            typed_map_node,
+            maximum,
+        )?;
+        let strings = data
+            .parser_strings
+            .checked_mul(2)
+            .filter(|bytes| *bytes <= maximum)
+            .ok_or(crate::node_contract::RuntimeError::ResourceLimit)?;
+        Ok((data.total()?, strings))
+    }
+
     pub(crate) fn capture_host_decode_storage(
         bytes: &[u8],
         maximum: usize,

@@ -48,6 +48,10 @@ pub(crate) use construction::{
     OriginalSourceRestoredSettled17DecodeConstructionData,
 };
 
+#[path = "source_reader/prelude.rs"]
+mod prelude;
+pub(crate) use prelude::OriginalSourceRestoredSettled17Prelude;
+
 /// Borrows actual independently authenticated participants for one cold read.
 ///
 /// This aggregate is DATA. The native and SDK operands are defining opaque

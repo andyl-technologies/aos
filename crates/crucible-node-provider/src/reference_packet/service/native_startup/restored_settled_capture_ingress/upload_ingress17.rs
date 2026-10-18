@@ -274,7 +274,8 @@ impl NativeRestoredSettledCaptureUploadAttempt {
     pub(crate) fn prepared_upload17_reply_parts_data(
         &self,
     ) -> Result<(&Envelope, &Map<String, Value>), ProviderError> {
-        let (original, _, _) = self.assigned_upload17_input_data()?;
+        self.phase17_data()?;
+        let original = self.original_data()?;
         let reply = self.base.prepared_reply.as_ref().ok_or_else(invalid)?;
         if self
             .upload_action
@@ -638,3 +639,12 @@ pub fn original_restored_settled_capture_upload_ingress_counter_scratch_data() -
 #[cfg(test)]
 #[path = "upload_ingress17_tests.rs"]
 mod tests;
+
+#[path = "upload_ingress17/published.rs"]
+mod published;
+pub(crate) use published::{
+    NativePublishedCapture17UploadData, native_published_capture17_upload_counter_scratch_data,
+};
+
+#[path = "upload_ingress17/continuation.rs"]
+mod continuation;

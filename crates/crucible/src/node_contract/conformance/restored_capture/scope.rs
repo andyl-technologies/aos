@@ -152,7 +152,7 @@ impl<'a> RestoredCollectingCaptureScope17<'a> {
     /// # Errors
     /// Refuses stale Scope/Window/World custody, a foreign Source, unadmitted or
     /// advanced attempt state, a started member, or a failed/reentrant writer.
-    pub(crate) fn original_source_imported_closure_storage_data(
+    pub fn original_source_imported_closure_storage_data(
         &self,
         source: &PacketCompleteSemanticSource,
     ) -> Result<(usize, usize, usize, usize, usize, usize, usize, usize), RuntimeError> {

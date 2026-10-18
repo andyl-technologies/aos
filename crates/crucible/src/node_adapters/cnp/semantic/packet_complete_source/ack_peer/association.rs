@@ -1396,9 +1396,11 @@ mod settled17_once;
 pub(crate) use settled17_once::OriginalSourceRestoredOnce17Read;
 
 pub(crate) use producer_progress::{
+    OriginalSourceRestoredFirstObservationHistory17Read, OriginalSourceRestoredInstallation17,
     OriginalSourceRestoredInstallationExpected17, OriginalSourceRestoredLimits17,
     OriginalSourceRestoredProducerCheckpoint17, OriginalSourceRestoredSettled17DecodeAttempt,
-    OriginalSourceRestoredSettled17Read, OriginalSourceRestoredSettled17ReadInputs,
+    OriginalSourceRestoredSettled17Prelude, OriginalSourceRestoredSettled17Read,
+    OriginalSourceRestoredSettled17ReadInputs,
 };
 
 pub(crate) use producer_progress::{

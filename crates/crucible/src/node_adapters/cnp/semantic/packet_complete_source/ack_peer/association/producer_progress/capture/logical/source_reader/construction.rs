@@ -38,6 +38,9 @@ pub(crate) use attempt::OriginalSourceRestoredSettled17DecodeAttempt;
 mod layouts;
 use layouts::Family;
 
+#[path = "construction/prelude.rs"]
+mod prelude;
+
 /// Describes the independently summed new Source decode owners and temporaries.
 pub(crate) struct OriginalSourceRestoredSettled17DecodeConstructionData {
     retained: usize,

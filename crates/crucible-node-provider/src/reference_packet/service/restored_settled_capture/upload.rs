@@ -41,7 +41,12 @@ pub struct PacketRestoredSettledCaptureUploadRequest {
     pub transfer_id: Id,
     /// Names exactly the object selected by the ordinal, including full hash/length.
     pub content: ContentRef,
-    /// Accounts independent new raw/typed/terminal/bytes/correspondence owners.
+    /// Bounds the complete new Blob/result/reply/terminal/transport action.
+    ///
+    /// The native independently prepays raw/typed receive custody from its
+    /// separate ingress reservation before inspecting this signed bound. That
+    /// receive row cannot substitute for these prospective action owners, and
+    /// neither component renews the native's existing nonrefundable lifetime.
     pub native_allocation: PacketNativeStartupAllocationRow,
 }
 

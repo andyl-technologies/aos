@@ -21,6 +21,9 @@ impl RetainedCold17Collection {
             thread: _,
             members,
             parents,
+            initial15_group,
+            historical_scope,
+            terminal_cache: _,
         } = self;
         let mut count = Counter { bytes: 0, maximum };
         count.add(
@@ -31,6 +34,20 @@ impl RetainedCold17Collection {
         )?;
         for parent in parents.iter().flatten() {
             count.add(parent.retained_requested_storage_data(maximum)?)?;
+        }
+        if let Some(group) = initial15_group {
+            count.add(
+                group
+                    .retained_requested_storage_data(maximum)
+                    .map_err(|_| RuntimeError::ResourceLimit)?
+                    .checked_sub(size_of::<
+                        crate::node_adapters::cnp::OriginalInitial15ArchivedGroup,
+                    >())
+                    .ok_or(RuntimeError::ResourceLimit)?,
+            )?;
+        }
+        if let Some(historical) = historical_scope {
+            count.add(historical.retained_requested_storage_data(maximum)?)?;
         }
         for member in members.iter().flatten() {
             let RetainedCold17Member {
@@ -49,7 +66,8 @@ impl RetainedCold17Collection {
                 route,
                 node_attempt,
                 node,
-                semantic,
+                prelude,
+                source_attempt,
                 source,
             } = member;
             if let Some(reference) = journal_reference {
@@ -155,9 +173,11 @@ impl RetainedCold17Collection {
             if let Some(node) = node {
                 count.add(node.retained_requested_storage_data(maximum)?)?;
             }
-            if let Some(semantic) = semantic {
-                count.add(NodeRuntime::capture_shared_allocation_storage::<Value>())?;
-                count.json(semantic.as_ref())?;
+            if let Some(prelude) = prelude {
+                count.add(prelude.retained_requested_storage_data(maximum)?)?;
+            }
+            if let Some(attempt) = source_attempt {
+                count.add(attempt.retained_requested_storage_data(maximum)?)?;
             }
             if let Some(source) = source {
                 count.add(source.retained_requested_storage_data(maximum)?)?;

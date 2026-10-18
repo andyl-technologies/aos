@@ -26,6 +26,51 @@ struct ReceiptProjection<'a> {
 }
 
 impl NativeArchiveRecord {
+    // Pure quote of the exact same four receipt serialization constructors.
+    // The caller has admitted formatter/counter work before entering this walk.
+    pub(super) fn restored_settled_owner_receipt_construction_data(
+        &self,
+        _graph: &crate::node_admission::AdmittedGraph,
+    ) -> Result<usize, StateError> {
+        let maximum = self
+            .limits
+            .state
+            .maximum_total_content_bytes
+            .min(self.limits.native.maximum_total_record_bytes);
+        let mut result = 0usize;
+        for (native, captured) in self.owners().iter().zip(&self.manifest.owners) {
+            let projection = ReceiptProjection {
+                schema_version: 1,
+                owner: &native.owner,
+                inventory: HashProjection {
+                    algorithm: "blake3-256",
+                    domain: INVENTORY_DOMAIN,
+                    digest: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                },
+                coordinator: &self.manifest.coordinator_state_ref,
+                cut: self.manifest.cut,
+                ordinal: self.manifest.event_ordinal,
+                domains: &captured.state_domain_ids,
+            };
+            let row = [
+                NodeRuntime::capture_serialization_storage(native, maximum).map_err(schema)?,
+                NodeRuntime::capture_encoded_output_storage(native, maximum).map_err(schema)?,
+                NodeRuntime::capture_serialization_storage(&projection, maximum).map_err(schema)?,
+                NodeRuntime::capture_encoded_output_storage(&projection, maximum)
+                    .map_err(schema)?,
+                std::mem::size_of::<HashRef>() + "blake3-256".len() + INVENTORY_DOMAIN.len() + 64,
+                super::validation::fixed_scratch(),
+            ]
+            .into_iter()
+            .try_fold(0usize, |sum, bytes| {
+                sum.checked_add(bytes)
+                    .ok_or_else(|| refused("terminal receipt constructor overflow"))
+            })?;
+            result = result.max(row);
+        }
+        Ok(result)
+    }
+
     pub(super) fn validate_restored_settled_owner_receipts(
         &self,
         graph: &crate::node_admission::AdmittedGraph,

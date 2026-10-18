@@ -1365,9 +1365,7 @@ pub use capture_allocation_receipt::{
     OriginalCaptureAllocationData, original_capture_allocation_witness_counter_scratch_data,
 };
 
-pub(crate) use ack_peer::{
-    PacketCompleteInitialLifecycleIdentity, PacketCompleteInitialLifecycleQuote,
-};
+pub(crate) use ack_peer::{PacketCompleteInitialLifecycleIdentity, PacketCompleteInitialLifecycleQuote};
 
 #[path = "packet_complete_source/invocation_snapshot.rs"]
 mod invocation_snapshot;
@@ -1404,9 +1402,11 @@ pub use ack_peer::PacketCompleteNativeRestoredSettledStartupWire;
 mod header17;
 
 pub(crate) use ack_peer::{
+    OriginalSourceRestoredFirstObservationHistory17Read, OriginalSourceRestoredInstallation17,
     OriginalSourceRestoredInstallationExpected17, OriginalSourceRestoredLimits17,
     OriginalSourceRestoredProducerCheckpoint17, OriginalSourceRestoredSettled17DecodeAttempt,
-    OriginalSourceRestoredSettled17Read, OriginalSourceRestoredSettled17ReadInputs,
+    OriginalSourceRestoredSettled17Prelude, OriginalSourceRestoredSettled17Read,
+    OriginalSourceRestoredSettled17ReadInputs,
 };
 
 pub(crate) use restored_producer_outcome::{
@@ -1422,9 +1422,7 @@ pub(crate) use ack_peer::OriginalSourceRestoredCaptureEncodingInputs;
 
 pub(crate) use ack_peer::OriginalSourceRestoredCaptureCountingBanksData;
 
-pub(crate) use archive_owner::{
-    OriginalInitial15ArchivedGroup, OriginalInitial15ArchivedOwnerRead,
-};
+pub(crate) use archive_owner::{OriginalInitial15ArchivedGroup, OriginalInitial15ArchivedOwnerRead};
 
 pub use ack_peer::OriginalSourceRestoredCaptureConstructionData;
 

@@ -22,6 +22,11 @@ mod declaration;
 mod decoded;
 #[path = "initial15/storage.rs"]
 mod storage;
+#[path = "initial15/parent_roles.rs"]
+mod parent_roles;
+#[path = "initial15/terminal.rs"]
+pub(super) mod terminal;
+use terminal::{Initial15Terminal17, protocol_prepare_terminal_storage_data};
 use decoded::{Initial15DecodeStaging, Initial15DecodedOwner};
 
 #[derive(Clone, Copy)]
@@ -131,9 +136,63 @@ impl OriginalInitial15ArchivedGroup {
         additional: usize,
         output: &mut Option<Self>,
     ) -> Result<(), OperationFailure> {
+        Self::read_into_data(scope, additional, output, None)
+    }
+
+    /// Reads the genuine original group under this writer's concrete phase ledger.
+    ///
+    /// `terminal_prior_cache` is the caller's already measured complete cache,
+    /// including this inline output slot. The returned total adds only actual
+    /// new backing; original limits and spent phases are never renewed.
+    ///
+    /// # Errors
+    /// Refuses a spent slot or phase, malformed original declaration/protocol,
+    /// changed source closure, any defining state predicate or finite credit.
+    /// Every initialized partial remains owned by `output` after refusal.
+    pub(crate) fn read_into_with_terminal_data(
+        scope: &ParentArchive17ReadScope<'_, '_>,
+        current: &crate::node_state::CompleteRestoredSettledArchiveValidation<'_>,
+        source_index: crate::node_state::RestoredArchive17SourceIndex,
+        parent_depth: usize,
+        terminal_prior_cache: usize,
+        additional: usize,
+        output: &mut Option<Self>,
+    ) -> Result<usize, OperationFailure> {
+        let terminal = Initial15Terminal17::new_data(
+            current,
+            scope,
+            source_index,
+            parent_depth,
+            terminal_prior_cache,
+        )?;
+        Self::read_into_data(scope, additional, output, Some(&terminal))?;
+        terminal.completed_cache_data()
+    }
+
+    /// Reports the actual constructor cursor, borrowed plans and fixed visitors.
+    ///
+    /// The enclosing caller admits this fixed workspace before entering the
+    /// terminal reader. This DATA getter performs no parse or source operation.
+    pub(crate) fn terminal_counter_scratch_data() -> usize {
+        Initial15Terminal17::counter_scratch_data()
+    }
+
+    fn read_into_data(
+        scope: &ParentArchive17ReadScope<'_, '_>,
+        additional: usize,
+        output: &mut Option<Self>,
+        terminal: Option<&Initial15Terminal17<'_, '_>>,
+    ) -> Result<(), OperationFailure> {
+        if let Some(terminal) = terminal {
+            terminal.begin_data(crate::node_state::RestoredArchive17Initial15Work::Header, 0)?;
+        }
         let limits = scope.limits_data().map_err(unknown)?;
+        // Nested decoders obey the collector's content and record ceilings
+        // before allocating, rather than relying on a later whole-row check.
         let maximum = usize::try_from(limits.state.maximum_native_memory_bytes)
             .map_err(unknown)?
+            .min(usize::try_from(limits.state.maximum_total_content_bytes).map_err(unknown)?)
+            .min(usize::try_from(limits.native.maximum_total_record_bytes).map_err(unknown)?)
             .min(MAXIMUM_WHOLE_BYTES);
         if output.is_some() {
             return Err(refused("initial15 owning attempt already exists"));
@@ -167,6 +226,22 @@ impl OriginalInitial15ArchivedGroup {
             ],
             maximum,
         )?;
+        if let Some(terminal) = terminal {
+            let references = checked_sum(
+                [
+                    NodeRuntime::capture_reference_storage(
+                        scope.index_reference_data().map_err(unknown)?,
+                    )
+                    .map_err(unknown)?,
+                    NodeRuntime::capture_reference_storage(
+                        scope.manifest_reference_data().map_err(unknown)?,
+                    )
+                    .map_err(unknown)?,
+                ],
+                maximum,
+            )?;
+            terminal.construct_data(references, 0)?;
+        }
         *output = Some(Self {
             process: std::process::id(),
             thread: std::thread::current().id(),
@@ -191,10 +266,16 @@ impl OriginalInitial15ArchivedGroup {
             .ok_or_else(|| refused("initial15 attempt absent"))?;
         group.parent_index = Some(scope.index_reference_data().map_err(unknown)?.clone());
         group.parent_manifest = Some(scope.manifest_reference_data().map_err(unknown)?.clone());
-        group.read_declarations_data(scope, additional)?;
-        group.reconstruct_protocols_data(scope, additional)?;
-        group.authenticate_semantics_data(scope, additional)?;
-        group.admit_data(scope, additional, 0)?;
+        scope.manifest_data().map_err(unknown)?;
+        if let Some(terminal) = terminal {
+            terminal.finish_data(group, 0)?;
+        }
+        group.read_declarations_data(scope, additional, terminal)?;
+        group.reconstruct_protocols_data(scope, additional, terminal)?;
+        group.authenticate_semantics_data(scope, additional, terminal)?;
+        if terminal.is_none() {
+            group.admit_data(scope, additional, 0)?;
+        }
         scope.manifest_data().map_err(unknown)?;
         group.verified = true;
         Ok(())
@@ -204,11 +285,24 @@ impl OriginalInitial15ArchivedGroup {
         &mut self,
         scope: &ParentArchive17ReadScope<'_, '_>,
         additional: usize,
+        terminal: Option<&Initial15Terminal17<'_, '_>>,
     ) -> Result<(), OperationFailure> {
         let limits = scope.limits_data().map_err(unknown)?;
+        if let Some(terminal) = terminal {
+            terminal.begin_data(
+                crate::node_state::RestoredArchive17Initial15Work::ProtocolJournal(
+                    crate::node_state::RestoredArchive17SourceIndex::from_data(0)
+                        .map_err(unknown)?,
+                ),
+                0,
+            )?;
+        }
         // The guard moves every initialized private shared decoder field into
         // the final owning slots on both normal return and early refusal.
         let retained = self.retained_requested_storage_data(self.maximum)?;
+        let terminal_base = retained
+            .checked_sub(size_of::<Self>())
+            .ok_or_else(|| refused("initial15 protocol root census overflow"))?;
         let mut staging = Initial15DecodeStaging::new_data(&mut self.protocols);
         let mut prepared = checked_sum(
             [additional, retained, Self::counter_scratch_data()],
@@ -248,6 +342,18 @@ impl OriginalInitial15ArchivedGroup {
             // All four aliases are priced from actual archived row populations.
             // Unused live parser-bank capacity never becomes semantic allowance.
             let journal_bytes = scope.body_data(journal_ref).map_err(unknown)?;
+            let source_index = crate::node_state::RestoredArchive17SourceIndex::from_data(index)
+                .map_err(unknown)?;
+            if index != 0 {
+                if let Some(terminal) = terminal {
+                    terminal.begin_data(
+                        crate::node_state::RestoredArchive17Initial15Work::ProtocolJournal(
+                            source_index,
+                        ),
+                        0,
+                    )?;
+                }
+            }
             let journal_transient = NodeRuntime::capture_selected_json_decode_storage(
                 journal_bytes,
                 size_of::<PacketCompleteSettledJournal>(),
@@ -267,10 +373,27 @@ impl OriginalInitial15ArchivedGroup {
                 ],
                 self.maximum,
             )?;
+            if let Some(terminal) = terminal {
+                terminal.construct_data(journal_transient, journal_transient)?;
+            }
             let journal = PacketCompleteSettledJournal::decode_data(
                 journal_bytes,
                 limits.state.maximum_record_bytes,
             )?;
+            if let Some(terminal) = terminal {
+                terminal.finish_protocol_data(
+                    terminal_base,
+                    &staging.slots,
+                    Some(&journal),
+                    self.maximum,
+                )?;
+                terminal.begin_data(
+                    crate::node_state::RestoredArchive17Initial15Work::ProtocolPrepare(
+                        source_index,
+                    ),
+                    20,
+                )?;
+            }
             let profile = &launch.capture_profile;
             let metadata = launch
                 .protocol_metadata_limits
@@ -320,6 +443,21 @@ impl OriginalInitial15ArchivedGroup {
                 ],
                 maximum,
             )?;
+            if let Some(terminal) = terminal {
+                let (growth, transient, scratch) = protocol_prepare_terminal_storage_data(
+                    scope,
+                    &journal,
+                    journal_bytes,
+                    launch,
+                    owner,
+                    host_limits,
+                    native_limits,
+                    before_limits,
+                    registry_limits,
+                    maximum,
+                )?;
+                terminal.construct_with_scratch_data(growth, transient, scratch)?;
+            }
             PacketCompleteArchivedOwnerData::prepare_data_into(
                 None,
                 CompleteNativeSnapshotClass::InvocationCapture15,
@@ -338,6 +476,7 @@ impl OriginalInitial15ArchivedGroup {
                 maximum,
                 &mut staging.slots[index],
             )?;
+            drop(journal);
             prepared = checked_sum(
                 [
                     prepared,
@@ -348,13 +487,18 @@ impl OriginalInitial15ArchivedGroup {
                 ],
                 maximum,
             )?;
+            if let Some(terminal) = terminal {
+                terminal.finish_protocol_data(terminal_base, &staging.slots, None, maximum)?;
+            }
         }
-        PacketCompleteArchivedOwnerData::reconstruct_group(
+        PacketCompleteArchivedOwnerData::reconstruct_group_with_terminal_data(
             &mut staging.slots,
             checked_sum(
                 [additional, retained, Self::counter_scratch_data()],
                 self.maximum,
             )?,
+            terminal,
+            terminal_base,
         )?;
         Ok(())
     }
@@ -363,14 +507,34 @@ impl OriginalInitial15ArchivedGroup {
         &mut self,
         scope: &ParentArchive17ReadScope<'_, '_>,
         additional: usize,
+        terminal: Option<&Initial15Terminal17<'_, '_>>,
     ) -> Result<(), OperationFailure> {
         let limits = scope.limits_data().map_err(unknown)?;
         for index in 0..3 {
+            let source_index = crate::node_state::RestoredArchive17SourceIndex::from_data(index)
+                .map_err(unknown)?;
+            if let Some(terminal) = terminal {
+                terminal.begin_data(
+                    crate::node_state::RestoredArchive17Initial15Work::SemanticDecode(source_index),
+                    0,
+                )?;
+            }
             let retained = self.retained_requested_storage_data(self.maximum)?;
             let protocol = &self.protocols[index];
             let journal = protocol.journal_data()?;
             let semantic = scope.body_data(&journal.semantic).map_err(unknown)?;
             let ancestry = scope.body_data(&journal.ancestry).map_err(unknown)?;
+            if let Some(terminal) = terminal {
+                let demand = PacketCompleteArchivedSemantics::decode_demand_data(
+                    semantic,
+                    ancestry,
+                    limits.state.maximum_record_bytes,
+                    self.maximum,
+                )?
+                .checked_mul(2)
+                .ok_or_else(|| refused("initial15 semantic terminal extent overflow"))?;
+                terminal.construct_data(demand, demand)?;
+            }
             self.semantics[index].read_data(
                 semantic,
                 ancestry,
@@ -388,6 +552,25 @@ impl OriginalInitial15ArchivedGroup {
                 )?,
                 self.maximum,
             )?;
+            if let Some(terminal) = terminal {
+                terminal.finish_data(self, 0)?;
+                let launch = self.launches[index]
+                    .as_ref()
+                    .ok_or_else(|| refused("initial15 semantic launch absent"))?;
+                let (launch_formatter, quote_scratch) = launch
+                    .validation_construction_projection_storage_data()
+                    .map_err(unknown)?;
+                let formatter = PacketCompleteArchivedSemantics::runtime_protocol_terminal_quote_transient_data()
+                    .max(launch_formatter);
+                terminal.begin_with_scratch_data(
+                    crate::node_state::RestoredArchive17Initial15Work::SemanticJoin(source_index),
+                    formatter,
+                    quote_scratch,
+                )?;
+                let (transient, scratch) =
+                    self.semantic_join_terminal_transient_data(scope, index)?;
+                terminal.construct_with_scratch_data(0, transient, scratch)?;
+            }
             let semantics = self.semantics[index].read_data_ref()?;
             let launch = self.launches[index]
                 .as_ref()
@@ -447,6 +630,10 @@ impl OriginalInitial15ArchivedGroup {
             declaration::authenticate_original_native_selection_data(&selection, protocol)?;
             declaration::authenticate_original_caps_data(semantics, selection.caps)?;
             self.admit_data(scope, additional, 0)?;
+            scope.manifest_data().map_err(unknown)?;
+            if let Some(terminal) = terminal {
+                terminal.finish_data(self, 0)?;
+            }
         }
         Ok(())
     }

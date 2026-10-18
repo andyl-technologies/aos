@@ -12,6 +12,51 @@ use crate::node_state::{
 use crucible_node_contract::{Id, canonical};
 
 impl NativeArchiveRecord {
+    // Pure terminal DATA cannot escape into a fresh Source or live grant. All
+    // Runtime/native once owners, actual outputs and failed Window phase remain
+    // retained independently when this local decoder is dropped on refusal.
+    pub(in crate::node_state::native) fn authenticate_restored_settled_before_signing_data(
+        &self,
+        graph: &crate::node_admission::AdmittedGraph,
+        factory: &dyn NativeWorldFactory,
+        lineage: OriginalInputLineageLimits,
+        origin: &storage::complete_original_validation_origin::CompleteArchiveValidationOrigin<'_>,
+        admission: &dyn RestoredArchive17ValidationAdmission,
+        additional: usize,
+    ) -> Result<(), StateError> {
+        origin.authenticate(self)?;
+        if origin.original_write_runtime_data(self)?.is_none() {
+            return Err(refused(
+                "terminal current17 verifier requires actual pending writer custody",
+            ));
+        }
+        let cursor = terminal_construction::Cursor::new(admission);
+        cursor.begin(
+            RestoredArchive17ValidationStage::MetadataDag,
+            std::mem::size_of::<CompleteRestoredSettledArchiveValidationAttempt>(),
+        )?;
+        let (retained, transient) = terminal_construction::metadata_geometry(self, graph, lineage)?;
+        cursor.construct(
+            RestoredArchive17ValidationStage::MetadataDag,
+            retained,
+            transient,
+        )?;
+        let mut attempt = CompleteRestoredSettledArchiveValidationAttempt::new(self, lineage);
+        let result = self.validate_restored_settled_into(
+            graph,
+            factory,
+            lineage,
+            additional,
+            origin,
+            &mut attempt,
+            Some(&cursor),
+        );
+        if result.is_err() {
+            attempt.stage.set(ValidationStage::Failed);
+        }
+        result
+    }
+
     /// Retains and validates the current17 family before any fresh reconstruction.
     ///
     /// The caller retains this exact archive occurrence and the output attempt
@@ -48,6 +93,7 @@ impl NativeArchiveRecord {
             additional_retained_bytes,
             &origin,
             owner,
+            None,
         );
         if result.is_err() {
             owner.stage.set(ValidationStage::Failed);
@@ -63,6 +109,7 @@ impl NativeArchiveRecord {
         additional_retained_bytes: usize,
         origin: &storage::complete_original_validation_origin::CompleteArchiveValidationOrigin<'_>,
         owner: &mut CompleteRestoredSettledArchiveValidationAttempt,
+        terminal: Option<&terminal_construction::Cursor<'_>>,
     ) -> Result<(), StateError> {
         owner.authenticate(self)?;
         origin.authenticate(self)?;
@@ -73,6 +120,11 @@ impl NativeArchiveRecord {
             || self.owners().len() != 4 || self.manifest().owners.len() != 4
         {
             return Err(refused("settled17 archive world or owner roster differs"));
+        }
+        if terminal.is_some() {
+            // A pending write capsule deliberately performs no early parser or
+            // inventory allocation. This real Metadata phase owns those checks.
+            storage::validate_index(&self.index, self.limits)?;
         }
         crate::node_state::validation::validate_manifest(
             graph,
@@ -88,6 +140,16 @@ impl NativeArchiveRecord {
         )?;
         admit(self, owner, additional_retained_bytes, fixed_scratch())?;
         self.authenticate_restored_metadata_dag_into(owner, additional_retained_bytes)?;
+        if let Some(cursor) = terminal {
+            cursor.finish(RestoredArchive17ValidationStage::MetadataDag, self, owner)?;
+            cursor.begin(RestoredArchive17ValidationStage::ContentClosure, 20)?;
+            let (retained, transient) = terminal_construction::closure_geometry(self)?;
+            cursor.construct(
+                RestoredArchive17ValidationStage::ContentClosure,
+                retained,
+                transient,
+            )?;
+        }
         let mut maximum_adjacency = 0usize;
         for row in &self.index.objects {
             let mut requested = row
@@ -124,6 +186,51 @@ impl NativeArchiveRecord {
             maximum_adjacency,
         )?;
         owner.content = Some(owner.closure.take_verified_data()?);
+        if terminal.is_some() {
+            // The writer-private capsule retained the actual typed Manifest.
+            // Join its entire canonical body to the verified immutable object
+            // before any Source/parent collector can consume this archive.
+            let literal = owner
+                .content
+                .as_ref()
+                .and_then(|content| content.get(self.artifact()))
+                .ok_or_else(|| refused("terminal Manifest immutable body absent"))?;
+            let value = serde_json::to_value(self.manifest()).map_err(schema)?;
+            let encoded = canonical::canonical_json(&value).map_err(schema)?;
+            if encoded.as_slice() != literal {
+                return Err(refused(
+                    "terminal Manifest typed record differs from actual immutable bytes",
+                ));
+            }
+        }
+        if let Some(cursor) = terminal {
+            cursor.finish(
+                RestoredArchive17ValidationStage::ContentClosure,
+                self,
+                owner,
+            )?;
+            cursor.begin(RestoredArchive17ValidationStage::Administrative, 20)?;
+            let content = owner
+                .content
+                .as_ref()
+                .ok_or_else(|| refused("terminal verified content absent"))?;
+            let reference = self
+                .index
+                .original_capture_journal
+                .as_ref()
+                .ok_or_else(|| refused("terminal administrative role absent"))?;
+            let bytes = content
+                .get(reference)
+                .ok_or_else(|| refused("terminal administrative body absent"))?;
+            let (retained, transient) = terminal_construction::administrative_geometry(
+                self, bytes, content, lineage, graph,
+            )?;
+            cursor.construct(
+                RestoredArchive17ValidationStage::Administrative,
+                retained,
+                transient,
+            )?;
+        }
         owner.stage.set(ValidationStage::Content);
         let content = owner
             .content
@@ -147,6 +254,39 @@ impl NativeArchiveRecord {
             self.limits.state.maximum_total_content_bytes,
         )?);
 
+        if let Some(cursor) = terminal {
+            cursor.finish(
+                RestoredArchive17ValidationStage::Administrative,
+                self,
+                owner,
+            )?;
+            cursor.begin(RestoredArchive17ValidationStage::Coordinator, 20)?;
+            let content = owner
+                .content
+                .as_ref()
+                .ok_or_else(|| refused("terminal verified content absent"))?;
+            let bytes = content
+                .get(&self.manifest().coordinator_state_ref)
+                .ok_or_else(|| refused("terminal coordinator body absent"))?;
+            let row = CoordinatorCommitmentCheckpoint17::prospective_storage_data(
+                bytes.len(),
+                maximum(self),
+            )
+            .map_err(schema)?;
+            let references =
+                NodeRuntime::capture_reference_storage(&self.manifest().coordinator_state_ref)
+                    .map_err(schema)?;
+            // Runtime fullref lives in the parsed checkpoint; add the complete
+            // typed row's retained bound for its independent clone as well.
+            cursor.construct(
+                RestoredArchive17ValidationStage::Coordinator,
+                terminal_construction::add(
+                    row.retained_requested_bytes_data(),
+                    terminal_construction::add(references, row.retained_requested_bytes_data())?,
+                )?,
+                row.maximum_simultaneous_transient_bytes_data(),
+            )?;
+        }
         let content = owner
             .content
             .as_ref()
@@ -191,7 +331,10 @@ impl NativeArchiveRecord {
             )
             .map_err(schema)?;
         coordinator.authenticate_prefix_data().map_err(schema)?;
-        self.authenticate_coordinator_ancestry17_data(owner, additional_retained_bytes)?;
+        if terminal.is_none() {
+            self.authenticate_coordinator_ancestry17_data(owner, additional_retained_bytes)?;
+        }
+
         let coordinator = owner
             .coordinator
             .as_ref()
@@ -207,6 +350,28 @@ impl NativeArchiveRecord {
         admit(self, owner, additional_retained_bytes, reference_storage)?;
         owner.runtime_reference = Some(coordinator.safe_point.runtime.clone());
         owner.checkpoint_reference = Some(self.manifest().coordinator_state_ref.clone());
+        if let Some(cursor) = terminal {
+            cursor.finish(RestoredArchive17ValidationStage::Coordinator, self, owner)?;
+            cursor.begin(RestoredArchive17ValidationStage::CoordinatorAncestry, 20)?;
+            let (retained, transient) =
+                terminal_construction::coordinator_ancestry_geometry(self, owner)?;
+            cursor.construct(
+                RestoredArchive17ValidationStage::CoordinatorAncestry,
+                retained,
+                transient,
+            )?;
+        }
+        if terminal.is_some() {
+            self.authenticate_coordinator_ancestry17_data(owner, additional_retained_bytes)?;
+        }
+        if let Some(cursor) = terminal {
+            cursor.finish(
+                RestoredArchive17ValidationStage::CoordinatorAncestry,
+                self,
+                owner,
+            )?;
+            cursor.begin(RestoredArchive17ValidationStage::Host, 20)?;
+        }
 
         let mut hosts = self.owners().iter().filter(|row| {
             row.key.implementation.as_str() == "source-owned.host-scheduling-owner/2"
@@ -226,6 +391,11 @@ impl NativeArchiveRecord {
         let host_bytes = content
             .get(&host_owner.state)
             .ok_or_else(|| refused("settled17 Host body absent"))?;
+        if let Some(cursor) = terminal {
+            let (retained, transient) =
+                terminal_construction::decode_geometry(host_bytes, maximum(self), true, lineage)?;
+            cursor.construct(RestoredArchive17ValidationStage::Host, retained, transient)?;
+        }
         admit_decode(self, owner, host_bytes, additional_retained_bytes, true)?;
         owner.host = Some(
             HostSchedulingRestoredContinuationRecord17::decode(
@@ -242,6 +412,9 @@ impl NativeArchiveRecord {
             .map_err(schema)?,
         );
         owner.stage.set(ValidationStage::Host);
+        if let Some(cursor) = terminal {
+            cursor.finish(RestoredArchive17ValidationStage::Host, self, owner)?;
+        }
         let host = owner
             .host
             .as_ref()
@@ -287,6 +460,8 @@ impl NativeArchiveRecord {
             &host.runtime,
             &coordinator.safe_point.runtime,
             additional_retained_bytes,
+            terminal,
+            RestoredArchive17ValidationStage::RuntimeIdentity,
         )?;
         authenticate_serialized_body(
             self,
@@ -294,6 +469,8 @@ impl NativeArchiveRecord {
             &host.scheduling,
             &coordinator.safe_point.scheduling,
             additional_retained_bytes,
+            terminal,
+            RestoredArchive17ValidationStage::SchedulingIdentity,
         )?;
         if coordinator.activation.activation_id != host.runtime.source_activation.activation_id
             || coordinator.activation.world_generation != host.runtime.source_activation.generation
@@ -310,13 +487,39 @@ impl NativeArchiveRecord {
                 return Err(refused("settled17 Host original body differs from closure"));
             }
         }
+        if let Some(cursor) = terminal {
+            cursor.begin(RestoredArchive17ValidationStage::OwnerReceipts, 20)?;
+            let work = self.restored_settled_owner_receipt_construction_data(graph)?;
+            cursor.construct(RestoredArchive17ValidationStage::OwnerReceipts, 0, work)?;
+        }
         self.validate_restored_settled_owner_receipts(graph, owner, additional_retained_bytes)?;
+        if let Some(cursor) = terminal {
+            cursor.finish(RestoredArchive17ValidationStage::OwnerReceipts, self, owner)?;
+        }
         admit(self, owner, additional_retained_bytes, 0)?;
+        let terminal_prefix_retained_bytes = if terminal.is_some() {
+            owner
+                .retained_requested_storage_data()
+                .map_err(schema)?
+                .checked_add(self.capture_owned_storage().map_err(schema)?)
+                .and_then(|bytes| {
+                    bytes.checked_add(std::mem::size_of::<
+                        CompleteRestoredSettledArchiveValidation<'_>,
+                    >())
+                })
+                .ok_or_else(|| refused("terminal Core prefix census overflow"))?
+        } else {
+            0
+        };
         factory.authenticate_complete_restored_settled_archive(
             CompleteRestoredSettledArchiveValidation {
                 restoration_data: &owner.restoration_data,
                 collection: &owner.collection,
+                collection_phase: &owner.collection_phase,
                 lineage_limits: lineage,
+                terminal_admission: terminal
+                    .map(|cursor| cursor as &dyn RestoredArchive17ValidationAdmission),
+                terminal_prefix_retained_bytes,
                 validation_origin: origin,
                 graph,
                 archive: self,
@@ -333,6 +536,10 @@ impl NativeArchiveRecord {
                 coordinator_ancestry: &owner.coordinator_ancestry,
             },
         )?;
+        if let Some(cursor) = terminal {
+            cursor.begin(RestoredArchive17ValidationStage::FinalConjunction, 0)?;
+            cursor.construct(RestoredArchive17ValidationStage::FinalConjunction, 0, 0)?;
+        }
         origin.authenticate(self)?;
         let cached = owner
             .restoration_data
@@ -355,6 +562,13 @@ impl NativeArchiveRecord {
             .authenticate_completed_data(self)
             .map_err(schema)?;
         owner.stage.set(ValidationStage::Verified);
+        if let Some(cursor) = terminal {
+            cursor.finish(
+                RestoredArchive17ValidationStage::FinalConjunction,
+                self,
+                owner,
+            )?;
+        }
         Ok(())
     }
 }
@@ -432,7 +646,12 @@ fn authenticate_serialized_body(
     value: &impl serde::Serialize,
     reference: &ContentRef,
     additional: usize,
+    terminal: Option<&terminal_construction::Cursor<'_>>,
+    stage: RestoredArchive17ValidationStage,
 ) -> Result<(), StateError> {
+    if let Some(cursor) = terminal {
+        cursor.begin(stage, 20)?;
+    }
     let maximum = archive
         .limits
         .state
@@ -441,6 +660,13 @@ fn authenticate_serialized_body(
     let serialization =
         NodeRuntime::capture_serialization_storage(value, maximum).map_err(schema)?;
     let encoded = NodeRuntime::capture_encoded_output_storage(value, maximum).map_err(schema)?;
+    if let Some(cursor) = terminal {
+        cursor.construct(
+            stage,
+            0,
+            terminal_construction::add(serialization, encoded)?,
+        )?;
+    }
     admit(
         archive,
         attempt,
@@ -461,7 +687,11 @@ fn authenticate_serialized_body(
             "settled17 current record differs from signed object",
         ));
     }
-    reference.verify(&bytes).map_err(schema)
+    reference.verify(&bytes).map_err(schema)?;
+    if let Some(cursor) = terminal {
+        cursor.finish(stage, archive, attempt)?;
+    }
+    Ok(())
 }
 
 fn authenticate_host_graph(
@@ -508,4 +738,12 @@ pub(super) fn fixed_scratch() -> usize {
         + crucible_node_provider::reference_packet::service::native_snapshot::native_restored_settled17_snapshot_schema_counter_scratch_data()
         + std::mem::size_of::<crucible_node_contract::HashRef>()
         + 64 + "blake3-256".len() + "cnp.blob.v1".len()
+}
+
+fn maximum(archive: &NativeArchiveRecord) -> usize {
+    archive
+        .limits
+        .state
+        .maximum_total_content_bytes
+        .min(archive.limits.native.maximum_total_record_bytes)
 }

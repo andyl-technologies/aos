@@ -283,6 +283,35 @@ impl NativeRestoredSettledCaptureOwner {
         Ok(())
     }
 
+    /// Borrows the actual nonrenewing predecessor bank of this current slot.
+    ///
+    /// This immutable source loan grants no Source, completion or effect right.
+    /// Its consumer must authenticate each selected real published upload and
+    /// drop this loan before a mutable native debit. No arbitrary ordinal or
+    /// detached serialized occurrence can replace this exact Boot/index/Rc.
+    ///
+    /// # Errors
+    /// Refuses changed native custody, an absent predecessor, inconsistent bank
+    /// extent or a callback failure. The current slot is rechecked on all exits.
+    pub(super) fn with_capture17_upload_predecessors_data<R>(
+        &self,
+        boot: &Rc<RefCell<NativeAckBoot>>,
+        index: usize,
+        current: &Rc<RefCell<NativeRestoredSettledActionAttempt>>,
+        inspect: impl FnOnce(
+            &[Rc<RefCell<NativeRestoredSettledActionAttempt>>],
+        ) -> Result<R, ProviderError>,
+    ) -> Result<R, ProviderError> {
+        self.authenticate_retained_attempt_data(boot, index, current)?;
+        if index == 0 || index.checked_add(1) != Some(self.attempts.len()) {
+            return Err(refused());
+        }
+        let predecessors = self.attempts.get(..index).ok_or_else(refused)?;
+        let result = inspect(predecessors);
+        self.authenticate_retained_attempt_data(boot, index, current)?;
+        result
+    }
+
     /// Checks defining action visitors beneath the exact retained receive.
     ///
     /// This pure ingress bound creates no action or numeric allocation credit.

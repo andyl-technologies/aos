@@ -365,6 +365,9 @@ mod restored_settled_capture_ingress;
 #[path = "native_startup/restored_action17.rs"]
 mod restored_action17;
 
+mod capture_upload17_future;
+pub use capture_upload17_future::PacketRestoredSettledNativeUploadFutureStorageData;
+
 mod restored_settled_capture_storage;
 pub use restored_settled_capture_storage::{
     PacketRestoredSettledNativeCarrierData, PacketRestoredSettledNativeConstructionInputs,

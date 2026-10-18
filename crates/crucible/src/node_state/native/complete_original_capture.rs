@@ -17,12 +17,14 @@ use super::lineage_source::OriginalLineageCoordinator;
 use super::storage::Index;
 use super::*;
 use crate::node_contract::OriginalInputLineageLimits;
-use crucible_node_contract::{
-    CaptureManifest, CaptureRepresentation, CapturedOwner, Id, canonical,
-};
+use crucible_node_contract::{CaptureManifest, CaptureRepresentation, CapturedOwner, Id, canonical};
 
 #[path = "complete_original_capture/profile.rs"]
 mod profile;
+
+#[path = "complete_original_capture/restored17.rs"]
+mod restored17;
+pub use restored17::{ImportedClosureGeometry17, imported_closure17_counter_scratch_data};
 
 impl NativeArchive {
     /// Captures and signs exact Runtime7 conditional model journals at an unchanged cut.
@@ -73,6 +75,27 @@ impl NativeArchive {
             ) -> Result<(), crate::node_contract::RuntimeError>,
         >,
     ) -> Result<NativeArchiveRecord, StateError> {
+        self.capture_complete_lineage_world_family_data(request, collecting, prepared, None, None)?
+            .ok_or_else(|| refused("original capture returned no durable archive"))
+    }
+
+    // The legacy branch owns its original snapshots. The distinct current17
+    // branch borrows the actual Window checkpoints and its one-use Host producer.
+    fn capture_complete_lineage_world_family_data(
+        &self,
+        request: OriginalLineageCaptureRequest<'_>,
+        collecting: Option<&crate::node_contract::OriginalCollectingCaptureScope>,
+        prepared: Option<
+            impl FnOnce(
+                &crate::node_contract::NodeRuntime,
+                &crate::node_contract::HostSchedulingSource,
+                &crate::node_scheduling::InputPayload,
+                &crate::node_scheduling::InputPayload,
+            ) -> Result<(), crate::node_contract::RuntimeError>,
+        >,
+        mut restored: Option<restored17::RestoredCaptureInputs17<'_, '_>>,
+        completed: Option<&mut Option<NativeArchiveRecord>>,
+    ) -> Result<Option<NativeArchiveRecord>, StateError> {
         let OriginalLineageCaptureRequest {
             graph,
             runtime,
@@ -85,9 +108,7 @@ impl NativeArchive {
             factory,
             lineage_limits,
         } = request;
-        runtime
-            .authenticate_complete_capture_purpose(collecting)
-            .map_err(schema)?;
+        restored17::authenticate_purpose(runtime, collecting, restored.as_ref())?;
         // Admit the original incoming owners before snapshot preparation or
         // source callbacks. They survive by move/retention through persistence.
         let request_storage = super::core_future_metadata::original_request_storage(
@@ -123,9 +144,24 @@ impl NativeArchive {
             base: immutable,
             selected: selected.as_ref(),
         };
-        let scheduler = runtime
-            .original_lineage_scheduler_snapshot(activation, cut, ordinal)
-            .map_err(schema)?;
+        let owned_scheduler;
+        let scheduler = if let Some(current) = &restored {
+            current.authenticate_request(
+                graph,
+                runtime,
+                activation,
+                &capture_id,
+                cut,
+                ordinal,
+                factory,
+            )?;
+            current.scheduling
+        } else {
+            owned_scheduler = runtime
+                .original_lineage_scheduler_snapshot(activation, cut, ordinal)
+                .map_err(schema)?;
+            &owned_scheduler
+        };
         if scheduler.schema_version != 1
             || scheduler.original_epochs.is_some()
             || !scheduler.external_closed_prefixes.is_empty()
@@ -134,14 +170,20 @@ impl NativeArchive {
                 "complete packet-five capture does not qualify combined scheduler editions or external ingress",
             ));
         }
-        let source = runtime
-            .original_lineage_runtime_snapshot(
-                cut,
-                ordinal,
-                lineage_limits,
-                self.limits.state.maximum_record_bytes,
-            )
-            .map_err(schema)?;
+        let owned_source;
+        let source = if let Some(current) = &restored {
+            current.runtime
+        } else {
+            owned_source = runtime
+                .original_lineage_runtime_snapshot(
+                    cut,
+                    ordinal,
+                    lineage_limits,
+                    self.limits.state.maximum_record_bytes,
+                )
+                .map_err(schema)?;
+            &owned_source
+        };
         // These actual decoded snapshots already coexist before any native
         // loan/effect. Admit their owned banks now; the complete future peak
         // remains a separate named reservation, not this minimum check.
@@ -232,16 +274,34 @@ impl NativeArchive {
             .min(immutable_limits.maximum_total_content_bytes);
         let content =
             verify_complete_closure(immutable_refs.clone(), &immutable, immutable_limits)?;
-        let runtime_object = self.lineage_record(&source, ORIGINAL_LINEAGE_RUNTIME_MEDIA)?;
-        let scheduler_object = self.lineage_record(&scheduler, "application/json")?;
-        let coordinator = OriginalLineageCoordinator {
-            schema_version: 7,
-            runtime: runtime_object.reference.clone(),
-            scheduler: scheduler_object.reference.clone(),
-            world_repeatability: graph.world_repeatability(),
+        let owned_runtime_object;
+        let owned_scheduler_object;
+        let owned_coordinator_object;
+        let (runtime_object, scheduler_object, coordinator_object) = if let Some(current) =
+            &restored
+        {
+            (
+                current.runtime_object,
+                current.scheduling_object,
+                current.coordinator_object,
+            )
+        } else {
+            owned_runtime_object = self.lineage_record(source, ORIGINAL_LINEAGE_RUNTIME_MEDIA)?;
+            owned_scheduler_object = self.lineage_record(scheduler, "application/json")?;
+            let coordinator = OriginalLineageCoordinator {
+                schema_version: 7,
+                runtime: owned_runtime_object.reference.clone(),
+                scheduler: owned_scheduler_object.reference.clone(),
+                world_repeatability: graph.world_repeatability(),
+            };
+            owned_coordinator_object =
+                self.lineage_record(&coordinator, ORIGINAL_LINEAGE_COORDINATOR_MEDIA)?;
+            (
+                &owned_runtime_object,
+                &owned_scheduler_object,
+                &owned_coordinator_object,
+            )
         };
-        let coordinator_object =
-            self.lineage_record(&coordinator, ORIGINAL_LINEAGE_COORDINATOR_MEDIA)?;
         let inventory_credit = super::lineage_inventory::credit(&source.inputs, self.limits.state)?;
         let inventory_storage = super::lineage_inventory::complete_requested_storage(
             &source.inputs,
@@ -315,8 +375,11 @@ impl NativeArchive {
                 )?,
             )?;
         }
-        if let Some(scope) = collecting {
-            let evidence = scope.plan().evidence();
+        if let Some(plan) = collecting
+            .map(|scope| scope.plan())
+            .or_else(|| restored.as_ref().map(|current| current.scope.plan_data()))
+        {
+            let evidence = plan.evidence();
             objects.insert(
                 evidence.plan_ref.clone(),
                 evidence.plan_bytes,
@@ -389,10 +452,14 @@ impl NativeArchive {
         objects.insert(
             coordinator_object.reference.clone(),
             &coordinator_object.bytes,
-            vec![
-                runtime_object.reference.clone(),
-                scheduler_object.reference.clone(),
-            ],
+            if let Some(current) = &restored {
+                core_references(current.coordinator, self.limits.state.maximum_record_bytes)?
+            } else {
+                vec![
+                    runtime_object.reference.clone(),
+                    scheduler_object.reference.clone(),
+                ]
+            },
         )?;
 
         // All known typed rows, including every original inventory occurrence,
@@ -401,28 +468,46 @@ impl NativeArchive {
         // Count the borrowed whole Host2 representation before creating its
         // first producer copy. This minimum covers current known banks only;
         // the source-selected whole capture peak remains independently required.
-        runtime
-            .precharge_original_host_capture(
-                graph,
-                &source,
-                &scheduler,
-                &runtime_object,
-                self.limits.state.maximum_total_content_bytes,
-            )
-            .map_err(schema)?;
-        let preflight = runtime
-            .preflight_complete_original_capture(
-                graph,
-                activation,
-                &source,
-                &runtime_object,
-                (&scheduler, lineage_limits),
-                NativeArchiveLimits {
-                    native: native_limits,
-                    state: self.limits.state,
-                },
-            )
-            .map_err(schema)?;
+        let preflight = if let Some(current) = &restored {
+            runtime
+                .preflight_complete_restored_capture17_data(
+                    graph,
+                    activation,
+                    source,
+                    runtime_object,
+                    (scheduler, lineage_limits),
+                    NativeArchiveLimits {
+                        native: native_limits,
+                        state: self.limits.state,
+                    },
+                    current.scope,
+                    std::rc::Rc::clone(current.host),
+                )
+                .map_err(schema)?
+        } else {
+            runtime
+                .precharge_original_host_capture(
+                    graph,
+                    source,
+                    scheduler,
+                    runtime_object,
+                    self.limits.state.maximum_total_content_bytes,
+                )
+                .map_err(schema)?;
+            runtime
+                .preflight_complete_original_capture(
+                    graph,
+                    activation,
+                    source,
+                    runtime_object,
+                    (scheduler, lineage_limits),
+                    NativeArchiveLimits {
+                        native: native_limits,
+                        state: self.limits.state,
+                    },
+                )
+                .map_err(schema)?
+        };
         // Source born-row plans require the actual owning-node loan and this
         // encoded Runtime7 identity. They cannot be demanded by the earlier
         // factory-cache callback, which precedes that loan and body creation.
@@ -458,6 +543,47 @@ impl NativeArchive {
                 state: self.limits.state,
             },
         )?;
+        let restored_storage = restored
+            .as_ref()
+            .map(|current| {
+                let imported = factory
+                    .complete_restored_capture_imported_closure_geometry_data(current.scope)?;
+                let imported = restored17::ImportedClosureStorage17::quote(imported, self.limits)?;
+                Ok::<_, StateError>(imported)
+            })
+            .transpose()?;
+        // This is a new independent constructor row for the final comparison
+        // copies. It consumes neither the Window checkpoint construction credit
+        // nor any of the six Source ticket-validation windows.
+        let final_snapshot_comparison = if restored.is_some() {
+            let row = runtime
+                .original_restored_capture_runtime_construction_data(
+                    activation,
+                    cut,
+                    ordinal,
+                    self.limits.state.maximum_record_bytes,
+                    self.limits
+                        .state
+                        .maximum_total_content_bytes
+                        .min(self.limits.native.maximum_total_record_bytes),
+                )
+                .map_err(schema)?;
+            row.checkpoint_inputs_construction_requested_bytes_data()
+                .checked_add(row.counter_scratch_bytes_data())
+                .ok_or_else(|| refused("final current17 snapshot comparison row overflow"))?
+        } else {
+            0
+        };
+        if let Some(imported) = &restored_storage {
+            native_limits.maximum_total_record_bytes = native_limits
+                .maximum_total_record_bytes
+                .checked_sub(imported.bytes())
+                .ok_or_else(|| refused("imported closure exhausts native record credit"))?;
+            native_limits.maximum_objects = native_limits
+                .maximum_objects
+                .checked_sub(imported.objects())
+                .ok_or_else(|| refused("imported closure exhausts native object credit"))?;
+        }
         let prior_admin = runtime
             .original_capture_journal_with_limit(self.limits.state.maximum_record_bytes)
             .map_err(schema)?;
@@ -477,11 +603,24 @@ impl NativeArchive {
         let remaining_edges = objects
             .remaining_dependency_credit()?
             .checked_sub(core_edges)
+            .and_then(|edges| {
+                edges.checked_sub(
+                    restored_storage
+                        .as_ref()
+                        .map(|row| row.edges())
+                        .unwrap_or(0),
+                )
+            })
             .ok_or_else(|| refused("capture geometry exhausts future core edge credit"))?;
         geometry.validate(graph, native_limits, self.limits.state, remaining_edges)?;
         let (known_objects, known_edges) = objects.complete_geometry_counts()?;
+        let (imported_objects, imported_edges) = restored_storage
+            .as_ref()
+            .map(|imported| (imported.objects(), imported.edges()))
+            .unwrap_or((0, 0));
         let projected_objects = known_objects
-            .checked_add(source_roles)
+            .checked_add(imported_objects)
+            .and_then(|objects| objects.checked_add(source_roles))
             .and_then(|objects| objects.checked_add(8))
             .ok_or_else(|| refused("complete future core object count overflow"))?;
         let projected_edges = geometry
@@ -491,6 +630,7 @@ impl NativeArchive {
                 edges.checked_add(row.maximum_dependency_edges)
             })
             .and_then(|edges| edges.checked_add(core_edges))
+            .and_then(|edges| edges.checked_add(imported_edges))
             .ok_or_else(|| refused("complete future core edge count overflow"))?;
         let core_metadata = super::core_future_metadata::CoreCaptureMetadataPeak::prepare(
             super::core_future_metadata::CoreCaptureMetadataGeometry {
@@ -511,8 +651,21 @@ impl NativeArchive {
         // A complete final sum, not a text-to-heap multiplier. This minimum
         // leaves the separately blocked source/attempt/future-byte peak intact.
         let future_content_banks = super::core_future_metadata::projected_future_content_banks(
-            objects.complete_disk_bytes(),
-            objects.complete_largest_object()?,
+            objects
+                .complete_disk_bytes()
+                .checked_add(
+                    restored_storage
+                        .as_ref()
+                        .map(|row| row.bytes())
+                        .unwrap_or(0),
+                )
+                .ok_or_else(|| refused("future imported content bytes overflow"))?,
+            objects.complete_largest_object()?.max(
+                restored_storage
+                    .as_ref()
+                    .map(|row| row.largest())
+                    .unwrap_or(0),
+            ),
             core_metadata.future_body_bounds(),
             &geometry,
             self.limits.state,
@@ -611,6 +764,13 @@ impl NativeArchive {
                 .and_then(|bytes| bytes.checked_add(row.maximum_transient_bytes))
                 .ok_or_else(|| refused("complete selected source peak overflow"))
         })?;
+        if let Some(imported) = &restored_storage {
+            current_core = current_core
+                .checked_add(restored17::writer_counter_scratch_data())
+                .and_then(|bytes| bytes.checked_add(final_snapshot_comparison))
+                .and_then(|bytes| bytes.checked_add(imported.peak().ok()?))
+                .ok_or_else(|| refused("restored capture import peak overflow"))?;
+        }
         let named_peak = super::core_future_metadata::CompleteCaptureAllocationPeak {
             current_core,
             original_payloads: runtime.capture_original_payload_storage().map_err(schema)?,
@@ -685,7 +845,7 @@ impl NativeArchive {
                   host: &crate::node_contract::HostSchedulingSource,
                   prepared_scheduling: &crate::node_scheduling::SchedulingSnapshot,
                   prepared_runtime: &crate::node_scheduling::InputPayload| {
-                if prepared_scheduling != expected_scheduling
+                if prepared_scheduling != *expected_scheduling
                     || prepared_runtime.reference != expected_runtime.reference
                     || prepared_runtime.bytes != expected_runtime.bytes
                 {
@@ -695,24 +855,33 @@ impl NativeArchive {
                 prepared(current, host, prepared_runtime, scheduling_object)
             }
         });
-        let captures = runtime
-            .capture_installed_original_lineage_with_prepared_host_data(
-                crate::node_contract::TicketedOriginalLineageCaptureRequest {
-                    graph,
-                    activation,
-                    capture_id: capture_id.clone(),
-                    source: &source,
-                    runtime_object: &runtime_object,
-                    lineage_limits,
-                    limits: native_limits,
-                    geometry: &geometry,
-                },
-                prepared,
-            )
-            .map_err(schema)?;
-        runtime
-            .authenticate_complete_capture_purpose(collecting)
-            .map_err(schema)?;
+        let capture_request = crate::node_contract::TicketedOriginalLineageCaptureRequest {
+            graph,
+            activation,
+            capture_id: capture_id.clone(),
+            source,
+            runtime_object,
+            lineage_limits,
+            limits: native_limits,
+            geometry: &geometry,
+        };
+        let captures = if let Some(current) = &mut restored {
+            runtime
+                .capture_installed_restored_lineage17_data(
+                    capture_request,
+                    current.scope,
+                    current.after_owner,
+                )
+                .map_err(schema)?
+        } else {
+            runtime
+                .capture_installed_original_lineage_with_prepared_host_data(
+                    capture_request,
+                    prepared,
+                )
+                .map_err(schema)?
+        };
+        restored17::authenticate_purpose(runtime, collecting, restored.as_ref())?;
         if let Some(scope) = collecting {
             scope.authenticate(&source, &scheduler, &capture_id, factory)?;
         }
@@ -728,6 +897,9 @@ impl NativeArchive {
         )?;
         observed_dependencies.validate(dependency_limits)?;
         dependency_storage.authenticate_bound(&observed_dependencies)?;
+        if let (Some(current), Some(imported)) = (restored.as_ref(), &restored_storage) {
+            imported.enroll(factory, current.scope, &mut objects)?;
+        }
         let captured_bodies = captures.read().map_err(schema)?;
         let mut states = Vec::new();
         let mut owners = Vec::new();
@@ -853,6 +1025,11 @@ impl NativeArchive {
             });
             states.push(native);
         }
+        if restored.is_some() {
+            // All native body copies are now enrolled. Release the private
+            // Runtime capture read before terminal phases call the full observer.
+            drop(captured_bodies);
+        }
         owners.sort_by(|left, right| left.capture_owner_id.cmp(&right.capture_owner_id));
         states.sort_by(|left, right| left.owner.cmp(&right.owner));
         let admin = runtime
@@ -877,9 +1054,16 @@ impl NativeArchive {
             "native_archive":{"schema_version":3,"content_inventory":2,"original_capture_journal":admin_object.reference},
         });
         let mut provenance_dependencies = vec![admin_object.reference.clone()];
-        if let Some(scope) = collecting {
-            let evidence = scope.plan().evidence();
-            provenance["collecting_capture"] = scope.provenance();
+        if let Some(plan) = collecting
+            .map(|scope| scope.plan())
+            .or_else(|| restored.as_ref().map(|current| current.scope.plan_data()))
+        {
+            let evidence = plan.evidence();
+            provenance["collecting_capture"] = if let Some(scope) = collecting {
+                scope.provenance()
+            } else {
+                restored17::collecting_provenance(plan)
+            };
             provenance_dependencies
                 .extend([evidence.plan_ref.clone(), evidence.refused_ref.clone()]);
             provenance_dependencies.extend(evidence.sources.iter().cloned());
@@ -897,12 +1081,15 @@ impl NativeArchive {
             event_ordinal: ordinal,
             ordering_profile: graph.world().ordering_profile.clone(),
             guarantees_ref,
-            coordinator_state_ref: coordinator_object.reference,
+            coordinator_state_ref: coordinator_object.reference.clone(),
             owners,
             immutable_refs,
             provenance_ref,
             extensions: Default::default(),
         };
+        // Current17 funded these two comparison constructors independently in
+        // final_snapshot_comparison before any owner effect. The original path
+        // keeps its existing construction and accounting behavior.
         if runtime
             .original_lineage_runtime_snapshot(
                 cut,
@@ -911,11 +1098,11 @@ impl NativeArchive {
                 self.limits.state.maximum_record_bytes,
             )
             .map_err(schema)?
-            != source
+            != *source
             || runtime
                 .original_lineage_scheduler_snapshot(activation, cut, ordinal)
                 .map_err(schema)?
-                != scheduler
+                != *scheduler
         {
             return Err(refused(
                 "conditional native/runtime state changed during capture",
@@ -933,7 +1120,25 @@ impl NativeArchive {
             objects: objects.finish(),
             owners: states,
         };
-        let record = self.record(index.clone())?;
+        let mut pending_record = None;
+        let legacy_record;
+        let record = if let Some(current) = &restored {
+            pending_record = Some(self.pending_restored_write17_record_data(
+                index.clone(),
+                manifest.clone(),
+                runtime,
+                &captures,
+                current.scope,
+                current.host,
+            )?);
+            pending_record
+                .as_ref()
+                .ok_or_else(|| refused("pending current17 writer record absent"))?
+                .record_data()
+        } else {
+            legacy_record = self.record(index.clone())?;
+            &legacy_record
+        };
         {
             // Only this actual pre-sign writer can lend OriginalWrite purpose.
             // Source validation still precedes signing/persistence; this witness
@@ -941,26 +1146,66 @@ impl NativeArchive {
             let origin = super::storage::complete_original_validation_origin::CompleteArchiveValidationOrigin::original_write(
                 self, &record, &captures, runtime,
             )?;
-            record.complete_original_lineage_content_with_origin(
-                graph,
-                factory,
-                lineage_limits,
-                &origin,
-            )?;
+            if let Some(current) = &mut restored {
+                let admission = restored17::WriterTerminalAdmission17::new(
+                    current.scope,
+                    runtime,
+                    &captures,
+                    &record,
+                    &mut *current.after_owner,
+                );
+                record.authenticate_restored_settled_before_signing_data(
+                    graph,
+                    factory,
+                    lineage_limits,
+                    &origin,
+                    &admission,
+                    named_peak.total().map_err(schema)?,
+                )?;
+                current
+                    .scope
+                    .require_terminal_validation_completed_data(runtime, &captures, &record)
+                    .map_err(schema)?;
+            } else {
+                record.complete_original_lineage_content_with_origin(
+                    graph,
+                    factory,
+                    lineage_limits,
+                    &origin,
+                )?;
+            }
         }
         // The same world remains held on every verification or persistence
         // failure. Release neither drops original bodies nor renews lifetime IDs.
-        runtime
-            .authenticate_complete_capture_purpose(collecting)
-            .map_err(schema)?;
+        restored17::authenticate_purpose(runtime, collecting, restored.as_ref())?;
         if let Some(scope) = collecting {
             scope.authenticate(&source, &scheduler, &manifest.capture_id, factory)?;
         }
-        let durable = self.persist(index)?;
-        captures
-            .release_persisted_archive(runtime, &durable)
-            .map_err(schema)?;
-        Ok(durable)
+        let durable = if let Some(current) = &restored {
+            pending_record
+                .take()
+                .ok_or_else(|| refused("pending current17 writer capsule absent"))?
+                .persist_data(runtime, &captures, current.scope, current.host)?
+        } else {
+            self.persist(index)?
+        };
+        if let Some(completed) = completed {
+            // Retain the actual committed record before releasing its ticket.
+            // A subsequent failure cannot make committed custody disappear.
+            *completed = Some(durable);
+            let durable = completed
+                .as_ref()
+                .ok_or_else(|| refused("durable archive output absent"))?;
+            captures
+                .release_persisted_archive(runtime, durable)
+                .map_err(schema)?;
+            Ok(None)
+        } else {
+            captures
+                .release_persisted_archive(runtime, &durable)
+                .map_err(schema)?;
+            Ok(Some(durable))
+        }
     }
 }
 

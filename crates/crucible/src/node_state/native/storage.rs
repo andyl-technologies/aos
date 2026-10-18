@@ -43,6 +43,10 @@ type ArchiveMac = Hmac<Sha256>;
 #[path = "storage/settled_history.rs"]
 mod settled_history;
 
+#[path = "storage/restored_write17.rs"]
+mod restored_write17;
+pub(super) use restored_write17::PendingRestoredArchive17;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Object {
@@ -264,6 +268,15 @@ impl NativeArchive {
 
     pub(super) fn persist(&self, index: Index) -> Result<NativeArchiveRecord, StateError> {
         let record = self.record(index)?;
+        self.persist_record_data(record)
+    }
+
+    // The original path reaches this tail only after record(index). Current17
+    // reaches it through the private completed terminal-write capsule instead.
+    fn persist_record_data(
+        &self,
+        record: NativeArchiveRecord,
+    ) -> Result<NativeArchiveRecord, StateError> {
         super::super::closure::bounded_record(
             record.index.as_ref(),
             self.limits.state.maximum_record_bytes,

@@ -44,7 +44,7 @@ pub(crate) use source_fields::{
 };
 pub(crate) use source_reader::{
     OriginalSourceRestoredSettled17DecodeAttempt, OriginalSourceRestoredSettled17Read,
-    OriginalSourceRestoredSettled17ReadInputs,
+    OriginalSourceRestoredSettled17ReadInputs, OriginalSourceRestoredSettled17Prelude,
 };
 
 #[path = "logical/source_writer.rs"]

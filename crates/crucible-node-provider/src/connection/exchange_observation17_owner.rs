@@ -118,6 +118,64 @@ impl ExchangeRecord {
         connection.authority.ensure_live()?;
         connection.protocol_owner.ensure_current()
     }
+
+    /// Rechecks a real completed upload while the sole next original is incoming.
+    ///
+    /// The native lender independently authenticates the actual prior private
+    /// owner and Source seed. This method checks immutable original/terminal
+    /// transport correspondence; it never treats the current incoming request
+    /// as a globally settled cut or grants another Blob/native effect.
+    ///
+    /// # Errors
+    /// Refuses a partial/foreign prior record, changed source literal or normal
+    /// reply, nonincreasing original sequence, or another current incoming cut.
+    pub(crate) fn authenticate_capture17_upload_predecessor_data<S: ProviderStream>(
+        &self,
+        connection: &Connection<S>,
+        original: &Envelope,
+        terminal: &Envelope,
+        current: &Envelope,
+    ) -> Result<(), ProviderError> {
+        connection.protocol_owner.ensure_current()?;
+        connection.authenticate_native5_source_codec()?;
+        if connection.fenced
+            || connection.role != EndpointRole::Provider
+            || self.originals.as_slice() != std::slice::from_ref(terminal)
+            || self.sent != 1
+            || self.canonical.len() != 1
+            || self.original_slots.len() != 1
+            || !self.acknowledgements.is_empty()
+        {
+            return Err(refused());
+        }
+        original.matches_response(terminal)?;
+        connection.authenticate_capture17_upload_completed_body_data(original, &terminal.body)?;
+        authenticate_incoming(connection, original)?;
+        let sent = self.original_sent_frame(connection, 0)?;
+        if sent.original() != terminal {
+            return Err(refused());
+        }
+        crate::protocol_snapshot::owned11::correspondence::envelope(
+            terminal,
+            sent.canonical_body(),
+        )?;
+        if !connection
+            .original_frames
+            .as_ref()
+            .ok_or_else(refused)?
+            .try_borrow()
+            .map_err(|_| refused())?
+            .complete()
+        {
+            return Err(refused());
+        }
+        if original.sequence.get() >= current.sequence.get() {
+            return Err(refused());
+        }
+        connection.authenticate_native_capture17_incoming_data(current)?;
+        connection.authority.ensure_live()?;
+        connection.protocol_owner.ensure_current()
+    }
 }
 
 fn authenticate_incoming<S: ProviderStream>(
@@ -167,7 +225,7 @@ fn authenticate_incoming_bank(
 pub(crate) fn counter_scratch_data() -> usize {
     use std::mem::size_of;
     size_of::<&ExchangeRecord>()
-        + size_of::<&Envelope>() * 4
+        + size_of::<&Envelope>() * 5
         + size_of::<std::slice::Iter<'static, ReceivedFrame>>()
         + size_of::<std::iter::Enumerate<std::slice::Iter<'static, Envelope>>>()
         + size_of::<

@@ -487,3 +487,6 @@ mod tests {
 #[cfg(test)]
 #[path = "upload17/reader_tests.rs"]
 mod reader_tests;
+
+#[path = "upload17/published.rs"]
+mod published;

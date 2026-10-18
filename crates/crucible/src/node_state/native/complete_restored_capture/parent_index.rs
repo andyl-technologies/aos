@@ -9,6 +9,15 @@ use crucible_node_contract::{CaptureManifest, Id, Validate, canonical};
 use crucible_node_provider::protocol_snapshot::borrowed_json::BorrowedJsonFields as Fields;
 use serde_json::Value;
 use std::mem::size_of;
+use super::terminal::{
+    RestoredArchive17ParentWork, RestoredArchive17SourceIndex,
+    RestoredArchive17ValidationConstructionData, RestoredArchive17ValidationPrewalkData,
+    RestoredArchive17ValidationStep,
+};
+
+#[path = "parent_index/terminal.rs"]
+mod terminal_admission;
+use terminal_admission::ParentTerminal17;
 
 const INDEX_MEDIA: &str = "application/vnd.crucible.native-signed-index-body.v3+json";
 
@@ -190,9 +199,11 @@ impl ParentIndex17Attempt {
         scope: &CompleteRestoredSettledArchiveValidation<'_>,
         reference: &ContentRef,
         depth: usize,
+        source_index: RestoredArchive17SourceIndex,
+        terminal_prior_cache: usize,
         additional: usize,
         output: &mut Option<Self>,
-    ) -> Result<(), StateError> {
+    ) -> Result<usize, StateError> {
         scope.validation_origin.authenticate(scope.archive)?;
         let limits = scope.archive_limits_data()?;
         if output.is_some() || depth >= limits.state.maximum_dependency_depth {
@@ -219,6 +230,15 @@ impl ParentIndex17Attempt {
         if bytes.is_empty() || bytes.len() > maximum_record {
             return Err(refused("parent Index3 exceeds record ceiling"));
         }
+        let mut terminal =
+            ParentTerminal17::new_data(source_index, depth, reference, terminal_prior_cache);
+        terminal.begin_data(
+            scope,
+            RestoredArchive17ParentWork::IndexDecode,
+            counter_scratch_data()
+                .checked_add(core_decode_credit::scanner_storage())
+                .ok_or_else(|| refused("parent Index3 terminal prewalk overflow"))?,
+        )?;
         admit(
             scope,
             None,
@@ -244,6 +264,21 @@ impl ParentIndex17Attempt {
                 )
                 .and_then(|n| n.checked_add(counter_scratch_data()))
                 .ok_or_else(|| refused("parent Index3 decoder credit overflow"))?,
+        )?;
+        let index_construction = credit
+            .total()
+            .map_err(super::super::super::schema)?
+            .checked_add(
+                NodeRuntime::capture_reference_storage(reference)
+                    .map_err(super::super::super::schema)?,
+            )
+            .ok_or_else(|| refused("parent Index3 terminal construction overflow"))?;
+        terminal.construct_data(
+            scope,
+            RestoredArchive17ParentWork::IndexDecode,
+            index_construction,
+            0,
+            counter_scratch_data(),
         )?;
         *output = Some(Self {
             reference: Some(reference.clone()),
@@ -279,6 +314,12 @@ impl ParentIndex17Attempt {
         if attempt.canonical.as_deref() != Some(bytes) {
             return Err(refused("parent Index3 body is noncanonical"));
         }
+        terminal.finish_data(scope, RestoredArchive17ParentWork::IndexDecode, attempt)?;
+        terminal.begin_data(
+            scope,
+            RestoredArchive17ParentWork::Inventory,
+            counter_scratch_data(),
+        )?;
         let index = attempt
             .index
             .as_ref()
@@ -287,6 +328,13 @@ impl ParentIndex17Attempt {
         // Charge their concrete map-node and string geometry before entry.
         let inventory = inventory_validation_storage(index)?;
         admit(scope, Some(attempt), additional, inventory)?;
+        terminal.construct_data(
+            scope,
+            RestoredArchive17ParentWork::Inventory,
+            0,
+            inventory,
+            counter_scratch_data(),
+        )?;
         storage::validate_index(index, limits)?;
         if index.owners.len() != 4 || index.artifact == *reference {
             return Err(refused(
@@ -324,6 +372,14 @@ impl ParentIndex17Attempt {
                 "parent Index3 does not own its full typed inventory",
             ));
         }
+        terminal.finish_data(scope, RestoredArchive17ParentWork::Inventory, attempt)?;
+        terminal.begin_data(
+            scope,
+            RestoredArchive17ParentWork::ManifestDecode,
+            counter_scratch_data()
+                .checked_add(core_decode_credit::scanner_storage())
+                .ok_or_else(|| refused("parent manifest terminal prewalk overflow"))?,
+        )?;
         let manifest_bytes = scope
             .content
             .get(&index.artifact)
@@ -351,6 +407,17 @@ impl ParentIndex17Attempt {
                 .checked_add(credit.typed_containers)
                 .ok_or_else(|| refused("parent manifest decoder credit overflow"))?,
         )?;
+        terminal.construct_data(
+            scope,
+            RestoredArchive17ParentWork::ManifestDecode,
+            credit
+                .total()
+                .map_err(super::super::super::schema)?
+                .checked_add(credit.typed_containers)
+                .ok_or_else(|| refused("parent manifest terminal construction overflow"))?,
+            0,
+            counter_scratch_data(),
+        )?;
         attempt.manifest_value = Some(
             canonical::parse_json(manifest_bytes, maximum_record)
                 .map_err(super::super::super::schema)?,
@@ -376,6 +443,12 @@ impl ParentIndex17Attempt {
         if attempt.manifest_canonical.as_deref() != Some(manifest_bytes) {
             return Err(refused("parent manifest body is noncanonical"));
         }
+        terminal.finish_data(scope, RestoredArchive17ParentWork::ManifestDecode, attempt)?;
+        terminal.begin_data(
+            scope,
+            RestoredArchive17ParentWork::ManifestValidate,
+            counter_scratch_data(),
+        )?;
         let manifest = attempt
             .manifest
             .as_ref()
@@ -387,6 +460,13 @@ impl ParentIndex17Attempt {
             Some(attempt),
             additional,
             NodeRuntime::capture_manifest_storage(manifest).map_err(super::super::super::schema)?,
+        )?;
+        terminal.construct_data(
+            scope,
+            RestoredArchive17ParentWork::ManifestValidate,
+            0,
+            NodeRuntime::capture_manifest_storage(manifest).map_err(super::super::super::schema)?,
+            counter_scratch_data(),
         )?;
         manifest.validate().map_err(super::super::super::schema)?;
         if manifest.owners.len() != index.owners.len()
@@ -406,8 +486,13 @@ impl ParentIndex17Attempt {
         }
         admit(scope, Some(attempt), additional, counter_scratch_data())?;
         scope.validation_origin.authenticate(scope.archive)?;
+        terminal.finish_data(
+            scope,
+            RestoredArchive17ParentWork::ManifestValidate,
+            attempt,
+        )?;
         attempt.verified = true;
-        Ok(())
+        Ok(terminal.completed_cache_data())
     }
 
     pub(super) fn borrow_data<'borrow, 'archive>(
@@ -689,6 +774,7 @@ pub(super) fn counter_scratch_data() -> usize {
         + 5 * size_of::<Fields<'static>>()
         + size_of::<Result<Option<&'static [u8]>, crucible_node_provider::ProviderError>>()
         + NodeRuntime::original_json_value_counter_scratch_data()
+        + terminal_admission::counter_scratch_data()
         + crucible_node_provider::protocol_snapshot::borrowed_json::counter_scratch_data()
 }
 

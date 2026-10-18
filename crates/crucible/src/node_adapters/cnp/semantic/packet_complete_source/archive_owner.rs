@@ -526,6 +526,23 @@ impl PacketCompleteArchivedOwnerData<'_> {
         owners: &mut [Option<Self>; 3],
         additional_retained_bytes: usize,
     ) -> Result<(), OperationFailure> {
+        Self::reconstruct_group_with_terminal_data(owners, additional_retained_bytes, None, 0)
+    }
+
+    fn reconstruct_group_with_terminal_data(
+        owners: &mut [Option<Self>; 3],
+        additional_retained_bytes: usize,
+        terminal: Option<&initial15::terminal::Initial15Terminal17<'_, '_>>,
+        terminal_base_backing: usize,
+    ) -> Result<(), OperationFailure> {
+        if let Some(terminal) = terminal {
+            // Demand walkers use preowned aliases; fullref verification owns one
+            // temporary hash tuple before the aggregate construction is known.
+            terminal.begin_data(
+                crate::node_state::RestoredArchive17Initial15Work::ProtocolReconstruct,
+                "blake3-256".len() + "cnp.blob.v1".len() + 64,
+            )?;
+        }
         let mut maximum = MAXIMUM_WHOLE_BYTES;
         let mut total = additional_retained_bytes;
         for (index, slot) in owners.iter().enumerate() {
@@ -568,6 +585,7 @@ impl PacketCompleteArchivedOwnerData<'_> {
                 }
             }
         }
+        let before_demands = total;
         // Every actual input/result slot is retained before the first validating
         // walker. No protocol reconstruction is reachable until all totals pass.
         for slot in owners.iter_mut() {
@@ -581,6 +599,15 @@ impl PacketCompleteArchivedOwnerData<'_> {
             }
             total = checked_sum([total, result?], maximum)?;
         }
+        if let Some(terminal) = terminal {
+            // The defining SDK demands include payload trees, validation scratch
+            // and sealed result backing. Charge their full sum in both columns;
+            // existing prepared banks are conservatively included again.
+            let demanded = total
+                .checked_sub(before_demands)
+                .ok_or_else(|| refused("initial15 protocol demand accounting overflow"))?;
+            terminal.construct_data(demanded, demanded)?;
+        }
         for slot in owners.iter_mut() {
             let owner = slot
                 .as_mut()
@@ -590,6 +617,9 @@ impl PacketCompleteArchivedOwnerData<'_> {
                 owner.failed = true;
             }
             result?;
+        }
+        if let Some(terminal) = terminal {
+            terminal.finish_protocol_data(terminal_base_backing, owners, None, maximum)?;
         }
         Ok(())
     }

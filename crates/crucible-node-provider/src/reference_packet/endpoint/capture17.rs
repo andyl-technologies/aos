@@ -62,7 +62,20 @@ impl<S: ProviderStream> PacketEndpoint<S> {
             return Err(ProviderError::Frame("Capture17 original peer closed"));
         }
         deadline.remaining()?;
-        scope.authenticate_assigned_source_data(connection, &self.native, &self.records)?;
+        let continuation = matches!(
+            scope.original_data()?.method,
+            Method::BlobChunk | Method::BlobFinish
+        );
+        if continuation {
+            scope.authenticate_upload_continuation17_source_data(
+                connection,
+                &self.uploads,
+                &self.native,
+                &self.records,
+            )?;
+        } else {
+            scope.authenticate_assigned_source_data(connection, &self.native, &self.records)?;
+        }
         Ok(scope)
     }
 }
@@ -112,14 +125,14 @@ impl PacketEndpoint<crate::client::DeadlineStream> {
             .as_ref()
             .ok_or_else(refused)?
             .authenticate_observation17_host_owners_data(boot, connection)?;
-        let projection = scope.prepare_assigned_upload17_data(
+        let projection = scope.prepare_current_upload17_data(
             connection,
             &self.uploads,
             &self.native,
             &self.records,
             self.next_sequence,
         )?;
-        scope.execute_assigned_upload17_data(&mut self.uploads)?;
+        scope.execute_current_upload17_data(&mut self.uploads)?;
         self.records.try_reserve_exact(1).map_err(|_| {
             ProviderError::ResourceExhausted("Capture17 upload completed record slot")
         })?;

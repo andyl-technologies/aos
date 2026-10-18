@@ -226,7 +226,27 @@ impl OriginalInitial15ArchivedGroup {
         reference: &ContentRef,
         slot: usize,
         additional: usize,
+        terminal: Option<&Initial15Terminal17<'_, '_>>,
+        temporary_references: usize,
     ) -> Result<(), OperationFailure> {
+        if let Some(cursor) = terminal {
+            use crate::node_state::{
+                RestoredArchive17Initial15Role as Role, RestoredArchive17Initial15Work as Work,
+            };
+            let role = match slot {
+                0 => Role::Provenance,
+                1 => Role::Plan,
+                2 => Role::Descriptors,
+                3 => Role::Contracts,
+                4 => Role::Fixtures,
+                5 => Role::Coordinator,
+                6 => Role::Runtime,
+                7 => Role::Scheduling,
+                8 => Role::Administrative,
+                _ => return Err(refused("initial15 original role is outside closed grammar")),
+            };
+            cursor.begin_data(Work::RoleDecode(role), 0)?;
+        }
         if slot >= self.values.len() || self.values[slot].is_some() {
             return Err(refused("initial15 original role slot spent"));
         }
@@ -254,6 +274,9 @@ impl OriginalInitial15ArchivedGroup {
             additional,
             checked_sum([decoder, encoded], self.maximum)?,
         )?;
+        if let Some(cursor) = terminal {
+            cursor.construct_data(decoder, encoded)?;
+        }
         self.values[slot] =
             Some(canonical::parse_json(bytes, limits.state.maximum_record_bytes).map_err(unknown)?);
         let value = self.values[slot]
@@ -266,7 +289,11 @@ impl OriginalInitial15ArchivedGroup {
         {
             return Err(refused("initial15 original role is not canonical"));
         }
-        self.admit_data(scope, additional, 0)
+        self.admit_data(scope, additional, 0)?;
+        if let Some(cursor) = terminal {
+            cursor.finish_data(self, temporary_references)?;
+        }
+        Ok(())
     }
 
     /// Reports the defining fixed observers, serializer views and borrowed plans.
@@ -305,11 +332,12 @@ impl OriginalInitial15ArchivedGroup {
             + PacketCompleteArchivedSemantics::retained_counter_scratch_data()
             + NodeRuntime::capture_selected_json_decode_counter_scratch_data()
             + NodeRuntime::capture_serialization_counter_scratch_data()
+            + crucible_node_provider::reference_packet::service::native_snapshot::native_owned14_snapshot_schema_counter_scratch_data()
     }
 }
 
 impl Initial15DecodedOwner {
-    fn charge_data(&self, census: &mut Census) -> Result<(), OperationFailure> {
+    pub(super) fn charge_data(&self, census: &mut Census) -> Result<(), OperationFailure> {
         let Self {
             snapshot_class,
             journal,
@@ -404,7 +432,7 @@ impl Initial15DecodedOwner {
     }
 }
 
-fn charge_journal_data(
+pub(super) fn charge_journal_data(
     census: &mut Census,
     journal: &PacketCompleteSettledJournal,
 ) -> Result<(), OperationFailure> {
@@ -455,7 +483,7 @@ fn charge_journal_data(
     )
 }
 
-fn add_metadata(
+pub(super) fn add_metadata(
     census: &mut Census,
     facts: &RetainedProtocolMetadataFacts,
 ) -> Result<(), OperationFailure> {
@@ -491,4 +519,4 @@ fn scalar_storage_data(value: &PacketNative5StorageSelection) {
     require_copy(limits);
 }
 
-fn require_copy<T: Copy>(_: &T) {}
+pub(super) fn require_copy<T: Copy>(_: &T) {}

@@ -10,6 +10,7 @@ mod archive_code;
 mod archive_validation;
 mod dependencies;
 mod host17;
+mod imported17;
 mod key;
 mod restoration_prebirth;
 mod restoration_source;
@@ -43,9 +44,7 @@ use crucible_node_provider::reference_packet::continuation_contracts::PACKET_COM
 
 use super::super::fixture::PacketFixtureMeasurements;
 use super::capture_records::{error, operation_failure, refused};
-use super::{
-    InstalledPacketCompleteCollectionAuthority, capture_records::PacketCompleteCaptureRecords,
-};
+use super::{InstalledPacketCompleteCollectionAuthority, capture_records::PacketCompleteCaptureRecords};
 
 /// Retains the original complete source installation and its opaque collection plan.
 ///
@@ -499,6 +498,28 @@ pub struct PacketCompleteWorldCapture<'a> {
 }
 
 impl NativeWorldFactory for PacketCompleteCaptureFactory {
+    fn complete_restored_capture_imported_closure_geometry_data(
+        &self,
+        scope: &crucible::node_contract::RestoredCollectingCaptureScope17<'_>,
+    ) -> Result<crucible::node_state::ImportedClosureGeometry17, StateError> {
+        self.imported17_geometry(scope, false)
+    }
+
+    fn complete_restored_capture_completed_imported_closure_geometry_data(
+        &self,
+        scope: &crucible::node_contract::RestoredCollectingCaptureScope17<'_>,
+    ) -> Result<crucible::node_state::ImportedClosureGeometry17, StateError> {
+        self.imported17_geometry(scope, true)
+    }
+
+    fn visit_complete_restored_capture_imported_objects_data(
+        &self,
+        scope: &crucible::node_contract::RestoredCollectingCaptureScope17<'_>,
+        inspect: &mut dyn FnMut(&ContentRef, &[u8], &[ContentRef]) -> Result<(), StateError>,
+    ) -> Result<(), StateError> {
+        self.visit_imported17_objects(scope, inspect)
+    }
+
     fn authenticate_complete_original_lineage_archive(
         &self,
         scope: crucible::node_state::CompleteOriginalArchiveValidation<'_>,
@@ -526,6 +547,14 @@ impl NativeWorldFactory for PacketCompleteCaptureFactory {
     ) -> Result<CompleteOriginalCaptureFactoryStorage, StateError> {
         self.authenticate_live(graph, runtime, scheduling)?;
         let projected = admitted_graph_records_storage(graph, limits.state)?;
+        // The actual cached declaration selects this additional borrowed walk.
+        // Its controls are admitted with factory preparation before the writer
+        // asks the Scope for the retained imported-closure rows.
+        let imported_counter = if self.selected_host_capture17_data()? {
+            imported17::counter_scratch_data()
+        } else {
+            0
+        };
         // This loan exists only during the same actor's synchronous capture.
         // Its immutable grant/scene references remain held by the caller while
         // Core separately owns and accounts the actual runtime.
@@ -557,6 +586,7 @@ impl NativeWorldFactory for PacketCompleteCaptureFactory {
                 // traversal frames/unwind and allocator rounding remain separate
                 // source/qualification obligations; this is not a stack bound.
                 .checked_add(dependencies::requested_scratch_bytes())
+                .and_then(|bytes| bytes.checked_add(imported_counter))
                 .and_then(|bytes| bytes.checked_add(crucible::node_adapters::cnp::PacketCompleteSemanticSource::original_complete_native_snapshot_schema_counter_scratch_data()))
                 // Full streamed-file scratch can coexist with the retained
                 // owners above; repeated synchronous checks share one slot.

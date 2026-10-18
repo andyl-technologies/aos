@@ -15,7 +15,9 @@ use std::{
     mem::{align_of, size_of},
 };
 
+mod future;
 mod identity;
+mod published;
 mod reply;
 mod retained;
 mod tree;

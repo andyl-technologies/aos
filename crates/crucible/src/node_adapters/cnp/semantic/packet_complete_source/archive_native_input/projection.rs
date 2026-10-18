@@ -186,57 +186,7 @@ impl NativeInputData<'_> {
             .get(reference)
             .ok_or_else(|| refused("cold complete Control body absent"))?;
         reference.verify(bytes).map_err(unknown)?;
-        let selected = self.selection.storage_data()?;
-        let layouts = packet_control_snapshot_validation_layouts();
-        let maximum = usize::try_from(selected.storage.control_snapshot_bytes.get())
-            .map_err(|_| refused("cold Control selected bound is not representable"))?
-            .min(layouts.maximum_control_bytes);
-        if bytes.len() > maximum {
-            return Err(refused(
-                "cold complete Control exceeds original selected bound",
-            ));
-        }
-        // One conservative pinned node for every possible typed entry/container
-        // covers the actual private map K/V layouts and alignments. The scanner
-        // counts the actual raw syntax, including empty containers, before DOM.
-        let node = NodeRuntime::capture_protocol_tree_storage(
-            1,
-            0,
-            layouts.maximum_tree_key_value_bytes,
-            layouts.maximum_tree_entry_alignment,
-            self.maximum,
-        )
-        .map_err(unknown)?;
-        let one = NodeRuntime::capture_selected_json_decode_storage(
-            bytes,
-            layouts.maximum_typed_slot_bytes,
-            node,
-            self.maximum,
-        )
-        .map_err(unknown)?;
-        let projections = layouts
-            .maximum_simultaneous_control_dom_views
-            .checked_add(layouts.maximum_simultaneous_typed_model_views)
-            .ok_or_else(|| refused("cold model projection count overflow"))?;
-        let encoded = bytes
-            .len()
-            .checked_mul(4)
-            .and_then(|n| n.checked_add(8))
-            .and_then(|n| n.checked_mul(layouts.maximum_simultaneous_control_encoded_banks))
-            .ok_or_else(|| refused("cold model canonical bank extent overflow"))?;
-        let demand = one
-            .checked_mul(projections)
-            .and_then(|n| n.checked_add(encoded))
-            .and_then(|n| n.checked_add(layouts.control_record_bytes))
-            .and_then(|n| n.checked_add(layouts.model_record_bytes))
-            .and_then(|n| {
-                n.checked_add(
-                    layouts
-                        .producer_state_bytes
-                        .max(layouts.reactive_state_bytes),
-                )
-            })
-            .ok_or_else(|| refused("cold model decoder storage overflow"))?;
+        let (bytes, demand, maximum) = self.control_construction_requested_data(reference)?;
         let scratch = self
             .scratch
             .get()
@@ -446,6 +396,50 @@ impl NativeInputData<'_> {
             ));
         }
         Ok(())
+    }
+
+    /// Quotes the exact retained-output consumption comparison before serialization.
+    ///
+    /// # Errors
+    /// Refuses missing outcomes, changed selection or checked serialization excess.
+    pub(super) fn consumption_projection_construction_data(
+        &self,
+        semantics: &PacketCompleteArchivedSemantics,
+    ) -> Result<usize, OperationFailure> {
+        let mut peak = 0usize;
+        for operation in semantics.source_common_data().operations.values() {
+            if operation.retirement.is_none() {
+                continue;
+            }
+            let expected = ConsumptionProjection {
+                schema: if self.selection.reactive_definition_data()?.is_some() {
+                    "source-owned.packet-consumption.v4"
+                } else {
+                    "source-owned.packet-consumption.v1"
+                },
+                operation: &operation.operation,
+                outputs: &operation
+                    .outcome
+                    .as_ref()
+                    .ok_or_else(|| refused("cold retirement outcome absent"))?
+                    .retained_outputs,
+            };
+            let value = NodeRuntime::capture_serialization_storage(&expected, self.maximum)
+                .map_err(unknown)?;
+            let encoded = super::super::super::budget::serialized_size(
+                &expected,
+                self.selection.maximum_authorization_bytes_data()?.min(8192),
+            )?
+            .checked_mul(4)
+            .and_then(|bytes| bytes.checked_add(8))
+            .ok_or_else(|| refused("cold consumption encoded bank extent overflow"))?;
+            peak = peak.max(
+                value
+                    .checked_add(encoded)
+                    .ok_or_else(|| refused("cold consumption simultaneous storage overflow"))?,
+            );
+        }
+        Ok(peak)
     }
 
     fn operation_population(

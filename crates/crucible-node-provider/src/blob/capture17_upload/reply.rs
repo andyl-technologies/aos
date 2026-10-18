@@ -162,6 +162,64 @@ fn authenticate_geometry(
 }
 
 impl BlobReceiver {
+    /// Projects the defining successful reply family without a future transfer.
+    ///
+    /// This closed grammar is shared with the real completed reply serializers
+    /// above. The Id grammar permits 128 unescaped ASCII bytes; U64 decimal text
+    /// permits 20. Full content media strings permit128 printable ASCII bytes,
+    /// including JSON escapes. This DATA neither predicts successful Finish nor
+    /// issues any receiver/native permission.
+    ///
+    /// # Errors
+    /// Refuses a non-Blob method, short projection or checked geometry overflow.
+    pub(crate) fn project_capture17_upload_future_reply_data(
+        method: crate::envelope::Method,
+        out: &mut OriginalSerializationStorageProjection,
+    ) -> Result<(), ProviderError> {
+        use crate::envelope::Method;
+        future_object(out, &["status", "operation_state", "result", "extensions"])?;
+        out.add_string("completed")?;
+        out.add_value(&OperationState::Completed)?;
+        match method {
+            Method::BlobBegin => {
+                future_object(out, &["transfer_id", "next_offset", "maximum_chunk_bytes"])?;
+                out.add_unescaped_ascii_extent(128)?;
+                out.add_unescaped_ascii_extent(20)?;
+                out.add_unescaped_ascii_extent(20)?;
+            }
+            Method::BlobChunk => {
+                future_object(out, &["transfer_id", "next_offset"])?;
+                out.add_unescaped_ascii_extent(128)?;
+                out.add_unescaped_ascii_extent(20)?;
+            }
+            Method::BlobFinish => {
+                future_object(out, &["transfer_id", "content"])?;
+                out.add_unescaped_ascii_extent(128)?;
+                future_object(out, &["hash", "length", "media_type"])?;
+                future_object(out, &["algorithm", "domain", "digest"])?;
+                out.add_string("blake3-256")?;
+                out.add_string("cnp.blob.v1")?;
+                out.add_unescaped_ascii_extent(64)?;
+                out.add_unescaped_ascii_extent(20)?;
+                out.add_string_extent(128)?;
+            }
+            _ => return Err(refused()),
+        }
+        out.add_object()
+    }
+
+    /// Names the closed future reply visitor's fixed borrowed controls.
+    pub(crate) fn capture17_upload_future_reply_counter_scratch_data() -> usize {
+        size_of::<crate::envelope::Method>()
+            + size_of::<OperationState>()
+            + size_of::<&mut OriginalSerializationStorageProjection>()
+            + size_of::<[&str; 4]>() + size_of::<[&str; 3]>()
+            + size_of::<&[&str]>()
+            + size_of::<std::slice::Iter<'static, &'static str>>()
+            + size_of::<Result<(), ProviderError>>()
+            + crate::retained_metadata::serialization_storage::original_serialization_counter_scratch_data()
+    }
+
     /// Projects the closed prospective body from the real unchanged receiver.
     ///
     /// The actual input/prestate guard precedes this borrowed walk. The caller
@@ -288,3 +346,42 @@ pub(super) fn counter_scratch_data() -> usize {
 #[cfg(test)]
 #[path = "reply_projection_tests.rs"]
 mod projection_tests;
+
+fn future_object(
+    out: &mut OriginalSerializationStorageProjection,
+    names: &[&str],
+) -> Result<(), ProviderError> {
+    out.add_object()?;
+    for name in names {
+        out.add_field(name)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "reply_future_tests.rs"]
+mod future_tests;
+
+// The future grammar must grow with these actual defining reply serializers.
+const _: fn(&Completed<Begin<'_>>, &Completed<Chunk<'_>>, &Completed<Finish<'_>>) =
+    |begin, chunk, finish| {
+        let Completed {
+            status: _,
+            operation_state: _,
+            result: begin,
+            extensions: _,
+        } = begin;
+        let Begin {
+            transfer_id: _,
+            next_offset: _,
+            maximum_chunk_bytes: _,
+        } = begin;
+        let Chunk {
+            transfer_id: _,
+            next_offset: _,
+        } = &chunk.result;
+        let Finish {
+            transfer_id: _,
+            content: _,
+        } = &finish.result;
+    };

@@ -45,8 +45,9 @@ pub(crate) use logical::{
 };
 
 pub(crate) use logical::{
-    OriginalSourceRestoredInstallationExpected17, OriginalSourceRestoredLimits17,
-    OriginalSourceRestoredProducerCheckpoint17, OriginalSourceRestoredSettled17DecodeAttempt,
+    OriginalSourceRestoredInstallation17, OriginalSourceRestoredInstallationExpected17,
+    OriginalSourceRestoredLimits17, OriginalSourceRestoredProducerCheckpoint17,
+    OriginalSourceRestoredSettled17DecodeAttempt, OriginalSourceRestoredSettled17Prelude,
     OriginalSourceRestoredSettled17Read, OriginalSourceRestoredSettled17ReadInputs,
 };
 

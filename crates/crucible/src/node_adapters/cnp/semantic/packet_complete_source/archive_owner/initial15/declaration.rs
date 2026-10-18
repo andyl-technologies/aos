@@ -6,6 +6,11 @@
 //! the four original semantic ceilings.
 
 use super::*;
+use crate::node_state::{
+    RestoredArchive17Initial15Work as TerminalWork, RestoredArchive17Initial15Role as TerminalRole,
+    RestoredArchive17Initial15QualificationRole as QualificationRole,
+};
+
 use crucible_node_contract::{CaptureManifest, Repeatability, Validate};
 use crucible_node_provider::protocol_snapshot::borrowed_json::BorrowedJsonFields as Fields;
 use serde::{Deserialize, Serialize};
@@ -24,9 +29,10 @@ impl OriginalInitial15ArchivedGroup {
         &mut self,
         scope: &ParentArchive17ReadScope<'_, '_>,
         additional: usize,
+        terminal: Option<&Initial15Terminal17<'_, '_>>,
     ) -> Result<(), OperationFailure> {
         let manifest = scope.manifest_data().map_err(unknown)?;
-        self.parse_role_data(scope, &manifest.provenance_ref, 0, additional)?;
+        self.parse_role_data(scope, &manifest.provenance_ref, 0, additional, terminal, 0)?;
         let provenance = self.values[0]
             .as_ref()
             .ok_or_else(|| refused("initial15 provenance absent"))?;
@@ -62,6 +68,11 @@ impl OriginalInitial15ArchivedGroup {
         let collecting = object
             .get("collecting_capture")
             .ok_or_else(|| refused("initial15 collecting original scope absent"))?;
+        self.begin_typed_terminal_data(
+            terminal,
+            TerminalWork::RoleTyped(TerminalRole::Provenance),
+            collecting,
+        )?;
         self.admit_typed_data(scope, additional, collecting)?;
         self.collecting = Some(
             crate::node_state::CollectingCompleteCaptureProvenance::deserialize(collecting)
@@ -93,7 +104,11 @@ impl OriginalInitial15ArchivedGroup {
             scope.body_data(reference).map_err(unknown)?;
         }
         let plan = collecting.plan.clone();
-        self.parse_role_data(scope, &plan, 1, additional)?;
+        let plan_copy = NodeRuntime::capture_reference_storage(&plan).map_err(unknown)?;
+        if let Some(cursor) = terminal {
+            cursor.finish_data(self, plan_copy)?;
+        }
+        self.parse_role_data(scope, &plan, 1, additional, terminal, plan_copy)?;
         drop(plan);
         for (key, slot) in [("descriptors", 2), ("contracts", 3), ("fixtures", 4)] {
             let unit = self.values[1]
@@ -123,6 +138,17 @@ impl OriginalInitial15ArchivedGroup {
             let value = unit
                 .get(key)
                 .ok_or_else(|| refused("initial15 qualification role absent"))?;
+            let role = match key {
+                "descriptors" => QualificationRole::Descriptors,
+                "contracts" => QualificationRole::Contracts,
+                "fixtures" => QualificationRole::Fixtures,
+                _ => return Err(refused("initial15 qualification role differs")),
+            };
+            self.begin_typed_terminal_data(
+                terminal,
+                TerminalWork::QualificationReference(role),
+                value,
+            )?;
             self.admit_typed_data(scope, additional, value)?;
             let reference = ContentRef::deserialize(value).map_err(unknown)?;
             let collecting = self
@@ -139,12 +165,36 @@ impl OriginalInitial15ArchivedGroup {
                     "initial15 qualification role is not an original immutable prerequisite",
                 ));
             }
-            self.parse_role_data(scope, &reference, slot, additional)?;
+            let reference_copy =
+                NodeRuntime::capture_reference_storage(&reference).map_err(unknown)?;
+            if let Some(cursor) = terminal {
+                cursor.finish_data(self, reference_copy)?;
+            }
+            self.parse_role_data(
+                scope,
+                &reference,
+                slot,
+                additional,
+                terminal,
+                reference_copy,
+            )?;
         }
-        self.parse_role_data(scope, &manifest.coordinator_state_ref, 5, additional)?;
+        self.parse_role_data(
+            scope,
+            &manifest.coordinator_state_ref,
+            5,
+            additional,
+            terminal,
+            0,
+        )?;
         let coordinator = self.values[5]
             .as_ref()
             .ok_or_else(|| refused("initial15 coordinator absent"))?;
+        self.begin_typed_terminal_data(
+            terminal,
+            TerminalWork::RoleTyped(TerminalRole::Coordinator),
+            coordinator,
+        )?;
         self.admit_typed_data(scope, additional, coordinator)?;
         self.coordinator = Some(Initial15Coordinator::deserialize(coordinator).map_err(unknown)?);
         let coordinator = self
@@ -169,21 +219,61 @@ impl OriginalInitial15ArchivedGroup {
         }
         let runtime_ref = coordinator.runtime.clone();
         let scheduler_ref = coordinator.scheduler.clone();
-        self.parse_role_data(scope, &runtime_ref, 6, additional)?;
-        self.parse_role_data(scope, &scheduler_ref, 7, additional)?;
+        let coordinator_copies = checked_sum(
+            [
+                NodeRuntime::capture_reference_storage(&runtime_ref).map_err(unknown)?,
+                NodeRuntime::capture_reference_storage(&scheduler_ref).map_err(unknown)?,
+            ],
+            self.maximum,
+        )?;
+        if let Some(cursor) = terminal {
+            cursor.finish_data(self, coordinator_copies)?;
+        }
+        self.parse_role_data(
+            scope,
+            &runtime_ref,
+            6,
+            additional,
+            terminal,
+            coordinator_copies,
+        )?;
+        self.parse_role_data(
+            scope,
+            &scheduler_ref,
+            7,
+            additional,
+            terminal,
+            coordinator_copies,
+        )?;
         drop(runtime_ref);
         drop(scheduler_ref);
         let runtime_value = self.values[6]
             .as_ref()
             .ok_or_else(|| refused("initial15 runtime DOM absent"))?;
+        self.begin_typed_terminal_data(
+            terminal,
+            TerminalWork::RoleTyped(TerminalRole::Runtime),
+            runtime_value,
+        )?;
         self.admit_typed_data(scope, additional, runtime_value)?;
         self.runtime =
             Some(OriginalLineageRuntimeRecord::deserialize(runtime_value).map_err(unknown)?);
+        if let Some(cursor) = terminal {
+            cursor.finish_data(self, 0)?;
+        }
         let scheduling_value = self.values[7]
             .as_ref()
             .ok_or_else(|| refused("initial15 scheduling DOM absent"))?;
+        self.begin_typed_terminal_data(
+            terminal,
+            TerminalWork::RoleTyped(TerminalRole::Scheduling),
+            scheduling_value,
+        )?;
         self.admit_typed_data(scope, additional, scheduling_value)?;
         self.scheduling = Some(SchedulingSnapshot::deserialize(scheduling_value).map_err(unknown)?);
+        if let Some(cursor) = terminal {
+            cursor.finish_data(self, 0)?;
+        }
         self.parse_role_data(
             scope,
             scope
@@ -191,16 +281,26 @@ impl OriginalInitial15ArchivedGroup {
                 .map_err(unknown)?,
             8,
             additional,
+            terminal,
+            0,
         )?;
         let administrative = self.values[8]
             .as_ref()
             .ok_or_else(|| refused("initial15 administrative DOM absent"))?;
+        self.begin_typed_terminal_data(
+            terminal,
+            TerminalWork::RoleTyped(TerminalRole::Administrative),
+            administrative,
+        )?;
         self.admit_typed_data(scope, additional, administrative)?;
         self.administrative =
             Some(RuntimeOriginalCaptureJournal::deserialize(administrative).map_err(unknown)?);
-        self.authenticate_runtime_roles_data(scope, additional)?;
+        if let Some(cursor) = terminal {
+            cursor.finish_data(self, 0)?;
+        }
+        self.authenticate_runtime_roles_data(scope, additional, terminal)?;
         for index in 0..3 {
-            self.read_original_launch_data(scope, index, additional)?;
+            self.read_original_launch_data(scope, index, additional, terminal)?;
             let launch = self.launches[index]
                 .as_ref()
                 .ok_or_else(|| refused("initial15 launch absent"))?;
@@ -225,6 +325,7 @@ impl OriginalInitial15ArchivedGroup {
         scope: &ParentArchive17ReadScope<'_, '_>,
         index: usize,
         additional: usize,
+        terminal: Option<&Initial15Terminal17<'_, '_>>,
     ) -> Result<(), OperationFailure> {
         let descriptors = tuple_data(
             self.values[2]
@@ -265,12 +366,34 @@ impl OriginalInitial15ArchivedGroup {
         {
             return Err(refused("initial15 original semantic ceilings unsupported"));
         }
+        let member =
+            crate::node_state::RestoredArchive17SourceIndex::from_data(index).map_err(unknown)?;
+        self.begin_typed_terminal_data(
+            terminal,
+            TerminalWork::LaunchDecode(member),
+            &launches[index],
+        )?;
         self.admit_typed_data(scope, additional, &launches[index])?;
         self.launches[index] =
             Some(PacketNative5SourceLaunch::deserialize(&launches[index]).map_err(unknown)?);
+        if let Some(cursor) = terminal {
+            cursor.finish_data(self, 0)?;
+        }
         let launch = self.launches[index]
             .as_ref()
             .ok_or_else(|| refused("initial15 typed launch absent"))?;
+        if let Some(cursor) = terminal {
+            let (formatter, quote_scratch) = launch
+                .validation_construction_projection_storage_data()
+                .map_err(unknown)?;
+            cursor.begin_with_scratch_data(
+                TerminalWork::LaunchValidate(member),
+                formatter,
+                quote_scratch,
+            )?;
+            let (transient, scratch) = self.launch_terminal_transient_data(launch, &rows[index])?;
+            cursor.construct_with_scratch_data(0, transient, scratch)?;
+        }
         // The real raw5 validator checks all original selection/schema/model and
         // private declaration DATA; it creates no process, key or native marker.
         self.admit_serialization_data(scope, additional, launch)?;
@@ -412,11 +535,13 @@ impl OriginalInitial15ArchivedGroup {
                 &launch.selection.provider.implementation.implementation_id,
             )
             .map_err(unknown)?;
-        if owner.owner != launch.selection.realization.owner_bindings[0].owner.id
-            || owner.key.schema != CompleteNativeSnapshotClass::InvocationCapture15.schema()?
-        {
+        if owner.owner != launch.selection.realization.owner_bindings[0].owner.id {
             return Err(refused("initial15 native owner/schema differs"));
         }
+        // Compare the same full compiled schema without allocating its definition
+        // and reference merely to perform equality against the archived key.
+        crucible_node_provider::reference_packet::service::native_snapshot::authenticate_native_owned14_snapshot_schema_data(&owner.key.schema)
+            .map_err(unknown)?;
         self.admit_serialization_data(scope, additional, &launch.program)?;
         let program = match &launch.program {
             PacketConnectedSourceProgram::Producer { program } => {
@@ -449,10 +574,52 @@ impl OriginalInitial15ArchivedGroup {
             limits: launch.limits.clone(),
         });
         self.caps[index] = Some(caps);
-        self.admit_data(scope, additional, 0)
+        drop(program_bytes);
+        drop(program);
+        self.admit_data(scope, additional, 0)?;
+        if let Some(cursor) = terminal {
+            cursor.finish_data(self, 0)?;
+        }
+        Ok(())
     }
 
     fn authenticate_runtime_roles_data(
+        &self,
+        scope: &ParentArchive17ReadScope<'_, '_>,
+        additional: usize,
+        terminal: Option<&Initial15Terminal17<'_, '_>>,
+    ) -> Result<(), OperationFailure> {
+        if let Some(cursor) = terminal {
+            let reference = &self
+                .coordinator
+                .as_ref()
+                .ok_or_else(|| refused("initial15 coordinator absent"))?
+                .runtime;
+            // Any temporary Bytes formatter reconstructs a string decoded from
+            // this exact closed Runtime input. Its backing cannot exceed the
+            // literal body extent. This prices only the quote's formatter, not
+            // a parser, result heap or reusable semantic allowance.
+            let formatter = scope
+                .body_data(reference)
+                .map_err(unknown)?
+                .len()
+                .checked_add(20)
+                .ok_or_else(|| refused("initial15 Runtime formatter extent overflow"))?;
+            cursor.begin_data(
+                crate::node_state::RestoredArchive17Initial15Work::RuntimeJoin,
+                formatter,
+            )?;
+            let transient = self.runtime_join_terminal_transient_data(scope)?;
+            cursor.construct_data(0, transient)?;
+        }
+        self.authenticate_runtime_roles_inner_data(scope, additional)?;
+        if let Some(cursor) = terminal {
+            cursor.finish_data(self, 0)?;
+        }
+        Ok(())
+    }
+
+    fn authenticate_runtime_roles_inner_data(
         &self,
         scope: &ParentArchive17ReadScope<'_, '_>,
         additional: usize,
@@ -787,5 +954,26 @@ mod tests {
         value["media_type"] = json!(reference.media_type);
         value["length"] = json!(format!("0{}", reference.length.get()));
         assert!(reference_matches_data(&value, &reference).is_err());
+    }
+}
+
+impl OriginalInitial15ArchivedGroup {
+    fn begin_typed_terminal_data(
+        &self,
+        terminal: Option<&Initial15Terminal17<'_, '_>>,
+        work: TerminalWork,
+        value: &Value,
+    ) -> Result<(), OperationFailure> {
+        if let Some(cursor) = terminal {
+            cursor.begin_data(work, 0)?;
+            let extent = NodeRuntime::capture_future_decode_storage(value, self.maximum)
+                .map_err(unknown)?
+                .checked_mul(3)
+                .ok_or_else(|| refused("initial15 terminal typed row overflow"))?;
+            // Same defining complete typed+serde construction as local admission.
+            // Both columns conservatively cover overlap with transient decoders.
+            cursor.construct_data(extent, extent)?;
+        }
+        Ok(())
     }
 }
