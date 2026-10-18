@@ -86,11 +86,18 @@ enum Command {
         claim: PublicationClaim,
         response: Response,
     },
-    Execute {
-        context: NativeCommandContext,
-        operation: NativeOperation,
-        response: oneshot::Sender<io::Result<NativeCommandResult>>,
-    },
+    Execute(Box<OwnedExecution>),
+}
+
+/// Keeps the fixed queue slots small without separating operation custody.
+///
+/// Allocation precedes queue submission. The worker consumes the same payload,
+/// including its descriptors and response sender, after acceptance; cancellation
+/// of the response waiter cannot reclaim accepted operation resources.
+struct OwnedExecution {
+    context: NativeCommandContext,
+    operation: NativeOperation,
+    response: oneshot::Sender<io::Result<NativeCommandResult>>,
 }
 
 #[path = "binding_repair.rs"]
@@ -516,11 +523,13 @@ impl NativePublicationWorker {
                                 .await;
                                 let _disconnected = response.send(result);
                             }
-                            Command::Execute {
-                                context,
-                                operation,
-                                response,
-                            } => {
+                            Command::Execute(command) => {
+                                let OwnedExecution {
+                                    context,
+                                    operation,
+                                    response,
+                                } = *command;
+
                                 let result = owner.execute(context, operation).await;
                                 let _disconnected = response.send(result);
                             }
@@ -560,12 +569,14 @@ impl NativePublicationWorker {
     ) -> io::Result<NativeCommandResult> {
         self.confinement.check_current()?;
         let (response, received) = oneshot::channel();
+        let command = Box::new(OwnedExecution {
+            context,
+            operation,
+            response,
+        });
+
         self.sender
-            .send(Command::Execute {
-                context,
-                operation,
-                response,
-            })
+            .send(Command::Execute(command))
             .await
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "publisher worker stopped"))?;
         received.await.map_err(|_| {
