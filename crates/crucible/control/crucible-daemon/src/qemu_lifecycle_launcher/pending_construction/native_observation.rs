@@ -1,8 +1,9 @@
 //! Keeps Flight operations inside the actual Main-held launcher allocation.
 
+use crate::NativeObservationError;
+
 use super::*;
 use crate::qemu_campaign_lifecycle::NativeObservationOwner;
-use std::error::Error;
 
 impl<F> PendingSourceConstruction<F>
 where
@@ -31,8 +32,10 @@ where
 
     pub(crate) fn with_native_observation(
         &mut self,
-        apply: &mut dyn FnMut(&mut dyn NativeObservationOwner) -> Result<(), Box<dyn Error>>,
-    ) -> Result<Result<(), Box<dyn Error>>, ()> {
+        apply: &mut dyn FnMut(
+            &mut dyn NativeObservationOwner,
+        ) -> Result<(), NativeObservationError>,
+    ) -> Result<Result<(), NativeObservationError>, ()> {
         if self.transferred
             || self.carrier_active
             || self.body_cleanup_complete

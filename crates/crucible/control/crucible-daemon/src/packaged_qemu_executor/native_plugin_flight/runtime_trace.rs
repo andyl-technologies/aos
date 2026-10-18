@@ -1,9 +1,10 @@
 //! Bounded evidence for the complete native runtime-determinism trace.
 
+use crate::NativeObservationError;
+
 use crate::packaged_qemu_executor::ram_catalog::CatalogEvidenceSpool;
 use std::cell::RefCell;
 use std::collections::VecDeque;
-use std::error::Error;
 #[cfg(test)]
 use std::io::Cursor;
 use std::io::{BufRead, BufReader, Seek, Write};
@@ -56,7 +57,7 @@ pub(super) fn summarize(
     raw_boundary: u64,
     virtual_boundary: i64,
     spool: CatalogEvidenceSpool,
-) -> Result<RuntimeTraceSummary, Box<dyn Error>> {
+) -> Result<RuntimeTraceSummary, NativeObservationError> {
     summarize_owned(
         reader,
         raw_boundary,
@@ -70,7 +71,7 @@ fn summarize_owned(
     raw_boundary: u64,
     virtual_boundary: i64,
     mut normalized_spool: TraceSpool,
-) -> Result<RuntimeTraceSummary, Box<dyn Error>> {
+) -> Result<RuntimeTraceSummary, NativeObservationError> {
     let mut validator = QemuRuntimeDeterminismTraceValidator::default();
     let mut raw_digest = Sha256::new();
     let mut normalized_digest = Sha256::new();
@@ -150,7 +151,7 @@ pub(super) fn compare(
     reference: &RuntimeTraceSummary,
     candidate_name: &str,
     candidate: &RuntimeTraceSummary,
-) -> Result<String, Box<dyn Error>> {
+) -> Result<String, NativeObservationError> {
     let mut reference_spool = reference.normalized_spool.try_borrow_mut()?;
     let mut candidate_spool = candidate.normalized_spool.try_borrow_mut()?;
     if reference_spool.seek(SeekFrom::End(0))? != reference.normalized_spool_bytes
@@ -236,14 +237,17 @@ pub(super) fn compare(
     ))
 }
 
-fn normalized_row_context(line: &[u8], present: bool) -> Result<String, Box<dyn Error>> {
+fn normalized_row_context(line: &[u8], present: bool) -> Result<String, NativeObservationError> {
     if !present {
         return Ok(String::from("<end-of-trace>"));
     }
     Ok(String::from_utf8(line[..line.len() - 1].to_vec())?)
 }
 
-fn read_bounded_line(reader: &mut dyn BufRead, line: &mut Vec<u8>) -> Result<bool, Box<dyn Error>> {
+fn read_bounded_line(
+    reader: &mut dyn BufRead,
+    line: &mut Vec<u8>,
+) -> Result<bool, NativeObservationError> {
     line.clear();
     loop {
         let available = reader.fill_buf()?;
@@ -323,7 +327,7 @@ impl Seek for TraceSpool {
 }
 
 impl RuntimeTraceSummary {
-    pub(super) fn finish(&self) -> Result<(), Box<dyn Error>> {
+    pub(super) fn finish(&self) -> Result<(), NativeObservationError> {
         let spool = std::mem::replace(&mut *self.normalized_spool.borrow_mut(), TraceSpool::Closed);
         match spool {
             TraceSpool::Catalog(spool) => spool.finish().map_err(Into::into),
@@ -339,7 +343,7 @@ pub(super) fn summarize_fixture(
     reader: &mut dyn BufRead,
     raw_boundary: u64,
     virtual_boundary: i64,
-) -> Result<RuntimeTraceSummary, Box<dyn Error>> {
+) -> Result<RuntimeTraceSummary, NativeObservationError> {
     summarize_owned(
         reader,
         raw_boundary,

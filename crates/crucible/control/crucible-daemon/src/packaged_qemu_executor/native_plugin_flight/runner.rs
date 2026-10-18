@@ -45,7 +45,8 @@ pub(in crate::packaged_qemu_executor) enum NativeFlightError<E> {
     },
     #[error("native plugin assertions: {first}; cleanup: {cleanup:?}")]
     Observation {
-        first: String,
+        #[source]
+        first: crate::NativeObservationError,
         cleanup: Option<NativeObservationRetirementError>,
     },
     #[error("worker retirement failed: {first}; observation retirement: {cleanup}")]
@@ -135,18 +136,18 @@ where
             self.evidence = None;
         }
         match (outcome, cleanup) {
-            (Err(first), cleanup) => {
-                match first.downcast::<QemuAttemptProductionVmLifecycleError>() {
-                    Ok(first) => Err(NativeFlightError::SourceObservation {
+            (Err(first), cleanup) => match first {
+                crate::NativeObservationError::Source(first) => {
+                    Err(NativeFlightError::SourceObservation {
                         first: *first,
                         cleanup: cleanup.err(),
-                    }),
-                    Err(first) => Err(NativeFlightError::Observation {
-                        first: first.to_string(),
-                        cleanup: cleanup.err(),
-                    }),
+                    })
                 }
-            }
+                first => Err(NativeFlightError::Observation {
+                    first,
+                    cleanup: cleanup.err(),
+                }),
+            },
             (Ok(()), Err(first)) => Err(NativeFlightError::Retirement(first)),
             (Ok(()), Ok(())) => Ok(()),
         }

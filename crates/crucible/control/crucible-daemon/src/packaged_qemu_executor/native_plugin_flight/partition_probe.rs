@@ -5,6 +5,8 @@
 //! including safe idle projections, not the campaign checkpoint interval or its
 //! oracle.
 
+use crate::NativeObservationError;
+
 use super::*;
 
 // The next physical stop occurs this measured 1 us after the authenticated
@@ -34,7 +36,7 @@ pub(super) fn run(
     node: &mut ObservedNativeNode<'_>,
     wake_tick: u64,
     step_ps: u64,
-) -> Result<PartitionProbe, Box<dyn Error>> {
+) -> Result<PartitionProbe, NativeObservationError> {
     let initial_calibration = node.logical_time_calibration()?;
     let initial_sample = node.fingerprint_sample()?;
     if initial_calibration.logical_icount != wake_tick || initial_sample.sample_icount != wake_tick
@@ -130,7 +132,7 @@ pub(super) fn run(
 pub(super) fn compare(
     coarse: &PartitionProbe,
     fine: &PartitionProbe,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<(), NativeObservationError> {
     for (name, probe) in [("coarse", coarse), ("fine", fine)] {
         println!(
             "phase4_partition_initial variant={name} logical={} raw={} bias={} rr={}/{}/{}",

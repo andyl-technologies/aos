@@ -4,6 +4,8 @@
 //! saved Originals, body loan and reservation stay there until publication to
 //! Main cleanup; a panic or semantic failure cannot drop a local owner.
 
+use crate::NativeObservationError;
+
 use super::*;
 use crate::qemu_lifecycle_launcher::ObservedNativeNode;
 use std::error::Error;
@@ -29,14 +31,14 @@ pub(crate) trait NativeObservationOwner {
         node: &crucible_engine::NodeId,
         generation: u64,
         maximum_bytes: u64,
-        inspect: &mut dyn FnMut(&mut dyn BufRead) -> Result<(), Box<dyn Error>>,
-    ) -> Result<(), Box<dyn Error>>;
+        inspect: &mut dyn FnMut(&mut dyn BufRead) -> Result<(), NativeObservationError>,
+    ) -> Result<(), NativeObservationError>;
 
     fn liveness_tail(
         &self,
         node: &crucible_engine::NodeId,
         generation: u64,
-    ) -> Result<String, Box<dyn Error>>;
+    ) -> Result<String, NativeObservationError>;
 }
 
 impl<G, F> NativeObservationOwner for QemuAttemptProductionVmNodeLauncher<G, F>
@@ -66,8 +68,8 @@ where
         node: &crucible_engine::NodeId,
         generation: u64,
         maximum_bytes: u64,
-        inspect: &mut dyn FnMut(&mut dyn BufRead) -> Result<(), Box<dyn Error>>,
-    ) -> Result<(), Box<dyn Error>> {
+        inspect: &mut dyn FnMut(&mut dyn BufRead) -> Result<(), NativeObservationError>,
+    ) -> Result<(), NativeObservationError> {
         self.inspect_native_observation_trace(node, generation, maximum_bytes, inspect)
     }
 
@@ -75,7 +77,7 @@ where
         &self,
         node: &crucible_engine::NodeId,
         generation: u64,
-    ) -> Result<String, Box<dyn Error>> {
+    ) -> Result<String, NativeObservationError> {
         self.native_observation_liveness_tail(node, generation)
     }
 }
@@ -183,8 +185,10 @@ where
     /// Borrows only operations while Main keeps the same actual native owner.
     pub(crate) fn with_native_observation(
         &mut self,
-        apply: &mut dyn FnMut(&mut dyn NativeObservationOwner) -> Result<(), Box<dyn Error>>,
-    ) -> Result<(), Box<dyn Error>> {
+        apply: &mut dyn FnMut(
+            &mut dyn NativeObservationOwner,
+        ) -> Result<(), NativeObservationError>,
+    ) -> Result<(), NativeObservationError> {
         let prepared = self.prepared_source_handle()?;
         prepared.with_native_observation(apply)
     }

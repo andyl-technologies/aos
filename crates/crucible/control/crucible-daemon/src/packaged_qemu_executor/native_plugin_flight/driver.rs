@@ -19,9 +19,10 @@
 
 #![forbid(unsafe_code)]
 
+use crate::NativeObservationError;
+
 use crate::qemu_lifecycle_launcher::ObservedNativeNode;
 
-use std::error::Error;
 use std::path::Path;
 use std::time::Duration;
 
@@ -30,16 +31,15 @@ use crucible_engine::{
     ObservableEvent, ObservableEventPayload, PreemptionDecision, PreemptionKind, SimulationBackend,
     VcpuId, VirtualTime,
 };
+use crucible_qemu_host::{
+    BoundedSchedulerPreemptionEvidence, QemuLiveNodeStepGateConfig, QemuLogicalTimeCalibration,
+    QemuNodeIdleState, QemuShutdownReport, QemuVirtualTimerFireWitness, QmpHotForkTemplateOutcome,
+};
 use crucible_qemu_protocol::selectable_catalog_plan::{
     SELECTABLE_NATIVE_HANDOFF_TICKS_PS, SelectableCatalogPlan, SelectablePlanContinuation,
     SelectablePlanDeclaration, SelectablePlanLimits, SelectablePlanPresence,
 };
 use crucible_qemu_protocol::{SelectionReply, SelectionReplyStatus};
-use crucible_qemu_host::{
-    BoundedSchedulerPreemptionEvidence, QemuLiveNodeStepGateConfig, QemuLogicalTimeCalibration,
-    QemuNodeIdleState, QemuShutdownReport, QemuVirtualTimerFireWitness, QmpHotForkTemplateOutcome,
-};
-
 
 use crucible_qemu_shmem::FingerprintSample;
 
@@ -102,7 +102,7 @@ pub(in crate::packaged_qemu_executor) fn run_four(
     idle_initrd: &Path,
     firmware: &Path,
     run_root: &Path,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<(), NativeObservationError> {
     let selectable_catalog_plan = readiness_selectable_catalog_plan()?;
     let config = QemuLiveNodeStepGateConfig::new(qemu, plugin, kernel, firmware, run_root)
         .with_initrd(idle_initrd)
@@ -349,12 +349,14 @@ pub(in crate::packaged_qemu_executor) fn run_four(
 }
 
 pub(in crate::packaged_qemu_executor) fn block_recovery_only_requested()
--> Result<bool, Box<dyn Error>> {
+-> Result<bool, NativeObservationError> {
     let value = std::env::var_os(BLOCK_RECOVERY_ONLY_ENVIRONMENT);
     parse_block_recovery_only(value.as_deref())
 }
 
-fn parse_block_recovery_only(value: Option<&std::ffi::OsStr>) -> Result<bool, Box<dyn Error>> {
+fn parse_block_recovery_only(
+    value: Option<&std::ffi::OsStr>,
+) -> Result<bool, NativeObservationError> {
     match value {
         None => Ok(false),
         Some(value) if value == "1" => Ok(true),
@@ -395,7 +397,7 @@ fn run_once(
     config: &QemuLiveNodeStepGateConfig,
     hostile: bool,
     partition_step_ps: Option<u64>,
-) -> Result<FlightRun, Box<dyn Error>> {
+) -> Result<FlightRun, NativeObservationError> {
     let mut owner = factory.begin(4, MEMORY_BYTES, DISK_BYTES)?;
     let driven = owner.with_launch(
         config,
@@ -414,26 +416,27 @@ fn run_once(
         node_run::DrivenFlight::Complete(run) => run,
         node_run::DrivenFlight::IdleFailed { source, shutdown } => {
             let trace = match &shutdown {
-                Ok(report) if report.reaped && !report.leaked => {
-                    owner.liveness_tail().map_err(|error| error.to_string())
-                }
-                _ => Err(String::from(
+                Ok(report) if report.reaped && !report.leaked => owner.liveness_tail(),
+                _ => Err(NativeObservationError::from(
                     "trace unavailable because clean QEMU reap was not proven",
                 )),
             };
             let finish = owner.finish();
-            return Err(format!(
-                "idle probe failed: hostile={hostile}; {source}; \
-                 diagnostic_shutdown={shutdown:?}; diagnostic_finish={finish:?}; \
-                 retained_native_rr_trace={trace:?}"
-            )
-            .into());
+            return Err(source.with_cleanup(
+                format!("idle probe failed: hostile={hostile}"),
+                Some(shutdown),
+                Some(finish),
+                Some(trace),
+            ));
         }
         node_run::DrivenFlight::PartitionFailed { source, shutdown } => {
             let finish = owner.finish();
-            return Err(format!(
-                "post-selection partition probe failed: {source}; shutdown={shutdown:?}; finish={finish:?}"
-            ).into());
+            return Err(source.with_cleanup(
+                String::from("post-selection partition probe failed"),
+                Some(shutdown),
+                Some(finish),
+                None,
+            ));
         }
     };
     let raw_boundary = final_busy_raw_boundary(&runtime_baseline)?;
@@ -450,11 +453,14 @@ fn run_once(
     let trace = match (trace_result, finish_result) {
         (Ok(trace), Ok(())) => trace,
         (Err(error), finish) => {
-            return Err(format!(
-                "runtime trace validation failed after authenticated idle wake: \
-                 error={error}; idle={idle:?}; shutdown={shutdown:?}; finish={finish:?}"
-            )
-            .into());
+            return Err(error.with_cleanup(
+                format!(
+                    "runtime trace validation failed after authenticated idle wake: idle={idle:?}"
+                ),
+                Some(Ok(shutdown)),
+                Some(finish),
+                None,
+            ));
         }
         (Ok(_), Err(error)) => return Err(error.into()),
     };
@@ -474,7 +480,7 @@ fn run_once(
 
 fn prepare_live_hot_fork_template(
     node: &mut ObservedNativeNode<'_>,
-) -> Result<u64, Box<dyn Error>> {
+) -> Result<u64, NativeObservationError> {
     node.pause_at_exact_checkpoint_boundary()?;
 
     let draining = node.prepare_hot_fork_template(&[])?;
@@ -511,8 +517,9 @@ fn prepare_live_hot_fork_template(
 fn node_state_failure(
     node: &mut ObservedNativeNode<'_>,
     phase: &str,
-    source: impl std::fmt::Display,
-) -> Box<dyn Error> {
+    source: impl Into<NativeObservationError>,
+) -> NativeObservationError {
+    let source = source.into();
     let idle_state = node.idle_state().map_err(|error| error.to_string());
     let calibration = node
         .logical_time_calibration()
@@ -520,15 +527,19 @@ fn node_state_failure(
     let timer_witness = node
         .virtual_timer_fire_witness()
         .map_err(|error| error.to_string());
-    format!(
+    let message = format!(
         "production flight failed during {phase}: source={source}; \
          idle_state={idle_state:?}; calibration={calibration:?}; \
          timer_witness={timer_witness:?}"
-    )
-    .into()
+    );
+    NativeObservationError::Context(Box::new(
+        crate::native_observation_error::NativeObservationContext { source, message },
+    ))
 }
 
-fn probe_idle_wake(node: &mut ObservedNativeNode<'_>) -> Result<IdleEvidence, Box<dyn Error>> {
+fn probe_idle_wake(
+    node: &mut ObservedNativeNode<'_>,
+) -> Result<IdleEvidence, NativeObservationError> {
     let readiness = match SimulationBackend::step_to(
         node,
         VirtualTime {
@@ -738,7 +749,7 @@ fn authenticate_readiness_marker(
     Ok(retired_icount.retired)
 }
 
-fn readiness_selectable_catalog_plan() -> Result<SelectableCatalogPlan, Box<dyn Error>> {
+fn readiness_selectable_catalog_plan() -> Result<SelectableCatalogPlan, NativeObservationError> {
     let declaration = SelectablePlanDeclaration::new(
         READINESS_SELECTABLE_ID,
         vec![1],
@@ -757,7 +768,7 @@ fn install_preemption(
     node: &mut ObservedNativeNode<'_>,
     kind: PreemptionKind,
     at: u64,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<(), NativeObservationError> {
     let current = SimulationBackend::now(node);
     SimulationBackend::apply(
         node,
@@ -777,7 +788,7 @@ fn aligned_preemption_tick(
     node: &mut ObservedNativeNode<'_>,
     requested: u64,
     horizon: u64,
-) -> Result<u64, Box<dyn Error>> {
+) -> Result<u64, NativeObservationError> {
     let calibration = node.logical_time_calibration()?;
     align_preemption_tick(calibration, requested, horizon)
 }
@@ -786,7 +797,7 @@ fn align_preemption_tick(
     calibration: QemuLogicalTimeCalibration,
     requested: u64,
     horizon: u64,
-) -> Result<u64, Box<dyn Error>> {
+) -> Result<u64, NativeObservationError> {
     let raw_ticks = calibration
         .raw_icount
         .checked_mul(FLIGHT_TICKS_PER_INSTRUCTION)
@@ -812,7 +823,7 @@ fn align_preemption_tick(
     Ok(at)
 }
 
-fn validate_sample(sample: FingerprintSample, target: u64) -> Result<(), Box<dyn Error>> {
+fn validate_sample(sample: FingerprintSample, target: u64) -> Result<(), NativeObservationError> {
     if sample.sample_icount != target
         || sample.vcpu_count != 4
         || sample.rr_current_vcpu >= sample.vcpu_count
@@ -850,7 +861,7 @@ pub(in crate::packaged_qemu_executor) fn run_block(
     initrd: &Path,
     firmware: &Path,
     run_root: &Path,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<(), NativeObservationError> {
     let diagnostic = block_recovery_only_requested()?;
     let evidence = block_recovery_hot_fork::run(
         factory, qemu, plugin, kernel, initrd, firmware, run_root, diagnostic,
@@ -869,7 +880,8 @@ pub(in crate::packaged_qemu_executor) fn run_block(
 /// Console collection, both fingerprint streams, and bounded trace/partition
 /// localization retain separate credit. Native pager metadata is admitted by
 /// the production inventory handshake, independently of this diagnostic loan.
-pub(in crate::packaged_qemu_executor) fn evidence_resident_bound() -> Result<u64, Box<dyn Error>> {
+pub(in crate::packaged_qemu_executor) fn evidence_resident_bound()
+-> Result<u64, NativeObservationError> {
     let bytes = (3 * MAXIMUM_HOT_FORK_RING_IMAGE_BYTES)
         .checked_add(2 * 4 * 1024 * 1024)
         .and_then(|bytes| bytes.checked_add(4 * std::mem::size_of::<FlightRun>()))

@@ -1,6 +1,7 @@
 //! Real-device block recovery and hot-fork preparation proof.
 
-use std::error::Error;
+use crate::NativeObservationError;
+
 use std::path::Path;
 use std::time::Duration;
 
@@ -53,7 +54,7 @@ pub(super) fn run(
     firmware: &Path,
     run_root: &Path,
     diagnostic_liveness_trace: bool,
-) -> Result<BlockRecoveryHotForkEvidence, Box<dyn Error>> {
+) -> Result<BlockRecoveryHotForkEvidence, NativeObservationError> {
     recovery_timing_margin_nanos(
         GUEST_RECOVERY_WAIT_NANOS,
         READINESS_SLICE_NANOS,
@@ -101,41 +102,63 @@ pub(super) fn run(
 
                 let evidence =
                     exercise_recovery_and_prepare_hot_fork(node, recovery_deadline_tick)?;
-                Ok::<_, Box<dyn Error>>((recovery_started_tick, evidence))
+                Ok::<_, NativeObservationError>((recovery_started_tick, evidence))
             })();
-            let shutdown = node.shutdown_child().map_err(|error| error.to_string());
+            let shutdown = node.shutdown_child();
             Ok((primary, shutdown))
         },
     )?;
     let trace = match &shutdown {
         Ok(report) if diagnostic_liveness_trace && report.reaped && !report.leaked => {
-            Some(owner.liveness_tail().map_err(|error| error.to_string()))
+            Some(owner.liveness_tail())
         }
-        _ if diagnostic_liveness_trace => Some(Err(String::from(
+        _ if diagnostic_liveness_trace => Some(Err(NativeObservationError::from(
             "trace unavailable because clean QEMU reap was not proven",
         ))),
         _ => None,
     };
-    let finish = owner.finish().map_err(|error| error.to_string());
+    let finish = owner.finish();
 
-    let (recovery_started_tick, primary) = primary.map_err(|error| {
-        let trace = trace.map_or_else(String::new, |trace| match trace {
-            Ok(trace) => format!(
-                "; retained_qmp_monitor_trace_tail_begin\n{trace}\n\
-                 retained_qmp_monitor_trace_tail_end"
-            ),
-            Err(error) => format!("; retained_qmp_monitor_trace_tail_error={error}"),
-        });
-        format!(
-            "{error}{trace}; \
-             diagnostic_shutdown={shutdown:?}; diagnostic_finish={finish:?}"
-        )
-    })?;
-    let shutdown = shutdown.map_err(|error| format!("block recovery shutdown: {error}"))?;
+    let (recovery_started_tick, primary) = match primary {
+        Ok(primary) => primary,
+        Err(error) => {
+            return Err(error.with_cleanup(
+                String::from("block recovery observation failed"),
+                Some(shutdown),
+                Some(finish),
+                trace,
+            ));
+        }
+    };
+    let shutdown = match shutdown {
+        Ok(shutdown) => shutdown,
+        Err(error) => {
+            return Err(NativeObservationError::from(error).with_cleanup(
+                String::from("block recovery shutdown failed"),
+                None,
+                Some(finish),
+                trace,
+            ));
+        }
+    };
     if !shutdown.reaped || shutdown.leaked {
-        return Err(format!("block recovery QEMU did not reap cleanly: {shutdown:?}").into());
+        return Err(
+            NativeObservationError::from("block recovery QEMU did not reap cleanly").with_cleanup(
+                String::from("block recovery shutdown refused"),
+                Some(Ok(shutdown)),
+                Some(finish),
+                trace,
+            ),
+        );
     }
-    finish.map_err(|error| format!("block recovery attempt finish: {error}"))?;
+    if let Err(error) = finish {
+        return Err(NativeObservationError::from(error).with_cleanup(
+            String::from("block recovery attempt finish failed"),
+            Some(Ok(shutdown)),
+            None,
+            trace,
+        ));
+    }
 
     Ok(BlockRecoveryHotForkEvidence {
         template_generation: primary.template_generation,
@@ -148,7 +171,7 @@ pub(super) fn run(
 
 fn await_recovery_readiness(
     node: &mut super::ObservedNativeNode<'_>,
-) -> Result<u64, Box<dyn Error>> {
+) -> Result<u64, NativeObservationError> {
     let readiness_slice_ticks = virtual_nanos_to_ticks(READINESS_SLICE_NANOS)?;
     let mut console = Vec::new();
     let mut last_reached = node.now().ticks;
@@ -252,7 +275,7 @@ struct PrimaryEvidence {
 fn exercise_recovery_and_prepare_hot_fork(
     node: &mut super::ObservedNativeNode<'_>,
     recovery_deadline_tick: u64,
-) -> Result<PrimaryEvidence, Box<dyn Error>> {
+) -> Result<PrimaryEvidence, NativeObservationError> {
     let mut console = Vec::new();
     let mut completed_at = None;
     let mut target_tick = recovery_deadline_tick;
@@ -339,7 +362,7 @@ fn exercise_recovery_and_prepare_hot_fork(
     })
 }
 
-fn virtual_nanos_to_ticks(nanos: u64) -> Result<u64, Box<dyn Error>> {
+fn virtual_nanos_to_ticks(nanos: u64) -> Result<u64, NativeObservationError> {
     nanos
         .checked_mul(crucible_engine::SIM_TICKS_PER_NS)
         .ok_or_else(|| "block recovery virtual-time conversion overflowed".into())
@@ -365,7 +388,7 @@ pub(super) fn recovery_transition() -> ResolvedBlockControllerTransition {
 fn append_console_bytes(
     console: &mut Vec<u8>,
     events: &[crucible_engine::ObservableEvent],
-) -> Result<(), Box<dyn Error>> {
+) -> Result<(), NativeObservationError> {
     for bytes in events.iter().filter_map(|event| match event.payload() {
         ObservableEventPayload::ConsoleOutput { bytes, .. } => Some(bytes.as_slice()),
         _ => None,

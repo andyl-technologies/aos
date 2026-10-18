@@ -315,10 +315,14 @@ impl SimulationBackend for AdmittedFlightNode {
     fn shutdown(&mut self) -> Result<(), BackendError> {
         self.node.shutdown()
     }
-    fn drain_observable_events(&mut self) -> Result<Vec<crucible_engine::ObservableEvent>, BackendError> {
+    fn drain_observable_events(
+        &mut self,
+    ) -> Result<Vec<crucible_engine::ObservableEvent>, BackendError> {
         self.node.drain_observable_events()
     }
-    fn drain_rng_evidence(&mut self) -> Result<Vec<crucible_engine::BackendRngEvidence>, BackendError> {
+    fn drain_rng_evidence(
+        &mut self,
+    ) -> Result<Vec<crucible_engine::BackendRngEvidence>, BackendError> {
         self.node.drain_rng_evidence()
     }
     fn drain_network_outputs(
@@ -338,14 +342,16 @@ impl crate::packaged_qemu_executor::native_plugin_flight::admission::FlightAdmis
         _disk: u64,
     ) -> Result<
         crate::packaged_qemu_executor::native_plugin_flight::admission::FlightOwner<'_>,
-        Box<dyn Error>,
+        crate::NativeObservationError,
     > {
-        Err(crucible_qemu_host::QemuVmRealizationError::ExecutorUnavailable {
-            operation: "observe production plugin flight",
-            message: String::from(
-                "the component process does not own the service Main Source factory",
-            ),
-        }
-        .into())
+        Err(
+            crucible_qemu_host::QemuVmRealizationError::ExecutorUnavailable {
+                operation: "observe production plugin flight",
+                message: String::from(
+                    "the component process does not own the service Main Source factory",
+                ),
+            }
+            .into(),
+        )
     }
 }

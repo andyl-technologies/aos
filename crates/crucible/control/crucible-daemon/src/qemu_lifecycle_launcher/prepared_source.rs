@@ -6,6 +6,8 @@
 //! cause in the original allocation.
 
 use super::PendingSourceConstruction;
+use crate::NativeObservationError;
+
 use crate::lifecycle_cleanup::{
     PreparedSourceFailure, PreparedSourceRetirement, ServiceMainHandle, ServiceMainPreclaimError,
 };
@@ -91,8 +93,8 @@ where
         &self,
         apply: &mut dyn FnMut(
             &mut dyn crate::qemu_campaign_lifecycle::NativeObservationOwner,
-        ) -> Result<(), Box<dyn std::error::Error>>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+        ) -> Result<(), NativeObservationError>,
+    ) -> Result<(), NativeObservationError> {
         match self.with_pending(|pending| pending.with_native_observation(apply)) {
             Ok(Ok(result)) => {
                 if result.is_err() {
@@ -102,12 +104,13 @@ where
                 }
                 result
             }
-            Ok(Err(())) => Err(Box::new(
-                self.failure("borrow same native observation body"),
-            )),
+            Ok(Err(())) => {
+                Err(Box::new(self.failure("borrow same native observation body")).into())
+            }
             Err(raw) => Err(Box::new(
                 self.failure_with_refusal("borrow Main native observation", raw),
-            )),
+            )
+            .into()),
         }
     }
 

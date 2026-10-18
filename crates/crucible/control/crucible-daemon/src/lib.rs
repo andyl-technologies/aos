@@ -174,6 +174,7 @@ mod hot_checkpoint_pool;
 pub mod hot_checkpoint_retention;
 #[cfg(target_os = "linux")]
 mod managed_qemu_hot_fork_source_world_pool;
+mod native_observation_error;
 mod owned_advisory_lock;
 pub mod packaged_qemu_executor;
 pub mod packaged_qemu_identity;
@@ -190,6 +191,8 @@ mod production_plugin_probe;
 mod production_qemu_config;
 pub mod qemu_baked_genesis;
 pub mod qemu_campaign_driver;
+pub(crate) use native_observation_error::NativeObservationError;
+
 pub mod qemu_campaign_lifecycle;
 pub mod qemu_campaign_resume;
 #[cfg(target_os = "linux")]

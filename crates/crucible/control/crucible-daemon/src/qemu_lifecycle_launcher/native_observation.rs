@@ -4,6 +4,8 @@
 //! generation lease and Original as the normal lifecycle. This module does not
 //! admit a Main, issue a Source or turn an observation into resource authority.
 
+use crate::NativeObservationError;
+
 use super::*;
 use crucible_engine::{
     BackendEffect, BackendError, BackendSnapshot, FingerprintSample, SimulationBackend,
@@ -151,10 +153,8 @@ where
         node: &crucible_engine::NodeId,
         generation: u64,
         maximum_bytes: u64,
-        inspect: &mut dyn FnMut(
-            &mut dyn std::io::BufRead,
-        ) -> Result<(), Box<dyn std::error::Error>>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+        inspect: &mut dyn FnMut(&mut dyn std::io::BufRead) -> Result<(), NativeObservationError>,
+    ) -> Result<(), NativeObservationError> {
         self.with_native_observation_directory(node, generation, |directory| {
             directory.inspect_runtime_determinism_trace_after_reap(maximum_bytes, inspect)
         })
@@ -169,7 +169,7 @@ where
         &self,
         node: &crucible_engine::NodeId,
         generation: u64,
-    ) -> Result<String, Box<dyn std::error::Error>> {
+    ) -> Result<String, NativeObservationError> {
         self.with_native_observation_directory(node, generation, |directory| {
             Ok(directory.retain_runtime_liveness_trace_tail_after_reap()?)
         })
@@ -275,7 +275,8 @@ impl ObservedNativeNode<'_> {
     /// Returns the node's actual calibration validation refusal.
     pub(crate) fn logical_time_calibration(
         &mut self,
-    ) -> Result<crucible_qemu_host::QemuLogicalTimeCalibration, crucible_qemu_host::QemuNodeError> {
+    ) -> Result<crucible_qemu_host::QemuLogicalTimeCalibration, crucible_qemu_host::QemuNodeError>
+    {
         self.node.logical_time_calibration()
     }
 
@@ -297,8 +298,10 @@ impl ObservedNativeNode<'_> {
     /// Returns the node's actual shared-memory read refusal.
     pub(crate) fn virtual_timer_fire_witness(
         &mut self,
-    ) -> Result<Option<crucible_qemu_host::QemuVirtualTimerFireWitness>, crucible_qemu_host::QemuNodeError>
-    {
+    ) -> Result<
+        Option<crucible_qemu_host::QemuVirtualTimerFireWitness>,
+        crucible_qemu_host::QemuNodeError,
+    > {
         self.node.virtual_timer_fire_witness()
     }
 
@@ -353,7 +356,8 @@ impl ObservedNativeNode<'_> {
     pub(crate) fn prepare_hot_fork_template(
         &mut self,
         bindings: &[crucible_qemu_host::QmpHotForkBlockSnapshotBinding],
-    ) -> Result<crucible_qemu_host::QmpHotForkTemplateState, crucible_qemu_host::QemuNodeChannelError> {
+    ) -> Result<crucible_qemu_host::QmpHotForkTemplateState, crucible_qemu_host::QemuNodeChannelError>
+    {
         self.node.prepare_hot_fork_template(bindings)
     }
 
@@ -365,7 +369,8 @@ impl ObservedNativeNode<'_> {
     pub(crate) fn prepare_hot_fork_template_barriers(
         &mut self,
         bindings: &[crucible_qemu_host::QmpHotForkBlockSnapshotBinding],
-    ) -> Result<crucible_qemu_host::QmpHotForkTemplateState, crucible_qemu_host::QemuNodeChannelError> {
+    ) -> Result<crucible_qemu_host::QmpHotForkTemplateState, crucible_qemu_host::QemuNodeChannelError>
+    {
         self.node.prepare_hot_fork_template_barriers(bindings)
     }
 
@@ -426,7 +431,9 @@ impl ObservedNativeNode<'_> {
     }
 
     /// Copies the accumulated plain-value block diagnostics.
-    pub(crate) fn block_io_diagnostics(&self) -> Option<crucible_qemu_host::BlockIoDiagnosticsSnapshot> {
+    pub(crate) fn block_io_diagnostics(
+        &self,
+    ) -> Option<crucible_qemu_host::BlockIoDiagnosticsSnapshot> {
         self.node.block_io_diagnostics()
     }
 
@@ -465,7 +472,10 @@ impl SimulationBackend for ObservedNativeNode<'_> {
         self.node.now()
     }
 
-    fn fingerprint(&mut self, node: crucible_engine::NodeId) -> Result<FingerprintSample, BackendError> {
+    fn fingerprint(
+        &mut self,
+        node: crucible_engine::NodeId,
+    ) -> Result<FingerprintSample, BackendError> {
         SimulationBackend::fingerprint(self.node, node)
     }
 
@@ -473,11 +483,15 @@ impl SimulationBackend for ObservedNativeNode<'_> {
         self.node.shutdown()
     }
 
-    fn drain_observable_events(&mut self) -> Result<Vec<crucible_engine::ObservableEvent>, BackendError> {
+    fn drain_observable_events(
+        &mut self,
+    ) -> Result<Vec<crucible_engine::ObservableEvent>, BackendError> {
         self.node.drain_observable_events()
     }
 
-    fn drain_rng_evidence(&mut self) -> Result<Vec<crucible_engine::BackendRngEvidence>, BackendError> {
+    fn drain_rng_evidence(
+        &mut self,
+    ) -> Result<Vec<crucible_engine::BackendRngEvidence>, BackendError> {
         self.node.drain_rng_evidence()
     }
 

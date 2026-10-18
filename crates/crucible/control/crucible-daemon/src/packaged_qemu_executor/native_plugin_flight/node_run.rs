@@ -3,6 +3,8 @@
 //! The caller holds the same Main projection throughout node operations. No
 //! launcher, native guard or borrowed node leaves this callback.
 
+use crate::NativeObservationError;
+
 use super::*;
 
 pub(super) struct DrivenNode {
@@ -17,11 +19,11 @@ pub(super) struct DrivenNode {
 pub(super) enum DrivenFlight {
     Complete(DrivenNode),
     IdleFailed {
-        source: Box<dyn Error>,
+        source: NativeObservationError,
         shutdown: Result<QemuShutdownReport, crucible_qemu_host::QemuNodeError>,
     },
     PartitionFailed {
-        source: Box<dyn Error>,
+        source: NativeObservationError,
         shutdown: Result<QemuShutdownReport, crucible_qemu_host::QemuNodeError>,
     },
 }
@@ -30,7 +32,7 @@ pub(super) fn drive(
     node: &mut ObservedNativeNode<'_>,
     hostile: bool,
     partition_step_ps: Option<u64>,
-) -> Result<DrivenFlight, Box<dyn Error>> {
+) -> Result<DrivenFlight, NativeObservationError> {
     let preemption = hostile.then(BoundedSchedulerPreemptionEvidence::default);
     let mut boundaries = Vec::with_capacity(TARGETS.len());
 
