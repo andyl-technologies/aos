@@ -68,8 +68,26 @@ fn quote_startup_parts(
     input: OriginalPacketPrefixProjectionInput<'_>,
     allow_empty_baseline: bool,
 ) -> Result<OriginalPacketPrefixProjectionStorageData, ProviderError> {
+    quote_startup_parts_for::<3>(
+        scope,
+        limits,
+        maximum_extensions,
+        input,
+        allow_empty_baseline,
+        PrefixClass::Observe,
+    )
+}
+
+fn quote_startup_parts_for<const OBJECTS: usize>(
+    scope: (&Id, &Id),
+    limits: crate::handshake::Limits,
+    maximum_extensions: usize,
+    input: OriginalPacketPrefixProjectionInput<'_>,
+    allow_empty_baseline: bool,
+    class: PrefixClass,
+) -> Result<OriginalPacketPrefixProjectionStorageData<OBJECTS>, ProviderError> {
     let (session, incarnation) = scope;
-    if (!allow_empty_baseline && input.objects.is_empty()) || input.objects.len() > 3 {
+    if (!allow_empty_baseline && input.objects.is_empty()) || input.objects.len() > OBJECTS {
         return Err(refused());
     }
     let maximum_frame = allowance(limits.frame_bytes.get())?;
@@ -77,7 +95,7 @@ fn quote_startup_parts(
     if maximum_frame == 0 || chunk == 0 {
         return Err(credit());
     }
-    let mut objects = [None; 3];
+    let mut objects = [None; OBJECTS];
     let mut payload = 0usize;
     let mut frames = 1usize;
     for (index, object) in input.objects.iter().enumerate() {
@@ -154,6 +172,16 @@ fn quote_startup_parts(
         original_literal_required_bytes: mul(requests, add(maximum_frame, 4)?)?,
         original_slots_required: add(frames, requests)?,
     };
+    if class == PrefixClass::RestoredInput17 {
+        data.declared_quote_scratch_bytes = add(
+            data.declared_quote_scratch_bytes,
+            super::super::restored_input17::counter_scratch_data(),
+        )?;
+        data.construction_transient_requested_bytes = add(
+            data.construction_transient_requested_bytes,
+            super::super::restored_input17::validation_transient_storage_data(),
+        )?;
+    }
     if allow_empty_baseline {
         // The legacy containment projection mixes the original DOM and
         // canonical work. Replace that one named component by backing only;
@@ -264,10 +292,11 @@ fn quote_startup_parts(
         exchange: data,
         source_owner_requested_bytes: source_owner,
         native_source_backing_bytes: allow_empty_baseline.then_some(native_source_backing),
-        declared_counter_scratch_bytes: startup_counter_additional_scratch_data(),
+        declared_counter_scratch_bytes: startup_counter_additional_scratch_data_for::<OBJECTS>(),
         terminal: copy_storage(input.terminal),
         original: copy_storage(input.original),
         objects,
+        class,
         maximum_requested_bytes: input.maximum_requested_bytes,
     };
     if result.requested_bytes()? > input.maximum_requested_bytes {
@@ -314,12 +343,16 @@ pub(crate) const fn original_packet_prefix_startup_counter_scratch_data() -> usi
 }
 
 const fn startup_counter_additional_scratch_data() -> usize {
+    startup_counter_additional_scratch_data_for::<3>()
+}
+
+const fn startup_counter_additional_scratch_data_for<const OBJECTS: usize>() -> usize {
     size_of::<[usize; 4]>()
         + size_of::<Option<&mut usize>>()
         + size_of::<&PacketNative5SourceLaunch>()
-        + size_of::<OriginalPacketPrefixProjectionStorageData>()
+        + size_of::<OriginalPacketPrefixProjectionStorageData<OBJECTS>>()
         + size_of::<OriginalPacketPrefixProjectionInput<'static>>()
-        + size_of::<[Option<ContentExtent>; 3]>()
+        + size_of::<[Option<ContentExtent>; OBJECTS]>()
         + size_of::<(&Id, &Id)>()
         + size_of::<MetadataObserver<'static>>()
         + size_of::<RetainedProtocolMetadataFacts>()
@@ -337,4 +370,41 @@ pub(in crate::connection) fn native_observe_projection_for_test(
     input: OriginalPacketPrefixProjectionInput<'_>,
 ) -> Result<OriginalPacketPrefixProjectionStorageData, ProviderError> {
     quote_startup_parts(scope, limits, 0, input, false)
+}
+
+/// Projects the distinct five-evidence Input17 producer without allocating it.
+///
+/// This closed constructor admits no request. Actual publication independently
+/// authenticates its Source action scope and exact five-role completed reply.
+///
+/// # Errors
+/// Refuses another full selected schema, non-Reactive launch, a changed five
+/// role roster, unchanged object/frame ceilings or arithmetic/storage overflow.
+pub(crate) fn quote_original_restored_input17_prefix_startup_storage_data(
+    launch: &PacketNative5SourceLaunch,
+    input: OriginalPacketPrefixProjectionInput<'_>,
+) -> Result<OriginalPacketPrefixProjectionStorageData<5>, ProviderError> {
+    super::super::restored_input17::authenticate_launch_data(launch)?;
+    if input.objects.len() != 5
+        || input
+            .objects
+            .iter()
+            .any(|object| object.media_type != "application/json")
+    {
+        return Err(refused());
+    }
+    let [binding] = launch.selection.realization.bindings.as_slice() else {
+        return Err(refused());
+    };
+    quote_startup_parts_for::<5>(
+        (
+            &binding.authority.session_id,
+            &binding.authority.incarnation_id,
+        ),
+        launch.limits,
+        launch.selection.provider.extensions_supported.len(),
+        input,
+        false,
+        PrefixClass::RestoredInput17,
+    )
 }

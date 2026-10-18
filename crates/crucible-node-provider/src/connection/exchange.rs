@@ -35,6 +35,7 @@ pub(crate) use storage::{
     quote_original_native_observe_prefix_startup_storage_data,
     quote_original_packet_baseline_prefix_startup_storage_data,
     quote_original_packet_prefix_startup_storage_data,
+    quote_original_restored_input17_prefix_startup_storage_data,
 };
 
 const MAXIMUM_EXCHANGE_BYTES: usize = 32 * 1024 * 1024;

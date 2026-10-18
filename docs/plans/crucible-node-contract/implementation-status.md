@@ -97,6 +97,16 @@ including 69 integration targets. Its captured Rust/Cargo payload matches all
 4,126 included files at that commit. This remains compilation-only evidence and
 excludes the subsequent ordinary packet and transport routing changes.
 
+The refresh at `0e8630d1d1` passes for the journal-reservation checkpoint,
+including the intervening routing, Hello and first-Observe changes: all 167 test
+artifacts freshly compile across 48 application packages, including 69
+integration targets. The captured source matches all 4,131 included Rust/Cargo
+files at that commit. Independent read-only review verifies the registered derivation and NAR hash,
+all 7,098 captured source files against the commit, and the installed compiler
+messages reporting the ordinary test profile and successful completion. This
+remains compilation-only evidence;
+it excludes the later Input17 transport change and native execution.
+
 ### QEMU package
 
 The ordinary QEMU package passes 589 upstream TAP checks, 44 project model/cost
@@ -1458,6 +1468,60 @@ passes and one failure, in 67.19 seconds. Node zero now completes Prepare; node
 one refuses during Hello with `UnsupportedFacet`. All original children are
 reclaimed. This is diagnostic phase progress, not successful startup, native
 preservation or a performance comparison. Temporary probes are removed.
+
+A subsequent child-side probe confirms an actual Hello timeout for node one,
+with zero passes and one failure in 67.15 seconds. Greeting all three children
+before Prepare is investigated under the same cuts: the clean experiment fails
+in 14.72 seconds, and a member probe isolates node one's window reservation to
+`ResourceLimit` in 14.58 seconds. Keeping the earlier Hello owners staged exceeds
+the current resource bound. The experiment and all probes are removed. These
+failures establish neither a startup success nor a performance improvement.
+
+### Distinct Input17 transport
+
+The new Input17 protocol family binds its complete schema across the provider
+and every selected implementation binding. SDK assignment retains the actual
+original and its cut before installing a Source artifact. A result extension
+must match the actual retained Input17 request before result decoding; an old
+Input4 or mixed original cannot select the new response grammar.
+
+A private projection class pairs the five-object Input proof quote with its
+actual original, full content references, bodies, literal cut and requote.
+The existing three-object Observe path keeps its limit. Chunk acknowledgements
+in the new class must name the exact next offset. The complete native owning
+codec must preserve this discriminator before that class can be captured.
+
+Wire validation grants no native action permission. The Endpoint explicitly
+refuses every Input17 request before legacy restore, upload or control dispatch.
+The genuine Source/Window claim, native MAC and funded action row, Stage/Commit
+custody, signed recurring Observe and complete historical reader remain required.
+
+Independent source review passes, including correction of a possible fallthrough
+to legacy dispatch before the closed Endpoint guard is added. The first ordinary
+compile exposes a module path and map-type mismatch; both are corrected. All
+1,097 provider tests then pass in 11.40 seconds, with fifteen ignored. The twelve
+new controls exercise schema and request-class isolation, exact proof-bank
+correspondence, ACK offsets and refusal before legacy dispatch. They use inert
+protocol fixtures and do not claim live Source/native authorization.
+
+All 1,753 Core and seven contract tests also pass; 32 Core cases remain ignored.
+The Core run completes in 6.10 seconds after compilation. Native startup and
+complete preservation remain unqualified.
+All four full-roster definition/admission controls pass in 24.82 seconds.
+Final six-crate all-feature/all-target checking passes in 38.90 seconds.
+
+Further review finds that the Input17 validation temporary was initially added
+to the construction quote and then overwritten by the request serialization
+quote. Checked addition preserves both independent terms. A regression exercises
+the actual accounting tail after the unchanged live admission checks: the
+exact Input17 temporary and scratch deltas remain, every retained component is
+unchanged, the complete exact budget fits and one fewer byte is refused. All
+1,098 provider tests pass in 10.85 seconds, with fifteen ignored. The earlier
+1,097-test run excludes this regression and is not evidence for the correction.
+Independent review confirms that the live class and owner checks remain before
+the private accounting tail. Six-crate all-feature/all-target checking passes
+for the correction in 33.96 seconds.
+The corresponding optimized provider rebuild also passes.
 
 ## Known gaps and exit criteria
 

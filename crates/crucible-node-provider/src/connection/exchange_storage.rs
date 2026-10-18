@@ -30,6 +30,9 @@ pub(crate) use continuation::{
 
 #[path = "exchange_packet_projection.rs"]
 mod packet_projection;
+
+#[path = "exchange_restored_input17.rs"]
+mod restored_input17;
 pub(crate) use packet_projection::{
     OriginalNativeObservePreparationStorageData, OriginalPacketPrefixProjectionInput,
     OriginalPacketPrefixProjectionStorageData,
@@ -38,6 +41,7 @@ pub(crate) use packet_projection::{
     quote_original_native_observe_prefix_startup_storage_data,
     quote_original_packet_baseline_prefix_startup_storage_data,
     quote_original_packet_prefix_startup_storage_data,
+    quote_original_restored_input17_prefix_startup_storage_data,
 };
 
 #[path = "exchange_report_query.rs"]
@@ -181,6 +185,20 @@ impl<S: ProviderStream> Connection<S> {
         evidence: &[(ContentRef, Vec<u8>)],
         maximum: usize,
     ) -> Result<OriginalPacketPrefixStorageData, ProviderError> {
+        self.quote_original_packet_prefix_storage_inner_data(
+            first, request, body, evidence, maximum, false,
+        )
+    }
+
+    fn quote_original_packet_prefix_storage_inner_data(
+        &self,
+        first: u64,
+        request: &Envelope,
+        body: &Map<String, Value>,
+        evidence: &[(ContentRef, Vec<u8>)],
+        maximum: usize,
+        restored_input17: bool,
+    ) -> Result<OriginalPacketPrefixStorageData, ProviderError> {
         self.protocol_owner.ensure_current()?;
         self.authenticate_native5_source_codec()?;
         if self.role != EndpointRole::Provider
@@ -191,12 +209,36 @@ impl<S: ProviderStream> Connection<S> {
         {
             return Err(refused());
         }
-        if !matches!(request.method, Method::Observe | Method::Poll)
+        if restored_input17 {
+            restored_input17::authenticate_actual_inputs_data(self, request, body, evidence)?;
+        } else if !matches!(request.method, Method::Observe | Method::Poll)
             && !(request.method == Method::Begin
                 && request.body.get("kind").and_then(Value::as_str) == Some("capture"))
         {
             return Err(refused());
         }
+        self.quote_original_packet_prefix_accounting_data(
+            first,
+            request,
+            body,
+            evidence,
+            maximum,
+            restored_input17,
+        )
+    }
+
+    // The live entry point authenticates the exact selected request class.
+    // This shared tail only accounts for its retained inputs and future work;
+    // a quote never creates an admission, action or publication permission.
+    fn quote_original_packet_prefix_accounting_data(
+        &self,
+        first: u64,
+        request: &Envelope,
+        body: &Map<String, Value>,
+        evidence: &[(ContentRef, Vec<u8>)],
+        maximum: usize,
+        restored_input17: bool,
+    ) -> Result<OriginalPacketPrefixStorageData, ProviderError> {
         let limits = self.authority.limits();
         let chunk = allowance(limits.blob_chunk_bytes.get())?.min(4096);
         let maximum_frame = allowance(limits.frame_bytes.get())?;
@@ -270,12 +312,26 @@ impl<S: ProviderStream> Connection<S> {
             original_literal_required_bytes: mul(requests, add(maximum_frame, 4)?)?,
             original_slots_required: add(frames, requests)?,
         };
+        if restored_input17 {
+            data.declared_quote_scratch_bytes = add(
+                data.declared_quote_scratch_bytes,
+                restored_input17::counter_scratch_data(),
+            )?;
+            data.construction_transient_requested_bytes = add(
+                data.construction_transient_requested_bytes,
+                restored_input17::validation_transient_storage_data(),
+            )?;
+        }
+
         // The old builder first clones the complete request, then replaces its
         // body/extensions with the response. Quote that discarded clone too.
         let mut fields = MetadataObserver::new();
         fields.observe(request)?;
         let request_quote = actual_serialization_storage_data(request, fields.finish(), maximum)?;
-        data.construction_transient_requested_bytes = request_quote.requested_total()?;
+        data.construction_transient_requested_bytes = add(
+            data.construction_transient_requested_bytes,
+            request_quote.requested_total()?,
+        )?;
         let response = frame_projection(
             &self.authority,
             Some(request),

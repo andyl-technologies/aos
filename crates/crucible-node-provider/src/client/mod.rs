@@ -88,6 +88,9 @@ pub use controller::{
     CompletedOriginalInstalledRestorationUpload, PreparedOriginalInstalledRestorationUpload,
 };
 
+/// Exposes a separately assigned Input17 SDK marker without issuing a claim.
+pub use controller::PreparedOriginalRestoredInputReactive17HostAttempt;
+
 /// Exposes retained ordinary suffix originals without issuing execution claims.
 pub use controller::{
     OriginalRestoredSuffixBody, OriginalRestoredSuffixHostAttempt,

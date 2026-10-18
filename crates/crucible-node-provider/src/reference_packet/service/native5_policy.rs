@@ -726,6 +726,13 @@ impl BodySchemaVerifier for Native5Policy {
         received: &ReceivedBody,
     ) -> Result<(), ProviderError> {
         self.validate_current_negotiation(authority)?;
+        if super::restored_input_reactive17::verify_selected_wire_header_data(
+            &self.selection,
+            authority,
+            envelope,
+        )? {
+            return authority.ensure_live();
+        }
         if self.verify_fresh_restore_allocation_envelope(authority, envelope, received)? {
             return authority.ensure_live();
         }

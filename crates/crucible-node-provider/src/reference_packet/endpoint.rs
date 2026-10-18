@@ -46,6 +46,7 @@ mod restoration_activation;
 mod restoration_observation;
 mod restore;
 mod restore_commit;
+mod restored_input17_closed;
 mod restored_producer;
 mod restored_suffix_observation;
 pub(crate) use restore::PacketEndpointRestoreAllocation;
@@ -514,6 +515,10 @@ impl<S: ProviderStream> PacketEndpoint<S> {
                 }
             }
             .ok_or(ProviderError::Frame("packet endpoint original peer closed"))?;
+        // Transport grammar is insufficient to select a native action owner.
+        // The original literal is already retained; keep the sticky held state
+        // and refuse before any generic fresh/restore/upload/control effect.
+        restored_input17_closed::require_legacy_dispatch_data(&frame.envelope)?;
         if fresh_query {
             // The endpoint retains the complete actual result before any
             // frontier/hash/currentness check or report transformation.

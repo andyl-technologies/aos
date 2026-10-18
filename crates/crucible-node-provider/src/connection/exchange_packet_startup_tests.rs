@@ -263,3 +263,51 @@ fn native_retained_prefix_counts_real_independent_dom_copies_without_replacing_l
     assert!(continuation::within(&shape, &backing_one_short).is_err());
     Ok(())
 }
+
+#[test]
+fn input17_five_object_projection_is_separate_from_the_old_three_object_class() -> TestResult {
+    let (_, authority) = crate::handshake::tests::authority_with_scope("input17-five-object-quote");
+    let (original, terminal) = original_and_terminal(&authority)?;
+    let objects: [OriginalContinuationContentExtent<'_>; 5] =
+        std::array::from_fn(|_| OriginalContinuationContentExtent {
+            maximum_payload_bytes: 257,
+            media_type: "application/json",
+        });
+    let input = |maximum| OriginalPacketPrefixProjectionInput {
+        original: &original,
+        terminal: &terminal,
+        objects: &objects,
+        maximum_requested_bytes: maximum,
+    };
+    assert!(
+        quote_startup_parts(
+            (authority.session_id(), authority.incarnation_id()),
+            authority.limits(),
+            0,
+            input(MAXIMUM),
+            false,
+        )
+        .is_err()
+    );
+    // This DATA-only test directly exercises the closed component projection.
+    // Its real constructor additionally requires the immutable new17 roster;
+    // neither constructor issues a native scope or transport allowance.
+    let quote = |maximum| {
+        quote_startup_parts_for::<5>(
+            (authority.session_id(), authority.incarnation_id()),
+            authority.limits(),
+            0,
+            input(maximum),
+            false,
+            PrefixClass::RestoredInput17,
+        )
+    };
+    let data = quote(MAXIMUM)?;
+    assert_eq!(data.exchange.frames, 16);
+    assert_eq!(data.exchange.requests, 15);
+    assert_eq!(data.objects.iter().flatten().count(), 5);
+    let exact = data.requested_bytes()?;
+    assert_eq!(quote(exact)?.requested_bytes()?, exact);
+    assert!(quote(exact - 1).is_err());
+    Ok(())
+}

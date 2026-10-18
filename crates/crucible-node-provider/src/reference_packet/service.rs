@@ -374,6 +374,9 @@ pub(crate) use owned11::NativeRestoreServiceAllocationQuote;
 
 pub mod complete_restore;
 
+/// Defines the separately negotiated Source-signed Input/Reactive17 protocol.
+pub mod restored_input_reactive17;
+
 // The transport control uses the actual selected immutable policy constructor,
 // without widening its production visibility or mutating private selectors.
 #[cfg(test)]

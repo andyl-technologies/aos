@@ -43,6 +43,7 @@ pub use installed_observation::{
     CompletedOriginalInstalledRestorationObservation,
     PreparedOriginalInstalledRestorationObservation,
 };
+pub use restored_suffix_host::PreparedOriginalRestoredInputReactive17HostAttempt;
 pub use restored_suffix_host::{
     OriginalRestoredSuffixBody, OriginalRestoredSuffixHostAttempt,
     OriginalRestoredSuffixHostHistoricalData, PreparedOriginalRestoredSuffixHostAttempt,

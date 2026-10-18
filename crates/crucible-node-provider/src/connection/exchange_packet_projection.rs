@@ -14,7 +14,25 @@ pub(crate) use startup::{
     original_packet_prefix_startup_counter_scratch_data,
     quote_original_packet_baseline_prefix_startup_storage_data,
     quote_original_packet_prefix_startup_storage_data,
+    quote_original_restored_input17_prefix_startup_storage_data,
 };
+
+// The class is private to the defining closed constructors. An array size or
+// matching scalar quote cannot select another request family.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum PrefixClass {
+    Observe,
+    RestoredInput17,
+}
+
+impl PrefixClass {
+    const fn method_data(self) -> Method {
+        match self {
+            Self::Observe => Method::Observe,
+            Self::RestoredInput17 => Method::Input,
+        }
+    }
+}
 
 pub(crate) struct OriginalPacketPrefixProjectionInput<'a> {
     pub(crate) terminal: &'a OriginalSerializationStorageData,
@@ -24,7 +42,7 @@ pub(crate) struct OriginalPacketPrefixProjectionInput<'a> {
 }
 
 /// Contains prospective storage bounds, without allocation or transport rights.
-pub(crate) struct OriginalPacketPrefixProjectionStorageData {
+pub(crate) struct OriginalPacketPrefixProjectionStorageData<const OBJECTS: usize = 3> {
     pub(crate) exchange: OriginalPacketPrefixStorageData,
     pub(crate) source_owner_requested_bytes: usize,
     /// Is present only for the closed native initial lifecycle grammar.
@@ -32,11 +50,12 @@ pub(crate) struct OriginalPacketPrefixProjectionStorageData {
     pub(crate) declared_counter_scratch_bytes: usize,
     terminal: OriginalSerializationStorageData,
     original: OriginalSerializationStorageData,
-    objects: [Option<ContentExtent>; 3],
+    objects: [Option<ContentExtent>; OBJECTS],
+    class: PrefixClass,
     maximum_requested_bytes: usize,
 }
 
-impl OriginalPacketPrefixProjectionStorageData {
+impl<const OBJECTS: usize> OriginalPacketPrefixProjectionStorageData<OBJECTS> {
     /// Counts the completed record using this same closed outgoing grammar.
     pub(crate) fn completed_record_encoding_data<S: ProviderStream>(
         &self,
@@ -114,10 +133,15 @@ impl OriginalPacketPrefixProjectionStorageData {
         connection.protocol_owner.ensure_current()?;
         connection.authenticate_native5_source_codec()?;
         if connection.role != EndpointRole::Provider
-            || request.method != Method::Observe
+            || request.method != self.class.method_data()
             || evidence.len() != self.objects.iter().flatten().count()
         {
             return Err(refused());
+        }
+        if self.class == PrefixClass::RestoredInput17 {
+            super::restored_input17::authenticate_actual_inputs_data(
+                connection, request, body, evidence,
+            )?;
         }
         // Source backing is independent of plan backing. Large spare payload,
         // reference, body or evidence-vector capacity must refuse here rather
@@ -154,7 +178,7 @@ impl OriginalPacketPrefixProjectionStorageData {
             &connection.authority,
             Some(request),
             first,
-            Method::Observe,
+            self.class.method_data(),
             Body::Response(body),
             self.maximum_requested_bytes,
         )?;
@@ -162,13 +186,23 @@ impl OriginalPacketPrefixProjectionStorageData {
         // This owning requote uses CURRENT authority, exact full references,
         // payload lengths and original. A foreign/stale smaller header bound
         // cannot allocate a multiplied larger plan before being checked.
-        let actual = connection.quote_original_packet_prefix_storage_data(
-            first,
-            request,
-            body,
-            evidence,
-            self.maximum_requested_bytes,
-        )?;
+        let actual = match self.class {
+            PrefixClass::Observe => connection.quote_original_packet_prefix_storage_data(
+                first,
+                request,
+                body,
+                evidence,
+                self.maximum_requested_bytes,
+            )?,
+            PrefixClass::RestoredInput17 => connection
+                .quote_original_restored_input17_prefix_storage_data(
+                    first,
+                    request,
+                    body,
+                    evidence,
+                    self.maximum_requested_bytes,
+                )?,
+        };
         within_exchange(&actual, &self.exchange)?;
         Ok(actual)
     }
@@ -181,6 +215,49 @@ impl<S: ProviderStream> Connection<S> {
         original_observe: &Envelope,
         input: OriginalPacketPrefixProjectionInput<'_>,
     ) -> Result<OriginalPacketPrefixProjectionStorageData, ProviderError> {
+        self.quote_original_packet_prefix_projection_storage_inner_data::<3>(
+            first,
+            original_observe,
+            input,
+            PrefixClass::Observe,
+        )
+    }
+
+    /// Quotes the same actual selected Input17 connection before its reply exists.
+    ///
+    /// # Errors
+    /// Refuses another full selected header, noncurrent connection, changed
+    /// original correlation/literal cut, five-role extent roster or byte limit.
+    pub(crate) fn quote_original_restored_input17_prefix_projection_storage_data(
+        &self,
+        first: u64,
+        original: &Envelope,
+        input: OriginalPacketPrefixProjectionInput<'_>,
+    ) -> Result<OriginalPacketPrefixProjectionStorageData<5>, ProviderError> {
+        super::restored_input17::authenticate_original_data(self, original)?;
+        if input.objects.len() != 5
+            || input
+                .objects
+                .iter()
+                .any(|object| object.media_type != "application/json")
+        {
+            return Err(refused());
+        }
+        self.quote_original_packet_prefix_projection_storage_inner_data::<5>(
+            first,
+            original,
+            input,
+            PrefixClass::RestoredInput17,
+        )
+    }
+
+    fn quote_original_packet_prefix_projection_storage_inner_data<const OBJECTS: usize>(
+        &self,
+        first: u64,
+        original_observe: &Envelope,
+        input: OriginalPacketPrefixProjectionInput<'_>,
+        class: PrefixClass,
+    ) -> Result<OriginalPacketPrefixProjectionStorageData<OBJECTS>, ProviderError> {
         self.protocol_owner.ensure_current()?;
         self.authenticate_native5_source_codec()?;
         if self.role != EndpointRole::Provider
@@ -188,9 +265,9 @@ impl<S: ProviderStream> Connection<S> {
                 self.native5_codec.as_deref(),
                 Some(Native5CodecOwner::NativePacket(_))
             )
-            || original_observe.method != Method::Observe
+            || original_observe.method != class.method_data()
             || input.objects.is_empty()
-            || input.objects.len() > 3
+            || input.objects.len() > OBJECTS
         {
             return Err(refused());
         }
@@ -200,7 +277,7 @@ impl<S: ProviderStream> Connection<S> {
         {
             return Err(credit());
         }
-        let mut objects = [None; 3];
+        let mut objects = [None; OBJECTS];
         let mut payload = 0usize;
         let mut frames = 1usize;
         for (index, object) in input.objects.iter().enumerate() {
@@ -288,6 +365,16 @@ impl<S: ProviderStream> Connection<S> {
             original_literal_required_bytes: mul(requests, add(maximum_frame, 4)?)?,
             original_slots_required: add(frames, requests)?,
         };
+        if class == PrefixClass::RestoredInput17 {
+            data.declared_quote_scratch_bytes = add(
+                data.declared_quote_scratch_bytes,
+                super::restored_input17::counter_scratch_data(),
+            )?;
+            data.construction_transient_requested_bytes = add(
+                data.construction_transient_requested_bytes,
+                super::restored_input17::validation_transient_storage_data(),
+            )?;
+        }
         let mut source_owner = sum(&[
             input.terminal.dom_and_canonical_scratch_bytes,
             payload,
@@ -378,7 +465,7 @@ impl<S: ProviderStream> Connection<S> {
             native_source_backing_bytes: None,
             declared_counter_scratch_bytes: sum(&[
                 size_of::<&Self>(),
-                size_of::<OriginalPacketPrefixProjectionStorageData>(),
+                size_of::<OriginalPacketPrefixProjectionStorageData<OBJECTS>>(),
                 size_of::<OriginalPacketPrefixProjectionInput<'static>>(),
                 size_of::<MetadataObserver<'static>>(),
                 size_of::<RetainedProtocolMetadataFacts>(),
@@ -387,6 +474,7 @@ impl<S: ProviderStream> Connection<S> {
             terminal: copy_storage(input.terminal),
             original: copy_storage(input.original),
             objects,
+            class,
             maximum_requested_bytes: input.maximum_requested_bytes,
         };
         if result.requested_bytes()? > input.maximum_requested_bytes {

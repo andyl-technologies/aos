@@ -435,3 +435,54 @@ mod packet_projection;
 
 #[path = "exchange_native_observe_prepare_tests.rs"]
 mod native_observe_preparation;
+
+#[test]
+fn selected_input_hash_work_survives_the_actual_complete_request_quote() -> TestResult {
+    let (_handshake, connection, request) = fixture()?;
+    let body = object(&ResponseShape::Completed {
+        operation_state: OperationState::Completed,
+        result: Map::new(),
+        extensions: Extensions::new(),
+    })?;
+    let bytes = br#"{"retained":"actual content bank"}"#.to_vec();
+    let evidence = vec![(canonical::content_ref(&bytes, "application/json")?, bytes)];
+    let legacy = connection
+        .quote_original_packet_prefix_storage_data(2, &request, &body, &evidence, MAXIMUM)?;
+    // The same complete accounting tail runs after the live Input17 entry
+    // authenticates its separate admission/class. This DATA control supplies
+    // only its named validation phase, never a fake native permission.
+    let quote = |maximum| {
+        connection.quote_original_packet_prefix_accounting_data(
+            2, &request, &body, &evidence, maximum, true,
+        )
+    };
+    let mut selected = quote(MAXIMUM)?;
+    let validation_transient = restored_input17::validation_transient_storage_data();
+    let validation_scratch = restored_input17::counter_scratch_data();
+    assert!(validation_transient > 0);
+    assert!(validation_scratch > 0);
+    assert_eq!(
+        selected.construction_transient_requested_bytes,
+        legacy.construction_transient_requested_bytes + validation_transient
+    );
+    assert_eq!(
+        selected.declared_quote_scratch_bytes,
+        legacy.declared_quote_scratch_bytes + validation_scratch
+    );
+    let exact = selected.requested_bytes()?;
+    assert_eq!(
+        exact,
+        legacy.requested_bytes()? + validation_transient + validation_scratch
+    );
+    assert_eq!(quote(exact)?.requested_bytes()?, exact);
+    assert!(quote(exact - 1).is_err());
+
+    // Every retained owner, literal bank and other independently accounted
+    // component stays identical; the added temporary is not hidden in R.
+    selected.construction_transient_requested_bytes -= validation_transient;
+    selected.declared_quote_scratch_bytes -= validation_scratch;
+    assert_eq!(selected, legacy);
+    assert!(connection.reader.stream_ref().output.is_empty());
+    assert_eq!(connection.guard.incoming_requests().count(), 1);
+    Ok(())
+}

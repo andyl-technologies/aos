@@ -69,9 +69,11 @@ pub(crate) use exchange::{
     quote_original_native_observe_prefix_startup_storage_data,
     quote_original_packet_baseline_prefix_startup_storage_data,
     quote_original_packet_prefix_startup_storage_data,
+    quote_original_restored_input17_prefix_startup_storage_data,
 };
 mod fresh_restore_receive;
 mod native5_codec;
+mod restored_input17_response;
 pub use native5_codec::CanonicalAckCodecMetadataExtent;
 pub(crate) use native5_codec::{Native5CodecOwner, ProtocolCodecView};
 
@@ -711,6 +713,7 @@ impl<S: ProviderStream> Connection<S> {
                         "response has no retained original",
                     ))?;
                 original.matches_response(envelope)?;
+                restored_input17_response::authenticate_original_class_data(original, envelope)?;
                 let request = bodies::decode_request(original.method, &original.body)?;
                 let response = bodies::decode_response(&request, &envelope.body)?;
                 let operation = match &response.result {

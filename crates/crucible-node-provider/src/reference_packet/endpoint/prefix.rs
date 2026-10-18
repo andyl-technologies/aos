@@ -12,6 +12,7 @@ use crate::{ProviderError, bodies::*, connection::*, envelope::*, handshake::Con
 pub(super) struct Acknowledgements {
     contents: BTreeMap<Id, ContentRef>,
     chunk: u64,
+    restored_input17: bool,
 }
 
 impl Acknowledgements {
@@ -37,7 +38,14 @@ impl Acknowledgements {
                     && result.maximum_chunk_bytes.get()
                         >= self.chunk.min(request.content.length.get())
             }
-            (RequestBody::BlobChunk(_), Some(MethodResult::BlobChunk(_))) => true,
+            (RequestBody::BlobChunk(request), Some(MethodResult::BlobChunk(result))) => {
+                !self.restored_input17
+                    || request.offset.get().checked_add(
+                        u64::try_from(request.bytes.as_slice().len()).map_err(|_| {
+                            ProviderError::ResourceExhausted("Input17 chunk ACK offset")
+                        })?,
+                    ) == Some(result.next_offset.get())
+            }
             (RequestBody::BlobFinish(request), Some(MethodResult::BlobFinish(result))) => {
                 self.contents.get(&request.transfer_id) == Some(&result.content)
             }
@@ -84,6 +92,7 @@ pub(super) fn prepare<S: ProviderStream>(
             request,
             reply,
             storage: None,
+            restored_input17: false,
         },
     )
 }
@@ -111,6 +120,7 @@ pub(super) fn prepare_with_storage_data<S: ProviderStream>(
             request,
             reply,
             storage: Some(storage),
+            restored_input17: false,
         },
     )
 }
@@ -151,11 +161,55 @@ pub(super) fn prepare_with_projection_storage_data<S: ProviderStream>(
     )
 }
 
+/// Builds one selected Input17 terminal and its exact five-evidence suffix.
+///
+/// The action owner has already authenticated and funded its genuine native
+/// occurrence. This wrapper independently reconciles actual owners and literal
+/// capacity before installing the ordinary prepared failure-retaining capsule.
+///
+/// # Errors
+/// Refuses another selected schema, current owner, five-role reply, actual
+/// component/credit upper, literal cut or the ordinary unchanged frame limits.
+pub(super) fn prepare_with_restored_input17_projection_storage_data<S: ProviderStream>(
+    transport: &mut Option<Transport<S>>,
+    next_sequence: &mut u64,
+    retained_credit: &mut usize,
+    authority: &ConnectionAuthority,
+    request: &Envelope,
+    reply: &PacketControlReply,
+    projection: &OriginalPacketPrefixProjectionStorageData<5>,
+) -> Result<(), ProviderError> {
+    let Some(Transport::Connected(connection)) = transport.as_ref() else {
+        return Err(ProviderError::Conflict("Input17 prefix connection absent"));
+    };
+    connection.authenticate_original_packet_prefix_builder_authority_data(authority)?;
+    let actual = projection.authenticate_actual_inputs(
+        connection,
+        *next_sequence,
+        request,
+        &reply.body,
+        &reply.evidence,
+    )?;
+    prepare_inner(
+        transport,
+        next_sequence,
+        retained_credit,
+        PrefixInput {
+            authority,
+            request,
+            reply,
+            storage: Some(&actual),
+            restored_input17: true,
+        },
+    )
+}
+
 struct PrefixInput<'a> {
     authority: &'a ConnectionAuthority,
     request: &'a Envelope,
     reply: &'a PacketControlReply,
     storage: Option<&'a OriginalPacketPrefixStorageData>,
+    restored_input17: bool,
 }
 
 fn prepare_inner<S: ProviderStream>(
@@ -169,6 +223,7 @@ fn prepare_inner<S: ProviderStream>(
         request,
         reply,
         storage,
+        restored_input17,
     } = input;
     if let Some(storage) = storage {
         let Some(Transport::Connected(connection)) = transport.as_ref() else {
@@ -177,16 +232,27 @@ fn prepare_inner<S: ProviderStream>(
             ));
         };
         connection.authenticate_original_packet_prefix_builder_authority_data(authority)?;
-        connection.authenticate_requoted_original_packet_prefix_storage_data(
-            *next_sequence,
-            request,
-            &reply.body,
-            &reply.evidence,
-            storage,
-        )?;
+        if restored_input17 {
+            connection.authenticate_requoted_original_restored_input17_prefix_storage_data(
+                *next_sequence,
+                request,
+                &reply.body,
+                &reply.evidence,
+                storage,
+            )?;
+        } else {
+            connection.authenticate_requoted_original_packet_prefix_storage_data(
+                *next_sequence,
+                request,
+                &reply.body,
+                &reply.evidence,
+                storage,
+            )?;
+        }
         storage.preflight_transport_credit_data(*retained_credit)?;
     }
-    let (frames, acknowledgements, next) = frames(*next_sequence, authority, request, reply)?;
+    let (frames, mut acknowledgements, next) = frames(*next_sequence, authority, request, reply)?;
+    acknowledgements.restored_input17 = restored_input17;
     // Retain complete outgoing envelopes/canonical/correlation copies plus the
     // worst negotiated incoming acknowledgement extents for this whole prefix.
     // This encoded-storage account is separate from native content/pin credit;
@@ -347,6 +413,7 @@ fn frames(
         Acknowledgements {
             contents,
             chunk: chunk as u64,
+            restored_input17: false,
         },
         next,
     ))
@@ -432,5 +499,110 @@ mod restored_response_tests {
         assert!(original_restored_response_data(&original, &prefix).is_err());
         prefix.remove(0);
         assert!(original_restored_response_data(&original, &prefix).is_err());
+    }
+}
+
+#[cfg(test)]
+mod input17_transport_tests {
+    use super::*;
+    use crucible_node_contract::canonical;
+
+    #[test]
+    fn five_bank_terminal_prefix_requires_every_exact_chunk_offset_ack() {
+        let (_, authority) =
+            crate::handshake::tests::authority_with_scope("input17-five-bank-prefix");
+        let mut original = crate::envelope::tests::request();
+        original.method = Method::Input;
+        original.session_id = Nullable(Some(authority.session_id().clone()));
+        original.incarnation_id = Nullable(Some(authority.incarnation_id().clone()));
+        original.extensions.clear();
+        original.body = object(InputRequest {
+            binding_hash: canonical::hash("cnp.owner-binding.v1", b"transport-test").unwrap(),
+            owner_generation: U64::new(1),
+            batch_id: Id::new("transport-test-batch").unwrap(),
+            batch_sequence: U64::new(1),
+            input_epoch: Id::new("transport-test-epoch").unwrap(),
+            events: Vec::new(),
+            batch_hash: canonical::hash("cnp.input-batch.v1", b"transport-test").unwrap(),
+            extensions: Extensions::new(),
+        })
+        .unwrap();
+        // This exercises the ordinary builder/ACK machinery using transport
+        // test banks. It supplies no new17 selected Source or native grant.
+        let evidence = (0..5)
+            .map(|role| {
+                let bytes =
+                    canonical::canonical_json(&serde_json::json!({"transport_role":role})).unwrap();
+                (
+                    canonical::content_ref(&bytes, "application/json").unwrap(),
+                    bytes,
+                )
+            })
+            .collect::<Vec<_>>();
+        let reply = PacketControlReply {
+            body: completed(InputResult {
+                accepted_event_ids: Vec::new(),
+                input_watermark: U64::new(1),
+                custody_receipt: evidence[2].0.clone(),
+                inventory_hash: evidence[0].0.hash.clone(),
+            })
+            .unwrap(),
+            evidence,
+        };
+        let (planned, mut acknowledgements, next) =
+            frames(10, &authority, &original, &reply).unwrap();
+        acknowledgements.restored_input17 = true;
+        assert_eq!(planned.len(), 16);
+        assert_eq!(next, 26);
+        assert_eq!(planned[0].message, MessageKind::Response);
+        let mut accepted = 0;
+        let mut checked_changed_chunk = false;
+        for sent in &planned[1..] {
+            let request = decode_request(sent.method, &sent.body).unwrap();
+            let result = match &request {
+                RequestBody::BlobBegin(request) => object(BlobBeginResult {
+                    transfer_id: request.transfer_id.clone(),
+                    next_offset: U64::new(0),
+                    maximum_chunk_bytes: U64::new(acknowledgements.chunk),
+                })
+                .unwrap(),
+                RequestBody::BlobChunk(request) => object(BlobChunkResult {
+                    transfer_id: request.transfer_id.clone(),
+                    next_offset: U64::new(
+                        request.offset.get() + request.bytes.as_slice().len() as u64,
+                    ),
+                })
+                .unwrap(),
+                RequestBody::BlobFinish(request) => object(BlobFinishResult {
+                    transfer_id: request.transfer_id.clone(),
+                    content: acknowledgements.contents[&request.transfer_id].clone(),
+                })
+                .unwrap(),
+                _ => panic!("unexpected transport request"),
+            };
+            let body = completed(result).unwrap();
+            let mut envelope = sent.clone();
+            envelope.message = MessageKind::Response;
+            envelope.body = body.clone();
+            let mut received = ReceivedFrame {
+                envelope,
+                body: ReceivedBody::Response(Box::new(decode_response(&request, &body).unwrap())),
+            };
+            acknowledgements.validate(sent, &received).unwrap();
+            accepted += 1;
+            if !checked_changed_chunk && sent.method == Method::BlobChunk {
+                let ReceivedBody::Response(response) = &mut received.body else {
+                    unreachable!()
+                };
+                let Some(MethodResult::BlobChunk(result)) = &mut response.result else {
+                    unreachable!()
+                };
+                result.next_offset = U64::new(result.next_offset.get() + 1);
+                assert!(acknowledgements.validate(sent, &received).is_err());
+                checked_changed_chunk = true;
+            }
+        }
+        assert_eq!(accepted, 15);
+        assert!(checked_changed_chunk);
     }
 }
