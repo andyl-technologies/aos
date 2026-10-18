@@ -13,7 +13,7 @@ use wasm_bindgen::JsValue;
 use worker::{Env, Headers, Method, Request, RequestInit, Response};
 
 use super::{
-    batches::{bounded, item_error, merge_reply, merge_status},
+    batches::{bounded, created_state, item_error, merge_reply, merge_status},
     complete,
     config::QualifiedConfig,
     control::{self, Transport},
@@ -129,8 +129,17 @@ async fn execute(request: &mut Request, env: &Env) -> Result<DirectUploadRespons
             )
             .await;
             for (identity, result) in outcomes {
-                if let Err(error) = result {
-                    response.errors.push(item_error(identity, &error));
+                match result {
+                    Ok(()) => {
+                        if let Some(status) = response
+                            .sessions
+                            .iter_mut()
+                            .find(|status| status.intent.client_operation_id == *identity)
+                        {
+                            status.state = created_state(status.state, Ok(()))?;
+                        }
+                    }
+                    Err(error) => response.errors.push(item_error(identity, &error)),
                 }
             }
         }
@@ -379,6 +388,14 @@ async fn sparse_status(
     query: &DirectStatusQuery,
     status: &mut DirectSessionStatus,
 ) -> Result<()> {
+    if status.state == DirectSessionState::Creating {
+        // Logical admission alone cannot prove provider readiness. Exact replay
+        // reads every original creation receipt before exposing active status.
+        for placement in &admission.placements {
+            created(env, admission, placement.placement_id).await?;
+        }
+        status.state = created_state(status.state, Ok(()))?;
+    }
     let mut remaining = query.maximum_parts;
     let after_placement = query
         .after

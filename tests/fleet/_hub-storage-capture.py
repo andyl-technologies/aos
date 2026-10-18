@@ -163,7 +163,9 @@ def finish_native_copy_capture(native, tools, selected):
             os.fsync(output.fileno())
         check_process()
         metadata = path.stat()
-        if result.returncode or metadata.st_size > 64 * 1024 * 1024:
+        no_matches = (result.returncode == 1 and metadata.st_size == 0
+            and (root / 'runtime.stderr').stat().st_size == 0)
+        if (result.returncode and not no_matches) or metadata.st_size > 64 * 1024 * 1024:
             raise ValueError('Native journal capture refused; actual bytes retained privately')
         print(json.dumps({'path': str(path), 'device': str(metadata.st_dev),
             'inode': str(metadata.st_ino), 'byteSize': 0}))

@@ -7,8 +7,8 @@
 use std::future::Future;
 
 use aos_hub_core::direct_upload::{
-    DirectItemError, DirectItemErrorCode, DirectSessionStatus, DirectUploadLogicalReply,
-    DirectUploadResponse,
+    DirectItemError, DirectItemErrorCode, DirectSessionState, DirectSessionStatus,
+    DirectUploadLogicalReply, DirectUploadResponse,
 };
 
 use futures_util::{stream, StreamExt as _};
@@ -44,6 +44,22 @@ pub(super) fn merge_status(response: &mut DirectUploadResponse, status: DirectSe
     }
 }
 
+/// Projects physical readiness only after every required creation is acknowledged.
+///
+/// Native retains logical `Creating` while the Worker owns provider receipts.
+/// Later lifecycle states remain authoritative even when creation is historical.
+pub(super) fn created_state(
+    state: DirectSessionState,
+    creation: anyhow::Result<()>,
+) -> anyhow::Result<DirectSessionState> {
+    creation?;
+    Ok(if state == DirectSessionState::Creating {
+        DirectSessionState::Active
+    } else {
+        state
+    })
+}
+
 pub(super) fn merge_reply(response: &mut DirectUploadResponse, reply: DirectUploadLogicalReply) {
     for status in reply.sessions {
         merge_status(response, status);
@@ -72,6 +88,32 @@ mod tests {
     };
 
     use super::bounded;
+
+    #[test]
+    fn acknowledged_creation_activates_only_the_initial_logical_state() {
+        use aos_hub_core::direct_upload::DirectSessionState::*;
+
+        assert_eq!(super::created_state(Creating, Ok(())).unwrap(), Active);
+        for state in [
+            Active,
+            Freezing,
+            CompletingStaging,
+            StagedVerified,
+            Promoting,
+            Committed,
+            Aborting,
+            Aborted,
+            BlockedUnknown,
+            CleanupPending,
+        ] {
+            assert_eq!(super::created_state(state, Ok(())).unwrap(), state);
+        }
+
+        for message in ["creation refused", "creation outcome unknown"] {
+            let result = super::created_state(Creating, Err(anyhow::anyhow!(message)));
+            assert_eq!(result.unwrap_err().to_string(), message);
+        }
+    }
 
     #[tokio::test]
     async fn bounds_inflight_items_and_retains_out_of_order_failures() {

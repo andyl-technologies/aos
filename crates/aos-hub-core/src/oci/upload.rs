@@ -557,7 +557,7 @@ impl RpcService {
         // The positive completion still checks the independently counted body.
         if !content_range_admits(headers, upload.uploaded_size, maximum_chunk_bytes) {
             return Err(upload_error(
-                StatusCode::BAD_REQUEST,
+                StatusCode::RANGE_NOT_SATISFIABLE,
                 DistributionErrorCode::BlobUploadInvalid,
                 "OCI chunk range is invalid for the current upload allowance",
             ));

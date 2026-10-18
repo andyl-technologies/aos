@@ -39,6 +39,17 @@ def retain_direct_flow(name, value):
     return hashlib.sha256(body).hexdigest()
 
 
+@contextmanager
+def preserve_direct_workload_failure(workload_error):
+    """Keep the original workload failure if collecting its private logs fails."""
+    try:
+        yield
+    except Exception:
+        if workload_error is None:
+            raise
+        workload_error.add_note("Private workload log collection is incomplete")
+
+
 def isolated_prequalification_worker_configuration(original):
     """Separate readiness state while preserving the selected Worker inputs."""
     paths = {
@@ -774,26 +785,31 @@ def run_external_direct_publication(client, native, worker, s3, tools, controls,
             "/var/lib/hybrid-worker-boundary/protected-headers.jsonl")),
     }
     observe_direct_boundary_lifetimes(native, worker, tools, "loaded-start")
+    workload_error = None
     try:
         publications, concurrent = run_direct_concurrent_publications(client, worker, tools,
             sources, registries, before_worker, identity["identity"]["sourceDigest"], corpus_a)
         index_freshness = wait_direct_registry_indexes(controls, registries, sources)
+    except BaseException as error:
+        workload_error = error
+        raise
     finally:
-        worker_log, worker_window = retain_direct_log_window(worker, tools["python"], before_worker, "publication-worker.log")
-        native_log, native_window = retain_direct_log_window(native, tools["python"], before_native, "publication-native.jsonl")
-        provider_log, provider_window = retain_direct_log_window(s3, tools["python"], before_provider, "publication-provider-private.jsonl")
-        native_storage_log, native_storage_window = retain_direct_log_window(native, tools["python"],
-            before_native_storage, "publication-native-storage.jsonl")
-        worker_storage_log, worker_storage_window = retain_direct_log_window(worker, tools["python"],
-            before_worker_storage, "publication-worker-storage.jsonl")
-        header_windows = {}
-        header_paths = {}
-        for label, (machine, position) in header_positions.items():
-            header_paths[label], header_windows[label] = retain_direct_log_window(machine, tools["python"],
-                position, "publication-" + label + "-protected-headers.jsonl")
-        native_copy_log, native_copy_window = finish_native_copy_capture(
-            native, tools, native_copy_capture)
-        proxy_lifetimes = observe_direct_boundary_lifetimes(native, worker, tools, "loaded-finish")
+        with preserve_direct_workload_failure(workload_error):
+            worker_log, worker_window = retain_direct_log_window(worker, tools["python"], before_worker, "publication-worker.log")
+            native_log, native_window = retain_direct_log_window(native, tools["python"], before_native, "publication-native.jsonl")
+            provider_log, provider_window = retain_direct_log_window(s3, tools["python"], before_provider, "publication-provider-private.jsonl")
+            native_storage_log, native_storage_window = retain_direct_log_window(native, tools["python"],
+                before_native_storage, "publication-native-storage.jsonl")
+            worker_storage_log, worker_storage_window = retain_direct_log_window(worker, tools["python"],
+                before_worker_storage, "publication-worker-storage.jsonl")
+            header_windows = {}
+            header_paths = {}
+            for label, (machine, position) in header_positions.items():
+                header_paths[label], header_windows[label] = retain_direct_log_window(machine, tools["python"],
+                    position, "publication-" + label + "-protected-headers.jsonl")
+            native_copy_log, native_copy_window = finish_native_copy_capture(
+                native, tools, native_copy_capture)
+            proxy_lifetimes = observe_direct_boundary_lifetimes(native, worker, tools, "loaded-finish")
     workload_finished = time.monotonic_ns()
     protected_headers = {label: capture_protected_headers(path, label)
         for label, path in header_paths.items()}

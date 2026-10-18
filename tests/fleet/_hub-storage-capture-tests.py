@@ -24,6 +24,7 @@ def load(name, path):
 
 
 capture = load("capture", "_hub-storage-capture.py")
+flow = load("flow", "_hub-direct-flow.py")
 review = load("review", "_hub-direct-review.py")
 observations = load("observations", "_hub-direct-observations.py")
 sql_projection = load("sql_projection", "_hub-native-sql-projection.py")
@@ -78,6 +79,33 @@ class StorageCaptureTests(unittest.TestCase):
         retained.clear()
 
     def test_selected_journal_retains_actual_sql_marker_without_broadening_window(self):
+        self.capture_selected_journal()
+
+    def test_empty_journal_match_is_valid_but_command_failures_still_refuse(self):
+        self.assertEqual(self.capture_selected_journal(returncode=1, selected_lines=False), "")
+        for code, selected_lines, error in [(2, False, b""), (1, True, b""),
+                (1, False, b"journal read failed")]:
+            with self.subTest(code=code, selected_lines=selected_lines, error=error):
+                with self.assertRaisesRegex(ValueError, "Native journal capture refused"):
+                    self.capture_selected_journal(code, selected_lines, error)
+
+    def test_log_capture_preserves_workload_error_and_still_rejects_success_without_logs(self):
+        original = RuntimeError("workload failed")
+        with self.assertRaises(RuntimeError) as raised:
+            try:
+                raise original
+            finally:
+                with flow.preserve_direct_workload_failure(original):
+                    raise ValueError("private collector failure")
+        self.assertIs(raised.exception, original)
+        self.assertEqual(original.__notes__, ["Private workload log collection is incomplete"])
+        self.assertNotIn("private collector failure", str(original.__notes__))
+
+        with self.assertRaisesRegex(ValueError, "capture failed"):
+            with flow.preserve_direct_workload_failure(None):
+                raise ValueError("capture failed")
+
+    def capture_selected_journal(self, returncode=0, selected_lines=True, error=b""):
         """Execute generated guest code against a controlled journal/process image."""
         source_child = {"version": 1, "event": "sql_projection", "status": 200,
             "projection": {"version": 1, "checkpoints": [
@@ -122,10 +150,11 @@ class StorageCaptureTests(unittest.TestCase):
                 # The generated argument's literal brackets and alternation use
                 # the same subset of ERE syntax here; source escapes are not
                 # interpreted a second time by this controlled journal.
-                for line in (sql_line, phase_line, storage_line, unrelated):
+                for line in ((sql_line, phase_line, storage_line, unrelated) if selected_lines else ()):
                     if re.search(pattern, json.loads(line)["MESSAGE"]):
                         options["stdout"].write((line + "\n").encode())
-                return types.SimpleNamespace(returncode=0)
+                options["stderr"].write(error)
+                return types.SimpleNamespace(returncode=returncode)
 
             def guest(machine, python, body, document, timeout):
                 self.assertEqual(timeout, 60)
@@ -144,6 +173,9 @@ class StorageCaptureTests(unittest.TestCase):
                     patch.object(capture, "retain_direct_log_window", retain_window, create=True):
                 retained_path, _ = capture.finish_native_copy_capture(None, {"python": "controlled"}, selected)
             raw = retained_path.read_text()
+            if not selected_lines:
+                self.assertEqual(raw, "")
+                return raw
             self.assertEqual(raw, sql_line + "\n" + phase_line + "\n" + storage_line + "\n")
             self.assertNotIn("ordinary_application_event", raw)
             self.assertEqual(len(argv_seen), 1)
@@ -152,6 +184,7 @@ class StorageCaptureTests(unittest.TestCase):
             checkpoints = sql_projection.native_sql_checkpoints(children)
             self.assertEqual(checkpoints[0]["checkpoints"], source_child["projection"]["checkpoints"])
             self.assertEqual(checkpoints[0]["rawChildSha256"], hashlib.sha256(json.dumps(source_child).encode()).hexdigest())
+            return raw
 
     def test_only_compact_controls_are_retained_and_summaries_contain_no_values(self):
         raw = header(ORIGINAL, ingress="e30.signature")
