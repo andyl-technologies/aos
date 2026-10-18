@@ -329,11 +329,16 @@ effects into arbitrary callbacks.
     predicate accumulators, the streaming console matcher, and segment-manifest
     measurement evidence.
 18. [`16-run-arena-and-run-journal.md`](16-run-arena-and-run-journal.md)
-    defines the Run Arena that owns one run's host-side state, its layers,
-    StateRoot, Run Authority and resource slots, the single segmented Run
-    Journal that replaces per-consumer event-log copies, graceful restart, and
-    the Campaign Arena view.
-19. [`schema-registry.tsv`](schema-registry.tsv) assigns each wire and object
+    defines the Run Arena that owns one run's modeled host state: its tables,
+    layers, canonical chunking, and StateRoot, the classification of the
+    lifecycle loop, per-purpose freeze refusal, the arena manifest, and the
+    single segmented Run Journal with its seal rule, segment identity, and
+    projections.
+19. [`16a-run-authority-and-restart.md`](16a-run-authority-and-restart.md)
+    defines the Run Authority and resource slots, the durable authority
+    journal, promotion-only admission and checkpoint-drain restart, migration,
+    the spill cache, and the Campaign Arena view.
+20. [`schema-registry.tsv`](schema-registry.tsv) assigns each wire and object
     schema its version owner, storage domain, and compatibility gates.
     [`schema-inventory.md`](schema-inventory.md) records the source audit and
     explicit exclusions.
