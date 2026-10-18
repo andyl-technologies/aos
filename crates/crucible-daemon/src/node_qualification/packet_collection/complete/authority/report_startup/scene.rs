@@ -224,6 +224,28 @@ impl PacketCompleteReportStartupHolder {
     /// Refuses an unstaged or repeated scene, incomplete owning data, exhausted
     /// installed resources or failure of an original constructor or launch.
     pub fn launch_original_scene(original: &Rc<RefCell<Self>>) -> Result<(), RuntimeError> {
+        Self::launch_original_scene_phases(original, false)
+    }
+
+    /// Launches each original child beside its admitted initial lifecycle.
+    ///
+    /// All commands and cleanup reservations precede the first child. Each
+    /// child completes Hello and preparation before the next child starts its
+    /// original birth cut. Failure retains every spent member and reservation.
+    ///
+    /// # Errors
+    /// Refuses the same original launch and lifecycle failures as the separate
+    /// phases, without renewing a deadline or repeating a completed member.
+    pub(in crate::node_qualification::packet_collection::complete) fn launch_and_complete_original_scene(
+        original: &Rc<RefCell<Self>>,
+    ) -> Result<(), RuntimeError> {
+        Self::launch_original_scene_phases(original, true)
+    }
+
+    fn launch_original_scene_phases(
+        original: &Rc<RefCell<Self>>,
+        initial_per_member: bool,
+    ) -> Result<(), RuntimeError> {
         {
             let held = original.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
             held.authenticate_native_origin_data()?;
@@ -243,7 +265,11 @@ impl PacketCompleteReportStartupHolder {
             .map_err(|_| RuntimeError::ResourceLimit)?;
         Self::finalize_original_report_startup(original)
             .map_err(|_| RuntimeError::ResourceLimit)?;
-        Self::launch_original_native_startup(original)?;
+        if initial_per_member {
+            Self::launch_original_native_startup_with_initial_lifecycle(original)?;
+        } else {
+            Self::launch_original_native_startup(original)?;
+        }
         let held = original.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
         held.authenticate_native_origin_data()?;
         held.original_scene
@@ -276,6 +302,7 @@ impl PacketCompleteReportStartupHolder {
     -> Result<usize, RuntimeError> {
         [
             std::mem::size_of::<Counter>() * 2,
+            initial_lifecycle::paired_launch_counter_scratch_data(),
             super::runtime::lifecycle_counter_scratch_data()?,
             super::runtime::fresh_counter_scratch_data()?,
             std::mem::size_of::<std::cell::Ref<'_, OriginalSceneOwners>>(),

@@ -34,7 +34,6 @@ impl PacketCompleteReportStartupHolder {
         let selected = scope.selected();
         if selected >= 3
             || !scene.staged()
-            || !scene.launched().get()
             || !scene.initial_attempted()[selected].get()
             || !scene.initial_in_flight()[selected].get()
             || scene.initial_completed()[selected].get()
@@ -201,13 +200,15 @@ impl InstalledPacketCompleteCollectionAuthority {
         }
         let scene = held.host_initial_lifecycle_owner_data()?;
         if !scene.staged()
-            || !scene.launched().get()
             || !scene.initial_attempted()[selected].get()
             || (!scene.initial_in_flight()[selected].get()
                 && !scene.initial_completed()[selected].get())
         {
             return Err(RuntimeError::OutstandingObligations);
         }
+        // The private member window was issued only after its actual written
+        // launch and guard check. Its callback may already hold that launch
+        // bank mutably while transferring the guard into preparation.
         held.graph_owner
             .authenticate_original_report_policy_data(&self.graph_policy)
             .map_err(|_| RuntimeError::ForeignAuthority)
@@ -249,170 +250,188 @@ impl PacketCompleteReportStartupHolder {
             return Err(RuntimeError::OwnerUnavailable);
         }
         for selected in 0..3 {
-            if scene.initial_attempted()[selected].replace(true)
-                || scene.initial_completed()[selected].get()
-                || scene.windows()[selected].get().is_some()
-            {
-                return Err(RuntimeError::DuplicateOperation);
-            }
-            scene.initial_in_flight()[selected].set(true);
-            let _loan = StartupLoan(&scene.initial_in_flight()[selected]);
-            {
-                let outputs = held
-                    .host_sdk_outputs
-                    .try_borrow()
-                    .map_err(|_| RuntimeError::OwnerBusy)?;
-                let sdks = [
-                    outputs[0].as_ref().ok_or(RuntimeError::OwnerUnavailable)?,
-                    outputs[1].as_ref().ok_or(RuntimeError::OwnerUnavailable)?,
-                    outputs[2].as_ref().ok_or(RuntimeError::OwnerUnavailable)?,
-                ];
-                let launches = held
-                    .native_launches
-                    .try_borrow()
-                    .map_err(|_| RuntimeError::OwnerBusy)?;
-                let (guard, socket) = launches.original_guard_and_socket_data(selected)?;
-                let roles = scene
-                    .roles()
-                    .try_borrow()
-                    .map_err(|_| RuntimeError::OwnerBusy)?;
-                let role = roles[selected]
-                    .as_ref()
-                    .ok_or(RuntimeError::OwnerUnavailable)?;
-                let preparations = held
-                    .preparations
-                    .try_borrow()
-                    .map_err(|_| RuntimeError::OwnerBusy)?;
-                let window = held.plan.reserve_original_host_initial_lifecycle(
-                    &held.authority.roster.sources,
-                    &held.authority.original_launches,
-                    sdks,
-                    selected,
-                    guard,
-                    role,
-                    socket,
-                    preparations.original_known_supervisor_data(selected)?,
-                    preparations.original_hello_slot_data(selected)?,
-                )?;
-                scene.windows()[selected]
-                    .set(RefCell::new(window))
-                    .map_err(|_| RuntimeError::DuplicateOperation)?;
-            }
-            if held
-                .authority
-                .original_initial_callback_active
-                .replace(true)
-            {
-                return Err(RuntimeError::DuplicateOperation);
-            }
-            let _callback_loan = StartupLoan(&held.authority.original_initial_callback_active);
-            let mut window = scene.windows()[selected]
-                .get()
-                .ok_or(RuntimeError::OwnerUnavailable)?
-                .try_borrow_mut()
-                .map_err(|_| RuntimeError::OwnerBusy)?;
-            {
-                let launches = held
-                    .native_launches
-                    .try_borrow()
-                    .map_err(|_| RuntimeError::OwnerBusy)?;
-                let (guard, socket) = launches.original_guard_and_socket_data(selected)?;
-                let mut outputs = held
-                    .host_sdk_outputs
-                    .try_borrow_mut()
-                    .map_err(|_| RuntimeError::OwnerBusy)?;
-                let sdk = outputs[selected]
-                    .as_mut()
-                    .ok_or(RuntimeError::OwnerUnavailable)?;
-                let mut streams = held
-                    .host_sdk_streams
-                    .try_borrow_mut()
-                    .map_err(|_| RuntimeError::OwnerBusy)?;
-                window.acquire_original_control_socket_into(
-                    sdk,
-                    guard,
-                    socket,
-                    &mut streams[selected],
-                )?;
-            }
-            {
-                let launches = held
-                    .native_launches
-                    .try_borrow()
-                    .map_err(|_| RuntimeError::OwnerBusy)?;
-                let (guard, _) = launches.original_guard_and_socket_data(selected)?;
-                let mut outputs = held
-                    .host_sdk_outputs
-                    .try_borrow_mut()
-                    .map_err(|_| RuntimeError::OwnerBusy)?;
-                let sdk = outputs[selected]
-                    .as_mut()
-                    .ok_or(RuntimeError::OwnerUnavailable)?;
-                let mut streams = held
-                    .host_sdk_streams
-                    .try_borrow_mut()
-                    .map_err(|_| RuntimeError::OwnerBusy)?;
-                held.connect_original_scene_sdk_data(
-                    selected,
-                    &mut window,
-                    sdk,
-                    guard,
-                    &mut streams[selected],
-                )?;
-            }
-            {
-                let mut launches = held
-                    .native_launches
-                    .try_borrow_mut()
-                    .map_err(|_| RuntimeError::OwnerBusy)?;
-                let guard = launches.original_guard_slot_for_initial_lifecycle(selected)?;
-                let mut roles = scene
-                    .roles()
-                    .try_borrow_mut()
-                    .map_err(|_| RuntimeError::OwnerBusy)?;
-                let mut outputs = held
-                    .host_sdk_outputs
-                    .try_borrow_mut()
-                    .map_err(|_| RuntimeError::OwnerBusy)?;
-                let sdk = outputs[selected]
-                    .as_mut()
-                    .ok_or(RuntimeError::OwnerUnavailable)?;
-                held.continue_original_scene_peer_data(
-                    selected,
-                    &mut window,
-                    sdk,
-                    guard,
-                    &mut roles[selected],
-                    &scene.admit_ids()?[selected],
-                )?;
-            }
-            // All mutable output loans end before Core repeats the actual
-            // complete owning conjunction over the resulting preparation.
-            drop(window);
-            let window = scene.windows()[selected]
-                .get()
-                .ok_or(RuntimeError::OwnerUnavailable)?
+            Self::complete_retained_host_initial_lifecycle_member(original, selected)?;
+        }
+        Ok(())
+    }
+
+    pub(in crate::node_qualification::packet_collection::complete::authority::report_startup) fn complete_retained_host_initial_lifecycle_member(
+        original: &Rc<RefCell<Self>>,
+        selected: usize,
+    ) -> Result<(), RuntimeError> {
+        let held = original.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
+        held.authenticate_native_origin_data()?;
+        let scene = held.host_initial_lifecycle_owner_data()?;
+        if selected >= 3 || !scene.staged() {
+            return Err(RuntimeError::OwnerUnavailable);
+        }
+        held.native_launches
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?
+            .original_guard_and_socket_data(selected)?;
+        if scene.initial_attempted()[selected].replace(true)
+            || scene.initial_completed()[selected].get()
+            || scene.windows()[selected].get().is_some()
+        {
+            return Err(RuntimeError::DuplicateOperation);
+        }
+        scene.initial_in_flight()[selected].set(true);
+        let _loan = StartupLoan(&scene.initial_in_flight()[selected]);
+        {
+            let outputs = held
+                .host_sdk_outputs
                 .try_borrow()
                 .map_err(|_| RuntimeError::OwnerBusy)?;
-            {
-                let launches = held
-                    .native_launches
-                    .try_borrow()
-                    .map_err(|_| RuntimeError::OwnerBusy)?;
-                let socket = launches.original_socket_data(selected)?;
-                let outputs = held
-                    .host_sdk_outputs
-                    .try_borrow()
-                    .map_err(|_| RuntimeError::OwnerBusy)?;
-                let sdks = [
-                    outputs[0].as_ref().ok_or(RuntimeError::OwnerUnavailable)?,
-                    outputs[1].as_ref().ok_or(RuntimeError::OwnerUnavailable)?,
-                    outputs[2].as_ref().ok_or(RuntimeError::OwnerUnavailable)?,
-                ];
-                held.recheck_original_scene_peer_data(selected, &window, sdks, socket)?;
-            }
-            scene.initial_completed()[selected].set(true);
+            let sdks = [
+                outputs[0].as_ref().ok_or(RuntimeError::OwnerUnavailable)?,
+                outputs[1].as_ref().ok_or(RuntimeError::OwnerUnavailable)?,
+                outputs[2].as_ref().ok_or(RuntimeError::OwnerUnavailable)?,
+            ];
+            let launches = held
+                .native_launches
+                .try_borrow()
+                .map_err(|_| RuntimeError::OwnerBusy)?;
+            let (guard, socket) = launches.original_guard_and_socket_data(selected)?;
+            let roles = scene
+                .roles()
+                .try_borrow()
+                .map_err(|_| RuntimeError::OwnerBusy)?;
+            let role = roles[selected]
+                .as_ref()
+                .ok_or(RuntimeError::OwnerUnavailable)?;
+            let preparations = held
+                .preparations
+                .try_borrow()
+                .map_err(|_| RuntimeError::OwnerBusy)?;
+            let window = held.plan.reserve_original_host_initial_lifecycle(
+                &held.authority.roster.sources,
+                &held.authority.original_launches,
+                sdks,
+                selected,
+                guard,
+                role,
+                socket,
+                preparations.original_known_supervisor_data(selected)?,
+                preparations.original_hello_slot_data(selected)?,
+            )?;
+            scene.windows()[selected]
+                .set(RefCell::new(window))
+                .map_err(|_| RuntimeError::DuplicateOperation)?;
         }
+        if held
+            .authority
+            .original_initial_callback_active
+            .replace(true)
+        {
+            return Err(RuntimeError::DuplicateOperation);
+        }
+        let _callback_loan = StartupLoan(&held.authority.original_initial_callback_active);
+        let mut window = scene.windows()[selected]
+            .get()
+            .ok_or(RuntimeError::OwnerUnavailable)?
+            .try_borrow_mut()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        {
+            let launches = held
+                .native_launches
+                .try_borrow()
+                .map_err(|_| RuntimeError::OwnerBusy)?;
+            let (guard, socket) = launches.original_guard_and_socket_data(selected)?;
+            let mut outputs = held
+                .host_sdk_outputs
+                .try_borrow_mut()
+                .map_err(|_| RuntimeError::OwnerBusy)?;
+            let sdk = outputs[selected]
+                .as_mut()
+                .ok_or(RuntimeError::OwnerUnavailable)?;
+            let mut streams = held
+                .host_sdk_streams
+                .try_borrow_mut()
+                .map_err(|_| RuntimeError::OwnerBusy)?;
+            window.acquire_original_control_socket_into(
+                sdk,
+                guard,
+                socket,
+                &mut streams[selected],
+            )?;
+        }
+        {
+            let launches = held
+                .native_launches
+                .try_borrow()
+                .map_err(|_| RuntimeError::OwnerBusy)?;
+            let (guard, _) = launches.original_guard_and_socket_data(selected)?;
+            let mut outputs = held
+                .host_sdk_outputs
+                .try_borrow_mut()
+                .map_err(|_| RuntimeError::OwnerBusy)?;
+            let sdk = outputs[selected]
+                .as_mut()
+                .ok_or(RuntimeError::OwnerUnavailable)?;
+            let mut streams = held
+                .host_sdk_streams
+                .try_borrow_mut()
+                .map_err(|_| RuntimeError::OwnerBusy)?;
+            held.connect_original_scene_sdk_data(
+                selected,
+                &mut window,
+                sdk,
+                guard,
+                &mut streams[selected],
+            )?;
+        }
+        {
+            let mut launches = held
+                .native_launches
+                .try_borrow_mut()
+                .map_err(|_| RuntimeError::OwnerBusy)?;
+            let guard = launches.original_guard_slot_for_initial_lifecycle(selected)?;
+            let mut roles = scene
+                .roles()
+                .try_borrow_mut()
+                .map_err(|_| RuntimeError::OwnerBusy)?;
+            let mut outputs = held
+                .host_sdk_outputs
+                .try_borrow_mut()
+                .map_err(|_| RuntimeError::OwnerBusy)?;
+            let sdk = outputs[selected]
+                .as_mut()
+                .ok_or(RuntimeError::OwnerUnavailable)?;
+            held.continue_original_scene_peer_data(
+                selected,
+                &mut window,
+                sdk,
+                guard,
+                &mut roles[selected],
+                &scene.admit_ids()?[selected],
+            )?;
+        }
+        // All mutable output loans end before Core repeats the actual
+        // complete owning conjunction over the resulting preparation.
+        drop(window);
+        let window = scene.windows()[selected]
+            .get()
+            .ok_or(RuntimeError::OwnerUnavailable)?
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        {
+            let launches = held
+                .native_launches
+                .try_borrow()
+                .map_err(|_| RuntimeError::OwnerBusy)?;
+            let socket = launches.original_socket_data(selected)?;
+            let outputs = held
+                .host_sdk_outputs
+                .try_borrow()
+                .map_err(|_| RuntimeError::OwnerBusy)?;
+            let sdks = [
+                outputs[0].as_ref().ok_or(RuntimeError::OwnerUnavailable)?,
+                outputs[1].as_ref().ok_or(RuntimeError::OwnerUnavailable)?,
+                outputs[2].as_ref().ok_or(RuntimeError::OwnerUnavailable)?,
+            ];
+            held.recheck_original_scene_peer_data(selected, &window, sdks, socket)?;
+        }
+        scene.initial_completed()[selected].set(true);
         Ok(())
     }
 
@@ -432,8 +451,7 @@ impl PacketCompleteReportStartupHolder {
         incoming: &mut Option<PacketCompleteOriginalSceneInputs>,
     ) -> Result<(), RuntimeError> {
         Self::stage_original_scene_into(original, incoming)?;
-        Self::launch_original_scene(original)?;
-        Self::complete_original_scene_initial_lifecycle(original)
+        Self::launch_and_complete_original_scene(original)
     }
 }
 
@@ -830,4 +848,25 @@ pub(in crate::node_qualification::packet_collection::complete::authority::report
         + size_of::<Result<bool, QualificationError>>()
         + size_of::<Result<bool, RuntimeError>>()
         + size_of::<Result<&[Id; 3], RuntimeError>>()
+}
+
+/// Counts launch locals that remain live inside an initial lifecycle callback.
+pub(super) fn paired_launch_counter_scratch_data() -> usize {
+    use crucible::node_adapters::cnp::PacketCompleteAckPeerBootMaterial;
+    use std::mem::size_of;
+
+    size_of::<[Option<PacketCompleteAckPeerBootMaterial<'static>>; 3]>()
+        + size_of::<std::cell::Ref<'static, PacketCompleteReportStartupHolder>>()
+        + size_of::<HostInitialLifecycleOwner<'static>>()
+        + size_of::<
+            Option<
+                fn(
+                    &Rc<RefCell<PacketCompleteReportStartupHolder>>,
+                    usize,
+                ) -> Result<(), RuntimeError>,
+            >,
+        >()
+        + size_of::<[usize; 3]>()
+        + size_of::<usize>()
+        + size_of::<bool>()
 }

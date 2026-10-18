@@ -116,12 +116,8 @@ impl InstalledCompleteScene {
         )
         .map_err(|_| refused())?;
         self.authenticate_transferred_inputs()?;
-        PacketCompleteReportStartupHolder::launch_original_scene(&self.original)
+        PacketCompleteReportStartupHolder::launch_and_complete_original_scene(&self.original)
             .map_err(|_| refused())?;
-        PacketCompleteReportStartupHolder::complete_original_scene_initial_lifecycle(
-            &self.original,
-        )
-        .map_err(|_| refused())?;
         // The earlier installation edition remains preparation-only. Only the
         // explicitly installed full mechanism enters the separate Core-priced
         // inactive constructor; this does not Arm or activate the runtime.

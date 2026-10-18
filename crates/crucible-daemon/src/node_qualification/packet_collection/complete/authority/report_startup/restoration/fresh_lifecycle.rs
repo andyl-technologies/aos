@@ -304,7 +304,7 @@ impl PacketCompleteReportStartupHolder {
         }
         Self::finalize_original_report_startup(original)
             .map_err(|_| RuntimeError::ResourceLimit)?;
-        Self::launch_original_native_startup(original)?;
+        Self::launch_original_native_startup_with_initial_lifecycle(original)?;
         {
             let held = original.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
             held.fresh_lifecycle
@@ -315,7 +315,6 @@ impl PacketCompleteReportStartupHolder {
                 .launched
                 .set(true);
         }
-        Self::complete_retained_host_initial_lifecycle(original)?;
         for selected in 0..3 {
             Self::call_original_fresh_restore_query(original, selected)?;
             // This marks the actual HOST continuation only after its full

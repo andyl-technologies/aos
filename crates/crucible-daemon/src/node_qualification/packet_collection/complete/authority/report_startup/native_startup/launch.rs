@@ -386,6 +386,22 @@ impl PacketCompleteReportStartupHolder {
     pub fn launch_original_native_startup(
         original: &Rc<RefCell<Self>>,
     ) -> Result<(), RuntimeError> {
+        Self::launch_original_native_startup_with_member(original, None)
+    }
+
+    pub(in crate::node_qualification::packet_collection::complete::authority::report_startup) fn launch_original_native_startup_with_initial_lifecycle(
+        original: &Rc<RefCell<Self>>,
+    ) -> Result<(), RuntimeError> {
+        Self::launch_original_native_startup_with_member(
+            original,
+            Some(Self::complete_retained_host_initial_lifecycle_member),
+        )
+    }
+
+    fn launch_original_native_startup_with_member(
+        original: &Rc<RefCell<Self>>,
+        initial: Option<fn(&Rc<RefCell<Self>>, usize) -> Result<(), RuntimeError>>,
+    ) -> Result<(), RuntimeError> {
         Self::finalize_original_native_startup(original)?;
         Self::prepare_original_native_host_sdk(original)?;
         let held = original.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
@@ -486,60 +502,81 @@ impl PacketCompleteReportStartupHolder {
             // assignment immediately follows its nonfallible ownership move.
             peer.command_stdin_owned = true;
         }
-        for (member, peer) in owners.peers.iter_mut().enumerate() {
-            if peer.attempted {
-                return Err(RuntimeError::DuplicateOperation);
-            }
-            peer.attempted = true;
-            let NativeLaunchPeer {
-                reservation,
-                command,
-                guard,
-                wire,
-                suffix_wire,
-                inputs,
-                written,
-                ..
-            } = peer;
-            held.authority
-                .graph_policy
-                .authenticate_original_native_launch_currentness(member, bounds[member])?;
-            reservation
-                .as_mut()
-                .ok_or(RuntimeError::OwnerUnavailable)?
-                .launch(command.as_mut().ok_or(RuntimeError::OwnerUnavailable)?)
-                .map_err(|_| RuntimeError::OwnerUnavailable)?;
-            let original_reservation = reservation.take().ok_or(RuntimeError::OwnerUnavailable)?;
-            match original_reservation.into_guard() {
-                Ok(original_guard) => *guard = Some(original_guard),
-                Err(failure) => {
-                    *reservation = Some(failure.original);
-                    return Err(RuntimeError::OwnerUnavailable);
+        drop(owners);
+        for member in 0..3 {
+            {
+                let mut owners = held
+                    .native_launches
+                    .try_borrow_mut()
+                    .map_err(|_| RuntimeError::OwnerBusy)?;
+                let peer = owners
+                    .peers
+                    .get_mut(member)
+                    .ok_or(RuntimeError::ForeignAuthority)?;
+                if peer.attempted {
+                    return Err(RuntimeError::DuplicateOperation);
                 }
-            }
-            let inputs = inputs.as_mut().ok_or(RuntimeError::OwnerUnavailable)?;
-            let deadline = Instant::now()
-                .checked_add(inputs.write_watchdog)
-                .ok_or(RuntimeError::ResourceLimit)?;
-            let mut writer = NativeDeadlineWriter {
-                stream: inputs
-                    .bootstrap_writer
+                peer.attempted = true;
+                let NativeLaunchPeer {
+                    reservation,
+                    command,
+                    guard,
+                    wire,
+                    suffix_wire,
+                    inputs,
+                    written,
+                    ..
+                } = peer;
+                held.authority
+                    .graph_policy
+                    .authenticate_original_native_launch_currentness(member, bounds[member])?;
+                reservation
                     .as_mut()
-                    .ok_or(RuntimeError::OwnerUnavailable)?,
-                deadline,
-            };
-            let material = materials[member]
-                .as_ref()
-                .ok_or(RuntimeError::OwnerUnavailable)?;
-            match (wire.as_mut(), suffix_wire.as_mut()) {
-                (Some(wire), None) if !restored_suffix => {
-                    wire.write_original(material, &mut writer)
+                    .ok_or(RuntimeError::OwnerUnavailable)?
+                    .launch(command.as_mut().ok_or(RuntimeError::OwnerUnavailable)?)
+                    .map_err(|_| RuntimeError::OwnerUnavailable)?;
+                let original_reservation =
+                    reservation.take().ok_or(RuntimeError::OwnerUnavailable)?;
+                match original_reservation.into_guard() {
+                    Ok(original_guard) => *guard = Some(original_guard),
+                    Err(failure) => {
+                        *reservation = Some(failure.original);
+                        return Err(RuntimeError::OwnerUnavailable);
+                    }
                 }
-                (None, Some(wire)) if restored_suffix => wire.write_original(material, &mut writer),
-                _ => return Err(RuntimeError::ForeignAuthority),
+                let inputs = inputs.as_mut().ok_or(RuntimeError::OwnerUnavailable)?;
+                let deadline = Instant::now()
+                    .checked_add(inputs.write_watchdog)
+                    .ok_or(RuntimeError::ResourceLimit)?;
+                let mut writer = NativeDeadlineWriter {
+                    stream: inputs
+                        .bootstrap_writer
+                        .as_mut()
+                        .ok_or(RuntimeError::OwnerUnavailable)?,
+                    deadline,
+                };
+                let material = materials[member]
+                    .as_ref()
+                    .ok_or(RuntimeError::OwnerUnavailable)?;
+                match (wire.as_mut(), suffix_wire.as_mut()) {
+                    (Some(wire), None) if !restored_suffix => {
+                        wire.write_original(material, &mut writer)
+                    }
+                    (None, Some(wire)) if restored_suffix => {
+                        wire.write_original(material, &mut writer)
+                    }
+                    _ => return Err(RuntimeError::ForeignAuthority),
+                }
+                .map_err(|_| RuntimeError::OwnerUnavailable)?;
+                *written = true;
             }
-            .map_err(|_| RuntimeError::OwnerUnavailable)?;
-            *written = true;
+            // No native launch-bank loan crosses the initial lifecycle. The
+            // next child has not started its birth deadline while this member
+            // completes Hello and preparation under its own admitted window.
+            drop(materials[member].take());
+            if let Some(complete) = initial {
+                complete(original, member)?;
+            }
         }
         held.authenticate_native_origin_data()
     }

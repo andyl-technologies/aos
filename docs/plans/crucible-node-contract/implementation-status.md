@@ -107,6 +107,13 @@ messages reporting the ordinary test profile and successful completion. This
 remains compilation-only evidence;
 it excludes the later Input17 transport change and native execution.
 
+The Input17 refresh at `e483be71b9` also passes: 167 newly compiled test
+artifacts cover all 48 application packages and 69 integration targets.
+Independent review verifies the registered derivation and output, recomputes
+the actual NAR hash, and matches all 7,105 captured files (4,137 Rust/Cargo)
+to the commit. This is compilation-only evidence and excludes the subsequent
+startup-order changes and temporary diagnostic probes.
+
 ### QEMU package
 
 The ordinary QEMU package passes 589 upstream TAP checks, 44 project model/cost
@@ -1522,6 +1529,39 @@ Independent review confirms that the live class and owner checks remain before
 the private accounting tail. Six-crate all-feature/all-target checking passes
 for the correction in 33.96 seconds.
 The corresponding optimized provider rebuild also passes.
+All four full-roster definition/admission controls pass again after the quote
+correction in 24.27 seconds.
+
+### Per-member initial startup
+
+Normal installed startup now prepares all original commands, cleanup slots and
+private wires before the first Child, then completes each launched member's
+initial lifecycle before launching the next. This preserves each original birth
+cut while removing the wait behind an earlier member's host preparation. The
+separate public launch and lifecycle methods retain their existing behavior.
+Fresh-world startup uses the same per-member ordering and already includes the
+shared fixed-layout quote; its later Query/restore phases keep their own paths.
+
+The native launch-bank loan and selected Boot-material loan end before the
+member callback. Only the actual written guard/socket can enter its window;
+private member callbacks use their issued scope and sticky once/phase fields
+without reborrowing a bank during guard transfer. The shared policy includes
+the additional overlapping fixed launch views. No deadline or ceiling grows.
+
+Independent source review passes for initial and fresh-world ordering.
+Six-crate all-feature/all-target checking passes in 36.68 seconds before the
+fresh-world caller update and in 10.62 seconds after it. All six scene controls
+pass on the complete six-file source in 34.24 seconds, including refusal of
+all unlaunched member indices before window/once/Child effects.
+The fresh-world original-holder relabeling control also passes in 2.83 seconds.
+
+The clean matching native run still fails: zero passes and one failure in 72.33
+seconds. Temporary failure probes isolate member one beyond Hello and host
+Prepare to the actual initial Admit exchange, which expires without a terminal
+result. Further diagnostic runs fail in 74.67, 76.82, 77.42, 72.50 and 72.71
+seconds. No child failure packet is observed at the host's timeout. These runs
+show diagnostic progress only; startup, state preservation and performance
+remain unqualified. All temporary source probes are removed.
 
 ## Known gaps and exit criteria
 

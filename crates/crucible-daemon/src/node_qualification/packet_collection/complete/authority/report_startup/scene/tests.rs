@@ -236,3 +236,27 @@ fn bounded_daemon_refusal_preserves_public_display_bytes() {
         );
     }
 }
+
+#[test]
+fn unlaunched_initial_member_refuses_without_spending_its_window() {
+    let (_fixture, original, mut incoming) = fixture();
+    PacketCompleteReportStartupHolder::stage_original_scene_into(&original, &mut incoming).unwrap();
+
+    for selected in 0..=3 {
+        assert!(matches!(
+            PacketCompleteReportStartupHolder::complete_retained_host_initial_lifecycle_member(
+                &original, selected,
+            ),
+            Err(RuntimeError::OwnerUnavailable),
+        ));
+    }
+
+    let held = original.borrow();
+    let scene = held.original_scene.get().unwrap().borrow();
+    assert!(!scene.launched.get());
+    assert!(scene.initial_attempted.iter().all(|flag| !flag.get()));
+    assert!(scene.initial_in_flight.iter().all(|flag| !flag.get()));
+    assert!(scene.initial_completed.iter().all(|flag| !flag.get()));
+    assert!(scene.windows.iter().all(|window| window.get().is_none()));
+    assert!(!held.native_attempted.get());
+}
