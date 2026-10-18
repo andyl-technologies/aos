@@ -244,29 +244,51 @@ function reportObservation(objectId, grant, etag) {
     observed: { part: reportPart(grant.part), etag } };
 }
 
+async function partStream(source, part, signal) {
+  const stat = await source.handle.stat();
+  if (stat.size !== source.before.size || stat.mtimeMs !== source.before.mtimeMs || stat.ctimeMs !== source.before.ctimeMs) {
+    throw new Error("Original payload changed before direct upload.");
+  }
+  const offset = Number(part.offset), size = Number(part.byteSize);
+  return Readable.from((async function* () {
+    let position = 0;
+    while (position < size) {
+      if (signal.aborted || cancelled) throw new Error("Direct stream cancelled.");
+      const buffer = Buffer.alloc(Math.min(65536, size - position));
+      const { bytesRead } = await source.handle.read(buffer, 0, buffer.length, offset + position);
+      if (!bytesRead) throw new Error("Original payload truncated.");
+      position += bytesRead; yield buffer.subarray(0, bytesRead);
+    }
+  })());
+}
+
+async function dispatchPart(source, grant, headers, signal, name) {
+  for (let attempt = 0; ; attempt += 1) {
+    const stream = await partStream(source, grant.part, signal);
+    try {
+      return await fetch(grant.url, { method: "PUT", headers, body: stream,
+        duplex: "half", redirect: "manual", signal });
+    } catch (error) {
+      stream.destroy();
+      // Undici cannot dispatch HTTP until its connector succeeds. Retry this
+      // pre-connect failure once under the same original abort signal and URL.
+      if (attempt !== 0 || error?.cause?.code !== "UND_ERR_CONNECT_TIMEOUT"
+          || signal.aborted || cancelled) throw error;
+      await save(`${name}-connect-timeout.json`, { version: 1,
+        state: "connection_not_established", transportCode: "UND_ERR_CONNECT_TIMEOUT",
+        retry: 1, originalOperationBudget: true });
+    }
+  }
+}
+
 async function upload(source, grant) {
-  const part = grant.part, offset = Number(part.offset), size = Number(part.byteSize);
+  const part = grant.part;
   return observe("upload-part", { runId, objectId: source.plan.objectId, partNumber: part.partNumber,
     byteSize: part.byteSize, sha256: part.sha256 }, async (signal, name) => {
-    const stat = await source.handle.stat();
-    if (stat.size !== source.before.size || stat.mtimeMs !== source.before.mtimeMs || stat.ctimeMs !== source.before.ctimeMs) {
-      throw new Error("Original payload changed before direct upload.");
-    }
-    const stream = Readable.from((async function* () {
-      let position = 0;
-      while (position < size) {
-        if (signal.aborted || cancelled) throw new Error("Direct stream cancelled.");
-        const buffer = Buffer.alloc(Math.min(65536, size - position));
-        const { bytesRead } = await source.handle.read(buffer, 0, buffer.length, offset + position);
-        if (!bytesRead) throw new Error("Original payload truncated.");
-        position += bytesRead; yield buffer.subarray(0, bytesRead);
-      }
-    })());
     const started = Date.now();
     const headers = Object.fromEntries(grant.requiredHeaders.map(header => [header.name, header.value]));
     headers["content-length"] = part.byteSize;
-    const response = await fetch(grant.url, { method: "PUT", headers, body: stream,
-      duplex: "half", redirect: "manual", signal });
+    const response = await dispatchPart(source, grant, headers, signal, name);
     const responseBytes = await bounded(response, 8192), etag = response.headers.get("etag");
     if (!response.ok || !etag || !/^"[^"\\\x00-\x1f\x7f]+"$/.test(etag)) {
       await save(`${name}-rejected.json`, { status: response.status,

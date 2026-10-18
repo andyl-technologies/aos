@@ -9,6 +9,7 @@ import { createServer as createHttpServer, request as httpRequest } from "node:h
 import { createResponseHold } from "../../tests/fleet/_hub-direct-provider-response-hold.mjs";
 import { chmod, mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const openssl = process.argv[2];
 const driver = resolve(process.argv[3] ?? "pkgs/tools/aos-hub-direct-qualification.mjs");
@@ -27,6 +28,37 @@ await chmod(privateKey, 0o600);
 const secret = "driver-protocol-test-private-key-0001";
 const keyFile = join(root, "control.key");
 await writeFile(keyFile, secret, { mode: 0o600 });
+const connectionHook = join(root, "connection-hook.mjs");
+await writeFile(connectionHook, `
+import { createHash } from "node:crypto";
+import { appendFile } from "node:fs/promises";
+const options = new URL(import.meta.url).searchParams;
+const originalFetch = globalThis.fetch;
+const attempts = new Map();
+let injected = false;
+globalThis.fetch = async (url, init) => {
+  if (init?.method !== "PUT") return originalFetch(url, init);
+  const target = createHash("sha256").update(String(url)).digest("hex");
+  const previous = attempts.get(target);
+  const attempt = (previous?.attempt ?? 0) + 1;
+  attempts.set(target, { attempt, signal: init.signal });
+  const rejectBeforeConnect = options.get("mode") === "connect-always"
+    || options.get("mode") === "connect-once" && !injected;
+  injected = true;
+  await appendFile(options.get("record"), JSON.stringify({ target, attempt,
+    sameSignal: !previous || previous.signal === init.signal,
+    rejectBeforeConnect }) + "\\n");
+  if (rejectBeforeConnect) {
+    throw new TypeError("controlled connection failure", { cause: { code: "UND_ERR_CONNECT_TIMEOUT" } });
+  }
+  const response = await originalFetch(url, init);
+  if (options.get("mode") === "after-send") {
+    await response.arrayBuffer();
+    throw new TypeError("controlled reply loss", { cause: { code: "UND_ERR_SOCKET" } });
+  }
+  return response;
+};
+`, { mode: 0o600 });
 const payload = Buffer.alloc(16 * 1024 * 1024 + 17, 0x36), payloadFile = join(root, "payload");
 await writeFile(payloadFile, payload, { mode: 0o600 });
 const secondPayload = Buffer.alloc(payload.length, 0x37), secondPayloadFile = join(root, "second-payload");
@@ -317,7 +349,12 @@ async function run(name, mode, phase = "run") {
       ...(mode === "mixed-saturation" ? [{ file: secondPayloadFile, metadata: false }] : []),
       { file: metadataFile, metadata: true }] }), { mode: 0o600 });
   }
-  child = spawn(process.execPath, [mode === "mixed-baseline" ? baselineDriver : driver, "--origin", origin, "--control-key-file", keyFile,
+  const hook = pathToFileURL(connectionHook);
+  hook.searchParams.set("mode", mode);
+  hook.searchParams.set("record", join(invocation, "connection-attempts.jsonl"));
+  const imports = ["connect-once", "connect-always", "after-send"].includes(mode)
+    ? ["--import", hook.href] : [];
+  child = spawn(process.execPath, [...imports, mode === "mixed-baseline" ? baselineDriver : driver, "--origin", origin, "--control-key-file", keyFile,
     "--identity-file", identityFile, "--manifest-file", manifestFile, "--output-dir", output,
     "--wait-seconds", mode.startsWith("mixed-") ? "15" : "0",
     ...(["mixed-barrier", "mixed-saturation"].includes(mode) ? ["--mixed-admission-file", resolve(output, "..", "mixed-admission-release.json")] : []), ...(phase === "clock" ? ["--phase", "clock", "--run-id", "ef".repeat(32),
@@ -494,6 +531,36 @@ print('PASS actual driver evidence accepted; old underscore filename refused by 
 
   const wrongRuntime = await run("wrong-runtime", "wrong-runtime"); assert.notEqual(wrongRuntime.exit, 0);
   assert.equal(calls.includes("begin"), false); assert.equal(calls.includes("grant"), false);
+
+  const connectionRetry = await run("connection-retry", "connect-once");
+  assert.equal(connectionRetry.exit, 0, connectionRetry.logs);
+  assert.equal(uploaded, payload.length);
+  assert.equal(uploadRoutes.size, 3);
+  const attemptsFor = async result => (await readFile(join(result.output, "connection-attempts.jsonl"), "utf8"))
+    .trim().split("\n").map(line => JSON.parse(line));
+  const connectedAttempts = await attemptsFor(connectionRetry);
+  assert.equal(connectedAttempts.length, 4);
+  assert.equal(connectedAttempts.filter(attempt => attempt.rejectBeforeConnect).length, 1);
+  assert.equal(connectedAttempts.filter(attempt => attempt.attempt === 2).length, 1);
+  assert.ok(connectedAttempts.every(attempt => attempt.sameSignal));
+  const connectedNames = await readdir(connectionRetry.output);
+  assert.equal(connectedNames.filter(name => name.endsWith("-connect-timeout.json")).length, 1);
+  assert.equal(connectedNames.some(name => name.endsWith("-unknown.json")), false);
+
+  const connectionFailure = await run("connection-failure", "connect-always");
+  assert.notEqual(connectionFailure.exit, 0);
+  assert.equal(uploaded, 0);
+  assert.equal(uploadRoutes.size, 0);
+  const failedAttempts = await attemptsFor(connectionFailure);
+  assert.ok(failedAttempts.some(attempt => attempt.attempt === 2));
+  assert.ok(failedAttempts.every(attempt => attempt.attempt <= 2 && attempt.sameSignal));
+
+  const lostPartReply = await run("lost-part-reply", "after-send");
+  assert.notEqual(lostPartReply.exit, 0);
+  assert.ok(uploaded > 0);
+  assert.ok((await attemptsFor(lostPartReply)).every(attempt => attempt.attempt === 1));
+  assert.ok((await readdir(lostPartReply.output)).some(name => name.endsWith("-upload-part-unknown.json")));
+
   const rejected = await run("part-rejected", "part-rejected");
   assert.notEqual(rejected.exit, 0);
   const rejectedNames = await readdir(rejected.output);
