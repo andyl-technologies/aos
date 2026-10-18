@@ -8977,23 +8977,34 @@ Resumed qualification:
   cancellation, the existing refusal controls and kernel EDQUOT remain green.
   These results belong to this exact source; later publisher and recovery
   follow-ups still require their own cache qualification.
-- Host recovery candidate `905195759c`: failure carriers are allocated before
-  publisher effects so original metadata, body and response observations survive
-  errors. The native fixture seeds ordinary canonical metadata packs and an
-  actual fs-verity cold candidate without embedded or publication records. It
-  requires genuine residence reconstruction and Resume, paired with mismatching
-  plaintext requiring quarantine and funded faulted custody. Source review finds
-  inventory verifying unbound plaintext before funded adoption; the fix retains
-  strict existing-binding verification while returning unbound keys only as
-  candidates. Actual adoption still verifies content before returning a backing
-  descriptor. The `94ec06af95` image and independent verifier pass, and its
-  guest executes all 47 filesystem cases successfully before stopping in the
-  new administrative seeder. The quota provisioning capability set cannot write
-  across role-owned directories. The corrected seeder has a separate bounded
-  root-only capability set, verifies all five actual sets through procfs, and
-  preserves original error output. Runtime actors still require empty sets.
-  The corrected formatter pair passes; image and guest requalification are
-  running. No nonempty recovery result is claimed yet.
+- Host recovery candidate `7c8b85b346`: source review, formatter pair, immutable
+  image, independent completed-image verification and actual ext4 guest pass.
+  All 47 filesystem cases execute with none ignored. Six actual manifest cases
+  pass: two reconstruct verified residences and acknowledge genuine Resume;
+  four quarantine the original mismatching, unsealed mode0400, unsealed mode0600
+  or truncated sealed inode while retaining metadata bytes and funded faulted
+  custody. A root write-open control confirms that a valid mode0600 sealed file
+  is protected by the kernel; adoption then installs mode0400 before binding
+  acknowledgement and Resume. Inventory keys remain untrusted; existing binding
+  checks stay strict. Retained ordinary inodes are classified before readable
+  opens, and opening performs no mutation of a rollback replacement. All six
+  publisher regression stages also pass on this source, including nineteen
+  builder cases, three native socket cases, both native parents and all four
+  multi-UID parent/child executions. The earlier administrative seed failure is
+  preserved; its corrected bounded root-only capability set is checked through
+  procfs, while runtime actors retain empty capability sets. These results cover
+  readable owned unbound candidates with actual canonical metadata. Full cold
+  policy recovery, HOST-32, Running publication, NativeReady and BKT-15 remain
+  open; no complete host task is accepted.
+- Publisher process candidate `973e429c1e`: the configured role installs a fixed
+  Unix-only socket policy before opening roots or channels and rejects undeclared
+  inherited descriptors. Its private receipt follows actual kernel installation,
+  descriptor inspection and denied Internet/socketpair plus permitted Unix
+  probes; prepared owners retain that same receipt. Three fresh-process controls
+  use unbound sockets without traffic to check allowed-before/denied-after
+  creation, a preexisting descriptor and a network socket passed as stdin.
+  Source review and the formatter pair pass. Compilation and native execution
+  are running; process confinement is not qualified yet.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
   and all seven strict Clippy/documentation profiles pass. The interface,
   commit-path, status and schema gates pass on unchanged final source, including
