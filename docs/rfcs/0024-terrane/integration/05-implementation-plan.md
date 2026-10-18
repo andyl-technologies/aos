@@ -8977,23 +8977,36 @@ Resumed qualification:
   cancellation, the existing refusal controls and kernel EDQUOT remain green.
   These results belong to this exact source; later publisher and recovery
   follow-ups still require their own cache qualification.
-- Host recovery candidate `83ab9b287d`: failure carriers are allocated before
+- Host recovery candidate `905195759c`: failure carriers are allocated before
   publisher effects so original metadata, body and response observations survive
-  errors. The committed native fixture seeds ordinary canonical metadata packs
-  and an actual fs-verity cold candidate without embedded or publication records.
-  It requires genuine residence reconstruction and Resume, paired with a
-  mismatching plaintext case requiring quarantine and funded faulted custody.
-  Formatting and source review pass; compilation and native execution remain
-  pending. No nonempty recovery result is claimed yet.
+  errors. The native fixture seeds ordinary canonical metadata packs and an
+  actual fs-verity cold candidate without embedded or publication records. It
+  requires genuine residence reconstruction and Resume, paired with mismatching
+  plaintext requiring quarantine and funded faulted custody. Source review finds
+  inventory verifying unbound plaintext before funded adoption; the fix retains
+  strict existing-binding verification while returning unbound keys only as
+  candidates. Actual adoption still verifies content before returning a backing
+  descriptor. The `94ec06af95` image and independent verifier pass, and its
+  guest executes all 47 filesystem cases successfully before stopping in the
+  new administrative seeder. The quota provisioning capability set cannot write
+  across role-owned directories. The corrected seeder has a separate bounded
+  root-only capability set, verifies all five actual sets through procfs, and
+  preserves original error output. Runtime actors still require empty sets.
+  The corrected formatter pair passes; image and guest requalification are
+  running. No nonempty recovery result is claimed yet.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
   and all seven strict Clippy/documentation profiles pass. The interface,
-  commit-path and status gates pass on unchanged final source, including unknown
-  policies refused before credential resolution. The final schema gate and
-  required application unit/integration target compilation are running. The
-  earlier `db293cd9f8` source passes all four owning gates; its native-profile
-  lint findings are corrected by precisely scoped SDK-only test helpers and an
-  existing test module's intentional panic assertions. Final-source configured
-  SDK components, feature matrix and the full current-trunk aggregate remain
+  commit-path, status and schema gates pass on unchanged final source, including
+  unknown policies refused before credential resolution. Schema finishes in
+  2,035 seconds; required application unit/integration target compilation also
+  passes in 2,172 seconds. Compilation supplies no application test execution.
+  SDK-only test helpers and an existing test module's intentional panic
+  assertions have precisely scoped lint configuration. The configured SDK image,
+  all eleven SDK unit cases and its native ext4 check also pass. Independent
+  review verifies all 3,338 crate inputs, each selected unit's actual passing
+  log, and four separate-process guest controls covering snapshots, late denial
+  and actual CLI success/refusal under UID/GID 840 with empty capabilities.
+  Final-source feature matrix and the full current-trunk aggregate remain
   required before formal task acceptance. The superseded `6cb1fcf235` aggregate
   was stopped after the policy fix and supplies no aggregate success.
 
