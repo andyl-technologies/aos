@@ -25,6 +25,9 @@ EXPECTED = {
         "received_rights_are_close_on_exec_and_writable_sources_fail",
         "rejected_rights_do_not_accumulate_descriptors",
         "ancillary_truncation_and_unregistered_credentials_are_rejected",
+        "retained_socket_chmod_sets_exact_mode_without_changing_inode_or_group",
+        "replaced_socket_name_is_rejected_without_changing_either_inode",
+        "socket_chmod_rejects_wrong_type_and_owner_before_mutation",
     },
     "publisher_local_protocol": {
         "registered_probe_roundtrips_without_descriptors",
