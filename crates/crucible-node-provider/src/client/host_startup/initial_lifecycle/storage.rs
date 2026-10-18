@@ -93,7 +93,7 @@ pub fn original_packet_host_initial_lifecycle_counter_scratch_data() -> usize {
         + 4 * size_of::<MetadataObserver<'static>>() + 4 * size_of::<RetainedProtocolMetadataFacts>()
         + 10 * size_of::<Data>() + 2 * size_of::<OriginalSerializationStorageProjection>()
         + size_of::<OriginalPacketHostInitialAttachmentScope<'static>>()
-        + size_of::<[usize; 24]>() + size_of::<blake3::Hasher>() + 20
+        + size_of::<[usize; 24]>() + 2 * size_of::<usize>() + size_of::<blake3::Hasher>() + 20
         + crate::protocol_snapshot::compact_bytes::BorrowedCompactBytes::requested_serialization_scratch_bytes()
         + original_json_value_storage_extent_counter_scratch_data()
         + crate::reference_packet::service::complete_restore::transfer::selected_issuer_decode_counter_scratch_data()
@@ -382,10 +382,14 @@ pub(super) fn quote(
     {
         return Err(refused());
     }
-    let journal_growth = add(
-        literal_bytes,
-        usize::try_from(launch.limits.frame_bytes.get()).map_err(|_| refused())?,
-    )?;
+    let wire_frame = usize::try_from(launch.limits.frame_bytes.get()).map_err(|_| refused())?;
+    // Source preflight reserves full response frames before sending a request.
+    // Cover that logical reservation across this same closed request/ACK roster;
+    // tight expected literals alone cannot satisfy the conservative preflight.
+    // This scalar grants no allocation credit: the independent rows above still
+    // price actual wire shapes, proof buffers, decoded owners and failure work.
+    let framed_journal = mul(add(outgoing, incoming)?, wire_frame)?;
+    let journal_growth = add(literal_bytes, wire_frame)?.max(framed_journal);
     let data = PacketNativeHostInitialLifecycleStorageData {
         retained,
         transient,
@@ -553,6 +557,43 @@ fn sum(values: &[usize]) -> Result<usize, ProviderError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn admitted_initial_custody_satisfies_source_preflight_without_new_backing() {
+        let (inputs, mut root) =
+            crate::client::host_startup::tests::prepared_initial_lifecycle_model();
+        let launch = inputs.borrowed().launch;
+        let quote = root
+            .quote_original_initial_lifecycle_storage_data(launch)
+            .unwrap();
+        let before = root.retained_requested_storage_data(None).unwrap();
+        let frame = usize::try_from(launch.limits.frame_bytes.get()).unwrap();
+        let custody = root.custody.as_mut().unwrap();
+
+        // The existing Producer and Reactive preparation preflight each need
+        // two controller requests and eighteen provider originals, with a full
+        // request/response frame reserved for every identity before dispatch.
+        let journal = 40 * frame;
+        assert!(custody.preflight_response(2, 18, journal, 64).is_err());
+
+        custody
+            .prepare_original_host_initial_capacity_data(quote.journal_growth_data())
+            .unwrap();
+
+        custody.preflight_response(2, 18, journal, 64).unwrap();
+        custody.content().preflight_capacity(2, 2 * 65_536).unwrap();
+        assert!(custody.originals().next().is_none());
+        for (reference, bytes) in inputs.borrowed().content {
+            assert_eq!(custody.content().get(reference).unwrap(), bytes);
+        }
+        assert_eq!(root.retained_requested_storage_data(None).unwrap(), before);
+        assert!(!root.initial_attachment_attempted);
+        assert!(root.controller.is_none());
+
+        let mut narrower = quote;
+        narrower.journal_growth -= 1;
+        assert!(!quote.within(&narrower));
+    }
 
     #[test]
     fn actual_prepared_initial_quote_is_readonly_and_each_axis_is_independent() {

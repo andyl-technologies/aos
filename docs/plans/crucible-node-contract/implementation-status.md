@@ -1430,6 +1430,35 @@ probe records zero passes and one failure in 15.00 seconds and isolates Prepare
 to the client's original-journal byte limit. Its declared growth and the Source
 preflight requirement remain under investigation; no policy limit is raised.
 
+### Initial journal reservation
+
+The native failure exposes a mismatch between two existing accounting rules.
+Source reserves full request and response frames before dispatch: its first
+Prepare preflight requires 2,621,440 journal bytes. The SDK instead admits
+549,165 bytes from expected literals and one spare frame. Both journals are
+empty when this preflight refuses.
+
+The initial lifecycle quote now covers the larger full-frame reservation across
+its existing closed request and proof roster. The actual wire, proof, decoded
+owner and failure allocations remain independently priced; the scalar journal
+reservation allocates no backing. The existing 512 MiB absolute journal cap,
+frame limits, request counts, content limits and original deadlines are unchanged.
+
+Independent source review passes. All 1,085 provider tests pass in 12.15 seconds,
+with fifteen ignored. The new control checks the actual custody setter against
+the Source preflight, preserving installed content and retained backing without
+dispatch or attachment. Its narrower-row assertion checks the independent
+admission axis, rather than claiming that one fewer byte exhausts physical
+journal storage. Six-crate all-feature/all-target checking passes in 36.06
+seconds. All four full-roster definition/admission controls pass in 26.36
+seconds.
+
+The matching optimized provider and ordinary native fixture still record zero
+passes and one failure, in 67.19 seconds. Node zero now completes Prepare; node
+one refuses during Hello with `UnsupportedFacet`. All original children are
+reclaimed. This is diagnostic phase progress, not successful startup, native
+preservation or a performance comparison. Temporary probes are removed.
+
 ## Known gaps and exit criteria
 
 Completion requires the full [qualification plan](qualification-plan.md),
