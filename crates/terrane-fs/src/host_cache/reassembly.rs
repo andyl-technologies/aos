@@ -1,11 +1,12 @@
 //! Streams a checked ordered source plan without buffering a whole object.
 //!
-//! Plan verification performs reads only. Allocating an output inode additionally
-//! requires the native reservation/custody protocol; this module mints no such
-//! receipt and does not expose a file eligible for a kernel surface.
+//! Verification and copying use the same ordered source reader. The caller owns
+//! any output, including partial output after failure. Allocating an output inode
+//! additionally requires the native reservation/custody protocol; this module
+//! mints no such receipt or file eligible for a kernel surface.
 
 use super::{NativeChunkSource, NativeHostLayout};
-use std::io::{self, Cursor, Read};
+use std::io::{self, Cursor, Read, Write};
 use terrane::{
     host::cache::HostReadLocation,
     host::publication::{PublicationClaim, PublicationRecipe},
@@ -120,6 +121,53 @@ impl NativeReassemblyPlan {
         };
         self.claim.verify_reader(&mut reader)
     }
+
+    /// Streams ordered plaintext into an owned output while verifying the claim.
+    ///
+    /// A successful result reports the exact verified plaintext length. Memory
+    /// remains bounded by individual chunks and their optional dictionaries;
+    /// the assembled object is never collected into a whole-object buffer.
+    /// This method neither flushes nor synchronizes the output. The caller must
+    /// establish and retain native pins, quota funding and output custody before
+    /// calling it, then synchronize and independently seal the completed inode.
+    ///
+    /// # Errors
+    /// Rejects changed, truncated, reordered or corrupt source bytes, incorrect
+    /// whole-file hashes, and read or write failures. Errors can leave partial
+    /// or complete unverified output, which the caller must retain or discard
+    /// under its original custody; such bytes are never publication authority.
+    pub fn copy_verified(&mut self, output: &mut impl Write) -> io::Result<u64> {
+        let mut reader = SequenceReader {
+            sources: self.sources.iter_mut(),
+            current: Cursor::new(Vec::new()),
+        };
+        copy_claim(&self.claim, &mut reader, output)
+    }
+}
+
+fn copy_claim(
+    claim: &PublicationClaim,
+    source: &mut impl Read,
+    output: &mut impl Write,
+) -> io::Result<u64> {
+    // Verify the same stream that reaches the output, rather than verifying once
+    // and then rereading mutable sources in an unchecked second pass.
+    let mut reader = CopyingReader { source, output };
+    claim.verify_reader(&mut reader)?;
+    Ok(claim.plaintext_size())
+}
+
+struct CopyingReader<'a, R, W> {
+    source: &'a mut R,
+    output: &'a mut W,
+}
+
+impl<R: Read, W: Write> Read for CopyingReader<'_, R, W> {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        let count = self.source.read(bytes)?;
+        self.output.write_all(&bytes[..count])?;
+        Ok(count)
+    }
 }
 
 struct SequenceReader<'a> {
@@ -148,3 +196,6 @@ impl Read for SequenceReader<'_> {
 fn invalid(message: impl ToString) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.to_string())
 }
+
+#[cfg(test)]
+mod tests;
