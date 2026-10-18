@@ -135,7 +135,9 @@ impl PreparationOwners {
     }
 
     #[cfg(test)]
-    pub(super) fn original_initial_scratch_for_test(&self) -> Option<&CnpPreparationStorageScratch> {
+    pub(super) fn original_initial_scratch_for_test(
+        &self,
+    ) -> Option<&CnpPreparationStorageScratch> {
         self.scratch.as_ref()
     }
 

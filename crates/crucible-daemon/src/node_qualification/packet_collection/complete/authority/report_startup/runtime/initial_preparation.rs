@@ -177,7 +177,8 @@ fn record_destination(found: &mut bool) -> Result<(), RuntimeError> {
 ///
 /// # Errors
 /// Refuses checked layout overflow before the actual owning-data traversal.
-pub(in crate::node_qualification::packet_collection::complete::authority::report_startup) fn counter_scratch_data() -> Result<usize, RuntimeError> {
+pub(in crate::node_qualification::packet_collection::complete::authority::report_startup) fn counter_scratch_data()
+-> Result<usize, RuntimeError> {
     let terms = [
         size_of::<&PacketCompleteReportStartupHolder>(),
         PreparationOwners::original_admitted_peer_counter_scratch_data(),

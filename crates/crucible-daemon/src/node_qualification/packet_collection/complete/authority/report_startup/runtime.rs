@@ -171,10 +171,11 @@ impl PacketCompleteReportStartupHolder {
         }
 
         if let Some(host) = &owners.host {
-            let storage = crucible::node_contract::SimulationNode::retained_requested_storage_precredit_data(
-                host,
-                usize::MAX,
-            );
+            let storage =
+                crucible::node_contract::SimulationNode::retained_requested_storage_precredit_data(
+                    host,
+                    usize::MAX,
+                );
             eprintln!("retained host diagnostic: storage={storage:?}");
         }
 
