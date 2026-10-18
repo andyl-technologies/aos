@@ -2357,8 +2357,10 @@
           for run in index_runs.values()
           if run["registry_id"] == container_registry_id
           and release in run["releases"]
-          and run.get("success", False)
-          and run["releases"][release]["completed_calls"] > 0
+      and run.get("success", False)
+      and run["releases"][release]["completed_calls"] > 0
+      and run["releases"][release].get("phase_completed", False)
+      and run["releases"][release].get("reused") is False
       ]
       assert cold_release_walks, (release, index_runs)
   container_refreshes = [
@@ -2370,10 +2372,27 @@
   assert len(container_refreshes) >= 2, index_runs
   assert all(
       release.get("phase_completed", False)
-      and release.get("reused") is False
+      and type(release.get("reused")) is bool
       and release["completed_calls"] > 0
       for run in container_refreshes for release in run["releases"].values()
   ), container_refreshes
+  # An unchanged release can reuse its parsed snapshot after its initial cold
+  # walk. Require genuinely less storage work for every reported reuse.
+  for name in ("1.0.0", "2.0.0"):
+      cold_walks = [
+          run["releases"][name] for run in container_refreshes
+          if run["releases"][name]["reused"] is False
+      ]
+      assert cold_walks, (name, container_refreshes)
+      for run in container_refreshes:
+          release = run["releases"][name]
+          if release["reused"]:
+              assert release["completed_calls"] < min(
+                  cold["completed_calls"] for cold in cold_walks
+              ), (name, release, cold_walks)
+              assert release["object_bytes_processed_at_worker"] < min(
+                  cold["object_bytes_processed_at_worker"] for cold in cold_walks
+              ), (name, release, cold_walks)
   metadata_cold_walks = [
       run for run in index_runs.values()
       if run["registry_id"] == metadata_registry_id
