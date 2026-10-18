@@ -9029,6 +9029,25 @@ Resumed qualification:
   preserved for review, with no clean-shutdown or root-cause claim. Full cold
   policy recovery, HOST-32, Running publication, NativeReady and BKT-15 remain
   open; no complete host task is accepted.
+- Inline publication candidate `9fda72f6c1`: the actual Running owner now accepts
+  bounded encoded inline input, verifies it and synchronizes a reservation before
+  creating an anonymous project-inheriting plaintext source or submitting the
+  publisher copy. The exclusive turn checks the original job, exact claim,
+  source inode, synchronized state and fresh quota. Actual replies remain owned
+  through native verification; successful backing and funding stay registered
+  before later state or accounting work, including after waiter cancellation.
+  Completion synchronizes the inline residence and separately reports sealed
+  inode allocation, full-project charged/reserved usage and logical future
+  holds. Read accessors borrow immutable fields without embedded-state locks.
+  Real guest controls cover pre-Resume refusal, repeated invalid inputs,
+  publication, no-replace and a stopped-publisher cancellation. Twenty-file
+  source review, syntax checks and provisional all-target builds pass; exact
+  source nextest, formatter pair, image and guest qualification are pending.
+  A strict Clippy attempt fails on inherited dead-code and test-assertion
+  findings; no clean-Clippy or task acceptance is claimed. Existing standalone
+  residence transfer, manifest Running publication, retirement, consumer leases
+  and bucket readiness remain open. No frozen identity, encoding, bucket key,
+  store trait, dependency or wire format changes.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
   and all seven strict Clippy/documentation profiles pass. The interface,
   commit-path, status and schema gates pass on unchanged final source, including
