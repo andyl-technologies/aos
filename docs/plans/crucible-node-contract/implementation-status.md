@@ -9,6 +9,39 @@ and [qualification plan](qualification-plan.md). Detailed test logs, images,
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Latest checkpoint
+
+`73389519ed` adds pre-admission for early Journal, normalization, geometry
+and Control construction. `ce94b2db8c` reduces selected closed currentness from four passes
+to two while preserving all four Source/Host checks and both roster checks;
+`e75818b353` separately formats fifteen files. Provider tests correct the
+encoded-credit and 20-digit JCS fixtures and cover the full typed U64.
+
+| Check | Latest recorded scope and result |
+| --- | --- |
+| Unfiltered libraries | 4,954 passes: Core 1,948, Daemon 1,498, Provider 1,496, Contract twelve; existing ignores remain 33/162/15/1 respectively. |
+| After formatting | Six-crate checking passes in 44.51 seconds; targeted formatting passes for 67 files. |
+| Startup/reclamation test pair | Baseline reaches the fifteen-minute limit during inactive-runtime construction; optimized construction finishes, then its recheck refuses after 641.39 seconds. Normal retirement and child reclamation pass. |
+| Outstanding qualification | The latest exact production application gate remains `b339f8c333`; a current refresh, strict lint, ABI and license gates remain pending. |
+
+One matched pair reaches the same inactive-runtime construction milestone in
+approximately 624 versus 364 seconds (41.6% less time). Only the three currentness
+files differ; all 7,046 source inputs, actual compiler profiles and common
+Provider/Device inputs were independently checked. Both use the existing test,
+default stack and unchanged limit, without a debugger or concurrent builds from this work.
+This is a partial startup-test measurement, not a completed preservation control
+or Linux-boot result. The optimized recheck reports `UnsupportedFacet`; source
+review finds that an inapplicable dormant fallback masks its first census error.
+Two reviewed repairs select the census from actual actor custody and use the initial
+graph precredit walk. They await compilation and the ordinary native control; the
+original error and its actual owning path still require diagnosis.
+
+The earlier diagnostic run timed out after fifteen minutes. Its nine read/hash stack observations
+and 2.957 TB of read accounting are diagnostic evidence, not statistical CPU
+sampling or a VM performance measurement. SourceDeclaration18 remains unissued:
+the genuine ACK, SDK preflight, complete initial funding/recipe, SourceRoot and
+held-Commit conjunction are still being implemented.
+
 ## Implemented areas
 
 | Area | Implemented behavior | Remaining qualification |
