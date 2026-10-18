@@ -950,3 +950,84 @@ fn owned_dispatch_refuses_changed_original_and_foreign_currency_without_losing_c
         assert_eq!(retained, banks);
     }
 }
+
+#[test]
+fn decoded_control_census_checks_actual_backing_without_mutating_its_live_source() {
+    let native = modeled_active_control();
+    let before = native.program.inventory_hash().unwrap();
+    let cut = Position::new(U64::new(0), U64::new(0), Phase::BoundaryControl);
+    let snapshot = native.capture_control_state(cut, 8 * 1024 * 1024).unwrap();
+    let decoded =
+        decode_packet_control_snapshot(snapshot.bytes(), snapshot.reference(), 8 * 1024 * 1024)
+            .unwrap();
+
+    let requested = decoded.retained_requested_storage_data(usize::MAX).unwrap();
+    assert!(requested > std::mem::size_of_val(&decoded));
+    assert_eq!(
+        decoded.retained_requested_storage_data(requested).unwrap(),
+        requested
+    );
+    assert!(
+        decoded
+            .retained_requested_storage_data(requested - 1)
+            .is_err()
+    );
+    assert!(PacketDecodedControlSnapshot::retained_metadata_counter_scratch_data() > 0);
+    assert_eq!(decoded.administrative_cut(), cut);
+    assert_eq!(native.program.inventory_hash().unwrap(), before);
+    snapshot.reference().verify(snapshot.bytes()).unwrap();
+}
+
+#[test]
+fn capture_future_control_provenance_binds_the_actual_decoded_body_and_full_reference() {
+    let native = modeled_active_control();
+    let cut = Position::new(U64::new(0), U64::new(0), Phase::BoundaryControl);
+    let snapshot = native.capture_control_state(cut, 8 * 1024 * 1024).unwrap();
+    let decoded = decode_packet_control_snapshot_for_capture_future_data(
+        snapshot.bytes(),
+        snapshot.reference(),
+        8 * 1024 * 1024,
+    )
+    .unwrap();
+
+    decoded
+        .authenticate_body_data(snapshot.reference(), snapshot.bytes())
+        .unwrap();
+    let requested = decoded.retained_requested_storage_data(usize::MAX).unwrap();
+    assert_eq!(
+        decoded.retained_requested_storage_data(requested).unwrap(),
+        requested
+    );
+    assert!(
+        decoded
+            .retained_requested_storage_data(requested - 1)
+            .is_err()
+    );
+    assert!(requested >= PacketDecodedCaptureFutureControlData::header_requested_bytes_data());
+    assert_eq!(decoded.control_data().administrative_cut(), cut);
+
+    let mut other_reference = snapshot.reference().clone();
+    other_reference.media_type = "application/example".into();
+    assert!(
+        decoded
+            .authenticate_body_data(&other_reference, snapshot.bytes())
+            .is_err()
+    );
+    assert!(
+        decoded
+            .authenticate_body_data(snapshot.reference(), b"{}")
+            .is_err()
+    );
+    let mut changed = snapshot.bytes().to_vec();
+    changed[0] ^= 1;
+    assert!(
+        decoded
+            .authenticate_body_data(snapshot.reference(), &changed)
+            .is_err()
+    );
+    assert_eq!(decoded.control_data().administrative_cut(), cut);
+    assert_eq!(
+        decoded.retained_requested_storage_data(requested).unwrap(),
+        requested
+    );
+}

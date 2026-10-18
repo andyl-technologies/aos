@@ -876,3 +876,12 @@ pub(crate) use settled_reader::{
 };
 
 mod pending_settled17;
+
+#[path = "continuation/decoded_metadata.rs"]
+mod decoded_metadata;
+
+#[path = "continuation/capture_future_input.rs"]
+mod capture_future_input;
+pub use capture_future_input::{
+    PacketDecodedCaptureFutureControlData, decode_packet_control_snapshot_for_capture_future_data,
+};

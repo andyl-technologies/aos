@@ -78,7 +78,9 @@ impl NativeInputData<'_> {
     ///
     /// # Errors
     /// Refuses a missing body, the selected encoded bound or defining layout excess.
-    pub(super) fn control_construction_requested_data<'a>(
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn control_construction_requested_data<
+        'a,
+    >(
         &'a self,
         reference: &ContentRef,
     ) -> Result<(&'a [u8], usize, usize), OperationFailure> {

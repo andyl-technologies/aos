@@ -45,7 +45,11 @@ pub(super) use snapshot::{CompleteNativeSnapshotClass, CompleteSnapshotPlan};
 mod retained;
 #[path = "archive_owner/settled.rs"]
 mod settled;
-pub(crate) use retained::{OriginalRestorationColdGroup, OriginalRestorationColdOwnerView};
+pub(crate) use retained::{
+    OriginalInitial15FutureControlAttempt, OriginalInitial15FutureControlConstructionData,
+    OriginalInitial15FutureControlLoan, OriginalRestorationColdGroup,
+    OriginalRestorationColdOwnerView,
+};
 pub use settled::CompleteHistoricalArchiveFamily;
 pub(crate) use settled::{
     OriginalCompleteHistoricalColdGroup, OriginalRestoredSettledColdGroup,

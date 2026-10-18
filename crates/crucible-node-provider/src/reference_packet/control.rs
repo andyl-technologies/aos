@@ -65,9 +65,11 @@ pub use native5::{
 };
 
 pub use continuation::{
-    PacketControlSnapshotValidationLayouts, PacketDecodedControlSnapshot,
-    PacketOriginalCaptureTransitionData, PacketOriginalControlSnapshot,
-    decode_packet_control_snapshot, packet_control_snapshot_validation_layouts,
+    PacketControlSnapshotValidationLayouts, PacketDecodedCaptureFutureControlData,
+    PacketDecodedControlSnapshot, PacketOriginalCaptureTransitionData,
+    PacketOriginalControlSnapshot, decode_packet_control_snapshot,
+    decode_packet_control_snapshot_for_capture_future_data,
+    packet_control_snapshot_validation_layouts,
 };
 mod initial_observe;
 mod program;
