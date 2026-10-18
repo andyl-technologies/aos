@@ -8969,8 +8969,15 @@ Resumed qualification:
 - Surface candidate `6cb1fcf235`: shared prerequisite `38a1ee21f6` is integrated
   through a normal merge, preserving the previous frozen candidate and receipts.
   The full current-trunk gate aggregate and required application test-target
-  compilation are running. Remaining surface checks, strict lint and formatting
-  precede task acceptance.
+  compilation are running; its formatter pair passes on unchanged source.
+  Review finds a SURF-8 gap: configuration accepts an unknown named view policy
+  until later startup. The earlier source-bound CLI reproduces that acceptance.
+  Follow-up `db293cd9f8` rejects it during whole-configuration loading and checks
+  caller-built exposure lists before any credential resolution. Existing
+  configuration and runtime regressions cover the late-list case without
+  changing their inventory. Full source review and its formatter pair pass;
+  compilation, execution, remaining gates and strict lint remain pending.
+  Results on the older candidate do not establish final task acceptance.
 
 The shared glue dependency now names
 the existing Core types directly, and the crate-graph audit includes the current
