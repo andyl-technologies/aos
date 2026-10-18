@@ -713,7 +713,9 @@ impl std::io::Write for BirthBankWriter<'_> {
     }
 }
 
-pub(crate) use birth::{PacketCompleteInitialLifecycleIdentity, PacketCompleteInitialLifecycleQuote};
+pub(crate) use birth::{
+    PacketCompleteInitialLifecycleIdentity, PacketCompleteInitialLifecycleQuote,
+};
 
 pub(crate) use association::{
     OriginalSourceRestoreSignerConstructionData, OriginalSourceRestoreVerifiedPhase,
@@ -733,8 +735,8 @@ pub(crate) use association::OriginalSourceRestoredProducerPhaseCompletion;
 
 pub(crate) use association::{
     OriginalSourceRestoredInstallationExpected17, OriginalSourceRestoredLimits17,
-    OriginalSourceRestoredProducerCheckpoint17, OriginalSourceRestoredSettled17Read,
-    OriginalSourceRestoredSettled17ReadInputs,
+    OriginalSourceRestoredProducerCheckpoint17, OriginalSourceRestoredSettled17DecodeAttempt,
+    OriginalSourceRestoredSettled17Read, OriginalSourceRestoredSettled17ReadInputs,
 };
 
 pub use birth::PacketCompleteNativeRestoredSettledStartupWire;

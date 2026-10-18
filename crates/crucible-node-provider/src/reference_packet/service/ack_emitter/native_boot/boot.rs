@@ -708,3 +708,21 @@ pub(crate) use restore_prepare::HistoricalPrepareStartupAllocation17;
 
 #[path = "boot/settled_token.rs"]
 mod settled_token_history;
+
+#[path = "boot/observation17.rs"]
+mod observation17;
+pub(crate) use observation17::{
+    NativeObservation17SpentAction, OriginalNativeObservation17Read,
+    native_observation17_scope_counter_scratch_data,
+};
+
+pub(crate) use restore::{
+    NativeObservation17OwningCheckpointData,
+    original_observation17_checkpoint_owner_counter_scratch_data,
+};
+
+#[path = "boot/capture17.rs"]
+mod capture17;
+pub(crate) use capture17::{
+    OriginalNativeCapture17Read, native_capture17_receive_scope_counter_scratch_data,
+};

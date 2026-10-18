@@ -229,6 +229,7 @@ impl InstalledConformancePlan {
             size_of::<Result<[OriginalRestorationNodeConstructionData; 3], [OriginalRestorationNodeConstructionData; 3]>>(),
             size_of::<Result<OriginalRestorationNodeConstructionData, RuntimeError>>(),
             size_of::<Result<Rc<CompleteOriginalRestorationWindow>, RuntimeError>>(),
+            crate::node_contract::ConformanceRuntimeObservation::counter_scratch_data(),
             OriginalRestorationRuntimeMemberIdentity::counter_scratch_data(),
             CompleteOriginalRestorationTransactionTarget::counter_scratch_data(),
             CompleteOriginalRestorationWindow::phase_counter_scratch_data(),
@@ -346,7 +347,7 @@ impl InstalledConformancePlan {
             inputs.sources[index].authenticate_original_restoration_target_data(
                 inputs.tickets[index],
                 inputs.archive,
-                inputs.runtime,
+                inputs.runtime.original_whole_owner_data()?,
                 self,
                 inputs.activation,
             )?;
@@ -1162,6 +1163,34 @@ impl CompleteOriginalRestorationWindow {
         runtime: &ConformanceRuntime,
         activation: &ActivationRecord,
     ) -> Result<usize, RuntimeError> {
+        self.recheck_original_transaction_observed_inputs_data(
+            plan,
+            sdks,
+            launches,
+            encoded_launches,
+            runtime.observation_data(),
+            activation,
+        )
+    }
+
+    /// Repeats the full census over genuine split wrapper/runtime owner loans.
+    ///
+    /// The writer calls this only after releasing every mutable owner loan.
+    /// An observation view grants no stage transition or admission by itself.
+    ///
+    /// # Errors
+    /// Refuses the same foreign, incomplete, busy, changed or excessive owners
+    /// as the ordinary whole-wrapper entry; failed observations stay checking.
+    pub(crate) fn recheck_original_transaction_observed_inputs_data(
+        &self,
+        plan: &InstalledConformancePlan,
+        sdks: [&crate::node_adapters::cnp::PacketCompleteOriginalHostSdk; 3],
+        launches: &[crucible_node_provider::reference_packet::service::PacketNative5SourceLaunch;
+             3],
+        encoded_launches: [&[u8]; 3],
+        runtime: crate::node_contract::ConformanceRuntimeObservation<'_>,
+        activation: &ActivationRecord,
+    ) -> Result<usize, RuntimeError> {
         self.origin()?;
         if self.phase_in_flight.get() {
             self.stage.set(WindowStage::Failed);
@@ -1184,7 +1213,7 @@ impl CompleteOriginalRestorationWindow {
                 .ticket(2)?
                 .original_restoration_journal_reference_data()?,
         ];
-        let inputs = group.original_group_inputs_data(
+        let inputs = group.original_group_observed_inputs_data(
             &self.sources,
             sdks,
             launches,

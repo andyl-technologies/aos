@@ -45,6 +45,31 @@ impl CompleteOriginalHostTicket {
                 _ => RuntimeError::InvalidReceipt,
             })?;
 
+        let result = self.with_restored_capture_first_roles17_data(|first_host, first_semantic| {
+            inspect(RestoredHostCaptureAncestryBorrowed17 {
+                parent_archive_index: &parent,
+                first_host,
+                first_semantic,
+            })
+        });
+        self.source.authenticate_birth()?;
+        result
+    }
+
+    /// Lends exact first Host/semantic roles without encoding the parent Index3.
+    ///
+    /// This separate metadata loan permits the Host17 counter to borrow all
+    /// immutable ancestry and use the Index3 codec's defining output projection.
+    /// No placeholder ContentRef or owning archive identity is manufactured.
+    ///
+    /// # Errors
+    /// Refuses foreign custody, ambiguous first roles, wrong participants or
+    /// first objects outside the actual authenticated archive closure.
+    pub(crate) fn with_restored_capture_first_roles17_data<R>(
+        &self,
+        inspect: impl FnOnce(&ContentRef, [(&Id, &ContentRef); 3]) -> Result<R, RuntimeError>,
+    ) -> Result<R, RuntimeError> {
+        self.source.authenticate_birth()?;
         let result = match &self.source.host {
             CompleteHostArchiveRecord::InitialInvocation15(host) => {
                 let owners = self.source.archive.owners();
@@ -90,11 +115,7 @@ impl CompleteOriginalHostTicket {
                 if semantic.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
                     return Err(RuntimeError::ForeignAuthority);
                 }
-                inspect(RestoredHostCaptureAncestryBorrowed17 {
-                    parent_archive_index: &parent,
-                    first_host: &host_row.state,
-                    first_semantic: semantic,
-                })
+                inspect(&host_row.state, semantic)
             }
             CompleteHostArchiveRecord::Settled17(host) => {
                 let ancestry = &host.ancestry;
@@ -106,14 +127,13 @@ impl CompleteOriginalHostTicket {
                 {
                     return Err(RuntimeError::InvalidReceipt);
                 }
-                inspect(RestoredHostCaptureAncestryBorrowed17 {
-                    parent_archive_index: &parent,
-                    first_host: &ancestry.first_host,
-                    first_semantic: ancestry
+                inspect(
+                    &ancestry.first_host,
+                    ancestry
                         .first_semantic
                         .each_ref()
                         .map(|row| (&row.node, &row.object)),
-                })
+                )
             }
         };
         self.source.authenticate_birth()?;
@@ -136,5 +156,45 @@ impl CompleteOriginalHostTicket {
             + size_of::<Result<usize, RuntimeError>>()
             + size_of::<Result<(), RuntimeError>>()
             + size_of::<usize>() * 4
+    }
+}
+
+impl CompleteOriginalHostTicket {
+    /// Quotes the real signed parent-index encoder used by the ancestry loan.
+    ///
+    /// The caller prices its own actual Source/archive storage independently.
+    /// Returned axes carry no parent provenance or execution permission.
+    ///
+    /// # Errors
+    /// Refuses foreign custody, actual index encoding or independent bounds.
+    pub(crate) fn restored_capture_ancestry17_index_construction_data(
+        &self,
+        maximum_record_bytes: usize,
+        maximum_requested_bytes: usize,
+    ) -> Result<(usize, usize, usize), RuntimeError> {
+        self.source.authenticate_birth()?;
+        let row = self
+            .source
+            .archive
+            .complete_original_index_identity_construction_data(
+                maximum_record_bytes,
+                maximum_requested_bytes,
+            )
+            .map_err(|error| match error.code {
+                crate::node_state::StateErrorCode::ResourceLimit => RuntimeError::ResourceLimit,
+                _ => RuntimeError::InvalidReceipt,
+            })?;
+        self.source.authenticate_birth()?;
+        Ok(row)
+    }
+
+    /// Names the known prewalk formatter temporary of the genuine Index3 codec.
+    pub(crate) fn restored_capture_ancestry17_index_counter_transient_data() -> usize {
+        NativeArchiveRecord::complete_original_index_identity_counter_transient_data()
+    }
+
+    /// Names fixed controls admitted before quoting the genuine signed Index3.
+    pub(crate) fn restored_capture_ancestry17_index_counter_scratch_data() -> usize {
+        NativeArchiveRecord::complete_original_index_identity_counter_scratch_data()
     }
 }

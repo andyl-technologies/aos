@@ -743,3 +743,8 @@ mod native_startup_after;
 pub(crate) use snapshot::settled17;
 
 pub(crate) use snapshot::HistoricalExchangeRecord17;
+
+#[path = "exchange_observation17_owner.rs"]
+mod observation17_owner;
+
+pub(crate) use observation17_owner::counter_scratch_data as original_observation17_publication_counter_scratch_data;

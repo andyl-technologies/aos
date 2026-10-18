@@ -935,3 +935,8 @@ mod tests;
 
 #[path = "restoration_activation/settled.rs"]
 mod settled;
+
+pub(crate) use observation::{
+    NativeObservation17OwningCheckpointData,
+    original_observation17_checkpoint_owner_counter_scratch_data,
+};

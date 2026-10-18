@@ -37,6 +37,37 @@ impl FlightSlots17 {
 }
 
 impl<S: ProviderStream> RestoreCommitFlight<S> {
+    /// Checks completed host owners independently of native release authority.
+    ///
+    /// The distinct signed Observe17 lender proves the actual released World,
+    /// first observation and latest native checkpoint separately. This pure
+    /// subset avoids invoking a legacy canonical verifier before action debit.
+    ///
+    /// # Errors
+    /// Refuses missing/active host fields or another genuine Boot/mapping/hold.
+    pub(in crate::reference_packet::endpoint) fn authenticate_observation17_host_owners_data(
+        &self,
+        boot: &Rc<RefCell<NativeAckBoot>>,
+        connection: &Connection<S>,
+    ) -> Result<(), ProviderError> {
+        FlightSlots17 {
+            mapping: self.mapping.is_some(),
+            admission: self.admission.is_some(),
+            held: self.held.is_some(),
+            proof: self.proof.is_some(),
+            recovered_connection: self.recovered_connection.is_some(),
+            completed: self.completed.is_some(),
+            proof_allocation: self.proof_allocation.is_some(),
+        }
+        .require_completed_owners_data()?;
+        let mapping = self.mapping.as_ref().ok_or_else(refused)?;
+        self.held
+            .as_ref()
+            .ok_or_else(refused)?
+            .authenticate_settled17_roots_data(boot, mapping)?;
+        connection.authenticate_installed_complete_restoration(mapping)
+    }
+
     /// Authenticates a retained completed capsule against the actual released world.
     ///
     /// # Errors
@@ -137,4 +168,15 @@ mod tests {
             assert!(same_some.is_some_and(|slots| slots.require_completed_owners_data().is_err()));
         }
     }
+}
+
+/// Names the distinct Observe17 host-slot/root predicate's explicit views.
+pub(in crate::reference_packet::endpoint) const fn observation17_host_cut_counter_scratch_data()
+-> usize {
+    std::mem::size_of::<FlightSlots17>()
+        + std::mem::size_of::<&Rc<RefCell<NativeAckBoot>>>()
+        + std::mem::size_of::<
+            &Rc<RefCell<crate::protocol_snapshot::PreparedArchivedNativeProtocolMapping>>,
+        >()
+        + std::mem::size_of::<Result<(), ProviderError>>()
 }

@@ -617,3 +617,10 @@ impl OriginalRestoredSuffixPostObservation {
 
 #[path = "observation_suffix/producer.rs"]
 mod producer;
+
+#[path = "observation_suffix/current17.rs"]
+mod current17;
+pub(crate) use current17::{
+    NativeObservation17OwningCheckpointData,
+    original_observation17_checkpoint_owner_counter_scratch_data,
+};

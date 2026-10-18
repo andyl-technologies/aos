@@ -25,6 +25,7 @@ use sha2::{Digest, Sha256};
 use super::{NodeObservedError, refused};
 
 mod schema;
+mod source;
 
 use schema::Manifest;
 

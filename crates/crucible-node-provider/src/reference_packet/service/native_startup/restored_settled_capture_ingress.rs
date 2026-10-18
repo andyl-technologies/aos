@@ -706,6 +706,8 @@ pub fn original_restored_settled_capture_ingress_row_data(
 /// Names the defining receiver/parser/DTO/hash and borrowed counter headers.
 pub fn original_restored_settled_capture_ingress_counter_scratch_data() -> usize {
     current_view17::counter_scratch_data()
+        + crate::reference_packet::service::ack_emitter::native_capture17_receive_scope_counter_scratch_data()
+        + source_occurrence17::capture17_phase_counter_scratch_data()
         + size_of::<NativeRestoredSettledCaptureAttempt>()
         + original_restored_settled_capture_auxiliary_geometry_counter_scratch_data()
         + size_of::<Stage>()
@@ -1076,3 +1078,7 @@ mod tests {
 #[path = "restored_settled_capture_ingress/current_view17.rs"]
 mod current_view17;
 pub(crate) use current_view17::NativeCaptureAttemptCurrent17;
+
+#[path = "restored_settled_capture_ingress/source_occurrence17.rs"]
+mod source_occurrence17;
+pub(crate) use source_occurrence17::NativeCapture17PhaseData;

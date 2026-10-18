@@ -17,7 +17,7 @@ pub struct PreparedCompleteOriginalCapturePreflight {
     limits: NativeArchiveLimits,
     nodes: [usize; 4],
     owners: [CompleteOriginalOwnerCapturePreflight; 4],
-    host: Option<Rc<super::capture_ticket::host_preparation::OriginalHostCapturePreparation>>,
+    host: Option<super::capture_ticket::host_preparation::family::PreparedHostCaptureFamily>,
     host_transferred: std::cell::Cell<bool>,
 }
 
@@ -49,13 +49,21 @@ impl PreparedCompleteOriginalCapturePreflight {
         Ok(total)
     }
 
+    pub(crate) fn authenticate_host_family17_data(
+        &self,
+        restored: bool,
+    ) -> Result<(), RuntimeError> {
+        let host = self.host.as_ref().ok_or(RuntimeError::UnsupportedFacet)?;
+        host.authenticate_family_data(restored)
+    }
+
     pub(crate) fn take_prepared_host(
         &self,
         runtime: &crate::node_contract::NodeRuntime,
         activation: &WorldActivation,
         object: &crate::node_scheduling::InputPayload,
     ) -> Result<
-        Rc<super::capture_ticket::host_preparation::OriginalHostCapturePreparation>,
+        super::capture_ticket::host_preparation::family::PreparedHostCaptureFamily,
         RuntimeError,
     > {
         self.authenticate_runtime(runtime, activation, object)?;
@@ -69,7 +77,7 @@ impl PreparedCompleteOriginalCapturePreflight {
         }
         // Both views retain one backing. Only the attempt can consume its
         // snapshot through the original ticket; this creates no new producer.
-        Ok(Rc::clone(prepared))
+        Ok(prepared.retained())
     }
 
     pub(crate) fn authenticate_runtime(
@@ -203,7 +211,72 @@ impl crate::node_contract::NodeRuntime {
         ),
         limits: NativeArchiveLimits,
     ) -> Result<PreparedCompleteOriginalCapturePreflight, super::RuntimePollFailure> {
+        self.preflight_complete_capture_family_data(
+            graph,
+            activation,
+            source,
+            runtime_object,
+            host_snapshot,
+            limits,
+            None,
+        )
+    }
+
+    /// Seals actual current17 owners around the separately retained Host17 producer.
+    ///
+    /// # Errors
+    /// Refuses foreign current Scope, prepared Host or actual owner geometry.
+    pub(crate) fn preflight_complete_restored_capture17_data(
+        &mut self,
+        graph: &AdmittedGraph,
+        activation: &WorldActivation,
+        source: &OriginalLineageRuntimeRecord,
+        runtime_object: &crate::node_scheduling::InputPayload,
+        host_snapshot: (
+            &crate::node_scheduling::SchedulingSnapshot,
+            OriginalInputLineageLimits,
+        ),
+        limits: NativeArchiveLimits,
+        scope: &crate::node_contract::RestoredCollectingCaptureScope17<'_>,
+        host: Rc<crate::node_contract::PreparedRestoredHost17Capture>,
+    ) -> Result<PreparedCompleteOriginalCapturePreflight, super::RuntimePollFailure> {
+        scope
+            .authenticate_runtime_data(self)
+            .map_err(super::RuntimePollFailure::Admission)?;
+        host.authenticate_runtime_data(self, activation, runtime_object)
+            .map_err(super::RuntimePollFailure::Admission)?;
+        let result = self.preflight_complete_capture_family_data(
+            graph,
+            activation,
+            source,
+            runtime_object,
+            host_snapshot,
+            limits,
+            Some(host),
+        );
+        scope
+            .authenticate_runtime_data(self)
+            .map_err(super::RuntimePollFailure::Admission)?;
+        result
+    }
+
+    fn preflight_complete_capture_family_data(
+        &mut self,
+        graph: &AdmittedGraph,
+        activation: &WorldActivation,
+        source: &OriginalLineageRuntimeRecord,
+        runtime_object: &crate::node_scheduling::InputPayload,
+        host_snapshot: (
+            &crate::node_scheduling::SchedulingSnapshot,
+            OriginalInputLineageLimits,
+        ),
+        limits: NativeArchiveLimits,
+        restored_host: Option<Rc<crate::node_contract::PreparedRestoredHost17Capture>>,
+    ) -> Result<PreparedCompleteOriginalCapturePreflight, super::RuntimePollFailure> {
         use super::RuntimePollFailure;
+        use super::capture_ticket::host_preparation::{
+            OriginalHostCapturePreparation, family::PreparedHostCaptureFamily,
+        };
         let (scheduling, lineage_limits) = host_snapshot;
         self.validate_activation(activation)
             .map_err(RuntimePollFailure::Admission)?;
@@ -226,26 +299,32 @@ impl crate::node_contract::NodeRuntime {
         original
             .authenticate_runtime_authority(graph.world_binding_hash(), &self.authority)
             .map_err(RuntimePollFailure::Admission)?;
-        self.precharge_original_host_capture(
-            graph,
-            source,
-            scheduling,
-            runtime_object,
-            limits.state.maximum_total_content_bytes,
-        )
-        .map_err(RuntimePollFailure::Admission)?;
-        let host = Rc::new(
-            super::capture_ticket::host_preparation::OriginalHostCapturePreparation::prepare(
-                self,
-                graph,
-                source,
-                runtime_object,
-                lineage_limits,
-                limits.native.maximum_record_bytes,
-                limits.state.maximum_total_content_bytes,
-            )
-            .map_err(RuntimePollFailure::Admission)?,
-        );
+        let host = match restored_host {
+            Some(host) => PreparedHostCaptureFamily::Settled17(host),
+            None => {
+                self.precharge_original_host_capture(
+                    graph,
+                    source,
+                    scheduling,
+                    runtime_object,
+                    limits.state.maximum_total_content_bytes,
+                )
+                .map_err(RuntimePollFailure::Admission)?;
+                let host = Rc::new(
+                    OriginalHostCapturePreparation::prepare(
+                        self,
+                        graph,
+                        source,
+                        runtime_object,
+                        lineage_limits,
+                        limits.native.maximum_record_bytes,
+                        limits.state.maximum_total_content_bytes,
+                    )
+                    .map_err(RuntimePollFailure::Admission)?,
+                );
+                PreparedHostCaptureFamily::Initial15(host)
+            }
+        };
         host.authenticate_runtime(self)
             .map_err(RuntimePollFailure::Admission)?;
         let mut rows = [None, None, None, None];

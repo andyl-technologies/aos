@@ -1966,6 +1966,10 @@ pub(crate) use continuation::{
 };
 
 mod restored_settled_history;
+pub(crate) use restored_settled_history::{
+    NativePendingCapture17ControlStorageData, NativePendingCapture17RequestHashAttempt,
+    NativePendingCapture17RequestHashStorageData,
+};
 
 mod current17_reader;
 pub(crate) use current17_reader::{
@@ -1994,3 +1998,12 @@ pub(crate) use restored_settled_capture::NativeRestoredSettledCheckpointAttempt;
 #[path = "control/restored_input_reactive17.rs"]
 mod restored_input_reactive17;
 pub(crate) use restored_input_reactive17::NativeInputReactive17CheckpointAttempt;
+
+pub(crate) use restored_input_reactive17::{
+    NativeObservation17CheckpointAttempt, NativeObservation17CheckpointStorageData,
+    NativeObservation17ProducerStorageData, NativeObservation17ProductionAttempt,
+    NativeObservation17PublishedProductionData, capture17_checkpoint_counter_scratch_data,
+    observation17_producer_counter_scratch_data,
+};
+
+mod capture17_ancestry;

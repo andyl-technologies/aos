@@ -591,7 +591,9 @@ pub(crate) const fn original_startup_capture_counter_scratch_data() -> usize {
 // Exact normative RequestOrigin projection, borrowing the genuine retained
 // original instead of validating and cloning its complete DOM repeatedly.
 // This DATA serializer grants no source, reply or registration permission.
-struct StartupRequestIdentity<'a>(&'a Envelope);
+pub(in crate::reference_packet::control) struct StartupRequestIdentity<'a>(
+    pub(in crate::reference_packet::control) &'a Envelope,
+);
 
 impl Serialize for StartupRequestIdentity<'_> {
     fn serialize<T: serde::Serializer>(&self, serializer: T) -> Result<T::Ok, T::Error> {

@@ -195,7 +195,7 @@ impl HostSchedulingSource {
                     .ok_or(RuntimeError::ResourceLimit)?;
             }
             total = total
-                .checked_add(self.retained_dependency_storage()?)
+                .checked_add(self.retained_archive_capture_dependency_storage_data()?)
                 .ok_or(RuntimeError::ResourceLimit)?;
             total = total
                 .checked_add(ticket.source.capture_owned_storage()?)

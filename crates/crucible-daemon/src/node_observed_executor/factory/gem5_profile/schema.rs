@@ -2,6 +2,7 @@
 
 use std::path::{Component, Path, PathBuf};
 
+use super::source::Source;
 use super::{Artifact, BTreeMap, Deserialize, NodeObservedError, U64, refused};
 
 #[derive(Deserialize)]
@@ -111,6 +112,8 @@ impl Manifest {
             }
             .measure()?;
         }
+        self.source
+            .measure_extensions(&self.artifacts["native_executable"])?;
         for witness in self.witnesses.values() {
             witness.realized_configuration.measure()?;
         }
@@ -166,47 +169,6 @@ impl Model {
         }
         Ok(())
     }
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Source {
-    schema: String,
-    revision: String,
-    upstream: String,
-    version: String,
-    build_configuration: String,
-    recipe_sha256: String,
-    patches: Vec<RecipePatch>,
-    crucible_node_protocol: bool,
-    qualified_exact_capture: bool,
-    qualified_live_branch: bool,
-}
-
-impl Source {
-    fn validate(&self) -> Result<(), NodeObservedError> {
-        if self.schema != "crucible.gem5.source-foundation.v1"
-            || self.revision != "f5c5a6e390f55dd5984977815bf9d0bd05da6945"
-            || self.upstream != "https://github.com/gem5/gem5"
-            || self.version != "25.1.0.1"
-            || self.build_configuration != "ALL"
-            || self.patches.is_empty()
-            || self.crucible_node_protocol
-            || self.qualified_exact_capture
-            || self.qualified_live_branch
-            || !valid_digest(&self.recipe_sha256)
-        {
-            return Err(refused("source-built gem5 implementation closure differs"));
-        }
-        Ok(())
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RecipePatch {
-    file: String,
-    sha256: String,
 }
 
 #[derive(Deserialize)]
@@ -295,14 +257,14 @@ struct HostAbi {
     page_bytes: U64,
 }
 
-fn valid_digest(value: &str) -> bool {
+pub(super) fn valid_digest(value: &str) -> bool {
     value.len() == 64
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-fn require_filename(value: &str) -> Result<(), NodeObservedError> {
+pub(super) fn require_filename(value: &str) -> Result<(), NodeObservedError> {
     let mut components = Path::new(value).components();
     if !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some() {
         return Err(refused(
@@ -312,7 +274,7 @@ fn require_filename(value: &str) -> Result<(), NodeObservedError> {
     Ok(())
 }
 
-fn measure_recipe(path: PathBuf, sha256: &str) -> Result<(), NodeObservedError> {
+pub(super) fn measure_recipe(path: PathBuf, sha256: &str) -> Result<(), NodeObservedError> {
     let length = std::fs::symlink_metadata(&path)
         .map_err(super::io_error)?
         .len();

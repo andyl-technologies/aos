@@ -107,6 +107,23 @@ impl OriginalRestoredCoordinatorCheckpointOwner17 {
         self.object_data().ok_or(RuntimeError::OwnerUnavailable)
     }
 
+    /// Borrows the actual verified typed checkpoint for the same Runtime object.
+    ///
+    /// The encoded-object guard remains the single check for completion and the
+    /// full safe-point Runtime reference. No record is parsed, cloned or created
+    /// by this DATA loan, and it issues no checkpoint or Capture permission.
+    ///
+    /// # Errors
+    /// Refuses an incomplete owner, absent record/object, or another complete
+    /// Runtime reference, exactly as the encoded-object loan does.
+    pub(crate) fn record_for_runtime_data(
+        &self,
+        runtime: &InputPayload,
+    ) -> Result<&CoordinatorCommitmentCheckpoint17, RuntimeError> {
+        self.object_for_runtime_data(runtime)?;
+        self.record.as_ref().ok_or(RuntimeError::OwnerUnavailable)
+    }
+
     /// Constructs from the same sealed current log after whole-row admission.
     /// The later genuine ticket independently binds the actual Runtime7 body.
     pub(crate) fn construct_data(
@@ -250,6 +267,8 @@ pub(super) fn checkpoint_owner_counter_scratch_data() -> usize {
         + size_of::<CoordinatorCommitmentSafePoint17>()
         + size_of::<Option<&InputPayload>>()
         + size_of::<&InputPayload>()
+        + size_of::<Result<&InputPayload, RuntimeError>>()
+        + size_of::<Result<&CoordinatorCommitmentCheckpoint17, RuntimeError>>()
         + size_of::<
             std::iter::Chain<
                 std::option::Iter<'static, serde_json::Value>,
@@ -262,4 +281,136 @@ pub(super) fn checkpoint_owner_counter_scratch_data() -> usize {
         + size_of::<Result<HashRef, crucible_node_contract::ContractError>>()
         + size_of::<Option<&mut CoordinatorCommitmentEntry17>>()
         + size_of::<Result<(), RuntimeError>>()
+}
+
+#[cfg(test)]
+mod typed_runtime_loan_tests {
+    use super::*;
+    use crucible_node_contract::{Phase, Position};
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    fn runtime_object() -> Result<InputPayload, Box<dyn std::error::Error>> {
+        let bytes = b"inert Runtime7 DATA".to_vec();
+        Ok(InputPayload {
+            reference: canonical::content_ref(
+                &bytes,
+                "application/vnd.crucible.runtime-original-lineage+json;version=7",
+            )?,
+            bytes,
+        })
+    }
+
+    // Inert partially populated DATA checks that field presence never replaces
+    // genuine completion. This fixture never sets the private verified bit.
+    fn partial_record(
+        runtime: &InputPayload,
+    ) -> Result<CoordinatorCommitmentCheckpoint17, Box<dyn std::error::Error>> {
+        let cut = Position::new(17.into(), 0.into(), Phase::BoundaryControl);
+        Ok(CoordinatorCommitmentCheckpoint17 {
+            schema_version: 17,
+            ordering_profile: "coordinator-public-events-v17".into(),
+            activation: CoordinatorCommitmentActivation17 {
+                activation_id: Id::new("typed-checkpoint-data")?,
+                world_generation: U64::new(1),
+                world_binding: canonical::hash("cnp.world-binding.v1", b"inert DATA")?,
+                boundary: cut,
+            },
+            parent: None,
+            maximum_records: U64::new(8),
+            first_sequence: U64::new(0),
+            next_sequence: U64::new(2),
+            first_event_ordinal: U64::new(0),
+            entries: Vec::new(),
+            safe_point: CoordinatorCommitmentSafePoint17 {
+                position: cut,
+                event_ordinal: U64::new(0),
+                prefix: HashRef {
+                    algorithm: String::new(),
+                    domain: String::new(),
+                    digest: String::new(),
+                },
+                runtime: runtime.reference.clone(),
+                scheduling: canonical::content_ref(b"inert scheduling DATA", "application/json")?,
+            },
+        })
+    }
+
+    #[test]
+    fn absent_typed_owner_never_lends_a_record_for_a_well_formed_reference() -> TestResult {
+        let owner = OriginalRestoredCoordinatorCheckpointOwner17::empty();
+        let runtime = runtime_object()?;
+
+        assert!(matches!(
+            owner.record_for_runtime_data(&runtime),
+            Err(RuntimeError::OwnerUnavailable)
+        ));
+        assert!(owner.record.is_none());
+        assert!(owner.object.is_none());
+        assert_eq!(owner.retained_requested_storage_data()?, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn partial_record_and_object_keep_custody_without_becoming_a_typed_loan() -> TestResult {
+        let runtime = runtime_object()?;
+        let mut owner = OriginalRestoredCoordinatorCheckpointOwner17::empty();
+        owner.started = true;
+        owner.record = Some(partial_record(&runtime)?);
+        owner.prefix_value = Some(serde_json::json!({"partial":"prefix"}));
+        owner.prefix_bytes.extend_from_slice(b"partial-prefix");
+        owner.bytes.extend_from_slice(b"partial-object");
+        let bytes = b"partial checkpoint DATA".to_vec();
+        owner.object = Some(InputPayload {
+            reference: canonical::content_ref(&bytes, COORDINATOR_CHECKPOINT17_MEDIA)?,
+            bytes,
+        });
+        let retained = owner.retained_requested_storage_data()?;
+        let object_pointer = owner
+            .object
+            .as_ref()
+            .ok_or("missing partial object")?
+            .bytes
+            .as_ptr();
+        let original_runtime = owner
+            .record
+            .as_ref()
+            .ok_or("missing partial record")?
+            .safe_point
+            .runtime
+            .clone();
+
+        assert!(matches!(
+            owner.record_for_runtime_data(&runtime),
+            Err(RuntimeError::OwnerUnavailable)
+        ));
+        let mut changed = runtime.clone();
+        changed.reference.media_type = "application/json".to_owned();
+        assert!(matches!(
+            owner.record_for_runtime_data(&changed),
+            Err(RuntimeError::OwnerUnavailable)
+        ));
+        assert_eq!(owner.retained_requested_storage_data()?, retained);
+        assert_eq!(
+            owner
+                .object
+                .as_ref()
+                .ok_or("lost partial object")?
+                .bytes
+                .as_ptr(),
+            object_pointer
+        );
+        assert_eq!(
+            owner
+                .record
+                .as_ref()
+                .ok_or("lost partial record")?
+                .safe_point
+                .runtime,
+            original_runtime
+        );
+        assert!(owner.started);
+        assert!(!owner.verified);
+        Ok(())
+    }
 }

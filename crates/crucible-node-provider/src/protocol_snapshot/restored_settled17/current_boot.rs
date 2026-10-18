@@ -452,7 +452,7 @@ pub(crate) fn current_boot17_counter_scratch_data() -> usize {
 ///
 /// The whole-family plan separately charges variable populations, raw banks,
 /// parser work, exact String/Vec backing and tree allocation geometry.
-pub(crate) fn current_boot17_inline_layouts_data() -> [usize; 24] {
+pub(crate) fn current_boot17_inline_layouts_data() -> [usize; 27] {
     [
         size_of::<CurrentBoot17Data>(),
         size_of::<CurrentBootData17>(),
@@ -474,6 +474,9 @@ pub(crate) fn current_boot17_inline_layouts_data() -> [usize; 24] {
         size_of::<super::current_actions::CurrentCaptureAttempt17>(),
         size_of::<super::current_actions::CurrentInputAttempt17>(),
         size_of::<super::current_actions::CurrentInputCheckpoint17>(),
+        size_of::<super::current_actions::CurrentObservationAction17>(),
+        size_of::<super::current_actions::CurrentObservationCheckpoint17>(),
+        size_of::<super::current_actions::CurrentObservationProduction17>(),
         size_of::<super::current_quotes::CurrentServiceQuote17>(),
         size_of::<super::current_quotes::CurrentControlQuote17>(),
         size_of::<super::current_quotes::CurrentEndpointQuote17>(),

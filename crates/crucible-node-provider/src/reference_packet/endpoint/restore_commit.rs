@@ -169,3 +169,5 @@ fn refused() -> ProviderError {
 }
 
 mod settled_capture_cut17;
+
+pub(super) use settled_capture_cut17::observation17_host_cut_counter_scratch_data;

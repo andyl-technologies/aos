@@ -183,6 +183,22 @@ impl NativeRestoredSettledActionAttempt {
         }
     }
 
+    /// Borrows the selected typed Capture child without dispatch permission.
+    ///
+    /// # Errors
+    /// Refuses an incomplete/failed wrapper or another actual selected family.
+    pub(crate) fn capture_data(
+        &self,
+    ) -> Result<&NativeRestoredSettledCaptureAttempt, ProviderError> {
+        if self.failed || !self.decoded {
+            return Err(refused());
+        }
+        match self.selected.as_ref() {
+            Some(Selected::Capture(child)) => Ok(child),
+            _ => Err(refused()),
+        }
+    }
+
     /// Borrows the same typed child without permitting mutation or dispatch.
     pub(crate) fn input_reactive_data(
         &self,
@@ -536,5 +552,37 @@ impl NativeRestoredSettledActionCurrent17<'_> {
             return Err(refused());
         }
         self.selected.current_capture_cut_original17_data()
+    }
+}
+
+impl NativeRestoredSettledActionAttempt {
+    /// Lends only a genuine completely published signed Observe17 child.
+    ///
+    /// Other families and partially published actions remain unsupported here.
+    /// The borrowed private child is custody, not permission for another action.
+    ///
+    /// # Errors
+    /// Refuses failed/raw/undecoded wrappers, another family, incomplete
+    /// publication or a refusal from the borrowed callback.
+    pub(crate) fn with_published_observation_checkpoint17_data<R>(
+        &self,
+        inspect: impl FnOnce(&Envelope, &Envelope, usize) -> Result<R, ProviderError>,
+    ) -> Result<R, ProviderError> {
+        if self.failed || !self.decoded || self.original.is_some() {
+            return Err(ProviderError::Correlation(
+                "native17 completed observation owner absent",
+            ));
+        }
+        let Some(Selected::InputReactive(child)) = &self.selected else {
+            return Err(ProviderError::Correlation(
+                "native17 preceding action is not a published observation",
+            ));
+        };
+        let completed = child.published_checkpoint17_data()?;
+        inspect(
+            completed.original_data(),
+            completed.terminal_data(),
+            completed.publication_record_data(),
+        )
     }
 }

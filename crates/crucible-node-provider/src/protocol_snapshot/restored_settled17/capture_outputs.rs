@@ -304,6 +304,22 @@ pub struct ValidatedRestoredSettledNative17CaptureOutputs {
 }
 
 impl ValidatedRestoredSettledNative17CaptureOutputs {
+    /// Borrows the exact retained native-before protocol body.
+    ///
+    /// The complete output reader independently retained these bytes from the
+    /// original Snapshot17 before leaf. This loan neither reparses that graph
+    /// nor substitutes the native-after body or grants a fresh native owner.
+    ///
+    /// # Errors
+    /// Refuses an incomplete output owner or an absent native-before body.
+    pub fn before_protocol_bytes_data(&self) -> Result<&[u8], ProviderError> {
+        self.ensure_validated()?;
+        if self.decoded.before_encoded.is_empty() {
+            return Err(invalid());
+        }
+        Ok(&self.decoded.before_encoded)
+    }
+
     /// Borrows the exact fourth `receipt.native_after_ref` full reference.
     ///
     /// # Errors
@@ -386,4 +402,65 @@ pub(super) fn counter_scratch_data() -> usize {
         +size_of::<std::array::IntoIter<(usize,usize),4>>()
         +size_of::<[usize;4]>()
         +size_of::<std::array::IntoIter<usize,4>>()
+}
+
+#[cfg(test)]
+mod before_protocol_loan_tests {
+    use super::*;
+    use crucible_node_contract::canonical;
+
+    #[test]
+    fn empty_incomplete_owner_cannot_lend_before_protocol() {
+        let output = ValidatedRestoredSettledNative17CaptureOutputs {
+            decoded: super::super::sealed::RestoredSettledNative17DecodeAttempt::new(),
+        };
+        let retained = output
+            .decoded
+            .retained_requested_storage_data(usize::MAX)
+            .unwrap();
+
+        assert!(output.before_protocol_bytes_data().is_err());
+        assert!(output.decoded.before_encoded.is_empty());
+        assert_eq!(output.decoded.before_encoded.capacity(), 0);
+        assert_eq!(
+            output
+                .decoded
+                .retained_requested_storage_data(usize::MAX)
+                .unwrap(),
+            retained
+        );
+    }
+
+    #[test]
+    fn reference_copy_refusal_preserves_partial_owner_when_before_loan_refuses() {
+        let mut decoded = super::super::sealed::RestoredSettledNative17DecodeAttempt::new();
+        let reference =
+            canonical::content_ref(b"retained native prefix", "application/json").unwrap();
+        assert!(decoded.retain_reference_data(0, &reference, 64).is_err());
+        let output = ValidatedRestoredSettledNative17CaptureOutputs { decoded };
+        let retained = output
+            .decoded
+            .retained_requested_storage_data(usize::MAX)
+            .unwrap();
+        let initialized = output.decoded.references[0].as_ref().unwrap();
+        assert_eq!(initialized.hash.algorithm, reference.hash.algorithm);
+        assert!(retained > 0);
+
+        assert!(output.before_protocol_bytes_data().is_err());
+        assert_eq!(
+            output.decoded.references[0]
+                .as_ref()
+                .unwrap()
+                .hash
+                .algorithm,
+            reference.hash.algorithm
+        );
+        assert_eq!(
+            output
+                .decoded
+                .retained_requested_storage_data(usize::MAX)
+                .unwrap(),
+            retained
+        );
+    }
 }

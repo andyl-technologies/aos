@@ -102,3 +102,17 @@ pub(crate) use bootstrap_settled::{
 pub(crate) use bootstrap_settled::{
     BorrowedBootstrap17LineageData, borrow_current_bootstrap17_lineage_data,
 };
+
+pub(crate) use boot::{
+    NativeObservation17SpentAction, OriginalNativeObservation17Read,
+    native_observation17_scope_counter_scratch_data,
+};
+
+pub(crate) use boot::{
+    NativeObservation17OwningCheckpointData,
+    original_observation17_checkpoint_owner_counter_scratch_data,
+};
+
+pub(crate) use boot::{
+    OriginalNativeCapture17Read, native_capture17_receive_scope_counter_scratch_data,
+};

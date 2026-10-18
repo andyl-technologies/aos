@@ -733,3 +733,8 @@ mod tests {
 
 #[path = "observation/settled.rs"]
 mod settled;
+
+pub(crate) use restored_suffix::{
+    NativeObservation17OwningCheckpointData,
+    original_observation17_checkpoint_owner_counter_scratch_data,
+};

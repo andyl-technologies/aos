@@ -51,6 +51,48 @@ impl PacketConnectedProgram {
         observer: &mut MetadataObserver,
     ) -> Result<Position, ProviderError> {
         self.current()?;
+        if self.gate_closed
+            || !self.outputs.is_empty()
+            || self.grants.values().any(|grant| !grant.complete)
+        {
+            return Err(ProviderError::Correlation(
+                "native live reactive Capture boundary",
+            ));
+        }
+        self.observe_original_live_owned_metadata_data(observer)?;
+        self.current()?;
+        Ok(self.reached)
+    }
+
+    /// Observes a stopped current inventory without requiring its outputs drained.
+    ///
+    /// The native17 caller independently proves grant-free current Control and
+    /// its owning published checkpoint. This observer lends no action permission.
+    ///
+    /// # Errors
+    /// Refuses failed/foreign or unopened models, unfinished native grants and
+    /// finite metadata-counter overflow.
+    pub(crate) fn observe_original_observation17_metadata_data(
+        &self,
+        observer: &mut MetadataObserver,
+    ) -> Result<Position, ProviderError> {
+        self.current()?;
+        if self.gate_closed || self.grants.values().any(|grant| !grant.complete) {
+            return Err(ProviderError::Correlation(
+                "native signed Observe17 stopped boundary",
+            ));
+        }
+        self.observe_original_live_owned_metadata_data(observer)?;
+        self.current()?;
+        Ok(self.reached)
+    }
+
+    // Both guarded borrowers enumerate the identical actual owned field walk.
+    // Eligibility remains separate: Capture requires its public outputs drained.
+    fn observe_original_live_owned_metadata_data(
+        &self,
+        observer: &mut MetadataObserver,
+    ) -> Result<(), ProviderError> {
         let Self {
             definition,
             native_pid,
@@ -68,11 +110,6 @@ impl PacketConnectedProgram {
             packet_effects,
             failed,
         } = self;
-        if *gate_closed || !outputs.is_empty() || grants.values().any(|grant| !grant.complete) {
-            return Err(ProviderError::Correlation(
-                "native live reactive Capture boundary",
-            ));
-        }
         observer.observe(definition)?;
         observer.observe(native_pid)?;
         observer.observe(reached)?;
@@ -108,8 +145,7 @@ impl PacketConnectedProgram {
         observer.observe(reactions_completed)?;
         observer.observe(packet_effects)?;
         observer.observe(failed)?;
-        self.current()?;
-        Ok(*reached)
+        Ok(())
     }
 }
 
@@ -213,6 +249,117 @@ mod reply_evidence_metadata_tests {
             facts.vector_capacity_bytes,
             evidence.capacity() * std::mem::size_of::<(ContentRef, Vec<u8>)>()
         );
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod observation17_boundary_tests {
+    use super::*;
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    fn model() -> Result<PacketConnectedProgram, ProviderError> {
+        let (socket, _peer) = UnixDatagram::pair()?;
+        PacketConnectedProgram::new(
+            PacketConnectedDefinition {
+                schema: "source-owned.packet-connected-program/4".into(),
+                connections: vec![PacketInputConnection {
+                    id: Id::new("actual-route")?,
+                    policy: canonical::content_ref(b"policy", "application/octet-stream")?,
+                    producer: Endpoint {
+                        node_id: Id::new("producer")?,
+                        port_id: Id::new("port")?,
+                        lane_id: Id::new("lane")?,
+                    },
+                    consumer: Endpoint {
+                        node_id: Id::new("consumer")?,
+                        port_id: Id::new("port")?,
+                        lane_id: Id::new("lane")?,
+                    },
+                    delay_ps: U64::new(1),
+                }],
+                output: None,
+            },
+            socket,
+        )
+    }
+
+    #[test]
+    fn observe_retains_complete_outputs_while_capture_keeps_its_drain_requirement() -> TestResult {
+        let mut actual = model()?;
+        actual.open_gate()?;
+        let reaction = PacketReaction {
+            input_event: Id::new("input")?,
+            input_producer: Id::new("producer")?,
+            input_sequence: U64::new(1),
+            stage_operation: Id::new("stage")?,
+            commit_request: Id::new("commit")?,
+            payload: Bytes::new(b"original bytes".to_vec()),
+            parent: Position::new(U64::new(0), U64::new(0), Phase::Delivery),
+            evaluation: Position::new(U64::new(0), U64::new(0), Phase::Reaction),
+        };
+        let publication = Position::new(U64::new(0), U64::new(1), Phase::Publication);
+        actual.outputs.push(PacketConnectedPublication {
+            output: PacketPublication {
+                event: Id::new("output")?,
+                operation: Id::new("run")?,
+                sequence: U64::new(1),
+                evaluation: reaction.evaluation,
+                publication,
+                payload: reaction.payload.clone(),
+            },
+            pending: PacketPendingPublication {
+                event: Id::new("output")?,
+                reaction,
+                reaction_operation: Id::new("run")?,
+                publication,
+            },
+        });
+        let before = (actual.outputs.as_ptr(), actual.outputs.capacity());
+        assert!(
+            actual
+                .borrow_original_capture_inventory(&mut MetadataObserver::new())
+                .is_err()
+        );
+        let borrowed =
+            actual.borrow_original_observation17_inventory_data(&mut MetadataObserver::new())?;
+        assert_eq!(
+            serde_json::to_value(&borrowed)?,
+            serde_json::to_value(actual.inventory()?)?
+        );
+        assert_eq!(before, (actual.outputs.as_ptr(), actual.outputs.capacity()));
+        assert_eq!(
+            actual.outputs[0].output.payload.as_slice(),
+            b"original bytes"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn unopened_failed_and_foreign_models_refuse_both_borrowers() -> TestResult {
+        for changed in 0..3 {
+            let mut actual = model()?;
+            if changed != 0 {
+                actual.open_gate()?;
+            }
+            if changed == 1 {
+                actual.failed = true;
+            }
+            if changed == 2 {
+                actual.native_pid = 0;
+            }
+            assert!(
+                actual
+                    .borrow_original_observation17_inventory_data(&mut MetadataObserver::new())
+                    .is_err()
+            );
+            assert!(
+                actual
+                    .borrow_original_capture_inventory(&mut MetadataObserver::new())
+                    .is_err()
+            );
+            assert!(actual.outputs.is_empty());
+        }
         Ok(())
     }
 }

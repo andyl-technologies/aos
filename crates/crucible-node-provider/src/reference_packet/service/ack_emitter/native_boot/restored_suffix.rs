@@ -1332,3 +1332,6 @@ impl RestoredSuffixPreamble {
         matches!(self, Self::Settled17(_))
     }
 }
+
+#[path = "restored_suffix/observation_current17.rs"]
+mod observation_current17;

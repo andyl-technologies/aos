@@ -239,8 +239,8 @@ impl Drop for AttemptGuard<'_> {
 
 pub(crate) use capture::{
     OriginalSourceRestoredInstallationExpected17, OriginalSourceRestoredLimits17,
-    OriginalSourceRestoredProducerCheckpoint17, OriginalSourceRestoredSettled17Read,
-    OriginalSourceRestoredSettled17ReadInputs,
+    OriginalSourceRestoredProducerCheckpoint17, OriginalSourceRestoredSettled17DecodeAttempt,
+    OriginalSourceRestoredSettled17Read, OriginalSourceRestoredSettled17ReadInputs,
 };
 
 pub(crate) use capture::{

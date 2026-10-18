@@ -28,6 +28,10 @@ pub(crate) struct OriginalRestoredSettledNodeHistoryView<'a> {
     base: &'a SemanticRuntimeCustody,
     installed: &'a InstalledRestorationCustody,
     route: &'a crate::node_contract::NodeRoute,
+    // Never dereference or encode this identity. Retaining a Controller borrow
+    // would conflict with the later mutable SDK effect on that same owner.
+    controller_identity: *const crucible_node_provider::client::CnpController,
+    supervisor: &'a crucible_node_provider::connection::OriginalRetainedSupervisor,
     aliases: Option<&'a RefCell<OriginalRestoredOwnerCapacityAliases>>,
     records:
         Option<&'a RefCell<crucible_node_provider::retained_metadata::records::MetadataRecordBank>>,
@@ -413,12 +417,15 @@ impl super::super::super::super::CnpSemanticNode {
         claim: &OriginalRestoredCaptureClaim<'_>,
     ) -> Result<OriginalRestoredSettledNodeHistoryView<'a>, RuntimeError> {
         self.current().map_err(|_| RuntimeError::OwnerUnavailable)?;
-        let base = self
+        let native = self
             .preparation
             .guard
             .custody
             .as_ref()
-            .and_then(|native| native.runtime.as_ref())
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        let base = native
+            .runtime
+            .as_ref()
             .ok_or(RuntimeError::OwnerUnavailable)?;
         let installed = base
             .installed_restoration
@@ -433,6 +440,14 @@ impl super::super::super::super::CnpSemanticNode {
             base,
             installed,
             route: &self.route,
+            controller_identity: native
+                .controller
+                .as_ref()
+                .ok_or(RuntimeError::OwnerUnavailable)?,
+            supervisor: self
+                .retained_supervisor
+                .as_ref()
+                .ok_or(RuntimeError::OwnerUnavailable)?,
             aliases: None,
             records: None,
             provider_aliases: None,
@@ -510,6 +525,14 @@ impl super::super::super::super::CnpSemanticNode {
                 .ok_or(RuntimeError::OwnerUnavailable)?,
             installed,
             route: &self.route,
+            controller_identity: native
+                .controller
+                .as_ref()
+                .ok_or(RuntimeError::OwnerUnavailable)?,
+            supervisor: self
+                .retained_supervisor
+                .as_ref()
+                .ok_or(RuntimeError::OwnerUnavailable)?,
             aliases: None,
             records: None,
             provider_aliases: None,
@@ -570,6 +593,14 @@ impl super::super::super::super::CnpSemanticNode {
                 .ok_or(RuntimeError::OwnerUnavailable)?,
             installed,
             route: &self.route,
+            controller_identity: native
+                .controller
+                .as_ref()
+                .ok_or(RuntimeError::OwnerUnavailable)?,
+            supervisor: self
+                .retained_supervisor
+                .as_ref()
+                .ok_or(RuntimeError::OwnerUnavailable)?,
             aliases: None,
             records: None,
             provider_aliases: None,
@@ -623,6 +654,14 @@ impl super::super::super::super::CnpSemanticNode {
                 .ok_or(RuntimeError::OwnerUnavailable)?,
             installed,
             route: &self.route,
+            controller_identity: native
+                .controller
+                .as_ref()
+                .ok_or(RuntimeError::OwnerUnavailable)?,
+            supervisor: self
+                .retained_supervisor
+                .as_ref()
+                .ok_or(RuntimeError::OwnerUnavailable)?,
             aliases: None,
             records: None,
             provider_aliases: None,
@@ -892,9 +931,11 @@ pub(crate) fn original_restored_settled_semantic_history_counter_scratch_data() 
     };
     use std::cell::{Ref, RefMut};
     original_restored_owner_capacity_counter_scratch_data()
+        + super::capture17::counter_scratch_data()
         + crate::node_contract::OriginalInstalledRestorationNodeAssociation::original_capture17_bridge_counter_scratch_data()
         + crucible_node_provider::retained_metadata::historical_response_body_counter_scratch_data()
         + super::counter_scratch_data()
+        + OriginalRestoredSettledNodeHistoryView::original_controller_history_counter_scratch_data()
         + crate::node_adapters::cnp::semantic::CnpSemanticLaunchGuard::original_metadata_origin_counter_scratch_data()
         + crate::node_adapters::cnp::semantic::semantic_snapshot::restored_base17_counter_scratch_data()
         + size_of::<Option<&'static serde_json::Value>>()
@@ -941,6 +982,8 @@ pub(crate) fn original_restored_settled_semantic_history_counter_scratch_data() 
 pub(in crate::node_adapters::cnp::semantic) fn view_for_current_capture_scope_data<'a>(
     base: &'a SemanticRuntimeCustody,
     route: &'a crate::node_contract::NodeRoute,
+    controller: &crucible_node_provider::client::CnpController,
+    supervisor: &'a crucible_node_provider::connection::OriginalRetainedSupervisor,
     claim: &OriginalRestoredCaptureClaim<'_>,
 ) -> Result<OriginalRestoredSettledNodeHistoryView<'a>, RuntimeError> {
     let installed = base
@@ -956,6 +999,8 @@ pub(in crate::node_adapters::cnp::semantic) fn view_for_current_capture_scope_da
         base,
         installed,
         route,
+        controller_identity: controller,
+        supervisor,
         aliases: None,
         records: None,
         provider_aliases: None,
@@ -992,3 +1037,5 @@ mod metadata17;
 
 #[path = "capture_history/source17.rs"]
 mod source17;
+#[path = "capture_history/controller_baseline17.rs"]
+mod controller_baseline17;

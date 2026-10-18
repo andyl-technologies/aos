@@ -1051,3 +1051,5 @@ mod receive_storage;
 
 #[path = "installed_observation/checkpoint_cache17.rs"]
 mod checkpoint_cache17;
+
+pub use receive_storage::OriginalObservationReceiveStorageData;

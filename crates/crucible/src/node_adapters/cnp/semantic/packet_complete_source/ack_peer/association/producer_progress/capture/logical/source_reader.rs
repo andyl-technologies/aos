@@ -35,11 +35,18 @@ use crucible_node_provider::{
     },
     reference_packet::{
         control::PacketNative5UnderlyingRecord,
-        service::{complete_restore::PacketNativeRestoredCommitHold, PacketConnectedSourceProgram},
+        service::{PacketConnectedSourceProgram, complete_restore::PacketNativeRestoredCommitHold},
     },
 };
 use serde_json::Value;
 use std::{mem::size_of, rc::Rc};
+
+#[path = "source_reader/construction.rs"]
+mod construction;
+pub(crate) use construction::{
+    OriginalSourceRestoredSettled17DecodeAttempt,
+    OriginalSourceRestoredSettled17DecodeConstructionData,
+};
 
 /// Borrows actual independently authenticated participants for one cold read.
 ///
@@ -95,19 +102,20 @@ pub(crate) struct OriginalSourceRestoredSettled17Read {
 impl OriginalSourceRestoredSettled17Read {
     /// Verifies a final Source root, actual uploaded prefix and all defining joins.
     ///
-    /// The caller retains raw literal/DOM inputs before entry and independently
-    /// admits every typed, canonical and native-verifier intermediate. A failed
-    /// read cannot publish a cold group or fabricate a replacement live owner.
+    /// The defining predecode attempt retains these raw and canonical inputs
+    /// after admitting every typed, canonical and native-verifier intermediate.
+    /// A failed read cannot publish a replacement live owner.
     ///
     /// # Errors
     /// Refuses malformed/noncanonical roots, another actual installation/World,
     /// nonrenewing counts or original limits, unsupported Input/old16 recurrence,
     /// incomplete once phases, unequal Node/Producer facts, a broken SDK/native
     /// chain, substituted prefix/checkpoint, or failed completed Capture evidence.
-    pub(crate) fn validate_completed_data(
+    fn validate_completed_data(
         reference: &ContentRef,
         literal: &[u8],
         raw: Rc<Value>,
+        checked_canonical: &[u8],
         input: &OriginalSourceRestoredSettled17ReadInputs<'_>,
     ) -> Result<Self, RuntimeError> {
         if reference.media_type != RESTORED_SETTLED_SEMANTIC17_MEDIA {
@@ -119,9 +127,7 @@ impl OriginalSourceRestoredSettled17Read {
         reference
             .verify(literal)
             .map_err(|_| RuntimeError::InvalidReceipt)?;
-        if canonical::canonical_json(raw.as_ref()).map_err(|_| RuntimeError::InvalidReceipt)?
-            != literal
-        {
+        if checked_canonical != literal {
             return Err(RuntimeError::InvalidReceipt);
         }
         let semantic = semantic_data(raw.as_ref())?;

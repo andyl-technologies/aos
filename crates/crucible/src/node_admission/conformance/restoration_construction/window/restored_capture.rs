@@ -26,6 +26,8 @@ mod checkpoint;
 mod checkpoint_inputs;
 #[path = "restored_capture/claims.rs"]
 mod claims;
+#[path = "restored_capture/host.rs"]
+mod host;
 #[path = "restored_capture/member.rs"]
 mod member;
 
@@ -56,6 +58,7 @@ struct Attempt {
     checkpoint: OriginalRestoredCoordinatorCheckpointOwner17,
     checkpoint_inputs: checkpoint_inputs::OriginalRestoredCaptureCheckpointInputs17,
     counting_banks: [banks::CountingBanks; 3],
+    host: host::RetainedHost17Capture,
     writer_join: Cell<checkpoint::WriterJoinStage>,
     window_work: (usize, usize, usize),
     prequote: [Option<(usize, usize, usize)>; 3],
@@ -87,6 +90,7 @@ impl Attempt {
                 self.window_work.0,
                 self.window_work.1,
                 self.window_work.2,
+                self.host.future_requested_bytes_data(maximum)?,
             ],
             maximum,
         )?;
@@ -148,6 +152,7 @@ impl Ledger {
                 &[
                     requested,
                     attempt.capture_id.allocated_capacity(),
+                    attempt.host.retained_requested_backing_data()?,
                     attempt.checkpoint.retained_requested_storage_data()?,
                     attempt
                         .checkpoint_inputs
@@ -245,6 +250,7 @@ impl CompleteOriginalRestorationWindow {
             checkpoint_inputs:
                 checkpoint_inputs::OriginalRestoredCaptureCheckpointInputs17::default(),
             counting_banks: std::array::from_fn(|_| banks::CountingBanks::default()),
+            host: host::RetainedHost17Capture::default(),
             writer_join: Cell::new(checkpoint::WriterJoinStage::Waiting),
             window_work,
             prequote: [None; 3],
@@ -413,6 +419,7 @@ impl CompleteOriginalRestorationWindow {
         {
             return Err(RuntimeError::ForeignAuthority);
         }
+        attempt.host.require_writing_data()?;
         claim.row.authenticate_owner_data(
             source,
             controller,
@@ -505,6 +512,7 @@ impl CompleteOriginalRestorationWindow {
         {
             return Err(RuntimeError::ForeignAuthority);
         }
+        attempt.host.require_writing_data()?;
         let row = attempt.rows[selected].ok_or(RuntimeError::OwnerUnavailable)?;
         row.authenticate_owner_data(source, controller, read_owner, &attempt.request_data())?;
         attempt.members[selected].set(1);
@@ -576,6 +584,10 @@ impl CompleteOriginalRestorationWindow {
         {
             attempt.stage.set(Stage::Failed);
             return Err(RuntimeError::OutstandingObligations);
+        }
+        if let Err(error) = attempt.host.require_spent_data() {
+            attempt.stage.set(Stage::Failed);
+            return Err(error);
         }
         self.whole_observation.authenticate_dispatch_data()?;
         attempt.stage.set(Stage::Verified);
@@ -778,6 +790,7 @@ pub(super) fn counter_scratch_data() -> usize {
         + size_of::<Result<(), RuntimeError>>()
         + size_of::<Result<&PacketCompleteSemanticSource, RuntimeError>>()
         + checkpoint_inputs::counter_scratch_data()
+        + member::counter_scratch_data()
         + size_of::<attempt_guard::OriginalRestoredCaptureAttemptGuard<'static>>()
         + crate::node_contract::coordinator_commitment::counter_scratch_data()
         + NodeRuntime::original_restored_capture_runtime_counter_scratch_data()
@@ -786,4 +799,6 @@ pub(super) fn counter_scratch_data() -> usize {
         )
         + PacketCompleteSemanticSource::original_restored_capture_counter_scratch_data()
         + banks::counter_scratch_data()
+        + host::counter_scratch_data()
+        + crate::node_contract::RestoredCollectingCaptureScope17::launch_operand_counter_scratch_data()
 }

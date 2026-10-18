@@ -696,3 +696,8 @@ mod settled_current;
 
 #[path = "restore/settled_token.rs"]
 mod settled_token_history;
+
+pub(crate) use restoration_activation::{
+    NativeObservation17OwningCheckpointData,
+    original_observation17_checkpoint_owner_counter_scratch_data,
+};

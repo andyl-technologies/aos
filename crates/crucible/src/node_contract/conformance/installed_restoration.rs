@@ -6,8 +6,6 @@
 
 use super::*;
 use crate::node_admission::{CompleteOriginalRestorationWindow, InstalledConformancePlan};
-use crate::node_contract::runtime_owned_counter::RetainedRuntimeCounter;
-use std::mem::size_of;
 
 impl ConformanceRuntime {
     pub(crate) fn authenticate_original_installed_runtime_data(
@@ -17,16 +15,8 @@ impl ConformanceRuntime {
         plan: &InstalledConformancePlan,
         target: &ActivationRecord,
     ) -> Result<(), RuntimeError> {
-        self.authenticate_complete_original_restoration_origin()?;
-        if !self.graph.plan().is_same_original_plan_data(plan) {
-            return Err(RuntimeError::ForeignAuthority);
-        }
-        window.authenticate_original_installed_runtime_identity_data(
-            &self.runtime,
-            archive,
-            plan,
-            target,
-        )
+        self.observation_data()
+            .authenticate_original_installed_runtime_data(window, archive, plan, target)
     }
 
     pub(crate) fn original_installed_restoration_retained_storage_precredit_data(
@@ -37,37 +27,10 @@ impl ConformanceRuntime {
         target: &ActivationRecord,
         maximum: usize,
     ) -> Result<usize, RuntimeError> {
-        self.authenticate_original_installed_runtime_data(window, archive, plan, target)?;
-        let mut counter = RetainedRuntimeCounter::new(maximum);
-        counter.add(size_of::<Self>())?;
-        counter.add(
-            self.runtime
-                .original_retained_requested_storage_precredit_data(maximum)?,
-        )?;
-        if counter.rc(&self.graph)? {
-            self.graph
-                .charge_original_retained_storage_precredit_data(&mut counter)?;
-        }
-        if let Some(source) = &self.exact_inputs
-            && counter.rc(source)?
-        {
-            counter.add(
-                source.retained_restoration_metadata_bytes_excluding_runtime_precredit_data(
-                    archive, maximum,
-                )?,
-            )?;
-        }
-        if let Some(activation) = &self.activation {
-            let facts = activation.retained_requested_storage_data(maximum)?;
-            counter.views(
-                facts.independent_bytes(),
-                facts
-                    .shared_allocations()
-                    .map(|root| (root.identity(), root.requested_bytes())),
-            )?;
-        }
-        self.authenticate_original_installed_runtime_data(window, archive, plan, target)?;
-        Ok(counter.bytes())
+        self.observation_data()
+            .original_installed_restoration_retained_storage_precredit_data(
+                window, archive, plan, target, maximum,
+            )
     }
 
     pub(crate) fn original_installed_restoration_descriptor_views_precredit_data(
@@ -77,12 +40,10 @@ impl ConformanceRuntime {
         plan: &InstalledConformancePlan,
         target: &ActivationRecord,
     ) -> Result<usize, RuntimeError> {
-        self.authenticate_original_installed_runtime_data(window, archive, plan, target)?;
-        let descriptors = self
-            .runtime
-            .original_inactive_descriptor_views_precredit_data()?;
-        self.authenticate_original_installed_runtime_data(window, archive, plan, target)?;
-        Ok(descriptors)
+        self.observation_data()
+            .original_installed_restoration_descriptor_views_precredit_data(
+                window, archive, plan, target,
+            )
     }
 }
 

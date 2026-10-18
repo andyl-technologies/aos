@@ -1009,3 +1009,6 @@ mod observation_receive;
 
 #[path = "content/capture_current17.rs"]
 mod capture_current17;
+
+#[path = "content/capture_encoding17.rs"]
+mod capture_encoding17;

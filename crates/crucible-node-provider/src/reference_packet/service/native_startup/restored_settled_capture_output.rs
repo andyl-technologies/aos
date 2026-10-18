@@ -268,6 +268,7 @@ impl Write for Bounded<'_> {
 
 pub(super) const fn counter_scratch_data() -> usize {
     active_cut17::counter_scratch_data()
+        + snapshot17::native_capture17_snapshot_counter_scratch_data()
         + size_of::<NativeRestoredSettledCaptureOutputs>()
         + size_of::<Output>()
         + size_of::<NativeRecordedOutput17<'static>>()
@@ -438,3 +439,8 @@ mod recorded_output_tests {
 #[path = "restored_settled_capture_output/active_cut17.rs"]
 mod active_cut17;
 pub(crate) use active_cut17::NativeCaptureOutputCut17;
+
+mod snapshot17;
+pub(crate) use snapshot17::{
+    NativeCapture17SnapshotStorageData, native_capture17_snapshot_counter_scratch_data,
+};

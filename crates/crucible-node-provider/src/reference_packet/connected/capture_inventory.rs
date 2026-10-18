@@ -19,6 +19,23 @@ impl PacketConnectedProgram {
     }
 }
 
+impl PacketConnectedProgram {
+    /// Borrows the exact stopped Observe17 inventory, including retained outputs.
+    ///
+    /// This is a field view only; the real action separately requires owning
+    /// checkpoint/currentness, Source MAC and prepaid same-Boot occurrence.
+    ///
+    /// # Errors
+    /// Refuses foreign/failed/unopened models, unfinished grants or counter overflow.
+    pub(crate) fn borrow_original_observation17_inventory_data(
+        &self,
+        observer: &mut MetadataObserver,
+    ) -> Result<OriginalCaptureReactiveInventory<'_>, ProviderError> {
+        self.observe_original_observation17_metadata_data(observer)?;
+        Ok(OriginalCaptureReactiveInventory(self))
+    }
+}
+
 impl OriginalCaptureReactiveInventory<'_> {
     /// Counts serialized byte fields independently of reserved inventory Vecs.
     pub(crate) fn observe_serialized_formatter_fields(
@@ -410,3 +427,6 @@ mod settled_inventory_tests {
         Ok(())
     }
 }
+
+#[path = "capture_inventory/observation17.rs"]
+pub(super) mod observation17;

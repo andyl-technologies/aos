@@ -52,8 +52,10 @@ pub struct OriginalRestorationConstructionInputs<'a> {
     pub archive: &'a CompleteOriginalRestorationSource,
     /// Borrows its same original native owner ticket before transfer.
     pub ticket: &'a CompleteOriginalNativeTicket,
-    /// Borrows the actual inactive complete-restoration runtime before Commit.
-    pub runtime: &'a ConformanceRuntime,
+    /// Borrows actual complete-restoration owners for this construction phase.
+    /// Installed observations retain real field loans and a current runtime loan;
+    /// cold construction also retains its genuine original whole-wrapper loan.
+    pub runtime: crate::node_contract::ConformanceRuntimeObservation<'a>,
     /// Borrows the proposal already installed on that exact runtime barrier.
     pub activation: &'a ActivationRecord,
     /// Borrows the three exact signed local journal roles in native owner order.

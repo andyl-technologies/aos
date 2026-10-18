@@ -329,6 +329,9 @@ impl Ledger<'_> {
             stage,
             construction,
             prefix: _,
+            // Archive output copies are completed-Capture housekeeping, not
+            // modeled guest/SDK state. The live census retains them separately.
+            materialization: _,
             transport,
             post_confirmation: _,
         } = self.owner;

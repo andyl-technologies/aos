@@ -25,16 +25,19 @@ impl PacketCompleteRestorationPrebirth {
         )
     }
 
-    pub(in crate::node_qualification::packet_collection::complete) fn retained_restoration_holder_storage_for_scope_data(
+    pub(in crate::node_qualification::packet_collection::complete) fn retained_restoration_holder_storage_for_scope_data<
+        'a,
+    >(
         &self,
         original: &Rc<RefCell<Self>>,
         archive: &crucible::node_state::CompleteOriginalRestorationSource,
-        runtime: &ConformanceRuntime,
+        runtime: impl Into<crucible::node_contract::ConformanceRuntimeObservation<'a>>,
         plan: &InstalledConformancePlan,
         activation: &ActivationRecord,
         maximum: usize,
         scope: Option<&crucible::node_admission::OriginalRestorationConstructionScope<'_>>,
     ) -> Result<usize, RuntimeError> {
+        let runtime = runtime.into();
         self.authenticate_restoration_storage_scope_data(
             archive, runtime, plan, activation, scope,
         )?;
@@ -191,14 +194,17 @@ impl PacketCompleteRestorationPrebirth {
         )
     }
 
-    pub(in crate::node_qualification::packet_collection::complete) fn retained_restoration_holder_descriptor_for_scope_data(
+    pub(in crate::node_qualification::packet_collection::complete) fn retained_restoration_holder_descriptor_for_scope_data<
+        'a,
+    >(
         &self,
         archive: &crucible::node_state::CompleteOriginalRestorationSource,
-        runtime: &ConformanceRuntime,
+        runtime: impl Into<crucible::node_contract::ConformanceRuntimeObservation<'a>>,
         plan: &InstalledConformancePlan,
         activation: &ActivationRecord,
         scope: Option<&crucible::node_admission::OriginalRestorationConstructionScope<'_>>,
     ) -> Result<usize, RuntimeError> {
+        let runtime = runtime.into();
         self.authenticate_restoration_storage_scope_data(
             archive, runtime, plan, activation, scope,
         )?;
@@ -281,14 +287,17 @@ fn storage_error(_: QualificationError) -> RuntimeError {
 }
 
 impl PacketCompleteRestorationPrebirth {
-    pub(in crate::node_qualification::packet_collection::complete) fn authenticate_restoration_storage_scope_data(
+    pub(in crate::node_qualification::packet_collection::complete) fn authenticate_restoration_storage_scope_data<
+        'a,
+    >(
         &self,
         archive: &crucible::node_state::CompleteOriginalRestorationSource,
-        runtime: &ConformanceRuntime,
+        runtime: impl Into<crucible::node_contract::ConformanceRuntimeObservation<'a>>,
         plan: &InstalledConformancePlan,
         activation: &ActivationRecord,
         scope: Option<&crucible::node_admission::OriginalRestorationConstructionScope<'_>>,
     ) -> Result<(), RuntimeError> {
+        let runtime = runtime.into();
         if let Some(scope) = scope
             && scope.phase()
                 == crucible::node_admission::OriginalRestorationConstructionPhase::Installed
@@ -298,10 +307,9 @@ impl PacketCompleteRestorationPrebirth {
                 || !self.binding_attempted
                 || !self.runtime_attempted
                 || self.failed_runtime.is_some()
-                || !self
-                    .runtime
-                    .as_ref()
-                    .is_some_and(|actual| std::ptr::eq(actual.as_ptr().cast_const(), runtime))
+                || !self.runtime.as_ref().is_some_and(|actual| {
+                    runtime.is_original_runtime_data(actual.as_ptr().cast_const())
+                })
                 || !std::ptr::eq(scope.inputs().archive, archive)
                 || !std::ptr::eq(scope.inputs().activation, activation)
                 || !scope.plan().is_original_plan_data(plan)
@@ -318,6 +326,11 @@ impl PacketCompleteRestorationPrebirth {
                 .map_err(|_| RuntimeError::ForeignAuthority)?;
             return scope.authenticate_original_runtime_data();
         }
-        self.authenticate_restoration_target_storage_data(archive, runtime, plan, activation)
+        self.authenticate_restoration_target_storage_data(
+            archive,
+            runtime.original_whole_owner_data()?,
+            plan,
+            activation,
+        )
     }
 }

@@ -328,3 +328,6 @@ impl CompleteOriginalArchiveValidation<'_> {
         Ok(())
     }
 }
+
+#[path = "complete_original_validation_origin/index_geometry17.rs"]
+mod index_geometry17;

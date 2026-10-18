@@ -24,7 +24,7 @@ use std::{
 type Originals = BTreeMap<Id, (HashRef, PacketControlReply)>;
 type Content = BTreeMap<ContentRef, Vec<u8>>;
 
-struct ControlHistory<'a>(&'a PacketControl, bool);
+struct ControlHistory<'a>(&'a PacketControl, bool, Option<PendingCapture17Fields<'a>>);
 
 struct ProgramHistory<'a>(&'a NativeProgram);
 
@@ -149,7 +149,7 @@ impl PacketControl {
         &self,
     ) -> Result<impl Serialize + '_, ProviderError> {
         self.authenticate_restored_settled_history_edges_data()?;
-        Ok(ControlHistory(self, false))
+        Ok(ControlHistory(self, false, None))
     }
 
     /// Borrows a rooted graph view whose Hold payload is defined by its prelude.
@@ -164,7 +164,7 @@ impl PacketControl {
         &self,
     ) -> Result<impl Serialize + '_, ProviderError> {
         self.authenticate_restored_settled_history_edges_data()?;
-        Ok(ControlHistory(self, true))
+        Ok(ControlHistory(self, true, None))
     }
 
     /// Walks every retained child under the caller's nonresetting graph observer.
@@ -512,9 +512,18 @@ impl Serialize for ControlHistory<'_> {
         state.serialize_field("capture_creator", capture_creator)?;
         let _ = capture_identity;
         state.serialize_field("capture_identity_role", "current-native-control-identity")?;
-        state.serialize_field("originals", &OriginalsHistory(originals))?;
-        state.serialize_field("begins", begins)?;
-        state.serialize_field("begin_requests", begin_requests)?;
+        if let Some(pending) = &self.2 {
+            state.serialize_field("originals", &pending.originals_data(originals))?;
+            state.serialize_field("begins", &pending.begins_data(begins))?;
+            state.serialize_field(
+                "begin_requests",
+                &pending.begin_requests_data(begin_requests),
+            )?;
+        } else {
+            state.serialize_field("originals", &OriginalsHistory(originals))?;
+            state.serialize_field("begins", begins)?;
+            state.serialize_field("begin_requests", begin_requests)?;
+        }
         state.serialize_field("content", &ContentHistory(content))?;
         state.serialize_field("content_bytes", content_bytes)?;
         state.serialize_field("realized", realized)?;
@@ -524,7 +533,11 @@ impl Serialize for ControlHistory<'_> {
         state.serialize_field("fenced", fenced)?;
         state.serialize_field("native_effect_attempted", native_effect_attempted)?;
         state.serialize_field("immediate", immediate)?;
-        state.serialize_field("current_operation", current_operation)?;
+        if let Some(pending) = &self.2 {
+            state.serialize_field("current_operation", &Some(pending.operation_data()))?;
+        } else {
+            state.serialize_field("current_operation", current_operation)?;
+        }
         state.serialize_field("terminals", terminals)?;
         state.serialize_field("common_coordinator", common_coordinator)?;
         state.serialize_field("world_coordinator", world_coordinator)?;
@@ -699,3 +712,10 @@ mod tests {
         Ok(())
     }
 }
+
+mod pending_capture17;
+use pending_capture17::PendingCapture17Fields;
+pub(crate) use pending_capture17::{
+    NativePendingCapture17ControlStorageData, NativePendingCapture17RequestHashAttempt,
+    NativePendingCapture17RequestHashStorageData,
+};

@@ -10,6 +10,9 @@ use crate::node_contract::{HostSchedulingContinuationV2, NodeRuntime};
 use crate::node_scheduling::InputPayload;
 use std::mem::{align_of, size_of};
 
+#[path = "capture_dependencies/restored17.rs"]
+mod restored17;
+
 const JOURNAL_MEDIA: &str =
     "application/vnd.crucible.host-scheduling-capture-journal+json;version=2";
 

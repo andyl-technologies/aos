@@ -1814,3 +1814,41 @@ Provider build statements refer to the ordinary development profile unless an
 optimized measurement explicitly identifies a different executable and profile.
 Component timings retain their original pinned inputs; a later provider rebuild
 is not a new performance measurement.
+
+
+### Scoped Capture dispatcher and current owner construction
+
+The current17 construction path now lends the actual Window scope through its
+separate owner-ticket family. It retains the genuine prepared Host producer and
+current Runtime, scheduler and coordinator objects. Native and Source loans join
+the same Boot, original launch, raw first envelope and Source owner. After each
+owner callback returns, private claims and result-slot loans are released before
+full observation admits the next owner; refusal retains partial outputs and
+spent occurrences.
+
+Controller and SDK growth quotes follow actual retained records and serialized
+fields. Native Capture request hashing uses the complete original identity;
+prospective geometry does not substitute for a future result hash. Strict
+Snapshot17 output follows the exact nested reference field order required by its
+reader. The new observer view borrows the real split Runtime owners instead of
+constructing a stand-in whole Runtime.
+
+The ordinary unfiltered library run passes 1,895 Core tests, 1,367 Provider tests
+and twelve Contract tests, with existing ignored populations of 33, fifteen and
+one. With the source-built gem5 profile and matching reference-device/provider
+inputs, the full Daemon rerun passes 1,479 tests, with 162 existing ignored
+tests, in 332.03 seconds. No tests are filtered or newly ignored.
+
+These are constructor, custody, dispatch and DATA-reader controls. The complete
+native Capture issuer, signed publication and fresh continuation remain closed
+until their actual owner and historical-reader conjunction is implemented and
+qualified. The production application-target result at `f89845137e` applies to
+its earlier immutable source snapshot and must be refreshed for this source.
+
+The configured rerun exposed a source-manifest reader that predated the current
+gem5 producer. Its strict typed extension reader now validates and measures the
+retained platform, terminal and native-origin source bindings. Genuine older v1
+producers remain supported; explicit nulls, unknown nested fields, incomplete
+pairs and qualification promotions are refused. All five new metadata controls
+and the actual installed-profile epoch control pass. These source bindings do
+not widen the fixed profile’s execution or device qualification.

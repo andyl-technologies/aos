@@ -63,7 +63,7 @@ impl PacketCompleteRestorationPrebirth {
             encoded_launch: encoded_launches[0],
             archive,
             ticket: tickets[0],
-            runtime,
+            runtime: runtime.observation_data(),
             activation,
             journals,
             journal: journals[0],

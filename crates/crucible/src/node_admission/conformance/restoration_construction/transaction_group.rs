@@ -134,6 +134,30 @@ impl OriginalRestorationTransactionGroup {
         journals: [&'a ContentRef; 3],
         selected: usize,
     ) -> Result<OriginalRestorationConstructionInputs<'a>, RuntimeError> {
+        self.original_group_observed_inputs_data(
+            sources,
+            sdks,
+            launches,
+            encoded_launches,
+            runtime.observation_data(),
+            activation,
+            journals,
+            selected,
+        )
+    }
+
+    pub(super) fn original_group_observed_inputs_data<'a>(
+        &'a self,
+        sources: &'a [Rc<PacketCompleteSemanticSource>; 3],
+        sdks: [&'a crate::node_adapters::cnp::PacketCompleteOriginalHostSdk; 3],
+        launches: &'a [crucible_node_provider::reference_packet::service::PacketNative5SourceLaunch;
+                3],
+        encoded_launches: [&'a [u8]; 3],
+        runtime: crate::node_contract::ConformanceRuntimeObservation<'a>,
+        activation: &'a ActivationRecord,
+        journals: [&'a ContentRef; 3],
+        selected: usize,
+    ) -> Result<OriginalRestorationConstructionInputs<'a>, RuntimeError> {
         self.authenticate_archive(&self.archive)?;
         let inputs = OriginalRestorationConstructionInputs {
             sources,

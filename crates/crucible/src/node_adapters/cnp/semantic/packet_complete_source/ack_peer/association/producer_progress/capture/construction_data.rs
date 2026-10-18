@@ -40,6 +40,8 @@ pub struct OriginalSourceRestoredCaptureConstructionData {
     pub(super) checkpoint: usize,
     pub(super) semantic: usize,
     pub(super) frozen: usize,
+    pub(super) finalization: super::finalization::FinalizationStorage,
+    pub(super) materialization: super::materialization_storage::CaptureMaterializationStorage,
     pub(super) sdk: OriginalRestoredSettledCaptureConstructionData,
     pub(super) native: PacketRestoredSettledNativeCarrierData,
     pub(super) validation: PacketRestoredSettledNativeOutputValidationStorageData,
@@ -71,6 +73,20 @@ impl OriginalSourceRestoredCaptureConstructionData {
     /// Refuses overflow or demand exceeding the original construction ceiling.
     pub fn requested_bytes_data(&self) -> Result<usize, RuntimeError> {
         super::construction_quote::sum(&[self.retained, self.transient, self.scratch], self.maximum)
+    }
+
+    /// Checks every output role against the actual remaining native capture limits.
+    ///
+    /// The owning Node invokes this before SDK effects and repeats it during
+    /// materialization. It grants no Capture action and raises no original cap.
+    ///
+    /// # Errors
+    /// Refuses a record, aggregate-byte or object ceiling below any required role.
+    pub fn authenticate_capture_output_limits_data(
+        &self,
+        limits: crate::node_contract::NativeCaptureLimits,
+    ) -> Result<(), RuntimeError> {
+        self.materialization.authenticate_limits_data(limits)
     }
 
     pub(crate) fn authenticate_owner_data(

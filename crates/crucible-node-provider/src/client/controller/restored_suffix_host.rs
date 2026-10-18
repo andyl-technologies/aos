@@ -596,3 +596,7 @@ pub use history::OriginalRestoredSuffixHostHistoricalData;
 
 #[path = "restored_suffix_host/checkpoint_cache17.rs"]
 mod checkpoint_cache17;
+
+#[path = "restored_suffix_host/observation17_storage.rs"]
+mod observation17_storage;
+pub use observation17_storage::OriginalRestoredObservation17AssignmentStorageData;

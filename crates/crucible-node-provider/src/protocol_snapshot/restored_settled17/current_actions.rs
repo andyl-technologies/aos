@@ -74,6 +74,7 @@ pub(crate) struct CurrentInputAttempt17 {
     pub(crate) terminal: Option<Envelope>,
     pub(crate) prepared_reply: Option<Map<String, Value>>,
     pub(crate) stage: CurrentAttemptStage17,
+    pub(crate) observation: Option<CurrentObservationAction17>,
 }
 impl HistoricalType for CurrentInputAttempt17 {
     fn read(
@@ -92,6 +93,7 @@ impl HistoricalType for CurrentInputAttempt17 {
         let terminal_raw = fields.named("terminal")?;
         let prepared_reply_raw = fields.named("prepared_reply")?;
         let stage_raw = fields.named("stage")?;
+        let observation_raw = fields.named("observation")?;
         fields.finish()?;
         let original = ledger.read::<Option<Envelope>>(original_raw, build)?;
         let terminal = ledger.read::<Option<Envelope>>(terminal_raw, build)?;
@@ -122,6 +124,8 @@ impl HistoricalType for CurrentInputAttempt17 {
         )?;
         let ordinal = ledger.read::<u64>(ordinal_raw, build)?;
         let stage = inline17::<CurrentAttemptStage17>(stage_raw, build)?;
+        let observation =
+            ledger.read::<Option<CurrentObservationAction17>>(observation_raw, build)?;
         if !build {
             return Ok(None);
         }
@@ -136,6 +140,7 @@ impl HistoricalType for CurrentInputAttempt17 {
             terminal: terminal.ok_or_else(invalid)?,
             prepared_reply: prepared_reply.ok_or_else(invalid)?,
             stage: stage.ok_or_else(invalid)?,
+            observation: observation.ok_or_else(invalid)?,
         }))
     }
 }
@@ -286,3 +291,9 @@ impl HistoricalType for HistoricalRestoredAction17 {
         }))
     }
 }
+
+#[path = "current_actions/observation17.rs"]
+mod observation17;
+pub(crate) use observation17::{
+    CurrentObservationAction17, CurrentObservationCheckpoint17, CurrentObservationProduction17,
+};

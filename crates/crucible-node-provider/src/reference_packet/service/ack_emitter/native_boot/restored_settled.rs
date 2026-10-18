@@ -283,6 +283,26 @@ impl NativeRestoredSettledCaptureOwner {
         Ok(())
     }
 
+    /// Checks defining action visitors beneath the exact retained receive.
+    ///
+    /// This pure ingress bound creates no action or numeric allocation credit.
+    /// Source authentication and the full prospective debit remain mandatory.
+    ///
+    /// # Errors
+    /// Refuses another Boot/current occurrence, poisoned ownership or scratch
+    /// outside this actual private native action reservation.
+    pub(super) fn authenticate_action_counter_scratch_data(
+        &self,
+        boot: &Rc<RefCell<NativeAckBoot>>,
+        index: usize,
+        attempt: &Rc<RefCell<NativeRestoredSettledActionAttempt>>,
+        scratch: usize,
+    ) -> Result<(), ProviderError> {
+        self.authenticate_retained_attempt_data(boot, index, attempt)?;
+        self.budget
+            .authenticate_action_counter_scratch_data(scratch)
+    }
+
     /// Spends separately recounted current graph and output work before dispatch.
     ///
     /// Only the actual live Source-MAC/currentness route may supply the complete
@@ -586,3 +606,6 @@ impl NativeRestoredSettledCaptureOwner {
         )
     }
 }
+
+#[path = "restored_settled/observation_current17.rs"]
+mod observation_current17;

@@ -637,7 +637,7 @@ impl ConformanceRuntime {
         maximum: usize,
     ) -> Result<crate::node_admission::OriginalRestorationNodeConstructionData, RuntimeError> {
         inputs.authenticate_original_group_data()?;
-        if !std::ptr::eq(self, inputs.runtime) {
+        if !inputs.runtime.is_original_runtime_data(std::ptr::from_ref(self)) {
             return Err(RuntimeError::ForeignAuthority);
         }
         self.authenticate_original_restoration_target_data(
@@ -684,7 +684,7 @@ impl ConformanceRuntime {
     ) -> Result<[crate::node_admission::OriginalRestorationNodeConstructionData; 3], RuntimeError>
     {
         inputs.authenticate_original_group_data()?;
-        if !std::ptr::eq(self, inputs.runtime) {
+        if !inputs.runtime.is_original_runtime_data(std::ptr::from_ref(self)) {
             return Err(RuntimeError::ForeignAuthority);
         }
         self.authenticate_original_restoration_target_data(
@@ -740,7 +740,7 @@ impl ConformanceRuntime {
             OriginalRestorationNodeInputs,
         };
         inputs.authenticate_original_group_data()?;
-        if !std::ptr::eq(self, inputs.runtime) {
+        if !inputs.runtime.is_original_runtime_data(std::ptr::from_ref(self)) {
             return Err(RuntimeError::ForeignAuthority);
         }
         self.authenticate_original_restoration_target_data(
@@ -758,6 +758,7 @@ impl ConformanceRuntime {
         let owning = self.original_inactive_retained_storage_counter_scratch_data()?;
         let terms = [
             std::mem::size_of::<OriginalRestorationConstructionInputs<'static>>(),
+            ConformanceRuntimeObservation::counter_scratch_data(),
             std::mem::size_of::<OriginalRestorationNodeInputs<'static>>(),
             std::mem::size_of::<[Option<OriginalRestorationNodeConstructionData>; 3]>(),
             std::mem::size_of::<[OriginalRestorationNodeConstructionData; 3]>(),
@@ -834,7 +835,7 @@ impl ConformanceRuntime {
         maximum: usize,
     ) -> Result<crate::node_admission::OriginalRestorationNodeConstructionData, RuntimeError> {
         inputs.authenticate_original_group_data()?;
-        if !std::ptr::eq(self, inputs.runtime) {
+        if !inputs.runtime.is_original_runtime_data(std::ptr::from_ref(self)) {
             return Err(RuntimeError::ForeignAuthority);
         }
         self.authenticate_original_restoration_target_data(
@@ -936,15 +937,7 @@ impl ConformanceRuntime {
         ),
         RuntimeError,
     > {
-        self.authenticate_complete_original_restoration_origin()?;
-        if !self.graph.plan().is_same_original_plan_data(plan) {
-            return Err(RuntimeError::ForeignAuthority);
-        }
-        let host = self
-            .exact_inputs
-            .as_ref()
-            .ok_or(RuntimeError::OwnerUnavailable)?;
-        Ok((self.graph.world(), host.as_ref()))
+        self.observation_data().original_restoration_coordinator_sources_data(plan)
     }
 }
 
@@ -994,3 +987,8 @@ impl ConformanceRuntime {
 mod restored_capture;
 
 pub use restored_capture::RestoredCollectingCaptureScope17;
+
+#[path = "conformance/observation.rs"]
+mod observation;
+pub use observation::ConformanceRuntimeObservation;
+pub(crate) use observation::ConformanceRuntimeObservationFields;

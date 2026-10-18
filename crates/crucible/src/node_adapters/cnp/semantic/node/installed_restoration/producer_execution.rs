@@ -593,9 +593,7 @@ pub(super) fn retained_data(
 }
 
 pub(super) fn counter_scratch_data() -> usize {
-    use crate::node_contract::{
-        NodeRuntime, RetainedCoreOwnerStorage, RetainedCoreSharedAllocation,
-    };
+    use crate::node_contract::{NodeRuntime, RetainedCoreOwnerStorage, RetainedCoreSharedAllocation};
     use std::{iter::Chain, option, slice};
     type Attempts = Chain<option::Iter<'static, Attempt>, slice::Iter<'static, Attempt>>;
     NodeRuntime::capture_opaque_owner_observer_scratch_data()
@@ -731,3 +729,6 @@ mod capture_history;
 pub(crate) use capture_history::OriginalRestoredSettledNodeHistoryView;
 
 pub(crate) use capture_history::original_restored_settled_semantic_history_counter_scratch_data;
+
+#[path = "producer_execution/capture17.rs"]
+mod capture17;

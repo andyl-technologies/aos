@@ -11,6 +11,9 @@ use crate::node_contract::{
 
 #[path = "host_preparation_credit.rs"]
 mod credit;
+#[path = "host_preparation_family17.rs"]
+pub(in crate::node_contract::runtime::continuation) mod family;
+
 #[path = "host_cached_demand.rs"]
 mod demand;
 

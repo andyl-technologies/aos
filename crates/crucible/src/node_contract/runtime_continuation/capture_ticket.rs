@@ -77,7 +77,7 @@ pub(crate) struct OriginalLineageCaptureAttempt {
     ordinal: U64,
     lineage_limits: OriginalInputLineageLimits,
     limits: NativeCaptureLimits,
-    host: Rc<host_preparation::OriginalHostCapturePreparation>,
+    host: host_preparation::family::PreparedHostCaptureFamily,
     owners: Vec<OriginalCaptureOwnerReservation>,
     active: Cell<bool>,
     sequence: U64,
@@ -105,6 +105,9 @@ struct OriginalCaptureOwnerReservation {
 pub struct OriginalLineageOwnerCaptureTicket<'a> {
     attempt: &'a OriginalLineageCaptureAttempt,
     owner: &'a OriginalCaptureOwnerReservation,
+    // The actual new17 dispatcher lends its stack scope only for this callback.
+    // Retained administrative attempts never borrow a transient caller scope.
+    restored_scope: Option<&'a crate::node_contract::RestoredCollectingCaptureScope17<'a>>,
 }
 
 /// Retains complete settled capture bodies in their same original world attempt.
@@ -324,6 +327,17 @@ impl OriginalLineageWorldCaptureRead<'_> {
 }
 
 impl OriginalLineageOwnerCaptureTicket<'_> {
+    /// Borrows only the actual current17 scope lent by its defining dispatcher.
+    ///
+    /// The optional loan carries no reconstructed scope or copied permissions.
+    /// Each selected Source still authenticates its actual Window claim, launch,
+    /// native owner and original runtime ticket before any effective callback.
+    pub(crate) fn restored_capture_scope17_data(
+        &self,
+    ) -> Option<&crate::node_contract::RestoredCollectingCaptureScope17<'_>> {
+        self.restored_scope
+    }
+
     /// Borrows the original world capture identity.
     pub fn capture_id(&self) -> &Id {
         &self.attempt.capture_id
@@ -383,6 +397,36 @@ impl OriginalLineageOwnerCaptureTicket<'_> {
             self.participants(),
         )?;
         self.attempt.host.take(host, self.owner(), activation)
+    }
+
+    /// Moves the same genuine Host17 producer through the current17 ticket family.
+    ///
+    /// # Errors
+    /// Refuses absent current17 Scope, foreign custody, another checkpoint or a
+    /// repeated transfer. The adapter must retain the returned value immediately.
+    pub(crate) fn take_prepared_restored_host17_data(
+        &self,
+        host: &crate::node_contract::HostSchedulingSource,
+        activation: &WorldActivation,
+        source: &OriginalLineageRuntimeRecord,
+        runtime_object: &InputPayload,
+    ) -> Result<crate::node_contract::HostSchedulingRestoredContinuation17, RuntimeError> {
+        let scope = self.restored_scope.ok_or(RuntimeError::UnsupportedFacet)?;
+        scope.authenticate_current_data()?;
+        self.authenticate_scope(
+            activation,
+            source,
+            runtime_object,
+            self.owner(),
+            self.participants(),
+        )?;
+        self.attempt.host.take_restored17_data(
+            host,
+            self.owner(),
+            activation,
+            source,
+            runtime_object,
+        )
     }
 
     /// Authenticates this reservation against the adapter's independent original scope.
@@ -706,6 +750,54 @@ impl crate::node_contract::NodeRuntime {
             ) -> Result<(), RuntimeError>,
         >,
     ) -> Result<OriginalLineageWorldCapture, super::RuntimePollFailure> {
+        self.capture_installed_original_lineage_family_data(request, prepared, None, None)
+    }
+
+    /// Dispatches genuinely scoped current17 owners with full observations between them.
+    ///
+    /// # Errors
+    /// Refuses foreign current Scope or family, ordinary capture admission,
+    /// callback failure or the genuine post-loan whole-graph observation.
+    pub(crate) fn capture_installed_restored_lineage17_data(
+        &mut self,
+        request: TicketedOriginalLineageCaptureRequest<'_>,
+        scope: &crate::node_contract::RestoredCollectingCaptureScope17<'_>,
+        after_owner: &mut dyn FnMut(&crate::node_contract::NodeRuntime) -> Result<(), RuntimeError>,
+    ) -> Result<OriginalLineageWorldCapture, super::RuntimePollFailure> {
+        scope
+            .authenticate_runtime_data(self)
+            .map_err(super::RuntimePollFailure::Admission)?;
+        self.capture_installed_original_lineage_family_data(
+            request,
+            None::<
+                fn(
+                    &crate::node_contract::NodeRuntime,
+                    &crate::node_contract::HostSchedulingSource,
+                    &crate::node_scheduling::SchedulingSnapshot,
+                    &InputPayload,
+                ) -> Result<(), RuntimeError>,
+            >,
+            Some(scope),
+            Some(after_owner),
+        )
+    }
+
+    fn capture_installed_original_lineage_family_data(
+        &mut self,
+        request: TicketedOriginalLineageCaptureRequest<'_>,
+        prepared: Option<
+            impl FnOnce(
+                &crate::node_contract::NodeRuntime,
+                &crate::node_contract::HostSchedulingSource,
+                &crate::node_scheduling::SchedulingSnapshot,
+                &InputPayload,
+            ) -> Result<(), RuntimeError>,
+        >,
+        restored_scope: Option<&crate::node_contract::RestoredCollectingCaptureScope17<'_>>,
+        mut after_owner: Option<
+            &mut dyn FnMut(&crate::node_contract::NodeRuntime) -> Result<(), RuntimeError>,
+        >,
+    ) -> Result<OriginalLineageWorldCapture, super::RuntimePollFailure> {
         use super::RuntimePollFailure;
         let TicketedOriginalLineageCaptureRequest {
             graph,
@@ -717,6 +809,9 @@ impl crate::node_contract::NodeRuntime {
             limits,
             geometry,
         } = request;
+        geometry
+            .authenticate_host_family17_data(restored_scope.is_some())
+            .map_err(RuntimePollFailure::Admission)?;
         geometry
             .authenticate(self, activation, &capture_id, runtime_object, limits)
             .map_err(RuntimePollFailure::Admission)?;
@@ -995,10 +1090,18 @@ impl crate::node_contract::NodeRuntime {
         if let Some(prepared) = prepared {
             attempt
                 .host
-                .with_original_scheduling_data(self, activation, |host, scheduling| {
-                    prepared(self, host, scheduling, &attempt.runtime_object)
-                })
+                .with_original_scheduling_data(
+                    self,
+                    activation,
+                    &attempt.runtime_object,
+                    |host, scheduling| prepared(self, host, scheduling, &attempt.runtime_object),
+                )
                 .map_err(RuntimePollFailure::Admission)?;
+        }
+        // Registration changes actual retained Runtime ownership. Reobserve it
+        // before the first current17 Source claim, with no private mutable loan.
+        if let Some(observe) = after_owner.as_mut() {
+            observe(self).map_err(RuntimePollFailure::Admission)?;
         }
         let mut remaining = limits;
         remaining.maximum_total_record_bytes = remaining
@@ -1023,9 +1126,15 @@ impl crate::node_contract::NodeRuntime {
                 maximum_total_record_bytes: selected.maximum_retained_bytes,
                 ..remaining
             };
+            if let Some(scope) = restored_scope {
+                scope
+                    .authenticate_runtime_data(self)
+                    .map_err(RuntimePollFailure::Admission)?;
+            }
             let ticket = OriginalLineageOwnerCaptureTicket {
                 attempt: &attempt,
                 owner,
+                restored_scope,
             };
             // Acquire the already reserved custody slot before entering a
             // possibly effective native callback. No post-effect allocation or
@@ -1034,68 +1143,83 @@ impl crate::node_contract::NodeRuntime {
                 .captures
                 .try_borrow_mut()
                 .map_err(|_| RuntimePollFailure::Admission(RuntimeError::OutstandingObligations))?;
-            let slot = retained
-                .get_mut(index)
-                .ok_or(RuntimePollFailure::Admission(RuntimeError::InvalidReceipt))?;
-            geometry.reloan_owner(self, activation, source, runtime_object, index)?;
-            owner.submitted.set(true);
-            // A panic, callback error or failed complete validation leaves this
-            // same request explicitly uncertain under its original world hold.
-            owner.uncertain.set(true);
-            let node = self
-                .nodes
-                .get_mut(&owner.participants[0])
-                .ok_or(RuntimePollFailure::Admission(RuntimeError::UnknownNode))?;
-            node.capture_original_lineage_continuation_with_ticket_into(
-                &ticket,
-                activation,
-                source,
-                runtime_object,
-                owner_limits,
-                slot,
-            )
-            .map_err(RuntimePollFailure::Native)?;
-            let captured = slot
-                .as_ref()
-                .ok_or(RuntimePollFailure::Admission(RuntimeError::InvalidReceipt))?;
-            geometry
-                .authenticate_owner_key(index, captured.native.key())
-                .map_err(RuntimePollFailure::Admission)?;
-            if captured.native.owner() != &owner.owner.owner
-                || captured.native.participants() != owner.participants
-                || captured.native.cut() != attempt.cut
-                || !captured.native.artifacts().is_empty()
-            {
-                return Err(RuntimePollFailure::Admission(RuntimeError::InvalidReceipt));
+            let owner_result = (|| -> Result<(), RuntimePollFailure> {
+                let slot = retained
+                    .get_mut(index)
+                    .ok_or(RuntimePollFailure::Admission(RuntimeError::InvalidReceipt))?;
+                geometry.reloan_owner(self, activation, source, runtime_object, index)?;
+                owner.submitted.set(true);
+                // A panic, callback error or failed complete validation leaves this
+                // same request explicitly uncertain under its original world hold.
+                owner.uncertain.set(true);
+                let node = self
+                    .nodes
+                    .get_mut(&owner.participants[0])
+                    .ok_or(RuntimePollFailure::Admission(RuntimeError::UnknownNode))?;
+                node.capture_original_lineage_continuation_with_ticket_into(
+                    &ticket,
+                    activation,
+                    source,
+                    runtime_object,
+                    owner_limits,
+                    slot,
+                )
+                .map_err(RuntimePollFailure::Native)?;
+                let captured = slot
+                    .as_ref()
+                    .ok_or(RuntimePollFailure::Admission(RuntimeError::InvalidReceipt))?;
+                geometry
+                    .authenticate_owner_key(index, captured.native.key())
+                    .map_err(RuntimePollFailure::Admission)?;
+                if captured.native.owner() != &owner.owner.owner
+                    || captured.native.participants() != owner.participants
+                    || captured.native.cut() != attempt.cut
+                    || !captured.native.artifacts().is_empty()
+                {
+                    return Err(RuntimePollFailure::Admission(RuntimeError::InvalidReceipt));
+                }
+                let binding = graph
+                    .binding(&owner.participants[0])
+                    .ok_or(RuntimePollFailure::Admission(RuntimeError::UnknownNode))?;
+                if captured.native.key().implementation
+                    != binding.compatibility.implementation.implementation_id
+                    || !binding
+                        .compatibility
+                        .implementation
+                        .formats
+                        .contains(&captured.native.key().schema)
+                    || !binding
+                        .compatibility
+                        .operating_contract
+                        .facets
+                        .iter()
+                        .any(|facet| facet.id == captured.native.key().profile)
+                {
+                    return Err(RuntimePollFailure::Admission(RuntimeError::InvalidReceipt));
+                }
+                geometry::charge_retained_capture_objects(captured, owner_limits, &mut remaining)
+                    .map_err(RuntimePollFailure::Admission)?;
+                attempt.settlements.try_borrow_mut().map_err(|_| {
+                    RuntimePollFailure::Admission(RuntimeError::OutstandingObligations)
+                })?[index] = Some((
+                    captured.native.state().reference.clone(),
+                    captured.journal.reference.clone(),
+                ));
+                owner.uncertain.set(false);
+                Ok(())
+            })();
+            drop(retained);
+            // Node callbacks have returned, so their Source claims and this
+            // private result-slot loan are both gone on success and refusal.
+            if let Some(observe) = after_owner.as_mut() {
+                observe(self).map_err(RuntimePollFailure::Admission)?;
             }
-            let binding = graph
-                .binding(&owner.participants[0])
-                .ok_or(RuntimePollFailure::Admission(RuntimeError::UnknownNode))?;
-            if captured.native.key().implementation
-                != binding.compatibility.implementation.implementation_id
-                || !binding
-                    .compatibility
-                    .implementation
-                    .formats
-                    .contains(&captured.native.key().schema)
-                || !binding
-                    .compatibility
-                    .operating_contract
-                    .facets
-                    .iter()
-                    .any(|facet| facet.id == captured.native.key().profile)
-            {
-                return Err(RuntimePollFailure::Admission(RuntimeError::InvalidReceipt));
+            owner_result?;
+            if let Some(scope) = restored_scope {
+                scope
+                    .authenticate_runtime_data(self)
+                    .map_err(RuntimePollFailure::Admission)?;
             }
-            geometry::charge_retained_capture_objects(captured, owner_limits, &mut remaining)
-                .map_err(RuntimePollFailure::Admission)?;
-            attempt.settlements.try_borrow_mut().map_err(|_| {
-                RuntimePollFailure::Admission(RuntimeError::OutstandingObligations)
-            })?[index] = Some((
-                captured.native.state().reference.clone(),
-                captured.journal.reference.clone(),
-            ));
-            owner.uncertain.set(false);
         }
         // The original runtime retains each body even if this read handle is
         // dropped. The archive must persist the joint closure before any release.
@@ -1216,7 +1340,9 @@ mod tests {
                 maximum_artifact_bytes: 0,
                 maximum_total_artifact_bytes: 0,
             },
-            host: Rc::new(host_preparation::OriginalHostCapturePreparation::absent()),
+            host: host_preparation::family::PreparedHostCaptureFamily::Initial15(Rc::new(
+                host_preparation::OriginalHostCapturePreparation::absent(),
+            )),
             owners: vec![OriginalCaptureOwnerReservation {
                 owner,
                 participants: vec![Id::new("a").unwrap()],
@@ -1242,6 +1368,7 @@ mod tests {
         let ticket = OriginalLineageOwnerCaptureTicket {
             attempt: &attempt,
             owner,
+            restored_scope: None,
         };
         let node = runtime.nodes.values_mut().next().unwrap();
 
@@ -1286,6 +1413,7 @@ mod tests {
         let ticket = OriginalLineageOwnerCaptureTicket {
             attempt: &attempt,
             owner,
+            restored_scope: None,
         };
         ticket
             .authenticate_scope(
@@ -1346,6 +1474,7 @@ mod tests {
         let ticket = OriginalLineageOwnerCaptureTicket {
             attempt: &attempt,
             owner,
+            restored_scope: None,
         };
         assert!(matches!(
             ticket.authenticate_scope(

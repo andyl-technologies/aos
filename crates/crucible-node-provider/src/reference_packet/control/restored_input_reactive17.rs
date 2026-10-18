@@ -51,3 +51,14 @@ impl NativeInputReactive17CheckpointAttempt {
 fn refused() -> ProviderError {
     ProviderError::Correlation("signed17 action current proof differs from actual native custody")
 }
+
+#[path = "restored_input_reactive17/observation.rs"]
+mod observation;
+#[path = "restored_input_reactive17/world.rs"]
+mod world;
+pub(crate) use observation::{
+    NativeObservation17CheckpointAttempt, NativeObservation17CheckpointStorageData,
+    NativeObservation17ProducerStorageData, NativeObservation17ProductionAttempt,
+    NativeObservation17PublishedProductionData, capture17_checkpoint_counter_scratch_data,
+    observation17_producer_counter_scratch_data,
+};

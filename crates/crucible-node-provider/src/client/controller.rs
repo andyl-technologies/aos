@@ -2071,3 +2071,6 @@ pub(crate) fn original_suffix_response_references_counter_scratch_data() -> usiz
         + std::mem::size_of::<Result<ContentRef, crucible_node_contract::ContractError>>()
         + std::mem::size_of::<Result<(), ProviderError>>()
 }
+
+pub use installed_observation::OriginalObservationReceiveStorageData;
+pub use restored_suffix_host::OriginalRestoredObservation17AssignmentStorageData;

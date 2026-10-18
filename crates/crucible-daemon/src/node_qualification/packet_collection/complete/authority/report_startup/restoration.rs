@@ -552,7 +552,7 @@ impl PacketCompleteReportStartupHolder {
             }
             window.retain_original_restored_producer_publication_data(
                 &held.plan,
-                inputs.runtime,
+                inputs.runtime.original_whole_owner_data()?,
                 activation,
                 pointer,
                 row,

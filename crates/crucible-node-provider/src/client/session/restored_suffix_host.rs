@@ -46,8 +46,28 @@ impl ClientSession {
         // ClientCustody already owns the exact original before a partial send.
         // The Connection validates the selected baseline method independently.
         self.send(original.clone())?;
+        let signed_observation17 = crate::connection::Connection::<DeadlineStream>::is_original_restored_observation17_data(original);
         loop {
-            let frame = self.connection.receive()?.ok_or_else(refused)?;
+            let frame = if signed_observation17 {
+                match self
+                    .connection
+                    .receive_original_restored_observation17_into(original, terminal, decoded)?
+                {
+                    Some(frame) => frame,
+                    None => {
+                        // The selected receiver retained this raw terminal before
+                        // roster/DTO checks, and its typed owner before guard release.
+                        let response = terminal.as_ref().ok_or_else(refused)?;
+                        original.matches_response(response)?;
+                        custody.retain_journal_bytes(envelope_bytes(response)?)?;
+                        custody.controller.get_mut(id).ok_or_else(refused)?.response =
+                            Some(response.clone());
+                        return Ok(());
+                    }
+                }
+            } else {
+                self.connection.receive()?.ok_or_else(refused)?
+            };
             match frame.body {
                 ReceivedBody::Response(body) => {
                     *terminal = Some(frame.envelope);
@@ -65,6 +85,13 @@ impl ClientSession {
                 ReceivedBody::Notification(_) => return Err(refused()),
             }
         }
+    }
+
+    pub(in crate::client) fn original_restored_observation17_response_counter_scratch_data(
+        &self,
+    ) -> usize {
+        self.connection
+            .original_restored_observation17_response_counter_scratch_data()
     }
 
     pub(in crate::client) const fn original_restored_suffix_counter_scratch_data() -> usize {

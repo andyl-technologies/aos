@@ -78,12 +78,23 @@ impl PreparedCompleteOriginalCaptureGeometry {
         Ok(())
     }
 
+    pub(super) fn authenticate_host_family17_data(
+        &self,
+        restored: bool,
+    ) -> Result<(), RuntimeError> {
+        match &self.preflight {
+            Some(preflight) => preflight.authenticate_host_family17_data(restored),
+            None if !restored => Ok(()),
+            None => Err(RuntimeError::UnsupportedFacet),
+        }
+    }
+
     pub(super) fn take_prepared_host(
         &self,
         runtime: &crate::node_contract::NodeRuntime,
         activation: &WorldActivation,
         object: &InputPayload,
-    ) -> Result<Rc<super::host_preparation::OriginalHostCapturePreparation>, RuntimeError> {
+    ) -> Result<super::host_preparation::family::PreparedHostCaptureFamily, RuntimeError> {
         self.preflight
             .as_ref()
             .ok_or(RuntimeError::UnsupportedFacet)?

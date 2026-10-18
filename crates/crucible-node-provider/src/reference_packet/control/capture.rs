@@ -514,3 +514,5 @@ pub(crate) use startup::{
     NativeStartupCaptureRegistrationData, NativeStartupCaptureReply,
     original_startup_capture_counter_scratch_data, startup_capture_terminal_cache_storage_data,
 };
+
+pub(in crate::reference_packet::control) use startup::StartupRequestIdentity;

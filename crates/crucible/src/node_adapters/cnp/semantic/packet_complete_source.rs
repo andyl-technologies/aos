@@ -426,6 +426,17 @@ impl PacketCompleteSemanticSource {
 }
 
 impl CnpSemanticSource for PacketCompleteSemanticSource {
+    fn requires_restored_capture17_scope_data(&self) -> Result<bool, RuntimeError> {
+        self.storage_origin_with_error::<RuntimeError>()?;
+        match self.invocation_snapshot_declaration {
+            Some(invocation_snapshot::Declaration::Attempted) => {
+                Err(RuntimeError::OutstandingObligations)
+            }
+            Some(invocation_snapshot::Declaration::RestoredSettledRecapture17) => Ok(true),
+            _ => Ok(false),
+        }
+    }
+
     fn call_original_installed_restoration_observation_into<'a>(
         &'a self,
         controller: &'a mut CnpController,
@@ -483,6 +494,17 @@ impl CnpSemanticSource for PacketCompleteSemanticSource {
         limits: crate::node_state::NativeArchiveLimits,
     ) -> Result<crate::node_state::CompleteOriginalOwnerCapturePreflight, OperationFailure> {
         self.ensure_origin()?;
+        // The legacy preflight initializes old banks before its owning-report
+        // refusal. A selected current codec must never create those old Some
+        // owners while its distinct complete native quote remains unavailable.
+        if self
+            .requires_restored_capture17_scope_data()
+            .map_err(unknown)?
+        {
+            return Err(refused(
+                "complete native owning Capture17 quote is unavailable",
+            ));
+        }
         self.authenticate_witness_scope(&scope)?;
         let runtime = scope
             .native
@@ -1343,7 +1365,9 @@ pub use capture_allocation_receipt::{
     OriginalCaptureAllocationData, original_capture_allocation_witness_counter_scratch_data,
 };
 
-pub(crate) use ack_peer::{PacketCompleteInitialLifecycleIdentity, PacketCompleteInitialLifecycleQuote};
+pub(crate) use ack_peer::{
+    PacketCompleteInitialLifecycleIdentity, PacketCompleteInitialLifecycleQuote,
+};
 
 #[path = "packet_complete_source/invocation_snapshot.rs"]
 mod invocation_snapshot;
@@ -1381,8 +1405,8 @@ mod header17;
 
 pub(crate) use ack_peer::{
     OriginalSourceRestoredInstallationExpected17, OriginalSourceRestoredLimits17,
-    OriginalSourceRestoredProducerCheckpoint17, OriginalSourceRestoredSettled17Read,
-    OriginalSourceRestoredSettled17ReadInputs,
+    OriginalSourceRestoredProducerCheckpoint17, OriginalSourceRestoredSettled17DecodeAttempt,
+    OriginalSourceRestoredSettled17Read, OriginalSourceRestoredSettled17ReadInputs,
 };
 
 pub(crate) use restored_producer_outcome::{
@@ -1398,8 +1422,25 @@ pub(crate) use ack_peer::OriginalSourceRestoredCaptureEncodingInputs;
 
 pub(crate) use ack_peer::OriginalSourceRestoredCaptureCountingBanksData;
 
-pub(crate) use archive_owner::{OriginalInitial15ArchivedGroup, OriginalInitial15ArchivedOwnerRead};
+pub(crate) use archive_owner::{
+    OriginalInitial15ArchivedGroup, OriginalInitial15ArchivedOwnerRead,
+};
 
 pub use ack_peer::OriginalSourceRestoredCaptureConstructionData;
 
 pub(super) use retained_values::value_storage_with_error;
+
+impl PacketCompleteSemanticSource {
+    /// Names fixed origin and cached-declaration controls for native preflight.
+    ///
+    /// No schema, Window, kernel or mutable-owner callback is performed by the
+    /// discriminator. This counter conveys no currentness or selected support.
+    pub(crate) fn original_restored_capture_scope_selection_counter_scratch_data() -> usize {
+        std::mem::size_of::<&Self>()
+            + std::mem::size_of::<Option<invocation_snapshot::Declaration>>()
+            + std::mem::size_of::<std::thread::ThreadId>()
+            + std::mem::size_of::<u32>()
+            + std::mem::size_of::<Result<bool, RuntimeError>>()
+            + std::mem::size_of::<Result<(), RuntimeError>>()
+    }
+}

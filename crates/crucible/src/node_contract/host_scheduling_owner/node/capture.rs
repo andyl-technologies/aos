@@ -38,6 +38,30 @@ impl PreparedHostSchedulingNode {
         limits: NativeCaptureLimits,
         completed: &mut Option<InstalledOriginalLineageCapture>,
     ) -> Result<(), OperationFailure> {
+        if ticket.restored_capture_scope17_data().is_some() {
+            return self.capture_restored_common_state17_into_data(
+                ticket,
+                activation,
+                source,
+                runtime_object,
+                limits,
+                completed,
+            );
+        }
+        if self
+            .source
+            .selection
+            .binding
+            .compatibility
+            .implementation
+            .formats
+            .iter()
+            .any(|schema| schema.id.as_str() == "source-owned.host-scheduling-continuation/17")
+        {
+            return Err(failure(
+                "selected Host17 capture requires its genuine current17 scope",
+            ));
+        }
         self.current()?;
         if completed.is_some() {
             return Err(failure("original Host2 capture destination is occupied"));
@@ -46,6 +70,7 @@ impl PreparedHostSchedulingNode {
             || self.ready.is_none()
             || activation.record() != &self.activation
             || self.capture_preparation.is_some()
+            || self.capture_preparation17.is_some()
             || limits.maximum_objects < 2
             || limits.maximum_record_bytes < 4096
             || limits.maximum_total_record_bytes

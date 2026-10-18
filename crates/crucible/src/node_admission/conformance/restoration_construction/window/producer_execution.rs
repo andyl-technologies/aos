@@ -203,7 +203,7 @@ impl ProducerExecutionLedger {
 
     pub(super) fn charge_original_storage_data(
         &self,
-        runtime: &ConformanceRuntime,
+        runtime: crate::node_contract::ConformanceRuntimeObservation<'_>,
         maximum: usize,
     ) -> Result<usize, RuntimeError> {
         let mut requested = self

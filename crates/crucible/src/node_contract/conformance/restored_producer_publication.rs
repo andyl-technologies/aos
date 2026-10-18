@@ -259,8 +259,7 @@ impl ConformanceRuntime {
         grant: &crate::node_scheduling::ExecutionAdmission,
         maximum: usize,
     ) -> Result<usize, RuntimeError> {
-        self.authenticate_complete_original_restoration_origin()?;
-        self.runtime
+        self.observation_data()
             .original_restored_producer_grant_requested_storage_data(grant, maximum)
     }
 }

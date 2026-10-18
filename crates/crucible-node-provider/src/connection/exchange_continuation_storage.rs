@@ -838,9 +838,10 @@ fn reference_fields(out: &mut Projection, object: &ContentExtent) -> Result<(), 
     out.add_field("digest")?;
     out.add_unescaped_ascii_extent(64)?;
     out.add_field("length")?;
-    out.add_value(&U64::new(
-        u64::try_from(object.payload).map_err(|_| credit())?,
-    ))?;
+    let length = u64::try_from(object.payload).map_err(|_| credit())?;
+    // The DATA counter projects U64's decimal JSON string directly. Its
+    // ordinary serializer creates a temporary String before a native debit.
+    out.add_unescaped_ascii_extent(length.checked_ilog10().unwrap_or(0) as usize + 1)?;
     out.add_field("media_type")?;
     // The contract permits quotes and backslashes in its printable ASCII.
     // Actual preparation bounds its byte length, so preserve worst escaping.
@@ -958,7 +959,7 @@ fn projected_blob_frame_scope(
     out.add_field("request_id")?;
     out.add_unescaped_ascii_extent(add(request_prefix.len(), 20)?)?;
     out.add_field("sequence")?;
-    out.add_value(&U64::new(u64::MAX))?;
+    out.add_unescaped_ascii_extent(20)?;
     out.add_field("method")?;
     out.add_value(&method)?;
     out.add_field("body")?;
@@ -974,7 +975,7 @@ fn projected_blob_frame_scope(
             out.add_field("transfer_id")?;
             out.add_unescaped_ascii_extent(transfer)?;
             out.add_field("offset")?;
-            out.add_value(&U64::new(u64::MAX))?;
+            out.add_unescaped_ascii_extent(20)?;
             out.add_field("bytes")?;
             out.add_unescaped_ascii_extent(bytes)?;
         }
@@ -1139,6 +1140,55 @@ mod tests {
         let mut fewer_records = copy_storage(&actual);
         fewer_records.serialized_capacity_records -= 1;
         assert!(within(&actual, &fewer_records).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn direct_decimal_extent_matches_actual_u64_counter_at_every_digit_boundary()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let same = |left: &OriginalSerializationStorageData,
+                    right: &OriginalSerializationStorageData| {
+            assert_eq!(left.maximum_encoded_bytes, right.maximum_encoded_bytes);
+            assert_eq!(
+                left.retained_value_backing_bytes,
+                right.retained_value_backing_bytes
+            );
+            assert_eq!(
+                left.dom_and_canonical_scratch_bytes,
+                right.dom_and_canonical_scratch_bytes
+            );
+            assert_eq!(
+                left.projected_parser_requested_bytes,
+                right.projected_parser_requested_bytes
+            );
+            assert_eq!(
+                left.canonical_output_requested_bytes,
+                right.canonical_output_requested_bytes
+            );
+            assert_eq!(left.serialized_value_nodes, right.serialized_value_nodes);
+            assert_eq!(
+                left.serialized_capacity_records,
+                right.serialized_capacity_records
+            );
+        };
+        for power in 0..=19 {
+            let base = 10u64.pow(power);
+            for value in [
+                base.saturating_sub(1),
+                base,
+                base.saturating_add(1),
+                u64::MAX,
+            ] {
+                let mut actual = Projection::new(1024 * 1024)?;
+                actual.add_value(&U64::new(value))?;
+                let actual = actual.finish(1024 * 1024)?;
+                let mut direct = Projection::new(1024 * 1024)?;
+                direct
+                    .add_unescaped_ascii_extent(value.checked_ilog10().unwrap_or(0) as usize + 1)?;
+                let direct = direct.finish(1024 * 1024)?;
+                same(&actual, &direct);
+            }
+        }
         Ok(())
     }
 }

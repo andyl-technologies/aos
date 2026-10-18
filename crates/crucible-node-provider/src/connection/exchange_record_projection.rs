@@ -89,7 +89,12 @@ pub(super) fn authenticate_current_proof_literal<S: ProviderStream>(
     connection.protocol_owner.ensure_current()
 }
 
-fn authenticate_proof_literal(
+/// Compares one retained incoming literal with its exact typed original.
+///
+/// # Errors
+/// Refuses incomplete I/O, malformed framing, another direction or changed
+/// canonical envelope correspondence. No completed owner is issued here.
+pub(super) fn authenticate_proof_literal(
     response: &Envelope,
     frame: crate::transport::original_frames::OriginalFrame<'_>,
 ) -> Result<(), ProviderError> {

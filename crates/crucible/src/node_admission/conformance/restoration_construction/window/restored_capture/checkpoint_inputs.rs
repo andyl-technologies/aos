@@ -219,6 +219,45 @@ impl OriginalRestoredCaptureCheckpointInputs17 {
         Ok(())
     }
 
+    /// Borrows typed current records from the completed same-attempt constructor.
+    ///
+    /// This view creates no snapshot, clone, owner claim or validation credit.
+    ///
+    /// # Errors
+    /// Refuses incomplete construction or an absent returned typed record.
+    pub(super) fn records_data(
+        &self,
+    ) -> Result<(&OriginalLineageRuntimeRecord, &SchedulingSnapshot), RuntimeError> {
+        if !self.verified {
+            return Err(RuntimeError::OwnerUnavailable);
+        }
+        Ok((
+            self.runtime_record
+                .as_ref()
+                .ok_or(RuntimeError::OwnerUnavailable)?,
+            self.scheduling_record
+                .as_ref()
+                .ok_or(RuntimeError::OwnerUnavailable)?,
+        ))
+    }
+
+    /// Joins the complete supplied Runtime7 record and object without allocation.
+    ///
+    /// Both the typed record and full reference/bytes must match. Equal cut
+    /// coordinates or an unchanged hash alone cannot substitute another object.
+    ///
+    /// # Errors
+    /// Refuses an incomplete constructor or any record/reference/byte difference.
+    pub(super) fn authenticate_runtime_inputs_data(
+        &self,
+        record: &OriginalLineageRuntimeRecord,
+        runtime: &InputPayload,
+    ) -> Result<(), RuntimeError> {
+        let (expected_record, _) = self.records_data()?;
+        let (expected_runtime, _) = self.objects_data()?;
+        authenticate_runtime_inputs_data(expected_record, expected_runtime, record, runtime)
+    }
+
     /// Lends completed objects without manufacturing a ticket or model grant.
     ///
     /// # Errors
@@ -260,6 +299,23 @@ impl OriginalRestoredCaptureCheckpointInputs17 {
     }
 }
 
+// The verified owner above supplies both expected operands. Kept separate so
+// DATA controls can exercise full joins without fabricating a completed owner.
+fn authenticate_runtime_inputs_data(
+    expected_record: &OriginalLineageRuntimeRecord,
+    expected_runtime: &InputPayload,
+    record: &OriginalLineageRuntimeRecord,
+    runtime: &InputPayload,
+) -> Result<(), RuntimeError> {
+    if expected_record != record
+        || expected_runtime.reference != runtime.reference
+        || expected_runtime.bytes != runtime.bytes
+    {
+        return Err(RuntimeError::ForeignAuthority);
+    }
+    Ok(())
+}
+
 /// Names the actual constructor, writer and typed-result counter views.
 pub(super) fn counter_scratch_data() -> usize {
     size_of::<OriginalRestoredCaptureCheckpointInputs17>()
@@ -274,6 +330,18 @@ pub(super) fn counter_scratch_data() -> usize {
         + size_of::<Result<serde_json::Value, serde_json::Error>>()
         + size_of::<Result<ContentRef, crucible_node_contract::ContractError>>()
         + size_of::<Result<(&'static InputPayload, &'static InputPayload), RuntimeError>>()
+        + size_of::<
+            Result<
+                (
+                    &'static OriginalLineageRuntimeRecord,
+                    &'static SchedulingSnapshot,
+                ),
+                RuntimeError,
+            >,
+        >()
+        + 2 * size_of::<&OriginalLineageRuntimeRecord>()
+        + 2 * size_of::<&InputPayload>()
+        + size_of::<&SchedulingSnapshot>()
         + size_of::<Result<(), crucible_node_contract::ContractError>>()
         + size_of::<io::Result<usize>>()
         + size_of::<io::Result<()>>()
@@ -329,5 +397,117 @@ mod canonical_tests {
             child.retained_requested_storage_data().unwrap(),
             expected_retained
         );
+    }
+}
+
+#[cfg(test)]
+mod runtime_join_tests {
+    use super::*;
+    use crate::node_contract::{
+        Lifecycle, OwnerIdentity, SavedRuntimeActivation, SavedRuntimeOwner,
+    };
+    use crucible_node_contract::{Phase, Position, U64};
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    // These are inert historical DTOs, not a verified constructor or Window.
+    fn record() -> Result<OriginalLineageRuntimeRecord, Box<dyn std::error::Error>> {
+        let owner = OwnerIdentity {
+            owner: Id::new("preflight-data-owner")?,
+            incarnation: Id::new("preflight-data-incarnation")?,
+            generation: U64::new(1),
+        };
+        Ok(OriginalLineageRuntimeRecord {
+            schema_version: 7,
+            source_activation: SavedRuntimeActivation {
+                generation: U64::new(1),
+                activation_id: Id::new("preflight-data-activation")?,
+                world_binding_hash: canonical::hash("cnp.world-binding.v1", b"DATA only")?,
+                owners: vec![owner.clone()],
+                boundary: Position::new(0.into(), 0.into(), Phase::BoundaryControl),
+            },
+            capture_cut: Position::new(17.into(), 2.into(), Phase::BoundaryControl),
+            capture_ordinal: U64::new(13),
+            owners: vec![SavedRuntimeOwner {
+                identity: owner,
+                lifecycle: Lifecycle::Stopped,
+                operation: None,
+                domains: vec![Id::new("preflight-data-domain")?],
+            }],
+            operations: Vec::new(),
+            inputs: Vec::new(),
+        })
+    }
+
+    fn object(
+        record: &OriginalLineageRuntimeRecord,
+    ) -> Result<InputPayload, Box<dyn std::error::Error>> {
+        let bytes = canonical::canonical_json(&serde_json::to_value(record)?)?;
+        Ok(InputPayload {
+            reference: canonical::content_ref(
+                &bytes,
+                "application/vnd.crucible.runtime-original-lineage+json;version=7",
+            )?,
+            bytes,
+        })
+    }
+
+    #[test]
+    fn full_typed_runtime_join_rejects_changed_nested_state_at_the_same_cut() -> TestResult {
+        let expected = record()?;
+        let object = object(&expected)?;
+        authenticate_runtime_inputs_data(&expected, &object, &expected, &object)?;
+
+        let mut changed = expected.clone();
+        changed.owners[0].domains.push(Id::new("different-domain")?);
+        assert_eq!(changed.capture_cut, expected.capture_cut);
+        assert_eq!(changed.capture_ordinal, expected.capture_ordinal);
+        assert!(matches!(
+            authenticate_runtime_inputs_data(&expected, &object, &changed, &object),
+            Err(RuntimeError::ForeignAuthority)
+        ));
+        changed = expected.clone();
+        changed.source_activation.generation = U64::new(2);
+        assert!(authenticate_runtime_inputs_data(&expected, &object, &changed, &object).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_object_join_requires_both_full_reference_and_complete_bytes() -> TestResult {
+        let record = record()?;
+        let expected = object(&record)?;
+        let mut changed = expected.clone();
+        changed.reference.media_type = "application/json".to_owned();
+        assert_eq!(changed.bytes, expected.bytes);
+        assert!(authenticate_runtime_inputs_data(&record, &expected, &record, &changed).is_err());
+
+        changed = expected.clone();
+        changed.bytes.push(b' ');
+        assert_eq!(changed.reference, expected.reference);
+        assert!(authenticate_runtime_inputs_data(&record, &expected, &record, &changed).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn partial_typed_records_never_become_a_completed_record_loan() -> TestResult {
+        let record = record()?;
+        let object = object(&record)?;
+        let mut partial = OriginalRestoredCaptureCheckpointInputs17::default();
+        partial.started = true;
+        partial.runtime_record = Some(record);
+        partial.runtime.object = Some(object);
+        let retained = partial.retained_requested_storage_data()?;
+
+        assert!(matches!(
+            partial.records_data(),
+            Err(RuntimeError::OwnerUnavailable)
+        ));
+        assert!(matches!(
+            partial.objects_data(),
+            Err(RuntimeError::OwnerUnavailable)
+        ));
+        assert_eq!(partial.retained_requested_storage_data()?, retained);
+        assert!(!partial.verified);
+        Ok(())
     }
 }

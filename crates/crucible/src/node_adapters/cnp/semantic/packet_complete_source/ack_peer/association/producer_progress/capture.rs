@@ -46,8 +46,8 @@ pub(crate) use logical::{
 
 pub(crate) use logical::{
     OriginalSourceRestoredInstallationExpected17, OriginalSourceRestoredLimits17,
-    OriginalSourceRestoredProducerCheckpoint17, OriginalSourceRestoredSettled17Read,
-    OriginalSourceRestoredSettled17ReadInputs,
+    OriginalSourceRestoredProducerCheckpoint17, OriginalSourceRestoredSettled17DecodeAttempt,
+    OriginalSourceRestoredSettled17Read, OriginalSourceRestoredSettled17ReadInputs,
 };
 
 pub(in crate::node_adapters::cnp::semantic::packet_complete_source) use logical::{
@@ -74,3 +74,12 @@ pub(crate) use ancestry::OriginalRestoredCaptureAncestry17Data;
 pub(crate) use quote_context::OriginalSourceRestoredCaptureEncodingInputs;
 
 pub(crate) use quote_context::OriginalSourceRestoredCaptureCountingBanksData;
+
+#[path = "capture/finalization.rs"]
+mod finalization;
+
+#[path = "capture/read_owner.rs"]
+mod read_owner;
+
+#[path = "capture/materialization_storage.rs"]
+mod materialization_storage;

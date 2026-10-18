@@ -527,6 +527,31 @@ impl crate::node_contract::NodeRuntime {
         )
     }
 
+    /// Bounds a native output metadata clone from its actual borrowed fields.
+    ///
+    /// The defining walk includes source spare backing conservatively. A clone
+    /// cannot use this DATA as permission or replace the original Source roster.
+    ///
+    /// # Errors
+    /// Refuses checked requested-layout overflow in the full typed metadata.
+    pub(crate) fn capture_native_output_metadata_clone_storage_data(
+        owner: &crucible_node_contract::Id,
+        participants: &Vec<crucible_node_contract::Id>,
+        implementation: &crucible_node_contract::Id,
+        profile: &crucible_node_contract::Id,
+        schema: &crucible_node_contract::SchemaRef,
+    ) -> Result<usize, RuntimeError> {
+        [
+            owner.owned_storage()?,
+            participants.owned_storage()?,
+            implementation.owned_storage()?,
+            profile.owned_storage()?,
+            schema.owned_storage()?,
+        ]
+        .into_iter()
+        .try_fold(0, storage::add)
+    }
+
     pub(crate) fn capture_native_key_storage(
         key: &crate::node_contract::NativeStateKey,
     ) -> Result<usize, RuntimeError> {

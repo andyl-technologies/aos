@@ -26,6 +26,7 @@ impl PreparedHostSchedulingNode {
             restoration,
             restoration_installed: _,
             capture_preparation,
+            capture_preparation17,
         } = self;
         if source.process != std::process::id()
             || source.owner_thread != std::thread::current().id()
@@ -66,6 +67,16 @@ impl PreparedHostSchedulingNode {
             counter.add(source.owned_storage()?)?;
             counter.add(scheduling.owned_storage()?)?;
             counter.add(target.owned_storage()?)?;
+        }
+        if let Some(snapshot) = capture_preparation17 {
+            counter.add(
+                snapshot
+                    .retained_requested_storage_data()?
+                    .checked_sub(size_of::<
+                        crate::node_contract::HostSchedulingRestoredContinuation17,
+                    >())
+                    .ok_or(RuntimeError::ResourceLimit)?,
+            )?;
         }
         if counter.rc(source)? {
             counter.add(

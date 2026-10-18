@@ -1048,3 +1048,16 @@ pub(crate) mod tests {
         Ok(())
     }
 }
+
+#[path = "restored_input_reactive17/observation_geometry.rs"]
+pub(crate) mod observation_geometry;
+pub use observation_geometry::{
+    PacketRestoredObservation17OutputStorageData, PacketRestoredObservation17ProspectiveData,
+    PacketRestoredObservation17SourceComponentStorageData,
+    PacketRestoredObservation17SourceTypedStorageData,
+    quote_restored_observation17_current_wrapper_storage_data,
+    quote_restored_observation17_output_storage_data,
+    quote_restored_observation17_source_typed_storage_data,
+    restored_observation17_output_counter_scratch_data,
+    restored_observation17_source_typed_counter_scratch_data,
+};

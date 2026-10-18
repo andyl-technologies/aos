@@ -64,6 +64,7 @@ pub struct RetainedProtocolMetadataFacts {
 pub(crate) struct MetadataObserver<'a> {
     facts: RetainedProtocolMetadataFacts,
     json_depth: usize,
+    ordinary_bytes_formatter: OrdinaryBytesFormatterDemandData,
     records: Option<&'a mut MetadataRecordBank>,
     aliases: Option<&'a mut aliases::MetadataAliasBank>,
 }
@@ -73,6 +74,7 @@ impl<'a> MetadataObserver<'a> {
         Self {
             facts: RetainedProtocolMetadataFacts::default(),
             json_depth: 0,
+            ordinary_bytes_formatter: OrdinaryBytesFormatterDemandData::default(),
             records: None,
             aliases: None,
         }
@@ -84,6 +86,7 @@ impl<'a> MetadataObserver<'a> {
         Self {
             facts: RetainedProtocolMetadataFacts::default(),
             json_depth: 0,
+            ordinary_bytes_formatter: OrdinaryBytesFormatterDemandData::default(),
             records: Some(records),
             aliases: None,
         }
@@ -98,6 +101,7 @@ impl<'a> MetadataObserver<'a> {
         Self {
             facts: RetainedProtocolMetadataFacts::default(),
             json_depth: 0,
+            ordinary_bytes_formatter: OrdinaryBytesFormatterDemandData::default(),
             records: Some(records),
             aliases: Some(aliases),
         }
@@ -140,6 +144,11 @@ impl<'a> MetadataObserver<'a> {
             })?;
         }
         Ok(())
+    }
+
+    /// Borrows a typed-Bytes formatter bound, without changing wire facts.
+    pub(crate) fn ordinary_bytes_formatter_data(&self) -> OrdinaryBytesFormatterDemandData {
+        self.ordinary_bytes_formatter
     }
 
     pub(crate) fn finish(self) -> RetainedProtocolMetadataFacts {
@@ -249,6 +258,7 @@ impl ObserveMetadata for Id {
 
 impl ObserveMetadata for Bytes {
     fn observe_metadata(&self, observer: &mut MetadataObserver) -> Result<(), ProviderError> {
+        observer.ordinary_bytes_formatter.include_data(self);
         observer.vector::<u8>(self.allocation_capacity())
     }
 }
@@ -892,3 +902,8 @@ pub use historical_response::{
 
 mod archived_installation17;
 pub use archived_installation17::RetainedArchivedSourceInstallation17;
+
+mod ordinary_bytes_formatter;
+pub(crate) use ordinary_bytes_formatter::{
+    OrdinaryBytesFormatterDemandData, ordinary_bytes_formatter_counter_scratch_data,
+};

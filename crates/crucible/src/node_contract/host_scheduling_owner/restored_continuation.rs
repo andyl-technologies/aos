@@ -322,3 +322,9 @@ pub fn host_scheduling_restored_continuation_schema17_counter_scratch_data() -> 
         + std::mem::size_of::<std::array::IntoIter<usize, 14>>()
         + terms.into_iter().sum::<usize>()
 }
+
+#[path = "restored_continuation/preparation.rs"]
+mod preparation;
+pub(crate) use preparation::{
+    PreparedRestoredHost17Capture, RestoredHost17CaptureConstructionData,
+};

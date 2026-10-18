@@ -21,7 +21,9 @@ use serde_json::{Value, json};
 use crate::node_admission::ConformanceGraph;
 
 use super::runtime::scheduling_state::OriginalSchedulingSource;
-use super::{ActivationRecord, NodeRoute, OperationFailure, OwnerIdentity, RuntimeError};
+use super::{
+    ActivationRecord, NodeRoute, OperationFailure, OwnerIdentity, RuntimeError, SimulationNode,
+};
 
 mod capture_dependencies;
 pub use capture_dependencies::{HostCaptureDependencyLookupData, HostCaptureDependencyStorageData};
@@ -33,6 +35,7 @@ mod continuation;
 mod restored_continuation;
 pub(crate) use restored_continuation::{
     HostSchedulingRestoredCaptureAttempt17, HostSchedulingRestoredContinuation17,
+    PreparedRestoredHost17Capture, RestoredHost17CaptureConstructionData,
     RestoredHostCaptureAncestryBorrowed17,
 };
 pub use restored_continuation::{
@@ -835,6 +838,26 @@ impl<'a> HostSchedulingNodeWitness<'a> {
             .ok_or(RuntimeError::UnsupportedFacet)?
             .retained_requested_storage_excluding_source()
             .map_err(|_| RuntimeError::UnsupportedFacet)
+    }
+
+    /// Observes the actual restored Host node without borrowing its future producer.
+    pub(in crate::node_contract) fn restored17_node_requested_storage_data(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, RuntimeError> {
+        if !self.matches(self.source)? {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        let node = self.original_node.ok_or(RuntimeError::UnsupportedFacet)?;
+        self.source
+            .authenticate_current()
+            .map_err(|_| RuntimeError::ForeignAuthority)?;
+        let bytes = node
+            .retained_requested_storage_precredit_data(maximum)?
+            .ok_or(RuntimeError::UnsupportedFacet)?;
+        bytes
+            .checked_add(std::mem::size_of::<PreparedHostSchedulingNode>())
+            .ok_or(RuntimeError::ResourceLimit)
     }
 
     pub(in crate::node_contract) fn original_capture_source(

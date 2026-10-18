@@ -887,3 +887,10 @@ impl CorrelationGuard {
         Ok(())
     }
 }
+
+#[path = "session/observation17_cut.rs"]
+mod observation17_cut;
+
+#[path = "session/capture17_cut.rs"]
+mod capture17_cut;
+pub(crate) use capture17_cut::is_native_capture17_original_data;

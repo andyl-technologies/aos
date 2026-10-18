@@ -10,6 +10,7 @@ mod content;
 mod controller;
 pub(crate) use controller::maximum_canonical_ack_framed_bytes;
 mod deadline;
+pub(crate) mod history_encoding17;
 pub(crate) mod history_credit;
 mod reference;
 mod session;
@@ -110,4 +111,8 @@ pub use controller::ControllerSettledHistoryData;
 pub(crate) use controller::{
     original_suffix_response_references_counter_scratch_data,
     original_suffix_response_references_data,
+};
+
+pub use controller::{
+    OriginalObservationReceiveStorageData, OriginalRestoredObservation17AssignmentStorageData,
 };

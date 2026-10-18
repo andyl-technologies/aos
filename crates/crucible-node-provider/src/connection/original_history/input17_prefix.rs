@@ -646,3 +646,49 @@ mod tests {
         assert!(identity.authenticate_reference_data(&changed).is_err());
     }
 }
+
+// This is a distinct incoming-request cut. The ordinary history lender keeps
+// its HostSettled predicate, which correctly refuses any outstanding request.
+impl<S: ProviderStream> Connection<S> {
+    /// Verifies a pre-original commitment under this exact incoming Observe17.
+    ///
+    /// This borrowed transport check issues no Source/native action permission.
+    /// The defining scope separately authenticates the real Boot/index/Rc, MAC,
+    /// newest owning checkpoint and its complete independent prospective row.
+    ///
+    /// # Errors
+    /// Refuses changed actor/admission, another incoming request, partial bank,
+    /// wrong literal slot/frontier, changed full commitment or a short bound.
+    pub(crate) fn authenticate_native_observation17_literal_prefix_data(
+        &self,
+        original: &Envelope,
+        slot: usize,
+        next: U64,
+        reference: &ContentRef,
+        maximum: usize,
+    ) -> Result<(), ProviderError> {
+        self.protocol_owner.ensure_current()?;
+        self.authenticate_native5_source_codec()?;
+        self.guard
+            .authenticate_incoming_observation17_cut_data(original)?;
+        self.authenticate_original_restored_suffix_observation_literal_data(original, slot)?;
+        if original.sequence != next || slot == 0 || self.fenced {
+            return Err(refused());
+        }
+        let bank = self
+            .original_frames
+            .as_ref()
+            .ok_or_else(refused)?
+            .try_borrow()
+            .map_err(|_| refused())?;
+        if !bank.complete() {
+            return Err(refused());
+        }
+        identity_data(&bank, Some(slot), next, maximum, true)?
+            .authenticate_reference_data(reference)?;
+        self.guard
+            .authenticate_incoming_observation17_cut_data(original)?;
+        self.protocol_owner.ensure_current()?;
+        self.authority.ensure_live()
+    }
+}

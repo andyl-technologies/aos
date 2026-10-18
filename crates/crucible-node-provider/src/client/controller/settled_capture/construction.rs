@@ -25,6 +25,9 @@ use crate::retained_metadata::{
 use crucible_node_contract::{HashRef, Position};
 use serde_json::Map;
 
+#[path = "construction/encoding.rs"]
+mod encoding;
+
 /// Borrows known Capture data before any administrative ticket or DTO exists.
 ///
 /// The two encoded bounds describe future objects, not fabricated references.
@@ -59,6 +62,7 @@ pub struct OriginalRestoredSettledCaptureConstructionData {
     chunk: usize,
     auxiliary: [usize; 2],
     incoming: usize,
+    controller_history_encoded_growth: usize,
     retained: usize,
     transient: usize,
     scratch: usize,
@@ -154,6 +158,15 @@ impl OriginalRestoredSettledCaptureConstructionData {
     /// Returns the remaining actual provider-original namespace ceiling priced.
     pub const fn maximum_incoming_originals_data(&self) -> usize {
         self.incoming
+    }
+
+    /// Returns additional encoded Controller history at successful completion.
+    ///
+    /// Core independently funds the genuine pre-Capture Controller/supervisor
+    /// baseline and output-bank/canonical work before effects. This checked
+    /// serialized-field bound cannot pay SDK/native retention or grant a cut.
+    pub const fn maximum_controller_history_encoded_growth_bytes_data(&self) -> usize {
+        self.controller_history_encoded_growth
     }
 
     /// Returns independent simultaneous retained SDK/receiver partial ownership.
@@ -454,6 +467,23 @@ impl CnpController {
             add(geometry.maximum_chunk_bytes_data(), request_bytes_temporary)?,
             receiver.transient,
         ])?;
+        // An earlier unanswered provider original can obtain its first cached
+        // ACK without consuming a new namespace entry. Count that real retained
+        // state separately; cached completed ACK replay cannot append content.
+        let unanswered_provider = self
+            .custody
+            .originals_by_origin(RequestOrigin::Provider)
+            .filter(|original| original.response.is_none())
+            .count();
+        let encoding_provider_originals = add(incoming, unanswered_provider)?;
+        let controller_history_encoded_growth = sum(&[
+            encoding::sdk_history_data(frame, auxiliary)?,
+            encoding::journals_data(frame, outgoing, encoding_provider_originals)?,
+            self.custody
+                .content()
+                .capture_history_encoded_growth_data(encoding_provider_originals, frame)?,
+            self.session.capture_history_encoded_growth_data()?,
+        ])?;
         let scratch = add(
             Self::original_restored_settled_capture_counter_scratch_data(),
             receiver.scratch,
@@ -477,6 +507,7 @@ impl CnpController {
             chunk: geometry.maximum_chunk_bytes_data(),
             auxiliary,
             incoming,
+            controller_history_encoded_growth,
             retained,
             transient,
             scratch,
@@ -544,7 +575,8 @@ fn typed_reply_headers() -> usize {
 }
 
 pub(super) fn counter_scratch_data() -> usize {
-    size_of::<&Option<Id>>()
+    encoding::counter_scratch_data()
+        + size_of::<&Option<Id>>()
         + crate::client::ClientContent::restored_settled_capture_receiver_counter_scratch_data()
         + size_of::<&RestoredSettledCaptureTypedOwnerData<'static>>()
         + size_of::<OriginalRestoredSettledCaptureProspectiveData<'static>>()

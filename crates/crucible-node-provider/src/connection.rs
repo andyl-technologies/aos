@@ -75,6 +75,7 @@ pub(crate) use exchange::{
 mod fresh_restore_receive;
 mod native5_codec;
 mod restored_input17_response;
+mod restored_observation17_response;
 pub use native5_codec::CanonicalAckCodecMetadataExtent;
 pub(crate) use native5_codec::{Native5CodecOwner, ProtocolCodecView};
 
@@ -702,19 +703,23 @@ impl<S: ProviderStream> Connection<S> {
                 bodies::decode_notification(envelope.method, &envelope.body)?,
             ))),
             MessageKind::Response => {
-                let originals: Box<dyn Iterator<Item = &Envelope> + '_> = if incoming {
-                    Box::new(self.guard.pending_requests())
+                let original = if incoming {
+                    self.guard
+                        .pending_requests()
+                        .find(|request| request.request_id == envelope.request_id)
                 } else {
-                    Box::new(self.guard.incoming_requests())
-                };
-                let original = originals
-                    .into_iter()
-                    .find(|request| request.request_id == envelope.request_id)
-                    .ok_or(ProviderError::Correlation(
-                        "response has no retained original",
-                    ))?;
+                    self.guard
+                        .incoming_requests()
+                        .find(|request| request.request_id == envelope.request_id)
+                }
+                .ok_or(ProviderError::Correlation(
+                    "response has no retained original",
+                ))?;
                 original.matches_response(envelope)?;
                 restored_input17_response::authenticate_original_class_data(original, envelope)?;
+                restored_observation17_response::authenticate_original_class_data(
+                    original, envelope,
+                )?;
                 let request = bodies::decode_request(original.method, &original.body)?;
                 let response = bodies::decode_response(&request, &envelope.body)?;
                 let operation = match &response.result {
@@ -1147,3 +1152,11 @@ pub use supervisor_state::RetainedSupervisorHistoricalData;
 pub use original_history::{
     OriginalRestoredInput17LiteralPrefixData, OriginalRestoredInput17LiteralPrefixIdentityData,
 };
+
+mod observation17_receive;
+pub(crate) use observation17_receive::native_observation17_receive_counter_scratch_data;
+
+pub(crate) use exchange::original_observation17_publication_counter_scratch_data;
+
+mod capture17_receive;
+pub(crate) use capture17_receive::native_capture17_receive_counter_scratch_data;

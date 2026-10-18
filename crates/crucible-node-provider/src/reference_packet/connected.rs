@@ -643,3 +643,9 @@ mod initial_observation_tests {
         Ok(())
     }
 }
+
+pub(crate) use capture_inventory::observation17::{
+    observation17_inventory_counter_scratch_data,
+    original_observation17_inventory_formatter_storage_data,
+    project_original_observation17_inventory_data,
+};

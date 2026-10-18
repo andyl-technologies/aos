@@ -185,6 +185,22 @@ pub enum CnpSemanticTransition {
 /// A generic frontend cannot infer a Clock, Compute or other role from labels.
 /// Unsupported facets must remain absent from the exact installation.
 pub trait CnpSemanticSource {
+    /// Reports an explicitly selected requirement for the separate Capture17 scope.
+    ///
+    /// This adapter-specific discriminator is immutable selection DATA. It
+    /// advertises neither support nor currentness and grants no capture, row or
+    /// native permission. Other Sources preserve their existing path by default.
+    /// Implementations perform only fixed origin/metadata checks here; schema
+    /// construction, I/O and whole-Window work belong to the funded producer.
+    ///
+    /// # Errors
+    /// Refuses foreign origin or a poisoned explicit declaration.
+    fn requires_restored_capture17_scope_data(
+        &self,
+    ) -> Result<bool, crate::node_contract::RuntimeError> {
+        Ok(false)
+    }
+
     /// Publishes one separately admitted restored observation from its Source.
     ///
     /// Unsupported implementations refuse before any effect. Portable labels,

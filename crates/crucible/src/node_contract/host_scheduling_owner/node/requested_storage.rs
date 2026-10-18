@@ -53,6 +53,7 @@ impl PreparedHostSchedulingNode {
             || self.restoration.is_some()
             || self.restoration_installed
             || self.capture_preparation.is_some()
+            || self.capture_preparation17.is_some()
         {
             return Err(failure(
                 "complete original Host node storage is not in its stable capture phase",
@@ -103,6 +104,7 @@ impl PreparedHostSchedulingNode {
             restoration: _,
             restoration_installed: _,
             capture_preparation: _,
+            capture_preparation17: _,
         } = self;
         if self.source.process != std::process::id()
             || self.source.owner_thread != std::thread::current().id()
@@ -114,6 +116,7 @@ impl PreparedHostSchedulingNode {
             || self.restoration.is_some()
             || self.restoration_installed
             || self.capture_preparation.is_some()
+            || self.capture_preparation17.is_some()
             || self.source.original_ticket.is_some()
             || self.source.archive_ticket.is_some()
             || !self.source.node_created.get()
@@ -167,6 +170,7 @@ impl PreparedHostSchedulingNode {
             restoration: _,
             restoration_installed: _,
             capture_preparation: _,
+            capture_preparation17: _,
         } = self;
         if self.source.process != std::process::id()
             || self.source.owner_thread != std::thread::current().id()
@@ -178,6 +182,7 @@ impl PreparedHostSchedulingNode {
             || self.restoration.is_some()
             || self.restoration_installed
             || self.capture_preparation.is_some()
+            || self.capture_preparation17.is_some()
             || self.source.original_ticket.is_some()
             || self.source.archive_ticket.is_none()
             || !self.source.node_created.get()

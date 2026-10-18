@@ -414,6 +414,26 @@ impl CnpSemanticNode {
                 "generic source has no installed complete capture mechanism",
             ));
         }
+        if let Some(scope) = ticket.restored_capture_scope17_data() {
+            return self.capture_with_restored17_ticket_into(
+                source.as_ref(),
+                scope,
+                ticket,
+                activation,
+                record,
+                runtime_object,
+                limits,
+                completed,
+            );
+        }
+        if source
+            .requires_restored_capture17_scope_data()
+            .map_err(unknown)?
+        {
+            return Err(refused(
+                "selected Capture17 requires its actual current collecting scope",
+            ));
+        }
         let native = self
             .preparation
             .guard

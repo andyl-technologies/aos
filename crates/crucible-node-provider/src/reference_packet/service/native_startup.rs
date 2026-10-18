@@ -389,10 +389,13 @@ pub use restored_settled_capture_ingress::{
 
 pub(crate) use restored_action17::{
     NativeRestoredSettledActionAttempt, NativeRestoredSettledActionCurrent17,
-    original_restored_settled_action_counter_scratch_data,
+    NativeRestoredSettledActionFamily17, original_restored_settled_action_counter_scratch_data,
     original_restored_settled_action_ingress_row_data,
 };
-pub(crate) use restored_settled_capture_output::NativeCaptureOutputCut17;
+pub(crate) use restored_settled_capture_output::{
+    NativeCapture17SnapshotStorageData, NativeCaptureOutputCut17,
+    native_capture17_snapshot_counter_scratch_data,
+};
 
 pub(crate) use restored_settled_capture_ingress::{
     NativeRestoredSettledCaptureAttempt,
@@ -428,3 +431,10 @@ pub use settled_data17::{
     write_original_native_settled_launch_data,
 };
 pub use settled_final_rows17::authenticate_original_native_settled_final_rows_data;
+
+pub(crate) use restored_input_reactive17_ingress::{
+    NativeObservation17ActionAttempt, NativePublishedInputReactive17CheckpointData,
+    original_native_observation17_retained_counter_scratch_data,
+};
+
+pub(crate) use restored_settled_capture_ingress::NativeCapture17PhaseData;

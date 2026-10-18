@@ -1176,3 +1176,87 @@ mod borrowed_string_comparison_tests {
         }
     }
 }
+
+/// Counts decoded backing and canonical encoded width of one borrowed JSON string.
+///
+/// The defining Cursor validates escapes, UTF-8 and surrogate pairs. This
+/// produces no decoded String, canonical bank, parsed Value or live authority.
+pub(crate) fn borrowed_json_string_storage_data(
+    input: &[u8],
+) -> Result<(usize, usize), ProviderError> {
+    let mut cursor = Cursor::new(input);
+    cursor.literal(b"\"")?;
+    let mut decoded = 0usize;
+    let mut encoded = 2usize;
+    while cursor.peek() != Some(b'"') {
+        let value = cursor.character()?;
+        decoded = decoded.checked_add(value.len_utf8()).ok_or_else(credit)?;
+        let width = match value {
+            '"' | '\\' | '\u{8}' | '\t' | '\n' | '\u{c}' | '\r' => 2,
+            '\u{0}'..='\u{1f}' => 6,
+            _ => value.len_utf8(),
+        };
+        encoded = encoded.checked_add(width).ok_or_else(credit)?;
+    }
+    cursor.literal(b"\"")?;
+    if cursor.position != input.len() {
+        return Err(invalid());
+    }
+    Ok((decoded, encoded))
+}
+
+/// Names the allocation-free string geometry walk's actual fixed headers.
+pub(crate) const fn borrowed_json_string_storage_counter_scratch_data() -> usize {
+    std::mem::size_of::<Cursor<'static>>()
+        + std::mem::size_of::<char>()
+        + std::mem::size_of::<[usize; 3]>()
+        + std::mem::size_of::<[u32; 3]>()
+        + std::mem::size_of::<Result<char, ProviderError>>()
+        + std::mem::size_of::<Result<(usize, usize), ProviderError>>()
+}
+
+#[cfg(test)]
+mod borrowed_string_storage_tests {
+    use super::*;
+
+    #[test]
+    fn decoded_and_canonical_widths_match_actual_string_writers() {
+        for (encoded, decoded) in [
+            (r#""plain""#, "plain"),
+            (r#""slash\/end""#, "slash/end"),
+            (r#""quote\"slash\\""#, "quote\"slash\\"),
+            (r#""\b\t\n\f\r\u0000""#, "\u{8}\t\n\u{c}\r\0"),
+            (r#""é/δ""#, "é/δ"),
+            (r#""\ud83d\ude00""#, "😀"),
+        ] {
+            let actual = serde_json::to_vec(decoded).unwrap();
+            assert_eq!(
+                borrowed_json_string_storage_data(encoded.as_bytes()).unwrap(),
+                (decoded.len(), actual.len())
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_or_trailing_string_data_cannot_become_projected_geometry() {
+        for input in [
+            br#""\ud83d""#.as_slice(),
+            br#""\udc00""#.as_slice(),
+            br#""\x""#.as_slice(),
+            br#""valid"false"#.as_slice(),
+            &[b'"', 0xc0, 0x80, b'"'],
+        ] {
+            assert!(borrowed_json_string_storage_data(input).is_err());
+        }
+    }
+}
+
+/// Checks one complete borrowed numeric value without allocating a DOM or error.
+pub(crate) fn borrowed_json_number_data(input: &[u8]) -> Result<Number, ProviderError> {
+    let mut cursor = Cursor { input, position: 0 };
+    let number = cursor.number()?;
+    if cursor.position != input.len() {
+        return Err(invalid());
+    }
+    Ok(number)
+}

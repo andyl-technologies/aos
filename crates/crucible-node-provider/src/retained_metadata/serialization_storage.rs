@@ -871,6 +871,23 @@ impl OriginalSerializationStorageProjection {
             .map_err(|_| projection_excess())
     }
 
+    /// Counts decoded and canonical string widths established by a borrowed decoder.
+    ///
+    /// The private defining caller validates the whole string using the shared
+    /// JSON Cursor. These are geometry bounds, never a parsed owner or credit.
+    pub(crate) fn add_verified_json_string_extent_data(
+        &mut self,
+        decoded_bytes: usize,
+        encoded_bytes: usize,
+    ) -> Result<(), ProviderError> {
+        if encoded_bytes < 2 {
+            return Err(projection_excess());
+        }
+        self.credit
+            .string_storage(decoded_bytes, encoded_bytes)
+            .map_err(|_| projection_excess())
+    }
+
     /// Visits actual closed scalar/container children with only decimal scratch.
     pub(crate) fn add_value(&mut self, value: &impl Serialize) -> Result<(), ProviderError> {
         value

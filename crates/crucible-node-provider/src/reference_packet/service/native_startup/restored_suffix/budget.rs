@@ -56,6 +56,27 @@ impl OriginalRestoredSuffixBudget {
         Ok(ordinal)
     }
 
+    /// Checks a fixed prospective visitor before walking actual action fields.
+    ///
+    /// This ingress-only negative bound does not spend or issue an action. The
+    /// genuine caller must still independently quote and debit all three axes.
+    ///
+    /// # Errors
+    /// Refuses another ledger phase or fixed scratch above the actual native
+    /// action reservation; no unrelated phase lends its counter credit.
+    pub(crate) fn authenticate_action_counter_scratch_data(
+        &self,
+        scratch: usize,
+    ) -> Result<(), ProviderError> {
+        if self.stage != Stage::Ingress
+            || u64::try_from(scratch).map_err(|_| invalid())?
+                > self.admitted.actions.declared_counter_scratch_bytes.get()
+        {
+            return Err(invalid());
+        }
+        Ok(())
+    }
+
     /// Spends current proof and callback work before any effect or allocation.
     pub(crate) fn begin_action_data(
         &mut self,
@@ -136,6 +157,24 @@ mod tests {
             actions: row(actions, 40, 50),
         })
         .unwrap()
+    }
+
+    #[test]
+    fn fixed_counter_preflight_never_spends_or_advances_the_actual_ledger() {
+        let mut ledger = budget(1, 10, 10);
+        assert!(ledger.authenticate_action_counter_scratch_data(50).is_err());
+        ledger.begin_ingress_data(row(10, 20, 30)).unwrap();
+        ledger.authenticate_action_counter_scratch_data(50).unwrap();
+        assert!(ledger.authenticate_action_counter_scratch_data(51).is_err());
+        assert_eq!(ledger.originals, 1);
+        assert_eq!(ledger.ingress_retained, 10);
+        assert_eq!(ledger.action_retained, 0);
+        assert_eq!(ledger.stage, Stage::Ingress);
+        ledger.begin_action_data(row(10, 40, 50)).unwrap();
+        assert!(ledger.authenticate_action_counter_scratch_data(50).is_err());
+        ledger.complete_publication_data().unwrap();
+        assert!(ledger.authenticate_action_counter_scratch_data(50).is_err());
+        assert_eq!(ledger.action_retained, 10);
     }
 
     #[test]

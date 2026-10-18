@@ -15,7 +15,7 @@ use crate::retained_metadata::serialization_storage::{
 use std::mem::{align_of, size_of};
 
 /// Reports independently priced future host receiver axes as inert DATA.
-pub(crate) struct OriginalObservationReceiveStorageData {
+pub struct OriginalObservationReceiveStorageData {
     /// Prices prospective persistent content, original, ACK and failure backing.
     pub(crate) retained: usize,
     /// Prices simultaneous decoder, mutation, serialization and failure work.
@@ -24,13 +24,41 @@ pub(crate) struct OriginalObservationReceiveStorageData {
     pub(crate) scratch: usize,
 }
 
+impl OriginalObservationReceiveStorageData {
+    /// Returns prospective content, original, ACK and failure backing.
+    pub fn retained_requested_bytes_data(&self) -> usize {
+        self.retained
+    }
+
+    /// Returns independently priced simultaneous receiver work.
+    pub fn maximum_simultaneous_transient_bytes_data(&self) -> usize {
+        self.transient
+    }
+
+    /// Returns the defining counters and borrowed receiver views.
+    pub fn counter_scratch_bytes_data(&self) -> usize {
+        self.scratch
+    }
+}
+
 impl CnpController {
+    /// Names this exact causal receiver quote's fixed headers before its walk.
+    ///
+    /// This DATA grants no original, credit, protocol operation or native action.
+    pub fn original_observation_receive_counter_scratch_data() -> usize {
+        counter_scratch_data()
+    }
+
     /// Quotes the actual finite receiver, persistent provider journals and ACKs.
+    ///
+    /// This inert DATA authenticates no Source, current checkpoint, World or
+    /// native action. The owning construction independently prices this new
+    /// component beside its existing census and other operation-specific rows.
     ///
     /// # Errors
     /// Refuses nonidle or changed native codec, checked overflow or total demand
     /// beyond the caller's independently funded complete construction ceiling.
-    pub(crate) fn original_observation_receive_storage_data(
+    pub fn original_observation_receive_storage_data(
         &self,
         maximum: usize,
     ) -> Result<OriginalObservationReceiveStorageData, ProviderError> {
@@ -198,7 +226,7 @@ fn reference_fields(out: &mut Projection) -> Result<(), ProviderError> {
     out.add_field("digest")?;
     out.add_unescaped_ascii_extent(64)?;
     out.add_field("length")?;
-    out.add_value(&U64::new(u64::MAX))?;
+    out.add_unescaped_ascii_extent(20)?;
     out.add_field("media_type")?;
     out.add_string_extent(128)
 }
@@ -231,7 +259,7 @@ fn blob_frame(
         out.add_string_extent(128)?;
     }
     out.add_field("sequence")?;
-    out.add_value(&U64::new(u64::MAX))?;
+    out.add_unescaped_ascii_extent(20)?;
     out.add_field("method")?;
     out.add_string(match method {
         0 => "blob_begin",
@@ -256,10 +284,10 @@ fn blob_frame(
             reference_fields(&mut out)?;
         } else {
             out.add_field("next_offset")?;
-            out.add_value(&U64::new(u64::MAX))?;
+            out.add_unescaped_ascii_extent(20)?;
             if method == 0 {
                 out.add_field("maximum_chunk_bytes")?;
-                out.add_value(&U64::new(u64::MAX))?;
+                out.add_unescaped_ascii_extent(20)?;
             }
         }
         out.add_field("extensions")?;
@@ -272,7 +300,7 @@ fn blob_frame(
             }
             1 => {
                 out.add_field("offset")?;
-                out.add_value(&U64::new(u64::MAX))?;
+                out.add_unescaped_ascii_extent(20)?;
                 out.add_field("bytes")?;
                 out.add_unescaped_ascii_extent(mul(chunk.div_ceil(3), 4)?)?;
             }

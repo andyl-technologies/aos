@@ -65,6 +65,7 @@ pub(crate) struct NativeRestoredInputReactive17Attempt {
     terminal: Option<Envelope>,
     prepared_reply: Option<Map<String, Value>>,
     stage: Stage,
+    observation: Option<observation17::NativeObservation17ActionAttempt>,
 }
 
 impl NativeRestoredInputReactive17Attempt {
@@ -80,6 +81,7 @@ impl NativeRestoredInputReactive17Attempt {
             terminal: None,
             prepared_reply: None,
             stage: Stage::Receiving,
+            observation: None,
         }
     }
 
@@ -285,7 +287,7 @@ impl NativeRestoredInputReactive17Attempt {
     pub(crate) fn complete_publication_data(&mut self) -> Result<(), ProviderError> {
         let previous = self.stage;
         self.stage = Stage::Failed;
-        if previous != Stage::Dispatched || self.terminal.is_none() {
+        if previous != Stage::Dispatched || self.terminal.is_none() || self.observation.is_some() {
             return Err(invalid());
         }
         self.stage = Stage::Published;
@@ -329,6 +331,7 @@ impl NativeRestoredInputReactive17Attempt {
             terminal,
             prepared_reply,
             stage: _,
+            observation,
         } = self;
         observer.observe(original)?;
         observer.observe(terminal)?;
@@ -393,6 +396,9 @@ impl NativeRestoredInputReactive17Attempt {
             observer.observe(input_epoch)?;
             observer.observe(ordering_profile)?;
             observer.observe(input_authorization)?;
+        }
+        if let Some(observation) = observation {
+            observation.observe_retained_data(observer)?;
         }
         Ok(())
     }
@@ -662,6 +668,10 @@ pub(crate) fn original_restored_input_reactive17_ingress_row_data(
 
 pub(super) fn counter_scratch_data() -> usize {
     restored_input_reactive17_contract_counter_scratch_data()
+        // The real native17 constructor spends this ingress before its first
+        // completed-ancestry/literal loan. Its fixed work is charged here,
+        // independently of the later separately debited model/action phase.
+        + crate::reference_packet::service::ack_emitter::native_observation17_scope_counter_scratch_data()
         + size_of::<NativeRestoredInputReactive17Attempt>()
         + size_of::<Option<NativeRestoredInputReactive17Attempt>>()
         + size_of::<Body>()
@@ -821,3 +831,10 @@ mod tests {
         assert_eq!(old.original_data().unwrap(), &original);
     }
 }
+
+#[path = "restored_input_reactive17_ingress/observation17.rs"]
+mod observation17;
+pub(crate) use observation17::{
+    NativeObservation17ActionAttempt, NativePublishedInputReactive17CheckpointData,
+    original_native_observation17_retained_counter_scratch_data,
+};

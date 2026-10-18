@@ -317,6 +317,16 @@ impl<S: ProviderStream> Connection<S> {
         )
     }
 
+    /// Names this defining signed Observe17 prefix's fixed borrowed work.
+    ///
+    /// The same actual native ingress/action reservation checks these views
+    /// before walking fields. This returns DATA, never a grant or reserved row.
+    pub(crate) fn native_observation17_prefix_counter_scratch_data() -> usize {
+        original_packet_prefix_startup_counter_scratch_data()
+            + super::restored_observation17::counter_scratch_data()
+            + crate::reference_packet::service::restored_input_reactive17::observation_geometry::prospective_counter_scratch_data()
+    }
+
     /// Quotes one separately selected two-object signed Observe17 publication.
     ///
     /// # Errors
@@ -404,13 +414,28 @@ impl<S: ProviderStream> Connection<S> {
             frames,
             requests,
         )?;
-        let mut original_fields = MetadataObserver::new();
-        original_fields.observe(original_observe)?;
-        let actual_original = actual_serialization_storage_data(
-            original_observe,
-            original_fields.finish(),
-            input.maximum_requested_bytes,
-        )?;
+        let actual_original = if class == PrefixClass::RestoredObserve17 {
+            // This quote precedes its native action debit. U64's ordinary
+            // serializer creates a decimal String, so this closed new family
+            // projects the actual retained fields without invoking Serialize.
+            use crate::reference_packet::service::restored_input_reactive17::observation_geometry::Observation17OriginalData;
+            let mut projection = crate::retained_metadata::serialization_storage::OriginalSerializationStorageProjection::new(input.maximum_requested_bytes)?;
+            Observation17OriginalData::Actual(original_observe).project(&mut projection)?;
+            let mut storage = projection.finish(input.maximum_requested_bytes)?;
+            storage.serializer_temporary_requested_bytes = 20;
+            if storage.requested_total()? > input.maximum_requested_bytes {
+                return Err(credit());
+            }
+            storage
+        } else {
+            let mut original_fields = MetadataObserver::new();
+            original_fields.observe(original_observe)?;
+            actual_serialization_storage_data(
+                original_observe,
+                original_fields.finish(),
+                input.maximum_requested_bytes,
+            )?
+        };
         continuation::within(&actual_original, input.original)?;
         let mut data = OriginalPacketPrefixStorageData {
             native_retained_backing_bytes: None,
@@ -605,6 +630,11 @@ impl<S: ProviderStream> Connection<S> {
                 size_of::<MetadataObserver<'static>>(),
                 size_of::<RetainedProtocolMetadataFacts>(),
                 mul(3, size_of::<OriginalSerializationStorageData>())?,
+                if class == PrefixClass::RestoredObserve17 {
+                    crate::reference_packet::service::restored_input_reactive17::observation_geometry::prospective_counter_scratch_data()
+                } else {
+                    0
+                },
             ])?,
             terminal: copy_storage(input.terminal),
             original: copy_storage(input.original),

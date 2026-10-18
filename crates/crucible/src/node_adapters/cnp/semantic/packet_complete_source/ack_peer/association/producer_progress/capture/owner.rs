@@ -50,6 +50,7 @@ pub(in crate::node_adapters::cnp::semantic::packet_complete_source::ack_peer::as
     stage: Stage,
     pub(super) construction: super::effect::CaptureConstructionOwners,
     prefix: CapturePrefixOwners,
+    pub(super) materialization: std::cell::RefCell<super::effect::CaptureMaterializationOwner>,
     transport: Option<CaptureSdkOwners>,
     post_confirmation: CapturePostConfirmationOwners,
 }
@@ -61,6 +62,9 @@ impl CaptureOnceOwner {
             stage: Stage::Unused,
             construction: super::effect::CaptureConstructionOwners::empty(),
             prefix: CapturePrefixOwners::new_data(),
+            materialization: std::cell::RefCell::new(
+                super::effect::CaptureMaterializationOwner::empty(),
+            ),
             transport: None,
             post_confirmation: CapturePostConfirmationOwners::new_data(),
         }
@@ -100,6 +104,19 @@ impl CaptureOnceOwner {
 
     pub(super) fn prefix_payload_data(&self) -> Result<(&ContentRef, &[u8]), RuntimeError> {
         if self.stage != Stage::Prepared {
+            return Err(RuntimeError::OutstandingObligations);
+        }
+        self.prefix.payload_data()
+    }
+
+    /// Lends the original uploaded prefix only after actual Capture completion.
+    ///
+    /// # Errors
+    /// Refuses an earlier phase, absent prefix custody or changed full bytes.
+    pub(super) fn completed_prefix_payload17_data(
+        &self,
+    ) -> Result<(&ContentRef, &[u8]), RuntimeError> {
+        if self.stage != Stage::Complete {
             return Err(RuntimeError::OutstandingObligations);
         }
         self.prefix.payload_data()
@@ -225,9 +242,14 @@ impl CaptureOnceOwner {
             stage: _,
             construction,
             prefix,
+            materialization,
             transport,
             post_confirmation,
         } = self;
+        let materialization = materialization
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        let copies = materialization.retained_storage_data(maximum)?;
         let prefix = prefix.retained_storage_data(maximum)?;
         let post = post_confirmation.retained_storage_data(maximum)?;
         let transport = transport
@@ -236,6 +258,7 @@ impl CaptureOnceOwner {
         post.checked_add(construction.retained_storage_data(maximum)?)
             .and_then(|bytes| bytes.checked_add(prefix))
             .and_then(|bytes| bytes.checked_add(transport))
+            .and_then(|bytes| bytes.checked_add(copies))
             .filter(|requested| *requested <= maximum)
             .ok_or(RuntimeError::ResourceLimit)
     }
@@ -272,6 +295,7 @@ impl CaptureOnceOwner {
             + size_of::<(&ContentRef, &[u8])>()
             + size_of::<&[u8; 32]>()
             + size_of::<&mut dyn FnMut() -> Result<(), RuntimeError>>()
+            + super::effect::CaptureMaterializationOwner::counter_scratch_data()
             + CapturePrefixOwners::counter_scratch_data()
             + CaptureSdkOwners::counter_scratch_data()
             + CapturePostConfirmationOwners::counter_scratch_data()

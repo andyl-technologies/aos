@@ -17,8 +17,8 @@ use crate::reference_packet::service::{
     CurrentServiceHistory17, OriginalNativeServiceCaptureContext, ack_emitter::NativeAckBoot,
 };
 use crate::retained_metadata::{
-    MetadataObserver, RetainedProtocolMetadataFacts, aliases::MetadataAliasBank,
-    records::MetadataRecordBank,
+    MetadataObserver, OrdinaryBytesFormatterDemandData, RetainedProtocolMetadataFacts,
+    aliases::MetadataAliasBank, records::MetadataRecordBank,
 };
 use serde::{Serialize, Serializer, ser::SerializeTuple};
 use std::cell::{Ref, RefCell};
@@ -33,6 +33,7 @@ pub(in crate::reference_packet) struct NativeCurrentGraph17Borrowed<'a> {
     records: &'a MetadataRecordBank,
     aliases: &'a MetadataAliasBank,
     facts: RetainedProtocolMetadataFacts,
+    ordinary_bytes_formatter: OrdinaryBytesFormatterDemandData,
     action_cut: Option<(
         &'a NativeRestoredSettledActionCurrent17<'a>,
         &'a NativeCaptureOutputCut17<'a>,
@@ -160,6 +161,7 @@ impl PacketEndpoint<DeadlineStream> {
             action_cut,
             &mut observer,
         )?;
+        let ordinary_bytes_formatter = observer.ordinary_bytes_formatter_data();
         let facts = observer.finish();
         Ok(NativeCurrentGraph17Borrowed {
             endpoint: self,
@@ -170,6 +172,7 @@ impl PacketEndpoint<DeadlineStream> {
             records,
             aliases,
             facts,
+            ordinary_bytes_formatter,
             action_cut,
         })
     }
@@ -292,6 +295,7 @@ pub(in crate::reference_packet) struct NativeCurrentGraph17ActionPlan<'a> {
     endpoint: &'a PacketEndpoint<DeadlineStream>,
     context: &'a OriginalNativeServiceCaptureContext<'a>,
     facts: RetainedProtocolMetadataFacts,
+    ordinary_bytes_formatter: OrdinaryBytesFormatterDemandData,
 }
 
 impl PacketEndpoint<DeadlineStream> {
@@ -304,11 +308,12 @@ impl PacketEndpoint<DeadlineStream> {
         &'a self,
         context: &'a OriginalNativeServiceCaptureContext<'a>,
     ) -> Result<NativeCurrentGraph17ActionPlan<'a>, ProviderError> {
-        let facts = self.current_graph17_census_data(context)?;
+        let (facts, ordinary_bytes_formatter) = self.current_graph17_census_data(context)?;
         Ok(NativeCurrentGraph17ActionPlan {
             endpoint: self,
             context,
             facts,
+            ordinary_bytes_formatter,
         })
     }
 
@@ -356,18 +361,26 @@ impl PacketEndpoint<DeadlineStream> {
     ) -> Result<NativeCurrentGraph17ActionPlan<'a>, ProviderError> {
         let graph = self.borrowed_current_graph17_data(context, records, aliases)?;
         let facts = *graph.metadata_facts_data();
+        let ordinary_bytes_formatter = graph.ordinary_bytes_formatter;
         drop(graph);
         Ok(NativeCurrentGraph17ActionPlan {
             endpoint: self,
             context,
             facts,
+            ordinary_bytes_formatter,
         })
     }
 
     fn current_graph17_census_data(
         &self,
         context: &OriginalNativeServiceCaptureContext<'_>,
-    ) -> Result<RetainedProtocolMetadataFacts, ProviderError> {
+    ) -> Result<
+        (
+            RetainedProtocolMetadataFacts,
+            OrdinaryBytesFormatterDemandData,
+        ),
+        ProviderError,
+    > {
         self.borrowed_rooted_settled17_data()?;
         let Some(Transport::Connected(connection)) = self.transport.as_ref() else {
             return Err(refused());
@@ -391,7 +404,8 @@ impl PacketEndpoint<DeadlineStream> {
             None,
             &mut observer,
         )?;
-        Ok(observer.finish())
+        let ordinary_bytes_formatter = observer.ordinary_bytes_formatter_data();
+        Ok((observer.finish(), ordinary_bytes_formatter))
     }
 }
 
@@ -426,7 +440,8 @@ impl NativeCurrentGraph17ActionPlan<'_> {
                 .canonical_ack_boot
                 .as_ref()
                 .is_none_or(|actual| !Rc::ptr_eq(boot, actual))
-            || self.endpoint.current_graph17_census_data(self.context)? != self.facts
+            || self.endpoint.current_graph17_census_data(self.context)?
+                != (self.facts, self.ordinary_bytes_formatter)
         {
             return Err(refused());
         }
@@ -501,6 +516,18 @@ impl NativeCurrentGraph17ActionPlan<'_> {
     /// Borrows the same actual Endpoint receiver for defining auxiliary pricing.
     pub(in crate::reference_packet) fn uploads_data(&self) -> &crate::blob::BlobReceiver {
         &self.endpoint.uploads
+    }
+
+    /// Borrows a formatter bound from actual typed Bytes without allocating a bank.
+    ///
+    /// The defining action adds its checked temporary extent before generic
+    /// counting. Compact-wrapped typed Bytes may make this conservative. Other
+    /// serializer work and genuinely new future fields require independently
+    /// derived rows; this is neither total work nor a native spending grant.
+    pub(in crate::reference_packet) fn ordinary_bytes_formatter_data(
+        &self,
+    ) -> OrdinaryBytesFormatterDemandData {
+        self.ordinary_bytes_formatter
     }
 
     /// Borrows the actual census without turning it into a storage allowance.

@@ -19,6 +19,24 @@ pub(in crate::client) struct SessionSettledHistoryData<'a> {
 }
 
 impl ClientSession {
+    pub(in crate::client) fn capture_history_encoded_growth_data(
+        &self,
+    ) -> Result<usize, ProviderError> {
+        // Session.sequence is independently encoded as a decimal U64 string.
+        self.connection
+            .capture_history_encoded_growth_data()?
+            .checked_add(22)
+            .ok_or(ProviderError::ResourceExhausted(
+                "SDK Capture Session encoding",
+            ))
+    }
+
+    pub(in crate::client) fn capture_history_encoding_counter_scratch_data() -> usize {
+        size_of::<&Self>()
+            + size_of::<Result<usize, ProviderError>>()
+            + crate::connection::Connection::<DeadlineStream>::capture_history_encoding_counter_scratch_data()
+    }
+
     fn authenticate_settled_history_parent_data(&self) -> Result<(), ProviderError> {
         if self.original_response_loss.is_some() {
             return Err(ProviderError::Correlation(

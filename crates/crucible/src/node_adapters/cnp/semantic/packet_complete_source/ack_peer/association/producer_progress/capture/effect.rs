@@ -151,6 +151,7 @@ pub(super) struct CaptureConstructionOwners {
     pub(super) body: Option<BeginRequest>,
     pub(super) uploads: [Option<PacketRestoredSettledCaptureUploadRequest>; 2],
     pub(super) ids: [Option<Id>; 4],
+    pub(super) finalization: super::finalization::FinalizationOwners,
     pub(super) final_started: bool,
     pub(super) final_value: Option<Value>,
     pub(super) final_bytes: Vec<u8>,
@@ -170,6 +171,7 @@ impl CaptureConstructionOwners {
             body: None,
             uploads: [None, None],
             ids: [None, None, None, None],
+            finalization: super::finalization::FinalizationOwners::empty(),
             final_started: false,
             final_value: None,
             final_bytes: Vec::new(),
@@ -198,6 +200,7 @@ impl CaptureConstructionOwners {
             body,
             uploads,
             ids,
+            finalization,
             final_started: _,
             final_value,
             final_bytes,
@@ -206,7 +209,11 @@ impl CaptureConstructionOwners {
             node_reference,
         } = self;
         let mut total = super::construction_quote::sum(
-            &[final_bytes.capacity(), node_bytes.capacity()],
+            &[
+                final_bytes.capacity(),
+                node_bytes.capacity(),
+                finalization.retained_storage_data(maximum)?,
+            ],
             maximum,
         )?;
         let mut add_facts =
@@ -310,15 +317,26 @@ pub struct OriginalSourceRestoredCaptureCompletion<'a> {
     pub(super) record: &'a OriginalLineageRuntimeRecord,
     runtime: &'a crate::node_scheduling::InputPayload,
     semantic: (&'a ContentRef, &'a [u8]),
+    history_prefix: (&'a ContentRef, &'a [u8]),
     node: (&'a ContentRef, &'a [u8]),
     native: &'a crucible_node_provider::protocol_snapshot::restored_settled17::ValidatedRestoredSettledNative17CaptureOutputs,
     sdk: crucible_node_provider::client::OriginalCompletedRestoredSettledCaptureData<'a>,
+    finalization: &'a super::finalization::FinalizationOwners,
+    materialization: &'a std::cell::RefCell<CaptureMaterializationOwner>,
 }
 
 impl OriginalSourceRestoredCaptureCompletion<'_> {
     /// Borrows the exact completed full semantic17 object.
     pub fn semantic_data(&self) -> (&ContentRef, &[u8]) {
         self.semantic
+    }
+
+    /// Borrows the actual uploaded prefix named by this final Journal17 cut.
+    ///
+    /// The tuple comes from the same completed Source Capture owner. Archive
+    /// enrollment and all copied evidence remain independently funded.
+    pub fn history_prefix_data(&self) -> (&ContentRef, &[u8]) {
+        self.history_prefix
     }
 
     /// Borrows the exact canonical embedded Node object from that same encoding.
@@ -340,6 +358,30 @@ impl OriginalSourceRestoredCaptureCompletion<'_> {
         &self,
     ) -> &crucible_node_provider::client::OriginalCompletedRestoredSettledCaptureData<'_> {
         &self.sdk
+    }
+
+    /// Borrows the same-supervisor post-confirmation Controller24 component.
+    ///
+    /// # Errors
+    /// Refuses an incomplete retained finalizer; no historical data is promoted.
+    pub(crate) fn host_protocol_data(&self) -> Result<(&ContentRef, &[u8]), RuntimeError> {
+        self.finalization.controller_data()
+    }
+
+    /// Borrows the final Journal17 built from the actual four completed SDK pairs.
+    ///
+    /// # Errors
+    /// Refuses an incomplete retained finalizer.
+    pub(crate) fn journal_data(&self) -> Result<(&ContentRef, &[u8]), RuntimeError> {
+        self.finalization.journal_data()
+    }
+
+    /// Borrows the original scope-proof body enrolled beside this capture.
+    ///
+    /// # Errors
+    /// Refuses an incomplete retained finalizer or absent original proof.
+    pub(crate) fn scope_proof_data(&self) -> Result<(&ContentRef, &[u8]), RuntimeError> {
+        self.finalization.proof_data()
     }
 
     pub(crate) fn authenticate_claim_data(
@@ -587,6 +629,80 @@ impl PacketCompleteSemanticSource {
             owner.retain_final_semantic17_data(value, row.semantic)?;
         }
         recheck()?;
+        // The final Controller is later than the Source prefix and has its own
+        // baseline-plus-SDK-growth row. Borrow the actual retained supervisor
+        // from this Node; a reconstructed or absent witness cannot serialize it.
+        {
+            use crucible_node_provider::protocol_snapshot::restored_journal17::{
+                PacketRestoredSettledHistoryCut17, PacketRestoredSettledJournal17Objects,
+            };
+            let sdk = controller
+                .original_completed_restored_settled_capture_data(emitter)
+                .map_err(|_| RuntimeError::InvalidReceipt)?;
+            let mut owner = original
+                .restored_capture
+                .try_borrow_mut()
+                .map_err(|_| RuntimeError::OwnerBusy)?;
+            let before = {
+                let native = owner.current_native_outputs17_data()?;
+                canonical::content_ref(
+                    native
+                        .before_protocol_bytes_data()
+                        .map_err(|_| RuntimeError::InvalidReceipt)?,
+                    "application/json",
+                )
+                .map_err(|_| RuntimeError::InvalidReceipt)?
+            };
+            let state = &mut owner.construction;
+            state.finalization.encode_controller_data(
+                &node.original_controller_history_data(controller)?,
+                inputs.scope_proof,
+                inputs.scope_proof_body,
+                &row.finalization,
+                row.maximum,
+            )?;
+            let controller_reference = state.finalization.controller_data()?.0.clone();
+            let receipt = sdk.receipt_data();
+            state.finalization.objects = Some(PacketRestoredSettledJournal17Objects {
+                snapshot: receipt.capture.native_snapshot_ref.clone(),
+                before,
+                control: receipt.capture.native_control_ref.clone(),
+                anchor: receipt.capture.native_anchor_ref.clone(),
+                after: receipt.native_after_ref.clone(),
+                host_protocol: controller_reference,
+                semantic: state
+                    .final_reference
+                    .as_ref()
+                    .ok_or(RuntimeError::OwnerUnavailable)?
+                    .clone(),
+                runtime_object: claim.runtime_object_data().reference.clone(),
+                coordinator_checkpoint: claim.coordinator_checkpoint_data()?.0.clone(),
+            });
+            state.finalization.history_cut = Some(PacketRestoredSettledHistoryCut17 {
+                prefix: sdk.request_data().history_prefix.clone(),
+                next_sequence: sdk
+                    .prefix_frontier_data()
+                    .map_err(|_| RuntimeError::InvalidReceipt)?,
+            });
+            state
+                .finalization
+                .objects
+                .as_ref()
+                .ok_or(RuntimeError::OwnerUnavailable)?
+                .validate_data()
+                .map_err(|_| RuntimeError::InvalidReceipt)?;
+            state.finalization.encode_journal_data(
+                state
+                    .ancestry
+                    .as_ref()
+                    .ok_or(RuntimeError::OwnerUnavailable)?,
+                &sdk,
+                &row.finalization,
+                row.maximum,
+            )?;
+            state.retained_storage_data(row.maximum)?;
+        }
+        recheck()?;
         let result = {
             let owner = original
                 .restored_capture
@@ -602,10 +718,13 @@ impl PacketCompleteSemanticSource {
             let state = &owner.construction;
             let completion = OriginalSourceRestoredCaptureCompletion {
                 row: &row,
+                finalization: &state.finalization,
+                materialization: &owner.materialization,
                 world: inputs.world,
                 ticket: claim.ticket_data(),
                 record: claim.runtime_record_data(),
                 runtime: claim.runtime_object_data(),
+                history_prefix: owner.completed_prefix_payload17_data()?,
                 semantic: (
                     state
                         .final_reference
@@ -673,7 +792,12 @@ pub(super) fn counter_scratch_data() -> usize {
         + size_of::<Result<(), RuntimeError>>()
         + size_of::<Result<Value, serde_json::Error>>()
         + size_of::<Result<Vec<u8>, crucible_node_contract::ContractError>>()
+        + CaptureMaterializationOwner::counter_scratch_data()
 }
+
+#[path = "effect/materialization.rs"]
+mod materialization;
+pub(super) use materialization::CaptureMaterializationOwner;
 
 fn same_prior_data(
     a: Option<&super::logical::OriginalSourceRestoredSettled17Read>,

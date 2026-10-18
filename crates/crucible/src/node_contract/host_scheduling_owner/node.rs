@@ -18,6 +18,8 @@ use crate::node_contract::{
 use super::{HostSchedulingSource, canonical, failure, json};
 
 mod capture;
+#[path = "node/capture17.rs"]
+mod capture17;
 mod preservation;
 mod requested_storage;
 
@@ -34,6 +36,7 @@ pub struct PreparedHostSchedulingNode {
     restoration: Option<preservation::HostRestorationAdmission>,
     restoration_installed: bool,
     capture_preparation: Option<crate::node_contract::HostSchedulingContinuationV2>,
+    capture_preparation17: Option<crate::node_contract::HostSchedulingRestoredContinuation17>,
 }
 
 impl PreparedHostSchedulingNode {
@@ -56,6 +59,7 @@ impl PreparedHostSchedulingNode {
             restoration: None,
             restoration_installed: false,
             capture_preparation: None,
+            capture_preparation17: None,
         }
     }
 
@@ -78,6 +82,7 @@ impl PreparedHostSchedulingNode {
             restoration: None,
             restoration_installed: false,
             capture_preparation: None,
+            capture_preparation17: None,
         }
     }
 

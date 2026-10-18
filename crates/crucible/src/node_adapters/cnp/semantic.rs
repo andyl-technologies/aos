@@ -188,8 +188,8 @@ pub(crate) use packet_complete_source::OriginalSourceRestoredProducerPhaseComple
 
 pub(crate) use packet_complete_source::{
     OriginalSourceRestoredInstallationExpected17, OriginalSourceRestoredLimits17,
-    OriginalSourceRestoredProducerCheckpoint17, OriginalSourceRestoredSettled17Read,
-    OriginalSourceRestoredSettled17ReadInputs,
+    OriginalSourceRestoredProducerCheckpoint17, OriginalSourceRestoredSettled17DecodeAttempt,
+    OriginalSourceRestoredSettled17Read, OriginalSourceRestoredSettled17ReadInputs,
 };
 
 pub(crate) use node::{

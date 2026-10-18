@@ -851,3 +851,10 @@ pub(crate) const fn original_frame_slot_alignment_data() -> usize {
 }
 
 pub(crate) mod current17;
+
+/// Names the exact retained-bank iterator header used by private borrowed scans.
+/// This is layout DATA and confers no custody, allocation or protocol right.
+pub(crate) const fn original_frames_iterator_counter_scratch_data() -> usize {
+    std::mem::size_of::<std::slice::Iter<'static, Slot>>()
+        + std::mem::size_of::<&OriginalFrameReservation>()
+}

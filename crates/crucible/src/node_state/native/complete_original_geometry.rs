@@ -146,6 +146,14 @@ impl crate::node_contract::NodeRuntime {
         super::core_decode_credit::preflight(bytes, maximum)?.total()
     }
 
+    /// Quotes the distinct Host17 decoder without constructing historical state.
+    pub(crate) fn capture_restored_host17_decode_storage_data(
+        bytes: &[u8],
+        maximum: usize,
+    ) -> Result<usize, crate::node_contract::RuntimeError> {
+        super::core_decode_credit::preflight_restored_host17(bytes, maximum)?.total()
+    }
+
     pub(crate) fn capture_host_dependency_count(
         bytes: &[u8],
         maximum: usize,

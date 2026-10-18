@@ -8,6 +8,98 @@ use super::*;
 use crate::node_contract::OriginalLineageNativeScope;
 
 impl CompleteOriginalRestorationWindow {
+    /// Borrows the actual admitted Source row before the archive writer joins.
+    ///
+    /// The current Window, Source/read/controller owners, complete checkpoint
+    /// record and original bytes must all match the latest admitted attempt.
+    /// This observer neither submits a member nor constructs a ticket, claim,
+    /// current native read, output bank or native construction allowance. The
+    /// effect path independently requires its verified writer join and ticket.
+    ///
+    /// # Errors
+    /// Refuses a stale or foreign owner, unsettled whole observation, another
+    /// World/cut/ordinal, incomplete checkpoint, changed Runtime7 record/object,
+    /// any submitted member, or failed/reentrant writer or Capture state.
+    pub(crate) fn original_restored_capture_preflight_construction_data(
+        &self,
+        selected: usize,
+        source: &PacketCompleteSemanticSource,
+        world: &WorldActivation,
+        record: &OriginalLineageRuntimeRecord,
+        runtime_object: &InputPayload,
+        controller: *const CnpController,
+        read_owner: *const (),
+    ) -> Result<OriginalSourceRestoredCaptureConstructionData, RuntimeError> {
+        self.origin()?;
+        if self.original_installed_source_index_data(source)? != selected {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        self.whole_observation.authenticate_dispatch_data()?;
+
+        // This private descendant borrows the same defining Weak directly so
+        // expiry returns a fixed RuntimeError rather than allocating diagnostic
+        // text. Keep its genuine Rc alive across all identity helpers below.
+        let plan = crate::node_admission::conformance::InstalledConformancePlan(
+            self.plan
+                .0
+                .upgrade()
+                .ok_or(RuntimeError::ForeignAuthority)?,
+        );
+        self.authenticate_suffix_identity_data(
+            selected,
+            source,
+            read_owner,
+            world,
+            self.original_complete_scope_proof_identity_data()?,
+        )?;
+
+        let ledger = self
+            .restored_captures
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        if ledger.pending.is_some() {
+            return Err(RuntimeError::OutstandingObligations);
+        }
+        let slot = ledger
+            .attempts
+            .len()
+            .checked_sub(1)
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        let attempt = ledger.active(slot)?;
+        if attempt.stage.get() != Stage::Admitted
+            || attempt.members.iter().any(|member| member.get() != 0)
+            || !matches!(
+                attempt.writer_join.get(),
+                checkpoint::WriterJoinStage::Waiting | checkpoint::WriterJoinStage::Verified
+            )
+            || record.capture_cut != attempt.cut
+            || record.capture_ordinal != attempt.ordinal
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        self.authenticate_restored_capture_archive_identity_data(
+            &plan,
+            world,
+            slot,
+            &attempt.capture_id,
+            attempt.runtime,
+        )?;
+        attempt
+            .checkpoint_inputs
+            .authenticate_runtime_inputs_data(record, runtime_object)?;
+        attempt.checkpoint.object_for_runtime_data(runtime_object)?;
+
+        let row = attempt
+            .rows
+            .get(selected)
+            .and_then(Option::as_ref)
+            .copied()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        row.authenticate_owner_data(source, controller, read_owner, &attempt.request_data())?;
+        self.whole_observation.authenticate_dispatch_data()?;
+        Ok(row)
+    }
+
     /// Authenticates the same current archive scope and retained admission.
     ///
     /// The runtime pointer is compared only. Its genuine live source is checked
@@ -119,4 +211,29 @@ impl CompleteOriginalRestorationWindow {
         self.runtime
             .authenticate_world_activation_data(world, &scope.target)
     }
+}
+
+/// Names the preflight's genuine plan upgrade, borrowed ledger and DATA result.
+pub(super) fn counter_scratch_data() -> usize {
+    type PlanOwner = Rc<crate::node_admission::conformance::Plan>;
+    size_of::<PlanOwner>()
+        + size_of::<Option<PlanOwner>>()
+        + size_of::<Result<PlanOwner, RuntimeError>>()
+        + size_of::<InstalledConformancePlan>()
+        + size_of::<Result<InstalledConformancePlan, crate::node_admission::EvidenceError>>()
+        + size_of::<std::cell::Ref<'static, Ledger>>()
+        + size_of::<Result<std::cell::Ref<'static, Ledger>, std::cell::BorrowError>>()
+        + size_of::<Result<&'static Attempt, RuntimeError>>()
+        + size_of::<Option<&'static OriginalSourceRestoredCaptureConstructionData>>()
+        + size_of::<OriginalSourceRestoredCaptureConstructionData>()
+        + size_of::<Result<OriginalSourceRestoredCaptureConstructionData, RuntimeError>>()
+        + size_of::<OriginalRestoredCaptureRequestData<'static>>()
+        + size_of::<&OriginalLineageRuntimeRecord>()
+        + size_of::<&InputPayload>()
+        + size_of::<*const CnpController>()
+        + size_of::<*const ()>()
+        + size_of::<*const NodeRuntime>()
+        + size_of::<std::slice::Iter<'static, Cell<u8>>>()
+        + size_of::<Option<usize>>()
+        + size_of::<Result<(), RuntimeError>>()
 }

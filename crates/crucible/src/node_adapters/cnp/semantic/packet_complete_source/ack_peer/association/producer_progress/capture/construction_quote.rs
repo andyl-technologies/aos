@@ -10,9 +10,7 @@ use super::{
     quote_context::OriginalSourceRestoredCaptureQuoteInputs, transport_quote,
 };
 use crate::node_adapters::cnp::semantic::node::OriginalRestoredSettledNodeHistoryView;
-use crate::node_admission::{
-    OriginalRestoredCaptureRequestData, OriginalRestoredCaptureSigningInputs,
-};
+use crate::node_admission::{OriginalRestoredCaptureRequestData, OriginalRestoredCaptureSigningInputs};
 use crucible_node_provider::{
     client::{CnpController, OriginalRestoredSettledCaptureProspectiveData},
     reference_packet::service::complete_restore::activation::{
@@ -61,6 +59,7 @@ impl PacketCompleteSemanticSource {
                     controller, launch,
                 )?,
                 demand.historical_serialization_transient_bytes_data(),
+                node.original_controller_history_serialization_transient_data(controller)?,
                 launch_pass
                     .canonical_pass_requested_bytes()
                     .map_err(|_| RuntimeError::ResourceLimit)?,
@@ -75,6 +74,8 @@ impl PacketCompleteSemanticSource {
             &[
                 Self::original_restored_capture_counter_scratch_data(),
                 demand.counter_scratch_bytes_data(),
+                CnpController::settled_history_counter_scratch_data(),
+                super::finalization::FinalizationStorage::counter_scratch_data(),
                 launch_pass.declared_counter_scratch_bytes,
                 semantic_scratch,
                 scope_scratch,
@@ -210,9 +211,36 @@ impl PacketCompleteSemanticSource {
         }
         let output = original_json_value_storage_extent_data(semantic)
             .map_err(|_| RuntimeError::ResourceLimit)?;
+        // Final Controller24 is a later cut than the prefix. Its actual same-Node
+        // supervisor baseline and the SDK's defining finite encoded delta are
+        // funded independently before the first auxiliary upload is assigned.
+        let controller_baseline = super::encoding_extent::canonical_encoded_extent_data(
+            &node.original_controller_history_data(controller)?,
+            maximum,
+        )?;
+        let finalization = super::finalization::FinalizationStorage::quote_data(
+            controller_baseline,
+            &sdk,
+            quote.ancestry,
+            usize::try_from(controller.authority().limits().frame_bytes.get())
+                .map_err(|_| RuntimeError::ResourceLimit)?,
+            inputs.scope_proof_body.len(),
+            maximum,
+        )?;
+        let materialization =
+            super::materialization_storage::CaptureMaterializationStorage::quote_data(
+                self,
+                &native.output_limits,
+                &finalization,
+                semantic,
+                prefix,
+                maximum,
+            )?;
         let retained = sum(
             &[
                 source.0,
+                materialization.retained,
+                finalization.retained,
                 sdk.retained_requested_bytes_data(),
                 validation.retained_requested_bytes_data(),
                 frozen,
@@ -241,6 +269,11 @@ impl PacketCompleteSemanticSource {
         let transient = sum(
             &[
                 source.1,
+                materialization.transient,
+                // The eventual caller owns this actual executable-link bank
+                // throughout its armed read. Fixed stream/guard S is separate.
+                self.original_retained_capture17_fresh_link_storage_data()?,
+                finalization.transient,
                 sdk.maximum_simultaneous_transient_bytes_data(),
                 validation.maximum_simultaneous_transient_bytes_data(),
                 frozen,
@@ -257,6 +290,8 @@ impl PacketCompleteSemanticSource {
         let scratch = sum(
             &[
                 source.2,
+                materialization.scratch,
+                finalization.scratch,
                 sdk.counter_scratch_bytes_data(),
                 validation.declared_counter_scratch_bytes_data(),
                 output.declared_counter_scratch_bytes,
@@ -280,6 +315,8 @@ impl PacketCompleteSemanticSource {
             checkpoint: request.maximum_coordinator_checkpoint_encoded_bytes,
             semantic,
             frozen,
+            finalization,
+            materialization,
             sdk,
             native,
             validation,
@@ -341,6 +378,7 @@ impl PacketCompleteSemanticSource {
             >()
             + accounting::counter_scratch_data()
             + super::effect::counter_scratch_data()
+            + Self::original_retained_capture17_read_counter_scratch_data::<usize>()
     }
 }
 
