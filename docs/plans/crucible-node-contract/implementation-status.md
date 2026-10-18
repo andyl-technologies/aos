@@ -1937,3 +1937,27 @@ bypassed Runtime's mandatory original close. Corrected controls use the genuine
 close, poll and cached-completion path; production validation remains intact.
 Failed logs remain local. Temporary startup probes are removed and excluded
 from this qualification; startup and native preservation remain unqualified.
+
+
+### Production compilation for Native construction and closure
+
+The production application-target gate passes for `511bffa914`. Independent
+installed-artifact verification matches all 7,689 captured source files to that
+commit. Its dependency source includes 63 of the checkpoint's 69 changed crate
+roles; the six Daemon roles remain outside this application's dependency closure
+and receive separate all-target and library checks.
+
+All 167 test targets freshly compile across 48 application packages, including
+69 integration targets, with optimized test compilation, debug assertions and
+overflow checks. The final test-target compilation takes 10 minutes 39 seconds
+after its production prerequisites. This is compilation-only evidence for that
+commit; it excludes subsequent cold restoration, upload continuation and startup
+census changes and does not establish native preservation.
+
+The separately registered ABI dependency gate fails during the Provider's strict
+Clippy package check, after ordinary release compilation succeeds. The retained
+diagnostics include unconsumed selected17 paths, unused imports, visibility
+mismatches and structural lints. No ABI or production-flight success follows from
+that run. The normal gate and its source coverage remain unchanged while actual
+consumers and source defects are addressed; complete native qualification remains
+required.
