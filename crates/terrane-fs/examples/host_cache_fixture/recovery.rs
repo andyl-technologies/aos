@@ -371,6 +371,11 @@ pub(super) fn run(
         ));
     }
     read_recovered_sources(owner, runtime, inputs)?;
+    admit_after_recovery(owner, runtime, inputs)?;
+    read_recovered_sources(owner, runtime, inputs)?;
+    println!(
+        "PASS actual recovered ranges survived a new Running admission; original metadata retained"
+    );
     if case.mixed() {
         println!(
             "PASS actual mixed recovery adopted inline and manifest bytes and acknowledged Resume; no Ready"
@@ -380,6 +385,40 @@ pub(super) fn run(
             "PASS actual manifest recovery reconstructed verified residences and acknowledged Resume; no Ready"
         );
     }
+    Ok(())
+}
+
+fn admit_after_recovery(
+    owner: &NativeMetadataOwner,
+    runtime: &tokio::runtime::Runtime,
+    inputs: &Inputs,
+) -> io::Result<()> {
+    let bytes = b"distinct new chunk after acknowledged manifest recovery";
+    let identity = TERRANE_V1
+        .calculate(IdentityKind::Chunk, bytes)
+        .map_err(io::Error::other)?;
+    let descriptor =
+        terrane_core::identity::Descriptor::from_identity(&TERRANE_V1, &identity, bytes)
+            .map_err(io::Error::other)?;
+    let before = fs::read(inputs.root.join("state/cache/records.toml"))?;
+    let admitted = runtime
+        .block_on(owner.admit_chunk(
+            descriptor.clone(),
+            terrane::store::ChunkPosition::Final,
+            [b"\0".as_slice(), bytes.as_slice()].concat(),
+        ))
+        .map_err(io::Error::other)?;
+    if admitted.descriptor() != &descriptor
+        || admitted.future_hold_bytes() != 3 * HOLD + bytes.len() as u64 + 1
+        || admitted.charged_reserved_bytes() > HARD_LIMIT
+        || admitted.synchronized_chunk_bytes() == 0
+        || fs::read(inputs.root.join("state/cache/records.toml"))? == before
+    {
+        return Err(invalid(
+            "post-recovery admission lacks actual durable funding",
+        ));
+    }
+    drop(admitted);
     Ok(())
 }
 

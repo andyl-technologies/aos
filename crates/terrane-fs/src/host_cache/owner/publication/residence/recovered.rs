@@ -15,7 +15,6 @@ use crate::{
 pub(super) struct RecoveredSource {
     verified: Arc<VerifiedRecoveryManifest>,
     running: Arc<PublisherRunningContext>,
-    recovery_id: [u8; 16],
 }
 
 /// Selects only original verified backing after the physical owner acknowledges Resume.
@@ -30,9 +29,6 @@ pub(super) fn select(
     row: ResidenceRecord,
 ) -> io::Result<Source> {
     let running = executor.admission_context_locked(owner)?;
-    let recovery_id = owner
-        .recovery_id
-        .ok_or_else(|| invalid("recovered source lost original recovery registration"))?;
     for verified in executor.verified_manifests() {
         if state::hex(verified.claim().descriptor().digest()) != row.object {
             continue;
@@ -43,7 +39,6 @@ pub(super) fn select(
             origin: Origin::Recovery(RecoveredSource {
                 verified: Arc::clone(verified),
                 running,
-                recovery_id,
             }),
             body,
             span,
@@ -81,18 +76,16 @@ impl RecoveredSource {
         check_snapshot(owner)?;
         let retained = self.verified.body().retained();
         let claim = self.verified.claim();
-        if owner.recovery_id != Some(self.recovery_id)
-            || !Arc::ptr_eq(
-                self.running.publisher_session(),
-                &owner.preparation.publisher_session(),
-            )
-            || !Arc::ptr_eq(&retained.body_arc(), &source.body)
+        if !Arc::ptr_eq(
+            self.running.publisher_session(),
+            &owner.preparation.publisher_session(),
+        ) || !Arc::ptr_eq(&retained.body_arc(), &source.body)
             || !Arc::ptr_eq(source.body.layout(), owner.preparation.layout())
             || source.body.claim().descriptor() != claim.descriptor()
             || source.body.claim().domain() != claim.domain()
             || source.body.claim().canonical_manifest() != claim.canonical_manifest()
             || !owner.state.reservations.iter().any(|hold| {
-                hold.id == state::hex(&self.recovery_id)
+                hold.id == state::hex(self.running.retained_bootstrap_id())
                     && hold.owner == owner.preparation.config.quota_owner
                     && hold.bytes == owner.preparation.config.metadata_sync_hold_bytes
             })

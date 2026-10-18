@@ -332,8 +332,11 @@ def manifest_recovery_cases(uuid, seeded):
         require("PASS actual recovered source refused without acknowledged Resume; policy unchanged"
                 in output.splitlines(), "recovery source bypassed actual Resume: " + case)
         if recovers:
-            require("PASS actual recovered manifest ranges read while embedded policy held; original custody unchanged"
-                    in output.splitlines(), "missing actual lock-free recovered range read: " + case)
+            require(output.splitlines().count(
+                "PASS actual recovered manifest ranges read while embedded policy held; original custody unchanged") == 2,
+                "missing actual lock-free recovered reads before/after Running mutation: " + case)
+            require("PASS actual recovered ranges survived a new Running admission; original metadata retained"
+                    in output.splitlines(), "recovered source reused the cold completion predicate: " + case)
         original = seeded[case]
         for path, inode in original["companions"]:
             require(path.stat().st_ino == inode and path.read_bytes() == INLINE_BYTES

@@ -35,6 +35,14 @@ impl PublisherRunningContext {
         &self.session
     }
 
+    /// Borrows original recovery funding from this actual acknowledged context.
+    ///
+    /// The registration survives legitimate Running writes, which invalidate
+    /// the old completion-generation predicate. This grants no live owner turn.
+    pub(crate) fn retained_bootstrap_id(&self) -> &[u8; 16] {
+        self._completed.retained_bootstrap_id()
+    }
+
     /// Rechecks the actual acknowledged session phase without embedded-state locks.
     ///
     /// This is not an owner-turn substitute and enables no running RPC itself.

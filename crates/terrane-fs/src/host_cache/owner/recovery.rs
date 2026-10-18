@@ -87,6 +87,14 @@ impl CompletedRecovery {
         &self.context
     }
 
+    /// Borrows the original bootstrap registration retained after acknowledged Resume.
+    ///
+    /// This identifies actual durable resources; it does not assert that the
+    /// original completion generation remains current after Running mutations.
+    pub(crate) fn retained_bootstrap_id(&self) -> &[u8; 16] {
+        &self.recovery_id
+    }
+
     /// Returns synchronized allocation of the explicitly retained native inodes.
     ///
     /// This deduplicated st_blocks sum excludes unobserved filesystem metadata
