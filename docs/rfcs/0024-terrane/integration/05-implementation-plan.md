@@ -9363,9 +9363,11 @@ Resumed qualification:
   verify, with the same six privileged cases separately inventoried. Both
   direct builds, eight focused cases and the formatter pair pass. Strict
   Clippy retains the same nineteen findings as its parent; the separate
-  all-target diagnostic passes without changing source lint policy. Application
-  target compilation and full task qualification remain pending. Consumer
-  leases, complete retirement and NativeReady are not qualified by these pins.
+  all-target diagnostic passes without changing source lint policy. Required
+  application target compilation also passes in 2,601.309 seconds: immutable
+  Cargo records verify 128 test artifacts across 29 packages, with no test
+  execution claim. Consumer leases, complete retirement, NativeReady and full
+  task qualification remain pending.
 - Cold-policy candidate `3c5b0d07bf`: recovery retains the original bounded
   pins, leases, future holds and residence candidates through its new random
   bootstrap and actual snapshot synchronization. Completion requires
@@ -9395,8 +9397,18 @@ Resumed qualification:
   full filesystem stage have not executed. The revised fixture requires two
   real physical owners, exact original-hold preservation, a distinct new durable
   hold and accounting of both; invalid pin, backing and ownership refusals
-  remain. Qualification on `3c5b0d07bf` is running. No complete native component
-  or full task success is claimed yet.
+  remain. On `3c5b0d07bf`, both direct builds, twelve focused cases, formatting
+  and the separate diagnostic pass; strict Clippy still has nineteen unchanged
+  findings. Actual native ext4 qualification now passes in 83.295 seconds.
+  Independent review verifies all 3,483 image inputs, six installed files, the
+  actual unit ELF and all 48 selected case results under the confined guest
+  identity. Both cold-policy controls and the two-physical-owner bootstrap
+  preservation control pass, alongside six recovered held-policy reads, three
+  intervening Running admissions, eight refusals without Resume, both recovered
+  assemblies and the dropped inline pin waiter. This qualifies the tested cold
+  reconciliation component. The expanded complete filesystem run and required
+  application compilation on this latest source remain pending; no full task
+  acceptance or consumer lease lifecycle completion follows.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
   and all seven strict Clippy/documentation profiles pass. The interface,
   commit-path, status and schema gates pass on unchanged final source, including
