@@ -9,6 +9,8 @@
 mod context;
 #[cfg(feature = "tokio")]
 mod manifest;
+#[cfg(feature = "tokio")]
+mod publication;
 mod receipt;
 mod recovery;
 #[cfg(feature = "tokio")]

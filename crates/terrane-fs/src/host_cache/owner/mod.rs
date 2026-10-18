@@ -9,6 +9,7 @@ mod admission;
 mod config;
 mod index_io;
 mod preparation;
+mod publication;
 mod recovery;
 mod recovery_accounting;
 mod recovery_candidates;
@@ -38,6 +39,7 @@ pub use admission::{
 };
 pub use config::{IndexRepairPolicy, NativeCacheOwnerConfig};
 pub use preparation::NativeCachePreparation;
+pub use publication::NativeInlinePublication;
 pub use recovery::CompletedRecovery;
 pub use resume_error::NativeResumeError;
 pub(crate) use retention::{

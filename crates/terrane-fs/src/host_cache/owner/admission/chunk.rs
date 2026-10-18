@@ -68,7 +68,7 @@ pub(super) async fn run(
         let mut hashes = vec![state::hex(identity.digest())];
         let dictionary = if let Codec::ZstdDictionary(digest) = envelope.codec {
             hashes.push(state::hex(&digest));
-            let (plaintext, actual) = dictionary(executor, resource, &owner, &digest)?;
+            let (plaintext, actual) = dictionary(executor, Some(resource), &owner, &digest)?;
             job.dependencies.push(actual);
             Some(plaintext)
         } else {
@@ -129,14 +129,18 @@ pub(super) async fn run(
     reconcile::finish(&mut owner, &mut job)
 }
 
-fn dictionary(
+/// Borrows only a genuinely admitted, durably pinned one-hop dictionary.
+///
+/// # Errors
+/// Refuses absent, changed, unpinned or nested dictionary sources.
+pub(in crate::host_cache::owner) fn dictionary(
     executor: &NativeOwnerExecutor,
-    current: &Arc<Mutex<AdmissionJob>>,
+    current: Option<&Arc<Mutex<AdmissionJob>>>,
     owner: &Custody,
     digest: &[u8],
 ) -> io::Result<(Vec<u8>, Arc<Mutex<AdmissionJob>>)> {
     for candidate in executor.admission_jobs() {
-        if Arc::ptr_eq(candidate, current) {
+        if current.is_some_and(|current| Arc::ptr_eq(candidate, current)) {
             continue;
         }
         let job = backing::lock(candidate)?;

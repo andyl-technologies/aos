@@ -45,6 +45,8 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
             | "recover-writable-manifest"
             | "recover-mixed-manifest"
             | "refuse-mixed-manifest"
+            | "publish-inline"
+            | "publish-inline-cancel"
     ) {
         return Err(io::Error::other("unknown component selector"));
     }
@@ -82,6 +84,9 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
         .enable_all()
         .build()?;
     match mode {
+        "publish-inline" | "publish-inline-cancel" => {
+            super::publication::run(mode, &owner, &runtime, &inputs, original)?;
+        }
         "refuse" => {
             let error = runtime
                 .block_on(owner.recover())

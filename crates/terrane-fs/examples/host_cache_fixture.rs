@@ -12,6 +12,8 @@ mod admission;
 mod config;
 #[path = "host_cache_fixture/network.rs"]
 mod network;
+#[path = "host_cache_fixture/publication.rs"]
+mod publication;
 #[path = "host_cache_fixture/recovery.rs"]
 mod recovery;
 
@@ -49,6 +51,8 @@ fn main() -> std::process::ExitCode {
             "seed-mixed-bad-manifest",
             "recover-mixed-manifest",
             "refuse-mixed-manifest",
+            "publish-inline",
+            "publish-inline-cancel",
         ] {
             println!("host-cache:{selector}");
         }

@@ -6,7 +6,7 @@
 //! These commands establish no eviction, consumer pin or full bucket readiness.
 
 mod backing;
-mod chunk;
+pub(super) mod chunk;
 mod error;
 mod io;
 mod memory;
@@ -50,7 +50,11 @@ impl AdmissionBounds {
         })
     }
 
-    fn check(self, first: usize, second: usize) -> std_io::Result<()> {
+    pub(in crate::host_cache::owner) fn check(
+        self,
+        first: usize,
+        second: usize,
+    ) -> std_io::Result<()> {
         if first == 0
             || first
                 .checked_add(second)

@@ -1,0 +1,251 @@
+//! Synchronizes publication funding and exact inline residence policy.
+//!
+//! Holds describe future allocation, not measured blocks. The original job
+//! retains every physical resource while a failed or uncertain command remains
+//! faulted. No error removes a pin, lease or reservation.
+
+use super::{InlineJob, invalid};
+use crate::host_cache::owner::{
+    RETAINED_LEASE_DEADLINE,
+    retention::{Custody, NativeOwnerExecutor},
+    snapshot::PreparedSnapshotWrite,
+};
+use std::{
+    fs::File,
+    io::{self, Read},
+    os::unix::fs::MetadataExt,
+    sync::Arc,
+};
+use terrane::host::cache::{LeaseRecord, PinRecord, ReservationRecord, ResidenceRecord};
+use terrane_core::codec::Codec;
+
+/// Prepares exact durable funding before an anonymous source or publisher copy.
+///
+/// # Errors
+/// Refuses stale custody, changed dictionaries, arithmetic/capacity failures,
+/// identifier collisions or unavailable snapshot resources.
+pub(super) fn begin(
+    executor: &NativeOwnerExecutor,
+    owner: &mut Custody,
+    job: &mut InlineJob,
+) -> io::Result<PreparedSnapshotWrite> {
+    owner.check_current()?;
+    if owner.faulted || owner.recovery_required || job.started {
+        return Err(invalid(
+            "publication requires a fresh running owner command",
+        ));
+    }
+    check_dictionary(executor, owner, job)?;
+    owner.preparation.recheck()?;
+    // Source plaintext and publisher-private copy overlap. Filesystem rounding,
+    // verity and directory metadata remain kernel charges, never guessed blocks.
+    let hold = job
+        .claim
+        .plaintext_size()
+        .checked_mul(2)
+        .and_then(|bytes| bytes.checked_add(owner.preparation.config.metadata_sync_hold_bytes))
+        .ok_or_else(|| invalid("publication payload overlap overflows accounting"))?;
+    check_total(
+        owner,
+        check_charge(owner)?
+            .checked_add(hold)
+            .ok_or_else(|| invalid("publication future holds overflow"))?,
+    )?;
+    let mut random = [0; 16];
+    File::open("/dev/urandom")?.read_exact(&mut random)?;
+    let token = hex(&random);
+    if owner.state.reservations.iter().any(|row| row.id == token) {
+        return Err(invalid("publication reservation identifier collision"));
+    }
+    let pin_owner = format!("publication:{token}");
+    let mut next = owner.state.clone();
+    next.reservations.push(ReservationRecord {
+        id: token.clone(),
+        owner: owner.preparation.config.quota_owner.clone(),
+        bytes: hold,
+    });
+    next.leases.push(LeaseRecord {
+        owner: pin_owner.clone(),
+        expires: RETAINED_LEASE_DEADLINE,
+    });
+    next.pins.push(PinRecord {
+        owner: pin_owner,
+        hash: hex(job.claim.descriptor().digest()),
+        expires: RETAINED_LEASE_DEADLINE,
+    });
+    next.encoded_len(owner.preparation.config.state)
+        .map_err(io::Error::other)?;
+    owner.begin_mutation()?;
+    job.token = token;
+    job.hold = hold;
+    job.generation = owner.generation;
+    job.started = true;
+    owner.faulted = true;
+    owner.state = next;
+    crate::host_cache::owner::snapshot::prepare(executor, owner)
+}
+
+/// Adds only the independently verified inline range before final synchronization.
+///
+/// # Errors
+/// Refuses absent or mismatched physical results, conflicting residences,
+/// changed source custody or exhausted durable-state capacity.
+pub(super) fn complete(
+    executor: &NativeOwnerExecutor,
+    owner: &mut Custody,
+    job: &mut InlineJob,
+) -> io::Result<PreparedSnapshotWrite> {
+    check_funding(
+        owner,
+        &job.token,
+        &hex(job.claim.descriptor().digest()),
+        job.hold,
+        job.generation,
+    )?;
+    check_dictionary(executor, owner, job)?;
+    let body = job
+        .body
+        .as_ref()
+        .ok_or_else(|| invalid("publication result absent"))?;
+    if body.claim().descriptor() != job.claim.descriptor()
+        || body.claim().domain() != job.claim.domain()
+        || !Arc::ptr_eq(body.layout(), owner.preparation.layout())
+    {
+        return Err(invalid("publication result differs from the funded claim"));
+    }
+    let hash = hex(job.claim.descriptor().digest());
+    let mut next = owner.state.clone();
+    if let Some(row) = next.residences.iter().find(|row| row.chunk == hash) {
+        if row.object != hash || row.offset != 0 || row.length != job.claim.plaintext_size() {
+            return Err(invalid(
+                "inline publication conflicts with a prior residence",
+            ));
+        }
+    } else {
+        next.residences.push(ResidenceRecord {
+            chunk: hash.clone(),
+            object: hash,
+            offset: 0,
+            length: job.claim.plaintext_size(),
+        });
+    }
+    next.encoded_len(owner.preparation.config.state)
+        .map_err(io::Error::other)?;
+    owner.begin_mutation()?;
+    job.generation = owner.generation;
+    owner.state = next;
+    crate::host_cache::owner::snapshot::prepare(executor, owner)
+}
+
+/// Requires the actual owner's completed snapshot containing the exact live hold.
+///
+/// # Errors
+/// Refuses fault/generation changes, absent write provenance, altered native
+/// snapshot custody, or any changed reservation, pin or lease.
+pub(super) fn check_funding(
+    owner: &Custody,
+    token: &str,
+    hash: &str,
+    hold: u64,
+    generation: u64,
+) -> io::Result<()> {
+    owner.check_current()?;
+    let written = owner
+        .synchronized_state
+        .as_ref()
+        .ok_or_else(|| invalid("publication has no completed snapshot write"))?;
+    let (snapshot, _) = owner
+        .snapshot
+        .as_ref()
+        .ok_or_else(|| invalid("publication snapshot absent"))?;
+    let metadata = snapshot.metadata()?;
+    if !owner.faulted
+        || owner.recovery_required
+        || owner.generation != generation
+        || written.generation != generation
+        || (written.device, written.inode) != (metadata.dev(), metadata.ino())
+    {
+        return Err(invalid("publication snapshot provenance changed"));
+    }
+    crate::host_cache::owner::recovery_manifest_state::require_same(&owner.state, &written.state)?;
+    let pin_owner = format!("publication:{token}");
+    if hold == 0
+        || !owner.state.reservations.iter().any(|row| {
+            row.id == token
+                && row.owner == owner.preparation.config.quota_owner
+                && row.bytes == hold
+        })
+        || !owner
+            .state
+            .leases
+            .iter()
+            .any(|row| row.owner == pin_owner && row.expires == RETAINED_LEASE_DEADLINE)
+        || !owner.state.pins.iter().any(|row| {
+            row.owner == pin_owner && row.hash == hash && row.expires == RETAINED_LEASE_DEADLINE
+        })
+    {
+        return Err(invalid("publication durable funding changed"));
+    }
+    Ok(())
+}
+
+/// Checks total logical holds separately from actual full-owner kernel usage.
+///
+/// # Errors
+/// Refuses arithmetic overflow or actual charge plus holds beyond capacity.
+pub(super) fn check_charge(owner: &Custody) -> io::Result<u64> {
+    let future = owner.state.reservations.iter().try_fold(0u64, |sum, row| {
+        sum.checked_add(row.bytes)
+            .ok_or_else(|| invalid("publication future holds overflow"))
+    })?;
+    check_total(owner, future)?;
+    Ok(future)
+}
+
+fn check_total(owner: &Custody, future: u64) -> io::Result<()> {
+    if owner
+        .preparation
+        .quota()
+        .observation()
+        .charged_reserved_bytes
+        .checked_add(future)
+        .is_none_or(|bytes| bytes > owner.preparation.config.policy.capacity)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::StorageFull,
+            "publication actual charge and future holds exceed capacity",
+        ));
+    }
+    Ok(())
+}
+
+fn check_dictionary(
+    executor: &NativeOwnerExecutor,
+    owner: &Custody,
+    job: &InlineJob,
+) -> io::Result<()> {
+    let codec = terrane_core::codec::parse_envelope(&job.encoded)
+        .map_err(io::Error::other)?
+        .codec;
+    match (codec, &job.dictionary) {
+        (Codec::ZstdDictionary(digest), Some(original)) => {
+            let (_, current) =
+                super::super::admission::chunk::dictionary(executor, None, owner, &digest)?;
+            if !Arc::ptr_eq(original, &current) {
+                return Err(invalid(
+                    "publication dictionary changed actual owner source",
+                ));
+            }
+            Ok(())
+        }
+        (Codec::ZstdDictionary(_), None) | (_, Some(_)) => Err(invalid(
+            "publication dictionary closure differs from its encoding",
+        )),
+        (_, None) => Ok(()),
+    }
+}
+
+/// Encodes a canonical digest or random physical operation identifier.
+pub(super) fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}

@@ -24,6 +24,7 @@ pub(in crate::host_cache::owner) struct NativeOwnerExecutor {
     running: Option<Arc<PublisherRunningContext>>,
     failed_resume: Option<(ResumeFailureStage, CompletedRecovery)>,
     admission_jobs: Vec<Arc<Mutex<super::super::admission::AdmissionJob>>>,
+    inline_publications: Vec<Arc<Mutex<super::super::publication::InlineJob>>>,
     adopted_inline: Vec<super::super::recovery_inline::AdoptedInline>,
     manifest_sources: Vec<Arc<crate::host_cache::NativeManifestSource>>,
     manifest_bodies: Vec<
@@ -47,6 +48,7 @@ impl NativeOwnerExecutor {
             running: None,
             failed_resume: None,
             admission_jobs: Vec::new(),
+            inline_publications: Vec::new(),
             adopted_inline: Vec::new(),
             manifest_sources: Vec::new(),
             manifest_bodies: Vec::new(),
@@ -125,7 +127,12 @@ impl NativeOwnerExecutor {
             .lock()
             .map_err(|_| io::Error::other("admission custody poisoned"))?;
         let limit = owner.preparation.config.state.records;
-        if self.admission_jobs.len() >= limit {
+        if self
+            .admission_jobs
+            .len()
+            .saturating_add(self.inline_publications.len())
+            >= limit
+        {
             return Err(io::Error::new(
                 io::ErrorKind::StorageFull,
                 "native admission registry capacity exhausted",
@@ -169,6 +176,90 @@ impl NativeOwnerExecutor {
         &self,
     ) -> &[Arc<Mutex<super::super::admission::AdmissionJob>>] {
         &self.admission_jobs
+    }
+
+    /// Registers owned inline resources before any durable or native effect.
+    ///
+    /// # Errors
+    /// Refuses a foreign thread, exhausted joint registry or allocation failure.
+    pub(in crate::host_cache::owner) fn register_inline(
+        &mut self,
+        job: super::super::publication::InlineJob,
+    ) -> io::Result<Arc<Mutex<super::super::publication::InlineJob>>> {
+        self.check_physical_worker()?;
+        let limit = self
+            .custody
+            .lock()
+            .map_err(|_| io::Error::other("publication custody poisoned"))?
+            .preparation
+            .config
+            .state
+            .records;
+        if self
+            .admission_jobs
+            .len()
+            .saturating_add(self.inline_publications.len())
+            >= limit
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::StorageFull,
+                "native publication registry capacity exhausted",
+            ));
+        }
+        self.inline_publications
+            .try_reserve(1)
+            .map_err(io::Error::other)?;
+        let job = Arc::new(Mutex::new(job));
+        self.inline_publications.push(Arc::clone(&job));
+        Ok(job)
+    }
+
+    /// Releases only conclusively effect-free inline input after rejection.
+    ///
+    /// # Errors
+    /// Refuses poisoned job custody; started resources remain retained.
+    pub(in crate::host_cache::owner) fn reclaim_inline(
+        &mut self,
+        job: &Arc<Mutex<super::super::publication::InlineJob>>,
+    ) -> io::Result<()> {
+        if !job
+            .lock()
+            .map_err(|_| io::Error::other("publication job poisoned"))?
+            .started
+        {
+            self.inline_publications
+                .retain(|entry| !Arc::ptr_eq(entry, job));
+        }
+        Ok(())
+    }
+
+    /// Borrows this executor exclusively for one durably funded publication.
+    ///
+    /// # Errors
+    /// Refuses an unregistered job or missing actual synchronized funding.
+    pub(in crate::host_cache::owner) fn publication_turn(
+        &mut self,
+        funding: super::super::publication::Funding,
+    ) -> io::Result<PublisherRunningTurn<'_>> {
+        if !self
+            .inline_publications
+            .iter()
+            .any(|job| Arc::ptr_eq(job, funding.job()))
+        {
+            return Err(io::Error::other(
+                "publication job belongs to another executor",
+            ));
+        }
+        let context = self
+            .running
+            .as_ref()
+            .ok_or_else(|| io::Error::other("publication requires acknowledged Resume"))?;
+        funding.check(&self.custody)?;
+        context.check_current().map_err(io::Error::other)?;
+        Ok(PublisherRunningTurn {
+            executor: self,
+            funding,
+        })
     }
 
     /// Retains actual source handles outside embedded state before write effects.
@@ -429,13 +520,40 @@ impl PublisherResumeTurn<'_> {
 
 /// Retains exclusive physical dispatch through one genuine running operation.
 ///
-/// No public constructor or caller-selected session exists. A constructor will
-/// be added only with actual physical dispatch of a supported running command.
+/// Only actual registered, durably funded inline dispatch constructs this turn.
 pub(crate) struct PublisherRunningTurn<'executor> {
     executor: &'executor mut NativeOwnerExecutor,
+    funding: super::super::publication::Funding,
 }
 
 impl PublisherRunningTurn<'_> {
+    /// Checks the exact funded publication claim and original source inode.
+    ///
+    /// # Errors
+    /// Refuses stale context, another claim, source inode or synchronized hold.
+    pub(crate) fn check_publication(
+        &mut self,
+        context: &PublisherRunningContext,
+        claim: &terrane::host::publication::PublicationClaim,
+        source: &std::fs::File,
+    ) -> io::Result<()> {
+        self.check_claim(context, claim)?;
+        self.funding.check_source(source)
+    }
+
+    /// Checks the actual funded job's claim before a native adoption or publication.
+    ///
+    /// # Errors
+    /// Refuses another claim, stale context or unavailable synchronized funding.
+    pub(crate) fn check_claim(
+        &mut self,
+        context: &PublisherRunningContext,
+        claim: &terrane::host::publication::PublicationClaim,
+    ) -> io::Result<()> {
+        self.check_context(context)?;
+        self.funding.check_claim(claim)
+    }
+
     /// Checks the exact executor-owned acknowledged context before an RPC lock.
     ///
     /// This never revalidates the old empty recovery snapshot. The caller must
@@ -443,8 +561,8 @@ impl PublisherRunningTurn<'_> {
     /// client must check its actual Running phase/epoch under its own mutex.
     ///
     /// # Errors
-    /// Refuses another physical thread/context, faulted native owner, required
-    /// recovery or a changed original publisher session.
+    /// Refuses another physical thread/context, absent synchronized funding,
+    /// required recovery or a changed original publisher session.
     pub(crate) fn check_context(&mut self, context: &PublisherRunningContext) -> io::Result<()> {
         if self.executor.worker != thread::current().id()
             || !self
@@ -463,8 +581,7 @@ impl PublisherRunningTurn<'_> {
             .lock()
             .map_err(|_| io::Error::other("metadata custody poisoned"))?;
         custody.check_current()?;
-        if custody.faulted
-            || custody.recovery_required
+        if custody.recovery_required
             || !Arc::ptr_eq(
                 context.publisher_session(),
                 &custody.preparation.publisher_session(),
@@ -472,6 +589,8 @@ impl PublisherRunningTurn<'_> {
         {
             return Err(io::Error::other("running owner requires recovery"));
         }
+        drop(custody);
+        self.funding.check(&self.executor.custody)?;
         Ok(())
     }
 }

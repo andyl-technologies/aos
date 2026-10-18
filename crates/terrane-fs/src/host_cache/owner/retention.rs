@@ -51,8 +51,9 @@ pub(crate) use recovery_manifest::{
 /// Retains a native queue for durable metadata pins and missing-index repair.
 ///
 /// This owner admits verified encoded chunks and metadata pairs only after
-/// actual recovery and acknowledged publisher Resume. Publication, eviction
-/// and consumer serving readiness remain separate unsupported commands.
+/// actual recovery and acknowledged publisher Resume. Funded inline publication
+/// uses the same physical queue. Manifest publication, eviction and consumer
+/// serving readiness remain separate unsupported commands.
 /// Cold records remain untrusted candidates until recovery reconciles
 /// them. Dropping an awaiting request does not cancel physical execution.
 pub struct NativeMetadataOwner {
@@ -65,6 +66,12 @@ pub struct NativeMetadataOwner {
 
 /// Transfers complete command ownership to the retained physical executor.
 pub(super) enum Command {
+    /// Transfers bounded encoded inline content to actual sealed publication.
+    PublishInline {
+        descriptor: terrane_core::identity::Descriptor,
+        encoded: Vec<u8>,
+        response: oneshot::Sender<io::Result<super::NativeInlinePublication>>,
+    },
     /// Transfers bounded untrusted chunk input to actual running admission.
     AdmitChunk {
         descriptor: terrane_core::identity::Descriptor,
@@ -237,6 +244,18 @@ impl NativeMetadataOwner {
                 }
                 while let Ok(command) = receive.recv() {
                     match command {
+                        Command::PublishInline {
+                            descriptor,
+                            encoded,
+                            response,
+                        } => {
+                            let result = runtime.block_on(super::publication::run(
+                                &mut executor,
+                                descriptor,
+                                encoded,
+                            ));
+                            let _ = response.send(result);
+                        }
                         Command::AdmitChunk {
                             descriptor,
                             position,

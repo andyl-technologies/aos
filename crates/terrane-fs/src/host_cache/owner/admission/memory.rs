@@ -40,10 +40,33 @@ pub(super) fn check(config: &NativeCacheOwnerConfig) -> io::Result<()> {
         .len()
         .checked_add(32)
         .ok_or_else(overflow)?;
-    total
+    let total = total
         .checked_add(path.checked_mul(4).ok_or_else(overflow)?)
         .and_then(|sum| sum.checked_add(size_of::<super::super::snapshot::PreparedSnapshotWrite>()))
         .and_then(|sum| sum.checked_add(6 * size_of::<std::fs::File>()))
+        .ok_or_else(overflow)?;
+    // Publication claims retain the configured domain, and an uncertain reply
+    // retains its bounded protobuf packet. Count those separately from encoded
+    // input/plaintext payloads; a small read window does not bound labels.
+    let jobs = config
+        .state
+        .records
+        .checked_add(config.queued_commands)
+        .and_then(|count| count.checked_add(1))
+        .ok_or_else(overflow)?;
+    let labels = config
+        .location
+        .domain()
+        .len()
+        .checked_add(config.quota_owner.len())
+        .and_then(|bytes| bytes.checked_mul(8))
+        .ok_or_else(overflow)?;
+    let replies = crate::publisher_local::validation::MAX_PACKET
+        .checked_mul(2)
+        .and_then(|bytes| bytes.checked_add(labels))
+        .ok_or_else(overflow)?;
+    total
+        .checked_add(jobs.checked_mul(replies).ok_or_else(overflow)?)
         .ok_or_else(overflow)?;
     Ok(())
 }
@@ -135,6 +158,7 @@ fn check_parts(
     // their cloned chains. Names are generated (32hex pack/token, 64hex hash),
     // never copied from a caller path. Descriptor/job headers are not payloads.
     let physical = size_of::<AdmissionJob>()
+        + size_of::<super::super::publication::InlineJob>()
         + 2 * size_of::<PendingFile>()
         + 3 * size_of::<DirectoryProgress>()
         + 24 * size_of::<std::fs::File>()

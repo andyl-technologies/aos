@@ -18,6 +18,7 @@ import socket
 import subprocess
 import sys
 import time
+import tomllib
 
 IMAGE = pathlib.Path(sys.argv[1])
 SOURCE = pathlib.Path(sys.argv[2])
@@ -49,6 +50,7 @@ CASES = [
     "empty", "pin", "lease", "reservation", "residence", "unknown",
     "state-file", "state-directory", "cancel", "edquot", "exclusive",
     "admission-chunk", "admission-metadata", "admission-cancel",
+    "publication-inline", "publication-cancel",
 ] + [row[0] for row in MANIFEST_CASES]
 
 LABELS = ["layout-root", "chunks", "objects", "sealed", "staging", "quarantine",
@@ -489,6 +491,81 @@ def admission_cases(helper, uuid):
             process.wait(timeout=5)
 
 
+def publication_cases(publisher, uuid):
+    """Exercises actual funded publication, no-replace and abandoned waiters."""
+    output = actor("publication-inline", "publish-inline", uuid)
+    require(output.splitlines() == [
+        "PASS actual inline publication verified bytes, retained funding and no-replace inode; no Ready"
+    ], "missing actual inline publication completion")
+
+    case = "publication-cancel"
+    process = controlled_actor(case, "publish-inline-cancel", uuid)
+    stopped = False
+    try:
+        lines = Lines(process)
+        lines.until("READY actual inline publication Resume acknowledged; wait for stopped-publisher control")
+        process_status(process, 840)
+        publisher.send_signal(signal.SIGSTOP)
+        stopped = True
+        deadline = time.monotonic() + 4
+        while True:
+            status = (pathlib.Path("/proc") / str(publisher.pid) / "status").read_text()
+            require(publisher.poll() is None, "publisher exited before inline cancellation")
+            if any(line.startswith("State:\tT") or line.startswith("State:\tt")
+                   for line in status.splitlines()):
+                break
+            require(time.monotonic() < deadline, "publisher stop was not acknowledged")
+            time.sleep(0.005)
+        process.stdin.write(b"start\n")
+        process.stdin.flush()
+        lines.until("QUEUED actual inline publication; wait for durable funding control")
+        snapshot = root(case) / "state/cache/records.toml"
+        while True:
+            state = tomllib.loads(snapshot.read_text())
+            require(process.poll() is None and time.monotonic() < deadline,
+                    "inline publication did not durably fund its stopped exchange")
+            if len(state["reservations"]) == 2 and len(state["pins"]) == len(state["leases"]) == 1:
+                require(state["residences"] == [], "stopped publisher already supplied a residence")
+                break
+            time.sleep(0.005)
+        require(list((root(case) / "sealed").glob("*/*")) == [],
+                "stopped publisher already supplied a canonical inode")
+        process.stdin.write(b"cancel\n")
+        process.stdin.flush()
+        lines.until("CANCELLED actual inline publication waiter; physical owner retained")
+        publisher.send_signal(signal.SIGCONT)
+        stopped = False
+        deadline = time.monotonic() + 10
+        while True:
+            state = tomllib.loads(snapshot.read_text())
+            require(process.poll() is None and time.monotonic() < deadline,
+                    "abandoned inline command did not publish a durable residence")
+            if len(state["residences"]) == 1:
+                break
+            time.sleep(0.005)
+        bodies = list((root(case) / "sealed").glob("*/*"))
+        require(len(bodies) == 1, "abandoned inline command did not retain exactly one canonical inode")
+        body = bodies[0]
+        inode = body.stat().st_ino
+        digest = hashlib.sha256(body.read_bytes()).hexdigest()
+        output, _ = process.communicate(b"finish\n", timeout=15)
+        print(output.decode(), end="", flush=True)
+        require(process.returncode == 0 and output.decode().splitlines() == [
+            "PASS dropped inline waiter retained physical publication, canonical inode and durable holds; no Ready"
+        ], "missing exact physical inline completion after dropping its waiter")
+        require(body.stat().st_ino == inode and hashlib.sha256(body.read_bytes()).hexdigest() == digest,
+                "repeated publication replaced the abandoned command's actual canonical inode")
+        require(list((root(case) / "chunks").glob("*/*")) == []
+                and list((root(case) / "staging").iterdir()) == [],
+                "inline publication left a duplicate standalone or staging file")
+    finally:
+        if stopped and publisher.poll() is None:
+            publisher.send_signal(signal.SIGCONT)
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+
+
 def verify_image():
     """Independently checks final ELF bytes and retained original Cargo events."""
     identity = json.loads((IMAGE / "share/identity.json").read_text())
@@ -739,8 +816,9 @@ def main():
         exclusive_case(uuid)
         actor("edquot", "edquot", uuid)
         admission_cases(helper, uuid)
+        publication_cases(publisher, uuid)
         manifest_recovery_cases(uuid, manifest_candidates)
-        print("PASS bounded native cache manifest recovery and encoded admission; Running sealed publication/BKT15 remain unqualified", flush=True)
+        print("PASS bounded native cache recovery, encoded admission and inline publication; full Running publication/BKT15 remain unqualified", flush=True)
     finally:
         for child in reversed(children):
             if child.poll() is None:

@@ -9,6 +9,11 @@ use std::{
     io::{Seek, SeekFrom},
     sync::Arc,
 };
+#[cfg(feature = "tokio")]
+use std::{
+    io::{self, Read},
+    os::unix::fs::FileExt,
+};
 
 use rustix::fs::{FileType, OFlags};
 use terrane::host::{
@@ -137,16 +142,29 @@ fn checked_file<L: HostReadLocation>(
     layout: &NativeHostLayout<L>,
     publisher_uid: u32,
 ) -> Result<(File, VerityBinding, rustix::fs::Stat), Error> {
+    let (binding, stat) = checked_received(&received, layout, publisher_uid)?;
+    let file = received
+        .files
+        .pop()
+        .ok_or(Error::Invalid("missing peer file"))?;
+    Ok((file, binding, stat))
+}
+
+fn checked_received<L: HostReadLocation>(
+    received: &ReceivedPacket,
+    layout: &NativeHostLayout<L>,
+    publisher_uid: u32,
+) -> Result<(VerityBinding, rustix::fs::Stat), Error> {
     layout.recheck()?;
     if received.files.len() != 1 {
         return Err(Error::Invalid("peer receipt descriptor count"));
     }
     let file = received
         .files
-        .pop()
+        .first()
         .ok_or(Error::Invalid("missing peer file"))?;
-    let stat = rustix::fs::fstat(&file)?;
-    let flags = rustix::fs::fcntl_getfl(&file)?;
+    let stat = rustix::fs::fstat(file)?;
+    let flags = rustix::fs::fcntl_getfl(file)?;
     let root_device = layout.directory_binding("layout-root")?.0;
     if flags.intersects(OFlags::WRONLY | OFlags::RDWR | OFlags::PATH)
         || FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile
@@ -155,11 +173,76 @@ fn checked_file<L: HostReadLocation>(
     {
         return Err(Error::Invalid("peer file ownership, device or access"));
     }
-    let binding = crate::verity::measure(&file)?;
+    let binding = crate::verity::measure(file)?;
     if u32::from(binding.algorithm) != received.packet.verity_algorithm
         || binding.digest != received.packet.verity_digest
     {
         return Err(Error::Invalid("peer kernel seal mismatch"));
     }
-    Ok((file, binding, stat))
+    Ok((binding, stat))
+}
+
+/// Verifies borrowed physical response custody before moving its descriptor.
+///
+/// # Errors
+/// Refuses missing or invalid replies and any native, seal or plaintext mismatch;
+/// every such failure leaves the original reply and descriptor in their slot.
+#[cfg(feature = "tokio")]
+pub(super) fn published_retained<L: HostReadLocation>(
+    slot: &mut Option<ReceivedPacket>,
+    layout: Arc<NativeHostLayout<L>>,
+    publisher_uid: u32,
+    claim: PublicationClaim,
+) -> Result<PeerPublishedObject<L>, Error> {
+    let received = slot
+        .as_mut()
+        .ok_or(Error::Invalid("missing publication reply"))?;
+    let incarnation = received
+        .packet
+        .body_incarnation
+        .as_slice()
+        .try_into()
+        .map_err(|_| Error::Invalid("publisher body incarnation"))?;
+    let (binding, stat) = checked_received(received, &layout, publisher_uid)?;
+    if stat.st_nlink == 0 || u64::try_from(stat.st_size).ok() != Some(claim.plaintext_size()) {
+        return Err(Error::Invalid("canonical inode link or plaintext length"));
+    }
+    let file = received
+        .files
+        .first()
+        .ok_or(Error::Invalid("missing peer file"))?;
+    claim.verify_reader(&mut PositionedReader { file, offset: 0 })?;
+    layout.recheck()?;
+    // No fallible verification follows extraction. The actual descriptor is
+    // moved only after every check, never replaced with a reconstructed file.
+    let file = received
+        .files
+        .pop()
+        .ok_or(Error::Invalid("missing peer file"))?;
+    *slot = None;
+    Ok(PeerPublishedObject {
+        file,
+        binding,
+        layout,
+        claim,
+        incarnation,
+    })
+}
+
+#[cfg(feature = "tokio")]
+struct PositionedReader<'file> {
+    file: &'file File,
+    offset: u64,
+}
+
+#[cfg(feature = "tokio")]
+impl Read for PositionedReader<'_> {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        let count = self.file.read_at(output, self.offset)?;
+        self.offset = self
+            .offset
+            .checked_add(count as u64)
+            .ok_or_else(|| io::Error::other("publication verification offset overflow"))?;
+        Ok(count)
+    }
 }

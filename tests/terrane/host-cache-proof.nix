@@ -1,6 +1,6 @@
 # Bounded native owner component evidence, outside owning gate registration.
-# Recovery and encoded admission do not authorize Running sealed publication
-# or BKT-15 readiness.
+# Recovery, encoded admission and funded inline publication do not authorize
+# full Running publication, consumer leases or BKT-15 readiness.
 {
   pkgs,
   lib,

@@ -3,7 +3,7 @@
 //! A successful Resume retains completion by value with the original session.
 //! This context is provenance for the concrete native owner, not BKT-15 bucket
 //! readiness or publication-allocation authority. Running RPCs additionally
-//! require the owner's future concrete executor-turn integration.
+//! require the owner's actual serialized command and synchronized funding.
 
 use std::sync::Arc;
 
@@ -83,13 +83,11 @@ impl Client<HostDomainLocation> {
     /// a conflicting binding. Neither a read-only returned descriptor nor the
     /// exclusive turn makes this operation read-only or proves allocation custody.
     ///
-    /// This remains inert without a concrete cache command and turn constructor.
-    /// Before activation that owner must retain genuine future holds across all
-    /// accepted physical work and reconcile native effects, durable state and
-    /// fresh quota before acknowledging its waiter, including on failure or
-    /// cancellation. The turn alone proves serialization, not those holds.
-    /// The transport verifies the claim, kernel seal and plaintext; it does not
-    /// implement that owner-side admission or reconciliation.
+    /// An actual inline-publication turn supplies synchronized funding for its
+    /// own claim; another claim is refused. The cache exposes no separate running
+    /// inspection command yet. Such a command must retain genuine future holds
+    /// across accepted physical work and reconcile effects, durable state and
+    /// fresh quota before acknowledgment, including failure or cancellation.
     ///
     /// # Errors
     /// Rejects foreign or stale owner/session/epoch/root custody, non-inline
@@ -104,8 +102,8 @@ impl Client<HostDomainLocation> {
     ) -> Result<PeerPublishedObject<HostDomainLocation>, Error> {
         // This can consult embedded native custody, so it must run before the
         // client mutex. The turn retains exclusive dispatch after it returns.
-        turn.check_context(context)?;
         let claim = self.inline_claim(claim)?;
+        turn.check_claim(context, &claim)?;
         let descriptor = claim.descriptor().encode();
         let payload = RequestPayload {
             claim: Some(Claim {
