@@ -584,6 +584,11 @@ def publication_cases(publisher, uuid):
                     "inline publication did not durably fund its stopped exchange")
             if len(state["reservations"]) == 2 and len(state["pins"]) == len(state["leases"]) == 1:
                 require(state["residences"] == [], "stopped publisher already supplied a residence")
+                publication = state["leases"][0]["owner"]
+                require(publication.startswith("publication:") and {
+                    "id": publication.removeprefix("publication:"), "owner": owner(case),
+                    "bytes": 262144 + 2 * len(b"actual owned inline publication bytes")
+                } in state["reservations"], "stopped inline copy released its actual overlap budget")
                 break
             time.sleep(0.005)
         require(list((root(case) / "sealed").glob("*/*")) == [],
@@ -599,6 +604,9 @@ def publication_cases(publisher, uuid):
             require(process.poll() is None and time.monotonic() < deadline,
                     "abandoned inline command did not publish a durable residence")
             if len(state["residences"]) == 1:
+                require(all(row["bytes"] == 262144 for row in state["reservations"]),
+                        "completed inline copy retained future overlap rather than its metadata allowance")
+                print("PASS actual completed publication settled future copy overlap after source closure; original durable pin retained", flush=True)
                 break
             time.sleep(0.005)
         bodies = list((root(case) / "sealed").glob("*/*"))

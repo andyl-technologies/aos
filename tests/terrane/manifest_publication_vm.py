@@ -282,6 +282,12 @@ def run(driver, publisher, uuid):
                                    "manifest publication did not synchronize real funding")
                     if (len(state["reservations"]), len(state["pins"]), len(state["leases"])) == (6, 7, 5):
                         driver.require(state["residences"] == [], "stopped publisher supplied manifest ranges")
+                        publication = [row for row in state["leases"] if row["owner"].startswith("publication:")]
+                        driver.require(len(publication) == 1, "stopped publication lost its actual owner")
+                        token = publication[0]["owner"].removeprefix("publication:")
+                        driver.require({"id": token, "owner": driver.owner(case),
+                                        "bytes": 262144 + 2 * len(expected_bytes)} in state["reservations"],
+                                       "stopped manifest copy released its actual overlap budget")
                         break
                     time.sleep(0.005)
                 driver.require(list((root / "sealed").glob("*/*")) == []
@@ -321,6 +327,13 @@ def run(driver, publisher, uuid):
             driver.require(process.returncode == 0 and output.decode().splitlines() == [expected_result],
                            "missing exact actual manifest publication result: " + case)
             state = tomllib.loads(snapshot.read_text())
+            publication_leases = [row for row in state["leases"] if row["owner"].startswith("publication:")]
+            driver.require(len(publication_leases) == 1, "missing actual publication funding owner")
+            publication_id = publication_leases[0]["owner"].removeprefix("publication:")
+            publication_holds = [row for row in state["reservations"] if row["id"] == publication_id]
+            driver.require(publication_holds == [{"id": publication_id, "owner": driver.owner(case),
+                                                  "bytes": 262144 + (2 * len(expected_bytes) if suffix == "-bad-whole" else 0)}],
+                           "publication settled uncertain copy capacity or retained completed overlap")
             for path, previous in metadata.items():
                 driver.require((path.stat().st_ino, path.read_bytes()) == previous,
                                "manifest publication rewrote its actual reconstruction metadata")
@@ -573,7 +586,7 @@ def run_consumer_leases(driver, helper, uuid):
                        and baseline["pins"] == [{"owner": publication[0]["owner"], "hash": digest,
                                                 "expires": 9223372036854775807}]
                        and sorted(row["bytes"] for row in baseline["reservations"])
-                       == [262144, 262144 + 2 * len(plaintext)],
+                       == [262144, 262144],
                        "consumer baseline lost independently funded original publication")
         foreign = tomllib.loads((driver.root("lease-foreign") / "state/cache/records.toml").read_text())
         driver.require(len(foreign["reservations"]) == 1

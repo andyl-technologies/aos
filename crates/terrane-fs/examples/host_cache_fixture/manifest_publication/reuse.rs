@@ -173,8 +173,7 @@ fn check_second_receipt(
         + admission_bytes(first) as u64
         + second.tail.len() as u64
         + 1
-        + metadata_bytes as u64
-        + 2 * (first.plaintext.len() + second.plaintext.len()) as u64;
+        + metadata_bytes as u64;
     if actual != second.plaintext
         || receipt.claim().descriptor().digest() != second.identity.digest()
         || receipt.claim().canonical_manifest() != Some(second.canonical.as_slice())

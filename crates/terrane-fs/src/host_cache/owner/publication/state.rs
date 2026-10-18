@@ -111,6 +111,7 @@ pub(super) fn complete(
         job.generation,
     )?;
     check_dictionary(executor, owner, job)?;
+    super::completion::check(job)?;
     let body = job
         .body
         .as_ref()
@@ -179,9 +180,29 @@ pub(super) fn complete(
             length: job.claim.plaintext_size(),
         });
     }
+    // The actual copy and its owned source descriptions have completed. Retain
+    // only future metadata capacity; physical inode charges remain in fresh Q,
+    // including any independently retained descriptors to transferred sources.
+    let metadata_hold = owner.preparation.config.metadata_sync_hold_bytes;
+    let retained = next
+        .reservations
+        .iter_mut()
+        .find(|row| {
+            row.id == job.token
+                && row.owner == owner.preparation.config.quota_owner
+                && row.bytes == job.hold
+        })
+        .ok_or_else(|| invalid("publication original hold absent at settlement"))?;
+    if job.hold < metadata_hold {
+        return Err(invalid(
+            "publication metadata allowance exceeds original hold",
+        ));
+    }
+    retained.bytes = metadata_hold;
     next.encoded_len(owner.preparation.config.state)
         .map_err(io::Error::other)?;
     owner.begin_mutation()?;
+    job.hold = metadata_hold;
     job.generation = owner.generation;
     owner.state = next;
     crate::host_cache::owner::snapshot::prepare(executor, owner)

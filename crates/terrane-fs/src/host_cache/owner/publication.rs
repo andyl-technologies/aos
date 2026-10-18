@@ -3,8 +3,11 @@
 //! A synchronized reservation precedes the anonymous plaintext inode and the
 //! publisher's copy. Original input, descriptors, replies and uncertain results
 //! stay in the physical registry after cancellation. Successful read accessors
-//! borrow immutable fields without consulting embedded policy state.
+//! borrow immutable fields without consulting embedded policy state. After real
+//! source closure and sealed-file synchronization, the final snapshot settles
+//! future copy overlap. Its metadata allowance and durable pin remain retained.
 
+mod completion;
 mod io;
 mod manifest;
 pub(super) mod residence;
@@ -56,6 +59,7 @@ pub(super) struct PublicationJob {
     generation: u64,
     pub(super) started: bool,
     complete: bool,
+    synchronized: Option<completion::SynchronizedPublication>,
     writer: Option<File>,
     reader: Option<File>,
     reply: Option<ReceivedPacket>,
@@ -454,6 +458,7 @@ fn prepare(
         generation: 0,
         started: false,
         complete: false,
+        synchronized: None,
         writer: None,
         reader: None,
         reply: None,
@@ -583,6 +588,8 @@ async fn execute(
             input.retire_sources(&session, &published, context, &mut turn)?;
         }
     }
+    completion::synchronize(executor, job)?;
+    context.check_current().map_err(std_io::Error::other)?;
     let ticket = {
         let mut physical = job
             .lock()

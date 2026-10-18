@@ -158,9 +158,7 @@ fn check_result(
         || result.synchronized_sealed_inode_bytes() == 0
         || result.charged_reserved_bytes() > HARD_LIMIT
         || result.future_hold_bytes()
-            != HOLD
-                + publications * (HOLD + 2 * PLAINTEXT.len() as u64)
-                + admissions * (HOLD + encoded().len() as u64)
+            != HOLD + publications * HOLD + admissions * (HOLD + encoded().len() as u64)
     {
         return Err(invalid(
             "inline result lacks actual native custody or accounting",
@@ -213,7 +211,7 @@ fn check_policy(
             .iter()
             .any(|lease| lease.owner == format!("publication:{}", row.id))
         {
-            HOLD + 2 * PLAINTEXT.len() as u64
+            HOLD
         } else if state
             .leases
             .iter()

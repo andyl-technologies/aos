@@ -453,7 +453,6 @@ fn check_receipt(
         || receipt.future_hold_bytes()
             != (6 + u64::from(data.dictionary.is_some())) * HOLD
                 + (admission_bytes(data) + metadata_bytes) as u64
-                + 2 * data.plaintext.len() as u64
         || metadata.uid() != 841
         || metadata.gid() != 841
         || metadata.mode() & 0o7777 != 0o400
@@ -526,7 +525,11 @@ fn check_state(
             Some(("publication", ref owner)) => {
                 kinds[0] += 1;
                 check_pins(&state, owner, &BTreeSet::from([object.clone()]))?;
-                HOLD + 2 * data.plaintext.len() as u64
+                if success {
+                    HOLD
+                } else {
+                    HOLD + 2 * data.plaintext.len() as u64
+                }
             }
             Some(("metadata", ref owner)) => {
                 kinds[1] += 1;

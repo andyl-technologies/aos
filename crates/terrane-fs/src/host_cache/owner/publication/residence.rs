@@ -532,7 +532,7 @@ fn same_row(first: &ResidenceRecord, second: &ResidenceRecord) -> bool {
 ///
 /// # Errors
 /// Refuses changed inode/project/seal or layout-root binding and native IO failures.
-fn synchronize_body(
+pub(super) fn synchronize_body(
     body: &PeerPublishedObject<HostDomainLocation>,
     project: u32,
     publisher_uid: u32,

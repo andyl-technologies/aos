@@ -133,11 +133,7 @@ fn run_body(
         .iter()
         .map(|hold| hold.bytes)
         .sum::<u64>();
-    let expected_holds = original_holds
-        + 4 * HOLD
-        + encoded.len() as u64
-        + metadata_bytes as u64
-        + 2 * plaintext.len() as u64;
+    let expected_holds = original_holds + 4 * HOLD + encoded.len() as u64 + metadata_bytes as u64;
     if actual != plaintext
         || published.claim().canonical_manifest() != Some(canonical.as_slice())
         || published.claim().descriptor().digest() != identity.digest()
