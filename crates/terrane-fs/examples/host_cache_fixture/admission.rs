@@ -594,12 +594,9 @@ fn invalid_metadata_body() -> io::Result<(PackId, Vec<u8>, Vec<u8>)> {
         .terrane_v1_digest()
         .map_err(io::Error::other)?;
     let mut invalid_body = None;
-    for value in 0..=u8::MAX {
-        let bytes = if value < 24 {
-            vec![value]
-        } else {
-            vec![0x18, value]
-        };
+    for value in 0..=u16::MAX {
+        let mut bytes = Vec::with_capacity(3);
+        terrane_core::cbor::write_uint(&mut bytes, u64::from(value));
         let hash = TERRANE_V1
             .calculate(IdentityKind::Manifest, &bytes)
             .map_err(io::Error::other)?
@@ -791,4 +788,42 @@ fn emit(message: &str) -> io::Result<()> {
     let mut output = io::stdout().lock();
     writeln!(output, "{message}")?;
     output.flush()
+}
+
+#[cfg(test)]
+mod tests {
+    //! Checks that the adversarial fixture fails semantics after a valid first body.
+
+    use super::*;
+
+    #[test]
+    fn semantic_fixture_keeps_honest_hashes_and_a_later_invalid_manifest()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (id, pack, index) = invalid_metadata_body()?;
+        let reader = PackReader::open(&pack)?;
+        assert_eq!(reader.header().id(), id);
+        reader.check_index_object(&index)?;
+
+        // Generic structure, canonical CBOR and both actual content hashes pass.
+        // Only the full Manifest decoder distinguishes the later invalid body.
+        let bodies = reader.verified_admissions(&[], &terrane::pack::RawBodyDecoder)?;
+        assert_eq!(bodies.len(), 2);
+        let profile = ChunkProfile::cdc_1m([0; 32]);
+        Manifest::decode(&bodies[0].bytes, &profile)?;
+        assert!(Manifest::decode(&bodies[1].bytes, &profile).is_err());
+        assert!(
+            terrane::host::cache::reconstruct_pack_index(
+                &pack,
+                id,
+                &profile,
+                &terrane::repository::MetadataValidator::new(profile.clone()),
+                &BTreeMap::new(),
+                terrane::host::cache::HostReadLimits {
+                    max_allocation_bytes: WINDOW,
+                },
+            )
+            .is_err()
+        );
+        Ok(())
+    }
 }
