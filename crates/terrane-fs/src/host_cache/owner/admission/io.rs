@@ -447,7 +447,11 @@ impl FileStamp {
     }
 }
 
-fn verify_custodied_bytes(owner: &Custody, file: &File, bytes: &[u8]) -> io::Result<()> {
+/// Checks positioned encoded bytes and their actual configured native custody.
+///
+/// # Errors
+/// Refuses changed bytes or inconsistent inode and project custody.
+pub(super) fn verify_custodied_bytes(owner: &Custody, file: &File, bytes: &[u8]) -> io::Result<()> {
     check(owner, file, InodePhase::Closed)?;
     let before = FileStamp::capture(file)?;
     verify_bytes(file, bytes)?;

@@ -17,6 +17,8 @@ mod recovery;
 pub(crate) mod recovery_manifest;
 #[cfg(feature = "tokio")]
 mod running;
+#[cfg(feature = "tokio")]
+mod transfer;
 
 pub(crate) use recovery::{BodyIncarnationObservation, RecoveryBody};
 

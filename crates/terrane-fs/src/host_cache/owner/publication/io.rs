@@ -18,6 +18,22 @@ use std::{
 /// # Errors
 /// Refuses any present encoding variant, unsafe shard or unavailable inspection.
 pub(super) fn refuse_standalone(owner: &Custody, digest: &[u8]) -> io::Result<()> {
+    scan_standalone(owner, digest, None)
+}
+
+/// Refuses every other encoding beside the actual selected admission.
+///
+/// # Errors
+/// Refuses another canonical encoding, unsafe namespace or unavailable inspection.
+pub(super) fn refuse_other_standalone(
+    owner: &Custody,
+    digest: &[u8],
+    codec: u32,
+) -> io::Result<()> {
+    scan_standalone(owner, digest, Some(codec))
+}
+
+fn scan_standalone(owner: &Custody, digest: &[u8], retained_codec: Option<u32>) -> io::Result<()> {
     owner.check_current()?;
     let chunks = owner
         .preparation
@@ -37,6 +53,9 @@ pub(super) fn refuse_standalone(owner: &Custody, digest: &[u8]) -> io::Result<()
         Err(error) => return Err(error.into()),
     };
     for codec in 0..=2 {
+        if retained_codec == Some(codec) {
+            continue;
+        }
         match fs::statat(&shard, format!("{hash}.{codec}"), AtFlags::SYMLINK_NOFOLLOW) {
             Err(rustix::io::Errno::NOENT) => {}
             Err(error) => return Err(error.into()),

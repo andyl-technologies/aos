@@ -42,6 +42,33 @@ impl<L: HostReadLocation> BodyIncarnationObservation<L> {
     pub(crate) fn key(&self) -> &BodyKey {
         &self.key
     }
+
+    /// Builds only this actual connection/epoch observation's registered payload.
+    ///
+    /// # Errors
+    /// Refuses another actual client, root, epoch or producer-selected key.
+    #[cfg(feature = "tokio")]
+    pub(super) fn checked_payload(
+        &self,
+        client: &Client<L>,
+        state: &State,
+        expected: &BodyKey,
+    ) -> Result<RequestPayload, Error> {
+        if self.client != client.cache_incarnation
+            || self.epoch != state.recovery_epoch
+            || !Arc::ptr_eq(&self.layout, &client.layout)
+            || &self.key != expected
+        {
+            return Err(Error::Invalid(
+                "inode observation belongs to another command context",
+            ));
+        }
+        Ok(RequestPayload {
+            body: Some(self.key.clone()),
+            incarnation: self.token.to_vec(),
+            ..Default::default()
+        })
+    }
 }
 
 /// Retains an encoded inode candidate without hash, service or pin authority.

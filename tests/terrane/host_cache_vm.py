@@ -50,7 +50,8 @@ CASES = [
     "empty", "pin", "lease", "reservation", "residence", "unknown",
     "state-file", "state-directory", "cancel", "edquot", "exclusive",
     "admission-chunk", "admission-metadata", "admission-cancel",
-    "publication-inline", "publication-cancel",
+    "publication-inline", "publication-cancel", "publication-transfer",
+    "publication-transfer-cancel", "publication-transfer-conflict",
 ] + [row[0] for row in MANIFEST_CASES]
 
 LABELS = ["layout-root", "chunks", "objects", "sealed", "staging", "quarantine",
@@ -581,6 +582,124 @@ def publication_cases(publisher, uuid):
             process.wait(timeout=5)
 
 
+def inline_transfer_cases(publisher, uuid):
+    """Checks actual source inodes, pending leases, cancellation and collision refusal."""
+    for suffix in ["", "-cancel", "-conflict"]:
+        case = "publication-transfer" + suffix
+        process = controlled_actor(case, "publish-inline-transfer" + suffix, uuid)
+        stopped = False
+        try:
+            lines = Lines(process)
+            lines.until("READY actual standalone admission retained; wait for transfer control")
+            print(process_status(process, 840), flush=True)
+            staging = root(case) / "staging" / str(publisher.pid)
+            require(not staging.is_symlink(), "transfer staging directory is a symlink")
+            staged_identity = (staging.stat().st_dev, staging.stat().st_ino)
+            sources = list((root(case) / "chunks").glob("*/*"))
+            require(len(sources) == 1, "transfer lacks exactly one actual standalone source")
+            source = sources[0]
+            original = source.stat()
+            original_bytes = source.read_bytes()
+            digest, separator, codec = source.name.partition(".")
+            require(separator and len(digest) == 64 and codec == "0"
+                    and source.parent.name == digest[:2]
+                    and original.st_uid == 840 and original.st_gid == 845
+                    and original.st_nlink == 1 and original.st_mode & 0o7777 == 0o640,
+                    "actual transfer source has another canonical shape or custody")
+            pending = root(case) / "pending-delete" / digest
+            snapshot = root(case) / "state/cache/records.toml"
+            collision = None
+            if suffix == "-conflict":
+                pending.write_bytes(b"occupied pending transfer name must survive")
+                metadata(pending, 841, 841, 0o400)
+                collision = (pending.stat().st_ino, pending.read_bytes())
+            if suffix == "-cancel":
+                publisher.send_signal(signal.SIGSTOP)
+                stopped = True
+                deadline = time.monotonic() + 4
+                while True:
+                    status = (pathlib.Path("/proc") / str(publisher.pid) / "status").read_text()
+                    require(publisher.poll() is None, "publisher exited before transfer cancellation")
+                    if any(line.startswith("State:\tT") or line.startswith("State:\tt")
+                           for line in status.splitlines()):
+                        break
+                    require(time.monotonic() < deadline, "transfer publisher stop was not acknowledged")
+                    time.sleep(0.005)
+            process.stdin.write(b"start\n")
+            process.stdin.flush()
+            if suffix == "-cancel":
+                lines.until("QUEUED actual inline transfer; wait for durable funding control")
+                deadline = time.monotonic() + 4
+                while True:
+                    state = tomllib.loads(snapshot.read_text())
+                    require(process.poll() is None and time.monotonic() < deadline,
+                            "transfer did not durably retain its publication funding")
+                    if len(state["reservations"]) == 3 and len(state["pins"]) == len(state["leases"]) == 2:
+                        require(state["residences"] == [], "stopped transfer supplied a residence")
+                        break
+                    time.sleep(0.005)
+                require(source.stat().st_ino == original.st_ino and source.read_bytes() == original_bytes
+                        and not pending.exists() and list((root(case) / "sealed").glob("*/*")) == [],
+                        "stopped publisher changed an actual transfer source or supplied backing")
+                process.stdin.write(b"cancel\n")
+                process.stdin.flush()
+                lines.until("CANCELLED inline transfer waiter; actual source and physical owner retained")
+                publisher.send_signal(signal.SIGCONT)
+                stopped = False
+                deadline = time.monotonic() + 15
+                while True:
+                    state = tomllib.loads(snapshot.read_text())
+                    require(process.poll() is None and time.monotonic() < deadline,
+                            "abandoned transfer lost physical retirement or residence completion")
+                    if len(state["residences"]) == 1 and not source.exists():
+                        break
+                    time.sleep(0.005)
+            output, _ = process.communicate(b"finish\n" if suffix == "-cancel" else None, timeout=20)
+            print(output.decode(), end="", flush=True)
+            expected = ("PASS occupied pending name refused inline transfer while retaining original inode, sealed outcome and funded fault; no Ready"
+                        if collision else "PASS actual inline transfer retained original source, pending retirement, sealed bytes and durable holds; no Ready")
+            require(process.returncode == 0 and output.decode().splitlines() == [expected],
+                    "missing exact actual inline transfer result: " + case)
+            bodies = list((root(case) / "sealed").glob("*/*"))
+            require(len(bodies) == 1 and bodies[0].name == digest
+                    and bodies[0].read_bytes() == original_bytes[1:],
+                    "transfer lost the actual independently published sealed bytes")
+            state = tomllib.loads(snapshot.read_text())
+            if collision:
+                require((pending.stat().st_ino, pending.read_bytes()) == collision
+                        and source.stat().st_ino == original.st_ino and source.read_bytes() == original_bytes
+                        and state["residences"] == [] and len(state["reservations"]) == 3,
+                        "failed transfer replaced a pending/canonical inode or discarded durable exclusion")
+            else:
+                retired = pending.stat()
+                require(not source.exists() and list((root(case) / "chunks").glob("*/*")) == []
+                        and (retired.st_dev, retired.st_ino) == (original.st_dev, original.st_ino)
+                        and retired.st_nlink == 1 and pending.read_bytes() == original_bytes,
+                        "transfer replaced/unlinked the source instead of retaining its exact pending inode")
+                leases = list((root(case) / "state/publication").glob("retirement-*.toml"))
+                require(len(leases) == 1, "actual transfer lacks its durable publisher retirement lease")
+                lease = tomllib.loads(leases[0].read_text())
+                require(lease["domain"] == domain(case) and lease["version"] == 1
+                        and lease["device"] == retired.st_dev and lease["inode"] == retired.st_ino
+                        and lease["changed_seconds"] == retired.st_ctime_ns // 1_000_000_000
+                        and lease["changed_nanoseconds"] == retired.st_ctime_ns % 1_000_000_000
+                        and lease["deadline_unix_ms"] > 0
+                        and len(state["residences"]) == 1 and len(state["reservations"]) == 4,
+                        "transfer retirement lease or completed policy names another actual source")
+            require(not staging.is_symlink()
+                    and (staging.stat().st_dev, staging.stat().st_ino) == staged_identity
+                    and list((root(case) / "staging").iterdir()) == [staging]
+                    and staging.stat().st_uid == staging.stat().st_gid == 841
+                    and staging.stat().st_mode & 0o7777 == 0o700 and list(staging.iterdir()) == [],
+                    "transfer left private staging files or changed publisher directory custody")
+        finally:
+            if stopped and publisher.poll() is None:
+                publisher.send_signal(signal.SIGCONT)
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+
+
 def verify_image():
     """Independently checks final ELF bytes and retained original Cargo events."""
     identity = json.loads((IMAGE / "share/identity.json").read_text())
@@ -832,6 +951,7 @@ def main():
         actor("edquot", "edquot", uuid)
         admission_cases(helper, uuid)
         publication_cases(publisher, uuid)
+        inline_transfer_cases(publisher, uuid)
         manifest_recovery_cases(uuid, manifest_candidates)
         print("PASS bounded native cache recovery, encoded admission and inline publication; full Running publication/BKT15 remain unqualified", flush=True)
     finally:

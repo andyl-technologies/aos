@@ -4,6 +4,9 @@
 //! acknowledged Resume, synchronized funding and the native publisher channel.
 //! These component cases establish no consumer lease or bucket readiness.
 
+#[path = "publication/transfer.rs"]
+mod transfer;
+
 use super::config::{HARD_LIMIT, HOLD, Inputs, STATE};
 use std::{
     fs,
@@ -36,6 +39,9 @@ pub(super) fn run(
     let case = match mode {
         "publish-inline" => "tenant:publication-inline",
         "publish-inline-cancel" => "tenant:publication-cancel",
+        "publish-inline-transfer" => "tenant:publication-transfer",
+        "publish-inline-transfer-cancel" => "tenant:publication-transfer-cancel",
+        "publish-inline-transfer-conflict" => "tenant:publication-transfer-conflict",
         _ => return Err(invalid("unknown inline publication selector")),
     };
     if inputs.domain != case || original.is_some() {
@@ -56,6 +62,9 @@ pub(super) fn run(
     runtime
         .block_on(owner.resume_recovered(completed))
         .map_err(io::Error::other)?;
+    if mode.starts_with("publish-inline-transfer") {
+        return transfer::run(mode, owner, runtime, inputs);
+    }
     if mode == "publish-inline-cancel" {
         return cancelled(owner, runtime, inputs);
     }
@@ -74,14 +83,14 @@ pub(super) fn run(
     let first = runtime
         .block_on(owner.publish_inline(descriptor()?, encoded()))
         .map_err(io::Error::other)?;
-    check_result(&first, inputs, 1)?;
-    check_policy(runtime, inputs, 1)?;
+    check_result(&first, inputs, 1, 0)?;
+    check_policy(runtime, inputs, 1, 0)?;
     let inode = first.handle().metadata()?.ino();
     let second = runtime
         .block_on(owner.publish_inline(descriptor()?, encoded()))
         .map_err(io::Error::other)?;
-    check_result(&second, inputs, 2)?;
-    check_policy(runtime, inputs, 2)?;
+    check_result(&second, inputs, 2, 0)?;
+    check_policy(runtime, inputs, 2, 0)?;
     if second.handle().metadata()?.ino() != inode {
         return Err(invalid(
             "no-replace publication replaced the original inode",
@@ -124,8 +133,8 @@ fn cancelled(
     let repeated = runtime
         .block_on(owner.publish_inline(descriptor()?, encoded()))
         .map_err(io::Error::other)?;
-    check_result(&repeated, inputs, 2)?;
-    check_policy(runtime, inputs, 2)?;
+    check_result(&repeated, inputs, 2, 0)?;
+    check_policy(runtime, inputs, 2, 0)?;
     emit(
         "PASS dropped inline waiter retained physical publication, canonical inode and durable holds; no Ready",
     )
@@ -135,6 +144,7 @@ fn check_result(
     result: &NativeInlinePublication,
     inputs: &Inputs,
     publications: u64,
+    admissions: u64,
 ) -> io::Result<()> {
     let metadata = result.handle().metadata()?;
     if result.claim().descriptor() != &descriptor()?
@@ -147,7 +157,10 @@ fn check_result(
         || NativeProject::inspect(result.handle())?.project_id != inputs.project
         || result.synchronized_sealed_inode_bytes() == 0
         || result.charged_reserved_bytes() > HARD_LIMIT
-        || result.future_hold_bytes() != HOLD + publications * (HOLD + 2 * PLAINTEXT.len() as u64)
+        || result.future_hold_bytes()
+            != HOLD
+                + publications * (HOLD + 2 * PLAINTEXT.len() as u64)
+                + admissions * (HOLD + encoded().len() as u64)
     {
         return Err(invalid(
             "inline result lacks actual native custody or accounting",
@@ -176,6 +189,7 @@ fn check_policy(
     runtime: &tokio::runtime::Runtime,
     inputs: &Inputs,
     publications: usize,
+    admissions: usize,
 ) -> io::Result<()> {
     let state = runtime
         .block_on(CacheState::load(
@@ -186,9 +200,9 @@ fn check_policy(
         .map_err(io::Error::other)?
         .ok_or_else(|| invalid("inline publication snapshot absent"))?;
     let hash = hex(descriptor()?.digest());
-    if state.reservations.len() != publications + 1
-        || state.pins.len() != publications
-        || state.leases.len() != publications
+    if state.reservations.len() != publications + admissions + 1
+        || state.pins.len() != publications + admissions
+        || state.leases.len() != publications + admissions
         || state.residences.len() != 1
     {
         return Err(invalid("inline publication policy closure differs"));
@@ -200,6 +214,12 @@ fn check_policy(
             .any(|lease| lease.owner == format!("publication:{}", row.id))
         {
             HOLD + 2 * PLAINTEXT.len() as u64
+        } else if state
+            .leases
+            .iter()
+            .any(|lease| lease.owner == format!("admission:{}", row.id))
+        {
+            HOLD + encoded().len() as u64
         } else {
             HOLD
         };
@@ -207,9 +227,27 @@ fn check_policy(
             return Err(invalid("inline publication reservation differs"));
         }
     }
+    if state
+        .leases
+        .iter()
+        .filter(|lease| lease.owner.starts_with("admission:"))
+        .count()
+        != admissions
+        || state
+            .leases
+            .iter()
+            .filter(|lease| lease.owner.starts_with("publication:"))
+            .count()
+            != publications
+    {
+        return Err(invalid(
+            "inline publication admission/publication pin classes differ",
+        ));
+    }
     for lease in &state.leases {
         if lease.expires != i64::MAX as u64
-            || !lease.owner.starts_with("publication:")
+            || !(lease.owner.starts_with("publication:")
+                || admissions > 0 && lease.owner.starts_with("admission:"))
             || state
                 .pins
                 .iter()

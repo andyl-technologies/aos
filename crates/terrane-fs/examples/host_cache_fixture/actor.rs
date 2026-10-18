@@ -47,6 +47,9 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
             | "refuse-mixed-manifest"
             | "publish-inline"
             | "publish-inline-cancel"
+            | "publish-inline-transfer"
+            | "publish-inline-transfer-cancel"
+            | "publish-inline-transfer-conflict"
     ) {
         return Err(io::Error::other("unknown component selector"));
     }
@@ -84,7 +87,11 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
         .enable_all()
         .build()?;
     match mode {
-        "publish-inline" | "publish-inline-cancel" => {
+        "publish-inline"
+        | "publish-inline-cancel"
+        | "publish-inline-transfer"
+        | "publish-inline-transfer-cancel"
+        | "publish-inline-transfer-conflict" => {
             super::publication::run(mode, &owner, &runtime, &inputs, original)?;
         }
         "refuse" => {

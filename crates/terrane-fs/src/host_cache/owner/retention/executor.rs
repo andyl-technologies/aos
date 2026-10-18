@@ -554,6 +554,49 @@ impl PublisherRunningTurn<'_> {
         self.funding.check_claim(claim)
     }
 
+    /// Requires genuine sealed replacement custody under this exclusive command.
+    ///
+    /// # Errors
+    /// Refuses a stale funded turn or a changed/foreign native backing receipt.
+    pub(crate) fn check_replacement(
+        &mut self,
+        context: &PublisherRunningContext,
+        body: &crate::publisher_local::client::PeerPublishedObject<
+            terrane::host::cache::HostDomainLocation,
+        >,
+    ) -> io::Result<()> {
+        self.check_claim(context, body.claim())?;
+        self.funding.check_replacement(body)
+    }
+
+    /// Selects only the original admitted key under this actual funded turn.
+    ///
+    /// # Errors
+    /// Refuses stale context, another claim or changed standalone custody.
+    pub(crate) fn transfer_key(
+        &mut self,
+        context: &PublisherRunningContext,
+        claim: &terrane::host::publication::PublicationClaim,
+    ) -> io::Result<crate::publisher_local::wire::BodyKey> {
+        self.check_claim(context, claim)?;
+        self.funding.transfer_key()
+    }
+
+    /// Verifies the actual inspected descriptor before a separate retirement RPC.
+    ///
+    /// # Errors
+    /// Refuses another key, inode, bytes, owner or changed synchronized funding.
+    pub(crate) fn check_transfer_reply(
+        &mut self,
+        context: &PublisherRunningContext,
+        claim: &terrane::host::publication::PublicationClaim,
+        key: &crate::publisher_local::wire::BodyKey,
+        file: &std::fs::File,
+    ) -> io::Result<()> {
+        self.check_claim(context, claim)?;
+        self.funding.check_transfer_reply(key, file)
+    }
+
     /// Checks the exact executor-owned acknowledged context before an RPC lock.
     ///
     /// This never revalidates the old empty recovery snapshot. The caller must

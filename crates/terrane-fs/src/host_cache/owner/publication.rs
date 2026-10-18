@@ -9,7 +9,7 @@ mod io;
 mod state;
 
 use super::{
-    admission::{AdmissionJob, NativeChunkAdmissionError},
+    admission::{AdmissionJob, NativeChunkAdmissionError, TransferSource},
     retention::{Command, Custody, NativeMetadataOwner, NativeOwnerExecutor},
 };
 use crate::publisher_local::{client::PeerPublishedObject, socket::ReceivedPacket};
@@ -38,6 +38,10 @@ pub(super) struct InlineJob {
     plaintext: Vec<u8>,
     claim: PublicationClaim,
     dictionary: Option<Arc<Mutex<AdmissionJob>>>,
+    transfer: Option<TransferSource>,
+    transfer_observation:
+        Option<crate::publisher_local::client::BodyIncarnationObservation<HostDomainLocation>>,
+    transfer_retired: bool,
     token: String,
     hold: u64,
     generation: u64,
@@ -56,6 +60,7 @@ pub(super) struct Funding {
     hash: String,
     descriptor: Descriptor,
     source: (u64, u64, u64),
+    transfer: Option<TransferSource>,
     hold: u64,
     generation: u64,
 }
@@ -94,6 +99,80 @@ impl Funding {
             ));
         }
         Ok(())
+    }
+
+    /// Requires an actual verified sealed replacement before source retirement.
+    ///
+    /// # Errors
+    /// Refuses another claim/root, missing kernel seal, changed native project,
+    /// ownership or unlinked backing. A raw file cannot construct this receipt.
+    pub(super) fn check_replacement(
+        &self,
+        body: &PeerPublishedObject<HostDomainLocation>,
+    ) -> std_io::Result<()> {
+        use std::os::unix::fs::MetadataExt;
+        let owner = self
+            .custody
+            .lock()
+            .map_err(|_| invalid("publication custody poisoned"))?;
+        let metadata = body.handle().metadata()?;
+        if body.claim().descriptor() != &self.descriptor
+            || body.claim().domain() != owner.preparation.config.location.domain()
+            || !Arc::ptr_eq(body.layout(), owner.preparation.layout())
+            || metadata.nlink() == 0
+            || metadata.len() != body.claim().plaintext_size()
+            || metadata.uid() != owner.preparation.config.publisher.identities.publish_uid
+            || metadata.mode() & 0o7777 != 0o400
+            || crate::host_quota::NativeProject::inspect(body.handle())?.project_id
+                != owner.preparation.config.project_id
+            || crate::verity::measure(body.handle())? != *body.binding()
+        {
+            return Err(invalid(
+                "transfer lacks its actual verified sealed replacement",
+            ));
+        }
+        body.layout().recheck()
+    }
+
+    /// Returns only the original admitted key after checking its canonical custody.
+    ///
+    /// # Errors
+    /// Refuses absent transfer custody, altered source bytes or lost actual pins.
+    pub(super) fn transfer_key(&self) -> std_io::Result<crate::publisher_local::wire::BodyKey> {
+        let owner = self
+            .custody
+            .lock()
+            .map_err(|_| invalid("publication custody poisoned"))?;
+        let transfer = self
+            .transfer
+            .as_ref()
+            .ok_or_else(|| invalid("publication has no standalone transfer"))?;
+        transfer.check_current(&owner)?;
+        Ok(transfer.key().clone())
+    }
+
+    /// Checks the actual same-response descriptor before permitting retirement.
+    ///
+    /// # Errors
+    /// Refuses another registered key, inode, bytes or native project custody.
+    pub(super) fn check_transfer_reply(
+        &self,
+        key: &crate::publisher_local::wire::BodyKey,
+        file: &File,
+    ) -> std_io::Result<()> {
+        let owner = self
+            .custody
+            .lock()
+            .map_err(|_| invalid("publication custody poisoned"))?;
+        let transfer = self
+            .transfer
+            .as_ref()
+            .ok_or_else(|| invalid("publication has no standalone transfer"))?;
+        if transfer.key() != key {
+            return Err(invalid("transfer reply names another actual source"));
+        }
+        transfer.check_current(&owner)?;
+        transfer.check_received(&owner, file)
     }
 
     /// Borrows the actual registered resource identity without locking it.
@@ -164,8 +243,10 @@ impl NativeMetadataOwner {
     ///
     /// The owner derives domain/profile, checks original encoded bytes, and
     /// durably funds simultaneous plaintext-source and publisher-copy lifetimes.
-    /// An already resident standalone body is refused pending its coordinated
-    /// residence transfer. No source path, raw file or validity assertion is accepted.
+    /// A standalone body may transfer only from this physical owner's actual
+    /// completed admission. Its original descriptors, pins and holds survive
+    /// publisher retirement into the pending namespace; actual cleanup is separate.
+    /// No source path, raw file or validity assertion is accepted.
     ///
     /// # Errors
     /// Returns original encoded inputs with `ChunkPosition::Final` on local/queue
@@ -296,13 +377,24 @@ fn prepare(
         .map_err(std_io::Error::other)?;
     let plaintext = verified.plaintext().to_vec();
     bounds.check(encoded.capacity(), plaintext.capacity())?;
-    io::refuse_standalone(&owner, descriptor.digest())?;
+    let transfer = match io::refuse_standalone(&owner, descriptor.digest()) {
+        Ok(()) => None,
+        Err(error) if error.kind() == std_io::ErrorKind::AlreadyExists => {
+            let actual = TransferSource::select(executor, &owner, &descriptor)?;
+            io::refuse_other_standalone(&owner, descriptor.digest(), actual.key().codec)?;
+            Some(actual)
+        }
+        Err(error) => return Err(error),
+    };
     Ok(InlineJob {
         custody: Arc::clone(custody),
         encoded,
         plaintext,
         claim,
         dictionary: dependency,
+        transfer,
+        transfer_observation: None,
+        transfer_retired: false,
         token: String::new(),
         hold: 0,
         generation: 0,
@@ -354,6 +446,7 @@ async fn execute(
             hash: state::hex(physical.claim.descriptor().digest()),
             descriptor: physical.claim.descriptor().clone(),
             source: (source.dev(), source.ino(), source.len()),
+            transfer: physical.transfer.clone(),
             hold: physical.hold,
             generation: physical.generation,
         }
@@ -370,12 +463,32 @@ async fn execute(
             .as_ref()
             .ok_or_else(|| invalid("publication source absent"))?;
         let body = session
-            .publish_inline_running(source, claim, context, &mut turn, reply)
+            .publish_inline_running(source, claim.clone(), context, &mut turn, reply)
             .map_err(std_io::Error::other)?;
         // The actual accepted result is retained before any later fallible
         // synchronization, state write or fresh quota reconciliation.
         physical.body = Some(Arc::new(body));
         drop(physical.reader.take());
+        if physical.transfer.is_some() {
+            let published = Arc::clone(
+                physical
+                    .body
+                    .as_ref()
+                    .ok_or_else(|| invalid("transfer replacement absent"))?,
+            );
+            let observation = session
+                .inspect_inline_transfer(&published, context, &mut turn, &mut physical.reply)
+                .map_err(std_io::Error::other)?;
+            physical.transfer_observation = Some(observation);
+            let observation = physical
+                .transfer_observation
+                .as_ref()
+                .ok_or_else(|| invalid("transfer observation absent"))?;
+            session
+                .retire_inline_transfer(&published, context, &mut turn, observation)
+                .map_err(std_io::Error::other)?;
+            physical.transfer_retired = true;
+        }
     }
     let ticket = {
         let mut physical = job

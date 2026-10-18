@@ -53,6 +53,9 @@ fn main() -> std::process::ExitCode {
             "refuse-mixed-manifest",
             "publish-inline",
             "publish-inline-cancel",
+            "publish-inline-transfer",
+            "publish-inline-transfer-cancel",
+            "publish-inline-transfer-conflict",
         ] {
             println!("host-cache:{selector}");
         }

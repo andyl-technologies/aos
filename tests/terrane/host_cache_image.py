@@ -289,7 +289,8 @@ def main():
         "publisher-confinement", "publisher-reject-descriptor", "publisher-reject-stdio",
         "seed-mixed-manifest", "seed-mixed-bad-manifest",
         "recover-mixed-manifest", "refuse-mixed-manifest",
-        "publish-inline", "publish-inline-cancel",
+        "publish-inline", "publish-inline-cancel", "publish-inline-transfer",
+        "publish-inline-transfer-cancel", "publish-inline-transfer-conflict",
     ]]
     shared.require(listed == expected, "cache fixture exact selector inventory mismatch")
     unit_elf = output / "bin" / UNIT_NAME

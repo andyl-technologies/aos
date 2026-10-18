@@ -36,6 +36,14 @@ pub(super) fn begin(
         ));
     }
     check_dictionary(executor, owner, job)?;
+    if let Some(transfer) = &job.transfer {
+        transfer.check_current(owner)?;
+        super::io::refuse_other_standalone(
+            owner,
+            job.claim.descriptor().digest(),
+            transfer.key().codec,
+        )?;
+    }
     owner.preparation.recheck()?;
     // Source plaintext and publisher-private copy overlap. Filesystem rounding,
     // verity and directory metadata remain kernel charges, never guessed blocks.
@@ -113,6 +121,15 @@ pub(super) fn complete(
     {
         return Err(invalid("publication result differs from the funded claim"));
     }
+    if let Some(transfer) = &job.transfer {
+        if !job.transfer_retired || job.transfer_observation.is_none() {
+            return Err(invalid(
+                "inline residence transfer lacks actual retirement acknowledgment",
+            ));
+        }
+        transfer.check_retired(owner)?;
+    }
+    super::io::refuse_standalone(owner, job.claim.descriptor().digest())?;
     let hash = hex(job.claim.descriptor().digest());
     let mut next = owner.state.clone();
     if let Some(row) = next.residences.iter().find(|row| row.chunk == hash) {
