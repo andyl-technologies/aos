@@ -387,7 +387,7 @@ fn owned_qemu_vmstate_sections(patch: &str) -> Result<BTreeMap<String, u32>, Str
         }
 
         let declaration_identifies_owned =
-            declaration.contains("crucible-engine") || declaration.contains("_wide");
+            declaration.contains("crucible") || declaration.contains("_wide");
         let Some(name) = name else {
             if declaration_identifies_owned {
                 return Err(format!(
@@ -396,7 +396,7 @@ fn owned_qemu_vmstate_sections(patch: &str) -> Result<BTreeMap<String, u32>, Str
             }
             continue;
         };
-        let owned = name.contains("crucible-engine")
+        let owned = name.contains("crucible")
             || name == "virtio-blk/dropped-requests"
             || name.ends_with("-wide")
             || name.ends_with("/wide");
@@ -464,7 +464,7 @@ fn qemu_vmstate_literal_name(expression: &str) -> Result<Option<String>, String>
     if expression == "TYPE_IMX6UL_LCDIF \"/crucible-clock\"" {
         return Ok(Some("imx6ul-lcdif/crucible-clock".to_owned()));
     }
-    if expression.contains("crucible-engine")
+    if expression.contains("crucible")
         || expression.contains("-wide")
         || expression.contains("/wide")
     {

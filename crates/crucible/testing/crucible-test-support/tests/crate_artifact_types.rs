@@ -4,7 +4,7 @@
 //! implementation detail: only the QEMU plugin builds a `cdylib`, the CLI
 //! builds the public `crucible` binary, `crucible-qemu-debug-gateway` builds the
 //! GPL-side gateway process, `crucible-guest` builds its optional in-guest
-//! emitter binary, `crucible-cas` builds the fleet-store binary, and every
+//! emitter binary, `crucible-store` builds the fleet-store binary, and every
 //! other Crucible package remains a library crate. The two explicitly named
 //! private measurement binaries require their nondefault feature and retain
 //! their library surface; they are not public CLI entry points. The allocation
@@ -74,6 +74,41 @@ fn crucible_packages_expose_declared_artifact_types() -> Result<(), Box<dyn Erro
         "Crucible crate artifact-type lint failed:\n{}",
         failures.join("\n")
     );
+
+    Ok(())
+}
+
+#[test]
+fn gateway_command_name_is_independent_of_its_package_name() -> Result<(), Box<dyn Error>> {
+    let spec = ArtifactSpec {
+        package: "crucible-qemu-debug-gateway",
+        expected: ExpectedArtifact::DebugGatewayBinary,
+    };
+    let manifest: Value = r#"
+        [package]
+        name = "crucible-qemu-debug-gateway"
+
+        [[bin]]
+        name = "crucible-debug-gateway"
+        path = "src/main.rs"
+    "#
+    .parse()?;
+    let layout = PackageLayout {
+        has_lib_rs: true,
+        has_main_rs: true,
+        has_src_bin_dir: false,
+    };
+
+    assert!(artifact_type_failures(&spec, &manifest, &layout).is_empty());
+
+    for name in ["crucible-qemu-debug-gateway", "unreviewed-gateway"] {
+        let mut changed = manifest.clone();
+        changed["bin"][0]["name"] = Value::String(name.to_owned());
+        assert!(contains_finding(
+            &artifact_type_failures(&spec, &changed, &layout),
+            "name must be `crucible-debug-gateway`",
+        ));
+    }
 
     Ok(())
 }
@@ -386,7 +421,7 @@ fn artifact_type_failures(
                 ));
             } else {
                 let bin = &bins[0];
-                if bin.name.as_deref() != Some("crucible-qemu-debug-gateway") {
+                if bin.name.as_deref() != Some("crucible-debug-gateway") {
                     failures.push(format!(
                         "{}: debug gateway [[bin]] name must be `crucible-debug-gateway`, found {:?}",
                         spec.package, bin.name

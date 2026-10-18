@@ -3,17 +3,17 @@
 use super::*;
 
 const CARRIER_PATH: &str = "src/ram_source.rs";
-const CARRIER: &str = "RamBackingFailure{kind:crucible::BackendOperationalFailureKind,#[source]source:crucible_cas::ram::RamStoreError,first:Option<QemuRamReadBoundaryError>,}";
+const CARRIER: &str = "RamBackingFailure{kind:crucible_engine::BackendOperationalFailureKind,#[source]source:crucible_store::ram::RamStoreError,first:Option<QemuRamReadBoundaryError>,}";
 const TEST_IMPORT_PATH: &str = "src/ram_source/worker_failure/tests/backend_cause.rs";
 const TEST_IMPORTS: &[&str] = &[
-    "usecrucible_cas::content_store::StoreError;",
-    "usecrucible_cas::ram::RamStoreError;",
+    "usecrucible_store::content_store::StoreError;",
+    "usecrucible_store::ram::RamStoreError;",
 ];
 
 pub(super) fn source_use_failures(
     crates_dir: &Path,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let package = crates_dir.join(HOST_DRIVER_RAM_ERROR_EDGE.0);
+    let package = workspace::package_directory(crates_dir, HOST_DRIVER_RAM_ERROR_EDGE.0)?;
     let manifest = fs::read_to_string(package.join("Cargo.toml"))?;
     let mut failures = manifest_failures(&manifest)?;
     failures.extend(test_module_chain_failures(&package)?);
@@ -65,7 +65,7 @@ fn manifest_failures(manifest: &str) -> Result<Vec<String>, Box<dyn std::error::
         Ok(Vec::new())
     } else {
         Ok(vec![String::from(
-            "host RAM error dependency must use exactly the reviewed `crucible-cas` manifest name",
+            "host RAM error dependency must use exactly the reviewed `crucible-store` manifest name",
         )])
     }
 }
@@ -130,7 +130,7 @@ fn carrier_failures(package: &Path, relative: &Path, content: &str) -> Vec<Strin
         code
     };
 
-    if remaining.contains("crucible_cas") {
+    if remaining.contains("crucible_store") {
         failures.push(format!(
             "{}: CAS use outside the reviewed inline RAM storage error carrier",
             source.display()
@@ -296,7 +296,7 @@ fn collect_sources(directory: &Path, sources: &mut Vec<PathBuf>) -> Result<(), i
 
 #[test]
 fn carrier_constraint_rejects_changed_shapes_extra_uses_and_fake_witnesses() {
-    let package = Path::new("crucible-qemu");
+    let package = Path::new("crucible-qemu-host");
     let path = Path::new(CARRIER_PATH);
     let valid = format!("pub enum QemuRamSourceError {{ {CARRIER} }}");
     assert!(carrier_failures(package, path, &valid).is_empty());
@@ -322,8 +322,8 @@ fn carrier_constraint_rejects_changed_shapes_extra_uses_and_fake_witnesses() {
         format!(
             "pub enum QemuRamSourceError {{ #[cfg_attr(any(), macro_call!({CARRIER}))] Other }}"
         ),
-        format!("{valid}\nfn store() {{ crucible_cas::content_store::open(); }}"),
-        format!("{valid}\ntype Duplicate = crucible_cas::ram::RamStoreError;"),
+        format!("{valid}\nfn store() {{ crucible_store::content_store::open(); }}"),
+        format!("{valid}\ntype Duplicate = crucible_store::ram::RamStoreError;"),
         format!("pub enum QemuRamSourceError {{ {CARRIER} {CARRIER} }}"),
         format!("/* {valid} */"),
         format!("const TEXT: &str = r#\"{valid}\"#;"),
@@ -342,28 +342,28 @@ fn carrier_constraint_rejects_changed_shapes_extra_uses_and_fake_witnesses() {
 
     assert!(!carrier_failures(package, Path::new("src/other.rs"), &valid).is_empty());
     let separated_test = format!(
-        "{valid}\n#[cfg(test)]\nmod tests {{ use crucible_cas::content_store::StoreError; }}"
+        "{valid}\n#[cfg(test)]\nmod tests {{ use crucible_store::content_store::StoreError; }}"
     );
     assert!(!carrier_failures(package, path, &separated_test).is_empty());
     assert!(
         !carrier_failures(
             package,
             Path::new("src/store_tests.rs"),
-            "use crucible_cas::content_store::Store;"
+            "use crucible_store::content_store::Store;"
         )
         .is_empty()
     );
     let diagnostic = format!(
-        "{valid}\n// crucible_cas::content_store::open();\nconst TEXT: &str = \"crucible_cas\";"
+        "{valid}\n// crucible_store::content_store::open();\nconst TEXT: &str = \"crucible_store\";"
     );
     assert!(carrier_failures(package, path, &diagnostic).is_empty());
 }
 
 #[test]
 fn reviewed_test_imports_require_exact_source_and_real_module_cfg() {
-    let package = Path::new("crucible-qemu");
+    let package = Path::new("crucible-qemu-host");
     let imports =
-        "use crucible_cas::content_store::StoreError;\nuse crucible_cas::ram::RamStoreError;\n";
+        "use crucible_store::content_store::StoreError;\nuse crucible_store::ram::RamStoreError;\n";
     assert!(carrier_failures(package, Path::new(TEST_IMPORT_PATH), imports).is_empty());
     for changed in [
         imports.replace("StoreError", "Store"),
@@ -394,19 +394,19 @@ fn reviewed_test_imports_require_exact_source_and_real_module_cfg() {
 #[test]
 fn carrier_dependency_rejects_renamed_or_additional_aliases()
 -> Result<(), Box<dyn std::error::Error>> {
-    let valid = "[dependencies]\ncrucible-cas = { path = \"../crucible-cas\" }\n";
+    let valid = "[dependencies]\ncrucible-store = { path = \"../crucible-store\" }\n";
     assert!(manifest_failures(valid)?.is_empty());
     let renamed =
-        "[dependencies]\nstore = { package = \"crucible-cas\", path = \"../crucible-cas\" }\n";
+        "[dependencies]\nstore = { package = \"crucible-store\", path = \"../crucible-store\" }\n";
     assert!(!manifest_failures(renamed)?.is_empty());
     assert!(
         !manifest_failures(&format!(
-            "{valid}store = {{ package = \"crucible-cas\" }}\n"
+            "{valid}store = {{ package = \"crucible-store\" }}\n"
         ))?
         .is_empty()
     );
     let target_alias = format!(
-        "{valid}[target.'cfg(unix)'.dependencies]\nstore = {{ package = \"crucible-cas\" }}\n"
+        "{valid}[target.'cfg(unix)'.dependencies]\nstore = {{ package = \"crucible-store\" }}\n"
     );
     assert!(!manifest_failures(&target_alias)?.is_empty());
     assert!(!manifest_failures("[dependencies]\n")?.is_empty());
