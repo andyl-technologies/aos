@@ -73,6 +73,49 @@ impl PreparationOwners {
         }
     }
 
+    // The original scene moved this exact reserved ID into the peer before
+    // Child. It remains owned and counted, but no host Query was attempted.
+    pub(super) fn authenticate_original_admitted_peer_data(
+        &self,
+        selected: usize,
+    ) -> Result<(), RuntimeError> {
+        let peer = self
+            .peers
+            .get(selected)
+            .ok_or(RuntimeError::ForeignAuthority)?;
+        if peer.host_attempted
+            || peer.ticket.get().is_some()
+            || peer.planned_id.is_none()
+            || peer.preparation.is_some()
+            || peer.connection.is_some()
+            || peer.registry.is_some()
+            || peer.supervisor.is_some()
+            || peer.operational.is_some()
+        {
+            return Err(RuntimeError::OwnerUnavailable);
+        }
+        Ok(())
+    }
+
+    pub(super) fn original_admitted_peer_counter_scratch_data() -> usize {
+        std::mem::size_of::<&Self>()
+            + std::mem::size_of::<&PreparationPeer>()
+            + std::mem::size_of::<Option<&PreparationPeer>>()
+            + std::mem::size_of::<usize>()
+            + std::mem::size_of::<Result<(), RuntimeError>>()
+    }
+
+    #[cfg(test)]
+    pub(super) fn original_initial_query_attempted_for_test(
+        &self,
+        selected: usize,
+    ) -> Result<bool, RuntimeError> {
+        self.peers
+            .get(selected)
+            .map(|peer| peer.host_attempted)
+            .ok_or(RuntimeError::ForeignAuthority)
+    }
+
     #[cfg(test)]
     pub(super) fn original_initial_ticket_data(
         &self,
@@ -828,6 +871,16 @@ impl PacketCompleteReportStartupHolder {
                         .add(report.complete_requested_bytes_precredit_data()?)
                         .map_err(storage_failure)?;
                 }
+            } else if initial_sources
+                && matches!(&held.purpose, StartupHolderPurpose::OriginalScene)
+                && (matches!(phase, HolderStoragePhase::RuntimeConstruction(_))
+                    || (matches!(phase, HolderStoragePhase::InitialLifecycle)
+                        && held.original_collecting_graph_started_data()))
+                && !peer.host_attempted
+                && peer.ticket.get().is_none()
+            {
+                owners.authenticate_original_admitted_peer_data(member)?;
+                held.authenticate_original_scene_admitted_destination_data(member)?;
             } else if initial_sources && peer.ticket.get().is_some() {
                 if peer.registry.is_some()
                     || peer.operational.is_some()

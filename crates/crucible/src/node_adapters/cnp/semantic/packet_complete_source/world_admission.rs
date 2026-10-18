@@ -392,3 +392,58 @@ impl OriginalCompletedCanonicalAckWorldAdmission {
         std::mem::size_of::<std::cell::Ref<'static, Option<Self>>>() + std::mem::size_of::<&Self>()
     }
 }
+
+impl OriginalCompletedCanonicalAckWorldAdmission {
+    // Reads the actual consumed Admit state. A planned but unissued Query is
+    // distinct from the independently completed five-part Query journal.
+    pub(in crate::node_adapters::cnp::semantic) fn original_initial_admission_state_data(
+        &self,
+        source: &Rc<PacketCompleteSemanticSource>,
+    ) -> Result<bool, crate::node_contract::RuntimeError> {
+        use crate::node_contract::RuntimeError;
+        if self.process != std::process::id()
+            || self.thread != std::thread::current().id()
+            || !self.issued
+            || !self.spent
+            || !Rc::ptr_eq(&self.source, source)
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        match (self.host_query_issued.get(), self.fresh_query.as_ref()) {
+            (false, None) => Ok(false),
+            (true, Some(query)) => {
+                if query.original_data().is_none()
+                    || query.terminal_data().is_none()
+                    || query.response_data().is_none()
+                    || query.report_data().is_none()
+                    || query.allocation_reference_data().is_none()
+                {
+                    return Err(RuntimeError::OwnerUnavailable);
+                }
+                Ok(true)
+            }
+            _ => Err(RuntimeError::OwnerUnavailable),
+        }
+    }
+
+    pub(in crate::node_adapters::cnp::semantic) fn original_initial_admission_counter_scratch_data()
+    -> usize {
+        std::mem::size_of::<&Self>()
+            + std::mem::size_of::<&Rc<PacketCompleteSemanticSource>>()
+            + std::mem::size_of::<Option<&crucible_node_provider::client::OriginalFreshRestoreQuery>>(
+            )
+            + std::mem::size_of::<(
+                bool,
+                Option<&crucible_node_provider::client::OriginalFreshRestoreQuery>,
+            )>()
+            + std::mem::size_of::<Result<bool, crate::node_contract::RuntimeError>>()
+            + std::mem::size_of::<bool>()
+            + std::mem::size_of::<std::thread::Thread>()
+            + std::mem::size_of::<std::thread::ThreadId>()
+            + std::mem::size_of::<u32>()
+            + std::mem::size_of::<Option<&crucible_node_provider::envelope::Envelope>>() * 2
+            + std::mem::size_of::<Option<&crucible_node_provider::bodies::ResponseBody>>()
+            + std::mem::size_of::<Option<&crucible_node_provider::reference_packet::service::fresh_restore_allocation::PacketNativeFreshRestoreAllocationReport>>()
+            + std::mem::size_of::<Option<&crucible_node_contract::ContentRef>>()
+    }
+}

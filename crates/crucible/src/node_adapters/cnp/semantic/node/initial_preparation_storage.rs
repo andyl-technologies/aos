@@ -22,6 +22,7 @@ impl CnpSemanticNode {
     fn authenticate_original_initial_node_data(
         &self,
         source: &Rc<PacketCompleteSemanticSource>,
+        expected_query: Option<bool>,
     ) -> Result<(), RuntimeError> {
         self.preparation
             .guard
@@ -92,17 +93,24 @@ impl CnpSemanticNode {
             .completed_ack_admission
             .try_borrow()
             .map_err(|_| RuntimeError::OwnerBusy)?;
-        let query = admission
-            .as_ref()
-            .ok_or(RuntimeError::OwnerUnavailable)?
-            .original_restoration_query_data(source)?;
-        if query.original_data().is_none()
-            || query.terminal_data().is_none()
-            || query.response_data().is_none()
-            || query.report_data().is_none()
-            || query.allocation_reference_data().is_none()
-        {
-            return Err(RuntimeError::OwnerUnavailable);
+        let admission = admission.as_ref().ok_or(RuntimeError::OwnerUnavailable)?;
+        if expected_query == Some(true) {
+            // The ticketed route retains its original Query guards and exact
+            // five-part completion requirement, including refusal ordering.
+            let query = admission.original_restoration_query_data(source)?;
+            if query.original_data().is_none()
+                || query.terminal_data().is_none()
+                || query.response_data().is_none()
+                || query.report_data().is_none()
+                || query.allocation_reference_data().is_none()
+            {
+                return Err(RuntimeError::OwnerUnavailable);
+            }
+        } else {
+            let queried = admission.original_initial_admission_state_data(source)?;
+            if expected_query.is_some_and(|expected| expected != queried) {
+                return Err(RuntimeError::ForeignAuthority);
+            }
         }
         self.preparation
             .guard
@@ -119,7 +127,7 @@ impl CnpSemanticNode {
         source: &Rc<PacketCompleteSemanticSource>,
         plan: &InstalledConformancePlan,
     ) -> Result<(), RuntimeError> {
-        self.authenticate_original_initial_node_data(source)?;
+        self.authenticate_original_initial_node_data(source, Some(true))?;
         self.preparation
             .authenticate_original_fresh_query_plan_data(plan)?;
         let native = self
@@ -135,6 +143,20 @@ impl CnpSemanticNode {
         )
     }
 
+    /// Checks the consumed initial Admit without inventing a host Query.
+    ///
+    /// # Errors
+    /// Refuses issued/partial Queries, foreign originals or nondormant custody.
+    pub(crate) fn inspect_original_admitted_preparation_data(
+        &self,
+        source: &Rc<PacketCompleteSemanticSource>,
+        plan: &InstalledConformancePlan,
+    ) -> Result<(), RuntimeError> {
+        self.authenticate_original_initial_node_data(source, Some(false))?;
+        self.preparation
+            .authenticate_original_fresh_query_plan_data(plan)
+    }
+
     /// Counts actual node ownership through the exact initial Source visitor.
     ///
     /// # Errors
@@ -145,7 +167,7 @@ impl CnpSemanticNode {
         scratch: &CnpPreparationStorageScratch,
         maximum: usize,
     ) -> Result<CnpRetainedStorageReport, RuntimeError> {
-        self.authenticate_original_initial_node_data(source)?;
+        self.authenticate_original_initial_node_data(source, None)?;
         self.original_retained_node_selected_precredit_data(
             scratch,
             None,
@@ -169,6 +191,19 @@ impl CnpSemanticConformanceNode {
     ) -> Result<(), RuntimeError> {
         self.0
             .inspect_original_initial_preparation_data(ticket, source, plan)
+    }
+
+    /// Inspects the actual initial node whose Admit completed without a Query.
+    ///
+    /// # Errors
+    /// Refuses another Source, plan, active owner or any attempted host Query.
+    pub fn inspect_original_admitted_preparation_data(
+        &self,
+        source: &Rc<PacketCompleteSemanticSource>,
+        plan: &InstalledConformancePlan,
+    ) -> Result<(), RuntimeError> {
+        self.0
+            .inspect_original_admitted_preparation_data(source, plan)
     }
 
     /// Counts the same node through its exact initial-lifecycle Source visitor.
@@ -199,6 +234,10 @@ impl CnpSemanticPreparation {
             super::super::CnpSemanticLaunchGuard::original_initial_lifecycle_storage_counter_scratch_data(),
             CompleteOriginalFreshRestoreHostWindow::original_initial_node_counter_scratch_data(),
             OriginalCompletedCanonicalAckWorldAdmission::original_restoration_query_counter_scratch_data(),
+            OriginalCompletedCanonicalAckWorldAdmission::original_initial_admission_counter_scratch_data(),
+            size_of::<Option<bool>>(),
+            size_of::<bool>() * 2,
+            size_of::<Result<bool, RuntimeError>>(),
             size_of::<&CnpSemanticNode>(),
             size_of::<&CnpSemanticPreparation>(),
             size_of::<&CnpPreparationStorageScratch>(),

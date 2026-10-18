@@ -188,9 +188,15 @@ impl PacketCompleteReportStartupHolder {
             };
             let source = &held.authority.roster.sources[index];
             let identity = preparations
-                .original_initial_ticket_data(index)
-                .and_then(|ticket| {
-                    node.inspect_original_initial_preparation_data(&ticket, source, &held.plan)
+                .original_initial_query_attempted_for_test(index)
+                .and_then(|queried| {
+                    if queried {
+                        let ticket = preparations.original_initial_ticket_data(index)?;
+                        node.inspect_original_initial_preparation_data(&ticket, source, &held.plan)
+                    } else {
+                        preparations.authenticate_original_admitted_peer_data(index)?;
+                        node.inspect_original_admitted_preparation_data(source, &held.plan)
+                    }
                 });
             eprintln!("retained node diagnostic: index={index} identity={identity:?}");
 

@@ -40,6 +40,14 @@ impl SimulationNode for CnpSemanticNode {
         CnpSemanticNode::inspect_original_initial_preparation_data(self, ticket, source, plan)
     }
 
+    fn inspect_original_admitted_preparation_data(
+        &self,
+        source: &std::rc::Rc<super::PacketCompleteSemanticSource>,
+        plan: &crate::node_admission::InstalledConformancePlan,
+    ) -> Result<(), RuntimeError> {
+        CnpSemanticNode::inspect_original_admitted_preparation_data(self, source, plan)
+    }
+
     fn retained_original_initial_requested_storage_precredit_data(
         &self,
         source: &std::rc::Rc<super::PacketCompleteSemanticSource>,

@@ -1,5 +1,6 @@
 //! Authenticates the actual destination of a moved original scene preparation.
 
+use super::super::preparation::PreparationOwners;
 use super::*;
 use crucible::node_adapters::cnp::{
     CnpSemanticPreparation, CnpSemanticSource, PacketCompleteSemanticSource,
@@ -8,6 +9,16 @@ use crucible::node_admission::CompleteOriginalFreshRestoreHostWindow;
 use std::mem::size_of;
 
 impl PacketCompleteReportStartupHolder {
+    // The initial-lifecycle observer also counts the fully moved inactive
+    // holder after construction. Empty precreation peers are not destinations.
+    pub(in crate::node_qualification::packet_collection::complete::authority::report_startup) fn original_collecting_graph_started_data(
+        &self,
+    ) -> bool {
+        self.runtime_members[index(OriginalRuntimeConstructionPhase::CollectingGraph)]
+            .get()
+            .is_some()
+    }
+
     /// Finds exactly one actual destination of the same moved initial preparation.
     ///
     /// # Errors
@@ -74,6 +85,84 @@ impl PacketCompleteReportStartupHolder {
         }
         self.authenticate_native_origin_data()
     }
+
+    /// Finds the unique moved completed-Admit destination without a host Query.
+    ///
+    /// # Errors
+    /// Refuses missing/duplicate destinations, failed owners or changed originals.
+    pub(in crate::node_qualification::packet_collection::complete::authority::report_startup) fn authenticate_original_scene_admitted_destination_data(
+        &self,
+        selected: usize,
+    ) -> Result<(), RuntimeError> {
+        self.authenticate_native_origin_data()?;
+        if !matches!(&self.purpose, StartupHolderPurpose::OriginalScene)
+            || self.runtime_members[index(OriginalRuntimeConstructionPhase::CollectingGraph)]
+                .get()
+                .is_none()
+        {
+            return Err(RuntimeError::OwnerUnavailable);
+        }
+        let source = self
+            .authority
+            .roster
+            .sources
+            .get(selected)
+            .ok_or(RuntimeError::ForeignAuthority)?;
+        let owners = self
+            .runtime_owners
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        if owners.provider_failure.is_some()
+            || owners.preparation_failure.is_some()
+            || owners.attachment_failure.is_some()
+            || owners.node_failures.iter().any(Option::is_some)
+            || owners.unwinds.iter().any(Option::is_some)
+            || !owners.native.is_empty()
+        {
+            return Err(RuntimeError::UnsupportedFacet);
+        }
+        let mut found = false;
+        if let Some(node) = owners.nodes.get(selected).and_then(Option::as_ref) {
+            node.inspect_original_admitted_preparation_data(source, &self.plan)?;
+            record_destination(&mut found)?;
+        }
+        for node in &owners.node_vector {
+            if node.original_conformance_route_data().node == source.installation().descriptor.id {
+                node.inspect_original_admitted_preparation_data(source, &self.plan)?;
+                record_destination(&mut found)?;
+            }
+        }
+        if let Some(provider) = &owners.provider
+            && provider.inspect_original_admitted_preparation_data(
+                &source.installation().descriptor.id,
+                source,
+                &self.plan,
+            )?
+        {
+            record_destination(&mut found)?;
+        }
+        if let Some(runtime) = &owners.runtime {
+            runtime.inspect_original_admitted_preparation_data(
+                &source.installation().descriptor.id,
+                source,
+                &self.plan,
+            )?;
+            record_destination(&mut found)?;
+        }
+        if let Some(actor) = &owners.actor
+            && actor.inspect_original_admitted_preparation_data(
+                &source.installation().descriptor.id,
+                source,
+                &self.plan,
+            )?
+        {
+            record_destination(&mut found)?;
+        }
+        if !found {
+            return Err(RuntimeError::OwnerUnavailable);
+        }
+        self.authenticate_native_origin_data()
+    }
 }
 
 fn record_destination(found: &mut bool) -> Result<(), RuntimeError> {
@@ -91,6 +180,8 @@ fn record_destination(found: &mut bool) -> Result<(), RuntimeError> {
 pub(in crate::node_qualification::packet_collection::complete::authority::report_startup) fn counter_scratch_data() -> Result<usize, RuntimeError> {
     let terms = [
         size_of::<&PacketCompleteReportStartupHolder>(),
+        PreparationOwners::original_admitted_peer_counter_scratch_data(),
+        size_of::<bool>(), // Actual CollectingGraph predicate result.
         size_of::<&CompleteOriginalFreshRestoreHostWindow>(),
         size_of::<std::cell::Ref<'static, OriginalRuntimeOwners>>(),
         size_of::<std::cell::Ref<'static, CompleteOriginalFreshRestoreHostWindow>>(),
@@ -143,7 +234,7 @@ impl PacketCompleteReportStartupHolder {
         Self::original_initial_holder_storage_data(original, &held, maximum)
     }
 
-    /// Checks a real test ticket against an actual inactive member.
+    /// Checks a real completed-Admit Source against an actual inactive member.
     ///
     /// # Errors
     /// Preserves actual origin, owner, phase and bound refusals.
@@ -158,8 +249,17 @@ impl PacketCompleteReportStartupHolder {
             .preparations
             .try_borrow()
             .map_err(|_| RuntimeError::OwnerBusy)?;
-        let ticket = preparations.original_initial_ticket_data(ticket_member)?;
+        let queried = preparations.original_initial_query_attempted_for_test(ticket_member)?;
+        if !queried {
+            preparations.authenticate_original_admitted_peer_data(ticket_member)?;
+        }
         let source = held
+            .authority
+            .roster
+            .sources
+            .get(ticket_member)
+            .ok_or(RuntimeError::ForeignAuthority)?;
+        let destination = held
             .authority
             .roster
             .sources
@@ -173,7 +273,17 @@ impl PacketCompleteReportStartupHolder {
             .actor
             .as_ref()
             .ok_or(RuntimeError::OwnerUnavailable)?;
-        if actor.inspect_original_initial_preparation_data(&ticket, source, &held.plan)? {
+        let present = if queried {
+            let ticket = preparations.original_initial_ticket_data(ticket_member)?;
+            actor.inspect_original_initial_preparation_data(&ticket, destination, &held.plan)?
+        } else {
+            actor.inspect_original_admitted_preparation_data(
+                &destination.installation().descriptor.id,
+                source,
+                &held.plan,
+            )?
+        };
+        if present {
             Ok(())
         } else {
             Err(RuntimeError::OwnerUnavailable)
@@ -193,7 +303,10 @@ impl PacketCompleteReportStartupHolder {
             .preparations
             .try_borrow()
             .map_err(|_| RuntimeError::OwnerBusy)?;
-        let ticket = preparations.original_initial_ticket_data(member)?;
+        let queried = preparations.original_initial_query_attempted_for_test(member)?;
+        if !queried {
+            preparations.authenticate_original_admitted_peer_data(member)?;
+        }
         let actor = held
             .runtime_owners
             .try_borrow_mut()
@@ -203,8 +316,18 @@ impl PacketCompleteReportStartupHolder {
             .ok_or(RuntimeError::OwnerUnavailable)?;
         // Retain the same real actor locally while testing the absent holder
         // destination. Restore it before propagating the observation result.
-        let observed =
-            held.authenticate_original_scene_preparation_destination_data(member, &ticket);
+        let observed = if queried {
+            // Retain the moved actor while observing either authentic phase.
+            // Borrow failure is included in the result so restoration below
+            // precedes every observation error return.
+            preparations
+                .original_initial_ticket_data(member)
+                .and_then(|ticket| {
+                    held.authenticate_original_scene_preparation_destination_data(member, &ticket)
+                })
+        } else {
+            held.authenticate_original_scene_admitted_destination_data(member)
+        };
         held.runtime_owners
             .try_borrow_mut()
             .map_err(|_| RuntimeError::OwnerBusy)?

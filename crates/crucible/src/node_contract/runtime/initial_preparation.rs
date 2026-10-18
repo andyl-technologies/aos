@@ -28,6 +28,24 @@ impl NodeRuntime {
         self.authenticate_original_initial_members_data(plan)
     }
 
+    /// Inspects the selected actual node against a same-owner unused Query state.
+    ///
+    /// # Errors
+    /// Refuses active/foreign custody, absent nodes or an attempted Query.
+    pub(crate) fn inspect_original_admitted_preparation_data(
+        &self,
+        destination: &Id,
+        source: &Rc<PacketCompleteSemanticSource>,
+        plan: &InstalledConformancePlan,
+    ) -> Result<(), RuntimeError> {
+        self.authenticate_original_initial_members_data(plan)?;
+        self.nodes
+            .get(destination)
+            .ok_or(RuntimeError::UnknownNode)?
+            .inspect_original_admitted_preparation_data(source, plan)?;
+        self.authenticate_original_initial_members_data(plan)
+    }
+
     /// Counts the same inactive runtime with its exact initial Source roster.
     ///
     /// # Errors

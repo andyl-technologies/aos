@@ -46,6 +46,47 @@ impl CnpSemanticExactConformanceWorldProvider {
         Ok(true)
     }
 
+    /// Inspects the real held destination of an initial preparation, if present.
+    ///
+    /// `false` means this provider has already transferred its node bank. It
+    /// cannot stand in for the caller's independently authenticated destination.
+    ///
+    /// # Errors
+    /// Refuses retirement, partial erased transfer, a foreign original plan,
+    /// absent selected node, changed Source/SDK owners or any host Query attempt.
+    pub fn inspect_original_admitted_preparation_data(
+        &self,
+        destination: &crucible_node_contract::Id,
+        source: &Rc<PacketCompleteSemanticSource>,
+        plan: &InstalledConformancePlan,
+    ) -> Result<bool, RuntimeError> {
+        if self.original.retirement.is_some() || !self.original.native.is_empty() {
+            return Err(RuntimeError::UnsupportedFacet);
+        }
+        let Some(nodes) = &self.original.nodes else {
+            return Ok(false);
+        };
+        let graph = self
+            .original
+            .original_graph
+            .as_ref()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        if !graph.plan().same_original(plan) {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        let mut selected = None;
+        for node in nodes {
+            if node.original_conformance_route_data().node == *destination
+                && selected.replace(node).is_some()
+            {
+                return Err(RuntimeError::ForeignAuthority);
+            }
+        }
+        let node = selected.ok_or(RuntimeError::UnknownNode)?;
+        node.inspect_original_admitted_preparation_data(source, plan)?;
+        Ok(true)
+    }
+
     /// Counts the same held initial nodes through their actual original Sources.
     ///
     /// The ordinary provider observer keeps its strict Source walk. All existing

@@ -27,6 +27,24 @@ impl ConformanceRuntime {
             .inspect_original_initial_preparation_data(ticket, source, plan)
     }
 
+    /// Inspects an actual initial node with a consumed Admit and unissued Query.
+    ///
+    /// # Errors
+    /// Refuses restored/active or foreign-plan custody and changed node owners.
+    pub fn inspect_original_admitted_preparation_data(
+        &self,
+        destination: &crucible_node_contract::Id,
+        source: &Rc<PacketCompleteSemanticSource>,
+        plan: &InstalledConformancePlan,
+    ) -> Result<(), RuntimeError> {
+        self.authenticate_initial_origin()?;
+        if self.activation.is_some() || !self.graph.plan().same_original(plan) {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        self.runtime
+            .inspect_original_admitted_preparation_data(destination, source, plan)
+    }
+
     /// Counts the actual initial runtime using each node's same original Source.
     ///
     /// The ordinary inactive observer and ordinary Input/Capture Source walks
@@ -75,6 +93,7 @@ impl ConformanceRuntime {
     pub fn original_initial_preparation_counter_scratch_data() -> usize {
         NodeRuntime::original_initial_preparation_counter_scratch_data()
             + std::mem::size_of::<&Self>()
+            + std::mem::size_of::<&crucible_node_contract::Id>()
             + std::mem::size_of::<crate::node_contract::runtime_owned_counter::RetainedRuntimeCounter>(
             )
     }

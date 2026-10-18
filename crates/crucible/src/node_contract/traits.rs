@@ -58,6 +58,22 @@ pub trait SimulationNode {
         Err(RuntimeError::UnsupportedFacet)
     }
 
+    /// Inspects a consumed initial Admit that has never issued a host Query.
+    ///
+    /// This callback-free owning-data check neither issues a Query nor grants
+    /// execution. Unknown concrete adapters refuse the separate path.
+    ///
+    /// # Errors
+    /// Refuses unsupported adapters, another Source/plan or any Query attempt.
+    #[doc(hidden)]
+    fn inspect_original_admitted_preparation_data(
+        &self,
+        _source: &std::rc::Rc<crate::node_adapters::cnp::PacketCompleteSemanticSource>,
+        _plan: &crate::node_admission::InstalledConformancePlan,
+    ) -> Result<(), RuntimeError> {
+        Err(RuntimeError::UnsupportedFacet)
+    }
+
     /// Counts backing through a separately authenticated initial Source census.
     ///
     /// # Errors
