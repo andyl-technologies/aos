@@ -19,6 +19,9 @@
 //! inode = 2
 //! ```
 
+/// Consumes genuine fresh-bucket evidence for first administrative enrollment.
+pub mod initial_enrollment;
+
 mod claims;
 
 use serde::{Deserialize, Serialize};

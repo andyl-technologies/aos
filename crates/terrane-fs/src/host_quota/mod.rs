@@ -3,6 +3,9 @@
 //! Quota charges include kernel reservations; they are not physical allocation.
 //! Linux checks the current caller's privilege even for retained descriptors.
 
+/// Retains fresh-bucket observations for administrative native enrollment.
+pub mod initial_enrollment;
+
 mod native;
 pub use native::{NativeProject, NativeQuota, provision_project, synchronized_allocated_bytes};
 

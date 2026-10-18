@@ -8694,10 +8694,10 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
 
 ### T2 — Host tier
 
-Status: in progress (2026-10-16). T1's 22 tasks and 89 current gates are
-complete; its identity, encoding, bucket-key and Store-trait freeze applies.
-Nine separate implementation worktrees cover the five T2 tasks, including
-dedicated publisher-transport, host-quota, native confinement and recovery
+Status: in progress, resumed without sub-agents (2026-10-17). T1's 22 tasks and
+89 current gates are complete; its identity, encoding, bucket-key and Store-trait
+freeze applies. Preserved worktrees cover the five T2 tasks, including dedicated
+publisher-transport, host-quota, native confinement and recovery
 inspection components.
 Shared module declarations,
 dependency edges, kernel prerequisites and check wiring precede worker edits.
@@ -8771,21 +8771,211 @@ publisher fixture helper reference and quota fixture synchronization races.
 The quota claim implementation now permanently binds each filesystem/project
 pair before ledger publication or native mutation; full process-crash and
 broker scenarios await execution. Configured SDK runtime composition and its
-separate unit/native proof harness pass source review; compilation and guest
-execution remain pending. The actual durable metadata-pin producer passes
+separate unit/native proof harness pass source review. After correcting a
+missing guest fixture parent, its current source-bound image, eleven unit
+cases and actual guest example/CLI success and denial cases pass with unchanged
+source guards and complete artifact verification. This qualifies the configured
+local SDK component on x86_64 Linux. The actual durable metadata-pin producer passes
 source review for consumer integration, without native qualification. Recovery
 inspection review found plaintext-allocation and retained-custody defects;
 their corrections precede integration. Publisher review likewise found a
-shared-claim field type mismatch before compilation. The frozen surface
-candidate passes its interface and schema gates. Its status gate fails on
-required xattrs; a finite probe confirms the actual Nix fixture filesystem
-rejects regular-file user xattrs both before and inside the protected namespace.
-The owning gate must run that presentation case on actual capable storage;
-unsupported metadata is not skipped. A separate native cache proof executable
+shared-claim field type mismatch before compilation. An earlier frozen surface
+candidate passes its interface and schema gates. Its status gate exposed
+unsupported regular-file user xattrs on the actual Nix fixture filesystem.
+The corrected status gate passes by requiring the unchanged presentation case
+in an actual ext4 guest as UID 840 with empty capabilities: one passed, none
+ignored. Its commit-path gate also passes with unchanged source guards.
+Interface and schema now also pass on that unchanged candidate, completing its
+four owning surface gates. Aggregate qualification remains pending. A separate native cache proof executable
 and image/guest selectors are declared but fail until implemented. Remaining
 surface gates and complete trunk qualification remain pending. These source
 reviews and component results do not establish configured role operation,
-completed recovery or task acceptance.
+completed recovery or task acceptance. The CLI now has reviewed thin dispatch
+to the configured publisher bootstrap. Serialized empty-case cache recovery
+passes source review after fixing unknown state-parent sibling coverage;
+compilation, nonempty reconstruction, actual admission and native cache execution
+remain incomplete.
+
+Canonical inline recovery now passes source review for retained adoption handles,
+durable residence reconstruction and final quota reconciliation. Publisher source
+review also covers existing inline bindings and exact temporary-state cleanup.
+The new bounded portable reader reuses the complete bucket-copy validators and
+returns immutable selected metadata with no ref authority. Its source and seven
+test cases pass review; compilation and execution remain pending. It does not
+provide live content serving or final native custody. Manifest recovery, genuine
+fresh-bucket enrollment and native admission remain incomplete. No T2 task is
+accepted by these component reviews.
+
+The fresh-only bucket enrollment producer now passes source review after fixing
+special-file classification before readable opens. It retains the actual creator
+event, original exclusion and complete bounded inode preimages; its nine tests
+remain unrun. Native administrative claim and setter consumers now pass source
+review, including complete first-claim preimages, preflight before effects and
+phase-aware administrative ancestor membership. Native qualification is pending.
+Manifest recovery's resource-custody layer also passes source review, including
+cancelled effects and adopted-body retention before fallible completion. Actual
+publisher response correlation and the actual manifest-only owner dispatch now
+pass source review; their runtime qualification remains pending. The cache proof
+image now builds and verifies its three actual executables and retained guest
+supervisor. Earlier guest attempts stopped before actor cases because that script
+was absent from the guest closure. Corrections preserve closed writable
+descriptors through real fs-verity enable and final read-only custody, and use
+the native retained-inode syscall to set listener permissions. Corrected guest
+execution at `454dc9fe0c` passes actual provisioning, helper and publisher
+preparation, empty recovery, eight cold-record or namespace refusal controls,
+the strict cancelled-waiter completion barrier, exclusive-owner refusal and
+release, and actual kernel quota exhaustion after 8,323,072 written bytes.
+All 6,449 source guards remain unchanged through the image, artifact verifier
+and guest execution. Two isolated signal tests also pass for retained socket
+delivery and the original receive deadline. The earlier broken connection's
+cause was not directly observed; this result does not establish its cause.
+These bounded component cases do not qualify Resume, native admission,
+BKT-15 or either complete host task.
+
+The first-enrollment fixture uses the existing vendored Tokio runtime as a
+development dependency. Its source-bound build and nine selected unit tests
+pass; four native tests remain unexecuted by that unit run. The corrected
+checkpoint `c033a09a8d` passes its fresh image, completed artifact verifier and
+all twelve finite native cases. These include genuine same-process public and
+private enrollment, first-enrollment refusals, actual partial kernel `EDQUOT`
+with permanent claims and an incomplete ledger, authenticated quota reads,
+and foreign-UID denials. Source and artifact guards remain unchanged.
+An earlier guest failed after both genuine creators succeeded because the
+fixture omitted the required empty protected project-claim directory. The
+correction supplies only that directory; production creates every claim and
+anchor. Capability CAS remains explicitly unsupported. This component pass
+does not establish NativeReady, BKT-15 or complete task acceptance.
+
+The manifest recovery candidate builds and passes all forty-one unchanged
+focused tests in an actual ext4 guest, with none ignored and independently
+verified per-test identities and executable hashes. This resolves the earlier
+host-filesystem failure while creating a non-UTF-8 filename. Its later native
+stage fails an old unchanged-snapshot assertion: the reviewed recovery path
+persists a funded hold before refusing unknown content. A distinct late-refusal
+fixture verifies that hold, faulted custody and preservation of the unknown
+inode while retaining the original cold-record controls. Corrected checkpoint
+`3def61cf17` passes its source-bound image, completed artifact verifier and
+complete native component sequence: all forty-one unchanged ext4 tests, seven
+strict cold refusals, the distinct funded late refusal, cancellation,
+exclusive-owner controls and actual kernel quota exhaustion after 8,323,072
+written bytes. Independent review verifies every compiler-input hash, executable,
+runtime identity, case result and unchanged source guard. Resume, admission,
+BKT-15 and full host-task qualification remain outside that component result.
+
+The encoded-admission producer's corrected checkpoint `52b111c72c` passes
+source review for registry-slot reclamation after effect-free rejection,
+phase-specific canonical file custody and checked active-memory overlaps.
+Its all-target build and five selected tests pass, with all 6,477 source inputs
+unchanged. Strict library Clippy first stops in the shared dependency; after
+the two reviewed condition collapses, it reaches filesystem diagnostics that
+include mutex guards across actual awaits. An owned snapshot-write transition
+is required before retrying; resource custody must survive that transition.
+The separate bounded existing-Original inspection producer at `7129f2f203`
+builds and passes all eleven selected tests, with unchanged source guards.
+Corrected checkpoint `f36a6b5921` passes strict library, native all-target and
+SDK all-target Clippy, preserving all test cases and native instrumentation.
+The eleven-case runtime result remains separately pinned to `7129f2f203`.
+These current-UID tests retain genuine native exclusion without establishing
+privileged host enrollment, fresh-creator authority or host readiness.
+The module privacy correction passes source review and all eighty-eight
+declarative module checks at `655b57b853`, including both privacy regressions.
+Independent review verifies all 6,324 tracked inputs and the evaluated report.
+Tmpfiles retain non-public roots at mode `0750`, including override paths,
+without a second declaration widening them to `0755`. Actual four-role
+composition and full module-task acceptance remain pending. The combined surface
+and configured SDK candidate passes all four surface gates at `1d9b52a51e`.
+Its subsequent SDK image compilation exposes a missing shared namespace helper. The correction
+uses the exact helper already qualified by the first-enrollment native fixture.
+The corrected candidate `7f645904e6` compiles all three configured SDK image
+targets; independent review verifies compiler inputs, executables and runtime
+hashes. All eleven configured SDK unit cases and the ext4 example/CLI success
+and late-denial controls pass on that corrected candidate. Its interface and
+schema gates also pass, with unchanged source guards. The schema observer passes
+one actual case with none ignored. Status, commit-path, feature-matrix, aggregate
+and application qualification on the final candidate remain pending.
+
+The shared Linux glue dependency explicitly enables the filesystem crate's
+existing Tokio feature for the receipt-consuming enrollment API. Locked offline
+Cargo metadata and the crate-graph gate pass. Cargo.lock and the 632 external
+dependencies are unchanged, so the lockfile-driven vendor staging hashes remain
+unchanged. Full application compilation remains part of qualification.
+
+Preserved pause checkpoints:
+
+- Surface candidate `7f645904e6`: image, unit, native SDK, interface and schema
+  checks pass. The last schema check finishes successfully before pausing; all
+  build handles are closed. The remaining stages have not started.
+- Core `f36a6b5921`: strict library, native all-target and SDK all-target
+  Clippy pass. The eleven actual existing-inspection tests remain qualified at
+  `7129f2f203`; no privileged enrollment result is inferred.
+- Existing enrollment consumer `37fbf8839c`: complete consumer passes source
+  review. Its first build stops at an inherited filesystem inventory reborrow;
+  the reviewed one-line correction is committed but its retry has not started.
+  Resume with the bounded all-target `aos-terrane` build before tests or lint.
+- Snapshot transition `2adeb253d9`: implementation is committed and formatted;
+  full source review, compilation and cancellation/failure/native validation
+  remain pending. The earlier five-test result belongs to `52b111c72c`.
+- Native admission fixture `1c17289e1e`: three selectors pass source review,
+  preserving the eight existing controls. The external supervisor consumers,
+  compilation and native execution remain pending.
+- Quota clock `1268037a15`: the native clock boundary preserves the original
+  EINTR deadline and actual signal-test assertions. Compilation, lint and real
+  signal/native requalification remain pending; `bfe91091de` is preserved.
+
+Every implementation checkout retains its committed branch. Unmerged work is
+kept locally; no partial task merge or task acceptance is implied. Resume the
+final surface qualification after integrating shared prerequisite `38a1ee21f6`,
+then the existing consumer and snapshot/native-admission queues. The zero-wipe
+conflict above and actual four-role deployment remain unresolved. T3 and all
+branch worklines remain unstarted.
+
+Resumed qualification:
+
+- Existing enrollment consumer `1ed19b7cce`: the all-target `aos-terrane`
+  build, strict all-target Clippy with dependency linting excluded, and local
+  Nextest run pass on unchanged source. Eighteen tests execute; five privileged
+  VM cases remain ignored. Corrections group fresh inode observations by named
+  fields, preserve epoch and ancestor validation, and scope panic assertions to
+  tests and fixtures. An inherited non-AOS linker environment was cleared before
+  the successful build. This does not qualify native existing enrollment or
+  dependency Clippy.
+- Snapshot transition `2adeb253d9`: full review of all thirteen changed files
+  finds no guard crossing a snapshot await. Its all-target native build and six
+  selected admission/snapshot regressions pass. The actual physical executor,
+  generation and write identity remain checked through sync and bounded readback;
+  abandonment invalidates completion provenance. Genuine native admission is
+  subsequently qualified on the combined candidate below.
+- Native admission `341ada166e`: image build, independent completed-image
+  verification and actual ext4 guest all pass with unchanged source. All 47
+  selected unit cases execute individually with none ignored under UID/GID 842,
+  empty capabilities and no supplementary groups. Actual Resume, repeated
+  invalid-input refusals, canonical chunk and metadata-pair admission, finite
+  preflight capacity refusal and completion after dropping an accepted waiter
+  pass. The existing recovery controls and actual kernel EDQUOT after 8,323,072
+  written bytes remain intact. Qualification exposes and fixes an unencodable
+  retained-lease deadline using the existing signed TOML representation; the
+  real snapshot regression now includes lease and pin rows. A separate passing
+  fixture regression verifies honest pack hashes, a valid first manifest and a
+  later schema-invalid body. Earlier failures remain archived. This is component
+  evidence, not sealed Running publication, live R, NativeReady, BKT-15 or full
+  host-task acceptance.
+- Publisher custody candidate `a4ef3ccd71`: source review and formatting pass
+  for compact owned command payloads, original boxed recovery completion on
+  Resume refusal, and retained verified inventory sources. Compilation and
+  native qualification remain pending. The shared registry now exposes
+  `integration.publisher-local-image`, `integration.publisher-local-multuid`
+  and `integration.native-publisher-local`; each fails explicitly while its
+  implementation file is absent. Registration supplies no conformance credit.
+- Surface candidate `6cb1fcf235`: shared prerequisite `38a1ee21f6` is integrated
+  through a normal merge, preserving the previous frozen candidate and receipts.
+  The full current-trunk gate aggregate and required application test-target
+  compilation are running. Remaining surface checks, strict lint and formatting
+  precede task acceptance.
+
+The shared glue dependency now names
+the existing Core types directly, and the crate-graph audit includes the current
+native and glue edges. All 632 external dependencies remain unchanged; every
+affected vendor hash is reproduced from local staging and the exact new lock.
 
 Deployable as: one machine that holds a local cache of any commit, seals
 objects, and exposes them to the `sdk` surface, with the `serve`,
@@ -8822,13 +9012,37 @@ Exit gates: `checks.terrane.gates.host-crash-recovery`,
 - [ ] **T-SURF-1** Surface interface, exposure records, schema validation,
   TOML configuration, status reporting, in-process registry, ownership and
   timestamp presentation, and privileged xattr filtering. — satisfies
-  TREE-9, TREE-10, TREE-15, SURF-1 to SURF-32, CRATE-17, CRATE-28;
+  TREE-9, TREE-10, TREE-15, SURF-1 to SURF-32, CRATE-17, and the SDK
+  component of CRATE-28, jointly with the surface tasks below;
   `checks.terrane.gates.surface-interface`,
   `checks.terrane.gates.surface-schema`,
   `checks.terrane.gates.surface-status`.
 - [ ] **T-PKG-3** `modules/terrane/` options, unit rendering for the
   `serve`, `realize`, `publish`, and `gc` roles, and the module evaluation
   check. — satisfies PKG-8, PKG-10; `checks.terrane.module-eval`.
+
+CRATE-28 is a shared full-specification obligation, not a claim that T2
+implements every registered surface. Under AD-13, each task below supplies its
+actual surface feature, compiled registry entry and feature-matrix coverage.
+T-SURF-1 owns the SDK component and the common closed registry; accepting it
+does not mark global CRATE-28 conformance complete. Unimplemented surfaces
+remain unavailable. Empty feature declarations and placeholder registrations
+do not complete these tasks. Every listed task must also pass
+`checks.terrane.gates.feature-matrix` when its real implementation lands.
+
+| Registered surface | Feature owner completing CRATE-28 |
+| --- | --- |
+| `sdk` | T-SURF-1 |
+| `nix-cache` | T-NIX-1 |
+| `reapi` | T-REAPI-1 |
+| `gha-cache` | T-GHA-1 |
+| `fuse` | T-FUSE-2 |
+| `erofs` | T-EROFS-1 |
+| `block` | T-VBLK-1 |
+| `virtiofs`, `virtio-pmem` | T-VM-1 |
+| `browse`, `api` | T-WEB-1 |
+| `git` | T-GIT-1 |
+| `oci` | T-OCI-1 |
 
 ### T3 — Wire protocol and buckets
 
@@ -9367,7 +9581,7 @@ the MVP conformance claim (PLAN-3) says so explicitly.
 | 34 observability | T3, B-ops | T-OBS-1, T-OBS-2, T-OBS-3 |
 | 35 performance | T6, B-ops | T-PERF-1, T-PERF-2 |
 | 36 testing | T1, T3, T6, B-topology | T-TEST-1, T-TEST-2, T-TEST-3, T-TEST-4, T-TEST-5 |
-| 37 crates | T0, T1 | T-PKG-1, T-CRATE-2, T-CRATE-1 |
+| 37 crates | T0, T1, T2, T4, T5, B-storage, B-surfaces-more, B-consistency | T-PKG-1, T-CRATE-2, T-CRATE-1; CRATE-28 component owners listed under T2 (AD-13) |
 | 38 edge | B-hub-edge | T-RISK-2, T-EDGE-1 |
 | 40 risks | T0, T3, T5, B-topology, B-bandwidth, B-hub-edge | T-RISK-3, T-RISK-1, T-RISK-4, T-RISK-5, T-PACK-3, T-RISK-2 |
 | integration 01 | T5 | T-SBX-1 to T-SBX-5 |

@@ -241,6 +241,26 @@ the requirement IDs each decision affects.
     privileged service (larger ownership design, unnecessary for this fix).
   - **Affects:** T-HOST-1, T-HOST-2, T-PKG-3, spec HOST-23 and D-126.
 
+- **[AD-13] Complete surface feature coverage with each real surface**
+  - **Status:** Decided
+  - **Decision:** T-SURF-1 owns the SDK feature and common compiled registry.
+    The implementation plan assigns the remaining CRATE-28 components to
+    their existing surface tasks. Each owner supplies its real feature,
+    registry entry and expanded feature-matrix checks. Global CRATE-28
+    conformance remains incomplete until every registered surface is covered.
+    T2 component acceptance does not make that full-specification claim.
+  - **Rationale:** The plan attributed the entire every-surface requirement
+    to T2 while scheduling those implementations in T4, T5 and existing
+    branch worklines. That ownership claim was inconsistent with its ordering.
+    The specification's requirement is correct and remains unchanged.
+  - **Alternatives considered:** Start later surface work during T2
+    (rejected: violates milestone order); add empty features or placeholder
+    surfaces (rejected: supplies no implementation or conformance evidence);
+    narrow the specification's requirement (rejected: full surface feature
+    coverage remains required).
+  - **Affects:** T-SURF-1 and the completing surface tasks listed in the
+    implementation plan; CRATE-28, CRATE-29 and D-118 remain unchanged.
+
 ## Open
 
 - **[AD-9] Whether `aos-cache` gains a `terrane://` backend or is replaced**
