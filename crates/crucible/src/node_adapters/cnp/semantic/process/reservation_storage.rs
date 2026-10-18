@@ -385,6 +385,8 @@ mod tests {
 
     #[test]
     fn selected_acquisition_quote_cannot_shrink_with_measured_elf_length() {
+        use super::super::super::executable_guard::FreshCurrentScratch;
+
         let small = canonical::content_ref(b"x", "application/octet-stream").unwrap();
         let mut large = small.clone();
         large.length = U64::new(256 * 1024 * 1024);
@@ -411,7 +413,9 @@ mod tests {
         );
         let birth_scratch = crate::node_adapters::cnp::PacketCompleteAckPeerBootMaterial::
             original_native_startup_authentication_scratch_data();
-        assert!(total >= birth_scratch);
-        assert!(total - birth_scratch < 256 * 1024);
+        let fixed_validation_scratch =
+            birth_scratch + 2 * FreshCurrentScratch::declared_scratch_data();
+        assert!(total >= fixed_validation_scratch);
+        assert!(total - fixed_validation_scratch < 256 * 1024);
     }
 }

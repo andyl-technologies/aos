@@ -9,19 +9,36 @@ use std::{ffi::CStr, mem::size_of, os::unix::ffi::OsStrExt};
 use super::*;
 use crate::node_contract::RuntimeError;
 
+// Batch complete-byte reads under the same independently quoted scratch row.
+const EXECUTABLE_STREAM_BYTES: usize = 256 * 1024;
+
 /// Owns one sequential kernel/namespace/executable validation window.
 ///
-/// Its fixed layout is precredited by Core. The only nested allocation is the
-/// exact original namespace length plus one, quoted from the retained owner.
+/// Core precredits the header and full stream-bank capacity. The original
+/// namespace length plus one is quoted separately from the retained owner.
 /// Compiler frames and OS resources are separate from these requested banks.
 pub(in crate::node_adapters::cnp::semantic) struct FreshCurrentScratch {
     pub(in crate::node_adapters::cnp::semantic) stat: [u8; 32 * 1024 + 1],
-    bytes: [u8; 8192],
+    bytes: Vec<u8>,
     link: Vec<u8>,
     path: [u8; 32],
 }
 
 impl FreshCurrentScratch {
+    fn stream_bank() -> Result<Vec<u8>, RuntimeError> {
+        // A large inline array materializes in nested currentness frames and
+        // overflows the ordinary native-test stack. Reserve directly on heap.
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(EXECUTABLE_STREAM_BYTES)
+            .map_err(|_| RuntimeError::ResourceLimit)?;
+        if bytes.capacity() > EXECUTABLE_STREAM_BYTES {
+            return Err(RuntimeError::ResourceLimit);
+        }
+        bytes.resize(EXECUTABLE_STREAM_BYTES, 0);
+        Ok(bytes)
+    }
+
     pub(super) fn read_original_native_link(&mut self, pid: u32) -> Result<usize, RuntimeError> {
         let path_len = self.proc_path(pid, b"/exe")?.to_bytes_with_nul().len();
         let path = CStr::from_bytes_with_nul(&self.path[..path_len])
@@ -46,7 +63,7 @@ impl FreshCurrentScratch {
         link.resize(maximum, 0);
         Ok(Self {
             stat: [0; 32 * 1024 + 1],
-            bytes: [0; 8192],
+            bytes: Self::stream_bank()?,
             link,
             path: [0; 32],
         })
@@ -54,6 +71,7 @@ impl FreshCurrentScratch {
 
     pub(in crate::node_adapters::cnp::semantic) fn declared_scratch_data() -> usize {
         size_of::<Self>()
+            + EXECUTABLE_STREAM_BYTES
             + size_of::<blake3::Hasher>()
             + 3 * size_of::<Metadata>()
             + 3 * size_of::<std::fs::File>()
@@ -131,7 +149,7 @@ impl OriginalExecutable {
         link.resize(maximum, 0);
         Ok(FreshCurrentScratch {
             stat: [0; 32 * 1024 + 1],
-            bytes: [0; 8192],
+            bytes: FreshCurrentScratch::stream_bank()?,
             link,
             path: [0; 32],
         })
@@ -218,6 +236,12 @@ impl OriginalExecutable {
         &self,
         scratch: &mut FreshCurrentScratch,
     ) -> Result<(), RuntimeError> {
+        self.measure_fresh_bytes_in_bank(&mut scratch.bytes)
+    }
+
+    // The caller owns and independently funds the bank. This helper measures
+    // complete bytes only; kernel, namespace and revision fences stay outside.
+    fn measure_fresh_bytes_in_bank(&self, bank: &mut [u8]) -> Result<(), RuntimeError> {
         let expected = &self.expected;
         if expected.hash.algorithm != "blake3-256"
             || expected.hash.domain != "cnp.blob.v1"
@@ -234,22 +258,22 @@ impl OriginalExecutable {
         let mut offset = 0_u64;
         while offset < self.revision.length {
             let remaining = self.revision.length - offset;
-            let count = remaining.min(scratch.bytes.len() as u64) as usize;
+            let count = remaining.min(bank.len() as u64) as usize;
             let read = self
                 .original
                 .file()
-                .read_at(&mut scratch.bytes[..count], offset)
+                .read_at(&mut bank[..count], offset)
                 .map_err(|_| RuntimeError::OwnerUnavailable)?;
             if read == 0 {
                 return Err(RuntimeError::OwnerUnavailable);
             }
-            hash.update(&scratch.bytes[..read]);
+            hash.update(&bank[..read]);
             offset += read as u64;
         }
         if self
             .original
             .file()
-            .read_at(&mut scratch.bytes[..1], offset)
+            .read_at(&mut bank[..1], offset)
             .map_err(|_| RuntimeError::OwnerUnavailable)?
             != 0
             || hash.finalize().to_hex().as_str() != expected.hash.digest
@@ -265,3 +289,7 @@ impl OriginalExecutable {
 fn result_layout<T>(_: impl FnOnce() -> T) -> usize {
     size_of::<T>()
 }
+
+#[cfg(test)]
+#[path = "fresh_current_tests.rs"]
+mod tests;

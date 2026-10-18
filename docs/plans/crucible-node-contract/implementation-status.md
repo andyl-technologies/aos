@@ -1679,3 +1679,33 @@ production package builds. This gate compiles tests without executing them.
 Native startup, complete Capture and fresh preservation remain separate runtime
 qualifications. Uncommitted Capture/Window integration and fresh native-adopter
 work are not covered by these results.
+
+
+### Bounded child executable stream bank
+
+The child executable currentness path now hashes through a separately allocated
+256 KiB bank. Its defining scratch quote includes the full bank capacity and
+its Vec header; both constructors enforce the original exact capacity bound.
+The first inline-array candidate overflowed the native test's default stack and
+was replaced with direct bounded heap reservation. No larger test stack,
+additional hash omission, changed metadata fence or extended deadline is used.
+
+The actual positional complete-file hash helper is compared in one ordinary
+optimized test executable, using the same 13,418,304-byte provider image and
+independent canonical digest. Thirty alternating pairs warm both paths equally
+and keep all samples: mean time falls from 15.82 to 2.84 ms, an 82.03% reduction,
+with a 5.62x median paired speedup and all thirty pairs improving. All sixty calls
+verify the same complete digest. This component measurement reuses prefunded
+banks and excludes bank construction, kernel/namespace checks and startup.
+Deterministic controls also reject a changed final byte with either bank size.
+
+The full Core and contract library runs pass 1,755 and eight tests, respectively;
+32 existing Core tests and the new opt-in benchmark are ignored in the full run.
+The benchmark passes separately. All-feature/all-target checks pass across all
+six affected crates in 31.81 seconds. The production application-target gate
+must be refreshed for this source alongside the next compiler checkpoint.
+
+Native startup remains unqualified. The previous committed source refuses scene
+creation after 66.94 seconds; the corrected heap-bank candidate refuses after
+42.51 seconds without a stack overflow. Failure-path elapsed times establish
+neither startup success nor an overall performance improvement.
