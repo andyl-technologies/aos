@@ -40,6 +40,36 @@ impl CnpSemanticLaunchGuard {
         retained_supervisor: Option<&OriginalRetainedSupervisor>,
         counter: &mut PreparationCounter,
     ) -> Result<(), RuntimeError> {
+        self.charge_retained_storage_selected_precredit_data(
+            registry,
+            retained_supervisor,
+            None,
+            counter,
+        )
+    }
+
+    pub(in crate::node_adapters::cnp::semantic) fn charge_initial_lifecycle_retained_storage_precredit_data(
+        &self,
+        registry: Option<&OriginalExtensionRegistryOwner>,
+        retained_supervisor: Option<&OriginalRetainedSupervisor>,
+        source: &std::rc::Rc<super::super::PacketCompleteSemanticSource>,
+        counter: &mut PreparationCounter,
+    ) -> Result<(), RuntimeError> {
+        self.charge_retained_storage_selected_precredit_data(
+            registry,
+            retained_supervisor,
+            Some(source),
+            counter,
+        )
+    }
+
+    fn charge_retained_storage_selected_precredit_data(
+        &self,
+        registry: Option<&OriginalExtensionRegistryOwner>,
+        retained_supervisor: Option<&OriginalRetainedSupervisor>,
+        initial_source: Option<&std::rc::Rc<super::super::PacketCompleteSemanticSource>>,
+        counter: &mut PreparationCounter,
+    ) -> Result<(), RuntimeError> {
         self.preparation_storage_origin_precredit_data()?;
         if let Some(slot) = &self.slot {
             counter.add(size_of_val(slot.as_ref()))?;
@@ -54,7 +84,12 @@ impl CnpSemanticLaunchGuard {
             .as_ref()
             .ok_or(RuntimeError::OwnerUnavailable)?;
         counter.add(size_of::<CnpSemanticProcessCustody>())?;
-        native.charge_retained_storage_precredit_data(registry, retained_supervisor, counter)?;
+        native.charge_retained_storage_precredit_data(
+            registry,
+            retained_supervisor,
+            initial_source,
+            counter,
+        )?;
         self.preparation_storage_origin_precredit_data()
     }
 }
@@ -79,6 +114,7 @@ impl CnpSemanticProcessCustody {
         &self,
         registry: Option<&OriginalExtensionRegistryOwner>,
         retained_supervisor: Option<&OriginalRetainedSupervisor>,
+        initial_source: Option<&std::rc::Rc<super::super::PacketCompleteSemanticSource>>,
         counter: &mut PreparationCounter,
     ) -> Result<(), RuntimeError> {
         self.storage_origin_precredit_data()?;
@@ -235,10 +271,18 @@ impl CnpSemanticProcessCustody {
             registration,
             super::super::CnpSemanticRegistrationPolicy::retained_requested_storage_precredit_data
         );
-        installed!(
-            source,
-            super::super::CnpSemanticSource::retained_requested_storage_precredit_data
-        );
+        if let Some(original) = initial_source {
+            CnpSemanticLaunchGuard::charge_original_initial_lifecycle_source_precredit_data(
+                source.as_ref().ok_or(RuntimeError::OwnerUnavailable)?,
+                original,
+                counter,
+            )?;
+        } else {
+            installed!(
+                source,
+                super::super::CnpSemanticSource::retained_requested_storage_precredit_data
+            );
+        }
         installed!(
             acceptance,
             super::super::CnpSemanticAcceptance::retained_requested_storage_precredit_data
@@ -270,5 +314,31 @@ impl CnpSemanticProcessCustody {
             executable.charge_retained_storage_precredit_data(counter)?;
         }
         self.storage_origin_precredit_data()
+    }
+}
+
+impl CnpSemanticLaunchGuard {
+    /// Counts an exact original Source through its closed initial owner walk.
+    pub(in crate::node_adapters::cnp::semantic) fn charge_original_initial_lifecycle_source_precredit_data(
+        installed: &std::rc::Rc<dyn super::super::CnpSemanticSource>,
+        original: &std::rc::Rc<super::super::PacketCompleteSemanticSource>,
+        counter: &mut PreparationCounter,
+    ) -> Result<(), RuntimeError> {
+        original.storage_origin_with_error::<RuntimeError>()?;
+        if !std::ptr::eq(
+            std::rc::Rc::as_ptr(installed).cast::<()>(),
+            std::rc::Rc::as_ptr(original).cast::<()>(),
+        ) {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        // Charge the same actual Rc root as the ordinary callback. Its real
+        // identity also keeps completed-admission aliases on existing dedup.
+        if counter.rc(installed)? {
+            counter.add(
+                original
+                    .original_initial_lifecycle_nested_source_storage_data(counter.remaining())?,
+            )?;
+        }
+        original.storage_origin_with_error::<RuntimeError>()
     }
 }

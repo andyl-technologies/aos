@@ -25,6 +25,8 @@ impl CnpSemanticLaunchGuard {
         size_of::<PreparationCounter>()
             + size_of::<Option<&OriginalExtensionRegistryOwner>>()
             + size_of::<Option<&OriginalRetainedSupervisor>>()
+            // The initial preparation walk also lends its exact roster Source.
+            + size_of::<Option<&std::rc::Rc<super::super::PacketCompleteSemanticSource>>>()
             + super::CnpSemanticLaunchReservation::unlaunched_descriptor_counter_scratch_data()
     }
 

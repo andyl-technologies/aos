@@ -125,6 +125,44 @@ impl CnpSemanticPreparation {
         supervisor: Option<&OriginalRetainedSupervisor>,
         maximum: usize,
     ) -> Result<CnpRetainedStorageReport, RuntimeError> {
+        self.retained_storage_selected_precredit_data(scratch, registry, supervisor, None, maximum)
+    }
+
+    /// Observes preparation owners beneath the same closed initial Source phase.
+    ///
+    /// The caller supplies each preparation's actual original roster Source.
+    /// Its exact Rc/root and every existing initial Source owner are counted;
+    /// an absent input-static allocation grants no Input or Capture rights.
+    /// Ordinary preparation observation keeps its strict complete-source walk.
+    ///
+    /// # Errors
+    /// Refuses a foreign Source allocation or any ordinary origin, typed-owner,
+    /// scratch, metadata or requested-storage failure.
+    pub fn retained_initial_lifecycle_requested_storage_precredit_data(
+        &self,
+        source: &std::rc::Rc<super::super::PacketCompleteSemanticSource>,
+        scratch: &CnpPreparationStorageScratch,
+        registry: Option<&OriginalExtensionRegistryOwner>,
+        supervisor: Option<&OriginalRetainedSupervisor>,
+        maximum: usize,
+    ) -> Result<CnpRetainedStorageReport, RuntimeError> {
+        self.retained_storage_selected_precredit_data(
+            scratch,
+            registry,
+            supervisor,
+            Some(source),
+            maximum,
+        )
+    }
+
+    fn retained_storage_selected_precredit_data(
+        &self,
+        scratch: &CnpPreparationStorageScratch,
+        registry: Option<&OriginalExtensionRegistryOwner>,
+        supervisor: Option<&OriginalRetainedSupervisor>,
+        initial_source: Option<&std::rc::Rc<super::super::PacketCompleteSemanticSource>>,
+        maximum: usize,
+    ) -> Result<CnpRetainedStorageReport, RuntimeError> {
         self.guard.preparation_storage_origin_precredit_data()?;
         let mut loan = scratch.loan(maximum)?;
         let counter = &mut *loan.0;
@@ -136,7 +174,12 @@ impl CnpSemanticPreparation {
 
         counter.add(size_of::<Self>())?;
         charge_responses(discovery, realization, counter)?;
-        guard.charge_retained_storage_precredit_data(registry, supervisor, counter)?;
+        match initial_source {
+            Some(source) => guard.charge_initial_lifecycle_retained_storage_precredit_data(
+                registry, supervisor, source, counter,
+            )?,
+            None => guard.charge_retained_storage_precredit_data(registry, supervisor, counter)?,
+        }
         guard.preparation_storage_origin_precredit_data()?;
         Ok(counter.finish())
     }

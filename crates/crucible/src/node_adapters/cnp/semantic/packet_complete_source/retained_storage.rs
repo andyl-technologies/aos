@@ -460,6 +460,27 @@ impl PacketCompleteSemanticSource {
         self.storage_origin_with_error::<RuntimeError>()?;
         let holders =
             self.original_complete_holder_storage_data_with_error::<RuntimeError>(maximum)?;
+        self.original_initial_lifecycle_storage_with_holders_data(holders, maximum)
+    }
+
+    /// Counts the same initial owners beneath an independently charged Source Rc.
+    pub(in crate::node_adapters::cnp::semantic) fn original_initial_lifecycle_nested_source_storage_data(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, crate::node_contract::RuntimeError> {
+        use crate::node_contract::RuntimeError;
+        self.storage_origin_with_error::<RuntimeError>()?;
+        let holders =
+            self.original_complete_nested_holder_storage_data_with_error::<RuntimeError>(maximum)?;
+        self.original_initial_lifecycle_storage_with_holders_data(holders, maximum)
+    }
+
+    fn original_initial_lifecycle_storage_with_holders_data(
+        &self,
+        holders: usize,
+        maximum: usize,
+    ) -> Result<usize, crate::node_contract::RuntimeError> {
+        use crate::node_contract::RuntimeError;
         let installation =
             self.original_complete_installation_storage_data_with_error::<RuntimeError>(maximum)?;
         let boot = self

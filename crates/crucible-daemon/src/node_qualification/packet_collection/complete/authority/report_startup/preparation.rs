@@ -780,17 +780,27 @@ impl PacketCompleteReportStartupHolder {
                     .as_ref()
                     .ok_or(RuntimeError::OwnerUnavailable)?;
                 if Some(member) != selected {
+                    // Every completed peer stays in its original initial
+                    // phase until this whole lifecycle finishes, including
+                    // earlier reactive peers in the third member's census.
+                    let report = if matches!(phase, HolderStoragePhase::InitialLifecycle) {
+                        preparation.retained_initial_lifecycle_requested_storage_precredit_data(
+                            &held.authority.roster.sources[member],
+                            scratch,
+                            peer.registry.as_ref(),
+                            peer.supervisor.as_ref(),
+                            counter.remaining(),
+                        )?
+                    } else {
+                        preparation.retained_requested_storage_precredit_data(
+                            scratch,
+                            peer.registry.as_ref(),
+                            peer.supervisor.as_ref(),
+                            counter.remaining(),
+                        )?
+                    };
                     counter
-                        .add(
-                            preparation
-                                .retained_requested_storage_precredit_data(
-                                    scratch,
-                                    peer.registry.as_ref(),
-                                    peer.supervisor.as_ref(),
-                                    counter.remaining(),
-                                )?
-                                .complete_requested_bytes_precredit_data()?,
-                        )
+                        .add(report.complete_requested_bytes_precredit_data()?)
                         .map_err(storage_failure)?;
                 }
             } else if let HolderStoragePhase::RuntimeConstruction(scope) = phase {
