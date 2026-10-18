@@ -9319,7 +9319,7 @@ Resumed qualification:
   unchanged. Recovered-range reuse
   in another actual assembly, inline recovery sources, consumer leases and
   completed retirement remain required; no complete task is accepted.
-- Recovered-reassembly candidate `41c407d794`: a new native control attempts a
+- Recovered-reassembly candidate `41c407d794`: a new native control publishes a
   second sealed object from a genuine recovered manifest and one newly admitted
   nonfinal prefix, using the existing production source path. It checks every
   original pin, lease, reservation and residence plus the exact additional
@@ -9328,10 +9328,19 @@ Resumed qualification:
   sealed bytes with the original recovered body and actual retired prefix,
   including the original prefix inode and synchronized retirement registration.
   All five changed files are fixtures or supervisor code; production Rust,
-  interfaces, formats and dependencies remain unchanged. Source review and the
-  formatter pair pass. The direct Cargo build is waiting for the shared target
-  lock; independent hermetic image/native qualification is running. No new
-  native or full-task success is credited before those results complete.
+  interfaces, formats and dependencies remain unchanged. Source review, the
+  formatter pair, both direct builds and eight focused regressions pass. Strict
+  Clippy retains the same nineteen findings; the separate all-target diagnostic
+  passes without changing source lint policy. The actual ext4 component passes
+  the new recovered-reassembly control, all six held-policy recovered reads,
+  three intervening Running admissions, eight refusals without Resume and all
+  47 selected filesystem cases. Review verifies all 3,480 image inputs and the
+  actual unit ELF. All 118 filesystem cases also pass on this revision: the
+  exact actual results, 3,475 archive inputs and archive digest verify, with the
+  same six privileged cases separately inventoried. Required application target
+  compilation is running on this exact source. This qualifies the tested reuse
+  component only; recovered inline source pins, consumer leases, completed
+  retirement and full task acceptance remain pending.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
   and all seven strict Clippy/documentation profiles pass. The interface,
   commit-path, status and schema gates pass on unchanged final source, including
