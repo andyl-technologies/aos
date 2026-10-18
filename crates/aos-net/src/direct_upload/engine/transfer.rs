@@ -37,8 +37,8 @@ struct PartJob {
 /// most 32 requests, eight active bulk files, four parts per file, or 32 small
 /// metadata files. Caller orchestration streams subsequent batches and keeps
 /// final publication behind the server's authoritative graph/visibility barrier.
-/// `CompletingStaging` is pending server verification, while `StagedVerified`
-/// is verified but still cannot commit release visibility.
+/// `Freezing` and `CompletingStaging` remain pending server work, while
+/// `StagedVerified` is verified but still cannot commit release visibility.
 ///
 /// Checkpoint intents and grant ordinals are durable before remote effects.
 /// Content-bound UploadPart transport retry is separate from unknown provider
@@ -201,7 +201,10 @@ pub async fn upload_direct_batch<
         return Err(DirectClientError::Checkpoint);
     }
     for owner in &mut work {
-        if owner.status.state == DirectSessionState::CompletingStaging {
+        if matches!(
+            owner.status.state,
+            DirectSessionState::Freezing | DirectSessionState::CompletingStaging
+        ) {
             let original = store
                 .retained_complete(&owner.status.session)
                 .await?
@@ -209,7 +212,7 @@ pub async fn upload_direct_batch<
             if original.session != owner.status.session {
                 return Err(DirectClientError::Checkpoint);
             }
-            // A pending server hash has no new part work. The retained
+            // A pending completion has no new part work. The retained
             // manifest is checked again before replaying Complete below.
             owner.status.parts.clear();
             continue;
@@ -218,7 +221,12 @@ pub async fn upload_direct_batch<
     let originals: Vec<_> = work
         .iter()
         .zip(resumed)
-        .filter(|(owner, _)| owner.status.state != DirectSessionState::CompletingStaging)
+        .filter(|(owner, _)| {
+            !matches!(
+                owner.status.state,
+                DirectSessionState::Freezing | DirectSessionState::CompletingStaging
+            )
+        })
         .map(|(owner, resumed)| status::ReconcileItem {
             object: &owner.object,
             status: owner.status.clone(),
@@ -228,7 +236,10 @@ pub async fn upload_direct_batch<
     let reconciled = status::reconcile_batch(control, store, originals).await?;
     let mut reconciled = reconciled.into_iter();
     for owner in &mut work {
-        if owner.status.state != DirectSessionState::CompletingStaging {
+        if !matches!(
+            owner.status.state,
+            DirectSessionState::Freezing | DirectSessionState::CompletingStaging
+        ) {
             owner.status = reconciled.next().ok_or(DirectClientError::Invalid)?;
         }
     }
@@ -675,7 +686,8 @@ async fn finish_batch<C: DirectUploadControl, S: DirectCheckpointStore>(
             .map_err(|_| DirectClientError::Invalid)?;
         if !matches!(
             session.state,
-            DirectSessionState::CompletingStaging
+            DirectSessionState::Freezing
+                | DirectSessionState::CompletingStaging
                 | DirectSessionState::StagedVerified
                 | DirectSessionState::Committed
         ) {

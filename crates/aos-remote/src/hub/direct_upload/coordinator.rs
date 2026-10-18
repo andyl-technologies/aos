@@ -3,7 +3,7 @@
 //! The same coordinator and provider pool serve publication, cache and OCI
 //! adapters. Private staging may finish before the authoritative graph allows
 //! final promotion. Only actual Committed replies permit a caller's release
-//! visibility step; neither CompletingStaging nor StagedVerified satisfies it.
+//! visibility step; Freezing, CompletingStaging and StagedVerified remain pending.
 
 use std::fmt;
 use std::path::Path;
@@ -164,7 +164,7 @@ impl DirectUploadCoordinator {
 
     /// Stages at most64 admitted files in count/byte packed before-effect waves.
     ///
-    /// A returned CompletingStaging or StagedVerified state allows independent waves
+    /// A pending freeze, verification or verified stage allows independent waves
     /// to proceed. Call [`Self::finish`] after all files have been staged before
     /// any public root/channel/tag commit. No request uses a proxy body fallback.
     ///
@@ -279,7 +279,8 @@ impl DirectUploadCoordinator {
             if statuses.iter().any(|status| {
                 !matches!(
                     status.state,
-                    DirectSessionState::CompletingStaging
+                    DirectSessionState::Freezing
+                        | DirectSessionState::CompletingStaging
                         | DirectSessionState::StagedVerified
                         | DirectSessionState::Committed
                 )
@@ -414,7 +415,8 @@ impl DirectUploadCoordinator {
                             .map_err(|_| DirectClientError::Invalid)?;
                         match status.state {
                             DirectSessionState::Committed => {}
-                            DirectSessionState::CompletingStaging
+                            DirectSessionState::Freezing
+                            | DirectSessionState::CompletingStaging
                             | DirectSessionState::StagedVerified => pending = true,
                             _ => return Err(DirectClientError::Blocked),
                         }
@@ -745,8 +747,8 @@ mod pending_restart_tests {
         )
         .await
         .unwrap();
-        // Only the original Complete request may reach the Hub, twice: pending
-        // verification, then final committed evidence. No Begin/grant/body path.
+        // Only the original Complete request may reach the Hub: logical freeze,
+        // queued verification, then commit. No Begin/grant/body path.
         let worker = std::thread::spawn(move || {
             let expected_batch = DirectBatch {
                 operation_id: commitment(
@@ -758,6 +760,7 @@ mod pending_restart_tests {
             let expected_body = encode_direct_control(&expected_batch).unwrap();
             let mut captured = Vec::new();
             for state in [
+                DirectSessionState::Freezing,
                 DirectSessionState::CompletingStaging,
                 DirectSessionState::Committed,
             ] {
@@ -849,8 +852,8 @@ mod pending_restart_tests {
             .unwrap();
         second.finish(Duration::from_secs(5)).await.unwrap();
         let captured = worker.join().unwrap();
-        assert_eq!(captured.len(), 2);
-        assert_eq!(captured[0], captured[1]);
+        assert_eq!(captured.len(), 3);
+        assert!(captured.iter().all(|request| request == &captured[0]));
         drop(second);
         std::fs::remove_dir_all(directory).unwrap();
     }
