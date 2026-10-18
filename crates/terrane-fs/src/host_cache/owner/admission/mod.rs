@@ -369,12 +369,8 @@ mod tests {
                 Arc,
                 atomic::{AtomicBool, Ordering},
             },
-            task::{Context, Poll, Wake, Waker},
+            task::{Context, Poll, Waker},
         };
-        struct Noop;
-        impl Wake for Noop {
-            fn wake(self: Arc<Self>) {}
-        }
         let fault = Arc::new(AtomicBool::new(false));
         let started = Arc::new(AtomicBool::new(true));
         let actual = Arc::clone(&fault);
@@ -388,9 +384,9 @@ mod tests {
             };
             std::future::pending::<()>().await;
         });
-        let waker = Waker::from(Arc::new(Noop));
+        let waker = Waker::noop();
         assert!(matches!(
-            pending.as_mut().poll(&mut Context::from_waker(&waker)),
+            pending.as_mut().poll(&mut Context::from_waker(waker)),
             Poll::Pending
         ));
         assert!(!actual.load(Ordering::Acquire));

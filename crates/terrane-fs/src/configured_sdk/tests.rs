@@ -3,6 +3,8 @@
 //! These tests never install the irreversible filter. Actual single-process
 //! startup belongs to the explicitly invoked configured SDK example fixture.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::{
     error::Error as _,
     fs::{self, File},

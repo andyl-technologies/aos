@@ -1018,6 +1018,7 @@ fn invalid(error: impl std::fmt::Display) -> io::Error {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod snapshot_provenance_tests {
     use super::*;
 

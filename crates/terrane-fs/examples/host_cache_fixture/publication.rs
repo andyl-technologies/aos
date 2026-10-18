@@ -10,8 +10,7 @@ use std::{
     future::Future,
     io::{self, BufRead, Write},
     os::unix::fs::{FileExt, MetadataExt},
-    sync::Arc,
-    task::{Context, Poll, Wake, Waker},
+    task::{Context, Poll, Waker},
 };
 use terrane::{host::cache::CacheState, store::TokioLocalFs};
 use terrane_core::identity::{Descriptor, IdentityKind, TERRANE_V1};
@@ -101,18 +100,14 @@ fn cancelled(
     runtime: &tokio::runtime::Runtime,
     inputs: &Inputs,
 ) -> io::Result<()> {
-    struct Noop;
-    impl Wake for Noop {
-        fn wake(self: Arc<Self>) {}
-    }
     emit(
         "READY actual inline publication Resume acknowledged; wait for stopped-publisher control",
     )?;
     control("start")?;
     let mut pending = Box::pin(owner.publish_inline(descriptor()?, encoded()));
-    let waker = Waker::from(Arc::new(Noop));
+    let waker = Waker::noop();
     if !matches!(
-        pending.as_mut().poll(&mut Context::from_waker(&waker)),
+        pending.as_mut().poll(&mut Context::from_waker(waker)),
         Poll::Pending
     ) {
         return Err(invalid(

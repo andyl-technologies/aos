@@ -167,6 +167,7 @@ fn unresolved(message: &'static str) -> io::Error {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use terrane_core::chunking::ChunkProfile;

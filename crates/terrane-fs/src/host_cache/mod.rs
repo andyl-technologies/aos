@@ -260,6 +260,7 @@ fn open_directory_chain(path: &Path) -> io::Result<OwnedFd> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::open_directory_chain;
     use std::{fs, os::unix::fs::symlink, time::SystemTime};

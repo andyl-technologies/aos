@@ -1,5 +1,7 @@
 //! Exercises real Linux packet and ancillary custody independently of publication.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use super::super::wire::Operation;
 use super::*;
 use std::io::Write;

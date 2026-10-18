@@ -378,6 +378,7 @@ fn require_candidate_key(expected: &BodyKey, requested: &BodyKey) -> Result<(), 
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

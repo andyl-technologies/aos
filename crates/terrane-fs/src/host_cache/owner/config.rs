@@ -228,6 +228,7 @@ fn invalid(message: &'static str) -> io::Error {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::publisher_local::socket::RoleIdentities;

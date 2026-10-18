@@ -470,6 +470,7 @@ fn open_publication_state(root: &File) -> io::Result<File> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use terrane::config::host::{DomainDirectory, DomainPublisher, Publisher, Quota, Reassembly};

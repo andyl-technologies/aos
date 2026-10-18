@@ -93,6 +93,7 @@ pub(super) fn verify_removed(scratch: &RetainedScratch) -> io::Result<()> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

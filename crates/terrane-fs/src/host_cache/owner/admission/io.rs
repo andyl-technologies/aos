@@ -494,6 +494,7 @@ pub(super) fn verify_bytes(file: &File, bytes: &[u8]) -> io::Result<()> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use std::io::{Seek, SeekFrom};

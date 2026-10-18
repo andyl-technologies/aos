@@ -243,6 +243,7 @@ fn require_same_inode(expected: &Metadata, actual: &Metadata) -> io::Result<()> 
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use std::io::Read;

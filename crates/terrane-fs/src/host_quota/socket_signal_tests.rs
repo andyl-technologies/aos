@@ -1,5 +1,7 @@
 //! Isolates real signal interruptions of retained native seqpacket receives.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use super::*;
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
