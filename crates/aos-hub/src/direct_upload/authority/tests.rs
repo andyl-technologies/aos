@@ -311,6 +311,12 @@ async fn sixty_four_real_admissions_share_one_signed_discovery_and_new_invocatio
     );
     assert_eq!(reply.admissions.len(), 64);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_large_placement_reply_budget(&reply, &first.context, 4);
+    assert_large_placement_reply_budget(&reply, &first.context, MAX_DIRECT_PLACEMENTS);
+    let mut expected_budget = super::reply_budget::ReplyBudget::default();
+    for placement in &reply.admissions[0].placements {
+        expected_budget.include(placement, "deployment-1").unwrap();
+    }
     eprintln!(
         "64 production Native admissions: {:?}, signed profile requests: 1",
         started.elapsed()
@@ -390,5 +396,77 @@ async fn sixty_four_real_admissions_share_one_signed_discovery_and_new_invocatio
         .await
         .unwrap();
     assert_eq!(caps.minimum_object_bytes.get(), 0);
+    assert_eq!(
+        caps.maximum_batch_items,
+        expected_budget.maximum_items().unwrap()
+    );
     server.abort();
+}
+
+fn assert_large_placement_reply_budget(
+    original: &DirectUploadLogicalReply,
+    context: &DirectRequestContext,
+    placement_count: usize,
+) {
+    let deployment = &context.deployment_id;
+    let mut reply = original.clone();
+    for (admission, status) in reply.admissions.iter_mut().zip(&mut reply.sessions) {
+        let template = admission.placements[0].clone();
+        admission.placements.clear();
+        for index in 1..=placement_count {
+            let mut placement = template.clone();
+            placement.placement_id = WireInteger::new(index as u64);
+            placement.final_key = format!("objects/{}", "\"".repeat(1016));
+            for credential in [
+                &mut placement.write_credential,
+                &mut placement.read_credential,
+                &mut placement.presign_credential,
+            ] {
+                credential.credential_id = "credential".repeat(25);
+                credential.secret_version_ref = "version".repeat(36);
+            }
+            admission.placements.push(placement);
+        }
+        if let DirectUploadTarget::CacheObject { path, .. } = &mut admission.intent.target {
+            *path = "\"".repeat(1024);
+        }
+        admission.logical_fingerprint = admission.fingerprint(deployment).unwrap();
+        status.session.logical_fingerprint = admission.logical_fingerprint.clone();
+        status.intent = admission.intent.clone();
+        status.placements = admission
+            .placements
+            .iter()
+            .map(|placement| placement.public_ref(deployment).unwrap())
+            .collect();
+    }
+
+    assert!(reply.validate(deployment).is_err());
+    let mut budget = super::reply_budget::ReplyBudget::default();
+    for placement in &reply.admissions[0].placements {
+        budget.include(placement, deployment).unwrap();
+    }
+    let maximum = budget.maximum_items().unwrap() as usize;
+    assert!((1..MAX_DIRECT_BATCH_ITEMS).contains(&maximum));
+    if placement_count == 4 {
+        assert!(maximum >= 2);
+    }
+
+    reply.admissions.truncate(maximum);
+    reply.sessions.truncate(maximum);
+    reply.validate(deployment).unwrap();
+    let envelope = DirectLogicalReplyEnvelope {
+        context: context.clone(),
+        reply,
+    };
+    let key = StorageWorkKey::new([21; 32]).unwrap();
+    let signed = sign_direct_logical_reply(&key, &envelope).unwrap();
+    let verified = verify_direct_logical_reply(
+        &key,
+        &signed.signature,
+        &signed.body,
+        context,
+        context.issued_at.get(),
+    )
+    .unwrap();
+    assert_eq!(verified, envelope);
 }

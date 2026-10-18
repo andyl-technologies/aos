@@ -599,11 +599,13 @@ impl NativeDirectUploadAuthority {
             transfer_mode: DirectTransferMode::DirectRequired,
         };
         let mut public = Vec::new();
+        let mut reply_budget = super::reply_budget::ReplyBudget::default();
         let mut minimum_object_bytes = 0;
         for row in rows {
             let placement = self
                 .resolve_placement(&row, "nar/probe.nar", &probe, &profiles)
                 .await?;
+            reply_budget.include(&placement, &self.deployment)?;
             let selected = profiles
                 .iter()
                 .find(|profile| {
@@ -670,7 +672,7 @@ impl NativeDirectUploadAuthority {
             config_generation: WireInteger::new(u64::try_from(config_generation)?),
             valid_until: expiry,
             maximum_control_bytes: MAX_DIRECT_CONTROL_BYTES as u32,
-            maximum_batch_items: MAX_DIRECT_BATCH_ITEMS as u32,
+            maximum_batch_items: reply_budget.maximum_items()?,
             maximum_batch_parts: MAX_DIRECT_BATCH_PARTS as u32,
             minimum_object_bytes: WireInteger::new(minimum_object_bytes),
             maximum_object_bytes: WireInteger::new(

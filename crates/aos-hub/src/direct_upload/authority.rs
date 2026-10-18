@@ -20,6 +20,7 @@ use aos_hub_core::{
 use async_trait::async_trait;
 
 mod acceptance;
+mod reply_budget;
 mod targets;
 mod transport;
 
