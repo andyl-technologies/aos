@@ -9,11 +9,16 @@ This guide maps those surfaces and their support boundaries.
 
 | Crate | Owns | Use it when |
 |---|---|---|
-| `crucible` | Model types, canonical forms, scheduler contracts, stores, checkpoints, properties, traces | Building and validating scenarios or consuming typed execution data. |
-| `crucible-api` | Versioned lifecycle/control API, in-process and RPC clients, streaming, daemon server, operational contracts | Embedding sessions or writing a control-plane client. |
-| `crucible-daemon` | Production VM construction, runtime, checkpoints, and retained backend cleanup | Composing a local production backend for the generic lifecycle API. |
-| `crucible-qemu` | Production patched-QEMU lifecycle implementation | Normally reached through `crucible-daemon`; examples/gates may use it directly. |
-| `crucible-protocol` / `crucible-shmem` | Versioned process-boundary protocols | Infrastructure integration, not ordinary scenario authoring. |
+| `crucible-engine` | Model types, canonical forms, scheduler contracts, checkpoints, properties, traces | Building and validating scenarios or consuming typed execution data. |
+| `crucible-control-api` | Versioned lifecycle/control values, RPC encoding, shared streaming contracts | Sharing typed requests and responses across control transports. |
+| `crucible-control-client` | Control-client interface and RPC implementation | Writing a control-plane client. |
+| `crucible-control-server` | In-process clients, actor dispatch, streaming, HTTP/2 serving | Embedding sessions or implementing a control-plane service. |
+| `crucible-daemon` | Production VM construction, runtime, checkpoints, and retained backend cleanup | Composing production execution, restore, and retained-source ownership. |
+| `crucible-qemu-host` | Apache host-side patched-QEMU lifecycle adapter | Normally reached through the daemon; examples/gates may use it directly. |
+| `crucible-store` | Shared content-addressed DAG-store implementations | Sharing immutable execution artifacts and checkpoint material. |
+| `crucible-ram` | Logical RAM codecs, BLAKE3 Merkle identity, and write epochs | Sharing portable RAM identities and authenticated page state. |
+| `crucible-host-resources` | Host resource permits, operational supervision, and RAM placement policy | Composing admitted host RAM and paging resources. |
+| `crucible-qemu-protocol` / `crucible-qemu-shmem` | Versioned process-boundary protocols | Infrastructure integration, not ordinary scenario authoring. |
 
 Do not link QEMU implementation details into Apache-side model code. The Unix
 socket and shared-memory protocols are the only Crucible/QEMU integration
@@ -24,7 +29,7 @@ surfaces.
 Generate canonical TOML rather than hand-maintaining derived hashes:
 
 ```rust,no_run
-use crucible::model::{Plan, Properties, ScenarioDefForm, Seed, World};
+use crucible_engine::model::{Plan, Properties, ScenarioDefForm, Seed, World};
 
 # fn build_world() -> Result<World, Box<dyn std::error::Error>> { todo!() }
 # fn build_plan(world: &World) -> Result<Plan, Box<dyn std::error::Error>> { todo!() }
@@ -164,7 +169,7 @@ source and provide the same store to the production lifecycle. See
 
 ## Integration checklist
 
-1. Keep scenario construction in `crucible` model types and serialize through
+1. Keep scenario construction in `crucible-engine` model types and serialize through
    canonical forms.
 2. Resolve fault plans against the exact admitted World.
 3. Supply complete world/signal object closures through lifecycle config.

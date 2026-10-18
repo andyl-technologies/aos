@@ -2,10 +2,11 @@
   pkgs,
   lib,
 }: let
+  inherit (import ./_workspace-packages.nix {inherit lib;}) packageDir packageNames cruciblePackages;
   root = ../..;
   cratesDir = ../../crates;
   defaultNix = builtins.readFile ./default.nix;
-  hygieneRust = builtins.readFile ../../crates/crucible-harness/tests/engineering_hygiene.rs;
+  hygieneRust = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/engineering_hygiene.rs;
   hygieneBaselineText = builtins.readFile ./engineering-hygiene-baseline.txt;
 
   responsibilityReviewThreshold = 1000;
@@ -13,29 +14,7 @@
   legacyShapeLineStaleThreshold = 600;
   cohesionNotRequired = "threshold-not-reached";
 
-  cruciblePackages = [
-    "crucible-sim"
-    "crucible-assert"
-    "crucible-shmem"
-    "crucible-protocol"
-    "crucible-ram"
-    "crucible-device"
-    "crucible-qemu"
-    "crucible-qemu-plugin"
-    "crucible-debug-gateway"
-    "crucible-guest"
-    "crucible-cas"
-    "crucible-campaign"
-    "crucible-linux-resource"
-    "crucible-s3-store"
-    "crucible"
-    "crucible-session"
-    "crucible-api"
-    "crucible-daemon"
-    "crucible-cli"
-    "crucible-harness"
-  ];
-  qemuBoundaryPackages = ["crucible-debug-gateway" "crucible-daemon" "crucible-qemu" "crucible-qemu-plugin"];
+  qemuBoundaryPackages = ["crucible-qemu-debug-gateway" "crucible-daemon" "crucible-qemu-host" "crucible-qemu-plugin"];
   qemuSpecificTokens = [
     "qemu"
     "Qemu"
@@ -555,12 +534,12 @@
     qemuManifestDebt;
 
   packageSourceFailures = package: let
-    files = rustFilesUnder "crates/${package}";
-    implementationFiles = rustFilesUnder "crates/${package}/src";
+    files = rustFilesUnder (lib.removePrefix "${toString root}/" (toString (packageDir package)));
+    implementationFiles = rustFilesUnder (lib.removePrefix "${toString root}/" ((toString (packageDir package)) + "/src"));
   in
     lib.concatMap sourceShapeFailures files
     ++ lib.concatMap (qemuBoundaryFailuresFor package) implementationFiles
-    ++ qemuManifestFailuresFor package "crates/${package}/Cargo.toml";
+    ++ qemuManifestFailuresFor package (lib.removePrefix "${toString root}/" ((toString (packageDir package)) + "/Cargo.toml"));
 
   commitRuleFailures = standards:
     lib.concatMap (
@@ -718,7 +697,7 @@
   qemuManifestRegressionFailures = let
     rootManifest = ''
       [dependencies]
-      vm_driver = { package = "crucible-qemu", path = "../crucible-qemu" }
+      vm_driver = { package = "crucible-qemu-host", path = "../crucible-qemu" }
     '';
 
     targetManifest = ''
@@ -727,7 +706,7 @@
     '';
     rootRejected = qemuManifestFailuresForContent "crucible-session" "Cargo.toml" rootManifest;
     targetRejected = qemuManifestFailuresForContent "crucible-session" "Cargo.toml" targetManifest;
-    allowed = qemuManifestFailuresForContent "crucible-qemu" "Cargo.toml" targetManifest;
+    allowed = qemuManifestFailuresForContent "crucible-qemu-host" "Cargo.toml" targetManifest;
   in
     lib.optionals (!(builtins.any (finding: hasInfix "QEMU boundary dependency" finding) rootRejected)) [
       "manifest regression: renamed root QEMU dependency should be rejected"

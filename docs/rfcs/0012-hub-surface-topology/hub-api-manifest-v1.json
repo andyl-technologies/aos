@@ -3159,7 +3159,7 @@
       "response_field" : "next_page_token"
    },
    "protobuf_package" : "aos.hub.v1",
-   "protobuf_source" : "crates/aos-proto/src/proto/aos/hub/v1/hub.proto",
+   "protobuf_source" : "crates/aos/packages/aos-build-api/src/proto/aos/hub/v1/hub.proto",
    "rpc_count" : 339,
    "services" : [
       "RegistryService",

@@ -10,10 +10,10 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   simBackend = import ./_crucible-local-and-test-backends-source.nix;
-  crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
-  pluginManifest = builtins.readFile ../../crates/crucible-qemu-plugin/Cargo.toml;
-  pluginNetworkRx = builtins.readFile ../../crates/crucible-qemu-plugin/src/network_rx.rs;
-  pluginNetworkTx = builtins.readFile ../../crates/crucible-qemu-plugin/src/network_tx.rs;
+  crateRoot = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/lib.rs;
+  pluginManifest = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/Cargo.toml;
+  pluginNetworkRx = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/network_rx.rs;
+  pluginNetworkTx = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/network_tx.rs;
   pluginTimeControl = import ./_qemu-plugin-time-control-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
   harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
@@ -27,13 +27,13 @@
         needle = "Completed by `checks.crucible.phase1.hostObservableSchedule`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" crateRoot [
       {
         label = "host schedule event export";
         needle = "SimDoubleHostScheduleEvent";
       }
     ]
-    ++ failuresFor "crates/crucible/src/sim_backend.rs" simBackend [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/sim_backend.rs" simBackend [
       {
         label = "host schedule event type";
         needle = "pub enum SimDoubleHostScheduleEvent";
@@ -91,17 +91,17 @@
         needle = "sim_double_rejects_outbound_sequence_overflow_like_real_plugin_tx";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/Cargo.toml" pluginManifest [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/Cargo.toml" pluginManifest [
       {
         label = "test-only layer exception comment";
         needle = "Test-only HARN-16 cross-check: production plugin dependencies stay L1-only.";
       }
       {
         label = "test-only crucible dependency";
-        needle = "crucible = { path = \"../crucible\", features = [\"test-double\", \"test-support\"] }";
+        needle = "crucible-engine = { path = \"../../engine/crucible-engine\", features = [\"test-double\", \"test-support\"] }";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/network_rx.rs" pluginNetworkRx [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/network_rx.rs" pluginNetworkRx [
       {
         label = "focused HARN-16 cross-check test";
         needle = "host_observable_schedule_cross_checks_sim_double_against_plugin_projection";
@@ -171,7 +171,7 @@
         needle = "SimDoubleHostScheduleEvent";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/network_tx.rs" pluginNetworkTx [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/network_tx.rs" pluginNetworkTx [
       {
         label = "safe TX callback body";
         needle = "pub fn handle_network_tx_callback";
@@ -181,7 +181,7 @@
         needle = "pub struct NetworkTxEnqueue";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/time_control.rs" pluginTimeControl [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/time_control.rs" pluginTimeControl [
       {
         label = "plugin virtual clock";
         needle = "pub struct PluginVirtualClock";
@@ -214,8 +214,11 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps =
         [
+          pkgs.sqlite
           pkgs.coreutils
           pkgs.rust
           pkgs.sed
@@ -270,7 +273,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-host-observable-schedule-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --features test-double \
               --lib \
               sim_double_ \

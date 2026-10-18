@@ -12,9 +12,9 @@
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = import ./_cli-source.nix {inherit lib;};
-  cliManifest = builtins.readFile ../../crates/crucible-cli/Cargo.toml;
-  cliHelpTests = builtins.readFile ../../crates/crucible-cli/tests/help_surface.rs;
-  machineReadableTests = builtins.readFile ../../crates/crucible-cli/tests/machine_readable.rs;
+  cliManifest = builtins.readFile ../../crates/crucible/control/crucible-cli/Cargo.toml;
+  cliHelpTests = builtins.readFile ../../crates/crucible/control/crucible-cli/tests/help_surface.rs;
+  machineReadableTests = builtins.readFile ../../crates/crucible/control/crucible-cli/tests/machine_readable.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -39,7 +39,7 @@
         needle = "`T-CLI-3` is green through `checks.crucible.phase5.cliBackendSelection`";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/Cargo.toml" cliManifest [
+    ++ failuresFor "crates/crucible/control/crucible-cli/Cargo.toml" cliManifest [
       {
         label = "production-default feature set";
         needle = "default = []";
@@ -53,7 +53,7 @@
         needle = ''required-features = ["test-double"]'';
       }
     ]
-    ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
+    ++ failuresFor "crates/crucible/control/crucible-cli/src/main.rs" cliMain [
       {
         label = "double backend compile-time gate";
         needle = ''#[cfg(any(test, feature = "test-double"))]'';
@@ -255,7 +255,7 @@
         needle = "cli_backend_selection_rejects_daemon_on_serve";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/tests/help_surface.rs" cliHelpTests [
+    ++ failuresFor "crates/crucible/control/crucible-cli/tests/help_surface.rs" cliHelpTests [
       {
         label = "production double rejection regression";
         needle = "cli_production_build_rejects_the_test_double_backend";
@@ -271,7 +271,7 @@
         needle = "cliBackendSelection = import ./phase5-cli-backend-selection.nix";
       }
     ]
-    ++ forbiddenFor "crates/crucible-cli/src/main.rs" cliMain [
+    ++ forbiddenFor "crates/crucible/control/crucible-cli/src/main.rs" cliMain [
       {
         label = "host PATH QEMU discovery";
         needle = "std::env::var(\"PATH\")";
@@ -289,13 +289,13 @@
         needle = "CRUCIBLE_TEST_SKIP_LIVE_QEMU_PROBE";
       }
     ]
-    ++ forbiddenFor "crates/crucible-cli/tests/machine_readable.rs" machineReadableTests [
+    ++ forbiddenFor "crates/crucible/control/crucible-cli/tests/machine_readable.rs" machineReadableTests [
       {
         label = "live-QEMU probe environment bypass";
         needle = "CRUCIBLE_TEST_SKIP_LIVE_QEMU_PROBE";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
+    ++ failuresFor "crates/crucible/control/crucible-cli/src/main.rs" cliMain [
       {
         label = "ELF dynamic-symbol parser";
         needle = "fn defined_global_dynamic_symbols(";

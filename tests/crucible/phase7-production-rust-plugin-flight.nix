@@ -87,32 +87,32 @@
           sed "s|@vendor@|${cargoDeps}|g" \
             "${cargoDeps}/.cargo/config.toml" > .cargo/config.toml
           test "$(${pkgs.grep}/bin/grep -Fxc '        .with_console_capture()' \
-            crates/crucible-daemon/src/packaged_qemu_executor/native_plugin_flight/driver.rs)" -eq 1
+            crates/crucible/control/crucible-daemon/src/packaged_qemu_executor/native_plugin_flight/driver.rs)" -eq 1
           cargo test --frozen --offline \
             --manifest-path crates/Cargo.toml \
             --target-dir "$TMPDIR/target" \
-            -p crucible-daemon --lib \
+            -p crucible-daemon --features private-measurement-domain --lib \
             plugin_flight
           cargo test --frozen --offline \
             --manifest-path crates/Cargo.toml \
             --target-dir "$TMPDIR/target" \
-            -p crucible-qemu --lib \
+            -p crucible-qemu-host --lib \
             spawn::tests::streamed_runtime_trace_rejects_replacement_oversize_and_partial_reads
           cargo test --frozen --offline \
             --manifest-path crates/Cargo.toml \
             --target-dir "$TMPDIR/target" \
-            -p crucible-qemu --lib \
+            -p crucible-qemu-host --lib \
             runtime_trace_budget_rejects_unbounded_or_empty_admission
           cargo test --frozen --offline \
             --manifest-path crates/Cargo.toml \
             --target-dir "$TMPDIR/target" \
-            -p crucible-qemu --lib \
+            -p crucible-qemu-host --lib \
             supervision::runtime_determinism_trace::tests
           cargo test --frozen --offline --release --no-run \
             --message-format=json-render-diagnostics \
             --manifest-path crates/Cargo.toml \
             --target-dir "$TMPDIR/target" \
-            -p crucible-daemon --lib > "$TMPDIR/daemon-messages.jsonl"
+            -p crucible-daemon --features private-measurement-domain --lib > "$TMPDIR/daemon-messages.jsonl"
           daemon_test=$(jq -r \
             'select(.reason == "compiler-artifact" and .target.name == "crucible_daemon" and .profile.test == true and .executable != null) | .executable' \
             "$TMPDIR/daemon-messages.jsonl")

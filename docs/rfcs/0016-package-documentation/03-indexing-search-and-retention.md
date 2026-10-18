@@ -2,10 +2,13 @@
 
 ## Shared ingestion path
 
-Documentation indexing belongs in `aos-hub-core`, beside signed registry
+Documentation indexing belongs in `aos-hub-service`, beside signed registry
 indexing. Native Hub supplies filesystem/S3-compatible surface readers and SQL
 backends; Worker supplies R2/S3-compatible readers and D1. All semantic work is
-shared and `wasm32` clean.
+shared and `wasm32` clean. Portable Hub policy values are owned by
+`aos-hub-model`; database projections, migrations, and queries are owned by
+`aos-hub-db`. Service indexing orchestrates these boundaries rather than
+placing application logic in the storage layer.
 
 For each signed platform entry with documentation, the indexer:
 

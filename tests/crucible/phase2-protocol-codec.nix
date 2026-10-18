@@ -8,12 +8,12 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   protocolLib = builtins.concatStringsSep "\n" (map builtins.readFile [
-    ../../crates/crucible-protocol/src/lib.rs
-    ../../crates/crucible-protocol/src/plugin_observation.rs
-    ../../crates/crucible-protocol/src/control_lifecycle.rs
+    ../../crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs
+    ../../crates/crucible/protocol/crucible-qemu-protocol/src/plugin_observation.rs
+    ../../crates/crucible/protocol/crucible-qemu-protocol/src/control_lifecycle.rs
   ]);
-  codecTest = builtins.readFile ../../crates/crucible-protocol/tests/codec.rs;
-  protocolAbiGate = builtins.readFile ../../crates/crucible-protocol/tests/gate_abi_conformance.rs;
+  codecTest = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-protocol/tests/codec.rs;
+  protocolAbiGate = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-protocol/tests/gate_abi_conformance.rs;
   protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -22,7 +22,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "crates/crucible-protocol/src/lib.rs" protocolLib [
+    failuresFor "crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs" protocolLib [
       {
         label = "plugin message enum";
         needle = "pub enum PluginMsg";
@@ -100,7 +100,7 @@
         needle = "if length > MAX_FRAME_SIZE";
       }
     ]
-    ++ failuresFor "crates/crucible-protocol/tests/codec.rs" codecTest [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-protocol/tests/codec.rs" codecTest [
       {
         label = "plugin message round trip";
         needle = "plugin_messages_round_trip_through_big_endian_frames";
@@ -134,7 +134,7 @@
         needle = "frame_read_helper_preserves_prefix_and_length_contract";
       }
     ]
-    ++ failuresFor "crates/crucible-protocol/tests/gate_abi_conformance.rs" protocolAbiGate [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-protocol/tests/gate_abi_conformance.rs" protocolAbiGate [
       {
         label = "canonical protocol ABI gate implemented";
         needle = "protocol_golden_vectors_match_live_codec_bytes";
@@ -213,7 +213,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-protocol-codec-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible-protocol \
+              -p crucible-qemu-protocol \
               --test codec \
               -- --test-threads=1
           '';
@@ -228,7 +228,7 @@ in
             check=${attrPath}
             tasks=${taskList}
             gate=gate:abi-conformance
-            rust_tests=crucible-protocol::codec
+            rust_tests=crucible_qemu_protocol::codec
             codec=pure-owned-buffer
             frame_io=read-write-helpers
             typed_errors=empty,unknown-tag,short-payload,long-payload,oversize-length,truncated-prefix,truncated-payload

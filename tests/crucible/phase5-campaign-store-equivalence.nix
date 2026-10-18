@@ -357,7 +357,7 @@ in
             --offline \
             --target-dir "$target" \
             --manifest-path crates/Cargo.toml \
-            -p crucible-cas \
+            -p crucible-store \
             --features test-support \
             --test gate_campaign_store_equivalence \
             -- --test-threads=1
@@ -369,7 +369,7 @@ in
             --offline \
             --target-dir "$target" \
             --manifest-path crates/Cargo.toml \
-            -p crucible-cas \
+            -p crucible-store \
             --lib content_store::s3 \
             -- --list)
           for expected_test in \
@@ -383,7 +383,7 @@ in
             --offline \
             --target-dir "$target" \
             --manifest-path crates/Cargo.toml \
-            -p crucible-cas \
+            -p crucible-store \
             --lib content_store::s3 \
             -- --test-threads=1
 
@@ -407,7 +407,7 @@ in
             --offline \
             --target-dir "$target" \
             --manifest-path crates/Cargo.toml \
-            -p crucible-s3-store \
+            -p crucible-store-s3 \
             --test live_conformance \
             -- --ignored --test-threads=1
 

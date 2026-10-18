@@ -6,10 +6,10 @@
   openTaskIds ? [],
 }: let
   root = ../..;
-  decisionRust = builtins.readFile ../../crates/crucible/src/decision.rs;
+  decisionRust = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/decision.rs;
   modelRust = import ./_crucible-model-source.nix {inherit lib;};
-  libRust = builtins.readFile ../../crates/crucible/src/lib.rs;
-  manifest = builtins.readFile ../../crates/crucible/Cargo.toml;
+  libRust = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/lib.rs;
+  manifest = builtins.readFile ../../crates/crucible/engine/crucible-engine/Cargo.toml;
   determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
   executionModel = builtins.readFile ../../docs/rfcs/0010-crucible/05-execution-model.md;
   patternsAndSketches = builtins.readFile ../../docs/rfcs/0010-crucible/29-patterns-and-sketches.md;
@@ -36,7 +36,7 @@
 
   engineCode = builtins.concatStringsSep "\n" (
     map (relative: builtins.readFile (root + "/${relative}"))
-    (rustFilesUnder "crates/crucible/src")
+    (rustFilesUnder "crates/crucible/engine/crucible-engine/src")
   );
   scrubLintVocabulary = content:
     builtins.replaceStrings
@@ -71,32 +71,32 @@
       in
         # This map is a pre-reserved identity-to-slot lookup; canonical order
         # remains in the separately owned target vector.
-        if relative == "crates/crucible/src/exact_checkpoint.rs"
+        if relative == "crates/crucible/engine/crucible-engine/src/exact_checkpoint.rs"
         then scrubExactCheckpointLookup content
         else if
           relative
-          == "crates/crucible/src/trigger.rs"
-          || lib.hasPrefix "crates/crucible/src/trigger/" relative
+          == "crates/crucible/engine/crucible-engine/src/trigger.rs"
+          || lib.hasPrefix "crates/crucible/engine/crucible-engine/src/trigger/" relative
         then scrubLintVocabulary content
         else content
     )
-    (rustFilesUnder "crates/crucible/src")
+    (rustFilesUnder "crates/crucible/engine/crucible-engine/src")
   );
   engineCodeOutsideDecision = builtins.concatStringsSep "\n" (
     map (relative: builtins.readFile (root + "/${relative}"))
     (builtins.filter (
         relative:
           relative
-          != "crates/crucible/src/decision.rs"
-          && !(lib.hasPrefix "crates/crucible/src/decision/" relative)
-          && relative != "crates/crucible/src/model.rs"
-          && !(lib.hasPrefix "crates/crucible/src/model/" relative)
+          != "crates/crucible/engine/crucible-engine/src/decision.rs"
+          && !(lib.hasPrefix "crates/crucible/engine/crucible-engine/src/decision/" relative)
+          && relative != "crates/crucible/engine/crucible-engine/src/model.rs"
+          && !(lib.hasPrefix "crates/crucible/engine/crucible-engine/src/model/" relative)
       )
-      (rustFilesUnder "crates/crucible/src"))
+      (rustFilesUnder "crates/crucible/engine/crucible-engine/src"))
   );
 
   failures =
-    failuresFor "crates/crucible/src/decision.rs" decisionRust [
+    failuresFor "crates/crucible/engine/crucible-engine/src/decision.rs" decisionRust [
       {
         label = "decision recorder type";
         needle = "pub struct DecisionRecorder";
@@ -170,7 +170,7 @@
         needle = "fork_in_domain(&stream.domain, &stream.name)";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs and fragments" modelRust [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs and fragments" modelRust [
       {
         label = "parent-bound selectable preemption producer";
         needle = "pub fn preemption_branch_choices";
@@ -216,7 +216,7 @@
         needle = "DECISION_RNG_LINK_STREAM_DOMAIN";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libRust [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" libRust [
       {
         label = "decision module";
         needle = "pub mod decision;";
@@ -226,10 +226,10 @@
         needle = "DecisionRecordError, DecisionRecorder,";
       }
     ]
-    ++ failuresFor "crates/crucible/Cargo.toml" manifest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/Cargo.toml" manifest [
       {
         label = "engine depends on deterministic L0 primitives";
-        needle = "crucible-sim = { path = \"../crucible-sim\" }";
+        needle = "crucible-determinism = { path = \"../crucible-determinism\" }";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
@@ -243,7 +243,7 @@
     ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsAndSketches [
       {
         label = "T-PAT-5 completion names decision recorder";
-        needle = "`crucible::decision::DecisionRecorder`";
+        needle = "`crucible_engine::decision::DecisionRecorder`";
       }
       {
         label = "T-PAT-5 completion names RngStreamId";
@@ -264,7 +264,7 @@
         needle = "decisionRecording = import ./phase1-decision-recording.nix";
       }
     ]
-    ++ forbiddenFor "crates/crucible/src outside lint vocabulary" engineCodeOutsideLintVocabulary [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/src outside lint vocabulary" engineCodeOutsideLintVocabulary [
       {
         label = "ambient rand crate use";
         needle = "rand::";
@@ -298,10 +298,10 @@
         needle = "HashMap";
       }
     ]
-    ++ forbiddenFor "crates/crucible/src outside decision module" engineCodeOutsideDecision [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/src outside decision module" engineCodeOutsideDecision [
       {
         label = "direct decision RNG import outside recorder";
-        needle = "use crucible_sim::DecisionRng";
+        needle = "use crucible_determinism::DecisionRng";
       }
       {
         label = "direct decision RNG grouped import outside recorder";
@@ -347,7 +347,7 @@ in
             evidence_scope=decision-recorder-model
             crate=crucible
             recorder=DecisionRecorder
-            rng_source=crucible-sim::DecisionRng
+            rng_source=crucible_determinism::DecisionRng
             app_random_source=single-seeded-decision-rng
             app_random_stream_fork=per-node-stream-name
             app_random_records=RngDraw+Selection

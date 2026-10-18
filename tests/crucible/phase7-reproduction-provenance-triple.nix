@@ -5,12 +5,12 @@
   taskIds ? ["T-PKG-20"],
 }: let
   packagingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/26-packaging-aos-integration.md;
-  reproduction = builtins.readFile ../../crates/crucible-harness/src/reproduction.rs;
-  e2e = builtins.readFile ../../crates/crucible-harness/src/e2e.rs;
-  replayOracle = builtins.readFile ../../crates/crucible-harness/src/replay_oracle.rs;
-  replayOracleGate = builtins.readFile ../../crates/crucible/tests/gate_replay_oracle.rs;
+  reproduction = builtins.readFile ../../crates/crucible/testing/crucible-test-support/src/reproduction.rs;
+  e2e = builtins.readFile ../../crates/crucible/testing/crucible-test-support/src/e2e.rs;
+  replayOracle = builtins.readFile ../../crates/crucible/testing/crucible-test-support/src/replay_oracle.rs;
+  replayOracleGate = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/gate_replay_oracle.rs;
   cliMain = import ./_cli-source.nix {inherit lib;};
-  cliManifest = builtins.readFile ../../crates/crucible-cli/Cargo.toml;
+  cliManifest = builtins.readFile ../../crates/crucible/control/crucible-cli/Cargo.toml;
   cliManifestToml = builtins.fromTOML cliManifest;
   cliRuntimeDependencyTables =
     [
@@ -26,29 +26,29 @@
   cliDevDependencies = cliManifestToml."dev-dependencies" or {};
   cliRuntimeProtocolBypasses =
     builtins.filter (
-      table: builtins.hasAttr "crucible-protocol" table.dependencies
+      table: builtins.hasAttr "crucible-qemu-protocol" table.dependencies
     )
     cliRuntimeDependencyTables;
   cliManifestDependencyFailures =
     lib.optional
-    (!(builtins.hasAttr "crucible-api" cliManifestToml.dependencies))
-    "crates/crucible-cli/Cargo.toml: missing CLI control-plane API dependency"
+    (!(builtins.hasAttr "crucible-control-api" cliManifestToml.dependencies))
+    "crates/crucible/control/crucible-cli/Cargo.toml: missing CLI control-plane API dependency"
     ++ lib.optional
-    (!(builtins.hasAttr "crucible-protocol" cliDevDependencies))
-    "crates/crucible-cli/Cargo.toml: missing black-box guest protocol fixture dev dependency"
+    (!(builtins.hasAttr "crucible-qemu-protocol" cliDevDependencies))
+    "crates/crucible/control/crucible-cli/Cargo.toml: missing black-box guest protocol fixture dev dependency"
     ++ map (
-      table: "crates/crucible-cli/Cargo.toml ${table.scope}: forbidden production CLI bypass of the API protocol re-export"
+      table: "crates/crucible/control/crucible-cli/Cargo.toml ${table.scope}: forbidden production CLI bypass of the API protocol re-export"
     )
     cliRuntimeProtocolBypasses;
   defaultChecks = builtins.readFile ./default.nix;
   gateCiWiring = builtins.readFile ./phase7-crucible-gate-ci-wiring.nix;
   releaseManifestGate = builtins.readFile ./phase7-crucible-release-manifest.nix;
   protocolLib = builtins.concatStringsSep "\n" (map builtins.readFile [
-    ../../crates/crucible-protocol/src/lib.rs
-    ../../crates/crucible-protocol/src/plugin_observation.rs
-    ../../crates/crucible-protocol/src/control_lifecycle.rs
+    ../../crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs
+    ../../crates/crucible/protocol/crucible-qemu-protocol/src/plugin_observation.rs
+    ../../crates/crucible/protocol/crucible-qemu-protocol/src/control_lifecycle.rs
   ]);
-  apiRpcAbi = builtins.readFile ../../crates/crucible-api/src/rpc_abi.rs;
+  apiRpcAbi = builtins.readFile ../../crates/crucible/control/crucible-control-api/src/rpc_abi.rs;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
@@ -89,7 +89,7 @@
     ]
     ++ forbiddenFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
     ]
-    ++ failuresFor "crates/crucible-harness/src/reproduction.rs" reproduction [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/src/reproduction.rs" reproduction [
       {
         label = "current reproduction schema";
         needle = "pub const REPRODUCTION_ARTIFACT_SCHEMA: &str = \"crucible.reproduction-artifact.v4\";";
@@ -143,7 +143,7 @@
         needle = "qemu_atomic_patch_hash: source.qemu_atomic_patch_hash.clone()";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/src/e2e.rs" e2e [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/src/e2e.rs" e2e [
       {
         label = "mock e2e Crucible version identity";
         needle = "pub crucible_version: String";
@@ -162,7 +162,7 @@
       }
       {
         label = "mock e2e canonical shmem ABI declaration";
-        needle = "pub const CANONICAL_SHMEM_ABI_VERSION: u32 = include!(\"../../crucible-shmem/src/abi_version.in\")";
+        needle = "pub const CANONICAL_SHMEM_ABI_VERSION: u32 =\n    include!(\"../../../protocol/crucible-qemu-shmem/src/abi_version.in\")";
       }
       {
         label = "mock e2e guest-host ABI source";
@@ -197,7 +197,7 @@
         needle = "CanonicalField::Str(&self.build_identity.plugin_abi)";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/src/replay_oracle.rs" replayOracle [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/src/replay_oracle.rs" replayOracle [
       {
         label = "replay-oracle Crucible version identity";
         needle = "pub crucible_version: String";
@@ -239,18 +239,18 @@
         needle = "reproduction_artifact_round_trip_rejects_plugin_identity_mismatch";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/gate_replay_oracle.rs" replayOracleGate [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/gate_replay_oracle.rs" replayOracleGate [
       {
         label = "engine replay-oracle Crucible version source";
         needle = "crucible_version: env!(\"CARGO_PKG_VERSION\").to_string()";
       }
       {
         label = "engine replay-oracle shmem ABI source";
-        needle = "shmem_abi_version: crucible_shmem::ABI_VERSION.to_string()";
+        needle = "shmem_abi_version: crucible_qemu_shmem::ABI_VERSION.to_string()";
       }
       {
         label = "engine replay-oracle guest-host ABI source";
-        needle = "guest_host_protocol_version: crucible_protocol::CONTROL_PROTOCOL_VERSION.to_string()";
+        needle = "guest_host_protocol_version: crucible_qemu_protocol::CONTROL_PROTOCOL_VERSION.to_string()";
       }
       {
         label = "engine replay-oracle RPC ABI source";
@@ -262,7 +262,7 @@
       }
     ]
     ++ cliManifestDependencyFailures
-    ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
+    ++ failuresFor "crates/crucible/control/crucible-cli/src/main.rs" cliMain [
       {
         label = "CLI current reproduction schema";
         needle = "const REPRODUCTION_ARTIFACT_SCHEMA: &str = \"crucible.reproduction-artifact.v4\";";
@@ -278,8 +278,12 @@
         needle = "RPC_PROTOCOL_BUILD, RPC_PROTOCOL_MAJOR,";
       }
       {
-        label = "CLI reads RPC ABI patch constants";
-        needle = "RPC_PROTOCOL_MINOR, RPC_PROTOCOL_PATCH";
+        label = "CLI reads RPC ABI minor constant";
+        needle = "RPC_PROTOCOL_MINOR,";
+      }
+      {
+        label = "CLI reads RPC ABI patch constant";
+        needle = "RPC_PROTOCOL_PATCH,";
       }
       {
         label = "CLI identity carries QEMU atomic-patch hash";

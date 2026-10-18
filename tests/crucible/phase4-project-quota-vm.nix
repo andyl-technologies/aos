@@ -29,9 +29,13 @@
           sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" > .cargo/config.toml
           cargo build --frozen --offline --release \
             --manifest-path crates/Cargo.toml --target-dir "$TMPDIR/target" \
-            -p crucible-linux-resource --example project-quota-flight
+            -p aos-linux-project-quota --example project-quota-flight
+          cargo build --frozen --offline --release \
+            --manifest-path crates/Cargo.toml --target-dir "$TMPDIR/target" \
+            -p crucible-host-resources --example persistent-quota-flight
           mkdir -p "$out/bin"
           cp "$TMPDIR/target/release/examples/project-quota-flight" "$out/bin/"
+          cp "$TMPDIR/target/release/examples/persistent-quota-flight" "$out/bin/"
         '';
       }
     ];
@@ -61,6 +65,8 @@ in
       ${pkgs.util-linux}/bin/mount -o loop,prjquota /tmp/quota.img /tmp/quota-root
       ${pkgs.coreutils}/bin/timeout -k 5 60 \
         ${probe}/bin/project-quota-flight /tmp/quota-root ${pkgs.e2fsprogs}/bin/chattr > /tmp/quota-result
+      ${pkgs.coreutils}/bin/timeout -k 5 60 \
+        ${probe}/bin/persistent-quota-flight /tmp/quota-root ${pkgs.e2fsprogs}/bin/chattr >> /tmp/quota-result
       cat /tmp/quota-result
       grep -Fxq PASS /tmp/quota-result
       grep -Fxq bytes_quota_enforced=true /tmp/quota-result

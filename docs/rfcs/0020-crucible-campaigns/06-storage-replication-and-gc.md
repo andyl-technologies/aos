@@ -490,7 +490,7 @@ terminal generation can participate in global-GC root planning and apply. It
 does not itself grant committed-object inventory or deletion for the S3 blob
 leaf; that authority is the separate boundary above.
 
-The concrete `crucible-s3-store` AWS SDK adapter owns a command queue of 1
+The concrete `crucible-store-s3` AWS SDK adapter owns a command queue of 1
 through 1,024 entries, an active-operation ceiling of 1 through 64, an
 aggregate queued-plus-active command budget of 128 MiB through 1 GiB, and a
 dedicated runtime. Each admitted command has one absolute 100 ms through one
@@ -517,7 +517,7 @@ no object. For refs it proves ordered pagination, exact stale-CAS diagnostics,
 complete fenced inventory, and same-value ABA generation change. Backend-
 specific tests add filesystem interruption/corruption and S3 multipart,
 credential, provider-page, deadline, and conditional-operation failures.
-`crucible-s3-store` also exposes an ignored, environment-gated live-service
+`crucible-store-s3` also exposes an ignored, environment-gated live-service
 test that runs these exact blob/admin and ref/admin routines through the AWS SDK
 adapter. It requires an exclusively owned, unversioned bucket with no retained
 versions or outside writers, standard AWS credential-chain configuration,
@@ -527,7 +527,7 @@ removes it after success:
 
 ```text
 nix develop -c cargo test --manifest-path crates/Cargo.toml \
-  -p crucible-s3-store --test live_conformance \
+  -p crucible-store-s3 --test live_conformance \
   -- --ignored --exact live_s3_service_passes_blob_and_ref_conformance
 ```
 

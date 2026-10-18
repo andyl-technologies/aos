@@ -55,7 +55,7 @@ in
 
             cargo test --frozen --offline --manifest-path crates/Cargo.toml \
               --target-dir "$TMPDIR/campaign-rfc-traceability-target" \
-              -p crucible-harness --test campaign_gate_traceability -- --test-threads=1
+              -p crucible-test-support --test campaign_gate_traceability -- --test-threads=1
           '';
         }
         {

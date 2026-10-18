@@ -73,7 +73,7 @@ selected job sequence and its immutable job digest. These fields come from the
 `AcceleratorJob` opportunity retained in `BindingActionCause`; an accelerator
 result action without that typed opportunity is rejected before submission.
 The digest is BLAKE3 over
-`crucible_shmem::canonical_accelerator_job_material`, which includes the class,
+`crucible_qemu_shmem::canonical_accelerator_job_material`, which includes the class,
 job kind, queue, deterministic service demand, output-capacity contract, and
 input bytes. It excludes process generation, transport sequence, and device
 identity because the opportunity and resolved target bind those independently.

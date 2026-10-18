@@ -2,6 +2,7 @@
 {lib}: let
   repoRoot = ../../..;
   repoRootString = toString repoRoot;
+  daemonRunState = "${repoRootString}/crates/crucible/control/crucible-daemon/run-state";
 in
   builtins.path {
     path = repoRoot;
@@ -16,6 +17,8 @@ in
       && base != "target"
       && base != "run-state"
       && pathString != "${repoRootString}/result"
+      && pathString != daemonRunState
+      && !lib.hasPrefix "${daemonRunState}/" pathString
       && (
         pathString
         == repoRootString

@@ -4,11 +4,17 @@
 }: let
   src = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  controlSourceProvenance = {
+    historicalHelperSha256 = "c7db55bfba0c066c52fc79fc2d08096910b74d946b5d9faafd48740176bb277a";
+    reviewedHelperSha256 = "a458b498bb73a03c33c908ddd520187301779bdab1bec143245b36c47dd569b9";
+    sharedSupportSha256 = "8002cc04248305b621fe9b92697642601a757237938a75c25acd71bb827fe0b6";
+  };
 in
   pkgs.mkDerivation {
     pname = "crucible-tcg-finite-rom-performance-driver";
     version = "0";
     inherit src;
+    passthru = {inherit controlSourceProvenance;};
 
     buildDeps = [pkgs.rust pkgs.coreutils pkgs.sed pkgs.python3 cargoDeps];
 
@@ -24,12 +30,25 @@ in
           cp ${./tcg-managed-performance.rs} performance-driver/src/tcg-managed-performance.rs
           cp ${./tcg-finite-rom-performance.rs} performance-driver/src/main.rs
           python3 - ${./tcg-linux-serial-performance.rs} <<'PYTHON'
+          import hashlib
           import sys
           from pathlib import Path
 
-          support = Path(sys.argv[1]).read_text().partition(
-              '/// Complete common milestone, emitted before the authenticated Sim request.'
-          )[0].replace('//!', '//')
+          frozen = Path(sys.argv[1]).read_bytes()
+          if hashlib.sha256(frozen).hexdigest() != '${controlSourceProvenance.reviewedHelperSha256}':
+              raise AssertionError('reviewed Linux helper changed; review control provenance explicitly')
+          marker = '/// Complete common milestone, emitted before the authenticated Sim request.'
+          support, separator, unused = frozen.decode().partition(marker)
+          if not separator:
+              raise AssertionError('public protocol support boundary missing')
+          declaration = 'struct Process(Child);'
+          unused, separator, shared = support.partition(declaration)
+          if not separator:
+              raise AssertionError('shared control support boundary missing')
+          # Process, QMP, and CPU accounting remain byte-identical to the historical helper.
+          if hashlib.sha256((declaration + shared).encode()).hexdigest() != '${controlSourceProvenance.sharedSupportSha256}':
+              raise AssertionError('shared ordinary control support changed')
+          support = support.replace('//!', '//')
           main = Path('performance-driver/src/main.rs')
           main.write_text(main.read_text() + '\n' + support)
           PYTHON

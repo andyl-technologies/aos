@@ -8,19 +8,19 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   protocolLib = builtins.concatStringsSep "\n" (map builtins.readFile [
-    ../../crates/crucible-protocol/src/lib.rs
-    ../../crates/crucible-protocol/src/plugin_observation.rs
-    ../../crates/crucible-protocol/src/control_lifecycle.rs
+    ../../crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs
+    ../../crates/crucible/protocol/crucible-qemu-protocol/src/plugin_observation.rs
+    ../../crates/crucible/protocol/crucible-qemu-protocol/src/control_lifecycle.rs
   ]);
-  codecFuzzLib = builtins.readFile ../../crates/crucible-protocol/src/codec_fuzz.rs;
-  codecFuzzTest = builtins.readFile ../../crates/crucible-protocol/tests/codec_fuzz.rs;
-  pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
-  ioWireFuzzLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/io_wire_fuzz.rs;
+  codecFuzzLib = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-protocol/src/codec_fuzz.rs;
+  codecFuzzTest = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-protocol/tests/codec_fuzz.rs;
+  pluginLib = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs;
+  ioWireFuzzLib = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/io_wire_fuzz.rs;
   pluginBlockIo = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/block_io.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/block_io.rs;
   };
-  pluginNinePIo = builtins.readFile ../../crates/crucible-qemu-plugin/src/ninep_io.rs;
+  pluginNinePIo = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/ninep_io.rs;
   protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;
   harnessSpec = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -30,7 +30,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "crates/crucible-protocol/src/lib.rs" protocolLib [
+    failuresFor "crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs" protocolLib [
       {
         label = "codec fuzz module";
         needle = "mod codec_fuzz;";
@@ -44,7 +44,7 @@
         needle = "CODEC_FUZZ_REGRESSION_CORPUS";
       }
     ]
-    ++ failuresFor "crates/crucible-protocol/src/codec_fuzz.rs" codecFuzzLib [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-protocol/src/codec_fuzz.rs" codecFuzzLib [
       {
         label = "fuzz target function";
         needle = "pub fn run_control_codec_fuzz_target";
@@ -106,7 +106,7 @@
         needle = "tag: control_frame_tag(frame)";
       }
     ]
-    ++ failuresFor "crates/crucible-protocol/tests/codec_fuzz.rs" codecFuzzTest [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-protocol/tests/codec_fuzz.rs" codecFuzzTest [
       {
         label = "seed corpus test";
         needle = "seeded_regression_corpus_exercises_malformed_and_adversarial_frames";
@@ -152,7 +152,7 @@
         needle = "tag_constants_are_covered_by_structure_aware_fuzz_generation";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs" pluginLib [
       {
         label = "I/O wire fuzz module";
         needle = "pub mod io_wire_fuzz;";
@@ -174,7 +174,7 @@
         needle = "NinePWireMessage";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/block_io.rs" pluginBlockIo [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/block_io.rs" pluginBlockIo [
       {
         label = "block request encoder public";
         needle = "pub fn encode(&self, identity: BlockRequestIdentity)";
@@ -192,7 +192,7 @@
         needle = "RequestCountExceedsPayload";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/ninep_io.rs" pluginNinePIo [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/ninep_io.rs" pluginNinePIo [
       {
         label = "9p wire message type";
         needle = "pub struct NinePWireMessage";
@@ -222,7 +222,7 @@
         needle = "pub enum NinePWireError";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/io_wire_fuzz.rs" ioWireFuzzLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/io_wire_fuzz.rs" ioWireFuzzLib [
       {
         label = "I/O fuzz target function";
         needle = "pub fn run_io_wire_fuzz_target";
@@ -339,7 +339,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.rust
         pkgs.sed
       ];
@@ -382,7 +385,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-protocol-codec-fuzz-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible-protocol \
+              -p crucible-qemu-protocol \
               --test codec_fuzz \
               -- --test-threads=1
           '';
@@ -414,7 +417,7 @@ in
             check=${attrPath}
             tasks=${taskList}
             gate=gate:abi-conformance
-            rust_test=crucible-protocol::codec_fuzz
+            rust_test=crucible_qemu_protocol::codec_fuzz
             rust_test=crucible-qemu-plugin::io_wire_fuzz
             corpus=protocol-codec,block-wire,9p-wire,malformed,adversarial,regression
             property=no-panic,typed-error,deterministic-decode,well-formed-round-trip

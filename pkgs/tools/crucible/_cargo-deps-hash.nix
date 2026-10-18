@@ -1,2 +1,5 @@
-# Fixed-output hash for the vendored crates/Cargo.lock dependency set.
-"sha256-8rCR63kzX4/kX6/lzI3FgH4gQO6LOY/dgFSrcRtOH94="
+# The shared vendor retains its verified archive beneath the local seed patch.
+{cargoDeps}: let
+  unpatchedVendor = cargoDeps.passthru.unpatchedVendor;
+in
+  unpatchedVendor.passthru.aos.fixedOutput.hash

@@ -1,0 +1,1459 @@
+//! Transactional ownership for production exact-checkpoint capture.
+
+use super::*;
+use std::collections::BTreeMap;
+
+pub(super) fn combine_exact_checkpoint_transaction(
+    operation: Result<ContentHash, ExactCheckpointTransactionError>,
+    cleanup: Result<(), SchedulerError>,
+    captures: Vec<PendingExactCapture>,
+) -> Result<ContentHash, ExactCheckpointTransactionError> {
+    match (operation, cleanup) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(identity), Err(source)) => Err(ExactCheckpointTransactionError::Indeterminate {
+            identity: Some(identity),
+            captures,
+            source,
+        }),
+        (Err(ExactCheckpointTransactionError::Unpublished(error)), Err(cleanup)) => {
+            Err(ExactCheckpointTransactionError::Indeterminate {
+                identity: None,
+                captures,
+                source: SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "exact checkpoint failed before publication ({error}); releasing paused QEMU nodes also failed ({cleanup})"
+                    ),
+                },
+            })
+        }
+        (
+            Err(ExactCheckpointTransactionError::Indeterminate {
+                identity,
+                captures: prior_captures,
+                source,
+            }),
+            Err(cleanup),
+        ) => {
+            let captures = if captures.is_empty() {
+                prior_captures
+            } else {
+                captures
+            };
+            Err(ExactCheckpointTransactionError::Indeterminate {
+                identity,
+                captures,
+                source: SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "exact checkpoint publication was indeterminate ({source}); releasing paused QEMU nodes also failed ({cleanup})"
+                    ),
+                },
+            })
+        }
+    }
+}
+
+pub(super) fn retained_exact_ram_parent_for_committed(
+    parents: &BTreeMap<ContentHash, ProductionExactRamPublishedParent>,
+    repository_rebase: Option<&ProductionRepositoryExactRamRebase>,
+    node: &NodeId,
+    committed: Option<QmpCheckpointIdentity>,
+) -> Result<(Option<ContentHash>, Option<ProductionExactRamCheckpoint>), SchedulerError> {
+    let Some(parent_identity) = committed else {
+        if repository_rebase.is_some_and(|rebase| rebase.targets.contains_key(node)) {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "QEMU lost the authenticated repository parent epoch for `{}`",
+                    node.name
+                ),
+            });
+        }
+        return Ok((None, None));
+    };
+    let Some(parent) = parents.get(&parent_identity.checkpoint()) else {
+        // Launch bound the repository's final RAM layer to the semantic
+        // boundary. It has no native RAM lease, so this exact QEMU epoch may
+        // produce only a direct first capture.
+        if repository_rebase
+            .and_then(|rebase| rebase.targets.get(node))
+            .is_some_and(|expected| *expected == parent_identity)
+        {
+            return Ok((None, None));
+        }
+        return Err(SchedulerError::BoundaryViolation {
+            message: format!(
+                "QEMU committed parent for `{}` has no retained authenticated closure lease or matching repository rebase identity",
+                node.name,
+            ),
+        });
+    };
+    let checkpoint =
+        parent
+            .targets
+            .get(node)
+            .cloned()
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: format!(
+                    "retained exact RAM parent closure has no target for `{}`",
+                    node.name
+                ),
+            })?;
+    if checkpoint.identity != parent_identity.into() {
+        return Err(SchedulerError::BoundaryViolation {
+            message: format!(
+                "retained exact RAM parent for `{}` differs from QEMU's committed identity",
+                node.name
+            ),
+        });
+    }
+    Ok((Some(parent.closure), Some(checkpoint)))
+}
+
+/// Lifecycle-owned state of one exact-checkpoint publication attempt.
+#[derive(Debug)]
+pub(in crate::vm_lifecycle) enum ExactCheckpointPublicationState {
+    /// Reversible capture or durable publication is still in progress.
+    Preparing,
+    /// The authenticated closure is durably published under this identity.
+    Published(ContentHash),
+    /// Snapshot cleanup that must finish before publication reconciliation or retry.
+    CleanupPending {
+        captures: Vec<PendingExactCapture>,
+        publication: Option<ContentHash>,
+    },
+    /// A named closure exists but its parent-directory durability is uncertain.
+    PublicationIndeterminate(ContentHash),
+}
+
+/// Transaction outcome before or across durable closure publication.
+pub(super) enum ExactCheckpointTransactionError {
+    /// No authenticated closure became visible.
+    Unpublished(SchedulerError),
+    /// Cleanup or durability could not establish one committed outcome.
+    Indeterminate {
+        /// Known closure identity when the manifest rename completed.
+        identity: Option<ContentHash>,
+        /// Exact snapshot handles retained when live cleanup was incomplete.
+        captures: Vec<PendingExactCapture>,
+        /// Primary transaction or cleanup failure.
+        source: SchedulerError,
+    },
+}
+
+/// Sole owner of one paused QEMU snapshot through immutable preparation.
+#[derive(Debug)]
+pub(in crate::vm_lifecycle) struct PendingExactCapture {
+    /// World node owning the snapshot.
+    pub(super) node: NodeId,
+    /// Physical icount captured from the node.
+    pub(super) counter: u64,
+    /// Shared scheduler frontier bound to the checkpoint.
+    pub(super) scheduler_time: VirtualTime,
+    /// Live QEMU snapshot deleted before publication or during rollback.
+    pub(super) snapshot: ExactSnapshotHandle,
+    /// Pre-owned staged overlay metadata once its copy authenticates.
+    pub(super) overlay_artifact: Option<ProductionCheckpointArtifact>,
+    /// Complete leased RAM image built from QEMU's frozen capture.
+    pub(super) exact_ram: Option<ProductionExactRamCheckpoint>,
+    /// QEMU-owned paged candidate awaiting publication disposition.
+    pub(super) exact_checkpoint: Option<PendingExactCheckpointCandidate>,
+    /// Whether the live QMP snapshot still requires deletion.
+    pub(super) snapshot_cleanup_pending: bool,
+    /// Whether a formerly running node remains paused at the capture boundary.
+    pub(super) resume_pending: bool,
+}
+
+/// QEMU epoch state paired with one paused descriptor-backed capture.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct PendingExactCheckpointCandidate {
+    /// Candidate identity that must be committed or aborted exactly once.
+    pub(super) identity: crucible_qemu_host::QmpCheckpointIdentity,
+    /// Exact native capture generation whose dirty obligations may advance.
+    pub(super) capture_generation: u64,
+    /// Previously committed identity that an abort must preserve.
+    pub(super) parent: Option<crucible_qemu_host::QmpCheckpointIdentity>,
+    /// Native generation of the previously committed complete image.
+    pub(super) parent_capture_generation: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ExactCaptureDisposition {
+    Published,
+    Unpublished,
+}
+
+/// Allocation-owning description of one target before the first QMP save.
+pub(super) struct PreparedExactCheckpointTarget {
+    /// World node captured by this target.
+    pub(super) node: NodeId,
+    /// Physical icount paired with the exact snapshot.
+    pub(super) counter: u64,
+    /// Shared scheduler frontier bound to the checkpoint.
+    pub(super) scheduler_time: VirtualTime,
+    /// Lifecycle state that selects the running or paused capture operation.
+    pub(super) service_state: ProductionNodeServiceState,
+    /// Fully owned temporal-graph checkpoint passed into QEMU capture.
+    pub(super) checkpoint: Checkpoint,
+    /// Current process-generation overlay streamed after QMP save.
+    pub(super) source_overlay: PathBuf,
+    /// Transaction-staging directory for authenticated overlay chunks.
+    pub(super) staged_overlay_chunks: PathBuf,
+    /// Pre-owned immutable page-capture spool path.
+    pub(super) page_capture_output: PathBuf,
+    /// Pre-owned descriptor-backed device-state output path.
+    pub(super) device_output: PathBuf,
+    /// Transaction-staging directory for authenticated device-state chunks.
+    pub(super) staged_device_chunks: PathBuf,
+}
+
+/// Owns every per-node checkpoint and artifact path before QMP mutation.
+///
+/// # Errors
+///
+/// Returns an error when checkpoint topology or node ownership is invalid, or
+/// when the bounded destination vector cannot be reserved.
+pub(super) fn prepare_exact_checkpoint_targets(
+    configuration: &Configuration,
+    checkpoint_virtual_time: VirtualTime,
+    node_icounts: &BTreeMap<NodeId, crucible_engine::Icount>,
+    boundaries: Vec<(NodeId, u64, ProductionNodeServiceState)>,
+    node_indexes: &BTreeMap<NodeId, usize>,
+    node_run_directories: &BTreeMap<NodeId, PathBuf>,
+    staging: &Path,
+) -> Result<Vec<PreparedExactCheckpointTarget>, SchedulerError> {
+    let parent = if configuration.schedule.is_empty() {
+        None
+    } else {
+        let parent_len = configuration.schedule.len().saturating_sub(1);
+        let parent_schedule = configuration.schedule.prefix(parent_len).map_err(|error| {
+            SchedulerError::BoundaryViolation {
+                message: format!(
+                    "derive exact checkpoint parent at schedule length {parent_len}: {error}"
+                ),
+            }
+        })?;
+        Some(Configuration {
+            def: configuration.def.clone(),
+            schedule: parent_schedule,
+        })
+    };
+    let mut prepared = Vec::new();
+    prepared
+        .try_reserve_exact(boundaries.len())
+        .map_err(|error| SchedulerError::BoundaryViolation {
+            message: format!("reserve exact checkpoint prepared targets: {error}"),
+        })?;
+
+    for (node, counter, service_state) in boundaries {
+        let checkpoint = Checkpoint::from_recorded_configuration(
+            configuration,
+            parent.as_ref(),
+            checkpoint_virtual_time,
+            node_icounts.clone(),
+            CheckpointKind::Fat,
+            BTreeMap::new(),
+        )
+        .map_err(|error| SchedulerError::BoundaryViolation {
+            message: format!("materialize exact scheduler checkpoint: {error}"),
+        })?;
+        let index =
+            node_indexes
+                .get(&node)
+                .copied()
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: format!("exact checkpoint has no launch index for `{}`", node.name),
+                })?;
+        let source_directory =
+            node_run_directories
+                .get(&node)
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "exact checkpoint has no process-generation directory for `{}`",
+                        node.name
+                    ),
+                })?;
+        prepared.push(PreparedExactCheckpointTarget {
+            node,
+            counter,
+            scheduler_time: checkpoint_virtual_time,
+            service_state,
+            checkpoint,
+            source_overlay: source_directory.join(DEFAULT_ROOT_OVERLAY_FILE_NAME),
+            staged_overlay_chunks: staging.join(format!("node-{index}-overlay-objects")),
+            page_capture_output: staging.join(format!("node-{index}-ram.capture")),
+            device_output: staging.join(format!("node-{index}-device.vmstate")),
+            staged_device_chunks: staging.join(format!("node-{index}-device-objects")),
+        });
+    }
+    Ok(prepared)
+}
+
+impl From<SchedulerError> for ExactCheckpointTransactionError {
+    fn from(error: SchedulerError) -> Self {
+        Self::Unpublished(error)
+    }
+}
+
+impl ProductionVmLifecycleLoop {
+    /// Captures one exact checkpoint under a pre-owned publication slot.
+    ///
+    /// # Errors
+    ///
+    /// Returns a scheduler error when capture, cleanup, or publication fails.
+    pub(in crate::vm_lifecycle) fn capture_exact_checkpoint_set(
+        &mut self,
+        configuration: &Configuration,
+    ) -> Result<ContentHash, SchedulerError> {
+        self.capture_exact_checkpoint_set_with_boundary(configuration, &mut || Ok(()))
+    }
+
+    /// Captures a new root when the same configuration has an earlier snapshot.
+    ///
+    /// A failed refresh retains the prior durable root unless publication or
+    /// cleanup is indeterminate and requires reconciliation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a scheduler error when the live boundary or capture fails.
+    pub(in crate::vm_lifecycle) fn capture_fresh_exact_checkpoint_set_with_boundary(
+        &mut self,
+        configuration: &Configuration,
+        boundary: &mut dyn FnMut() -> Result<(), SchedulerError>,
+    ) -> Result<ContentHash, SchedulerError> {
+        self.capture_fresh_exact_checkpoint_set_with_terminal_nodes(
+            configuration,
+            &BTreeSet::new(),
+            boundary,
+        )
+    }
+
+    pub(super) fn capture_fresh_exact_checkpoint_set_with_terminal_nodes(
+        &mut self,
+        configuration: &Configuration,
+        terminal_nodes: &BTreeSet<NodeId>,
+        boundary: &mut dyn FnMut() -> Result<(), SchedulerError>,
+    ) -> Result<ContentHash, SchedulerError> {
+        self.require_published_host_continuation()?;
+        boundary()?;
+        let configuration_id = configuration.id();
+        let previous = match self.checkpoint_targets.get(&configuration_id) {
+            Some(ExactCheckpointPublicationState::Published(identity)) => Some(*identity),
+            _ => None,
+        };
+        let Some(previous) = previous else {
+            return self.capture_exact_checkpoint_set_with_terminal_nodes(
+                configuration,
+                terminal_nodes,
+                boundary,
+            );
+        };
+
+        // A Snapshot control may have retained this configuration before the
+        // terminal event log was complete. Keep its durable root and RAM parent
+        // until the fresh transaction has a definitive published outcome.
+        self.retain_exact_ram_parent_from_closure(configuration_id, previous)?;
+        let previous_parent = self
+            .exact_ram_parents
+            .get(&configuration_id)
+            .filter(|parent| parent.closure == previous)
+            .cloned()
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "published exact checkpoint has no matching retained RAM parent",
+                ),
+            })?;
+        self.checkpoint_targets.remove(&configuration_id);
+        let result = self.capture_exact_checkpoint_set_with_terminal_nodes(
+            configuration,
+            terminal_nodes,
+            boundary,
+        );
+        if result.is_err()
+            && matches!(
+                self.checkpoint_targets.get(&configuration_id),
+                None | Some(ExactCheckpointPublicationState::Preparing)
+            )
+        {
+            self.checkpoint_targets.insert(
+                configuration_id,
+                ExactCheckpointPublicationState::Published(previous),
+            );
+            self.exact_ram_parents
+                .insert(configuration_id, previous_parent);
+        }
+        result
+    }
+
+    pub(in crate::vm_lifecycle) fn capture_exact_checkpoint_set_with_boundary(
+        &mut self,
+        configuration: &Configuration,
+        boundary: &mut dyn FnMut() -> Result<(), SchedulerError>,
+    ) -> Result<ContentHash, SchedulerError> {
+        self.capture_exact_checkpoint_set_with_terminal_nodes(
+            configuration,
+            &BTreeSet::new(),
+            boundary,
+        )
+    }
+
+    fn capture_exact_checkpoint_set_with_terminal_nodes(
+        &mut self,
+        configuration: &Configuration,
+        terminal_nodes: &BTreeSet<NodeId>,
+        boundary: &mut dyn FnMut() -> Result<(), SchedulerError>,
+    ) -> Result<ContentHash, SchedulerError> {
+        self.require_published_host_continuation()?;
+        boundary()?;
+        // Drain every selectable delta before snapshotting scheduler and QEMU
+        // state. Pending requests remain retained by the node set, while
+        // registration, freeze, and completion markers update the exact plan.
+        let _pending = self
+            .inner
+            .backend_mut()
+            .drain_pending_selectable_requests()?;
+        let configuration_id = configuration.id();
+        let mut retry_cleanup = None;
+        let mut retry_publication = None;
+        match self.checkpoint_targets.entry(configuration_id) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(ExactCheckpointPublicationState::Preparing);
+            }
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                let prior =
+                    std::mem::replace(entry.get_mut(), ExactCheckpointPublicationState::Preparing);
+                match prior {
+                    ExactCheckpointPublicationState::Published(identity) => {
+                        *entry.get_mut() = ExactCheckpointPublicationState::Published(identity);
+                        return Ok(identity);
+                    }
+                    ExactCheckpointPublicationState::CleanupPending {
+                        captures,
+                        publication,
+                    } => {
+                        retry_cleanup = Some((captures, publication));
+                    }
+                    ExactCheckpointPublicationState::Preparing => {
+                        return Err(SchedulerError::BoundaryViolation {
+                            message: format!(
+                                "exact checkpoint {} already has a capture in progress",
+                                configuration_id.to_hex()
+                            ),
+                        });
+                    }
+                    ExactCheckpointPublicationState::PublicationIndeterminate(identity) => {
+                        retry_publication = Some(identity);
+                    }
+                }
+            }
+        }
+        if let Some((mut captures, publication)) = retry_cleanup {
+            let disposition = if let Some(identity) = publication {
+                if let Err(error) = boundary() {
+                    let state = self
+                        .checkpoint_targets
+                        .get_mut(&configuration_id)
+                        .ok_or_else(missing_publication_owner)?;
+                    *state = ExactCheckpointPublicationState::CleanupPending {
+                        captures,
+                        publication,
+                    };
+                    return Err(error);
+                }
+                match checkpoint_store::reconcile_indeterminate_publication(
+                    &self.config.run_state_root,
+                    &self.scenario,
+                    &self.source,
+                    identity,
+                    self.config.ram_catalog_provider(),
+                ) {
+                    Ok(Some(observed)) if observed == configuration_id => {
+                        ExactCaptureDisposition::Published
+                    }
+                    Ok(Some(observed)) => {
+                        let state = self
+                            .checkpoint_targets
+                            .get_mut(&configuration_id)
+                            .ok_or_else(missing_publication_owner)?;
+                        *state = ExactCheckpointPublicationState::CleanupPending {
+                            captures,
+                            publication,
+                        };
+                        return Err(SchedulerError::BoundaryViolation {
+                            message: format!(
+                                "indeterminate exact checkpoint {} authenticates configuration {} instead of {}",
+                                identity.to_hex(),
+                                observed.to_hex(),
+                                configuration_id.to_hex(),
+                            ),
+                        });
+                    }
+                    Ok(None) => ExactCaptureDisposition::Unpublished,
+                    Err(error) => {
+                        let state = self
+                            .checkpoint_targets
+                            .get_mut(&configuration_id)
+                            .ok_or_else(missing_publication_owner)?;
+                        *state = ExactCheckpointPublicationState::CleanupPending {
+                            captures,
+                            publication,
+                        };
+                        return Err(error);
+                    }
+                }
+            } else {
+                ExactCaptureDisposition::Unpublished
+            };
+            match disposition {
+                ExactCaptureDisposition::Published => {
+                    let identity =
+                        publication.ok_or_else(|| SchedulerError::BoundaryViolation {
+                            message: String::from(
+                                "published exact checkpoint cleanup lost its closure identity",
+                            ),
+                        })?;
+                    if let Err(error) =
+                        self.retain_exact_ram_parent_from_closure(configuration_id, identity)
+                    {
+                        let state = self
+                            .checkpoint_targets
+                            .get_mut(&configuration_id)
+                            .ok_or_else(missing_publication_owner)?;
+                        *state = ExactCheckpointPublicationState::CleanupPending {
+                            captures,
+                            publication,
+                        };
+                        return Err(error);
+                    }
+                }
+                ExactCaptureDisposition::Unpublished => {
+                    self.exact_ram_parents.remove(&configuration_id);
+                }
+            }
+            if let Err(error) = self.release_exact_captures(&mut captures, disposition) {
+                let state = self
+                    .checkpoint_targets
+                    .get_mut(&configuration_id)
+                    .ok_or_else(missing_publication_owner)?;
+                *state = ExactCheckpointPublicationState::CleanupPending {
+                    captures,
+                    publication,
+                };
+                return Err(error);
+            }
+            if disposition == ExactCaptureDisposition::Published {
+                let identity = publication.ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: String::from(
+                        "published exact checkpoint cleanup lost its closure identity",
+                    ),
+                })?;
+                let state = self
+                    .checkpoint_targets
+                    .get_mut(&configuration_id)
+                    .ok_or_else(missing_publication_owner)?;
+                *state = ExactCheckpointPublicationState::Published(identity);
+                self.exact_ram_parents
+                    .retain(|candidate, _| *candidate == configuration_id);
+                self.repository_exact_ram_rebase = None;
+                return Ok(identity);
+            }
+        }
+        boundary()?;
+        if let Some(identity) = retry_publication {
+            match checkpoint_store::reconcile_indeterminate_publication(
+                &self.config.run_state_root,
+                &self.scenario,
+                &self.source,
+                identity,
+                self.config.ram_catalog_provider(),
+            ) {
+                Ok(Some(observed_configuration)) if observed_configuration == configuration_id => {
+                    if let Err(error) =
+                        self.retain_exact_ram_parent_from_closure(configuration_id, identity)
+                    {
+                        let state = self
+                            .checkpoint_targets
+                            .get_mut(&configuration_id)
+                            .ok_or_else(missing_publication_owner)?;
+                        *state =
+                            ExactCheckpointPublicationState::PublicationIndeterminate(identity);
+                        return Err(error);
+                    }
+                    let published = finish_reconciled_exact_ram_publication(
+                        &mut self.checkpoint_targets,
+                        &mut self.exact_ram_parents,
+                        configuration_id,
+                        identity,
+                    )?;
+                    self.repository_exact_ram_rebase = None;
+                    return Ok(published);
+                }
+                Ok(Some(observed_configuration)) => {
+                    let state = self
+                        .checkpoint_targets
+                        .get_mut(&configuration_id)
+                        .ok_or_else(missing_publication_owner)?;
+                    *state = ExactCheckpointPublicationState::PublicationIndeterminate(identity);
+                    return Err(SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "indeterminate exact checkpoint {} authenticates configuration {} instead of {}",
+                            identity.to_hex(),
+                            observed_configuration.to_hex(),
+                            configuration_id.to_hex()
+                        ),
+                    });
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    let state = self
+                        .checkpoint_targets
+                        .get_mut(&configuration_id)
+                        .ok_or_else(missing_publication_owner)?;
+                    *state = ExactCheckpointPublicationState::PublicationIndeterminate(identity);
+                    return Err(error);
+                }
+            }
+        }
+
+        boundary()?;
+        let result =
+            self.capture_reserved_exact_checkpoint_set(configuration, terminal_nodes, boundary);
+        finish_exact_checkpoint_transaction(&mut self.checkpoint_targets, configuration_id, result)
+    }
+
+    /// Deletes every snapshot and resumes each previously running node.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first cleanup error after attempting every snapshot.
+    pub(super) fn release_exact_captures(
+        &mut self,
+        captured: &mut Vec<PendingExactCapture>,
+        disposition: ExactCaptureDisposition,
+    ) -> Result<(), SchedulerError> {
+        cleanup_exact_captures_with(
+            captured,
+            |capture| {
+                if let Some(candidate) = capture.exact_checkpoint {
+                    self.resolve_exact_checkpoint_candidate(&capture.node, candidate, disposition)?;
+                    capture.exact_checkpoint = None;
+                } else if capture.snapshot_cleanup_pending {
+                    self.inner
+                        .backend_mut()
+                        .delete_exact_snapshot(&capture.node, &capture.snapshot)
+                        .map_err(SchedulerError::from)?;
+                    capture.snapshot_cleanup_pending = false;
+                }
+                if capture.resume_pending {
+                    self.inner
+                        .backend_mut()
+                        .resume_after_exact_snapshot(&capture.node)
+                        .map_err(SchedulerError::from)?;
+                    capture.resume_pending = false;
+                }
+                Ok(())
+            },
+            |capture| {
+                capture.exact_checkpoint.is_some()
+                    || capture.snapshot_cleanup_pending
+                    || capture.resume_pending
+            },
+        )
+    }
+
+    fn resolve_exact_checkpoint_candidate(
+        &mut self,
+        node: &NodeId,
+        candidate: PendingExactCheckpointCandidate,
+        disposition: ExactCaptureDisposition,
+    ) -> Result<(), SchedulerError> {
+        let state = self
+            .inner
+            .backend_mut()
+            .query_exact_checkpoint_epoch(node)?;
+        let already_resolved = match disposition {
+            ExactCaptureDisposition::Published => {
+                state.committed() == Some(candidate.identity)
+                    && state.committed_capture_generation() == Some(candidate.capture_generation)
+                    && state.candidate().is_none()
+            }
+            ExactCaptureDisposition::Unpublished => {
+                state.committed() == candidate.parent
+                    && state.committed_capture_generation() == candidate.parent_capture_generation
+                    && state.candidate().is_none()
+            }
+        };
+        if already_resolved {
+            return Ok(());
+        }
+        if state.committed() != candidate.parent
+            || state.candidate() != Some(candidate.identity)
+            || state.candidate_capture_generation() != Some(candidate.capture_generation)
+            || state.committed_capture_generation() != candidate.parent_capture_generation
+        {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "exact checkpoint QEMU epoch for `{}` differs before {:?} disposition",
+                    node.name, disposition,
+                ),
+            });
+        }
+
+        let resolved = match disposition {
+            ExactCaptureDisposition::Published => self
+                .inner
+                .backend_mut()
+                .commit_exact_checkpoint(node, candidate.identity, candidate.capture_generation)?,
+            ExactCaptureDisposition::Unpublished => {
+                self.inner.backend_mut().abort_exact_checkpoint(
+                    node,
+                    candidate.identity,
+                    candidate.capture_generation,
+                    candidate.parent,
+                )?
+            }
+        };
+        let valid = match disposition {
+            ExactCaptureDisposition::Published => {
+                resolved.committed() == Some(candidate.identity)
+                    && resolved.committed_capture_generation() == Some(candidate.capture_generation)
+                    && resolved.candidate().is_none()
+            }
+            ExactCaptureDisposition::Unpublished => {
+                resolved.committed() == candidate.parent
+                    && resolved.committed_capture_generation()
+                        == candidate.parent_capture_generation
+                    && resolved.candidate().is_none()
+            }
+        };
+        if !valid {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "exact checkpoint QEMU epoch for `{}` did not reach {:?} disposition",
+                    node.name, disposition,
+                ),
+            });
+        }
+        Ok(())
+    }
+
+    fn retain_exact_ram_parent_from_closure(
+        &mut self,
+        configuration: ContentHash,
+        closure: ContentHash,
+    ) -> Result<(), SchedulerError> {
+        if self.exact_ram_parents.contains_key(&configuration) {
+            return Ok(());
+        }
+        let checkpoint = load_exact_checkpoint_set(
+            &self.config.run_state_root,
+            &self.scenario,
+            &self.source,
+            closure,
+            self.config.ram_catalog_provider(),
+        )
+        .map_err(|error| SchedulerError::BoundaryViolation {
+            message: format!(
+                "reload indeterminate exact RAM publication {}: {error}",
+                closure.to_hex()
+            ),
+        })?;
+        if checkpoint.configuration.id() != configuration || checkpoint.identity != closure {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "reloaded exact RAM publication differs from its transaction identity",
+                ),
+            });
+        }
+        let mut targets = BTreeMap::new();
+        for (node, target) in checkpoint.targets {
+            let ProductionVmExactCheckpointMaterialization::Native { exact_ram, .. } =
+                target.materialization
+            else {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: String::from(
+                        "indeterminate native checkpoint contains a repository restore target",
+                    ),
+                });
+            };
+            targets.insert(node, *exact_ram);
+        }
+        self.exact_ram_parents.insert(
+            configuration,
+            ProductionExactRamPublishedParent { closure, targets },
+        );
+        Ok(())
+    }
+}
+
+fn cleanup_exact_captures_with<T, E>(
+    captured: &mut Vec<T>,
+    mut cleanup: impl FnMut(&mut T) -> Result<(), E>,
+    pending: impl Fn(&T) -> bool,
+) -> Result<(), E> {
+    let mut first_error = None;
+    for capture in captured.iter_mut().rev() {
+        match cleanup(capture) {
+            Ok(()) => {}
+            Err(error) if first_error.is_none() => first_error = Some(error),
+            Err(_) => {}
+        }
+    }
+    captured.retain(pending);
+    first_error.map_or(Ok(()), Err)
+}
+
+pub(super) fn finish_exact_checkpoint_transaction(
+    publications: &mut BTreeMap<ContentHash, ExactCheckpointPublicationState>,
+    configuration: ContentHash,
+    result: Result<ContentHash, ExactCheckpointTransactionError>,
+) -> Result<ContentHash, SchedulerError> {
+    match result {
+        Ok(identity) => {
+            let state = publications
+                .get_mut(&configuration)
+                .ok_or_else(missing_publication_owner)?;
+            *state = ExactCheckpointPublicationState::Published(identity);
+            Ok(identity)
+        }
+        Err(ExactCheckpointTransactionError::Unpublished(error)) => {
+            publications.remove(&configuration);
+            Err(error)
+        }
+        Err(ExactCheckpointTransactionError::Indeterminate {
+            identity,
+            captures,
+            source,
+        }) => {
+            let state = publications
+                .get_mut(&configuration)
+                .ok_or_else(missing_publication_owner)?;
+            *state = match (captures.is_empty(), identity) {
+                (true, Some(identity)) => {
+                    ExactCheckpointPublicationState::PublicationIndeterminate(identity)
+                }
+                (_, publication) => ExactCheckpointPublicationState::CleanupPending {
+                    captures,
+                    publication,
+                },
+            };
+            Err(source)
+        }
+    }
+}
+
+fn finish_reconciled_exact_ram_publication<T>(
+    publications: &mut BTreeMap<ContentHash, ExactCheckpointPublicationState>,
+    parents: &mut BTreeMap<ContentHash, T>,
+    configuration: ContentHash,
+    identity: ContentHash,
+) -> Result<ContentHash, SchedulerError> {
+    let state = publications
+        .get_mut(&configuration)
+        .ok_or_else(missing_publication_owner)?;
+    if !parents.contains_key(&configuration) {
+        return Err(SchedulerError::BoundaryViolation {
+            message: String::from(
+                "reconciled exact checkpoint has no authenticated RAM parent lease",
+            ),
+        });
+    }
+    parents.retain(|candidate, _| *candidate == configuration);
+    *state = ExactCheckpointPublicationState::Published(identity);
+    Ok(identity)
+}
+
+fn missing_publication_owner() -> SchedulerError {
+    SchedulerError::BoundaryViolation {
+        message: String::from("exact checkpoint publication owner disappeared"),
+    }
+}
+
+#[cfg(test)]
+// crucible-lint: allow panic-shortcut -- catalog fixture setup and explicit last-reader assertions intentionally panic on failure.
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    fn boundary_error(message: &str) -> SchedulerError {
+        SchedulerError::BoundaryViolation {
+            message: String::from(message),
+        }
+    }
+
+    fn checkpoint_identity(label: &str) -> ProductionExactCheckpointIdentity {
+        ProductionExactCheckpointIdentity {
+            checkpoint: ContentHash::from_bytes(format!("{label} checkpoint").as_bytes()),
+            target: ContentHash::from_bytes(format!("{label} target").as_bytes()),
+            frontier: ContentHash::from_bytes(format!("{label} frontier").as_bytes()),
+        }
+    }
+
+    #[test]
+    fn repository_parent_requires_exact_authenticated_identity_for_direct_rebase() {
+        let node = NodeId {
+            name: String::from("restored-vm"),
+        };
+        let identity = QmpCheckpointIdentity::from(checkpoint_identity("repository source"));
+        let rebase = ProductionRepositoryExactRamRebase {
+            targets: BTreeMap::from([(node.clone(), identity)]),
+        };
+        let parents = BTreeMap::new();
+
+        let (closure, parent) =
+            retained_exact_ram_parent_for_committed(&parents, Some(&rebase), &node, Some(identity))
+                .unwrap_or_else(|error| panic!("select authenticated repository parent: {error}"));
+        assert_eq!(closure, None);
+        assert!(parent.is_none());
+
+        let mismatched = [
+            QmpCheckpointIdentity::new(
+                ContentHash::from_bytes(b"wrong checkpoint"),
+                identity.target(),
+                identity.frontier(),
+            ),
+            QmpCheckpointIdentity::new(
+                identity.checkpoint(),
+                ContentHash::from_bytes(b"wrong target"),
+                identity.frontier(),
+            ),
+            QmpCheckpointIdentity::new(
+                identity.checkpoint(),
+                identity.target(),
+                ContentHash::from_bytes(b"wrong frontier"),
+            ),
+        ];
+        for observed in mismatched {
+            assert!(
+                retained_exact_ram_parent_for_committed(
+                    &parents,
+                    Some(&rebase),
+                    &node,
+                    Some(observed),
+                )
+                .is_err(),
+                "a changed checkpoint, target, or frontier cannot rebase"
+            );
+        }
+
+        let unknown_node = NodeId {
+            name: String::from("other-vm"),
+        };
+        assert!(
+            retained_exact_ram_parent_for_committed(
+                &parents,
+                Some(&rebase),
+                &unknown_node,
+                Some(identity),
+            )
+            .is_err()
+        );
+        assert!(
+            retained_exact_ram_parent_for_committed(&parents, None, &node, Some(identity)).is_err()
+        );
+        assert!(
+            retained_exact_ram_parent_for_committed(&parents, Some(&rebase), &node, None).is_err()
+        );
+        let genesis = retained_exact_ram_parent_for_committed(&parents, None, &node, None)
+            .unwrap_or_else(|error| panic!("select genesis capture: {error}"));
+        assert_eq!(genesis.0, None);
+        assert!(genesis.1.is_none());
+    }
+
+    #[test]
+    fn cleanup_attempts_every_capture_in_reverse_order() {
+        #[derive(Debug, PartialEq, Eq)]
+        struct Capture {
+            id: u8,
+            pending: bool,
+        }
+        let mut captures = vec![
+            Capture {
+                id: 1,
+                pending: true,
+            },
+            Capture {
+                id: 2,
+                pending: true,
+            },
+            Capture {
+                id: 3,
+                pending: true,
+            },
+        ];
+        let mut observed = Vec::new();
+        let error = match cleanup_exact_captures_with(
+            &mut captures,
+            |capture| {
+                observed.push(capture.id);
+                if capture.id == 3 || capture.id == 1 {
+                    Err(capture.id)
+                } else {
+                    capture.pending = false;
+                    Ok(())
+                }
+            },
+            |capture| capture.pending,
+        ) {
+            Ok(()) => panic!("the first reverse-order cleanup error should survive"),
+            Err(error) => error,
+        };
+
+        assert_eq!(observed, [3, 2, 1]);
+        assert_eq!(error, 3);
+        assert_eq!(
+            captures,
+            [
+                Capture {
+                    id: 1,
+                    pending: true
+                },
+                Capture {
+                    id: 3,
+                    pending: true
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn cleanup_retry_preserves_delete_before_resume_order() {
+        #[derive(Debug)]
+        struct Capture {
+            delete_pending: bool,
+            resume_pending: bool,
+        }
+        let mut captures = vec![Capture {
+            delete_pending: true,
+            resume_pending: true,
+        }];
+        let mut operations = Vec::new();
+
+        let first = cleanup_exact_captures_with(
+            &mut captures,
+            |capture| {
+                operations.push("delete-failed");
+                assert!(capture.delete_pending);
+                Err("delete")
+            },
+            |capture| capture.delete_pending || capture.resume_pending,
+        );
+        assert_eq!(first, Err("delete"));
+        assert_eq!(captures.len(), 1);
+
+        let second = cleanup_exact_captures_with(
+            &mut captures,
+            |capture| {
+                if capture.delete_pending {
+                    operations.push("delete");
+                    capture.delete_pending = false;
+                }
+                operations.push("resume-failed");
+                Err("resume")
+            },
+            |capture| capture.delete_pending || capture.resume_pending,
+        );
+        assert_eq!(second, Err("resume"));
+        assert!(!captures[0].delete_pending);
+        assert!(captures[0].resume_pending);
+
+        cleanup_exact_captures_with(
+            &mut captures,
+            |capture| {
+                assert!(!capture.delete_pending);
+                operations.push("resume");
+                capture.resume_pending = false;
+                Ok::<_, &str>(())
+            },
+            |capture| capture.delete_pending || capture.resume_pending,
+        )
+        .unwrap_or_else(|error| panic!("resume retry should finish cleanup: {error}"));
+        assert!(captures.is_empty());
+        assert_eq!(
+            operations,
+            ["delete-failed", "delete", "resume-failed", "resume"]
+        );
+    }
+
+    #[test]
+    fn publication_registry_retains_only_durable_or_indeterminate_owners() {
+        let configuration = ContentHash::from_bytes(b"configuration");
+        let identity = ContentHash::from_bytes(b"checkpoint");
+
+        let mut publications =
+            BTreeMap::from([(configuration, ExactCheckpointPublicationState::Preparing)]);
+        let committed = match finish_exact_checkpoint_transaction(
+            &mut publications,
+            configuration,
+            Ok(identity),
+        ) {
+            Ok(committed) => committed,
+            Err(error) => panic!("publication should commit: {error}"),
+        };
+        assert_eq!(committed, identity);
+        assert!(matches!(
+            publications.get(&configuration),
+            Some(ExactCheckpointPublicationState::Published(observed)) if *observed == identity
+        ));
+
+        publications.insert(configuration, ExactCheckpointPublicationState::Preparing);
+        assert!(
+            finish_exact_checkpoint_transaction(
+                &mut publications,
+                configuration,
+                Err(ExactCheckpointTransactionError::Unpublished(
+                    boundary_error("unpublished",)
+                )),
+            )
+            .is_err()
+        );
+        assert!(!publications.contains_key(&configuration));
+
+        publications.insert(configuration, ExactCheckpointPublicationState::Preparing);
+        assert!(
+            finish_exact_checkpoint_transaction(
+                &mut publications,
+                configuration,
+                Err(ExactCheckpointTransactionError::Indeterminate {
+                    identity: Some(identity),
+                    captures: Vec::new(),
+                    source: boundary_error("indeterminate"),
+                }),
+            )
+            .is_err()
+        );
+        assert!(matches!(
+            publications.get(&configuration),
+            Some(ExactCheckpointPublicationState::PublicationIndeterminate(observed))
+                if *observed == identity
+        ));
+
+        publications.insert(configuration, ExactCheckpointPublicationState::Preparing);
+        assert!(
+            finish_exact_checkpoint_transaction(
+                &mut publications,
+                configuration,
+                Err(ExactCheckpointTransactionError::Indeterminate {
+                    identity: None,
+                    captures: Vec::new(),
+                    source: boundary_error("cleanup pending"),
+                }),
+            )
+            .is_err()
+        );
+        assert!(matches!(
+            publications.get(&configuration),
+            Some(ExactCheckpointPublicationState::CleanupPending {
+                captures,
+                publication: None,
+            }) if captures.is_empty()
+        ));
+    }
+
+    #[test]
+    fn reconciled_publication_requires_and_retires_to_its_authenticated_parent() {
+        let stale_configuration = ContentHash::from_bytes(b"stale configuration");
+        let configuration = ContentHash::from_bytes(b"reconciled configuration");
+        let identity = ContentHash::from_bytes(b"reconciled checkpoint");
+        let mut publications = BTreeMap::from([(
+            configuration,
+            ExactCheckpointPublicationState::PublicationIndeterminate(identity),
+        )]);
+        let mut parents = BTreeMap::from([(stale_configuration, "stale")]);
+
+        assert!(
+            finish_reconciled_exact_ram_publication(
+                &mut publications,
+                &mut parents,
+                configuration,
+                identity,
+            )
+            .is_err()
+        );
+        assert!(matches!(
+            publications.get(&configuration),
+            Some(ExactCheckpointPublicationState::PublicationIndeterminate(observed))
+                if *observed == identity
+        ));
+
+        parents.insert(configuration, "authenticated");
+        let committed = finish_reconciled_exact_ram_publication(
+            &mut publications,
+            &mut parents,
+            configuration,
+            identity,
+        )
+        .unwrap_or_else(|error| panic!("authenticated reconciliation should commit: {error}"));
+
+        assert_eq!(committed, identity);
+        assert_eq!(parents, BTreeMap::from([(configuration, "authenticated")]));
+        assert!(matches!(
+            publications.get(&configuration),
+            Some(ExactCheckpointPublicationState::Published(observed)) if *observed == identity
+        ));
+    }
+
+    #[test]
+    fn changed_path_checkpoint_retains_both_complete_images_without_layers() {
+        const CHILD_MARKER: &str = "CRUCIBLE_RAM_CATALOG_FENCE_CHILD";
+        const TEST_NAME: &str = "vm_lifecycle::quantum_loop::checkpoint_capture::tests::changed_path_checkpoint_retains_both_complete_images_without_layers";
+        if std::env::var_os(CHILD_MARKER).is_none() {
+            // Unrelated parallel process spawns can temporarily inherit a shared
+            // flock descriptor before exec closes it. Isolate the exact last-
+            // owner assertion so every live kernel borrower belongs to this test.
+            let status = std::process::Command::new(
+                std::env::current_exe().expect("locate catalog fence test executable"),
+            )
+            .arg("--exact")
+            .arg(TEST_NAME)
+            .arg("--nocapture")
+            .env(CHILD_MARKER, "1")
+            .status()
+            .expect("launch isolated catalog fence fixture");
+            assert!(status.success(), "isolated catalog fence assertions failed");
+            return;
+        }
+
+        let directory = tempfile::tempdir().expect("checkpoint root");
+        let scenario = ContentHash::from_bytes(b"paged checkpoint source");
+        let catalog = checkpoint_store::paged::PagedRamCatalog::open(
+            directory.path(),
+            scenario,
+            FaultResourceLimits::compiled_maximum(),
+            Some(&crate::vm_lifecycle::checkpoint_store::test_support::test_ram_catalog_provider()),
+        )
+        .expect("RAM catalog");
+        let topology = crucible_ram::Topology::new(
+            vec![
+                crucible_ram::RegionDescriptor::new(
+                    "main",
+                    crucible_ram::RegionClass::MutableMain,
+                    8192,
+                )
+                .expect("region"),
+            ],
+            crucible_ram::Limits::default(),
+        )
+        .expect("topology");
+        let first = {
+            let account = catalog
+                .original()
+                .child()
+                .expect("same original capture account");
+            let retention = catalog.retention().expect("capture retention");
+
+            catalog.store().capture(
+                topology,
+                crucible_ram::Scope::Exact,
+                &mut |_, index, output| {
+                    output.fill(index as u8);
+                    Ok(())
+                },
+                retention.as_ref(),
+                &account,
+                &mut || Ok(()),
+            )
+        }
+        .expect("initial image");
+        let mut changes = [crucible_store::ram::RamPageChange {
+            region_id: String::from("main"),
+            page_index: 1,
+            bytes: vec![9; 4096],
+        }]
+        .into_iter();
+        let second = catalog
+            .store()
+            .update_with_reader(
+                &first,
+                &mut || Ok(changes.next()),
+                catalog.retention().expect("admit successor root").as_ref(),
+                &catalog
+                    .original()
+                    .child()
+                    .expect("same original update account"),
+                &mut || Ok(()),
+            )
+            .expect("persistent successor");
+
+        assert_ne!(first.logical_digest(), second.logical_digest());
+        assert_eq!(
+            catalog
+                .store()
+                .read_page(
+                    &first,
+                    "main",
+                    1,
+                    &catalog
+                        .original()
+                        .child()
+                        .expect("same original read account"),
+                    &mut || Ok(())
+                )
+                .expect("parent page")
+                .bytes(),
+            vec![1; 4096]
+        );
+        assert_eq!(
+            catalog
+                .store()
+                .read_page(
+                    &second,
+                    "main",
+                    1,
+                    &catalog
+                        .original()
+                        .child()
+                        .expect("same original read account"),
+                    &mut || Ok(())
+                )
+                .expect("successor page")
+                .bytes(),
+            vec![9; 4096]
+        );
+        assert_eq!(
+            catalog
+                .verify(&second, &mut || Ok(()))
+                .expect("complete successor")
+                .pages,
+            2
+        );
+        let scenario_directory = directory.path().join(scenario.to_hex());
+        assert!(checkpoint_store::paged::retirement_fence(&scenario_directory).is_err());
+        let fork_reader = second.clone();
+        drop(first);
+        drop(second);
+        drop(catalog);
+        assert!(checkpoint_store::paged::retirement_fence(&scenario_directory).is_err());
+        drop(fork_reader);
+        checkpoint_store::paged::retirement_fence(&scenario_directory)
+            .expect("last actual catalog reader releases deletion exclusion");
+    }
+
+    #[test]
+    fn failed_terminal_capture_refreshes_same_configuration_snapshot() {
+        let _scope = crucible_engine::test_support::fixture_decode_scope(256 * 1024 * 1024)
+            .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
+        let root = tempfile::tempdir()
+            .unwrap_or_else(|error| panic!("create refresh fixture store: {error}"));
+        let fixture =
+            checkpoint_store::build_exact_ram_production_checkpoint_codec_fixture(root.path())
+                .unwrap_or_else(|error| panic!("build refresh fixture: {error}"));
+        let configuration = fixture.configuration().id();
+        let previous = fixture.closure().identity();
+        let mut lifecycle =
+            crate::vm_lifecycle::runtime::tests::production_loop_without_backends(fixture.source());
+        lifecycle.config = Arc::new(
+            ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", root.path())
+                .with_ram_catalog_provider(
+                    checkpoint_store::test_support::test_ram_catalog_provider(),
+                ),
+        );
+        lifecycle.checkpoint_targets.insert(
+            configuration,
+            ExactCheckpointPublicationState::Published(previous),
+        );
+
+        assert_eq!(
+            lifecycle.capture_exact_checkpoint_set(fixture.configuration()),
+            Ok(previous)
+        );
+        let terminal_nodes = fixture
+            .source()
+            .world()
+            .vm_nodes()
+            .iter()
+            .map(|vm| vm.id.clone())
+            .collect::<BTreeSet<_>>();
+        assert!(
+            lifecycle
+                .capture_fresh_exact_checkpoint_set_with_terminal_nodes(
+                    fixture.configuration(),
+                    &terminal_nodes,
+                    &mut || Ok(())
+                )
+                .is_err(),
+            "fresh capture must reach the unavailable live backend, not reuse the snapshot"
+        );
+        assert!(matches!(
+            lifecycle.checkpoint_targets.get(&configuration),
+            Some(ExactCheckpointPublicationState::Published(identity)) if *identity == previous
+        ));
+        assert_eq!(
+            lifecycle
+                .exact_ram_parents
+                .get(&configuration)
+                .map(|parent| parent.closure),
+            Some(previous)
+        );
+    }
+
+    #[test]
+    fn indeterminate_v10_retry_rehydrates_the_complete_paged_parent() {
+        let _scope = crucible_engine::test_support::fixture_decode_scope(256 * 1024 * 1024)
+            .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
+        let root = tempfile::tempdir()
+            .unwrap_or_else(|error| panic!("create reconciliation fixture store: {error}"));
+        let fixture =
+            checkpoint_store::build_exact_ram_production_checkpoint_codec_fixture(root.path())
+                .unwrap_or_else(|error| panic!("build v10 reconciliation fixture: {error}"));
+        let configuration = fixture.configuration().id();
+        let identity = fixture.closure().identity();
+        let node = NodeId {
+            name: String::from("vm-a"),
+        };
+        let mut lifecycle =
+            crate::vm_lifecycle::runtime::tests::production_loop_without_backends(fixture.source());
+        lifecycle.config = Arc::new(
+            ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", root.path())
+                .with_ram_catalog_provider(
+                    checkpoint_store::test_support::test_ram_catalog_provider(),
+                ),
+        );
+        lifecycle.checkpoint_targets = BTreeMap::from([(
+            configuration,
+            ExactCheckpointPublicationState::PublicationIndeterminate(identity),
+        )]);
+        assert!(lifecycle.exact_ram_parents.is_empty());
+
+        let committed_closure = lifecycle
+            .capture_exact_checkpoint_set(fixture.configuration())
+            .unwrap_or_else(|error| panic!("retry indeterminate v10 publication: {error}"));
+        assert_eq!(committed_closure, identity);
+        assert!(matches!(
+            lifecycle.checkpoint_targets.get(&configuration),
+            Some(ExactCheckpointPublicationState::Published(observed)) if *observed == identity
+        ));
+
+        let committed = lifecycle
+            .exact_ram_parents
+            .get(&configuration)
+            .and_then(|parent| parent.targets.get(&node))
+            .map(|checkpoint| QmpCheckpointIdentity::from(checkpoint.identity))
+            .unwrap_or_else(|| panic!("retry should hydrate the v10 exact RAM parent"));
+        assert_eq!(committed.checkpoint(), configuration);
+
+        let (parent_closure, parent) = retained_exact_ram_parent_for_committed(
+            &lifecycle.exact_ram_parents,
+            None,
+            &node,
+            Some(committed),
+        )
+        .unwrap_or_else(|error| panic!("select next persistent RAM predecessor: {error}"));
+        assert_eq!(parent_closure, Some(identity));
+        let parent =
+            parent.unwrap_or_else(|| panic!("next capture should retain a complete predecessor"));
+        assert_eq!(parent.ram.record().scope(), crucible_ram::Scope::Exact);
+        assert_eq!(
+            parent
+                .catalog
+                .verify(&parent.ram, &mut || Ok(()))
+                .expect("complete retained RAM")
+                .pages,
+            4
+        );
+    }
+}
+#[cfg(test)]
+#[path = "checkpoint_capture/tests.rs"]
+mod preparation_tests;

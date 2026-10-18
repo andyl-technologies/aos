@@ -157,7 +157,7 @@ aos ability artifact-consumption artifact-consumption.json \
 
 The report identifies the exact observed files, mechanism, and closure retention.
 It does not imply that a native runtime effect was activated. The shared decoder
-lives in `aos_doc_model::artifact_consumption`; it is independent of runtime
+lives in `aos_artifact_evidence::consumption`; it is independent of runtime
 handler selection and transaction journals.
 
 ## Browse through Hub

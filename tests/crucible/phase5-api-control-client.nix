@@ -7,13 +7,22 @@
 }: let
   apiDoc = builtins.readFile ../../docs/rfcs/0010-crucible/21-api.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
-  apiCargo = builtins.readFile ../../crates/crucible-api/Cargo.toml;
-  apiLib = builtins.readFile ../../crates/crucible-api/src/lib.rs;
-  apiClient = builtins.readFile ../../crates/crucible-api/src/client.rs;
-  rpcAbi = builtins.readFile ../../crates/crucible-api/src/rpc_abi.rs;
+  apiCargo = builtins.concatStringsSep "\n" [
+    (builtins.readFile ../../crates/crucible/control/crucible-control-client/Cargo.toml)
+    (builtins.readFile ../../crates/crucible/control/crucible-control-server/Cargo.toml)
+  ];
+  apiLib = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "exports";
+  };
+  apiClient = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "client";
+  };
+  rpcAbi = builtins.readFile ../../crates/crucible/control/crucible-control-api/src/rpc_abi.rs;
   apiGateTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-api/tests/gate_control_client.rs;
+    entry = ../../crates/crucible/control/crucible-control-client/tests/gate_control_client.rs;
   };
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -34,7 +43,7 @@
         needle = "`T-API-1` is green through `checks.crucible.phase5.apiControlClient`";
       }
     ]
-    ++ failuresFor "crates/crucible-api/Cargo.toml" apiCargo [
+    ++ failuresFor "crates/crucible/control/crucible-control-api/Cargo.toml" apiCargo [
       {
         label = "reqwest HTTP/2 client dependency";
         needle = ''reqwest = { workspace = true, features = ["http2"] }'';
@@ -44,7 +53,7 @@
         needle = "axum = { workspace = true }";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/lib.rs" apiLib [
+    ++ failuresFor "crates/crucible/control/crucible-control-api/src/lib.rs" apiLib [
       {
         label = "client module exported";
         needle = "pub mod client";
@@ -54,7 +63,7 @@
         needle = "ControlClient";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/rpc_abi.rs" rpcAbi [
+    ++ failuresFor "crates/crucible/control/crucible-control-api/src/rpc_abi.rs" rpcAbi [
       {
         label = "typed hello request encoder";
         needle = "pub fn encode_rpc_hello_request";
@@ -64,7 +73,7 @@
         needle = "pub fn encode_rpc_hello_response";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/client.rs" apiClient [
+    ++ failuresFor "crates/crucible/control/crucible-control-client/src/client.rs" apiClient [
       {
         label = "async typed client trait";
         needle = "pub trait ControlClient";
@@ -142,7 +151,7 @@
         needle = "RpcDecode";
       }
     ]
-    ++ failuresFor "crates/crucible-api/tests/gate_control_client*.rs" apiGateTest [
+    ++ failuresFor "crates/crucible/control/crucible-control-client/tests/gate_control_client*.rs" apiGateTest [
       {
         label = "trait transport-agnostic test";
         needle = "control_client_trait_is_transport_agnostic_over_in_process_and_rpc";

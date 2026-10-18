@@ -647,7 +647,7 @@ unknown, duplicated, future-dated, expired, or incorrectly scoped evidence
 cannot satisfy a required case. Preserve failed attempts; a later pass does not
 erase them from the operational record.
 
-Two ages are fixed in `aos_release::qualification::limits`: rollout
+Two ages are fixed in `aos_release_format::qualification::limits`: rollout
 observations and approvals expire after 10 minutes, and any other observation a
 report relies on expires after 30 days. A3 cases additionally require
 observation at least as long as the destination's soak, or the soak of an
@@ -784,7 +784,7 @@ key, either through `aos maintain release review` or directly:
 
 Use the existing signed-receipt envelope: Ed25519 signs the SHA-256 of
 `aos.hub.release-evidence-signature/v1`, a NUL byte, then the canonical payload.
-This is `RECEIPT_SIGNATURE_DOMAIN` in `crates/aos-release/src/receipt.rs`.
+This is `RECEIPT_SIGNATURE_DOMAIN` in `crates/aos/release/aos-release-format/src/receipt.rs`.
 Keep review signing under the configured authority provider, outside the Nix
 store. The destination's profile sets the review threshold: `functional` and
 `soak` require one reviewer, `smoke` and `build` none. A reviewer may be added

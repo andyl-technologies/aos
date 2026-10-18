@@ -10,22 +10,22 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
   guestNonModification = import ./phase1-guest-non-modification.nix {inherit pkgs lib;};
   model = import ./_crucible-model-source.nix {inherit lib;};
-  modelCanonical = builtins.readFile ../../crates/crucible/src/model/canonical.rs;
+  modelCanonical = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/model/canonical.rs;
   libSource = builtins.concatStringsSep "\n" [
-    (builtins.readFile ../../crates/crucible/src/lib.rs)
-    (builtins.readFile ../../crates/crucible/src/tests/model_core.rs)
+    (builtins.readFile ../../crates/crucible/engine/crucible-engine/src/lib.rs)
+    (builtins.readFile ../../crates/crucible/engine/crucible-engine/src/tests/model_core.rs)
   ];
-  cargoManifest = builtins.readFile ../../crates/crucible/Cargo.toml;
-  replayGate = builtins.readFile ../../crates/crucible/tests/gate_replay_oracle.rs;
-  replayOracleHarness = builtins.readFile ../../crates/crucible-harness/src/replay_oracle.rs;
+  cargoManifest = builtins.readFile ../../crates/crucible/engine/crucible-engine/Cargo.toml;
+  replayGate = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/gate_replay_oracle.rs;
+  replayOracleHarness = builtins.readFile ../../crates/crucible/testing/crucible-test-support/src/replay_oracle.rs;
   qemuRealization = builtins.concatStringsSep "\n" [
-    (builtins.readFile ../../crates/crucible-qemu/src/realization.rs)
-    (builtins.readFile ../../crates/crucible-qemu/src/realization/node_executor.rs)
+    (builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/src/realization.rs)
+    (builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/src/realization/node_executor.rs)
   ];
-  qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
-  gateTargets = builtins.readFile ../../crates/crucible-harness/src/gate_targets.rs;
-  gateCatalog = builtins.readFile ../../crates/crucible-harness/src/lib.rs;
-  gateCatalogTest = builtins.readFile ../../crates/crucible-harness/tests/gate_catalog.rs;
+  qemuLib = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/src/lib.rs;
+  gateTargets = builtins.readFile ../../crates/crucible/testing/crucible-test-support/src/gate_targets.rs;
+  gateCatalog = builtins.readFile ../../crates/crucible/testing/crucible-test-support/src/lib.rs;
+  gateCatalogTest = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/gate_catalog.rs;
   gateTargetMapping = builtins.readFile ./phase1-gate-target-mapping.nix;
   defaultChecks = builtins.readFile ./default.nix;
   determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
@@ -36,7 +36,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "crates/crucible/src/model.rs" model [
+    failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
       {
         label = "pure reducer implementation";
         needle = "pub fn reduce(def: &ScenarioDef, schedule: &Schedule) -> Result<State, EngineError>";
@@ -190,7 +190,7 @@
         needle = "self.record_checkpoint_closure(tip)?;";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model/canonical.rs" modelCanonical [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model/canonical.rs" modelCanonical [
       {
         label = "reduce state domain separator";
         needle = "crucible.reduce.state.v2";
@@ -208,13 +208,13 @@
         needle = "fn write_decision(hasher: &mut MaterialHasher, decision: &Decision)";
       }
     ]
-    ++ forbiddenFor "crates/crucible/src/model.rs" model [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
       {
         label = "reduce not-implemented placeholder";
         needle = "operation: \"reduce\"";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs and src/tests/model_core.rs" libSource [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs and src/tests/model_core.rs" libSource [
       {
         label = "reduce purity test";
         needle = "reduce_is_pure_over_scenario_and_schedule";
@@ -304,10 +304,10 @@
         needle = "fat snapshot should still match thin derivation after GC";
       }
     ]
-    ++ failuresFor "crates/crucible/Cargo.toml" cargoManifest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/Cargo.toml" cargoManifest [
       {
         label = "replay-oracle dev dependency";
-        needle = "crucible-harness = { path = \"../crucible-harness\" }";
+        needle = "crucible-test-support = { path = \"../../testing/crucible-test-support\" }";
       }
       {
         label = "test-double replay oracle target";
@@ -318,7 +318,7 @@
         needle = "required-features = [\"test-double\"]";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/gate_replay_oracle.rs" replayGate [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/gate_replay_oracle.rs" replayGate [
       {
         label = "fixed checkpoint corpus";
         needle = "assert_replay_oracle_fixed_checkpoint_corpus(";
@@ -488,7 +488,7 @@
         needle = "assert!(matches!(snapshot.blob, NodeBlobRef::CowDelta { .. }));";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/gate_replay_oracle.rs" replayGate [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/gate_replay_oracle.rs" replayGate [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -502,7 +502,7 @@
         needle = ".prefix(checkpoint.schedule.len())";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/src/replay_oracle.rs" replayOracleHarness [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/src/replay_oracle.rs" replayOracleHarness [
       {
         label = "first mismatch reporting";
         needle = "fn mismatch(checkpoint_id: &str, fat_hash: &[u8], thin_hash: &[u8])";
@@ -636,7 +636,7 @@
         needle = "reproduction_artifact_round_trip_rejects_inconsistent_reproduced_oracle";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/realization.rs" qemuRealization [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/realization.rs" qemuRealization [
       {
         label = "one-shot QEMU replay-oracle match";
         needle = "pub struct QemuReplayOracleMatch";
@@ -678,7 +678,7 @@
         needle = "admissions_reject_node_and_full_snapshot_transplants";
       }
     ]
-    ++ forbiddenFor "crates/crucible-qemu/src/realization.rs" qemuRealization [
+    ++ forbiddenFor "crates/crucible/qemu/crucible-qemu-host/src/realization.rs" qemuRealization [
       {
         label = "generic loadvm probe authorization";
         needle = "authorize_" + "loadvm_probe";
@@ -692,25 +692,25 @@
         needle = "QemuRestoreCommand" + "Purpose";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/lib.rs" qemuLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/lib.rs" qemuLib [
       {
         label = "QEMU replay-oracle match exported";
         needle = "QemuReplayOracleMatch";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/src/gate_targets.rs" gateTargets [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/src/gate_targets.rs" gateTargets [
       {
         label = "implemented replay-oracle target";
-        needle = "gate: \"gate:replay-oracle\",\n        package: \"crucible\",\n        test_target: \"gate_replay_oracle\",\n        required_features: &[\"test-double\"],";
+        needle = "gate: \"gate:replay-oracle\",\n        package: \"crucible-engine\",\n        test_target: \"gate_replay_oracle\",\n        required_features: &[\"test-double\"],";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/src/lib.rs" gateCatalog [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/src/lib.rs" gateCatalog [
       {
         label = "implemented replay-oracle catalog status";
-        needle = "name: \"gate:replay-oracle\",\n        phase: GatePhase::Phase1,\n        owner: \"crucible\",\n        status: GateStatus::Implemented,";
+        needle = "name: \"gate:replay-oracle\",\n        phase: GatePhase::Phase1,\n        owner: \"crucible-engine\",\n        status: GateStatus::Implemented,";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/tests/gate_catalog.rs" gateCatalogTest [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/tests/gate_catalog.rs" gateCatalogTest [
       {
         label = "replay oracle implemented status assertion";
         needle = "find_gate(\"gate:replay-oracle\").map(|spec| spec.status),\n        Some(GateStatus::Implemented)";
@@ -719,7 +719,7 @@
     ++ failuresFor "tests/crucible/phase1-gate-target-mapping.nix" gateTargetMapping [
       {
         label = "implemented replay-oracle mapping target";
-        needle = "gate = \"gate:replay-oracle\";\n      package = \"crucible\";\n      testTarget = \"gate_replay_oracle\";\n      requiredFeatures = [\"test-double\"];";
+        needle = "gate = \"gate:replay-oracle\";\n      package = \"crucible-engine\";\n      testTarget = \"gate_replay_oracle\";\n      requiredFeatures = [\"test-double\"];";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -825,7 +825,7 @@
     ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsAndSketches [
       {
         label = "T-PAT-4 completion names materialization policy";
-        needle = "`crucible::MaterializationPolicy`";
+        needle = "`crucible_engine::MaterializationPolicy`";
       }
       {
         label = "T-PAT-4 completion names fat eviction";
@@ -849,7 +849,7 @@
       }
       {
         label = "T-TEMP-4 completion names materialization policy";
-        needle = "`crucible::MaterializationPolicy`";
+        needle = "`crucible_engine::MaterializationPolicy`";
       }
       {
         label = "T-TEMP-4 completion names eviction API";
@@ -940,7 +940,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-replay-oracle-target" \
-              -p crucible \
+              -p crucible-engine \
               --lib \
               temporal_graph_ \
               -- --test-threads=1
@@ -948,7 +948,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-replay-oracle-target" \
-              -p crucible \
+              -p crucible-engine \
               --features test-double \
               --test gate_replay_oracle \
               -- --test-threads=1
@@ -956,7 +956,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-replay-oracle-target" \
-              -p crucible-harness \
+              -p crucible-test-support \
               --lib \
               replay_oracle \
               -- --test-threads=1
@@ -964,7 +964,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-replay-oracle-target" \
-              -p crucible-qemu \
+              -p crucible-qemu-host \
               --lib \
               replay_oracle \
               -- --test-threads=1
@@ -972,7 +972,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-replay-oracle-target" \
-              -p crucible-qemu \
+              -p crucible-qemu-host \
               --lib \
               qemu_exact_snapshot_rejects_incomplete_materialized_state \
               -- --test-threads=1
@@ -1017,9 +1017,9 @@ in
             check=${attrPath}
             gate=gate:replay-oracle
             tasks=${builtins.concatStringsSep "," taskIds}
-            rust_test=crucible::gate_replay_oracle
-            harness_rust_test=crucible-harness::replay_oracle
-            qemu_rust_test=crucible-qemu::realization::replay_oracle
+            rust_test=crucible_engine::gate_replay_oracle
+            harness_rust_test=crucible_test_support::replay_oracle
+            qemu_rust_test=crucible_qemu_host::realization::replay_oracle
             oracle=fat-materialized-equals-thin-from-ancestor
             qemu_oracle=v9-descriptor-restore-equals-replay-from-ancestor
             qemu_oracle_probe_authority=private-descriptor-bound-operation

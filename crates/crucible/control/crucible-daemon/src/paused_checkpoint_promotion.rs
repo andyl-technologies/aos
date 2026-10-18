@@ -1,0 +1,1373 @@
+//! Crash-safe replay-oracle promotion of paused attempt checkpoints.
+//!
+//! A freshly captured paused root deliberately carries `NotRun` replay-oracle
+//! evidence and is not eligible for production resume. This module keeps QEMU
+//! comparison and immutable-store work outside the local supervisor actor,
+//! then uses linear phase tokens to establish the promoted root as a durable GC
+//! root before its first write.
+
+use std::collections::BTreeMap;
+use std::path::Path;
+
+use crate::ProductionVmReplayExactNodeRestoreAdmission;
+use crucible_engine::{Configuration, ScenarioDefForm, World};
+use crucible_control_api::LifecycleApiError;
+use crucible_campaign::{
+    AttemptResourceLimits, AttemptStart, AttemptStartMode, CampaignExecutorStore,
+    CampaignRepositoryError, ExactCheckpointId, ExecutionId,
+    attempt_execution_basis_digest_for_start_mode,
+};
+
+
+use crucible_qemu_host::{QemuReplayValidationExecutor, QemuVmRealizationError};
+use crucible_store::content_store::ContentId;
+use thiserror::Error;
+
+use crate::exact_checkpoint_restore::validate_materialized_start_configuration;
+use crate::exact_checkpoint_restore::{
+    GuardedReplayAdmission, QemuGuardedReplayOracleSession, replay_quarantine_with_cause,
+};
+use crate::executor_supervisor::SelectedExactCheckpointRoot;
+use crate::{
+    AssignmentLedger, AttemptAdmissionValidator, AttemptExecutionKey,
+    CheckpointPromotionCompletionOutcome, CheckpointPromotionRecovery,
+    CheckpointPromotionRestartWork, CheckpointPromotionStageOutcome, CrucibleArtifactError,
+    CrucibleAttemptExecution, CrucibleResolvedAttemptStart, ExactCheckpointStore,
+    ExactCheckpointStoreError, ExecutionCancellation, LocalExecutorError, LocalExecutorSupervisor,
+    PausedCheckpointPromotionRecovery, PreparedProductionAttemptReplayOraclePromotion,
+    ProductionAttemptCheckpointRestoreError, ProductionBakedGenesisReplayStore,
+    QemuAttemptProcessResourceGuard,
+    authenticate_production_exact_checkpoint_replay_oracle_promotion,
+    decode_crucible_attempt_execution, install_attempt_production_exact_checkpoint,
+    prepare_attempt_production_replay_oracle_promotion, resolve_attempt_execution_input,
+};
+
+/// Replay-validated replacement bound to one paused attempt execution.
+#[derive(Debug)]
+pub(crate) struct PreparedPausedCheckpointPromotion {
+    key: AttemptExecutionKey,
+    execution: ExecutionId,
+    promotion: Box<PreparedProductionAttemptReplayOraclePromotion>,
+}
+
+/// Complete semantic and operational basis for one production-root comparison.
+pub(crate) struct ProductionPausedCheckpointPromotionTarget<'a> {
+    key: AttemptExecutionKey,
+    execution: ExecutionId,
+    raw: ExactCheckpointId,
+    source: &'a ScenarioDefForm,
+    initial: &'a Configuration,
+    post_selection: Option<&'a Configuration>,
+    run_state_root: &'a Path,
+    cancellation: &'a ExecutionCancellation,
+    resources: AttemptResourceLimits,
+    start_mode: AttemptStartMode,
+    attempt: &'a CrucibleAttemptExecution,
+    replay_store: Option<&'a CampaignExecutorStore>,
+    selected_checkpoint: &'a mut Option<SelectedExactCheckpointRoot>,
+}
+
+/// Owned semantic input for restarting one raw paused-root comparison.
+pub(crate) struct ResolvedProductionPausedCheckpointPromotionRecovery {
+    key: AttemptExecutionKey,
+    execution_id: ExecutionId,
+    raw: ExactCheckpointId,
+    promotion_basis: crate::CheckpointPromotionExecutionBasis,
+    attempt: CrucibleAttemptExecution,
+    cancellation: ExecutionCancellation,
+}
+
+impl ResolvedProductionPausedCheckpointPromotionRecovery {
+    #[cfg(test)]
+    pub(crate) fn matches_recovery(&self, recovery: &PausedCheckpointPromotionRecovery) -> bool {
+        self.key == recovery.key()
+            && self.execution_id == recovery.execution()
+            && self.raw == recovery.source()
+            && self.promotion_basis == recovery.promotion_basis()
+    }
+
+    /// Borrows the complete target for one guarded production comparison.
+    #[must_use]
+    pub(crate) fn target<'a>(
+        &'a self,
+        replay_store: &'a CampaignExecutorStore,
+        run_state_root: &'a Path,
+        selected_checkpoint: &'a mut Option<SelectedExactCheckpointRoot>,
+    ) -> ProductionPausedCheckpointPromotionTarget<'a> {
+        let (initial, post_selection) = match self.attempt.start() {
+            CrucibleResolvedAttemptStart::Discover { configuration } => (configuration, None),
+            CrucibleResolvedAttemptStart::Branch {
+                parent, selected, ..
+            } => (parent, Some(selected)),
+            CrucibleResolvedAttemptStart::AfterAttempt { .. } => {
+                (self.attempt.start().configuration(), None)
+            }
+        };
+        ProductionPausedCheckpointPromotionTarget {
+            key: self.key,
+            execution: self.execution_id,
+            raw: self.raw,
+            source: self.attempt.scenario(),
+            initial,
+            post_selection,
+            run_state_root,
+            cancellation: &self.cancellation,
+            resources: self.promotion_basis.resources(),
+            start_mode: self.promotion_basis.start_mode(),
+            attempt: &self.attempt,
+            replay_store: Some(replay_store),
+            selected_checkpoint,
+        }
+    }
+}
+
+mod replay_protocol;
+pub(crate) use replay_protocol::{
+    ProductionPausedCheckpointReplayFactory, ProductionReplayBeginFailure, ProductionReplayCleanup,
+    ProductionReplayError, ReplayBoundaryRefusal, check_replay_boundary,
+};
+
+/// Newly admitted node-specific replay session before either QEMU path starts.
+///
+/// The value keeps the realization store and fixed-node executor linear while
+/// the caller retains the one aggregate attempt guard.
+pub(crate) struct ProductionPausedCheckpointReplaySession {
+    realization_store: ProductionBakedGenesisReplayStore,
+    executor: QemuReplayValidationExecutor,
+}
+
+impl ProductionPausedCheckpointReplaySession {
+    /// Binds one unopened fixed-node executor to its realization store.
+    #[must_use]
+    pub(crate) const fn new(
+        realization_store: ProductionBakedGenesisReplayStore,
+        executor: QemuReplayValidationExecutor,
+    ) -> Self {
+        Self {
+            realization_store,
+            executor,
+        }
+    }
+
+    /// Consumes the admission into its linear realization capabilities.
+    #[must_use]
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        ProductionBakedGenesisReplayStore,
+        QemuReplayValidationExecutor,
+    ) {
+        (self.realization_store, self.executor)
+    }
+}
+
+impl PreparedPausedCheckpointPromotion {
+    /// Binds one complete multi-node production replacement to its owner.
+    ///
+    /// The production token already proves that the installed raw root and
+    /// every source-bound live-node replay result derive this exact no-write
+    /// campaign replacement.
+    #[must_use]
+    pub(crate) fn new(
+        key: AttemptExecutionKey,
+        execution: ExecutionId,
+        promotion: PreparedProductionAttemptReplayOraclePromotion,
+    ) -> Self {
+        Self {
+            key,
+            execution,
+            promotion: Box::new(promotion),
+        }
+    }
+
+    /// Returns the raw exact root compared by the replay oracle.
+    #[must_use]
+    pub(crate) const fn source(&self) -> ExactCheckpointId {
+        self.promotion.source()
+    }
+
+    /// Returns the expected replacement root containing matching evidence.
+    #[must_use]
+    pub(crate) const fn promoted(&self) -> ExactCheckpointId {
+        self.promotion.promoted()
+    }
+
+    pub(crate) fn into_native_retirement(
+        self,
+    ) -> Option<crate::ProductionExactCheckpointRetirement> {
+        let retirement = self.promotion.replacement().native_retirement();
+        drop(self);
+        retirement
+    }
+}
+
+/// Linear proof that both source and replacement are durable retention roots.
+#[derive(Debug)]
+pub(crate) struct StagedPausedCheckpointPromotion {
+    prepared: PreparedPausedCheckpointPromotion,
+}
+
+impl StagedPausedCheckpointPromotion {
+    pub(crate) fn into_native_retirement(
+        self,
+    ) -> Option<crate::ProductionExactCheckpointRetirement> {
+        self.prepared.into_native_retirement()
+    }
+}
+
+/// Complete durable replacement awaiting the final paused-state CAS.
+#[derive(Debug)]
+pub(crate) struct PublishedPausedCheckpointPromotion {
+    key: AttemptExecutionKey,
+    execution: ExecutionId,
+    source: ExactCheckpointId,
+    promoted: ExactCheckpointId,
+    evidence: ContentId,
+}
+
+impl PublishedPausedCheckpointPromotion {
+    /// Returns the raw durable root replaced by this publication.
+    #[must_use]
+    pub(crate) const fn source(&self) -> ExactCheckpointId {
+        self.source
+    }
+
+    /// Returns the replay-validated replacement root.
+    #[must_use]
+    pub(crate) const fn promoted(&self) -> ExactCheckpointId {
+        self.promoted
+    }
+}
+
+/// Result of the short supervisor staging phase.
+#[derive(Debug)]
+pub(crate) enum PausedCheckpointPromotionStageOutcome {
+    /// Immutable publication may proceed outside the supervisor actor.
+    Publish(Box<StagedPausedCheckpointPromotion>),
+    /// Another idempotent or stale state won without further writes.
+    Finished {
+        /// Prepared token retained so redundant native state can be retired.
+        prepared: Box<PreparedPausedCheckpointPromotion>,
+        /// Durable staging disposition.
+        outcome: CheckpointPromotionStageOutcome,
+    },
+}
+
+/// QEMU comparison or no-write promotion preparation failure.
+#[derive(Debug, Error)]
+pub(crate) enum PausedCheckpointPromotionPreparationError {
+    /// Production-root installation or no-write replacement preparation failed.
+    #[error(transparent)]
+    ProductionRestore(#[from] ProductionAttemptCheckpointRestoreError),
+    /// The portable production closure could not stream one raw live target.
+    #[error(transparent)]
+    ProductionClosure(#[from] LifecycleApiError),
+    /// Root-bound and repository choice records do not authenticate the schedule.
+    #[error(transparent)]
+    ReplayChoices(#[from] crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosureError),
+    /// Fat/thin realization, comparison, or mandatory cleanup failed.
+    #[error(transparent)]
+    Realization(#[from] QemuVmRealizationError),
+    /// Guard cleanup preserves its moved leaf and observed custody.
+    #[error(transparent)]
+    ResourceCleanup(#[from] crate::QemuAttemptResourceGuardCleanupFailure),
+    /// Realization refused before guard cleanup independently failed.
+    #[error("realization failed: {first}; guard cleanup failed: {cleanup}")]
+    RealizationCleanup {
+        /// The unchanged initiating realization error.
+        #[source]
+        first: QemuVmRealizationError,
+        /// The independent cleanup cause and reporting policy.
+        cleanup: ProductionReplayCleanup,
+    },
+    /// Comparison failed before independent guard cleanup also refused.
+    #[error("comparison failed: {comparison}; guard cleanup failed: {cleanup}")]
+    ComparisonCleanup {
+        /// The unchanged initiating comparison error.
+        #[source]
+        comparison: QemuVmRealizationError,
+        /// The independently observed cleanup result.
+        cleanup: ProductionReplayCleanup,
+    },
+    /// The original Main role retains a replay startup, return or terminal report.
+    #[error("supervised replay failed: {first}; independent return: {cleanup:?}")]
+    SupervisedReplay {
+        #[source]
+        first: ProductionReplayError,
+        cleanup: Option<ProductionReplayCleanup>,
+    },
+    #[error(transparent)]
+    SupervisedCleanup(ProductionReplayCleanup),
+    /// Canonical event evidence could not be authenticated under its original metadata authority.
+    #[error("checkpoint event identity failed: {0}")]
+    EventIdentity(#[source] crucible_engine::EngineError),
+    /// The independent replay proof could not be constructed.
+    #[error("checkpoint replay proof failed: {0}")]
+    ReplayProof(#[source] crate::QemuFreshModeledDriverError),
+    /// Independent execution did not reproduce the captured checkpoint boundary.
+    #[error("checkpoint does not match an independent full-world replay")]
+    SavepointReplayMismatch,
+}
+
+impl From<ProductionReplayError> for PausedCheckpointPromotionPreparationError {
+    fn from(first: ProductionReplayError) -> Self {
+        match first {
+            ProductionReplayError::Realization(first) => Self::Realization(first),
+            ProductionReplayError::Cleanup(first) => first.into(),
+            first => Self::SupervisedReplay {
+                first,
+                cleanup: None,
+            },
+        }
+    }
+}
+
+impl From<ProductionReplayCleanup> for PausedCheckpointPromotionPreparationError {
+    fn from(first: ProductionReplayCleanup) -> Self {
+        match first {
+            ProductionReplayCleanup::Native(first) => Self::ResourceCleanup(first),
+            first => Self::SupervisedCleanup(first),
+        }
+    }
+}
+
+/// Failure to resolve one durable raw pause into guarded comparison input.
+#[derive(Debug, Error)]
+pub(crate) enum PausedCheckpointPromotionRecoveryResolutionError {
+    /// Immutable campaign input was unavailable or failed authentication.
+    #[error(transparent)]
+    Repository(#[from] CampaignRepositoryError),
+    /// Nested Crucible scenario or configuration bytes failed strict decoding.
+    #[error(transparent)]
+    Artifact(#[from] CrucibleArtifactError),
+    /// The durable resource/retention basis does not match the attempt key.
+    #[error("paused checkpoint promotion execution basis is inconsistent")]
+    ExecutionBasisMismatch,
+    /// A capture basis does not name this discovery attempt's exact start artifact.
+    #[error("paused checkpoint promotion capture start is inconsistent")]
+    CaptureStartMismatch,
+}
+
+/// No-write restart result ready for a short supervisor or publication phase.
+#[derive(Debug)]
+pub(crate) enum PreparedPausedCheckpointPromotionRestart {
+    /// A raw pause passed semantic resolution and guarded replay comparison.
+    Stage(Box<PreparedPausedCheckpointPromotion>),
+    /// A staged replacement was already complete and reauthenticated.
+    Reconcile(Box<PublishedPausedCheckpointPromotion>),
+}
+
+/// Failure to prepare one durable promotion phase after restart.
+#[derive(Debug, Error)]
+pub(crate) enum PausedCheckpointPromotionRestartPreparationError {
+    /// Raw-pause semantic input or its execution basis was invalid.
+    #[error(transparent)]
+    Resolution(#[from] PausedCheckpointPromotionRecoveryResolutionError),
+    /// A staged pair's immutable attempt input was unavailable or invalid.
+    #[error(transparent)]
+    Repository(#[from] CampaignRepositoryError),
+    /// A staged pair's nested Crucible input failed strict decoding.
+    #[error(transparent)]
+    Artifact(#[from] CrucibleArtifactError),
+    /// Guarded raw-root comparison or no-write replacement preparation failed.
+    #[error(transparent)]
+    Preparation(#[from] Box<PausedCheckpointPromotionPreparationError>),
+    /// A staged production source/replacement pair failed full authentication.
+    #[error(transparent)]
+    Staged(#[from] ProductionAttemptCheckpointRestoreError),
+}
+
+/// Resolves a durable raw pause into owned production-comparison input.
+///
+/// Repository and artifact authentication happen without supervisor ownership
+/// and without writes. The caller supplies the fresh cancellation incarnation
+/// that every guarded replay session must share during this recovery attempt.
+///
+/// # Errors
+///
+/// Returns [`PausedCheckpointPromotionRecoveryResolutionError`] when the
+/// durable execution basis is inconsistent or any immutable semantic input
+/// cannot be authenticated and strictly decoded.
+pub(crate) fn resolve_production_paused_checkpoint_promotion_recovery(
+    store: &CampaignExecutorStore,
+    recovery: &PausedCheckpointPromotionRecovery,
+    cancellation: ExecutionCancellation,
+) -> Result<
+    ResolvedProductionPausedCheckpointPromotionRecovery,
+    PausedCheckpointPromotionRecoveryResolutionError,
+> {
+    let basis = recovery.promotion_basis();
+    validate_promotion_execution_basis(recovery.key(), recovery.execution_basis(), basis)?;
+    store.validate_execution_scope(
+        recovery.key().lineage(),
+        recovery.key().attempt(),
+        basis.start_mode(),
+    )?;
+    let input = crate::resolve_attempt_execution_input_with_resources(
+        store,
+        recovery.key(),
+        basis.resources(),
+    )?;
+    validate_capture_attempt_start(&input, basis.start_mode())?;
+    let execution =
+        crate::decode_crucible_attempt_execution_with_resources(store, &input, basis.resources())?;
+    Ok(ResolvedProductionPausedCheckpointPromotionRecovery {
+        key: recovery.key(),
+        execution_id: recovery.execution(),
+        raw: recovery.source(),
+        promotion_basis: recovery.promotion_basis(),
+        attempt: execution,
+        cancellation,
+    })
+}
+
+fn validate_promotion_execution_basis(
+    key: AttemptExecutionKey,
+    execution_basis: crucible_campaign::CampaignHash,
+    basis: crate::CheckpointPromotionExecutionBasis,
+) -> Result<(), PausedCheckpointPromotionRecoveryResolutionError> {
+    if attempt_execution_basis_digest_for_start_mode(
+        key.lineage(),
+        key.attempt(),
+        basis.resources(),
+        basis.retention(),
+        basis.start_mode(),
+        basis.retention_policy(),
+    ) != execution_basis
+    {
+        return Err(PausedCheckpointPromotionRecoveryResolutionError::ExecutionBasisMismatch);
+    }
+
+    Ok(())
+}
+
+fn validate_capture_attempt_start(
+    input: &crate::AttemptExecutionInput,
+    start_mode: AttemptStartMode,
+) -> Result<(), PausedCheckpointPromotionRecoveryResolutionError> {
+    let configuration = match start_mode {
+        AttemptStartMode::Execute => return Ok(()),
+        AttemptStartMode::CaptureMaterializedStart { configuration } => {
+            let AttemptStart::Discover {
+                configuration: resolved,
+            } = input.attempt().start()
+            else {
+                return Err(PausedCheckpointPromotionRecoveryResolutionError::CaptureStartMismatch);
+            };
+            (resolved == configuration).then_some(configuration)
+        }
+        AttemptStartMode::SavepointCapture { configuration, .. } => {
+            let resolved = match input.attempt().start() {
+                AttemptStart::Discover { configuration } => configuration,
+                AttemptStart::Branch { parent, .. } => parent,
+                AttemptStart::AfterAttempt { reached, .. } => reached,
+            };
+            (resolved == configuration).then_some(configuration)
+        }
+        AttemptStartMode::SelectedSavepoint { .. } => {
+            let AttemptStart::AfterAttempt { reached, .. } = input.attempt().start() else {
+                return Err(PausedCheckpointPromotionRecoveryResolutionError::CaptureStartMismatch);
+            };
+            Some(reached)
+        }
+    };
+    if configuration.is_none() {
+        return Err(PausedCheckpointPromotionRecoveryResolutionError::CaptureStartMismatch);
+    }
+
+    Ok(())
+}
+
+/// Prepares one durable paused-root restart phase without supervisor ownership.
+///
+/// Raw pauses resolve their exact repository input and run the complete guarded
+/// multi-node comparison. Staged pairs fully authenticate the published
+/// source/replacement relationship and repeat the independent savepoint-boundary
+/// replay when that start mode requires it. No path writes immutable objects or
+/// operational ledger state.
+///
+/// # Errors
+///
+/// Returns [`PausedCheckpointPromotionRestartPreparationError`] when semantic
+/// input, guarded comparison, or the staged production pair fails closed.
+pub(crate) fn prepare_production_paused_checkpoint_promotion_restart<F>(
+    store: &CampaignExecutorStore,
+    checkpoints: &ExactCheckpointStore,
+    work: &mut CheckpointPromotionRestartWork,
+    run_state_root: &Path,
+    cancellation: ExecutionCancellation,
+    factory: &mut F,
+) -> Result<
+    PreparedPausedCheckpointPromotionRestart,
+    PausedCheckpointPromotionRestartPreparationError,
+>
+where
+    F: ProductionPausedCheckpointReplayFactory,
+{
+    match work {
+        CheckpointPromotionRestartWork::Paused(recovery) => {
+            let resolved = resolve_production_paused_checkpoint_promotion_recovery(
+                store,
+                recovery,
+                cancellation,
+            )?;
+            let target = resolved.target(store, run_state_root, recovery.selected_checkpoint());
+            let prepared = validate_and_prepare_production_paused_checkpoint_promotion(
+                checkpoints,
+                target,
+                factory,
+            )
+            .map_err(Box::new)?;
+            Ok(PreparedPausedCheckpointPromotionRestart::Stage(Box::new(
+                prepared,
+            )))
+        }
+        CheckpointPromotionRestartWork::Staged(recovery) => {
+            let recovery = *recovery;
+            let promotion_basis = recovery.promotion_basis();
+            if let Some(basis) = promotion_basis {
+                validate_promotion_execution_basis(
+                    recovery.key(),
+                    recovery.execution_basis(),
+                    basis,
+                )?;
+                store.validate_execution_scope(
+                    recovery.key().lineage(),
+                    recovery.key().attempt(),
+                    basis.start_mode(),
+                )?;
+            }
+            let input = match promotion_basis {
+                Some(basis) => crate::resolve_attempt_execution_input_with_resources(
+                    store,
+                    recovery.key(),
+                    basis.resources(),
+                )?,
+                None => resolve_attempt_execution_input(store, recovery.key())?,
+            };
+            if let Some(basis) = promotion_basis {
+                validate_capture_attempt_start(&input, basis.start_mode())?;
+            }
+            let execution = match promotion_basis {
+                Some(basis) => crate::decode_crucible_attempt_execution_with_resources(
+                    store,
+                    &input,
+                    basis.resources(),
+                )?,
+                None => decode_crucible_attempt_execution(store, &input)?,
+            };
+            if matches!(
+                promotion_basis.map(|basis| basis.start_mode()),
+                Some(AttemptStartMode::SavepointCapture { .. } | AttemptStartMode::Execute)
+            ) {
+                let (initial, post_selection) = execution_start_parts(&execution);
+                let installed = install_attempt_production_exact_checkpoint(
+                    checkpoints,
+                    recovery.source(),
+                    execution.scenario(),
+                    initial,
+                    post_selection,
+                    &cancellation,
+                )
+                .map_err(PausedCheckpointPromotionPreparationError::from)
+                .map_err(Box::new)?;
+                let basis = promotion_basis.ok_or(
+                    PausedCheckpointPromotionRecoveryResolutionError::ExecutionBasisMismatch,
+                )?;
+                let _decode_scope = execution.enter_decode_scope();
+                factory
+                    .configure_execution(
+                        crate::qemu_baked_genesis::ProductionCheckpointReplayBasis::new(
+                            execution.scenario(),
+                            basis.resources(),
+                            crate::AttemptExecutionRuntimeBasis::new(
+                                recovery.key(),
+                                recovery.execution(),
+                            ),
+                            basis.start_mode(),
+                            recovery.source(),
+                        )
+                        .map_err(|source| QemuVmRealizationError::ModelCopy {
+                            source: Box::new(source),
+                        })
+                        .map_err(PausedCheckpointPromotionPreparationError::from)
+                        .map_err(Box::new)?,
+                    )
+                    .map_err(PausedCheckpointPromotionPreparationError::from)
+                    .map_err(Box::new)?;
+                let replay = match basis.start_mode() {
+                    AttemptStartMode::SavepointCapture { .. } => factory
+                        .replay_savepoint_capture(
+                            &execution,
+                            run_state_root,
+                            &cancellation,
+                            basis.resources(),
+                        )
+                        .map_err(PausedCheckpointPromotionPreparationError::from),
+                    AttemptStartMode::Execute => replay_checkpoint_causal_boundary(
+                        factory,
+                        &execution,
+                        run_state_root,
+                        &cancellation,
+                        basis.resources(),
+                        installed.configuration(),
+                        installed.scheduler(),
+                    ),
+                    _ => Err(PausedCheckpointPromotionPreparationError::SavepointReplayMismatch),
+                }
+                .map_err(Box::new)?;
+                validate_savepoint_replay_boundary(
+                    replay,
+                    installed.configuration(),
+                    installed.scheduler(),
+                )
+                .map_err(Box::new)?;
+            }
+            let materialized_start = match promotion_basis.map(|basis| basis.start_mode()) {
+                Some(AttemptStartMode::CaptureMaterializedStart { .. }) => {
+                    let CrucibleResolvedAttemptStart::Discover { configuration } =
+                        execution.start()
+                    else {
+                        return Err(
+                            PausedCheckpointPromotionRecoveryResolutionError::CaptureStartMismatch
+                                .into(),
+                        );
+                    };
+                    Some(configuration)
+                }
+                Some(AttemptStartMode::SavepointCapture { .. } | AttemptStartMode::Execute)
+                | Some(AttemptStartMode::SelectedSavepoint { .. })
+                | None => None,
+            };
+            let published = recover_published_production_paused_checkpoint_promotion(
+                checkpoints,
+                execution.scenario(),
+                &cancellation,
+                recovery,
+                materialized_start,
+            )?;
+            Ok(PreparedPausedCheckpointPromotionRestart::Reconcile(
+                Box::new(published),
+            ))
+        }
+    }
+}
+
+fn execution_start_parts(
+    execution: &CrucibleAttemptExecution,
+) -> (&Configuration, Option<&Configuration>) {
+    match execution.start() {
+        CrucibleResolvedAttemptStart::Discover { configuration } => (configuration, None),
+        CrucibleResolvedAttemptStart::Branch {
+            parent, selected, ..
+        } => (parent, Some(selected)),
+        CrucibleResolvedAttemptStart::AfterAttempt { .. } => {
+            (execution.start().configuration(), None)
+        }
+    }
+}
+
+/// Staging failure retaining the sole prepared promotion token.
+#[derive(Debug, Error)]
+#[error("paused exact-checkpoint promotion staging failed")]
+pub(crate) struct PausedCheckpointPromotionStagingError<E> {
+    /// Prepared promotion retained for exact actor retry or abandonment.
+    pub prepared: Box<PreparedPausedCheckpointPromotion>,
+    /// Supervisor or operational-ledger failure.
+    pub source: E,
+}
+
+/// Immutable publication failure retaining the staged promotion token.
+#[derive(Debug, Error)]
+#[error("paused exact-checkpoint promotion publication failed")]
+pub(crate) struct PausedCheckpointPromotionPublicationError {
+    /// Staged promotion retained for exact publication retry or abandonment.
+    pub staged: Box<StagedPausedCheckpointPromotion>,
+    /// Immutable checkpoint-store failure.
+    pub source: ExactCheckpointStoreError,
+}
+
+/// Final reconciliation failure retaining the complete published root token.
+#[derive(Debug, Error)]
+#[error("paused exact-checkpoint promotion reconciliation failed")]
+pub(crate) struct PausedCheckpointPromotionReconcileError<E> {
+    /// Published promotion retained for exact actor retry.
+    pub published: Box<PublishedPausedCheckpointPromotion>,
+    /// Supervisor or operational-ledger failure.
+    pub source: E,
+}
+
+/// Validates every live node in one raw production root and prepares promotion.
+///
+/// The raw root first passes complete attempt-prefix installation. Its live
+/// snapshot bodies are then streamed one at a time through a node-specific
+/// guarded replay oracle. Each target's process authority is reaped or
+/// quarantined before the next target is opened, and only compact source-bound
+/// checks survive to prepare the replacement. This function changes neither
+/// immutable campaign storage nor operational ledger state.
+///
+/// # Errors
+///
+/// Returns [`PausedCheckpointPromotionPreparationError`] when installation or
+/// target streaming fails, cancellation wins, any node's fat/thin realization
+/// differs or fails, mandatory cleanup cannot attest reap, or the no-write
+/// replacement does not derive exactly from the raw root.
+pub(crate) fn validate_and_prepare_production_paused_checkpoint_promotion<F>(
+    checkpoints: &ExactCheckpointStore,
+    target: ProductionPausedCheckpointPromotionTarget<'_>,
+    factory: &mut F,
+) -> Result<PreparedPausedCheckpointPromotion, PausedCheckpointPromotionPreparationError>
+where
+    F: ProductionPausedCheckpointReplayFactory,
+{
+    let _decode_scope = target.attempt.enter_decode_scope();
+    factory.configure_execution(
+        crate::qemu_baked_genesis::ProductionCheckpointReplayBasis::new(
+            target.source,
+            target.resources,
+            crate::AttemptExecutionRuntimeBasis::new(target.key, target.execution),
+            target.start_mode,
+            target.raw,
+        )
+        .map_err(|source| QemuVmRealizationError::ModelCopy {
+            source: Box::new(source),
+        })?,
+    )?;
+    let mut installed = install_attempt_production_exact_checkpoint(
+        checkpoints,
+        target.raw,
+        target.source,
+        target.initial,
+        target.post_selection,
+        target.cancellation,
+    )?;
+    let owned_choices =
+        crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::from_canonical_bytes(
+            installed.loaded().choice_closure(),
+        )?;
+    let choices = match target.replay_store {
+        Some(store) => owned_choices.complete_from_repository(
+            store,
+            target.source,
+            &installed.configuration().schedule,
+        )?,
+        None => {
+            owned_choices
+                .validate_for_schedule(target.source, &installed.configuration().schedule)?;
+            owned_choices
+        }
+    };
+    match target.start_mode {
+        AttemptStartMode::CaptureMaterializedStart { .. } => {
+            validate_materialized_start_configuration(
+                target.raw,
+                target.initial,
+                installed.configuration().id(),
+            )?;
+        }
+        AttemptStartMode::SavepointCapture { .. } => {
+            let replay = factory.replay_savepoint_capture(
+                target.attempt,
+                target.run_state_root,
+                target.cancellation,
+                target.resources,
+            )?;
+            validate_savepoint_replay_boundary(
+                replay,
+                installed.configuration(),
+                installed.scheduler(),
+            )?;
+        }
+        AttemptStartMode::Execute => {
+            let replay = replay_checkpoint_causal_boundary(
+                factory,
+                target.attempt,
+                target.run_state_root,
+                target.cancellation,
+                target.resources,
+                installed.configuration(),
+                installed.scheduler(),
+            )?;
+            validate_savepoint_replay_boundary(
+                replay,
+                installed.configuration(),
+                installed.scheduler(),
+            )?;
+        }
+        AttemptStartMode::SelectedSavepoint { .. } => {}
+    }
+    let mut targets = installed.take_node_restore_admissions().ok_or_else(|| {
+        PausedCheckpointPromotionPreparationError::ProductionClosure(
+            LifecycleApiError::LoopFactory {
+                message: String::from(
+                    "production replay-oracle checkpoint has no authenticated target admissions",
+                ),
+            },
+        )
+    })?;
+
+    let selected_checkpoint = target.selected_checkpoint.take().ok_or_else(|| {
+        QemuVmRealizationError::InvalidCheckpoint {
+            role: "production replay exact root",
+            message: String::from("durable paused-root selection authority was already consumed"),
+        }
+    })?;
+    let mut guard =
+        match factory.begin_replay(selected_checkpoint, target.cancellation, target.resources) {
+            Ok(guard) => guard,
+            Err(failure) => {
+                let (error, selected_checkpoint) = failure.into_parts();
+                *target.selected_checkpoint = selected_checkpoint;
+                return Err(error.into());
+            }
+        };
+    if !factory.guard_matches(&guard, target.resources, target.cancellation) {
+        let error = QemuVmRealizationError::Executor {
+            operation: "admit production replay-oracle aggregate",
+            message: String::from("resource guard does not match the requested aggregate basis"),
+        };
+        return Err(finish_replay_after_failure(factory, &mut guard, error));
+    }
+
+    let mut matches = BTreeMap::new();
+    loop {
+        let next = match targets.take_next() {
+            Ok(next) => next,
+            Err(error) => {
+                let error = map_production_target_error(error, target.cancellation);
+                let cleanup = finish_replay_guard(factory, &mut guard);
+                return cleanup.map_or(Err(error), |cleanup| Err(cleanup.into()));
+            }
+        };
+        let Some(next) = next else {
+            break;
+        };
+        let node = next.node().clone();
+        let process_generation = next.process_generation();
+        let snapshot = next.snapshot().clone();
+        let session = factory.begin_target(
+            target.source.world(),
+            installed.configuration(),
+            next,
+            &mut guard,
+        );
+        let (mut realization_store, mut executor) = match session {
+            Ok(session) => session.into_parts(),
+            Err(first) => {
+                let cleanup = finish_replay_guard(factory, &mut guard);
+                return Err(
+                    PausedCheckpointPromotionPreparationError::SupervisedReplay { first, cleanup },
+                );
+            }
+        };
+        if executor.node() != &node {
+            let error = QemuVmRealizationError::Executor {
+                operation: "admit production replay-oracle target",
+                message: String::from("node executor does not match the requested target"),
+            };
+            drop(executor);
+            drop(realization_store);
+            return Err(finish_replay_after_failure(factory, &mut guard, error));
+        }
+        let baked = match realization_store
+            .baked_genesis(target.source.world(), &installed.configuration().def)
+        {
+            Ok(baked) => baked,
+            Err(error) => {
+                drop(executor);
+                drop(realization_store);
+                return Err(finish_replay_after_failure(factory, &mut guard, error));
+            }
+        };
+        let observed = factory.with_native_guard(&mut guard, |native, original| {
+            let mut session = QemuGuardedReplayOracleSession::new(&mut executor, native, original);
+            let comparison = session.check_snapshot_replay_oracle(
+                target.source.world(),
+                target.source,
+                GuardedReplayAdmission {
+                    choices: &choices,
+                    scheduler: installed.scheduler(),
+                    process_generation,
+                },
+                installed.configuration(),
+                &snapshot,
+                &baked,
+            );
+            let original = session.original_refusal();
+            let cleanup = session.finish();
+            (comparison, cleanup, original)
+        });
+        // The executor retains pinned launch files after its node is reaped.
+        // Close them before the aggregate guard releases the project quota.
+        drop(baked);
+        drop(executor);
+        drop(realization_store);
+        let (comparison, cleanup_result, original) = match observed {
+            Ok(observed) => observed,
+            Err(first) => {
+                let cleanup = finish_replay_guard(factory, &mut guard);
+                return Err(
+                    PausedCheckpointPromotionPreparationError::SupervisedReplay {
+                        first: first.into(),
+                        cleanup,
+                    },
+                );
+            }
+        };
+        if let Some(original) = original {
+            let cleanup = finish_replay_guard(factory, &mut guard);
+            return Err(
+                PausedCheckpointPromotionPreparationError::SupervisedReplay {
+                    first: ProductionReplayError::OriginalBoundary {
+                        original,
+                        comparison: comparison.err(),
+                        node_cleanup: cleanup_result.err(),
+                    },
+                    cleanup,
+                },
+            );
+        }
+        let matched = match (comparison, cleanup_result) {
+            (Err(comparison), Err(cleanup)) => {
+                return Err(PausedCheckpointPromotionPreparationError::Realization(
+                    replay_quarantine_with_cause(comparison, cleanup),
+                ));
+            }
+            (Ok(_), Err(cleanup)) => {
+                return Err(PausedCheckpointPromotionPreparationError::Realization(
+                    cleanup,
+                ));
+            }
+            (Err(comparison), Ok(())) => {
+                return Err(match finish_replay_guard(factory, &mut guard) {
+                    Some(cleanup) => PausedCheckpointPromotionPreparationError::ComparisonCleanup {
+                        comparison,
+                        cleanup,
+                    },
+                    None => PausedCheckpointPromotionPreparationError::Realization(comparison),
+                });
+            }
+            (Ok(check), Ok(())) => check,
+        };
+        if matches.insert(node, matched).is_some() {
+            let error = PausedCheckpointPromotionPreparationError::ProductionClosure(
+                LifecycleApiError::LoopFactory {
+                    message: String::from(
+                        "production replay-oracle target set contains a duplicate node",
+                    ),
+                },
+            );
+            return match finish_replay_guard(factory, &mut guard) {
+                Some(cleanup) => Err(cleanup.into()),
+                None => Err(error),
+            };
+        }
+        if let Err(first) = factory.target_completed(&mut guard) {
+            let cleanup = finish_replay_guard(factory, &mut guard);
+            return Err(
+                PausedCheckpointPromotionPreparationError::SupervisedReplay { first, cleanup },
+            );
+        }
+    }
+    factory.finish_replay(&mut guard)?;
+    let mut boundary = || {
+        if target.cancellation.is_canceled() {
+            Err(LifecycleApiError::AttemptOperational {
+                class: crucible_engine::SchedulerOperationalFailureClass::Canceled,
+                message: String::from("production replay-oracle promotion was canceled"),
+            })
+        } else {
+            Ok(())
+        }
+    };
+    let evidence = targets
+        .prepare_replay_oracle_promotion_with_boundary(target.raw, matches, &mut boundary)
+        .map_err(|error| map_production_target_error(error, target.cancellation))?;
+    let promotion = prepare_attempt_production_replay_oracle_promotion(
+        checkpoints,
+        target.raw,
+        &installed,
+        evidence,
+        target.cancellation,
+    )?;
+    Ok(PreparedPausedCheckpointPromotion::new(
+        target.key,
+        target.execution,
+        promotion,
+    ))
+}
+
+fn finish_replay_after_failure<F: ProductionPausedCheckpointReplayFactory>(
+    factory: &mut F,
+    guard: &mut F::Guard,
+    first: QemuVmRealizationError,
+) -> PausedCheckpointPromotionPreparationError {
+    match finish_replay_guard(factory, guard) {
+        Some(cleanup) => {
+            PausedCheckpointPromotionPreparationError::RealizationCleanup { first, cleanup }
+        }
+        None => PausedCheckpointPromotionPreparationError::Realization(first),
+    }
+}
+
+fn finish_replay_guard<F: ProductionPausedCheckpointReplayFactory>(
+    factory: &mut F,
+    guard: &mut F::Guard,
+) -> Option<ProductionReplayCleanup> {
+    factory.finish_replay(guard).err()
+}
+
+fn validate_savepoint_replay_boundary(
+    replay: crate::QemuSavepointReplayProof,
+    configuration: &Configuration,
+    scheduler: &crucible_engine::SingleSchedulerCheckpoint,
+) -> Result<(), PausedCheckpointPromotionPreparationError> {
+    if replay
+        .matches_checkpoint(configuration, scheduler)
+        .map_err(PausedCheckpointPromotionPreparationError::EventIdentity)?
+    {
+        Ok(())
+    } else {
+        Err(PausedCheckpointPromotionPreparationError::SavepointReplayMismatch)
+    }
+}
+
+fn replay_checkpoint_causal_boundary<F: ProductionPausedCheckpointReplayFactory>(
+    factory: &mut F,
+    attempt: &CrucibleAttemptExecution,
+    run_state_root: &Path,
+    cancellation: &ExecutionCancellation,
+    resources: AttemptResourceLimits,
+    configuration: &Configuration,
+    scheduler: &crucible_engine::SingleSchedulerCheckpoint,
+) -> Result<crate::QemuSavepointReplayProof, PausedCheckpointPromotionPreparationError> {
+    let source = crate::QemuSavepointReplayProof::from_reached_boundary(
+        configuration,
+        scheduler.quanta(),
+        scheduler.frontier(),
+        scheduler.retained_event_log_entries(),
+    )
+    .map_err(PausedCheckpointPromotionPreparationError::ReplayProof)?;
+    if !source
+        .matches_checkpoint(configuration, scheduler)
+        .map_err(PausedCheckpointPromotionPreparationError::EventIdentity)?
+    {
+        return Err(PausedCheckpointPromotionPreparationError::SavepointReplayMismatch);
+    }
+    let target =
+        crate::qemu_campaign_driver::QemuSelectedResumeBoundary::new(configuration.clone(), source);
+    factory
+        .replay_checkpoint_boundary(attempt, run_state_root, cancellation, resources, &target)
+        .map_err(Into::into)
+}
+
+fn map_production_target_error(
+    error: LifecycleApiError,
+    cancellation: &ExecutionCancellation,
+) -> PausedCheckpointPromotionPreparationError {
+    if cancellation.is_canceled() {
+        PausedCheckpointPromotionPreparationError::ProductionRestore(
+            ProductionAttemptCheckpointRestoreError::Canceled,
+        )
+    } else {
+        PausedCheckpointPromotionPreparationError::ProductionClosure(error)
+    }
+}
+
+/// Installs both promotion roots with one short supervisor CAS.
+///
+/// # Errors
+///
+/// Returns [`PausedCheckpointPromotionStagingError`] with the complete token
+/// when the ledger cannot safely establish the retained root pair.
+pub(crate) fn stage_prepared_paused_checkpoint_promotion<L, V>(
+    supervisor: &mut LocalExecutorSupervisor<L, V>,
+    prepared: PreparedPausedCheckpointPromotion,
+) -> Result<
+    PausedCheckpointPromotionStageOutcome,
+    PausedCheckpointPromotionStagingError<LocalExecutorError<L::Error>>,
+>
+where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    let stage = match supervisor.stage_checkpoint_promotion(
+        prepared.key,
+        prepared.execution,
+        prepared.source(),
+        prepared.promoted(),
+    ) {
+        Ok(stage) => stage,
+        Err(source) => {
+            return Err(PausedCheckpointPromotionStagingError {
+                prepared: Box::new(prepared),
+                source,
+            });
+        }
+    };
+    match stage {
+        CheckpointPromotionStageOutcome::Staged
+        | CheckpointPromotionStageOutcome::AlreadyStaged => {
+            Ok(PausedCheckpointPromotionStageOutcome::Publish(Box::new(
+                StagedPausedCheckpointPromotion { prepared },
+            )))
+        }
+        CheckpointPromotionStageOutcome::AlreadyPromoted
+        | CheckpointPromotionStageOutcome::NotCurrent => {
+            Ok(PausedCheckpointPromotionStageOutcome::Finished {
+                prepared: Box::new(prepared),
+                outcome: stage,
+            })
+        }
+    }
+}
+
+/// Publishes a staged replacement outside supervisor ownership.
+///
+/// # Errors
+///
+/// Returns [`PausedCheckpointPromotionPublicationError`] with the staged token
+/// when any durable immutable placement fails.
+pub(crate) fn publish_staged_paused_checkpoint_promotion(
+    checkpoints: &ExactCheckpointStore,
+    mut staged: StagedPausedCheckpointPromotion,
+) -> Result<PublishedPausedCheckpointPromotion, PausedCheckpointPromotionPublicationError> {
+    let Some(evidence) = staged
+        .prepared
+        .promotion
+        .replacement()
+        .promotion_evidence_id()
+    else {
+        return Err(PausedCheckpointPromotionPublicationError {
+            staged: Box::new(staged),
+            source: ExactCheckpointStoreError::InvalidRoot {
+                reason: "replay promotion has no matching evidence identity",
+            },
+        });
+    };
+    if let Err(source) =
+        checkpoints.publish_production_closure(staged.prepared.promotion.replacement())
+    {
+        return Err(PausedCheckpointPromotionPublicationError {
+            staged: Box::new(staged),
+            source,
+        });
+    }
+    // The authority belongs to this staged execution, even when a later
+    // pause produces identical immutable bytes and reuses the same root.
+    if let Err(source) = checkpoints.retain_live_replay_promotion(
+        staged.prepared.key,
+        staged.prepared.execution,
+        staged.prepared.promoted(),
+        evidence,
+    ) {
+        return Err(PausedCheckpointPromotionPublicationError {
+            staged: Box::new(staged),
+            source,
+        });
+    }
+    if let Err(source) = staged
+        .prepared
+        .promotion
+        .replacement_mut()
+        .retire_native_source(checkpoints)
+    {
+        return Err(PausedCheckpointPromotionPublicationError {
+            staged: Box::new(staged),
+            source,
+        });
+    }
+    Ok(PublishedPausedCheckpointPromotion {
+        key: staged.prepared.key,
+        execution: staged.prepared.execution,
+        source: staged.prepared.source(),
+        promoted: staged.prepared.promoted(),
+        evidence,
+    })
+}
+
+/// Reconstructs a published production token from one durable staged pair.
+///
+/// Both version-five roots and their source-bound replay evidence are checked
+/// without writes. Only a pair retained by the staged supervisor ledger can
+/// reconstitute the process-local reconciliation claim before the final CAS.
+///
+/// # Errors
+///
+/// Returns [`ProductionAttemptCheckpointRestoreError`] when cancellation wins,
+/// either root is unavailable or invalid, the scenario differs, or any modeled,
+/// artifact, lifecycle, or replay-oracle field changed unexpectedly.
+pub(crate) fn recover_published_production_paused_checkpoint_promotion(
+    checkpoints: &ExactCheckpointStore,
+    source: &ScenarioDefForm,
+    cancellation: &ExecutionCancellation,
+    recovery: CheckpointPromotionRecovery,
+    materialized_start: Option<&Configuration>,
+) -> Result<PublishedPausedCheckpointPromotion, ProductionAttemptCheckpointRestoreError> {
+    let evidence = authenticate_production_exact_checkpoint_replay_oracle_promotion(
+        checkpoints,
+        recovery.source(),
+        recovery.promoted(),
+        source,
+        cancellation,
+    )?;
+    if let Some(materialized_start) = materialized_start {
+        let raw = checkpoints
+            .load_production_closure_with_cancellation(recovery.source(), cancellation)
+            .map_err(map_staged_checkpoint_store_error)?;
+        validate_materialized_start_configuration(
+            recovery.source(),
+            materialized_start,
+            raw.configuration(),
+        )?;
+    }
+    if cancellation.is_canceled() {
+        return Err(ProductionAttemptCheckpointRestoreError::Canceled);
+    }
+    // Only the staged ledger pair may restore the ephemeral reconcile claim.
+    // Its complete published relationship was authenticated above.
+    checkpoints
+        .retain_live_replay_promotion(
+            recovery.key(),
+            recovery.execution(),
+            recovery.promoted(),
+            evidence,
+        )
+        .map_err(map_staged_checkpoint_store_error)?;
+    Ok(PublishedPausedCheckpointPromotion {
+        key: recovery.key(),
+        execution: recovery.execution(),
+        source: recovery.source(),
+        promoted: recovery.promoted(),
+        evidence,
+    })
+}
+
+fn map_staged_checkpoint_store_error(
+    error: ExactCheckpointStoreError,
+) -> ProductionAttemptCheckpointRestoreError {
+    match error {
+        ExactCheckpointStoreError::Canceled => ProductionAttemptCheckpointRestoreError::Canceled,
+        error => ProductionAttemptCheckpointRestoreError::Checkpoint(error),
+    }
+}
+
+/// Commits one complete replacement as the paused resume root.
+///
+/// # Errors
+///
+/// Returns [`PausedCheckpointPromotionReconcileError`] with the published token
+/// when the final ledger CAS cannot be reconciled safely.
+pub(crate) fn reconcile_published_paused_checkpoint_promotion<L, V>(
+    checkpoints: &ExactCheckpointStore,
+    supervisor: &mut LocalExecutorSupervisor<L, V>,
+    published: PublishedPausedCheckpointPromotion,
+) -> Result<
+    CheckpointPromotionCompletionOutcome,
+    PausedCheckpointPromotionReconcileError<LocalExecutorError<L::Error>>,
+>
+where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    let claim = match checkpoints.acquire_live_replay_promotion(
+        published.key,
+        published.execution,
+        published.promoted,
+        published.evidence,
+    ) {
+        Ok(Some(claim)) => claim,
+        Ok(None) | Err(_) => {
+            return Err(PausedCheckpointPromotionReconcileError {
+                published: Box::new(published),
+                source: LocalExecutorError::LedgerInvariant {
+                    reason: "replay promotion live authority is unavailable",
+                },
+            });
+        }
+    };
+    let outcome = supervisor.complete_checkpoint_promotion(
+        published.key,
+        published.execution,
+        published.source,
+        published.promoted,
+    );
+    match outcome {
+        Ok(
+            outcome @ (CheckpointPromotionCompletionOutcome::Promoted
+            | CheckpointPromotionCompletionOutcome::AlreadyPromoted),
+        ) => {
+            claim
+                .commit()
+                .map(|()| outcome)
+                .map_err(|_| PausedCheckpointPromotionReconcileError {
+                    published: Box::new(published),
+                    source: LocalExecutorError::LedgerInvariant {
+                        reason: "replay promotion live authority could not be consumed",
+                    },
+                })
+        }
+        Ok(outcome) => Ok(outcome),
+        Err(source) => Err(PausedCheckpointPromotionReconcileError {
+            published: Box::new(published),
+            source,
+        }),
+    }
+}
+
+/// Reverts an incomplete staged replacement to its retained raw source.
+///
+/// This operation is intended for stable publication failures. Retryable store
+/// failures should retain and retry the staged token instead.
+///
+/// # Errors
+///
+/// Returns a supervisor error if the exact source/replacement pair cannot be
+/// safely reconciled.
+pub(crate) fn revert_staged_paused_checkpoint_promotion<L, V>(
+    supervisor: &mut LocalExecutorSupervisor<L, V>,
+    staged: &StagedPausedCheckpointPromotion,
+) -> Result<CheckpointPromotionCompletionOutcome, LocalExecutorError<L::Error>>
+where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    supervisor.revert_checkpoint_promotion(
+        staged.prepared.key,
+        staged.prepared.execution,
+        staged.prepared.source(),
+        staged.prepared.promoted(),
+    )
+}
+
+/// Reverts an incomplete promotion discovered after restart.
+///
+/// Callers should use this only after classifying the promoted closure failure
+/// as stable or authoritatively absent. Temporary store unavailability must
+/// retain the staged pair for retry instead.
+///
+/// # Errors
+///
+/// Returns a supervisor error if the exact recovered pair cannot be safely
+/// reconciled.
+pub(crate) fn revert_recovered_paused_checkpoint_promotion<L, V>(
+    supervisor: &mut LocalExecutorSupervisor<L, V>,
+    recovery: CheckpointPromotionRecovery,
+) -> Result<CheckpointPromotionCompletionOutcome, LocalExecutorError<L::Error>>
+where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    supervisor.revert_checkpoint_promotion(
+        recovery.key(),
+        recovery.execution(),
+        recovery.source(),
+        recovery.promoted(),
+    )
+}
+
+#[cfg(test)]
+mod tests;
+
+#[cfg(test)]
+pub(crate) use tests::{RepositoryPromotionFixture, prepare_repository_promotion_fixture};

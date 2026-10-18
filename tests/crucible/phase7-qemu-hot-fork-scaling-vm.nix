@@ -54,7 +54,7 @@
           cargo test --frozen --offline --release --no-run \
             --message-format=json-render-diagnostics \
             --manifest-path crates/Cargo.toml --target-dir "$TMPDIR/target" \
-            -p crucible-api -p crucible-qemu -p crucible-daemon --lib \
+            -p crucible-qemu-host -p crucible-daemon --lib \
             > "$TMPDIR/messages.jsonl"
           daemon_test=$(jq -r \
             'select(.reason == "compiler-artifact" and .target.name == "crucible_daemon" and .profile.test == true and .executable != null) | .executable' \
@@ -63,7 +63,7 @@
           mkdir -p "$out/bin"
           cp "$daemon_test" "$out/bin/crucible-daemon-scaling"
           ln -s crucible-daemon-scaling "$out/bin/crucible_daemon-clone-cost"
-          for package in crucible_qemu; do
+          for package in crucible_qemu_host; do
             binary=$(jq -r --arg package "$package" \
               'select(.reason == "compiler-artifact" and .target.name == $package and .profile.test == true and .executable != null) | .executable' \
               "$TMPDIR/messages.jsonl")
@@ -370,7 +370,7 @@ in
       ${pkgs.grep}/bin/grep -Fxq 'host_shared_backing_copies=1' /tmp/host-clone-cost-result
       ${pkgs.grep}/bin/grep -Fxq 'host_clone_private_growth_limit_kib=65536' /tmp/host-clone-cost-result
       run_host_clone_test \
-        crucible_qemu \
+        crucible_qemu_host \
         production_fault_runtime::checkpoint_codec::tests::fault_checkpoint_clone_cost_keeps_mutable_ledgers_private \
         /tmp/fault-clone-cost-result
       require_exact_test_marker fault_checkpoint_siblings=64 /tmp/fault-clone-cost-result

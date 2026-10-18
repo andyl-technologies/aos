@@ -30,7 +30,7 @@ mkAosCargoPackage {
   };
   cargoDeps = aosWorkspaceVendor;
   cargoRoot = "crates";
-  cargoFlags = "-p aos-package --example package_deployment_check";
+  cargoFlags = "-p aos-package-manager --example package_deployment_check";
   doCheck = false;
   buildDeps = [buildPackages.pkg-config buildPackages.protobuf buildPackages.cmake buildPackages.perl];
   runtimeDeps = [openssl sqlite libssh2 zlib];

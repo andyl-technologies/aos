@@ -1,0 +1,957 @@
+//! Closed typed QMP command vocabulary and exact JSON request encoding.
+//!
+//! Only the operations represented here can reach the machine-control stream.
+//! Each request retains its command kind for bounded response authentication.
+//!
+//! ```text
+//! {"execute":"query-status"}
+//! ```
+
+use super::*;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum HotForkPluginBarrierAction {
+    Hold,
+    Query,
+    Release,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum HotForkRcuBarrierAction {
+    Hold,
+    Query,
+    Release,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum HotForkAsyncWorkerBarrierAction {
+    Hold,
+    Query,
+    Release,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum HotForkBlockBarrierAction {
+    Hold,
+    Query,
+    Release,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum HotForkTemplateAction {
+    Prepare,
+    Query,
+    AdoptChild,
+    Abort,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum HotForkPrivateRingAction {
+    Stage,
+    Query,
+    Release,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum HotForkPluginEndpointAction {
+    Stage,
+    Query,
+    Release,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum HotForkChildDiagnosticAction {
+    Stage,
+    Query,
+    Release,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum HotForkChildQmpAction {
+    Stage,
+    Query,
+    Release,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum HotForkChildConsoleAction {
+    Stage,
+    Query,
+    Release,
+}
+
+impl HotForkTemplateAction {
+    const fn wire_name(self) -> &'static str {
+        match self {
+            Self::Prepare => "prepare",
+            Self::Query => "query",
+            Self::AdoptChild => "adopt-child",
+            Self::Abort => "abort",
+        }
+    }
+}
+
+impl HotForkPrivateRingAction {
+    const fn wire_name(self) -> &'static str {
+        match self {
+            Self::Stage => "stage",
+            Self::Query => "query",
+            Self::Release => "release",
+        }
+    }
+}
+
+impl HotForkPluginEndpointAction {
+    const fn wire_name(self) -> &'static str {
+        match self {
+            Self::Stage => "stage",
+            Self::Query => "query",
+            Self::Release => "release",
+        }
+    }
+}
+
+impl HotForkChildDiagnosticAction {
+    const fn wire_name(self) -> &'static str {
+        match self {
+            Self::Stage => "stage",
+            Self::Query => "query",
+            Self::Release => "release",
+        }
+    }
+}
+
+impl HotForkChildQmpAction {
+    const fn wire_name(self) -> &'static str {
+        match self {
+            Self::Stage => "stage",
+            Self::Query => "query",
+            Self::Release => "release",
+        }
+    }
+}
+
+impl HotForkChildConsoleAction {
+    const fn wire_name(self) -> &'static str {
+        match self {
+            Self::Stage => "stage",
+            Self::Query => "query",
+            Self::Release => "release",
+        }
+    }
+}
+
+impl HotForkPluginBarrierAction {
+    const fn wire_name(self) -> &'static str {
+        match self {
+            Self::Hold => "hold",
+            Self::Query => "query",
+            Self::Release => "release",
+        }
+    }
+}
+
+impl HotForkRcuBarrierAction {
+    const fn wire_name(self) -> &'static str {
+        match self {
+            Self::Hold => "hold",
+            Self::Query => "query",
+            Self::Release => "release",
+        }
+    }
+}
+
+impl HotForkAsyncWorkerBarrierAction {
+    const fn wire_name(self) -> &'static str {
+        match self {
+            Self::Hold => "hold",
+            Self::Query => "query",
+            Self::Release => "release",
+        }
+    }
+}
+
+impl HotForkBlockBarrierAction {
+    const fn wire_name(self) -> &'static str {
+        match self {
+            Self::Hold => "hold",
+            Self::Query => "query",
+            Self::Release => "release",
+        }
+    }
+}
+
+pub(super) enum QmpCommand<'a> {
+    Capabilities,
+    #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+    SelectableReset {
+        pending: &'a crucible_qemu_protocol::selectable_catalog_plan::SelectablePlanPendingRequest,
+        request_hex: &'a str,
+        correlation: u64,
+    },
+    SaveVm {
+        tag: &'a QmpSnapshotTag,
+        job_id: &'a str,
+    },
+    DeleteSnapshot {
+        tag: &'a QmpSnapshotTag,
+        job_id: &'a str,
+    },
+    #[cfg(target_os = "linux")]
+    CheckpointBegin {
+        receipt: crate::ram_control::CheckpointArmReceipt,
+    },
+    CheckpointCapture {
+        request: &'a QmpCheckpointCaptureRequest,
+    },
+    CheckpointTopology {
+        request: &'a QmpCheckpointCaptureRequest,
+    },
+    CheckpointRestore {
+        request: &'a QmpCheckpointRestoreRequest,
+    },
+    CheckpointCommit {
+        identity: QmpCheckpointIdentity,
+        capture_generation: u64,
+    },
+    CheckpointAbort {
+        identity: QmpCheckpointIdentity,
+        capture_generation: u64,
+    },
+    QueryCheckpointEpoch,
+    QueryFingerprintProjectionManifest,
+    QueryPausedCpu {
+        vcpu: u32,
+        generation: Option<u64>,
+    },
+    #[cfg(feature = "kernel-swap-measurement")]
+    QueryKernelSwapAdmission {
+        generation: u64,
+        cancellation: &'a QmpDescriptorName,
+    },
+    #[cfg(feature = "kernel-swap-measurement")]
+    QueryKernelSwapResidency {
+        generation: u64,
+        topology_generation: u64,
+        cancellation: &'a QmpDescriptorName,
+    },
+    #[cfg(any(test, feature = "test-support"))]
+    PerformanceObservation {
+        command: &'static str,
+    },
+    QueryJobs,
+    JobDismiss {
+        job_id: &'a str,
+    },
+    QueryStatus,
+    Stop,
+    Cont,
+    CompleteTerminalLifecycle {
+        action: crucible_engine::ContentHash,
+        evidence: crucible_engine::ContentHash,
+        process_generation: u64,
+    },
+    QueryHotForkPluginResourceInventory,
+    QueryHotForkChildRuntime,
+    HotForkPluginBarrier {
+        action: HotForkPluginBarrierAction,
+    },
+    HotForkRcuBarrier {
+        action: HotForkRcuBarrierAction,
+    },
+    HotForkAsyncWorkerBarrier {
+        action: HotForkAsyncWorkerBarrierAction,
+    },
+    HotForkBlockBarrier {
+        action: HotForkBlockBarrierAction,
+    },
+    HotForkSourceGraph {
+        expected_qemu_pid: i64,
+        expected_template_generation: u64,
+    },
+    QueryHotForkBlockSeal,
+    HotForkBlockSeal {
+        expected_qemu_pid: i64,
+        expected_backend_generation: u64,
+        expected_graph_mutation_generation: u64,
+        roots: &'a [QmpHotForkBlockSealRequest],
+    },
+    HotForkDetachedBlockdevAdd {
+        node_name: &'a str,
+        file_path: &'a std::path::Path,
+    },
+    HotForkTemplate {
+        action: HotForkTemplateAction,
+        block_snapshot_bindings: Option<&'a [QmpHotForkBlockSnapshotBinding]>,
+    },
+    HotFork {
+        request: QmpHotForkRequest,
+    },
+    HotForkChildProcess {
+        action: HotForkChildProcessAction,
+        generation: u64,
+    },
+    HotForkChildProcessContract {
+        action: HotForkChildProcessContractAction,
+        cgroup_name: Option<&'a QmpDescriptorName>,
+        cgroup_procs_name: Option<&'a QmpDescriptorName>,
+        cancellation_name: Option<&'a QmpDescriptorName>,
+        identity: Option<QmpHotForkChildProcessContractIdentity>,
+    },
+    HotForkChildRam {
+        request: hot_fork_ram::Request<'a>,
+    },
+    HotForkChildFiles {
+        action: HotForkChildFilesAction,
+        files: Option<&'a [QmpHotForkChildFile]>,
+        maximum_bytes: Option<u64>,
+        expected_generation: Option<u64>,
+    },
+    HotForkPrivateRings {
+        action: HotForkPrivateRingAction,
+        name: Option<&'a QmpDescriptorName>,
+        identity: Option<SetupRegionBackingIdentity>,
+    },
+    HotForkPluginEndpoints {
+        action: HotForkPluginEndpointAction,
+        control_name: Option<&'a QmpDescriptorName>,
+        wake_name: Option<&'a QmpDescriptorName>,
+        identity: Option<QmpHotForkPluginEndpointIdentity>,
+    },
+    HotForkChildDiagnostics {
+        action: HotForkChildDiagnosticAction,
+        name: Option<&'a QmpDescriptorName>,
+        socket_cookie: Option<u64>,
+    },
+    HotForkChildQmp {
+        action: HotForkChildQmpAction,
+        name: Option<&'a QmpDescriptorName>,
+        socket_cookie: Option<u64>,
+    },
+    HotForkChildConsole {
+        action: HotForkChildConsoleAction,
+        name: Option<&'a QmpDescriptorName>,
+        socket_cookie: Option<u64>,
+    },
+    Quit,
+    GetFd {
+        name: &'a QmpDescriptorName,
+    },
+    CloseFd {
+        name: &'a QmpDescriptorName,
+    },
+    AdoptLaunchFdsets {
+        has_root_overlay: bool,
+    },
+}
+
+impl QmpCommand<'_> {
+    pub(super) const fn kind(&self) -> QmpCommandKind {
+        match self {
+            Self::Capabilities => QmpCommandKind::Capabilities,
+            #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+            Self::SelectableReset { .. } => QmpCommandKind::SelectableReset,
+            Self::SaveVm { .. } => QmpCommandKind::SaveVm,
+            Self::DeleteSnapshot { .. } => QmpCommandKind::DeleteSnapshot,
+            #[cfg(target_os = "linux")]
+            Self::CheckpointBegin { .. } => QmpCommandKind::CheckpointBegin,
+            Self::CheckpointCapture { .. } => QmpCommandKind::CheckpointCapture,
+            Self::CheckpointTopology { .. } => QmpCommandKind::CheckpointTopology,
+            Self::CheckpointRestore { .. } => QmpCommandKind::CheckpointRestore,
+            Self::CheckpointCommit { .. } => QmpCommandKind::CheckpointCommit,
+            Self::CheckpointAbort { .. } => QmpCommandKind::CheckpointAbort,
+            Self::QueryCheckpointEpoch => QmpCommandKind::QueryCheckpointEpoch,
+            Self::QueryFingerprintProjectionManifest => {
+                QmpCommandKind::QueryFingerprintProjectionManifest
+            }
+            Self::QueryPausedCpu { .. } => QmpCommandKind::QueryPausedCpu,
+            #[cfg(feature = "kernel-swap-measurement")]
+            Self::QueryKernelSwapResidency { .. } => QmpCommandKind::QueryKernelSwapResidency,
+            #[cfg(feature = "kernel-swap-measurement")]
+            Self::QueryKernelSwapAdmission { .. } => QmpCommandKind::QueryKernelSwapAdmission,
+            #[cfg(any(test, feature = "test-support"))]
+            Self::PerformanceObservation { .. } => QmpCommandKind::PerformanceObservation,
+            Self::QueryJobs => QmpCommandKind::QueryJobs,
+            Self::JobDismiss { .. } => QmpCommandKind::JobDismiss,
+            Self::QueryStatus => QmpCommandKind::QueryStatus,
+            Self::Stop => QmpCommandKind::Stop,
+            Self::Cont => QmpCommandKind::Cont,
+            Self::CompleteTerminalLifecycle { .. } => QmpCommandKind::CompleteTerminalLifecycle,
+            Self::QueryHotForkPluginResourceInventory => {
+                QmpCommandKind::QueryHotForkPluginResourceInventory
+            }
+            Self::QueryHotForkChildRuntime => QmpCommandKind::QueryHotForkChildRuntime,
+            Self::HotForkPluginBarrier { .. } => QmpCommandKind::HotForkPluginBarrier,
+            Self::HotForkRcuBarrier { .. } => QmpCommandKind::HotForkRcuBarrier,
+            Self::HotForkAsyncWorkerBarrier { .. } => QmpCommandKind::HotForkAsyncWorkerBarrier,
+            Self::HotForkBlockBarrier { .. } => QmpCommandKind::HotForkBlockBarrier,
+            Self::HotForkSourceGraph { .. } => QmpCommandKind::HotForkSourceGraph,
+            Self::QueryHotForkBlockSeal => QmpCommandKind::QueryHotForkBlockSeal,
+            Self::HotForkBlockSeal { .. } => QmpCommandKind::HotForkBlockSeal,
+            Self::HotForkDetachedBlockdevAdd { .. } => QmpCommandKind::HotForkDetachedBlockdevAdd,
+            Self::HotForkTemplate { .. } => QmpCommandKind::HotForkTemplate,
+            Self::HotFork { .. } => QmpCommandKind::HotFork,
+            Self::HotForkChildProcess { .. } => QmpCommandKind::HotForkChildProcess,
+            Self::HotForkChildProcessContract { .. } => QmpCommandKind::HotForkChildProcessContract,
+            Self::HotForkChildRam { .. } => QmpCommandKind::HotForkChildRam,
+            Self::HotForkChildFiles { .. } => QmpCommandKind::HotForkChildFiles,
+            Self::HotForkPrivateRings { .. } => QmpCommandKind::HotForkPrivateRings,
+            Self::HotForkPluginEndpoints { .. } => QmpCommandKind::HotForkPluginEndpoints,
+            Self::HotForkChildDiagnostics { .. } => QmpCommandKind::HotForkChildDiagnostics,
+            Self::HotForkChildQmp { .. } => QmpCommandKind::HotForkChildQmp,
+            Self::HotForkChildConsole { .. } => QmpCommandKind::HotForkChildConsole,
+            Self::Quit => QmpCommandKind::Quit,
+            Self::GetFd { .. } => QmpCommandKind::GetFd,
+            Self::CloseFd { .. } => QmpCommandKind::CloseFd,
+            Self::AdoptLaunchFdsets { .. } => QmpCommandKind::AdoptLaunchFdsets,
+        }
+    }
+
+    pub(super) fn request(&self) -> Value {
+        match self {
+            #[cfg(any(test, feature = "test-support"))]
+            Self::PerformanceObservation { command } => json!({
+                "execute": "human-monitor-command", "arguments": { "command-line": command },
+            }),
+            Self::Capabilities => json!({
+                "execute": QMP_CAPABILITIES_COMMAND,
+                "arguments": {
+                    "enable": ["oob"],
+                },
+            }),
+            #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+            Self::SelectableReset {
+                pending,
+                request_hex,
+                correlation,
+            } => json!({
+                "execute": "crucible-selectable-reset-v1",
+                "arguments": {
+                    "schema-version": 1,
+                    "correlation": correlation,
+                    "request-hex": request_hex,
+                    "raw-icount": pending.raw_icount(),
+                    "trap-tick-ps": pending.trap_tick_ps(),
+                    "vcpu-index": pending.vcpu_index(),
+                    "reply-address": pending.guest_virtual_address(),
+                },
+            }),
+            Self::SaveVm { tag, job_id } => {
+                snapshot_request(QMP_SNAPSHOT_SAVE_COMMAND, job_id, tag)
+            }
+            Self::DeleteSnapshot { tag, job_id } => json!({
+                "execute": QMP_SNAPSHOT_DELETE_COMMAND,
+                "arguments": {
+                    "job-id": job_id,
+                    "tag": tag.as_str(),
+                    "devices": [QMP_SNAPSHOT_VMSTATE_DEVICE],
+                },
+            }),
+            #[cfg(target_os = "linux")]
+            Self::CheckpointBegin { receipt } => super::checkpoint_begin::request(*receipt),
+            Self::CheckpointCapture { request } => json!({
+                "execute": QMP_CHECKPOINT_CAPTURE_COMMAND,
+                "arguments": request.wire_value(),
+            }),
+            Self::CheckpointTopology { request } => {
+                let mut arguments = request
+                    .identity()
+                    .wire_value()
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default();
+                arguments.insert(
+                    "root-fdname".into(),
+                    Value::from(request.ram_descriptor().as_str()),
+                );
+                arguments.insert(
+                    "cancellation-fdname".into(),
+                    Value::from(request.cancellation_descriptor().as_str()),
+                );
+                json!({ "execute": checkpoint_topology::COMMAND, "arguments": arguments })
+            }
+            Self::CheckpointRestore { request } => json!({
+                "execute": QMP_CHECKPOINT_RESTORE_COMMAND,
+                "arguments": request.wire_value(),
+            }),
+            Self::CheckpointCommit {
+                identity,
+                capture_generation,
+            } => json!({
+                "execute": QMP_CHECKPOINT_COMMIT_COMMAND,
+                "arguments": {
+                    "checkpoint-sha256": identity.checkpoint().to_hex(),
+                    "target-sha256": identity.target().to_hex(),
+                    "frontier-sha256": identity.frontier().to_hex(),
+                    "capture-generation": capture_generation,
+                },
+            }),
+            Self::CheckpointAbort {
+                identity,
+                capture_generation,
+            } => json!({
+                "execute": QMP_CHECKPOINT_ABORT_COMMAND,
+                "arguments": {
+                    "checkpoint-sha256": identity.checkpoint().to_hex(),
+                    "target-sha256": identity.target().to_hex(),
+                    "frontier-sha256": identity.frontier().to_hex(),
+                    "capture-generation": capture_generation,
+                },
+            }),
+            Self::QueryCheckpointEpoch => json!({
+                "execute": QMP_QUERY_CHECKPOINT_EPOCH_COMMAND,
+            }),
+            Self::QueryFingerprintProjectionManifest => json!({
+                "execute": QMP_QUERY_FINGERPRINT_PROJECTION_MANIFEST_COMMAND,
+            }),
+            Self::QueryPausedCpu { vcpu, generation } => {
+                let mut arguments = json!({"vcpu-index":vcpu});
+                if let Some(generation) = generation {
+                    arguments["expected-generation"] = json!(generation);
+                }
+                json!({"execute":QMP_QUERY_PAUSED_CPU_COMMAND,"arguments":arguments})
+            }
+            #[cfg(feature = "kernel-swap-measurement")]
+            Self::QueryKernelSwapAdmission {
+                generation,
+                cancellation,
+            } => json!({
+                "execute": super::QMP_QUERY_KERNEL_SWAP_ADMISSION_COMMAND,
+                "arguments": {
+                    "expected-generation": generation,
+                    "cancellation-fdname": cancellation.as_str(),
+                },
+            }),
+            #[cfg(feature = "kernel-swap-measurement")]
+            Self::QueryKernelSwapResidency {
+                generation,
+                topology_generation,
+                cancellation,
+            } => json!({
+                "execute": super::QMP_QUERY_KERNEL_SWAP_RESIDENCY_COMMAND,
+                "arguments": {
+                    "expected-generation": generation,
+                    "expected-topology-generation": topology_generation,
+                    "cancellation-fdname": cancellation.as_str(),
+                },
+            }),
+            Self::QueryJobs => json!({
+                "execute": QMP_QUERY_JOBS_COMMAND,
+            }),
+            Self::JobDismiss { job_id } => json!({
+                "execute": QMP_JOB_DISMISS_COMMAND,
+                "arguments": { "id": job_id },
+            }),
+            Self::QueryStatus => json!({
+                "execute": QMP_QUERY_STATUS_COMMAND,
+            }),
+            Self::Stop => json!({
+                "execute": QMP_STOP_COMMAND,
+            }),
+            Self::Cont => json!({
+                "execute": QMP_CONT_COMMAND,
+            }),
+            Self::CompleteTerminalLifecycle {
+                action,
+                evidence,
+                process_generation,
+            } => json!({
+                "execute": QMP_COMPLETE_TERMINAL_LIFECYCLE_COMMAND,
+                "arguments": {
+                    "action-sha256": action.to_hex(),
+                    "evidence-sha256": evidence.to_hex(),
+                    "process-generation": process_generation,
+                },
+            }),
+            Self::QueryHotForkPluginResourceInventory => json!({
+                "exec-oob": QMP_QUERY_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_COMMAND,
+            }),
+            Self::QueryHotForkChildRuntime => json!({
+                "exec-oob": QMP_QUERY_HOT_FORK_CHILD_RUNTIME_COMMAND,
+            }),
+            Self::HotForkPluginBarrier { action } => json!({
+                "exec-oob": QMP_HOT_FORK_PLUGIN_BARRIER_COMMAND,
+                "arguments": {
+                    "action": action.wire_name(),
+                },
+            }),
+            Self::HotForkRcuBarrier { action } => json!({
+                "exec-oob": QMP_HOT_FORK_RCU_BARRIER_COMMAND,
+                "arguments": {
+                    "action": action.wire_name(),
+                },
+            }),
+            Self::HotForkAsyncWorkerBarrier { action } => json!({
+                "exec-oob": QMP_HOT_FORK_ASYNC_WORKER_BARRIER_COMMAND,
+                "arguments": {
+                    "action": action.wire_name(),
+                },
+            }),
+            Self::HotForkBlockBarrier { action } => json!({
+                "execute": QMP_HOT_FORK_BLOCK_BARRIER_COMMAND,
+                "arguments": {
+                    "action": action.wire_name(),
+                },
+            }),
+            Self::HotForkSourceGraph {
+                expected_qemu_pid,
+                expected_template_generation,
+            } => json!({
+                "exec-oob": super::hot_fork::QMP_HOT_FORK_SOURCE_GRAPH_COMMAND,
+                "arguments": {
+                    "expected-qemu-pid": expected_qemu_pid,
+                    "expected-template-generation": expected_template_generation,
+                    "maximum-nodes": super::hot_fork::QMP_HOT_FORK_SOURCE_GRAPH_MAX_NODES,
+                    "maximum-bytes": super::hot_fork::QMP_HOT_FORK_SOURCE_GRAPH_MAX_BYTES,
+                },
+            }),
+            Self::QueryHotForkBlockSeal => json!({
+                "execute": QMP_QUERY_HOT_FORK_BLOCK_SEAL_COMMAND,
+            }),
+            Self::HotForkBlockSeal {
+                expected_qemu_pid,
+                expected_backend_generation,
+                expected_graph_mutation_generation,
+                roots,
+            } => json!({
+                "execute": QMP_HOT_FORK_BLOCK_SEAL_COMMAND,
+                "arguments": {
+                    "expected-qemu-pid": expected_qemu_pid,
+                    "expected-backend-generation": expected_backend_generation,
+                    "expected-graph-mutation-generation": expected_graph_mutation_generation,
+                    "roots": roots.iter().map(QmpHotForkBlockSealRequest::wire_value).collect::<Vec<_>>(),
+                },
+            }),
+            Self::HotForkDetachedBlockdevAdd {
+                node_name,
+                file_path,
+            } => json!({
+                "execute": "blockdev-add",
+                "arguments": {
+                    "driver": "qcow2",
+                    "node-name": node_name,
+                    "file": {
+                        "driver": "file",
+                        "filename": file_path,
+                    },
+                },
+            }),
+            Self::HotForkTemplate {
+                action,
+                block_snapshot_bindings,
+            } => {
+                let mut arguments = serde_json::Map::new();
+                arguments.insert(
+                    String::from("action"),
+                    Value::String(action.wire_name().to_owned()),
+                );
+                if let Some(bindings) = block_snapshot_bindings {
+                    arguments.insert(
+                        String::from("block-snapshot-bindings"),
+                        Value::Array(
+                            bindings
+                                .iter()
+                                .map(QmpHotForkBlockSnapshotBinding::wire_value)
+                                .collect(),
+                        ),
+                    );
+                }
+                json!({
+                    "exec-oob": QMP_HOT_FORK_TEMPLATE_COMMAND,
+                    "arguments": Value::Object(arguments),
+                })
+            }
+            Self::HotFork { request } => json!({
+                "exec-oob": QMP_HOT_FORK_COMMAND,
+                "arguments": request.wire_value(),
+            }),
+            Self::HotForkChildProcess { action, generation } => json!({
+                "exec-oob": QMP_HOT_FORK_CHILD_PROCESS_COMMAND,
+                "arguments": {
+                    "schema-version": QMP_HOT_FORK_CHILD_PROCESS_SCHEMA_VERSION,
+                    "action": action.wire_name(),
+                    "generation": generation,
+                },
+            }),
+            Self::HotForkChildProcessContract {
+                action,
+                cgroup_name,
+                cgroup_procs_name,
+                cancellation_name,
+                identity,
+            } => {
+                let mut arguments = serde_json::Map::new();
+                arguments.insert(
+                    String::from("action"),
+                    Value::String(action.wire_name().to_owned()),
+                );
+                if let Some(name) = cgroup_name {
+                    arguments.insert(
+                        String::from("cgroup-fdname"),
+                        Value::String(name.as_str().to_owned()),
+                    );
+                }
+                if let Some(name) = cgroup_procs_name {
+                    arguments.insert(
+                        String::from("cgroup-procs-fdname"),
+                        Value::String(name.as_str().to_owned()),
+                    );
+                }
+                if let Some(name) = cancellation_name {
+                    arguments.insert(
+                        String::from("cancellation-fdname"),
+                        Value::String(name.as_str().to_owned()),
+                    );
+                }
+                if let Some(identity) = identity {
+                    arguments.insert(
+                        String::from("expected-cgroup-device"),
+                        Value::from(identity.cgroup_device()),
+                    );
+                    arguments.insert(
+                        String::from("expected-cgroup-inode"),
+                        Value::from(identity.cgroup_inode()),
+                    );
+                    arguments.insert(
+                        String::from("expected-cgroup-procs-inode"),
+                        Value::from(identity.cgroup_procs_inode()),
+                    );
+                    arguments.insert(
+                        String::from("expected-cancellation-eventfd-id"),
+                        Value::from(identity.cancellation_eventfd_id()),
+                    );
+                    arguments.insert(
+                        String::from("maximum-file-bytes"),
+                        Value::from(identity.maximum_file_bytes()),
+                    );
+                    arguments.insert(
+                        String::from("maximum-locked-bytes"),
+                        Value::from(identity.maximum_locked_bytes()),
+                    );
+                }
+                json!({
+                    "exec-oob": QMP_HOT_FORK_CHILD_PROCESS_CONTRACT_COMMAND,
+                    "arguments": Value::Object(arguments),
+                })
+            }
+            Self::HotForkChildRam { request } => json!({
+                "execute": hot_fork_ram::COMMAND, "arguments": request.wire_value(),
+            }),
+            Self::HotForkChildFiles {
+                action,
+                files,
+                maximum_bytes,
+                expected_generation,
+            } => {
+                let mut arguments = serde_json::Map::new();
+                arguments.insert(
+                    String::from("action"),
+                    Value::String(action.wire_name().to_owned()),
+                );
+                if let Some(files) = files {
+                    arguments.insert(
+                        String::from("files"),
+                        Value::Array(files.iter().map(QmpHotForkChildFile::wire_value).collect()),
+                    );
+                }
+                if let Some(maximum_bytes) = maximum_bytes {
+                    arguments.insert(String::from("maximum-bytes"), Value::from(*maximum_bytes));
+                }
+                if let Some(generation) = expected_generation {
+                    arguments.insert(
+                        String::from("expected-generation"),
+                        Value::from(*generation),
+                    );
+                }
+                json!({
+                    "exec-oob": QMP_HOT_FORK_CHILD_FILES_COMMAND,
+                    "arguments": Value::Object(arguments),
+                })
+            }
+            Self::HotForkPrivateRings {
+                action,
+                name,
+                identity,
+            } => {
+                let mut arguments = serde_json::Map::new();
+                arguments.insert(
+                    String::from("action"),
+                    Value::String(action.wire_name().to_owned()),
+                );
+                if let Some(name) = name {
+                    arguments.insert(
+                        String::from("fdname"),
+                        Value::String(name.as_str().to_owned()),
+                    );
+                }
+                if let Some(identity) = identity {
+                    arguments.insert(
+                        String::from("expected-device"),
+                        Value::from(identity.device()),
+                    );
+                    arguments.insert(
+                        String::from("expected-inode"),
+                        Value::from(identity.inode()),
+                    );
+                    arguments.insert(
+                        String::from("expected-length"),
+                        Value::from(identity.length()),
+                    );
+                }
+                json!({
+                    "exec-oob": QMP_HOT_FORK_PRIVATE_RINGS_COMMAND,
+                    "arguments": Value::Object(arguments),
+                })
+            }
+            Self::HotForkPluginEndpoints {
+                action,
+                control_name,
+                wake_name,
+                identity,
+            } => {
+                let mut arguments = serde_json::Map::new();
+                arguments.insert(
+                    String::from("action"),
+                    Value::String(action.wire_name().to_owned()),
+                );
+                if let Some(control_name) = control_name {
+                    arguments.insert(
+                        String::from("control-fdname"),
+                        Value::String(control_name.as_str().to_owned()),
+                    );
+                }
+                if let Some(wake_name) = wake_name {
+                    arguments.insert(
+                        String::from("wake-fdname"),
+                        Value::String(wake_name.as_str().to_owned()),
+                    );
+                }
+                if let Some(identity) = identity {
+                    arguments.insert(
+                        String::from("expected-control-socket-cookie"),
+                        Value::from(identity.control_socket_cookie()),
+                    );
+                    arguments.insert(
+                        String::from("expected-wake-eventfd-id"),
+                        Value::from(identity.wake_eventfd_id()),
+                    );
+                }
+                json!({
+                    "exec-oob": QMP_HOT_FORK_PLUGIN_ENDPOINTS_COMMAND,
+                    "arguments": Value::Object(arguments),
+                })
+            }
+            Self::HotForkChildDiagnostics {
+                action,
+                name,
+                socket_cookie,
+            } => {
+                let mut arguments = serde_json::Map::new();
+                arguments.insert(
+                    String::from("action"),
+                    Value::String(action.wire_name().to_owned()),
+                );
+                if let Some(name) = name {
+                    arguments.insert(
+                        String::from("fdname"),
+                        Value::String(name.as_str().to_owned()),
+                    );
+                }
+                if let Some(socket_cookie) = socket_cookie {
+                    arguments.insert(
+                        String::from("expected-socket-cookie"),
+                        Value::from(*socket_cookie),
+                    );
+                }
+                json!({
+                    "exec-oob": QMP_HOT_FORK_CHILD_DIAGNOSTICS_COMMAND,
+                    "arguments": Value::Object(arguments),
+                })
+            }
+            Self::HotForkChildQmp {
+                action,
+                name,
+                socket_cookie,
+            } => {
+                let mut arguments = serde_json::Map::new();
+                arguments.insert(
+                    String::from("action"),
+                    Value::String(action.wire_name().to_owned()),
+                );
+                if let Some(name) = name {
+                    arguments.insert(
+                        String::from("fdname"),
+                        Value::String(name.as_str().to_owned()),
+                    );
+                }
+                if let Some(socket_cookie) = socket_cookie {
+                    arguments.insert(
+                        String::from("expected-socket-cookie"),
+                        Value::from(*socket_cookie),
+                    );
+                }
+                json!({
+                    "exec-oob": QMP_HOT_FORK_CHILD_QMP_COMMAND,
+                    "arguments": Value::Object(arguments),
+                })
+            }
+            Self::HotForkChildConsole {
+                action,
+                name,
+                socket_cookie,
+            } => {
+                let mut arguments = serde_json::Map::new();
+                arguments.insert(
+                    String::from("action"),
+                    Value::String(action.wire_name().to_owned()),
+                );
+                if let Some(name) = name {
+                    arguments.insert(
+                        String::from("fdname"),
+                        Value::String(name.as_str().to_owned()),
+                    );
+                }
+                if let Some(socket_cookie) = socket_cookie {
+                    arguments.insert(
+                        String::from("expected-socket-cookie"),
+                        Value::from(*socket_cookie),
+                    );
+                }
+                json!({
+                    "exec-oob": QMP_HOT_FORK_CHILD_CONSOLE_COMMAND,
+                    "arguments": Value::Object(arguments),
+                })
+            }
+            Self::Quit => json!({
+                "execute": QMP_QUIT_COMMAND_NAME,
+            }),
+            // Descriptor transfer must reach QEMU on the monitor thread: a
+            // retained hot-fork template parks main-loop dispatch, and patched
+            // QEMU admits both commands out of band.
+            Self::GetFd { name } => json!({
+                "exec-oob": QMP_GETFD_COMMAND,
+                "arguments": { "fdname": name.as_str() },
+            }),
+            Self::CloseFd { name } => json!({
+                "exec-oob": QMP_CLOSEFD_COMMAND,
+                "arguments": { "fdname": name.as_str() },
+            }),
+            Self::AdoptLaunchFdsets { has_root_overlay } => json!({
+                "execute": QMP_ADOPT_LAUNCH_FDSETS_COMMAND,
+                "arguments": { "root-overlay": has_root_overlay },
+            }),
+        }
+    }
+}
+
+fn snapshot_request(command: &'static str, job_id: &str, tag: &QmpSnapshotTag) -> Value {
+    json!({
+        "execute": command,
+        "arguments": {
+            "job-id": job_id,
+            "tag": tag.as_str(),
+            "vmstate": QMP_SNAPSHOT_VMSTATE_DEVICE,
+            "devices": [QMP_SNAPSHOT_VMSTATE_DEVICE],
+        },
+    })
+}

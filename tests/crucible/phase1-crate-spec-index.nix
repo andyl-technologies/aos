@@ -2,6 +2,7 @@
   pkgs,
   lib,
 }: let
+  inherit (import ./_workspace-packages.nix {inherit lib;}) packageDir packageNames cruciblePackages;
   cratesDir = ../../crates;
   rfcDir = ../../docs/rfcs/0010-crucible;
   campaignRfcDir = ../../docs/rfcs/0020-crucible-campaigns;
@@ -9,35 +10,36 @@
 
   specs = [
     {
-      package = "crucible-cas";
+      package = "crucible-sqlite-heap";
+      descriptiveContract = "Integer-only native SQLite allocator limits and usage controls";
+      root = "src/lib.rs";
+      specFiles = [];
+      section6 = false;
+    }
+    {
+      package = "crucible-store";
       descriptiveContract = "Content-addressed objects, durable references, authenticated closures, and bounded storage operations";
       root = "src/lib.rs";
       specFiles = ["35"];
       section6 = true;
     }
     {
-      package = "crucible-sim";
+      package = "crucible-determinism";
       descriptiveContract = "Deterministic randomness, counters, and virtual-time primitives";
       root = "src/lib.rs";
       specFiles = ["04" "08" "09"];
       section6 = true;
     }
+
     {
-      package = "crucible-assert";
-      descriptiveContract = "Deterministic assertion vocabulary and canonical subject identities";
-      root = "src/lib.rs";
-      specFiles = ["18"];
-      section6 = true;
-    }
-    {
-      package = "crucible-shmem";
+      package = "crucible-qemu-shmem";
       descriptiveContract = "Versioned shared-memory layouts, checked offsets, and process ownership";
       root = "src/lib.rs";
       specFiles = ["13"];
       section6 = true;
     }
     {
-      package = "crucible-protocol";
+      package = "crucible-qemu-protocol";
       descriptiveContract = "Versioned control messages, bounded codecs, and descriptor exchange";
       root = "src/lib.rs";
       specFiles = ["14" "16"];
@@ -59,7 +61,7 @@
       section6 = true;
     }
     {
-      package = "crucible-qemu";
+      package = "crucible-qemu-host";
       descriptiveContract = "Host-side QEMU process control, deterministic execution, and exact-state ownership";
       root = "src/lib.rs";
       specFiles = ["10" "11"];
@@ -73,7 +75,7 @@
       section6 = true;
     }
     {
-      package = "crucible-debug-gateway";
+      package = "crucible-qemu-debug-gateway";
       descriptiveContract = "Authenticated interactive debugging across the process boundary";
       root = "src/lib.rs";
       specFiles = ["36"];
@@ -88,7 +90,7 @@
       section6 = true;
     }
     {
-      package = "crucible";
+      package = "crucible-engine";
       descriptiveContract = "Pure execution model, scheduling, faults, assertions, and replay identity";
       root = "src/lib.rs";
       specFiles = ["05" "06" "07" "08" "17" "18" "19"];
@@ -102,8 +104,22 @@
       section6 = true;
     }
     {
-      package = "crucible-api";
-      descriptiveContract = "Host lifecycle composition, exact checkpoints, and temporal graph APIs";
+      package = "crucible-control-client";
+      descriptiveContract = "Control client transport, authenticated requests, and admitted response decoding";
+      root = "src/lib.rs";
+      specFiles = ["21"];
+      section6 = true;
+    }
+    {
+      package = "crucible-control-server";
+      descriptiveContract = "Control server dispatch, lifecycle actors, and admitted asynchronous ownership";
+      root = "src/lib.rs";
+      specFiles = ["21"];
+      section6 = true;
+    }
+    {
+      package = "crucible-control-api";
+      descriptiveContract = "Versioned control requests, admitted response contracts, and host ownership interfaces";
       root = "src/lib.rs";
       specFiles = ["21"];
       section6 = true;
@@ -124,10 +140,10 @@
       section6 = true;
     }
     {
-      package = "crucible-harness";
+      package = "crucible-test-support";
       descriptiveContract = "Executable conformance gates, independent replay checks, and ownership inventories";
       root = "src/lib.rs";
-      specFiles = ["24" "27"];
+      specFiles = ["18" "24" "27"];
       section6 = false;
     }
     {
@@ -139,7 +155,7 @@
       section6 = false;
     }
     {
-      package = "crucible-linux-resource";
+      package = "crucible-host-resources";
       descriptiveContract = "Linux physical containment, host admission, and operational supervision";
       root = "src/lib.rs";
       specFiles = [];
@@ -147,7 +163,7 @@
       section6 = false;
     }
     {
-      package = "crucible-s3-store";
+      package = "crucible-store-s3";
       descriptiveContract = "Authenticated remote object storage and durable reference coordination";
       root = "src/lib.rs";
       specFiles = [];
@@ -157,13 +173,7 @@
   ];
 
   expectedPackages = lib.sort builtins.lessThan (map (spec: spec.package) specs);
-  foundPackages = lib.sort builtins.lessThan (
-    builtins.filter (
-      name:
-        lib.hasPrefix "crucible" name
-        && builtins.pathExists (cratesDir + "/${name}/Cargo.toml")
-    ) (builtins.attrNames (builtins.readDir cratesDir))
-  );
+  foundPackages = lib.sort builtins.lessThan cruciblePackages;
 
   packageSetFailures =
     if foundPackages == expectedPackages
@@ -232,7 +242,7 @@
       spec:
         crateDocFailures
         spec
-        (builtins.readFile (cratesDir + "/${spec.package}/${spec.root}"))
+        (builtins.readFile (packageDir spec.package + "/${spec.root}"))
         "crates/${spec.package}/${spec.root}"
     )
     specs;
@@ -335,7 +345,7 @@
 
   regressionFailures = let
     spec = {
-      package = "crucible-sim";
+      package = "crucible-determinism";
       descriptiveContract = "Deterministic randomness, counters, and virtual-time primitives";
       root = "src/lib.rs";
       specFiles = ["04" "08" "09"];
@@ -357,7 +367,7 @@
       //! Implementation contract: Deterministic randomness, counters, and virtual-time primitives.
       #![forbid(unsafe_code)]
     '' "synthetic";
-    staleRowFindings = section6RowFailures spec "| `crucible-sim` | [`04`](04-determinism-contract.md), [`09`](09-virtual-time-icount.md) | `gate:layer0-determinism` |";
+    staleRowFindings = section6RowFailures spec "| `crucible-determinism` | [`04`](04-determinism-contract.md), [`09`](09-virtual-time-icount.md) | `gate:layer0-determinism` |";
     hasFinding = needle: findings:
       builtins.any (finding: hasInfix needle finding) findings;
   in

@@ -1,0 +1,735 @@
+//! Checks the normal control lifecycle and run-phase control-channel silence.
+
+#![forbid(unsafe_code)]
+
+#[cfg(unix)]
+use std::error::Error;
+#[cfg(unix)]
+use std::fs::File;
+#[cfg(unix)]
+use std::io::{Read, Write};
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
+#[cfg(unix)]
+use std::os::unix::net::UnixStream;
+
+use crucible_qemu_protocol::{
+    CONTROL_PROTOCOL_VERSION, ControlDirection, ControlLifecycle, ControlLifecycleError,
+    ControlLifecycleEvent, ControlLifecycleIoError, ControlLifecycleState, ControlLifecycleStream,
+    ControlTag, HandshakeError, HostHandshakeConfig, HostMsg, NORMAL_CONTROL_LIFECYCLE,
+    NegotiatedHandshake, PluginHandshakeConfig, PluginMsg, RUNTIME_DATA_PLANE_CONTRACT,
+    RuntimeDataPlane, SETUP_ACK_STATUS_READY, SETUP_ACK_STATUS_SETUP_FAILED,
+    control_decode_host_msg, control_encode_host_msg, control_encode_plugin_msg,
+    read_control_frame, validate_complete_control_lifecycle, validate_control_lifecycle_trace,
+};
+#[cfg(unix)]
+use crucible_qemu_protocol::{ReceivedSetup, ReceivedSetupDescriptors, SetupDescriptorFds};
+
+#[test]
+fn bounded_quit_writer_commits_only_after_a_complete_frame() {
+    let mut failed = ControlLifecycleStream::restored_run_via_shared_memory(Vec::new());
+    let result = failed.host_send_quit_with_writer(|stream, frame| {
+        stream.extend_from_slice(&frame[..1]);
+        Err(crucible_qemu_protocol::FrameIoError::Io {
+            operation: "test partial writer",
+            kind: std::io::ErrorKind::TimedOut,
+        })
+    });
+    assert!(result.is_err());
+    assert_eq!(
+        failed.state(),
+        ControlLifecycleState::RunningViaSharedMemory
+    );
+
+    let mut complete = ControlLifecycleStream::restored_run_via_shared_memory(Vec::new());
+    complete
+        .host_send_quit()
+        .unwrap_or_else(|error| panic!("write complete Quit frame: {error}"));
+    assert_eq!(complete.state(), ControlLifecycleState::QuitSent);
+    assert_eq!(
+        complete.into_inner(),
+        control_encode_host_msg(&HostMsg::Quit)
+    );
+}
+
+#[test]
+fn normal_lifecycle_connects_handshakes_runs_via_shmem_and_quits() {
+    assert_eq!(
+        validate_complete_control_lifecycle(NORMAL_CONTROL_LIFECYCLE),
+        Ok(())
+    );
+    assert_eq!(
+        validate_control_lifecycle_trace(NORMAL_CONTROL_LIFECYCLE),
+        Ok(ControlLifecycleState::QuitSent)
+    );
+    assert_eq!(
+        RUNTIME_DATA_PLANE_CONTRACT.runtime_data_plane,
+        RuntimeDataPlane::SharedMemory
+    );
+    const {
+        assert!(RUNTIME_DATA_PLANE_CONTRACT.control_channel_silent_between_setup_ack_and_quit);
+    }
+}
+
+#[test]
+fn lifecycle_events_are_derived_from_decoded_control_messages() {
+    assert_eq!(
+        ControlLifecycleEvent::from_plugin_msg(&PluginMsg::Hello {
+            proto_version: CONTROL_PROTOCOL_VERSION,
+            abi_version: 25,
+        }),
+        ControlLifecycleEvent::PluginHello
+    );
+    assert_eq!(
+        ControlLifecycleEvent::from_plugin_msg(&PluginMsg::SetupAck {
+            status: SETUP_ACK_STATUS_READY,
+        }),
+        ControlLifecycleEvent::PluginSetupAck {
+            status: SETUP_ACK_STATUS_READY,
+        }
+    );
+    assert_eq!(
+        ControlLifecycleEvent::from_host_msg(&HostMsg::HelloAck {
+            proto_version: CONTROL_PROTOCOL_VERSION,
+            abi_version: 25,
+            slot_index: 0,
+            node_count: 2,
+        }),
+        ControlLifecycleEvent::HostHelloAck
+    );
+    assert_eq!(
+        ControlLifecycleEvent::from_host_msg(&HostMsg::Setup {
+            process_generation: 1,
+            device_digest_workspace: None,
+            region_len: 4096
+        }),
+        ControlLifecycleEvent::HostSetup
+    );
+    assert_eq!(
+        ControlLifecycleEvent::from_host_msg(&HostMsg::Quit),
+        ControlLifecycleEvent::HostQuit
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn lifecycle_stream_wires_real_frames_setup_descriptors_and_run_silence()
+-> Result<(), Box<dyn Error>> {
+    let (host_socket, mut plugin_socket) = UnixStream::pair()?;
+    let mut host = ControlLifecycleStream::connected_unix_stream(host_socket)?;
+
+    plugin_socket.write_all(&control_encode_plugin_msg(&PluginMsg::Hello {
+        proto_version: CONTROL_PROTOCOL_VERSION,
+        abi_version: 25,
+    }))?;
+    assert_eq!(
+        host.host_accept_handshake(HostHandshakeConfig {
+            proto_version: CONTROL_PROTOCOL_VERSION,
+            abi_version: 25,
+            slot_index: 0,
+            node_count: 1,
+        })?,
+        NegotiatedHandshake {
+            proto_version: CONTROL_PROTOCOL_VERSION,
+            abi_version: 25,
+            slot_index: 0,
+            node_count: 1,
+        }
+    );
+    assert_eq!(host.state(), ControlLifecycleState::HelloAcknowledged);
+    assert!(matches!(
+        control_decode_host_msg(&read_control_frame(&mut plugin_socket)?)?,
+        HostMsg::HelloAck { .. }
+    ));
+
+    let shmem = File::open("/dev/null")?;
+    let wake = File::open("/dev/zero")?;
+    host.host_send_setup_with_descriptors(
+        4096,
+        SetupDescriptorFds {
+            process_generation: 1,
+            device_digest_workspace: None,
+            shmem_fd: shmem.as_raw_fd(),
+            wake_fd: wake.as_raw_fd(),
+            plugin_setup_plan_fd: shmem.as_raw_fd(),
+            source_supervision_fd: shmem.as_raw_fd(),
+            source_cancellation_fd: shmem.as_raw_fd(),
+        },
+    )?;
+    let ReceivedSetup {
+        process_generation: _,
+        device_digest_workspace: _,
+        region_len,
+        descriptors: ReceivedSetupDescriptors { .. },
+    } = crucible_qemu_protocol::recv_setup_with_descriptors(plugin_socket.as_raw_fd())?;
+    assert_eq!(region_len, 4096);
+    assert_eq!(host.state(), ControlLifecycleState::SetupSent);
+
+    plugin_socket.write_all(&control_encode_plugin_msg(&PluginMsg::SetupAck {
+        status: SETUP_ACK_STATUS_READY,
+    }))?;
+    let setup = host.host_accept_setup_ack()?;
+    assert!(setup.can_schedule());
+    assert_eq!(host.state(), ControlLifecycleState::SetupAcknowledged);
+
+    host.enter_run_via_shared_memory()?;
+    assert_eq!(host.state(), ControlLifecycleState::RunningViaSharedMemory);
+
+    plugin_socket.write_all(&control_encode_plugin_msg(&PluginMsg::Hello {
+        proto_version: CONTROL_PROTOCOL_VERSION,
+        abi_version: 25,
+    }))?;
+    assert_eq!(
+        host.host_read_run_control_frame(),
+        Err(ControlLifecycleIoError::Lifecycle {
+            source: ControlLifecycleError::ControlFrameDuringRun {
+                tag: ControlTag::Hello,
+                direction: ControlDirection::PluginToHost,
+            },
+        })
+    );
+    assert_eq!(host.state(), ControlLifecycleState::RunningViaSharedMemory);
+
+    host.host_send_quit()?;
+    assert_eq!(
+        control_decode_host_msg(&read_control_frame(&mut plugin_socket)?)?,
+        HostMsg::Quit
+    );
+    assert_eq!(host.state(), ControlLifecycleState::QuitSent);
+
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn lifecycle_stream_does_not_advance_after_invalid_hello_ack() -> Result<(), Box<dyn Error>> {
+    let (mut host_socket, plugin_socket) = UnixStream::pair()?;
+    let mut plugin = ControlLifecycleStream::connected_unix_stream(plugin_socket)?;
+
+    host_socket.write_all(&control_encode_host_msg(&HostMsg::HelloAck {
+        proto_version: CONTROL_PROTOCOL_VERSION,
+        abi_version: u32::MAX,
+        slot_index: 0,
+        node_count: 1,
+    }))?;
+
+    assert_eq!(
+        plugin.plugin_start_handshake(PluginHandshakeConfig {
+            proto_version: CONTROL_PROTOCOL_VERSION,
+            abi_version: 25,
+        }),
+        Err(ControlLifecycleIoError::Handshake {
+            source: HandshakeError::AbiMismatch {
+                plugin_abi: 25,
+                host_abi: u32::MAX,
+            },
+        })
+    );
+    assert_eq!(plugin.state(), ControlLifecycleState::HelloSent);
+
+    assert_eq!(
+        plugin.plugin_recv_setup_with_descriptors().err(),
+        Some(ControlLifecycleIoError::Lifecycle {
+            source: ControlLifecycleError::UnexpectedEvent {
+                state: ControlLifecycleState::HelloSent,
+                event: ControlLifecycleEvent::HostSetup,
+            },
+        })
+    );
+
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn restored_child_run_stream_accepts_only_the_terminal_run_frame() -> Result<(), Box<dyn Error>> {
+    let (mut invalid_host, invalid_plugin) = UnixStream::pair()?;
+    let mut invalid_plugin = ControlLifecycleStream::restored_run_via_shared_memory(invalid_plugin);
+    invalid_host.write_all(&control_encode_host_msg(&HostMsg::Setup {
+        process_generation: 1,
+        device_digest_workspace: None,
+        region_len: 4096,
+    }))?;
+    assert!(invalid_plugin.plugin_read_run_control_frame().is_err());
+    assert_eq!(
+        invalid_plugin.state(),
+        ControlLifecycleState::RunningViaSharedMemory
+    );
+
+    let (mut host, plugin) = UnixStream::pair()?;
+    let mut plugin = ControlLifecycleStream::restored_run_via_shared_memory(plugin);
+    assert_eq!(
+        plugin.state(),
+        ControlLifecycleState::RunningViaSharedMemory
+    );
+
+    host.write_all(&control_encode_host_msg(&HostMsg::Quit))?;
+    assert_eq!(
+        plugin.plugin_read_run_control_frame()?,
+        ControlLifecycleState::QuitSent
+    );
+    assert_eq!(plugin.state(), ControlLifecycleState::QuitSent);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn plugin_transport_borrows_follow_setup_and_run_lifecycle() -> Result<(), Box<dyn Error>> {
+    let (peer_socket, plugin_socket) = UnixStream::pair()?;
+    let mut connected = ControlLifecycleStream::connected_unix_stream(plugin_socket)?;
+    assert!(matches!(
+        connected.plugin_setup_io_mut(),
+        Err(ControlLifecycleIoError::Lifecycle {
+            source: ControlLifecycleError::UnexpectedEvent {
+                state: ControlLifecycleState::Connected,
+                event: ControlLifecycleEvent::HostSetup,
+            },
+        })
+    ));
+    drop(peer_socket);
+
+    let (mut peer_socket, plugin_socket) = UnixStream::pair()?;
+    let mut setup = plugin_setup_lifecycle_stream(plugin_socket, &mut peer_socket)?;
+    assert!(setup.plugin_run_io_mut().is_err());
+    setup.plugin_setup_io_mut()?.write_all(&[])?;
+    setup.plugin_send_ready_setup_ack()?;
+    let _ = read_control_frame(&mut peer_socket)?;
+    setup.enter_run_via_shared_memory()?;
+    assert!(matches!(
+        setup.plugin_setup_io_mut(),
+        Err(ControlLifecycleIoError::Lifecycle {
+            source: ControlLifecycleError::UnexpectedEvent {
+                state: ControlLifecycleState::RunningViaSharedMemory,
+                event: ControlLifecycleEvent::HostSetup,
+            },
+        })
+    ));
+
+    let _transport = setup.plugin_run_io_mut()?;
+    peer_socket.set_nonblocking(true)?;
+    assert_eq!(
+        peer_socket.read(&mut [0_u8; 1]).unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    peer_socket.set_nonblocking(false)?;
+    assert_eq!(setup.state(), ControlLifecycleState::RunningViaSharedMemory);
+
+    peer_socket.write_all(&control_encode_host_msg(&HostMsg::Quit))?;
+    setup.plugin_read_run_control_frame()?;
+    assert!(matches!(
+        setup.plugin_run_io_mut(),
+        Err(ControlLifecycleIoError::Lifecycle {
+            source: ControlLifecycleError::UnexpectedEvent {
+                state: ControlLifecycleState::QuitSent,
+                event: ControlLifecycleEvent::RunViaSharedMemory,
+            },
+        })
+    ));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn plugin_ready_commit_records_exact_setup_transition() -> Result<(), Box<dyn Error>> {
+    let (mut peer_socket, plugin_socket) = UnixStream::pair()?;
+    let mut plugin = plugin_setup_lifecycle_stream(plugin_socket, &mut peer_socket)?;
+
+    plugin
+        .plugin_setup_io_mut()?
+        .write_all(&control_encode_plugin_msg(&PluginMsg::SetupAck {
+            status: SETUP_ACK_STATUS_READY,
+        }))?;
+    plugin.plugin_commit_ready_setup_ack()?;
+    assert_eq!(plugin.state(), ControlLifecycleState::SetupAcknowledged);
+    assert!(plugin.plugin_commit_ready_setup_ack().is_err());
+    plugin.enter_run_via_shared_memory()?;
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn plugin_failure_ack_writes_nonready_bytes_without_entering_run() -> Result<(), Box<dyn Error>> {
+    let (mut peer_socket, plugin_socket) = UnixStream::pair()?;
+    let mut plugin = plugin_setup_lifecycle_stream(plugin_socket, &mut peer_socket)?;
+
+    plugin.plugin_send_setup_failure_ack()?;
+    assert_eq!(
+        crucible_qemu_protocol::control_decode_plugin_msg(&read_control_frame(&mut peer_socket)?)?,
+        PluginMsg::SetupAck {
+            status: SETUP_ACK_STATUS_SETUP_FAILED,
+        }
+    );
+    assert_eq!(plugin.state(), ControlLifecycleState::SetupSent);
+    assert!(plugin.enter_run_via_shared_memory().is_err());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn lifecycle_stream_splits_host_faults_from_plugin_quit_acceptance() -> Result<(), Box<dyn Error>> {
+    let (mut peer_socket, host_socket) = UnixStream::pair()?;
+    let mut host = host_running_lifecycle_stream(host_socket, &mut peer_socket)?;
+
+    peer_socket.write_all(&control_encode_host_msg(&HostMsg::Quit))?;
+    assert_eq!(
+        host.host_read_run_control_frame(),
+        Err(ControlLifecycleIoError::Lifecycle {
+            source: ControlLifecycleError::ControlFrameDuringRun {
+                tag: ControlTag::Quit,
+                direction: ControlDirection::HostToPlugin,
+            },
+        })
+    );
+    assert_eq!(host.state(), ControlLifecycleState::RunningViaSharedMemory);
+
+    let (mut host_socket, plugin_socket) = UnixStream::pair()?;
+    let mut plugin = plugin_running_lifecycle_stream(plugin_socket, &mut host_socket)?;
+
+    host_socket.write_all(&control_encode_host_msg(&HostMsg::Quit))?;
+    assert_eq!(
+        plugin.plugin_read_run_control_frame(),
+        Ok(ControlLifecycleState::QuitSent)
+    );
+    assert_eq!(plugin.state(), ControlLifecycleState::QuitSent);
+
+    Ok(())
+}
+
+#[test]
+fn run_phase_accepts_only_shmem_until_quit() {
+    let mut lifecycle = ControlLifecycle::new();
+    for event in [
+        ControlLifecycleEvent::ConnectUnixStreamSocketPair,
+        ControlLifecycleEvent::PluginHello,
+        ControlLifecycleEvent::HostHelloAck,
+        ControlLifecycleEvent::HostSetup,
+        ControlLifecycleEvent::PluginSetupAck {
+            status: SETUP_ACK_STATUS_READY,
+        },
+        ControlLifecycleEvent::RunViaSharedMemory,
+    ] {
+        assert!(lifecycle.observe(event).is_ok());
+    }
+
+    assert_eq!(
+        lifecycle.observe(ControlLifecycleEvent::RunViaSharedMemory),
+        Ok(ControlLifecycleState::RunningViaSharedMemory)
+    );
+
+    for (event, tag) in [
+        (ControlLifecycleEvent::PluginHello, ControlTag::Hello),
+        (ControlLifecycleEvent::HostHelloAck, ControlTag::HelloAck),
+        (ControlLifecycleEvent::HostSetup, ControlTag::Setup),
+        (
+            ControlLifecycleEvent::PluginSetupAck {
+                status: SETUP_ACK_STATUS_READY,
+            },
+            ControlTag::SetupAck,
+        ),
+    ] {
+        assert_eq!(
+            lifecycle.observe(event),
+            Err(ControlLifecycleError::ControlFrameDuringRun {
+                tag,
+                direction: tag.direction(),
+            })
+        );
+        assert_eq!(
+            lifecycle.state(),
+            ControlLifecycleState::RunningViaSharedMemory
+        );
+    }
+
+    assert_eq!(
+        lifecycle.observe(ControlLifecycleEvent::HostQuit),
+        Ok(ControlLifecycleState::QuitSent)
+    );
+}
+
+#[test]
+fn lifecycle_rejects_non_ready_setup_ack_before_run() {
+    assert_eq!(
+        validate_control_lifecycle_trace([
+            ControlLifecycleEvent::ConnectUnixStreamSocketPair,
+            ControlLifecycleEvent::PluginHello,
+            ControlLifecycleEvent::HostHelloAck,
+            ControlLifecycleEvent::HostSetup,
+            ControlLifecycleEvent::PluginSetupAck { status: 7 },
+        ]),
+        Err(ControlLifecycleError::NonReadySetupAck { status: 7 })
+    );
+}
+
+#[test]
+fn lifecycle_rejects_out_of_order_and_incomplete_traces() {
+    assert_eq!(
+        validate_control_lifecycle_trace([
+            ControlLifecycleEvent::ConnectUnixStreamSocketPair,
+            ControlLifecycleEvent::HostSetup,
+        ]),
+        Err(ControlLifecycleError::UnexpectedEvent {
+            state: ControlLifecycleState::Connected,
+            event: ControlLifecycleEvent::HostSetup,
+        })
+    );
+    assert_eq!(
+        validate_control_lifecycle_trace([
+            ControlLifecycleEvent::ConnectUnixStreamSocketPair,
+            ControlLifecycleEvent::PluginHello,
+            ControlLifecycleEvent::HostHelloAck,
+            ControlLifecycleEvent::HostSetup,
+            ControlLifecycleEvent::PluginSetupAck {
+                status: SETUP_ACK_STATUS_READY,
+            },
+            ControlLifecycleEvent::HostQuit,
+        ]),
+        Err(ControlLifecycleError::UnexpectedEvent {
+            state: ControlLifecycleState::SetupAcknowledged,
+            event: ControlLifecycleEvent::HostQuit,
+        })
+    );
+    assert_eq!(
+        validate_complete_control_lifecycle([
+            ControlLifecycleEvent::ConnectUnixStreamSocketPair,
+            ControlLifecycleEvent::PluginHello,
+            ControlLifecycleEvent::HostHelloAck,
+            ControlLifecycleEvent::HostSetup,
+            ControlLifecycleEvent::PluginSetupAck {
+                status: SETUP_ACK_STATUS_READY,
+            },
+        ]),
+        Err(ControlLifecycleError::IncompleteLifecycle {
+            state: ControlLifecycleState::SetupAcknowledged,
+        })
+    );
+}
+
+#[test]
+fn lifecycle_control_tags_preserve_registered_direction() {
+    assert_eq!(
+        ControlLifecycleEvent::PluginHello.control_tag(),
+        Some(ControlTag::Hello)
+    );
+    assert_eq!(
+        ControlLifecycleEvent::HostQuit.control_tag(),
+        Some(ControlTag::Quit)
+    );
+    assert_eq!(
+        ControlLifecycleEvent::RunViaSharedMemory.control_tag(),
+        None
+    );
+    assert_eq!(
+        ControlTag::Hello.direction(),
+        ControlDirection::PluginToHost
+    );
+    assert_eq!(ControlTag::Quit.direction(), ControlDirection::HostToPlugin);
+}
+
+#[cfg(unix)]
+fn host_running_lifecycle_stream(
+    stream: UnixStream,
+    peer: &mut UnixStream,
+) -> Result<ControlLifecycleStream<UnixStream>, Box<dyn Error>> {
+    let mut host = ControlLifecycleStream::connected_unix_stream(stream)?;
+
+    peer.write_all(&control_encode_plugin_msg(&PluginMsg::Hello {
+        proto_version: CONTROL_PROTOCOL_VERSION,
+        abi_version: 25,
+    }))?;
+    host.host_accept_handshake(HostHandshakeConfig {
+        proto_version: CONTROL_PROTOCOL_VERSION,
+        abi_version: 25,
+        slot_index: 0,
+        node_count: 1,
+    })?;
+    let _ = read_control_frame(peer)?;
+
+    let shmem = File::open("/dev/null")?;
+    let wake = File::open("/dev/zero")?;
+    host.host_send_setup_with_descriptors(
+        4096,
+        SetupDescriptorFds {
+            process_generation: 1,
+            device_digest_workspace: None,
+            shmem_fd: shmem.as_raw_fd(),
+            wake_fd: wake.as_raw_fd(),
+            plugin_setup_plan_fd: shmem.as_raw_fd(),
+            source_supervision_fd: shmem.as_raw_fd(),
+            source_cancellation_fd: shmem.as_raw_fd(),
+        },
+    )?;
+    let _ = crucible_qemu_protocol::recv_setup_with_descriptors(peer.as_raw_fd())?;
+
+    peer.write_all(&control_encode_plugin_msg(&PluginMsg::SetupAck {
+        status: SETUP_ACK_STATUS_READY,
+    }))?;
+    let _ = host.host_accept_setup_ack()?;
+    host.enter_run_via_shared_memory()?;
+
+    Ok(host)
+}
+
+#[cfg(unix)]
+fn plugin_running_lifecycle_stream(
+    stream: UnixStream,
+    peer: &mut UnixStream,
+) -> Result<ControlLifecycleStream<UnixStream>, Box<dyn Error>> {
+    let mut plugin = plugin_setup_lifecycle_stream(stream, peer)?;
+
+    plugin.plugin_send_ready_setup_ack()?;
+    let _ = read_control_frame(peer)?;
+    plugin.enter_run_via_shared_memory()?;
+
+    Ok(plugin)
+}
+
+#[cfg(unix)]
+fn plugin_setup_lifecycle_stream(
+    stream: UnixStream,
+    peer: &mut UnixStream,
+) -> Result<ControlLifecycleStream<UnixStream>, Box<dyn Error>> {
+    let mut plugin = ControlLifecycleStream::connected_unix_stream(stream)?;
+
+    peer.write_all(&control_encode_host_msg(&HostMsg::HelloAck {
+        proto_version: CONTROL_PROTOCOL_VERSION,
+        abi_version: 25,
+        slot_index: 0,
+        node_count: 1,
+    }))?;
+    plugin.plugin_start_handshake(PluginHandshakeConfig {
+        proto_version: CONTROL_PROTOCOL_VERSION,
+        abi_version: 25,
+    })?;
+    let _ = read_control_frame(peer)?;
+
+    let shmem = File::open("/dev/null")?;
+    let wake = File::open("/dev/zero")?;
+    crucible_qemu_protocol::send_setup_with_descriptors(
+        peer.as_raw_fd(),
+        4096,
+        SetupDescriptorFds {
+            process_generation: 1,
+            device_digest_workspace: None,
+            shmem_fd: shmem.as_raw_fd(),
+            wake_fd: wake.as_raw_fd(),
+            plugin_setup_plan_fd: shmem.as_raw_fd(),
+            source_supervision_fd: shmem.as_raw_fd(),
+            source_cancellation_fd: shmem.as_raw_fd(),
+        },
+    )?;
+    let _ = plugin.plugin_recv_setup_with_descriptors()?;
+
+    Ok(plugin)
+}
+
+/// Advances an actual socket through the ordinary Hello/HelloAck exchange.
+#[cfg(unix)]
+fn preexec_ack_stream(
+    socket: UnixStream,
+    peer: &mut UnixStream,
+) -> Result<ControlLifecycleStream<UnixStream>, Box<dyn Error>> {
+    let mut stream = ControlLifecycleStream::connected_unix_stream(socket)?;
+    peer.write_all(&control_encode_plugin_msg(&PluginMsg::Hello {
+        proto_version: CONTROL_PROTOCOL_VERSION,
+        abi_version: 25,
+    }))?;
+    stream.host_accept_handshake(HostHandshakeConfig {
+        proto_version: CONTROL_PROTOCOL_VERSION,
+        abi_version: 25,
+        slot_index: 0,
+        node_count: 1,
+    })?;
+    assert!(matches!(
+        control_decode_host_msg(&read_control_frame(peer)?)?,
+        HostMsg::HelloAck { .. }
+    ));
+    Ok(stream)
+}
+
+#[cfg(unix)]
+fn selected_preexec_frame() -> [u8; 61] {
+    let mut frame = [0; 61];
+    frame[..4].copy_from_slice(&57_u32.to_be_bytes());
+    frame[4] = 0x15;
+    frame[5..13].copy_from_slice(&4096_u64.to_be_bytes());
+    frame[21..29].copy_from_slice(&1_u64.to_be_bytes());
+    frame
+}
+
+#[cfg(unix)]
+#[test]
+fn completed_preexec_receipt_commits_without_a_second_frame() -> Result<(), Box<dyn Error>> {
+    let (host, mut peer) = UnixStream::pair()?;
+    let alias = host.try_clone()?;
+    let descriptor = File::open("/dev/null")?;
+    let frame = selected_preexec_frame();
+    let receipt = crucible_qemu_protocol::send_preexec_setup_frame_with_descriptors(
+        host.as_raw_fd(),
+        &frame,
+        &[descriptor.as_raw_fd(); 5],
+    )?;
+    let mut observed = [0; 61];
+    peer.read_exact(&mut observed)?;
+    assert_eq!(observed, frame);
+
+    // A real duplicate refers to the same physical endpoint, unlike another
+    // stream with identical frame bytes. The receipt is consumed exactly once.
+    let mut stream = preexec_ack_stream(alias, &mut peer)?;
+    stream.host_commit_preexec_setup(receipt)?;
+    assert_eq!(stream.state(), ControlLifecycleState::SetupSent);
+    peer.set_nonblocking(true)?;
+    assert_eq!(
+        peer.read(&mut [0; 1]).unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn preexec_receipt_refuses_another_endpoint_without_advancing() -> Result<(), Box<dyn Error>> {
+    let (first, mut first_peer) = UnixStream::pair()?;
+    let descriptor = File::open("/dev/null")?;
+    let receipt = crucible_qemu_protocol::send_preexec_setup_frame_with_descriptors(
+        first.as_raw_fd(),
+        &selected_preexec_frame(),
+        &[descriptor.as_raw_fd(); 5],
+    )?;
+    first_peer.read_exact(&mut [0; 61])?;
+
+    let (second, mut second_peer) = UnixStream::pair()?;
+    let mut stream = preexec_ack_stream(second, &mut second_peer)?;
+    assert!(stream.host_commit_preexec_setup(receipt).is_err());
+    assert_eq!(stream.state(), ControlLifecycleState::HelloAcknowledged);
+    second_peer.set_nonblocking(true)?;
+    assert_eq!(
+        second_peer.read(&mut [0; 1]).unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn selected_preexec_geometry_refuses_before_any_frame() -> Result<(), Box<dyn Error>> {
+    let (host, mut peer) = UnixStream::pair()?;
+    let descriptor = File::open("/dev/null")?;
+    for range in [5..13, 21..29] {
+        let mut frame = selected_preexec_frame();
+        frame[range].fill(0);
+        assert!(
+            crucible_qemu_protocol::send_preexec_setup_frame_with_descriptors(
+                host.as_raw_fd(),
+                &frame,
+                &[descriptor.as_raw_fd(); 5],
+            )
+            .is_err()
+        );
+    }
+    peer.set_nonblocking(true)?;
+    assert_eq!(
+        peer.read(&mut [0; 1]).unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    Ok(())
+}

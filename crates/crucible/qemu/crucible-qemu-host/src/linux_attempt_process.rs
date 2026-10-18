@@ -1,0 +1,1309 @@
+//! Sealed Linux process ownership for one QEMU attempt.
+//!
+//! This module is the public, process-only facade over the raw cgroup-v2 state
+//! machine. It creates one uniquely named attempt cgroup, starts its persistent
+//! cancellation watcher, lends only the sealed child-launch contract, retains
+//! failed direct children, and completes or quarantines the entire process
+//! authority. Raw cgroup controls remain crate-private. This facade deliberately
+//! does not claim aggregate filesystem-quota ownership and therefore cannot by
+//! itself satisfy a complete campaign attempt resource guard.
+
+use std::io::Read as _;
+use std::os::fd::{AsRawFd as _, OwnedFd};
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use rustix::process::{Pid, PidfdFlags, Signal, pidfd_open, pidfd_send_signal};
+
+use crate::linux_cgroup::{
+    LinuxQemuAttemptProcessOwner as CgroupAttemptProcessOwner,
+    LinuxQemuAttemptProcessOwnerError as CgroupAttemptProcessOwnerError,
+    LinuxQemuAttemptProcessOwnerStatus as CgroupAttemptProcessOwnerStatus, LinuxQemuCgroupError,
+    LinuxQemuCgroupLimits, LinuxQemuCgroupRoot, MAX_LINUX_QEMU_CGROUP_TASKS,
+};
+use crate::{
+    QemuChildProcessContract, QemuHotForkChildProcessBasis, QemuHotForkChildProcessOwner,
+    QemuNodeChannelError, QemuNodeChild, QemuProcessIdentity, QemuVmRealizationError,
+};
+
+/// Minimum bounded wait accepted for normal process-owner cleanup.
+pub const MIN_LINUX_QEMU_PROCESS_FINISH_TIMEOUT: Duration = Duration::from_millis(10);
+
+/// Maximum bounded wait accepted for normal process-owner cleanup.
+pub const MAX_LINUX_QEMU_PROCESS_FINISH_TIMEOUT: Duration = Duration::from_secs(60);
+
+const ATTEMPT_COUNTER_HEX_BYTES: usize = 16;
+const ATTEMPT_NAME_SEPARATOR_BYTES: usize = 1;
+const MAX_CGROUP_NAME_BYTES: usize = 128;
+const MAX_ATTEMPT_NAMESPACE_BYTES: usize =
+    MAX_CGROUP_NAME_BYTES - ATTEMPT_NAME_SEPARATOR_BYTES - ATTEMPT_COUNTER_HEX_BYTES;
+
+/// Validated configuration for one delegated Linux QEMU process namespace.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LinuxQemuAttemptProcessConfig {
+    cgroup_root: PathBuf,
+    attempt_namespace: String,
+    child_user_id: u32,
+    child_group_id: u32,
+    maximum_tasks: u32,
+    maximum_file_descriptors: u64,
+    maximum_locked_bytes: u64,
+    finish_timeout: Duration,
+}
+
+impl LinuxQemuAttemptProcessConfig {
+    /// Validates one daemon-incarnation process namespace.
+    ///
+    /// `attempt_namespace` must be unique to the daemon incarnation. The
+    /// factory appends a fixed-width process-local counter to derive each child
+    /// name without using semantic campaign identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuVmRealizationError::Executor`] when the root is not an
+    /// absolute path, the namespace is not a bounded cgroup name prefix, child
+    /// credentials are root, the task ceiling is invalid, or the finish timeout
+    /// is outside the reviewed bound.
+    pub fn new(
+        cgroup_root: impl Into<PathBuf>,
+        attempt_namespace: impl Into<String>,
+        child_user_id: u32,
+        child_group_id: u32,
+        maximum_tasks: u32,
+        maximum_file_descriptors: u64,
+        finish_timeout: Duration,
+    ) -> Result<Self, QemuVmRealizationError> {
+        Self::new_typed(
+            cgroup_root,
+            attempt_namespace,
+            child_user_id,
+            child_group_id,
+            maximum_tasks,
+            maximum_file_descriptors,
+            finish_timeout,
+        )
+        .map_err(invalid_config)
+    }
+
+    // The admitted constructor retains this fixed cause before diagnostics.
+    pub(crate) fn new_typed(
+        cgroup_root: impl Into<PathBuf>,
+        attempt_namespace: impl Into<String>,
+        child_user_id: u32,
+        child_group_id: u32,
+        maximum_tasks: u32,
+        maximum_file_descriptors: u64,
+        finish_timeout: Duration,
+    ) -> Result<Self, &'static str> {
+        let cgroup_root = cgroup_root.into();
+        let attempt_namespace = attempt_namespace.into();
+        if !cgroup_root.is_absolute() {
+            return Err("delegated cgroup root must be absolute");
+        }
+        if attempt_namespace.is_empty()
+            || attempt_namespace.len() > MAX_ATTEMPT_NAMESPACE_BYTES
+            || !attempt_namespace
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        {
+            return Err(
+                "attempt namespace must be bounded ASCII alphanumeric, dash, or underscore",
+            );
+        }
+        if child_user_id == 0 || child_group_id == 0 {
+            return Err("QEMU child user and group identifiers must be non-root");
+        }
+        if maximum_tasks == 0 || maximum_tasks > MAX_LINUX_QEMU_CGROUP_TASKS {
+            return Err("QEMU task ceiling is outside the supported bound");
+        }
+        if maximum_file_descriptors < 16 {
+            return Err("QEMU descriptor ceiling must accommodate fixed launch descriptors");
+        }
+        if !(MIN_LINUX_QEMU_PROCESS_FINISH_TIMEOUT..=MAX_LINUX_QEMU_PROCESS_FINISH_TIMEOUT)
+            .contains(&finish_timeout)
+        {
+            return Err("QEMU process finish timeout is outside the reviewed bound");
+        }
+        Ok(Self {
+            cgroup_root,
+            attempt_namespace,
+            child_user_id,
+            child_group_id,
+            maximum_tasks,
+            maximum_file_descriptors,
+            maximum_locked_bytes: 0,
+            finish_timeout,
+        })
+    }
+
+    /// Returns the delegated cgroup-v2 root path.
+    #[must_use]
+    pub fn cgroup_root(&self) -> &Path {
+        &self.cgroup_root
+    }
+
+    /// Returns the daemon-incarnation child-name namespace.
+    #[must_use]
+    pub fn attempt_namespace(&self) -> &str {
+        &self.attempt_namespace
+    }
+
+    /// Returns the unprivileged QEMU child user identifier.
+    #[must_use]
+    pub const fn child_user_id(&self) -> u32 {
+        self.child_user_id
+    }
+
+    /// Returns the unprivileged QEMU child group identifier.
+    #[must_use]
+    pub const fn child_group_id(&self) -> u32 {
+        self.child_group_id
+    }
+
+    /// Returns the defensive cgroup task ceiling.
+    #[must_use]
+    pub const fn maximum_tasks(&self) -> u32 {
+        self.maximum_tasks
+    }
+
+    /// Returns the hard per-process descriptor limit installed before execution.
+    #[must_use]
+    pub const fn maximum_file_descriptors(&self) -> u64 {
+        self.maximum_file_descriptors
+    }
+
+    /// Sets the independently authored hard and soft child memory-lock limit.
+    ///
+    /// Zero permits ordinary pageable execution. Strict placement must separately
+    /// prove that the realized rounded RAM spans fit this entitlement.
+    ///
+    /// # Errors
+    /// Refuses the kernel infinity sentinel; an entitlement is always finite.
+    pub fn with_maximum_locked_bytes(
+        self,
+        maximum_locked_bytes: u64,
+    ) -> Result<Self, QemuVmRealizationError> {
+        self.with_maximum_locked_bytes_typed(maximum_locked_bytes)
+            .map_err(invalid_config)
+    }
+
+    pub(crate) fn with_maximum_locked_bytes_typed(
+        mut self,
+        maximum_locked_bytes: u64,
+    ) -> Result<Self, &'static str> {
+        if maximum_locked_bytes == libc::RLIM_INFINITY {
+            return Err("child memory-lock entitlement must be finite");
+        }
+        self.maximum_locked_bytes = maximum_locked_bytes;
+        Ok(self)
+    }
+
+    /// Returns the exact child memory-lock entitlement installed before execution.
+    #[must_use]
+    pub const fn maximum_locked_bytes(&self) -> u64 {
+        self.maximum_locked_bytes
+    }
+
+    /// Returns the bounded normal-finish wait.
+    #[must_use]
+    pub const fn finish_timeout(&self) -> Duration {
+        self.finish_timeout
+    }
+}
+
+/// Exclusive allocator for one daemon-incarnation QEMU cgroup namespace.
+#[derive(Debug)]
+#[must_use = "the delegated namespace lock must outlive every attempt process owner"]
+pub struct LinuxQemuAttemptProcessFactory {
+    config: LinuxQemuAttemptProcessConfig,
+    root: LinuxQemuCgroupRoot,
+    next_attempt: u64,
+    poisoned: bool,
+    target_dispatcher: Option<crate::linux_cgroup::TargetDispatcher>,
+    target_dispatcher_terminal: bool,
+}
+
+impl LinuxQemuAttemptProcessFactory {
+    /// Verifies the existing namespace before any original attempt birth.
+    ///
+    /// The original account retains the same authenticated family owner.
+    /// This delegate lends only the already-pinned root to its verifier.
+    ///
+    /// # Errors
+    /// Refuses stale membership, altered controls or a foreign workload root.
+    #[cfg(feature = "private-measurement-domain")]
+    pub(crate) fn verify_original_actor_family(
+        &self,
+        family: &crucible_host_resources::measurement_origin::AuthenticatedActorFamily,
+    ) -> Result<(), crucible_host_resources::measurement_origin::MeasurementOriginError> {
+        self.root.verify_original_actor_family(family)
+    }
+
+    /// Checks the retained normal family before process or watcher birth.
+    ///
+    /// The root delegates its existing pinned directory without allocating or
+    /// exposing descriptors. The nominal family checks current host membership
+    /// before and after authenticating that workload.
+    ///
+    /// # Errors
+    /// Refuses foreign directories, altered controls or unavailable originals.
+    pub(crate) fn verify_normal_family(
+        &self,
+        family: &crucible_host_resources::host_services::process_birth::AuthenticatedServiceFamily,
+    ) -> Result<(), crucible_host_resources::host_services::process_birth::ServiceBirthError> {
+        self.root.verify_normal_family(family)
+    }
+
+    /// Acquires and validates the configured delegated cgroup-v2 root.
+    ///
+    /// Configuration validation completes before any path access.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stable executor error for invalid configuration or cgroup
+    /// policy, and an availability error for host I/O or namespace contention.
+    pub fn open(config: LinuxQemuAttemptProcessConfig) -> Result<Self, QemuVmRealizationError> {
+        let root = LinuxQemuCgroupRoot::acquire(config.cgroup_root())
+            .map_err(|error| map_cgroup_error("acquire delegated QEMU cgroup root", &error))?;
+        Ok(Self {
+            config,
+            root,
+            next_attempt: 0,
+            poisoned: false,
+            target_dispatcher: None,
+            target_dispatcher_terminal: false,
+        })
+    }
+
+    /// Returns the validated process-namespace configuration.
+    #[must_use]
+    pub const fn config(&self) -> &LinuxQemuAttemptProcessConfig {
+        &self.config
+    }
+
+    /// Returns whether a retained setup failure closed this allocator.
+    #[must_use]
+    pub const fn is_poisoned(&self) -> bool {
+        self.poisoned
+    }
+
+    /// Installs one attempt cgroup and sealed process owner.
+    ///
+    /// `maximum_writable_bytes` is the per-file launch backstop only. The
+    /// caller must pair this process authority with the same attempt's hard
+    /// aggregate filesystem quota before exposing it as a complete guard.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stable or availability error when limits, cgroup creation,
+    /// watcher startup, credentials, or contract sealing fail. A failure after
+    /// cgroup creation poisons the allocator and deliberately retains or leaks
+    /// cleanup authority fail-closed; another QEMU process cannot launch from
+    /// this allocator until daemon restart.
+    pub(crate) fn begin(
+        &mut self,
+        maximum_vcpus: u32,
+        maximum_resident_bytes: u64,
+        maximum_writable_bytes: u64,
+        exact_checkpoint_root: Option<crucible_engine::ContentHash>,
+    ) -> Result<LinuxQemuAttemptProcessOwner, QemuVmRealizationError> {
+        if self.poisoned {
+            return Err(QemuVmRealizationError::ExecutorUnavailable {
+                operation: "create QEMU attempt process owner",
+                message: String::from("delegated process allocator is poisoned"),
+            });
+        }
+        if maximum_writable_bytes == 0 {
+            return Err(invalid_config("QEMU writable-byte ceiling must be nonzero"));
+        }
+        let limits = LinuxQemuCgroupLimits::new(
+            maximum_vcpus,
+            maximum_resident_bytes,
+            self.config.maximum_tasks,
+        )
+        .map_err(|error| map_cgroup_error("validate QEMU cgroup limits", &error))?;
+        let sequence = self.next_attempt;
+        self.next_attempt = self.next_attempt.checked_add(1).ok_or_else(|| {
+            QemuVmRealizationError::ExecutorUnavailable {
+                operation: "allocate QEMU attempt process name",
+                message: String::from("attempt process-name sequence is exhausted"),
+            }
+        })?;
+        let name = attempt_name(&self.config.attempt_namespace, sequence);
+        let group = match self.root.create(name, limits) {
+            Ok(group) => group,
+            Err(error) => {
+                self.poisoned = true;
+                let mapped = map_cgroup_error("create QEMU attempt cgroup", error.source_error());
+                if let Some(authority) = error.into_cleanup_authority() {
+                    let _retained = Box::leak(Box::new(authority));
+                }
+                return Err(mapped);
+            }
+        };
+        let owner = match CgroupAttemptProcessOwner::start(
+            group,
+            maximum_writable_bytes,
+            self.config.maximum_file_descriptors,
+            self.config.maximum_locked_bytes,
+            self.config.child_user_id,
+            self.config.child_group_id,
+            exact_checkpoint_root,
+        ) {
+            Ok(owner) => owner,
+            Err(error) => {
+                self.poisoned = true;
+                let mapped =
+                    map_owner_error("start QEMU attempt process owner", error.source_error());
+                drop(error);
+                return Err(mapped);
+            }
+        };
+        Ok(LinuxQemuAttemptProcessOwner {
+            owner,
+            maximum_vcpus,
+            maximum_resident_bytes,
+            maximum_writable_bytes,
+            maximum_tasks: self.config.maximum_tasks,
+            finish_timeout: self.config.finish_timeout,
+            hot_fork_children_retained: 0,
+        })
+    }
+
+    /// Keeps created process authority in the original caller before effects.
+    #[cfg(feature = "private-measurement-domain")]
+    pub(crate) fn begin_under_original_parent(
+        &mut self,
+        original: &crucible_host_resources::host_services::process_birth::OriginalParentAttempt,
+        ceilings: (u32, u64, u64),
+        saved: &mut Option<LinuxQemuAttemptProcessOwner>,
+        setup: &mut crate::linux_attempt_host::OriginalParentSetup,
+    ) -> Result<(), QemuVmRealizationError> {
+        use crate::linux_attempt_host::parent_setup::parent_original_error;
+
+        original.check_original().map_err(parent_original_error)?;
+        let (maximum_vcpus, maximum_resident_bytes, maximum_writable_bytes) = ceilings;
+        if self.poisoned || saved.is_some() || maximum_writable_bytes == 0 {
+            return Err(invalid_config(
+                "original Parent process setup is occupied or invalid",
+            ));
+        }
+        let limits = LinuxQemuCgroupLimits::new(
+            maximum_vcpus,
+            maximum_resident_bytes,
+            self.config.maximum_tasks,
+        )
+        .map_err(|source| map_cgroup_error("validate original Parent cgroup limits", &source))?;
+        let sequence = self.next_attempt;
+        self.next_attempt = sequence
+            .checked_add(1)
+            .ok_or_else(|| invalid_config("Parent process-name sequence is exhausted"))?;
+        let name = attempt_name(&self.config.attempt_namespace, sequence);
+        let group = match self.root.create(name, limits) {
+            Ok(group) => group,
+            Err(error) => {
+                self.poisoned = true;
+                setup.retain_group_failure(error);
+                let _original_after = original.check_original();
+                return Err(map_cgroup_error(
+                    "create original Parent cgroup",
+                    setup
+                        .group_failure
+                        .as_ref()
+                        .ok_or_else(|| invalid_config("Parent cgroup error is missing"))?
+                        .source_error(),
+                ));
+            }
+        };
+        *saved = Some(LinuxQemuAttemptProcessOwner {
+            owner: CgroupAttemptProcessOwner::retain_created(group),
+            maximum_vcpus,
+            maximum_resident_bytes,
+            maximum_writable_bytes,
+            maximum_tasks: self.config.maximum_tasks,
+            finish_timeout: self.config.finish_timeout,
+            hot_fork_children_retained: 0,
+        });
+        original.check_original().map_err(parent_original_error)?;
+        let owner = saved
+            .as_mut()
+            .ok_or_else(|| invalid_config("Parent process owner is missing"))?;
+        let started = owner.owner.start_saved_watcher();
+        if let Err(error) = started {
+            self.poisoned = true;
+            setup.process_failure = Some(error);
+        }
+        let after = original.check_original();
+        if let Some(error) = setup.process_failure.as_ref() {
+            return Err(map_owner_error("start retained Parent watcher", error));
+        }
+        after.map_err(parent_original_error)?;
+        let sealed = owner.owner.seal_saved_contract(
+            crate::spawn::QemuChildFileLimits {
+                writable_bytes: maximum_writable_bytes,
+                descriptors: self.config.maximum_file_descriptors,
+                locked_bytes: self.config.maximum_locked_bytes,
+            },
+            self.config.child_user_id,
+            self.config.child_group_id,
+        );
+        if let Err(error) = sealed {
+            self.poisoned = true;
+            setup.process_failure = Some(error);
+        }
+        let after = original.check_original();
+        if let Some(error) = setup.process_failure.as_ref() {
+            return Err(map_owner_error(
+                "seal retained Parent child contract",
+                error,
+            ));
+        }
+        after.map_err(parent_original_error)
+    }
+
+    /// Publishes physical setup remnants before returning their first refusal.
+    pub(crate) fn begin_under_original(
+        &mut self,
+        maximum_vcpus: u32,
+        maximum_resident_bytes: u64,
+        maximum_writable_bytes: u64,
+        exact_checkpoint_root: Option<crucible_engine::ContentHash>,
+        original: &crate::linux_attempt_host::NativeAccountAttempt,
+        retained: &mut OriginalProcessSetupCustody,
+    ) -> Result<LinuxQemuAttemptProcessOwner, QemuVmRealizationError> {
+        self.begin_under_original_with_descriptors(
+            (
+                maximum_vcpus,
+                maximum_resident_bytes,
+                maximum_writable_bytes,
+            ),
+            exact_checkpoint_root,
+            self.config.maximum_file_descriptors,
+            original,
+            retained,
+            false,
+        )
+    }
+
+    pub(crate) fn begin_fork_target_under_original(
+        &mut self,
+        ceilings: (u32, u64, u64),
+        descriptors: u64,
+        credentials: (u32, u32),
+        original: &crate::linux_attempt_host::NativeAccountAttempt,
+        retained: &mut OriginalProcessSetupCustody,
+    ) -> Result<LinuxQemuAttemptProcessOwner, QemuVmRealizationError> {
+        original
+            .verify_actor_family(self)
+            .map_err(|source| QemuVmRealizationError::ModelCopy {
+                source: Box::new(source),
+            })?;
+        if credentials != (self.config.child_user_id, self.config.child_group_id)
+            || descriptors > self.config.maximum_file_descriptors
+            || descriptors < QemuChildProcessContract::required_launch_file_descriptors()
+        {
+            return Err(invalid_config(
+                "fork target credential or descriptor assignment differs",
+            ));
+        }
+        self.verify_ready_target_dispatcher(original)?;
+        self.begin_under_original_with_descriptors(
+            ceilings,
+            None,
+            descriptors,
+            original,
+            retained,
+            true,
+        )
+    }
+
+    /// Starts or borrows this Main's one retained Target dispatcher.
+    ///
+    /// # Errors
+    /// Refuses terminal factories, missing authentic Main or failed startup.
+    pub(crate) fn prepare_target_dispatcher(
+        &mut self,
+        original: &crate::linux_attempt_host::NativeAccountAttempt,
+    ) -> Result<(), QemuVmRealizationError> {
+        if self.target_dispatcher_terminal {
+            return Err(invalid_config("Target dispatcher factory is terminal"));
+        }
+        if self.target_dispatcher.is_none() {
+            let capacity = original.target_dispatcher_capacity().map_err(|source| {
+                QemuVmRealizationError::ModelCopy {
+                    source: Box::new(source),
+                }
+            })?;
+            let peak = crate::linux_cgroup::TargetDispatcher::control_peak(capacity)
+                .ok_or_else(|| invalid_config("Target dispatcher control extent overflow"))?;
+            let purpose = original
+                .reserve_target_dispatcher_purpose(peak)
+                .map_err(|source| QemuVmRealizationError::ModelCopy {
+                    source: Box::new(source),
+                })?;
+            self.target_dispatcher = Some(crate::linux_cgroup::TargetDispatcher::reserved(
+                purpose, capacity,
+            ));
+            let started = self
+                .target_dispatcher
+                .as_mut()
+                .ok_or_else(|| invalid_config("Target dispatcher custody is absent"))?
+                .start(&self.root);
+            if let Err(source) = started {
+                self.poisoned = true;
+                return Err(map_cgroup_error(
+                    "start authentic Main Target dispatcher",
+                    &source,
+                ));
+            }
+        }
+        original
+            .verify_target_dispatcher_purpose(
+                self.target_dispatcher
+                    .as_ref()
+                    .and_then(|dispatcher| dispatcher.purpose())
+                    .ok_or_else(|| invalid_config("Target dispatcher payer is absent"))?,
+            )
+            .map_err(|source| QemuVmRealizationError::ModelCopy {
+                source: Box::new(source),
+            })?;
+        Ok(())
+    }
+
+    /// Permanently closes the Main dispatcher without allowing another birth.
+    ///
+    /// # Errors
+    /// Retains actual job, queue, worker and Cleanup custody on every refusal.
+    pub(crate) fn finish_target_dispatcher(&mut self) -> Result<(), LinuxQemuCgroupError> {
+        self.target_dispatcher_terminal = true;
+        if let Some(dispatcher) = self.target_dispatcher.as_mut() {
+            dispatcher.finish()?;
+        }
+        // Retain the same dispatcher and typed join payload until this actual
+        // containing factory retires; success is not permission for rebirth.
+        Ok(())
+    }
+
+    pub(crate) fn target_dispatcher_physically_retired(&self) -> bool {
+        self.target_dispatcher_terminal
+            && self
+                .target_dispatcher
+                .as_ref()
+                .is_none_or(|dispatcher| dispatcher.is_physically_retired())
+    }
+
+    pub(crate) fn target_dispatcher_worker_panic(&mut self) -> Option<&(dyn std::any::Any + Send)> {
+        self.target_dispatcher
+            .as_mut()
+            .and_then(|dispatcher| dispatcher.worker_panic())
+    }
+
+    pub(crate) fn target_dispatcher_cleanup_admission_failure(
+        &self,
+    ) -> Option<&crucible_host_resources::host_supervision::HostSupervisionError> {
+        self.target_dispatcher
+            .as_ref()
+            .and_then(|dispatcher| dispatcher.purpose())
+            .and_then(|purpose| purpose.cleanup_admission_failure())
+    }
+
+    fn verify_ready_target_dispatcher(
+        &self,
+        original: &crate::linux_attempt_host::NativeAccountAttempt,
+    ) -> Result<(), QemuVmRealizationError> {
+        let purpose = self
+            .target_dispatcher
+            .as_ref()
+            .and_then(|dispatcher| dispatcher.purpose())
+            .ok_or_else(|| invalid_config("Target dispatcher has no authentic prepared payer"))?;
+        original
+            .verify_target_dispatcher_purpose(purpose)
+            .map_err(|source| QemuVmRealizationError::ModelCopy {
+                source: Box::new(source),
+            })
+    }
+
+    fn begin_under_original_with_descriptors(
+        &mut self,
+        ceilings: (u32, u64, u64),
+        exact_checkpoint_root: Option<crucible_engine::ContentHash>,
+        maximum_file_descriptors: u64,
+        original: &crate::linux_attempt_host::NativeAccountAttempt,
+        retained: &mut OriginalProcessSetupCustody,
+        target_dispatcher: bool,
+    ) -> Result<LinuxQemuAttemptProcessOwner, QemuVmRealizationError> {
+        let (maximum_vcpus, maximum_resident_bytes, maximum_writable_bytes) = ceilings;
+        original
+            .require_original()
+            .map_err(|source| QemuVmRealizationError::ModelCopy {
+                source: Box::new(source),
+            })?;
+        if self.poisoned || maximum_writable_bytes == 0 {
+            return Err(invalid_config(
+                "original process allocator is poisoned or writable ceiling is zero",
+            ));
+        }
+        let target_original = if target_dispatcher {
+            Some(original.target_watcher_original().map_err(|source| {
+                QemuVmRealizationError::ModelCopy {
+                    source: Box::new(source),
+                }
+            })?)
+        } else {
+            None
+        };
+        let limits = LinuxQemuCgroupLimits::new(
+            maximum_vcpus,
+            maximum_resident_bytes,
+            self.config.maximum_tasks,
+        )
+        .map_err(|source| map_cgroup_error("validate original QEMU cgroup limits", &source))?;
+        let sequence = self.next_attempt;
+        self.next_attempt = sequence
+            .checked_add(1)
+            .ok_or_else(|| invalid_config("attempt process-name sequence is exhausted"))?;
+        let name = attempt_name(&self.config.attempt_namespace, sequence);
+
+        let group = match self.root.create(name, limits) {
+            Ok(group) => group,
+            Err(error) => {
+                self.poisoned = true;
+                let primary =
+                    map_cgroup_error("create original QEMU attempt cgroup", error.source_error());
+                retained.unconfigured = error.into_cleanup_authority();
+                return Err(original.after_refusal(primary));
+            }
+        };
+        if let Err(source) = original.require_original() {
+            self.poisoned = true;
+            retained.owner = Some(self.wrap_original_owner(
+                CgroupAttemptProcessOwner::retain_created(group),
+                maximum_vcpus,
+                maximum_resident_bytes,
+                maximum_writable_bytes,
+            ));
+            return Err(QemuVmRealizationError::ModelCopy {
+                source: Box::new(source),
+            });
+        }
+        let started = if let Some(original_operation) = target_original {
+            let dispatcher = self
+                .target_dispatcher
+                .as_mut()
+                .ok_or_else(|| invalid_config("Target dispatcher owner is absent"))?;
+            CgroupAttemptProcessOwner::start_with_target_dispatcher(
+                group,
+                crate::spawn::QemuChildFileLimits {
+                    writable_bytes: maximum_writable_bytes,
+                    descriptors: maximum_file_descriptors,
+                    locked_bytes: self.config.maximum_locked_bytes,
+                },
+                (self.config.child_user_id, self.config.child_group_id),
+                dispatcher,
+                original_operation,
+            )
+        } else {
+            CgroupAttemptProcessOwner::start(
+                group,
+                maximum_writable_bytes,
+                maximum_file_descriptors,
+                self.config.maximum_locked_bytes,
+                self.config.child_user_id,
+                self.config.child_group_id,
+                exact_checkpoint_root,
+            )
+        };
+        let owner = match started {
+            Ok(owner) => self.wrap_original_owner(
+                owner,
+                maximum_vcpus,
+                maximum_resident_bytes,
+                maximum_writable_bytes,
+            ),
+            Err(error) => {
+                self.poisoned = true;
+                let primary = map_owner_error(
+                    "start original QEMU attempt process owner",
+                    error.source_error(),
+                );
+                retained.owner = error.into_original_owner().map(|owner| {
+                    self.wrap_original_owner(
+                        owner,
+                        maximum_vcpus,
+                        maximum_resident_bytes,
+                        maximum_writable_bytes,
+                    )
+                });
+                return Err(original.after_refusal(primary));
+            }
+        };
+        if let Err(source) = original.require_original() {
+            self.poisoned = true;
+            retained.owner = Some(owner);
+            return Err(QemuVmRealizationError::ModelCopy {
+                source: Box::new(source),
+            });
+        }
+        Ok(owner)
+    }
+
+    fn wrap_original_owner(
+        &self,
+        owner: CgroupAttemptProcessOwner,
+        maximum_vcpus: u32,
+        maximum_resident_bytes: u64,
+        maximum_writable_bytes: u64,
+    ) -> LinuxQemuAttemptProcessOwner {
+        LinuxQemuAttemptProcessOwner {
+            owner,
+            maximum_vcpus,
+            maximum_resident_bytes,
+            maximum_writable_bytes,
+            maximum_tasks: self.config.maximum_tasks,
+            finish_timeout: self.config.finish_timeout,
+            hot_fork_children_retained: 0,
+        }
+    }
+}
+
+/// Inline physical setup custody, independent of the returned first cause.
+#[derive(Default)]
+pub(crate) struct OriginalProcessSetupCustody {
+    pub(crate) owner: Option<LinuxQemuAttemptProcessOwner>,
+    pub(crate) unconfigured: Option<crate::linux_cgroup::LinuxQemuCgroupCleanupAuthority>,
+}
+
+/// Complete Linux process authority for one QEMU attempt.
+#[derive(Debug)]
+#[must_use = "finish the QEMU process owner or transfer it to quarantine"]
+pub struct LinuxQemuAttemptProcessOwner {
+    owner: CgroupAttemptProcessOwner,
+    maximum_vcpus: u32,
+    maximum_resident_bytes: u64,
+    maximum_writable_bytes: u64,
+    maximum_tasks: u32,
+    finish_timeout: Duration,
+    hot_fork_children_retained: u32,
+}
+
+impl LinuxQemuAttemptProcessOwner {
+    /// Returns the exact CPU, memory, and writable-byte launch ceiling.
+    #[must_use]
+    pub const fn resource_ceiling(&self) -> (u32, u64, u64) {
+        (
+            self.maximum_vcpus,
+            self.maximum_resident_bytes,
+            self.maximum_writable_bytes,
+        )
+    }
+
+    pub(crate) fn memory_control(
+        &self,
+    ) -> Result<crate::linux_cgroup::LinuxQemuCgroupMemoryControl, QemuVmRealizationError> {
+        self.owner
+            .memory_control()
+            .map_err(|error| map_owner_error("pin live QEMU memory control", &error))
+    }
+
+    /// Returns the sealed child-process launch contract while active.
+    ///
+    /// # Errors
+    ///
+    /// Returns an operational error after cancellation or terminal cleanup has
+    /// closed launch authority.
+    pub fn process_contract(&self) -> Result<&QemuChildProcessContract, QemuVmRealizationError> {
+        self.owner
+            .process_contract()
+            .map_err(|error| map_owner_error("lend QEMU child-process contract", &error))
+    }
+
+    /// Duplicates the narrow sticky-cancellation signal.
+    ///
+    /// # Errors
+    ///
+    /// Returns an operational error when signal authority cannot be duplicated
+    /// or terminal cleanup has begun.
+    pub fn cancellation_signal(
+        &self,
+    ) -> Result<LinuxQemuAttemptCancellationSignal, QemuVmRealizationError> {
+        self.owner
+            .cancellation_signal()
+            .map(|signal| LinuxQemuAttemptCancellationSignal { signal })
+            .map_err(|error| map_owner_error("duplicate QEMU cancellation signal", &error))
+    }
+
+    /// Retains a failed launch's exact direct-child wait handle.
+    pub fn retain_failed_child(&mut self, child: QemuNodeChild) {
+        self.owner.retain_failed_child(child);
+    }
+
+    /// Joins this Parent process owner within its unchanged original end.
+    ///
+    /// # Errors
+    /// Retains unfinished authority on original refusal or kernel failure.
+    #[cfg(feature = "private-measurement-domain")]
+    pub(crate) fn finish_under_original_parent(
+        &mut self,
+        original: &crucible_host_resources::host_services::process_birth::OriginalParentAttempt,
+        setup: &mut crate::linux_attempt_host::OriginalParentSetup,
+    ) -> Result<(), QemuVmRealizationError> {
+        let status = self
+            .owner
+            .finish_under_original_parent(original, setup)
+            .map_err(|error| map_owner_error("finish original Parent process owner", &error))?;
+        if let CgroupAttemptProcessOwnerStatus::ReleasedAfterMemoryFailure(failure) = status {
+            return Err(QemuVmRealizationError::HostMemoryLimit { failure });
+        }
+        Ok(())
+    }
+
+    /// Joins the watcher, proves the group empty, and releases the cgroup.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuVmRealizationError::ReapQuarantined`] when cleanup moved to
+    /// the nondroppable worker, or an availability error while retryable owner
+    /// authority remains installed.
+    pub fn finish(&mut self) -> Result<(), QemuVmRealizationError> {
+        match self.owner.finish(self.finish_timeout) {
+            Ok(CgroupAttemptProcessOwnerStatus::ReapedAndReleased) => Ok(()),
+            Ok(CgroupAttemptProcessOwnerStatus::ReleasedAfterMemoryFailure(failure)) => {
+                Err(QemuVmRealizationError::HostMemoryLimit { failure })
+            }
+            Ok(
+                CgroupAttemptProcessOwnerStatus::QuarantineRunning
+                | CgroupAttemptProcessOwnerStatus::QuarantineParked,
+            ) => Err(QemuVmRealizationError::ReapQuarantined {
+                operation: "finish QEMU attempt process owner",
+                message: String::from("process cleanup remains under quarantine authority"),
+            }),
+            Err(error) => Err(map_owner_error("finish QEMU attempt process owner", &error)),
+        }
+    }
+
+    /// Joins and removes this same process owner under its original Cleanup.
+    ///
+    /// No local timeout can extend the guard's retained absolute end. Actual
+    /// watcher, kernel and original postcheck refusals remain typed, and the
+    /// owner retains every recoverable physical authority on failure.
+    ///
+    /// # Errors
+    /// Refuses original cancellation or expiry, watcher failure, quarantine,
+    /// or an empty-group removal failure without declaring physical release.
+    pub fn finish_under_original(
+        &mut self,
+        original: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<(), QemuVmRealizationError> {
+        self.owner
+            .finish_under_original(self.finish_timeout, original)
+            .map_err(|source| QemuVmRealizationError::ModelCopy {
+                source: Box::new(source),
+            })
+            .and_then(|status| match status {
+                CgroupAttemptProcessOwnerStatus::ReleasedAfterMemoryFailure(failure) => {
+                    Err(QemuVmRealizationError::HostMemoryLimit { failure })
+                }
+                _ => Ok(()),
+            })
+    }
+
+    /// Transfers every unfinished process authority to nondroppable quarantine.
+    pub fn quarantine(&mut self) {
+        let _ = self.owner.quarantine();
+    }
+}
+
+/// Exact daemon-side kill and identity authority for one hot-fork child.
+///
+/// The source QEMU process remains the direct parent and owns `waitpid` status.
+/// This authority instead pins the live kernel process generation with a pidfd
+/// and records the identity authenticated inside the target attempt cgroup.
+/// Callers must retain it with the source child-status record and the target
+/// [`LinuxQemuAttemptProcessOwner`] until terminal reap and cgroup emptiness are
+/// both attested.
+#[derive(Debug)]
+#[must_use = "retain the hot-fork child authority until source reap and cgroup cleanup"]
+pub struct LinuxQemuHotForkChildProcessAuthority {
+    basis: QemuHotForkChildProcessBasis,
+    identity: QemuProcessIdentity,
+    pidfd: OwnedFd,
+}
+
+impl LinuxQemuHotForkChildProcessAuthority {
+    /// Builds an unvalidated authority for cross-crate ownership tests.
+    ///
+    /// The descriptor is accepted without pidfd or cgroup authentication. Test
+    /// fixtures must arrange for source-parent status to report a terminal
+    /// child before any signal operation is attempted.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn from_unvalidated_test_parts(
+        basis: QemuHotForkChildProcessBasis,
+        identity: QemuProcessIdentity,
+        descriptor: OwnedFd,
+    ) -> Self {
+        Self {
+            basis,
+            identity,
+            pidfd: descriptor,
+        }
+    }
+
+    /// Returns the exact source, child, and fork-request basis.
+    #[must_use]
+    pub const fn basis(&self) -> QemuHotForkChildProcessBasis {
+        self.basis
+    }
+
+    /// Returns the authenticated Linux process-generation identity.
+    #[must_use]
+    pub const fn identity(&self) -> &QemuProcessIdentity {
+        &self.identity
+    }
+
+    /// Sends `SIGTERM` through the exact retained pidfd.
+    ///
+    /// # Errors
+    ///
+    /// Returns an executor-availability error when the kernel rejects the
+    /// pidfd signal operation. The source-parent status and attempt cgroup must
+    /// remain retained regardless of this result.
+    pub fn terminate(&self) -> Result<(), QemuVmRealizationError> {
+        pidfd_send_signal(&self.pidfd, Signal::TERM).map_err(|source| {
+            QemuVmRealizationError::ExecutorUnavailable {
+                operation: "terminate retained hot-fork child",
+                message: source.to_string(),
+            }
+        })
+    }
+
+    /// Sends `SIGKILL` through the exact retained pidfd.
+    ///
+    /// # Errors
+    ///
+    /// Returns an executor-availability error when the kernel rejects the
+    /// pidfd signal operation. The caller must keep the attempt cgroup watcher
+    /// and source-QEMU reap authority active regardless of this result.
+    pub fn kill(&self) -> Result<(), QemuVmRealizationError> {
+        pidfd_send_signal(&self.pidfd, Signal::KILL).map_err(|source| {
+            QemuVmRealizationError::ExecutorUnavailable {
+                operation: "kill retained hot-fork child",
+                message: source.to_string(),
+            }
+        })
+    }
+}
+
+impl QemuHotForkChildProcessOwner for LinuxQemuAttemptProcessOwner {
+    type Authority = LinuxQemuHotForkChildProcessAuthority;
+
+    fn retain_hot_fork_child(
+        &mut self,
+        basis: QemuHotForkChildProcessBasis,
+    ) -> Result<Self::Authority, QemuNodeChannelError> {
+        if self.hot_fork_children_retained >= self.maximum_tasks {
+            return Err(QemuNodeChannelError::new(
+                "retain forked child process",
+                "attempt process owner exhausted its bounded hot-fork child slots",
+            ));
+        }
+        let raw_process_id = i32::try_from(basis.child_process_id())
+            .ok()
+            .and_then(Pid::from_raw)
+            .ok_or_else(|| {
+                QemuNodeChannelError::new(
+                    "retain forked child process",
+                    "hot-fork child PID is outside the supported Linux range",
+                )
+            })?;
+        let pidfd = pidfd_open(raw_process_id, PidfdFlags::empty()).map_err(|source| {
+            QemuNodeChannelError::new(
+                "retain forked child process",
+                format!("open pidfd for hot-fork child: {source}"),
+            )
+        })?;
+        verify_pidfd_process_id(&pidfd, basis.child_process_id())?;
+        let identity = self
+            .owner
+            .authenticate_hot_fork_child_process(basis.child_process_id())
+            .map_err(|source| {
+                QemuNodeChannelError::new(
+                    "retain forked child process",
+                    format!("authenticate hot-fork child in attempt cgroup: {source}"),
+                )
+            })?;
+        verify_pidfd_process_id(&pidfd, basis.child_process_id())?;
+
+        self.hot_fork_children_retained = self
+            .hot_fork_children_retained
+            .checked_add(1)
+            .ok_or_else(|| {
+                QemuNodeChannelError::new(
+                    "retain forked child process",
+                    "attempt hot-fork child accounting overflowed",
+                )
+            })?;
+        Ok(LinuxQemuHotForkChildProcessAuthority {
+            basis,
+            identity,
+            pidfd,
+        })
+    }
+}
+
+fn verify_pidfd_process_id(
+    pidfd: &OwnedFd,
+    expected_process_id: u32,
+) -> Result<(), QemuNodeChannelError> {
+    const MAX_PIDFD_INFO_BYTES: u64 = 4096;
+
+    let path = format!("/proc/self/fdinfo/{}", pidfd.as_raw_fd());
+    let file = std::fs::File::open(&path).map_err(|source| {
+        QemuNodeChannelError::new(
+            "retain forked child process",
+            format!("open pidfd identity {path}: {source}"),
+        )
+    })?;
+    let mut bytes = Vec::new();
+    file.take(MAX_PIDFD_INFO_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|source| {
+            QemuNodeChannelError::new(
+                "retain forked child process",
+                format!("read pidfd identity {path}: {source}"),
+            )
+        })?;
+    if bytes.len() > MAX_PIDFD_INFO_BYTES as usize {
+        return Err(QemuNodeChannelError::new(
+            "retain forked child process",
+            "pidfd identity exceeded the bounded Linux fdinfo size",
+        ));
+    }
+    let text = std::str::from_utf8(&bytes).map_err(|source| {
+        QemuNodeChannelError::new(
+            "retain forked child process",
+            format!("decode pidfd identity: {source}"),
+        )
+    })?;
+    let observed = text
+        .lines()
+        .find_map(|line| line.strip_prefix("Pid:\t"))
+        .and_then(|value| value.parse::<u32>().ok());
+    if observed != Some(expected_process_id) {
+        return Err(QemuNodeChannelError::new(
+            "retain forked child process",
+            "pidfd no longer names the reported live hot-fork child",
+        ));
+    }
+    Ok(())
+}
+
+/// Narrow sticky signal for one Linux QEMU attempt process group.
+#[derive(Debug)]
+pub struct LinuxQemuAttemptCancellationSignal {
+    signal: crate::linux_cgroup::LinuxQemuCgroupCancellationSignal,
+}
+
+impl LinuxQemuAttemptCancellationSignal {
+    /// Makes cancellation visible to existing and future child processes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an availability error when the sticky event cannot be published.
+    pub fn signal(&self) -> Result<(), QemuVmRealizationError> {
+        self.signal
+            .signal()
+            .map_err(|error| map_cgroup_error("signal QEMU attempt cancellation", &error))
+    }
+}
+
+fn attempt_name(namespace: &str, sequence: u64) -> String {
+    format!("{namespace}-{sequence:016x}")
+}
+
+fn invalid_config(message: &'static str) -> QemuVmRealizationError {
+    QemuVmRealizationError::Executor {
+        operation: "configure Linux QEMU attempt process owner",
+        message: String::from(message),
+    }
+}
+
+fn map_cgroup_error(
+    operation: &'static str,
+    error: &LinuxQemuCgroupError,
+) -> QemuVmRealizationError {
+    match error {
+        LinuxQemuCgroupError::Io { .. } | LinuxQemuCgroupError::NamespaceLocked { .. } => {
+            QemuVmRealizationError::ExecutorUnavailable {
+                operation,
+                message: error.to_string(),
+            }
+        }
+        _ => QemuVmRealizationError::Executor {
+            operation,
+            message: error.to_string(),
+        },
+    }
+}
+
+fn map_owner_error(
+    operation: &'static str,
+    error: &CgroupAttemptProcessOwnerError,
+) -> QemuVmRealizationError {
+    match error {
+        CgroupAttemptProcessOwnerError::Cgroup(error) => map_cgroup_error(operation, error),
+        CgroupAttemptProcessOwnerError::Watcher { .. }
+        | CgroupAttemptProcessOwnerError::Quarantine { .. } => {
+            QemuVmRealizationError::ExecutorUnavailable {
+                operation,
+                message: error.to_string(),
+            }
+        }
+        #[cfg(feature = "private-measurement-domain")]
+        CgroupAttemptProcessOwnerError::OriginalParentWatcherRetained
+        | CgroupAttemptProcessOwnerError::OriginalParentGroupRetained => {
+            QemuVmRealizationError::ExecutorUnavailable {
+                operation,
+                message: error.to_string(),
+            }
+        }
+        CgroupAttemptProcessOwnerError::MissingAuthority { .. } => {
+            QemuVmRealizationError::Executor {
+                operation,
+                message: error.to_string(),
+            }
+        }
+    }
+}
+
+// Fixture policy reserves a finite descriptor ceiling independently of vCPU count.
+#[cfg(test)]
+const TEST_HOST_FILE_DESCRIPTORS: u64 = 1_024;
+
+#[cfg(test)]
+mod tests {
+    // crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts.
+    #![allow(clippy::expect_used)]
+
+    use tempfile::tempdir;
+
+    use super::*;
+
+    fn config(
+        root: impl Into<PathBuf>,
+        namespace: &str,
+    ) -> Result<LinuxQemuAttemptProcessConfig, QemuVmRealizationError> {
+        LinuxQemuAttemptProcessConfig::new(
+            root,
+            namespace,
+            65_533,
+            65_532,
+            64,
+            TEST_HOST_FILE_DESCRIPTORS,
+            Duration::from_secs(1),
+        )
+    }
+
+    #[test]
+    fn configuration_rejects_invalid_values_before_cgroup_access() {
+        assert!(config("relative", "attempt").is_err());
+        assert!(config("/does/not/exist", "").is_err());
+        assert!(config("/does/not/exist", "bad/name").is_err());
+        assert!(
+            LinuxQemuAttemptProcessConfig::new(
+                "/does/not/exist",
+                "attempt",
+                0,
+                65_532,
+                64,
+                TEST_HOST_FILE_DESCRIPTORS,
+                Duration::from_secs(1),
+            )
+            .is_err()
+        );
+        assert!(
+            LinuxQemuAttemptProcessConfig::new(
+                "/does/not/exist",
+                "attempt",
+                65_533,
+                65_532,
+                MAX_LINUX_QEMU_CGROUP_TASKS + 1,
+                TEST_HOST_FILE_DESCRIPTORS,
+                Duration::from_secs(1),
+            )
+            .is_err()
+        );
+        assert!(
+            LinuxQemuAttemptProcessConfig::new(
+                "/does/not/exist",
+                "attempt",
+                65_533,
+                65_532,
+                64,
+                TEST_HOST_FILE_DESCRIPTORS,
+                Duration::from_millis(1),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn locked_entitlement_is_explicit_finite_and_independent() -> Result<(), QemuVmRealizationError>
+    {
+        let ordinary = config("/does/not/exist", "attempt")?;
+        assert_eq!(ordinary.maximum_locked_bytes(), 0);
+        let strict = ordinary.clone().with_maximum_locked_bytes(4096)?;
+        assert_eq!(strict.maximum_locked_bytes(), 4096);
+        assert_eq!(strict.maximum_tasks(), ordinary.maximum_tasks());
+        assert!(
+            ordinary
+                .with_maximum_locked_bytes(libc::RLIM_INFINITY)
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn child_names_are_bounded_unique_and_namespace_scoped() {
+        let namespace = "d0123456789abcdef";
+        let first = attempt_name(namespace, 0);
+        let second = attempt_name(namespace, 1);
+        assert_ne!(first, second);
+        assert!(first.starts_with(namespace));
+        assert!(first.len() <= MAX_CGROUP_NAME_BYTES);
+        assert_eq!(first, "d0123456789abcdef-0000000000000000");
+    }
+
+    #[test]
+    fn non_cgroup_root_fails_closed_without_creating_children() {
+        let root = tempdir().expect("temporary cgroup root");
+        let config = config(root.path(), "attempt").expect("process config");
+        assert!(matches!(
+            LinuxQemuAttemptProcessFactory::open(config),
+            Err(QemuVmRealizationError::Executor { .. })
+        ));
+        assert_eq!(
+            std::fs::read_dir(root.path())
+                .expect("read temporary root")
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn pidfd_identity_rejects_a_reaped_process_generation() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut child = std::process::Command::new("sleep").arg("60").spawn()?;
+        let process_id = child.id();
+        let raw_process_id = i32::try_from(process_id)
+            .ok()
+            .and_then(Pid::from_raw)
+            .ok_or("test child PID is outside the supported Linux range")?;
+        let pidfd = pidfd_open(raw_process_id, PidfdFlags::empty())?;
+
+        verify_pidfd_process_id(&pidfd, process_id)?;
+        child.kill()?;
+        child.wait()?;
+        assert!(verify_pidfd_process_id(&pidfd, process_id).is_err());
+        Ok(())
+    }
+}

@@ -228,7 +228,7 @@ the adversarial host matrix (24 §7). **Reproduce:** the scenario pins its seed,
 so the command `crucible run builtin:happy-path.scn` is already reproducible;
 `crucible replay` of any emitted artifact lands at the same state ([EX-2]).
 
-Implementation note (T-EX-1): `crucible::example_corpus` ships the
+Implementation note (T-EX-1): `crucible_engine::example_corpus` ships the
 `happy-path.scn` corpus fixture as a content-addressed `ScenarioDefForm` with two
 unmodified guest images, in-guest `httpd`/`httpget` workload command-line
 parameters, console-marker readiness, black-box console/lifecycle/quiescence
@@ -375,7 +375,7 @@ given run. **Reproduce:**
 hypothetical convergence failure would print a `crucible replay` line for the
 exact `(seed, scenario, schedule)` that exhibited it.
 
-Implementation note (T-EX-2): `crucible::example_corpus` ships the
+Implementation note (T-EX-2): `crucible_engine::example_corpus` ships the
 `partition-recovery.scn` corpus fixture as a three-node, three-link
 content-addressed `ScenarioDefForm` with unmodified kernels and store images;
 the user-controlled store test application emits structured guest assertions.
@@ -479,7 +479,7 @@ can also gate further work on; the crash binding pulse ends at that boundary.
 deterministic; the crash icount, the 5s restart offset, and the reconvergence are
 all functions of `(scenario, seed, schedule)`.
 
-Implementation note (T-EX-3): `crucible::example_corpus` ships the
+Implementation note (T-EX-3): `crucible_engine::example_corpus` ships the
 `crash-restart.scn` corpus fixture as a three-node, three-link
 content-addressed `ScenarioDefForm` with unmodified kernels and store images;
 the user-controlled store test application emits structured guest assertions.
@@ -1106,7 +1106,7 @@ PARAMETERIZATION (WL-10,11,12): params live in the ScenarioDef, delivered
   `verify --runs N` is byte-identical. — satisfies [EX-1], [EX-2], [EX-3]; spec
   §A.1.
   Completed by `checks.crucible.phase7.happyPathExample`: the built-in
-  `happy-path.scn` fixture is exported from `crucible::example_corpus`, uses only
+  `happy-path.scn` fixture is exported from `crucible_engine::example_corpus`, uses only
   black-box console/lifecycle/quiescence predicates with white-box
   disabled, runs to the `pass-on-quiescence` event, captures a replayable
   reproduction artifact with the canonical observation script in its schedule,
@@ -1118,7 +1118,7 @@ PARAMETERIZATION (WL-10,11,12): params live in the ScenarioDef, delivered
   and byte-identical reproduction. — satisfies [EX-1], [EX-2], [EX-3]; spec §A.2;
   cross-ref 17a §17a.5.1.
   Completed by `checks.crucible.phase7.adversarialExampleVerify`: the built-in
-  `partition-recovery.scn` fixture is exported from `crucible::example_corpus`,
+  `partition-recovery.scn` fixture is exported from `crucible_engine::example_corpus`,
   uses the observable readiness graph, grouped partition injection plus
   relative timer, timer-driven heal, and guest-assertion convergence pass event,
   checks structured `no-split-brain`/`replicas-reconciled` assertions and bounded
@@ -1131,7 +1131,7 @@ PARAMETERIZATION (WL-10,11,12): params live in the ScenarioDef, delivered
   `data-not-lost`/`reconverges` and reproduction. — satisfies [EX-1], [EX-2],
   [EX-3]; spec §A.3; cross-ref 17 §17.4.3, 17a §17a.4.1.
   Completed by `checks.crucible.phase7.adversarialExampleVerify`: the built-in
-  `crash-restart.scn` fixture is exported from `crucible::example_corpus`, uses
+  `crash-restart.scn` fixture is exported from `crucible_engine::example_corpus`, uses
   the observable WAL-write crash trigger, a `node.lifecycle` binding with
   `RestartPolicy::FromReadyPoint`, an `After`-anchored `StartNode` restart event,
   derived crash/restart lifecycle facts, and

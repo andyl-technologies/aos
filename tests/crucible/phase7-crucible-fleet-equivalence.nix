@@ -14,18 +14,18 @@
 
   dceDoc = builtins.readFile ../../docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md;
   harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
-  crucibleManifest = builtins.readFile ../../crates/crucible/Cargo.toml;
+  crucibleManifest = builtins.readFile ../../crates/crucible/engine/crucible-engine/Cargo.toml;
   modelRust = import ./_crucible-model-source.nix {inherit lib;};
   libRust = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/src/lib.rs;
+    entry = ../../crates/crucible/engine/crucible-engine/src/lib.rs;
   };
-  gateTest = builtins.readFile ../../crates/crucible/tests/gate_fleet_equivalence.rs;
-  gateCatalog = builtins.readFile ../../crates/crucible-harness/src/lib.rs;
-  gateCatalogTest = builtins.readFile ../../crates/crucible-harness/tests/gate_catalog.rs;
-  gateTargets = builtins.readFile ../../crates/crucible-harness/src/gate_targets.rs;
-  gateTargetMappingTest = builtins.readFile ../../crates/crucible-harness/tests/gate_target_mapping.rs;
-  testingStandards = builtins.readFile ../../crates/crucible-harness/tests/testing_standards.rs;
+  gateTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/gate_fleet_equivalence.rs;
+  gateCatalog = builtins.readFile ../../crates/crucible/testing/crucible-test-support/src/lib.rs;
+  gateCatalogTest = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/gate_catalog.rs;
+  gateTargets = builtins.readFile ../../crates/crucible/testing/crucible-test-support/src/gate_targets.rs;
+  gateTargetMappingTest = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/gate_target_mapping.rs;
+  testingStandards = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/testing_standards.rs;
   gateTargetMapping = builtins.readFile ./phase1-gate-target-mapping.nix;
   phase1TestingStandards = builtins.readFile ./phase1-testing-standards.nix;
   defaultChecks = builtins.readFile ./default.nix;
@@ -84,7 +84,7 @@
         needle = "discovery order may differ";
       }
     ]
-    ++ failuresFor "crates/crucible/Cargo.toml" crucibleManifest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/Cargo.toml" crucibleManifest [
       {
         label = "fleet equivalence Cargo test target";
         needle = "name = \"gate_fleet_equivalence\"";
@@ -98,7 +98,7 @@
         needle = "name = \"gate_fleet_equivalence\"\npath = \"tests/gate_fleet_equivalence.rs\"";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" modelRust [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" modelRust [
       {
         label = "fleet config type";
         needle = "pub struct FleetWorkStealingConfig";
@@ -144,7 +144,7 @@
         needle = "self.search(\n                &candidate.configuration";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libRust [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" libRust [
       {
         label = "fleet config export";
         needle = "FleetWorkStealingConfig";
@@ -158,7 +158,7 @@
         needle = "FleetEquivalenceReport";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/gate_fleet_equivalence.rs" gateTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/gate_fleet_equivalence.rs" gateTest [
       {
         label = "positive gate test";
         needle = "gate_fleet_equivalence_matches_single_host_finding_set_and_artifacts";
@@ -216,7 +216,7 @@
         needle = "fleet-equivalence-not-exhausted";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/gate_fleet_equivalence.rs" gateTest [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/gate_fleet_equivalence.rs" gateTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -226,31 +226,31 @@
         needle = "implementation is pending";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/src/lib.rs" gateCatalog [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/src/lib.rs" gateCatalog [
       {
         label = "fleet equivalence gate catalog implemented";
-        needle = "name: \"gate:fleet-equivalence\",\n        phase: GatePhase::Phase7,\n        owner: \"crucible-harness\",\n        status: GateStatus::Implemented,";
+        needle = "name: \"gate:fleet-equivalence\",\n        phase: GatePhase::Phase7,\n        owner: \"crucible-test-support\",\n        status: GateStatus::Implemented,";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/tests/gate_catalog.rs" gateCatalogTest [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/tests/gate_catalog.rs" gateCatalogTest [
       {
         label = "fleet equivalence implemented status assertion";
         needle = "find_gate(\"gate:fleet-equivalence\").map(|spec| spec.status),\n        Some(GateStatus::Implemented)";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/src/gate_targets.rs" gateTargets [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/src/gate_targets.rs" gateTargets [
       {
         label = "fleet equivalence gate target implemented";
-        needle = "gate: \"gate:fleet-equivalence\",\n        package: \"crucible\",\n        test_target: \"gate_fleet_equivalence\",\n        required_features: &[],";
+        needle = "gate: \"gate:fleet-equivalence\",\n        package: \"crucible-engine\",\n        test_target: \"gate_fleet_equivalence\",\n        required_features: &[],";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/tests/gate_target_mapping.rs" gateTargetMappingTest [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/tests/gate_target_mapping.rs" gateTargetMappingTest [
       {
         label = "fleet equivalence target mapping assertion";
         needle = "\"gate:fleet-equivalence\",\n                \"crucible\",\n                \"gate_fleet_equivalence\"";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/tests/testing_standards.rs" testingStandards [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/tests/testing_standards.rs" testingStandards [
       {
         label = "fleet equivalence testing standard";
         needle = "gate: \"gate:fleet-equivalence\",\n        owner_packages: &[\"crucible\"],\n        layers: &[Layer::L3],\n        shape: TestShape::FleetEquivalence,\n        backend: TestBackend::Mixed,";
@@ -263,13 +263,13 @@
     ++ failuresFor "tests/crucible/phase1-gate-target-mapping.nix" gateTargetMapping [
       {
         label = "phase1 target lint includes fleet equivalence";
-        needle = "gate = \"gate:fleet-equivalence\";\n      package = \"crucible\";\n      testTarget = \"gate_fleet_equivalence\";\n      requiredFeatures = [];";
+        needle = "gate = \"gate:fleet-equivalence\";\n      package = \"crucible-engine\";\n      testTarget = \"gate_fleet_equivalence\";\n      requiredFeatures = [];";
       }
     ]
     ++ failuresFor "tests/crucible/phase1-testing-standards.nix" phase1TestingStandards [
       {
         label = "phase1 testing standards target includes fleet equivalence";
-        needle = "gate = \"gate:fleet-equivalence\";\n      package = \"crucible\";\n      testTarget = \"gate_fleet_equivalence\";\n      requiredFeatures = [];";
+        needle = "gate = \"gate:fleet-equivalence\";\n      package = \"crucible-engine\";\n      testTarget = \"gate_fleet_equivalence\";\n      requiredFeatures = [];";
       }
       {
         label = "phase1 testing standards include fleet equivalence";
@@ -382,7 +382,7 @@ in
             --frozen \
             --offline \
             --target-dir "$TMPDIR/crucible-phase7-fleet-equivalence-target" \
-            -p crucible \
+            -p crucible-engine \
             --test gate_fleet_equivalence \
             -- --list --format terse)
           test "$(printf '%s\n' "$listed" | grep -c ': test$')" -eq 4
@@ -390,7 +390,7 @@ in
             --frozen \
             --offline \
             --target-dir "$TMPDIR/crucible-phase7-fleet-equivalence-target" \
-            -p crucible \
+            -p crucible-engine \
             --test gate_fleet_equivalence \
             -- --test-threads=1
 
@@ -425,8 +425,11 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps =
         [
+          pkgs.sqlite
           pkgs.coreutils
           pkgs.grep
           pkgs.rust
@@ -472,7 +475,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-phase7-fleet-equivalence-target" \
-              -p crucible \
+              -p crucible-engine \
               --test gate_fleet_equivalence \
               -- --list --format terse)
             test "$(printf '%s\n' "$listed" | grep -c ': test$')" -eq 4
@@ -480,7 +483,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-phase7-fleet-equivalence-target" \
-              -p crucible \
+              -p crucible-engine \
               --test gate_fleet_equivalence \
               -- --test-threads=1
           '';

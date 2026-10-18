@@ -70,7 +70,7 @@
       cargoRoot = "crates";
     };
     cargoRoot = "crates";
-    cargoFlags = "-p aos-hub --features postgres";
+    cargoFlags = "-p aos-hub-native --features postgres";
     buildDeps = [buildPerl buildPkgConfig openssl sqlite buildProtobuf aos-hub-console-dist];
     runtimeDeps = [openssl sqlite zlib];
   };
@@ -165,7 +165,7 @@ in
     # Build the hub package's control-plane and fixed egress binaries.
     # PostgreSQL is the strongly-consistent shared nonce store for replicated
     # aos-hub-egress deployments. SQLite remains available for a singleton.
-    cargoFlags = "-p aos-hub --features postgres";
+    cargoFlags = "-p aos-hub-native --features postgres";
 
     inherit cargoDeps cargoArtifacts cargoEnv cargoArtifactContract;
     cargoRoot = "crates";
