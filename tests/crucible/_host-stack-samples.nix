@@ -8,6 +8,17 @@
   serviceStderrDir = "/tmp/campaign-service-stderr";
   stallStopFile = "/tmp/crucible-qemu-stall-stop";
 
+  # One host sample prints at most this many stack bytes before its footer.
+  # The cap bounds the 180-sample file (about 11 MiB) while leaving room for
+  # every busy service thread; the footer itself is printed outside the cap.
+  hostSampleStackBytes = 61440;
+  # The shell cut is a backstop above the in-process cap and its footer.
+  hostSampleCutBytes = 65536;
+  # Full QEMU backtraces are unfiltered, so one process can exceed 16 KiB.
+  # Three rounds over five guests stay within about 1 MiB.
+  qemuStallCutBytes = 65536;
+  qemuStallReportBytes = 1048576;
+
   commands = pkgs.writeTextFile {
     name = "crucible-host-stack-sample";
     destination = "/share/crucible/host-stack-sample.gdb";
@@ -21,9 +32,14 @@
       # Threads parked in these waits are idle; their stacks are omitted. Only
       # the two innermost frames are matched, so host functions whose names
       # merely contain a marker, such as repoll loops, still count as busy.
-      idle_markers = ("futex", "epoll", "poll", "nanosleep", "park", "wait4",
-                      "waitid", "accept", "recvmsg", "__libc_read", "pthread_cond")
+      # "recv" covers recv, recvfrom, and recvmsg; "epoll" covers epoll_wait
+      # and epoll_pwait; "poll" covers poll and ppoll.
+      idle_markers = ("futex", "epoll", "poll", "pselect", "__select", "nanosleep",
+                      "park", "wait4", "waitid", "sigtimedwait", "sigwait",
+                      "accept", "recv", "__libc_read", "pthread_cond")
+      stack_budget = ${toString hostSampleStackBytes}
       busy = 0
+      omitted = 0
       for thread in gdb.selected_inferior().threads():
           thread.switch()
           frame = gdb.newest_frame()
@@ -34,9 +50,17 @@
           if any(marker in name for name in names[:2] for marker in idle_markers):
               continue
           busy += 1
-          print("host_stack_thread lwp=%d frames=%d" % (thread.ptid[1], len(names)))
-          for index, name in enumerate(names):
-              print("  #%d %s" % (index, name))
+          lines = ["host_stack_thread lwp=%d frames=%d" % (thread.ptid[1], len(names))]
+          lines.extend("  #%d %s" % (index, name) for index, name in enumerate(names))
+          text = "\n".join(lines)
+          # Busy threads are still counted once the budget is spent, so the
+          # footer stays exact even when their stacks are omitted.
+          if len(text) + 1 > stack_budget:
+              omitted += 1
+              continue
+          stack_budget -= len(text) + 1
+          print(text)
+      print("host_stack_omitted_threads=%d" % omitted)
       print("host_stack_busy_threads=%d" % busy)
       end
     '';
@@ -68,7 +92,7 @@ in {
             -iex 'set auto-load off' -iex 'set debuginfod enabled off' \
             -p "$host_stack_pid" -x ${commands}/share/crucible/host-stack-sample.gdb \
             2>&1 | ${pkgs.grep}/bin/grep -E '^(host_stack|  #)' \
-            | ${pkgs.coreutils}/bin/head -c 16384
+            | ${pkgs.coreutils}/bin/head -c ${toString hostSampleCutBytes}
         fi
         ${pkgs.coreutils}/bin/sleep 10
       done
@@ -119,7 +143,7 @@ in {
             -ex 'set pagination off' -ex 'set print frame-arguments none' \
             -ex 'thread apply all bt 32' -p "$qemu_stall_pid" 2>&1 \
             | ${pkgs.grep}/bin/grep -E '^(Thread |#)' \
-            | ${pkgs.coreutils}/bin/head -c 16384
+            | ${pkgs.coreutils}/bin/head -c ${toString qemuStallCutBytes}
         done
         qemu_stall_pause=0
         while [ "$qemu_stall_pause" -lt 15 ] && [ ! -e ${stallStopFile} ]; do
@@ -141,8 +165,8 @@ in {
     printf '%s\n' 'host-stack-samples-begin max_bytes=1048576'
     ${pkgs.coreutils}/bin/tail -c 1048576 /tmp/crucible-host-stack-samples.txt 2>/dev/null || true
     printf '%s\n' 'host-stack-samples-end'
-    printf '%s\n' 'qemu-stall-stacks-begin max_bytes=262144'
-    ${pkgs.coreutils}/bin/head -c 262144 /tmp/crucible-qemu-stall-stacks.txt 2>/dev/null || true
+    printf '%s\n' 'qemu-stall-stacks-begin max_bytes=${toString qemuStallReportBytes}'
+    ${pkgs.coreutils}/bin/head -c ${toString qemuStallReportBytes} /tmp/crucible-qemu-stall-stacks.txt 2>/dev/null || true
     printf '%s\n' 'qemu-stall-stacks-end'
   '';
 }
