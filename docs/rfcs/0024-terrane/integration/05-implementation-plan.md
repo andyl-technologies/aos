@@ -9003,8 +9003,24 @@ Resumed qualification:
   probes; prepared owners retain that same receipt. Three fresh-process controls
   use unbound sockets without traffic to check allowed-before/denied-after
   creation, a preexisting descriptor and a network socket passed as stdin.
-  Source review and the formatter pair pass. Compilation and native execution
-  are running; process confinement is not qualified yet.
+  Source review, the formatter pair, immutable image, independent image
+  verification and actual ext4 guest pass on unchanged source. All three
+  confinement controls, 47 filesystem cases and six manifest cases pass. The
+  six publisher regression stages also pass: nineteen builder cases, four
+  public metadata cases, three native socket cases, both native parents and
+  all four multi-UID parent/child executions. This qualifies the configured
+  publisher's process boundary and the bounded cache/transport components;
+  Running publication, full host recovery and service readiness remain open.
+- Mixed recovery candidate `37ed65d54d`: the physical owner now retains inline
+  adoption alongside manifest recovery, combines independently verified
+  residences and checks both exact content sets before completion and Resume.
+  The existing bootstrap, durable manifest funding, original Drain context,
+  complete metadata-source closure and fresh quota reconciliation remain
+  mandatory. Two native controls add valid mixed recovery and a corrupt
+  manifest beside an independently adopted inline inode; a later failure must
+  retain that inline inode, its binding and the original funded faulted custody.
+  Full source review and the formatter pair pass. Compilation and actual guest
+  execution are pending; no additional runtime or task acceptance is claimed.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
   and all seven strict Clippy/documentation profiles pass. The interface,
   commit-path, status and schema gates pass on unchanged final source, including
