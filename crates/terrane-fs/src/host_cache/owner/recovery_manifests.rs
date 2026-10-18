@@ -39,10 +39,7 @@ pub(super) enum ManifestFailureResources {
         observation: BodyIncarnationObservation<HostDomainLocation>,
     },
     /// Keeps a failed independent inspection's original candidate and body.
-    Inspection {
-        candidate: NativeRecoveryCandidate,
-        body: RecoveryManifestBody,
-    },
+    Inspection(Box<Option<(NativeRecoveryCandidate, RecoveryManifestBody)>>),
     /// Keeps an unresolved report if ownership extraction was refused.
     Inventory(Box<NativeRecoveryInspection>),
 }
@@ -120,19 +117,23 @@ pub(super) async fn run(
             // Reserve actual success/failure registry slots before source/publisher
             // effects. No fallible step precedes retaining an accepted result.
             live.reserve_reconciliation()?;
+            let mut inspection_failure = Box::new(None);
             let receipt = live.retain_manifest(identity).await?;
             let body = match session.adopt_manifest_recovery(receipt, &candidate) {
                 Ok(body) => body,
                 Err(RecoveryManifestError::BeforeEffect(error)) => return Err(error),
                 Err(RecoveryManifestError::Metadata(failure)) => {
+                    let Some(failure) = *failure else {
+                        return Err(unresolved("missing retained metadata failure"));
+                    };
                     let (error, retained) = failure.into_parts();
                     live.retain_failure(ManifestFailureResources::Metadata(retained));
                     return Err(error);
                 }
-                Err(RecoveryManifestError::Body {
-                    failure,
-                    observation,
-                }) => {
+                Err(RecoveryManifestError::Body(failure)) => {
+                    let Some((failure, observation)) = *failure else {
+                        return Err(unresolved("missing retained body failure"));
+                    };
                     let (error, retained) = failure.into_parts();
                     live.retain_failure(ManifestFailureResources::Body {
                         retained,
@@ -147,7 +148,8 @@ pub(super) async fn run(
                 }
                 Err(failure) => {
                     let (error, candidate, body) = failure.into_parts();
-                    live.retain_failure(ManifestFailureResources::Inspection { candidate, body });
+                    *inspection_failure = Some((candidate, body));
+                    live.retain_failure(ManifestFailureResources::Inspection(inspection_failure));
                     return Err(error);
                 }
             }

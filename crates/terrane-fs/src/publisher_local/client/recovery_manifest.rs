@@ -49,19 +49,23 @@ impl RecoveryManifestBody {
     }
 }
 
+/// Pairs a failed native resource owner with its original response observation.
+type BodyFailureResources = (
+    RecoveryManifestBodyFailure,
+    BodyIncarnationObservation<HostDomainLocation>,
+);
+
 /// Preserves typed resource custody on every stage of a failed recovery exchange.
+///
+/// Slots are allocated before submission and filled before returning an effect
+/// error. An empty slot cannot supply resource or recovery-completion authority.
 pub(crate) enum RecoveryManifestError {
     /// The receipt could not arm an effect; its physical source registry remains.
     BeforeEffect(io::Error),
     /// No verified response body was accepted; durable metadata custody remains.
-    Metadata(RecoveryManifestEffectFailure),
+    Metadata(Box<Option<RecoveryManifestEffectFailure>>),
     /// The registered body, metadata and genuine lifecycle observation remain owned.
-    Body {
-        /// The actual failed native resource pair and original error.
-        failure: RecoveryManifestBodyFailure,
-        /// The lifecycle name extracted from the same verified response.
-        observation: BodyIncarnationObservation<HostDomainLocation>,
-    },
+    Body(Box<Option<BodyFailureResources>>),
 }
 
 impl Client<HostDomainLocation> {
@@ -133,6 +137,11 @@ impl Client<HostDomainLocation> {
         retained: RecoveryRetainedManifest<'_, '_>,
         expected: &NativeRecoveryCandidate,
     ) -> Result<RecoveryManifestBody, RecoveryManifestError> {
+        // Reserve both possible failure carriers before any publisher exchange.
+        // Filling an owned slot never allocates after the native effect or drops
+        // its original metadata/body custody to manufacture a smaller error.
+        let mut metadata_failure = Box::new(None);
+        let mut body_failure = Box::new(None);
         let effect = retained
             .begin_effect()
             .map_err(RecoveryManifestError::BeforeEffect)?;
@@ -142,29 +151,26 @@ impl Client<HostDomainLocation> {
         let (body, observation) = match response {
             Ok(response) => response,
             Err(error) => {
-                return Err(RecoveryManifestError::Metadata(
-                    effect.fail(io::Error::other(error)),
-                ));
+                *metadata_failure = Some(effect.fail(io::Error::other(error)));
+                return Err(RecoveryManifestError::Metadata(metadata_failure));
             }
         };
         // Capacity was reserved before submission. Register the actual owned
         // verified file before any later fallible correlation or completion.
         let accepted = effect.accept_body(body);
         if let Err(error) = self.correlate_recovery_manifest(&accepted, &observation) {
-            return Err(RecoveryManifestError::Body {
-                failure: accepted.fail(io::Error::other(error)),
-                observation,
-            });
+            *body_failure = Some((accepted.fail(io::Error::other(error)), observation));
+            return Err(RecoveryManifestError::Body(body_failure));
         }
         match accepted.complete() {
             Ok(retained) => Ok(RecoveryManifestBody {
                 retained,
                 observation,
             }),
-            Err(failure) => Err(RecoveryManifestError::Body {
-                failure,
-                observation,
-            }),
+            Err(failure) => {
+                *body_failure = Some((failure, observation));
+                Err(RecoveryManifestError::Body(body_failure))
+            }
         }
     }
 
