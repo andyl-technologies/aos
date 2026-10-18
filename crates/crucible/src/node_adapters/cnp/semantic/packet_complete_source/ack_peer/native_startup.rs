@@ -331,7 +331,7 @@ impl PacketCompleteSemanticSource {
             size_of::<bool>(),
             size_of::<OriginalNativeStartupFinalization>(),
             size_of::<PacketNativeBirthStartupInputs<'_>>(),
-            16 * 1024,
+            super::HOST_EXECUTABLE_STREAM_BYTES,
             size_of::<blake3::Hasher>(),
             size_of::<[u8; 336]>(),
             Self::original_complete_capture_execution_counter_scratch_data(),

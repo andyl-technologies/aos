@@ -280,7 +280,7 @@ impl PacketCompleteSemanticSource {
             // the counter sink; the projection uses the same fixed text width.
             32, 43,
             // Full private-host currentness uses the same retained file and
-            // exact16KiB stream bank; it is separate from child currentness.
+            // same fixed stream bank; it is separate from child currentness.
             super::super::PacketCompleteAckPeerBootMaterial::original_native_startup_authentication_scratch_data(),
             // Existing native UID lookup formats a bounded /proc/u32 path.
             12, 24, 17, size_of::<std::fs::Metadata>(),

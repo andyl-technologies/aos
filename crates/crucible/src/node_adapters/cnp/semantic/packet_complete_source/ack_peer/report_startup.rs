@@ -97,7 +97,7 @@ impl PacketCompleteSemanticSource {
             + NodeRuntime::capture_selected_json_counter_scratch_data()
             + NodeRuntime::capture_serialization_counter_scratch_data()
             + size_of::<blake3::Hasher>()
-            + size_of::<[u8; 16 * 1024]>()
+            + size_of::<[u8; super::HOST_EXECUTABLE_STREAM_BYTES]>()
             + 2 * size_of::<std::fs::File>()
             + 2 * size_of::<super::HostRevision>()
             + returned_layout(blake3::Hash::to_hex)

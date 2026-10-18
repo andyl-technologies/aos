@@ -17,6 +17,10 @@ use crucible_node_contract::{ContentRef, Id, Validate};
 
 use super::{OperationFailure, refused};
 
+// Batch the same complete-byte check without retaining a whole executable.
+// Every defining scratch quote below and in the startup children uses this bank.
+const HOST_EXECUTABLE_STREAM_BYTES: usize = 256 * 1024;
+
 #[path = "host_startup.rs"]
 mod host_startup;
 pub use host_startup::PacketCompleteOriginalHostSdk;
@@ -249,7 +253,7 @@ impl OriginalAckPeerBirth {
         hasher.update(&(domain.len() as u32).to_be_bytes());
         hasher.update(domain);
         hasher.update(&self.host_revision.length.to_be_bytes());
-        let mut scratch = [0; 16 * 1024];
+        let mut scratch = [0; HOST_EXECUTABLE_STREAM_BYTES];
         let mut offset = 0;
         while offset < self.host_revision.length {
             let remaining = self.host_revision.length - offset;
@@ -313,7 +317,7 @@ impl<'a> PacketCompleteAckPeerBootMaterial<'a> {
         // The exact same material uses its retained file and fixed stream bank.
         // File-open conversion is the pinned small-C-string stack path.
         super::super::PacketCompleteSemanticSource::original_native_host_barrier_authentication_scratch_data()
-            + 16 * 1024
+            + HOST_EXECUTABLE_STREAM_BYTES
             + size_of::<blake3::Hasher>()
             + size_of::<File>()
             + 2 * size_of::<std::fs::Metadata>()

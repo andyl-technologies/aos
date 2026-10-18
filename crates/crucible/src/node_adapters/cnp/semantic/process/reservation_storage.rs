@@ -409,6 +409,9 @@ mod tests {
             ),
             Err(RuntimeError::ResourceLimit)
         );
-        assert!(total < 256 * 1024);
+        let birth_scratch = crate::node_adapters::cnp::PacketCompleteAckPeerBootMaterial::
+            original_native_startup_authentication_scratch_data();
+        assert!(total >= birth_scratch);
+        assert!(total - birth_scratch < 256 * 1024);
     }
 }

@@ -1563,6 +1563,31 @@ seconds. No child failure packet is observed at the host's timeout. These runs
 show diagnostic progress only; startup, state preservation and performance
 remain unqualified. All temporary source probes are removed.
 
+
+### Complete host-image authentication bank
+
+Wait-only tracing of the ordinary native startup fixture shows node one waiting
+for its next request until cleanup; no Admit data arrives at its idle wait.
+The SDK's original 60-second cut starts during prelaunch preparation and is only
+tightened later. Source call-graph review finds four complete host-image checks
+before assigned Admit publication, plus other birth and currentness checks.
+
+The birth guard now streams the same complete executable through a 256-KiB
+bank instead of 16 KiB. The same private constant supplies all three defining
+scratch quotes. This adds 240 KiB to each synchronous check, preserves positional
+reads and every before/after metadata, full ContentRef, origin and deadline
+check, and retains the existing ceilings. The acquisition control still checks
+size-independent quotes and refusal at one byte less; it now also requires the
+actual birth scratch explicitly and bounds the remaining fixed work separately.
+Independent source review passes.
+
+All 1,753 Core and seven contract controls pass in 5.97 seconds. Six-crate
+all-feature/all-target checking passes in 28.44 seconds. The matching
+native fixture still fails (zero passes, one failure in 101.70 seconds); a
+wait-traced repeat also fails in 66.70 seconds. These incomplete runs do not
+establish an end-to-end speedup or startup success. Images, debugger output and wait traces
+remain local. No temporary diagnostic source is part of this change.
+
 ## Known gaps and exit criteria
 
 Completion requires the full [qualification plan](qualification-plan.md),
