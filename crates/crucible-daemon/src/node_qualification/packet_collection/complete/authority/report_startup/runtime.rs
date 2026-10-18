@@ -128,6 +128,46 @@ mod tests;
 
 #[cfg(test)]
 impl PacketCompleteReportStartupHolder {
+    /// Reports retained construction failures before the native control retires them.
+    ///
+    /// This inspects existing slots without a Source callback, retry or owner
+    /// transfer. A busy diagnostic loan must not replace the original failure.
+    pub(in crate::node_qualification::packet_collection::complete) fn report_original_runtime_failure_for_test(
+        original: &Rc<RefCell<Self>>,
+    ) {
+        let Ok(held) = original.try_borrow() else {
+            eprintln!("retained runtime failure: holder borrowed");
+            return;
+        };
+        let Ok(owners) = held.runtime_owners.try_borrow() else {
+            eprintln!("retained runtime failure: construction owners borrowed");
+            return;
+        };
+
+        eprintln!(
+            "retained runtime construction: attempted={:?} members={:?} graph={} nodes={:?} host={} provider_failure={} preparation_failure={} attachment_failure={}",
+            held.runtime_attempted.each_ref().map(Cell::get),
+            held.runtime_members.each_ref().map(|member| member.get().is_some()),
+            owners.graph.is_some(),
+            owners.nodes.each_ref().map(Option::is_some),
+            owners.host.is_some(),
+            owners.provider_failure.is_some(),
+            owners.preparation_failure.is_some(),
+            owners.attachment_failure.is_some(),
+        );
+        for (index, failure) in owners.node_failures.iter().enumerate() {
+            if let Some(failure) = failure {
+                eprintln!(
+                    "retained node failure: index={index} effects={:?} reason={}",
+                    failure.effects, failure.reason,
+                );
+            }
+            if owners.unwinds[index].is_some() {
+                eprintln!("retained node failure: index={index} unwind retained");
+            }
+        }
+    }
+
     /// Checks that the real initial constructor retained an attached inactive actor.
     pub(in crate::node_qualification::packet_collection::complete) fn authenticate_original_inactive_actor_for_test(
         original: &Rc<RefCell<Self>>,
