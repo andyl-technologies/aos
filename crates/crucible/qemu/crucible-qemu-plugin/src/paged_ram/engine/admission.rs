@@ -302,7 +302,7 @@ pub(super) fn prepare_service_for_inventory(
         activated: AtomicBool::new(false),
         destructive: AtomicBool::new(false),
         failed: AtomicBool::new(false),
-        lifetime: Mutex::new(service::ActorLifetime::default()),
+        lifetime: service::ActorLifetime::default(),
         retained_token: AtomicU64::new(0),
         resident_observation,
         operations,

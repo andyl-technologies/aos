@@ -328,7 +328,7 @@ impl PreparedChildArenas {
                 .take()
                 .ok_or("child residency observation custody absent")?,
             failed: AtomicBool::new(false),
-            lifetime: Mutex::new(service::ActorLifetime::default()),
+            lifetime: service::ActorLifetime::default(),
             operations: self.operations.clone(),
             worker_generation,
             native: self.parent_service.native,
@@ -342,10 +342,7 @@ impl PreparedChildArenas {
                 .ok_or("child arena receipt absent")?,
         });
         owner.check_mapping_peak(&service)?;
-        *owner
-            .active
-            .try_lock()
-            .map_err(|_| "child paging owner unavailable")? = Some(service.clone());
+        owner.retain_service(&service)?;
         let operational = OPERATIONAL_OWNER
             .get()
             .ok_or("operational paging owner absent")?;

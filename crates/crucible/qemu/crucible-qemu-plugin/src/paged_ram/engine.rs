@@ -277,11 +277,7 @@ impl PausedPagingOwner {
         let Some(service) = active.as_ref() else {
             return Ok(None);
         };
-        let lifetime = service
-            .lifetime
-            .try_lock()
-            .map_err(|_| "fault actor report unavailable")?;
-        Ok(lifetime.report(service.worker_generation))
+        service.lifetime.report(service.worker_generation)
     }
 
     /// Requests the exact active actor's terminal return; all other custody stays.
@@ -294,11 +290,7 @@ impl PausedPagingOwner {
         if service.worker_generation != generation || !service.activated.load(Ordering::Acquire) {
             return Err(RamError::Invariant("fault actor generation is not active"));
         }
-        service
-            .lifetime
-            .try_lock()
-            .map_err(|_| "fault actor request unavailable")?
-            .request_exit()
+        service.lifetime.request_exit()
     }
 
     /// Returns the fixed pager actor stack, guard, and page-scratch peak.
@@ -742,16 +734,9 @@ impl RestoreMappingOwner for PausedPagingOwner {
             self.counters.clone(),
         )?;
         self.check_mapping_peak(&service)?;
-        if let Err(error) = service.start() {
-            service.stop_before_activation()?;
-            return Err(error);
-        }
-        // Retain the real actor/source even when a native partial cleanup fails.
-        // No engine mutex remains held while native writer barriers are acquired.
-        *self
-            .active
-            .lock()
-            .map_err(|_| "paging authority owner is poisoned")? = Some(service.clone());
+        // Retain the actual source and worker before startup can partially fail.
+        self.retain_service(&service)?;
+        service.start()?;
         let mut preflight = PhysicalPreflight {
             native,
             generation: source.topology_generation,

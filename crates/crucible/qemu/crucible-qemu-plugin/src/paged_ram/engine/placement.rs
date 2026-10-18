@@ -9,6 +9,22 @@ use std::fs::File;
 use super::*;
 
 impl PausedPagingOwner {
+    /// Retains the paid service before worker or mapping effects can begin.
+    ///
+    /// # Errors
+    /// Refuses unavailable custody or an already retained service.
+    pub(super) fn retain_service(&self, service: &Arc<FaultService>) -> Result<(), RamError> {
+        let mut active = self
+            .active
+            .try_lock()
+            .map_err(|_| RamError::Invariant("paging authority unavailable"))?;
+        if active.is_some() {
+            return Err(RamError::Invariant("paging authority already retained"));
+        }
+        *active = Some(service.clone());
+        Ok(())
+    }
+
     /// Reserves a real private disk file before any physical removal is admitted.
     ///
     /// # Errors
@@ -63,11 +79,11 @@ impl PausedPagingOwner {
             .map_err(|_| "paging ownership unavailable")?
             .clone();
         if let Some(service) = existing {
-            if service.activated.load(Ordering::Acquire) {
-                return Ok(());
-            }
             if service.failed.load(Ordering::Acquire) {
                 return Err(RamError::Invariant("failed activation authority"));
+            }
+            if service.activated.load(Ordering::Acquire) {
+                return Ok(());
             }
             if service.source.is_some() {
                 // A prepared restore owns this inactive source-backed service
@@ -111,11 +127,8 @@ impl PausedPagingOwner {
             },
         )?;
         self.check_mapping_peak(&service)?;
+        self.retain_service(&service)?;
         service.start()?;
-        *self
-            .active
-            .try_lock()
-            .map_err(|_| "paging authority unavailable")? = Some(service.clone());
         self.activate_service(service, operation, completed_work)
     }
 

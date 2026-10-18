@@ -57,7 +57,7 @@ pub(super) struct FaultService {
     pub(super) activated: AtomicBool,
     pub(super) destructive: AtomicBool,
     pub(super) failed: AtomicBool,
-    pub(super) lifetime: Mutex<ActorLifetime>,
+    pub(super) lifetime: ActorLifetime,
     pub(super) retained_token: AtomicU64,
     pub(super) resident_observation: super::physical_observation::ResidentObservationState,
     pub(super) operations: Arc<dyn SourceOperationFactory>,
@@ -69,6 +69,16 @@ pub(super) struct FaultService {
 
 impl FaultService {
     pub(super) fn start(self: &Arc<Self>) -> Result<(), RamError> {
+        let result = self.start_worker();
+        if let Err(error) = &result {
+            self.failed.store(true, Ordering::Release);
+            self.stop.store(true, Ordering::Release);
+            self.lifetime.failed(error.clone());
+        }
+        result
+    }
+
+    fn start_worker(self: &Arc<Self>) -> Result<(), RamError> {
         let operation = self
             .operations
             .begin(SourceOperationClass::ControlSetup)
@@ -86,70 +96,7 @@ impl FaultService {
             std::thread::Builder::new()
                 .name("guest-page-service".to_owned())
                 .stack_size(PAGER_STACK_BYTES)
-                .spawn(move || {
-                    // SAFETY: gettid has no pointer operands and identifies this actual
-                    // actor; native registry checks caller identity rather than names.
-                    let tid = unsafe { libc::syscall(libc::SYS_gettid) };
-                    let status =
-                        (service.native.worker)(1, service.worker_generation, tid as u64, 1);
-                    if status != 0 {
-                        let _ = ready_tx.send(status);
-                        service.failed.store(true, Ordering::Release);
-                        return Err(RamError::Native {
-                            operation: "paging worker registration refused",
-                            status,
-                        });
-                    }
-                    service
-                        .lifetime
-                        .lock()
-                        .map_err(|_| RamError::Invariant("fault actor lifetime poisoned"))?
-                        .admitted(tid as u64);
-                    if ready_tx.send(0).is_err() {
-                        service.failed.store(true, Ordering::Release);
-                        let release =
-                            (service.native.worker)(1, service.worker_generation, tid as u64, 0);
-                        return Err(RamError::Native {
-                            operation: "paging worker admission abandoned",
-                            status: release,
-                        });
-                    }
-                    let result =
-                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| service.run()))
-                            .unwrap_or(Err(RamError::Invariant("paging fault actor panicked")));
-                    if let Err(error) = &result {
-                        service
-                            .lifetime
-                            .lock()
-                            .map_err(|_| {
-                                RamError::Invariant("fault actor failure publication poisoned")
-                            })?
-                            .failed(error.clone());
-                        service.failed.store(true, Ordering::Release);
-                    }
-                    let mut release =
-                        (service.native.worker)(1, service.worker_generation, tid as u64, 0);
-                    while release == -libc::EBUSY {
-                        // Existing membership stays alive while a certificate retains
-                        // it. Failure never disappears from the held physical inventory.
-                        std::thread::sleep(std::time::Duration::from_millis(10));
-                        release =
-                            (service.native.worker)(1, service.worker_generation, tid as u64, 0);
-                    }
-                    if release != 0 {
-                        service.failed.store(true, Ordering::Release);
-                        return Err(RamError::Native {
-                            operation: "paging worker membership release failed",
-                            status: release,
-                        });
-                    }
-                    service
-                        .lifetime
-                        .lock()
-                        .map_err(|_| RamError::Invariant("fault actor disposition poisoned"))?
-                        .released();
-                    result
-                })
+                .spawn(move || service.run_worker(ready_tx))
                 .map_err(RamError::from)?,
         );
         drop(worker);
@@ -173,6 +120,60 @@ impl FaultService {
         }
         operation.complete().map_err(RamError::from)?;
         Ok(())
+    }
+
+    fn run_worker(&self, ready: std::sync::mpsc::SyncSender<i32>) -> Result<(), RamError> {
+        // SAFETY: gettid has no pointer operands and identifies this actual
+        // actor; native registry checks caller identity rather than names.
+        let tid = unsafe { libc::syscall(libc::SYS_gettid) } as u64;
+        let status = (self.native.worker)(1, self.worker_generation, tid, 1);
+        if status != 0 {
+            let error = RamError::Native {
+                operation: "paging worker registration refused",
+                status,
+            };
+            self.failed.store(true, Ordering::Release);
+            self.lifetime.failed(error.clone());
+            let _ = ready.send(status);
+            return Err(error);
+        }
+
+        // Every exit after real native admission passes through membership
+        // release, including journal poison, abandoned startup and body panic.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.lifetime.admitted(tid)?;
+            ready
+                .send(0)
+                .map_err(|_| RamError::Invariant("paging worker admission abandoned"))?;
+            self.run()
+        }))
+        .unwrap_or(Err(RamError::Invariant("paging fault actor panicked")));
+        if let Err(error) = &result {
+            self.failed.store(true, Ordering::Release);
+            self.lifetime.failed(error.clone());
+        }
+        // A failed startup must notify its original waiter even when physical
+        // membership release remains held by an independent certificate.
+        drop(ready);
+
+        let mut release = (self.native.worker)(1, self.worker_generation, tid, 0);
+        while release == -libc::EBUSY {
+            // Existing membership stays alive while a certificate retains
+            // it. Failure never disappears from the held physical inventory.
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            release = (self.native.worker)(1, self.worker_generation, tid, 0);
+        }
+        if release != 0 {
+            let error = RamError::Native {
+                operation: "paging worker membership release failed",
+                status: release,
+            };
+            self.failed.store(true, Ordering::Release);
+            self.lifetime.failed(error.clone());
+            return Err(error);
+        }
+        self.lifetime.released();
+        result
     }
 
     pub(super) fn stop_for_fork(&self) -> Result<(), RamError> {
@@ -248,10 +249,7 @@ impl FaultService {
 
     fn run(&self) -> Result<(), RamError> {
         while !self.stop.load(Ordering::Acquire) {
-            self.lifetime
-                .lock()
-                .map_err(|_| RamError::Invariant("fault actor poll publication poisoned"))?
-                .poll()?;
+            self.lifetime.poll()?;
             self.registration.wait(10).map_err(RamError::from)?;
             if !self.activated.load(Ordering::Acquire) {
                 continue;
@@ -372,10 +370,7 @@ impl FaultService {
         operation: &dyn SourceOperation,
         scratch: &mut [u8; PAGE_BYTES],
     ) -> Result<(), RamError> {
-        self.lifetime
-            .lock()
-            .map_err(|_| "fault actor poll publication poisoned")?
-            .poll()?;
+        self.lifetime.poll()?;
         self.check_placement_dependency()?;
         let address = fault.address & !(PAGE_BYTES as u64 - 1);
         let arena = self
@@ -455,10 +450,7 @@ impl FaultService {
             let valid = self.read_page_source(arena, page_index, coordinate, operation, scratch)?;
             // A terminal request accepted while backing I/O was pending refuses
             // installation after the original read returns, retaining UFFD.
-            self.lifetime
-                .lock()
-                .map_err(|_| "fault actor poll publication poisoned")?
-                .poll()?;
+            self.lifetime.poll()?;
             if valid as usize != PAGE_BYTES {
                 return Err(RamError::Invariant(
                     "source page length differs from admitted host mapping",
