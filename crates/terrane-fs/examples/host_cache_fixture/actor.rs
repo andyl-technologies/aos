@@ -43,6 +43,8 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
             | "refuse-unsealed-writable-manifest"
             | "refuse-truncated-manifest"
             | "recover-writable-manifest"
+            | "recover-mixed-manifest"
+            | "refuse-mixed-manifest"
     ) {
         return Err(io::Error::other("unknown component selector"));
     }
@@ -104,7 +106,9 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
         | "refuse-unsealed-manifest"
         | "refuse-unsealed-writable-manifest"
         | "refuse-truncated-manifest"
-        | "recover-writable-manifest" => {
+        | "recover-writable-manifest"
+        | "recover-mixed-manifest"
+        | "refuse-mixed-manifest" => {
             super::recovery::run(mode, &owner, &runtime, &inputs, original)?;
         }
         "late-refuse" => late_refuse(&owner, &runtime, &inputs, original)?,

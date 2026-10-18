@@ -287,6 +287,8 @@ def main():
         "recover-manifest", "refuse-manifest", "refuse-unsealed-manifest",
         "refuse-unsealed-writable-manifest", "refuse-truncated-manifest", "recover-writable-manifest",
         "publisher-confinement", "publisher-reject-descriptor", "publisher-reject-stdio",
+        "seed-mixed-manifest", "seed-mixed-bad-manifest",
+        "recover-mixed-manifest", "refuse-mixed-manifest",
     ]]
     shared.require(listed == expected, "cache fixture exact selector inventory mismatch")
     unit_elf = output / "bin" / UNIT_NAME

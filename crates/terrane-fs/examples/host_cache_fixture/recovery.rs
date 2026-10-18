@@ -27,6 +27,8 @@ use terrane_core::{
 };
 use terrane_fs::{host_cache::NativeMetadataOwner, host_quota::NativeProject};
 
+const INLINE_BYTES: &[u8] = b"independent inline cold candidate";
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum FixtureCase {
     Verified,
@@ -35,6 +37,8 @@ enum FixtureCase {
     WritableUnsealed,
     Truncated,
     WritableVerified,
+    MixedVerified,
+    MixedMismatch,
 }
 
 impl FixtureCase {
@@ -48,6 +52,8 @@ impl FixtureCase {
             }
             "seed-truncated-manifest" | "refuse-truncated-manifest" => Ok(Self::Truncated),
             "seed-writable-manifest" | "recover-writable-manifest" => Ok(Self::WritableVerified),
+            "seed-mixed-manifest" | "recover-mixed-manifest" => Ok(Self::MixedVerified),
+            "seed-mixed-bad-manifest" | "refuse-mixed-manifest" => Ok(Self::MixedMismatch),
             _ => Err(invalid("unknown manifest fixture selector")),
         }
     }
@@ -60,6 +66,8 @@ impl FixtureCase {
             Self::WritableUnsealed => "tenant:manifest-unsealed-writable",
             Self::Truncated => "tenant:manifest-truncated",
             Self::WritableVerified => "tenant:manifest-sealed-writable",
+            Self::MixedVerified => "tenant:manifest-mixed",
+            Self::MixedMismatch => "tenant:manifest-mixed-mismatch",
         }
     }
 
@@ -69,12 +77,20 @@ impl FixtureCase {
             Self::Unsealed => "unsealed manifest",
             Self::WritableUnsealed => "unsealed writable manifest",
             Self::Truncated => "truncated manifest",
-            Self::Verified | Self::WritableVerified => "valid manifest",
+            Self::MixedMismatch => "mixed manifest mismatch",
+            Self::Verified | Self::WritableVerified | Self::MixedVerified => "valid manifest",
         }
     }
 
     fn recovers(self) -> bool {
-        matches!(self, Self::Verified | Self::WritableVerified)
+        matches!(
+            self,
+            Self::Verified | Self::WritableVerified | Self::MixedVerified
+        )
+    }
+
+    fn mixed(self) -> bool {
+        matches!(self, Self::MixedVerified | Self::MixedMismatch)
     }
 }
 
@@ -179,7 +195,7 @@ pub(super) fn seed(mode: &str) -> io::Result<()> {
     let sealed_parent = inputs.root.join("sealed").join(&fixture.manifest_hash[..2]);
     directory(&sealed_parent, 841, 841, 0o755)?;
     let sealed = sealed_parent.join(&fixture.manifest_hash);
-    if case == FixtureCase::Mismatch {
+    if matches!(case, FixtureCase::Mismatch | FixtureCase::MixedMismatch) {
         fixture.plaintext[0] ^= 1;
     } else if case == FixtureCase::Truncated {
         fixture
@@ -221,6 +237,19 @@ pub(super) fn seed(mode: &str) -> io::Result<()> {
     }
     retained.sync_all()?;
     File::open(&sealed_parent)?.sync_all()?;
+    if case.mixed() {
+        let hash = inline_hash()?;
+        let parent = inputs.root.join("sealed").join(&hash[..2]);
+        if parent != sealed_parent {
+            directory(&parent, 841, 841, 0o755)?;
+        }
+        let path = parent.join(hash);
+        write(&inputs, &path, INLINE_BYTES, 841, 841, 0o400)?;
+        let inline = File::open(path)?;
+        terrane_fs::verity::enable(&inline)?;
+        inline.sync_all()?;
+        File::open(parent)?.sync_all()?;
+    }
     File::open(inputs.root.join("sealed"))?.sync_all()?;
     println!("SEEDED actual cold manifest candidate; no publication or recovery authority");
     Ok(())
@@ -301,7 +330,7 @@ pub(super) fn run(
             .err()
             .ok_or_else(|| invalid("rejected manifest candidate completed recovery"))?;
         println!("REFUSED actual {} candidate: {error}", case.refusal_label());
-        check_policy(runtime, inputs, false)?;
+        check_policy(runtime, inputs, case, false)?;
         let funded = fs::read(inputs.root.join("state/cache/records.toml"))?;
         let error = runtime
             .block_on(owner.recover())
@@ -329,7 +358,7 @@ pub(super) fn run(
     {
         return Err(invalid("nonempty recovery lacks actual bounded accounting"));
     }
-    check_policy(runtime, inputs, true)?;
+    check_policy(runtime, inputs, case, true)?;
     let before = fs::read(inputs.root.join("state/cache/records.toml"))?;
     runtime
         .block_on(owner.resume_recovered(completed))
@@ -339,15 +368,22 @@ pub(super) fn run(
             "manifest Resume changed its durable recovery policy",
         ));
     }
-    println!(
-        "PASS actual manifest recovery reconstructed verified residences and acknowledged Resume; no Ready"
-    );
+    if case.mixed() {
+        println!(
+            "PASS actual mixed recovery adopted inline and manifest bytes and acknowledged Resume; no Ready"
+        );
+    } else {
+        println!(
+            "PASS actual manifest recovery reconstructed verified residences and acknowledged Resume; no Ready"
+        );
+    }
     Ok(())
 }
 
 fn check_policy(
     runtime: &tokio::runtime::Runtime,
     inputs: &Inputs,
+    case: FixtureCase,
     recovered: bool,
 ) -> io::Result<()> {
     let fixture = Fixture::new()?;
@@ -380,12 +416,34 @@ fn check_policy(
         || !ids
             .iter()
             .any(|id| format!("metadata:{id}") == state.leases[0].owner)
-        || state.residences.len() != if recovered { fixture.chunks.len() } else { 0 }
+        || state.residences.len()
+            != if recovered {
+                fixture.chunks.len() + usize::from(case.mixed())
+            } else {
+                0
+            }
     {
         return Err(invalid("manifest recovery retained policy closure differs"));
     }
     let mut offset = 0;
     if recovered {
+        if case.mixed() {
+            let hash = inline_hash()?;
+            if state
+                .residences
+                .iter()
+                .filter(|row| {
+                    row.chunk == hash
+                        && row.object == hash
+                        && row.offset == 0
+                        && row.length == INLINE_BYTES.len() as u64
+                })
+                .count()
+                != 1
+            {
+                return Err(invalid("mixed recovery omitted its exact inline residence"));
+            }
+        }
         for chunk in &fixture.chunks {
             let matching = state
                 .residences
@@ -435,6 +493,13 @@ fn require_domain(inputs: &Inputs, case: FixtureCase) -> io::Result<()> {
         return Err(invalid("manifest fixture requires its dedicated domain"));
     }
     Ok(())
+}
+
+fn inline_hash() -> io::Result<String> {
+    let identity = TERRANE_V1
+        .calculate(IdentityKind::Chunk, INLINE_BYTES)
+        .map_err(io::Error::other)?;
+    Ok(hex(identity.digest()))
 }
 
 fn hex(bytes: &[u8]) -> String {

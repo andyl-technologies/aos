@@ -2,11 +2,14 @@
 //!
 //! Candidate names supply no authority. Adoption independently verifies actual
 //! plaintext and kernel sealing; the physical executor retains every receipt
-//! before further fallible work. Pending, encoded and manifest bodies remain
-//! unsupported, and no cold policy record is discarded.
+//! before further fallible work. Mixed recovery selects inline candidates only
+//! after classifying the complete inventory; manifest adoption remains separate.
+//! No cold policy record is discarded.
 
 use crate::{
-    host_cache::{NativeHostLayout, NativeRecoveryInspection, RecoveryIssue},
+    host_cache::{
+        NativeHostLayout, NativeRecoveryCandidate, NativeRecoveryInspection, RecoveryIssue,
+    },
     publisher_local::{client::PeerPublishedObject, wire::BodyKind},
 };
 use std::{io, sync::Arc};
@@ -33,32 +36,58 @@ pub(super) fn claims(
     }
     let mut claims = Vec::with_capacity(inventory.candidates().len());
     for candidate in inventory.candidates() {
-        if candidate.key().kind != BodyKind::Sealed as i32
-            || candidate.pending_observation().is_some()
-            || !matches!(candidate.issues(), [RecoveryIssue::SealedWitnessRequired])
-        {
-            return Err(unresolved("unsupported recovery candidate or pending body"));
-        }
-        let descriptor = Descriptor::decode(&TERRANE_V1, &candidate.key().descriptor)
-            .map_err(io::Error::other)?;
-        if descriptor.domain()
-            != TERRANE_V1
-                .domain(IdentityKind::Chunk)
-                .map_err(io::Error::other)?
-        {
-            return Err(unresolved("manifest-backed sealed recovery is unsupported"));
-        }
-        let location = layout.layout();
-        claims.push(
-            PublicationClaim::new(
-                location.domain().to_owned(),
-                PublicationRecipe::Inline { chunk: descriptor },
-                location.chunk_profile(),
-            )
-            .map_err(io::Error::other)?,
-        );
+        claims.push(claim(candidate, layout)?);
     }
     Ok(claims)
+}
+
+/// Selects inline claims after validating every mixed-inventory candidate.
+///
+/// # Errors
+/// Refuses global failures, unsupported candidates and invalid inline claims.
+pub(super) fn selected_claims(
+    inventory: &NativeRecoveryInspection,
+    layout: &Arc<NativeHostLayout<HostDomainLocation>>,
+) -> io::Result<Vec<PublicationClaim>> {
+    super::recovery_candidates::preflight(inventory)?;
+    let mut claims = Vec::new();
+    for candidate in inventory.candidates() {
+        if matches!(
+            super::recovery_candidates::classify(candidate)?,
+            super::recovery_candidates::RecoveryCase::Inline
+        ) {
+            claims.push(claim(candidate, layout)?);
+        }
+    }
+    Ok(claims)
+}
+
+fn claim(
+    candidate: &NativeRecoveryCandidate,
+    layout: &Arc<NativeHostLayout<HostDomainLocation>>,
+) -> io::Result<PublicationClaim> {
+    if candidate.key().kind != BodyKind::Sealed as i32
+        || candidate.pending_observation().is_some()
+        || !matches!(candidate.issues(), [RecoveryIssue::SealedWitnessRequired])
+    {
+        return Err(unresolved("unsupported recovery candidate or pending body"));
+    }
+    let descriptor =
+        Descriptor::decode(&TERRANE_V1, &candidate.key().descriptor).map_err(io::Error::other)?;
+    if descriptor.domain()
+        != TERRANE_V1
+            .domain(IdentityKind::Chunk)
+            .map_err(io::Error::other)?
+    {
+        return Err(unresolved("manifest-backed sealed recovery is unsupported"));
+    }
+    let location = layout.layout();
+    PublicationClaim::new(
+        location.domain().to_owned(),
+        PublicationRecipe::Inline { chunk: descriptor },
+        location.chunk_profile(),
+    )
+    .map_err(io::Error::other)
 }
 
 /// Derives exact reconstructible ranges without assigning consumer pin promises.
@@ -93,6 +122,27 @@ pub(super) fn check(
     adopted: &[AdoptedInline],
 ) -> io::Result<()> {
     let claims = claims(inventory, layout)?;
+    check_claims(&claims, layout, adopted)
+}
+
+/// Checks the exact adopted inline subset without ignoring other candidate issues.
+///
+/// # Errors
+/// Refuses invalid mixed inventory, changed inline sets or native custody.
+pub(super) fn check_subset(
+    inventory: &NativeRecoveryInspection,
+    layout: &Arc<NativeHostLayout<HostDomainLocation>>,
+    adopted: &[AdoptedInline],
+) -> io::Result<()> {
+    let claims = selected_claims(inventory, layout)?;
+    check_claims(&claims, layout, adopted)
+}
+
+fn check_claims(
+    claims: &[PublicationClaim],
+    layout: &Arc<NativeHostLayout<HostDomainLocation>>,
+    adopted: &[AdoptedInline],
+) -> io::Result<()> {
     if claims.len() != adopted.len() {
         return Err(unresolved("inline candidate set changed during recovery"));
     }

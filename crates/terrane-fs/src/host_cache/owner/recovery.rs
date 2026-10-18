@@ -1,8 +1,8 @@
 //! Runs serialized actual recovery without conflating it with tier readiness.
 //!
-//! Supported cases start with empty cold policy and reconcile empty, inline-only
-//! or manifest-only content using actual verified metadata and native bindings. Unknown names,
-//! unhandled private publication state, temporary files,
+//! Supported cases start with empty cold policy and reconcile empty, inline
+//! and manifest content using actual verified metadata and native bindings.
+//! Unknown names, unhandled private publication state, temporary files,
 //! pending bodies and every unhandled candidate remain non-ready. A receipt
 //! requires real shared/private scans, durable state, synchronized allocation,
 //! fresh authenticated quota charges and the original successful drain epoch.
@@ -149,6 +149,8 @@ impl CompletedRecovery {
                 &self.inventory,
                 &self.manifest_results,
                 &self.metadata_sources,
+                owner.preparation.layout(),
+                &self.adopted_inline,
             )?;
             drop(owner);
             for body in &self.manifest_results {

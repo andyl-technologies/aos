@@ -38,7 +38,13 @@ MANIFEST_CASES = [
      "refuse-truncated-manifest", False, "truncated manifest"),
     ("manifest-sealed-writable", "seed-writable-manifest",
      "recover-writable-manifest", True, "valid manifest"),
+    ("manifest-mixed", "seed-mixed-manifest",
+     "recover-mixed-manifest", True, "valid mixed content"),
+    ("manifest-mixed-mismatch", "seed-mixed-bad-manifest",
+     "refuse-mixed-manifest", False, "mixed manifest mismatch"),
 ]
+MIXED_CASES = {"manifest-mixed", "manifest-mixed-mismatch"}
+INLINE_BYTES = b"independent inline cold candidate"
 CASES = [
     "empty", "pin", "lease", "reservation", "residence", "unknown",
     "state-file", "state-directory", "cancel", "edquot", "exclusive",
@@ -273,14 +279,24 @@ def seed_manifests(uuid):
         ], "missing actual cold seed witness: " + case)
         bodies = list((root(case) / "sealed").glob("*/*"))
         packs = list((root(case) / "objects/pack").glob("*/*"))
-        require(len(bodies) == 1 and len(packs) == 2
+        require(len(bodies) == (2 if case in MIXED_CASES else 1) and len(packs) == 2
                 and sorted(path.suffix for path in packs) == [".idx", ".pack"]
                 and list((root(case) / "state/publication").iterdir()) == []
                 and list((root(case) / "state/cache").iterdir()) == [],
                 "seed fabricated policy/publication state or omitted physical bytes")
-        body = bodies[0]
+        # This identifies fixture inputs by their exact seeded bytes only;
+        # actual native adoption must independently verify their kernel seals
+        # and registered identities before any recovery completion can exist.
+        companions = [path for path in bodies if case in MIXED_CASES
+                      and path.read_bytes() == INLINE_BYTES]
+        require(len(companions) == (1 if case in MIXED_CASES else 0),
+                "mixed seed omitted its independent inline candidate")
+        remaining = [path for path in bodies if path not in companions]
+        require(len(remaining) == 1, "fixture manifest candidate is ambiguous")
+        body = remaining[0]
         seeded[case] = {"body": body, "inode": body.stat().st_ino,
                         "hash": hashlib.sha256(body.read_bytes()).hexdigest(),
+                        "companions": [(path, path.stat().st_ino) for path in companions],
                         "packs": {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in packs}}
     return seeded
 
@@ -292,8 +308,17 @@ def manifest_recovery_cases(uuid, seeded):
         expected = ("PASS actual manifest recovery reconstructed verified residences and acknowledged Resume; no Ready"
                     if recovers else
                     f"PASS actual {label} retained metadata funding and faulted custody; no Resume")
+        if case == "manifest-mixed":
+            expected = "PASS actual mixed recovery adopted inline and manifest bytes and acknowledged Resume; no Ready"
         require(expected in output.splitlines(), "missing native manifest result: " + case)
         original = seeded[case]
+        for path, inode in original["companions"]:
+            require(path.stat().st_ino == inode and path.read_bytes() == INLINE_BYTES
+                    and path.stat().st_mode & 0o7777 == 0o400,
+                    "mixed recovery changed its independently adopted inline candidate")
+            bindings = list((root(case) / "state/publication").glob("*-" + path.name + ".toml"))
+            require(len(bindings) == 1 and bindings[0].stat().st_uid == 841,
+                    "mixed recovery omitted actual inline adoption before manifest completion/refusal")
         for name, digest in original["packs"].items():
             require(hashlib.sha256(pathlib.Path(name).read_bytes()).hexdigest() == digest,
                     "manifest recovery changed retained metadata bytes")

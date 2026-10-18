@@ -1,6 +1,7 @@
-//! Reconciles manifest-only recovery on the genuine physical owner executor.
+//! Reconciles manifest and inline recovery on the genuine physical owner executor.
 //!
-//! Every adoption follows a durable bootstrap and actual metadata retention.
+//! Every adoption follows a durable bootstrap. Manifest adoption additionally
+//! requires actual metadata retention.
 //! Accepted IPC resources and independent Inspector results enter physical
 //! registries before further fallible work. Completion still requires exhaustive
 //! final private/shared scans; unsupported records and names are never cleared.
@@ -9,7 +10,7 @@ use super::{
     recovery::{self, CompletedRecovery},
     recovery_accounting,
     recovery_candidates::{self, RecoveryCase},
-    recovery_manifest_state,
+    recovery_inline, recovery_manifest_state,
     recovery_namespace::SharedNamespaceObservation,
     recovery_residences::ResidenceSelection,
     recovery_state_parent::StateParentObservation,
@@ -65,7 +66,7 @@ pub(super) struct ManifestRecoveryStart {
 /// Runs supported manifest candidates without inventing completion for other cases.
 ///
 /// # Errors
-/// Refuses all cold/mixed/pending/unhandled candidates, failed source retention,
+/// Refuses cold/pending/unhandled candidates, failed source retention,
 /// actual adoption/verification, incomplete final inventory or namespace closure,
 /// changed policy and native synchronization/quota/context failures. Every
 /// accepted resource stays physically registered independently of the waiter.
@@ -83,19 +84,30 @@ pub(super) async fn run(
         inventory,
     } = start;
     recovery_candidates::preflight(&inventory)?;
-    for candidate in inventory.candidates() {
-        if matches!(
-            recovery_candidates::classify(candidate)?,
-            RecoveryCase::Inline
-        ) {
-            return Err(unresolved(
-                "mixed inline and manifest recovery remains unsupported",
-            ));
-        }
-    }
+    let layout = {
+        let owner = executor
+            .custody()
+            .lock()
+            .map_err(|_| io::Error::other("recovery custody poisoned"))?;
+        Arc::clone(owner.preparation.layout())
+    };
+    let inline_claims = recovery_inline::selected_claims(&inventory, &layout)?;
+    executor
+        .inline_registry_mut()
+        .try_reserve(inline_claims.len())
+        .map_err(io::Error::other)?;
     session
         .check_recovery_context(&original)
         .map_err(io::Error::other)?;
+    // The synchronized bootstrap funds adoption before manifest-specific pins
+    // exist. Keep every actual inline result with this physical executor even
+    // if a later manifest fails or its waiter disappears.
+    for claim in &inline_claims {
+        let body = session
+            .adopt_inline(claim.clone())
+            .map_err(io::Error::other)?;
+        executor.inline_registry_mut().push(Arc::new(body));
+    }
     let candidates = match inventory.try_into_candidates() {
         Ok(candidates) => candidates,
         Err(report) => {
@@ -111,8 +123,7 @@ pub(super) async fn run(
         for candidate in candidates {
             let identity = match recovery_candidates::classify(&candidate)? {
                 RecoveryCase::Manifest(identity) => identity,
-                RecoveryCase::Pack => continue,
-                RecoveryCase::Inline => return Err(unresolved("unsupported mixed recovery")),
+                RecoveryCase::Pack | RecoveryCase::Inline => continue,
             };
             // Reserve actual success/failure registry slots before source/publisher
             // effects. No fallible step precedes retaining an accepted result.
@@ -169,13 +180,20 @@ pub(super) async fn run(
             .map_err(|_| io::Error::other("recovery custody poisoned"))?;
         ResidenceSelection::new(custody.preparation.config.state.records)
     };
+    selected.extend(recovery_inline::residences(&inline_claims))?;
     for body in &verified {
         body.check_current(&original)?;
         selected.extend(body.residences()?)?;
     }
     shared.require_metadata_sources(executor.manifest_sources())?;
     let final_inventory = inspector.inspect()?;
-    check_inventory(&final_inventory, &verified, executor.manifest_sources())?;
+    check_inventory(
+        &final_inventory,
+        &verified,
+        executor.manifest_sources(),
+        &layout,
+        executor.inline_registry(),
+    )?;
     for body in &verified {
         body.check_current(&original)?;
     }
@@ -298,8 +316,11 @@ pub(super) fn check_inventory(
     inventory: &NativeRecoveryInspection,
     verified: &[Arc<VerifiedRecoveryManifest>],
     sources: &[Arc<crate::host_cache::NativeManifestSource>],
+    layout: &Arc<crate::host_cache::NativeHostLayout<HostDomainLocation>>,
+    inline: &[recovery_inline::AdoptedInline],
 ) -> io::Result<()> {
     recovery_candidates::preflight(inventory)?;
+    recovery_inline::check_subset(inventory, layout, inline)?;
     let mut sealed = 0usize;
     for candidate in inventory.candidates() {
         match recovery_candidates::classify(candidate)? {
@@ -322,9 +343,7 @@ pub(super) fn check_inventory(
                     return Err(unresolved("final inventory contains unrelated shared pack"));
                 }
             }
-            RecoveryCase::Inline => {
-                return Err(unresolved("unsupported final inline candidate"));
-            }
+            RecoveryCase::Inline => {}
         }
     }
     if sealed != verified.len() {

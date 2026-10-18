@@ -3,7 +3,7 @@
 //! The live context borrows the genuine physical executor for its entire life.
 //! It owns the original opaque Drain context, never a replacement epoch. Its
 //! distinct receipt cannot satisfy ordinary retention/currentness or authorize
-//! Resume. The physical owner enters this phase for supported manifest-only
+//! Resume. The physical owner enters this phase for supported manifest
 //! recovery; exhaustive final reconciliation remains required for completion.
 
 use super::{executor::NativeOwnerExecutor, *};

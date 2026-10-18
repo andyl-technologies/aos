@@ -45,6 +45,10 @@ fn main() -> std::process::ExitCode {
             "publisher-confinement",
             "publisher-reject-descriptor",
             "publisher-reject-stdio",
+            "seed-mixed-manifest",
+            "seed-mixed-bad-manifest",
+            "recover-mixed-manifest",
+            "refuse-mixed-manifest",
         ] {
             println!("host-cache:{selector}");
         }
@@ -58,6 +62,8 @@ fn main() -> std::process::ExitCode {
             | "seed-unsealed-writable-manifest"
             | "seed-truncated-manifest"
             | "seed-writable-manifest"
+            | "seed-mixed-manifest"
+            | "seed-mixed-bad-manifest"
     ) {
         recovery::seed(&mode)
     } else if matches!(
