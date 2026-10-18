@@ -376,7 +376,12 @@ async fn execute(request: &mut Request, env: &Env) -> Result<DirectUploadRespons
             }
         }
     }
-    response.validate()?;
+    response.validate().map_err(|error| {
+        // This error type contains a static protocol message, never provider
+        // response text, signing credentials, or a delegated URL.
+        worker::console_warn!("direct_upload_reply_invalid reason={}", error);
+        error
+    })?;
     Ok(response)
 }
 

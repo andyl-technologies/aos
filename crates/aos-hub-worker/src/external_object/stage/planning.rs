@@ -317,6 +317,23 @@ pub(crate) async fn presign_registered_parts(
     work: &ExternalStageRequest,
     result: &ExternalStageResult,
 ) -> Result<Vec<DirectPartGrant>> {
+    let mut phase = "configuration";
+    let result = presign_registered_parts_inner(env, work, result, &mut phase).await;
+    if result.is_err() {
+        // Provider errors may contain bearer URLs or credential material. Only
+        // source-defined phase names are safe for the Worker console.
+        worker::console_warn!("direct_part_grant_refused phase={}", phase);
+    }
+
+    result
+}
+
+async fn presign_registered_parts_inner(
+    env: &Env,
+    work: &ExternalStageRequest,
+    result: &ExternalStageResult,
+    phase: &mut &'static str,
+) -> Result<Vec<DirectPartGrant>> {
     executor_key(env)?;
     let object = configured(env)?.ok_or_else(|| anyhow::anyhow!("external consumer disabled"))?;
     let config = config::configured(env, &object)?
@@ -339,6 +356,7 @@ pub(crate) async fn presign_registered_parts(
             && result.outcome == ExternalStageOutcome::Registered,
         "registration result differs from original delegation"
     );
+    *phase = "binding_publication";
     let publication = crate::hybrid_binding::resolve_for_delivery(
         env,
         i64::try_from(work.context.placement.binding_id.get())?,
@@ -346,6 +364,7 @@ pub(crate) async fn presign_registered_parts(
     )
     .await?;
     validate_publication(&object, &config, work, &publication, &deployment)?;
+    *phase = "delegation";
     let scope = work.context.scope(false)?;
     let reply = call(
         env,
@@ -366,6 +385,7 @@ pub(crate) async fn presign_registered_parts(
         receipt.turn.intent == intent && digest(&receipt)? == result.receipt_digest,
         "registered grant receipt differs"
     );
+    *phase = "credentials";
     let credential = &domain.presign_credential;
     let now = object.clock().observed_at;
     let secret = publication.credential_text(
@@ -383,6 +403,7 @@ pub(crate) async fn presign_registered_parts(
         Some(secret.as_str()),
         now,
     )?;
+    *phase = "provider_signing";
     let relative = relative_key(&publication.snapshot.object_prefix, &scope.full_key)?;
     let placement = work.context.placement.public_ref(&deployment)?;
     let mut signed = Vec::with_capacity(grants.len());
@@ -419,6 +440,7 @@ pub(crate) async fn presign_registered_parts(
             expires_at: grant.expires_at,
         });
     }
+    *phase = "lease_validation";
     let validated = object.verifier()?.validate_lease(
         work.write_lease.as_bytes(),
         &domain.write_cohort,
@@ -428,12 +450,16 @@ pub(crate) async fn presign_registered_parts(
         LeaseEffect::MultipartPart,
         object.clock(),
     )?;
+
+    *phase = "dispatch_time";
     let clock = object.clock();
     work.check_dispatch_time(&publication.snapshot, &validated, &floor, clock)?;
     let latest = clock
         .observed_at
         .checked_add(clock.uncertainty)
         .ok_or_else(|| anyhow::anyhow!("grant issuance clock overflow"))?;
+
+    *phase = "grant_expiry";
     for grant in grants {
         ensure!(
             grant.issued_at.get() <= u64::try_from(latest)?
