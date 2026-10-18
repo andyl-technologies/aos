@@ -67,14 +67,13 @@ impl std::fmt::Display for NativePoolReturnError {
 
 impl std::error::Error for NativePoolReturnError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.first
-            .as_ref()
-            .map(|error| error as &dyn std::error::Error)
-            .or_else(|| {
-                self.post
-                    .as_ref()
-                    .map(|error| error as &dyn std::error::Error)
-            })
+        if let Some(first) = &self.first {
+            return Some(first);
+        }
+        match &self.post {
+            Some(post) => Some(post),
+            None => None,
+        }
     }
 }
 

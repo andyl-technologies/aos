@@ -141,6 +141,10 @@ pub(super) fn operational_boundary_source(package: &str, package_dir: &Path, pat
             )
             | ("crucible-daemon", "src/host_operational_registry.rs")
             | ("crucible-qemu-host", "src/linux_cgroup/original_finish.rs")
+            | (
+                "crucible-qemu-host",
+                "src/linux_cgroup/target_dispatcher.rs"
+            )
             | ("crucible-qemu-host", "src/node/shutdown_budget.rs")
             | ("crucible-qemu-host", "src/ram_control/supervision.rs")
             | ("crucible-qemu-plugin", "src/paged_ram/supervision.rs")
@@ -180,6 +184,18 @@ pub(super) fn operational_public_exports(
         ("crucible-qemu-host", "src/linux_cgroup/original_finish.rs") => {
             &["remove_under_original", "OriginalWatcherRefusal"]
         }
+        // The retained Main watcher uses time only to space physical cleanup.
+        // Its original authority gates each attempt; no clock crosses these APIs.
+        ("crucible-qemu-host", "src/linux_cgroup/target_dispatcher.rs") => &[
+            "TargetDispatcher",
+            "control_peak",
+            "reserved",
+            "purpose",
+            "start",
+            "finish",
+            "is_physically_retired",
+            "worker_panic",
+        ],
         ("crucible-qemu-host", "src/linux_cgroup.rs") => &[
             "LinuxQemuCgroupMemoryControl",
             "measurement_domain",

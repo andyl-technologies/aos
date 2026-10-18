@@ -595,10 +595,8 @@ impl QemuTargetDispatcherRetirementError {
 
     /// Borrows the original dispatcher error without exposing raw cgroup control.
     #[must_use]
-    pub fn dispatcher_error(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.dispatcher
-            .as_ref()
-            .map(|error| error as &dyn std::error::Error)
+    pub fn dispatcher_error(&self) -> Option<&crate::LinuxQemuCgroupError> {
+        self.dispatcher.as_ref()
     }
 
     /// Borrows the independent actual native-pool return refusal.
@@ -638,11 +636,13 @@ impl std::fmt::Display for QemuTargetDispatcherRetirementError {
 #[cfg(target_os = "linux")]
 impl std::error::Error for QemuTargetDispatcherRetirementError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.dispatcher_error().or_else(|| {
-            self.pool
-                .as_ref()
-                .map(|error| error as &dyn std::error::Error)
-        })
+        if let Some(dispatcher) = self.dispatcher_error() {
+            return Some(dispatcher);
+        }
+        match &self.pool {
+            Some(pool) => Some(pool),
+            None => None,
+        }
     }
 }
 

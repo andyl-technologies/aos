@@ -131,9 +131,10 @@ impl std::error::Error for ExecutorControlRetirementError {
         if let Some(cause) = &self.before {
             return Some(cause);
         }
-        self.post
-            .as_ref()
-            .map(|cause| cause as &dyn std::error::Error)
+        match &self.post {
+            Some(post) => Some(post),
+            None => None,
+        }
     }
 }
 

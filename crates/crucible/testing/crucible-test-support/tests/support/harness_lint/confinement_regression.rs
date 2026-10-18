@@ -317,6 +317,10 @@ fn operational_boundary_regression_failures() -> Vec<String> {
         ),
         ("crucible-daemon", "src/host_operational_registry.rs"),
         ("crucible-qemu-host", "src/linux_cgroup/original_finish.rs"),
+        (
+            "crucible-qemu-host",
+            "src/linux_cgroup/target_dispatcher.rs",
+        ),
         ("crucible-qemu-host", "src/node/shutdown_budget.rs"),
         ("crucible-qemu-host", "src/ram_control/supervision.rs"),
         ("crucible-qemu-plugin", "src/paged_ram/supervision.rs"),
@@ -359,7 +363,7 @@ fn operational_boundary_regression_failures() -> Vec<String> {
         for source in [
             "pub fn export_clock() { consume(std::time::Instant::now()); }",
             "pub async fn export_clock() { consume(std::time::Instant::now()); }",
-            "use crucible_api::ControlClient; fn bad() { consume(std::time::Instant::now()); }",
+            "use crucible_control_api::ControlClient; fn bad() { consume(std::time::Instant::now()); }",
         ] {
             let findings = package_source_confinement_findings(
                 package,
@@ -386,8 +390,11 @@ fn operational_boundary_regression_failures() -> Vec<String> {
     // The retained memory controller is an opaque physical authority. Its
     // one named alias does not authorize sibling exports or raw clock types.
     let cgroup_path = Path::new("crucible/qemu/crucible-qemu-host/src/linux_cgroup.rs");
-    let cgroup_exports =
-        operational_public_exports("crucible-qemu-host", Path::new("crucible/qemu/crucible-qemu-host"), cgroup_path);
+    let cgroup_exports = operational_public_exports(
+        "crucible-qemu-host",
+        Path::new("crucible/qemu/crucible-qemu-host"),
+        cgroup_path,
+    );
     let alias = "pub(crate) type LinuxQemuCgroupMemoryControl = memory_control::LinuxQemuCgroupMemoryControl;";
     let findings = public_export_findings(cgroup_path, alias, cgroup_exports);
     if !findings.is_empty() {
@@ -413,8 +420,11 @@ fn operational_boundary_regression_failures() -> Vec<String> {
         ),
     ] {
         let path = Path::new(path);
-        let approved =
-            operational_public_exports("crucible-qemu-host", Path::new("crucible/qemu/crucible-qemu-host"), path);
+        let approved = operational_public_exports(
+            "crucible-qemu-host",
+            Path::new("crucible/qemu/crucible-qemu-host"),
+            path,
+        );
         let findings = public_export_findings(path, source, approved);
         if !finding_contains(&findings, reason) {
             failures.push(format!(
@@ -424,11 +434,45 @@ fn operational_boundary_regression_failures() -> Vec<String> {
         }
     }
 
+    let dispatcher_path =
+        Path::new("crucible/qemu/crucible-qemu-host/src/linux_cgroup/target_dispatcher.rs");
+    let dispatcher_exports = operational_public_exports(
+        "crucible-qemu-host",
+        Path::new("crucible/qemu/crucible-qemu-host"),
+        dispatcher_path,
+    );
+    for source in [
+        "pub(crate) struct TargetDispatcher { clock: std::time::Instant }",
+        "pub(crate) fn start() -> std::time::Instant { std::time::Instant::now() }",
+    ] {
+        let findings = public_export_findings(dispatcher_path, source, dispatcher_exports);
+        if !finding_contains(&findings, "raw host clock in public operational signature") {
+            failures.push(format!(
+                "Target dispatcher exposes an operational clock: {source}"
+            ));
+        }
+    }
+    let findings = public_export_findings(
+        dispatcher_path,
+        "pub(crate) fn unreviewed_dispatcher_authority() {}",
+        dispatcher_exports,
+    );
+    if !finding_contains(
+        &findings,
+        "public export from nondeterministic boundary source",
+    ) {
+        failures.push("Target dispatcher admitted an unreviewed export".to_string());
+    }
+
     // The watcher result and cleanup method are opaque crate-private authority.
     // Naming them explicitly cannot admit a raw clock or a neighboring export.
-    let finish_path = Path::new("crucible/qemu/crucible-qemu-host/src/linux_cgroup/original_finish.rs");
-    let finish_exports =
-        operational_public_exports("crucible-qemu-host", Path::new("crucible/qemu/crucible-qemu-host"), finish_path);
+    let finish_path =
+        Path::new("crucible/qemu/crucible-qemu-host/src/linux_cgroup/original_finish.rs");
+    let finish_exports = operational_public_exports(
+        "crucible-qemu-host",
+        Path::new("crucible/qemu/crucible-qemu-host"),
+        finish_path,
+    );
     let opaque = "pub(crate) struct OriginalWatcherRefusal { source: Error } pub(crate) fn remove_under_original(original: &Guard) -> Result<(), Error> { Ok(()) }";
     let findings = public_export_findings(finish_path, opaque, finish_exports);
     if !findings.is_empty() {
@@ -460,65 +504,57 @@ fn operational_boundary_regression_failures() -> Vec<String> {
     }
 
     let registry_path = "crucible-daemon/src/host_operational_registry.rs";
-    let source = "use crucible_api::host_operational::HostRamTarget; pub fn operational_identity() { consume(std::time::Instant::now()); }";
-    let findings = package_source_confinement_findings(
-        "crucible-daemon",
-        Path::new("crucible-daemon"),
-        &source_pairs(&[(registry_path, source)]),
-    );
-    if !findings.is_empty() {
-        failures.push(format!(
-            "reviewed operator-only API namespace rejected: {findings:?}"
-        ));
-    }
-    let bootstrap = "pub(crate) fn bootstrap_limits() -> Option<crucible_api::host_operational::HostRamBootstrapLimits> { consume(std::time::Instant::now()); None }";
-    let findings = package_source_confinement_findings(
-        "crucible-daemon",
-        Path::new("crucible-daemon"),
-        &source_pairs(&[(registry_path, bootstrap)]),
-    );
-    if !findings.is_empty() {
-        failures.push(format!(
-            "reviewed pure bootstrap entitlement type rejected: {findings:?}"
-        ));
-    }
-    let admitted_response = "fn execute() -> crucible_api::AdmittedOutput<HostOperationalResponse> { consume(std::time::Instant::now()); todo!() }";
-    let findings = package_source_confinement_findings(
-        "crucible-daemon",
-        Path::new("crucible-daemon"),
-        &source_pairs(&[(registry_path, admitted_response)]),
-    );
-    if !findings.is_empty() {
-        failures.push(format!(
-            "reviewed operational response custody rejected: {findings:?}"
-        ));
+    let bootstrap = "pub(crate) fn bootstrap_limits() -> Option<crucible_control_api::host_operational::HostRamBootstrapLimits> { consume(std::time::Instant::now()); None }";
+    let admitted_response = "fn execute() -> crucible_control_api::AdmittedOutput<HostOperationalResponse> { consume(std::time::Instant::now()); todo!() }";
+    for (path, source) in [
+        (
+            registry_path,
+            "use crucible_control_api::host_operational::HostRamTarget; pub fn operational_identity() { consume(std::time::Instant::now()); }",
+        ),
+        (registry_path, bootstrap),
+        (registry_path, admitted_response),
+        (
+            "crucible-daemon/src/supervision.rs",
+            "fn boundary() -> Result<(), crucible_control_api::host_operational::HostOperationalError> { consume(std::time::Instant::now()); Ok(()) }",
+        ),
+    ] {
+        let findings = package_source_confinement_findings(
+            "crucible-daemon",
+            Path::new("crucible-daemon"),
+            &source_pairs(&[(path, source)]),
+        );
+        if !findings.is_empty() {
+            failures.push(format!(
+                "reviewed operator-only route rejected at {path}: {findings:?}"
+            ));
+        }
     }
     for (path, source) in [
         (
             registry_path,
-            "use crucible_api::vm_lifecycle; fn boundary() { consume(std::time::Instant::now()); }",
+            "use crucible_control_api::vm_lifecycle; fn boundary() { consume(std::time::Instant::now()); }",
         ),
         (
             registry_path,
-            "use crucible_api::vm_lifecycle::{HostRamBootstrapLimits, Scenario}; fn boundary() { consume(std::time::Instant::now()); }",
+            "use crucible_control_api::vm_lifecycle::{HostRamBootstrapLimits, Scenario}; fn boundary() { consume(std::time::Instant::now()); }",
         ),
         (
             registry_path,
-            "fn boundary(value: crucible_api::vm_lifecycle::Scenario) { consume(std::time::Instant::now()); }",
+            "fn boundary(value: crucible_control_api::vm_lifecycle::Scenario) { consume(std::time::Instant::now()); }",
         ),
         ("crucible-daemon/src/guest_execution.rs", bootstrap),
         ("crucible-daemon/src/supervision.rs", bootstrap),
         (
             registry_path,
-            "use crucible_api::AdmittedOutput; fn boundary() { consume(std::time::Instant::now()); }",
+            "use crucible_control_api::AdmittedOutput; fn boundary() { consume(std::time::Instant::now()); }",
         ),
         (
             registry_path,
-            "fn boundary(value: crucible_api::AdmittedOutput<RuntimeState>) { consume(std::time::Instant::now()); }",
+            "fn boundary(value: crucible_control_api::AdmittedOutput<RuntimeState>) { consume(std::time::Instant::now()); }",
         ),
         (
             registry_path,
-            "fn boundary(value: crucible_api::AdmittedOutput<NativeControl>) { consume(std::time::Instant::now()); }",
+            "fn boundary(value: crucible_control_api::AdmittedOutput<NativeControl>) { consume(std::time::Instant::now()); }",
         ),
         ("crucible-daemon/src/supervision.rs", admitted_response),
         ("crucible-daemon/src/guest_execution.rs", admitted_response),
@@ -647,7 +683,10 @@ fn operational_boundary_regression_failures() -> Vec<String> {
         let findings = package_source_confinement_findings(
             "crucible-host-resources",
             Path::new("crucible/host/crucible-host-resources"),
-            &source_pairs(&[("crucible/host/crucible-host-resources/src/host_supervision.rs", source)]),
+            &source_pairs(&[(
+                "crucible/host/crucible-host-resources/src/host_supervision.rs",
+                source,
+            )]),
         );
         if !finding_contains(&findings, "raw host clock in public operational signature") {
             failures.push(format!(

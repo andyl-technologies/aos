@@ -550,7 +550,7 @@ fn token_identifier_findings(
             continue;
         }
 
-        if identifier == "crucible_api" && operational_api.is_some() {
+        if identifier == "crucible_control_api" && operational_api.is_some() {
             let module = tokens
                 .get(index + 3)
                 .and_then(|token| token.kind.as_ident());
@@ -561,12 +561,24 @@ fn token_identifier_findings(
                 tokens.get(index + 2).map(|token| &token.kind),
                 Some(TokenKind::Punct(':'))
             );
-            if separator && module == operational_api {
-                continue;
-            }
-
             let registry_source =
                 path.ends_with("crucible-daemon/src/host_operational_registry.rs");
+            let supervision_error = path.ends_with("crucible-daemon/src/supervision.rs")
+                && matches!(
+                    tokens.get(index + 4).map(|token| &token.kind),
+                    Some(TokenKind::Punct(':'))
+                )
+                && matches!(
+                    tokens.get(index + 5).map(|token| &token.kind),
+                    Some(TokenKind::Punct(':'))
+                )
+                && tokens
+                    .get(index + 6)
+                    .and_then(|token| token.kind.as_ident())
+                    == Some("HostOperationalError");
+            if separator && module == operational_api && (registry_source || supervision_error) {
+                continue;
+            }
 
             // This closed operational DTO retains its original output loan.
             // The generic wrapper and other API routes remain unapproved.

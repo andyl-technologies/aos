@@ -100,11 +100,7 @@ fn dispatcher_retirement_preserves_both_actual_leaf_errors_and_first_source() {
     let super::QemuVmRealizationError::TargetDispatcherRetirement { source } = error else {
         panic!("both leaf errors must remain typed");
     };
-    let dispatcher = source
-        .dispatcher_error()
-        .unwrap()
-        .downcast_ref::<LinuxQemuCgroupError>()
-        .unwrap();
+    let dispatcher = source.dispatcher_error().unwrap();
     assert!(
         matches!(dispatcher, LinuxQemuCgroupError::Io { source, .. } if source.raw_os_error() == Some(libc::EIO))
     );

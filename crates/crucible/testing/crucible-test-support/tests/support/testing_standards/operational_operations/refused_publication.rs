@@ -106,7 +106,7 @@ let metadata = file.metadata().expect("");"#,
         ),
         (
             r#"let first = LifecycleApiError::ConfigurationCopy(
-    crucible::owned_decode::DecodeAdmissionError::new(ConstructorRefusal { marker: 73 }),
+    crucible_engine::owned_decode::DecodeAdmissionError::new(ConstructorRefusal { marker: 73 }),
 );"#,
             1,
         ),

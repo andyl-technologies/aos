@@ -145,7 +145,7 @@ fn reviewed_owner_export_cannot_carry_a_clock_to_state_or_an_api_route() {
     for (route, reason) in [
         ("use crucible::State;", "host nondeterminism reaching State"),
         (
-            "use crucible_api::ControlClient;",
+            "use crucible_control_api::ControlClient;",
             "host nondeterminism reaches API/session route",
         ),
     ] {
