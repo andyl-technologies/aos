@@ -126,15 +126,22 @@ impl DirectUploadControl for RefreshingControl {
         request: &DirectUploadRequest,
     ) -> Result<DirectUploadResponse, DirectClientError> {
         let (control, _, epoch) = self.current(None).await?;
-        match control.execute(request).await {
-            Err(DirectClientError::Denied) => {
-                // Authentication retries preserve every byte of the original
-                // control request, including operation identity and original RV.
-                let (renewed, _, _) = self.current(Some(epoch)).await?;
-                renewed.execute(request).await
-            }
-            result => result,
+        let result = control.execute(request).await;
+        let denied = match &result {
+            Err(DirectClientError::Denied) => true,
+            Ok(reply) => reply
+                .errors
+                .iter()
+                .any(|error| error.code == DirectItemErrorCode::Denied),
+            _ => false,
+        };
+        if denied {
+            // A credential can expire between HTTP authentication and an item
+            // authorization. Retry once, preserving the original request bytes.
+            let (renewed, _, _) = self.current(Some(epoch)).await?;
+            return renewed.execute(request).await;
         }
+        result
     }
 }
 

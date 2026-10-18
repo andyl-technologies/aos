@@ -547,7 +547,16 @@ impl DirectUploadService {
                             reply.authorizations.push(session.clone());
                             reply.baseline_permissions.extend(permissions);
                         }
-                        Err(error) => push_error(&mut reply, &session.session.session_id, &error),
+                        Err(error) => {
+                            // Part batches may contain several operations for one
+                            // session. Refusals must identify each original item.
+                            let item_id = match action {
+                                DirectLogicalAction::GrantParts
+                                | DirectLogicalAction::ReportParts => &session.operation_id,
+                                _ => &session.session.session_id,
+                            };
+                            push_error(&mut reply, item_id, &error);
+                        }
                     }
                 }
             }

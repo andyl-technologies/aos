@@ -13,6 +13,7 @@ use crate::domain::{Permission, Principal};
 
 struct RefusedStorageAuthority {
     latest_time: i64,
+    deny_authorization: bool,
     stage_calls: Arc<AtomicUsize>,
     invocation_calls: Arc<AtomicUsize>,
     active_stage: Arc<AtomicUsize>,
@@ -24,6 +25,7 @@ impl RefusedStorageAuthority {
     fn new(latest_time: i64) -> Self {
         Self {
             latest_time,
+            deny_authorization: false,
             stage_calls: Arc::new(AtomicUsize::new(0)),
             invocation_calls: Arc::new(AtomicUsize::new(0)),
             active_stage: Arc::new(AtomicUsize::new(0)),
@@ -39,6 +41,7 @@ impl DirectUploadAuthority for RefusedStorageAuthority {
         self.invocation_calls.fetch_add(1, Ordering::SeqCst);
         Arc::new(Self {
             latest_time: self.latest_time,
+            deny_authorization: self.deny_authorization,
             stage_calls: Arc::clone(&self.stage_calls),
             invocation_calls: Arc::clone(&self.invocation_calls),
             active_stage: Arc::clone(&self.active_stage),
@@ -79,6 +82,12 @@ impl DirectUploadAuthority for RefusedStorageAuthority {
         _metadata_phase: Option<DirectPositiveMetadataPhase>,
         _now: i64,
     ) -> Result<()> {
+        anyhow::ensure!(
+            !self.deny_authorization,
+            DirectUploadRefusal {
+                code: DirectItemErrorCode::Denied,
+            }
+        );
         Ok(())
     }
 
@@ -133,6 +142,116 @@ impl DirectUploadAuthority for RefusedStorageAuthority {
         _now: i64,
     ) -> Result<Vec<CheckedStatement>> {
         anyhow::bail!("independent abort receipt unavailable")
+    }
+}
+
+#[tokio::test]
+async fn part_refusals_preserve_each_part_operation_identity() {
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let admitted = original(&db).await;
+    let user = i64::try_from(admitted.admission.actor_slot.numeric_id.get()).unwrap();
+    db.grant_membership("user", user, "instance", "owner")
+        .await
+        .unwrap();
+    let (_, secret) = db
+        .create_token(
+            Principal::user(user),
+            "instance",
+            &[Permission::Publish],
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let token = db.validate_token(&secret).await.unwrap().unwrap();
+    let keys = JwtKeys::from_secret(b"per-part-refusal-regression");
+    let mut claims = keys.verify(&keys.mint(&token, 300).unwrap()).unwrap();
+    claims.iat = 10;
+    let session = complete(&admitted).session;
+    let operations = ["a".repeat(64), "b".repeat(64)];
+    let context = DirectRequestContext {
+        deployment_id: "deployment".into(),
+        executor_public_origin: "https://executor.test".into(),
+        public_authority: "hub.test".into(),
+        foreground: DirectForegroundBudget {
+            invocation_id: "7".repeat(64),
+            issued_at: WireInteger::new(10),
+            expires_at: WireInteger::new(30),
+        },
+        request_nonce: "8".repeat(64),
+        request_body_sha256: "9".repeat(64),
+        public_method: "POST".into(),
+        public_path: "/aos.hub.v1.DirectUploadService/GrantPartsBatch".into(),
+        issued_at: WireInteger::new(10),
+        expires_at: WireInteger::new(30),
+    };
+    let mut authority = RefusedStorageAuthority::new(11);
+    authority.deny_authorization = true;
+    let service = DirectUploadService::new(Arc::clone(&db), Arc::new(authority));
+
+    for action in [
+        DirectLogicalAction::GrantParts,
+        DirectLogicalAction::ReportParts,
+    ] {
+        let mut context = context.clone();
+        context.public_path = format!(
+            "/aos.hub.v1.DirectUploadService/{}",
+            match action {
+                DirectLogicalAction::GrantParts => "GrantPartsBatch",
+                DirectLogicalAction::ReportParts => "ReportPartsBatch",
+                _ => unreachable!(),
+            }
+        );
+        let envelope = DirectLogicalRequestEnvelope {
+            context: context.clone(),
+            request: DirectUploadLogicalRequest::Authorize {
+                action,
+                complete_step: None,
+                stage_evidence: Vec::new(),
+                retained_stage_digests: Vec::new(),
+                baseline_evidence: Vec::new(),
+                baseline_witnesses: Vec::new(),
+                baseline_witness_refs: Vec::new(),
+                settled_placements: Vec::new(),
+                sessions: operations
+                    .iter()
+                    .map(|operation| DirectSessionAuthorization {
+                        session: session.clone(),
+                        operation_id: operation.clone(),
+                        expected_resource_version: None,
+                        complete_intent: None,
+                    })
+                    .collect(),
+            },
+        };
+        let key = crate::storage_work::StorageWorkKey::new([7; 32]).unwrap();
+        let signed = sign_direct_logical_request(&key, &envelope).unwrap();
+        let verified = verify_direct_logical_request(
+            &key,
+            &signed.signature,
+            &signed.body,
+            "deployment",
+            "https://executor.test",
+            11,
+        )
+        .unwrap();
+
+        let reply = service.dispatch(&claims, &verified, 11).await.unwrap();
+
+        assert!(reply.authorizations.is_empty());
+        assert_eq!(reply.errors.len(), 2);
+        for (error, operation) in reply.errors.iter().zip(&operations) {
+            assert_eq!(&error.item_id, operation);
+            assert_eq!(error.code, DirectItemErrorCode::Denied);
+        }
+        DirectUploadResponse {
+            operation_id: "c".repeat(64),
+            sessions: Vec::new(),
+            grants: Vec::new(),
+            errors: reply.errors,
+        }
+        .validate()
+        .unwrap();
     }
 }
 

@@ -171,56 +171,70 @@ async fn renewed_actor_or_provider_profile_cannot_be_adopted_even_after_expiry()
 
 #[tokio::test]
 async fn actual_unauthorized_control_rotates_only_auth_and_replays_original_bytes() {
-    let caps = capabilities(now() + 600);
-    let request = DirectUploadRequest::StatusBatch(DirectBatch {
-        operation_id: "ba".repeat(32),
-        items: vec![DirectStatusQuery {
-            session: DirectSessionRef {
-                session_id: "session".into(),
-                logical_fingerprint: "bf".repeat(32),
-            },
-            after: None,
-            maximum_parts: 1,
-        }],
-    });
-    let response = DirectUploadResponse {
-        operation_id: "ba".repeat(32),
-        sessions: vec![],
-        grants: vec![],
-        errors: vec![],
-    };
-    let (origin, requests, worker) = server(vec![
-        (401, vec![]),
-        (200, encode_direct_control(&caps).unwrap()),
-        (200, encode_direct_control(&response).unwrap()),
-    ]);
-    let hub = HubClient::connect_with_token(&origin, "expired-private-jwt").unwrap();
-    let provider = Arc::new(Authentication(AtomicUsize::new(0)));
-    let control =
-        RefreshingControl::new(&hub, caps, Some(provider.clone()), Arc::default()).unwrap();
+    for typed_denial in [false, true] {
+        let caps = capabilities(now() + 600);
+        let request = DirectUploadRequest::StatusBatch(DirectBatch {
+            operation_id: "ba".repeat(32),
+            items: vec![DirectStatusQuery {
+                session: DirectSessionRef {
+                    session_id: "session".into(),
+                    logical_fingerprint: "bf".repeat(32),
+                },
+                after: None,
+                maximum_parts: 1,
+            }],
+        });
+        let response = DirectUploadResponse {
+            operation_id: "ba".repeat(32),
+            sessions: vec![],
+            grants: vec![],
+            errors: vec![],
+        };
+        let denied = DirectUploadResponse {
+            errors: vec![DirectItemError {
+                item_id: "session".into(),
+                code: DirectItemErrorCode::Denied,
+            }],
+            ..response.clone()
+        };
+        let first_reply = if typed_denial {
+            (200, encode_direct_control(&denied).unwrap())
+        } else {
+            (401, vec![])
+        };
+        let (origin, requests, worker) = server(vec![
+            first_reply,
+            (200, encode_direct_control(&caps).unwrap()),
+            (200, encode_direct_control(&response).unwrap()),
+        ]);
+        let hub = HubClient::connect_with_token(&origin, "expired-private-jwt").unwrap();
+        let provider = Arc::new(Authentication(AtomicUsize::new(0)));
+        let control =
+            RefreshingControl::new(&hub, caps, Some(provider.clone()), Arc::default()).unwrap();
 
-    assert_eq!(control.execute(&request).await.unwrap(), response);
+        assert_eq!(control.execute(&request).await.unwrap(), response);
 
-    let captured: Vec<_> = (0..3)
-        .map(|_| requests.recv_timeout(Duration::from_secs(5)).unwrap())
-        .collect();
-    let first = String::from_utf8(captured[0].clone()).unwrap();
-    let last = String::from_utf8(captured[2].clone()).unwrap();
-    assert_eq!(
-        first.split_once("\r\n\r\n").unwrap().1,
-        last.split_once("\r\n\r\n").unwrap().1
-    );
-    assert!(
-        first
-            .to_ascii_lowercase()
-            .contains("authorization: bearer expired-private-jwt")
-    );
-    assert!(
-        last.to_ascii_lowercase()
-            .contains("authorization: bearer renewed-private-jwt")
-    );
-    assert_eq!(provider.0.load(Ordering::SeqCst), 1);
-    worker.join().unwrap();
+        let captured: Vec<_> = (0..3)
+            .map(|_| requests.recv_timeout(Duration::from_secs(5)).unwrap())
+            .collect();
+        let first = String::from_utf8(captured[0].clone()).unwrap();
+        let last = String::from_utf8(captured[2].clone()).unwrap();
+        assert_eq!(
+            first.split_once("\r\n\r\n").unwrap().1,
+            last.split_once("\r\n\r\n").unwrap().1
+        );
+        assert!(
+            first
+                .to_ascii_lowercase()
+                .contains("authorization: bearer expired-private-jwt")
+        );
+        assert!(
+            last.to_ascii_lowercase()
+                .contains("authorization: bearer renewed-private-jwt")
+        );
+        assert_eq!(provider.0.load(Ordering::SeqCst), 1);
+        worker.join().unwrap();
+    }
 }
 
 #[tokio::test]
