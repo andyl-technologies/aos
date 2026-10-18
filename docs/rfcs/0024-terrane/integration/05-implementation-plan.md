@@ -8959,34 +8959,33 @@ Resumed qualification:
   later schema-invalid body. Earlier failures remain archived. This is component
   evidence, not sealed Running publication, live R, NativeReady, BKT-15 or full
   host-task acceptance.
-- Publisher custody candidate `dcdfb1b1a3`: the compact owned command payloads,
-  original boxed Resume completion and retained verified inventory sources build.
-  The earlier `8de8b15aba` image passes independent completed-image verification
-  and all nineteen builder cases; its guest passes all three original socket
-  mode/replacement cases under measured UID 841/GID 845, no supplementary groups,
-  empty capabilities and no-new-privileges. The later lifecycle check fails when
-  inventory mistakes a valid retained retirement lease for a binding record.
-  The reviewed fix validates the existing bounded lease schema and typed keys,
-  retaining actual inode and byte observations without granting body, pin or
-  deadline authority. Its all-target native build and actual typed-key rejection
-  test pass; parser and guest requalification remain pending. Unknown and changed
-  records still refuse inventory. The three shared publisher integration checks
-  remain explicit pending failures on trunk until implementation lands. No
-  transport component or full host task is accepted from the partial guest pass.
-- Surface candidate `6cb1fcf235`: shared prerequisite `38a1ee21f6` is integrated
-  through a normal merge, preserving the previous frozen candidate and receipts.
-  The full current-trunk gate aggregate remains running. Required application
-  unit and integration test-target compilation passes on that unchanged source;
-  this is compilation evidence, not execution. Its formatter pair also passes.
-  Review finds a SURF-8 gap: configuration accepts an unknown named view policy
-  until later startup. The earlier source-bound CLI reproduces that acceptance.
-  Follow-up `db293cd9f8` rejects it during whole-configuration loading and checks
-  caller-built exposure lists before any credential resolution. Existing
-  configuration and runtime regressions cover the late-list case without
-  changing their inventory. Review of the complete forty-one-file task diff and
-  its formatter pair pass; final-source compilation, execution, remaining gates
-  and strict lint remain pending.
-  Results on the older candidate do not establish final task acceptance.
+- Publisher custody candidate `f3f88f2128`: the image, independent completed-image
+  verifier, native ext4 lifecycle and multi-UID transport checks all pass on
+  unchanged source, as does the required formatter pair. All nineteen builder
+  cases execute, followed by the three original socket mode/replacement cases
+  under measured UID 841/GID 845, no supplementary groups, empty capabilities
+  and no-new-privileges. Both native parent cases and the multi-UID parent with
+  its three child roles pass. An earlier lifecycle failure exposed valid retained
+  retirement leases being parsed as binding records. The fix validates their
+  existing bounded schema and typed keys and retains checked inode/byte custody
+  without granting body, pin or expiry authority. All four public parser
+  regressions pass in a separate integration target; the preceding all-target
+  build and typed-key development-profile test also pass. The monolithic parser
+  diagnostic was stopped before execution; moving the same assertions to the
+  public target permits their complete isolated check in 69.7 seconds. Native
+  cache admission and cancellation are being requalified on this combined source.
+  This accepts the transport component only: full host tasks, sealed Running
+  publication, process network sandboxing, NativeReady and BKT-15 remain open.
+- Surface candidate `db293cd9f8`: review of the complete forty-one-file task diff,
+  the formatter pair, and the interface, commit-path and status gates pass on
+  unchanged final source. The interface gate executes the late-list unknown-policy
+  regressions: whole-configuration loading refuses the name, and caller-built
+  exposure lists refuse it before any credential resolution. Schema qualification
+  remains running. The superseded `6cb1fcf235` aggregate was stopped after the
+  policy fix; its passing application unit/integration target compilation remains
+  evidence for that older source only. Final-source strict profiles, feature
+  matrix, application target compilation and the full current-trunk aggregate
+  remain required before formal task acceptance.
 
 The shared glue dependency now names
 the existing Core types directly, and the crate-graph audit includes the current
