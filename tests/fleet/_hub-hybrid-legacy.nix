@@ -2809,7 +2809,7 @@
       f"--data {shlex.quote(json.dumps({'cacheId': 'fleet/objects', 'path': f'{gc_store_hash}.narinfo', 'size': len(gc_narinfo.encode())}))} "
       "https://aos.fleet.test/aos.hub.v1.BinaryCacheService/CreateCacheObjectUploads",
       timeout=60,
-  )))
+  ))
   client.succeed(
       f"{CURL} -fsS -X PUT -H 'cf-connecting-ip: 192.0.2.10' "
       f"-H 'Authorization: Bearer {session_token}' "
