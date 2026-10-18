@@ -1,6 +1,6 @@
 //! Reconciles only actual manifest-retention records with rebuilt residences.
 //!
-//! Cold records are refused before this phase. The expected metadata pins and
+//! Cold records stay unchanged through this phase. The new metadata pins and
 //! holds come from genuine registered backing receipts, never manifest names or
 //! length estimates. No record is cleared to force a supported recovery case.
 
@@ -23,12 +23,12 @@ pub(super) fn reconstruct(
     residences: Vec<ResidenceRecord>,
 ) -> io::Result<CacheState> {
     let config = &owner.preparation.config;
-    let mut expected = CacheState::default();
-    expected.reservations.push(ReservationRecord {
-        id: token(bootstrap_id),
-        owner: config.quota_owner.clone(),
-        bytes: config.metadata_sync_hold_bytes,
-    });
+    let cold = owner
+        .recovery_cold
+        .as_ref()
+        .ok_or_else(|| invalid("manifest recovery lost original cold policy candidates"))?;
+    let mut expected = cold.bootstrap(config, bootstrap_id)?;
+    let mut metadata_hashes = Vec::new();
     for body in bodies {
         let backing = body.backing();
         backing.check_recovery_registration(owner)?;
@@ -54,6 +54,7 @@ pub(super) fn reconstruct(
             token(backing.claim().descriptor().digest()),
             token(backing.pack_identity().digest()),
         ] {
+            metadata_hashes.push(hash.clone());
             expected.pins.push(PinRecord {
                 owner: pin_owner.clone(),
                 hash,
@@ -61,9 +62,11 @@ pub(super) fn reconstruct(
             });
         }
     }
-    // Only the exact actual rows may survive. An extra old pin/lease/hold or
-    // preexisting residence remains unresolved rather than being discarded.
+    // No row is removed or replaced to manufacture closure. Existing policy
+    // must match its original snapshot, and every old pin/range must reconcile
+    // with genuinely adopted bodies or independently verified metadata packs.
     require_same(&owner.state, &expected)?;
+    cold.reconcile(&residences, &metadata_hashes)?;
     expected.residences = residences;
     expected
         .encoded_len(config.state)

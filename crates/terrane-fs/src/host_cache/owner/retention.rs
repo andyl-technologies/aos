@@ -172,6 +172,8 @@ pub(super) struct Custody {
     pub(super) recovery_required: bool,
     pub(super) generation: u64,
     pub(super) recovery_id: Option<[u8; 16]>,
+    /// Original cold candidates retained until complete verified reconciliation.
+    pub(super) recovery_cold: Option<super::recovery_cold::ColdPolicy>,
     pub(super) snapshot_allocated_bytes: u64,
     pub(super) directory_allocated_bytes: u64,
 }
@@ -716,6 +718,7 @@ impl Custody {
             recovery_required: true,
             generation: 0,
             recovery_id: None,
+            recovery_cold: None,
             snapshot_allocated_bytes: 0,
             directory_allocated_bytes: 0,
         };
@@ -850,8 +853,12 @@ impl Custody {
                 "bootstrap write provenance differs from retained snapshot",
             ));
         }
-        super::recovery_state::check_bootstrap(&self.preparation.config, &completed.state, id)?;
-        super::recovery_state::check_bootstrap(&self.preparation.config, &self.state, id)
+        let cold = self
+            .recovery_cold
+            .as_ref()
+            .ok_or_else(|| invalid("bootstrap lost original cold policy candidates"))?;
+        cold.check_bootstrap(&self.preparation.config, &completed.state, id)?;
+        cold.check_bootstrap(&self.preparation.config, &self.state, id)
     }
 
     /// Invalidates an older completion before any new durable command effects.

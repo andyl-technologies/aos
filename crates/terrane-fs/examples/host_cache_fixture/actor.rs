@@ -401,11 +401,11 @@ fn cancel(
         .block_on(owner.recover())
         .err()
         .ok_or_else(|| io::Error::other("serialized barrier unexpectedly cleared prior hold"))?;
-    // This fixture-only diagnostic distinguishes successful physical work
-    // followed by refusal to erase its cold hold from the earlier faulted-owner
-    // branch, which also returns WouldBlock after a late failed command.
+    // This exact refusal proves that the abandoned first command completed;
+    // a faulted first command produces the distinct failed-work refusal. A
+    // completed physical owner never restarts recovery or adds another hold.
     if error.kind() != io::ErrorKind::WouldBlock
-        || error.to_string() != "cold policy records require actual native reconciliation"
+        || error.to_string() != "native recovery already completed for this physical owner"
     {
         return Err(io::Error::other(format!(
             "cancel barrier did not reach cold-policy refusal: {error}"

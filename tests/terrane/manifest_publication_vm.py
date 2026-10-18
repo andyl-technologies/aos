@@ -1,10 +1,69 @@
 """Checks real Running manifest publication under the verified native supervisor."""
 
+import json
+import os
 import pathlib
 import signal
 import stat
 import time
 import tomllib
+
+
+def seed_cold_policy(driver, case, body, companions):
+    """Seeds durable policy candidates; actual roles must verify their backing."""
+    if case not in {"manifest-sealed-writable", "manifest-mixed"}:
+        return None
+
+    pinned = body if case == "manifest-sealed-writable" else companions[0]
+    cold = {
+        "pins": [{"owner": "fixture-cold-consumer", "hash": pinned.name,
+                  "expires": 9223372036854775807}],
+        "leases": [{"owner": "fixture-cold-consumer", "expires": 9223372036854775807}],
+        "reservations": [],
+        "residences": [],
+    }
+    if case == "manifest-sealed-writable":
+        cold["reservations"] = [{"id": "fixture-cold-hold", "owner": driver.owner(case),
+                                 "bytes": 262144}]
+    else:
+        cold["residences"] = [{"chunk": pinned.name, "object": pinned.name,
+                               "offset": 0, "length": len(driver.INLINE_BYTES)}]
+
+    lines = ["version = 1"]
+    for group, rows in cold.items():
+        if not rows:
+            lines.append(group + " = []")
+    for group, rows in cold.items():
+        for row in rows:
+            lines.append("[[" + group + "]]")
+            lines.extend(key + " = " + json.dumps(value) for key, value in row.items())
+
+    policy = driver.root(case) / "state/cache/records.toml"
+    policy.write_text("\n".join(lines) + "\n")
+    driver.metadata(policy, 840, 844, 0o660)
+    with policy.open("rb") as stream:
+        os.fsync(stream.fileno())
+    directory = os.open(policy.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+    return cold
+
+
+def check_cold_policy(driver, case, output, original):
+    """Checks original cold policy after real recovery and subsequent writes."""
+    if original["cold_policy"] is None:
+        return
+
+    actual = tomllib.loads((driver.root(case) / "state/cache/records.toml").read_text())
+    for group, rows in original["cold_policy"].items():
+        driver.require(all(actual[group].count(row) == 1 for row in rows),
+                       "recovery changed or removed original cold " + group)
+    driver.require("PASS actual cold consumer pins, leases and holds reconciled with verified native backing; original records retained"
+                   in output.splitlines(), "missing actual cold policy recovery control")
+    print("PASS actual native recovery retained original cold policy and verified backing: " + case,
+          flush=True)
 
 
 def run_mixed_source_pin(driver, helper, uuid, original):

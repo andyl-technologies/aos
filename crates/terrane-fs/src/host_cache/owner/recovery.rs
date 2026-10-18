@@ -1,6 +1,6 @@
 //! Runs serialized actual recovery without conflating it with tier readiness.
 //!
-//! Supported cases start with empty cold policy and reconcile empty, inline
+//! Supported cases preserve cold policy and reconcile empty, inline
 //! and manifest content using actual verified metadata and native bindings.
 //! Unknown names, unhandled private publication state, temporary files,
 //! pending bodies and every unhandled candidate remain non-ready. A receipt
@@ -174,6 +174,10 @@ impl CompletedRecovery {
             &owner.preparation.config,
             &owner.state,
             &self.recovery_id,
+            owner
+                .recovery_cold
+                .as_ref()
+                .ok_or_else(|| invalid("recovery lost original cold policy candidates"))?,
             &recovery_inline::residences(&claims),
         )?;
         self.shared.check_current()?;
@@ -190,7 +194,7 @@ impl CompletedRecovery {
 impl NativeMetadataOwner {
     /// Runs bounded actual recovery in the retained physical command queue.
     ///
-    /// Supported cases require empty cold policy and an exhaustive empty,
+    /// Supported cases require reconciled cold policy and an exhaustive empty,
     /// inline-only or manifest-only verified namespace. Other cases remain unresolved;
     /// no record is auto-cleared and no exposure is resumed. Request cancellation
     /// never cancels accepted physical work or releases its durable future hold.
@@ -227,7 +231,7 @@ impl NativeMetadataOwner {
 /// the first snapshot attempt, failures retain the owner's hold and fault state.
 pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<CompletedRecovery> {
     let custody = Arc::clone(executor.custody());
-    let (session, inspector, shared, state_parent) = {
+    let (session, inspector, shared, state_parent, requires_cold_backing) = {
         let mut owner = custody
             .lock()
             .map_err(|_| io::Error::other("recovery custody poisoned"))?;
@@ -238,9 +242,18 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
                 "failed physical work requires native reconciliation",
             ));
         }
-        owner.recovery_required = true;
+        if !owner.recovery_required {
+            return Err(unresolved(
+                "native recovery already completed for this physical owner",
+            ));
+        }
         owner.recovery_id = None;
-        recovery_state::require_empty(&owner.state)?;
+        // Validate original lease and charge ownership before any durable change.
+        // The captured records are candidates; actual adoption still follows the
+        // new synchronized bootstrap and original publisher Drain context.
+        super::recovery_cold::ColdPolicy::capture(&owner.preparation.config, &owner.state)?;
+        let requires_cold_backing =
+            !owner.state.pins.is_empty() || !owner.state.residences.is_empty();
         let state_parent = StateParentObservation::inspect(&owner.preparation)?;
         let shared = SharedNamespaceObservation::inspect(&owner.preparation)?;
         (
@@ -248,10 +261,16 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
             owner.preparation.recovery_inspector()?,
             shared,
             state_parent,
+            requires_cold_backing,
         )
     };
     // No embedded guard is held while acquiring the actual client RPC mutex.
     let context = session.recovery_context().map_err(io::Error::other)?;
+    if requires_cold_backing && inspector.inspect()?.candidates().is_empty() {
+        return Err(unresolved(
+            "cold policy has no native backing candidates to reconcile",
+        ));
+    }
     let (id, generation, bootstrap_write) = {
         let mut owner = custody
             .lock()
@@ -263,6 +282,7 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
         let bootstrap = recovery_state::bootstrap(&owner.preparation.config, &owner.state)?;
         check_charge(&owner, owner.preparation.config.metadata_sync_hold_bytes)?;
         owner.begin_mutation()?;
+        owner.recovery_cold = Some(bootstrap.cold);
         owner.state = bootstrap.snapshot;
         owner.faulted = true;
         let write = super::snapshot::prepare(executor, &mut owner)?;
@@ -343,9 +363,15 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
         shared.check_current()?;
         state_parent.check_current()?;
         inventory.check_current()?;
-        recovery_state::check_bootstrap(&owner.preparation.config, &owner.state, &id)?;
+        let cold = owner
+            .recovery_cold
+            .as_ref()
+            .ok_or_else(|| invalid("recovery lost original cold policy candidates"))?;
+        cold.check_bootstrap(&owner.preparation.config, &owner.state, &id)?;
         let claims = recovery_inline::claims(&inventory, owner.preparation.layout())?;
-        owner.state.residences = recovery_inline::residences(&claims);
+        let residences = recovery_inline::residences(&claims);
+        cold.reconcile(&residences, &[])?;
+        owner.state.residences = residences;
         super::snapshot::prepare(executor, &mut owner)?
     };
     super::snapshot::persist(executor, final_write).await?;
@@ -382,6 +408,10 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
             &owner.preparation.config,
             &owner.state,
             &id,
+            owner
+                .recovery_cold
+                .as_ref()
+                .ok_or_else(|| invalid("recovery lost original cold policy candidates"))?,
             &recovery_inline::residences(&expected),
         )?;
         owner.recovery_id = Some(id);
@@ -394,7 +424,14 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
                 .quota()
                 .observation()
                 .charged_reserved_bytes,
-            owner.preparation.config.metadata_sync_hold_bytes,
+            owner
+                .state
+                .reservations
+                .iter()
+                .try_fold(0_u64, |sum, hold| {
+                    sum.checked_add(hold.bytes)
+                        .ok_or_else(|| invalid("recovery future holds overflow"))
+                })?,
         )
     };
     // Any uncertainty after filesystem work withholds the receipt and restores

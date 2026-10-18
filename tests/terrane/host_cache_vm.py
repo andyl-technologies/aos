@@ -232,14 +232,15 @@ def cold_candidates():
     """Seeds actual bounded untrusted records without granting native authority."""
     bodies = {
         "pin": '[[pins]]\nowner = "cold"\nhash = "' + "00" * 32 + '"\nexpires = 1\n',
-        "lease": '[[leases]]\nowner = "cold"\nexpires = 1\n',
+        "lease": '[[leases]]\nowner = "cold"\nexpires = 1\n[[pins]]\nowner = "cold"\nhash = "' + "00" * 32 + '"\nexpires = 1\n',
         "reservation": '[[reservations]]\nid = "cold"\nowner = "cold"\nbytes = 262144\n',
         "residence": '[[residences]]\nchunk = "' + "00" * 32 + '"\nobject = "' + "11" * 32 + '"\noffset = 0\nlength = 1\n',
     }
     for case, record in bodies.items():
         categories = {"pin": "pins", "lease": "leases", "reservation": "reservations", "residence": "residences"}
         text = "version = 1\n" + "".join(name + " = []\n" for name in categories.values()
-                                                    if name != categories[case]) + record
+                                                    if name != categories[case]
+                                                    and not (case == "lease" and name == "pins")) + record
         path = root(case) / "state/cache/records.toml"
         path.write_text(text)
         metadata(path, 840, 844, 0o660)
@@ -312,7 +313,9 @@ def seed_manifests(uuid):
         remaining = [path for path in bodies if path not in companions]
         require(len(remaining) == 1, "fixture manifest candidate is ambiguous")
         body = remaining[0]
-        seeded[case] = {"body": body, "inode": body.stat().st_ino,
+        cold = runpy.run_path(str(IMAGE / "share/manifest_publication_vm.py"))[
+            "seed_cold_policy"](sys.modules[__name__], case, body, companions)
+        seeded[case] = {"cold_policy": cold, "body": body, "inode": body.stat().st_ino,
                         "hash": hashlib.sha256(body.read_bytes()).hexdigest(),
                         "companions": [(path, path.stat().st_ino) for path in companions],
                         "packs": {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in packs}}
@@ -345,6 +348,8 @@ def manifest_recovery_cases(uuid, seeded, helper):
             require("PASS actual recovered ranges survived a new Running admission; original metadata retained"
                     in output.splitlines(), "recovered source reused the cold completion predicate: " + case)
         original = seeded[case]
+        runpy.run_path(str(IMAGE / "share/manifest_publication_vm.py"))[
+            "check_cold_policy"](sys.modules[__name__], case, output, original)
         if case in MIXED_CASES:
             require(output.splitlines().count(
                 "PASS actual adopted inline source refused before complete recovery and Resume; policy unchanged") == 1,

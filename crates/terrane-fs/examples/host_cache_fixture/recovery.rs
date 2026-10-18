@@ -326,8 +326,14 @@ pub(super) fn run(
 ) -> io::Result<()> {
     let case = FixtureCase::from_mode(mode)?;
     require_domain(inputs, case)?;
-    if original.is_some() {
-        return Err(invalid("manifest recovery requires absent embedded state"));
+    let cold = matches!(
+        case,
+        FixtureCase::WritableVerified | FixtureCase::MixedVerified
+    );
+    if original.is_some() != cold {
+        return Err(invalid(
+            "manifest recovery fixture has unexpected cold policy presence",
+        ));
     }
     let result = runtime.block_on(owner.recover());
     if !case.recovers() {
@@ -361,7 +367,8 @@ pub(super) fn run(
     }
     let completed = result?;
     completed.check_current()?;
-    if completed.future_hold_bytes() != 2 * HOLD
+    if completed.future_hold_bytes()
+        != (2 + u64::from(case == FixtureCase::WritableVerified)) * HOLD
         || completed.charged_reserved_bytes() > HARD_LIMIT
         || completed.synchronized_retained_inode_bytes() == 0
     {
@@ -373,6 +380,11 @@ pub(super) fn run(
         inline::refuse(owner, runtime, inputs)?;
     }
     let before = fs::read(inputs.root.join("state/cache/records.toml"))?;
+    if cold {
+        println!(
+            "PASS actual cold consumer pins, leases and holds reconciled with verified native backing; original records retained"
+        );
+    }
     runtime
         .block_on(owner.resume_recovered(completed))
         .map_err(io::Error::other)?;
@@ -417,6 +429,18 @@ fn admit_after_recovery(
         terrane_core::identity::Descriptor::from_identity(&TERRANE_V1, &identity, bytes)
             .map_err(io::Error::other)?;
     let before = fs::read(inputs.root.join("state/cache/records.toml"))?;
+    let prior = runtime
+        .block_on(CacheState::load(
+            &TokioLocalFs,
+            &inputs.root.join("state/cache"),
+            STATE,
+        ))
+        .map_err(io::Error::other)?
+        .ok_or_else(|| invalid("post-recovery original snapshot absent"))?;
+    let prior_holds = prior.reservations.iter().try_fold(0_u64, |sum, hold| {
+        sum.checked_add(hold.bytes)
+            .ok_or_else(|| invalid("fixture original holds overflow"))
+    })?;
     let admitted = runtime
         .block_on(owner.admit_chunk(
             descriptor.clone(),
@@ -442,13 +466,13 @@ fn admit_after_recovery(
         ))
         .map_err(io::Error::other)?
         .ok_or_else(|| invalid("post-recovery admission snapshot missing"))?;
-    if state.reservations.len() != 3
+    if state.reservations.len() != prior.reservations.len() + 1
         || state
             .reservations
             .iter()
             .map(|hold| hold.bytes)
             .sum::<u64>()
-            != 3 * HOLD + bytes.len() as u64 + 1
+            != prior_holds + HOLD + bytes.len() as u64 + 1
     {
         return Err(invalid(
             "post-recovery owner total differs from retained operation holds",
@@ -529,7 +553,7 @@ fn check_policy(
     recovered: bool,
 ) -> io::Result<()> {
     let fixture = Fixture::new()?;
-    let state = runtime
+    let mut state = runtime
         .block_on(CacheState::load(
             &TokioLocalFs,
             &inputs.root.join("state/cache"),
@@ -537,6 +561,55 @@ fn check_policy(
         ))
         .map_err(io::Error::other)?
         .ok_or_else(|| invalid("manifest recovery snapshot missing"))?;
+    if matches!(
+        case,
+        FixtureCase::WritableVerified | FixtureCase::MixedVerified
+    ) {
+        let hash = if case == FixtureCase::WritableVerified {
+            fixture.manifest_hash.clone()
+        } else {
+            inline_hash()?
+        };
+        let pins: Vec<_> = state
+            .pins
+            .iter()
+            .filter(|row| row.owner == "fixture-cold-consumer")
+            .collect();
+        let leases: Vec<_> = state
+            .leases
+            .iter()
+            .filter(|row| row.owner == "fixture-cold-consumer")
+            .collect();
+        if pins.len() != 1
+            || leases.len() != 1
+            || pins[0].hash != hash
+            || pins[0].expires != i64::MAX as u64
+            || leases[0].expires != i64::MAX as u64
+        {
+            return Err(invalid("cold consumer pin or lease was changed or lost"));
+        }
+        if case == FixtureCase::WritableVerified {
+            let holds: Vec<_> = state
+                .reservations
+                .iter()
+                .filter(|row| row.id == "fixture-cold-hold")
+                .collect();
+            if holds.len() != 1 || holds[0].owner != inputs.owner || holds[0].bytes != HOLD {
+                return Err(invalid("cold future hold was changed or lost"));
+            }
+        }
+        // Remove only independently checked expected cold rows from this local
+        // fixture copy, then apply the unchanged exact new-operation assertions.
+        state
+            .pins
+            .retain(|row| row.owner != "fixture-cold-consumer");
+        state
+            .leases
+            .retain(|row| row.owner != "fixture-cold-consumer");
+        state
+            .reservations
+            .retain(|row| row.id != "fixture-cold-hold");
+    }
     let ids: BTreeSet<_> = state.reservations.iter().map(|row| &row.id).collect();
     let expected_pins =
         BTreeSet::from([fixture.manifest_hash.clone(), metadata_pack_hash(inputs)?]);
