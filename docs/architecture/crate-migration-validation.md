@@ -463,5 +463,38 @@ source inspection is recorded separately from the original pins and dirty
 working-tree observation. No owning-branch build/test claim is made.
 
 Overlapping suites and repeated derivation confirmations are not added together.
-The PR remains a draft with repository-wide and native qualification failures
-documented; no merge was performed.
+Repository-wide and native qualification failures remain documented; no merge
+was performed as part of this work.
+
+## Documentation follow-up
+
+The [rename reference](crate-renames.md) maps each of the 67 former packages
+exactly once and accounts for all 77 current packages, including five merges
+and fifteen extractions. The repository documentation audit updates RFCs,
+registry references, crate/module overviews, source paths, and contributor
+license-boundary names. Dated plans retain their historical names with explicit
+current-owner guidance. All relative Markdown links in the changed documents
+resolve.
+
+The 41 edited Rust files retain identical code and string tokens; the workspace
+manifest retains identical parsed values. The schema registry changes 142 owner
+cells while retaining every schema name, version, object kind, compatibility
+gate, and row position. The RFC checklist synchronization digest and one
+comment-bound source-review digest are refreshed without changing checklist
+policy, source limits, or review responsibilities.
+
+The existing RFC consistency, determinism-review, engineering-hygiene, and exact
+schema-registry checks pass all 14 cases. The migration map check and six lexical
+rewrite tests also pass. Application test-target compilation passes in the AOS
+Cargo shell using the same dynamically selected 58 packages and
+`aos-cli/release-fleet-fixture` feature as `checks.rust.aos-test-targets`: all 180
+test executables compile in 5m54s with exit status zero. This is a Cargo-shell
+compile equivalent, rather than a new Nix realization. Inherited external linker
+flags caused the first local invocation to fail before tests ran; clearing those
+flags before entering the AOS shell restores the source-built tool environment.
+
+The CLI hint-helper overview now describes the independent entry points. Its
+existing fallback for unknown program names still contains legacy `aos package`
+prefixes; documenting that limitation does not change command parsing or hints.
+The broader production and qualification outcomes above retain their original
+tested checkpoints.

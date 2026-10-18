@@ -1,11 +1,11 @@
-//! Helpers for adapting user-facing messages to how the CLI was invoked.
+//! Command-prefix helpers shared by the independent CLI entry points.
 //!
-//! The `aos` binary ships under several names. When run as `apm` it behaves as
-//! `aos package`, and when run as `apr` it behaves as `aos package registry`
-//! (see the argv\[0\] dispatch in the binary's `main`). Hint messages such as
-//! "add one with `… add <url>`" should echo the name the user actually typed
-//! rather than always naming `apm`, so this module derives that prefix from
-//! `argv[0]`.
+//! Hint messages derive package-manager and registry prefixes from `argv[0]`.
+//! Normalization recognizes `apm` and `apr` through installed wrapper names.
+//!
+//! Unrecognized names retain the legacy `aos package` and `aos package registry`
+//! fallback strings. These values describe the helper's existing behavior;
+//! the independent `aos` parser does not expose those command paths.
 
 use std::path::Path;
 
