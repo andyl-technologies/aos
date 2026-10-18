@@ -1519,6 +1519,11 @@
         --cache-url https://aos.fleet.test/fleet/containers \\
         --upload-url file:///var/tmp/hybrid-publication-surface
       {APR} verify --registry containers
+      # Publish the released default channel, preserving the separate authoring
+      # branch without advertising it as the public package catalog.
+      git -C "$registry" switch stable
+      {APR} origin upload --registry containers \\
+        --upload-url file:///var/tmp/hybrid-publication-surface
       mkdir -p /var/tmp/hybrid-publication-surface/web
       ${pkgs.coreutils}/bin/head -c {publication_size} /dev/zero \\
         > /var/tmp/hybrid-publication-surface/{publication_path}
