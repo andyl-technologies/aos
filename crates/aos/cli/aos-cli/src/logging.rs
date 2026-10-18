@@ -1,6 +1,6 @@
 //! Minimal stderr tracing subscriber for `aos serve`.
 //!
-//! `aos-server` is richly instrumented with `tracing::{info,warn,error}!`,
+//! `aos-build-server` is richly instrumented with `tracing::{info,warn,error}!`,
 //! but the `aos` binary links no `tracing-subscriber`. With no subscriber
 //! installed, every event is dropped on the floor — so the daemon's
 //! request logs never reach `journald`.

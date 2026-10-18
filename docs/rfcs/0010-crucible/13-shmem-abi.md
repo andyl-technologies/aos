@@ -108,7 +108,7 @@ offset, size, or alignment ever disagree, every guarantee built on the region
 silently collapses — a scheduler ceiling read from the wrong offset, a frame's
 delivery icount parsed as its length.
 
-- **[SHM-3]** The Rust `#[repr(C)]` definitions in the `crucible-shmem` crate are
+- **[SHM-3]** The Rust `#[repr(C)]` definitions in the `crucible-qemu-shmem` crate are
   the **mechanically checked source** of the publicly specified region layout.
   The normative field semantics, offsets, ordering rules, version-rejection policy,
   and golden vectors MUST be sufficient for an independent implementation.
@@ -126,7 +126,7 @@ delivery icount parsed as its length.
   from its base. *Gate:* `gate:abi-conformance`, `gate:license-boundary`.
   *Spec:* §13.2, 37/[BOUND-6].
 
-- **[SHM-4]** `crucible-shmem` MUST emit a generated C header
+- **[SHM-4]** `crucible-qemu-shmem` MUST emit a generated C header
   (`crucible_shmem_abi.h`) describing every shared struct, its fields, and the ABI
   version, produced mechanically from the Rust definitions during the build. The
   atomic QEMU patch ([`11-qemu-patches.md`](11-qemu-patches.md)) MUST include this
@@ -1482,7 +1482,7 @@ by when the producer's store landed in shared memory.
 > whose primary area is the shared-memory ABI, tracked here by [PLAN-3].
 
 - [x] **T-SHM-1** Define the `#[repr(C)]` `RegionHeader`, `NodeSlot`,
-  `RingHeader`, and `FrameEntry` in `crucible-shmem` with the field set, order,
+  `RingHeader`, and `FrameEntry` in `crucible-qemu-shmem` with the field set, order,
   and padding of §13.3, and the constants of §13.4; make the region the only
   channel for virtual-time advancement and cross-node frame delivery (the IPC
   protocol carries no per-quantum timing or per-frame delivery decisions). —

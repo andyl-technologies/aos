@@ -471,7 +471,7 @@ genuinely unresolved and is tracked as a spike in
   with `FrameEntry` payloads), driven by a per-node max-advance ceiling and futex
   wake — not an IPC-barrier / message-passing rendezvous. Every input carries its
   **delivery icount in-band** so the consumer is time-driven, not arrival-driven.
-  The shared-memory layout (the `crucible-shmem` ABI) is the **single, explicitly
+  The shared-memory layout (the `crucible-qemu-shmem` ABI) is the **single, explicitly
   versioned public protocol** for the data-plane boundary, covered by conformance
   tests/golden vectors and independently implementable from its public semantics.
 - **Rationale:** The most important correctness property of the transport is that
@@ -872,11 +872,11 @@ genuinely unresolved and is tracked as a spike in
 - **Date:** 2026-07-08.
 - **Decided by:** project owner.
 
-### D-32 — Remote checkpoint store is the same `crucible-cas` interface, not a separate backend
+### D-32 — Remote checkpoint store is the same `crucible-store` interface, not a separate backend
 
 - **Status:** Decided
 - **Decision:** The remote/shared checkpoint store is **in scope** and is
-  satisfied by the **existing `crucible-cas` `DagStore` interface** — the same
+  satisfied by the **existing `crucible-store` `DagStore` interface** — the same
   backend-agnostic `put`/`get`/`has`(-by-content-hash) trait Crucible already
   ships — **not** by a second, separately-designed store. The fleet-visible and
   team-shared backend is `crucible_store::SharedDagStore` today; a future RFC-0007
@@ -949,7 +949,7 @@ genuinely unresolved and is tracked as a spike in
     **choosing a separate remote backend now is unnecessary and would duplicate
     that seam.**
 - **Alternatives considered:**
-  - *Design a separate remote checkpoint store distinct from `crucible-cas`.*
+  - *Design a separate remote checkpoint store distinct from `crucible-store`.*
     Rejected: the store role is fully expressed by the backend-agnostic
     `DagStore` trait, and `SharedDagStore` already provides fleet-visible,
     location-independent, idempotent, immutable-on-conflict semantics. A second
@@ -970,7 +970,7 @@ genuinely unresolved and is tracked as a spike in
     deferred.
 - **Affects:** [INV-6], [G-6], [NG-7]; [TEMP-21], [TEMP-22], [TEMP-24]–[TEMP-26];
   [DCE-3], [DCE-4], [DCE-28], [DCE-29]; files 07 (§7, §8), 35 (§35.2.1, §35.6.2),
-  26 (§26.9); crates `crucible-cas` (`DagStore`, `SharedDagStore`,
+  26 (§26.9); crates `crucible-store` (`DagStore`, `SharedDagStore`,
   `SharedFrontier`, `SharedDedupIndex`, and `SharedCampaignStore`). References
   D-17, D-28.
 - **Supersedes:** [D-20] (the Open provisional local-only default and its
@@ -1273,7 +1273,7 @@ becomes a new `Decided` entry referencing the one it supersedes).
 
 > **Superseded by [D-32].** The T-D-2 spike confirmed the store interface is
 > backend-pluggable today and that the remote/shared backend is satisfied by the
-> **same `crucible-cas` `DagStore` interface** (`SharedDagStore`), with the
+> **same `crucible-store` `DagStore` interface** (`SharedDagStore`), with the
 > RFC-0007 (`ratchet`) substrate as a later drop-in behind the unchanged seam —
 > **not** a separate store and **not** a ratchet dependency. D-20 is retained
 > below as the original Open provisional framing; D-32 is the current decision.
@@ -1403,7 +1403,7 @@ becomes a new `Decided` entry referencing the one it supersedes).
   dependency trees would expand the hermetic bootstrap without increasing the
   bounded state space covered by this gate.
 - **Evidence:** `checks.crucible.phase1.concurrencyAbiOracleStandards` and the
-  mirrored `crucible-harness` test require the two executable model entrypoints
+  mirrored `crucible-test-support` test require the two executable model entrypoints
   and emit `spsc=exhaustive-ordering-model`.
 - **Affects:** [STD-22], [STD-23], [HARN-33]; files 13, 24, and 28.
 - **Date:** 2026-07-28.
@@ -1911,7 +1911,7 @@ register.
     good C encoder matches the Rust golden bytes, good C and Rust views round-trip
     the fixture byte-for-byte, and a drifted C encoder matches the generated
     drifted fixture while differing from the good fixture. The production
-    `crucible-shmem` crate and full
+    `crucible-qemu-shmem` crate and full
     `gate:abi-conformance` still own the permanent generated header, checked-in
     golden corpus, and version-bump workflow.
   - **Fallback:** none adopted.
@@ -2211,7 +2211,7 @@ register.
   remote backend is satisfied by the gated ratchet substrate (D-17) or a separate
   store; record the resolution superseding D-20. — resolves [D-20]; satisfies
   [INV-6]; spec [`30-risks-spikes.md`](30-risks-spikes.md), §07. Resolved by
-  [D-32]: the `crucible-cas` `DagStore` trait
+  [D-32]: the `crucible-store` `DagStore` trait
   (`crates/crucible/storage/crucible-store/src/lib.rs:195`) is proven backend-pluggable
   (`MemoryDagStore`/`LocalDagStore`/`SharedDagStore`), the remote/shared backend
   is the same interface via `SharedDagStore`, and the ratchet substrate is a

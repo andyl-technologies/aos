@@ -40,7 +40,7 @@ What is missing:
   maintainers share a roster; multiple teams must run disjoint
   registries with hand-managed credentials.
 - **No managed write path.** Producers need direct S3 credentials (or
-  an `aos-server` provisioning token) plus local signing keys; there is
+  an `aos-build-server` provisioning token) plus local signing keys; there is
   no way to grant a teammate "may publish to this registry" without
   handing over bucket access.
 - **No operational visibility.** Channel rollout state (which of the
@@ -51,11 +51,11 @@ What is missing:
   `apr validate` against a local clone.
 
 Meanwhile the building blocks for a server-side surface already exist:
-`aos-server` speaks ConnectRPC (`aos.{cache,build,gc,auth}.v1` in
+`aos-build-server` speaks ConnectRPC (`aos.{cache,build,gc,auth}.v1` in
 `crates/aos/packages/aos-build-api/`), has a proven two-tier token model (long-lived
 hashed provisioning tokens exchanged at `/oauth2/token` for short-lived
 JWTs — `crates/aos/packages/aos-build-server/src/tokens.rs`, `auth.rs`), and
-`aos-cache`'s HTTP backend already knows how to authenticate and batch
+`aos-nix-cache`'s HTTP backend already knows how to authenticate and batch
 uploads against that surface (`crates/aos/packages/aos-nix-cache/src/backend/http.rs`).
 
 ## Goal

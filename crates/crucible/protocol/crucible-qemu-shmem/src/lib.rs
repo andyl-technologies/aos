@@ -1,5 +1,5 @@
 //! SPDX-License-Identifier: MIT OR Apache-2.0
-//! `crucible-shmem` implements the public shared-memory process ABI.
+//! `crucible-qemu-shmem` implements the public shared-memory process ABI.
 //!
 //! Spec index: RFC-0010 files 13.
 //!

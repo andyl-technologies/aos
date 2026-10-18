@@ -1,4 +1,4 @@
-//! `aos-systemd` — a typed, async client for `org.freedesktop.systemd1` over
+//! `aos-systemd-client` — a typed, async client for `org.freedesktop.systemd1` over
 //! D-Bus (zbus 5).
 //!
 //! This crate is the *transport* layer: it speaks to systemd directly so apm

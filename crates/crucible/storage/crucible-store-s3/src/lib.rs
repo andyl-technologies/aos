@@ -3,7 +3,7 @@
 //! Spec index: RFC-0020 file 06.
 //!
 //! [`AwsSdkS3Client`] owns a bounded command queue and a dedicated Tokio
-//! runtime. This keeps the synchronous, streaming `crucible-cas` contract free
+//! runtime. This keeps the synchronous, streaming `crucible-store` contract free
 //! of credential and runtime policy while reusing one configured SDK client.
 //! Callers should invoke the synchronous CAS surface from their admitted
 //! blocking worker pool so a read does not park an async reactor thread.

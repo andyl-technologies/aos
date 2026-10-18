@@ -1,5 +1,15 @@
 # Workstream 06 — Nix binary-cache / narinfo (AOT static generation)
 
+> **Historical source snapshot:** "CURRENT" and crate names in this planning
+> record describe the git-native registry cutover before the workspace
+> reorganization. Current NAR format/signing code belongs to `aos-nar`;
+> verified registry reads to `aos-registry-client`; producer/signing operations
+> to `aos-registry-authoring`; installation to `aos-package-manager`; and cache
+> transport to `aos-nix-cache`. The live build server is `aos-build-server`.
+> Use the [as-built registry reference](../../registry/current-state.md) and
+> [crate rename map](../../architecture/crate-renames.md) for current ownership.
+
+
 > **Status:** **Producer-side work, reusing existing logic.** The registry's Nix
 > binary cache is **dumb static files on the HTTP CDN**, pre-generated
 > **ahead-of-time (AOT) at publish** and uploaded — there is **no server at

@@ -43,7 +43,7 @@ IO 16  QEMU 16  API 14  DBG 14  OBS 14  SESS 14  STD 14  PROTO 11  TEMP 11
 DCE 10  PAT 9  TIME 9  TRI 8  WL 6  ARCH 5  EX 5  BOUND 4  D 4  PLAN 3
 ```
 
-Checklist sync digest: `rfc0010-checklist-v1:33d449c073a08868`
+Checklist sync digest: `rfc0010-checklist-v1:1f04dbe817c09642`
 
 ### Current completion audit
 
@@ -377,7 +377,7 @@ long-held locks.
   RPC server, covers scenario-ref and inline creation, both attach paths, command
   send, fault, breakpoint, savepoint, fork, `GetReproduction`, stale epoch
   rejection, destroy, idempotent destroy, and per-message RPC ABI snapshot
-  coverage, and also runs the `crucible-qemu` `QemuNode`
+  coverage, and also runs the `crucible-qemu-host` `QemuNode`
   `SimulationBackend` contract test.
   `T-API-14` is green through `checks.crucible.phase5.apiNondeterminism`,
   which compares quiet/noisy in-process, quiet/noisy HTTP/2 RPC, and

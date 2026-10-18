@@ -4,7 +4,7 @@
 //! the producing side must *block at its current boundary* and resume when the
 //! consumer frees a slot — never drop, reorder, or re-time a frame ([IO-32]).
 //! This module owns [`BoundedQueue`], a fixed-capacity FIFO whose `push`/`pop`
-//! semantics mirror the `crucible-shmem` SPSC ring
+//! semantics mirror the `crucible-qemu-shmem` SPSC ring
 //! ([`crucible_qemu_shmem::RingHeader`]): a power-of-two capacity, monotonic
 //! head/tail indices, `QueueFull` on a full ring, and a derived
 //! [`BackpressureState`] that a futex waiter consults.

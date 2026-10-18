@@ -29,7 +29,7 @@
 //!
 //! # Manual testing
 //!
-//! The workspace has no SFTP server fixture. Ignored `aos-cache` tests
+//! The workspace has no SFTP server fixture. Ignored `aos-nix-cache` tests
 //! exercise both write paths against a disposable remote directory:
 //!
 //! ```text

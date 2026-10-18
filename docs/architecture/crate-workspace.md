@@ -5,7 +5,9 @@ projects such as Hub and Crucible. A package's full name identifies its ownershi
 and purpose without requiring its filesystem path. Directories group packages for
 readers; they do not introduce Cargo namespaces.
 
-The [active inventory](crate-inventory.md) records implemented ownership;
+The [rename reference](crate-renames.md) maps all 67 former packages to their
+current owners, including merges and extractions. The
+[active inventory](crate-inventory.md) records implemented ownership;
 the [validation record](crate-migration-validation.md) distinguishes completed
 local checks, baseline failures, and unresolved qualification.
 

@@ -5,8 +5,8 @@
 //!
 //! License boundary: this crate is GPL-2.0-only because its `cdylib` is loaded
 //! into QEMU and directly implements QEMU plugin entry points and callbacks.
-//! It may depend on the permissively dual-licensed `crucible-protocol` and
-//! `crucible-shmem` boundary crates, but MUST NOT depend on Apache-licensed
+//! It may depend on the permissively dual-licensed `crucible-qemu-protocol` and
+//! `crucible-qemu-shmem` boundary crates, but MUST NOT depend on Apache-licensed
 //! Crucible host/runtime crates in production. Host/plugin communication stays
 //! within the versioned socket control protocol and shared-memory process ABI.
 //!

@@ -9,9 +9,9 @@
 //! - **Machines** use the shared OAuth device/refresh flow or present an
 //!   `aos_`-prefixed [provisioning token](token) through the explicit bootstrap
 //!   grant at `POST /oauth2/token`; both produce short-TTL [HS256 JWTs](jwt).
-//!   The hub generalizes the `aos-server` token from a set of *views* to a
+//!   The hub generalizes the `aos-build-server` token from a set of *views* to a
 //!   `{scope-path, permissions[]}` grant, and *honors* the rotation grace
-//!   window that `aos-server` recorded but ignored.
+//!   window that `aos-build-server` recorded but ignored.
 //! - **Humans** carry opaque [cookie sessions](session)
 //!   (`__Host-aos_session`) with a sudo `auth_level`, obtained through the
 //!   [device-authorization flow](device) (RFC 8628) for the CLI, [email magic

@@ -5,7 +5,7 @@
 //! a Cloudflare Worker, and (now) a visitor's browser. The dependency-light,
 //! no-IO core lives in the standalone [`aos_registry_format`] crate so it
 //! compiles to `wasm32-unknown-unknown` and the registry web-surface SPA
-//! (`aos-registry-spa`) can reuse the *exact* verifier the hub indexer runs:
+//! (`aos-registry-web`) can reuse the *exact* verifier the hub indexer runs:
 //!
 //! - [`object`] — SHA-256 loose objects: inflate, hash-verify, and parse
 //!   commits, trees, and tags.
@@ -17,11 +17,11 @@
 //!
 //! Those four modules are re-exported from [`aos_registry_format`]; only
 //! [`load`] stays here, because tree-walking depends on the hub's
-//! [`crate::fetch::SurfaceFetch`] transport and `aos-package`'s
+//! [`crate::fetch::SurfaceFetch`] transport and `aos-registry-client`'s
 //! committed-file parsers, neither of which belongs in the pure core.
 //!
-//! Format parsers are shared with `aos-package` wherever they exist there
-//! (tag headers, package TOML, `keys.toml`, `registry.toml`), so this
+//! Format parsers are shared through `aos-registry-format` and
+//! `aos-registry-client` (tag headers, package TOML, `keys.toml`, `registry.toml`), so this
 //! reader and `apm` cannot silently diverge on committed formats. The
 //! parts implemented in the surface crate — loose objects, SSHSIG, refs —
 //! are the parts `apm` delegates to the git CLI.

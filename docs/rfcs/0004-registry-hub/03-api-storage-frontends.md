@@ -73,7 +73,7 @@ upload.
    bound at deploy time, with registries as prefixes* — keeping the
    zero-egress fast path. Dedicated bucket-per-registry is an opt-in
    (large tenants, clean export/exit), accessed via R2's S3-compatible
-   endpoint with SigV4 (the same `aos-net` engine; SigV4-over-fetch on
+   endpoint with SigV4 (the same `aos-transfer` engine; SigV4-over-fetch on
    Workers) — latency cost only, R2 has no egress fees.
 2. **BYO bucket**, in three tiers by what the operator hands over:
    `write` credentials (hub hosts the upload facade and pointer

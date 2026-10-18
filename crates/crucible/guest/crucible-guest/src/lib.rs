@@ -4,7 +4,7 @@
 //!
 //! This guest-side library is wrapped by the `crucible-guest` static
 //! command-line emitter. It builds marker payloads from the shared
-//! `crucible-protocol` vocabulary and canonical typed choice domains and
+//! `crucible-qemu-protocol` vocabulary and canonical typed choice domains and
 //! values for product-facing selectables, encodes the same
 //! architecture-independent doorbell frame consumed by the QEMU plugin, and
 //! rings the per-architecture trap instruction selected by the single-source
@@ -14,7 +14,7 @@
 //! and the Linux doorbell instruction transport; [`guest_introspection_agent`]
 //! owns the argv exec, PTY, resize, and optional SSH-compatible guest service;
 //! [`selectable`] owns typed guest choice registration and request helpers.
-//! `crucible-protocol` owns the independently implementable semantic
+//! `crucible-qemu-protocol` owns the independently implementable semantic
 //! domain/value bytes and every process wire format.
 //!
 //! Unsafe boundary discipline: public callers use safe doorbell and marker accessors; private inline

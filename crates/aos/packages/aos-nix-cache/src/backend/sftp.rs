@@ -183,7 +183,7 @@ impl CacheBackend for SftpBackend {
         }
 
         // Create root and nar directories by writing empty marker files,
-        // since SFTP protocol in aos-net creates parent dirs automatically.
+        // since SFTP protocol in aos-transfer creates parent dirs automatically.
         let content = format!("StoreDir: {store_dir}\nWantMassQuery: 1\nPriority: 40\n");
         let req = TransferRequest::put(&info_url, content.into_bytes());
         self.engine

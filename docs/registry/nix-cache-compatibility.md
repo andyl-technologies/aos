@@ -17,15 +17,15 @@
 > serve-time — a stock `nix` / `apm` reads these files as an ordinary static
 > binary cache (the strict superset). What is **not** greenfield is the narinfo
 > **format / sign / FileHash logic**: it already exists as reusable code —
-> `aos-core/nar/info.rs` (the shared `NarInfo` type) and
-> `aos-core/nar/cache.rs` (`render_static_narinfo`, `NarInfoSigner`,
+> `aos-nar/src/info.rs` (the shared `NarInfo` type) and
+> `aos-nar/src/cache.rs` (`render_static_narinfo`, `NarInfoSigner`,
 > `nix_cache_info`, and `nar_url`). The **producer reuses these as a library** to
-> *generate* the static files. The live `aos-server` cache
+> *generate* the static files. The live `aos-build-server` cache
 > (a host serving its **own** Nix store, nix-serve-style) is a **separate use
-> case the registry never runs**. The consumer (`aos-package/download.rs`) is
+> case the registry never runs**. The consumer (`aos-package-manager/src/download.rs`) is
 > already narinfo-driven and works against a dumb static cache. The producer path
 > is implemented as `apr cache generate`: it AOT-generates those static files,
-> can upload them through `aos-cache`, and can update the committed
+> can upload them through `aos-nix-cache`, and can update the committed
 > `registry.toml` `[[caches]]` pointer.
 
 This document explains how an AOS registry's Nix binary cache is, by design, a
@@ -139,10 +139,10 @@ has been extracted into reusable code:
   commit the root `registry.toml` `[[caches]]` pointer.
 
 The **registry producer uses this library** to *emit static files* at publish
-time — it does **not** run `aos-server`'s request handlers
+time — it does **not** run `aos-build-server`'s request handlers
 (`routes.rs` `cache_info_handler` / `narinfo_handler` / `nar_handler`), which
 serve a live host's own store dynamically and are a **different use case the
-registry never runs**. The `aos-cache` backends
+registry never runs**. The `aos-nix-cache` backends
 (`crates/aos/packages/aos-nix-cache/src/backend/{s3,sftp,http,fs}.rs`,
 `has_narinfo` / `get_narinfo` / `put_narinfo`, `backend/mod.rs:16-23`) are a
 related building block — object-store I/O that reads/writes the same static
@@ -224,8 +224,8 @@ superset endpoints:
 ## 4. What exists today (CURRENT) vs. what the producer generates (TARGET)
 
 Two things **exist today** as code: (a) the narinfo **format / sign / FileHash
-logic** (currently the body of `aos-server`'s live cache, reusable as a library),
-and (b) a **narinfo-driven consumer** (`aos-package`). What does **not** exist is
+logic** (shared by `aos-nar` and the native build-server adapters),
+and (b) a **narinfo-driven consumer** (`aos-package-manager`). What does **not** exist is
 the registry **producer** that, at publish, *reuses* (a) to AOT-generate the
 static `nix-cache-info` / `<storehash>.narinfo` / `nar/` files and uploads them
 to the CDN — see §11. The registry runs **no server**; nothing dynamically serves
@@ -253,7 +253,7 @@ narinfo fingerprint `1;{store_path};{nar_hash};{nar_size};{refs}`.
 `render_static_narinfo` appends the resulting `Sig:` line when a signer is
 configured, baking the signature into each static narinfo at publish.
 
-**Object-store I/O (CURRENT — reusable upload path, `aos-cache`).** The backend
+**Object-store I/O (CURRENT — reusable upload path, `aos-nix-cache`).** The backend
 trait declares `has_narinfo` / `get_narinfo` / `put_narinfo` /
 `put_cache_info` (`crates/aos/packages/aos-nix-cache/src/backend/mod.rs`), implemented for `s3`,
 `sftp`, `http`, and `fs` (`crates/aos/packages/aos-nix-cache/src/backend/`). The
@@ -327,21 +327,21 @@ Priority: 40
 ```
 
 The producer writes this static file locally, then uploads that exact body
-through `aos-cache` so backend upload does not rewrite the chosen `Priority`.
+through `aos-nix-cache` so backend upload does not rewrite the chosen `Priority`.
 For reference, the **live**
-`aos-server` cache returns its own variant dynamically — with `Priority: 30` and
+`aos-build-server` cache returns its own variant dynamically — with `Priority: 30` and
 a `Capabilities: pack-upload query-missing sse-logs zstd xz content-range` line
 (`cache_info_handler`, `routes.rs:123,145`) — but that is the **separate
 nix-serve-style host use case the registry does not run**, and its
-`Capabilities` advertise an `aos-server`-specific dynamic extension surface that
+`Capabilities` advertise an `aos-build-server`-specific dynamic extension surface that
 has no meaning for a static CDN cache.
 
 | Key | Meaning | Registry static value |
 |---|---|---|
 | `StoreDir` | Store prefix the NARs were built against. Must match the consuming host's store. | The configured store dir baked into the static file. Commonly `/nix/store`. |
 | `WantMassQuery` | `1` lets `nix` batch-query this cache when computing substitutions. | `1` — the origin is a plain static object store; mass query is cheap. |
-| `Priority` | Lower = preferred. Stock `cache.nixos.org` is `40`. | The `apr cache generate --priority` value preserved in the uploaded `nix-cache-info`. Operator policy knob — raise above `40` to defer to the upstream cache for shared paths. (The live `aos-server` host uses `30`; not relevant to the registry's static cache.) |
-| `Capabilities` | `aos-server` dynamic extension advertisement (not stock Nix). | **Omitted** on the registry's static cache — there is no running server to advertise extensions. (The live `aos-server` host emits `pack-upload query-missing sse-logs zstd xz content-range`; stock `nix` ignores such an unknown line, so the strict-superset property holds either way.) |
+| `Priority` | Lower = preferred. Stock `cache.nixos.org` is `40`. | The `apr cache generate --priority` value preserved in the uploaded `nix-cache-info`. Operator policy knob — raise above `40` to defer to the upstream cache for shared paths. (The live `aos-build-server` host uses `30`; not relevant to the registry's static cache.) |
+| `Capabilities` | `aos-build-server` dynamic extension advertisement (not stock Nix). | **Omitted** on the registry's static cache — there is no running server to advertise extensions. (The live `aos-build-server` host emits `pack-upload query-missing sse-logs zstd xz content-range`; stock `nix` ignores such an unknown line, so the strict-superset property holds either way.) |
 
 > Note: the `nix-cache-info` `Priority` is the **Nix-cache** preference knob,
 > consumed by stock `nix` to order substituters. It is distinct from the AOS
@@ -534,7 +534,7 @@ and consumer already agree on it:
 > **Colon-in-filename:** because the format logic rewrites the file-hash colon to
 > a dash in the `URL:`, the static object key is colon-free, so
 > CDN/edge layers that mangle a literal `:` are not a concern for the
-> generated static files. (The `aos-cache` backend keys —
+> generated static files. (The `aos-nix-cache` backend keys —
 > `<storehash>.narinfo` / `nar/<filename>` — are likewise colon-free.) See
 > [open-questions.md](../plans/registry/open-questions.md) for any
 > alternate-keying deployment notes.
@@ -631,18 +631,18 @@ override) — verifying the content hash (`download.rs:191-204`), never the nari
 The narinfo **format / sign / FileHash logic**, the **narinfo-driven consumer**,
 and the **static producer** exist today. The registry runs **no server**: its Nix
 cache is dumb static files on the CDN, generated AOT by `apr cache generate` and
-optionally uploaded through `aos-cache` to one or more destinations.
+optionally uploaded through `aos-nix-cache` to one or more destinations.
 
 **Reusable logic and producer surface.** These are libraries and commands the
 producer calls; none of them is a server the registry runs.
 
 | Capability | Where it lives | Cite |
 |---|---|---|
-| Shared `NarInfo` type + `parse`/`format` | `aos-core` | `nar/info.rs:5,19,81` |
-| Static narinfo rendering, URL construction, cache-info body, and Nix `Sig:` | `aos-core` | `nar/cache.rs` |
-| Static cache generation, local completeness checks, compressed NAR writing, upload, and `[[caches]]` update | `aos-package` | `registry/nixcache.rs`; `registry_ops.rs run_cache` |
-| Static object upload backends (`put_*`, `put_cache_info`) | `aos-cache` | `backend/mod.rs`; backend implementations |
-| Consumer (`apm`) reads a dumb static narinfo cache | `aos-package` | `download.rs` |
+| Shared `NarInfo` type + `parse`/`format` | `aos-nar` | `src/info.rs` |
+| Static narinfo rendering, URL construction, cache-info body, and Nix `Sig:` | `aos-nar` | `src/cache.rs` |
+| Static cache generation, local completeness checks, compressed NAR writing, upload, and `[[caches]]` update | `aos-registry-authoring` | `registry/nixcache.rs`; `registry_ops.rs run_cache` |
+| Static object upload backends (`put_*`, `put_cache_info`) | `aos-nix-cache` | `backend/mod.rs`; backend implementations |
+| Consumer (`apm`) reads a dumb static narinfo cache | `aos-package-manager` | `download.rs` |
 
 `apr cache generate` walks every package and sysroot-image store path listed by
 the registry, fails if any path is absent from the local Nix store, emits signed

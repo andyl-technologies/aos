@@ -59,7 +59,7 @@ C++ Nix; its closed PR remains available if that work is revisited.
       `TasksMax`, timeout,
       read-only inputs, `ProtectSystem=strict`, and syscall restrictions).
       Evidence for this section is `checks.config-eval` plus the
-      `aos-package` Rust tests.
+      `aos-package-manager` Rust tests.
 
 ## Two-axis generations and activation
 

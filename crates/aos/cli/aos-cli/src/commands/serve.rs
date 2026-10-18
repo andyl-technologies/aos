@@ -1,7 +1,7 @@
 //! `aos serve` — run the AOS HTTP binary cache server.
 //!
 //! This module is the daemon bootstrap; the request handling itself
-//! lives in the `aos-server` crate. Startup sequence: install the
+//! lives in the `aos-build-server` crate. Startup sequence: install the
 //! stderr tracing subscriber (`crate::logging`), load the TOML config,
 //! open the Nix store and token databases, initialise the view
 //! directories, recover builds left in-flight by a previous crash, load
@@ -38,7 +38,7 @@ use aos_nix::aos_nix_env;
 /// cannot be bound. Per-connection errors after startup are logged, not
 /// returned.
 pub async fn run(printer: &Printer, config_path: &Path) -> Result<()> {
-    // Install a stderr tracing subscriber so aos-server's request
+    // Install a stderr tracing subscriber so aos-build-server's request
     // instrumentation (`tracing::info!` in routes.rs etc.) reaches
     // journald. Without this the daemon's logs are silently dropped.
     crate::logging::init();

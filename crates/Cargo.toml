@@ -137,14 +137,13 @@ zbus = { version = "5", default-features = false, features = ["tokio"] }
 # Server
 axum = { version = "0.8", features = ["macros"] }
 tower-http = { version = "0.6", features = ["cors", "trace"] }
-# Async SQL toolkit driving the registry-hub `Backend` over concrete pools
-# (RFC-0004 phase 5, step 3b). The per-engine driver features (sqlite/postgres/
-# mysql) are selected by `aos-hub`'s own cargo features; the bundled
-# sqlite driver is pure-Rust and needs no system library. `runtime-tokio` reuses
-# the existing tokio runtime rather than spawning a second reactor.
+# Async SQL toolkit implementing aos-hub-db's native Backend over concrete pools.
+# SQLite is enabled by aos-hub-db; aos-hub-native selects optional PostgreSQL
+# and MySQL drivers through the database crate's features. runtime-tokio reuses
+# the native application's existing Tokio runtime.
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio"] }
-# Still used by aos-package, aos-server, and aos-hub-worker; the registry
-# hub moved off it to sqlx (RFC-0004 Phase 5 step 3b).
+# Used by aos-build-server and crucible-store, and by Hub database/native
+# migration fixtures. Production Hub database operations use SQLx.
 rusqlite = "0.32"
 jsonwebtoken = "9"
 uuid = { version = "1", features = ["v4", "serde"] }

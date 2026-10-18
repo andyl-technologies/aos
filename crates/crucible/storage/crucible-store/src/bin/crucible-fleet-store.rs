@@ -3,7 +3,7 @@
 //! This small binary is packaged as the AOS `crucible-fleet-store` component.
 //! It intentionally exposes only a deterministic local probe surface for the
 //! packaging and fleet-check harnesses; the public store interface remains the
-//! `crucible-cas` [`crucible_store::DagStore`] trait.
+//! `crucible-store` [`crucible_store::DagStore`] trait.
 
 use std::env;
 use std::error::Error;

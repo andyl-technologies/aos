@@ -1,7 +1,7 @@
 //! `aos profile` — find build/dev artifacts that leaked into a runtime
 //! closure.
 //!
-//! Two subcommands, both backed by the `aos-profile` crate:
+//! Two subcommands, both backed by the `aos-closure-analysis` crate:
 //!
 //! - `closure` — enumerate a target's runtime closure, rank paths by
 //!   exclusive (dominator-subtree) size, and rule on every suspect build

@@ -15,13 +15,13 @@
 //! (filesystem/HTTP surface) and the Cloudflare Worker (R2 surface), and
 //! compiles to both native and `wasm32-unknown-unknown`. Unlike the indexer's
 //! tree load, these reads touch only the loose-object and tree formats from
-//! [`aos_registry_format`]; they pull in none of `aos-package`'s
+//! [`aos_registry_format`]; they pull in none of `aos-registry-client`'s
 //! committed-file parsers.
 //!
 //! The write side (proposing a signed draft change request) and the indexer's
 //! full-tree load stay in the native hub, which has a writable filesystem and
-//! the `aos-package` schema; this module is the read logic shared with the
-//! Worker.
+//! the `aos-registry-format` and `aos-registry-client` parsers. This module is
+//! shared with the Worker.
 
 use anyhow::{bail, Context, Result};
 

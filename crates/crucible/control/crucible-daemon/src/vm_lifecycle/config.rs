@@ -308,7 +308,7 @@ impl ProductionVmLifecycleConfig {
     ///
     /// The executable remains a separate GPL-side process. The production
     /// lifecycle communicates with it only through the versioned Unix control
-    /// protocol owned by `crucible-protocol`.
+    /// protocol owned by `crucible-qemu-protocol`.
     #[must_use]
     pub fn with_debug_gateway(mut self, executable: impl Into<PathBuf>) -> Self {
         self.debug_gateway_executable = Some(executable.into());

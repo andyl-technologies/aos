@@ -1,7 +1,7 @@
 //! Shared registry byte transport and publication storage adapters.
 //!
 //! [`RegistryRead`] exposes the static origin's relative object namespace.
-//! [`RegistryTransport`] supplies that interface with the existing `aos-net`
+//! [`RegistryTransport`] supplies that interface with the existing `aos-transfer`
 //! transfer engine, including local paths and `file://` origins. Git object
 //! verification and channel trust remain in their respective registry modules.
 //! publication storage adapters live in `aos-registry-authoring`.

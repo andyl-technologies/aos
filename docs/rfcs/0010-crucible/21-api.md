@@ -808,7 +808,7 @@ ran in-process against the double or over the wire against QEMU.
   `CreateSession`, both `Control` and `Watch` attach paths, `Send` through
   continue/pause/step/fault/breakpoint/savepoint/fork/query, `GetReproduction`,
   stale epoch rejection, `DestroySession`, and idempotent destroy. The gate also
-  runs the `crucible-qemu` `qemu_node_satisfies_simulation_backend_trait` test,
+  runs the `crucible-qemu-host` `qemu_node_satisfies_simulation_backend_trait` test,
   which exercises `QemuNode` step/apply/fingerprint/snapshot/restore/shutdown
   through the `SimulationBackend` contract. The ABI and wire-snapshot tests now
   explicitly cover the frozen RPC request, response, streaming-frame, error, and

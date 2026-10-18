@@ -1,4 +1,4 @@
-//! `crucible-sim` owns Crucible's deterministic core primitives.
+//! `crucible-determinism` owns Crucible's deterministic core primitives.
 //!
 //! Spec index: RFC-0010 files 04, 08, 09.
 //!

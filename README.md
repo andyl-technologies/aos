@@ -83,8 +83,11 @@ for cache setup and incremental Rust builds.
 Rust code uses one Cargo workspace under `crates/`, grouped into shared libraries,
 AOS subsystems, Hub, and Crucible. See the
 [workspace organization](docs/architecture/crate-workspace.md) and
-[crate inventory](docs/architecture/crate-inventory.md) for package ownership,
-full names, and reusable boundaries.
+[crate inventory](docs/architecture/crate-inventory.md) for package ownership
+and reusable boundaries. The
+[rename and extraction reference](docs/architecture/crate-renames.md) maps every
+former crate to its current name and location, including merges and new shared
+libraries.
 
 ## Project status
 

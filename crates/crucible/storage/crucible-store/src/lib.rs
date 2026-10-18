@@ -1,6 +1,6 @@
 //! Content-addressed storage primitives for Crucible.
 //!
-//! `crucible-cas` owns the small standalone substrate required by RFC-0010:
+//! `crucible-store` owns the small standalone substrate required by RFC-0010:
 //! BLAKE3 content keys, a minimal `put`/`get`/`has` store interface, local and
 //! in-memory implementations, a fleet-visible shared implementation, and a
 //! dependency-gated invalidation query. The crate intentionally has

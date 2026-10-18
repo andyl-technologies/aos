@@ -120,7 +120,7 @@
 //! ```
 //!
 //! The native workspace build only compiles the pure modules; the Worker glue
-//! is wasm-only, exactly like the sibling `aos-registry-spa` crate, so adding
+//! is wasm-only, exactly like the sibling `aos-registry-web` crate, so adding
 //! this crate to the workspace members never breaks the native build.
 
 pub mod keymap;

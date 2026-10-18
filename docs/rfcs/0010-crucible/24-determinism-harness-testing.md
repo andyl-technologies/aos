@@ -68,7 +68,7 @@ invariants/requirements it enforces.
 | `gate:qemu-inert` | AOS QEMU package + atomic patch | INV-7, G-7; HARN-20, HARN-21 | Checked sim-off guest/QMP outputs and legacy Q35 migration bytes match upstream; PIT phase and patched restore/resave are authenticated; the host-control extension is rejected off and component microtests pass. |
 | `gate:abi-conformance` | L1 boundary ABIs | G-8; HARN-32, HARN-33, HARN-34 | Shmem layout, protocol, and RPC match frozen golden vectors. |
 | `gate:typed-choice` | L1/L2 guest choice boundary | INV-3, INV-4, G-8; SHM-53, SHM-54 | Typed guest registrations, exact pending tokens, host-authorized replies, and fresh-process continuation match the frozen shared-memory and canonical choice contracts. |
-| `gate:license-boundary` | Repository and Crucible/QEMU boundary (Always) | BOUND-1..BOUND-12 | `crucible-harness` rejects dependency, license-scope, protocol-shape, package-source, or corresponding-source violations. |
+| `gate:license-boundary` | Repository and Crucible/QEMU boundary (Always) | BOUND-1..BOUND-12 | `crucible-test-support` rejects dependency, license-scope, protocol-shape, package-source, or corresponding-source violations. |
 | `gate:patch-microtests` | Atomic QEMU integration patch | INV-7; HARN-20 | Every capability task has a focused, passing behavioral test and the atomic patch has one pristine-QEMU attribution negative. |
 | `gate:adversarial-determinism` | Cross-layer (Phase ≥ L2) | INV-1, INV-4, INV-9; HARN-11 | N runs under hostile host conditions yield byte-identical canonical logs. |
 | `gate:e2e-determinism` | Final acceptance (all layers) | All headline invariants; HARN-22, HARN-23 | A representative multi-VM, fault-injected scenario runs bit-identically across adversarial conditions and reproduces from its artifact. |
@@ -104,7 +104,7 @@ aggregates the closed effect registry, production adapter capability manifests,
 live boundary tests, replay/search evidence, documentation coverage, and the
 repository guard that rejects retired fault APIs and executable sensor effects.
 
-`gate:license-boundary` is an **Always** gate owned by `crucible-harness`; it
+`gate:license-boundary` is an **Always** gate owned by `crucible-test-support`; it
 runs on every boundary-affecting change and at release construction.
 
 - **[HARN-2]** A gate MUST be a *pure* check: given the same source tree and the
@@ -331,9 +331,10 @@ and how*; the gate names above bind to it.
                         gate:adversarial-determinism, gate:e2e-determinism
 ```
 
-**L0 — deterministic core (`crucible-sim`, `crucible-assert`).** Supplemental
+**L0 — deterministic core (`crucible-determinism`).** Supplemental
 in-process unit tests cover the scheduler primitives, decision RNG,
-content-addressed digest helpers, and assertion evaluator. Property tests cover:
+content-addressed digest helpers, and the engine-owned assertion evaluator.
+Test-only gate labels are in `crucible_test_support::assertion`. Property tests cover:
 decision-RNG stability under entity insertion (the per-entity stream is forked by
 name-hash so adding a node does not perturb others — §4.5), total-order stability
 of the cross-node event keying `(virtual_time, consumer node_id, producer node_id, sequence)`, and ordered
@@ -341,7 +342,7 @@ iteration on every ordering-significant collection. These tests run in
 milliseconds but do not stand in for the canonical production-QEMU
 `gate:layer0-determinism` authority.
 
-**L1 — co-sim transport (`crucible-shmem`, `crucible-protocol`,
+**L1 — co-sim transport (`crucible-qemu-shmem`, `crucible-qemu-protocol`,
 `crucible-device`).** Tested against the in-process QEMU double (§3): the shmem
 region, SPSC frame queues, protocol codec, and I/O sub-nodes are exercised
 without real QEMU. Two suites: injection determinism (`gate:layer1-injection`,
@@ -349,7 +350,7 @@ INV-3) and ABI conformance (`gate:abi-conformance`, G-8) plus SPSC property test
 and codec/wire fuzzing (§8). **Gate:** `gate:layer1-injection`,
 `gate:abi-conformance`, `gate:content-address`.
 
-**L2 — QEMU integration (`crucible-qemu`, `crucible-qemu-plugin`,
+**L2 — QEMU integration (`crucible-qemu-host`, `crucible-qemu-plugin`,
 `crucible-guest`).** The first layer that requires real QEMU. Single-VM
 fingerprint determinism (`gate:single-vm-fingerprint`, Contract A),
 production execution determinism (`gate:layer0-determinism`), production
@@ -359,14 +360,15 @@ unmodified-guest boot and non-mutation (`gate:any-guest`), and patch inertness
 suite uses small boot-to-ready images and is structured so the cheap in-process
 layers catch most regressions first.
 
-**L3 — engine (`crucible`).** The temporal graph, scheduler, faults, assertions.
+**L3 — engine (`crucible-engine`).** The temporal graph, scheduler, faults, assertions.
 The replay oracle (`gate:replay-oracle`, INV-1/INV-2) is the headline structural
 test; content addressing (`gate:content-address`, INV-6) rounds it out. L3 keeps
 fast in-process scheduler unit coverage, while the canonical scheduler-liveness
 authority is the packaged-QEMU flight described above.
 
-**L4 — control plane (`crucible-session`, `crucible-api`, `crucible-daemon`,
-`crucible`).** The session actor, API, daemon, and CLI.
+**L4 — control plane (`crucible-session`, `crucible-control-api`,
+`crucible-control-client`, `crucible-control-server`, `crucible-daemon`,
+`crucible-cli`).** The session actor, API, daemon, and CLI.
 `gate:control-responsive` (INV-8 responsiveness) and the API/RPC half of
 `gate:abi-conformance`. Tested against the in-process double so a full
 session/fork/snapshot/inject API exercise runs without booting a guest.
@@ -933,8 +935,8 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   [HARN-15], [HARN-17]; spec §3.
   - Completed by `crucible_engine::SimDouble` and
     `checks.crucible.phase1.simDouble`: the double is compiled behind the
-    `test-double` feature, enables the shared `crucible-shmem` and
-    `crucible-protocol` crates only for that feature, builds its plugin-side
+    `test-double` feature, enables the shared `crucible-qemu-shmem` and
+    `crucible-qemu-protocol` crates only for that feature, builds its plugin-side
     region from the canonical `RegionAllocation` model, drains and emits frames
     through the real directed SPSC accessors, accepts host control frames through
     the real protocol decoder and lifecycle validator, replies with real

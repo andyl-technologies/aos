@@ -335,7 +335,7 @@ attested through this supported path.
 - **[GHC-16]** On **aarch64**, where architectural port I/O does not exist, the
   doorbell MUST use the reserved `HINT #0x4c` encoding. The plugin observes that
   instruction synchronously and reads the payload pointer/length from the fixed
-  register pair in [GHC-11](b); after the callback, the instruction MUST retire
+  register pair in [GHC-11] part (b); after the callback, the instruction MUST retire
   inertly at EL0 so the guest agent can continue polling. Exception-class
   instructions such as `HLT`, `BRK`, or `HVC` MUST NOT be used unless the emulator
   consumes the exception and the live gate proves that a sustained guest agent
@@ -893,7 +893,7 @@ the transport layer by construction.
   aarch64 reserved-immediate HINT, from a single-source ABI
   definition; document and golden-vector the encodings. — satisfies [GHC-15],
   [GHC-16], [GHC-18]; spec §16.4.
-  Completed by `checks.crucible.phase4.guestHostDoorbellAbi`: `crucible-protocol`
+  Completed by `checks.crucible.phase4.guestHostDoorbellAbi`: `crucible-qemu-protocol`
   now exports `WHITEBOX_DOORBELL_ABIS` as the single-source instruction ABI, the
   QEMU plugin and guest-agent boundary re-export it, the x86_64 `out 0xe7,al`
   byte vector (`e6 e7`) and aarch64 `hint #0x4c` byte vector (`9f 29 03 d5`) are frozen,
@@ -925,7 +925,7 @@ the transport layer by construction.
   format (magic/version/kind/len/payload, little-endian, length-prefixed strings),
   with golden vectors and a versioning rule. — satisfies [GHC-12], [GHC-19],
   [GHC-20], [GHC-21]; spec §16.5.
-  Completed by `checks.crucible.phase4.guestHostDoorbellFrame`: `crucible-protocol`
+  Completed by `checks.crucible.phase4.guestHostDoorbellFrame`: `crucible-qemu-protocol`
   now owns the fixed little-endian `WhiteboxDoorbellFrame` header/body codec,
   exports byte-exact golden frame vectors plus a regeneration rule tied to the
   protocol version, and feeds those vectors through the ABI-conformance and
@@ -938,7 +938,7 @@ the transport layer by construction.
   assertion-marker payload fields (id/kind/`must_hit`/details/location) that drive
   finalize. — satisfies [GHC-22], [GHC-23], [GHC-25], [GHC-36]; spec §16.5.1.
   Completed by `checks.crucible.phase4.guestHostMarkerVocabulary`:
-  `crucible-protocol` now owns the closed marker-kind vocabulary, assertion,
+  `crucible-qemu-protocol` now owns the closed marker-kind vocabulary, assertion,
   lifecycle, event, coverage, and app-random body codecs, typed decode errors, and
   marker payload golden vectors; `crucible` maps decoded assertion payloads into
   `GuestAssertionMarker` events for the existing finalize machinery; the QEMU
@@ -966,7 +966,7 @@ the transport layer by construction.
   spec §16.6.
   Completed by `checks.crucible.phase4.guestHostEmitter`: `crucible_guest::GuestCommand`
   now constructs every §16.5.1 marker family through the shared
-  `crucible-protocol` marker codec, the `crucible-guest` CLI mirrors the
+  `crucible-qemu-protocol` marker codec, the `crucible-guest` CLI mirrors the
   always/sometimes/reachable/unreachable/lifecycle/event/coverage/get-random
   vocabulary, `InstructionDoorbellTransport` rings the Linux x86_64 and aarch64
   trap instructions from `WHITEBOX_DOORBELL_ABIS` (with x86_64 `ioperm(2)`

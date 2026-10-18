@@ -20,10 +20,12 @@ and are not in its dependency set. A reviewer reads one crate-root attribute and
 one `[dependencies]` table and knows the regime that applies to every line in
 that crate.
 
-> This RFC is design-only; the crate tree below is the *target*. Nothing here
-> ships until the phased plan in
-> [`32-implementation-plan.md`](32-implementation-plan.md) is worked through and
-> each layer's determinism gate is green.
+> The package names and member paths below describe the implemented monorepo
+> layout. Architectural requirements and qualification remain governed by the
+> phased plan in [`32-implementation-plan.md`](32-implementation-plan.md).
+> A package's presence does not establish that its layer's determinism gates pass;
+> see the [validation record](../../architecture/crate-migration-validation.md)
+> for completed checks and remaining qualification.
 
 ## 1. The crate map (L0–L4)
 
@@ -37,12 +39,15 @@ The L3 library is `crucible-engine`. The `crucible-cli` package produces the
 public executable named `crucible`; package renames preserve that command.
 The former assertion crate's determinism gate vocabulary now belongs to
 `crucible_test_support::assertion`. Production assertion semantics and evaluation
-remain in `crucible-engine`.
+remain in `crucible-engine`. The control API is a native client/service
+contract with session and engine dependencies; it is not a standalone WebAssembly
+format library. Live event-log hub/stream adapters belong to the control server,
+and production VM lifecycle composition belongs to the daemon.
 
 ```text
   L4  CONTROL PLANE
     crucible-session   actor owning one live RuntimeState; control at quanta
-    crucible-control-api    portable versioned control messages and codecs
+    crucible-control-api    native versioned control messages and codecs
     crucible-control-client client transport and lifecycle operations
     crucible-control-server session service and server stream orchestration
     crucible-daemon    long-lived host process hosting sessions over the API
@@ -533,8 +538,8 @@ members = [
   # L0
   "crucible/engine/crucible-determinism",
   # L1
-  "crucible/engine/crucible-engine/protocol/crucible-qemu-shmem",
-  "crucible/engine/crucible-engine/protocol/crucible-qemu-protocol",
+  "crucible/protocol/crucible-qemu-shmem",
+  "crucible/protocol/crucible-qemu-protocol",
   "crucible/engine/crucible-device",
   # L2
   "crucible/qemu/crucible-qemu-host",
@@ -571,16 +576,16 @@ edition = "2021"
 supporting `crucible-fleet-store` binary:
 
 ```toml
-# crates/crucible-qemu-plugin/Cargo.toml
+# crates/crucible/qemu/crucible-qemu-plugin/Cargo.toml
 [lib]
 crate-type = ["cdylib"]
 
-# crates/crucible-cli/Cargo.toml
+# crates/crucible/control/crucible-cli/Cargo.toml
 [[bin]]
 name = "crucible"
 path = "src/main.rs"
 
-# crates/crucible-store/Cargo.toml
+# crates/crucible/storage/crucible-store/Cargo.toml
 [[bin]]
 name = "crucible-fleet-store"
 path = "src/bin/crucible-fleet-store.rs"
@@ -741,7 +746,7 @@ primitives.
     `crucible-qemu-host` each depend on `crucible-engine` with `features = ["test-double"]`
     outside `[dev-dependencies]`, so the in-process double is compiled into the
     shipped closure and is reachable from production code paths. Separately
-    `crates/crucible-engine/Cargo.toml` declares `qemu-backend = []` and no
+    `crates/crucible/engine/crucible-engine/Cargo.toml` declares `qemu-backend = []` and no
     `#[cfg(feature = "qemu-backend")]` exists anywhere in the workspace — the
     feature is a label that suggests a compile-time backend split that does not
     exist.
@@ -750,10 +755,10 @@ primitives.
     non-test module; (2) either implement the `qemu-backend` split behind real
     `cfg` gates or delete the feature; (3) add a workspace lint asserting that
     every declared feature is referenced by at least one `cfg`.
-  - Gate: extend `checks.crucible-engine.phase1.crateFeaturePowerset` to build the
+  - Gate: extend `checks.crucible.phase1.crateFeaturePowerset` to build the
     shipped feature set with `test-double` disabled and fail if any production
     crate requires it.
-  Completed by `checks.crucible-engine.phase1.crateFeaturePowerset`: `SimBackend` is
+  Completed by `checks.crucible.phase1.crateFeaturePowerset`: `SimBackend` is
   now an always-available local backend while the shmem-backed `SimDouble`
   remains behind `crucible-engine/test-double`; shipped crates use plain `crucible-engine`,
   and the live QEMU comparison examples opt into a consumed

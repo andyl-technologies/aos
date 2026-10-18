@@ -97,7 +97,7 @@ the release schema.
 The `aos` CLI calls this library. It is not a daemon and does not publish to the
 Hub.
 
-### `aos` release coordinator
+### Release coordinator library and `aos` command adapter
 
 Add `crates/aos/cli/aos-cli/src/cli/release.rs` and
 `crates/aos/cli/aos-cli/src/commands/release/`. The command implementation owns local
@@ -110,17 +110,19 @@ crates/aos/cli/aos-cli/src/commands/release/
   plan.rs
   build.rs
   finalize.rs
-  author.rs
+  finalize_registry.rs
   publish.rs
   qualification_run.rs
-  channel.rs
+  channel/
   timestamp.rs
   status.rs
   verify.rs
 ```
 
-The coordinator uses `aos-package` as a library for registry operations and
-`aos-hub-client` for Hub transport. It must not parse APR or Hub human-readable
+Reusable signer, capture, journal, and local registry staging implementations
+live in `aos-release-coordinator`. The `aos-cli` maintainer command composes them
+with `aos-registry-authoring` and `aos-hub-client`; it does not depend on package
+installation for registry authoring. It must not parse APR or Hub human-readable
 output.
 
 ## Release schemas
@@ -262,8 +264,10 @@ hide lower-level APR or Hub identifiers needed for recovery.
 ## Atomic registry authoring
 
 Move release-specific code from `registry_ops.rs` into
-`crates/aos/packages/aos-package-manager/src/registry/release/` and introduce an API shaped around a
-complete transaction:
+the registry authoring owner, `aos-registry-authoring`, and introduce an API
+shaped around a complete transaction. A future `registry/release/` module belongs
+under `crates/aos/registry/aos-registry-authoring/src/`; it is a proposed module,
+not an existing package-manager directory:
 
 ```text
 RegistryReleaseTransaction
@@ -296,7 +300,7 @@ uses its manifest-driven API.
 
 ## Signing protocol and adapters
 
-`aos-release` defines the request and response values; effectful adapters live
+`aos-release-format` defines the request and response values; effectful adapters live
 outside the pure crate. A signing request binds:
 
 - schema and signature domain;
@@ -485,7 +489,7 @@ those PRs.
 
 ### PR 1: Release contract and offline verifier
 
-- Add `aos-release` and workspace/Nix packaging integration.
+- Add `aos-release-format` and workspace/Nix packaging integration.
 - Extract shared strict JSON, canonicalization, path-boundary, digest, and
   detached-verification primitives.
 - Implement plan, manifest, matrix, evidence, receipt, and state types.

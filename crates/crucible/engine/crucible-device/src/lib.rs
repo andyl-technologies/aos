@@ -6,7 +6,7 @@
 //! simulation sub-nodes**: each is a scheduling node with an icount-derived
 //! virtual clock, a request inbox, a response outbox, and a deterministic
 //! completion model. The shared lifecycle abstraction is backed by both an
-//! in-process harness queue and real `crucible-shmem` SPSC rings for the block
+//! in-process harness queue and real `crucible-qemu-shmem` SPSC rings for the block
 //! and 9p request/response paths.
 //!
 //! # The COMPUTE-then-DELIVER lifecycle

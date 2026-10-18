@@ -198,6 +198,6 @@ skip + real-substitution path.)
 1. A2+A4 (membership) → 2. A1 (orchestration reorder) + dead-phase cleanup →
 3. A3 (path) → 4. B1/B2 → 5. C.
 
-Verify: `cargo test -p aos-package-manager -p aos-cache` (unit + `apr_cache_cli`);
+Verify: `cargo test -p aos-package-manager -p aos-registry-authoring -p aos-nix-cache` (unit + `apr_cache_cli`);
 `aos test eval`; `aos test fleet apr-release-e2e`. Per repo principles, all test
 tooling is AOS-built (no host/nixpkgs tools).

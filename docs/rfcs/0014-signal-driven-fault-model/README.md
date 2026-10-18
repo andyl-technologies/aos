@@ -7,7 +7,7 @@
   [`07-implementation-plan.md`](07-implementation-plan.md).
 - **Date:** 2026-08-04
 - **PR:** [#187](https://github.com/andyl-technologies/aos/pull/187)
-- **Audience:** anyone working on `crates/crucible-*`, the AOS QEMU patch and
+- **Audience:** anyone working on `crates/crucible/`, the AOS QEMU patch and
   plugin boundary, deterministic device models, scenario authoring, trace
   ingestion, search, replay, or fault-injection documentation.
 

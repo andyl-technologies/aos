@@ -1,4 +1,4 @@
-//! `crucible-qemu` owns host-side QEMU integration.
+//! `crucible-qemu-host` owns host-side QEMU integration.
 //!
 //! Spec index: RFC-0010 files 10, 11.
 //!

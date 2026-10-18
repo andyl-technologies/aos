@@ -1,4 +1,4 @@
-//! `aos-doc` -- Documentation browser for the AOS repository (`aos doc`).
+//! `aos-nix-docs` -- Documentation browser for the AOS repository (`aos doc`).
 //!
 //! This crate builds a searchable index of repository-owned Nix language and
 //! library API guidance and presents it either interactively (a ratatui TUI)

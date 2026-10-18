@@ -900,7 +900,7 @@ spike:  guest HLT vs busy-poll during I/O — busy-poll stays correct but defeat
   Completed by `cargo test --manifest-path crates/Cargo.toml -p crucible-engine --lib
   device`, `cargo test --manifest-path crates/Cargo.toml -p crucible-device`,
   `cargo test --manifest-path crates/Cargo.toml -p crucible`, and
-  the focused `crucible-harness` `harness_lint`
+  the focused `crucible-test-support` `harness_lint`
   `reduction_path_sources_have_no_banned_nondeterminism` subtest.
   `device_rng` forks the per-device stream through the same name-hashed
   `RngStreamId::for_device` and SplitMix64 cursor convention as the engine

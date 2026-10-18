@@ -1,6 +1,6 @@
 //! Record-specific campaign validation over generic content envelopes.
 //!
-//! [`ContentEnvelope`] lives in `crucible-cas`, below campaign semantics, so a
+//! [`ContentEnvelope`] lives in `crucible-store`, below campaign semantics, so a
 //! generic store can walk child references. This module seals construction and
 //! derives the exact child table from each decoded campaign record. Callers
 //! cannot attach extra retention edges or omit referenced content.

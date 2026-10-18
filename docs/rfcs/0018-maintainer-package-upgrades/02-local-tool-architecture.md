@@ -11,7 +11,7 @@ The architecture separates pure decisions from effects without turning either
 side into a separately operated component:
 
 ```text
-shared `aos-contract` + `aos-maintain` libraries
+shared aos-core + aos-package-maintenance libraries
   canonical bytes / update schemas / policy / planner / transitions / verifier
                                 |
                                 v
@@ -29,16 +29,16 @@ remaining one local tool.
 
 ### Shared contract primitives
 
-Extract the canonical JSON, digest, bounded-decoding, and primitive contract
-support already required by RFC-0017 into one small pure crate such as
-`aos-contract`. Both `aos-release` and `aos-maintain` use it. The extraction
-must preserve RFC-0017 fixtures and byte identities; update tooling does not
-create a competing canonical format implementation.
+Use the existing portable `aos_core::{json,digest,limits,identity}` primitives
+shared with `aos-release-format`. The former `aos-contract` package is merged
+into that owner. `aos-package-maintenance` adds update-specific policy and state;
+it does not create a competing canonical format implementation. Preserve
+RFC-0017 fixtures and byte identities.
 
-### `aos-maintain`
+### `aos-package-maintenance`
 
-Add a pure library crate to the existing Rust workspace. It performs no
-filesystem, network, subprocess, Git, Nix, agent, or clock I/O. Callers supply
+The pure library lives at `crates/aos/release/aos-package-maintenance`. It performs
+no filesystem, network, subprocess, Git, Nix, agent, or clock I/O. Callers supply
 all observations explicitly.
 
 It owns:

@@ -1178,7 +1178,7 @@ can cause verification to fail.
 
 ## 2. The `PlatformFetcher` trait
 
-The trait isolates the thin per-platform knowledge layer (endpoint, header, label, encoding) over the reused `aos-net` plumbing. All fetchers share one `TransferEngine` and one `RetryConfig`.
+The trait isolates the thin per-platform knowledge layer (endpoint, header, label, encoding) over the reused `aos-transfer` plumbing. All fetchers share one `TransferEngine` and one `RetryConfig`.
 
 ```rust,ignore
 /// A cross-cloud user-data + instance-metadata acquisition strategy.
@@ -1449,7 +1449,7 @@ Everything else is reuse; these four are the genuinely-new code, all small and i
    network fields AOS consumes with the safe in-tree parser. Unsupported YAML
    syntax fails closed; no general YAML implementation or `unsafe-libyaml`
    enters the early-boot closure.
-3. **`tokio::time::timeout` shim** — `aos-net`'s client is a process-wide singleton with only a 10s `connect_timeout`, and `HttpProtocol::with_client` isn't wired through the engine. Wrap each IMDS `engine.execute(...)` in `tokio::time::timeout` so a black-hole metadata endpoint can't wedge boot.
+3. **`tokio::time::timeout` shim** — `aos-transfer`'s client is a process-wide singleton with only a 10s `connect_timeout`, and `HttpProtocol::with_client` isn't wired through the engine. Wrap each IMDS `engine.execute(...)` in `tokio::time::timeout` so a black-hole metadata endpoint can't wedge boot.
 4. **Per-platform fetchers** — thin `PlatformFetcher` impls (facts-from-docs over `TransferEngine` + `with_header` + `RetryConfig`), recorded-fixture tested off-box. AWS IMDSv2 ([§4](#4-aws-imdsv2-fetcher-cloud-exemplar)) is the reference impl; GCP (`Metadata-Flavor: Google`), Azure (`Metadata:true` + base64 + OVF), DigitalOcean, OpenStack-IMDS follow.
 
 All advertised offline and cloud fetchers are native and recorded-fixture
@@ -1496,7 +1496,7 @@ Grounding files:
 
 ### 1.1 Producer
 
-A new module in `aos-package` (`crates/aos/packages/aos-package-manager/src/attestation.rs`) emits the
+A new module in `aos-package-manager` (`crates/aos/packages/aos-package-manager/src/attestation.rs`) emits the
 record after a generation is materialized and `activate <N>` succeeds. It is a
 serde struct serialized to **canonical JSON** (BTreeMap key ordering, no
 insignificant whitespace — the same canonicalization the manifest hash uses).

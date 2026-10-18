@@ -26,7 +26,7 @@
   2026-06-16):** a single async runtime shared by the native hub and the
   Cloudflare Workers deployment, at **full feature parity** — see
   [`10-unified-runtime.md`](10-unified-runtime.md). This **supersedes** the
-  read-only Workers edge in `crates/aos-registry-worker`.
+  read-only Workers edge now implemented by `crates/hub/aos-hub-worker`.
 
   **Shipped:** the async `Backend` + shared `aos_hub_db::db::Database` (reads
   *and* writes; sqlx native / D1 Workers); a wasm-clean `aos-hub-api`
@@ -56,15 +56,15 @@
   the gap `cargo test` (native-only) can't cover.
 
   The unification extends to **deployment + maintenance**: the native
-  `aos-registry-hub` binary doubles as the installer. Provider-specific work is
-  `aos-registry-hub worker deploy --provider cloudflare` (provision + deploy +
+  `aos-hub` binary, built by `aos-hub-native`, doubles as the installer. Provider-specific work is
+  `aos-hub worker deploy --provider cloudflare` (provision + deploy +
   secrets, packaged with `wrangler` + the Worker wasm as
-  `pkgs.aos-registry-hub-cloudflare`); everything else is provider-neutral over
+  `pkgs.aos-hub-cloudflare`); everything else is provider-neutral over
   `--target`: `init` (migrate + bootstrap root), `reset-root`, and every admin
-  command run the *same* `core::Database` code over the local sqlite file or live
+  command run the *same* `aos_hub_db::db::Database` code over the local sqlite file or live
   D1 (the `WranglerD1Backend`, via `wrangler d1 execute`). Schema migration is
   CLI-driven — there is **no public init endpoint** on the Worker. See
-  `crates/aos-registry-worker/deploy/DEPLOY.md`.
+  `crates/hub/aos-hub-worker/deploy/DEPLOY.md`.
 
   **Proposed continuation (2026-06-17):** hosting managed Nix binary
   **caches** as a first-class sibling of registries — turning the hub from a
@@ -81,8 +81,8 @@
   git-backed change requests; quotas/backup/offboarding.
 - **Date:** 2026-06-12 (Phase 5 addendum: 2026-06-15; wasm spike + Connect-JSON transport decision: 2026-06-16)
 - **PR:** [#99](https://github.com/andyl-technologies/aos/pull/99)
-- **Audience:** anyone working on `crates/aos/packages/aos-package-manager/` (the `apr`/`apm`
-  registry surface), `crates/aos/packages/aos-build-server/`, `crates/aos/packages/aos-build-api/`,
+- **Audience:** anyone working on `crates/aos/registry/` (registry formats, verified reads, and APR authoring)
+  or `crates/aos/packages/aos-package-manager/` (APM installation), `crates/aos/packages/aos-build-server/`, `crates/aos/packages/aos-build-api/`,
   `crates/hub/`, or the
   registry docs under `docs/registry/`.
 

@@ -1,6 +1,6 @@
 //! Crate-local error type.
 //!
-//! `aos-systemd` is deliberately apm-agnostic — it does NOT depend on
+//! `aos-systemd-client` is deliberately apm-agnostic — it does NOT depend on
 //! `aos-core`. The apm-side mapping to `AosError` / exit codes happens at the
 //! call site (via `anyhow` context). `Error` is `Send + Sync + 'static`, so it
 //! threads through `anyhow` cleanly.

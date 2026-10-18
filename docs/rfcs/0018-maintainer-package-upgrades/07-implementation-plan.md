@@ -23,9 +23,9 @@
 
 ## PR 1: Shared contracts and thin maintenance model
 
-Extract RFC-0017's canonical JSON, digest, bounded-decoding, and primitive
-contract support into one pure crate such as `aos-contract`, preserving all
-existing `aos-release` byte fixtures. Add a thin `aos-maintain` crate with:
+Use RFC-0017's existing portable `aos_core::{json,digest,limits,identity}`
+primitives, preserving all `aos-release-format` byte fixtures. The implemented
+`aos-package-maintenance` library owns the update-specific model with:
 
 - inventory envelope, component observation/candidate vector, campaign plan,
   gate plan, run, attempt, mutation, and evidence v1 schemas;

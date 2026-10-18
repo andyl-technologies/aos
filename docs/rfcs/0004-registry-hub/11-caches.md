@@ -453,9 +453,10 @@ and names the native Cargo package `aos-hub-native` while preserving the
 | `pkgs.aos-registry-hub-cloudflare` | `pkgs.aos-hub-cloudflare` |
 | `pkgs.aos-registry-worker-e2e` | `pkgs.aos-hub-worker-e2e` |
 
-`aos-registry-surface` and `aos-registry-spa` **keep** their names — they read
-the registry *git wire surface* specifically (the SPA merely *gains* cache
-closure/NAR views). The runtime env vars are already `HUB_*`
+At that cache-era milestone, `aos-registry-surface` and `aos-registry-spa`
+kept their names because they read the registry *git wire surface*. The current
+monorepo packages are `aos-registry-format` and `aos-registry-web`; the cache
+closure/NAR responsibilities remain with those owners. The runtime env vars are already `HUB_*`
 (`HUB_EXTERNAL_URL`, `HUB_JWT_SECRET`, `HUB_SEAL_KEY`, …), so **no deployed
 Worker secret/var churn** — the rename is crate, bin, Nix-package, justfile,
 and doc naming only. `aos hub …` remains the umbrella subcommand.

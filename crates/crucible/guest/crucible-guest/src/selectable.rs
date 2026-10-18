@@ -1,7 +1,7 @@
 //! Typed guest helpers for the selectable register/request/reply ABI.
 //!
 //! These helpers reuse the native doorbell transport while keeping all byte
-//! ownership and protocol validation in `crucible-protocol`. A request lends
+//! ownership and protocol validation in `crucible-qemu-protocol`. A request lends
 //! one fixed zero-filled buffer to the host; a conforming host replaces that
 //! buffer with one exact sequence-bound reply and clears the unused tail.
 

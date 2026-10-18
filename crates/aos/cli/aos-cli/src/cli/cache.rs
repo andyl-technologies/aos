@@ -8,7 +8,7 @@
 //! HTTP, S3, and SFTP authentication flags.
 //!
 //! Doc comments here are clap `--help` text; the implementation lives in
-//! `commands::cache`, which delegates to the `aos-cache` crate.
+//! `commands::cache`, which delegates to the `aos-nix-cache` crate.
 
 use clap::{Args, Subcommand};
 

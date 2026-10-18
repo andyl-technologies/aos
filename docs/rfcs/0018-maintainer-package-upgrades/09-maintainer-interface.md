@@ -29,7 +29,7 @@ never becomes workflow authority.
 
 ## One presentation model
 
-The pure `aos-maintain` crate defines presentation-neutral types alongside its
+The pure `aos-package-maintenance` crate defines presentation-neutral types alongside its
 workflow types. Durable workflow transitions and transient display progress are
 different contracts:
 

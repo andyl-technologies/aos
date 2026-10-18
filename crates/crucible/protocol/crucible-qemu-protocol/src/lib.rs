@@ -1,5 +1,5 @@
 //! SPDX-License-Identifier: MIT OR Apache-2.0
-//! `crucible-protocol` implements the public host/plugin process protocol.
+//! `crucible-qemu-protocol` implements the public host/plugin process protocol.
 //! Spec index: RFC-0010 files 14, 16.
 //!
 //! This dual-licensed L1 crate implements independently implementable framing,

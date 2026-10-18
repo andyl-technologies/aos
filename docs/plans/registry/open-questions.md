@@ -1,5 +1,15 @@
 # AOS Registry — Open Questions, Risks & Migration Strategy
 
+> **Historical source snapshot:** "CURRENT" and crate names in this planning
+> record describe the git-native registry cutover before the workspace
+> reorganization. Current NAR format/signing code belongs to `aos-nar`;
+> verified registry reads to `aos-registry-client`; producer/signing operations
+> to `aos-registry-authoring`; installation to `aos-package-manager`; and cache
+> transport to `aos-nix-cache`. The live build server is `aos-build-server`.
+> Use the [as-built registry reference](../../registry/current-state.md) and
+> [crate rename map](../../architecture/crate-renames.md) for current ownership.
+
+
 > **Status:** Plan document. Derived from the
 > [design brief](./design-brief.md) §16 (open questions) and §2 / §15 (current
 > state and removed concepts), with risk and migration detail expanded for

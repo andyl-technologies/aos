@@ -4,7 +4,7 @@ use super::*;
 
 /// The shmem slot the link carries frames over (`SLOT_NET_ROUTER`).
 ///
-/// Re-exported from `crucible-shmem` so the slot binding is referenced, never
+/// Re-exported from `crucible-qemu-shmem` so the slot binding is referenced, never
 /// hardcoded ([IO-20]). The QEMU backend performs the concrete ring copy while
 /// this crate owns the deterministic link model.
 pub const LINK_SLOT: usize = SLOT_NET_ROUTER;

@@ -92,6 +92,9 @@ not a Cargo target: its existing `env!` tool paths bind the exact production
 closure during compilation. The owning boot runtime README documents this
 exception; its installed name remains `aos-boot-preparations`.
 
+For a complete old-name → current-owner mapping, including packages whose names
+stay the same, see the [rename reference](crate-renames.md).
+
 ## Merges and extractions
 
 - `aos-contract` is merged into the portable `aos_core::{json,digest,limits}`.

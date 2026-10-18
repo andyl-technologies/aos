@@ -523,7 +523,7 @@ impl From<AdversarialComparisonError> for E2eGateError {
 /// Shared-memory ABI version used by canonical harness identities.
 ///
 /// The included expression is compile-time checked against the authoritative
-/// [`crucible_qemu_shmem::ABI_VERSION`](https://docs.rs/crucible-shmem) declaration
+/// [`crucible_qemu_shmem::ABI_VERSION`](https://docs.rs/crucible-qemu-shmem) declaration
 /// inside the owning crate without adding a runtime dependency from this
 /// test-only harness.
 pub const CANONICAL_SHMEM_ABI_VERSION: u32 =

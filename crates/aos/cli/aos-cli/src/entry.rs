@@ -485,7 +485,7 @@ async fn run(cli: &Cli, printer: &Printer) -> Result<()> {
 /// Rejects entrypoints that necessarily operate on host boot or device state.
 ///
 /// Package-manager and registry-authoring paths are guarded within
-/// `aos-package`, where their complete command shapes are available. This
+/// `aos-package-manager`, where their complete command shapes are available. This
 /// top-level guard owns the repository CLI: the QEMU lifecycle and boot
 /// metadata agent are rejected, while portable builds, signed image downloads,
 /// and container publication remain available.
@@ -493,7 +493,7 @@ fn validate_container_runtime(command: &Commands) -> Result<()> {
     let runtime = std::env::var_os("AOS_RUNTIME");
     validate_runtime(command, runtime.as_deref())?;
 
-    // The independent apm/apr processes synchronize inside `aos-package`.
+    // The independent apm/apr processes synchronize inside `aos-package-manager`.
     // Every admitted repository command waits here so `docker exec aos ...`
     // cannot race PID-1 setup.
     if runtime.as_deref() == Some(OsStr::new("container")) {

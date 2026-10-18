@@ -1253,7 +1253,7 @@ authority for its shape. The contract those files may rely on:
     times, undeclared property refs, empty compound predicates, white-box ready
     points without opt-in and zero fixed vCPU counts. `WorldNode` carries fixed
     `smp_vcpus`, and the global 1000-tick-per-nanosecond scale participates in
-    world/scenario identity; `crucible-qemu` launch-profile validation mirrors
+    world/scenario identity; `crucible-qemu-host` launch-profile validation mirrors
     those rows before spawn and continues to
     reject MTTCG/non-pinned launch material. The focused
     `scenario_def_form_rejects_well_formedness_matrix_before_hashing` test and

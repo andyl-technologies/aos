@@ -56,7 +56,7 @@ pub use snapshot::{BlockSnapshot, BlockSnapshotCodecError, MAX_BLOCK_SNAPSHOT_BY
 /// leave room for the fixed [`RESPONSE_HEADER_LEN`]-byte response header. A read
 /// whose `count` exceeds this is rejected with an error status ([IO-8]) rather
 /// than emitting an un-transportable frame. The bound is derived from the
-/// `crucible-shmem` constant, never hardcoded, so it tracks the ABI.
+/// `crucible-qemu-shmem` constant, never hardcoded, so it tracks the ABI.
 pub const MAX_READ_BYTES: usize = crucible_qemu_shmem::MAX_FRAME_DATA - RESPONSE_HEADER_LEN;
 
 /// The deterministic completion-latency model for the block device.

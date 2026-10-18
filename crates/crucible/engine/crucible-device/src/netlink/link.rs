@@ -29,7 +29,7 @@
 //! ```
 //!
 //! The concrete QEMU transport drains and fills the `SLOT_NET_ROUTER` rings in
-//! `crucible-qemu`'s network I/O servicer. This device-level type deliberately
+//! `crucible-qemu-host`'s network I/O servicer. This device-level type deliberately
 //! owns only deterministic scheduling and fault transforms. It references the
 //! slot constant and stamps each delivery's `src_node`/`seq` into a
 //! [`FrameDeliveryKey`] so the modeled order matches the transport.

@@ -344,7 +344,7 @@ impl CacheBackend for HttpBackend {
         }
         if self.is_aos {
             // AOS servers generate narinfo on demand from the ValidPaths DB
-            // (see `narinfo_handler` in aos-server/src/routes.rs:155-219).
+            // (see `narinfo_handler` in `aos-build-server/src/routes.rs`).
             // There is no PUT-narinfo route — uploading a NAR via
             // `PUT /{view}/store/{hash}` or `POST /{view}/upload-pack`
             // registers the path and the narinfo becomes synthesisable.
@@ -391,14 +391,14 @@ impl CacheBackend for HttpBackend {
                 None => anyhow::bail!("Hub requires unsupported multipart for this NAR upload"),
             };
         }
-        // TODO(aos-cache push >1MB): when is_aos == true, this path is
+        // TODO(aos-nix-cache push >1MB): when is_aos == true, this path is
         // broken on two axes:
         //   1. URL: PUT goes to {base_url}/nar/{filename}, but the
         //      server's only PUT route is /{view}/store/{hash}
-        //      (aos-server/src/routes.rs). 405.
+        //      (`aos-build-server/src/routes.rs`). 405.
         //   2. Body: the server pipes `body` into `nix-store --import`,
         //      which expects (raw NAR + ExportTrailer), not compressed
-        //      NAR. See `streaming_import` in aos-cache/src/compress.rs
+        //      NAR. See `streaming_import` in `aos-nix-cache/src/compress.rs`
         //      for the inverse format.
         // Untriggered in-tree under default `--batch-threshold 1MB`.
         // Fixing properly needs either a new server route accepting
@@ -991,7 +991,7 @@ impl CacheBackend for HttpBackend {
             .body
             .ok_or_else(|| anyhow::anyhow!("empty upload-pack response"))?;
         // Server wraps the imported paths in
-        // `{accepted, rejected, paths}` (aos-server/src/routes.rs's
+        // `{accepted, rejected, paths}` (`aos-build-server/src/routes.rs`'s
         // `upload_pack_handler`). Extract just the `paths` array; the
         // counts are tracing-only metadata.
         #[derive(serde::Deserialize)]

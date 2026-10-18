@@ -1,5 +1,15 @@
 # AOS Registry — Gap Analysis (current code → git-native target)
 
+> **Historical source snapshot:** "CURRENT" and crate names in this planning
+> record describe the git-native registry cutover before the workspace
+> reorganization. Current NAR format/signing code belongs to `aos-nar`;
+> verified registry reads to `aos-registry-client`; producer/signing operations
+> to `aos-registry-authoring`; installation to `aos-package-manager`; and cache
+> transport to `aos-nix-cache`. The live build server is `aos-build-server`.
+> Use the [as-built registry reference](../../registry/current-state.md) and
+> [crate rename map](../../architecture/crate-renames.md) for current ownership.
+
+
 > **Status:** Plan-grade gap analysis. Grounding source is
 > [`design-brief.md`](./design-brief.md) (§2, §3, §15 in particular). When this
 > doc disagrees with the brief on *target intent*, the brief wins; when it

@@ -61,7 +61,7 @@ implementation delta remains disabled.
 
 ## 11.3 Phase 1 — Canonical campaign model
 
-Primary crates: `crucible-campaign`, `crucible`, `crucible-cas`, and codec-only
+Primary crates: `crucible-campaign`, `crucible-engine`, `crucible-store`, and codec-only
 API types.
 
 - [x] **T-CAM-1.1** Implement `CampaignLineage`, `CampaignPolicy`,
@@ -111,7 +111,7 @@ native QEMU qualification.
 
 ## 11.4 Phase 2 — Typed choice model and guest protocol
 
-Primary crates: `crucible`, `crucible-protocol`, `crucible-shmem`,
+Primary crates: `crucible-engine`, `crucible-qemu-protocol`, `crucible-qemu-shmem`,
 `crucible-guest`, `crucible-qemu-plugin`, and QEMU launch integration.
 
 - [x] **T-CAM-2.1** Implement Boolean, discrete, and integer domains; stable
@@ -169,7 +169,7 @@ restart proves exact resume and forward progress. Close T-CAM-2.8 when this
 packaged product/checkpoint gate records a green exact-head result.
 
 The version-1 selectable ABI is now a pure, architecture-independent codec in
-`crucible-protocol` with closed register/request/reply kinds, a 4,608-byte
+`crucible-qemu-protocol` with closed register/request/reply kinds, a 4,608-byte
 aggregate bound, checked dense byte ranges, exact request/reply sequence
 binding, a zero-filled mutable reply reservation, and a closed typed rejection
 vocabulary. `crucible-guest` emits immutable setup registrations and validates
@@ -275,8 +275,8 @@ proof required to close T-CAM-2.8 once its exact-head gate is green.
 
 ## 11.5 Phase 3 — Measurements and objectives
 
-Primary crates: `crucible`, `crucible-guest`, `crucible-qemu-plugin`, and
-`crucible-api`.
+Primary crates: `crucible-engine`, `crucible-guest`, `crucible-qemu-plugin`,
+`crucible-control-api`, `crucible-control-client`, and `crucible-control-server`.
 
 - [x] **T-CAM-3.1** Add scenario measurement definitions, boundary selectors,
   cohort rules, metric types, exact aggregations, and canonical stop outcomes.
@@ -361,7 +361,7 @@ extensions under `gate:abi-conformance`.
 ## 11.6 Phase 4 — Lazy local campaign supervisor
 
 `checks.crucible.phase4.projectQuotaVm` now exercises the production
-`crucible-linux-resource` API against real ext4 inside a disposable Firecracker
+`aos-linux-project-quota` API against real ext4 inside a disposable Firecracker
 guest. Unprivileged writers encounter both hard-byte and hard-inode quota
 limits; a nonempty release retains its exact authority, and emptied/released
 projects can be reused. The host needs KVM, not an ext4 mount or quota changes.
@@ -669,8 +669,8 @@ repository/planner scale results, not real-QEMU lifecycle or pressure evidence.
 All six packaged campaign VM cases also pass with the indexed request-budget
 and ordered-frontier build; their execution scope remains unchanged.
 
-Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
-`crucible-daemon`.
+Primary crates: `crucible-engine`, `crucible-store`, `crucible-control-api`, `crucible-control-client`,
+`crucible-control-server`, and `crucible-daemon`.
 
 - [x] **T-CAM-4.1** Implement bounded finite and versioned generated
   `CandidateSource` forms plus generator specs for all/discrete, boundary,
@@ -1645,7 +1645,7 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
 
 ## 11.7 Phase 5 — Composable content stores and durable closure efficiency
 
-Primary crates: `crucible-cas` and `crucible-api` lifecycle/checkpoint code.
+Primary crates: `crucible-store` and `crucible-control-server`/`crucible-daemon` lifecycle/checkpoint code.
 
 - [x] **T-CAM-5.1** Introduce separate streaming `ImmutableBlobBackend` and
   conditional `MutableRefBackend` traits, capability and error models, and
@@ -1793,7 +1793,7 @@ capability must match that endpoint identity. The leaf authenticates sources
 before and during multipart upload, conditionally completes without replacing
 an existing content-addressed key, authenticates full and range reads, and
 fails closed when multipart cleanup cannot be confirmed. The concrete
-`crucible-s3-store` AWS SDK adapter adds bounded queue, active-operation, and
+`crucible-store-s3` AWS SDK adapter adds bounded queue, active-operation, and
 retained-command-byte admission, one absolute deadline over each SDK/stream operation, explicit
 credential/availability/protocol error classes, and conditional completion. Tests cover multipart
 round trip, range authentication, exact replay, corruption, interruption,
@@ -2171,7 +2171,8 @@ pass.
 
 ## 11.10 Phase 8 — User-facing porcelain
 
-Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
+Primary crates: `crucible-cli`, `crucible-control-api`, `crucible-control-client`,
+`crucible-control-server`, and `crucible-daemon`.
 
 - [x] **T-CAM-8.1** Implement campaign create/validate/start/pause/resume/stop,
   budget, steer, semantic `branch`, campaign `derive`, status, and watch. The

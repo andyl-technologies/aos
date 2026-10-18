@@ -26,11 +26,11 @@ The registry URL is simultaneously:
    plain-Nix compatibility is unconditional only for *public*
    registries — Nix's substituter auth is netrc-based, so for private
    registries the facade also accepts HTTP basic auth with a token as
-   the password (the netrc bridge); `apm`/`aos-cache` use bearer
+   the password (the netrc bridge); `apm`/`aos-nix-cache` use bearer
    tokens natively.
 
 Private registries enforce bearer-token auth on the machine paths —
-which `apm` and `aos-cache` already know how to send.
+which `apm` and `aos-nix-cache` already know how to send.
 
 ### CLI convergence — the "like magic" contract
 

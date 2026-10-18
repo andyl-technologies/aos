@@ -868,7 +868,7 @@ The session drives VMs through a **pluggable backend trait**, never against a
 QEMU-specific type. This is what lets the *same* session, scheduler, and command
 set run against three backends interchangeably:
 
-- the **real QEMU backend** (`crucible-qemu`, 10) for fidelity;
+- the **real QEMU backend** (`crucible-qemu-host`, 10) for fidelity;
 - the **in-process test double** (`SimDouble`, 24 §3) for fast, deterministic
   testing of all host orchestration (scheduling, transport, save/restore, fork,
   the whole control plane) without booting a guest;

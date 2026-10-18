@@ -195,7 +195,7 @@ and rejection of an external credential realm. Final combined results are in
 `apr channel` authors signed Git rollout state, while `aos maintain release step channel`
 verifies deployment identity and signed receipts before performing a
 production compare-and-swap through Hub
-(`crates/aos/cli/aos-cli/src/commands/release/channel.rs:90`). The latter dependency is
+(`crates/aos/cli/aos-cli/src/commands/release/channel/mod.rs:90`). The latter dependency is
 required for the command's authority and audit guarantees.
 
 Keep the command families distinct in help and documentation:

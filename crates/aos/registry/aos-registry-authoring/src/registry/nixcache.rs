@@ -8,7 +8,7 @@
 //! optionally Ed25519-signed.
 //!
 //! The cache is laid out on disk first ([`generate_static_cache`]) and then
-//! mirrored to one or more upload destinations via `aos-cache` backends
+//! mirrored to one or more upload destinations via `aos-nix-cache` backends
 //! ([`upload_static_cache`], [`upload_static_cache_to_all`]).
 //! [`upsert_registry_cache`] records the published cache URL in the
 //! registry's `registry.toml` so consumers discover it after sync.

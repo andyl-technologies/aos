@@ -152,7 +152,7 @@ In `crates/aos/packages/aos-nix-cache` (`backend/mod.rs` + `backend/http.rs` + `
   initiate → N× upload_part (streaming each chunk from the compressor, never
   holding the whole NAR) → complete. Otherwise keep the single `PUT`.
 - The HTTP backend issues the protocol above with `Authorization: Bearer`.
-  (`aos-net` already has `TransferBody::Stream`; parts can be fed without a full
+  (`aos-transfer` already has `TransferBody::Stream`; parts can be fed without a full
   buffer.)
 
 ## Files (ordered, smallest blast radius first)

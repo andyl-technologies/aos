@@ -1,7 +1,7 @@
 # Phase 5: one async runtime, full Cloudflare/native parity
 
 - **Status:** Complete (2026-06-17). **Data layer + handler unification landed**
-  (PR #99): the async `Backend` trait, the shared `aos-registry-core::Database`
+  (PR #99): the async `Backend` trait, the shared `aos_hub_db::db::Database`
   (reads *and* writes), and the worker's `D1Backend` all ship. The handler
   unification — where parity is won — is **done**: the facade, browse UI, JSON
   API, RPC, auth, and producer console all live in one shared `axum` router in
@@ -22,9 +22,13 @@
 - **Audience:** `crates/hub/aos-hub-native/`, `crates/hub/aos-hub-worker/`,
   `crates/hub/aos-hub-api/`, the `aos` CLI (`crates/aos/cli/aos-cli/`, `crates/aos/packages/aos-build-client/`).
 
-> Code links reflect the tree at the time of writing and are illustrative
-> of the proposal; this is a design record, not a description of shipped
-> behavior.
+> The proposal, topology sketch and dated spike below retain their original
+> `aos-registry-*` names. Current ownership is split across `aos-hub-model`,
+> `aos-hub-db` and `aos-hub-service`, deployed by `aos-hub-native` and
+> `aos-hub-worker`; the portable registry verifier is `aos-registry-format`.
+> Database backends and SQL drivers now belong to `aos-hub-db`, not the native
+> shell alone. See the [current map](README.md#current-workspace-ownership).
+> Historical paths and spike results below are not current build instructions.
 
 ## Current crate boundaries
 
@@ -45,12 +49,12 @@ project-scoped boundaries.
 Phases 1–4 shipped the hub as a native binary. The Cloudflare deployment
 was then spiked as a **separate, read-only** Worker
 (`crates/aos-registry-worker`). The two share only
-`aos-registry-surface` (~500 LOC: the pure Ed25519/SSHSIG verifier).
+`aos-registry-format` (~500 LOC: the pure Ed25519/SSHSIG verifier).
 Everything else on the read path is implemented twice:
 
 | Read-path concern | Worker | Native hub | Status |
 | --- | --- | --- | --- |
-| Signature verification | `aos-registry-surface` | `aos-registry-surface` | **shared** |
+| Signature verification | `aos-registry-format` | `aos-registry-format` | **shared** |
 | Machine-path facade (git/nix-cache) | `src/facade.rs` + `src/keymap.rs` | `src/compat.rs` | duplicated (~900 LOC) |
 | Indexer orchestration | `src/indexer.rs` + `src/indexlogic.rs` | `src/indexer.rs` | duplicated |
 | Browse UI HTML | `src/render.rs` | `src/ui/render.rs` + `src/ui/pages.rs` | duplicated |

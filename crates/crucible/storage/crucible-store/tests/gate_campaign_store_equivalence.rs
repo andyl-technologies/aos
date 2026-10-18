@@ -2,7 +2,7 @@
 //!
 //! The gate applies one shared semantic contract to every local immutable
 //! implementation and to every local mutable-ref implementation. S3-compatible
-//! leaves use the same contract in `crucible-s3-store`'s live conformance target.
+//! leaves use the same contract in `crucible-store-s3`'s live conformance target.
 
 // crucible-lint: allow panic-shortcut -- gate assertions identify the violated backend contract.
 #![allow(clippy::expect_used)]

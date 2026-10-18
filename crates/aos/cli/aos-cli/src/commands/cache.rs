@@ -19,7 +19,7 @@ use crate::cli::{CacheAuthArgs, CacheCmd};
 /// # Errors
 ///
 /// Returns an error if the cache URL cannot be resolved to a backend or
-/// if the delegated `aos-cache` operation fails (evaluation, transfer,
+/// if the delegated `aos-nix-cache` operation fails (evaluation, transfer,
 /// or authentication).
 pub async fn run(printer: &Printer, cmd: &CacheCmd) -> Result<()> {
     match cmd {

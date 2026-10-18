@@ -20,8 +20,8 @@
 //! same store directory.
 //!
 //! Mirrors `aos_build_server::aos_root()`'s reading of the same env var, but
-//! lives in `aos-nix` so the CLI side (`aos-cache`, `aos`) doesn't
-//! pull in `aos-server` as a dependency.
+//! lives in `aos-nix` so the CLI side (`aos-nix-cache`, `aos-cli`) doesn't
+//! pull in `aos-build-server` as a dependency.
 
 use std::path::Path;
 use std::process::Command;

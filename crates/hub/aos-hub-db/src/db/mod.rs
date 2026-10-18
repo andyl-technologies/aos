@@ -254,7 +254,7 @@
 //! - `org_quotas` caps an org's hub-managed storage: bytes, object count,
 //!   registries, and active tokens. A `NULL` cell is unlimited; typed upload
 //!   admission rejects an over-quota write with `507 Insufficient Storage`
-//!   ([`Database::would_exceed_quota`]), matching `aos-server`'s `max_paths`
+//!   ([`Database::would_exceed_quota`]), matching `aos-build-server`'s `max_paths`
 //!   contract.
 //! - `org_usage` holds running totals maintained on every successful upload
 //!   ([`Database::add_org_usage`]). Usage is *approximate* — it counts bytes as
@@ -494,7 +494,7 @@ pub use worker_jobs::*;
 
 /// Grace period, in seconds, during which a rotated token's old secret
 /// keeps validating after its `revoked_at` stamp (RFC-0004 fixes the
-/// `aos-server` bug where this window was recorded but not honored).
+/// `aos-build-server` bug where this window was recorded but not honored).
 const ROTATION_GRACE_SECS: i64 = 3600;
 
 /// Maximum `audit_log` rows scanned per [`Database::list_audit`] call.

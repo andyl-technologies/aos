@@ -1,6 +1,6 @@
 ## Alternatives considered
 
-- **Extend `aos-server` instead of a new crate.** `aos-server` is a
+- **Extend `aos-build-server` instead of a new crate.** `aos-build-server` is a
   build + ephemeral-cache server (views, TTLs, `nix-store --realise`)
   with a tokio/axum/process-spawning core that cannot target Workers.
   The hub's job — tenancy, indexing, static-surface facade — is
