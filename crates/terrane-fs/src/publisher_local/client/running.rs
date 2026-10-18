@@ -26,7 +26,7 @@ use crate::{
 pub(crate) struct PublisherRunningContext {
     session: Arc<Client<HostDomainLocation>>,
     epoch: u64,
-    _completed: CompletedRecovery,
+    _completed: Box<CompletedRecovery>,
 }
 
 impl PublisherRunningContext {
@@ -65,12 +65,12 @@ pub(crate) enum ResumeFailureStage {
 pub(crate) struct ResumeFailure {
     error: Error,
     stage: ResumeFailureStage,
-    completed: CompletedRecovery,
+    completed: Box<CompletedRecovery>,
 }
 
 impl ResumeFailure {
     /// Returns the physical failure with its original completion custody intact.
-    pub(crate) fn into_parts(self) -> (Error, ResumeFailureStage, CompletedRecovery) {
+    pub(crate) fn into_parts(self) -> (Error, ResumeFailureStage, Box<CompletedRecovery>) {
         (self.error, self.stage, self.completed)
     }
 }
@@ -180,7 +180,7 @@ impl Client<HostDomainLocation> {
     /// barrier and requires actual recovery, including a lost Resume reply.
     pub(crate) fn resume_completed(
         &self,
-        completed: CompletedRecovery,
+        completed: Box<CompletedRecovery>,
         turn: &mut PublisherResumeTurn<'_>,
     ) -> Result<PublisherRunningContext, ResumeFailure> {
         let mut stage = ResumeFailureStage::BeforeSubmission;

@@ -22,7 +22,7 @@ pub(in crate::host_cache::owner) struct NativeOwnerExecutor {
     custody: Arc<Mutex<Custody>>,
     worker: ThreadId,
     running: Option<Arc<PublisherRunningContext>>,
-    failed_resume: Option<(ResumeFailureStage, CompletedRecovery)>,
+    failed_resume: Option<(ResumeFailureStage, Box<CompletedRecovery>)>,
     admission_jobs: Vec<Arc<Mutex<super::super::admission::AdmissionJob>>>,
     inline_publications: Vec<Arc<Mutex<super::super::publication::InlineJob>>>,
     adopted_inline: Vec<super::super::recovery_inline::AdoptedInline>,
@@ -436,7 +436,7 @@ impl NativeOwnerExecutor {
     /// # Errors
     /// Refuses repeated handoffs, stale completion, failed or uncertain RPCs,
     /// and poisoned custody while retaining the accepted physical outcome.
-    pub(super) fn resume(&mut self, completed: CompletedRecovery) -> io::Result<()> {
+    pub(super) fn resume(&mut self, completed: Box<CompletedRecovery>) -> io::Result<()> {
         if self.running.is_some() || self.failed_resume.is_some() {
             return Err(io::Error::other("owner already retained a Resume outcome"));
         }

@@ -165,6 +165,16 @@ fn check_parts(
         + 32 * size_of::<String>()
         + 32 * 128;
     add(jobs, physical)?;
+
+    // Queued commands keep large repair custody behind a box. Resume retains
+    // its original queued completion box through either RPC outcome. Count the
+    // pointees as well as command headers rather than treating indirection as
+    // a reduction in simultaneous retained storage.
+    let command = size_of::<super::super::retention::Command>()
+        + size_of::<crate::host_cache::DerivedIndexRepair>()
+        + size_of::<crate::host_cache::CompletedRecovery>();
+    add(jobs, command)?;
+
     // Preserve checked descriptor-count arithmetic independently of byte sums.
     jobs.checked_mul(24).ok_or_else(overflow)?;
     Ok(total)

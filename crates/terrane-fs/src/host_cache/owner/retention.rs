@@ -102,7 +102,7 @@ pub(super) enum Command {
     },
     /// Repairs one missing detached index under durable source custody.
     RepairIndex {
-        source: DerivedIndexRepair,
+        source: Box<DerivedIndexRepair>,
         response: oneshot::Sender<io::Result<NativeIndexRepairReport>>,
     },
 }
@@ -288,7 +288,7 @@ impl NativeMetadataOwner {
                             completed,
                             response,
                         } => {
-                            let result = executor.resume(*completed);
+                            let result = executor.resume(completed);
                             // The executor retains the physical outcome before reply.
                             let _ = response.send(result);
                         }
@@ -307,7 +307,7 @@ impl NativeMetadataOwner {
                         Command::RepairIndex { source, response } => {
                             let result = executor
                                 .check_recovery_phase()
-                                .and_then(|()| runtime.block_on(repair_index(&executor, source)));
+                                .and_then(|()| runtime.block_on(repair_index(&executor, *source)));
                             // Actual source/temporary custody and durable holds
                             // belong to the worker, never to this reply waiter.
                             let _ = response.send(result);
@@ -432,7 +432,10 @@ impl NativeMetadataOwner {
         self.commands
             .as_ref()
             .ok_or_else(|| io::Error::other("metadata owner stopped"))?
-            .try_send(Command::RepairIndex { source, response })
+            .try_send(Command::RepairIndex {
+                source: Box::new(source),
+                response,
+            })
             .map_err(|error| match error {
                 mpsc::TrySendError::Full(_) => {
                     io::Error::new(io::ErrorKind::WouldBlock, "metadata owner queue is full")

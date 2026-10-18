@@ -73,7 +73,7 @@ pub(crate) enum RecoveryBody<L: HostReadLocation> {
     /// Contains independently verified inline content and a lifecycle name.
     Sealed {
         /// The actual readonly file, kernel seal, claim and retained root.
-        object: super::PeerPublishedObject<L>,
+        object: Box<super::PeerPublishedObject<L>>,
         /// The actual publisher-issued inode observation for this drain epoch.
         observation: BodyIncarnationObservation<L>,
     },
@@ -209,7 +209,7 @@ impl<L: HostReadLocation> Client<L> {
                 claim,
             )
             .map(|object| RecoveryBody::Sealed {
-                object,
+                object: Box::new(object),
                 observation,
             }),
             None => self
