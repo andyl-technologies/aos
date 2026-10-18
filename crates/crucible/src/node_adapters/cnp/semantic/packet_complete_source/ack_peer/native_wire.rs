@@ -403,3 +403,9 @@ mod restored_suffix;
 
 pub use restored_suffix::PacketCompleteNativeRestoredSuffixStartupWire;
 pub(super) use restored_suffix::counter_scratch_data as original_restored_suffix_wire_counter_scratch_data;
+
+#[path = "native_wire/restored_settled.rs"]
+mod restored_settled;
+
+pub use restored_settled::PacketCompleteNativeRestoredSettledStartupWire;
+pub(super) use restored_settled::counter_scratch_data as original_restored_settled_wire_counter_scratch_data;

@@ -167,3 +167,9 @@ fn decode_storage(
         >());
     NodeRuntime::capture_selected_json_decode_storage(bytes, slot, map, maximum)
 }
+
+#[path = "archive_semantics/decoded_storage.rs"]
+pub(super) mod decoded_storage;
+
+#[path = "archive_semantics/initial15.rs"]
+pub(super) mod initial15;

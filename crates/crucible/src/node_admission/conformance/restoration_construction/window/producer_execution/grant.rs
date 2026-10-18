@@ -15,6 +15,10 @@ impl CompleteOriginalRestorationWindow {
         node: &crucible_node_contract::Id,
         work: (usize, usize, usize),
     ) -> Result<usize, RuntimeError> {
+        if self.restored_capture_in_flight.get() {
+            return Err(RuntimeError::OutstandingObligations);
+        }
+
         self.authenticate_current_observation_runtime_data(runtime, plan, world)?;
         let candidate = self
             .producer_publication
@@ -113,6 +117,10 @@ impl CompleteOriginalRestorationWindow {
         world: &WorldActivation,
         selected: usize,
     ) -> Result<(), RuntimeError> {
+        if self.restored_capture_in_flight.get() {
+            return Err(RuntimeError::OutstandingObligations);
+        }
+
         self.authenticate_current_observation_runtime_data(runtime, plan, world)?;
         self.whole_observation.authenticate_dispatch_data()?;
         let candidate = self

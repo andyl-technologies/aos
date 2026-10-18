@@ -135,6 +135,31 @@ impl PacketCompleteReportStartupHolder {
             .map_err(|_| RuntimeError::OwnerBusy)?
             .prepare_original_complete_scheduler(&window, &plan, &context)?;
         Self::recheck_original_restoration_transaction_data(original, activation)?;
+        // A selected17 world funds and retains its inherited coordinator log
+        // before Arm or durable publication. The initializer invalidates the
+        // whole census, so the next effect needs a new actual observation.
+        let coordinator17_selected = {
+            let held = original.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
+            let mut selected = 0;
+            for source in &held.authority.roster.sources {
+                if source.is_original_restored_settled_capture_declaration_data()? {
+                    selected += 1;
+                }
+            }
+            if selected != 0 && selected != held.authority.roster.sources.len() {
+                return Err(RuntimeError::UnsupportedFacet);
+            }
+            selected != 0
+        };
+        if coordinator17_selected {
+            capsule
+                .try_borrow()
+                .map_err(|_| RuntimeError::OwnerBusy)?
+                .initialize_original_complete_coordinator17_before_activation(
+                    &window, &plan, &context,
+                )?;
+            Self::recheck_original_restoration_transaction_data(original, activation)?;
+        }
         capsule
             .try_borrow_mut()
             .map_err(|_| RuntimeError::OwnerBusy)?

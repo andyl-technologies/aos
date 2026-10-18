@@ -343,6 +343,9 @@ pub use restored_suffix::{
 
 pub(crate) use restored_suffix::original_native_restored_suffix_observation_required_storage_data;
 
+/// Lends actual typed Producer partials for independent historical accounting.
+pub use super::complete_restore::producer_progress::PacketRestoredProducerTypedOwnerData;
+
 /// Exposes closed borrowed lifecycle projections without enabling native dispatch.
 pub use restored_suffix::{
     PacketRestoredProducerArgumentsData, PacketRestoredProducerLifecycleInputs,
@@ -386,8 +389,8 @@ pub use restored_settled_capture_ingress::{
 
 pub(crate) use restored_action17::{
     NativeRestoredSettledActionAttempt, NativeRestoredSettledActionCurrent17,
-    original_restored_settled_action_ingress_row_data,
     original_restored_settled_action_counter_scratch_data,
+    original_restored_settled_action_ingress_row_data,
 };
 pub(crate) use restored_settled_capture_output::NativeCaptureOutputCut17;
 
@@ -400,8 +403,7 @@ pub(crate) use restored_settled_capture_ingress::{
 #[path = "native_startup/restored_input_reactive17_ingress.rs"]
 mod restored_input_reactive17_ingress;
 pub(crate) use restored_input_reactive17_ingress::{
-    NativeRestoredInputReactive17Attempt,
-    original_restored_input_reactive17_ingress_row_data,
+    NativeRestoredInputReactive17Attempt, original_restored_input_reactive17_ingress_row_data,
 };
 
 // Pure defining wrapper, sizing and correspondence leaves; none installs credit.

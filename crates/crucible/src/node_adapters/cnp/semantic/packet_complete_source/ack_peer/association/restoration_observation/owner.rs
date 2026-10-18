@@ -1,6 +1,9 @@
 //! Keeps every Source observation partial beneath its original once attempt.
 
 use super::*;
+
+#[path = "owner/checkpoint_cache17.rs"]
+mod checkpoint_cache17;
 use std::io;
 
 const BANKS: usize = 4;
@@ -386,5 +389,275 @@ impl OriginalSourceRestorationObservationAttempt {
             return Err(RuntimeError::UnsupportedFacet);
         };
         Ok((self.record()?, producer, &self.scheduling()?.proof_ref))
+    }
+}
+
+#[path = "owner/logical17.rs"]
+mod logical17;
+
+/// Lends the complete original Source-owned once-observation partial graph.
+///
+/// Historical model evidence stays distinct from the latest current checkpoint.
+/// No private process identity, pointer or live OnceCell constructor is encoded.
+pub(crate) struct OriginalSourceFirstObservationHistoryData<'a> {
+    original: &'a OriginalSourceRestorationObservationAttempt,
+    records: &'a std::cell::RefCell<
+        crucible_node_provider::retained_metadata::records::MetadataRecordBank,
+    >,
+    aliases: &'a std::cell::RefCell<
+        crucible_node_provider::retained_metadata::aliases::MetadataAliasBank,
+    >,
+}
+
+impl OriginalSourceRestorationObservationAttempt {
+    /// Lends an already verified first checkpoint as DATA for either native model.
+    ///
+    /// # Errors
+    /// Refuses an incomplete actual first observation or missing retained owner.
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn original_capture_checkpoint_data(
+        &self,
+    ) -> Result<
+        (
+            &PacketNativeRestoredRecord,
+            &PacketNative5UnderlyingRecord,
+            &ContentRef,
+        ),
+        RuntimeError,
+    > {
+        self.authenticate_verified()?;
+        Ok((
+            self.record()?,
+            self.underlying()?,
+            &self.scheduling()?.proof_ref,
+        ))
+    }
+
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn historical_data<'a>(
+        &'a self,
+        records: &'a std::cell::RefCell<
+            crucible_node_provider::retained_metadata::records::MetadataRecordBank,
+        >,
+        aliases: &'a std::cell::RefCell<
+            crucible_node_provider::retained_metadata::aliases::MetadataAliasBank,
+        >,
+    ) -> OriginalSourceFirstObservationHistoryData<'a> {
+        OriginalSourceFirstObservationHistoryData {
+            original: self,
+            records,
+            aliases,
+        }
+    }
+
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn historical_metadata_demand_data(
+        &self,
+    ) -> Result<
+        (
+            crucible_node_provider::retained_metadata::RetainedProtocolMetadataFacts,
+            usize,
+        ),
+        RuntimeError,
+    > {
+        if self.underlying.is_some() && self.record.is_none() {
+            return Err(RuntimeError::InvalidReceipt);
+        }
+        let Some(record) = self.record.as_ref() else {
+            return Ok((Default::default(), 0));
+        };
+        let facts =
+            restoration_activation_retained_native_evidence_data(record, self.underlying.as_ref())
+                .map_err(|_| RuntimeError::ResourceLimit)?;
+        let transient = crucible_node_provider::reference_packet::service::complete_restore::activation::restoration_activation_historical_native_evidence_transient_bytes_data(
+            record, self.underlying.as_ref(),
+        ).map_err(|_| RuntimeError::ResourceLimit)?;
+        Ok((facts, transient))
+    }
+}
+
+struct HistoricalCommon<'a, T: ?Sized>(&'a T);
+
+impl<
+    T: serde::Serialize
+        + crate::node_contract::restored_owner_history::OriginalRestoredOwnerCapacityWalk
+        + ?Sized,
+> serde::Serialize for HistoricalCommon<'_, T>
+{
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::{Error, SerializeStruct};
+        let capacities =
+            crate::node_contract::restored_owner_history::OriginalRestoredOwnerCapacityRows(self.0);
+        capacities
+            .metadata_demand_data()
+            .map_err(S::Error::custom)?;
+        let mut value = serializer.serialize_struct("FirstSourceObservationOwner", 2)?;
+        value.serialize_field("value", self.0)?;
+        value.serialize_field("capacities", &capacities)?;
+        value.end()
+    }
+}
+
+struct HistoricalValues<'a>(&'a [Option<serde_json::Value>; BANKS]);
+struct HistoricalBanks<'a>(&'a [Vec<u8>; BANKS]);
+
+impl serde::Serialize for HistoricalValues<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+        let mut values = serializer.serialize_seq(Some(BANKS))?;
+        for value in self.0 {
+            values.serialize_element(&HistoricalCommon(value))?;
+        }
+        values.end()
+    }
+}
+
+impl serde::Serialize for HistoricalBanks<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+        let mut values = serializer.serialize_seq(Some(BANKS))?;
+        for value in self.0 {
+            values.serialize_element(&HistoricalCommon(value))?;
+        }
+        values.end()
+    }
+}
+
+struct HistoricalUnderlying<'a>(&'a PacketNative5UnderlyingRecord);
+
+impl serde::Serialize for HistoricalUnderlying<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut value = serializer.serialize_struct("FirstSourceObservationUnderlying", 2)?;
+        match self.0 {
+            PacketNative5UnderlyingRecord::Producer(record) => {
+                value.serialize_field("kind", "producer")?;
+                value.serialize_field("value", record)?;
+            }
+            PacketNative5UnderlyingRecord::Reactive(record) => {
+                value.serialize_field("kind", "reactive")?;
+                value.serialize_field("value", record)?;
+            }
+        }
+        value.end()
+    }
+}
+
+struct HistoricalNativeCapacities<'a>(&'a OriginalSourceFirstObservationHistoryData<'a>);
+
+impl serde::Serialize for HistoricalNativeCapacities<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::{Error, SerializeStruct};
+        let owner = self.0;
+        let Some(record) = &owner.original.record else {
+            return serializer.serialize_none();
+        };
+        {
+            let mut records = owner.records.try_borrow_mut().map_err(S::Error::custom)?;
+            let mut aliases = owner.aliases.try_borrow_mut().map_err(S::Error::custom)?;
+            let before = restoration_activation_retained_native_evidence_data(
+                record,
+                owner.original.underlying.as_ref(),
+            )
+            .map_err(S::Error::custom)?;
+            let after = crucible_node_provider::reference_packet::service::complete_restore::activation::restoration_activation_record_native_evidence_metadata_data(
+                record, owner.original.underlying.as_ref(), &mut records, &mut aliases,
+            ).map_err(S::Error::custom)?;
+            if before != after {
+                return Err(S::Error::custom("first Source native owner changed"));
+            }
+        }
+        let records = owner.records.try_borrow().map_err(S::Error::custom)?;
+        let aliases = owner.aliases.try_borrow().map_err(S::Error::custom)?;
+        let mut value = serializer.serialize_struct("FirstSourceObservationNativeCapacities", 5)?;
+        value.serialize_field("record_capacity", &records.capacity_rows())?;
+        value.serialize_field("record_maximum", &records.maximum_rows())?;
+        value.serialize_field("records", &*records)?;
+        value.serialize_field("alias_capacities", &aliases.capacity_rows())?;
+        value.serialize_field("aliases", &*aliases)?;
+        value.end()
+    }
+}
+
+impl serde::Serialize for OriginalSourceFirstObservationHistoryData<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::{Error, SerializeStruct};
+        let OriginalSourceRestorationObservationAttempt {
+            process: _,
+            thread: _,
+            source: _,
+            controller: _,
+            binding,
+            reserved,
+            verified,
+            banks,
+            values,
+            record,
+            underlying,
+            scheduling,
+        } = self.original;
+        self.original
+            .historical_metadata_demand_data()
+            .map_err(S::Error::custom)?;
+        let mut value = serializer.serialize_struct("FirstSourceObservationHistory", 10)?;
+        value.serialize_field(
+            "schema",
+            "source-private.source-first-observation-history/1",
+        )?;
+        value.serialize_field("binding", binding)?;
+        value.serialize_field("reserved", reserved)?;
+        value.serialize_field("verified", verified)?;
+        value.serialize_field("banks", &HistoricalBanks(banks))?;
+        value.serialize_field("values", &HistoricalValues(values))?;
+        value.serialize_field("native_capacities", &HistoricalNativeCapacities(self))?;
+        value.serialize_field("record", record)?;
+        value.serialize_field("underlying", &underlying.as_ref().map(HistoricalUnderlying))?;
+        value.serialize_field("scheduling", &scheduling.get().map(HistoricalCommon))?;
+        value.end()
+    }
+}
+
+pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn historical_counter_scratch_data()
+-> usize {
+    use crucible_node_provider::{
+        ProviderError,
+        retained_metadata::{
+            RetainedProtocolMetadataFacts, aliases::MetadataAliasBank, records::MetadataRecordBank,
+        },
+    };
+    use std::cell::{BorrowError, BorrowMutError, Ref, RefMut};
+    crate::node_contract::restored_owner_history::original_restored_owner_capacity_counter_scratch_data()
+        + size_of::<OriginalSourceFirstObservationHistoryData<'static>>()
+        + size_of::<HistoricalBanks<'static>>() + size_of::<HistoricalValues<'static>>()
+        + size_of::<HistoricalUnderlying<'static>>() + size_of::<Option<HistoricalUnderlying<'static>>>()
+        + size_of::<HistoricalNativeCapacities<'static>>()
+        + size_of::<HistoricalCommon<'static, NativeSchedulingObservation>>()
+        + size_of::<RetainedProtocolMetadataFacts>() + size_of::<Result<RetainedProtocolMetadataFacts, ProviderError>>()
+        + size_of::<Result<(RetainedProtocolMetadataFacts, usize), RuntimeError>>()
+        + size_of::<Ref<'static, MetadataRecordBank>>() + size_of::<RefMut<'static, MetadataRecordBank>>()
+        + size_of::<Ref<'static, MetadataAliasBank>>() + size_of::<RefMut<'static, MetadataAliasBank>>()
+        + size_of::<Result<Ref<'static, MetadataRecordBank>, BorrowError>>()
+        + size_of::<Result<RefMut<'static, MetadataRecordBank>, BorrowMutError>>()
+        + size_of::<Result<Ref<'static, MetadataAliasBank>, BorrowError>>()
+        + size_of::<Result<RefMut<'static, MetadataAliasBank>, BorrowMutError>>()
+        + size_of::<Result<(&PacketNativeRestoredRecord, &PacketNative5UnderlyingRecord, &ContentRef), RuntimeError>>()
+}
+
+impl OriginalSourceRestorationObservationAttempt {
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn historical_counter_scratch_data()
+    -> usize {
+        historical_counter_scratch_data()
+    }
+}
+
+impl OriginalSourceRestorationObservationAttempt {
+    pub(in super::super) fn settled17_once_data(
+        &self,
+        source: &PacketCompleteSemanticSource,
+        controller: &CnpController,
+    ) -> Result<super::super::settled17_once::FirstObservationOnce17, RuntimeError> {
+        self.authenticate_original(source, controller, self.binding)?;
+        Ok(super::super::settled17_once::FirstObservationOnce17 {
+            reserved: self.reserved,
+            verified: self.verified,
+            binding: self.binding,
+        })
     }
 }

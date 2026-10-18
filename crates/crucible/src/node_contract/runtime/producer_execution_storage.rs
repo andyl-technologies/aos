@@ -406,57 +406,79 @@ impl NodeRuntime {
         .map_err(RuntimePollFailure::Admission)?;
         self.validate_owners_available(token.route())
             .map_err(RuntimePollFailure::Admission)?;
-        let entry = self
-            .operations
-            .get(token.operation())
-            .ok_or(RuntimePollFailure::Admission(
-                RuntimeError::ForeignAuthority,
-            ))?;
-        if !matches!(entry.result, RetainedResult::Acknowledged(_)) {
-            return Err(RuntimePollFailure::Admission(
-                RuntimeError::OutstandingObligations,
-            ));
-        }
-        let node = self
-            .nodes
-            .get_mut(&token.route.node)
-            .ok_or(RuntimePollFailure::Admission(RuntimeError::UnknownNode))?;
-        let snapshot = self
-            .snapshots
-            .get(&token.route.node)
-            .ok_or(RuntimePollFailure::Admission(RuntimeError::UnknownNode))?;
-        snapshot
-            .validate_current(node.as_ref())
-            .map_err(RuntimePollFailure::Admission)?;
-        let observation = node
-            .observe_original_restored_producer_scheduling(&entry.admission, claim)
-            .map_err(RuntimePollFailure::Native)?;
-        snapshot
-            .validate_current(node.as_ref())
-            .map_err(RuntimePollFailure::Admission)?;
-        if observation.node != token.route.node
-            || observation.owners != token.route.owners
-            || observation.bounds.len() > self.limits.maximum_nodes
-            || !observation.publications.is_empty()
         {
-            self.contain_roster(token.route());
-            return Err(RuntimePollFailure::Admission(RuntimeError::InvalidReceipt));
+            let entry =
+                self.operations
+                    .get(token.operation())
+                    .ok_or(RuntimePollFailure::Admission(
+                        RuntimeError::ForeignAuthority,
+                    ))?;
+            if !matches!(entry.result, RetainedResult::Acknowledged(_)) {
+                return Err(RuntimePollFailure::Admission(
+                    RuntimeError::OutstandingObligations,
+                ));
+            }
         }
-        let validated = crate::node_scheduling::ValidatedSchedulingObservation::new(
-            claim.world_data().clone(),
-            observation,
-        );
-        self.scheduler
-            .as_mut()
-            .ok_or(RuntimePollFailure::Admission(RuntimeError::NotActivated))?
-            .borrow_mut()
-            .map_err(RuntimePollFailure::Admission)?
-            .accept_boundary_observation(validated)
-            .map_err(|error| {
-                RuntimePollFailure::Admission(RuntimeError::SchedulerRefused(error.to_string()))
-            })?;
-        claim
-            .retain_runtime_checkpoint_data(self)
-            .map_err(RuntimePollFailure::Admission)
+        let coordinator_attempt = self.reserve_coordinator_attempt_data(
+            crucible_node_provider::reference_packet::service::complete_restore::settled_recapture::CoordinatorCommitmentKind17::Observe,
+            Some(token.operation()), Some(&token.route.node), None, 0,
+        ).map_err(RuntimePollFailure::Admission)?;
+        let result = (|| {
+            let entry =
+                self.operations
+                    .get(token.operation())
+                    .ok_or(RuntimePollFailure::Admission(
+                        RuntimeError::ForeignAuthority,
+                    ))?;
+            let node = self
+                .nodes
+                .get_mut(&token.route.node)
+                .ok_or(RuntimePollFailure::Admission(RuntimeError::UnknownNode))?;
+            let snapshot = self
+                .snapshots
+                .get(&token.route.node)
+                .ok_or(RuntimePollFailure::Admission(RuntimeError::UnknownNode))?;
+            snapshot
+                .validate_current(node.as_ref())
+                .map_err(RuntimePollFailure::Admission)?;
+            let observation = node
+                .observe_original_restored_producer_scheduling(&entry.admission, claim)
+                .map_err(RuntimePollFailure::Native)?;
+            snapshot
+                .validate_current(node.as_ref())
+                .map_err(RuntimePollFailure::Admission)?;
+            if observation.node != token.route.node
+                || observation.owners != token.route.owners
+                || observation.bounds.len() > self.limits.maximum_nodes
+                || !observation.publications.is_empty()
+            {
+                self.contain_roster(token.route());
+                return Err(RuntimePollFailure::Admission(RuntimeError::InvalidReceipt));
+            }
+            let validated = crate::node_scheduling::ValidatedSchedulingObservation::new(
+                claim.world_data().clone(),
+                observation,
+            );
+            self.scheduler
+                .as_mut()
+                .ok_or(RuntimePollFailure::Admission(RuntimeError::NotActivated))?
+                .borrow_mut()
+                .map_err(RuntimePollFailure::Admission)?
+                .accept_boundary_observation(validated)
+                .map_err(|error| {
+                    RuntimePollFailure::Admission(RuntimeError::SchedulerRefused(error.to_string()))
+                })?;
+            claim
+                .retain_runtime_checkpoint_data(self)
+                .map_err(RuntimePollFailure::Admission)
+        })();
+        self.finish_coordinator_attempt_data(coordinator_attempt,
+            if result.is_ok() {
+                crucible_node_provider::reference_packet::service::complete_restore::settled_recapture::CoordinatorCommitmentState17::Committed
+            } else {
+                crucible_node_provider::reference_packet::service::complete_restore::settled_recapture::CoordinatorCommitmentState17::Uncertain
+            },
+        ).map_err(RuntimePollFailure::Admission)?;
+        result
     }
 }

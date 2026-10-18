@@ -101,18 +101,30 @@ pub(super) fn install(
         restoration_observation || selected.schema == "crucible.complete-scene.installation/4";
     let invocation_snapshot =
         restoration_activation || selected.schema == "crucible.complete-scene.installation/3";
-    let (sources, declarations) = prepare_sources(
-        selected.participants,
-        &selected.coordinator,
-        selected.maximum_native_rows,
-        selected.maximum_initial_bytes,
-        selected.mechanism,
-        invocation_snapshot,
-        restoration_activation,
-        restoration_observation,
-        false,
-        &content,
-    )?;
+    let (sources, declarations) = if selected.schema == "crucible.complete-scene.installation/7" {
+        prepare_restored_settled_sources(
+            selected.participants,
+            &selected.coordinator,
+            selected.maximum_native_rows,
+            selected.maximum_initial_bytes,
+            selected.mechanism,
+            selected.maximum_coordinator_records.ok_or_else(refused)?,
+            &content,
+        )?
+    } else {
+        prepare_sources(
+            selected.participants,
+            &selected.coordinator,
+            selected.maximum_native_rows,
+            selected.maximum_initial_bytes,
+            selected.mechanism,
+            invocation_snapshot,
+            restoration_activation,
+            restoration_observation,
+            false,
+            &content,
+        )?
+    };
     let mut namespace = Namespace::create(directory)?;
     let directories = namespace.peer_directories()?;
     let paths: [PathBuf; 3] =
@@ -244,6 +256,31 @@ struct LaunchDeclaration {
     mechanism: Option<CompleteMechanism>,
 }
 
+fn prepare_restored_settled_sources(
+    participants: [Participant; 3],
+    coordinator: &PacketNative5CoordinatorInstallation,
+    maximum_native_rows: usize,
+    maximum_initial_bytes: usize,
+    mechanism: Option<CompleteMechanism>,
+    maximum_coordinator_records: usize,
+    content: &std::collections::BTreeMap<ContentRef, Vec<u8>>,
+) -> Result<([PacketCompleteSemanticSource; 3], [LaunchDeclaration; 3]), QualificationError> {
+    prepare_sources_with_capture_family(
+        participants,
+        coordinator,
+        maximum_native_rows,
+        maximum_initial_bytes,
+        mechanism,
+        true,
+        true,
+        true,
+        true,
+        true,
+        Some(maximum_coordinator_records),
+        content,
+    )
+}
+
 fn prepare_sources(
     participants: [Participant; 3],
     coordinator: &PacketNative5CoordinatorInstallation,
@@ -256,6 +293,39 @@ fn prepare_sources(
     restored_suffix: bool,
     content: &std::collections::BTreeMap<ContentRef, Vec<u8>>,
 ) -> Result<([PacketCompleteSemanticSource; 3], [LaunchDeclaration; 3]), QualificationError> {
+    prepare_sources_with_capture_family(
+        participants,
+        coordinator,
+        maximum_native_rows,
+        maximum_initial_bytes,
+        mechanism,
+        invocation_snapshot,
+        restoration_activation,
+        restoration_observation,
+        restored_suffix,
+        false,
+        None,
+        content,
+    )
+}
+
+fn prepare_sources_with_capture_family(
+    participants: [Participant; 3],
+    coordinator: &PacketNative5CoordinatorInstallation,
+    maximum_native_rows: usize,
+    maximum_initial_bytes: usize,
+    mechanism: Option<CompleteMechanism>,
+    invocation_snapshot: bool,
+    restoration_activation: bool,
+    restoration_observation: bool,
+    restored_suffix: bool,
+    restored_settled: bool,
+    maximum_coordinator_records: Option<usize>,
+    content: &std::collections::BTreeMap<ContentRef, Vec<u8>>,
+) -> Result<([PacketCompleteSemanticSource; 3], [LaunchDeclaration; 3]), QualificationError> {
+    if restored_settled != maximum_coordinator_records.is_some() {
+        return Err(refused());
+    }
     let mut sources = Vec::with_capacity(3);
     let mut declarations = Vec::with_capacity(3);
     for (member, participant) in participants.into_iter().enumerate() {
@@ -320,7 +390,16 @@ fn prepare_sources(
             // This fixed-stack, allocation-free DATA binder belongs to the
             // ordinary operator-install phase, like the tuple binders above.
             // Later runtime/native grants do not authorize this earlier work.
-            if restored_suffix {
+            if restored_settled {
+                source
+                    .bind_original_restored_settled_capture_declaration()
+                    .map_err(|_| refused())?;
+                source
+                    .bind_original_restored_settled_coordinator_policy17(
+                        maximum_coordinator_records.ok_or_else(refused)?,
+                    )
+                    .map_err(|_| refused())?;
+            } else if restored_suffix {
                 source
                     .bind_original_restored_suffix_declaration()
                     .map_err(|_| refused())?;

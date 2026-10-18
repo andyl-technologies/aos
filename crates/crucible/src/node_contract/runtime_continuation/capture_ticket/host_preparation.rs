@@ -159,6 +159,51 @@ impl OriginalHostCapturePreparation {
         })
     }
 
+    /// Lends the original scheduling snapshot before any owner takes it.
+    ///
+    /// The same host and runtime are checked after callback refusal as well as
+    /// success. This loan performs no model work and transfers no custody.
+    ///
+    /// # Errors
+    /// Refuses foreign or inactive host/runtime custody, a consumed preparation,
+    /// or changed ownership across the callback.
+    pub(super) fn with_original_scheduling_data<R>(
+        &self,
+        runtime: &crate::node_contract::NodeRuntime,
+        activation: &WorldActivation,
+        inspect: impl FnOnce(
+            &HostSchedulingSource,
+            &crate::node_scheduling::SchedulingSnapshot,
+        ) -> Result<R, RuntimeError>,
+    ) -> Result<R, RuntimeError> {
+        self.authenticate_runtime(runtime)?;
+        runtime.validate_activation(activation)?;
+        let source = self.source.as_ref().ok_or(RuntimeError::UnsupportedFacet)?;
+        source
+            .authenticate_current()
+            .map_err(|_| RuntimeError::ForeignAuthority)?;
+        if source.world() != &activation.record().world_binding_hash {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        let snapshot = self
+            .snapshot
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        let snapshot = snapshot
+            .as_ref()
+            .ok_or(RuntimeError::OutstandingObligations)?;
+        if &snapshot.record().source != source.selection() {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        let result = inspect(source, &snapshot.record().scheduling);
+        self.authenticate_runtime(runtime)?;
+        runtime.validate_activation(activation)?;
+        source
+            .authenticate_current()
+            .map_err(|_| RuntimeError::ForeignAuthority)?;
+        result
+    }
+
     pub(super) fn take(
         &self,
         source: &HostSchedulingSource,

@@ -266,3 +266,6 @@ impl PreparedOriginalRestoredSettledCapture<'_> {
         Ok(&state.canonical)
     }
 }
+
+#[path = "current/precredit.rs"]
+mod precredit;

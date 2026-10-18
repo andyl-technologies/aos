@@ -15,6 +15,9 @@ use crucible_node_contract::Position;
 #[path = "complete_capture/construction.rs"]
 mod construction;
 
+#[path = "complete_capture/restored_source.rs"]
+mod restored_source;
+
 /// Borrows complete capture inputs without exposing ordinary collection internals.
 ///
 /// Coordinates and requirements are data. Only this runtime's original plan and
@@ -122,6 +125,31 @@ impl ConformanceRuntime {
         &mut self,
         request: CollectingOriginalLineageCaptureRequest<'_>,
     ) -> Result<NativeArchiveRecord, StateError> {
+        self.capture_complete_original_lineage_with_prepared_data(
+            request,
+            None::<
+                fn(
+                    &crate::node_contract::NodeRuntime,
+                    &crate::node_contract::HostSchedulingSource,
+                    &crate::node_scheduling::InputPayload,
+                    &crate::node_scheduling::InputPayload,
+                ) -> Result<(), RuntimeError>,
+            >,
+        )
+    }
+
+    pub(crate) fn capture_complete_original_lineage_with_prepared_data(
+        &mut self,
+        request: CollectingOriginalLineageCaptureRequest<'_>,
+        prepared: Option<
+            impl FnOnce(
+                &crate::node_contract::NodeRuntime,
+                &crate::node_contract::HostSchedulingSource,
+                &crate::node_scheduling::InputPayload,
+                &crate::node_scheduling::InputPayload,
+            ) -> Result<(), RuntimeError>,
+        >,
+    ) -> Result<NativeArchiveRecord, StateError> {
         self.current().map_err(crate::node_state::schema)?;
         let source = Rc::clone(
             self.exact_inputs
@@ -150,7 +178,7 @@ impl ConformanceRuntime {
             .map_err(crate::node_state::schema)?;
         request
             .archive
-            .capture_complete_original_lineage_world_scoped(
+            .capture_complete_original_lineage_world_prepared_data(
                 crate::node_state::OriginalLineageCaptureRequest {
                     graph: &self.graph.graph,
                     runtime: &mut self.runtime,
@@ -164,6 +192,7 @@ impl ConformanceRuntime {
                     lineage_limits: request.lineage_limits,
                 },
                 Some(&scope),
+                prepared,
             )
     }
 }

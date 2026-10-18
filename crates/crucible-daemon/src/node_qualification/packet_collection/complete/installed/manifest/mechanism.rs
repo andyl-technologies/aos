@@ -37,6 +37,21 @@ pub(super) fn authenticate_edition_data(
     value: &serde_json::Value,
 ) -> Result<(), QualificationError> {
     let object = value.as_object().ok_or_else(refused)?;
+    if object.get("schema").and_then(serde_json::Value::as_str)
+        == Some("crucible.complete-scene.installation/7")
+    {
+        if !object
+            .get("maximum_coordinator_records")
+            .and_then(serde_json::Value::as_u64)
+            .is_some_and(|maximum| maximum >= 2 && usize::try_from(maximum).is_ok())
+        {
+            return Err(refused());
+        }
+    } else if object.contains_key("maximum_coordinator_records") {
+        // Presence under an old edition, including null, cannot extend that
+        // edition's closed identity or silently infer a new lifetime policy.
+        return Err(refused());
+    }
     match object.get("schema").and_then(serde_json::Value::as_str) {
         Some("crucible.complete-scene.installation/1") if !object.contains_key("mechanism") => {
             Ok(())
@@ -50,7 +65,9 @@ pub(super) fn authenticate_edition_data(
             Ok(())
         }
         Some(
-            "crucible.complete-scene.installation/5" | "crucible.complete-scene.installation/6",
+            "crucible.complete-scene.installation/5"
+            | "crucible.complete-scene.installation/6"
+            | "crucible.complete-scene.installation/7",
         ) if object
             .get("mechanism")
             .is_some_and(serde_json::Value::is_object) =>
@@ -80,7 +97,9 @@ pub(super) fn authenticate_selection_data(
         ) => selected.authenticate(),
         ("crucible.complete-scene.installation/4", Some(selected)) => selected.authenticate(),
         (
-            "crucible.complete-scene.installation/5" | "crucible.complete-scene.installation/6",
+            "crucible.complete-scene.installation/5"
+            | "crucible.complete-scene.installation/6"
+            | "crucible.complete-scene.installation/7",
             Some(selected),
         ) => selected.authenticate(),
         _ => Err(refused()),
@@ -398,8 +417,50 @@ mod restoration_observation;
 pub(super) fn authenticate_profile_declaration_data(
     selected: &Manifest,
 ) -> Result<(), QualificationError> {
-    restored_suffix::authenticate_profile_declaration_data(selected)
+    settled_recapture::authenticate_profile_declaration_data(selected)
 }
 
 #[path = "mechanism/restored_suffix.rs"]
 mod restored_suffix;
+
+#[path = "mechanism/settled_recapture.rs"]
+mod settled_recapture;
+
+#[cfg(test)]
+mod coordinator_policy_tests {
+    use super::*;
+
+    #[test]
+    fn only_explicit_seven_accepts_a_nonnullable_funded_coordinator_policy() {
+        for edition in 1..=6 {
+            let mut value = serde_json::json!({"schema":format!("crucible.complete-scene.installation/{edition}")});
+            if edition != 1 {
+                value["mechanism"] = serde_json::json!({});
+            }
+            authenticate_edition_data(&value).unwrap();
+            for policy in [
+                serde_json::Value::Null,
+                serde_json::json!(0),
+                serde_json::json!(256),
+            ] {
+                value["maximum_coordinator_records"] = policy;
+                assert!(authenticate_edition_data(&value).is_err());
+            }
+        }
+        let mut selected =
+            serde_json::json!({"schema":"crucible.complete-scene.installation/7","mechanism":{}});
+        assert!(authenticate_edition_data(&selected).is_err());
+        for policy in [
+            serde_json::Value::Null,
+            serde_json::json!(0),
+            serde_json::json!(1),
+            serde_json::json!(-1),
+            serde_json::json!("256"),
+        ] {
+            selected["maximum_coordinator_records"] = policy;
+            assert!(authenticate_edition_data(&selected).is_err());
+        }
+        selected["maximum_coordinator_records"] = serde_json::json!(256);
+        authenticate_edition_data(&selected).unwrap();
+    }
+}

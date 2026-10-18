@@ -28,6 +28,8 @@ use crucible_node_contract::U64;
 use serde_json::Value;
 
 mod ack;
+#[path = "historical_auth/construction.rs"]
+pub(crate) mod construction;
 mod observation;
 mod shared;
 mod transfer;

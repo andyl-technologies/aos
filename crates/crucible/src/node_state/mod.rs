@@ -40,6 +40,9 @@ pub use closure::VerifiedStateContent;
 pub use evidence::*;
 pub use host::*;
 pub use native::*;
+pub(crate) use native::{
+    ParentArchive17ReadScope, RetainedCold17Collection, RetainedCold17MemberView,
+};
 pub use staging_custody::{PreparedNativeCustody, PreparedRestoreAllocation};
 pub use transaction::*;
 pub use validation::{VerifiedCapture, admit_capture};

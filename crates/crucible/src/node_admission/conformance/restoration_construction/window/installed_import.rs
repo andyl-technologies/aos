@@ -64,6 +64,7 @@ impl CompleteOriginalRestorationWindow {
         if !self.context_issued.get()
             || self.phase_in_flight.get()
             || self.suffix_in_flight.get()
+            || self.restored_capture_in_flight.get()
             || self.stage.get() != WindowStage::TransactionAdmitted
             || self.producer_grant_started.iter().any(Cell::get)
         {

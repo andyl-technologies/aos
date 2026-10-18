@@ -45,6 +45,28 @@ pub(crate) struct OriginalRestoredOwnerCapacityRow {
 }
 
 impl OriginalRestoredOwnerCapacityRow {
+    /// Describes an actual byte buffer whose defining owner exposes both facts.
+    ///
+    /// This covers non-UTF-8 path/OS buffers without converting or copying them.
+    /// Values are historical DATA, never authority to allocate that capacity.
+    ///
+    /// # Errors
+    /// Refuses an initialized length beyond its actual retained capacity.
+    pub(crate) fn byte_buffer_data(length: usize, capacity: usize) -> Result<Self, RuntimeError> {
+        if length > capacity {
+            return Err(RuntimeError::InvalidReceipt);
+        }
+        Ok(Self {
+            kind: "vector",
+            length,
+            capacity: Some(capacity),
+            element_bytes: size_of::<u8>(),
+            alignment: align_of::<u8>(),
+            shared_group: None,
+            identity: None,
+        })
+    }
+
     /// Describes exposed tree population without inventing hidden node capacity.
     pub(crate) fn tree_population_data<K, V>(length: usize) -> Self {
         Self {
@@ -289,6 +311,49 @@ impl<T: OriginalRestoredOwnerCapacityWalk + ?Sized> OriginalRestoredOwnerCapacit
     }
 }
 
+impl<T: OriginalRestoredOwnerCapacityWalk + ?Sized> OriginalRestoredOwnerCapacityWalk for Box<T> {
+    fn capacities(
+        &self,
+        depth: usize,
+        sink: &mut dyn FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>,
+    ) -> Result<(), RuntimeError> {
+        sink(OriginalRestoredOwnerCapacityRow {
+            kind: "boxed",
+            length: 1,
+            capacity: None,
+            element_bytes: size_of_val(self.as_ref()),
+            alignment: align_of_val(self.as_ref()),
+            shared_group: None,
+            identity: None,
+        })?;
+        self.as_ref().capacities(depth, sink)
+    }
+}
+
+impl<T: Ord + OriginalRestoredOwnerCapacityWalk> OriginalRestoredOwnerCapacityWalk
+    for std::collections::BTreeSet<T>
+{
+    fn capacities(
+        &self,
+        depth: usize,
+        sink: &mut dyn FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>,
+    ) -> Result<(), RuntimeError> {
+        if depth >= MAXIMUM_DEPTH {
+            return Err(RuntimeError::ResourceLimit);
+        }
+        // A set exposes key population, not hidden BTree node capacity. Its
+        // zero-sized value is not an independently owned payload allocation.
+        sink(OriginalRestoredOwnerCapacityRow::tree_population_data::<
+            T,
+            (),
+        >(self.len()))?;
+        for value in self {
+            value.capacities(depth + 1, sink)?;
+        }
+        Ok(())
+    }
+}
+
 macro_rules! capacity_fields {
     ($ty:ty; $($field:ident),+; $($scalar:ident),* $(,)?) => {
         impl OriginalRestoredOwnerCapacityWalk for $ty {
@@ -352,7 +417,11 @@ impl OriginalRestoredOwnerCapacityWalk for OperationRequest {
                 limit: _,
                 boundary_policy: _,
             }
-            | Self::BoundarySettle { start: _, limit: _ } => Ok(()),
+            | Self::BoundarySettle { start: _, limit: _ }
+            | Self::Pause
+            | Self::Observe
+            | Self::Capture
+            | Self::Shutdown => Ok(()),
             _ => Err(RuntimeError::UnsupportedFacet),
         }
     }
@@ -368,7 +437,8 @@ impl OriginalRestoredOwnerCapacityWalk for ProgressEvidence {
             Self::Exact {
                 reached: _,
                 stop: _,
-            } => Ok(()),
+            }
+            | Self::Administrative => Ok(()),
             _ => Err(RuntimeError::UnsupportedFacet),
         }
     }
@@ -463,6 +533,12 @@ pub(crate) fn original_restored_owner_capacity_counter_scratch_data() -> usize {
         size_of::<(usize, usize)>(),
         size_of::<Result<(usize, usize), RuntimeError>>(),
         size_of::<OriginalRestoredOwnerCapacityRow>(),
+        size_of::<Result<OriginalRestoredOwnerCapacityRow, RuntimeError>>(),
+        size_of::<&mut OriginalRestoredOwnerCapacityAliases>(),
+        size_of::<&std::sync::Arc<()>>(),
+        size_of::<&std::rc::Weak<()>>(),
+        size_of::<std::rc::Weak<()>>(),
+        size_of::<Option<usize>>(),
         size_of::<OriginalRestoredOwnerCapacityRows<'static, OperationAdmission>>(),
         size_of::<OriginalRestoredOwnerCapacityRows<'static, [OwnerIdentity]>>(),
         size_of::<OriginalRestoredSharedOwnerCapacityRows<'static, OperationAdmission>>(),
@@ -492,6 +568,9 @@ pub(crate) fn original_restored_owner_capacity_counter_scratch_data() -> usize {
         size_of::<std::slice::Iter<'static, Delivery>>(),
         size_of::<std::slice::Iter<'static, InputPayload>>(),
         size_of::<std::slice::Iter<'static, Id>>(),
+        size_of::<std::collections::btree_set::Iter<'static, Id>>(),
+        size_of::<&Box<String>>(),
+        size_of::<&std::collections::BTreeSet<Id>>(),
         size_of::<std::slice::Iter<'static, Position>>(),
         size_of::<std::slice::Iter<'static, NativeProducerBound>>(),
         size_of::<std::slice::Iter<'static, InputIdentity>>(),
@@ -578,12 +657,80 @@ mod tests {
     }
 
     #[test]
+    fn boxed_and_set_owners_keep_payload_layout_population_and_actual_child_capacity() {
+        let mut text = String::with_capacity(97);
+        text.push_str("boxed");
+        let actual_capacity = text.capacity();
+        let boxed = Box::new(text);
+        let rows = serde_json::to_value(OriginalRestoredOwnerCapacityRows(&boxed)).unwrap();
+        assert_eq!(rows[0]["kind"], "boxed");
+        assert_eq!(rows[0]["element_bytes"], size_of::<String>());
+        assert_eq!(rows[0]["alignment"], align_of::<String>());
+        assert_eq!(rows[1]["capacity"], actual_capacity);
+        let mut values = std::collections::BTreeSet::new();
+        values.insert(String::from("a"));
+        values.insert(String::from("b"));
+        let rows = serde_json::to_value(OriginalRestoredOwnerCapacityRows(&values)).unwrap();
+        assert_eq!(rows[0]["kind"], "tree");
+        assert_eq!(rows[0]["length"], 2);
+        assert!(rows[0]["capacity"].is_null());
+        assert_eq!(rows[0]["element_bytes"], size_of::<(String, ())>());
+        assert_eq!(rows.as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn byte_buffer_rows_keep_spare_raw_capacity_without_utf8_or_allocation() {
+        use std::os::unix::ffi::OsStrExt;
+        let mut path = std::path::PathBuf::with_capacity(97);
+        path.push(std::ffi::OsStr::from_bytes(b"/non-utf8-\xff"));
+        let row = OriginalRestoredOwnerCapacityRow::byte_buffer_data(
+            path.as_os_str().as_bytes().len(),
+            path.capacity(),
+        )
+        .unwrap();
+        let actual = serde_json::to_value(&row).unwrap();
+        assert_eq!(actual["length"], path.as_os_str().as_bytes().len());
+        assert_eq!(actual["capacity"], path.capacity());
+        assert_eq!(actual["element_bytes"], 1);
+        assert_eq!(actual["alignment"], 1);
+        assert!(path.to_str().is_none());
+        assert!(OriginalRestoredOwnerCapacityRow::byte_buffer_data(2, 1).is_err());
+    }
+
+    #[test]
+    fn scalar_administrative_history_is_preserved_without_heap_or_live_permission() {
+        for request in [
+            OperationRequest::Pause,
+            OperationRequest::Observe,
+            OperationRequest::Capture,
+            OperationRequest::Shutdown,
+        ] {
+            let rows = serde_json::to_value(OriginalRestoredOwnerCapacityRows(&request)).unwrap();
+            assert_eq!(rows, serde_json::json!([]));
+            assert_eq!(
+                serde_json::from_value::<OperationRequest>(serde_json::to_value(&request).unwrap())
+                    .unwrap(),
+                request
+            );
+        }
+        assert_eq!(
+            serde_json::to_value(OriginalRestoredOwnerCapacityRows(
+                &ProgressEvidence::Administrative
+            ))
+            .unwrap(),
+            serde_json::json!([])
+        );
+    }
+
+    #[test]
     fn unsupported_common_variants_and_excess_depth_refuse_before_output() {
         let mut bytes = Vec::new();
         assert!(
             serde_json::to_writer(
                 &mut bytes,
-                &OriginalRestoredOwnerCapacityRows(&OperationRequest::Pause)
+                &OriginalRestoredOwnerCapacityRows(&OperationRequest::QuantumClose {
+                    window: Id::new("unsupported-quantum").unwrap(),
+                })
             )
             .is_err()
         );
@@ -598,5 +745,74 @@ mod tests {
         );
         assert!(bytes.is_empty());
         assert!(value.is_array());
+    }
+}
+
+pub(crate) mod finalizers17;
+
+// These common records are consumed by both native/Host and Node history.
+// Keep their exhaustive defining walk here rather than in either adapter path.
+impl OriginalRestoredOwnerCapacityWalk for crate::node_contract::OperationFailure {
+    fn capacities(
+        &self,
+        depth: usize,
+        sink: &mut dyn FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>,
+    ) -> Result<(), RuntimeError> {
+        let Self { effects, reason } = self;
+        reason.capacities(depth, sink)?;
+        effects.capacities(depth, sink)
+    }
+}
+
+impl OriginalRestoredOwnerCapacityWalk for crate::node_scheduling::NativeInputAcknowledgement {
+    fn capacities(
+        &self,
+        depth: usize,
+        sink: &mut dyn FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>,
+    ) -> Result<(), RuntimeError> {
+        let Self {
+            stage_operation,
+            batch,
+            node,
+            owners,
+            cutoff: _,
+            inventory,
+            proof_ref,
+        } = self;
+        stage_operation.capacities(depth, sink)?;
+        batch.capacities(depth, sink)?;
+        node.capacities(depth, sink)?;
+        owners.capacities(depth, sink)?;
+        inventory.capacities(depth, sink)?;
+        proof_ref.capacities(depth, sink)
+    }
+}
+
+#[cfg(test)]
+mod shared_failure_capacity_tests {
+    use super::*;
+    use crate::node_contract::{EffectKnowledge, OperationFailure};
+
+    #[test]
+    fn committed_prefix_ids_remain_in_shared_failure_capacity_walk() {
+        let none = OperationFailure {
+            effects: EffectKnowledge::None,
+            reason: "retained refusal".into(),
+        };
+        let prefix = OperationFailure {
+            effects: EffectKnowledge::CommittedPrefix(vec![
+                crucible_node_contract::Id::new("retained/original-output").unwrap(),
+            ]),
+            reason: none.reason.clone(),
+        };
+
+        let empty = OriginalRestoredOwnerCapacityRows(&none)
+            .metadata_demand_data()
+            .unwrap();
+        let retained = OriginalRestoredOwnerCapacityRows(&prefix)
+            .metadata_demand_data()
+            .unwrap();
+
+        assert!(retained.0 > empty.0);
     }
 }

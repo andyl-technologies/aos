@@ -226,3 +226,27 @@ pub(super) fn decode_complete_envelope(
         wire.authentication,
     ))
 }
+
+/// Decodes only an immutable complete Index3 body, without an archive receipt.
+///
+/// The caller independently admits the retained DOM, typed owner and validation
+/// work. Reachability under its genuine signed closure supplies provenance; this
+/// operation deliberately issues no local-load admission or live target.
+pub(super) fn decode_complete_body_data(
+    value: &serde_json::Value,
+) -> Result<Index, super::StateError> {
+    let wire = CompleteOriginalIndex::deserialize(value).map_err(super::super::schema)?;
+    if wire.schema_version != 3 || wire.typed_inventory.schema_version != 2 {
+        return Err(super::refused(
+            "historical parent requires Index3/inventory2",
+        ));
+    }
+    Ok(Index {
+        schema_version: 3,
+        artifact: wire.artifact,
+        objects: wire.typed_inventory.objects,
+        owners: wire.owners,
+        selected_extensions: None,
+        original_capture_journal: Some(wire.original_capture_journal),
+    })
+}

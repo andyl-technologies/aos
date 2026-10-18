@@ -11,6 +11,10 @@ use crate::node_contract::{NativeStateKey, OriginalLineageRestoration, RuntimeEr
 use crate::node_state::VerifiedStateContent;
 use crucible_node_contract::ContentRef;
 
+#[path = "complete_original_native_ticket/history.rs"]
+mod history;
+pub use history::CompleteOriginalNativeTicketHistory;
+
 use super::NativeOwnerState;
 use super::complete_original_source::{CompleteOriginalRestorationSource, CompleteOriginalSource};
 
@@ -228,5 +232,33 @@ impl CompleteOriginalNativeTicket {
             + std::mem::size_of::<std::slice::Iter<'static, ContentRef>>()
             + std::mem::size_of::<Option<&ContentRef>>()
             + std::mem::size_of::<Result<&ContentRef, RuntimeError>>()
+    }
+}
+
+impl CompleteOriginalNativeTicket {
+    /// Borrows the actual separately validated import geometry and its explicit family.
+    ///
+    /// # Errors
+    /// Refuses foreign custody or a missing independently validated import row.
+    pub fn restored_native_import_construction_data(
+        &self,
+    ) -> Result<&super::CompleteRestoredSettledNativeRestorationData, RuntimeError> {
+        self.source
+            .restored_native_import_construction_data(self.owner_index)
+    }
+}
+
+impl CompleteOriginalNativeTicket {
+    /// Lends actual separately validated geometry from the same native owner ticket.
+    ///
+    /// This is a borrowed fixed DATA view, with no parse, clone, hash or new grant.
+    ///
+    /// # Errors
+    /// Refuses foreign origin, absent actual owner or unavailable validated geometry.
+    pub fn original_restored_settled_import_geometry_data(&self) -> Result<&crucible_node_provider::protocol_snapshot::restored_settled17::RestoredSettledNativeImportGeometryData, RuntimeError>{
+        self.owner()?;
+        Ok(self
+            .restored_native_import_construction_data()?
+            .native_import_geometry_data())
     }
 }

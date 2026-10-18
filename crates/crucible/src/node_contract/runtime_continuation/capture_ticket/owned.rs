@@ -851,3 +851,9 @@ mod submission_storage_tests {
         Ok(())
     }
 }
+
+#[path = "decoded_node17.rs"]
+mod decoded_node17;
+
+#[path = "decoded_initial15.rs"]
+mod decoded_initial15;

@@ -40,6 +40,9 @@ pub(super) use complete_original_loader::{admit, admit_decode, fixed_storage};
 const AUTHENTICATION_DOMAIN: &[u8] = b"crucible.native-world-archive.authentication.v1\0";
 type ArchiveMac = Hmac<Sha256>;
 
+#[path = "storage/settled_history.rs"]
+mod settled_history;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Object {
@@ -121,6 +124,13 @@ pub struct NativeArchiveRecord {
 }
 
 impl NativeArchive {
+    /// Borrows the signer's original finite archive ceilings as DATA.
+    ///
+    /// This copy grants no capture, signing or restoration permission.
+    pub(crate) fn original_restored_capture_limits_data(&self) -> NativeArchiveLimits {
+        self.limits
+    }
+
     /// Observes the signer's retained directory allocation without accessing it.
     ///
     /// The key and limits are inline. Filesystem/native storage is separate;
@@ -487,7 +497,10 @@ impl NativeArchiveRecord {
     }
 }
 
-fn validate_index(index: &Index, limits: NativeArchiveLimits) -> Result<(), StateError> {
+pub(in crate::node_state::native) fn validate_index(
+    index: &Index,
+    limits: NativeArchiveLimits,
+) -> Result<(), StateError> {
     if !matches!(index.schema_version, 1..=3)
         || index.objects.len() > limits.state.maximum_content_objects
         || index.owners.len() > limits.state.maximum_owners_or_domains
@@ -850,7 +863,9 @@ impl NativeArchiveRecord {
     }
 }
 
-fn index_owned_storage(index: &Index) -> Result<usize, crate::node_contract::RuntimeError> {
+pub(in crate::node_state::native) fn index_owned_storage(
+    index: &Index,
+) -> Result<usize, crate::node_contract::RuntimeError> {
     use crate::node_contract::{NodeRuntime, RuntimeError};
     use std::mem::size_of;
     let add = |a: usize, b: usize| a.checked_add(b).ok_or(RuntimeError::ResourceLimit);

@@ -94,6 +94,25 @@ impl NodeRuntime {
             activation: activation.clone(),
             inputs,
         };
+        let maximum_publications = producer.map_or(self.limits.maximum_retained_outputs, |claim| {
+            claim
+                .row_data()
+                .provider
+                .population_data()
+                .newborn_publications_data()
+        });
+        let maximum_semantic_events = maximum_publications
+            .checked_add(
+                admission
+                    .inputs()
+                    .map_or(0, |batch| batch.deliveries().len()),
+            )
+            .ok_or(RuntimeError::ResourceLimit)?;
+        let coordinator_attempt = self.reserve_coordinator_attempt_data(
+            crucible_node_provider::reference_packet::service::complete_restore::settled_recapture::CoordinatorCommitmentKind17::Begin,
+            Some(&operation), Some(node), exact_window(admission.request()).map(|(start, _)| start),
+            maximum_semantic_events,
+        )?;
         self.reserve(&token);
         self.operations.insert(
             operation.clone(),
@@ -126,7 +145,12 @@ impl NodeRuntime {
             },
             None => return Err(RuntimeError::UnknownNode),
         };
-        match submission {
+        let coordinator_state = match &submission {
+            Submission::Refused(_) => crucible_node_provider::reference_packet::service::complete_restore::settled_recapture::CoordinatorCommitmentState17::Refused,
+            Submission::Accepted => crucible_node_provider::reference_packet::service::complete_restore::settled_recapture::CoordinatorCommitmentState17::Committed,
+            Submission::Uncertain(_) => crucible_node_provider::reference_packet::service::complete_restore::settled_recapture::CoordinatorCommitmentState17::Uncertain,
+        };
+        let result: Result<BeginResult, RuntimeError> = match submission {
             Submission::Refused(refusal) => {
                 self.release_reservation(&token);
                 // Retain the used identity: a retry must not become a fresh mutation.
@@ -146,7 +170,16 @@ impl NodeRuntime {
                 self.contain_roster(token.route());
                 Ok(BeginResult::Uncertain { token, effects })
             }
+        };
+        // Native disposition is retained in the existing operation owners
+        // before a fallible coordinator-currentness recheck can refuse.
+        if let Err(error) =
+            self.finish_coordinator_attempt_data(coordinator_attempt, coordinator_state)
+        {
+            self.contain_roster(admission.token.route());
+            return Err(error);
         }
+        result
     }
 
     /// Recovers the original token without resubmitting native work.
@@ -452,28 +485,44 @@ impl NodeRuntime {
             .map_err(RuntimePollFailure::Admission)?;
         self.validate_owners_available(&route)
             .map_err(RuntimePollFailure::Admission)?;
-        let handle = self
-            .nodes
-            .get_mut(node)
-            .ok_or(RuntimePollFailure::Admission(RuntimeError::UnknownNode))?;
-        let observation = handle
-            .observe_scheduling(activation)
-            .map_err(RuntimePollFailure::Native)?;
-        if observation.node != *node
-            || observation.owners != route.owners
-            || observation.bounds.len() > self.limits.maximum_nodes
-            || observation.publications.len() > self.limits.maximum_retained_outputs
-            || handle
-                .validate_scheduling_observation(activation, &observation)
-                .is_err()
-        {
-            self.contain_roster(&route);
-            return Err(RuntimePollFailure::Admission(RuntimeError::InvalidReceipt));
+        let coordinator_attempt = self.reserve_coordinator_attempt_data(
+            crucible_node_provider::reference_packet::service::complete_restore::settled_recapture::CoordinatorCommitmentKind17::Observe,
+            None, Some(node), None, 0,
+        ).map_err(RuntimePollFailure::Admission)?;
+        let result = (|| {
+            let handle = self
+                .nodes
+                .get_mut(node)
+                .ok_or(RuntimePollFailure::Admission(RuntimeError::UnknownNode))?;
+            let observation = handle
+                .observe_scheduling(activation)
+                .map_err(RuntimePollFailure::Native)?;
+            if observation.node != *node
+                || observation.owners != route.owners
+                || observation.bounds.len() > self.limits.maximum_nodes
+                || observation.publications.len() > self.limits.maximum_retained_outputs
+                || handle
+                    .validate_scheduling_observation(activation, &observation)
+                    .is_err()
+            {
+                self.contain_roster(&route);
+                return Err(RuntimePollFailure::Admission(RuntimeError::InvalidReceipt));
+            }
+            self.finish_coordinator_attempt_with_evidence_data(
+            coordinator_attempt,
+            crucible_node_provider::reference_packet::service::complete_restore::settled_recapture::CoordinatorCommitmentState17::Committed,
+            Some(&observation.proof_ref),
+        ).map_err(RuntimePollFailure::Admission)?;
+            Ok(crate::node_scheduling::ValidatedSchedulingObservation::new(
+                activation.clone(),
+                observation,
+            ))
+        })();
+        if result.is_err() {
+            self.finish_coordinator_runtime_result_data(coordinator_attempt, &result)
+                .map_err(RuntimePollFailure::Admission)?;
         }
-        Ok(crate::node_scheduling::ValidatedSchedulingObservation::new(
-            activation.clone(),
-            observation,
-        ))
+        result
     }
 
     pub(crate) fn observe_original_installed_first_scheduling(
@@ -488,28 +537,44 @@ impl NodeRuntime {
             .map_err(RuntimePollFailure::Admission)?;
         self.validate_owners_available(&route)
             .map_err(RuntimePollFailure::Admission)?;
-        let handle = self
-            .nodes
-            .get_mut(node)
-            .ok_or(RuntimePollFailure::Admission(RuntimeError::UnknownNode))?;
-        let observation = handle
-            .observe_scheduling(activation)
-            .map_err(RuntimePollFailure::Native)?;
-        if observation.node != *node
-            || observation.owners != route.owners
-            || observation.bounds.len() > self.limits.maximum_nodes
-            || observation.publications.len() > self.limits.maximum_retained_outputs
-            || handle
-                .validate_scheduling_observation(activation, &observation)
-                .is_err()
-        {
-            self.contain_roster(&route);
-            return Err(RuntimePollFailure::Native(OperationFailure {
+        let coordinator_attempt = self.reserve_coordinator_attempt_data(
+            crucible_node_provider::reference_packet::service::complete_restore::settled_recapture::CoordinatorCommitmentKind17::Observe,
+            None, Some(node), None, 0,
+        ).map_err(RuntimePollFailure::Admission)?;
+        let result = (|| {
+            let handle = self
+                .nodes
+                .get_mut(node)
+                .ok_or(RuntimePollFailure::Admission(RuntimeError::UnknownNode))?;
+            let observation = handle
+                .observe_scheduling(activation)
+                .map_err(RuntimePollFailure::Native)?;
+            if observation.node != *node
+                || observation.owners != route.owners
+                || observation.bounds.len() > self.limits.maximum_nodes
+                || observation.publications.len() > self.limits.maximum_retained_outputs
+                || handle
+                    .validate_scheduling_observation(activation, &observation)
+                    .is_err()
+            {
+                self.contain_roster(&route);
+                return Err(RuntimePollFailure::Native(OperationFailure {
                 effects: EffectKnowledge::Unknown,
                 reason: crate::node_admission::OriginalRestoredSchedulingObservationClaim::RECEIPT_FAILURE.into(),
             }));
+            }
+            self.finish_coordinator_attempt_with_evidence_data(
+            coordinator_attempt,
+            crucible_node_provider::reference_packet::service::complete_restore::settled_recapture::CoordinatorCommitmentState17::Committed,
+            Some(&observation.proof_ref),
+        ).map_err(RuntimePollFailure::Admission)?;
+            Ok(())
+        })();
+        if result.is_err() {
+            self.finish_coordinator_runtime_result_data(coordinator_attempt, &result)
+                .map_err(RuntimePollFailure::Admission)?;
         }
-        Ok(())
+        result
     }
 
     pub(crate) fn observe_scheduling_with_original_claim(
@@ -533,31 +598,47 @@ impl NodeRuntime {
                 RuntimeError::ForeignAuthority,
             ));
         }
-        let handle = self
-            .nodes
-            .get_mut(node)
-            .ok_or(RuntimePollFailure::Admission(RuntimeError::UnknownNode))?;
-        let observation = handle
-            .observe_original_restored_scheduling(claim)
-            .map_err(RuntimePollFailure::Native)?;
-        if observation.node != *node
-            || observation.owners != route.owners
-            || observation.bounds.len() > self.limits.maximum_nodes
-            || observation.publications.len() > self.limits.maximum_retained_outputs
-            || handle
-                .validate_scheduling_observation(activation, &observation)
-                .is_err()
-        {
-            self.contain_roster(&route);
-            return Err(RuntimePollFailure::Native(OperationFailure {
+        let coordinator_attempt = self.reserve_coordinator_attempt_data(
+            crucible_node_provider::reference_packet::service::complete_restore::settled_recapture::CoordinatorCommitmentKind17::Observe,
+            None, Some(node), None, 0,
+        ).map_err(RuntimePollFailure::Admission)?;
+        let result = (|| {
+            let handle = self
+                .nodes
+                .get_mut(node)
+                .ok_or(RuntimePollFailure::Admission(RuntimeError::UnknownNode))?;
+            let observation = handle
+                .observe_original_restored_scheduling(claim)
+                .map_err(RuntimePollFailure::Native)?;
+            if observation.node != *node
+                || observation.owners != route.owners
+                || observation.bounds.len() > self.limits.maximum_nodes
+                || observation.publications.len() > self.limits.maximum_retained_outputs
+                || handle
+                    .validate_scheduling_observation(activation, &observation)
+                    .is_err()
+            {
+                self.contain_roster(&route);
+                return Err(RuntimePollFailure::Native(OperationFailure {
                 effects: EffectKnowledge::Unknown,
                 reason: crate::node_admission::OriginalRestoredSchedulingObservationClaim::RECEIPT_FAILURE.into(),
             }));
+            }
+            self.finish_coordinator_attempt_with_evidence_data(
+            coordinator_attempt,
+            crucible_node_provider::reference_packet::service::complete_restore::settled_recapture::CoordinatorCommitmentState17::Committed,
+            Some(&observation.proof_ref),
+        ).map_err(RuntimePollFailure::Admission)?;
+            Ok(crate::node_scheduling::ValidatedSchedulingObservation::new(
+                activation.clone(),
+                observation,
+            ))
+        })();
+        if result.is_err() {
+            self.finish_coordinator_runtime_result_data(coordinator_attempt, &result)
+                .map_err(RuntimePollFailure::Admission)?;
         }
-        Ok(crate::node_scheduling::ValidatedSchedulingObservation::new(
-            activation.clone(),
-            observation,
-        ))
+        result
     }
 
     pub(crate) fn preflight_scheduling_receipts(
@@ -628,13 +709,13 @@ impl NodeRuntime {
             return Ok(commit.retained_copy());
         }
         let operation = receipt.operation.clone();
-        let commit = self
-            .scheduler
-            .as_mut()
-            .ok_or(RuntimeError::NotActivated)?
-            .borrow_mut()?
-            .accept_receipt(receipt)
-            .map_err(|error| RuntimeError::SchedulerRefused(error.to_string()))?;
+        let scheduling = self.scheduler.as_ref().ok_or(RuntimeError::NotActivated)?;
+        let commit = scheduling.with_coordinator17_data(|log| {
+            scheduling
+                .borrow_mut()?
+                .accept_receipt_with_coordinator17_data(receipt, log)
+                .map_err(|error| RuntimeError::SchedulerRefused(error.to_string()))
+        })?;
         let entry = self
             .operations
             .get_mut(&operation)

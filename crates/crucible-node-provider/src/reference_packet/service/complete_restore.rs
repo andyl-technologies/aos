@@ -443,3 +443,5 @@ pub(crate) use restored_record::native_restored_record_contract_storage_data;
 
 /// Defines the closed immutable settled17 declaration and output policy DATA.
 pub mod settled_recapture;
+
+pub(crate) use input_emitter::canonical_restore_inputs_contract_storage_data;

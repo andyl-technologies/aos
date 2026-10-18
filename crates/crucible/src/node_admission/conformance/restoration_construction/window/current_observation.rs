@@ -527,6 +527,10 @@ impl CompleteOriginalRestorationWindow {
         node: &crucible_node_contract::Id,
         row: OriginalRestoredSchedulingObservationConstructionData,
     ) -> Result<(), RuntimeError> {
+        if self.restored_capture_in_flight.get() {
+            return Err(RuntimeError::OutstandingObligations);
+        }
+
         self.authenticate_original_installed_runtime_identity_data(
             runtime,
             &self.archive,
@@ -586,6 +590,10 @@ impl CompleteOriginalRestorationWindow {
         launch: &'a PacketNative5SourceLaunch,
         canonical_launch5: &'a [u8],
     ) -> Result<OriginalRestoredSchedulingObservationClaim<'a>, RuntimeError> {
+        if self.restored_capture_in_flight.get() {
+            return Err(RuntimeError::OutstandingObligations);
+        }
+
         self.whole_observation.authenticate_dispatch_data()?;
         let selected = self
             .sources
@@ -876,5 +884,19 @@ impl CompleteOriginalRestorationWindow {
         self.authenticate_original_complete_identity_data(&plan, scope)?;
         self.runtime
             .authenticate_runtime_data(runtime, &world.record().world_binding_hash)
+    }
+}
+
+impl CompleteOriginalRestorationWindow {
+    pub(super) fn require_original_current_inspections_settled_data(
+        &self,
+    ) -> Result<(), RuntimeError> {
+        for observation in &self.current_observations {
+            observation
+                .try_borrow()
+                .map_err(|_| RuntimeError::OwnerBusy)?
+                .authenticate_no_pending_data()?;
+        }
+        Ok(())
     }
 }

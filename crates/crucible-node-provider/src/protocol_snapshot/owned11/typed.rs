@@ -601,7 +601,23 @@ pub(crate) struct Fields<'a> {
     first: bool,
 }
 
+const FIELD_SPAN_STACK_BYTES: usize = 128;
+
 impl<'a> Fields<'a> {
+    pub(crate) fn counter_scratch_data() -> usize {
+        use std::mem::size_of;
+        size_of::<Self>()
+            + FIELD_SPAN_STACK_BYTES
+            + size_of::<Result<Option<&[u8]>, ProviderError>>()
+            + size_of::<Result<Option<BorrowedFieldPair<'static>>, ProviderError>>()
+            + size_of::<Result<&[u8], ProviderError>>()
+            + size_of::<Result<&str, ProviderError>>()
+            + size_of::<Result<(), ProviderError>>()
+            + size_of::<usize>() * 2
+            + size_of::<u8>()
+            + size_of::<bool>() * 2
+    }
+
     pub(crate) fn array(input: &'a [u8]) -> Result<Self, ProviderError> {
         Self::new(input, b'[', b']')
     }
@@ -668,7 +684,7 @@ impl<'a> Fields<'a> {
 
     fn span(&mut self) -> Result<&'a [u8], ProviderError> {
         let start = self.position;
-        let mut stack = [0u8; 128];
+        let mut stack = [0u8; FIELD_SPAN_STACK_BYTES];
         let mut depth = 0usize;
         let mut string = false;
         let mut escaped = false;

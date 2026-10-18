@@ -15,7 +15,8 @@ use crucible_node_contract::canonical;
 use std::io::{self, Write};
 
 mod view;
-pub(super) use view::BatchView;
+pub(super) use view::restored_base17_counter_scratch_data;
+pub(super) use view::{ActivationView, BatchView, RestoredBaseCustodyView};
 
 /// Reserves one finite original semantic snapshot bank before native effects.
 ///

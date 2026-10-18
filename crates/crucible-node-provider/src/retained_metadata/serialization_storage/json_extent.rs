@@ -11,27 +11,31 @@ use super::*;
 
 /// Reports named upper bounds for one bounded raw JSON Value family.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct OriginalJsonValueStorageExtentData {
+pub struct OriginalJsonValueStorageExtentData {
     /// Counts JSON values and independently owned object-key strings.
-    pub(crate) maximum_value_nodes: usize,
+    pub maximum_value_nodes: usize,
     /// Counts original object entries across all nested maps.
-    pub(crate) maximum_object_members: usize,
+    pub maximum_object_members: usize,
     /// Bounds the sum of decoded UTF-8 lengths, including object keys.
-    pub(crate) maximum_decoded_string_bytes: usize,
+    pub maximum_decoded_string_bytes: usize,
     /// Covers one fresh parser/clone Value tree with growable child banks.
-    pub(crate) value_dom_requested_bytes: usize,
+    pub value_dom_requested_bytes: usize,
     /// Covers canonical key sorting, quoted string work and numeric formatting.
-    pub(crate) canonical_work_requested_bytes: usize,
+    pub canonical_work_requested_bytes: usize,
     /// Covers cumulative requested growth of the final canonical output bank.
-    pub(crate) canonical_output_requested_bytes: usize,
+    pub canonical_output_requested_bytes: usize,
     /// Bounds actual JCS output independently of its bank-growth requests.
-    pub(crate) maximum_canonical_encoded_bytes: usize,
+    pub maximum_canonical_encoded_bytes: usize,
     /// Names only explicit counter/layout result headers, not compiler frames.
-    pub(crate) declared_counter_scratch_bytes: usize,
+    pub declared_counter_scratch_bytes: usize,
 }
 
 impl OriginalJsonValueStorageExtentData {
-    pub(crate) fn canonical_pass_requested_bytes(self) -> Result<usize, ProviderError> {
+    /// Sums one independent Value, canonical-work, output and fixed-view pass.
+    ///
+    /// # Errors
+    /// Refuses checked requested-storage overflow.
+    pub fn canonical_pass_requested_bytes(self) -> Result<usize, ProviderError> {
         sum(&[
             self.value_dom_requested_bytes,
             self.canonical_work_requested_bytes,
@@ -52,7 +56,11 @@ impl OriginalJsonValueStorageExtentData {
 /// No typed request/response validation, callback or custom formatter is run.
 /// Caller limits are DATA until the actual original source/grant authenticates
 /// their use; this function creates no Connection, DTO or native owner.
-pub(crate) fn original_json_value_storage_extent_data(
+///
+/// # Errors
+/// Refuses zero extent, unsupported compiled tree layout, or checked arithmetic
+/// overflow while bounding JSON values, strings, containers and canonical work.
+pub fn original_json_value_storage_extent_data(
     maximum_encoded_bytes: usize,
 ) -> Result<OriginalJsonValueStorageExtentData, ProviderError> {
     if maximum_encoded_bytes == 0 {
@@ -118,7 +126,8 @@ pub(crate) fn original_json_value_storage_extent_data(
     Ok(result)
 }
 
-pub(crate) const fn original_json_value_storage_extent_counter_scratch_data() -> usize {
+/// Names the actual fixed lexical-bound, layout and result views.
+pub const fn original_json_value_storage_extent_counter_scratch_data() -> usize {
     // Includes result/copy, direct counters, nested node-layout counters and
     // the largest explicit sum array/iterator. This is not a compiler frame bound.
     2 * std::mem::size_of::<OriginalJsonValueStorageExtentData>()

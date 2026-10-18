@@ -409,3 +409,6 @@ mod tests {
         assert!(second.original_host_startup_unlaunched_data());
     }
 }
+
+#[path = "host_startup/settled17.rs"]
+mod settled17;

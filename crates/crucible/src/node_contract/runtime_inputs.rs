@@ -140,6 +140,14 @@ impl NodeRuntime {
                 return Err(error);
             }
         };
+        let coordinator_stage = self.reserve_coordinator_attempt_data(
+            crucible_node_provider::reference_packet::service::complete_restore::settled_recapture::CoordinatorCommitmentKind17::InputStage,
+            Some(batch.stage_operation()), Some(batch.node()), Some(batch.cutoff()), 0,
+        ).map_err(RuntimePollFailure::Admission)?;
+        let coordinator_acknowledgement = self.reserve_coordinator_attempt_data(
+            crucible_node_provider::reference_packet::service::complete_restore::settled_recapture::CoordinatorCommitmentKind17::InputAcknowledgement,
+            Some(batch.stage_operation()), Some(batch.node()), Some(batch.cutoff()), 0,
+        ).map_err(RuntimePollFailure::Admission)?;
         self.reserve(&token);
         let operation = batch.stage_operation().clone();
         self.input_batches.insert(
@@ -177,7 +185,7 @@ impl NodeRuntime {
                 reason: "original staged-input custody disappeared".into(),
             }),
         };
-        match result {
+        let checked_result = (|| match result {
             Ok(acknowledgement) => {
                 let valid = match (
                     self.nodes.get(&route.node),
@@ -239,7 +247,12 @@ impl NodeRuntime {
                 }
                 Err(RuntimePollFailure::Native(failure))
             }
-        }
+        })();
+        self.finish_coordinator_runtime_result_data(coordinator_stage, &checked_result)
+            .map_err(RuntimePollFailure::Admission)?;
+        self.finish_coordinator_runtime_result_data(coordinator_acknowledgement, &checked_result)
+            .map_err(RuntimePollFailure::Admission)?;
+        checked_result
     }
 
     /// Recovers authenticated original native staging evidence without restaging.
@@ -410,53 +423,66 @@ impl NodeRuntime {
         }) {
             return Err(RuntimePollFailure::Admission(RuntimeError::OwnerBusy));
         }
-        // A native socket consumer must consume this exact original commit
-        // before the coordinator releases locks or can issue an execution grant.
-        // A pending exchange keeps the retained commit and reservation unchanged.
-        let consumer_commit = self
-            .nodes
-            .get_mut(commit.node())
-            .ok_or(RuntimePollFailure::Admission(RuntimeError::UnknownNode))?
-            .commit_input_custody(commit)
-            .and_then(|()| {
-                self.nodes
-                    .get(commit.node())
-                    .ok_or(OperationFailure {
-                        effects: EffectKnowledge::Unknown,
-                        reason: "original input consumer disappeared during commitment".into(),
-                    })?
-                    .validate_input_custody_commit(commit)
-            });
-        if let Err(failure) = consumer_commit {
-            if failure.effects != EffectKnowledge::None {
-                self.contain_roster(&route);
+        let coordinator_commit = self.reserve_coordinator_attempt_data(
+            crucible_node_provider::reference_packet::service::complete_restore::settled_recapture::CoordinatorCommitmentKind17::InputCommit,
+            Some(commit.stage_operation()), Some(commit.node()), Some(commit.cutoff()), 0,
+        ).map_err(RuntimePollFailure::Admission)?;
+        let checked_result = (|| {
+            // A native socket consumer must consume this exact original commit
+            // before the coordinator releases locks or can issue an execution grant.
+            // A pending exchange keeps the retained commit and reservation unchanged.
+            let consumer_commit = self
+                .nodes
+                .get_mut(commit.node())
+                .ok_or(RuntimePollFailure::Admission(RuntimeError::UnknownNode))?
+                .commit_input_custody(commit)
+                .and_then(|()| {
+                    self.nodes
+                        .get(commit.node())
+                        .ok_or(OperationFailure {
+                            effects: EffectKnowledge::Unknown,
+                            reason: "original input consumer disappeared during commitment".into(),
+                        })?
+                        .validate_input_custody_commit(commit)
+                });
+            if let Err(failure) = consumer_commit {
+                if failure.effects != EffectKnowledge::None {
+                    self.contain_roster(&route);
+                }
+                return Err(RuntimePollFailure::Native(failure));
             }
-            return Err(RuntimePollFailure::Native(failure));
-        }
 
-        // Grant issuance itself remains closed until the original native
-        // consumer's commit has succeeded, independently of dispatch checks.
-        if let Some(state) = &self.scheduler
-            && let Some(mut scheduler) = state
-                .borrow_if_initialized()
-                .map_err(RuntimePollFailure::Admission)?
-        {
-            scheduler.commit_input_custody(commit).map_err(|error| {
-                RuntimePollFailure::Admission(RuntimeError::SchedulerRefused(error.to_string()))
-            })?;
-        }
+            // Grant issuance itself remains closed until the original native
+            // consumer's commit has succeeded, independently of dispatch checks.
+            if let Some(state) = &self.scheduler
+                && let Some(mut scheduler) = state
+                    .borrow_if_initialized()
+                    .map_err(RuntimePollFailure::Admission)?
+            {
+                scheduler.commit_input_custody(commit).map_err(|error| {
+                    RuntimePollFailure::Admission(RuntimeError::SchedulerRefused(error.to_string()))
+                })?;
+            }
 
-        let token = OperationToken {
-            authority: Rc::clone(&self.authority),
-            operation: commit.stage_operation().clone(),
-            route,
-        };
-        self.release_reservation(&token);
-        let retained = self.input_batches.get_mut(commit.stage_operation()).ok_or(
-            RuntimePollFailure::Admission(RuntimeError::ForeignAuthority),
-        )?;
-        retained.committed = true;
-        Ok(())
+            let token = OperationToken {
+                authority: Rc::clone(&self.authority),
+                operation: commit.stage_operation().clone(),
+                route,
+            };
+            self.release_reservation(&token);
+            let retained = self.input_batches.get_mut(commit.stage_operation()).ok_or(
+                RuntimePollFailure::Admission(RuntimeError::ForeignAuthority),
+            )?;
+            retained.committed = true;
+            Ok(())
+        })();
+        self.finish_coordinator_runtime_result_data(coordinator_commit, &checked_result)
+            .map_err(RuntimePollFailure::Admission)?;
+        if checked_result.is_ok() {
+            self.reconcile_coordinator_input_commit_data(commit)
+                .map_err(RuntimePollFailure::Admission)?;
+        }
+        checked_result
     }
 
     pub(super) fn execution_inputs(

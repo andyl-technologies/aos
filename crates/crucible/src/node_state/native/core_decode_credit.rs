@@ -552,3 +552,21 @@ mod tests {
         ));
     }
 }
+
+/// Counts the distinct Host17 root plus the unchanged current Runtime7 and
+/// scheduler child families. Byte-array roles retain their defining u8 geometry.
+pub(super) fn preflight_restored_host17(
+    bytes: &[u8],
+    maximum: usize,
+) -> Result<DecodeCredit, RuntimeError> {
+    use crate::node_contract::{
+        HostSchedulingRestoredContinuationRecord17, RestoredHostAdmissionPolicy17,
+        RestoredHostAncestry17, RestoredHostSemanticAncestor,
+    };
+    let typed_slot = NodeRuntime::capture_closed_inline_storage()
+        .max(size_of::<HostSchedulingRestoredContinuationRecord17>())
+        .max(size_of::<RestoredHostAncestry17>())
+        .max(size_of::<RestoredHostSemanticAncestor>())
+        .max(size_of::<RestoredHostAdmissionPolicy17>());
+    preflight_shape(bytes, maximum, typed_slot, true, None)
+}

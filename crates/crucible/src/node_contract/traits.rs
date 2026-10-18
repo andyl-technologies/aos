@@ -1159,6 +1159,51 @@ pub trait SimulationNode {
         self.begin_operation(dispatch.admission_data())
     }
 
+    /// Quotes passive retained, transient and scratch demand before counting-bank allocation.
+    ///
+    /// # Errors
+    /// Refuses an unsupported node, foreign launch or exhausted selected bound.
+    fn quote_original_restored_capture_prequote(
+        &self,
+        _launch: &crucible_node_provider::reference_packet::service::PacketNative5SourceLaunch,
+        _canonical_launch5: &[u8],
+        _request: &crate::node_admission::OriginalRestoredCaptureRequestData<'_>,
+        _maximum: usize,
+    ) -> Result<(usize, usize, usize), super::RuntimeError> {
+        Err(super::RuntimeError::UnsupportedFacet)
+    }
+
+    /// Reserves the actual admitted counting banks without dispatching native Capture.
+    ///
+    /// # Errors
+    /// Refuses an unsupported node, foreign launch or exhausted selected bound.
+    fn reserve_original_restored_capture_counting_banks(
+        &self,
+        _launch: &crucible_node_provider::reference_packet::service::PacketNative5SourceLaunch,
+        _canonical_launch5: &[u8],
+        _request: &crate::node_admission::OriginalRestoredCaptureRequestData<'_>,
+        _maximum: usize,
+    ) -> Result<(), super::RuntimeError> {
+        Err(super::RuntimeError::UnsupportedFacet)
+    }
+
+    /// Quotes the complete Source construction using its actual admitted counting banks.
+    ///
+    /// # Errors
+    /// Refuses an unsupported node, foreign launch or exhausted selected bound.
+    fn quote_original_restored_capture_construction(
+        &self,
+        _launch: &crucible_node_provider::reference_packet::service::PacketNative5SourceLaunch,
+        _canonical_launch5: &[u8],
+        _request: &crate::node_admission::OriginalRestoredCaptureRequestData<'_>,
+        _maximum: usize,
+    ) -> Result<
+        crate::node_adapters::cnp::OriginalSourceRestoredCaptureConstructionData,
+        super::RuntimeError,
+    > {
+        Err(super::RuntimeError::UnsupportedFacet)
+    }
+
     /// Quotes an actual pending restored Producer grant without issuing effects.
     ///
     /// # Errors

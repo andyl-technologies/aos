@@ -30,14 +30,20 @@ mod population_tests;
 #[path = "archive_native_input/projection.rs"]
 mod projection;
 
+#[path = "archive_native_input/selection.rs"]
+mod selection;
+pub(super) use selection::NativeInputSelection;
+
+use super::archive_owner::ArchivedContentData;
+
 const MAXIMUM_RECORD_BYTES: usize = 65_536;
 
 /// Borrows actual archive owners while charging transient data comparisons.
 pub(super) struct NativeInputData<'a> {
-    pub(super) source: &'a PacketCompleteSemanticSource,
+    pub(super) selection: NativeInputSelection<'a>,
     pub(super) host: &'a HistoricalControllerState,
     pub(super) native: &'a HistoricalNativeState,
-    pub(super) content: &'a VerifiedStateContent,
+    pub(super) content: ArchivedContentData<'a>,
     pub(super) retained: usize,
     pub(super) maximum: usize,
     pub(super) scratch: Cell<usize>,
@@ -73,10 +79,10 @@ impl PacketCompleteSemanticSource {
             .filter(|n| *n <= maximum_total_bytes)
             .ok_or_else(|| refused("cold native input aggregate storage exhausted"))?;
         let data = NativeInputData {
-            source: self,
+            selection: NativeInputSelection::Live(self),
             host: cold.host()?,
             native: cold.native_after()?,
-            content,
+            content: ArchivedContentData::Verified(content),
             retained,
             maximum: maximum_total_bytes,
             scratch: Cell::new(0),
@@ -94,9 +100,24 @@ impl PacketCompleteSemanticSource {
         data: &NativeInputData<'_>,
         semantics: &PacketCompleteArchivedSemantics,
     ) -> Result<(), OperationFailure> {
+        self.ensure_origin()?;
+        data.selection.authenticate_same_source_data(self)?;
+        data.authenticate_input_history_data(semantics)?;
+        data.selection.authenticate_same_source_data(self)?;
+        self.ensure_origin()
+    }
+}
+
+impl NativeInputData<'_> {
+    /// Checks the complete native Input population using its original DATA selection.
+    pub(super) fn authenticate_input_history_data(
+        &self,
+        semantics: &PacketCompleteArchivedSemantics,
+    ) -> Result<(), OperationFailure> {
+        self.selection.authenticate_origin_data()?;
         let state = semantics.source_common_data();
-        data.input_population(state)?;
-        if state.inputs.is_empty() && self.complete_reactive_definition_data()?.is_none() {
+        self.input_population(state)?;
+        if state.inputs.is_empty() && self.selection.reactive_definition_data()?.is_none() {
             if !semantics
                 .source_reference_ancestry_data()?
                 .lineages
@@ -106,21 +127,21 @@ impl PacketCompleteSemanticSource {
             }
             return Ok(());
         }
-        if self.complete_reactive_definition_data()?.is_none() {
+        if self.selection.reactive_definition_data()?.is_none() {
             return Err(refused("producer invented input custody"));
         }
         for input in state.inputs.values() {
-            data.input(input)?;
+            self.input(input)?;
         }
         for lineage in &semantics.source_reference_ancestry_data()?.lineages {
-            data.original_batch(&lineage.original)?;
-            let staged = data.find_stage(&lineage.original)?;
-            data.stage(&staged, &lineage.original)?;
+            self.original_batch(&lineage.original)?;
+            let staged = self.find_stage(&lineage.original)?;
+            self.stage(&staged, &lineage.original)?;
             for publication in &lineage.publications {
                 for reference in &publication.objects {
                     reference
                         .verify(
-                            data.content.get(reference).ok_or_else(|| {
+                            self.content.get(reference).ok_or_else(|| {
                                 refused("reference ancestry full object body absent")
                             })?,
                         )
@@ -128,11 +149,9 @@ impl PacketCompleteSemanticSource {
                 }
             }
         }
-        self.ensure_origin()
+        self.selection.authenticate_origin_data()
     }
-}
 
-impl NativeInputData<'_> {
     fn observe_construction(&self, scratch: usize) -> Result<(), OperationFailure> {
         if let Some(counter) = self.construction {
             counter.observe(self.retained, scratch)?;

@@ -232,6 +232,48 @@ impl Serialize for PublicationView<'_> {
     }
 }
 
+/// Names the defining borrowed Runtime7 traversal headers without running it.
+///
+/// All map adapters above capture no state. Their concrete iterator layout is
+/// represented with the same base iterator and a zero-sized map function slot.
+/// Serialization, DOM, typed decode and canonical storage are separate rows.
+pub(in crate::node_contract::runtime) fn original_restored_snapshot_counter_scratch_data() -> usize
+{
+    use std::{
+        collections::{btree_map, btree_set},
+        iter::Map,
+        mem::size_of,
+        slice,
+    };
+    type Owners = Map<btree_map::Values<'static, Id, super::super::OwnerCustody>, ()>;
+    type Operations =
+        Map<btree_map::Values<'static, OperationId, super::super::RetainedOperation>, ()>;
+    type Inputs = Map<btree_map::Values<'static, Id, super::super::inputs::RetainedInput>, ()>;
+    type Payloads = Map<slice::Iter<'static, crate::node_scheduling::InputPayload>, ()>;
+    type Publications = Map<slice::Iter<'static, OriginalPublicationClaim>, ()>;
+
+    size_of::<SnapshotView<'static>>()
+        + size_of::<ActivationView<'static>>()
+        + size_of::<OwnerView<'static>>()
+        + size_of::<OperationView<'static>>()
+        + size_of::<ResultView<'static>>()
+        + size_of::<CommitView<'static>>()
+        + size_of::<InputView<'static>>()
+        + size_of::<ProvenanceView<'static>>()
+        + size_of::<LineageView<'static>>()
+        + size_of::<PublicationView<'static>>()
+        + size_of::<Sequence<Owners>>()
+        + size_of::<Sequence<Operations>>()
+        + size_of::<Sequence<Inputs>>()
+        + size_of::<Sequence<btree_set::Iter<'static, Id>>>()
+        + size_of::<Sequence<Payloads>>()
+        + size_of::<Sequence<Publications>>()
+        + size_of::<Option<CommitView<'static>>>()
+        + size_of::<Option<ProvenanceView<'static>>>()
+        + size_of::<Option<LineageView<'static>>>()
+        + size_of::<Option<&Id>>()
+}
+
 #[cfg(test)]
 thread_local! {
     static METADATA_COPY_ATTEMPTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };

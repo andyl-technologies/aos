@@ -64,3 +64,26 @@ impl OriginalRestoredSuffixHostAttempt {
             + size_of::<Result<(), ProviderError>>()
     }
 }
+
+impl OriginalRestoredSuffixHostAttempt {
+    /// Borrows its exact retained SDK pair without asserting currentness.
+    ///
+    /// A separately authenticated current Source bridge may borrow this frozen
+    /// pair while retaining its own final cut. The full original suffix guard
+    /// remains required, and the saved actual cut is checked against the SDK
+    /// journal before returning any historical references.
+    ///
+    /// # Errors
+    /// Refuses another process/thread/controller/emitter or immutable codec,
+    /// incomplete private custody, changed actual request/terminal membership,
+    /// an absent saved frontier or a frontier beyond the actual Session.
+    pub fn authenticate_retained_pair_data(
+        &self,
+        controller: &CnpController,
+        emitter: &OriginalCanonicalBlobAckEmitter,
+    ) -> Result<(&Envelope, &Envelope, &ResponseBody), ProviderError> {
+        controller.authenticate_original_installed_restored_suffix_data(emitter)?;
+        let frontier = self.completed_frontier_data().ok_or_else(refused)?;
+        self.authenticate_completed_checkpoint17_cache_data(controller, emitter, frontier, false)
+    }
+}

@@ -190,3 +190,6 @@ pub(super) fn counter_scratch_data() -> usize {
         + size_of::<Result<usize, ProviderError>>()
         + crate::retained_metadata::serialization_storage::original_json_value_storage_extent_counter_scratch_data()
 }
+
+#[path = "construction/settled17.rs"]
+mod settled17;

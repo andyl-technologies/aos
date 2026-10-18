@@ -172,12 +172,21 @@ pub struct MetadataAliasAllocationFacts {
     pub lookup_bytes: usize,
 }
 
+// The installed owner remains failed if either backing cannot be constructed.
+// Existing successful constructors start Ready and retain their prior behavior.
+enum ReservationState {
+    Unallocated,
+    Failed,
+    Ready,
+}
+
 /// Owns precharged local alias rows and private walk-only lookup storage.
 pub struct MetadataAliasBank {
     rows: Vec<AliasRow>,
     keys: Vec<AliasKey>,
     maximum: usize,
     comparisons: usize,
+    reservation: ReservationState,
 }
 
 impl MetadataAliasBank {
@@ -214,7 +223,86 @@ impl MetadataAliasBank {
             keys,
             maximum,
             comparisons: 0,
+            reservation: ReservationState::Ready,
         })
+    }
+
+    /// Creates a validated alias-bank owner without allocating either backing.
+    ///
+    /// Callers install this owner before reserving so a later lookup-allocation
+    /// refusal retains the earlier row allocation in the enclosing operation.
+    ///
+    /// # Errors
+    /// Refuses zero or excessive row allowance or checked layout overflow.
+    pub fn unallocated(maximum_rows: usize) -> Result<Self, ProviderError> {
+        Self::reservation_requested_bytes(maximum_rows)?;
+        Ok(Self {
+            rows: Vec::new(),
+            keys: Vec::new(),
+            maximum: maximum_rows,
+            comparisons: 0,
+            reservation: ReservationState::Unallocated,
+        })
+    }
+
+    /// Reserves both installed backings once under their exact byte quote.
+    ///
+    /// A refusal keeps both actual capacities in this owner and permanently
+    /// closes reservation. Alias recording is enabled only after both succeed.
+    /// The enclosing owner separately admits the simultaneous requested bytes;
+    /// these data-only banks provide no source or native admission.
+    ///
+    /// # Errors
+    /// Refuses a repeated attempt, insufficient backing allowance, allocation
+    /// failure or actual capacity beyond either defining finite request.
+    pub fn reserve_retained_data(&mut self) -> Result<(), ProviderError> {
+        self.reserve_retained_with_backing_data(Self::reservation_requested_bytes(self.maximum)?)
+    }
+
+    fn reserve_retained_with_backing_data(
+        &mut self,
+        admitted_bytes: usize,
+    ) -> Result<(), ProviderError> {
+        if !matches!(self.reservation, ReservationState::Unallocated) {
+            return Err(credit());
+        }
+        self.reservation = ReservationState::Failed;
+
+        let row_bytes = self
+            .maximum
+            .checked_mul(std::mem::size_of::<AliasRow>())
+            .ok_or_else(credit)?;
+        if row_bytes > admitted_bytes {
+            return Err(credit());
+        }
+        self.rows
+            .try_reserve_exact(self.maximum)
+            .map_err(|_| credit())?;
+        if self.rows.capacity() > self.maximum {
+            return Err(credit());
+        }
+
+        // Debit the retained first backing before attempting the second. A
+        // lookup refusal must leave that earlier allocation inside this owner.
+        let remaining = admitted_bytes
+            .checked_sub(self.rows.capacity() * std::mem::size_of::<AliasRow>())
+            .ok_or_else(credit)?;
+        let key_bytes = self
+            .maximum
+            .checked_mul(std::mem::size_of::<AliasKey>())
+            .ok_or_else(credit)?;
+        if key_bytes > remaining {
+            return Err(credit());
+        }
+        self.keys
+            .try_reserve_exact(self.maximum)
+            .map_err(|_| credit())?;
+        if self.keys.capacity() > self.maximum {
+            return Err(credit());
+        }
+
+        self.reservation = ReservationState::Ready;
+        Ok(())
     }
 
     /// Quotes both requested vector backings before any alias-bank allocation.
@@ -276,7 +364,10 @@ impl MetadataAliasBank {
         kind: MetadataSharedKind,
         backing: &T,
     ) -> Result<(), ProviderError> {
-        if self.rows.len() >= self.maximum || self.rows.len() == self.rows.capacity() {
+        if !matches!(self.reservation, ReservationState::Ready)
+            || self.rows.len() >= self.maximum
+            || self.rows.len() == self.rows.capacity()
+        {
             return Err(credit());
         }
         // Addresses are comparison keys only. Neither serialization nor callers
@@ -484,5 +575,80 @@ impl MetadataAliasBank {
     ) -> Result<(), ProviderError> {
         observer.vector::<AliasRow>(rows)?;
         observer.vector::<AliasKey>(lookups)
+    }
+}
+
+#[cfg(test)]
+mod retained_owner_tests {
+    use super::*;
+
+    #[test]
+    fn installed_alias_owner_reserves_once_and_preserves_completed_edges()
+    -> Result<(), ProviderError> {
+        assert!(MetadataAliasBank::unallocated(0).is_err());
+        assert!(MetadataAliasBank::unallocated(131_073).is_err());
+        let mut bank = MetadataAliasBank::unallocated(7)?;
+        assert_eq!(bank.capacity_rows(), (0, 0));
+        assert_eq!(bank.allocated_bytes(), 0);
+        assert!(
+            bank.retain(MetadataSharedKind::RegistrarEpoch, &3u64)
+                .is_err()
+        );
+
+        bank.reserve_retained_data()?;
+        assert_eq!(bank.capacity_rows(), (7, 7));
+        assert_eq!(
+            bank.allocated_bytes(),
+            MetadataAliasBank::reservation_requested_bytes(7)?
+        );
+        bank.retain(MetadataSharedKind::RegistrarEpoch, &3u64)?;
+        let rows = bank.rows.as_ptr();
+        let keys = bank.keys.as_ptr();
+        let facts = bank.allocation_facts();
+        assert!(bank.reserve_retained_data().is_err());
+        assert_eq!(bank.allocation_facts(), facts);
+        assert_eq!(bank.rows.as_ptr(), rows);
+        assert_eq!(bank.keys.as_ptr(), keys);
+        assert_eq!(bank.rows[0].first, 0);
+        assert_eq!(bank.keys.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn late_lookup_debit_refusal_retains_row_allocation_and_actual_census()
+    -> Result<(), ProviderError> {
+        let mut bank = MetadataAliasBank::unallocated(7)?;
+        let required = MetadataAliasBank::reservation_requested_bytes(7)?;
+
+        // This admits the actual row bank but falls one byte short of its
+        // independently required lookup bank. No allocator failure is faked.
+        assert!(
+            bank.reserve_retained_with_backing_data(required - 1)
+                .is_err()
+        );
+        assert!(matches!(bank.reservation, ReservationState::Failed));
+        assert_eq!(bank.capacity_rows(), (7, 0));
+        assert!(bank.rows.is_empty() && bank.keys.is_empty());
+        let pointer = bank.rows.as_ptr();
+        let allocation = bank.allocation_facts();
+        assert_eq!(allocation.row_bytes, 7 * std::mem::size_of::<AliasRow>());
+        assert_eq!(allocation.lookup_bytes, 0);
+
+        let mut observer = crate::retained_metadata::MetadataObserver::new();
+        bank.observe_current17_storage_data(&mut observer)?;
+        let facts = observer.finish();
+        assert_eq!(facts.vector_banks, 2);
+        assert_eq!(facts.vector_capacity_bytes, bank.allocated_bytes());
+        assert_eq!(facts.vector_capacity_bytes, allocation.row_bytes);
+
+        bank.clear();
+        assert!(bank.reserve_retained_data().is_err());
+        assert!(
+            bank.retain(MetadataSharedKind::RegistrarEpoch, &3u64)
+                .is_err()
+        );
+        assert_eq!(bank.rows.as_ptr(), pointer);
+        assert_eq!(bank.allocation_facts(), allocation);
+        Ok(())
     }
 }

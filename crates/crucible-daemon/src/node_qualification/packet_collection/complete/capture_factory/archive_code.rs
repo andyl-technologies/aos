@@ -6,6 +6,8 @@
 
 mod precredit;
 
+mod restored_source;
+
 use super::*;
 use crucible::node_admission::{
     AdmissionLimits, CompleteArchiveCodeGraph, admit_complete_archive_code_graph,

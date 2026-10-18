@@ -1030,3 +1030,12 @@ impl PacketCompleteSemanticSource {
         ))
     }
 }
+
+#[path = "native_startup/settled17.rs"]
+mod settled17;
+
+#[path = "native_startup/source17_writer.rs"]
+mod source17_writer;
+
+#[path = "native_startup/restored_settled.rs"]
+mod restored_settled;

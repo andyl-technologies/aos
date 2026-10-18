@@ -564,3 +564,6 @@ impl Serialize for PacketNativeRestoredSuffixStartupHistoricalData<'_> {
         state.end()
     }
 }
+
+#[path = "reservation/settled17.rs"]
+mod settled17;

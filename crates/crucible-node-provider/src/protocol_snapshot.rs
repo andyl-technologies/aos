@@ -1699,3 +1699,6 @@ mod current_transport17;
 
 #[path = "protocol_snapshot/current_native_connection17.rs"]
 mod current_native_connection17;
+
+/// Lends schema-neutral JSON field DATA without constructing historical owners.
+pub mod borrowed_json;

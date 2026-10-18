@@ -13,6 +13,7 @@
 //! journal/12 additionally requires host_extension_registry; journal/11 forbids it.
 //! ```
 
+use super::archive_owner::ArchivedContentData;
 use super::*;
 use crate::{
     node_contract::{NativeStateKey, OriginalLineageRuntimeRecord},
@@ -179,6 +180,21 @@ impl PacketCompleteSettledJournal {
         runtime_object: &ContentRef,
         content: &VerifiedStateContent,
     ) -> Result<(), OperationFailure> {
+        self.authenticate_owner_from_content_data(
+            owner,
+            runtime,
+            runtime_object,
+            ArchivedContentData::Verified(content),
+        )
+    }
+
+    pub(super) fn authenticate_owner_from_content_data(
+        &self,
+        owner: &NativeOwnerState,
+        runtime: &OriginalLineageRuntimeRecord,
+        runtime_object: &ContentRef,
+        content: ArchivedContentData<'_>,
+    ) -> Result<(), OperationFailure> {
         self.validate_data()?;
         if owner.state != self.native_snapshot
             || self.owner != owner.owner
@@ -224,6 +240,19 @@ impl PacketCompleteSettledJournal {
         installed: &ImplementationIdentity,
         key: &NativeStateKey,
         content: &VerifiedStateContent,
+    ) -> Result<(), OperationFailure> {
+        self.authenticate_backend_from_content_data(
+            installed,
+            key,
+            ArchivedContentData::Verified(content),
+        )
+    }
+
+    pub(super) fn authenticate_backend_from_content_data(
+        &self,
+        installed: &ImplementationIdentity,
+        key: &NativeStateKey,
+        content: ArchivedContentData<'_>,
     ) -> Result<(), OperationFailure> {
         let value = if self.schema == PACKET_COMPLETE_SETTLED_REGISTRY_JOURNAL_SCHEMA {
             if key.schema.id.as_str() == "source-owned.packet-native-continuation/13" {

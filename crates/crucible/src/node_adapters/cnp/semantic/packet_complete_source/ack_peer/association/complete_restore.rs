@@ -6,6 +6,9 @@
 //! retains every original owner; it cannot be retried with replacement data.
 
 use super::*;
+
+#[path = "complete_restore/history.rs"]
+mod history;
 use crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::StorageError;
 use crate::{
     node_contract::OriginalLineageRestoration,
@@ -909,5 +912,20 @@ impl OriginalCompleteRestoreAttempt {
             ));
         }
         Ok(())
+    }
+}
+
+impl OriginalCompleteRestoreAttempt {
+    pub(super) fn settled17_once_data(
+        &self,
+    ) -> Result<super::settled17_once::RestoreOnce17, RuntimeError> {
+        self.authenticate_unpopulated_capture_metadata_with_error::<RuntimeError>()?;
+        Ok(super::settled17_once::RestoreOnce17 {
+            prepared: self.prepared,
+            ready: self.ready,
+            signing_started: self.signing_started,
+            sealed: self.sealed,
+            publishing_started: self.publishing_started,
+        })
     }
 }

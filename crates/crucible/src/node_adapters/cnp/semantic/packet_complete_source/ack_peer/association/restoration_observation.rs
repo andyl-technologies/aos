@@ -30,6 +30,8 @@ use crucible_node_provider::{
 };
 use std::mem::size_of;
 
+#[path = "restoration_observation/checkpoint_cache17.rs"]
+mod checkpoint_cache17;
 #[path = "restoration_observation/construction.rs"]
 mod construction;
 #[path = "restoration_observation/construction_data.rs"]
@@ -62,3 +64,6 @@ fn sum<const N: usize>(terms: [usize; N], maximum: usize) -> Result<usize, Runti
 mod current;
 pub(super) use current::CurrentObservationHistory;
 pub(crate) use current::OriginalSourceRestoredObservationCompletion;
+
+#[path = "restoration_observation/checkpoint17.rs"]
+mod checkpoint17;

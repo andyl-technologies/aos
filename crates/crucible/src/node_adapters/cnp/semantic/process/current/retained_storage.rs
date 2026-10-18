@@ -1,5 +1,8 @@
 //! Observes retained read-handle aliases after live currentness may have ended.
 
+#[path = "retained_storage/checkpoint_cache17.rs"]
+mod checkpoint_cache17;
+
 use super::*;
 use crate::node_adapters::cnp::semantic::{
     CnpRetainedStorageReport, retained_storage::Counter, unknown,

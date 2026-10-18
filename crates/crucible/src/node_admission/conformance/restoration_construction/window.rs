@@ -140,6 +140,8 @@ enum WindowStage {
 /// the window cannot renew the archive's per-owner transaction ledger.
 #[must_use = "retain the original window and every partial owner through failure"]
 pub struct CompleteOriginalRestorationWindow {
+    restored_captures: RefCell<restored_capture::Ledger>,
+    restored_capture_in_flight: Cell<bool>,
     producer_executions: [RefCell<producer_execution::ProducerExecutionLedger>; 3],
     producer_publication: OnceCell<producer_execution::ProducerPublicationIdentity>,
     producer_next_slot: Cell<usize>,
@@ -185,6 +187,8 @@ pub struct CompleteOriginalRestorationWindow {
     context_started: Cell<bool>,
     context_issued: Cell<bool>,
     coordinator_construction: OnceCell<OriginalRestorationCoordinatorConstructionData>,
+    coordinator17_construction:
+        OnceCell<crate::node_contract::OriginalRestoredCoordinator17ConstructionData>,
     coordinator_target: OnceCell<ActivationRecord>,
     coordinator_owner: RefCell<coordinator_owner::OriginalRestorationCoordinatorOwner>,
     common_construction:
@@ -229,6 +233,7 @@ impl InstalledConformancePlan {
             CompleteOriginalRestorationTransactionTarget::counter_scratch_data(),
             CompleteOriginalRestorationWindow::phase_counter_scratch_data(),
             producer_execution::counter_scratch_data(),
+            restored_capture::counter_scratch_data(),
             world_roster::counter_scratch_data()?,
             super::transaction_group::OriginalRestorationTransactionGroup::counter_scratch_data(),
             size_of::<super::target::OriginalRestorationTargetInputs>(),
@@ -269,6 +274,7 @@ impl InstalledConformancePlan {
             PacketCompleteSemanticSource::original_restoration_observation_source_construction_counter_scratch_data(),
             PacketCompleteSemanticSource::original_restoration_observation_declaration_counter_scratch_data(),
             OriginalRestorationCoordinatorConstructionData::defining_counter_scratch_data(),
+            crate::node_contract::OriginalRestoredCoordinator17ConstructionData::counter_scratch_data(),
             ConformanceRuntime::original_runtime_restoration_installation_counter_scratch_data()?,
             crate::node_scheduling::PreparedSchedulingRestore::original_retained_counter_scratch_data(),
             observation::owner_loan_result_counter_scratch_data::<Option<crate::node_scheduling::PreparedSchedulingRestore>>(),
@@ -372,6 +378,8 @@ impl InstalledConformancePlan {
             policy.maximum_requested_bytes,
         )?;
         Ok(Rc::new(CompleteOriginalRestorationWindow {
+            restored_captures: RefCell::new(restored_capture::Ledger::new()),
+            restored_capture_in_flight: Cell::new(false),
             producer_executions: std::array::from_fn(|_| {
                 RefCell::new(producer_execution::ProducerExecutionLedger::new())
             }),
@@ -414,6 +422,7 @@ impl InstalledConformancePlan {
             context_started: Cell::new(false),
             context_issued: Cell::new(false),
             coordinator_construction: OnceCell::new(),
+            coordinator17_construction: OnceCell::new(),
             coordinator_target: OnceCell::new(),
             coordinator_owner: RefCell::new(
                 coordinator_owner::OriginalRestorationCoordinatorOwner::empty(),
@@ -1390,3 +1399,16 @@ pub(crate) use producer_execution::ProducerExecutionPhase;
 
 #[path = "window/installed_import.rs"]
 mod installed_import;
+
+#[path = "window/input17_construction.rs"]
+mod input17_construction;
+pub use input17_construction::OriginalRestoredInput17ConstructionData;
+#[path = "window/restored_capture.rs"]
+mod restored_capture;
+pub use restored_capture::{OriginalRestoredCaptureClaim, OriginalRestoredCaptureRequestData};
+pub(crate) use restored_capture::{
+    OriginalRestoredCaptureImportedOwnerInputs, OriginalRestoredCaptureSigningInputs,
+};
+
+#[path = "window/coordinator17.rs"]
+mod coordinator17;

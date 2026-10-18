@@ -154,3 +154,64 @@ pub(super) const fn counter_scratch_data() -> usize {
         + size_of::<blake3::Hash>()
         + size_of::<[u8; 32]>()
 }
+
+/// Lends every portable fixed field without reconstructing a live Source row.
+///
+/// Creator identities, thread handles and process pointers never enter history.
+pub(crate) struct OriginalSourceRestorationObservationHistoricalData<'a> {
+    original: &'a OriginalSourceRestorationObservationConstructionData,
+}
+
+impl OriginalSourceRestorationObservationConstructionData {
+    /// Borrows the full historical quote without creating a Source permission.
+    pub(crate) fn historical_data(&self) -> OriginalSourceRestorationObservationHistoricalData<'_> {
+        OriginalSourceRestorationObservationHistoricalData { original: self }
+    }
+
+    /// Names the nested defining row and full borrowed historical views.
+    pub(crate) fn historical_counter_scratch_data() -> usize {
+        OriginalInstalledRestorationObservationConstructionData::historical_counter_scratch_data()
+            + OriginalSourceRestorationActivationConstructionData::historical_counter_scratch_data()
+            + size_of::<OriginalSourceRestorationObservationHistoricalData<'static>>()
+            + size_of::<&OriginalSourceRestorationObservationConstructionData>()
+            + 11 * size_of::<&usize>()
+            + size_of::<&[u8; 32]>()
+    }
+}
+
+impl serde::Serialize for OriginalSourceRestorationObservationHistoricalData<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let OriginalSourceRestorationObservationConstructionData {
+            process: _,
+            thread: _,
+            source: _,
+            controller: _,
+            provider,
+            activation,
+            request_id,
+            retained,
+            transient,
+            scratch,
+            requested,
+            maximum,
+            frame,
+            scheduling,
+            node_scheduling_copies,
+        } = self.original;
+        let mut state = serializer
+            .serialize_struct("OriginalSourceRestorationObservationHistoricalData", 11)?;
+        state.serialize_field("provider", &provider.historical_data())?;
+        state.serialize_field("activation", &activation.historical_data())?;
+        state.serialize_field("request_id", request_id)?;
+        state.serialize_field("retained", retained)?;
+        state.serialize_field("transient", transient)?;
+        state.serialize_field("scratch", scratch)?;
+        state.serialize_field("requested", requested)?;
+        state.serialize_field("maximum", maximum)?;
+        state.serialize_field("frame", frame)?;
+        state.serialize_field("scheduling", scheduling)?;
+        state.serialize_field("node_scheduling_copies", node_scheduling_copies)?;
+        state.end()
+    }
+}

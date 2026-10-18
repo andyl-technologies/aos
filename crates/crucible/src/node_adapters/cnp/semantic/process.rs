@@ -18,7 +18,9 @@ use rustix::process::{Pid, Signal, getpgid, kill_process_group};
 #[path = "process/current.rs"]
 mod current;
 pub use current::CnpSemanticSourceRead;
+pub(in crate::node_adapters::cnp::semantic) use current::OriginalFreshQueryReadCall;
 pub(super) use current::ReadCall;
+pub(in crate::node_adapters::cnp::semantic) use executable_guard::FreshCurrentScratch;
 
 mod complete_registry;
 mod executable_guard;
@@ -723,3 +725,6 @@ pub(in crate::node_adapters::cnp::semantic) use host_startup::OriginalHostLaunch
 #[path = "process/initial_lifecycle_storage.rs"]
 mod initial_lifecycle_storage;
 pub(in crate::node_adapters::cnp::semantic) use host_startup::OriginalHostInitialLifecycleGuardIdentity;
+
+#[path = "process/metadata_origin17.rs"]
+mod metadata_origin17;

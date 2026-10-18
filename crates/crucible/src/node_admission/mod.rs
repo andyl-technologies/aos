@@ -552,3 +552,13 @@ pub use conformance::{
 };
 
 pub(crate) use conformance::ProducerExecutionPhase;
+
+pub use conformance::CompleteOriginalRestoredSettledStartupAdmission;
+pub(crate) use conformance::OriginalRestoredSettledStartupMember;
+
+pub use conformance::OriginalRestoredInput17ConstructionData;
+
+pub use conformance::{OriginalRestoredCaptureClaim, OriginalRestoredCaptureRequestData};
+pub(crate) use conformance::{
+    OriginalRestoredCaptureImportedOwnerInputs, OriginalRestoredCaptureSigningInputs,
+};

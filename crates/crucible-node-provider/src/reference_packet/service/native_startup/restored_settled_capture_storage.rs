@@ -380,6 +380,12 @@ impl PacketRestoredSettledNativeStorageData {
             extent(limits.native_after_bytes)?,
         ])?;
         let graph_targets = mul(2, maximum_typed_graph)?;
+        // Both lazily retained decoder headers are actual heap slots, separate
+        // from selected model backing and the enclosing inline Source owner.
+        let graph_headers = mul(
+            2,
+            std::mem::size_of::<Option<crate::protocol_snapshot::native_wholegraph17::NativeCurrentGraph17DecodeAttempt>>(),
+        )?;
         let role_references = mul(
             5,
             sum(&[
@@ -390,8 +396,14 @@ impl PacketRestoredSettledNativeStorageData {
             ])?,
         )?;
         Ok(PacketRestoredSettledNativeOutputValidationStorageData {
-            retained:sum(&[raw,graph_raw,graph_targets,alias_summaries,role_references])?,
-            transient:sum(&[transient,maximum_typed_graph])?,
+            retained:sum(&[raw,graph_raw,graph_targets,graph_headers,alias_summaries,role_references])?,
+            // Native decoder roots are independent pure constructor outputs;
+            // neither retained model backing nor heap-slot R pays this T window.
+            transient: sum(&[
+                transient,
+                maximum_typed_graph,
+                crate::protocol_snapshot::restored_settled17::restored_settled_native17_decode_construction_transient_bytes_data(),
+            ])?,
             scratch:sum(&[syntax_scratch,crate::protocol_snapshot::restored_settled17::restored_settled_native17_counter_scratch_data()])?,
             maximum_typed_graph,
             output_limits:self.carrier.output_limits,

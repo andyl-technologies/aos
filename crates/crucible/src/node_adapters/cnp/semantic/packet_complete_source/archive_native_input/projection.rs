@@ -46,10 +46,10 @@ impl PacketCompleteSemanticSource {
             .filter(|n| *n <= maximum_total_bytes)
             .ok_or_else(|| refused("cold native projection aggregate storage exhausted"))?;
         let data = NativeInputData {
-            source: self,
+            selection: NativeInputSelection::Live(self),
             host: cold.host()?,
             native: cold.native_after()?,
-            content,
+            content: ArchivedContentData::Verified(content),
             retained,
             maximum: maximum_total_bytes,
             scratch: Cell::new(0),
@@ -64,61 +64,75 @@ impl PacketCompleteSemanticSource {
         journal: &PacketCompleteSettledJournal,
         semantics: &PacketCompleteArchivedSemantics,
     ) -> Result<(), OperationFailure> {
+        self.ensure_origin()?;
+        data.selection.authenticate_same_source_data(self)?;
+        data.authenticate_semantic_history_data(journal, semantics)?;
+        data.selection.authenticate_same_source_data(self)?;
+        self.ensure_origin()
+    }
+}
+
+impl NativeInputData<'_> {
+    /// Checks original outcomes, model history and scheduling without live grants.
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn authenticate_semantic_history_data(
+        &self,
+        journal: &PacketCompleteSettledJournal,
+        semantics: &PacketCompleteArchivedSemantics,
+    ) -> Result<(), OperationFailure> {
+        self.selection.authenticate_origin_data()?;
         let state = semantics.source_common_data();
         // A complete live cut requires the original current native owner. A
         // reclaimed or quarantined common node cannot acquire Ready through a
         // historical decoder, even when all its old fields remain preserved.
-        if state.quarantined || state.reclaimed.is_some() || data.host.fenced {
+        if state.quarantined || state.reclaimed.is_some() || self.host.fenced {
             return Err(refused(
                 "cold complete source has unresolved or reclaimed custody",
             ));
         }
-        data.observation_population(state)?;
-        let control = data.control(&journal.native_control)?;
+        self.observation_population(state)?;
+        let control = self.control(&journal.native_control)?;
         if control.administrative_cut() != journal.cut {
             return Err(refused("cold native model uses another administrative cut"));
         }
-        let capture = data
+        let capture = self
             .host
             .custody
             .controller
             .get(&journal.confirmation.capture.capture_request_id)
             .ok_or_else(|| refused("cold original Capture request absent"))?;
-        data.operation_population(state, &capture.request)?;
+        self.operation_population(state, &capture.request)?;
         for operation in state.operations.values() {
             settled_operation(operation)?;
-            data.retirement(operation)?;
+            self.retirement(operation)?;
             if let Some(outcome) = &operation.outcome {
                 let observation = outcome
                     .scheduling
                     .as_ref()
                     .ok_or_else(|| refused("cold completed operation scheduling absent"))?;
-                let record = data.native_record(
+                let record = self.native_record(
                     &observation.proof_ref,
                     &control,
                     PacketModelRecordExpectation::CompletedGrant,
                     capture.request.sequence,
                 )?;
-                data.outcome(operation, outcome, &record, &observation.proof_ref, state)?;
+                self.outcome(operation, outcome, &record, &observation.proof_ref, state)?;
             }
         }
         if let Some((activation, observation)) = &state.observation {
             if state.active.as_ref() != Some(activation) {
                 return Err(refused("cold latest observation uses another activation"));
             }
-            let record = data.native_record(
+            let record = self.native_record(
                 &observation.proof_ref,
                 &control,
                 PacketModelRecordExpectation::FinalObservation,
                 capture.request.sequence,
             )?;
-            data.observation(observation, &record, &observation.proof_ref, false)?;
+            self.observation(observation, &record, &observation.proof_ref, false)?;
         }
-        self.ensure_origin()
+        self.selection.authenticate_origin_data()
     }
-}
 
-impl NativeInputData<'_> {
     pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn capture_boundary_data(
         &self,
         journal: &PacketCompleteSettledJournal,
@@ -149,8 +163,8 @@ impl NativeInputData<'_> {
         };
         let control = self.control(&journal.native_control)?;
         let maximum = usize::try_from(
-            self.source
-                .selected_storage_selection()?
+            self.selection
+                .storage_data()?
                 .storage
                 .control_snapshot_bytes
                 .get(),
@@ -172,7 +186,7 @@ impl NativeInputData<'_> {
             .get(reference)
             .ok_or_else(|| refused("cold complete Control body absent"))?;
         reference.verify(bytes).map_err(unknown)?;
-        let selected = self.source.selected_storage_selection()?;
+        let selected = self.selection.storage_data()?;
         let layouts = packet_control_snapshot_validation_layouts();
         let maximum = usize::try_from(selected.storage.control_snapshot_bytes.get())
             .map_err(|_| refused("cold Control selected bound is not representable"))?
@@ -262,7 +276,7 @@ impl NativeInputData<'_> {
             || wrapper.protocol_metadata_limits != policy.protocol_metadata_limits
             || wrapper.complete_restore_selection != policy.complete_restore_selection
             || wrapper.restore_input_emitter_selection != policy.restore_input_emitter_selection
-            || wrapper.storage_selection != *self.source.selected_storage_selection()?
+            || wrapper.storage_selection != *self.selection.storage_data()?
         {
             return Err(refused(
                 "cold native receipt differs from original installed tuple",
@@ -288,8 +302,8 @@ impl NativeInputData<'_> {
         drop(raw_value);
         let record = NativeObject { value, _charge };
         let maximum = usize::try_from(
-            self.source
-                .selected_storage_selection()?
+            self.selection
+                .storage_data()?
                 .storage
                 .control_snapshot_bytes
                 .get(),
@@ -376,7 +390,7 @@ impl NativeInputData<'_> {
             ));
         }
         let expected = ConsumptionProjection {
-            schema: if self.source.complete_reactive_definition_data()?.is_some() {
+            schema: if self.selection.reactive_definition_data()?.is_some() {
                 "source-owned.packet-consumption.v4"
             } else {
                 "source-owned.packet-consumption.v1"
@@ -392,10 +406,7 @@ impl NativeInputData<'_> {
             NodeRuntime::capture_serialization_storage(&expected, self.maximum).map_err(unknown)?;
         let encoded_extent = super::super::super::budget::serialized_size(
             &expected,
-            self.source
-                .installation()
-                .maximum_authorization_bytes
-                .min(8192),
+            self.selection.maximum_authorization_bytes_data()?.min(8192),
         )?;
         // This is the same conservative growing byte-bank bound as the pinned
         // Core decoder. The DOM and encoded bank coexist; neither displaces the
@@ -666,8 +677,8 @@ impl NativeInputData<'_> {
             }
             PacketNative5UnderlyingRecord::Reactive(record) => {
                 let definition = self
-                    .source
-                    .complete_reactive_definition_data()?
+                    .selection
+                    .reactive_definition_data()?
                     .ok_or_else(|| refused("cold reactive definition absent"))?;
                 let bound = super::super::super::packet_connected_source::output_bound(
                     &record.inventory,

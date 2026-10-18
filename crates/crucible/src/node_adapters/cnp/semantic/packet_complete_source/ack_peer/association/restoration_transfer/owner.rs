@@ -534,3 +534,126 @@ impl std::io::Write for TransferBankWriter<'_> {
         Ok(())
     }
 }
+
+/// Borrows every retained Source transfer phase as inert historical DATA.
+pub(crate) struct SourceRestoreTransferHistoryData<'a> {
+    original: &'a OriginalSourceRestoreTransferAttempt,
+}
+
+#[derive(serde::Serialize)]
+struct SourceRestoreTransferPhaseHistoryData<'a> {
+    normalized: &'a [Option<serde_json::Value>; 5],
+    capacities: crate::node_contract::restored_owner_history::OriginalRestoredOwnerCapacityRows<
+        'a,
+        [Option<serde_json::Value>],
+    >,
+    started: bool,
+    sealed: bool,
+    publishing_started: bool,
+    verified: bool,
+}
+
+impl SourceTransferPhase {
+    fn historical_data(&self) -> SourceRestoreTransferPhaseHistoryData<'_> {
+        let Self {
+            normalized,
+            started,
+            sealed,
+            publishing_started,
+            verified,
+        } = self;
+        SourceRestoreTransferPhaseHistoryData {
+            normalized,
+            capacities:
+                crate::node_contract::restored_owner_history::OriginalRestoredOwnerCapacityRows(
+                    normalized.as_slice(),
+                ),
+            started: *started,
+            sealed: *sealed,
+            publishing_started: *publishing_started,
+            verified: *verified,
+        }
+    }
+}
+
+impl OriginalSourceRestoreTransferAttempt {
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn historical_data(
+        &self,
+    ) -> SourceRestoreTransferHistoryData<'_> {
+        SourceRestoreTransferHistoryData { original: self }
+    }
+
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn historical_counter_scratch_data()
+    -> usize {
+        std::mem::size_of::<SourceRestoreTransferHistoryData<'static>>()
+            + std::mem::size_of::<SourceRestoreTransferPhaseHistoryData<'static>>()
+            + std::mem::size_of::<&OriginalSourceRestoreTransferAttempt>()
+            + std::mem::size_of::<&SourceTransferPhase>()
+            + crate::node_contract::restored_owner_history::original_restored_owner_capacity_counter_scratch_data()
+    }
+}
+
+impl serde::Serialize for SourceRestoreTransferHistoryData<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let OriginalSourceRestoreTransferAttempt {
+            prepare_id,
+            commit_id,
+            nonce,
+            generation,
+            prepare,
+            commit,
+            inputs_started,
+            inputs_verified,
+            failed,
+        } = self.original;
+        let mut value = serializer.serialize_struct("SourceRestoreTransferHistory", 12)?;
+        value.serialize_field("prepare_id", prepare_id)?;
+        value.serialize_field(
+            "prepare_id_capacities",
+            &crate::node_contract::restored_owner_history::OriginalRestoredOwnerCapacityRows(
+                prepare_id,
+            ),
+        )?;
+        value.serialize_field("commit_id", commit_id)?;
+        value.serialize_field(
+            "commit_id_capacities",
+            &crate::node_contract::restored_owner_history::OriginalRestoredOwnerCapacityRows(
+                commit_id,
+            ),
+        )?;
+        value.serialize_field("nonce", nonce)?;
+        value.serialize_field("generation", generation)?;
+        value.serialize_field("prepare", &prepare.historical_data())?;
+        value.serialize_field("commit", &commit.historical_data())?;
+        value.serialize_field("inputs_started", inputs_started)?;
+        value.serialize_field("inputs_verified", inputs_verified)?;
+        value.serialize_field("failed", failed)?;
+        value.serialize_field("schema", "source-private.source-restore-transfer-history/1")?;
+        value.end()
+    }
+}
+
+impl super::super::restore_transfer_banks::OriginalRestoreTransferBanks {
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source::ack_peer::association) fn settled17_once_data(
+        &self,
+    ) -> Result<super::super::settled17_once::TransferOnce17, RuntimeError> {
+        use super::super::settled17_once::{TransferOnce17, TransferPhaseOnce17};
+        let signer = self.signer.as_ref().ok_or(RuntimeError::OwnerUnavailable)?;
+        let phase = |value: &SourceTransferPhase| TransferPhaseOnce17 {
+            started: value.started,
+            sealed: value.sealed,
+            publishing_started: value.publishing_started,
+            verified: value.verified,
+        };
+        Ok(TransferOnce17 {
+            mapping_attempted: self.mapping_attempted,
+            mapping_complete: self.mapping_complete,
+            prepare: phase(&signer.prepare),
+            commit: phase(&signer.commit),
+            inputs_started: signer.inputs_started,
+            inputs_verified: signer.inputs_verified,
+            failed: signer.failed,
+        })
+    }
+}

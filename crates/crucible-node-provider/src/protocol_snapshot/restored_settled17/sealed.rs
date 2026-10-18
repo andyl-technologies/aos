@@ -8,11 +8,17 @@
 use super::*;
 use crate::reference_packet::continuation_models::settled_reader::PacketSettledModel17Data;
 use crate::reference_packet::control::PacketNative5UnderlyingRecord;
-use crate::reference_packet::service::complete_restore::PacketNativeRestoredRecord;
+use crate::reference_packet::service::complete_restore::{
+    PacketNativeRestoredRecord, transfer::PacketCompleteRestorePrepareRequest,
+};
 use crate::retained_metadata::{
     MetadataObserver, requested_storage::requested_metadata_backing_storage_data,
 };
 use crucible_node_contract::{Validate, canonical};
+
+#[path = "sealed_graph_cache.rs"]
+mod graph_cache;
+use graph_cache::NativeGraph17DecodeCache;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(super) enum DecodeStage {
@@ -32,10 +38,8 @@ pub struct RestoredSettledNative17DecodeAttempt {
     pub(super) references: [Option<ContentRef>; 5],
     pub(super) raw: [Vec<u8>; 5],
     pub(super) before_encoded: Vec<u8>,
-    pub(super) before_native_graph:
-        Option<crate::protocol_snapshot::native_wholegraph17::NativeCurrentGraph17DecodeAttempt>,
-    pub(super) native_graph:
-        Option<crate::protocol_snapshot::native_wholegraph17::NativeCurrentGraph17DecodeAttempt>,
+    pub(super) before_native_graph: NativeGraph17DecodeCache,
+    pub(super) native_graph: NativeGraph17DecodeCache,
     pub(super) immutable: Vec<(ContentRef, Vec<u8>)>,
     pub(super) aliases: Vec<super::aliases::RestoredSettledNative17AliasSummary>,
     pub(super) limits: Option<RestoredSettledNative17Limits>,
@@ -48,8 +52,8 @@ impl RestoredSettledNative17DecodeAttempt {
             references: std::array::from_fn(|_| None),
             raw: std::array::from_fn(|_| Vec::new()),
             before_encoded: Vec::new(),
-            before_native_graph: None,
-            native_graph: None,
+            before_native_graph: NativeGraph17DecodeCache::new(),
+            native_graph: NativeGraph17DecodeCache::new(),
             immutable: Vec::new(),
             aliases: Vec::new(),
             limits: None,
@@ -134,10 +138,7 @@ impl RestoredSettledNative17DecodeAttempt {
             observer.observe(bytes)?;
         }
         let mut requested = requested_metadata_backing_storage_data(&observer.finish())?;
-        for graph in [&self.before_native_graph, &self.native_graph]
-            .into_iter()
-            .flatten()
-        {
+        for graph in [&self.before_native_graph, &self.native_graph] {
             let remaining = maximum.checked_sub(requested).ok_or_else(invalid)?;
             requested = requested
                 .checked_add(graph.retained_requested_storage_data(remaining)?)
@@ -165,6 +166,37 @@ pub struct SealedHistoricalRestoredSettledNative17 {
 }
 
 impl SealedHistoricalRestoredSettledNative17 {
+    /// Quotes native-private cold Source verification from completed owners.
+    ///
+    /// The counter borrows actual native/Controller body shapes and the cached
+    /// original birth inputs. It does not construct the Source association or
+    /// run any proof validator. The caller separately funds exact selected
+    /// Source parsing, custom formatter strings, public proof canonical banks,
+    /// the first underlying-model reparse and supplied launch comparisons.
+    /// These allocations are not represented by a successful native decoder or
+    /// by this owner's retained-storage census.
+    ///
+    /// # Errors
+    /// Refuses incomplete native or Controller history, missing required cached
+    /// phases, arithmetic/layout overflow or a quote beyond the independent
+    /// requested-storage ceiling. No live permission follows from the row.
+    pub fn source_history17_authentication_geometry_data(
+        &self,
+        controller: &crate::protocol_snapshot::current_controller17::ValidatedControllerSettledHistory17,
+        capture: &crate::protocol_snapshot::current_controller17::ValidatedHistoricalRestoredSettledCapture17,
+        maximum_requested_bytes: usize,
+    ) -> Result<
+        super::historical_auth::construction::RestoredSettledSourceHistory17AuthGeometryData,
+        ProviderError,
+    > {
+        let graph = self.validated_native_graph_data()?;
+        graph.source_history17_authentication_geometry_data(
+            controller,
+            capture,
+            maximum_requested_bytes,
+        )
+    }
+
     /// Checks the full first-observation history against the sealed native graph.
     ///
     /// The actual ACK, Prepare, Commit, Arm, World and first Observe proofs,
@@ -205,6 +237,34 @@ impl SealedHistoricalRestoredSettledNative17 {
         let graph = self.decoded.native_graph.as_ref().ok_or_else(invalid)?;
         graph.validate_data()?;
         graph.completed_data().ok_or_else(invalid)
+    }
+
+    /// Borrows the actual archived Prepare request from the completed native graph.
+    ///
+    /// The request retains its original full input references and allocation
+    /// contract. This DATA loan grants no fresh restoration or construction.
+    ///
+    /// # Errors
+    /// Refuses an incomplete seal or an absent or unfinished cached Prepare slot.
+    pub fn restoration_prepare_request_data(
+        &self,
+    ) -> Result<&PacketCompleteRestorePrepareRequest, ProviderError> {
+        self.validated_native_graph_data()?
+            .restoration_prepare_request_data()
+    }
+
+    /// Returns the exact archived carrier's declared normalization ceiling.
+    ///
+    /// This scalar comes from the same sealed native graph, without replacing
+    /// its declaration with a current launch limit or a format-wide maximum.
+    ///
+    /// # Errors
+    /// Refuses an incomplete seal or an invalid archived carrier contract.
+    pub fn archived_normalization_maximum_data(
+        &self,
+    ) -> Result<crucible_node_contract::U64, ProviderError> {
+        self.validated_native_graph_data()?
+            .archived_normalization_maximum_data()
     }
 
     /// Borrows the actual authenticated startup suffix request ceiling.
@@ -526,10 +586,26 @@ fn reference_string_data(
     }
 }
 
+/// Bounds concrete by-value outputs during lazy native decoder construction.
+///
+/// The retained heap slot is independently funded in R. This T window names the
+/// `Option::None` output formed by the slot initializer, the native attempt's
+/// `Default` output, and its `Option::Some` output before installation. Their
+/// sum conservatively covers those constructor outputs without estimating
+/// compiler-generated stack copies or retaining pure temporary DATA as state.
+/// The two native cuts are constructed sequentially and reuse this T window.
+pub const fn restored_settled_native17_decode_construction_transient_bytes_data() -> usize {
+    use crate::protocol_snapshot::native_wholegraph17::NativeCurrentGraph17DecodeAttempt;
+    std::mem::size_of::<Option<NativeCurrentGraph17DecodeAttempt>>()
+        + std::mem::size_of::<NativeCurrentGraph17DecodeAttempt>()
+        + std::mem::size_of::<Option<NativeCurrentGraph17DecodeAttempt>>()
+}
+
 pub(super) const fn counter_scratch_data() -> usize {
     use std::mem::size_of;
     size_of::<RestoredSettledNative17DecodeAttempt>()
         + size_of::<SealedHistoricalRestoredSettledNative17>()
+        + graph_cache::counter_scratch_data()
         + size_of::<MetadataObserver<'static>>()
         + size_of::<crate::retained_metadata::RetainedProtocolMetadataFacts>()
         + size_of::<std::slice::Iter<'static, Option<ContentRef>>>()
@@ -723,6 +799,28 @@ mod tests {
         assert!(partial.media_type.is_empty());
         assert!(attempt.retained_requested_storage_data(64).unwrap() > 0);
         assert!(attempt.retain_reference_data(0, &reference, 4096).is_err());
+    }
+
+    #[test]
+    fn incomplete_native_seal_cannot_lend_prepare_or_normalization() {
+        let reference = canonical::content_ref(b"{}", "application/json").unwrap();
+        let mut decoded = RestoredSettledNative17DecodeAttempt::new();
+        assert!(decoded.retain_reference_data(0, &reference, 64).is_err());
+        let sealed = SealedHistoricalRestoredSettledNative17 { decoded };
+        let before = sealed.decoded.retained_requested_storage_data(64).unwrap();
+
+        assert!(sealed.restoration_prepare_request_data().is_err());
+        assert!(sealed.archived_normalization_maximum_data().is_err());
+
+        assert_eq!(
+            sealed.decoded.retained_requested_storage_data(64).unwrap(),
+            before
+        );
+        let partial = sealed.decoded.references[0].as_ref().unwrap();
+        assert_eq!(partial.hash.algorithm, reference.hash.algorithm);
+        assert_eq!(partial.hash.domain, reference.hash.domain);
+        assert!(partial.hash.digest.is_empty());
+        assert!(partial.media_type.is_empty());
     }
 
     #[test]

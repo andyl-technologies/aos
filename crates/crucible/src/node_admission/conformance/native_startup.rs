@@ -875,3 +875,8 @@ mod retained_overlap_tests {
         assert_eq!(rows.native_birth.retained_requested_bytes.get(), 20);
     }
 }
+
+mod settled17;
+
+pub use invocation::CompleteOriginalRestoredSettledStartupAdmission;
+pub(crate) use invocation::OriginalRestoredSettledStartupMember;

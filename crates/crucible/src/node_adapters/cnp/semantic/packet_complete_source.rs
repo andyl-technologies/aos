@@ -125,6 +125,7 @@ pub struct PacketCompleteSemanticSource {
     registry_retention_failed: std::cell::Cell<bool>,
     complete_bytes_launch_reserved: std::cell::Cell<bool>,
     invocation_snapshot_declaration: Option<invocation_snapshot::Declaration>,
+    original_coordinator_policy17: Option<invocation_snapshot::CoordinatorPolicy17>,
 }
 
 impl PacketCompleteSemanticSource {
@@ -170,6 +171,7 @@ impl PacketCompleteSemanticSource {
             registry_retention_failed: std::cell::Cell::new(false),
             complete_bytes_launch_reserved: std::cell::Cell::new(false),
             invocation_snapshot_declaration: None,
+            original_coordinator_policy17: None,
             complete_restore_selection: None,
             restore_input_emitter_selection: None,
         })
@@ -217,6 +219,7 @@ impl PacketCompleteSemanticSource {
             registry_retention_failed: std::cell::Cell::new(false),
             complete_bytes_launch_reserved: std::cell::Cell::new(false),
             invocation_snapshot_declaration: None,
+            original_coordinator_policy17: None,
             complete_restore_selection: None,
             restore_input_emitter_selection: None,
         })
@@ -1189,7 +1192,12 @@ pub use archive_journal::{
 
 #[path = "packet_complete_source/archive_owner.rs"]
 mod archive_owner;
+pub use archive_owner::CompleteHistoricalArchiveFamily;
 pub use archive_owner::PacketCompleteArchivedOwnerData;
+pub(crate) use archive_owner::{
+    OriginalCompleteHistoricalColdGroup, OriginalRestoredSettledColdGroup,
+    OriginalRestoredSettledColdOwnerView,
+};
 pub(crate) use archive_owner::{OriginalRestorationColdGroup, OriginalRestorationColdOwnerView};
 
 impl PacketCompleteSemanticSource {
@@ -1335,9 +1343,7 @@ pub use capture_allocation_receipt::{
     OriginalCaptureAllocationData, original_capture_allocation_witness_counter_scratch_data,
 };
 
-pub(crate) use ack_peer::{
-    PacketCompleteInitialLifecycleIdentity, PacketCompleteInitialLifecycleQuote,
-};
+pub(crate) use ack_peer::{PacketCompleteInitialLifecycleIdentity, PacketCompleteInitialLifecycleQuote};
 
 #[path = "packet_complete_source/invocation_snapshot.rs"]
 mod invocation_snapshot;
@@ -1367,3 +1373,33 @@ pub use restored_producer_outcome::{
 };
 
 pub(crate) use ack_peer::OriginalSourceRestoredProducerPhaseCompletion;
+
+pub use ack_peer::PacketCompleteNativeRestoredSettledStartupWire;
+
+#[path = "packet_complete_source/header17.rs"]
+mod header17;
+
+pub(crate) use ack_peer::{
+    OriginalSourceRestoredInstallationExpected17, OriginalSourceRestoredLimits17,
+    OriginalSourceRestoredProducerCheckpoint17, OriginalSourceRestoredSettled17Read,
+    OriginalSourceRestoredSettled17ReadInputs,
+};
+
+pub(crate) use restored_producer_outcome::{
+    OriginalRestoredProducerHistoricalAdmissionData,
+    OriginalRestoredProducerHistoricalInstallationData,
+};
+
+pub(crate) use ack_peer::{
+    OriginalSourceRestoredCaptureCompletion, OriginalSourceRestoredCaptureQuoteInputs,
+};
+
+pub(crate) use ack_peer::OriginalSourceRestoredCaptureEncodingInputs;
+
+pub(crate) use ack_peer::OriginalSourceRestoredCaptureCountingBanksData;
+
+pub(crate) use archive_owner::{OriginalInitial15ArchivedGroup, OriginalInitial15ArchivedOwnerRead};
+
+pub use ack_peer::OriginalSourceRestoredCaptureConstructionData;
+
+pub(super) use retained_values::value_storage_with_error;

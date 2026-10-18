@@ -1,5 +1,6 @@
 //! Conjoins full common snapshots with Runtime7 and first-sealed input ancestry.
 
+use super::super::archive_owner::ArchivedContentData;
 use super::{PacketCompleteArchivedSemantics, data::*, refused};
 use crate::{
     node_contract::{
@@ -44,6 +45,27 @@ impl PacketCompleteArchivedSemantics {
         node: &Id,
         runtime: &OriginalLineageRuntimeRecord,
         content: &VerifiedStateContent,
+        maximum_record_bytes: usize,
+        additional_retained_bytes: usize,
+        maximum_total_bytes: usize,
+        construction: Option<&super::construction_storage::ValidationConstructionCounter>,
+    ) -> Result<(), OperationFailure> {
+        self.authenticate_runtime_from_content_data(
+            node,
+            runtime,
+            ArchivedContentData::Verified(content),
+            maximum_record_bytes,
+            additional_retained_bytes,
+            maximum_total_bytes,
+            construction,
+        )
+    }
+
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn authenticate_runtime_from_content_data(
+        &self,
+        node: &Id,
+        runtime: &OriginalLineageRuntimeRecord,
+        content: ArchivedContentData<'_>,
         maximum_record_bytes: usize,
         additional_retained_bytes: usize,
         maximum_total_bytes: usize,
@@ -263,7 +285,7 @@ impl PacketCompleteArchivedSemantics {
         &self,
         node: &Id,
         runtime: &OriginalLineageRuntimeRecord,
-        content: &VerifiedStateContent,
+        content: ArchivedContentData<'_>,
         maximum_record_bytes: usize,
         additional_retained_bytes: usize,
         maximum_total_bytes: usize,
@@ -289,7 +311,7 @@ impl PacketCompleteArchivedSemantics {
 struct AncestryValidation<'a> {
     node: &'a Id,
     runtime: &'a OriginalLineageRuntimeRecord,
-    content: &'a VerifiedStateContent,
+    content: ArchivedContentData<'a>,
     maximum_record_bytes: usize,
     retained_decoder_bytes: usize,
     additional_retained_bytes: usize,
@@ -300,7 +322,7 @@ struct AncestryValidation<'a> {
 trait ArchivedObjectData {
     fn reference(&self) -> &crucible_node_contract::ContentRef;
 
-    fn authenticate(&self, content: &VerifiedStateContent) -> Result<(), OperationFailure>;
+    fn authenticate(&self, content: ArchivedContentData<'_>) -> Result<(), OperationFailure>;
 }
 
 impl ArchivedObjectData for crate::node_scheduling::InputPayload {
@@ -308,7 +330,7 @@ impl ArchivedObjectData for crate::node_scheduling::InputPayload {
         &self.reference
     }
 
-    fn authenticate(&self, content: &VerifiedStateContent) -> Result<(), OperationFailure> {
+    fn authenticate(&self, content: ArchivedContentData<'_>) -> Result<(), OperationFailure> {
         authenticate_payload(self, content)
     }
 }
@@ -318,7 +340,7 @@ impl ArchivedObjectData for crucible_node_contract::ContentRef {
         self
     }
 
-    fn authenticate(&self, content: &VerifiedStateContent) -> Result<(), OperationFailure> {
+    fn authenticate(&self, content: ArchivedContentData<'_>) -> Result<(), OperationFailure> {
         let bytes = content
             .get(self)
             .ok_or_else(|| refused("reference ancestry body absent"))?;
@@ -525,7 +547,7 @@ fn authenticate_batch(
     batch: &ArchivedBatch,
     input: &OriginalLineageInputRecord,
     runtime: &OriginalLineageRuntimeRecord,
-    content: &VerifiedStateContent,
+    content: ArchivedContentData<'_>,
 ) -> Result<(), OperationFailure> {
     if batch.activation != runtime.source_activation
         || batch.node != input.node
@@ -551,7 +573,7 @@ fn authenticate_batch(
 
 pub(super) fn authenticate_payload(
     payload: &crate::node_scheduling::InputPayload,
-    content: &VerifiedStateContent,
+    content: ArchivedContentData<'_>,
 ) -> Result<(), OperationFailure> {
     payload
         .reference

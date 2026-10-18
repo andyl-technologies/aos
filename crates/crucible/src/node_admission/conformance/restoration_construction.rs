@@ -244,3 +244,10 @@ pub use window::{
 };
 
 pub(crate) use window::ProducerExecutionPhase;
+
+pub use window::OriginalRestoredInput17ConstructionData;
+
+pub use window::{OriginalRestoredCaptureClaim, OriginalRestoredCaptureRequestData};
+pub(crate) use window::{
+    OriginalRestoredCaptureImportedOwnerInputs, OriginalRestoredCaptureSigningInputs,
+};

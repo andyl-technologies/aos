@@ -35,6 +35,12 @@ mod fresh_restore_host;
 mod restoration_activation;
 #[path = "association/restoration_observation.rs"]
 mod restoration_observation;
+#[path = "association/restored_checkpoint17.rs"]
+mod restored_checkpoint17;
+#[path = "association/restored_input_reactive17.rs"]
+mod restored_input_reactive17;
+#[path = "association/restored_observation17.rs"]
+mod restored_observation17;
 
 #[path = "association/restoration_continuation.rs"]
 mod restoration_continuation;
@@ -62,6 +68,9 @@ pub(in crate::node_adapters::cnp::semantic::packet_complete_source) struct Origi
     // Every initialized/failed seed remains inside the actual Source sizeof root.
     current_observations: std::cell::RefCell<restoration_observation::CurrentObservationHistory>,
     producer_progress: std::cell::RefCell<producer_progress::ProducerProgressHistory>,
+    restored_capture: std::cell::RefCell<producer_progress::capture::CaptureOnceOwner>,
+    restored_observations17: restored_observation17::Observation17Owner,
+    restored_inputs: std::cell::RefCell<restored_input_reactive17::InputReactive17History>,
     restored_suffix:
         std::cell::RefCell<Option<restoration_continuation::OriginalRestoredSuffixSeed>>,
     emitter: Option<OriginalCanonicalBlobAckEmitter>,
@@ -110,6 +119,13 @@ impl OriginalAckPeerAssociation {
             ),
             producer_progress: std::cell::RefCell::new(
                 producer_progress::ProducerProgressHistory::new(),
+            ),
+            restored_capture: std::cell::RefCell::new(
+                producer_progress::capture::CaptureOnceOwner::new_data(),
+            ),
+            restored_observations17: restored_observation17::Observation17Owner::new_data(),
+            restored_inputs: std::cell::RefCell::new(
+                restored_input_reactive17::InputReactive17History::new_data(),
             ),
             emitter: None,
             restore_input_emitter: None,
@@ -1176,6 +1192,9 @@ impl OriginalAckPeerAssociation {
             restored_suffix,
             current_observations,
             producer_progress,
+            restored_capture,
+            restored_observations17,
+            restored_inputs,
             emitter,
             restore_input_emitter,
             native,
@@ -1192,6 +1211,21 @@ impl OriginalAckPeerAssociation {
             publication_attempted,
             completed_mechanism,
         } = self;
+        if restored_observations17
+            .is_used_data()
+            .map_err(|_| E::refused("reserved prebirth signed observation owner is busy"))?
+        {
+            return Err(E::refused(
+                "reserved prebirth signed observation owner is used",
+            ));
+        }
+        let inputs17 = restored_inputs
+            .try_borrow()
+            .map_err(|_| E::refused("reserved prebirth signed input owner is busy"))?;
+        if inputs17.is_used_data() {
+            return Err(E::refused("reserved prebirth signed input owner is used"));
+        }
+        drop(inputs17);
         // A fixed failed seed has no heap to refund, but it still permanently
         // leaves this association outside the never-used prebirth family.
         let seed = restored_suffix
@@ -1219,6 +1253,13 @@ impl OriginalAckPeerAssociation {
             return Err(E::refused("reserved prebirth Producer owner already used"));
         }
         drop(progress);
+        let capture = restored_capture
+            .try_borrow()
+            .map_err(|_| E::refused("reserved prebirth Capture owner busy"))?;
+        if capture.is_used_data() {
+            return Err(E::refused("reserved prebirth Capture owner already used"));
+        }
+        drop(capture);
 
         if restoration_observation.is_some()
             || restoration_activation.is_some()
@@ -1349,3 +1390,23 @@ pub(crate) use restoration_observation::OriginalSourceRestoredObservationComplet
 mod producer_progress;
 
 pub(crate) use producer_progress::OriginalSourceRestoredProducerPhaseCompletion;
+
+#[path = "association/settled17_once.rs"]
+mod settled17_once;
+pub(crate) use settled17_once::OriginalSourceRestoredOnce17Read;
+
+pub(crate) use producer_progress::{
+    OriginalSourceRestoredInstallationExpected17, OriginalSourceRestoredLimits17,
+    OriginalSourceRestoredProducerCheckpoint17, OriginalSourceRestoredSettled17Read,
+    OriginalSourceRestoredSettled17ReadInputs,
+};
+
+pub(crate) use producer_progress::{
+    OriginalSourceRestoredCaptureCompletion, OriginalSourceRestoredCaptureQuoteInputs,
+};
+
+pub(crate) use producer_progress::OriginalSourceRestoredCaptureEncodingInputs;
+
+pub(crate) use producer_progress::OriginalSourceRestoredCaptureCountingBanksData;
+
+pub use producer_progress::OriginalSourceRestoredCaptureConstructionData;

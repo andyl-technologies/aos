@@ -17,6 +17,9 @@ use crucible_node_contract::{ContentRef, Id, Validate};
 
 use super::{OperationFailure, refused};
 
+#[path = "birth/history.rs"]
+mod history;
+
 // Batch the same complete-byte check without retaining a whole executable.
 // Every defining scratch quote below and in the startup children uses this bank.
 const HOST_EXECUTABLE_STREAM_BYTES: usize = 256 * 1024;
@@ -32,7 +35,8 @@ mod native_wire;
 #[path = "report_startup.rs"]
 mod report_startup;
 pub use native_wire::{
-    PacketCompleteNativeRestoredSuffixStartupWire, PacketCompleteNativeStartupWire,
+    PacketCompleteNativeRestoredSettledStartupWire, PacketCompleteNativeRestoredSuffixStartupWire,
+    PacketCompleteNativeStartupWire,
 };
 
 /// Borrows one original source-owned private boot material transfer.
@@ -500,3 +504,6 @@ impl OriginalAckPeerBirth {
 pub(crate) use host_startup::{
     PacketCompleteInitialLifecycleIdentity, PacketCompleteInitialLifecycleQuote,
 };
+
+#[path = "birth/settled17.rs"]
+mod settled17;

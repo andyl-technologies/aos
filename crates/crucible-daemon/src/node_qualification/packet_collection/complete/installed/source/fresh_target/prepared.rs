@@ -73,7 +73,10 @@ impl PreparedCompleteRestoration {
         }
 
         let mut selected = super::super::super::manifest::load(&manifest)?;
-        if selected.schema != "crucible.complete-scene.installation/6" {
+        if !matches!(
+            selected.schema.as_str(),
+            "crucible.complete-scene.installation/6" | "crucible.complete-scene.installation/7"
+        ) {
             return Err(refused());
         }
 
@@ -103,18 +106,31 @@ impl PreparedCompleteRestoration {
             reference: canonical::content_ref(&initial_bytes, "application/json")?,
             bytes: Bytes::new(initial_bytes),
         };
-        let (sources, declarations) = prepare_sources(
-            duplicate_participant_data(&selected.participants)?,
-            &selected.coordinator,
-            selected.maximum_native_rows,
-            selected.maximum_initial_bytes,
-            selected.mechanism,
-            true,
-            true,
-            true,
-            true,
-            &content,
-        )?;
+        let (sources, declarations) = if selected.schema == "crucible.complete-scene.installation/7"
+        {
+            prepare_restored_settled_sources(
+                duplicate_participant_data(&selected.participants)?,
+                &selected.coordinator,
+                selected.maximum_native_rows,
+                selected.maximum_initial_bytes,
+                selected.mechanism,
+                selected.maximum_coordinator_records.ok_or_else(refused)?,
+                &content,
+            )?
+        } else {
+            prepare_sources(
+                duplicate_participant_data(&selected.participants)?,
+                &selected.coordinator,
+                selected.maximum_native_rows,
+                selected.maximum_initial_bytes,
+                selected.mechanism,
+                true,
+                true,
+                true,
+                true,
+                &content,
+            )?
+        };
 
         let mut namespace = Namespace::create(directory)?;
         let directories = namespace.peer_directories()?;
@@ -356,18 +372,32 @@ impl PreparedCompleteRestoration {
         &self,
         host: Rc<HostSchedulingSource>,
     ) -> Result<AuthorityOwners, QualificationError> {
-        let (sources, _) = prepare_sources(
-            duplicate_participant_data(&self.selected.participants)?,
-            &self.selected.coordinator,
-            self.selected.maximum_native_rows,
-            self.selected.maximum_initial_bytes,
-            self.selected.mechanism,
-            true,
-            true,
-            true,
-            true,
-            &self.content,
-        )?;
+        let (sources, _) = if self.selected.schema == "crucible.complete-scene.installation/7" {
+            prepare_restored_settled_sources(
+                duplicate_participant_data(&self.selected.participants)?,
+                &self.selected.coordinator,
+                self.selected.maximum_native_rows,
+                self.selected.maximum_initial_bytes,
+                self.selected.mechanism,
+                self.selected
+                    .maximum_coordinator_records
+                    .ok_or_else(refused)?,
+                &self.content,
+            )?
+        } else {
+            prepare_sources(
+                duplicate_participant_data(&self.selected.participants)?,
+                &self.selected.coordinator,
+                self.selected.maximum_native_rows,
+                self.selected.maximum_initial_bytes,
+                self.selected.mechanism,
+                true,
+                true,
+                true,
+                true,
+                &self.content,
+            )?
+        };
         let sources = ready_sources(
             sources,
             &self.launches,

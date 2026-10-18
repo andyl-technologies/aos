@@ -3,7 +3,7 @@
 use super::*;
 use crucible::{
     node_adapters::cnp::{CnpSemanticConformanceWorldProvider, CnpSemanticExactWorldReservation},
-    node_contract::{NodeRuntime, SimulationNode},
+    node_contract::{NodeRuntime, OriginalCoordinator17ConstructionData, SimulationNode},
 };
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
@@ -54,14 +54,33 @@ pub(super) fn quote(
         &scene.inputs.activation,
         maximum,
     )?;
+    // Both append banks remain retained on partial construction. They require
+    // no separate temporary heap; their defining fixed views are priced below.
+    let coordinator17 = coordinator17_row_data(held, maximum)?;
+    let coordinator_retained = coordinator17.as_ref().map_or(
+        0,
+        OriginalCoordinator17ConstructionData::retained_requested_bytes_data,
+    );
+    let coordinator_scratch = coordinator17.as_ref().map_or(
+        0,
+        OriginalCoordinator17ConstructionData::declared_counter_scratch_bytes_data,
+    );
     Ok((
-        add(data.retained_requested_bytes, provider.0, maximum)?,
+        add(
+            add(data.retained_requested_bytes, provider.0, maximum)?,
+            coordinator_retained,
+            maximum,
+        )?,
         add(
             data.maximum_simultaneous_transient_bytes,
             provider.1,
             maximum,
         )?,
-        add(data.declared_counter_scratch_bytes, provider.2, maximum)?,
+        add(
+            add(data.declared_counter_scratch_bytes, provider.2, maximum)?,
+            coordinator_scratch,
+            maximum,
+        )?,
     ))
 }
 
@@ -145,6 +164,18 @@ pub(super) fn construct(held: &PacketCompleteReportStartupHolder) -> Result<(), 
             return Err(RuntimeError::OwnerUnavailable);
         }
     }
+    if let Some(row) = coordinator17_row_data(
+        held,
+        held.policy_data()
+            .map_err(storage_error)?
+            .maximum_requested_bytes,
+    )? {
+        owners
+            .runtime
+            .as_mut()
+            .ok_or(RuntimeError::OwnerUnavailable)?
+            .initialize_original_coordinator17_data(&row)?;
+    }
     let runtime = owners
         .runtime
         .take()
@@ -161,4 +192,38 @@ pub(super) fn construct(held: &PacketCompleteReportStartupHolder) -> Result<(), 
             Err(RuntimeError::InvalidReceipt)
         }
     }
+}
+
+fn coordinator17_row_data(
+    held: &PacketCompleteReportStartupHolder,
+    maximum: usize,
+) -> Result<Option<OriginalCoordinator17ConstructionData>, RuntimeError> {
+    let sources = &held.authority.roster.sources;
+    let selected = sources[0].original_restored_settled_coordinator_policy17_data()?;
+    for source in &sources[1..] {
+        if source.original_restored_settled_coordinator_policy17_data()? != selected {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+    }
+    selected
+        .map(|maximum_records| {
+            OriginalCoordinator17ConstructionData::quote(maximum_records, maximum)
+        })
+        .transpose()
+}
+
+/// Names the same original policy/row loan views before either quote or reserve.
+pub(super) fn counter_scratch_data() -> usize {
+    use crucible::node_adapters::cnp::PacketCompleteSemanticSource;
+    use std::mem::size_of;
+    PacketCompleteSemanticSource::original_restored_settled_coordinator_policy17_counter_scratch_data()
+        + size_of::<&PacketCompleteReportStartupHolder>()
+        + size_of::<&[Rc<PacketCompleteSemanticSource>; 3]>()
+        + size_of::<&Rc<PacketCompleteSemanticSource>>()
+        + size_of::<std::slice::Iter<'static, Rc<PacketCompleteSemanticSource>>>()
+        + size_of::<Option<usize>>() + size_of::<Result<Option<usize>, RuntimeError>>()
+        + size_of::<OriginalCoordinator17ConstructionData>()
+        + size_of::<Option<OriginalCoordinator17ConstructionData>>()
+        + size_of::<Result<Option<OriginalCoordinator17ConstructionData>, RuntimeError>>()
+        + size_of::<[usize; 4]>()
 }

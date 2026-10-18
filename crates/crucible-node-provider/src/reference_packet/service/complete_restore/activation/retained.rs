@@ -675,3 +675,6 @@ impl serde::Serialize for HistoricalCommand<'_> {
         state.end()
     }
 }
+
+#[path = "retained/capture_scope17.rs"]
+mod capture_scope17;

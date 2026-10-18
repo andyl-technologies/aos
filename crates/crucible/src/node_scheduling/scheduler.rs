@@ -861,6 +861,14 @@ impl CausalScheduler {
         &mut self,
         receipt: SchedulingReceipt,
     ) -> Result<SchedulingCommit, SchedulingError> {
+        self.accept_receipt_with_coordinator17_data(receipt, None)
+    }
+
+    pub(crate) fn accept_receipt_with_coordinator17_data(
+        &mut self,
+        receipt: SchedulingReceipt,
+        mut coordinator: Option<&mut crate::node_contract::CoordinatorCommitments17>,
+    ) -> Result<SchedulingCommit, SchedulingError> {
         if !Rc::ptr_eq(&self.activation.authority, &receipt.activation.authority)
             || self.activation.record() != receipt.activation.record()
         {
@@ -963,8 +971,26 @@ impl CausalScheduler {
         } else {
             None
         };
+        if !self.owners.contains_key(&owner) {
+            return Err(SchedulingError::InvalidReceipt);
+        }
+        let mut semantic_start = None;
+        if let Some(log) = coordinator.as_deref_mut() {
+            semantic_start = Some(log.next_entry_index_data());
+            if let Some(update) = update.as_ref() {
+                if let Err(error) = self.stage_coordinator_observation17_data(log, &receipt, update)
+                {
+                    log.fail_semantic_transaction_data();
+                    return Err(error);
+                }
+            }
+        }
         if let Some(update) = update {
             self.apply_observation(update);
+        }
+        if let (Some(log), Some(start)) = (coordinator.as_deref_mut(), semantic_start) {
+            log.publish_semantic_range_data(start)
+                .map_err(|_| SchedulingError::CapacityExceeded)?;
         }
         let schedule = self
             .owners
@@ -1227,3 +1253,9 @@ mod producer_construction;
 
 #[path = "scheduler/producer_publication_storage.rs"]
 mod producer_publication_storage;
+
+#[path = "coordinator_capture17.rs"]
+mod coordinator_capture17;
+
+#[path = "snapshot_borrowed17.rs"]
+mod snapshot_borrowed17;

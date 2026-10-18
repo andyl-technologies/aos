@@ -2167,6 +2167,26 @@ pub(crate) fn host_continuation_runtime_fixture() -> (
     (graph, runtime, activation)
 }
 
+/// Retains a completed modeled operation beside the actual initialized scheduler.
+///
+/// Native peers remain models; activation, dispatch, settlement and the retained
+/// scheduler use their real Core owners. This fixture supplies codec data only.
+pub(super) fn settled_capture_runtime_fixture() -> (NodeRuntime, WorldActivation, Position) {
+    let (_graph, mut runtime, world) = host_continuation_runtime_fixture();
+    let token = exact(&mut runtime, &world, "settled-capture-projection");
+    let outcome = match poll(&mut runtime, &token) {
+        Poll::Ready(Ok(outcome)) => outcome,
+        other => panic!("modeled capture operation did not complete: {other:?}"),
+    };
+    runtime
+        .acknowledge(&token, &outcome.retained_outputs)
+        .unwrap();
+
+    assert_eq!(runtime.operations.len(), 1);
+    assert!(runtime.scheduler.as_ref().unwrap().initialized().unwrap());
+    (runtime, world, position(10))
+}
+
 pub(super) fn capture_ticket_fixture() -> (NodeRuntime, OriginalLineageRuntimeRecord) {
     let (runtime, _, record) = original_exact_lineage_models::preservation_record();
     (runtime, record)

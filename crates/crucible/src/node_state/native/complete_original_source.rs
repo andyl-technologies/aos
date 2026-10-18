@@ -22,6 +22,24 @@ use collecting::CompleteOriginalSourcePurpose;
 
 mod prebirth_storage;
 
+#[path = "complete_original_source/settled17.rs"]
+mod settled17;
+
+#[path = "complete_original_source/host_ancestry17.rs"]
+mod host_ancestry17;
+
+#[path = "complete_original_source/host_record.rs"]
+mod host_record;
+use host_record::CompleteHostArchiveRecord;
+
+#[path = "complete_original_source/coordinator_checkpoint.rs"]
+mod coordinator_checkpoint;
+use coordinator_checkpoint::CompleteCoordinatorArchiveRecord;
+
+#[path = "complete_original_source/history.rs"]
+mod history;
+pub use history::CompleteOriginalSourceHistory;
+
 /// Retains a source-verified complete archive without issuing fresh readiness.
 ///
 /// This handle has no public constructor or serialization. Source-specific
@@ -35,10 +53,13 @@ pub(crate) struct CompleteOriginalSource {
     archive: NativeArchiveRecord,
     content: VerifiedStateContent,
     administrative: RuntimeOriginalCaptureJournal,
-    host: Rc<HostSchedulingContinuationRecord>,
+    host: CompleteHostArchiveRecord,
     runtime: ContentRef,
+    coordinator_checkpoint: Option<CompleteCoordinatorArchiveRecord>,
     purpose: CompleteOriginalSourcePurpose,
     native_restoration_data: [Option<super::CompleteOriginalNativeRestorationData>; 4],
+    settled_restoration_data: [Option<super::CompleteRestoredSettledNativeRestorationData>; 4],
+    restored_collection: RefCell<Option<super::RetainedCold17Collection>>,
     validation_limits: HostSchedulingContinuationLimits,
     process: u32,
     thread: ThreadId,
@@ -60,9 +81,25 @@ pub struct CompleteOriginalHostTicket {
 }
 
 impl CompleteOriginalHostTicket {
-    /// Borrows the exact captured host selection and common-state closure.
-    pub fn record(&self) -> &HostSchedulingContinuationRecord {
-        &self.source.host
+    /// Borrows the genuine initial Host2 record without converting Host17.
+    ///
+    /// # Errors
+    /// Refuses foreign custody or a ticket carrying the distinct restored family.
+    pub fn record(&self) -> Result<&HostSchedulingContinuationRecord, RuntimeError> {
+        self.source.authenticate_birth()?;
+        self.source.host.initial_data()
+    }
+
+    /// Borrows the genuine restored Host17 record without reconstructing Host2.
+    ///
+    /// # Errors
+    /// Refuses foreign custody or an initial-family ticket.
+    pub fn restored_record_data(
+        &self,
+    ) -> Result<&crate::node_contract::HostSchedulingRestoredContinuationRecord17, RuntimeError>
+    {
+        self.source.authenticate_birth()?;
+        self.source.host.restored_data()
     }
 
     pub(crate) fn authenticate_birth(&self) -> Result<(), RuntimeError> {
@@ -110,7 +147,7 @@ impl CompleteOriginalRestorationSource {
         self.inner.authenticate_birth()?;
         self.inner.authenticate_ticket_phase()?;
         let owners = self.inner.archive.owners();
-        if owners.len() != 4 || owner == &self.inner.host.source.owner.owner.id {
+        if owners.len() != 4 || owner == &self.inner.host.selection_data().owner.owner.id {
             return Err(RuntimeError::ForeignAuthority);
         }
         let index = owners
@@ -167,10 +204,7 @@ impl CompleteOriginalRestorationSource {
         &self,
     ) -> Result<&OriginalLineageRuntimeRecord, RuntimeError> {
         self.inner.authenticate_birth()?;
-        match &self.inner.host.runtime {
-            HostSchedulingRuntimeRecord::OriginalLineage(record) => Ok(record),
-            HostSchedulingRuntimeRecord::Legacy(_) => Err(RuntimeError::UnsupportedFacet),
-        }
+        self.inner.host.runtime_data()
     }
 
     /// Returns this same admitted archive's retained finite decoding limits.
@@ -219,7 +253,7 @@ impl CompleteOriginalSource {
         }
         let owners = self.archive.owners();
         let issued = self.native_issued.get();
-        let host = &self.host.source.owner.owner.id;
+        let host = &self.host.selection_data().owner.owner.id;
         if owners.len() != issued.len()
             || owners.iter().filter(|row| &row.owner == host).count() != 1
             || owners
@@ -433,10 +467,16 @@ impl NativeArchiveRecord {
                 archive: self,
                 content,
                 administrative,
-                host: Rc::new(record),
+                host: CompleteHostArchiveRecord::InitialInvocation15(Rc::new(record)),
                 runtime,
                 purpose: CompleteOriginalSourcePurpose::new(collecting_plan),
                 native_restoration_data,
+                // This constructor has authenticated the original-only /5
+                // family and decoded Host2. Current17 custody is constructed
+                // separately by settled_load from its actual validated bank.
+                settled_restoration_data: std::array::from_fn(|_| None),
+                restored_collection: RefCell::new(None),
+                coordinator_checkpoint: None,
                 validation_limits: limits,
                 process: std::process::id(),
                 thread: thread::current().id(),
@@ -488,11 +528,31 @@ impl CompleteOriginalSource {
             bytes,
             NodeRuntime::capture_admin_storage(&self.administrative)?,
         )?;
-        bytes = add(
-            bytes,
-            NodeRuntime::capture_shared_allocation_storage::<HostSchedulingContinuationRecord>(),
-        )?;
-        bytes = add(bytes, NodeRuntime::capture_host_record_storage(&self.host)?)?;
+        bytes = add(bytes, self.host.retained_storage_data()?)?;
+        if let Some(checkpoint) = &self.coordinator_checkpoint {
+            bytes = add(bytes, checkpoint.retained_backing_requested_bytes_data()?)?;
+        }
+        for data in self.settled_restoration_data.iter().flatten() {
+            bytes = add(
+                bytes,
+                data.native_import_geometry_data()
+                    .retained_requested_storage_data()
+                    .map_err(|_| RuntimeError::ResourceLimit)?,
+            )?;
+        }
+        if let Some(collection) = self
+            .restored_collection
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?
+            .as_ref()
+        {
+            bytes = add(
+                bytes,
+                collection.retained_requested_storage_data(
+                    self.archive.limits.state.maximum_total_content_bytes,
+                )?,
+            )?;
+        }
         NodeRuntime::capture_reference_storage(&self.runtime)
             .and_then(|reference| add(bytes, reference))
     }
@@ -514,7 +574,7 @@ impl CompleteOriginalSource {
             .owners()
             .get(owner_index)
             .ok_or(RuntimeError::ForeignAuthority)?;
-        if owner.owner == self.host.source.owner.owner.id {
+        if owner.owner == self.host.selection_data().owner.owner.id {
             return Err(RuntimeError::ForeignAuthority);
         }
 
@@ -589,9 +649,16 @@ impl CompleteOriginalRestorationSource {
         &self,
     ) -> Result<&HostSchedulingContinuationRecord, RuntimeError> {
         self.inner.authenticate_birth()?;
-        Ok(&self.inner.host)
+        self.inner.host.initial_data()
     }
 }
 
 #[path = "complete_original_source/context_validation.rs"]
 mod context_validation;
+
+#[path = "complete_original_source/settled.rs"]
+mod settled;
+
+#[path = "complete_original_source/settled_load.rs"]
+mod settled_load;
+pub use settled_load::CompleteRestoredSettledSourceLoadAttempt;

@@ -24,6 +24,7 @@ struct Original {
     live: Cell<bool>,
     scheduler: RefCell<Option<CausalScheduler>>,
     restored: RefCell<Option<OriginalLineageSchedulingIdentity>>,
+    coordinator17: RefCell<Option<super::coordinator_commitment::CoordinatorCommitments17>>,
 }
 
 /// Records the core-checked source installed into this same original allocation.
@@ -55,6 +56,35 @@ impl OriginalRestorationSchedulingFence {
     ) -> Result<(), RuntimeError> {
         let original = self.0.upgrade().ok_or(RuntimeError::ForeignAuthority)?;
         OriginalSchedulingState(original).authenticate(authority, world)
+    }
+
+    pub(in crate::node_contract) fn authenticate_coordinator17_boundary_data(
+        &self,
+        authority: &Rc<()>,
+        world: &HashRef,
+        boundary: &crate::node_contract::OriginalRestoredCoordinatorBoundary17,
+        host_node: &crucible_node_contract::Id,
+        host_owner: &crucible_node_contract::Id,
+    ) -> Result<(), RuntimeError> {
+        let original = self.0.upgrade().ok_or(RuntimeError::ForeignAuthority)?;
+        let state = OriginalSchedulingState(original);
+        state.authenticate(authority, world)?;
+        let log = state
+            .0
+            .coordinator17
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        log.as_ref()
+            .ok_or(RuntimeError::UnsupportedFacet)?
+            .authenticate_boundary_data(boundary)?;
+        state
+            .retained()?
+            .authenticate_coordinator17_capture_boundary_data(
+                boundary.cut_data(),
+                host_node,
+                host_owner,
+            )?;
+        state.authenticate(authority, world)
     }
 
     pub(in crate::node_contract) fn retained_backing_storage_data(
@@ -130,6 +160,7 @@ impl OriginalSchedulingState {
             live: _,
             scheduler,
             restored,
+            coordinator17,
         } = self.0.as_ref();
         let state = scheduler
             .try_borrow()
@@ -137,8 +168,15 @@ impl OriginalSchedulingState {
         let restored = restored
             .try_borrow()
             .map_err(|_| RuntimeError::OutstandingObligations)?;
+        let coordinator17 = coordinator17
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
         if counter.rc(&self.0)? {
             counter.owned(world)?;
+            if let Some(log) = coordinator17.as_ref() {
+                counter.add(log.retained_requested_storage_data()?)?;
+                counter.add(log.future_requested_storage_data()?)?;
+            }
             if let Some(state) = state.as_ref() {
                 state.charge_original_retained_storage(counter)?;
             }
@@ -156,6 +194,73 @@ impl OriginalSchedulingState {
         self.original()
     }
 
+    /// Retains the independently admitted once owner before its first reserve.
+    pub(super) fn initialize_coordinator17_data(
+        &self,
+        owner: super::coordinator_commitment::CoordinatorCommitments17,
+        maximum: usize,
+        parent: &ContentRef,
+    ) -> Result<(), RuntimeError> {
+        self.current()?;
+        let mut slot = self
+            .0
+            .coordinator17
+            .try_borrow_mut()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        if slot.is_some() {
+            return Err(RuntimeError::OutstandingObligations);
+        }
+        *slot = Some(owner);
+        let owner = slot.as_mut().ok_or(RuntimeError::OwnerUnavailable)?;
+        owner.initialize_data(maximum)?;
+        owner.retain_parent_data(parent)
+    }
+
+    /// Installs the actual admitted initial bank before World publication.
+    pub(super) fn initialize_initial_coordinator17_data(
+        &self,
+        owner: super::coordinator_commitment::CoordinatorCommitments17,
+        maximum: usize,
+    ) -> Result<(), RuntimeError> {
+        self.current()?;
+        if self.initialized()? {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        let mut slot = self
+            .0
+            .coordinator17
+            .try_borrow_mut()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        if slot.is_some() {
+            return Err(RuntimeError::OutstandingObligations);
+        }
+        *slot = Some(owner);
+        slot.as_mut()
+            .ok_or(RuntimeError::OwnerUnavailable)?
+            .initialize_data(maximum)
+    }
+
+    /// Lends the same optional log only while its original authority stays live.
+    pub(super) fn with_coordinator17_data<R>(
+        &self,
+        inspect: impl FnOnce(
+            Option<&mut super::coordinator_commitment::CoordinatorCommitments17>,
+        ) -> Result<R, RuntimeError>,
+    ) -> Result<R, RuntimeError> {
+        let mut slot = self
+            .0
+            .coordinator17
+            .try_borrow_mut()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        if slot.is_none() {
+            return inspect(None);
+        }
+        self.current()?;
+        let result = inspect(slot.as_mut());
+        self.current()?;
+        result
+    }
+
     pub(in super::super) fn new(authority: &Rc<()>, world: HashRef) -> Self {
         Self(Rc::new(Original {
             process: std::process::id(),
@@ -165,6 +270,7 @@ impl OriginalSchedulingState {
             live: Cell::new(true),
             scheduler: RefCell::new(None),
             restored: RefCell::new(None),
+            coordinator17: RefCell::new(None),
         }))
     }
 

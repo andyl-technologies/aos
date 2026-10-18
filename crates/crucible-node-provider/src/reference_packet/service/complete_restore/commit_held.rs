@@ -83,14 +83,14 @@ impl PacketNativeRestoredCommitHold {
 }
 
 #[derive(Serialize)]
-struct HoldView<'a, H: ?Sized, C: ?Sized, I: ?Sized, P: ?Sized, B: ?Sized> {
+struct HoldView<'a, H: ?Sized, C: ?Sized, I: ?Sized, P: ?Sized, B: ?Sized, N> {
     schema: &'a str,
-    native_pid: U64,
+    native_pid: N,
     target_world: &'a H,
     target_owner: &'a I,
     target_owner_binding: &'a H,
     target_activation: &'a I,
-    target_generation: U64,
+    target_generation: N,
     captured_owner_state: &'a C,
     captured_control: &'a C,
     captured_journal: &'a C,
@@ -152,18 +152,23 @@ impl Serialize for PacketNativeRestoredCommitHold {
 /// 128-byte hash domains at their worst six-byte ASCII escaping, maximum full
 /// ContentRefs with doubled quote media bytes, the 32-byte digest's exact
 /// unpadded base64 width and the complete coordinate. It constructs no ID or
-/// JSON value and grants no selected protocol credit. Its U64 decimal formatter
-/// temporary is named by the separate counter-scratch getter.
+/// JSON value, custom U64 formatter string or selected protocol credit. The
+/// maximum decimal spelling is borrowed statically through the same field view.
 ///
 /// # Errors
 /// Reports serialization/count overflow; it does not admit an input lease.
 pub fn maximum_complete_restore_held_evidence_bytes() -> Result<usize, ProviderError> {
+    maximum_held_encoded_bytes_data("18446744073709551615")
+}
+
+fn maximum_held_encoded_bytes_data<N: Serialize + Copy>(
+    maximum: N,
+) -> Result<usize, ProviderError> {
     let domains = [0u8; 128];
     let identifiers = [b'x'; 128];
     let media = [b'"'; 128];
     let hexadecimal = [b'0'; 64];
     let digest = [b'x'; 43];
-    let maximum = U64::new(u64::MAX);
     let hash = MaximumHeldHash {
         algorithm: "blake3-256",
         domain: bound_ascii(&domains)?,
@@ -217,42 +222,57 @@ struct MaximumHeldHash<'a> {
     digest: &'a str,
 }
 #[derive(Serialize)]
-struct MaximumHeldContent<'a> {
+struct MaximumHeldContent<'a, N> {
     hash: MaximumHeldHash<'a>,
-    length: U64,
+    length: N,
     media_type: &'a str,
 }
 #[derive(Serialize)]
-struct MaximumHeldCoordinate {
-    time_ps: U64,
-    microstep: U64,
+struct MaximumHeldCoordinate<N> {
+    time_ps: N,
+    microstep: N,
     phase: u16,
 }
 
-/// Names actual fixed maximum-Hold views before its decimal serialization.
+/// Names actual fixed maximum-Hold counter views without decimal allocation.
 ///
-/// The twenty-byte temporary is U64's actual Display-to-String formatter;
-/// each occurrence is serialized and dropped before the next one. Compiler
-/// and recursive serde frames and allocator physical overhead remain separate.
+/// The maximum decimal spelling is borrowed static data. Compiler and recursive
+/// serde frames and allocator physical overhead remain separate.
 pub fn maximum_complete_restore_held_evidence_counter_scratch_data() -> usize {
     use std::mem::size_of;
     3 * size_of::<[u8; 128]>()
         + size_of::<[u8; 64]>()
         + size_of::<[u8; 43]>()
-        + size_of::<U64>()
+        + size_of::<&'static str>()
         + size_of::<MaximumHeldHash<'static>>()
-        + size_of::<MaximumHeldContent<'static>>()
-        + size_of::<MaximumHeldCoordinate>()
+        + size_of::<MaximumHeldContent<'static, &'static str>>()
+        + size_of::<MaximumHeldCoordinate<&'static str>>()
         + size_of::<
             HoldView<
                 'static,
                 MaximumHeldHash<'static>,
-                MaximumHeldContent<'static>,
+                MaximumHeldContent<'static, &'static str>,
                 str,
-                MaximumHeldCoordinate,
+                MaximumHeldCoordinate<&'static str>,
                 str,
+                &'static str,
             >,
         >()
         + crate::connection::original_serialized_credit_counter_scratch_data()
-        + 20
+}
+
+#[cfg(test)]
+mod maximum_counter_tests {
+    use super::*;
+
+    #[test]
+    fn borrowed_maximum_decimal_preserves_the_original_u64_serialized_bound()
+    -> Result<(), ProviderError> {
+        assert_eq!(
+            maximum_complete_restore_held_evidence_bytes()?,
+            maximum_held_encoded_bytes_data(U64::new(u64::MAX))?
+        );
+        assert!(maximum_complete_restore_held_evidence_bytes()? > 0);
+        Ok(())
+    }
 }

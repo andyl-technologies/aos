@@ -576,8 +576,12 @@ impl RetainedColdOwner {
         archive: &CompleteOriginalRestorationSource,
         source: &Rc<PacketCompleteSemanticSource>,
     ) -> bool {
-        std::ptr::eq(owner.source, source.as_ref())
-            && std::ptr::eq(owner.content, archive.content())
+        owner
+            .source
+            .is_some_and(|actual| std::ptr::eq(actual, source.as_ref()))
+            && owner
+                .content
+                .same_data(ArchivedContentData::Verified(archive.content()))
             && archive
                 .archive()
                 .owners()

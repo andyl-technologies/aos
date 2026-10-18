@@ -549,3 +549,102 @@ fn strengthens(old: OutputBound, new: OutputBound) -> bool {
 
 #[path = "external_impl.rs"]
 mod external;
+
+impl CausalScheduler {
+    /// Stages exact newly consumed inputs and actual accepted publications.
+    /// The caller publishes their ordinals only after applying this same update.
+    pub(super) fn stage_coordinator_observation17_data(
+        &self,
+        log: &mut crate::node_contract::CoordinatorCommitments17,
+        receipt: &SchedulingReceipt,
+        update: &ObservationUpdate,
+    ) -> Result<(), SchedulingError> {
+        use crucible_node_provider::reference_packet::service::complete_restore::settled_recapture::CoordinatorCommitmentKind17;
+        let attempt = log
+            .operation_attempt_data(&receipt.operation, &receipt.node)
+            .map_err(|_| SchedulingError::InvalidReceipt)?;
+        let observation = receipt
+            .observation
+            .as_ref()
+            .ok_or(SchedulingError::MissingObservation)?;
+        let publications = observation.publications.as_slice();
+        if publications
+            .windows(2)
+            .any(|pair| pair[0].publication > pair[1].publication)
+        {
+            return Err(SchedulingError::CausalRegression);
+        }
+        let consumed = match &update.consumed {
+            Some((owner, identities)) => Some((
+                self.input_batches
+                    .get(owner)
+                    .ok_or(SchedulingError::InvalidReceipt)?,
+                identities.as_slice(),
+            )),
+            None => None,
+        };
+        let mut publication_index = 0usize;
+        let mut input_index = 0usize;
+        let mut previous = None;
+        loop {
+            let publication = publications.get(publication_index);
+            let delivery = match consumed {
+                Some((state, identities)) => match identities.get(input_index) {
+                    Some(identity) => Some(
+                        state
+                            .batch
+                            .deliveries
+                            .iter()
+                            .find(|delivery| {
+                                super::inputs_impl::input_identity(delivery) == *identity
+                            })
+                            .ok_or(SchedulingError::InvalidReceipt)?,
+                    ),
+                    None => None,
+                },
+                None => None,
+            };
+            let input_first = match (delivery, publication) {
+                (Some(delivery), Some(publication)) => delivery.delivery <= publication.publication,
+                (Some(_), None) => true,
+                (None, Some(_)) => false,
+                (None, None) => break,
+            };
+            let (kind, position, evidence) = if input_first {
+                let delivery = delivery.ok_or(SchedulingError::InvalidReceipt)?;
+                let progress = observation
+                    .input_progress
+                    .as_ref()
+                    .ok_or(SchedulingError::MissingObservation)?;
+                input_index += 1;
+                (
+                    CoordinatorCommitmentKind17::InputCommit,
+                    delivery.delivery,
+                    &progress.proof_ref,
+                )
+            } else {
+                let publication = publication.ok_or(SchedulingError::InvalidReceipt)?;
+                publication_index += 1;
+                (
+                    CoordinatorCommitmentKind17::SchedulingCommit,
+                    publication.publication,
+                    &observation.proof_ref,
+                )
+            };
+            if previous.is_some_and(|previous| previous > position) {
+                return Err(SchedulingError::CausalRegression);
+            }
+            log.stage_semantic_data(
+                attempt,
+                kind,
+                &receipt.operation,
+                &receipt.node,
+                position,
+                Some(evidence),
+            )
+            .map_err(|_| SchedulingError::CapacityExceeded)?;
+            previous = Some(position);
+        }
+        Ok(())
+    }
+}

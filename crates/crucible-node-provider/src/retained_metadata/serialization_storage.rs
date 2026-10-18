@@ -7,7 +7,7 @@
 
 #[path = "serialization_storage/json_extent.rs"]
 mod json_extent;
-pub(crate) use json_extent::{
+pub use json_extent::{
     OriginalJsonValueStorageExtentData, original_json_value_storage_extent_counter_scratch_data,
     original_json_value_storage_extent_data,
 };

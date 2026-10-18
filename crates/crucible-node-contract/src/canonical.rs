@@ -431,3 +431,20 @@ pub fn content_ref(payload: &[u8], media_type: &str) -> Result<ContentRef, Contr
     reference.validate()?;
     Ok(reference)
 }
+
+/// Reports fixed controls of the scalar-number JCS writer.
+///
+/// The number branch borrows its input and writes Ryu's inline buffer directly;
+/// it creates no whole-value DOM, string bank or ordering tree. Callers separately
+/// price their own input value, sink and serializer frames.
+pub fn canonical_number_counter_scratch_bytes_data() -> usize {
+    use std::mem::size_of;
+    size_of::<ryu_js::Buffer>()
+        + size_of::<f64>()
+        + size_of::<Option<f64>>()
+        + size_of::<&serde_json::Number>()
+        + size_of::<&[u8]>()
+        + size_of::<Result<(), std::io::Error>>()
+        + size_of::<Result<(), serde_json::Error>>()
+        + size_of::<Result<(), ContractError>>()
+}

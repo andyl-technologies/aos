@@ -105,7 +105,7 @@ impl ConformanceRuntime {
             self.runtime.prepare_original_lineage_scheduler(
                 &self.graph.graph,
                 context,
-                archive.original_host_record_data()?.scheduling.clone(),
+                archive.historical_host_scheduling_data()?.clone(),
             )
         })
     }
@@ -207,6 +207,10 @@ impl ConformanceRuntime {
             scheduling,
         )?;
         context.validate_current(&self.runtime)?;
+        // This is the same preadmitted common-installation occurrence. Its
+        // Window marker was spent before mutation; no callback opens a new
+        // dispatch phase or retries a partially allocated coordinator bank.
+        window.initialize_restored_coordinator17_data(plan, &self.runtime, activation)?;
         window.complete_original_common_installation_data(plan, &self.runtime)
     }
 }
@@ -248,5 +252,54 @@ impl ConformanceRuntime {
             return Err(RuntimeError::ForeignAuthority);
         }
         window.authenticate_installed_import_release_current_data(plan, &self.runtime)
+    }
+}
+
+impl ConformanceRuntime {
+    /// Retains future17 coordinator storage before the complete transaction census.
+    ///
+    /// This explicit profile-selected preparation requires the same verified
+    /// archive checkpoint and original fresh target. It creates no allocation,
+    /// dispatch grant, safe-point claim or old-archive promotion.
+    ///
+    /// # Errors
+    /// Refuses a foreign or late Window/target, missing authenticated checkpoint,
+    /// repeated selection or independently exceeded construction policy.
+    pub fn retain_restored_coordinator17_construction_data(
+        &self,
+        window: &Rc<CompleteOriginalRestorationWindow>,
+        plan: &InstalledConformancePlan,
+        target: &crate::node_contract::ActivationRecord,
+    ) -> Result<(), RuntimeError> {
+        self.authenticate_complete_original_restoration_origin()?;
+        window.retain_restored_coordinator17_construction_data(plan, &self.runtime, target)
+    }
+}
+
+impl ConformanceRuntime {
+    /// Installs the whole-admitted imported append bank before native readiness.
+    ///
+    /// The caller reobserves all current owners after this allocation and before
+    /// Arm or World publication. Its same Source-bound row retains inherited
+    /// lifetime counters; the later installation phase only rechecks that owner.
+    ///
+    /// # Errors
+    /// Refuses a foreign/inactive context, missing whole admission, a repeated
+    /// initialization or unavailable original imported checkpoint policy.
+    pub fn initialize_original_installed_coordinator17_before_activation_data(
+        &self,
+        window: &Rc<CompleteOriginalRestorationWindow>,
+        plan: &InstalledConformancePlan,
+        context: &OriginalLineageRestoration<'_>,
+    ) -> Result<(), RuntimeError> {
+        window.authenticate_original_context_owner_data(context)?;
+        window.authenticate_original_common_construction_data(self, plan)?;
+        context.validate_current(&self.runtime)?;
+        window.initialize_restored_coordinator17_before_activation_data(
+            plan,
+            &self.runtime,
+            self.runtime.original_preparation_record(),
+        )?;
+        context.validate_current(&self.runtime)
     }
 }

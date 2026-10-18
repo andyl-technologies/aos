@@ -35,7 +35,7 @@ impl<'a> BorrowedCompactBytes<'a> {
     ///
     /// This excludes generic serializer state, recursive/compiler frames and
     /// allocator residency, which require separate simultaneous admission.
-    pub(crate) const fn requested_serialization_scratch_bytes() -> usize {
+    pub const fn requested_serialization_scratch_bytes() -> usize {
         ENCODED_CHUNK_BYTES
             + std::mem::size_of::<Chunks<'static>>()
             + std::mem::size_of::<BorrowedCompactBytes<'static>>()

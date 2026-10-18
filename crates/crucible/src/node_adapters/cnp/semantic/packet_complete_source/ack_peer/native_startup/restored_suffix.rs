@@ -205,11 +205,24 @@ impl PacketCompleteSemanticSource {
         suffix.authenticate_source_data(self)?;
         suffix.authenticate_completed_wire_data(self)?;
         let reservation = suffix.reservation_data();
-        let actual = crucible_node_provider::reference_packet::service::native_startup::original_native_suffix_launch_identity_data(
-            &purpose, canonical_launch5, &reservation,
-        ).map_err(|_| RuntimeError::ForeignAuthority)?;
-        if actual != suffix.launch_identity_data() || actual.encoded_bytes > 1024 * 1024 {
-            return Err(RuntimeError::ForeignAuthority);
+        // Dispatch from the actual private retained member, never a DTO/tag or
+        // a failed old parser fallback. Each family binds its complete wrapper.
+        if let Some(settled) = suffix.settled_data(self)? {
+            if !self.is_original_restored_settled_capture_declaration_data()? {
+                return Err(RuntimeError::ForeignAuthority);
+            }
+            let actual=crucible_node_provider::reference_packet::service::native_startup::original_native_settled_launch_identity_data(
+                &purpose,canonical_launch5,&reservation,settled.existing_rows_data(),settled.carrier_data()).map_err(|_|RuntimeError::ForeignAuthority)?;
+            if actual != settled.launch_identity_data() || actual.encoded_bytes > 1024 * 1024 {
+                return Err(RuntimeError::ForeignAuthority);
+            }
+        } else {
+            let actual = crucible_node_provider::reference_packet::service::native_startup::original_native_suffix_launch_identity_data(
+                &purpose, canonical_launch5, &reservation,
+            ).map_err(|_| RuntimeError::ForeignAuthority)?;
+            if actual != suffix.launch_identity_data() || actual.encoded_bytes > 1024 * 1024 {
+                return Err(RuntimeError::ForeignAuthority);
+            }
         }
         Ok(())
     }
@@ -221,7 +234,10 @@ impl PacketCompleteSemanticSource {
             PacketNativeInvocationPurposeData, PacketNativeSuffixLaunchIdentityData,
             original_native_suffix_counter_scratch_data,
         };
-        super::super::PacketCompleteAckPeerBootMaterial::original_native_startup_authentication_scratch_data()
+        crucible_node_provider::reference_packet::service::native_startup::original_native_settled_carrier_counter_scratch_data()
+            + size_of::<Option<&crate::node_admission::OriginalRestoredSettledStartupMember>>()
+            + size_of::<Result<Option<&crate::node_admission::OriginalRestoredSettledStartupMember>, RuntimeError>>()
+            + super::super::PacketCompleteAckPeerBootMaterial::original_native_startup_authentication_scratch_data()
             + original_native_suffix_counter_scratch_data()
             + size_of::<PacketNativeInvocationPurposeData>()
             + size_of::<Option<PacketNativeInvocationPurposeData>>()

@@ -589,7 +589,15 @@ impl NodeRuntime {
             return Err(RuntimeError::OwnerUnavailable);
         }
         self.validate_all_declarations()?;
-        let activation = self.barrier.publish(&self.authority, publisher)?;
+        self.prepare_coordinator17_activation_data()?;
+        let activation = match self.barrier.publish(&self.authority, publisher) {
+            Ok(world) => world,
+            Err(error) => {
+                self.settle_coordinator17_activation_data(None)?;
+                return Err(error);
+            }
+        };
+        self.settle_coordinator17_activation_data(Some(&activation))?;
         self.finish_activation();
         Ok(activation)
     }
@@ -603,7 +611,15 @@ impl NodeRuntime {
         publisher: &mut dyn ActivationPublisher,
     ) -> Result<WorldActivation, RuntimeError> {
         self.validate_all_declarations()?;
-        let activation = self.barrier.reconcile(&self.authority, publisher)?;
+        self.prepare_coordinator17_activation_data()?;
+        let activation = match self.barrier.reconcile(&self.authority, publisher) {
+            Ok(world) => world,
+            Err(error) => {
+                self.settle_coordinator17_activation_data(None)?;
+                return Err(error);
+            }
+        };
+        self.settle_coordinator17_activation_data(Some(&activation))?;
         self.finish_activation();
         Ok(activation)
     }
@@ -731,6 +747,13 @@ impl NodeRuntime {
         if let Err(error) = final_collection_scope(self.collecting.as_deref()) {
             return Poll::Ready(Err(RuntimePollFailure::Admission(error)));
         }
+        let coordinator_attempt = match self.reserve_coordinator_attempt_data(
+            crucible_node_provider::reference_packet::service::complete_restore::settled_recapture::CoordinatorCommitmentKind17::Poll,
+            Some(token.operation()), Some(&token.route.node), None, 0,
+        ) {
+            Ok(attempt) => attempt,
+            Err(error) => return Poll::Ready(Err(RuntimePollFailure::Admission(error))),
+        };
         let result = match self.nodes.get_mut(&token.route.node) {
             Some(handle) => match producer {
                 Some(claim) => {
@@ -744,7 +767,7 @@ impl NodeRuntime {
                 )));
             }
         };
-        match result {
+        let processed = (|| match result {
             Poll::Pending => Poll::Pending,
             Poll::Ready(Ok(outcome)) => {
                 let native_evidence_valid = self
@@ -785,6 +808,9 @@ impl NodeRuntime {
                 if let Some(entry) = self.operations.get_mut(token.operation()) {
                     entry.result = RetainedResult::Complete(outcome.clone());
                 }
+                if let Err(error) = self.reconcile_coordinator_poll_data(token) {
+                    return Poll::Ready(Err(RuntimePollFailure::Admission(error)));
+                }
                 Poll::Ready(Ok(outcome))
             }
             Poll::Ready(Err(failure)) => {
@@ -794,7 +820,17 @@ impl NodeRuntime {
                 }
                 Poll::Ready(Err(RuntimePollFailure::Native(failure)))
             }
+        })();
+        let disposition = if matches!(&processed, Poll::Ready(Ok(_))) {
+            crucible_node_provider::reference_packet::service::complete_restore::settled_recapture::CoordinatorCommitmentState17::Committed
+        } else {
+            crucible_node_provider::reference_packet::service::complete_restore::settled_recapture::CoordinatorCommitmentState17::Uncertain
+        };
+        if let Err(error) = self.finish_coordinator_attempt_data(coordinator_attempt, disposition) {
+            self.contain_roster(token.route());
+            return Poll::Ready(Err(RuntimePollFailure::Admission(error)));
         }
+        processed
     }
 
     /// Requests termination while retaining the original owner reservation.
@@ -920,21 +956,41 @@ impl NodeRuntime {
 
         final_collection_scope(self.collecting.as_deref())
             .map_err(RuntimePollFailure::Admission)?;
+        let coordinator_attempt = self.reserve_coordinator_attempt_data(
+            crucible_node_provider::reference_packet::service::complete_restore::settled_recapture::CoordinatorCommitmentKind17::Retire,
+            Some(token.operation()), Some(&token.route.node), None, 0,
+        ).map_err(RuntimePollFailure::Admission)?;
         let node = self
             .nodes
             .get_mut(&token.route.node)
             .ok_or(RuntimePollFailure::Admission(RuntimeError::UnknownNode))?;
-        match claim {
+        let acknowledgement = match claim {
             Some(claim) => {
                 node.acknowledge_original_restored_producer_publication(token, outputs, claim)
             }
             None => node.acknowledge_publication(token, outputs),
+        };
+        let disposition = if acknowledgement.is_ok() {
+            // Preserve the positively established ACK before any later local
+            // ledger recheck; an error must not relabel actual native progress.
+            if let Some(entry) = self.operations.get_mut(token.operation()) {
+                entry.result = RetainedResult::Acknowledged(outcome);
+            }
+            self.release_reservation(token);
+            crucible_node_provider::reference_packet::service::complete_restore::settled_recapture::CoordinatorCommitmentState17::Committed
+        } else {
+            crucible_node_provider::reference_packet::service::complete_restore::settled_recapture::CoordinatorCommitmentState17::Uncertain
+        };
+        if let Err(error) = self.finish_coordinator_attempt_data(coordinator_attempt, disposition) {
+            self.contain_roster(token.route());
+            return match acknowledgement {
+                Err(failure) => Err(RuntimePollFailure::Native(failure)),
+                Ok(()) => Err(RuntimePollFailure::Admission(error)),
+            };
         }
-        .map_err(RuntimePollFailure::Native)?;
-        if let Some(entry) = self.operations.get_mut(token.operation()) {
-            entry.result = RetainedResult::Acknowledged(outcome);
-        }
-        self.release_reservation(token);
+        acknowledgement.map_err(RuntimePollFailure::Native)?;
+        self.finish_coordinator_operation_data(token.operation(), &token.route.node)
+            .map_err(RuntimePollFailure::Admission)?;
         Ok(())
     }
 
@@ -1780,3 +1836,10 @@ mod current_observation;
 
 #[path = "runtime/producer_execution_storage.rs"]
 mod producer_execution_storage;
+
+#[path = "runtime/restored_capture_storage.rs"]
+mod restored_capture_storage;
+pub use restored_capture_storage::OriginalRestoredCaptureRuntimeConstructionData;
+
+#[path = "runtime/coordinator_commitment.rs"]
+pub(crate) mod coordinator_commitment;

@@ -788,3 +788,6 @@ impl OriginalInstalledRestorationNodeAssociation {
         )
     }
 }
+
+#[path = "installed_node/restored_capture17.rs"]
+mod restored_capture17;

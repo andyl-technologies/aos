@@ -15,6 +15,14 @@ use crucible_node_contract::canonical;
 #[path = "capture/auxiliary.rs"]
 mod auxiliary;
 
+#[path = "capture/selected_construction.rs"]
+mod selected_construction;
+pub use selected_construction::{
+    historical_restored_settled_capture17_selected_counter_scratch_data,
+    historical_restored_settled_capture17_selected_retained_construction_bytes_data,
+    historical_restored_settled_capture17_selected_validation_transient_bytes_data,
+};
+
 /// Retains checked actual Capture and confirmation pairs as inert history.
 ///
 /// There is no public field, decoder, Clone implementation, or live conversion.
@@ -401,6 +409,55 @@ fn authenticate_roots_data(
     Ok(())
 }
 
+/// Quotes the independent retained owner returned by the completed Capture reader.
+///
+/// The caller supplies the byte extent of its actual opaque Controller owner
+/// before constructing this additional SDK history. This is storage DATA only;
+/// validation, transient construction and any earlier SDK copy remain separate.
+///
+/// The four Envelopes, two independent ResponseBodies, request, context,
+/// artifact, confirmation request and receipt correspond to disjoint retained
+/// Controller subtrees. `pair_data` compares both decoded responses, including
+/// their raw shapes and typed results, with their own `decoded` subtrees. Their
+/// combined String, Value and map backing therefore fits one whole-input lexical
+/// DOM bound; nested copies of the request already have distinct input fields.
+///
+/// Typed vectors additionally store Ids in Capture arguments and ContentRefs in
+/// the Capture result. A successful final Poll has no observations. Each vector
+/// element and each vector container consumes a lexical event; four requests per
+/// element plus eight minimum slots per container bound geometric reservation.
+/// The canonical-original byte vector has its own independently retained bank.
+///
+/// # Errors
+/// Refuses a zero extent, unsupported selected JSON layouts or checked storage
+/// overflow. The result grants no decode, Source or native allocation authority.
+pub fn historical_restored_settled_capture17_retained_construction_bytes_data(
+    controller_encoded_bytes: usize,
+) -> Result<usize, ProviderError> {
+    let extent =
+        crate::retained_metadata::serialization_storage::original_json_value_storage_extent_data(
+            controller_encoded_bytes,
+        )?;
+    let typed_element = size_of::<Id>().max(size_of::<ContentRef>());
+    let typed_vectors = extent
+        .maximum_value_nodes
+        .checked_mul(12)
+        .and_then(|slots| slots.checked_mul(typed_element))
+        .ok_or_else(invalid)?;
+    let canonical_original = controller_encoded_bytes
+        .checked_mul(4)
+        .and_then(|bytes| bytes.checked_add(8))
+        .ok_or_else(invalid)?;
+
+    // This header contains both HistoricalPair17 triples, every inline DTO,
+    // the canonical Vec handle and prefix frontier, with their real padding.
+    size_of::<ValidatedHistoricalRestoredSettledCapture17>()
+        .checked_add(extent.value_dom_requested_bytes)
+        .and_then(|bytes| bytes.checked_add(typed_vectors))
+        .and_then(|bytes| bytes.checked_add(canonical_original))
+        .ok_or_else(invalid)
+}
+
 /// Quotes independent typed history validation and canonical temporaries.
 ///
 /// The whole Source constructor separately admits the parent's raw/DOM owner and
@@ -512,3 +569,7 @@ impl ValidatedControllerSettledHistory17 {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "capture/retained_construction_tests.rs"]
+mod retained_construction_tests;

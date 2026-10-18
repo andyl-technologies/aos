@@ -3,7 +3,6 @@
 use super::{sealed::RestoredSettledNative17DecodeAttempt, *};
 use crate::protocol_snapshot::native_wholegraph17::{
     NativeCurrentGraph17Data, NativeCurrentGraph17ReadLimits,
-    read_native_current_graph17_with_limits_into_data,
 };
 
 pub(super) fn read_graph_pair_into_data(
@@ -17,9 +16,8 @@ pub(super) fn read_graph_pair_into_data(
     }
 
     let retained = decoded.retained_requested_storage_data(maximum_requested)?;
-    read_native_current_graph17_with_limits_into_data(
+    decoded.before_native_graph.read_into_data(
         &decoded.before_encoded,
-        &mut decoded.before_native_graph,
         NativeCurrentGraph17ReadLimits {
             maximum_requested: maximum_requested
                 .checked_sub(retained)
@@ -31,9 +29,8 @@ pub(super) fn read_graph_pair_into_data(
     )?;
 
     let retained = decoded.retained_requested_storage_data(maximum_requested)?;
-    read_native_current_graph17_with_limits_into_data(
+    decoded.native_graph.read_into_data(
         &decoded.raw[1],
-        &mut decoded.native_graph,
         NativeCurrentGraph17ReadLimits {
             maximum_requested: maximum_requested
                 .checked_sub(retained)

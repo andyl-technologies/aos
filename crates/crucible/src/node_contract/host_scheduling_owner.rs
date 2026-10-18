@@ -30,6 +30,20 @@ mod construction_storage;
 pub use construction_storage::HostCollectionNodeConstructionStorageData;
 
 mod continuation;
+mod restored_continuation;
+pub(crate) use restored_continuation::{
+    HostSchedulingRestoredCaptureAttempt17, HostSchedulingRestoredContinuation17,
+    RestoredHostCaptureAncestryBorrowed17,
+};
+pub use restored_continuation::{
+    HostSchedulingRestoredContinuationRecord17, RestoredHostAdmissionPolicy17,
+    RestoredHostAncestry17, RestoredHostSemanticAncestor,
+    authenticate_host_scheduling_restored_continuation_schema17_data,
+    host_scheduling_restored_continuation_definition17,
+    host_scheduling_restored_continuation_schema17,
+    host_scheduling_restored_continuation_schema17_counter_scratch_data,
+};
+
 mod prebirth_storage;
 mod requested_storage;
 pub use continuation::{
@@ -532,12 +546,50 @@ impl HostSchedulingSource {
             }
             (None, Some(ticket)) => {
                 ticket.authenticate_birth().map_err(failure)?;
-                Ok(ticket.record())
+                ticket.record().map_err(failure)
             }
             _ => Err(failure(
                 "original host continuation ticket is absent or ambiguous",
             )),
         }
+    }
+
+    pub(super) fn restoration_runtime_fields_data(
+        &self,
+    ) -> Result<
+        (
+            &super::OriginalLineageRuntimeRecord,
+            &crate::node_scheduling::SchedulingSnapshot,
+            &[crate::node_scheduling::InputPayload],
+            &HostSchedulingSelection,
+        ),
+        OperationFailure,
+    > {
+        self.authenticate_current()?;
+        if let Some(ticket) = &self.archive_ticket
+            && ticket.is_restored_settled_data().map_err(failure)?
+        {
+            if self.original_ticket.is_some() {
+                return Err(failure("Host restoration has ambiguous actual tickets"));
+            }
+            let record = ticket.restored_record_data().map_err(failure)?;
+            return Ok((
+                &record.runtime,
+                &record.scheduling,
+                &record.objects,
+                &record.source,
+            ));
+        }
+        let original = self.original_restoration_record()?;
+        let HostSchedulingRuntimeRecord::OriginalLineage(runtime) = &original.runtime else {
+            return Err(failure("original Host legacy restoration is unsupported"));
+        };
+        Ok((
+            runtime,
+            &original.scheduling,
+            &original.objects,
+            &original.source,
+        ))
     }
 
     pub(super) fn authenticate_original_lineage_context(

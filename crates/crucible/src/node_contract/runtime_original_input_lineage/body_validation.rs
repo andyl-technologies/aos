@@ -128,3 +128,36 @@ fn verify_body<'a>(
         .verify(bytes)
         .map_err(|_| RuntimeError::InvalidReceipt)
 }
+
+impl OriginalLineageRuntimeRecord {
+    /// Checks original body DATA within the exact authenticated initial15 parent.
+    ///
+    /// The concrete scope restricts every lookup to that parent's typed inventory.
+    /// This issues no runtime, Source, adoption or native-currentness permission.
+    ///
+    /// # Errors
+    /// Refuses invalid metadata, absent parent roles, changed original Event facts
+    /// or exceeded original lineage/record limits.
+    pub(crate) fn validate_initial15_parent_bodies_data(
+        &self,
+        scope: &crate::node_state::ParentArchive17ReadScope<'_, '_>,
+        maximum_record_bytes: usize,
+    ) -> Result<(), RuntimeError> {
+        scope
+            .manifest_data()
+            .map_err(|_| RuntimeError::ForeignAuthority)?;
+        let declared = scope.lineage_limits_data();
+        let supported = OriginalInputLineageLimits::default();
+        let limits = OriginalInputLineageLimits {
+            maximum_objects: declared.maximum_objects.min(supported.maximum_objects),
+            maximum_bytes: declared.maximum_bytes.min(supported.maximum_bytes),
+            maximum_edges: declared.maximum_edges.min(supported.maximum_edges),
+        };
+        self.validate_metadata(limits, maximum_record_bytes)?;
+        self.check_original_bodies(|reference| scope.body_data(reference).ok())?;
+        scope
+            .manifest_data()
+            .map_err(|_| RuntimeError::ForeignAuthority)?;
+        Ok(())
+    }
+}

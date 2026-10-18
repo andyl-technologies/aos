@@ -52,7 +52,10 @@ impl InstalledCompleteRestoration {
         }
 
         let selected = super::super::manifest::load(&manifest)?;
-        if selected.schema != "crucible.complete-scene.installation/6" {
+        if !matches!(
+            selected.schema.as_str(),
+            "crucible.complete-scene.installation/6" | "crucible.complete-scene.installation/7"
+        ) {
             return Err(refused());
         }
 
@@ -87,18 +90,31 @@ impl InstalledCompleteRestoration {
             bytes: Bytes::new(initial_bytes),
         };
 
-        let (sources, declarations) = prepare_sources(
-            selected.participants,
-            &selected.coordinator,
-            selected.maximum_native_rows,
-            selected.maximum_initial_bytes,
-            selected.mechanism,
-            true,
-            true,
-            true,
-            true,
-            &content,
-        )?;
+        let (sources, declarations) = if selected.schema == "crucible.complete-scene.installation/7"
+        {
+            prepare_restored_settled_sources(
+                selected.participants,
+                &selected.coordinator,
+                selected.maximum_native_rows,
+                selected.maximum_initial_bytes,
+                selected.mechanism,
+                selected.maximum_coordinator_records.ok_or_else(refused)?,
+                &content,
+            )?
+        } else {
+            prepare_sources(
+                selected.participants,
+                &selected.coordinator,
+                selected.maximum_native_rows,
+                selected.maximum_initial_bytes,
+                selected.mechanism,
+                true,
+                true,
+                true,
+                true,
+                &content,
+            )?
+        };
 
         let mut namespace = Namespace::create(directory)?;
         let directories = namespace.peer_directories()?;

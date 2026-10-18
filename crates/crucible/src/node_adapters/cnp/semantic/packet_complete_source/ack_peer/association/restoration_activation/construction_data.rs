@@ -171,3 +171,57 @@ impl OriginalSourceRestorationActivationConstructionData {
         Ok(())
     }
 }
+
+/// Lends every portable fixed field without reconstructing a live Source row.
+///
+/// Creator identities, thread handles and process pointers never enter history.
+pub(crate) struct OriginalSourceRestorationActivationHistoricalData<'a> {
+    original: &'a OriginalSourceRestorationActivationConstructionData,
+}
+
+impl OriginalSourceRestorationActivationConstructionData {
+    /// Borrows the full historical quote without creating a Source permission.
+    pub(crate) fn historical_data(&self) -> OriginalSourceRestorationActivationHistoricalData<'_> {
+        OriginalSourceRestorationActivationHistoricalData { original: self }
+    }
+
+    /// Names the nested defining row and full borrowed historical views.
+    pub(crate) fn historical_counter_scratch_data() -> usize {
+        OriginalInstalledRestorationActivationConstructionData::historical_counter_scratch_data()
+            + size_of::<OriginalSourceRestorationActivationHistoricalData<'static>>()
+            + size_of::<&OriginalSourceRestorationActivationConstructionData>()
+            + 8 * size_of::<&usize>()
+            + size_of::<&[u8; 32]>()
+    }
+}
+
+impl serde::Serialize for OriginalSourceRestorationActivationHistoricalData<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let OriginalSourceRestorationActivationConstructionData {
+            process: _,
+            thread: _,
+            source: _,
+            controller: _,
+            provider,
+            retained,
+            transient,
+            scratch,
+            requested,
+            maximum,
+            frame,
+            manifest,
+        } = self.original;
+        let mut state =
+            serializer.serialize_struct("OriginalSourceRestorationActivationHistoricalData", 8)?;
+        state.serialize_field("provider", &provider.historical_data())?;
+        state.serialize_field("retained", retained)?;
+        state.serialize_field("transient", transient)?;
+        state.serialize_field("scratch", scratch)?;
+        state.serialize_field("requested", requested)?;
+        state.serialize_field("maximum", maximum)?;
+        state.serialize_field("frame", frame)?;
+        state.serialize_field("manifest", manifest)?;
+        state.end()
+    }
+}

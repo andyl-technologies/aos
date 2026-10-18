@@ -32,6 +32,7 @@ pub(super) enum Declaration {
     RestorationActivation14,
     RestorationObservation14,
     RestorationSuffix14,
+    RestoredSettledRecapture17,
 }
 
 impl PacketCompleteSemanticSource {
@@ -99,7 +100,8 @@ impl PacketCompleteSemanticSource {
                 Declaration::Invocation14
                 | Declaration::RestorationActivation14
                 | Declaration::RestorationObservation14
-                | Declaration::RestorationSuffix14,
+                | Declaration::RestorationSuffix14
+                | Declaration::RestoredSettledRecapture17,
             ) => {
                 self.authenticate_invocation_snapshot_declaration_tuple_data()?;
                 if matches!(
@@ -108,21 +110,34 @@ impl PacketCompleteSemanticSource {
                         Declaration::RestorationActivation14
                             | Declaration::RestorationObservation14
                             | Declaration::RestorationSuffix14
+                            | Declaration::RestoredSettledRecapture17
                     )
                 ) {
                     self.authenticate_restoration_activation_declaration_tuple_data()?;
                 }
                 if matches!(
                     self.invocation_snapshot_declaration,
-                    Some(Declaration::RestorationObservation14 | Declaration::RestorationSuffix14)
+                    Some(
+                        Declaration::RestorationObservation14
+                            | Declaration::RestorationSuffix14
+                            | Declaration::RestoredSettledRecapture17
+                    )
                 ) {
                     self.authenticate_restoration_observation_declaration_tuple_data()?;
                 }
                 if matches!(
                     self.invocation_snapshot_declaration,
-                    Some(Declaration::RestorationSuffix14)
+                    Some(
+                        Declaration::RestorationSuffix14 | Declaration::RestoredSettledRecapture17
+                    )
                 ) {
                     self.authenticate_restored_suffix_declaration_tuple_data()?;
+                }
+                if matches!(
+                    self.invocation_snapshot_declaration,
+                    Some(Declaration::RestoredSettledRecapture17)
+                ) {
+                    self.authenticate_restored_settled_recapture_declaration_tuple_data()?;
                 }
                 Ok(true)
             }
@@ -160,6 +175,7 @@ impl PacketCompleteSemanticSource {
             + restoration_activation::counter_scratch_data()
             + restoration_observation::counter_scratch_data()
             + restored_suffix::counter_scratch_data()
+            + restored_settled_recapture::counter_scratch_data()
     }
 
     fn authenticate_invocation_snapshot_declaration_tuple_data(&self) -> Result<(), RuntimeError> {
@@ -317,3 +333,11 @@ mod restoration_observation;
 
 #[path = "invocation_snapshot/restored_suffix.rs"]
 mod restored_suffix;
+
+#[path = "invocation_snapshot/restored_settled_recapture.rs"]
+mod restored_settled_recapture;
+
+#[path = "invocation_snapshot/coordinator_policy17.rs"]
+mod coordinator_policy17;
+
+pub(super) use coordinator_policy17::CoordinatorPolicy17;

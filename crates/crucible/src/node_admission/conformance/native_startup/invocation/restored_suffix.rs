@@ -44,6 +44,7 @@ pub(crate) struct OriginalRestoredSuffixStartupMember {
     wire_attempted: Cell<bool>,
     // Host publication only: native receipt and post-Observe proof are separate.
     wire_completed: Cell<bool>,
+    settled: Option<settled::OriginalRestoredSettledStartupMember>,
 }
 
 impl InstalledConformancePlan {
@@ -319,6 +320,7 @@ impl CompleteOriginalRestoredSuffixStartupAdmission<'_> {
             rows: self.rows[index],
             wire_attempted: Cell::new(false),
             wire_completed: Cell::new(false),
+            settled: None,
         });
         source.finalize_original_restored_suffix_startup_birth(
             member,
@@ -374,7 +376,7 @@ impl OriginalRestoredSuffixStartupMember {
         source: &PacketCompleteSemanticSource,
     ) -> Result<(), RuntimeError> {
         self.authenticate_source_data(source)?;
-        if !self.wire_attempted.get() || self.wire_completed.get() {
+        if self.settled.is_some() || !self.wire_attempted.get() || self.wire_completed.get() {
             return Err(RuntimeError::DuplicateOperation);
         }
         Ok(())
@@ -397,6 +399,9 @@ impl OriginalRestoredSuffixStartupMember {
         source: &PacketCompleteSemanticSource,
     ) -> Result<(), RuntimeError> {
         self.authenticate_source_data(source)?;
+        if let Some(settled) = &self.settled {
+            return settled.authenticate_completed_wire_data();
+        }
         if !self.wire_attempted.get() || !self.wire_completed.get() {
             return Err(RuntimeError::OwnerUnavailable);
         }
@@ -408,7 +413,7 @@ impl OriginalRestoredSuffixStartupMember {
         source: &PacketCompleteSemanticSource,
     ) -> Result<(), RuntimeError> {
         self.authenticate_source_data(source)?;
-        if self.wire_attempted.replace(true) {
+        if self.settled.is_some() || self.wire_attempted.replace(true) {
             return Err(RuntimeError::DuplicateOperation);
         }
         Ok(())
@@ -457,3 +462,12 @@ mod tests {
         }
     }
 }
+
+#[path = "restored_suffix/settled17.rs"]
+mod settled17;
+
+#[path = "restored_suffix/settled.rs"]
+mod settled;
+
+pub use settled::CompleteOriginalRestoredSettledStartupAdmission;
+pub(crate) use settled::OriginalRestoredSettledStartupMember;

@@ -581,3 +581,7 @@ mod current_observation;
 
 #[path = "installed_restoration/producer_execution.rs"]
 mod producer_execution;
+
+pub(crate) use producer_execution::OriginalRestoredSettledNodeHistoryView;
+
+pub(crate) use producer_execution::original_restored_settled_semantic_history_counter_scratch_data;

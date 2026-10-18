@@ -557,3 +557,7 @@ pub(crate) fn complete_coordinator_contract_storage_data(
 #[cfg(test)]
 #[path = "continuation_contracts/precision_tests.rs"]
 mod precision_tests;
+
+#[path = "continuation_contracts/initial15.rs"]
+mod initial15;
+pub use initial15::complete_packet_contract_history_data;

@@ -6,8 +6,10 @@
 //! creates a fresh ACK, Source operation, restoration proof or active context.
 
 use super::*;
+use crate::node_adapters::cnp::semantic::packet_complete_source::archive_owner::ArchivedContentData;
 use crate::node_adapters::cnp::semantic::packet_complete_source::{
-    archive_native_input::NativeInputData, archive_owner::OriginalRestorationColdOwnerView,
+    archive_native_input::{NativeInputData, NativeInputSelection},
+    archive_owner::OriginalRestorationColdOwnerView,
 };
 use crate::node_contract::OriginalLineageRuntimeRecord;
 use crate::node_state::{
@@ -151,10 +153,10 @@ impl PacketCompleteSemanticSource {
             Some(&protocol_counter),
         )?;
         let data = NativeInputData {
-            source: self,
+            selection: NativeInputSelection::Live(self),
             host: cold.host()?,
             native: cold.native_after()?,
-            content,
+            content: ArchivedContentData::Verified(content),
             retained: native_baseline
                 .checked_add(20 + 256)
                 .filter(|bytes| *bytes <= maximum_total_bytes)
@@ -318,10 +320,10 @@ impl PacketCompleteSemanticSource {
             Some(&protocol_counter),
         )?;
         let data = NativeInputData {
-            source: self,
+            selection: NativeInputSelection::Live(self),
             host,
             native,
-            content,
+            content: ArchivedContentData::Verified(content),
             retained: native_baseline
                 .checked_add(20 + 256)
                 .filter(|bytes| *bytes <= maximum_total_bytes)

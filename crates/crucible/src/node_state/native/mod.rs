@@ -13,6 +13,15 @@ mod capture;
 mod collecting_scope;
 mod complete_original_archive_storage;
 mod complete_original_capture;
+mod complete_restored_capture;
+pub use complete_restored_capture::{
+    CompleteRestoredSettledArchiveValidation, CompleteRestoredSettledArchiveValidationAttempt,
+    complete_restored_settled_archive_validation_counter_scratch_data,
+};
+pub(crate) use complete_restored_capture::{
+    CompleteRestoredSettledValidatedArchiveData, ParentArchive17ReadScope,
+    RetainedCold17Collection, RetainedCold17MemberView,
+};
 mod complete_original_dependency_storage;
 mod complete_original_factory_storage;
 pub use collecting_scope::CollectingCompleteCaptureProvenance;
@@ -22,9 +31,14 @@ mod complete_original_geometry;
 mod complete_original_index;
 mod complete_original_native_ticket;
 mod complete_original_restoration_data;
+mod complete_restored_restoration_data;
 pub use complete_original_restoration_data::{
     CompleteOriginalArchivedValidationConstructionData, CompleteOriginalNativeRestorationData,
     CompleteOriginalRestorationIndexConstructionData, ValidatedCompleteNativeRestorationData,
+};
+pub use complete_restored_restoration_data::{
+    CompleteRestoredSettledNativeRestorationData,
+    ValidatedCompleteRestoredSettledNativeRestorationData,
 };
 mod complete_original_source;
 mod driver;
@@ -61,9 +75,14 @@ pub use complete_original_geometry::{
     CompleteOriginalCaptureGeometry, CompleteOriginalOwnerCaptureGeometry,
     CompleteOriginalOwnerCapturePreflight,
 };
-pub use complete_original_native_ticket::CompleteOriginalNativeTicket;
+pub use complete_original_native_ticket::{
+    CompleteOriginalNativeTicket, CompleteOriginalNativeTicketHistory,
+};
 pub(crate) use complete_original_source::CompleteOriginalSource;
-pub use complete_original_source::{CompleteOriginalHostTicket, CompleteOriginalRestorationSource};
+pub use complete_original_source::{
+    CompleteOriginalHostTicket, CompleteOriginalRestorationSource, CompleteOriginalSourceHistory,
+    CompleteRestoredSettledSourceLoadAttempt,
+};
 pub(crate) use core_future_metadata::CompleteCaptureAllocationBudget;
 pub use driver::NativeWorldRestoreDriver;
 pub use extensions::NativeExtensionPreservationPolicy;
@@ -159,6 +178,20 @@ impl AuthenticatedNativeSource<'_> {
 /// complete native ledgers and every image/resource dependency. Source image
 /// certificates never qualify a fresh live peer or grant execution authority.
 pub trait NativeWorldFactory {
+    /// Authenticates the distinct current17 archive and retains all cold owners.
+    ///
+    /// # Errors
+    /// Refuses unsupported implementations, changed signed scopes or incomplete
+    /// native, Controller, Node, Source and inherited-parent correspondence.
+    fn authenticate_complete_restored_settled_archive(
+        &self,
+        _scope: CompleteRestoredSettledArchiveValidation<'_>,
+    ) -> Result<(), StateError> {
+        Err(refused(
+            "installed restored settled17 archive codec is unsupported",
+        ))
+    }
+
     /// Observes separate complete-factory banks before any cache preparation.
     ///
     /// This data callback uses the same closed source/graph and actual current

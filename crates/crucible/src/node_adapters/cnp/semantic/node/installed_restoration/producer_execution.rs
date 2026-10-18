@@ -725,3 +725,9 @@ impl super::super::super::CnpSemanticNode {
             .map_err(failure)
     }
 }
+
+#[path = "producer_execution/capture_history.rs"]
+mod capture_history;
+pub(crate) use capture_history::OriginalRestoredSettledNodeHistoryView;
+
+pub(crate) use capture_history::original_restored_settled_semantic_history_counter_scratch_data;

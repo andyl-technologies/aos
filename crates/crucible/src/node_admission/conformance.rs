@@ -20,6 +20,9 @@ mod host_startup;
 mod native_startup;
 mod report_startup;
 mod runtime_construction;
+
+#[path = "conformance/weak_plan_history.rs"]
+mod weak_plan_history;
 pub use host_startup::{
     CompleteOriginalNativeHostStartupAdmission, OriginalNativeHostStartupMemberScope,
     OriginalNativeHostStartupPolicy, OriginalNativeHostStartupScope,
@@ -325,6 +328,27 @@ pub trait ConformanceAdmissionAuthority: AdmissionEvidence {
         crucible_node_provider::reference_packet::service::native_startup::PacketNativeRestoredSuffixStartupStorageData;
         3
     ], crate::node_contract::RuntimeError>{
+        Err(crate::node_contract::RuntimeError::UnsupportedFacet)
+    }
+
+    /// Quotes new Capture17 storage from actual registered prebirth tickets.
+    ///
+    /// Each non-Clone result is independent of old startup/suffix rows. The
+    /// callback lends exact authenticated import geometry and installed count;
+    /// its returned DATA alone cannot install a Source or native reservation.
+    ///
+    /// # Errors
+    /// Defaults to refusal for unsupported holders, foreign tickets, absent
+    /// selected17 declarations or any complete unchanged resource overrun.
+    fn original_restored_settled_startup_data(
+        &self,
+        _: &ConformancePlanEvidence<'_>,
+        _: &OriginalNativeStartupScope<'_>,
+        _: &[crucible_node_provider::reference_packet::service::native_startup::PacketRestoredSettledNativeExistingRowsData; 3],
+    ) -> Result<
+        [crucible_node_provider::reference_packet::service::native_startup::PacketRestoredSettledNativeStorageData; 3],
+        crate::node_contract::RuntimeError,
+    >{
         Err(crate::node_contract::RuntimeError::UnsupportedFacet)
     }
 
@@ -1458,3 +1482,15 @@ pub use restoration_construction::{
 };
 
 pub(crate) use restoration_construction::ProducerExecutionPhase;
+
+pub use native_startup::CompleteOriginalRestoredSettledStartupAdmission;
+pub(crate) use native_startup::OriginalRestoredSettledStartupMember;
+
+pub use restoration_construction::OriginalRestoredInput17ConstructionData;
+
+pub use restoration_construction::{
+    OriginalRestoredCaptureClaim, OriginalRestoredCaptureRequestData,
+};
+pub(crate) use restoration_construction::{
+    OriginalRestoredCaptureImportedOwnerInputs, OriginalRestoredCaptureSigningInputs,
+};

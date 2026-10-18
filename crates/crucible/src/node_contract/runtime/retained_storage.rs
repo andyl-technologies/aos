@@ -184,6 +184,7 @@ impl NodeRuntime {
             );
         }
         child = child.max(super::opaque_owner_counter_scratch_data());
+        child = child.max(super::coordinator_commitment::counter_scratch_data());
         scheduler
             .authenticate_retained(&self.authority, &self.barrier.record().world_binding_hash)?;
         size_of::<RetainedRuntimeCounter>()

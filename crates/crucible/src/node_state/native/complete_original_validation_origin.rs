@@ -51,7 +51,7 @@ impl<'a> CompleteArchiveValidationOrigin<'a> {
         Ok(Self::SelectedLoad { record })
     }
 
-    fn original_write_runtime_data(
+    pub(in crate::node_state::native) fn original_write_runtime_data(
         &self,
         actual: &NativeArchiveRecord,
     ) -> Result<Option<&NodeRuntime>, StateError> {

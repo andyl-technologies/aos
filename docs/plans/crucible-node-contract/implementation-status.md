@@ -1746,3 +1746,42 @@ The final ordinary Contract test executable passes all twelve library controls;
 the benchmark remains opt-in and passes separately. The expanded compiler and
 production application-target gates are reported with the Capture integration
 checkpoint, which remains separate from this component measurement.
+
+
+### Settled Capture construction and retained owner census
+
+The restored Capture preparation now retains its real pending identity, current
+coordinator boundary, independent Source construction rows and counting banks
+before allocation. Its census includes failed partials, spare capacity and
+future commitments. The once phases remain spent on refusal or unwind; successful
+encoding does not renew credit. Actual Runtime and scheduler snapshots, their
+DOMs and canonical objects have independent constructor funding, separate from
+the six later ticket-validation windows. The archive join compares complete
+references and bytes before any owner submits.
+
+Current17 history observation now follows the actual native, SDK, startup,
+lifecycle, alias and committed-prefix owners. Pointer tokens compare ownership
+only and never enter serialized state. Historical native authentication and
+normalization have separate constructor and overlap terms. Recursively inline
+optional graph caches are replaced by independently admitted lazy zero-or-one
+slots; initialized children and failed reservations remain counted. The
+previously overflowing sealed-history control passes on the default test stack.
+
+The normal unfiltered library run passes 1,868 Core tests, 1,310 Provider tests
+and all twelve Contract tests. Existing and opt-in ignored populations are
+33, fifteen and one respectively; no control is newly skipped to pass this
+checkpoint. The expanded Daemon run passes 1,464 tests and fails ten, with 162
+existing ignored tests: nine failures identify missing packaged reference-device
+or gem5-profile test inputs, and one identifies the shared-owner fixture's absent
+source-consumed input commitment implementation. Their corrected qualification
+is pending; the failures are retained as evidence.
+
+These constructors and DATA loans do not enable a live Capture effect, establish
+a native successful boot or qualify fresh continuation. The complete native
+prospective request/failure budget, genuine Node and Host dispatch, per-owner
+full reobservation and signed archive publication remain required. Full compiler
+and production application-target qualification are tracked independently.
+
+The final all-feature/all-target check passes across Core, Daemon, Provider, API,
+Session and QEMU in 2 minutes 16 seconds. This is compiler qualification; the
+production application-target gate must be refreshed for this checkpoint.

@@ -1166,6 +1166,10 @@ mod capture;
 pub use capture::{
     ValidatedHistoricalRestoredSettledCapture17,
     historical_restored_settled_capture17_counter_scratch_data,
+    historical_restored_settled_capture17_retained_construction_bytes_data,
+    historical_restored_settled_capture17_selected_counter_scratch_data,
+    historical_restored_settled_capture17_selected_retained_construction_bytes_data,
+    historical_restored_settled_capture17_selected_validation_transient_bytes_data,
     historical_restored_settled_capture17_validation_transient_bytes_data,
 };
 
@@ -1173,5 +1177,7 @@ mod restoration_association;
 pub use restoration_association::{
     ValidatedHistoricalRestorationAssociation17,
     historical_restoration_association17_counter_scratch_data,
+    historical_restoration_association17_selected_counter_scratch_data,
+    historical_restoration_association17_validation_transient_for_controller_data,
     historical_restoration_association17_validation_transient_bytes_data,
 };

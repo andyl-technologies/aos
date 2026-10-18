@@ -46,6 +46,33 @@ impl NativeArchive {
         request: OriginalLineageCaptureRequest<'_>,
         collecting: Option<&crate::node_contract::OriginalCollectingCaptureScope>,
     ) -> Result<NativeArchiveRecord, StateError> {
+        self.capture_complete_original_lineage_world_prepared_data(
+            request,
+            collecting,
+            None::<
+                fn(
+                    &crate::node_contract::NodeRuntime,
+                    &crate::node_contract::HostSchedulingSource,
+                    &crate::node_scheduling::InputPayload,
+                    &crate::node_scheduling::InputPayload,
+                ) -> Result<(), crate::node_contract::RuntimeError>,
+            >,
+        )
+    }
+
+    pub(crate) fn capture_complete_original_lineage_world_prepared_data(
+        &self,
+        request: OriginalLineageCaptureRequest<'_>,
+        collecting: Option<&crate::node_contract::OriginalCollectingCaptureScope>,
+        prepared: Option<
+            impl FnOnce(
+                &crate::node_contract::NodeRuntime,
+                &crate::node_contract::HostSchedulingSource,
+                &crate::node_scheduling::InputPayload,
+                &crate::node_scheduling::InputPayload,
+            ) -> Result<(), crate::node_contract::RuntimeError>,
+        >,
+    ) -> Result<NativeArchiveRecord, StateError> {
         let OriginalLineageCaptureRequest {
             graph,
             runtime,
@@ -650,8 +677,26 @@ impl NativeArchive {
                 (preflight, allocation_budget),
             )
             .map_err(schema)?;
+        let expected_scheduling = &scheduler;
+        let expected_runtime = &runtime_object;
+        let scheduling_object = &scheduler_object;
+        let prepared = prepared.map(|prepared| {
+            move |current: &crate::node_contract::NodeRuntime,
+                  host: &crate::node_contract::HostSchedulingSource,
+                  prepared_scheduling: &crate::node_scheduling::SchedulingSnapshot,
+                  prepared_runtime: &crate::node_scheduling::InputPayload| {
+                if prepared_scheduling != expected_scheduling
+                    || prepared_runtime.reference != expected_runtime.reference
+                    || prepared_runtime.bytes != expected_runtime.bytes
+                {
+                    return Err(crate::node_contract::RuntimeError::ForeignAuthority);
+                }
+                // These exact objects are enrolled by this same archive writer.
+                prepared(current, host, prepared_runtime, scheduling_object)
+            }
+        });
         let captures = runtime
-            .capture_installed_original_lineage_with_ticket(
+            .capture_installed_original_lineage_with_prepared_host_data(
                 crate::node_contract::TicketedOriginalLineageCaptureRequest {
                     graph,
                     activation,
@@ -662,6 +707,7 @@ impl NativeArchive {
                     limits: native_limits,
                     geometry: &geometry,
                 },
+                prepared,
             )
             .map_err(schema)?;
         runtime

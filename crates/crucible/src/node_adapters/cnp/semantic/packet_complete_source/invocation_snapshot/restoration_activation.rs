@@ -52,6 +52,7 @@ impl PacketCompleteSemanticSource {
                 Declaration::RestorationActivation14
                     | Declaration::RestorationObservation14
                     | Declaration::RestorationSuffix14
+                    | Declaration::RestoredSettledRecapture17
             )
         ))
     }

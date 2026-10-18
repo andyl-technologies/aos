@@ -31,6 +31,54 @@ impl FacetDescription for CnpSemanticNode {
 }
 
 impl SimulationNode for CnpSemanticNode {
+    fn quote_original_restored_capture_prequote(
+        &self,
+        launch: &crucible_node_provider::reference_packet::service::PacketNative5SourceLaunch,
+        canonical_launch5: &[u8],
+        request: &crate::node_admission::OriginalRestoredCaptureRequestData<'_>,
+        maximum: usize,
+    ) -> Result<(usize, usize, usize), RuntimeError> {
+        self.quote_installed_restored_capture_prequote_data(
+            launch,
+            canonical_launch5,
+            request,
+            maximum,
+        )
+    }
+
+    fn reserve_original_restored_capture_counting_banks(
+        &self,
+        launch: &crucible_node_provider::reference_packet::service::PacketNative5SourceLaunch,
+        canonical_launch5: &[u8],
+        request: &crate::node_admission::OriginalRestoredCaptureRequestData<'_>,
+        maximum: usize,
+    ) -> Result<(), RuntimeError> {
+        self.reserve_installed_restored_capture_counting_banks_data(
+            launch,
+            canonical_launch5,
+            request,
+            maximum,
+        )
+    }
+
+    fn quote_original_restored_capture_construction(
+        &self,
+        launch: &crucible_node_provider::reference_packet::service::PacketNative5SourceLaunch,
+        canonical_launch5: &[u8],
+        request: &crate::node_admission::OriginalRestoredCaptureRequestData<'_>,
+        maximum: usize,
+    ) -> Result<
+        crate::node_adapters::cnp::OriginalSourceRestoredCaptureConstructionData,
+        RuntimeError,
+    > {
+        self.quote_installed_restored_capture_construction_data(
+            launch,
+            canonical_launch5,
+            request,
+            maximum,
+        )
+    }
+
     fn quote_original_restored_producer_execution(
         &self,
         grant: &crate::node_scheduling::ExecutionAdmission,

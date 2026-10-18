@@ -417,3 +417,15 @@ mod restoration_construction;
 pub use installed_restoration::OriginalInstalledRestorationCustodyConstructionData;
 #[path = "node/installed_restoration.rs"]
 pub(super) mod installed_restoration;
+
+#[path = "node/restored_settled17.rs"]
+mod restored_settled17;
+pub(crate) use restored_settled17::{
+    CnpRestoredNode17DecodeAttempt, CnpRestoredNode17DecodeConstructionData,
+    CnpRestoredNode17ProducerAttemptBorrowedData, CnpRestoredNode17RawStorageData,
+    CnpRestoredSettledValidatedNode17,
+};
+
+pub(crate) use installed_restoration::OriginalRestoredSettledNodeHistoryView;
+
+pub(crate) use installed_restoration::original_restored_settled_semantic_history_counter_scratch_data;

@@ -7,6 +7,7 @@ use std::{cell::Cell, rc::Rc};
 
 #[path = "current/retained_storage.rs"]
 mod retained_storage;
+pub(in crate::node_adapters::cnp::semantic) use retained_storage::OriginalFreshQueryReadCall;
 
 #[path = "current/fresh_current.rs"]
 mod fresh_current;
@@ -342,3 +343,6 @@ impl CnpSemanticSourceRead {
         self.executable.retained_descriptor_views_precredit_data()
     }
 }
+
+#[path = "current/settled17.rs"]
+mod settled17;

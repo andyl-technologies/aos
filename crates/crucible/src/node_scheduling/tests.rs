@@ -40,7 +40,11 @@ fn exact(ceiling: ExactCeiling) -> ExecutionPolicy {
     }
 }
 
-fn fixture(policy: ExecutionPolicy, resolution: u64, latency: Option<u64>) -> CausalScheduler {
+pub(super) fn fixture(
+    policy: ExecutionPolicy,
+    resolution: u64,
+    latency: Option<u64>,
+) -> CausalScheduler {
     let activation = WorldActivation {
         nodes: std::rc::Rc::from([]),
         preparation: None,

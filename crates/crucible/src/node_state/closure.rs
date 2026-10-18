@@ -8,6 +8,12 @@ use serde::Serialize;
 
 use super::{CaptureEvidence, StateError, StateErrorCode, StateLimits, schema};
 
+#[path = "closure/retained.rs"]
+pub(crate) mod retained;
+
+#[path = "closure/settled_history.rs"]
+mod settled_history;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ContentInventoryEdition {
     Legacy,

@@ -38,6 +38,9 @@ pub(crate) mod owned;
 
 #[path = "capture_ticket/serialization.rs"]
 mod serialization;
+
+#[path = "capture_ticket/restored_identity.rs"]
+mod restored_identity;
 pub use geometry::PreparedCompleteOriginalCaptureGeometry;
 
 /// Borrows an unchanged-cut world for separately owned administrative capture.
@@ -670,6 +673,39 @@ impl crate::node_contract::NodeRuntime {
         &mut self,
         request: TicketedOriginalLineageCaptureRequest<'_>,
     ) -> Result<OriginalLineageWorldCapture, super::RuntimePollFailure> {
+        self.capture_installed_original_lineage_with_prepared_host_data(
+            request,
+            None::<
+                fn(
+                    &crate::node_contract::NodeRuntime,
+                    &crate::node_contract::HostSchedulingSource,
+                    &crate::node_scheduling::SchedulingSnapshot,
+                    &InputPayload,
+                ) -> Result<(), RuntimeError>,
+            >,
+        )
+    }
+
+    /// Runs a separately admitted preparation against the genuine retained host.
+    ///
+    /// The attempt is registered before this callback. Any callback refusal
+    /// preserves it and its prepared host, before the first owner is submitted.
+    ///
+    /// # Errors
+    /// Refuses the same capture admissions as the ordinary ticketed path, a
+    /// consumed or foreign host preparation, or the callback's own validation.
+    pub(crate) fn capture_installed_original_lineage_with_prepared_host_data(
+        &mut self,
+        request: TicketedOriginalLineageCaptureRequest<'_>,
+        prepared: Option<
+            impl FnOnce(
+                &crate::node_contract::NodeRuntime,
+                &crate::node_contract::HostSchedulingSource,
+                &crate::node_scheduling::SchedulingSnapshot,
+                &InputPayload,
+            ) -> Result<(), RuntimeError>,
+        >,
+    ) -> Result<OriginalLineageWorldCapture, super::RuntimePollFailure> {
         use super::RuntimePollFailure;
         let TicketedOriginalLineageCaptureRequest {
             graph,
@@ -956,6 +992,14 @@ impl crate::node_contract::NodeRuntime {
             .map_err(RuntimePollFailure::Admission)?;
         self.original_capture_attempts
             .insert(capture_id, Rc::clone(&attempt));
+        if let Some(prepared) = prepared {
+            attempt
+                .host
+                .with_original_scheduling_data(self, activation, |host, scheduling| {
+                    prepared(self, host, scheduling, &attempt.runtime_object)
+                })
+                .map_err(RuntimePollFailure::Admission)?;
+        }
         let mut remaining = limits;
         remaining.maximum_total_record_bytes = remaining
             .maximum_total_record_bytes

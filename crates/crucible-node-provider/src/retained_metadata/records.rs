@@ -72,10 +72,19 @@ impl Serialize for MetadataCapacityRecord {
     }
 }
 
+// A retained constructor marks failure before its first fallible allocation.
+// Neither clearing rows nor repeating reservation can reopen that attempt.
+enum ReservationState {
+    Unallocated,
+    Failed,
+    Ready,
+}
+
 /// Retains a finite caller-precharged record bank without growth during walking.
 pub struct MetadataRecordBank {
     rows: Vec<MetadataCapacityRecord>,
     maximum_rows: usize,
+    reservation: ReservationState,
 }
 
 impl MetadataRecordBank {
@@ -93,7 +102,82 @@ impl MetadataRecordBank {
             .ok_or_else(credit)?;
         let mut rows = Vec::new();
         rows.try_reserve_exact(maximum_rows).map_err(|_| credit())?;
-        Ok(Self { rows, maximum_rows })
+        Ok(Self {
+            rows,
+            maximum_rows,
+            reservation: ReservationState::Ready,
+        })
+    }
+
+    /// Creates a validated record-bank owner without allocating its backing.
+    ///
+    /// Callers install this owner before reserving so a refused construction
+    /// retains its actual storage until the enclosing operation resolves.
+    ///
+    /// # Errors
+    /// Refuses zero or excessive row allowance or checked layout overflow.
+    pub fn unallocated(maximum_rows: usize) -> Result<Self, ProviderError> {
+        Self::reservation_requested_bytes(maximum_rows)?;
+        Ok(Self {
+            rows: Vec::new(),
+            maximum_rows,
+            reservation: ReservationState::Unallocated,
+        })
+    }
+
+    /// Quotes the exact requested record-vector backing before allocation.
+    ///
+    /// The enclosing owner admits this term with its simultaneous allocations.
+    /// Container headers and allocator geometry remain separate terms.
+    ///
+    /// # Errors
+    /// Refuses zero or excessive row allowance or checked layout overflow.
+    pub fn reservation_requested_bytes(maximum_rows: usize) -> Result<usize, ProviderError> {
+        if maximum_rows == 0 || maximum_rows > MAXIMUM_ROWS {
+            return Err(credit());
+        }
+        maximum_rows
+            .checked_mul(std::mem::size_of::<MetadataCapacityRecord>())
+            .ok_or_else(credit)
+    }
+
+    /// Reserves the installed owner's backing once under its exact byte quote.
+    ///
+    /// A refusal keeps every allocated backing in this owner and permanently
+    /// closes reservation. Walking is enabled only after full success. This
+    /// method supplies storage DATA, without source or native admission.
+    ///
+    /// # Errors
+    /// Refuses a repeated attempt, insufficient backing allowance, allocation
+    /// failure or actual capacity beyond the defining finite request.
+    pub fn reserve_retained_data(&mut self) -> Result<(), ProviderError> {
+        self.reserve_retained_with_backing_data(Self::reservation_requested_bytes(
+            self.maximum_rows,
+        )?)
+    }
+
+    fn reserve_retained_with_backing_data(
+        &mut self,
+        admitted_bytes: usize,
+    ) -> Result<(), ProviderError> {
+        if !matches!(self.reservation, ReservationState::Unallocated) {
+            return Err(credit());
+        }
+        self.reservation = ReservationState::Failed;
+
+        let requested = Self::reservation_requested_bytes(self.maximum_rows)?;
+        if requested > admitted_bytes {
+            return Err(credit());
+        }
+        self.rows
+            .try_reserve_exact(self.maximum_rows)
+            .map_err(|_| credit())?;
+        if self.rows.capacity() > self.maximum_rows {
+            return Err(credit());
+        }
+
+        self.reservation = ReservationState::Ready;
+        Ok(())
     }
 
     /// Reports actual retained record capacity in bytes, including spare rows.
@@ -121,7 +205,10 @@ impl MetadataRecordBank {
     }
 
     pub(crate) fn append(&mut self, row: MetadataCapacityRecord) -> Result<(), ProviderError> {
-        if self.rows.len() >= self.maximum_rows || self.rows.len() >= self.rows.capacity() {
+        if !matches!(self.reservation, ReservationState::Ready)
+            || self.rows.len() >= self.maximum_rows
+            || self.rows.len() >= self.rows.capacity()
+        {
             return Err(credit());
         }
         self.rows.push(row);
@@ -459,5 +546,72 @@ mod encoded_span_tests {
             br#"["shared",24,1,8],["vector",19,1,1],["vector",20,1,1]"#,
         );
         assert!(rows.next().is_none());
+    }
+}
+
+#[cfg(test)]
+mod retained_owner_tests {
+    use super::*;
+
+    fn row() -> MetadataCapacityRecord {
+        MetadataCapacityRecord {
+            kind: MetadataRecordKind::Vector,
+            extent: 19,
+            element_bytes: 1,
+            alignment: 1,
+        }
+    }
+
+    #[test]
+    fn installed_record_owner_has_no_backing_until_reservation_succeeds()
+    -> Result<(), ProviderError> {
+        assert!(MetadataRecordBank::unallocated(0).is_err());
+        assert!(MetadataRecordBank::unallocated(MAXIMUM_ROWS + 1).is_err());
+        let mut bank = MetadataRecordBank::unallocated(7)?;
+        assert_eq!(bank.maximum_rows(), 7);
+        assert_eq!(bank.capacity_rows(), 0);
+        assert_eq!(bank.allocated_bytes(), 0);
+        assert!(bank.append(row()).is_err());
+
+        bank.reserve_retained_data()?;
+        assert_eq!(bank.capacity_rows(), 7);
+        assert_eq!(
+            bank.allocated_bytes(),
+            MetadataRecordBank::reservation_requested_bytes(7)?
+        );
+        bank.append(row())?;
+        let pointer = bank.rows.as_ptr();
+        let capacity = bank.capacity_rows();
+        assert!(bank.reserve_retained_data().is_err());
+        assert_eq!(bank.rows(), &[row()]);
+        assert_eq!(bank.rows.as_ptr(), pointer);
+        assert_eq!(bank.capacity_rows(), capacity);
+
+        let mut observer = crate::retained_metadata::MetadataObserver::new();
+        bank.observe_current17_storage_data(&mut observer)?;
+        let facts = observer.finish();
+        assert_eq!(facts.vector_banks, 1);
+        assert_eq!(facts.vector_capacity_bytes, bank.allocated_bytes());
+        Ok(())
+    }
+
+    #[test]
+    fn refused_record_debit_is_sticky_and_cannot_be_reopened_by_clear() -> Result<(), ProviderError>
+    {
+        let mut bank = MetadataRecordBank::unallocated(7)?;
+        let required = MetadataRecordBank::reservation_requested_bytes(7)?;
+        assert!(
+            bank.reserve_retained_with_backing_data(required - 1)
+                .is_err()
+        );
+        assert!(matches!(bank.reservation, ReservationState::Failed));
+        assert_eq!(bank.allocated_bytes(), 0);
+
+        bank.clear();
+        assert!(bank.reserve_retained_data().is_err());
+        assert!(bank.append(row()).is_err());
+        assert_eq!(bank.capacity_rows(), 0);
+        assert!(bank.rows().is_empty());
+        Ok(())
     }
 }

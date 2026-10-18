@@ -66,6 +66,35 @@ impl OriginalAckPeerAssociation {
             maximum,
         )?;
         drop(progress);
+        let input = self
+            .restored_inputs
+            .try_borrow()
+            .map_err(|_| E::unknown("Input17 custody is borrowed"))?;
+        bytes = sum_with_error::<E, _>(
+            [bytes, input.retained_heap_bytes_with_error::<E>(maximum)?],
+            maximum,
+        )?;
+        drop(input);
+        let capture = self
+            .restored_capture
+            .try_borrow()
+            .map_err(|_| E::unknown("restored Capture custody is borrowed"))?;
+        bytes = sum_with_error::<E, _>(
+            [
+                bytes,
+                capture.retained_storage_data(maximum).map_err(E::unknown)?,
+            ],
+            maximum,
+        )?;
+        drop(capture);
+        bytes = sum_with_error::<E, _>(
+            [
+                bytes,
+                self.restored_observations17
+                    .retained_heap_bytes_with_error::<E>(maximum)?,
+            ],
+            maximum,
+        )?;
         if let Some(observation) = &self.restoration_observation {
             bytes = sum_with_error::<E, _>(
                 [

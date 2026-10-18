@@ -30,7 +30,7 @@ impl CompleteOriginalRestorationSource {
             .archive
             .owners()
             .iter()
-            .find(|owner| owner.owner == self.inner.host.source.owner.owner.id)
+            .find(|owner| owner.owner == self.inner.host.selection_data().owner.owner.id)
             .ok_or(RuntimeError::OwnerUnavailable)?;
         let host_bytes = self
             .inner

@@ -61,3 +61,27 @@ impl PacketConnectedSemanticSource {
         Ok(bytes)
     }
 }
+
+impl PacketConnectedSemanticSource {
+    /// Refuses local Input lineage unsupported by the settled Source17 family.
+    ///
+    /// Imported input ancestry belongs to the separately retained Node family.
+    /// This check neither erases nor reconstructs the actual local lineage bank.
+    ///
+    /// # Errors
+    /// Refuses foreign origin, a busy actual lineage bank or local Input use.
+    pub(in crate::node_adapters::cnp::semantic) fn require_unused_restored_source17_input_data(
+        &self,
+    ) -> Result<(), crate::node_contract::RuntimeError> {
+        use crate::node_contract::RuntimeError;
+        self.local_owner_with_error::<RuntimeError>()?;
+        let lineages = self
+            .input_lineage
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        if !lineages.is_empty() {
+            return Err(RuntimeError::UnsupportedFacet);
+        }
+        Ok(())
+    }
+}

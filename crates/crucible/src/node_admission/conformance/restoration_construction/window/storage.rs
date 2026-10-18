@@ -50,6 +50,12 @@ pub(super) fn observe(
                 &[requested, coordinator.requested_bytes_data()?],
                 policy.maximum_requested_bytes,
             )?;
+            if let Some(row) = window.coordinator17_construction.get() {
+                requested = checked_sum(
+                    &[requested, row.requested_bytes_data()?],
+                    policy.maximum_requested_bytes,
+                )?;
+            }
             let common = window
                 .common_construction
                 .get()
@@ -65,6 +71,19 @@ pub(super) fn observe(
             if let Some(candidate) = window.producer_publication.get() {
                 requested = checked_sum(
                     &[requested, candidate.row.requested_bytes_data()],
+                    policy.maximum_requested_bytes,
+                )?;
+            }
+            {
+                let capture = window
+                    .restored_captures
+                    .try_borrow()
+                    .map_err(|_| RuntimeError::OwnerBusy)?;
+                requested = checked_sum(
+                    &[
+                        requested,
+                        capture.future_requested_bytes_data(policy.maximum_requested_bytes)?,
+                    ],
                     policy.maximum_requested_bytes,
                 )?;
             }
@@ -283,6 +302,16 @@ pub(super) fn observed_current(
                         .maximum_simultaneous_transient_descriptors_data(),
                 ],
                 policy.maximum_owned_descriptors,
+            )?;
+        }
+        {
+            let capture = window
+                .restored_captures
+                .try_borrow()
+                .map_err(|_| RuntimeError::OwnerBusy)?;
+            requested = checked_sum(
+                &[requested, capture.retained_requested_bytes_data(maximum)?],
+                maximum,
             )?;
         }
         for ledger in &window.producer_executions {

@@ -152,3 +152,57 @@ impl OriginalRestoreTransferBanks {
         Ok(())
     }
 }
+
+/// Lends both actual phase-bank arrays and their retained signer partials.
+pub(crate) struct SourceRestoreTransferBanksHistoryData<'a> {
+    original: &'a OriginalRestoreTransferBanks,
+}
+
+impl OriginalRestoreTransferBanks {
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn historical_data(
+        &self,
+    ) -> SourceRestoreTransferBanksHistoryData<'_> {
+        SourceRestoreTransferBanksHistoryData { original: self }
+    }
+
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn historical_counter_scratch_data()
+    -> usize {
+        std::mem::size_of::<SourceRestoreTransferBanksHistoryData<'static>>()
+            + std::mem::size_of::<&OriginalRestoreTransferBanks>()
+            + std::mem::size_of::<&[Vec<u8>; 5]>()
+            + crate::node_contract::restored_owner_history::original_restored_owner_capacity_counter_scratch_data()
+            + super::restoration_transfer::OriginalSourceRestoreTransferAttempt::historical_counter_scratch_data()
+    }
+}
+
+impl serde::Serialize for SourceRestoreTransferBanksHistoryData<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use crate::node_contract::restored_owner_history::OriginalRestoredOwnerCapacityRows;
+        use serde::ser::SerializeStruct;
+        let OriginalRestoreTransferBanks {
+            prepare,
+            commit,
+            signer,
+            mapping_attempted,
+            mapping_complete,
+        } = self.original;
+        let mut value = serializer.serialize_struct("SourceRestoreTransferBanksHistory", 7)?;
+        value.serialize_field("prepare", prepare)?;
+        value.serialize_field(
+            "prepare_capacities",
+            &OriginalRestoredOwnerCapacityRows(prepare.as_slice()),
+        )?;
+        value.serialize_field("commit", commit)?;
+        value.serialize_field(
+            "commit_capacities",
+            &OriginalRestoredOwnerCapacityRows(commit.as_slice()),
+        )?;
+        value.serialize_field(
+            "signer",
+            &signer.as_ref().map(|signer| signer.historical_data()),
+        )?;
+        value.serialize_field("mapping_attempted", mapping_attempted)?;
+        value.serialize_field("mapping_complete", mapping_complete)?;
+        value.end()
+    }
+}

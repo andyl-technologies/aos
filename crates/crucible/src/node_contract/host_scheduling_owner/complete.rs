@@ -187,7 +187,7 @@ impl HostSchedulingOwner {
         ticket: crate::node_state::CompleteOriginalHostTicket,
     ) -> Result<Self, OperationFailure> {
         ticket.authenticate_birth().map_err(failure)?;
-        let record = ticket.record();
+        let record = ticket.record().map_err(failure)?;
         if record.source.descriptor.model_ref
             != preservation::definition(Edition::CompleteOriginalLineage)?
             || record.source.descriptor != selection.descriptor

@@ -76,3 +76,17 @@ pub use host_scheduling_owner::*;
 pub use runtime::OriginalInstalledRestorationNodeAssociation;
 
 pub(crate) use conformance::OriginalRestoredProducerReportFence;
+
+pub(crate) use runtime::coordinator_commitment::{
+    CoordinatorCommitmentPolicy17, CoordinatorCommitments17,
+    OriginalRestoredCoordinator17ConstructionData, OriginalRestoredCoordinatorBoundary17,
+    OriginalRestoredCoordinatorCheckpointOwner17,
+};
+
+/// Prices the separately selected original coordinator17 fixed append bank.
+pub use runtime::coordinator_commitment::OriginalCoordinator17ConstructionData;
+
+mod runtime_input_phase;
+pub use runtime_input_phase::OriginalRuntimeInputPhase;
+
+pub use runtime::OriginalRestoredCaptureRuntimeConstructionData;

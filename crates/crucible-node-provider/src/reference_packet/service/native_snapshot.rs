@@ -20,25 +20,23 @@ use crate::protocol_snapshot::owned11::{
 };
 use crucible_node_contract::{Id, SchemaRef, canonical};
 
-const SCHEMA: &str = "source-owned.packet-native-continuation/11";
+/// Names the defining fixed snapshot schema for internal construction accounting.
+pub(crate) const SCHEMA: &str = "source-owned.packet-native-continuation/11";
 const BEFORE_TAG: &str = "source-private.native-before-protocol/11";
+
+#[path = "native_snapshot/owned11_contract_value.rs"]
+mod owned11_contract_value;
+pub(crate) use owned11_contract_value::native_owned11_snapshot_contract_storage_data;
 
 /// Returns the complete definition for the selected raw-before snapshot edition.
 ///
 /// # Errors
 /// Reports canonical definition encoding failure.
 pub fn native_owned11_snapshot_contract() -> Result<Vec<u8>, ProviderError> {
-    Ok(canonical::canonical_json(&serde_json::json!({
-        "schema":"source-owned.packet-native-continuation-contract/11",
-        "snapshot":SCHEMA,
-        "fields":["capture","capture_request","control","control_reference","endpoint","protocol","schema"],
-        "protocol":[BEFORE_TAG,"full application/json CNP blob reference of exact original encoded protocol bytes","actual original encoded Vec capacity","complete compact-bytes/7 literal bytes"],
-        "endpoint":"exact native-endpoint-state/11 fourteen-field tuple; full original histories, capacities, Hello, pins, sequences and held Capture boundary",
-        "identity":"never parse and canonicalize the embedded original protocol; raw serde field order, numeric representation and alias-view bytes are preserved",
-        "admission":"count complete encoded compact leaf before copying; separately admit original capacity, snapshot output, bounded parser/typed history/Control/model and canonical scratch; finite encoded bounds are not physical allocation authority",
-        "validation":"exact before fullref and capacity, full native protocol decoder and alias manifest, full endpoint history/blob/correlation correspondence, pending Control/model transition and original terminal/fourth-Poll journal are all required",
-        "authority":"historical data only; no source ticket, live registrar, fresh key activation or semantic Arm/Capture permission"
-    }))?)
+    Ok(canonical::canonical_json(
+        &serde_json::to_value(owned11_contract_value::NativeOwned11SnapshotContractValue)
+            .map_err(crucible_node_contract::ContractError::from)?,
+    )?)
 }
 
 /// Returns the full immutable selected snapshot schema reference.

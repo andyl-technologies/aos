@@ -46,6 +46,22 @@ impl NativeArchiveRecord {
         self.collecting_provenance_inner(0, None)
     }
 
+    /// Reads actual signed collecting facts while preserving the caller's census.
+    ///
+    /// This is only a bounded DATA loan. The selected-load receipt, actual code
+    /// graph, immutable plan equality and factory callback remain independent.
+    pub(crate) fn complete_collecting_provenance_with_retained_data(
+        &self,
+        additional_retained_bytes: usize,
+    ) -> Result<Option<CollectingCompleteCaptureProvenance>, StateError> {
+        self.authenticate_complete_load_admission()
+            .map_err(super::super::schema)?;
+        self.collecting_complete_capture_provenance_admitted(
+            additional_retained_bytes,
+            self.limits.state.maximum_total_content_bytes,
+        )
+    }
+
     pub(super) fn collecting_complete_capture_provenance_admitted(
         &self,
         extra_retained: usize,

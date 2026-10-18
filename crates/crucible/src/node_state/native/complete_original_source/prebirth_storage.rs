@@ -33,7 +33,7 @@ impl CompleteOriginalSource {
         }
         let owners = self.archive.owners();
         let issued = self.native_issued.get();
-        let host = &self.host.source.owner.owner.id;
+        let host = &self.host.selection_data().owner.owner.id;
         if owners.len() != issued.len()
             || owners.iter().filter(|row| &row.owner == host).count() != 1
             || owners

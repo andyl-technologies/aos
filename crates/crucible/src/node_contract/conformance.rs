@@ -559,6 +559,10 @@ impl ConformanceRuntime {
     ) -> Result<(), RuntimePollFailure> {
         self.current_operation(token)
             .map_err(RuntimePollFailure::Admission)?;
+        let coordinator_stored = self.runtime.reserve_coordinator_attempt_data(
+            crucible_node_provider::reference_packet::service::complete_restore::settled_recapture::CoordinatorCommitmentKind17::StoredResult,
+            Some(token.operation()), Some(&token.route.node), None, 0,
+        ).map_err(RuntimePollFailure::Admission)?;
         let original = self
             .runtime
             .original_completed_operation(token)
@@ -566,15 +570,23 @@ impl ConformanceRuntime {
         self.graph.authenticate_current_scope().map_err(|error| {
             RuntimePollFailure::Admission(RuntimeError::SchedulerRefused(error.message))
         })?;
-        if publisher
-            .publish_original(self.graph.plan().evidence(), &original)
-            .map_err(RuntimePollFailure::Admission)?
-            != PublicationStatus::Committed
-        {
+        let publication = publisher.publish_original(self.graph.plan().evidence(), &original);
+        let disposition = match &publication {
+            Ok(PublicationStatus::Committed) => crucible_node_provider::reference_packet::service::complete_restore::settled_recapture::CoordinatorCommitmentState17::Committed,
+            Ok(PublicationStatus::NotCommitted) => crucible_node_provider::reference_packet::service::complete_restore::settled_recapture::CoordinatorCommitmentState17::Refused,
+            _ => crucible_node_provider::reference_packet::service::complete_restore::settled_recapture::CoordinatorCommitmentState17::Uncertain,
+        };
+        self.runtime
+            .finish_coordinator_attempt_data(coordinator_stored, disposition)
+            .map_err(RuntimePollFailure::Admission)?;
+        if publication.map_err(RuntimePollFailure::Admission)? != PublicationStatus::Committed {
             return Err(RuntimePollFailure::Admission(
                 RuntimeError::OutstandingObligations,
             ));
         }
+        self.runtime
+            .reconcile_coordinator_stored_result_data(token)
+            .map_err(RuntimePollFailure::Admission)?;
         self.current_operation(token)
             .map_err(RuntimePollFailure::Admission)?;
         let receipt = self
@@ -953,3 +965,32 @@ pub use restored_producer_publication::{
 mod producer_execution;
 
 pub(crate) use restored_producer_publication::OriginalRestoredProducerReportFence;
+
+impl ConformanceRuntime {
+    /// Selects the separately funded original coordinator17 append owner.
+    ///
+    /// The actual initial factory calls this only after authenticating its
+    /// complete upfront17 Source declaration and admitting this same row with
+    /// all existing World owners. Old factories never call this entry point.
+    ///
+    /// # Errors
+    /// Refuses a restored/active/foreign World, missing exact Host custody,
+    /// changed current plan, prior initialization or bank allocation failure.
+    pub fn initialize_original_coordinator17_data(
+        &mut self,
+        row: &super::OriginalCoordinator17ConstructionData,
+    ) -> Result<(), RuntimeError> {
+        self.current()?;
+        self.authenticate_initial_origin()?;
+        if self.activation.is_some() || self.exact_inputs.is_none() {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        self.runtime.initialize_original_coordinator17_data(row)?;
+        self.current()
+    }
+}
+
+#[path = "conformance/restored_capture.rs"]
+mod restored_capture;
+
+pub use restored_capture::RestoredCollectingCaptureScope17;

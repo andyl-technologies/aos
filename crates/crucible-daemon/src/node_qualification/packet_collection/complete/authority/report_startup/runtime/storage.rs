@@ -12,6 +12,7 @@ pub(super) fn counter_scratch_data() -> Result<usize, RuntimeError> {
         super::content_limits::counter_scratch_data(),
         super::super::super::super::execution::schedule::bootstrap_counter_scratch_data(),
         super::family::counter_scratch_data(),
+        super::inactive::counter_scratch_data(),
         super::fresh::counter_scratch_data()?,
         ConformanceRuntime::original_fixed_four_inactive_observer_counter_scratch_data()?,
         super::super::super::super::construction_diagnostics::Scope::requested_bytes(),

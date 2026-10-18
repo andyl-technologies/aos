@@ -750,3 +750,106 @@ mod tests {
         }
     }
 }
+
+/// Preserves the original seed as DATA without importing its process authority.
+pub(crate) struct SourceRestoredSuffixSeedHistoryData<'a> {
+    original: &'a OriginalRestoredSuffixSeed,
+}
+
+#[derive(serde::Serialize)]
+struct SourceRestoredSuffixCheckpointHistoryData<'a> {
+    restoration_proof: &'a [u8; 32],
+    native_binding: &'a [u8; 32],
+    observation_binding: &'a [u8; 32],
+    reached: Position,
+}
+
+impl OriginalRestoredSuffixSeed {
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn historical_data(
+        &self,
+    ) -> SourceRestoredSuffixSeedHistoryData<'_> {
+        SourceRestoredSuffixSeedHistoryData { original: self }
+    }
+
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn historical_counter_scratch_data()
+    -> usize {
+        size_of::<SourceRestoredSuffixSeedHistoryData<'static>>()
+            + size_of::<SourceRestoredSuffixCheckpointHistoryData<'static>>()
+            + size_of::<Option<SourceRestoredSuffixCheckpointHistoryData<'static>>>()
+            + size_of::<&OriginalRestoredSuffixSeed>()
+    }
+}
+
+impl serde::Serialize for SourceRestoredSuffixSeedHistoryData<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let OriginalRestoredSuffixSeed {
+            process: _,
+            thread: _,
+            source: _,
+            controller: _,
+            checkpoint,
+            signature,
+            stage,
+        } = self.original;
+        let checkpoint = checkpoint.as_ref().map(|value| {
+            let OriginalRestoredSuffixCheckpointData {
+                restoration_proof,
+                native_binding,
+                observation_binding,
+                reached,
+            } = value;
+            SourceRestoredSuffixCheckpointHistoryData {
+                restoration_proof,
+                native_binding,
+                observation_binding,
+                reached: *reached,
+            }
+        });
+        let mut value = serializer.serialize_struct("SourceRestoredSuffixSeedHistory", 3)?;
+        value.serialize_field("checkpoint", &checkpoint)?;
+        value.serialize_field("signature", signature)?;
+        value.serialize_field(
+            "stage",
+            match stage {
+                Stage::Started => "started",
+                Stage::Signed => "signed",
+                Stage::Verified => "verified",
+                Stage::Failed => "failed",
+            },
+        )?;
+        value.end()
+    }
+}
+
+impl OriginalRestoredSuffixSeed {
+    pub(super) fn settled17_once_data(
+        &self,
+        source: &PacketCompleteSemanticSource,
+        controller: &CnpController,
+        key: &[u8; 32],
+    ) -> Result<super::settled17_once::SuffixOnce17, RuntimeError> {
+        let checkpoint = self
+            .checkpoint
+            .as_ref()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        self.authenticate_original_data(source, controller, checkpoint, key)?;
+        Ok(super::settled17_once::SuffixOnce17 {
+            stage: super::settled17_once::VerifiedSuffixStage17::Verified,
+            restoration_proof: checkpoint.restoration_proof,
+            native_binding: checkpoint.native_binding,
+            observation_binding: checkpoint.observation_binding,
+            reached: checkpoint.reached,
+            signature: self.signature.ok_or(RuntimeError::OwnerUnavailable)?,
+        })
+    }
+}
+
+pub(super) fn historical_checkpoint17_data(
+    restoration_proof: [u8; 32],
+    record: &PacketNativeRestoredRecord,
+    underlying: &PacketNative5UnderlyingRecord,
+    scheduling: &NativeSchedulingObservation,
+) -> Result<OriginalRestoredSuffixCheckpointData, RuntimeError> {
+    checkpoint_data(restoration_proof, record, underlying, scheduling)
+}

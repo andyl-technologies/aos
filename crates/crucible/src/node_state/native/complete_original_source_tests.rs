@@ -112,10 +112,13 @@ fn source(archive: NativeArchiveRecord) -> CompleteOriginalRestorationSource {
             archive,
             content,
             administrative,
-            host: Rc::new(host),
+            host: CompleteHostArchiveRecord::InitialInvocation15(Rc::new(host)),
             runtime,
+            coordinator_checkpoint: None,
             purpose: CompleteOriginalSourcePurpose::new(None),
             native_restoration_data: [None; 4],
+            settled_restoration_data: std::array::from_fn(|_| None),
+            restored_collection: RefCell::new(None),
             validation_limits: crate::node_contract::HostSchedulingContinuationLimits {
                 maximum_record_bytes: 1024 * 1024,
                 lineage: crate::node_contract::OriginalInputLineageLimits::default(),
@@ -144,7 +147,7 @@ fn native_ids(source: &CompleteOriginalRestorationSource) -> Vec<Id> {
         .archive()
         .owners()
         .iter()
-        .filter(|row| row.owner != source.inner.host.source.owner.owner.id)
+        .filter(|row| row.owner != source.inner.host.selection_data().owner.owner.id)
         .map(|row| row.owner.clone())
         .collect()
 }
@@ -366,4 +369,97 @@ fn legacy_target_cannot_be_reinterpreted_as_a_selected_transaction() {
         .authenticate_legacy_restoration_context_phase_data()
         .unwrap();
     source.inner.authenticate_target(&target).unwrap();
+}
+
+#[test]
+fn historical_ticket_links_actual_source_definition_and_refuses_equal_foreign_archive() {
+    use crate::node_contract::restored_owner_history::OriginalRestoredOwnerCapacityAliases;
+
+    let (_directory, source) = fixture();
+    let foreign = self::source(source.inner.archive().clone());
+    assert_eq!(
+        source.inner.archive().artifact(),
+        foreign.inner.archive().artifact()
+    );
+    let ids = native_ids(&source);
+    let ticket = source.take_native_ticket(&ids[0]).unwrap();
+    assert!(matches!(
+        ticket.borrowed_settled_history_data(&foreign),
+        Err(RuntimeError::ForeignAuthority)
+    ));
+    let ticket_view = ticket.borrowed_settled_history_data(&source).unwrap();
+    let source_view = source.borrowed_settled_history_data().unwrap();
+    let (rows, shared) = source_view.metadata_demand_data().unwrap();
+    assert!(rows > shared && shared >= 4);
+    let mut slot = None;
+    OriginalRestoredOwnerCapacityAliases::reserve_into(shared, &mut slot).unwrap();
+    let aliases = RefCell::new(slot.unwrap());
+
+    let definition = serde_json::to_value(source_view.with_aliases(&aliases)).unwrap();
+    let edge = serde_json::to_value(ticket_view.with_aliases(&aliases)).unwrap();
+    assert_eq!(definition["role"], "complete_original_source");
+    assert_eq!(edge["source_role"], "complete_original_source");
+    assert_eq!(definition["source_edge"], edge["source_edge"]);
+    assert_eq!(edge["owner_index"], ticket.owner_index);
+    assert_eq!(
+        edge["manifest"],
+        serde_json::to_value(source.inner.archive().artifact()).unwrap()
+    );
+    assert_eq!(
+        definition["issuance"][0]["native_issued"][ticket.owner_index],
+        true
+    );
+    assert!(
+        definition["archive"]["index_edge"]
+            .get("identity")
+            .is_none()
+    );
+    assert!(definition["content"]["objects"].is_array());
+    ticket.authenticate_source(&source).unwrap();
+    assert!(source.take_native_ticket(&ids[0]).is_err());
+}
+
+#[test]
+fn historical_shared_source_one_short_refuses_without_lookup_growth_or_output() {
+    use crate::node_contract::restored_owner_history::OriginalRestoredOwnerCapacityAliases;
+
+    let (_directory, source) = fixture();
+    let view = source.borrowed_settled_history_data().unwrap();
+    let mut slot = None;
+    OriginalRestoredOwnerCapacityAliases::reserve_into(1, &mut slot).unwrap();
+    let aliases = RefCell::new(slot.unwrap());
+    let capacity = aliases.borrow().allocated_bytes().unwrap();
+    let mut output = Vec::new();
+
+    assert!(serde_json::to_writer(&mut output, &view.with_aliases(&aliases)).is_err());
+    assert!(output.is_empty());
+    assert_eq!(aliases.borrow().allocated_bytes().unwrap(), capacity);
+    assert!(!source.inner.host_issued.get());
+    assert_eq!(source.inner.native_issued.get(), [false; 4]);
+}
+
+#[test]
+fn historical_source_view_refuses_later_real_ticket_issuance_without_renewal() {
+    use crate::node_contract::restored_owner_history::OriginalRestoredOwnerCapacityAliases;
+
+    let (_directory, source) = fixture();
+    let ids = native_ids(&source);
+    let view = source.borrowed_settled_history_data().unwrap();
+    let _actual_ticket = source.take_native_ticket(&ids[0]).unwrap();
+    let mut slot = None;
+    OriginalRestoredOwnerCapacityAliases::reserve_into(8, &mut slot).unwrap();
+    let aliases = RefCell::new(slot.unwrap());
+    let mut output = Vec::new();
+
+    assert!(serde_json::to_writer(&mut output, &view.with_aliases(&aliases)).is_err());
+    assert!(output.is_empty());
+    assert!(
+        source
+            .inner
+            .native_issued
+            .get()
+            .into_iter()
+            .any(|issued| issued)
+    );
+    assert!(source.take_native_ticket(&ids[0]).is_err());
 }

@@ -410,3 +410,6 @@ mod restored_suffix;
 
 pub use restored_suffix::CompleteOriginalRestoredSuffixStartupAdmission;
 pub(crate) use restored_suffix::OriginalRestoredSuffixStartupMember;
+
+pub use restored_suffix::CompleteOriginalRestoredSettledStartupAdmission;
+pub(crate) use restored_suffix::OriginalRestoredSettledStartupMember;

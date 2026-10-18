@@ -12,7 +12,7 @@ use crate::node_contract::{ActivationRecord, WorldActivation};
 use crate::node_scheduling::{InputCustodyCommit, RuntimeInputBatch};
 
 #[derive(Serialize)]
-struct ActivationView<'a> {
+pub(in crate::node_adapters::cnp::semantic) struct ActivationView<'a> {
     generation: crucible_node_contract::U64,
     activation_id: &'a crucible_node_contract::Id,
     world_binding_hash: &'a crucible_node_contract::HashRef,
@@ -210,3 +210,8 @@ impl Serialize for CustodyView<'_> {
         row.end()
     }
 }
+
+#[path = "view/restored_base17.rs"]
+mod restored_base17;
+pub(in crate::node_adapters::cnp::semantic) use restored_base17::RestoredBaseCustodyView;
+pub(in crate::node_adapters::cnp::semantic) use restored_base17::counter_scratch_data as restored_base17_counter_scratch_data;

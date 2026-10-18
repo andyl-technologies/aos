@@ -530,3 +530,36 @@ mod terminal_tests {
         );
     }
 }
+
+/// Records the actual sticky upload ledger without creating another ordinal.
+#[derive(serde::Serialize)]
+pub(super) struct SourceActivationUploadOrderHistoryData {
+    next: usize,
+    in_flight: bool,
+    failed: bool,
+}
+
+impl UploadOrder {
+    pub(super) fn historical_data(&self) -> SourceActivationUploadOrderHistoryData {
+        let Self {
+            next,
+            in_flight,
+            failed,
+        } = self;
+        SourceActivationUploadOrderHistoryData {
+            next: *next,
+            in_flight: *in_flight,
+            failed: *failed,
+        }
+    }
+
+    pub(super) fn historical_counter_scratch_data() -> usize {
+        size_of::<SourceActivationUploadOrderHistoryData>() + size_of::<&Self>()
+    }
+}
+
+impl UploadOrder {
+    pub(super) fn settled17_once_data(&self) -> (usize, bool, bool) {
+        (self.next, self.in_flight, self.failed)
+    }
+}

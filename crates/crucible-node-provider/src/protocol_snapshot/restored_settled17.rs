@@ -367,6 +367,7 @@ pub use capture_outputs::{
 pub use sealed::{
     RestoredSettledHistoryVerifierData, RestoredSettledNative17DecodeAttempt,
     SealedHistoricalRestoredSettledNative17,
+    restored_settled_native17_decode_construction_transient_bytes_data,
 };
 
 pub mod aliases;
@@ -406,6 +407,10 @@ pub fn restored_settled_native17_counter_scratch_data() -> usize {
 
 pub(crate) mod historical_auth;
 pub use historical_auth::{HistoricalCompletedPair17, HistoricalRestoredObservation17Data};
+pub use historical_auth::construction::{
+    RestoredSettledSourceHistory17AuthGeometryData,
+    source_history17_authentication_counter_scratch_data,
+};
 
 pub(crate) mod current_actions;
 

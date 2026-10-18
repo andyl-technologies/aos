@@ -24,6 +24,14 @@ use crucible_node_provider::{
 };
 use std::{mem::size_of, thread::ThreadId};
 
+#[path = "archive_owner/content.rs"]
+mod content;
+pub(super) use content::ArchivedContentData;
+
+#[path = "archive_owner/initial15.rs"]
+pub(super) mod initial15;
+pub(crate) use initial15::{OriginalInitial15ArchivedGroup, OriginalInitial15ArchivedOwnerRead};
+
 const MAXIMUM_WHOLE_BYTES: usize = 512 * 1024 * 1024;
 
 #[path = "archive_owner/registry.rs"]
@@ -35,7 +43,14 @@ pub(super) use snapshot::{CompleteNativeSnapshotClass, CompleteSnapshotPlan};
 
 #[path = "archive_owner/retained.rs"]
 mod retained;
+#[path = "archive_owner/settled.rs"]
+mod settled;
 pub(crate) use retained::{OriginalRestorationColdGroup, OriginalRestorationColdOwnerView};
+pub use settled::CompleteHistoricalArchiveFamily;
+pub(crate) use settled::{
+    OriginalCompleteHistoricalColdGroup, OriginalRestoredSettledColdGroup,
+    OriginalRestoredSettledColdOwnerView,
+};
 
 /// Retains one bounded owner linked to the actual immutable archive closure.
 ///
@@ -46,10 +61,10 @@ pub(crate) use retained::{OriginalRestorationColdGroup, OriginalRestorationColdO
 pub struct PacketCompleteArchivedOwnerData<'a> {
     process: u32,
     thread: ThreadId,
-    source: &'a PacketCompleteSemanticSource,
+    source: Option<&'a PacketCompleteSemanticSource>,
     snapshot_class: CompleteNativeSnapshotClass,
     owner: &'a NativeOwnerState,
-    content: &'a VerifiedStateContent,
+    content: ArchivedContentData<'a>,
     journal_reference: &'a ContentRef,
     journal: Option<PacketCompleteSettledJournal>,
     host_limits: OwnedProtocol11DataLimits,
@@ -195,6 +210,49 @@ impl PacketCompleteSemanticSource {
             limits,
             maximum,
         )?;
+        PacketCompleteArchivedOwnerData::prepare_data_into(
+            Some(self),
+            snapshot_class,
+            &installation.provider.implementation,
+            owner,
+            runtime,
+            runtime_reference,
+            ArchivedContentData::Verified(content),
+            journal_reference,
+            limits,
+            additional_retained_bytes,
+            host_limits,
+            native_limits,
+            before_limits,
+            registry_limits,
+            maximum,
+            completed,
+        )
+    }
+}
+
+impl<'a> PacketCompleteArchivedOwnerData<'a> {
+    fn prepare_data_into(
+        source: Option<&'a PacketCompleteSemanticSource>,
+        snapshot_class: CompleteNativeSnapshotClass,
+        implementation: &ImplementationIdentity,
+        owner: &'a NativeOwnerState,
+        runtime: &OriginalLineageRuntimeRecord,
+        runtime_reference: &ContentRef,
+        content: ArchivedContentData<'a>,
+        journal_reference: &'a ContentRef,
+        limits: NativeArchiveLimits,
+        additional_retained_bytes: usize,
+        host_limits: OwnedProtocol11DataLimits,
+        native_limits: OwnedProtocol11DataLimits,
+        before_limits: OwnedProtocol11DataLimits,
+        registry_limits: OwnedProtocol11DataLimits,
+        maximum: usize,
+        completed: &mut Option<Self>,
+    ) -> Result<(), OperationFailure> {
+        if completed.is_some() {
+            return Err(refused("cold archive owner slot occupied"));
+        }
         let journal_bytes = content
             .get(journal_reference)
             .ok_or_else(|| refused("cold signed journal body absent"))?;
@@ -222,7 +280,7 @@ impl PacketCompleteSemanticSource {
         checked_sum(
             [
                 additional_retained_bytes,
-                content.capture_owned_storage().map_err(unknown)?,
+                content.capture_owned_storage()?,
                 size_of::<PacketCompleteArchivedOwnerData<'_>>(),
                 journal_storage,
             ],
@@ -232,7 +290,7 @@ impl PacketCompleteSemanticSource {
         *completed = Some(PacketCompleteArchivedOwnerData {
             process: std::process::id(),
             thread: std::thread::current().id(),
-            source: self,
+            source,
             snapshot_class,
             owner,
             content,
@@ -275,12 +333,13 @@ impl PacketCompleteSemanticSource {
                 .journal
                 .as_ref()
                 .ok_or_else(|| refused("cold journal lost"))?;
-            journal.authenticate_owner_data(owner, runtime, runtime_reference, content)?;
-            journal.authenticate_backend_data(
-                &installation.provider.implementation,
-                &owner.key,
+            journal.authenticate_owner_from_content_data(
+                owner,
+                runtime,
+                runtime_reference,
                 content,
             )?;
+            journal.authenticate_backend_from_content_data(implementation, &owner.key, content)?;
             state.journal_storage = state
                 .journal_storage
                 .checked_add(
@@ -319,7 +378,7 @@ impl PacketCompleteSemanticSource {
             checked_sum(
                 [
                     additional_retained_bytes,
-                    content.capture_owned_storage().map_err(unknown)?,
+                    content.capture_owned_storage()?,
                     state.actual_banks()?,
                 ],
                 maximum,
@@ -359,7 +418,7 @@ impl PacketCompleteSemanticSource {
             checked_sum(
                 [
                     additional_retained_bytes,
-                    content.capture_owned_storage().map_err(unknown)?,
+                    content.capture_owned_storage()?,
                     size_of::<PacketCompleteArchivedOwnerData<'_>>(),
                     state.journal_storage,
                     aliases,
@@ -420,7 +479,7 @@ impl PacketCompleteSemanticSource {
             checked_sum(
                 [
                     additional_retained_bytes,
-                    content.capture_owned_storage().map_err(unknown)?,
+                    content.capture_owned_storage()?,
                     state.actual_banks()?,
                 ],
                 maximum,
@@ -485,20 +544,17 @@ impl PacketCompleteArchivedOwnerData<'_> {
             }
             maximum = maximum.min(owner.maximum);
             if index == 0 {
-                total = checked_sum(
-                    [
-                        total,
-                        owner.content.capture_owned_storage().map_err(unknown)?,
-                    ],
-                    maximum,
-                )?;
+                total = checked_sum([total, owner.content.capture_owned_storage()?], maximum)?;
             }
             for previous in &owners[..index] {
                 let previous = previous
                     .as_ref()
                     .ok_or_else(|| refused("cold previous owner absent"))?;
-                if !std::ptr::eq(previous.content, owner.content)
-                    || std::ptr::eq(previous.source, owner.source)
+                if !previous.content.same_data(owner.content)
+                    || previous
+                        .source
+                        .zip(owner.source)
+                        .is_some_and(|(left, right)| std::ptr::eq(left, right))
                     || previous.owner.owner == owner.owner.owner
                     || previous
                         .owner
@@ -545,10 +601,13 @@ impl PacketCompleteArchivedOwnerData<'_> {
         source: &PacketCompleteSemanticSource,
     ) -> Result<&VerifiedStateContent, OperationFailure> {
         self.ensure_complete()?;
-        if !std::ptr::eq(self.source, source) {
+        if !self
+            .source
+            .is_some_and(|actual| std::ptr::eq(actual, source))
+        {
             return Err(refused("cold native predicate belongs to another source"));
         }
-        Ok(self.content)
+        self.content.live_data()
     }
 
     /// Reports actual prepared banks before typed reconstruction begins.
@@ -672,6 +731,10 @@ impl PacketCompleteArchivedOwnerData<'_> {
     ) -> Result<crate::node_state::ValidatedCompleteNativeRestorationData<'_>, OperationFailure>
     {
         self.ensure_complete()?;
+        self.source
+            .ok_or_else(|| refused("inert history cannot issue future restoration data"))?
+            .ensure_origin()?;
+        let live_content = self.content.live_data()?;
         let journal = self
             .journal
             .as_ref()
@@ -760,7 +823,7 @@ impl PacketCompleteArchivedOwnerData<'_> {
                 )?,
                 selected_owner,
                 self.owner,
-                self.content,
+                live_content,
             ),
         )
     }
@@ -1003,7 +1066,10 @@ impl PacketCompleteArchivedOwnerData<'_> {
         if self.process != std::process::id() || self.thread != std::thread::current().id() {
             return Err(refused("cold archive owner foreign origin"));
         }
-        self.source.ensure_origin()
+        match self.source {
+            Some(source) => source.ensure_origin(),
+            None => Ok(()),
+        }
     }
 
     fn ensure_complete(&self) -> Result<(), OperationFailure> {

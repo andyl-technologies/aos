@@ -46,6 +46,18 @@ impl PacketCompleteRestorationPrebirth {
             .prepare_original_installed_scheduler(window, plan, context)
     }
 
+    pub(in crate::node_qualification::packet_collection::complete) fn initialize_original_complete_coordinator17_before_activation(
+        &self,
+        window: &Rc<CompleteOriginalRestorationWindow>,
+        plan: &InstalledConformancePlan,
+        context: &OriginalLineageRestoration<'_>,
+    ) -> Result<(), RuntimeError> {
+        self.runtime_data()?
+            .initialize_original_installed_coordinator17_before_activation_data(
+                window, plan, context,
+            )
+    }
+
     pub(in crate::node_qualification::packet_collection::complete) fn arm_original_complete_restoration(
         &mut self,
         window: &Rc<CompleteOriginalRestorationWindow>,

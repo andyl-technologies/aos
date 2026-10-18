@@ -133,7 +133,8 @@ impl RestoredSettledNativeImportGeometryData {
         let retained = backing
             .checked_add(std::mem::size_of::<SealedHistoricalRestoredSettledNative17>())
             .ok_or_else(invalid)?;
-        let mut transient = 0usize;
+        let mut transient =
+            super::restored_settled_native17_decode_construction_transient_bytes_data();
         for bytes in input
             .roles_data()
             .into_iter()

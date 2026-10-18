@@ -1006,3 +1006,6 @@ impl ClientContent {
 }
 
 mod observation_receive;
+
+#[path = "content/capture_current17.rs"]
+mod capture_current17;

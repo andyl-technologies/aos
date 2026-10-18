@@ -915,3 +915,6 @@ impl PacketCompleteOriginalHostSdk {
         self.original_initial_lifecycle_outstanding_data(source, launch, plan, false)
     }
 }
+
+#[path = "initial_lifecycle/settled17.rs"]
+mod settled17;

@@ -520,3 +520,6 @@ impl PacketCompleteOriginalHostSdk {
         Ok(())
     }
 }
+
+#[path = "host_startup/settled17.rs"]
+mod settled17;

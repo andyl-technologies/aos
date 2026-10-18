@@ -22,6 +22,8 @@ use crucible_node_provider::{
 };
 use std::{cell::RefCell, thread::ThreadId};
 
+#[path = "current/checkpoint_cache17.rs"]
+mod checkpoint_cache17;
 #[path = "current/construction.rs"]
 mod construction;
 #[path = "current/effect.rs"]
@@ -294,3 +296,14 @@ mod tests {
         assert!(history.poison_next_data(1).is_err());
     }
 }
+
+#[path = "current/capture_history.rs"]
+pub(in super::super) mod capture_history;
+
+#[path = "current/settled_logical.rs"]
+mod settled_logical;
+
+#[path = "current/checkpoint17.rs"]
+mod checkpoint17;
+#[path = "current/typed_checkpoint17.rs"]
+mod typed_checkpoint17;

@@ -7,6 +7,10 @@
 //!  resources:limits, maximum_initial_bytes:n, maximum_native_rows:n,
 //!  maximum_operations:n, maximum_retained_outputs:n, write_watchdog_ms:n}
 //! ```
+//!
+//! Edition seven additionally requires the explicit `maximum_coordinator_records`
+//! lifetime policy. The original and fresh Source rosters bind that exact policy;
+//! older editions omit the field entirely.
 
 mod mechanism;
 pub(super) use mechanism::CompleteMechanism;
@@ -52,6 +56,9 @@ pub(super) struct Manifest {
     pub(super) maximum_native_rows: usize,
     pub(super) maximum_operations: usize,
     pub(super) maximum_retained_outputs: usize,
+    /// Bounds cumulative coordinator records for the explicit edition-seven World.
+    #[serde(default)]
+    pub(super) maximum_coordinator_records: Option<usize>,
     pub(super) write_watchdog_ms: u64,
 }
 
@@ -207,6 +214,15 @@ fn validate_declaration(selected: &Manifest) -> Result<(), QualificationError> {
     selected.resources.validate()?;
     mechanism::authenticate_selection_data(&selected.schema, selected.mechanism)?;
     mechanism::authenticate_profile_declaration_data(selected)?;
+    match (
+        selected.schema.as_str(),
+        selected.maximum_coordinator_records,
+    ) {
+        ("crucible.complete-scene.installation/7", Some(maximum))
+            if maximum >= 2 && u64::try_from(maximum).is_ok() => {}
+        ("crucible.complete-scene.installation/7", _) | (_, Some(_)) => return Err(refused()),
+        (_, None) => {}
+    }
     if selected.content.len() > 128
         || selected.maximum_initial_bytes == 0
         || selected.maximum_initial_bytes > 64 * 1024 * 1024

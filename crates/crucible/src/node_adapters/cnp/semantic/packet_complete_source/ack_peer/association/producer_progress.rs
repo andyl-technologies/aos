@@ -32,6 +32,10 @@ use std::{
     thread::ThreadId,
 };
 
+#[path = "producer_progress/capture.rs"]
+pub(super) mod capture;
+#[path = "producer_progress/checkpoint_cache17.rs"]
+mod checkpoint_cache17;
 #[path = "producer_progress/construction.rs"]
 mod construction;
 #[path = "producer_progress/deferred.rs"]
@@ -51,6 +55,7 @@ mod read;
 #[path = "producer_progress/sdk.rs"]
 mod sdk;
 
+pub(crate) use capture::OriginalSourceRestoredProducerHistory17Read;
 pub(crate) use proof::OriginalSourceRestoredProducerPhaseCompletion;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -231,3 +236,24 @@ impl Drop for AttemptGuard<'_> {
         }
     }
 }
+
+pub(crate) use capture::{
+    OriginalSourceRestoredInstallationExpected17, OriginalSourceRestoredLimits17,
+    OriginalSourceRestoredProducerCheckpoint17, OriginalSourceRestoredSettled17Read,
+    OriginalSourceRestoredSettled17ReadInputs,
+};
+
+pub(crate) use capture::{
+    OriginalSourceRestoredCaptureCompletion, OriginalSourceRestoredCaptureQuoteInputs,
+};
+
+pub(crate) use capture::OriginalSourceRestoredCaptureEncodingInputs;
+
+pub(crate) use capture::OriginalSourceRestoredCaptureCountingBanksData;
+
+#[path = "producer_progress/checkpoint17.rs"]
+mod checkpoint17;
+#[path = "producer_progress/typed_checkpoint17.rs"]
+mod typed_checkpoint17;
+
+pub use capture::OriginalSourceRestoredCaptureConstructionData;

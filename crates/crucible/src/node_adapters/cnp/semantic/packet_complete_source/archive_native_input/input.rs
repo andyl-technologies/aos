@@ -38,13 +38,13 @@ impl NativeInputData<'_> {
     }
 
     pub(super) fn original_batch(&self, batch: &ArchivedBatch) -> Result<(), OperationFailure> {
-        let installation = self.source.installation();
+        let node = self.selection.node_data()?;
         let definition = self
-            .source
-            .complete_reactive_definition_data()?
+            .selection
+            .reactive_definition_data()?
             .ok_or_else(|| refused("cold input has no original reactive definition"))?;
         if batch.node != self.host.node
-            || batch.node != installation.descriptor.id
+            || &batch.node != node
             || batch.owners.len() != 1
             || batch.owners[0].owner != self.host.execution_owner
             || batch.deliveries.len() > 4

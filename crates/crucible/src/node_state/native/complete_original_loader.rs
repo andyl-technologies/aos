@@ -20,6 +20,29 @@ pub(super) struct CompleteLoadAdmission {
     maximum: usize,
 }
 
+impl CompleteLoadAdmission {
+    /// Borrows historical local receipt facts; actual pointer roles stay separate.
+    ///
+    /// The owning archive verifies its real index/directory correspondence before
+    /// and after serialization. This DATA cannot recreate a load admission.
+    pub(super) fn borrowed_settled_history_data(&self) -> impl serde::Serialize + '_ {
+        let Self {
+            process,
+            thread: _,
+            index: _,
+            directory: _,
+            maximum,
+        } = self;
+        (
+            process,
+            "original-creator-thread-not-portable",
+            maximum,
+            "same-archive-index",
+            "same-archive-directory",
+        )
+    }
+}
+
 pub(in crate::node_state::native) fn add(a: usize, b: usize) -> Result<usize, StateError> {
     a.checked_add(b)
         .ok_or_else(|| limit("complete loader allocation overflow"))

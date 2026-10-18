@@ -8,6 +8,9 @@ use crucible_node_provider::protocol_snapshot::owned11::{
     native::outer::NativeOwnedProtocol11AllocationDemand, outer::OwnedProtocol11DataLimits,
 };
 
+#[path = "complete_original_restoration_data/history.rs"]
+mod history;
+
 /// Retains one verified owner's detailed native-after demand without decoder banks.
 ///
 /// Construction is crate-private and the archive validation scope accepts a row
@@ -176,7 +179,7 @@ impl<'a> ValidatedCompleteNativeRestorationData<'a> {
 
 // The independent length prefix prevents concatenation ambiguity. This fixed
 // Source-only association does not replace any normative CNP content digest.
-fn reference_identity(reference: &crucible_node_contract::ContentRef) -> [u8; 32] {
+pub(super) fn reference_identity(reference: &crucible_node_contract::ContentRef) -> [u8; 32] {
     let mut hash = blake3::Hasher::new_derive_key("core.original-restoration-body-reference/1");
     for text in [
         &reference.hash.algorithm,

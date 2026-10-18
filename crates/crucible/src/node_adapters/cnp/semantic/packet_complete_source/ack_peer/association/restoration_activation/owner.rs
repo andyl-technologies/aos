@@ -637,3 +637,287 @@ pub(super) fn write_bounded_value_into(
     canonical::canonical_json_to_writer(value, &mut BankWriter { bytes, maximum })
         .map_err(|_| RuntimeError::InvalidReceipt)
 }
+
+/// Lends all original Source activation banks, values and native partials.
+pub(crate) struct SourceRestorationActivationHistoryData<'a> {
+    original: &'a OriginalSourceRestorationActivationAttempt,
+    records: &'a std::cell::RefCell<
+        crucible_node_provider::retained_metadata::records::MetadataRecordBank,
+    >,
+    aliases: &'a std::cell::RefCell<
+        crucible_node_provider::retained_metadata::aliases::MetadataAliasBank,
+    >,
+}
+
+impl OriginalSourceRestorationActivationAttempt {
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn historical_data<'a>(
+        &'a self,
+        records: &'a std::cell::RefCell<
+            crucible_node_provider::retained_metadata::records::MetadataRecordBank,
+        >,
+        aliases: &'a std::cell::RefCell<
+            crucible_node_provider::retained_metadata::aliases::MetadataAliasBank,
+        >,
+    ) -> SourceRestorationActivationHistoryData<'a> {
+        SourceRestorationActivationHistoryData {
+            original: self,
+            records,
+            aliases,
+        }
+    }
+
+    /// Reports actual metadata demand before the capture bank is allocated.
+    ///
+    /// # Errors
+    /// Refuses a model without its owner, overflow or unsupported metadata.
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn historical_metadata_demand_data(
+        &self,
+    ) -> Result<(usize, usize, usize), RuntimeError> {
+        let mut records = 0usize;
+        let mut aliases = 0usize;
+        let mut transient = 0usize;
+        for phase in self.phases.iter().chain(&self.uploads) {
+            if phase.underlying.is_some() && phase.native_record.is_none() {
+                return Err(RuntimeError::InvalidReceipt);
+            }
+            let Some(record) = &phase.native_record else {
+                continue;
+            };
+            let facts = crucible_node_provider::reference_packet::service::complete_restore::activation::restoration_activation_retained_native_evidence_data(
+                record, phase.underlying.as_ref(),
+            ).map_err(|_| RuntimeError::ResourceLimit)?;
+            // Complete each serialized owner before reusing the temporary banks.
+            records = records.max(facts.capacity_records);
+            aliases = aliases.max(facts.shared_backing_views);
+            transient = transient.checked_add(crucible_node_provider::reference_packet::service::complete_restore::activation::restoration_activation_historical_native_evidence_transient_bytes_data(
+                record, phase.underlying.as_ref(),
+            ).map_err(|_| RuntimeError::ResourceLimit)?).ok_or(RuntimeError::ResourceLimit)?;
+        }
+        Ok((records, aliases, transient))
+    }
+}
+
+struct HistoricalPhases<'a>(
+    &'a [ActivationPhase; 2],
+    &'a SourceRestorationActivationHistoryData<'a>,
+);
+struct HistoricalPhase<'a>(
+    &'a ActivationPhase,
+    &'a SourceRestorationActivationHistoryData<'a>,
+);
+struct HistoricalNativeCapacities<'a>(
+    &'a ActivationPhase,
+    &'a SourceRestorationActivationHistoryData<'a>,
+);
+struct HistoricalUnderlying<'a>(&'a PacketNative5UnderlyingRecord);
+
+#[derive(serde::Serialize)]
+struct HistoricalWorldBodies<'a> {
+    coordinator: &'a crate::node_scheduling::InputPayload,
+    manifest: &'a crate::node_scheduling::InputPayload,
+    coordinator_capacities:
+        crate::node_contract::restored_owner_history::OriginalRestoredOwnerCapacityRows<
+            'a,
+            crate::node_scheduling::InputPayload,
+        >,
+    manifest_capacities:
+        crate::node_contract::restored_owner_history::OriginalRestoredOwnerCapacityRows<
+            'a,
+            crate::node_scheduling::InputPayload,
+        >,
+}
+
+impl serde::Serialize for HistoricalPhases<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+        let mut values = serializer.serialize_seq(Some(2))?;
+        for phase in self.0 {
+            values.serialize_element(&HistoricalPhase(phase, self.1))?;
+        }
+        values.end()
+    }
+}
+
+impl serde::Serialize for HistoricalPhase<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use crate::node_contract::restored_owner_history::OriginalRestoredOwnerCapacityRows;
+        use serde::ser::SerializeStruct;
+        let ActivationPhase {
+            banks,
+            values,
+            native_record,
+            underlying,
+        } = self.0;
+        let mut value = serializer.serialize_struct("SourceActivationPhaseHistory", 7)?;
+        value.serialize_field("banks", banks)?;
+        value.serialize_field(
+            "bank_capacities",
+            &OriginalRestoredOwnerCapacityRows(banks.as_slice()),
+        )?;
+        value.serialize_field("values", values)?;
+        value.serialize_field(
+            "value_capacities",
+            &OriginalRestoredOwnerCapacityRows(values.as_slice()),
+        )?;
+        value.serialize_field(
+            "native_capacities",
+            &HistoricalNativeCapacities(self.0, self.1),
+        )?;
+        value.serialize_field("native_record", native_record)?;
+        value.serialize_field("underlying", &underlying.as_ref().map(HistoricalUnderlying))?;
+        value.end()
+    }
+}
+
+impl serde::Serialize for HistoricalNativeCapacities<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::{Error, SerializeStruct};
+        let Some(record) = &self.0.native_record else {
+            return serializer.serialize_none();
+        };
+        {
+            let mut records = self.1.records.try_borrow_mut().map_err(S::Error::custom)?;
+            let mut aliases = self.1.aliases.try_borrow_mut().map_err(S::Error::custom)?;
+            let before = crucible_node_provider::reference_packet::service::complete_restore::activation::restoration_activation_retained_native_evidence_data(
+                record, self.0.underlying.as_ref(),
+            ).map_err(S::Error::custom)?;
+            let after = crucible_node_provider::reference_packet::service::complete_restore::activation::restoration_activation_record_native_evidence_metadata_data(
+                record, self.0.underlying.as_ref(), &mut records, &mut aliases,
+            ).map_err(S::Error::custom)?;
+            if before != after {
+                return Err(S::Error::custom("Source activation native owner changed"));
+            }
+        }
+        let records = self.1.records.try_borrow().map_err(S::Error::custom)?;
+        let aliases = self.1.aliases.try_borrow().map_err(S::Error::custom)?;
+        let mut value = serializer.serialize_struct("SourceActivationNativeCapacities", 5)?;
+        value.serialize_field("record_capacity", &records.capacity_rows())?;
+        value.serialize_field("record_maximum", &records.maximum_rows())?;
+        value.serialize_field("records", &*records)?;
+        value.serialize_field("alias_capacities", &aliases.capacity_rows())?;
+        value.serialize_field("aliases", &*aliases)?;
+        value.end()
+    }
+}
+
+impl serde::Serialize for HistoricalUnderlying<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut value = serializer.serialize_struct("SourceActivationUnderlying", 2)?;
+        match self.0 {
+            PacketNative5UnderlyingRecord::Producer(record) => {
+                value.serialize_field("kind", "producer")?;
+                value.serialize_field("value", record)?;
+            }
+            PacketNative5UnderlyingRecord::Reactive(record) => {
+                value.serialize_field("kind", "reactive")?;
+                value.serialize_field("value", record)?;
+            }
+        }
+        value.end()
+    }
+}
+
+impl serde::Serialize for SourceRestorationActivationHistoryData<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use crate::node_contract::restored_owner_history::OriginalRestoredOwnerCapacityRows;
+        use serde::ser::{Error, SerializeStruct};
+        let OriginalSourceRestorationActivationAttempt {
+            process: _,
+            thread: _,
+            source: _,
+            controller: _,
+            binding,
+            reserved,
+            order,
+            phases,
+            uploads,
+            world_bodies,
+            upload_order,
+        } = self.original;
+        self.original
+            .historical_metadata_demand_data()
+            .map_err(S::Error::custom)?;
+        let ActivationOrder {
+            started,
+            verified,
+            failed,
+        } = order;
+        let bodies = world_bodies.as_ref().map(|bodies| {
+            let world_content::WorldUploadBodies {
+                coordinator,
+                manifest,
+            } = bodies;
+            HistoricalWorldBodies {
+                coordinator,
+                manifest,
+                coordinator_capacities: OriginalRestoredOwnerCapacityRows(coordinator),
+                manifest_capacities: OriginalRestoredOwnerCapacityRows(manifest),
+            }
+        });
+        let mut value = serializer.serialize_struct("SourceActivationHistory", 10)?;
+        value.serialize_field("schema", "source-private.source-activation-history/1")?;
+        value.serialize_field("binding", binding.as_bytes())?;
+        value.serialize_field("reserved", reserved)?;
+        value.serialize_field("phase_started", started)?;
+        value.serialize_field("phase_verified", verified)?;
+        value.serialize_field("failed", failed)?;
+        value.serialize_field("phases", &HistoricalPhases(phases, self))?;
+        value.serialize_field("uploads", &HistoricalPhases(uploads, self))?;
+        value.serialize_field("world_bodies", &bodies)?;
+        value.serialize_field("upload_order", &upload_order.historical_data())?;
+        value.end()
+    }
+}
+
+pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn historical_counter_scratch_data()
+-> usize {
+    use crucible_node_provider::retained_metadata::{
+        aliases::MetadataAliasBank, records::MetadataRecordBank,
+    };
+    use std::cell::{BorrowError, BorrowMutError, Ref, RefMut};
+    crate::node_contract::restored_owner_history::original_restored_owner_capacity_counter_scratch_data()
+        + size_of::<SourceRestorationActivationHistoryData<'static>>()
+        + size_of::<HistoricalPhases<'static>>() + size_of::<HistoricalPhase<'static>>()
+        + size_of::<HistoricalNativeCapacities<'static>>()
+        + size_of::<HistoricalUnderlying<'static>>() + size_of::<Option<HistoricalUnderlying<'static>>>()
+        + size_of::<HistoricalWorldBodies<'static>>() + size_of::<Option<HistoricalWorldBodies<'static>>>()
+        + size_of::<std::iter::Chain<std::slice::Iter<'static, ActivationPhase>, std::slice::Iter<'static, ActivationPhase>>>()
+        + size_of::<Result<(usize, usize, usize), RuntimeError>>()
+        + size_of::<Ref<'static, MetadataRecordBank>>() + size_of::<RefMut<'static, MetadataRecordBank>>()
+        + size_of::<Ref<'static, MetadataAliasBank>>() + size_of::<RefMut<'static, MetadataAliasBank>>()
+        + size_of::<Result<Ref<'static, MetadataRecordBank>, BorrowError>>()
+        + size_of::<Result<RefMut<'static, MetadataRecordBank>, BorrowMutError>>()
+        + size_of::<Result<Ref<'static, MetadataAliasBank>, BorrowError>>()
+        + size_of::<Result<RefMut<'static, MetadataAliasBank>, BorrowMutError>>()
+        + upload::UploadOrder::historical_counter_scratch_data()
+}
+
+impl OriginalSourceRestorationActivationAttempt {
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn historical_counter_scratch_data()
+    -> usize {
+        historical_counter_scratch_data()
+    }
+}
+
+impl OriginalSourceRestorationActivationAttempt {
+    pub(in super::super) fn settled17_once_data(
+        &self,
+        source: &PacketCompleteSemanticSource,
+        controller: &CnpController,
+    ) -> Result<super::super::settled17_once::ActivationOnce17, RuntimeError> {
+        self.authenticate_original(source, controller, self.binding)?;
+        self.authenticate_verified(PacketRestorationActivationPhase::WorldActivate)?;
+        let (uploads_next, upload_in_flight, upload_failed) =
+            self.upload_order.settled17_once_data();
+        Ok(super::super::settled17_once::ActivationOnce17 {
+            reserved: self.reserved,
+            started: self.order.started,
+            verified: self.order.verified,
+            failed: self.order.failed,
+            uploads_next,
+            upload_in_flight,
+            upload_failed,
+        })
+    }
+}

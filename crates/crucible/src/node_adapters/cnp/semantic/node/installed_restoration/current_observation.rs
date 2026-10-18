@@ -12,6 +12,7 @@ use crate::node_admission::{
 use crate::node_scheduling::NativeSchedulingObservation;
 use crucible_node_provider::reference_packet::service::PacketNative5SourceLaunch;
 
+#[derive(serde::Serialize)]
 pub(super) struct CurrentNodeObservation {
     ordinal: u64,
     retained: Option<NativeSchedulingObservation>,
@@ -362,5 +363,26 @@ mod tests {
         assert!(attempts[0].retained.is_some());
         assert_eq!(actual_return, *attempts[0].retained.as_ref().unwrap());
         assert_eq!(attempts[0].ordinal, 1);
+    }
+}
+
+impl crate::node_contract::restored_owner_history::OriginalRestoredOwnerCapacityWalk
+    for CurrentNodeObservation
+{
+    fn capacities(
+        &self,
+        depth: usize,
+        sink: &mut dyn FnMut(
+            crate::node_contract::restored_owner_history::OriginalRestoredOwnerCapacityRow,
+        ) -> Result<(), RuntimeError>,
+    ) -> Result<(), RuntimeError> {
+        use crate::node_contract::restored_owner_history::OriginalRestoredOwnerCapacityWalk;
+        let Self {
+            ordinal: _,
+            retained,
+            returned,
+        } = self;
+        retained.capacities(depth, sink)?;
+        returned.capacities(depth, sink)
     }
 }

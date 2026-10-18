@@ -116,6 +116,7 @@ impl NodeRuntime {
             return Err(RuntimeError::OwnerUnavailable);
         }
         self.validate_all_declarations()?;
+        self.prepare_coordinator17_activation_data()?;
         let mut current = CurrentPublisher {
             graph,
             nodes: &self.nodes,
@@ -123,8 +124,20 @@ impl NodeRuntime {
             publisher,
         };
         current.current()?;
-        let activation = self.barrier.publish(&self.authority, &mut current)?;
-        current.current()?;
+        let result = self.barrier.publish(&self.authority, &mut current);
+        let current_result = current.current();
+        let activation = match result {
+            Ok(world) if current_result.is_ok() => world,
+            Ok(_) => {
+                self.settle_coordinator17_activation_data(None)?;
+                return Err(current_result.err().ok_or(RuntimeError::ForeignAuthority)?);
+            }
+            Err(error) => {
+                self.settle_coordinator17_activation_data(None)?;
+                return Err(error);
+            }
+        };
+        self.settle_coordinator17_activation_data(Some(&activation))?;
         self.finish_activation();
         Ok(activation)
     }

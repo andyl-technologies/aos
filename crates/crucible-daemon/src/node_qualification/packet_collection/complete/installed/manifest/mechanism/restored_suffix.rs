@@ -44,7 +44,7 @@ pub(super) fn authenticate_profile_declaration_data(
     authenticate_suffix_rosters_data(rosters, features, &selected.content)
 }
 
-fn authenticate_suffix_rosters_data(
+pub(super) fn authenticate_suffix_rosters_data(
     rosters: [(&[SchemaRef], &[SchemaRef]); 3],
     features: [&[Id]; 3],
     content: &[Content],

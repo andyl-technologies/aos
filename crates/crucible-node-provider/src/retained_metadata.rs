@@ -815,7 +815,11 @@ pub use restore_transfer_data::{
 };
 
 #[path = "retained_metadata/serialization_storage.rs"]
-pub(crate) mod serialization_storage;
+/// Exposes bounded JSON storage DATA for independently admitted host consumers.
+///
+/// Public extent calculations issue no Source, native allocation, or execution
+/// permission. Typed serializers and actual whole-owner admission stay separate.
+pub mod serialization_storage;
 
 pub(crate) mod requested_storage;
 pub(crate) use requested_storage::requested_metadata_backing_storage_data;
@@ -885,3 +889,6 @@ pub use historical_response::{
     HistoricalResponseBodyData, historical_response_body_counter_scratch_data,
     historical_response_body_data,
 };
+
+mod archived_installation17;
+pub use archived_installation17::RetainedArchivedSourceInstallation17;

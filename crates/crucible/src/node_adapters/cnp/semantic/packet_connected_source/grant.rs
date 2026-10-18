@@ -434,13 +434,37 @@ impl PacketConnectedSemanticSource {
         record: &PacketConnectedNativeRecord,
     ) -> Result<NativeSchedulingObservation, OperationFailure> {
         self.world.authenticate_record(activation.record())?;
+        Self::historical_scheduling17_data(
+            &self.installation.descriptor,
+            || self.owner(),
+            &self.definition,
+            root,
+            record,
+        )
+    }
+
+    /// Maps an already authenticated historical model without a live World.
+    ///
+    /// This is inert DATA construction shared with the live observation path.
+    /// The caller independently authenticates native proof, installation and
+    /// owner correspondence; this mapping grants no currentness or execution.
+    ///
+    /// # Errors
+    /// Refuses a closed gate, an output unsupported by the exact model, or a
+    /// model bound outside the unchanged finite superdense ordering profile.
+    pub(in crate::node_adapters::cnp::semantic) fn historical_scheduling17_data(
+        descriptor: &NodeDescriptor,
+        owner: impl FnOnce() -> OwnerIdentity,
+        definition: &PacketConnectedDefinition,
+        root: &ContentRef,
+        record: &PacketConnectedNativeRecord,
+    ) -> Result<NativeSchedulingObservation, OperationFailure> {
         if record.inventory.gate_closed {
             return Err(refused("connected unopened original world"));
         }
         let mut publications = Vec::with_capacity(record.inventory.retained_outputs.len());
         for row in &record.inventory.retained_outputs {
-            let endpoint = self
-                .definition
+            let endpoint = definition
                 .output
                 .as_ref()
                 .ok_or_else(|| refused("connected sink invented public output"))?;
@@ -460,14 +484,14 @@ impl PacketConnectedSemanticSource {
                 payload_bytes: output.payload.as_slice().to_vec(),
             });
         }
-        let bound = output_bound(&record.inventory, self.definition.output.is_some())?;
+        let bound = output_bound(&record.inventory, definition.output.is_some())?;
         Ok(NativeSchedulingObservation {
-            node: self.installation.descriptor.id.clone(),
-            owners: vec![self.owner()],
+            node: descriptor.id.clone(),
+            owners: vec![owner()],
             reached: record.inventory.reached,
             closed_prefix: record.inventory.reached,
             bounds: vec![NativeProducerBound {
-                producer: self.installation.descriptor.id.clone(),
+                producer: descriptor.id.clone(),
                 bound,
                 proof_ref: root.clone(),
             }],

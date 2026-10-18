@@ -150,6 +150,8 @@ impl PacketCompleteSemanticSource {
     pub fn original_restored_producer_outcome_counter_scratch_data() -> usize {
         NodeRuntime::capture_serialization_counter_scratch_data()
             + size_of::<OriginalRestoredProducerOutcomeProjection<'static>>()
+            + size_of::<OriginalRestoredProducerHistoricalInstallationData<'static>>()
+            + size_of::<OriginalRestoredProducerHistoricalAdmissionData<'static>>()
             + size_of::<RouteProjection<'static>>()
             + size_of::<OperationRequest>()
             + size_of::<FutureScheduling<'static>>()
@@ -421,144 +423,30 @@ impl PacketCompleteSemanticSource {
         let CompletePacketOriginal::Producer(source) = &self.original else {
             return Err(RuntimeError::UnsupportedFacet);
         };
-        source.original_restored_producer_inventory_data(producer)?;
-        restored
-            .validate_data()
-            .map_err(|_| RuntimeError::InvalidReceipt)?;
-        if restored.physical_gate_held
-            || producer.inventory.gate_closed
-            || original.inputs().is_some()
-        {
+        if original.inputs().is_some() {
             return Err(RuntimeError::InvalidReceipt);
         }
-        let (start, limit) = match original.request() {
-            OperationRequest::ExactRun {
-                start,
-                limit,
-                boundary_policy: ExactBoundaryPolicy::HorizonPark,
-            }
-            | OperationRequest::BoundarySettle { start, limit } => (*start, *limit),
-            _ => return Err(RuntimeError::UnsupportedFacet),
-        };
-        let grant = producer
-            .grant
-            .as_ref()
-            .ok_or(RuntimeError::InvalidReceipt)?;
-        if !grant.complete
-            || grant.operation != *original.token().operation()
-            || grant.start != start
-            || grant.limit != limit
-            || grant.inventory != producer.inventory
-            || producer.inventory.reached < start
-            || producer.inventory.reached > limit
-            || grant.newborn != producer.inventory.retained_outputs
-            || producer.original.operation_id.0.as_ref() != Some(original.token().operation())
-        {
-            return Err(RuntimeError::InvalidReceipt);
-        }
-        let route = original.token().route();
         let install = self.installation();
-        if route.node != install.descriptor.id
-            || route.owners.len() != 1
-            || route.owners[0].owner != install.owner.owner.id
-            || route.owners[0].incarnation != install.binding.authority.incarnation_id
-            || route.owners[0].generation != install.binding.authority.owner_generation
-            || original.activation().record().world_binding_hash != install.world_binding_hash
-            || !original
-                .activation()
-                .record()
-                .owners
-                .contains(&route.owners[0])
-        {
-            return Err(RuntimeError::ForeignAuthority);
-        }
-        let [port] = install.descriptor.ports.as_slice() else {
-            return Err(RuntimeError::UnsupportedFacet);
-        };
-        let [lane] = port.lanes.as_slice() else {
-            return Err(RuntimeError::UnsupportedFacet);
-        };
-        let mut publications = Vec::new();
-        publications
-            .try_reserve_exact(grant.newborn.len())
-            .map_err(|_| RuntimeError::ResourceLimit)?;
-        for output in &grant.newborn {
-            publications.push(NativePublication {
-                publication_id: output.event.clone(),
-                endpoint: Endpoint {
-                    node_id: route.node.clone(),
-                    port_id: port.id.clone(),
-                    lane_id: lane.id.clone(),
-                },
-                native_sequence: output.sequence,
-                publication: output.publication,
-                evaluation: Some(output.evaluation),
-                causal_parents: Vec::new(),
-                payload: canonical::content_ref(
-                    output.payload.as_slice(),
-                    "application/octet-stream",
-                )
-                .map_err(|_| RuntimeError::InvalidReceipt)?,
-                payload_bytes: output.payload.as_slice().to_vec(),
-            });
-        }
-        let future_output = producer
-            .inventory
-            .pending
-            .iter()
-            .filter(|event| event.payload.is_some())
-            .map(|event| event.completion)
-            .min();
-        let bound =
-            future_output
-                .map(NativeOutputBound::At)
-                .unwrap_or(NativeOutputBound::AfterInstant(
-                    producer.inventory.reached.time_ps,
-                ));
-        let stop = if producer.inventory.reached == limit {
-            StopReason::HorizonPark
-        } else {
-            // The separate native transition validator establishes that this is
-            // the first still-pending payload callback, with no skipped effect.
-            if !producer.inventory.pending.iter().any(|event| {
-                event.payload.is_some()
-                    && event.evaluation == producer.inventory.reached
-                    && event.evaluation < limit
-            }) {
-                return Err(RuntimeError::InvalidReceipt);
-            }
-            StopReason::Output
-        };
-        let retained_outputs = publications
-            .iter()
-            .map(|publication| publication.publication_id.clone())
-            .collect();
-        let scheduling = NativeSchedulingObservation {
-            node: route.node.clone(),
-            owners: route.owners.clone(),
-            reached: producer.inventory.reached,
-            closed_prefix: producer.inventory.reached,
-            bounds: vec![NativeProducerBound {
-                producer: route.node.clone(),
-                bound,
-                proof_ref: measurement.clone(),
-            }],
-            publications,
-            input_progress: None,
-            external_inputs: Vec::new(),
-            proof_ref: measurement.clone(),
-        };
-        Ok(OperationOutcome {
-            operation: original.token().operation().clone(),
-            node: route.node.clone(),
-            owners: route.owners.clone(),
-            progress: ProgressEvidence::Exact {
-                reached: producer.inventory.reached,
-                stop,
+        Self::original_restored_producer_historical_mapped_outcome_data(
+            OriginalRestoredProducerHistoricalAdmissionData {
+                operation: original.token().operation(),
+                route: original.token().route(),
+                request: original.request(),
+                world_binding: &original.activation().record().world_binding_hash,
+                activation_owners: &original.activation().record().owners,
             },
-            retained_outputs,
-            scheduling: Some(scheduling),
-        })
+            OriginalRestoredProducerHistoricalInstallationData {
+                descriptor: &install.descriptor,
+                owner: &install.owner.owner.id,
+                incarnation: &install.binding.authority.incarnation_id,
+                generation: install.binding.authority.owner_generation,
+                world_binding: &install.world_binding_hash,
+                program: source.original_program_data(),
+            },
+            restored,
+            producer,
+            measurement,
+        )
     }
 }
 
@@ -584,58 +472,28 @@ impl PacketCompleteSemanticSource {
         let CompletePacketOriginal::Producer(source) = &self.original else {
             return Err(RuntimeError::UnsupportedFacet);
         };
-        source.original_restored_producer_inventory_data(producer)?;
-        restored
-            .validate_data()
-            .map_err(|_| RuntimeError::InvalidReceipt)?;
-        if restored.physical_gate_held
-            || producer.inventory.gate_closed
-            || producer.grant.is_some()
-            || !producer.inventory.retained_outputs.is_empty()
-        {
-            return Err(RuntimeError::InvalidReceipt);
-        }
         let install = self.installation();
-        let mut owner = None;
-        for candidate in &world.record().owners {
-            if candidate.owner == install.owner.owner.id {
-                if owner.replace(candidate).is_some() {
-                    return Err(RuntimeError::ForeignAuthority);
-                }
-            }
-        }
-        let owner = owner.ok_or(RuntimeError::ForeignAuthority)?;
-        if world.record().world_binding_hash != install.world_binding_hash
-            || owner.incarnation != install.binding.authority.incarnation_id
-            || owner.generation != install.binding.authority.owner_generation
-        {
-            return Err(RuntimeError::ForeignAuthority);
-        }
-        let bound = producer
-            .inventory
-            .pending
-            .iter()
-            .filter(|event| event.payload.is_some())
-            .map(|event| event.completion)
-            .min()
-            .map(NativeOutputBound::At)
-            .unwrap_or(NativeOutputBound::AfterInstant(
-                producer.inventory.reached.time_ps,
-            ));
-        Ok(NativeSchedulingObservation {
-            node: install.descriptor.id.clone(),
-            owners: vec![owner.clone()],
-            reached: producer.inventory.reached,
-            closed_prefix: producer.inventory.reached,
-            bounds: vec![NativeProducerBound {
-                producer: install.descriptor.id.clone(),
-                bound,
-                proof_ref: measurement.clone(),
-            }],
-            publications: Vec::new(),
-            input_progress: None,
-            external_inputs: Vec::new(),
-            proof_ref: measurement.clone(),
-        })
+        Self::original_restored_producer_historical_checkpoint_scheduling_data(
+            &world.record().world_binding_hash,
+            &world.record().owners,
+            OriginalRestoredProducerHistoricalInstallationData {
+                descriptor: &install.descriptor,
+                owner: &install.owner.owner.id,
+                incarnation: &install.binding.authority.incarnation_id,
+                generation: install.binding.authority.owner_generation,
+                world_binding: &install.world_binding_hash,
+                program: source.original_program_data(),
+            },
+            restored,
+            producer,
+            measurement,
+        )
     }
 }
+
+#[path = "restored_producer_outcome/historical.rs"]
+mod historical;
+pub(crate) use historical::{
+    OriginalRestoredProducerHistoricalAdmissionData,
+    OriginalRestoredProducerHistoricalInstallationData,
+};

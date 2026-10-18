@@ -224,19 +224,29 @@ impl PacketSemanticSource {
     }
 
     pub(super) fn inventory(&self, record: &PacketNativeRecord) -> Result<(), OperationFailure> {
+        Self::original_restored_producer_historical_inventory_data(&self.program, record)
+    }
+
+    /// Checks immutable Producer inventory without constructing a live Source.
+    ///
+    /// The exact same algorithm protects the live caller and historical DATA
+    /// mapping. Original native receipts and Source authority remain separate.
+    pub(in crate::node_adapters::cnp::semantic) fn original_restored_producer_historical_inventory_data(
+        program: &crucible_node_provider::reference_packet::PacketProgramDefinition,
+        record: &PacketNativeRecord,
+    ) -> Result<(), OperationFailure> {
         let inventory = &record.inventory;
-        let completed = self
-            .program
+        let completed = program
             .events
             .len()
             .checked_sub(inventory.pending.len())
             .ok_or_else(|| refused("packet pending source population exceeds complete program"))?;
-        if self.program.events[completed..] != inventory.pending {
+        if program.events[completed..] != inventory.pending {
             return Err(refused(
                 "packet pending callbacks differ from immutable source program",
             ));
         }
-        let prefix = &self.program.events[..completed];
+        let prefix = &program.events[..completed];
         let packets = prefix
             .iter()
             .filter(|event| event.payload.is_some())
@@ -252,14 +262,13 @@ impl PacketSemanticSource {
         inventory.reached.validate().map_err(unknown)?;
         let mut sequence = 0;
         for output in &inventory.retained_outputs {
-            let (index, event) = self
-                .program
+            let (index, event) = program
                 .events
                 .iter()
                 .enumerate()
                 .find(|(_, event)| event.id == output.event)
                 .ok_or_else(|| refused("packet output has no source-native event"))?;
-            let expected_sequence = self.program.events[..=index]
+            let expected_sequence = program.events[..=index]
                 .iter()
                 .filter(|event| event.payload.is_some())
                 .count() as u64;
@@ -361,6 +370,27 @@ impl PacketSemanticSource {
         record: &PacketNativeRecord,
     ) -> Result<NativeSchedulingObservation, OperationFailure> {
         self.authenticate_activation_record(activation.record())?;
+        Self::historical_scheduling17_data(
+            &self.installation.descriptor,
+            || self.owner(),
+            root,
+            record,
+        )
+    }
+
+    /// Maps an authenticated historical Producer without constructing a World.
+    ///
+    /// Its caller separately verifies the model, original native proof and
+    /// complete owner correspondence. The result is inert scheduling DATA.
+    ///
+    /// # Errors
+    /// Refuses a closed gate or invalid full output payload reference.
+    pub(in crate::node_adapters::cnp::semantic) fn historical_scheduling17_data(
+        descriptor: &NodeDescriptor,
+        owner: impl FnOnce() -> OwnerIdentity,
+        root: &ContentRef,
+        record: &PacketNativeRecord,
+    ) -> Result<NativeSchedulingObservation, OperationFailure> {
         if record.inventory.gate_closed {
             return Err(refused(
                 "packet scheduling has foreign or unopened original activation",
@@ -372,12 +402,20 @@ impl PacketSemanticSource {
             .iter()
             .map(|output| {
                 let bytes = output.payload.as_slice();
+                let port = descriptor
+                    .ports
+                    .first()
+                    .ok_or_else(|| refused("packet historical publication port absent"))?;
+                let lane = port
+                    .lanes
+                    .first()
+                    .ok_or_else(|| refused("packet historical publication lane absent"))?;
                 Ok(NativePublication {
                     publication_id: output.event.clone(),
                     endpoint: Endpoint {
-                        node_id: self.installation.descriptor.id.clone(),
-                        port_id: self.installation.descriptor.ports[0].id.clone(),
-                        lane_id: self.installation.descriptor.ports[0].lanes[0].id.clone(),
+                        node_id: descriptor.id.clone(),
+                        port_id: port.id.clone(),
+                        lane_id: lane.id.clone(),
                     },
                     native_sequence: output.sequence,
                     publication: output.publication,
@@ -391,12 +429,12 @@ impl PacketSemanticSource {
             .collect::<Result<Vec<_>, OperationFailure>>()?;
         let bound = output_bound(&record.inventory);
         Ok(NativeSchedulingObservation {
-            node: self.installation.descriptor.id.clone(),
-            owners: vec![self.owner()],
+            node: descriptor.id.clone(),
+            owners: vec![owner()],
             reached: record.inventory.reached,
             closed_prefix: record.inventory.reached,
             bounds: vec![NativeProducerBound {
-                producer: self.installation.descriptor.id.clone(),
+                producer: descriptor.id.clone(),
                 bound,
                 proof_ref: root.clone(),
             }],

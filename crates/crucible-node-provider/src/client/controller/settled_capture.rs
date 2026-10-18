@@ -249,3 +249,6 @@ pub use construction::{
 #[path = "settled_capture/typed_owner.rs"]
 mod typed_owner;
 pub use typed_owner::RestoredSettledCaptureTypedOwnerData;
+
+#[path = "settled_capture/retained.rs"]
+mod retained;

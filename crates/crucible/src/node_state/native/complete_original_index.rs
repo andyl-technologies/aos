@@ -454,3 +454,7 @@ mod operation_spelling_tests {
 
 #[cfg(test)]
 mod tests;
+
+#[path = "complete_original_index/parent15.rs"]
+mod parent15;
+pub(super) use parent15::authenticate_initial15_parent_parts_data;
