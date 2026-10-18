@@ -491,3 +491,6 @@ impl CompleteOriginalFreshRestoreHostWindow {
         &self.quote
     }
 }
+
+#[path = "fresh_restore_host/initial_node.rs"]
+mod initial_node;

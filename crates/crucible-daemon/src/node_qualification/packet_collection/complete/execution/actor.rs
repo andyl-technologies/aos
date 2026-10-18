@@ -611,6 +611,16 @@ impl PacketCompleteExecutionActor {
         &self,
         maximum: usize,
     ) -> Result<usize, crucible::node_contract::RuntimeError> {
+        self.inactive_storage_selected_precredit_data(maximum, None)
+    }
+
+    fn inactive_storage_selected_precredit_data(
+        &self,
+        maximum: usize,
+        initial_sources: Option<
+            &[Rc<crucible::node_adapters::cnp::PacketCompleteSemanticSource>; 3],
+        >,
+    ) -> Result<usize, crucible::node_contract::RuntimeError> {
         use crucible::node_contract::RuntimeError;
         self.original_creator()
             .map_err(|_| RuntimeError::ForeignAuthority)?;
@@ -648,12 +658,21 @@ impl PacketCompleteExecutionActor {
             .charge(&self.supervision_proposal)
             .map_err(|_| RuntimeError::ResourceLimit)?;
         counter
-            .add(
-                self.runtime
+            .add(match initial_sources {
+                Some(sources) => self
+                    .runtime
+                    .as_ref()
+                    .ok_or(RuntimeError::OwnerUnavailable)?
+                    .retained_original_initial_requested_storage_precredit_data(
+                        sources,
+                        counter.remaining(),
+                    )?,
+                None => self
+                    .runtime
                     .as_ref()
                     .ok_or(RuntimeError::OwnerUnavailable)?
                     .original_inactive_retained_storage_precredit_data(counter.remaining())?,
-            )
+            })
             .map_err(|_| RuntimeError::ResourceLimit)?;
         Ok(counter.bytes())
     }
@@ -711,3 +730,6 @@ impl PacketCompleteExecutionActor {
             .map_err(failure)
     }
 }
+
+#[path = "actor/initial_preparation.rs"]
+mod initial_preparation;

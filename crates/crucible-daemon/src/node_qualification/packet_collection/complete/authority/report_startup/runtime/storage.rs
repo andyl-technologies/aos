@@ -37,7 +37,8 @@ pub(super) fn counter_scratch_data() -> Result<usize, RuntimeError> {
         InstalledConformancePlan::original_runtime_constructor_data_counter_scratch_data(),
         PacketCompleteNativeOracle::original_shared_construction_counter_scratch_data()?,
         PacketCompleteExecutionScene::original_construction_counter_scratch_data()?,
-        PacketCompleteExecutionActor::original_construction_counter_scratch_data()?];
+        PacketCompleteExecutionActor::original_construction_counter_scratch_data()?,
+        super::initial_preparation::counter_scratch_data()?];
     terms
         .into_iter()
         .try_fold(0usize, |a, b| add(a, b, usize::MAX))
@@ -112,9 +113,15 @@ impl PacketCompleteReportStartupHolder {
                     || self.runtime_in_flight.get()
                         == Some(OriginalRuntimeConstructionPhase::InactiveRuntime)
                 {
-                    actor
-                        .original_inactive_retained_storage_precredit_data(c.remaining())
-                        .or_else(|_| actor.dormant_construction_storage_data(c.remaining()))?
+                    let observed = if matches!(&self.purpose, StartupHolderPurpose::OriginalScene) {
+                        actor.retained_original_initial_requested_storage_precredit_data(
+                            &self.authority.roster.sources,
+                            c.remaining(),
+                        )
+                    } else {
+                        actor.original_inactive_retained_storage_precredit_data(c.remaining())
+                    };
+                    observed.or_else(|_| actor.dormant_construction_storage_data(c.remaining()))?
                 } else {
                     actor.dormant_construction_storage_data(c.remaining())?
                 },
@@ -134,13 +141,32 @@ impl PacketCompleteReportStartupHolder {
             .chain(owners.node_vector.iter())
         {
             c.add(
-                node.retained_requested_storage_precredit_data(
-                    &scratch,
-                    None,
-                    None,
-                    c.remaining(),
-                )?
-                .complete_requested_bytes_precredit_data()?,
+                if matches!(&self.purpose, StartupHolderPurpose::OriginalScene) {
+                    let source = self
+                        .authority
+                        .roster
+                        .sources
+                        .iter()
+                        .find(|source| {
+                            source.installation().descriptor.id
+                                == node.original_conformance_route_data().node
+                        })
+                        .ok_or(RuntimeError::ForeignAuthority)?;
+                    node.retained_original_initial_requested_storage_precredit_data(
+                        source,
+                        &scratch,
+                        c.remaining(),
+                    )?
+                    .complete_requested_bytes_precredit_data()?
+                } else {
+                    node.retained_requested_storage_precredit_data(
+                        &scratch,
+                        None,
+                        None,
+                        c.remaining(),
+                    )?
+                    .complete_requested_bytes_precredit_data()?
+                },
             )
             .map_err(storage_error)?;
         }
@@ -176,12 +202,26 @@ impl PacketCompleteReportStartupHolder {
             .map_err(storage_error)?;
         }
         if let Some(provider) = &owners.provider {
-            c.add(provider.original_retained_storage_precredit_data(c.remaining())?)
-                .map_err(storage_error)?;
+            let bytes = if matches!(&self.purpose, StartupHolderPurpose::OriginalScene) {
+                provider.retained_original_initial_requested_storage_precredit_data(
+                    &self.authority.roster.sources,
+                    c.remaining(),
+                )?
+            } else {
+                provider.original_retained_storage_precredit_data(c.remaining())?
+            };
+            c.add(bytes).map_err(storage_error)?;
         }
         if let Some(runtime) = &owners.runtime {
-            c.add(runtime.original_inactive_retained_storage_precredit_data(c.remaining())?)
-                .map_err(storage_error)?;
+            let bytes = if matches!(&self.purpose, StartupHolderPurpose::OriginalScene) {
+                runtime.retained_original_initial_requested_storage_precredit_data(
+                    &self.authority.roster.sources,
+                    c.remaining(),
+                )?
+            } else {
+                runtime.original_inactive_retained_storage_precredit_data(c.remaining())?
+            };
+            c.add(bytes).map_err(storage_error)?;
         }
         Ok(())
     }

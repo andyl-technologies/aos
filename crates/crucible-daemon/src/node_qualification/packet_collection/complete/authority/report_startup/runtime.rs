@@ -199,3 +199,6 @@ impl PacketCompleteReportStartupHolder {
             .map_err(|_| RuntimeError::OutstandingObligations)
     }
 }
+
+mod initial_preparation;
+pub(super) use initial_preparation::counter_scratch_data as initial_preparation_counter_scratch_data;

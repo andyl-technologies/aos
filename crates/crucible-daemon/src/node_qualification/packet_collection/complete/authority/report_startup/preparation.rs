@@ -73,6 +73,24 @@ impl PreparationOwners {
         }
     }
 
+    #[cfg(test)]
+    pub(super) fn original_initial_ticket_data(
+        &self,
+        selected: usize,
+    ) -> Result<
+        std::cell::Ref<'_, crucible::node_admission::CompleteOriginalFreshRestoreHostWindow>,
+        RuntimeError,
+    > {
+        self.peers
+            .get(selected)
+            .ok_or(RuntimeError::ForeignAuthority)?
+            .ticket
+            .get()
+            .ok_or(RuntimeError::OwnerUnavailable)?
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)
+    }
+
     // These roots live inline in the actual holder. Only the concrete supervisor
     // backing is charged here; completed preparation/query rows are phase terms.
     pub(super) fn charge_supervisors(
@@ -594,10 +612,9 @@ impl PacketCompleteReportStartupHolder {
         scope: &crucible::node_admission::OriginalRuntimeConstructionScope<'_>,
         maximum: usize,
     ) -> Result<usize, RuntimeError> {
-        if matches!(&held.purpose, StartupHolderPurpose::OriginalScene) {
-            return Self::original_initial_holder_storage_data(original, held, maximum);
+        if matches!(&held.purpose, StartupHolderPurpose::FreshRestoration(_)) {
+            held.authenticate_fresh_runtime_flight_data()?;
         }
-        held.authenticate_fresh_runtime_flight_data()?;
         Self::holder_storage_data(
             original,
             held,
@@ -677,6 +694,9 @@ impl PacketCompleteReportStartupHolder {
         phase: HolderStoragePhase<'_>,
     ) -> Result<usize, RuntimeError> {
         let require_complete_preparations = matches!(phase, HolderStoragePhase::HostQuery);
+        let initial_sources = matches!(phase, HolderStoragePhase::InitialLifecycle)
+            || (matches!(phase, HolderStoragePhase::RuntimeConstruction(_))
+                && matches!(&held.purpose, StartupHolderPurpose::OriginalScene));
         let live_original_scene = matches!(
             phase,
             HolderStoragePhase::InitialLifecycle
@@ -783,7 +803,7 @@ impl PacketCompleteReportStartupHolder {
                     // Every completed peer stays in its original initial
                     // phase until this whole lifecycle finishes, including
                     // earlier reactive peers in the third member's census.
-                    let report = if matches!(phase, HolderStoragePhase::InitialLifecycle) {
+                    let report = if initial_sources {
                         preparation.retained_initial_lifecycle_requested_storage_precredit_data(
                             &held.authority.roster.sources[member],
                             scratch,
@@ -803,11 +823,31 @@ impl PacketCompleteReportStartupHolder {
                         .add(report.complete_requested_bytes_precredit_data()?)
                         .map_err(storage_failure)?;
                 }
+            } else if initial_sources && peer.ticket.get().is_some() {
+                if peer.registry.is_some()
+                    || peer.operational.is_some()
+                    || peer.supervisor.is_some()
+                {
+                    return Err(RuntimeError::OwnerUnavailable);
+                }
+                // The same ticket remains retained after its preparation and
+                // metadata owners move. Follow that actual destination node;
+                // an empty source slot or a phase flag cannot establish it.
+                let ticket = peer
+                    .ticket
+                    .get()
+                    .ok_or(RuntimeError::OwnerUnavailable)?
+                    .try_borrow()
+                    .map_err(|_| RuntimeError::OwnerBusy)?;
+                held.authenticate_original_scene_preparation_destination_data(member, &ticket)?;
             } else if let HolderStoragePhase::RuntimeConstruction(scope) = phase {
                 if peer.registry.is_some()
                     || peer.operational.is_some()
                     || peer.supervisor.is_some()
                 {
+                    return Err(RuntimeError::OwnerUnavailable);
+                }
+                if matches!(&held.purpose, StartupHolderPurpose::OriginalScene) {
                     return Err(RuntimeError::OwnerUnavailable);
                 }
                 held.authenticate_fresh_preparation_destination_data(member, scope.activation())?;

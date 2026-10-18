@@ -1843,3 +1843,6 @@ pub use restored_capture_storage::OriginalRestoredCaptureRuntimeConstructionData
 
 #[path = "runtime/coordinator_commitment.rs"]
 pub(crate) mod coordinator_commitment;
+
+#[path = "runtime/initial_preparation.rs"]
+mod initial_preparation;

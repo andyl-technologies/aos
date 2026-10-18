@@ -132,7 +132,7 @@ impl NodeRuntime {
         &self,
         maximum: usize,
     ) -> Result<usize, RuntimeError> {
-        self.retained_requested_storage_inner(maximum, false)
+        self.retained_requested_storage_inner(maximum, false, None)
     }
 
     /// Observes actual owners using only closed typed precredit node callbacks.
@@ -150,7 +150,7 @@ impl NodeRuntime {
         maximum: usize,
     ) -> Result<usize, RuntimeError> {
         self.original_retained_requested_storage_precredit_scratch_data()?;
-        self.retained_requested_storage_inner(maximum, true)
+        self.retained_requested_storage_inner(maximum, true, None)
     }
 
     /// Names simultaneous fixed counters for this closed typed owning walk.
@@ -192,11 +192,18 @@ impl NodeRuntime {
             .ok_or(RuntimeError::ResourceLimit)
     }
 
-    fn retained_requested_storage_inner(
+    /// Counts the same runtime with an optional actual initial Source roster.
+    ///
+    /// # Errors
+    /// Preserves all scheduler, owner, metadata and requested-bound refusals.
+    pub(super) fn retained_requested_storage_inner(
         &self,
         maximum: usize,
         precredit: bool,
+        initial_sources: Option<&[Rc<crate::node_adapters::cnp::PacketCompleteSemanticSource>; 3]>,
     ) -> Result<usize, RuntimeError> {
+        use crate::node_adapters::cnp::CnpSemanticSource;
+
         // Authenticate the retained original before following its owner graph.
         self.scheduler
             .as_ref()
@@ -286,7 +293,17 @@ impl NodeRuntime {
             counter.owned(key)?;
             counter.add(size_of_val(node.as_ref()))?;
             let backing = if precredit {
-                node.retained_requested_storage_precredit_data(maximum)?
+                match initial_sources.and_then(|sources| {
+                    sources
+                        .iter()
+                        .find(|source| source.installation().descriptor.id == *key)
+                }) {
+                    Some(source) => node
+                        .retained_original_initial_requested_storage_precredit_data(
+                            source, maximum,
+                        )?,
+                    None => node.retained_requested_storage_precredit_data(maximum)?,
+                }
             } else {
                 node.retained_requested_storage_data(maximum)
                     .map_err(|_| RuntimeError::UnsupportedFacet)?

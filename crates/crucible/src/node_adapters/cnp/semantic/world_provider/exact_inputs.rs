@@ -274,6 +274,15 @@ impl CnpSemanticExactConformanceWorldProvider {
         &self,
         maximum: usize,
     ) -> Result<usize, RuntimeError> {
+        self.retained_storage_selected_precredit_data(maximum, None)
+    }
+
+    fn retained_storage_selected_precredit_data(
+        &self,
+        maximum: usize,
+        initial_sources: Option<&[Rc<crate::node_adapters::cnp::PacketCompleteSemanticSource>; 3]>,
+    ) -> Result<usize, RuntimeError> {
+        use crate::node_adapters::cnp::CnpSemanticSource;
         use crate::node_contract::{NodeRuntime, RuntimeOwnedStorage};
         if self.original.retirement.is_some() {
             return Err(RuntimeError::UnsupportedFacet);
@@ -299,13 +308,26 @@ impl CnpSemanticExactConformanceWorldProvider {
                 )
                 .ok_or(RuntimeError::ResourceLimit)?;
             for node in nodes {
-                bytes = bytes
-                    .checked_add(
-                        node.retained_requested_storage_precredit_data(
-                            &scratch, None, None, maximum,
+                let requested = match initial_sources {
+                    Some(sources) => {
+                        let source = sources
+                            .iter()
+                            .find(|source| {
+                                source.installation().descriptor.id
+                                    == node.original_conformance_route_data().node
+                            })
+                            .ok_or(RuntimeError::ForeignAuthority)?;
+                        node.retained_original_initial_requested_storage_precredit_data(
+                            source, &scratch, maximum,
                         )?
+                        .complete_requested_bytes_precredit_data()?
+                    }
+                    None => node
+                        .retained_requested_storage_precredit_data(&scratch, None, None, maximum)?
                         .complete_requested_bytes_precredit_data()?,
-                    )
+                };
+                bytes = bytes
+                    .checked_add(requested)
                     .ok_or(RuntimeError::ResourceLimit)?;
             }
         }
@@ -504,3 +526,6 @@ impl CnpSemanticExactConformanceWorldProvider {
         Ok((retained, transient, scratch))
     }
 }
+
+#[path = "exact_inputs/initial_preparation.rs"]
+mod initial_preparation;

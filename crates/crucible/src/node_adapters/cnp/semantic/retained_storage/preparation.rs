@@ -261,6 +261,19 @@ impl crate::node_adapters::cnp::semantic::CnpSemanticNode {
         supervisor: Option<&OriginalRetainedSupervisor>,
         maximum: usize,
     ) -> Result<CnpRetainedStorageReport, RuntimeError> {
+        self.original_retained_node_selected_precredit_data(
+            scratch, registry, supervisor, None, maximum,
+        )
+    }
+
+    pub(in crate::node_adapters::cnp::semantic) fn original_retained_node_selected_precredit_data(
+        &self,
+        scratch: &CnpPreparationStorageScratch,
+        registry: Option<&OriginalExtensionRegistryOwner>,
+        supervisor: Option<&OriginalRetainedSupervisor>,
+        initial_source: Option<&std::rc::Rc<super::super::PacketCompleteSemanticSource>>,
+        maximum: usize,
+    ) -> Result<CnpRetainedStorageReport, RuntimeError> {
         use crate::node_contract::RuntimeOwnedStorage;
         let Self {
             preparation: _,
@@ -305,9 +318,18 @@ impl crate::node_adapters::cnp::semantic::CnpSemanticNode {
             &node.preparation.realization,
             counter,
         )?;
-        node.preparation
-            .guard
-            .charge_retained_storage_precredit_data(registry, supervisor, counter)?;
+        match initial_source {
+            Some(source) => node
+                .preparation
+                .guard
+                .charge_initial_lifecycle_retained_storage_precredit_data(
+                    registry, supervisor, source, counter,
+                )?,
+            None => node
+                .preparation
+                .guard
+                .charge_retained_storage_precredit_data(registry, supervisor, counter)?,
+        }
         node.preparation
             .guard
             .preparation_storage_origin_precredit_data()?;

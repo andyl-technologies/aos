@@ -31,6 +31,52 @@ impl FacetDescription for CnpSemanticNode {
 }
 
 impl SimulationNode for CnpSemanticNode {
+    fn inspect_original_initial_preparation_data(
+        &self,
+        ticket: &crate::node_admission::CompleteOriginalFreshRestoreHostWindow,
+        source: &std::rc::Rc<super::PacketCompleteSemanticSource>,
+        plan: &crate::node_admission::InstalledConformancePlan,
+    ) -> Result<(), RuntimeError> {
+        CnpSemanticNode::inspect_original_initial_preparation_data(self, ticket, source, plan)
+    }
+
+    fn retained_original_initial_requested_storage_precredit_data(
+        &self,
+        source: &std::rc::Rc<super::PacketCompleteSemanticSource>,
+        maximum: usize,
+    ) -> Result<Option<usize>, RuntimeError> {
+        self.preparation
+            .guard
+            .preparation_storage_origin_precredit_data()?;
+        let scratch = super::CnpPreparationStorageScratch::new(
+            super::CnpPreparationStorageScratch::requested_bytes(),
+        )?;
+        let complete = CnpSemanticNode::retained_original_initial_requested_storage_precredit_data(
+            self, source, &scratch, maximum,
+        )?
+        .complete_requested_bytes_precredit_data()?;
+        let nested = complete
+            .checked_sub(std::mem::size_of::<Self>())
+            .ok_or(RuntimeError::ForeignAuthority)?;
+        Ok(Some(nested))
+    }
+
+    fn retained_original_initial_requested_storage_precredit_scratch_data(
+        &self,
+    ) -> Result<Option<usize>, RuntimeError> {
+        self.preparation
+            .guard
+            .preparation_storage_origin_precredit_data()?;
+        if self.retained_registry.is_none()
+            || self.retained_supervisor.is_none()
+            || self.retained_operational.is_none()
+        {
+            return Ok(None);
+        }
+        super::CnpSemanticPreparation::original_initial_node_retained_counter_scratch_data()
+            .map(Some)
+    }
+
     fn quote_original_restored_capture_prequote(
         &self,
         launch: &crucible_node_provider::reference_packet::service::PacketNative5SourceLaunch,

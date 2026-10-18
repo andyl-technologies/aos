@@ -246,6 +246,58 @@ fn source_built_packet_original_scene_reaches_inactive_runtime_and_reclaims() {
             &installed.original,
         )
         .unwrap();
+
+        let actual = PacketCompleteReportStartupHolder::original_inactive_holder_storage_for_test(
+            &installed.original,
+            usize::MAX,
+        )
+        .unwrap();
+        assert_eq!(
+            PacketCompleteReportStartupHolder::original_inactive_holder_storage_for_test(
+                &installed.original,
+                actual,
+            )
+            .unwrap(),
+            actual,
+        );
+        assert!(
+            PacketCompleteReportStartupHolder::original_inactive_holder_storage_for_test(
+                &installed.original,
+                actual.checked_sub(1).unwrap(),
+            )
+            .is_err(),
+        );
+        for member in 0..3 {
+            assert_eq!(
+                PacketCompleteReportStartupHolder::original_inactive_missing_destination_for_test(
+                    &installed.original,
+                    member,
+                ),
+                Err(crucible::node_contract::RuntimeError::OwnerUnavailable),
+            );
+            PacketCompleteReportStartupHolder::original_inactive_destination_for_test(
+                &installed.original,
+                member,
+                member,
+            )
+            .unwrap();
+            assert!(
+                PacketCompleteReportStartupHolder::original_inactive_destination_for_test(
+                    &installed.original,
+                    member,
+                    (member + 1) % 3,
+                )
+                .is_err()
+            );
+        }
+        assert_eq!(
+            PacketCompleteReportStartupHolder::original_inactive_holder_storage_for_test(
+                &installed.original,
+                actual,
+            )
+            .unwrap(),
+            actual,
+        );
     }));
     installed.retire().unwrap();
     let deadline = ProcessDeadline::after(Duration::from_secs(30)).unwrap();

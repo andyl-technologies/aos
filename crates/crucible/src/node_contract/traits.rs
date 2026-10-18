@@ -41,6 +41,47 @@ pub struct RetainedRetirementHistory {
 /// descriptions do not provide alternate mutation paths. Implementations need
 /// not be `Send` or `Sync`; a worker requires explicit custody transfer.
 pub trait SimulationNode {
+    /// Inspects the same completed initial node after its preparation moved.
+    ///
+    /// No preparation-phase exception, callback or ticket renewal is implied.
+    /// Unknown adapters refuse this separate raw owning-data path.
+    ///
+    /// # Errors
+    /// Refuses unsupported adapters or a foreign ticket, Source, plan or owner.
+    #[doc(hidden)]
+    fn inspect_original_initial_preparation_data(
+        &self,
+        _ticket: &crate::node_admission::CompleteOriginalFreshRestoreHostWindow,
+        _source: &std::rc::Rc<crate::node_adapters::cnp::PacketCompleteSemanticSource>,
+        _plan: &crate::node_admission::InstalledConformancePlan,
+    ) -> Result<(), RuntimeError> {
+        Err(RuntimeError::UnsupportedFacet)
+    }
+
+    /// Counts backing through a separately authenticated initial Source census.
+    ///
+    /// # Errors
+    /// Refuses unsupported adapters, foreign or active custody and storage bounds.
+    #[doc(hidden)]
+    fn retained_original_initial_requested_storage_precredit_data(
+        &self,
+        _source: &std::rc::Rc<crate::node_adapters::cnp::PacketCompleteSemanticSource>,
+        _maximum: usize,
+    ) -> Result<Option<usize>, RuntimeError> {
+        Ok(None)
+    }
+
+    /// Names the fixed initial-node census before any owning observation.
+    ///
+    /// # Errors
+    /// Refuses unsupported adapters, foreign custody or layout overflow.
+    #[doc(hidden)]
+    fn retained_original_initial_requested_storage_precredit_scratch_data(
+        &self,
+    ) -> Result<Option<usize>, RuntimeError> {
+        Ok(None)
+    }
+
     /// Names fixed original-node restoration quote views before its data walk.
     ///
     /// Unknown adapters return None. This raw getter performs no callback,

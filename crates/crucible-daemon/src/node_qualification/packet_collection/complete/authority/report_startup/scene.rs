@@ -305,6 +305,7 @@ impl PacketCompleteReportStartupHolder {
             initial_lifecycle::paired_launch_counter_scratch_data(),
             super::runtime::lifecycle_counter_scratch_data()?,
             super::runtime::fresh_counter_scratch_data()?,
+            super::runtime::initial_preparation_counter_scratch_data()?,
             std::mem::size_of::<std::cell::Ref<'_, OriginalSceneOwners>>(),
             std::mem::size_of::<std::cell::RefMut<'_, OriginalSceneOwners>>(),
             std::mem::size_of::<std::cell::Ref<'_, [Option<InstalledCnpConformanceRole>; 3]>>(),

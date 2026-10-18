@@ -1005,3 +1005,6 @@ pub use restored_capture::RestoredCollectingCaptureScope17;
 mod observation;
 pub use observation::ConformanceRuntimeObservation;
 pub(crate) use observation::ConformanceRuntimeObservationFields;
+
+#[path = "conformance/initial_preparation.rs"]
+mod initial_preparation;

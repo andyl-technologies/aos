@@ -1,5 +1,7 @@
 //! Owns generic original admission and the source-qualified common node capsule.
 
+mod initial_preparation_storage;
+
 mod construction_storage;
 pub use construction_storage::CnpConformanceNodeConstructionStorageData;
 
