@@ -1691,9 +1691,10 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   publish segments as trace leaves, and resume from chain positions.
   Executor and observer logs seal into per-attempt directories, and
   prepared-result journals own copies of the segments their results
-  reference. Checkpoint- and fork-offset seals and chain-position resume
-  remain open; scheduler continuations reference the scheduler log's sealed
-  segments (T-CAM-4.16). Resolved-effect traces seal into trace segments by
+  reference. Seal points depend only on size and the modeled attempt stop
+  (amended CCOMP-26), so no checkpoint- or fork-offset seal is required;
+  chain-position resume moves to T-CAM-10.3. Scheduler continuations
+  reference the scheduler log's sealed segments (T-CAM-4.16). Resolved-effect traces seal into trace segments by
   size only, checkpoints carry trace positions, and exact closures retain the
   referenced trace segments (CCOMP-31).
 - [ ] **T-CAM-4.12** Convert finding replay captures, CLI explanation,

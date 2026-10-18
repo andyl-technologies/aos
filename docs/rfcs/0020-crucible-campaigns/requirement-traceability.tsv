@@ -170,7 +170,7 @@ CCOMP-22	T-CAM-4.9	gate:campaign-component-contract,gate:campaign-cold-continuit
 CCOMP-23	T-CAM-4.9	gate:campaign-component-contract
 CCOMP-24	T-CAM-4.9	gate:campaign-component-contract
 CCOMP-25	T-CAM-4.11	gate:campaign-replay,gate:attempt-idempotence
-CCOMP-26	T-CAM-4.11	gate:campaign-replay,gate:content-address
+CCOMP-26	T-CAM-4.11,T-CAM-10.3	gate:campaign-replay,gate:content-address
 CCOMP-27	T-CAM-4.11	gate:campaign-replay,gate:e2e-determinism
 CCOMP-28	T-CAM-4.11	gate:campaign-component-contract,gate:attempt-idempotence
 CCOMP-29	T-CAM-4.11	gate:attempt-idempotence,gate:content-address
