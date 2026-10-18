@@ -9177,8 +9177,9 @@ Resumed qualification:
   installed files, the exact selected unit inventory and actual result markers.
   A separate full ext4 nextest run passes all 117 nonignored cases on this same
   source; its original six privileged cases remain separately inventoried.
-  Required application target compilation is running for this revision. The
-  finite guest disk is 512 MiB, accommodating all 32 declared
+  Required application target compilation also passes for this revision in
+  2,472 seconds: 128 unit/integration artifacts across 29 packages, without
+  executing application tests. The finite guest disk is 512 MiB, accommodating all 32 declared
   8 MiB project ceilings without changing any individual quota. Existing sealed
   range sources, completed retirement, consumer leases and NativeReady remain
   required; no complete task is accepted.
@@ -9210,9 +9211,23 @@ Resumed qualification:
   require unchanged durable pins and holds. Source review, all-target build and
   the formatter pair pass. A diagnostic reaching all targets with dead-code
   checks disabled passes; strict Clippy still reports the same nineteen existing
-  findings. Immutable image and actual guest qualification are running. This
-  path accepts only completed Running jobs; recovered reads, source reuse in
-  another assembly, consumer leases and NativeReady remain required.
+  findings. Its immutable image and independent verification pass, but the
+  actual guest stops with EACCES in the first new reader control, without a
+  retained-range success marker. That implementation attempted to reopen the
+  publisher-owned sealed namespace; role permissions remain unchanged. Review
+  also rejects its queued byte-read design under HOST-30: already-retained
+  sealed reads must not consult embedded state.
+  Follow-up `9b50146322` separates source preparation from actual reading. The
+  queue resolves genuine completed job custody, current pins and canonical
+  metadata before returning an opaque retained source. Its bounded positioned
+  reads verify the original authenticated descriptor, native project and kernel
+  seal without the queue, embedded-policy mutex or publisher namespace opens.
+  The native fixture now holds the actual worker's policy mutex while each
+  retained first/final range is read, releasing it only afterward. This control
+  is compiled only for explicitly enabled native fixtures and supplies no source,
+  pin or readiness authority. Corrected immutable-image and actual guest
+  qualification are running. Recovered reads, source reuse in another assembly,
+  consumer leases and NativeReady remain required; no complete task is accepted.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
   and all seven strict Clippy/documentation profiles pass. The interface,
   commit-path, status and schema gates pass on unchanged final source, including
