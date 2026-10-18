@@ -148,7 +148,10 @@ pub(super) fn complete(
             let chunk = hex(identity.digest());
             let length = u64::try_from(span.length).map_err(io::Error::other)?;
             if let Some(row) = next.residences.iter().find(|row| row.chunk == chunk) {
-                if row.object != hash || row.offset != span.offset || row.length != length {
+                if row.length != length
+                    || (!input.retains_residence(row)
+                        && (row.object != hash || row.offset != span.offset))
+                {
                     return Err(invalid(
                         "manifest publication conflicts with a prior residence",
                     ));

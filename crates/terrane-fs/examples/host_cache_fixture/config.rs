@@ -99,7 +99,17 @@ impl Inputs {
             state_gid: 844,
             tier_charge_budget_bytes: self.budget,
             policy: PolicyConfig {
-                capacity: 6 * 1024 * 1024,
+                // This case retains two independently funded objects. Its
+                // policy remains bounded by the same actual project hard limit.
+                capacity: if matches!(
+                    self.domain.as_str(),
+                    "tenant:publication-manifest-reuse"
+                        | "tenant:publication-manifest-reuse-bad-whole"
+                ) {
+                    HARD_LIMIT
+                } else {
+                    6 * 1024 * 1024
+                },
                 low_watermark: 4 * 1024 * 1024,
                 probation_bytes: 65536,
                 release_grace: Duration::from_secs(30),

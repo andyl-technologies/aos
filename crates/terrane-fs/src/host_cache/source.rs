@@ -1,10 +1,14 @@
-//! Retains genuine domain-bound encoded chunk descriptors for native commands.
+//! Retains genuine encoded or pinned sealed chunk sources for native commands.
 //!
 //! Each decode is bounded by CDC-12/CDC-13 and re-verifies the bytes actually
 //! read. A retained descriptor is not a pin or an allocation reservation.
 
 use super::NativeHostLayout;
+#[cfg(feature = "tokio")]
+use super::NativeResidentChunkSource;
 use rustix::fs::{Mode, OFlags, open, openat};
+#[cfg(feature = "tokio")]
+use std::sync::Arc;
 use std::{
     fs::{File, Metadata},
     io::{self, Read, Seek, SeekFrom},
@@ -22,19 +26,28 @@ use terrane_core::{
     identity::{Identity, IdentityKind, TERRANE_V1},
 };
 
-/// Retains a verified chunk source from one inspected domain's chunk directory.
+/// Retains a verified chunk source from one inspected native domain.
 ///
-/// This type grants no surface handle or pin authority. The native command
-/// owner must retain the corresponding real pin and reservation throughout use.
+/// This grants no surface handle or new pin authority. Encoded sources require
+/// their actual owner's original pin and reservation throughout use. Internal
+/// sealed sources retain their genuine completed publication job instead.
 pub struct NativeChunkSource {
-    file: File,
+    backing: Backing,
     domain: String,
     identity: Identity,
     length: usize,
     final_chunk: bool,
     profile: ChunkProfile,
     allocation_limit: usize,
-    dictionary: Option<Box<NativeChunkSource>>,
+}
+
+enum Backing {
+    Encoded {
+        file: File,
+        dictionary: Option<Box<NativeChunkSource>>,
+    },
+    #[cfg(feature = "tokio")]
+    Sealed(Arc<NativeResidentChunkSource>),
 }
 
 impl NativeChunkSource {
@@ -174,18 +187,46 @@ impl NativeChunkSource {
             None
         };
         let mut source = Self {
-            file,
+            backing: Backing::Encoded { file, dictionary },
             domain: layout.layout.domain().to_owned(),
             identity,
             length: declared,
             final_chunk,
             profile,
             allocation_limit,
-            dictionary,
         };
         source.read_verified()?;
         layout.recheck()?;
         Ok(source)
+    }
+
+    /// Uses only a genuine retained publication source for an ordered occurrence.
+    ///
+    /// # Errors
+    /// Refuses a source that cannot be nonfinal under the registered profile.
+    /// Actual bytes and the occurrence's full boundary context are rechecked
+    /// during copying, outside embedded state.
+    #[cfg(feature = "tokio")]
+    pub(in crate::host_cache) fn from_resident(
+        source: Arc<NativeResidentChunkSource>,
+        final_chunk: bool,
+    ) -> io::Result<Self> {
+        let length = source.span().length;
+        let profile = source.profile().clone();
+        if !final_chunk && length < profile.minimum() {
+            return Err(invalid(
+                "resident source is too short for a nonfinal occurrence",
+            ));
+        }
+        Ok(Self {
+            domain: source.domain().to_owned(),
+            identity: source.identity().clone(),
+            length,
+            final_chunk,
+            allocation_limit: profile.maximum(),
+            profile,
+            backing: Backing::Sealed(source),
+        })
     }
 
     /// Returns the source's trusted configured domain label.
@@ -206,9 +247,16 @@ impl NativeChunkSource {
     /// Borrows actual source and one-hop dictionary handles for owner binding.
     #[cfg(feature = "tokio")]
     pub(in crate::host_cache) fn handles(&self) -> impl Iterator<Item = (&Identity, usize, &File)> {
+        let dictionary = match &self.backing {
+            Backing::Encoded { dictionary, .. } => dictionary.as_deref(),
+            Backing::Sealed(_) => None,
+        };
         std::iter::once(self)
-            .chain(self.dictionary.as_deref())
-            .map(|source| (&source.identity, source.length, &source.file))
+            .chain(dictionary)
+            .filter_map(|source| match &source.backing {
+                Backing::Encoded { file, .. } => Some((&source.identity, source.length, file)),
+                Backing::Sealed(_) => None,
+            })
     }
 
     pub(super) fn matches(
@@ -227,22 +275,38 @@ impl NativeChunkSource {
     }
 
     pub(super) fn read_verified(&mut self) -> io::Result<Vec<u8>> {
-        let encoded = read_bounded(&mut self.file, &self.profile, self.allocation_limit)?;
-        let dictionary = self
-            .dictionary
-            .as_mut()
-            .map(|source| source.read_verified())
-            .transpose()?;
-        let verified = terrane::codec::decode_verified(
-            &encoded,
-            self.length,
-            &self.profile,
-            self.final_chunk,
-            &self.identity,
-            dictionary.as_deref(),
-        )
-        .map_err(invalid)?;
-        Ok(verified.plaintext().to_vec())
+        match &mut self.backing {
+            Backing::Encoded { file, dictionary } => {
+                let encoded = read_bounded(file, &self.profile, self.allocation_limit)?;
+                let dictionary = dictionary
+                    .as_mut()
+                    .map(|source| source.read_verified())
+                    .transpose()?;
+                let verified = terrane::codec::decode_verified(
+                    &encoded,
+                    self.length,
+                    &self.profile,
+                    self.final_chunk,
+                    &self.identity,
+                    dictionary.as_deref(),
+                )
+                .map_err(invalid)?;
+                Ok(verified.plaintext().to_vec())
+            }
+            #[cfg(feature = "tokio")]
+            Backing::Sealed(source) => {
+                let bytes = source.read_verified()?;
+                if bytes.len() != self.length
+                    || self.profile.first_boundary(&bytes) != bytes.len()
+                    || (!self.final_chunk && !self.profile.valid_nonfinal_chunk(&bytes))
+                {
+                    return Err(invalid(
+                        "resident source differs from its ordered chunk context",
+                    ));
+                }
+                Ok(bytes)
+            }
+        }
     }
 }
 

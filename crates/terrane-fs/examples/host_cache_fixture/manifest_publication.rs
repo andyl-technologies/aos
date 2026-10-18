@@ -3,6 +3,9 @@
 //! Pure byte fixtures establish no native authority. Every admission, metadata
 //! pin, anonymous output, publisher reply and residence comes from the real owner.
 
+#[path = "manifest_publication/reuse.rs"]
+mod reuse;
+
 use super::config::{HOLD, Inputs, STATE};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -53,6 +56,10 @@ fn descriptor(bytes: &[u8], kind: IdentityKind) -> io::Result<Descriptor> {
 }
 
 fn data(bad_whole: bool, dictionary_backed: bool) -> io::Result<Data> {
+    data_with_tail(bad_whole, dictionary_backed, 99)
+}
+
+fn data_with_tail(bad_whole: bool, dictionary_backed: bool, tail_byte: u8) -> io::Result<Data> {
     let profile = ChunkProfile::cdc_1m([0; 32]);
     let mut first = None;
     // Search bounded deterministic input for an honest early cut. Repetition
@@ -90,7 +97,7 @@ fn data(bad_whole: bool, dictionary_backed: bool) -> io::Result<Data> {
     } else {
         [vec![0], first.clone()].concat()
     };
-    let tail = vec![99; 31];
+    let tail = vec![tail_byte; 31];
     let plaintext = [first.as_slice(), first.as_slice(), tail.as_slice()].concat();
     let chunks = [first.as_slice(), first.as_slice(), tail.as_slice()]
         .into_iter()
@@ -144,6 +151,12 @@ pub(super) fn run(
     inputs: &Inputs,
     original: Option<Vec<u8>>,
 ) -> io::Result<()> {
+    if matches!(
+        mode,
+        "publish-manifest-reuse" | "publish-manifest-reuse-bad-whole"
+    ) {
+        return reuse::run(owner, runtime, inputs, original);
+    }
     let case = match mode {
         "publish-manifest" => "tenant:publication-manifest",
         "publish-manifest-cancel" => "tenant:publication-manifest-cancel",
@@ -222,22 +235,7 @@ pub(super) fn run(
         ChunkPosition::Final,
         [vec![0], data.tail.clone()].concat(),
     )?;
-    let mut random = [0; 16];
-    File::open("/dev/urandom")?.read_exact(&mut random)?;
-    let id = PackId::from_random_bytes(random);
-    let mut writer = PackWriter::new(id, PackClass::Meta, false);
-    writer
-        .append_raw(EntryKind::Manifest, &data.canonical)
-        .map_err(io::Error::other)?;
-    let sealed = writer.seal().map_err(io::Error::other)?;
-    let pack = sealed.bytes().to_vec();
-    let index = sealed.index_object().to_vec();
-    let pack_identity = TERRANE_V1
-        .calculate(IdentityKind::Pack, &pack)
-        .map_err(io::Error::other)?;
-    runtime
-        .block_on(owner.admit_metadata_pack(id, pack.clone(), index.clone()))
-        .map_err(io::Error::other)?;
+    let (pack_identity, pack, index) = admit_manifest(owner, runtime, &data)?;
     emit("READY actual manifest sources and metadata admitted; wait for publication control")?;
     control("start")?;
     let receipt = if mode == "publish-manifest-cancel" {
@@ -319,6 +317,30 @@ pub(super) fn run(
         emit(message)?;
     }
     Ok(())
+}
+
+fn admit_manifest(
+    owner: &NativeMetadataOwner,
+    runtime: &tokio::runtime::Runtime,
+    data: &Data,
+) -> io::Result<(Identity, Vec<u8>, Vec<u8>)> {
+    let mut random = [0; 16];
+    File::open("/dev/urandom")?.read_exact(&mut random)?;
+    let id = PackId::from_random_bytes(random);
+    let mut writer = PackWriter::new(id, PackClass::Meta, false);
+    writer
+        .append_raw(EntryKind::Manifest, &data.canonical)
+        .map_err(io::Error::other)?;
+    let sealed = writer.seal().map_err(io::Error::other)?;
+    let pack = sealed.bytes().to_vec();
+    let index = sealed.index_object().to_vec();
+    let pack_identity = TERRANE_V1
+        .calculate(IdentityKind::Pack, &pack)
+        .map_err(io::Error::other)?;
+    runtime
+        .block_on(owner.admit_metadata_pack(id, pack.clone(), index.clone()))
+        .map_err(io::Error::other)?;
+    Ok((pack_identity, pack, index))
 }
 
 fn check_resident_reads(

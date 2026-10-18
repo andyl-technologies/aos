@@ -189,3 +189,137 @@ def run(driver, publisher, uuid):
                 process.wait(timeout=5)
     driver.require(len(published) == len(set(published)) == 3,
                    "manifest sealed inodes were unexpectedly shared across distinct domains")
+    run_reuse(driver, publisher, uuid)
+
+
+def run_reuse(driver, publisher, uuid):
+    """Exercises actual resident sources for both valid and wrong whole-file hashes."""
+    for suffix in ["", "-bad-whole"]:
+        reuse_case(driver, publisher, uuid, suffix)
+
+
+def reuse_case(driver, publisher, uuid, suffix):
+    """Checks original native custody while a second object reuses sealed ranges."""
+    case = "publication-manifest-reuse" + suffix
+    process = driver.controlled_actor(case, "publish-manifest-reuse" + suffix, uuid)
+    try:
+        lines = driver.Lines(process)
+        lines.until("READY original manifest backing and new standalone tail retained; wait for range reuse control")
+        print(driver.process_status(process, 840), flush=True)
+        root = driver.root(case)
+        bodies = list((root / "sealed").glob("*/*"))
+        pending = list((root / "pending-delete").iterdir())
+        chunks = list((root / "chunks").glob("*/*"))
+        metadata_files = list((root / "objects/pack").glob("*/*"))
+        driver.require(len(bodies) == len(chunks) == 1 and len(pending) == 2
+                       and len(metadata_files) == 4, "reuse lacks actual first backing and new input pair")
+        first = bodies[0]
+        first_identity = (first.stat().st_dev, first.stat().st_ino, first.read_bytes())
+        prior = {path.name: (path.stat().st_dev, path.stat().st_ino, path.read_bytes()) for path in pending}
+        ordered = sorted(prior.items(), key=lambda item: len(item[1][2]), reverse=True)
+        repeated_hash, repeated = ordered[0]
+        old_tail_hash, old_tail = ordered[1]
+        driver.require(repeated[2][0] == old_tail[2][0] == 0 and len(repeated[2]) > 256 * 1024
+                       and first_identity[2] == repeated[2][1:] * 2 + old_tail[2][1:],
+                       "first reuse backing differs from its actual original sources")
+        new_tail = chunks[0]
+        new_stat = new_tail.stat()
+        new_content = new_tail.read_bytes()
+        new_hash, separator, codec = new_tail.name.partition(".")
+        driver.require(separator and codec == "0" and new_content == b"\x00" + bytes([100]) * 31
+                       and new_stat.st_uid == 840 and new_stat.st_gid == 845
+                       and new_stat.st_mode & 0o7777 == 0o640 and new_stat.st_nlink == 1,
+                       "new reuse tail lacks canonical admission custody")
+        snapshot = root / "state/cache/records.toml"
+        original_rows = tomllib.loads(snapshot.read_text())["residences"]
+        first_length = len(repeated[2]) - 1
+        driver.require(original_rows == [
+            {"chunk": row[0], "object": first.name, "offset": row[1], "length": row[2]}
+            for row in sorted([(repeated_hash, 0, first_length),
+                               (old_tail_hash, 2 * first_length, len(old_tail[2]) - 1)])
+        ], "reuse first ranges do not match actual original metadata")
+        metadata = {path: (path.stat().st_ino, path.read_bytes()) for path in metadata_files}
+        old_leases = {path: (path.stat().st_ino, path.read_bytes())
+                      for path in (root / "state/publication").glob("retirement-*.toml")}
+        driver.require(len(old_leases) == 2, "reuse first sources lost their original retirement records")
+        staging = root / "staging" / str(publisher.pid)
+        staging_inode = (staging.stat().st_dev, staging.stat().st_ino)
+        expected_bytes = repeated[2][1:] * 2 + new_content[1:]
+        if suffix:
+            process.stdin.write(b"publish\n")
+            process.stdin.flush()
+            lines.until("REFUSED resident reassembly whole hash; original source still readable and anonymous output retained; no Ready")
+            anonymous = []
+            for path in pathlib.Path(f"/proc/{process.pid}/fd").iterdir():
+                try:
+                    observed = path.stat()
+                    if (stat.S_ISREG(observed.st_mode) and observed.st_nlink == 0
+                            and observed.st_uid == 840 and observed.st_size == len(expected_bytes)):
+                        anonymous.append(path.read_bytes())
+                except FileNotFoundError:
+                    continue
+            driver.require(anonymous == [expected_bytes], "failed resident whole hash lost its actual anonymous output")
+        output, error = process.communicate(b"finish\n" if suffix else b"publish\n", timeout=30)
+        print(output.decode(), end="", flush=True)
+        if error:
+            print(error.decode(), end="", flush=True)
+        expected_result = ("PASS actual resident reassembly rejected the wrong whole hash, retained anonymous output and preserved original backing, ranges and sources; no Ready"
+                           if suffix else
+                           "PASS actual manifest reassembly reused pinned sealed ranges, retained original residences and retired only its new standalone source; no Ready")
+        driver.require(process.returncode == 0 and output.decode().splitlines() == [expected_result],
+                       "missing exact actual range reuse result: " + case)
+        driver.require((first.stat().st_dev, first.stat().st_ino, first.read_bytes()) == first_identity,
+                       "second assembly replaced or changed its original backing")
+        for digest, previous in prior.items():
+            path = root / "pending-delete" / digest
+            driver.require((path.stat().st_dev, path.stat().st_ino, path.read_bytes()) == previous,
+                           "reuse changed an original pending source inode")
+        for path, previous in {**metadata, **old_leases}.items():
+            driver.require((path.stat().st_ino, path.read_bytes()) == previous,
+                           "reuse rewrote an original metadata or retirement record")
+        driver.require((staging.stat().st_dev, staging.stat().st_ino) == staging_inode
+                       and list(staging.iterdir()) == [], "reuse changed or leaked publisher staging")
+        state = tomllib.loads(snapshot.read_text())
+        bodies = list((root / "sealed").glob("*/*"))
+        if suffix:
+            driver.require(bodies == [first] and state["residences"] == original_rows
+                           and list((root / "chunks").glob("*/*")) == [new_tail]
+                           and (new_tail.stat().st_dev, new_tail.stat().st_ino, new_tail.read_bytes())
+                               == (new_stat.st_dev, new_stat.st_ino, new_content)
+                           and len(list((root / "pending-delete").iterdir())) == 2
+                           and len(list((root / "state/publication").glob("retirement-*.toml"))) == 2,
+                           "wrong whole hash created backing, moved original ranges or retired a source")
+            return
+        second = [path for path in bodies if path != first]
+        driver.require(len(bodies) == 2 and len(second) == 1, "reuse lacks distinct actual second backing")
+        second = second[0]
+        second_stat = second.stat()
+        driver.require((second_stat.st_dev, second_stat.st_ino) != first_identity[:2]
+                       and second_stat.st_uid == second_stat.st_gid == 841
+                       and second_stat.st_mode & 0o7777 == 0o400 and second_stat.st_nlink == 1
+                       and second.read_bytes() == repeated[2][1:] * 2 + new_content[1:],
+                       "second sealed bytes, inode or native custody differ")
+        state = tomllib.loads(snapshot.read_text())
+        expected_rows = original_rows + [{"chunk": new_hash, "object": second.name,
+                                         "offset": 2 * first_length, "length": len(new_content) - 1}]
+        driver.require(sorted(state["residences"], key=lambda row: row["chunk"]) == sorted(expected_rows, key=lambda row: row["chunk"])
+                       and list((root / "chunks").glob("*/*")) == [],
+                       "reuse moved an original range or left a duplicate standalone source")
+        retired = root / "pending-delete" / new_hash
+        driver.require((retired.stat().st_dev, retired.stat().st_ino, retired.read_bytes())
+                       == (new_stat.st_dev, new_stat.st_ino, new_content)
+                       and len(list((root / "pending-delete").iterdir())) == 3,
+                       "reuse lost the new tail's actual native retirement")
+        leases = [tomllib.loads(path.read_text()) for path in (root / "state/publication").glob("retirement-*.toml")]
+        driver.require(len(leases) == 3 and any(lease["domain"] == driver.domain(case)
+                       and lease["device"] == new_stat.st_dev and lease["inode"] == new_stat.st_ino
+                       and lease["deadline_unix_ms"] > 0
+                       and lease["changed_seconds"] == retired.stat().st_ctime_ns // 1_000_000_000
+                       and lease["changed_nanoseconds"] == retired.stat().st_ctime_ns % 1_000_000_000
+                       for lease in leases),
+                       "reuse new source lacks its actual original-inode retirement lease")
+
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)

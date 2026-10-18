@@ -165,7 +165,8 @@ pub(in crate::host_cache::owner) fn retain(
             .custody()
             .lock()
             .map_err(|_| invalid("resident custody poisoned"))?;
-        if owner.generation != source.generation
+        if owner.faulted
+            || owner.generation != source.generation
             || !owner
                 .state
                 .residences
@@ -179,21 +180,106 @@ pub(in crate::host_cache::owner) fn retain(
     Ok(NativeResidentChunkSource { identity, source })
 }
 
-fn select(executor: &NativeOwnerExecutor, identity: &Identity) -> io::Result<Source> {
-    let row = {
-        let owner = executor
-            .custody()
+/// Retains an original source while the producer already holds genuine policy custody.
+///
+/// # Errors
+/// Refuses another physical worker, faulted preparation, missing current pin or
+/// native backing. This is preparation only; no plaintext is read under the lock.
+pub(super) fn retain_registered(
+    executor: &NativeOwnerExecutor,
+    owner: &Custody,
+    identity: Identity,
+) -> io::Result<NativeResidentChunkSource> {
+    let source = select_locked(executor, owner, &identity)?;
+    check_native(&source)?;
+    Ok(NativeResidentChunkSource { identity, source })
+}
+
+impl NativeResidentChunkSource {
+    /// Borrows the actual retained source's domain binding.
+    pub(in crate::host_cache) fn domain(&self) -> &str {
+        self.source.body.claim().domain()
+    }
+
+    /// Borrows the chunk profile checked against the original native root.
+    pub(in crate::host_cache) fn profile(&self) -> &terrane_core::chunking::ChunkProfile {
+        self.source.body.layout().layout().chunk_profile()
+    }
+
+    /// Rechecks original funding under a later serialized producer's exclusion.
+    ///
+    /// This creates no command or authority while that producer is faulted/busy.
+    /// Its genuine source was retained before the later operation began.
+    ///
+    /// # Errors
+    /// Refuses changed original job, pins, metadata, range or snapshot provenance.
+    pub(super) fn check_protected(&self, owner: &Custody) -> io::Result<()> {
+        let job = self
+            .source
+            .job
             .lock()
-            .map_err(|_| invalid("resident custody poisoned"))?;
-        owner.check_current()?;
-        owner
+            .map_err(|_| invalid("resident publication poisoned"))?;
+        if !owner
             .state
             .residences
             .iter()
-            .find(|row| row.chunk == state::hex(identity.digest()))
-            .cloned()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "resident chunk absent"))?
-    };
+            .any(|row| self.matches_record(row))
+            || registration(owner, &job, &self.identity, &self.source.row)? != self.source.span
+            || !job
+                .body
+                .as_ref()
+                .is_some_and(|body| Arc::ptr_eq(body, &self.source.body))
+        {
+            return Err(invalid("retained source lost original publication custody"));
+        }
+        Ok(())
+    }
+
+    /// Recognizes only the original checked residence, without choosing another body.
+    pub(super) fn matches_record(&self, row: &ResidenceRecord) -> bool {
+        same_row(row, &self.source.row)
+    }
+}
+
+/// Counts retained native source and generated range-name storage per unique chunk.
+pub(super) fn header_bytes() -> usize {
+    std::mem::size_of::<NativeResidentChunkSource>()
+        + std::mem::size_of::<Source>()
+        + 4 * std::mem::size_of::<usize>()
+        + 128
+}
+
+fn select(executor: &NativeOwnerExecutor, identity: &Identity) -> io::Result<Source> {
+    let owner = executor
+        .custody()
+        .lock()
+        .map_err(|_| invalid("resident custody poisoned"))?;
+    select_locked(executor, &owner, identity)
+}
+
+fn select_locked(
+    executor: &NativeOwnerExecutor,
+    owner: &Custody,
+    identity: &Identity,
+) -> io::Result<Source> {
+    executor.check_physical_worker()?;
+    owner.check_current()?;
+    if owner.faulted
+        || owner.recovery_required
+        || identity.kind() != IdentityKind::Chunk
+        || identity.profile() != TERRANE_V1.name()
+    {
+        return Err(invalid(
+            "resident source requires current Running preparation",
+        ));
+    }
+    let row = owner
+        .state
+        .residences
+        .iter()
+        .find(|row| row.chunk == state::hex(identity.digest()))
+        .cloned()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "resident chunk absent"))?;
     for resource in executor.publication_jobs() {
         let job = resource
             .lock()
@@ -201,14 +287,10 @@ fn select(executor: &NativeOwnerExecutor, identity: &Identity) -> io::Result<Sou
         if state::hex(job.claim.descriptor().digest()) != row.object {
             continue;
         }
-        let owner = executor
-            .custody()
-            .lock()
-            .map_err(|_| invalid("resident custody poisoned"))?;
         if !Arc::ptr_eq(&job.custody, executor.custody()) {
             return Err(invalid("resident publication belongs to another owner"));
         }
-        let span = registration(&owner, &job, identity, &row)?;
+        let span = registration(owner, &job, identity, &row)?;
         let body = Arc::clone(
             job.body
                 .as_ref()
@@ -249,8 +331,7 @@ fn registration(
     if (written.device, written.inode) != (snapshot.dev(), snapshot.ino()) {
         return Err(invalid("resident snapshot writer incarnation changed"));
     }
-    if owner.faulted
-        || owner.recovery_required
+    if owner.recovery_required
         || !job.started
         || !job.complete
         || owner.generation != written.generation

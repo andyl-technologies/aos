@@ -483,10 +483,31 @@ async fn execute(
         let mut physical = job
             .lock()
             .map_err(|_| invalid("publication job poisoned"))?;
+        let scope = {
+            let mut owner = custody
+                .lock()
+                .map_err(|_| invalid("publication custody poisoned"))?;
+            if let Some(input) = &physical.manifest {
+                input.check(&owner)?;
+            }
+            io::SourceContext::funded(&mut owner, &physical)?
+        };
+        // Keep the actual registered job locked, but never hold embedded state
+        // while copying existing sealed ranges or synchronizing native output.
+        io::prepare_source(&scope, &mut physical)?;
         let owner = custody
             .lock()
             .map_err(|_| invalid("publication custody poisoned"))?;
-        io::prepare_source(&owner, &mut physical)?;
+        state::check_funding(
+            &owner,
+            &physical.token,
+            &state::hex(physical.claim.descriptor().digest()),
+            physical.hold,
+            physical.generation,
+        )?;
+        if let Some(input) = &physical.manifest {
+            input.check(&owner)?;
+        }
         use std::os::unix::fs::MetadataExt;
         let source = physical
             .reader
@@ -615,6 +636,8 @@ async fn execute(
 /// Counts retained manifest headers and actual per-source ownership slots.
 pub(super) fn manifest_source_header_bytes() -> usize {
     std::mem::size_of::<manifest::ManifestInput>()
+        + std::mem::size_of::<io::SourceContext>()
+        + residence::header_bytes()
         + std::mem::size_of::<manifest::SourceTransfer>()
         + 2 * std::mem::size_of::<crate::host_cache::NativeChunkSource>()
         + 4 * std::mem::size_of::<TransferSource>()

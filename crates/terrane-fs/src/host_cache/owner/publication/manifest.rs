@@ -72,10 +72,11 @@ impl NativeMetadataOwner {
     /// chunks itself. It synchronizes metadata retention and allocation funding
     /// before creating output, streams ordered bytes through content verification,
     /// and retires actual standalone sources before recording their sealed ranges.
-    /// Existing sealed-range sources require the separately retained native read
-    /// path; this operation never guesses their bytes or reconstructs metadata
-    /// from assembled plaintext. View-policy selection belongs to the caller's
-    /// trusted tier composition, before this explicit physical operation.
+    /// Existing sealed ranges retain their original completed job and residence;
+    /// only newly admitted standalone sources retire into this object. This
+    /// never guesses source bytes or reconstructs metadata from plaintext.
+    /// View-policy selection belongs to the caller's trusted tier composition,
+    /// before this explicit physical operation.
     ///
     /// # Errors
     /// Refuses a full/stopped queue, absent Resume, invalid or missing metadata,
@@ -121,6 +122,7 @@ pub(super) struct ManifestInput {
     pub(super) plan: NativeReassemblyPlan,
     transfers: Vec<SourceTransfer>,
     dependencies: Vec<TransferSource>,
+    residents: Vec<Arc<crate::host_cache::NativeResidentChunkSource>>,
 }
 
 impl ManifestInput {
@@ -142,6 +144,10 @@ impl ManifestInput {
             ));
         }
         let mut sources = Vec::new();
+        let mut residents: Vec<Arc<crate::host_cache::NativeResidentChunkSource>> = Vec::new();
+        residents
+            .try_reserve_exact(declaration.chunks.len())
+            .map_err(io::Error::other)?;
         let mut transfers: Vec<SourceTransfer> = Vec::new();
         let mut dependencies: Vec<TransferSource> = Vec::new();
         sources
@@ -163,6 +169,38 @@ impl ManifestInput {
             let identity = TERRANE_V1
                 .from_digest(IdentityKind::Chunk, &chunk.digest)
                 .map_err(io::Error::other)?;
+            let chunk_hash = super::state::hex(identity.digest());
+            if owner
+                .state
+                .residences
+                .iter()
+                .any(|row| row.chunk == chunk_hash)
+            {
+                super::io::refuse_standalone(owner, identity.digest())?;
+                let source = match residents
+                    .iter()
+                    .find(|source| source.identity() == &identity)
+                {
+                    Some(source) => Arc::clone(source),
+                    None => {
+                        let source = Arc::new(super::residence::retain_registered(
+                            executor,
+                            owner,
+                            identity.clone(),
+                        )?);
+                        residents.push(Arc::clone(&source));
+                        source
+                    }
+                };
+                if u64::try_from(source.span().length).map_err(io::Error::other)? != chunk.length {
+                    return Err(invalid("resident chunk length differs from new manifest"));
+                }
+                sources.push(NativeChunkSource::from_resident(
+                    source,
+                    index + 1 == declaration.chunks.len(),
+                )?);
+                continue;
+            }
             let actual = TransferSource::select_chunk(executor, owner, &identity, chunk.length)?;
             super::io::refuse_other_standalone(owner, &chunk.digest, actual.key().codec)?;
             let source = NativeChunkSource::open_bounded(
@@ -202,6 +240,7 @@ impl ManifestInput {
             plan,
             transfers,
             dependencies,
+            residents,
         })
     }
 
@@ -211,6 +250,9 @@ impl ManifestInput {
     /// Refuses missing metadata pins, altered actual admissions or changed bytes.
     pub(super) fn check(&self, owner: &Custody) -> io::Result<()> {
         self.retained.check_registration(owner)?;
+        for source in &self.residents {
+            source.check_protected(owner)?;
+        }
         for dependency in &self.dependencies {
             if self
                 .transfers
@@ -223,6 +265,13 @@ impl ManifestInput {
             }
         }
         Ok(())
+    }
+
+    /// Recognizes an original range retained from its genuine completed job.
+    pub(super) fn retains_residence(&self, row: &terrane::host::cache::ResidenceRecord) -> bool {
+        self.residents
+            .iter()
+            .any(|source| source.matches_record(row))
     }
 
     /// Clones actual admissions for the exclusive turn without duplicating payloads.

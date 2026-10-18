@@ -66,6 +66,8 @@ fn main() -> std::process::ExitCode {
             "publish-manifest-cancel",
             "publish-manifest-bad-whole",
             "publish-manifest-dictionary",
+            "publish-manifest-reuse",
+            "publish-manifest-reuse-bad-whole",
         ] {
             println!("host-cache:{selector}");
         }

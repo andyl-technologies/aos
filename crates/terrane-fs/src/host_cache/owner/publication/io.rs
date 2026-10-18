@@ -5,13 +5,18 @@
 //! physical owner; kernel quotas bound allocation beyond the logical hold.
 
 use super::{PublicationJob, invalid, state};
-use crate::{host_cache::owner::retention::Custody, host_quota::NativeProject};
+use crate::{
+    host_cache::{NativeHostLayout, owner::retention::Custody},
+    host_quota::NativeProject,
+};
 use rustix::fs::{self, AtFlags, Mode, OFlags};
 use std::{
     fs::File,
     io::{self, Write},
     os::{fd::AsRawFd, unix::fs::MetadataExt},
+    sync::{Arc, Mutex},
 };
+use terrane::host::cache::HostDomainLocation;
 
 /// Refuses a canonical standalone copy pending coordinated residence transfer.
 ///
@@ -70,22 +75,80 @@ fn scan_standalone(owner: &Custody, digest: &[u8], retained_codec: Option<u32>) 
     owner.check_current()
 }
 
-/// Creates and synchronizes one project-inheriting anonymous plaintext inode.
+/// Retains native output bindings captured from the actual synchronized job.
+///
+/// Construction checks genuine funding under the physical owner's policy lock.
+/// Only immutable native bindings cross into the copying phase; this scope
+/// accepts no caller-selected path, descriptor, hold or validity assertion.
+pub(super) struct SourceContext {
+    custody: Arc<Mutex<Custody>>,
+    token: String,
+    generation: u64,
+    hold: u64,
+    size: u64,
+    layout: Arc<NativeHostLayout<HostDomainLocation>>,
+    content_uid: u32,
+    content_gid: u32,
+    project: u32,
+}
+
+impl SourceContext {
+    /// Captures the actual native bindings only after synchronized funding.
+    ///
+    /// # Errors
+    /// Refuses stale or absent funding, changed native custody, unavailable quota
+    /// observations and actual charge plus holds beyond the policy ceiling.
+    pub(super) fn funded(owner: &mut Custody, job: &PublicationJob) -> io::Result<Self> {
+        state::check_funding(
+            owner,
+            &job.token,
+            &state::hex(job.claim.descriptor().digest()),
+            job.hold,
+            job.generation,
+        )?;
+        owner.preparation.recheck()?;
+        state::check_charge(owner)?;
+        Ok(Self {
+            custody: Arc::clone(&job.custody),
+            token: job.token.clone(),
+            generation: job.generation,
+            hold: job.hold,
+            size: job.claim.plaintext_size(),
+            layout: Arc::clone(owner.preparation.layout()),
+            content_uid: owner.preparation.config.content_uid,
+            content_gid: owner.preparation.config.content_gid,
+            project: owner.preparation.config.project_id,
+        })
+    }
+}
+
+/// Creates and synchronizes actual anonymous output without an embedded guard.
+///
+/// The caller retains its registered physical job and exclusive executor turn.
+/// Source and pin registrations are checked before and after copying. Any
+/// partial output stays in that same job on error or waiter cancellation.
 ///
 /// # Errors
-/// Refuses missing synchronized funding, unsupported anonymous files, changed
-/// inode/project custody, write/sync failures or missing actual writer closure.
-pub(super) fn prepare_source(owner: &Custody, job: &mut PublicationJob) -> io::Result<()> {
-    state::check_funding(
-        owner,
-        &job.token,
-        &state::hex(job.claim.descriptor().digest()),
-        job.hold,
-        job.generation,
-    )?;
-    let objects = owner
-        .preparation
-        .layout()
+/// Refuses unsupported anonymous files, changed native bindings, invalid source
+/// bytes, write/sync failures or missing actual writer closure.
+pub(super) fn prepare_source(scope: &SourceContext, job: &mut PublicationJob) -> io::Result<()> {
+    if !Arc::ptr_eq(&scope.custody, &job.custody)
+        || scope.token != job.token
+        || scope.generation != job.generation
+        || scope.hold != job.hold
+        || scope.size != job.claim.plaintext_size()
+        || !job.started
+        || job.complete
+        || job.writer.is_some()
+        || job.reader.is_some()
+    {
+        return Err(invalid(
+            "anonymous output scope differs from its original funded job",
+        ));
+    }
+    scope.layout.recheck()?;
+    let objects = scope
+        .layout
         .directories
         .get("objects")
         .ok_or_else(|| invalid("publication objects root absent"))?;
@@ -99,16 +162,15 @@ pub(super) fn prepare_source(owner: &Custody, job: &mut PublicationJob) -> io::R
         .writer
         .as_mut()
         .ok_or_else(|| invalid("publication writer absent"))?;
-    check_source(owner, writer)?;
+    check_source(scope, writer)?;
     if let Some(input) = &mut job.manifest {
         input.plan.copy_verified(writer)?;
-        input.check(owner)?;
     } else {
         writer.write_all(&job.plaintext)?;
     }
     fs::fchmod(&*writer, Mode::from_raw_mode(0o400))?;
     writer.sync_all()?;
-    check_source(owner, writer)?;
+    check_source(scope, writer)?;
     let before = writer.metadata()?;
     let reader = File::from(fs::open(
         format!("/proc/self/fd/{}", writer.as_raw_fd()),
@@ -131,26 +193,21 @@ pub(super) fn prepare_source(owner: &Custody, job: &mut PublicationJob) -> io::R
         .reader
         .as_ref()
         .ok_or_else(|| invalid("publication reader absent"))?;
-    check_source(owner, reader)?;
+    check_source(scope, reader)?;
     if fs::fcntl_getfl(reader)?.intersects(OFlags::WRONLY | OFlags::RDWR | OFlags::PATH) {
         return Err(invalid("publication source is not independently read-only"));
     }
-    owner.check_current()
+    scope.layout.recheck()
 }
 
-fn check_source(owner: &Custody, file: &File) -> io::Result<()> {
+fn check_source(scope: &SourceContext, file: &File) -> io::Result<()> {
     let metadata = file.metadata()?;
     if !metadata.is_file()
         || metadata.nlink() != 0
-        || metadata.uid() != owner.preparation.config.content_uid
-        || metadata.gid() != owner.preparation.config.content_gid
-        || metadata.dev()
-            != owner
-                .preparation
-                .layout()
-                .directory_binding("layout-root")?
-                .0
-        || NativeProject::inspect(file)?.project_id != owner.preparation.config.project_id
+        || metadata.uid() != scope.content_uid
+        || metadata.gid() != scope.content_gid
+        || metadata.dev() != scope.layout.directory_binding("layout-root")?.0
+        || NativeProject::inspect(file)?.project_id != scope.project
     {
         return Err(invalid(
             "anonymous publication source has invalid native custody",

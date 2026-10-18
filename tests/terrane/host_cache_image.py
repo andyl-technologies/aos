@@ -302,6 +302,8 @@ def main():
         "retain-running", "retain-running-cancel",
         "publish-manifest", "publish-manifest-cancel", "publish-manifest-bad-whole",
         "publish-manifest-dictionary",
+        "publish-manifest-reuse",
+        "publish-manifest-reuse-bad-whole",
     ]]
     shared.require(listed == expected, "cache fixture exact selector inventory mismatch")
     unit_elf = output / "bin" / UNIT_NAME
