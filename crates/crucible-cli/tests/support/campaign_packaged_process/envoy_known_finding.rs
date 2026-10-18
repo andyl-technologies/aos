@@ -67,7 +67,7 @@ fn public_five_node_envoy_network_retains_known_failure() -> Result<(), Box<dyn 
         &fixture,
         &mut service,
         envoy_network::initial_discovery_attempt(&lineage, &policy)?,
-        Duration::from_secs(900),
+        envoy_network::envoy_attempt_limits(),
     );
     let discovery = match discovery {
         Ok(discovery) => discovery,
@@ -152,7 +152,7 @@ fn public_five_node_envoy_network_retains_known_failure() -> Result<(), Box<dyn 
         &mut service,
         &request,
         &unsafe_recovery,
-        Duration::from_secs(900),
+        envoy_network::envoy_attempt_limits(),
     )?;
     assert_eq!(
         failed["observation"]["stop"],

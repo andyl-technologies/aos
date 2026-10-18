@@ -20,6 +20,8 @@ const PROCESS_OBSERVATION_INTERVAL: Duration = Duration::from_millis(100);
 // responsive interval above.
 const LONG_ATTEMPT_OBSERVATION_INTERVAL: Duration = Duration::from_secs(1);
 
+#[path = "campaign_packaged_process/attempt_progress.rs"]
+mod attempt_progress;
 #[cfg(feature = "packaged-midpoint-flight")]
 #[path = "campaign_packaged_process/envoy_known_finding.rs"]
 mod envoy_known_finding;

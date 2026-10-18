@@ -7,10 +7,10 @@ use crucible_campaign::{
 };
 use crucible_core::NetworkFaultSelectable;
 
+use super::attempt_progress::{AttemptProgressWatch, AttemptWaitLimits};
+
 #[path = "envoy_network/resource_audit.rs"]
 mod resource_audit;
-
-const ATTEMPT_WAIT: Duration = Duration::from_secs(600);
 // Admission reserves the measured five-guest profile for each retained world:
 // a thin root at the follow-up boundary and the hot child forked from it.
 const ENVOY_HOT_FORK_BYTE_CEILING: u64 = 9 * 1024 * 1024 * 1024;
@@ -23,6 +23,14 @@ const ENVOY_QUANTUM_BUDGET: &str = "250000";
 const ENVOY_POLICY_VIRTUAL_TIME_PS: u64 = 30_000_000_000_000;
 const WITHDRAW_THEN_RELEARN: [u8; 32] = [0x22; 32];
 const RETAIN_AND_PROBE: [u8; 32] = [0x11; 32];
+
+/// Returns the wait limits every Envoy attempt shares.
+///
+/// The policy horizon above is the semantic bound on each attempt; waits
+/// fail on stalled progress rather than on a fixed host-time ceiling.
+pub(super) fn envoy_attempt_limits() -> AttemptWaitLimits {
+    AttemptWaitLimits::for_policy_horizon(ENVOY_POLICY_VIRTUAL_TIME_PS)
+}
 
 pub(super) struct FlightProgress {
     pub(super) parent: String,
@@ -212,7 +220,7 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
         &fixture,
         &mut service,
         discovery_attempt,
-        Duration::from_secs(900),
+        envoy_attempt_limits(),
     );
     stop_resource_sampling.store(true, std::sync::atomic::Ordering::Release);
     let resource_audit_result = resource_sampler
@@ -483,7 +491,8 @@ pub(super) fn choose_known(
 ) -> Result<Value, Box<dyn Error>> {
     let submission = guest_choice::submit_choice(fixture, choice, value, stop, command_byte)?;
     let request = guest_choice::accepted_branch_request(&submission)?;
-    let explanation = wait_for_request_attempt(fixture, service, &request, value, ATTEMPT_WAIT)?;
+    let explanation =
+        wait_for_request_attempt(fixture, service, &request, value, envoy_attempt_limits())?;
     require_bounded_primary_reached(&explanation, stop)?;
     println!("envoy_five_node_choice={explanation}");
 
@@ -600,8 +609,12 @@ fn wait_for_capture_ready(
     service: &mut CampaignServiceChild,
     request: &str,
 ) -> Result<Value, Box<dyn Error>> {
-    let deadline = Instant::now() + ATTEMPT_WAIT;
-    wait_for_long_process_observation(deadline, || {
+    let mut watch = AttemptProgressWatch::new(
+        format!("capture {request}"),
+        service.child.id(),
+        envoy_attempt_limits(),
+    );
+    let ready = wait_for_long_process_observation(watch.deadline(), || {
         if let Some(status) = service.child.try_wait()? {
             return Err(format!(
                 "Envoy campaign service exited before capture {request}: {status}"
@@ -610,6 +623,7 @@ fn wait_for_capture_ready(
         }
         let head = campaign_status(fixture)?;
         let snapshot = json_string(&head, "snapshot")?;
+        watch.observe(&format!("snapshot={snapshot}"))?;
         let output = connected_campaign(fixture)
             .args([
                 "capture-status",
@@ -638,8 +652,8 @@ fn wait_for_capture_ready(
             }
             _ => Err(format!("Envoy capture {request} has invalid outcome: {report}").into()),
         }
-    })?
-    .ok_or_else(|| format!("capture {request} did not become ready within {ATTEMPT_WAIT:?}").into())
+    })?;
+    ready.ok_or_else(|| watch.safety_cap_expired().into())
 }
 
 fn wait_for_public_completed_attempt(
@@ -647,8 +661,12 @@ fn wait_for_public_completed_attempt(
     service: &mut CampaignServiceChild,
     attempt: AttemptId,
 ) -> Result<Value, Box<dyn Error>> {
-    let deadline = Instant::now() + ATTEMPT_WAIT;
-    wait_for_long_process_observation(deadline, || {
+    let mut watch = AttemptProgressWatch::new(
+        format!("exact continuation {attempt}"),
+        service.child.id(),
+        envoy_attempt_limits(),
+    );
+    let completed = wait_for_long_process_observation(watch.deadline(), || {
         if let Some(status) = service.child.try_wait()? {
             return Err(format!(
                 "Envoy campaign service exited before exact continuation {attempt}: {status}"
@@ -659,15 +677,18 @@ fn wait_for_public_completed_attempt(
         let snapshot = json_string(&head, "snapshot")?;
         let Some(explanation) = explain_public_attempt(fixture, &snapshot, &attempt.to_string())?
         else {
+            watch.observe(&format!("snapshot={snapshot}"))?;
             return Ok(None);
         };
+        watch.observe(&format!(
+            "snapshot={snapshot} phase={}",
+            explanation["runtime"]["phase"]
+        ))?;
         Ok((!explanation["observation"].is_null()
             && explanation["runtime"]["phase"] == "completed")
             .then_some(explanation))
-    })?
-    .ok_or_else(|| {
-        format!("exact continuation {attempt} did not complete within {ATTEMPT_WAIT:?}").into()
-    })
+    })?;
+    completed.ok_or_else(|| watch.safety_cap_expired().into())
 }
 
 pub(super) fn initial_discovery_attempt(
@@ -734,14 +755,15 @@ pub(super) fn wait_for_public_attempt(
     fixture: &FlightFixture,
     service: &mut CampaignServiceChild,
     attempt: AttemptId,
-    timeout: Duration,
+    limits: AttemptWaitLimits,
 ) -> Result<Value, Box<dyn Error>> {
+    let mut watch =
+        AttemptProgressWatch::new(format!("attempt {attempt}"), service.child.id(), limits);
     let started = Instant::now();
-    let deadline = started + timeout;
     let mut next_progress = started + Duration::from_secs(30);
     let mut last_status = None;
     let mut last_explanation = None;
-    let explanation = wait_for_long_process_observation(deadline, || {
+    let explanation = wait_for_long_process_observation(watch.deadline(), || {
         if let Some(status) = service.child.try_wait()? {
             return Err(format!(
                 "Envoy campaign service exited before attempt {attempt}: {status}"
@@ -768,17 +790,34 @@ pub(super) fn wait_for_public_attempt(
         }
         let head = campaign_status(fixture)?;
         last_status = Some(head.clone());
+        let snapshot = json_string(&head, "snapshot")?;
         // This empty-frontier campaign can only admit discovery first. Wait
         // for its execution basis before requesting the snapshot explanation.
-        if !initial_discovery_admitted(&head)? {
-            return Ok(None);
+        let explanation = if initial_discovery_admitted(&head)? {
+            explain_public_attempt(fixture, &snapshot, &attempt.to_string())?
+        } else {
+            None
+        };
+        if let Some(explanation) = &explanation {
+            last_explanation = Some(explanation.clone());
         }
-        let snapshot = json_string(&head, "snapshot")?;
-        let Some(explanation) = explain_public_attempt(fixture, &snapshot, &attempt.to_string())?
-        else {
+        let phase = last_explanation
+            .as_ref()
+            .and_then(|report: &Value| report["runtime"]["phase"].as_str())
+            .unwrap_or("unadmitted");
+        if let Err(stall) = watch.observe(&format!("snapshot={snapshot} phase={phase}")) {
+            let diagnostics = initial_discovery_diagnostics(
+                fixture,
+                service,
+                attempt,
+                last_status.as_ref(),
+                last_explanation.as_ref(),
+            );
+            return Err(format!("{stall}; {diagnostics}").into());
+        }
+        let Some(explanation) = explanation else {
             return Ok(None);
         };
-        last_explanation = Some(explanation.clone());
         if explanation["runtime"]["phase"] == "terminal-failure" {
             let diagnostics = initial_discovery_diagnostics(
                 fixture,
@@ -802,8 +841,7 @@ pub(super) fn wait_for_public_attempt(
             last_status.as_ref(),
             last_explanation.as_ref(),
         );
-        format!("attempt {attempt} has no public observation within {timeout:?}; {diagnostics}")
-            .into()
+        format!("{}; {diagnostics}", watch.safety_cap_expired()).into()
     })
 }
 
@@ -900,10 +938,11 @@ pub(super) fn wait_for_request_attempt(
     service: &mut CampaignServiceChild,
     request: &str,
     value: &str,
-    timeout: Duration,
+    limits: AttemptWaitLimits,
 ) -> Result<Value, Box<dyn Error>> {
-    let deadline = Instant::now() + timeout;
-    let completed = wait_for_long_process_observation(deadline, || {
+    let mut watch =
+        AttemptProgressWatch::new(format!("request {request}"), service.child.id(), limits);
+    let completed = wait_for_long_process_observation(watch.deadline(), || {
         if let Some(status) = service.child.try_wait()? {
             return Err(format!(
                 "Envoy campaign service exited before request {request}: {status}"
@@ -912,6 +951,7 @@ pub(super) fn wait_for_request_attempt(
         }
         let head = campaign_status(fixture)?;
         let snapshot = json_string(&head, "snapshot")?;
+        let mut state = format!("snapshot={snapshot}");
         let output = connected_campaign(fixture)
             .args([
                 "request-attempts",
@@ -928,6 +968,7 @@ pub(super) fn wait_for_request_attempt(
             && String::from_utf8_lossy(&output.stderr)
                 .contains("campaign request used stale snapshot")
         {
+            watch.observe(&state)?;
             return Ok(None);
         }
         let page = parse_json_output(output, "query authenticated request attempts")?;
@@ -972,12 +1013,17 @@ pub(super) fn wait_for_request_attempt(
             if !explanation["observation"].is_null() {
                 return Ok(Some(explanation));
             }
+            state.push_str(&format!(
+                " {attempt}={}",
+                explanation["runtime"]["phase"]
+                    .as_str()
+                    .unwrap_or("unknown")
+            ));
         }
+        watch.observe(&state)?;
         Ok(None)
     })?;
-    completed.ok_or_else(|| {
-        format!("request {request} has no public completed attempt within {timeout:?}").into()
-    })
+    completed.ok_or_else(|| watch.safety_cap_expired().into())
 }
 
 pub(super) fn require_network_effect(
