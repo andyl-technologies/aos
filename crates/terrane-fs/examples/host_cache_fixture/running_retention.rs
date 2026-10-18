@@ -64,11 +64,14 @@ pub(super) fn run(
         .calculate(IdentityKind::Pack, &pack)
         .map_err(io::Error::other)?;
 
+    eprintln!("Running retention: begin actual recovery");
     let completed = runtime.block_on(owner.recover())?;
     completed.check_current()?;
+    eprintln!("Running retention: actual recovery complete; begin Resume");
     runtime
         .block_on(owner.resume_recovered(completed))
         .map_err(io::Error::other)?;
+    eprintln!("Running retention: actual Resume acknowledged");
     let before = fs::read(inputs.root.join("state/cache/records.toml"))?;
     if runtime
         .block_on(owner.retain_manifest(identity.clone()))
@@ -77,10 +80,12 @@ pub(super) fn run(
     {
         return Err(invalid("missing Running metadata changed durable policy"));
     }
+    eprintln!("Running retention: missing metadata refused without policy mutation");
 
     let admitted = runtime
         .block_on(owner.admit_metadata_pack(id, pack.clone(), index.clone()))
         .map_err(io::Error::other)?;
+    eprintln!("Running retention: actual metadata pair admitted");
     let prefix = inputs
         .root
         .join(format!("objects/pack/{:02x}", id.as_bytes()[0]));
@@ -113,6 +118,7 @@ pub(super) fn run(
         None
     } else {
         let retained = runtime.block_on(owner.retain_manifest(identity.clone()))?;
+        eprintln!("Running retention: first actual metadata retention completed");
         check_receipt(
             &retained,
             inputs,
