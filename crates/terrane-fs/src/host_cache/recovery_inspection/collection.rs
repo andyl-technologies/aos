@@ -160,9 +160,9 @@ fn decode_hex(name: &str, width: usize) -> io::Result<Vec<u8>> {
     {
         return Err(invalid("noncanonical shared-content hexadecimal name"));
     }
-    Ok(name
-        .as_bytes()
-        .chunks_exact(2)
+    let (pairs, _) = name.as_bytes().as_chunks::<2>();
+    Ok(pairs
+        .iter()
         .map(|pair| {
             let nibble = |byte: u8| {
                 if byte <= b'9' {

@@ -891,6 +891,6 @@ fn check_authenticated_client(root: &Path, expected_inode: u64) {
     // The receipt itself still owns the real root guard and measured inode.
     adopted.layout().recheck().unwrap();
     let mut plaintext = Vec::new();
-    (&*adopted.handle()).read_to_end(&mut plaintext).unwrap();
+    adopted.handle().read_to_end(&mut plaintext).unwrap();
     assert_eq!(plaintext, PLAINTEXT);
 }

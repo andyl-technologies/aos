@@ -308,32 +308,31 @@ pub(super) fn pack(
         if let Codec::ZstdDictionary(digest) = terrane_core::codec::parse_envelope(encoded)
             .map_err(invalid)?
             .codec
+            && let std::collections::btree_map::Entry::Vacant(slot) = dictionaries.entry(digest)
         {
-            if let std::collections::btree_map::Entry::Vacant(slot) = dictionaries.entry(digest) {
-                let remaining = context
-                    .reads
-                    .max_allocation_bytes
-                    .checked_sub(dictionary_bytes)
-                    .ok_or_else(|| invalid("dictionary budget overflow"))?;
-                let plaintext = dictionary(
-                    context,
-                    &digest,
-                    Some(&reader),
-                    packs,
-                    &mut dependencies,
-                    remaining,
-                )?;
-                dictionary_bytes = dictionary_bytes
-                    .checked_add(plaintext.len())
-                    .ok_or_else(|| invalid("dictionary budget overflow"))?;
-                if dictionary_bytes > context.reads.max_allocation_bytes {
-                    return Err(io::Error::new(
-                        io::ErrorKind::OutOfMemory,
-                        "pack dictionaries exceed aggregate read budget",
-                    ));
-                }
-                slot.insert(plaintext);
+            let remaining = context
+                .reads
+                .max_allocation_bytes
+                .checked_sub(dictionary_bytes)
+                .ok_or_else(|| invalid("dictionary budget overflow"))?;
+            let plaintext = dictionary(
+                context,
+                &digest,
+                Some(&reader),
+                packs,
+                &mut dependencies,
+                remaining,
+            )?;
+            dictionary_bytes = dictionary_bytes
+                .checked_add(plaintext.len())
+                .ok_or_else(|| invalid("dictionary budget overflow"))?;
+            if dictionary_bytes > context.reads.max_allocation_bytes {
+                return Err(io::Error::new(
+                    io::ErrorKind::OutOfMemory,
+                    "pack dictionaries exceed aggregate read budget",
+                ));
             }
+            slot.insert(plaintext);
         }
     }
     let profile = context.layout.layout().chunk_profile();

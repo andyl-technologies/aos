@@ -78,14 +78,11 @@ pub(super) fn classify(candidate: &NativeRecoveryCandidate) -> io::Result<Recove
         && key.codec == 0
         && key.descriptor.is_empty()
         && candidate.issues().is_empty()
+        && let Some(VerifiedEncodedBody::Pack(plan)) = candidate.verified()
+        && plan.detached_index_status() == DetachedIndexStatus::Matches
+        && key.pack_id.as_slice() == plan.pack_id().as_bytes()
     {
-        if let Some(VerifiedEncodedBody::Pack(plan)) = candidate.verified() {
-            if plan.detached_index_status() == DetachedIndexStatus::Matches
-                && key.pack_id.as_slice() == plan.pack_id().as_bytes()
-            {
-                return Ok(RecoveryCase::Pack);
-            }
-        }
+        return Ok(RecoveryCase::Pack);
     }
     Err(unresolved(
         "unsupported loose, missing-index or unresolved recovery candidate",

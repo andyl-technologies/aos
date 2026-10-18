@@ -155,7 +155,7 @@ impl NativeCacheOwnerConfig {
 
         if self.project_id == 0
             || self.project_hard_limit_bytes == 0
-            || self.project_hard_limit_bytes % 1024 != 0
+            || !self.project_hard_limit_bytes.is_multiple_of(1024)
             || self.project_hard_limit_bytes > self.tier_charge_budget_bytes
             || self.tier_charge_budget_bytes == 0
             || self.policy.capacity == 0

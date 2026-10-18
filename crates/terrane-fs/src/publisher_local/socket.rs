@@ -532,7 +532,7 @@ fn receive_record_with_space<const WORDS: usize>(
         }
         if value.cmsg_level == libc::SOL_SOCKET && value.cmsg_type == libc::SCM_RIGHTS {
             let length = value.cmsg_len - header_length;
-            if length % mem::size_of::<libc::c_int>() != 0 {
+            if !length.is_multiple_of(mem::size_of::<libc::c_int>()) {
                 invalid_ancillary = true;
             }
             for index in 0..length / mem::size_of::<libc::c_int>() {

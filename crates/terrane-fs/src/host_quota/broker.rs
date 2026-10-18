@@ -266,21 +266,22 @@ impl HostQuotaBroker {
                         }
                     }
                 }
-                if valid && sum <= self.budget {
-                    if let Some((quota, roots)) = selected {
-                        response.result = 0;
-                        response.filesystem_uuid = owner.filesystem_uuid.to_vec();
-                        response.project_id = owner.project_id;
-                        response.accounting = true;
-                        response.enforcement = true;
-                        response.hard_limit_bytes = quota.hard_limit_bytes;
-                        response.charged_reserved_bytes = quota.charged_reserved_bytes;
-                        response.hard_inode_limit = quota.hard_inode_limit;
-                        response.charged_inodes = quota.charged_inodes;
-                        response.roots = roots;
-                        response.tier_charge_budget_bytes = self.budget;
-                        response.configured_limit_sum_bytes = sum;
-                    }
+                if valid
+                    && sum <= self.budget
+                    && let Some((quota, roots)) = selected
+                {
+                    response.result = 0;
+                    response.filesystem_uuid = owner.filesystem_uuid.to_vec();
+                    response.project_id = owner.project_id;
+                    response.accounting = true;
+                    response.enforcement = true;
+                    response.hard_limit_bytes = quota.hard_limit_bytes;
+                    response.charged_reserved_bytes = quota.charged_reserved_bytes;
+                    response.hard_inode_limit = quota.hard_inode_limit;
+                    response.charged_inodes = quota.charged_inodes;
+                    response.roots = roots;
+                    response.tier_charge_budget_bytes = self.budget;
+                    response.configured_limit_sum_bytes = sum;
                 }
             } else {
                 response.result = 2;

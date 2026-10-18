@@ -197,8 +197,9 @@ fn digest(name: &str, size: usize) -> io::Result<Vec<u8>> {
     {
         return Err(invalid("unexpected inventory key name"));
     }
-    name.as_bytes()
-        .chunks_exact(2)
+    let (pairs, _) = name.as_bytes().as_chunks::<2>();
+    pairs
+        .iter()
         .map(|pair| {
             let nibble = |byte: u8| {
                 if byte <= b'9' {

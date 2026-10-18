@@ -223,7 +223,7 @@ pub fn provision_project(root: &File, project_id: u32, hard_limit_bytes: u64) ->
             "project root must be a directory",
         ));
     }
-    if project_id == 0 || hard_limit_bytes == 0 || hard_limit_bytes % 1024 != 0 {
+    if project_id == 0 || hard_limit_bytes == 0 || !hard_limit_bytes.is_multiple_of(1024) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "finite aligned project limit required",
