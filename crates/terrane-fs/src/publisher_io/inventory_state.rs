@@ -1,12 +1,15 @@
-//! Reconciles bounded bindings against independently verified native content.
+//! Reconciles bounded publication state against verified native content.
 //!
 //! The existing portable binding parser remains authoritative for its private
-//! format. Record names never supply a content claim. Unknown, orphaned, pending
-//! state stays unresolved, without deletion or replacement. Manifest claims keep
-//! their actual verified metadata pack/index and native custody through finish.
+//! format. Record names never supply a content claim. Known historical leases
+//! remain checked metadata without supplying a body, pin or current deadline.
+//! Unknown, orphaned binding and incomplete state stays unresolved, without
+//! deletion or replacement. Manifest claims keep their actual verified metadata
+//! pack/index and native custody through finish.
 
 use super::*;
 use std::os::unix::fs::MetadataExt;
+use terrane::host::publication::MAX_RETIREMENT_RECORD_BYTES;
 use terrane::host::publication::{FsPublicationState, PublicationState, VerityBinding};
 
 // Record capacity, retained canonical metadata and decoded payloads share one
@@ -64,7 +67,14 @@ struct Record {
     file: File,
     observed: std::fs::Metadata,
     bytes: Vec<u8>,
+    kind: RecordKind,
     body: Option<Body>,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum RecordKind {
+    Binding,
+    Retirement,
 }
 
 /// Retains exhaustive private records and verified sources through reconciliation.
@@ -104,16 +114,31 @@ impl StateInventory {
             charge(budget)?;
             // This only classifies an existing private name. Its exact match to
             // an independently reconstructed claim is required separately.
-            let (domain, content) = name
-                .strip_suffix(".toml")
-                .and_then(|stem| stem.split_once('-'))
-                .ok_or_else(|| invalid("unresolved publication-state record name"))?;
-            digest(domain, 32)?;
-            digest(content, 32)?;
+            let kind = if name.starts_with("retirement-") {
+                RecordKind::Retirement
+            } else {
+                let (domain, content) = name
+                    .strip_suffix(".toml")
+                    .and_then(|stem| stem.split_once('-'))
+                    .ok_or_else(|| invalid("unresolved publication-state record name"))?;
+                digest(domain, 32)?;
+                digest(content, 32)?;
+                RecordKind::Binding
+            };
             let mut file = open(&directory, &name, false)?;
             inventory.check(&file, Custody::Publisher, InodeKind::File)?;
             let observed = file.metadata()?;
-            let canonical = bytes(&mut file, MAX_RECORD)?;
+            let bound = if kind == RecordKind::Retirement {
+                MAX_RETIREMENT_RECORD_BYTES
+            } else {
+                MAX_RECORD
+            };
+            let canonical = bytes(&mut file, bound)?;
+            if kind == RecordKind::Retirement {
+                // A valid historical lease is metadata, never an existing
+                // body, pin, current expiry or recovery-completion receipt.
+                lease_records::validate(inventory, &name, &canonical)?;
+            }
             retained_bytes = add_retained(retained_bytes, canonical.capacity())?;
             if !same_inode_snapshot(&observed, &file.metadata()?) {
                 return Err(invalid("publication-state record changed during capture"));
@@ -123,6 +148,7 @@ impl StateInventory {
                 file,
                 observed,
                 bytes: canonical,
+                kind,
                 body: None,
             });
         }
@@ -140,10 +166,15 @@ impl StateInventory {
     ) -> io::Result<()> {
         let mut named = open(directory, &record.name, false)?;
         inventory.check(&named, Custody::Publisher, InodeKind::File)?;
+        let bound = if record.kind == RecordKind::Retirement {
+            MAX_RETIREMENT_RECORD_BYTES
+        } else {
+            MAX_RECORD
+        };
         if !same_inode_snapshot(&record.observed, &named.metadata()?)
             || !same_inode_snapshot(&record.observed, &record.file.metadata()?)
-            || bytes(&mut named, MAX_RECORD)? != record.bytes
-            || bytes(&mut record.file, MAX_RECORD)? != record.bytes
+            || bytes(&mut named, bound)? != record.bytes
+            || bytes(&mut record.file, bound)? != record.bytes
         {
             return Err(invalid("publication-state inode or bytes changed"));
         }
@@ -204,7 +235,7 @@ impl StateInventory {
             // interpreting an absent record as an existing durable binding.
             return Ok(());
         };
-        if record.body.is_some() {
+        if record.kind != RecordKind::Binding || record.body.is_some() {
             return Err(invalid(
                 "publication-state record matched multiple canonical bodies",
             ));
@@ -251,17 +282,21 @@ impl StateInventory {
         body.verified.recheck(inventory)
     }
 
+    fn recheck_binding(inventory: &NativeInventory, record: &Record) -> io::Result<()> {
+        match (record.kind, record.body.as_ref()) {
+            (RecordKind::Binding, Some(body)) => Self::recheck_body(inventory, body),
+            (RecordKind::Retirement, None) => Ok(()),
+            _ => Err(invalid("unreconciled publication-state record")),
+        }
+    }
+
     /// Rechecks exhaustive state and synchronizes actual matched record custody.
     ///
     /// # Errors
     /// Rejects unmatched records, changed physical entries or durability failure.
     pub(super) fn finish(&mut self, inventory: &NativeInventory) -> io::Result<()> {
         for record in &mut self.records {
-            let body = record
-                .body
-                .as_ref()
-                .ok_or_else(|| invalid("unreconciled publication-state record"))?;
-            Self::recheck_body(inventory, body)?;
+            Self::recheck_binding(inventory, record)?;
             Self::recheck_record(&self.directory, inventory, record)?;
             // No model callback acknowledges durability: these are the retained
             // actual record inode and its actual private containing directory.
@@ -269,11 +304,7 @@ impl StateInventory {
         }
         self.directory.sync_all()?;
         for record in &mut self.records {
-            let body = record
-                .body
-                .as_ref()
-                .ok_or_else(|| invalid("unreconciled publication-state record"))?;
-            Self::recheck_body(inventory, body)?;
+            Self::recheck_binding(inventory, record)?;
             Self::recheck_record(&self.directory, inventory, record)?;
         }
         let actual = names(&self.directory, MAX_CANDIDATES)?;
@@ -287,11 +318,7 @@ impl StateInventory {
             return Err(invalid("publication-state physical record set changed"));
         }
         for record in &self.records {
-            let body = record
-                .body
-                .as_ref()
-                .ok_or_else(|| invalid("unreconciled publication-state record"))?;
-            Self::recheck_body(inventory, body)?;
+            Self::recheck_binding(inventory, record)?;
         }
         Ok(())
     }

@@ -35,6 +35,74 @@ struct Record {
     deadline_unix_ms: u64,
 }
 
+/// Bounds the existing private retirement-record representation.
+pub const MAX_RETIREMENT_RECORD_BYTES: usize = 4096;
+
+/// Contains syntax-checked retirement metadata without current lease authority.
+///
+/// A record may outlive its old inode. Parsing does not prove that an inode is
+/// pending, that its deadline is current, or that any content or pin is valid.
+/// Native inventory independently checks the retained file and typed key.
+pub struct RetirementRecordCandidate {
+    key: Vec<u8>,
+    device: u64,
+}
+
+impl RetirementRecordCandidate {
+    /// Validates bounded private bytes against their domain and exact filename.
+    ///
+    /// # Errors
+    /// Rejects malformed or oversized TOML, unknown fields/version/domain,
+    /// invalid key bounds or inode/timestamp fields, a missing deadline, and a
+    /// filename that does not match the existing domain-and-key digest.
+    pub fn parse(domain: &str, name: &str, bytes: &[u8]) -> io::Result<Self> {
+        let invalid = |message| io::Error::new(io::ErrorKind::InvalidData, message);
+        if bytes.len() > MAX_RETIREMENT_RECORD_BYTES {
+            return Err(invalid("oversized retirement record"));
+        }
+        let text = std::str::from_utf8(bytes)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let record: Record = toml::from_str(text)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        terrane_core::properties::Domain::parse(domain)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        if record.version != 1
+            || record.domain != domain
+            || record.key.is_empty()
+            || record.key.len() > 128
+            || record.inode == 0
+            || !(0..1_000_000_000).contains(&record.changed_nanoseconds)
+            || record.deadline_unix_ms == 0
+        {
+            return Err(invalid("invalid retirement record context"));
+        }
+
+        // This reproduces the existing writer's private filename, without
+        // changing its format or treating the digest as a content identity.
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(&(domain.len() as u64).to_le_bytes());
+        hasher.update(domain.as_bytes());
+        hasher.update(&record.key);
+        if name != format!("retirement-{}.toml", hasher.finalize().to_hex()) {
+            return Err(invalid("retirement record filename mismatch"));
+        }
+        Ok(Self {
+            key: record.key,
+            device: record.device,
+        })
+    }
+
+    /// Borrows the recorded untrusted key for native structural validation.
+    pub fn key(&self) -> &[u8] {
+        &self.key
+    }
+
+    /// Returns the recorded device, which must match actual native custody.
+    pub fn device(&self) -> u64 {
+        self.device
+    }
+}
+
 /// Identifies the actual retained inode and its post-rename change timestamp.
 ///
 /// The timestamp distinguishes a reused inode number after publisher restart.
@@ -248,5 +316,91 @@ impl<F: LocalFs + Sync> FsPublicationState<F> {
         self.fs.sync_file(&path).await?;
         self.fs.sync_directory(&self.directory).await?;
         Ok(RetirementLease { deadline_unix_ms })
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "Retirement record fixtures intentionally fail on invalid setup."
+)]
+mod candidate_tests {
+    use super::*;
+
+    fn record() -> String {
+        "version=1\ndomain='public'\nkey=[1,2]\ndevice=7\ninode=11\nchanged_seconds=1\nchanged_nanoseconds=2\ndeadline_unix_ms=3\n".to_owned()
+    }
+
+    fn name(key: &[u8]) -> String {
+        // Independent fixed public-domain prefix, retaining the existing
+        // little-endian length and opaque key bytes in the filename contract.
+        let bytes = [[6, 0, 0, 0, 0, 0, 0, 0].as_slice(), b"public", key].concat();
+        format!("retirement-{}.toml", blake3::hash(&bytes).to_hex())
+    }
+
+    #[test]
+    fn retirement_candidate_returns_only_untrusted_key_and_device() {
+        let candidate =
+            RetirementRecordCandidate::parse("public", &name(&[1, 2]), record().as_bytes())
+                .unwrap();
+        assert_eq!(candidate.key(), [1, 2]);
+        assert_eq!(candidate.device(), 7);
+    }
+
+    #[test]
+    fn retirement_candidate_rejects_wrong_names_domains_and_unknown_fields() {
+        assert!(
+            RetirementRecordCandidate::parse(
+                "public",
+                "retirement-other.toml",
+                record().as_bytes()
+            )
+            .is_err()
+        );
+        assert!(
+            RetirementRecordCandidate::parse("private:other", &name(&[1, 2]), record().as_bytes())
+                .is_err()
+        );
+        assert!(
+            RetirementRecordCandidate::parse(
+                "public",
+                &name(&[1, 2]),
+                format!("{}foreign=1\n", record()).as_bytes()
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn retirement_candidate_rejects_invalid_record_values() {
+        for (field, invalid) in [
+            ("version=1", "version=2"),
+            ("inode=11", "inode=0"),
+            ("changed_nanoseconds=2", "changed_nanoseconds=-1"),
+            ("changed_nanoseconds=2", "changed_nanoseconds=1000000000"),
+            ("deadline_unix_ms=3", "deadline_unix_ms=0"),
+            ("key=[1,2]", "key=[]"),
+        ] {
+            let bytes = record().replace(field, invalid);
+            assert!(
+                RetirementRecordCandidate::parse("public", &name(&[1, 2]), bytes.as_bytes())
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn retirement_candidate_bounds_record_and_key_allocations() {
+        assert!(
+            RetirementRecordCandidate::parse(
+                "public",
+                &name(&[1, 2]),
+                &[b' '; MAX_RETIREMENT_RECORD_BYTES + 1]
+            )
+            .is_err()
+        );
+        let key = vec![1; 129];
+        let bytes = record().replace("key=[1,2]", &format!("key={key:?}"));
+        assert!(RetirementRecordCandidate::parse("public", &name(&key), bytes.as_bytes()).is_err());
     }
 }

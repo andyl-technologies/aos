@@ -32,6 +32,9 @@ use crate::host_cache::{NativeHostLayout, NativeHostMetadataReader, NativeManife
 #[path = "inventory_state.rs"]
 mod state;
 
+#[path = "inventory_leases.rs"]
+mod lease_records;
+
 #[path = "inventory_startup.rs"]
 mod startup;
 
@@ -664,6 +667,35 @@ mod tests {
         for malformed in ["00FF", "0xff", "000", "../a", "gggg"] {
             assert!(digest(malformed, 2).is_err());
         }
+
+        let identity = TERRANE_V1.calculate(IdentityKind::Chunk, b"lease").unwrap();
+        let descriptor = Descriptor::from_identity(&TERRANE_V1, &identity, b"lease").unwrap();
+        let sealed = descriptor.encode();
+        assert!(lease_records::validate_key(&sealed).is_ok());
+
+        let mut chunk = vec![1, 2];
+        chunk.extend_from_slice(&sealed);
+        chunk.push(0);
+        assert!(lease_records::validate_key(&chunk).is_ok());
+
+        let mut pack = vec![2];
+        pack.extend_from_slice(&[7; 16]);
+        pack.push(0);
+        assert!(lease_records::validate_key(&pack).is_ok());
+        *pack.last_mut().unwrap() = 1;
+        assert!(lease_records::validate_key(&pack).is_ok());
+
+        let mut wrong_codec = chunk.clone();
+        wrong_codec[1] = 3;
+        *chunk.last_mut().unwrap() = 1;
+        *pack.last_mut().unwrap() = 2;
+        for malformed in [vec![1], vec![2], wrong_codec, chunk, pack] {
+            assert!(lease_records::validate_key(&malformed).is_err());
+        }
+
+        let tree = TERRANE_V1.calculate(IdentityKind::Tree, b"lease").unwrap();
+        let tree = Descriptor::from_identity(&TERRANE_V1, &tree, b"lease").unwrap();
+        assert!(lease_records::validate_key(&tree.encode()).is_err());
     }
 
     #[test]

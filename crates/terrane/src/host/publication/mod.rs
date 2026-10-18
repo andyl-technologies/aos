@@ -8,7 +8,10 @@ mod claim;
 mod leases;
 mod sequence;
 mod state;
-pub use leases::{RetirementInode, RetirementLease, RetirementLeaseRequest};
+pub use leases::{
+    MAX_RETIREMENT_RECORD_BYTES, RetirementInode, RetirementLease, RetirementLeaseRequest,
+    RetirementRecordCandidate,
+};
 
 pub use claim::{PublicationClaim, PublicationRecipe};
 pub use sequence::{
