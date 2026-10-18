@@ -67,7 +67,7 @@ struct Snapshot {
 // until the exhaustive binding decision, without claiming a durable cache pin.
 enum SealedClaim {
     Inline(PublicationClaim),
-    Manifest(NativeManifestSource),
+    Manifest(Box<NativeManifestSource>),
 }
 
 impl SealedClaim {
@@ -368,7 +368,10 @@ impl NativeInventory {
             .map_err(source)?;
         let manifest =
             NativeManifestSource::open(&reader, &identity, HostReadLimits::default()).await?;
-        let verified = SealedClaim::Manifest(manifest);
+        // This read-only scan has not changed publication state. Keep the full
+        // verified source behind one allocation before any binding decision,
+        // retaining its original descriptors and provisioning guard together.
+        let verified = SealedClaim::Manifest(Box::new(manifest));
         verified.recheck(self)?;
         Ok(verified)
     }
