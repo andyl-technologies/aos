@@ -493,12 +493,27 @@ def admission_cases(helper, uuid):
 
 def publication_cases(publisher, uuid):
     """Exercises actual funded publication, no-replace and abandoned waiters."""
+    def staging_snapshot(case):
+        directory = root(case) / "staging" / str(publisher.pid)
+        entries = list((root(case) / "staging").iterdir())
+        require(entries == [directory] and not directory.is_symlink(),
+                "publication staging differs from the actual publisher-ID directory")
+        observed = directory.stat()
+        require(directory.is_dir() and observed.st_uid == observed.st_gid == 841
+                and observed.st_mode & 0o7777 == 0o700 and list(directory.iterdir()) == [],
+                "publication left temporary files or changed private staging custody")
+        return observed.st_dev, observed.st_ino
+
+    inline_staging = staging_snapshot("publication-inline")
     output = actor("publication-inline", "publish-inline", uuid)
     require(output.splitlines() == [
         "PASS actual inline publication verified bytes, retained funding and no-replace inode; no Ready"
     ], "missing actual inline publication completion")
+    require(staging_snapshot("publication-inline") == inline_staging,
+            "inline publication replaced the actual private staging directory")
 
     case = "publication-cancel"
+    cancelled_staging = staging_snapshot(case)
     process = controlled_actor(case, "publish-inline-cancel", uuid)
     stopped = False
     try:
@@ -556,7 +571,7 @@ def publication_cases(publisher, uuid):
         require(body.stat().st_ino == inode and hashlib.sha256(body.read_bytes()).hexdigest() == digest,
                 "repeated publication replaced the abandoned command's actual canonical inode")
         require(list((root(case) / "chunks").glob("*/*")) == []
-                and list((root(case) / "staging").iterdir()) == [],
+                and staging_snapshot(case) == cancelled_staging,
                 "inline publication left a duplicate standalone or staging file")
     finally:
         if stopped and publisher.poll() is None:
