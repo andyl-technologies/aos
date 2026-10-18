@@ -871,6 +871,16 @@ initial hotness, so it never evicts genesis or another retained source. Only
 branches whose parent is that published configuration reuse it. Promoting a
 forked descendant at its own stop boundary remains future work.
 
+A boundary whose next choice is a guest selectable is not retained. The guest's
+committed stop stays held until a branch replies, together with the original
+RUN plans its peers resume after that reply. The hold is a live controller
+capability that neither an exact checkpoint nor a hot-fork continuation
+carries, and nothing yet proves that a child reconstructed without it resumes
+its peers exactly as the thin fallback the root names would. The retention
+drain therefore declines such a world before settling anything and reports
+the refusal. A network fault boundary, where every VM is parked and joined at
+an exact-checkpoint-ready frontier, remains retainable.
+
 - **[HFORK-21]** Every writable mapping in a template capability profile MUST be
   classified as private-COW, replaced in the child, reconstructed in the child,
   or forbidden. `MAP_SHARED` inheritance is never presumed to become COW.

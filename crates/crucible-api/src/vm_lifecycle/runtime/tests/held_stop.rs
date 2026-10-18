@@ -731,3 +731,51 @@ fn retained_publication_authenticates_parent_and_returns_the_suffix_once() -> Te
     lifecycle.shutdown()?;
     Ok(())
 }
+
+#[test]
+fn unanswered_guest_choice_declines_retention_without_settling() -> TestResult {
+    // A thin attempt that stops at a guest choice keeps the guest's committed
+    // stop held until a branch replies to it. The hold is a live controller
+    // capability that checkpoint and hot-fork capture refuse, so retaining
+    // the world must decline before anything settles.
+    let mut lifecycle = stopped_lifecycle(0)?;
+    let offset = lifecycle.inner.loop_impl().event_log_offset();
+
+    let drained = lifecycle.drain_final_boundary_for_retention()?;
+
+    let refusal = crate::vm_lifecycle::RetentionDrainRefusal::Boundary(
+        crucible::FinalBoundaryRefusal::HeldGuestSelectableStop,
+    );
+    assert_eq!(
+        drained,
+        crate::vm_lifecycle::RetentionDrain::Declined(refusal)
+    );
+    assert_eq!(refusal.token(), "held-guest-selectable-stop");
+    assert_eq!(lifecycle.inner.loop_impl().event_log_offset(), offset);
+    assert!(lifecycle.inner.held_host_stop_witness().is_some());
+    assert!(lifecycle.capture_hot_fork_world_continuation().is_err());
+
+    // Ordinary teardown still discards the hold exactly as before.
+    lifecycle.shutdown()?;
+    Ok(())
+}
+
+#[test]
+fn unparked_campaign_marker_declines_retention_without_settling() -> TestResult {
+    let mut lifecycle = stopped_lifecycle_with_kind(0, true)?;
+    let offset = lifecycle.inner.loop_impl().event_log_offset();
+
+    let drained = lifecycle.drain_final_boundary_for_retention()?;
+
+    assert_eq!(
+        drained,
+        crate::vm_lifecycle::RetentionDrain::Declined(
+            crate::vm_lifecycle::RetentionDrainRefusal::Boundary(
+                crucible::FinalBoundaryRefusal::HeldCampaignMarkerStop,
+            ),
+        )
+    );
+    assert_eq!(lifecycle.inner.loop_impl().event_log_offset(), offset);
+    lifecycle.shutdown()?;
+    Ok(())
+}
