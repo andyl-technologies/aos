@@ -1102,6 +1102,38 @@ mod tests {
     }
 }
 
+/// Names only the borrowed JSON validator's actual fixed traversal controls.
+///
+/// The owning reconstruction array and rebuilt Value/String banks are excluded.
+/// The complete parent separately counts its typed callers and alias summaries.
+pub(crate) fn borrowed_validation_counter_scratch_data() -> usize {
+    size_of::<ValidatedHistoricalJson<'static, 'static>>()
+        + size_of::<Cursor<'static>>()
+        + size_of::<Ledger<'static>>()
+        + size_of::<[Option<ValidationFrame<'static>>; MAXIMUM_DEPTH]>()
+        + size_of::<ValidationFrame<'static>>()
+        + size_of::<StringToken<'static>>()
+        + size_of::<HistoricalJsonLimits>()
+        + size_of::<MetadataCapacityRecord>()
+        + size_of::<MetadataRecordRows<'static>>() * 2
+        + size_of::<Result<ValidatedHistoricalJson<'static, 'static>, ProviderError>>()
+        + size_of::<Result<StringToken<'static>, ProviderError>>()
+        + size_of::<Result<MetadataCapacityRecord, ProviderError>>()
+        + size_of::<Result<(), ProviderError>>()
+        + size_of::<Option<u8>>()
+        + size_of::<char>() * 2
+        + size_of::<Number>()
+        + size_of::<Result<Number, ProviderError>>()
+        + size_of::<Result<f64, std::num::ParseFloatError>>()
+        + size_of::<Result<i64, std::num::ParseIntError>>()
+        + size_of::<Result<u64, std::num::ParseIntError>>()
+        + size_of::<[u8; 4]>()
+        + size_of::<usize>() * 4
+        + size_of::<bool>() * 2
+        + borrowed_json_string_comparison_counter_scratch_data()
+        + borrowed_json_string_storage_counter_scratch_data()
+}
+
 /// Reports the declared fixed traversal arrays of this source-bound decoder.
 ///
 /// Compiler frames and thread-stack peak remain independent of these explicit

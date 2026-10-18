@@ -273,3 +273,50 @@ super::super::retained_storage::fields!(
 );
 
 pub(crate) mod current17;
+
+/// Names actual fixed local and returned headers of this handwritten reader.
+///
+/// Empty maps and `Option` payloads remain real controls when `build` is false;
+/// no tree entries, backing allocations or owning reconstruction are included.
+pub(super) fn borrowed_validation_headers_data() -> usize {
+    use std::mem::size_of;
+
+    fn header<T>() -> usize {
+        size_of::<Option<T>>() + size_of::<Result<Option<T>, ProviderError>>()
+    }
+
+    fn field<T: super::super::typed::HistoricalType>() -> usize {
+        header::<T>() + T::borrowed_header_counter_scratch_data()
+    }
+
+    field::<u8>()
+        + field::<Id>()
+        + field::<Id>()
+        + field::<ImplementationIdentity>()
+        + field::<ContentRef>()
+        + field::<IdSet>()
+        + field::<IdSet>()
+        + field::<Limits>()
+        + field::<Vec<SchemaRef>>()
+        + field::<ContentRef>()
+        + field::<BTreeMap<String, Id>>()
+        + field::<U64>()
+        + field::<Option<Id>>()
+        + field::<Option<IdSet>>()
+        + field::<bool>()
+        + field::<BTreeSet<Id>>()
+        + field::<U64>()
+        + field::<bool>()
+        + field::<HistoricalNativeNegotiation>()
+        + header::<HistoricalNativeNegotiation>()
+        + header::<HistoricalNativeExtensionNegotiation>()
+        + header::<[u8; 32]>()
+        + header::<[u8; 32]>()
+        + header::<std::sync::Arc<[ExtensionSelection]>>()
+        + header::<Option<std::sync::Arc<[ExtensionSelection]>>>()
+        + header::<usize>()
+        + size_of::<[u8; 32]>()
+        + size_of::<Option<[u8; 32]>>()
+        + size_of::<std::slice::IterMut<'static, u8>>()
+        + size_of::<std::ops::Range<usize>>()
+}

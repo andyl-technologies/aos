@@ -153,6 +153,95 @@ fn read(
 }
 
 impl<'a, 'scratch> ValidatedNativeOwnedProtocol11<'a, 'scratch> {
+    /// Names fixed work of the existing borrowed complete validator.
+    ///
+    /// This excludes owning historical graph reconstruction, native shared
+    /// payload lookup banks and alias-summary backing. Those are separate
+    /// prospective obligations. Explicit arrays and views describe requested
+    /// counter scratch, not compiler frame or allocator measurements.
+    pub fn borrowed_validation_counter_scratch_data() -> usize {
+        use std::mem::size_of;
+        size_of::<Self>()
+            + size_of::<Result<Self, ProviderError>>()
+            + size_of::<NativeLedger<'static, 'static, 'static, 'static, 'static>>()
+            + size_of::<super::super::typed::Ledger<'static, 'static, 'static>>()
+            + size_of::<ValidatedMetadataRecords<'static>>()
+            + size_of::<super::super::outer::OwnedProtocol11DataLimits>()
+            + size_of::<NativeOwnedProtocol11AllocationDemand>()
+            + size_of::<OwnedProtocol11AllocationDemand>()
+            + size_of::<Result<Option<HistoricalNativeState>, ProviderError>>()
+            + size_of::<Option<HistoricalNativeConnection>>()
+            + size_of::<Result<Option<HistoricalNativeConnection>, ProviderError>>()
+            + size_of::<Option<HistoricalNativeBlobReceiver>>()
+            + size_of::<Result<Option<HistoricalNativeBlobReceiver>, ProviderError>>()
+            + size_of::<Option<HistoricalNativeService>>()
+            + size_of::<Result<Option<HistoricalNativeService>, ProviderError>>()
+            + size_of::<Option<super::capture_owner::HistoricalNativeCaptureAllocationOwner>>()
+            + size_of::<crate::transport::ValidatedCompactOriginalFrames<'static>>()
+            + size_of::<crate::protocol_snapshot::compact_bytes::ValidatedCompactBytes<'static>>()
+            + size_of::<super::super::reader::HistoricalFrameReaderFacts>()
+            + size_of::<Result<super::super::reader::HistoricalFrameReaderFacts, ProviderError>>()
+            + size_of::<Result<(&'static str, &'static str, &'static str), ProviderError>>()
+            // Each nested borrowed field cursor occupies a structural input
+            // level. The existing outer work scanner enforces its128-level
+            // array before typed traversal; include every such cursor header.
+            + size_of::<[Fields<'static>; super::super::outer::OUTER_WORK_MAXIMUM_DEPTH]>()
+            + super::super::typed::Fields::counter_scratch_data()
+            + super::super::aliases::borrowed_validation_counter_scratch_data()
+            + super::super::json_value::borrowed_validation_counter_scratch_data()
+            + crate::transport::ValidatedCompactOriginalFrames::validation_counter_scratch_data()
+            + crate::protocol_snapshot::compact_bytes::ValidatedCompactBytes::validation_counter_scratch_data()
+            + size_of::<[usize; 2]>()
+            + size_of::<std::iter::Zip<std::slice::IterMut<'static, usize>, std::array::IntoIter<usize, 2>>>()
+            + size_of::<Option<(&'static mut usize, usize)>>()
+            + size_of::<Option<super::super::state::HistoricalAuthority>>()
+            + size_of::<Result<Option<super::super::state::HistoricalAuthority>, ProviderError>>()
+            + size_of::<Option<super::super::state::HistoricalCorrelations>>()
+            + size_of::<Result<Option<super::super::state::HistoricalCorrelations>, ProviderError>>()
+            + size_of::<[Option<serde_json::Value>; 5]>()
+            + size_of::<[Option<Vec<u8>>; 5]>()
+            + size_of::<std::slice::IterMut<'static, Option<serde_json::Value>>>()
+            + size_of::<std::slice::IterMut<'static, Option<Vec<u8>>>>()
+            + size_of::<Option<&'static mut Option<serde_json::Value>>>()
+            + size_of::<Option<&'static mut Option<Vec<u8>>>>()
+            + size_of::<[usize; 7]>()
+            + size_of::<std::slice::IterMut<'static, usize>>()
+            + size_of::<crate::reference_packet::service::native_startup::PacketNativeStartupAllocationRow>() * 3
+            + size_of::<std::iter::Flatten<std::array::IntoIter<Option<crate::reference_packet::service::native_startup::PacketNativeStartupAllocationRow>, 3>>>()
+            + size_of::<Option<crate::reference_packet::service::native_startup::PacketNativeStartupAllocationRow>>()
+            + <crate::connection::NativeCaptureSdkStateData as super::super::typed::HistoricalType>::borrowed_header_counter_scratch_data()
+            + <crate::protocol_snapshot::OriginalProtocolStorageFacts as super::super::typed::HistoricalType>::borrowed_header_counter_scratch_data()
+            + <crate::connection::NativeCaptureSdkSnapshotBankQuote as super::super::typed::HistoricalType>::borrowed_header_counter_scratch_data()
+            + <crate::protocol_snapshot::ProtocolSnapshotAllocationFacts as super::super::typed::HistoricalType>::borrowed_header_counter_scratch_data()
+            + <crate::protocol_snapshot::ProtocolSnapshotLiteralAllocationFacts as super::super::typed::HistoricalType>::borrowed_header_counter_scratch_data()
+            + <crate::protocol_snapshot::MetadataRecordAllocationFacts as super::super::typed::HistoricalType>::borrowed_header_counter_scratch_data()
+            + <crate::protocol_snapshot::MetadataAliasAllocationFacts as super::super::typed::HistoricalType>::borrowed_header_counter_scratch_data()
+            + <crate::connection::NativeCaptureFutureReceiveQuote as super::super::typed::HistoricalType>::borrowed_header_counter_scratch_data()
+            + super::super::state::borrowed_native_validation_headers_data()
+            + super::boot::borrowed_validation_headers_data()
+            + super::service::borrowed_validation_headers_data()
+            + super::identity::borrowed_validation_headers_data()
+            + super::capture_owner::borrowed_validation_headers_data()
+            + super::bootstrap::borrowed_validation_headers_data()
+            + super::connection::borrowed_validation_headers_data()
+            + super::shared::borrowed_validation_headers_data()
+            + super::bytes::borrowed_validation_headers_data()
+            + super::proof::borrowed_validation_headers_data()
+            + super::registrar::borrowed_validation_headers_data()
+            + super::blob::borrowed_validation_headers_data()
+            + super::startup::borrowed_validation_headers_data()
+            + super::capture_sdk::borrowed_validation_headers_data()
+            + super::token::borrowed_validation_headers_data()
+            + super::policy::borrowed_validation_counter_scratch_data()
+            + super::invocation::declared_scratch_bytes()
+            + size_of::<[u8; super::super::outer::OUTER_WORK_MAXIMUM_DEPTH]>()
+            + size_of::<std::slice::Iter<'static, u8>>()
+            + size_of::<usize>() * 6
+            + size_of::<bool>() * 5
+            + size_of::<Option<(usize, usize)>>()
+            + size_of::<Result<(), ProviderError>>()
+    }
+
     pub(crate) const fn validated_input_bytes_data(&self) -> &'a [u8] {
         self.input
     }

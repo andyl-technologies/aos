@@ -26,6 +26,28 @@ pub struct ValidatedCompactOriginalFrames<'a> {
 }
 
 impl<'a> ValidatedCompactOriginalFrames<'a> {
+    /// Names fixed validation controls beside the actual borrowed compact leaf.
+    ///
+    /// No original byte/descriptor backing is reconstructed by this path. Its
+    /// request IDs and frame headers use exactly the declared fixed arrays.
+    pub const fn validation_counter_scratch_data() -> usize {
+        use std::mem::size_of;
+        size_of::<Self>()
+            + size_of::<CompactFrameCursor<'static>>()
+            + size_of::<Slot>()
+            + size_of::<FrameDirection>()
+            + size_of::<[u8; 128]>()
+            + size_of::<[u8; 4]>()
+            + size_of::<Option<([u8; 128], usize)>>()
+            + size_of::<Result<Option<([u8; 128], usize)>, ProviderError>>()
+            + size_of::<usize>() * 14
+            + size_of::<bool>() * 2
+            + size_of::<Result<Self, ProviderError>>()
+            + size_of::<Result<usize, ProviderError>>()
+            + size_of::<Result<(), ProviderError>>()
+            + ValidatedCompactBytes::validation_counter_scratch_data()
+    }
+
     /// Checks the complete grammar, capacities, headers and lifetime slot roster.
     ///
     /// All validation precedes byte or descriptor allocation. Parsed request IDs

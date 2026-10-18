@@ -762,11 +762,13 @@ pub(super) fn demand_records(
     Ok(demand)
 }
 
+pub(crate) const OUTER_WORK_MAXIMUM_DEPTH: usize = 128;
+
 pub(super) fn validate_outer_work(input: &[u8], maximum_nodes: usize) -> Result<(), ProviderError> {
     std::str::from_utf8(input).map_err(|_| invalid())?;
     let mut nodes = 0usize;
     let mut depth = 0usize;
-    let mut stack = [0u8; 128];
+    let mut stack = [0u8; OUTER_WORK_MAXIMUM_DEPTH];
     let mut quoted = false;
     let mut escaped = false;
     let mut primitive = false;

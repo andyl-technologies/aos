@@ -13,6 +13,12 @@ use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) trait HistoricalType: Sized {
+    /// Names this read's actual returned fixed headers, excluding owned backing.
+    fn borrowed_header_counter_scratch_data() -> usize {
+        std::mem::size_of::<Option<Self>>()
+            + std::mem::size_of::<Result<Option<Self>, ProviderError>>()
+    }
+
     fn read(
         input: &[u8],
         ledger: &mut Ledger<'_, '_, '_>,
@@ -333,6 +339,12 @@ impl HistoricalType for bool {
 }
 
 impl<T: HistoricalType> HistoricalType for Option<T> {
+    fn borrowed_header_counter_scratch_data() -> usize {
+        std::mem::size_of::<Option<Self>>()
+            + std::mem::size_of::<Result<Option<Self>, ProviderError>>()
+            + <T as HistoricalType>::borrowed_header_counter_scratch_data()
+    }
+
     fn read(
         input: &[u8],
         ledger: &mut Ledger<'_, '_, '_>,
@@ -346,6 +358,14 @@ impl<T: HistoricalType> HistoricalType for Option<T> {
 }
 
 impl<T: HistoricalType> HistoricalType for Vec<T> {
+    fn borrowed_header_counter_scratch_data() -> usize {
+        std::mem::size_of::<Option<Self>>()
+            + std::mem::size_of::<Result<Option<Self>, ProviderError>>()
+            + <T as HistoricalType>::borrowed_header_counter_scratch_data()
+            + std::mem::size_of::<Self>()
+            + Fields::counter_scratch_data()
+    }
+
     fn read(
         input: &[u8],
         ledger: &mut Ledger<'_, '_, '_>,
@@ -438,6 +458,17 @@ impl HistoricalType for Value {
 }
 
 impl HistoricalType for BTreeMap<String, Id> {
+    fn borrowed_header_counter_scratch_data() -> usize {
+        std::mem::size_of::<Self>()
+            + std::mem::size_of::<Option<Self>>()
+            + std::mem::size_of::<Result<Option<Self>, ProviderError>>()
+            + std::mem::size_of::<Option<&'static str>>()
+            + std::mem::size_of::<usize>() * 2
+            + Fields::counter_scratch_data()
+            + <String as HistoricalType>::borrowed_header_counter_scratch_data()
+            + <Id as HistoricalType>::borrowed_header_counter_scratch_data()
+    }
+
     fn read(
         input: &[u8],
         ledger: &mut Ledger<'_, '_, '_>,
@@ -477,6 +508,16 @@ impl HistoricalType for BTreeMap<String, Id> {
 }
 
 impl<V: HistoricalType> HistoricalType for BTreeMap<Id, V> {
+    fn borrowed_header_counter_scratch_data() -> usize {
+        std::mem::size_of::<Option<Self>>()
+            + std::mem::size_of::<Result<Option<Self>, ProviderError>>()
+            + <V as HistoricalType>::borrowed_header_counter_scratch_data()
+            + std::mem::size_of::<Self>()
+            + Fields::counter_scratch_data()
+            + <Id as HistoricalType>::borrowed_header_counter_scratch_data()
+            + std::mem::size_of::<Option<&'static str>>()
+    }
+
     fn read(
         input: &[u8],
         ledger: &mut Ledger<'_, '_, '_>,
@@ -516,6 +557,16 @@ impl<V: HistoricalType> HistoricalType for BTreeMap<Id, V> {
 }
 
 impl HistoricalType for BTreeSet<String> {
+    fn borrowed_header_counter_scratch_data() -> usize {
+        std::mem::size_of::<Self>()
+            + std::mem::size_of::<Option<Self>>()
+            + std::mem::size_of::<Result<Option<Self>, ProviderError>>()
+            + std::mem::size_of::<Option<&'static str>>()
+            + std::mem::size_of::<usize>() * 2
+            + Fields::counter_scratch_data()
+            + <String as HistoricalType>::borrowed_header_counter_scratch_data()
+    }
+
     fn read(
         input: &[u8],
         ledger: &mut Ledger<'_, '_, '_>,
@@ -554,6 +605,16 @@ impl HistoricalType for BTreeSet<String> {
     }
 }
 impl HistoricalType for BTreeSet<Id> {
+    fn borrowed_header_counter_scratch_data() -> usize {
+        std::mem::size_of::<Self>()
+            + std::mem::size_of::<Option<Self>>()
+            + std::mem::size_of::<Result<Option<Self>, ProviderError>>()
+            + std::mem::size_of::<Option<&'static str>>()
+            + std::mem::size_of::<usize>() * 2
+            + Fields::counter_scratch_data()
+            + <Id as HistoricalType>::borrowed_header_counter_scratch_data()
+    }
+
     fn read(
         input: &[u8],
         ledger: &mut Ledger<'_, '_, '_>,
@@ -769,6 +830,15 @@ fn credit() -> ProviderError {
 macro_rules! historical_struct {
     ($type:ty { $($field:ident : $child:ty),+ $(,)? }) => {
         impl HistoricalType for $type {
+            fn borrowed_header_counter_scratch_data() -> usize {
+                std::mem::size_of::<Option<Self>>()
+                    + std::mem::size_of::<Result<Option<Self>, ProviderError>>()
+                    + $crate::protocol_snapshot::owned11::typed::Fields::counter_scratch_data()
+                    $(+ std::mem::size_of::<Option<$child>>()
+                      + std::mem::size_of::<Result<Option<$child>, ProviderError>>()
+                      + <$child as $crate::protocol_snapshot::owned11::typed::HistoricalType>::borrowed_header_counter_scratch_data())+
+            }
+
             fn read(input: &[u8], ledger: &mut Ledger<'_, '_, '_>, build: bool) -> Result<Option<Self>, ProviderError> {
                 let mut fields = $crate::protocol_snapshot::owned11::typed::Fields::object(input)?;
                 $(let $field = ledger.read::<$child>(fields.named(stringify!($field))?, build)?;)+

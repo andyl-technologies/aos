@@ -653,3 +653,61 @@ pub(crate) fn read_native17_blob_leaf_data(
 pub(crate) mod native17_retained;
 
 pub(crate) mod current17;
+
+/// Names actual fixed local and returned headers of this handwritten reader.
+///
+/// Empty maps and `Option` payloads remain real controls when `build` is false;
+/// no tree entries, backing allocations or owning reconstruction are included.
+pub(super) fn borrowed_validation_headers_data() -> usize {
+    use std::mem::size_of;
+
+    fn header<T>() -> usize {
+        size_of::<Option<T>>() + size_of::<Result<Option<T>, ProviderError>>()
+    }
+
+    fn field<T: super::super::typed::HistoricalType>() -> usize {
+        header::<T>() + T::borrowed_header_counter_scratch_data()
+    }
+
+    field::<Id>()
+        + field::<Id>()
+        + field::<Id>()
+        + field::<Id>()
+        + field::<ContentRef>()
+        + field::<ContentRef>()
+        + field::<usize>()
+        + field::<usize>()
+        + field::<U64>()
+        + field::<Id>()
+        + field::<ContentRef>()
+        + field::<Option<ContentRef>>()
+        + field::<usize>()
+        + field::<U64>()
+        + field::<usize>()
+        + field::<ContentRef>()
+        + field::<usize>()
+        + field::<bool>()
+        + field::<bool>()
+        + field::<bool>()
+        + field::<bool>()
+        + field::<Id>()
+        + field::<Id>()
+        + field::<usize>()
+        + header::<TransferKey>()
+        + header::<Option<BlobRetirement>>()
+        + header::<BTreeMap<usize, usize>>()
+        + header::<BTreeMap<u64, HistoricalNativeBlobPin>>()
+        + header::<HistoricalNativeBlobLedger>()
+        + header::<HistoricalNativeBlobReceiver>()
+        + header::<Vec<u8>>()
+        + header::<std::rc::Rc<HistoricalNativeBlobLedger>>()
+        + size_of::<BTreeMap<usize, usize>>()
+        + size_of::<BTreeMap<u64, HistoricalNativeBlobPin>>()
+        + size_of::<BTreeMap<TransferKey, HistoricalNativeBlobRecord>>()
+        + size_of::<Option<TransferKeyOrder<'static>>>()
+        + size_of::<TransferKeyOrder<'static>>()
+        + size_of::<(Option<TransferKey>, TransferKeyOrder<'static>)>()
+        + size_of::<Result<(Option<TransferKey>, TransferKeyOrder<'static>), ProviderError>>()
+        + size_of::<Option<usize>>()
+        + size_of::<[usize; 7]>()
+}

@@ -444,3 +444,31 @@ super::super::retained_storage::fields!(
 );
 
 pub(crate) mod current17;
+
+/// Names actual fixed local and returned headers of this handwritten reader.
+///
+/// Empty maps and `Option` payloads remain real controls when `build` is false;
+/// no tree entries, backing allocations or owning reconstruction are included.
+pub(super) fn borrowed_validation_headers_data() -> usize {
+    use std::mem::size_of;
+
+    fn header<T>() -> usize {
+        size_of::<Option<T>>() + size_of::<Result<Option<T>, ProviderError>>()
+    }
+
+    fn field<T: super::super::typed::HistoricalType>() -> usize {
+        header::<T>() + T::borrowed_header_counter_scratch_data()
+    }
+
+    field::<u32>()
+        + field::<usize>()
+        + field::<Position>()
+        + field::<u32>()
+        + field::<Envelope>()
+        + field::<PacketNativeCaptureAllocationReport>()
+        + field::<ContentRef>()
+        + field::<Option<Envelope>>()
+        + header::<HistoricalNativeCaptureAllocationOwner>()
+        + header::<super::capture_sdk::HistoricalNativeCaptureSdkOwner>()
+        + header::<HistoricalNativeCaptureCurrency>()
+}

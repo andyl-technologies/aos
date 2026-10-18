@@ -375,3 +375,41 @@ super::retained_storage::fields!(
 );
 
 pub(crate) mod current17;
+
+/// Names fixed controls of the native authority, selection and correlation reads.
+pub(crate) fn borrowed_native_validation_headers_data() -> usize {
+    use std::mem::size_of;
+
+    <Id as HistoricalType>::borrowed_header_counter_scratch_data()
+        + <Id as HistoricalType>::borrowed_header_counter_scratch_data()
+        + <Id as HistoricalType>::borrowed_header_counter_scratch_data()
+        + <U64 as HistoricalType>::borrowed_header_counter_scratch_data()
+        + <Limits as HistoricalType>::borrowed_header_counter_scratch_data()
+        + <IdSet as HistoricalType>::borrowed_header_counter_scratch_data()
+        + <BTreeSet<String> as HistoricalType>::borrowed_header_counter_scratch_data()
+        + <ExtensionSelection as HistoricalType>::borrowed_header_counter_scratch_data()
+        + <ExtensionSelection as HistoricalType>::borrowed_header_counter_scratch_data()
+        + <ExtensionSelection as HistoricalType>::borrowed_header_counter_scratch_data()
+        + <Id as HistoricalType>::borrowed_header_counter_scratch_data()
+        + <Id as HistoricalType>::borrowed_header_counter_scratch_data()
+        + <U64 as HistoricalType>::borrowed_header_counter_scratch_data()
+        + <U64 as HistoricalType>::borrowed_header_counter_scratch_data()
+        + <usize as HistoricalType>::borrowed_header_counter_scratch_data()
+        + <BTreeMap<Id, Envelope> as HistoricalType>::borrowed_header_counter_scratch_data()
+        + <BTreeMap<Id, Envelope> as HistoricalType>::borrowed_header_counter_scratch_data()
+        + <BTreeMap<Id, Envelope> as HistoricalType>::borrowed_header_counter_scratch_data()
+        + <BTreeSet<String> as HistoricalType>::borrowed_header_counter_scratch_data()
+        + <bool as HistoricalType>::borrowed_header_counter_scratch_data()
+        + <bool as HistoricalType>::borrowed_header_counter_scratch_data()
+        + size_of::<Option<HistoricalAuthority>>()
+        + size_of::<Result<Option<HistoricalAuthority>, ProviderError>>()
+        + size_of::<Option<HistoricalCorrelations>>()
+        + size_of::<Result<Option<HistoricalCorrelations>, ProviderError>>()
+        + size_of::<Option<Option<std::sync::Arc<[ExtensionSelection]>>>>()
+        + size_of::<Result<Option<Option<std::sync::Arc<[ExtensionSelection]>>>, ProviderError>>()
+        + size_of::<crate::retained_metadata::records::MetadataRecordRows<'static>>() * 2
+        + size_of::<Option<&'static std::sync::Arc<[ExtensionSelection]>>>()
+        + size_of::<usize>() * 6
+        + size_of::<bool>() * 3
+        + Fields::counter_scratch_data()
+}

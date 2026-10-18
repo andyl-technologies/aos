@@ -376,3 +376,41 @@ super::super::retained_storage::fields!(
 );
 
 pub(crate) mod current17;
+
+/// Names every simultaneously retained policy-wrapper frame under raw depth128.
+///
+/// The complete native validator first enforces the outer structural depth
+/// before invoking this direct recursive reader. Array/iterator controls belong
+/// to the actual7/3-reference wrapper branches, not another model's allowance.
+pub(super) fn borrowed_validation_counter_scratch_data() -> usize {
+    use std::mem::size_of;
+    let wrapper = size_of::<Option<HistoricalNativePolicy>>()
+        + size_of::<Result<Option<HistoricalNativePolicy>, ProviderError>>()
+        + size_of::<Fields<'static>>() * 3
+        + size_of::<[Option<ContentRef>; 7]>()
+        + size_of::<[Option<ContentRef>; 3]>()
+        + size_of::<[Option<ContentRef>; 5]>()
+        + size_of::<[&[u8]; 5]>()
+        + size_of::<std::slice::IterMut<'static, &[u8]>>()
+        + size_of::<
+            std::iter::Zip<
+                std::slice::IterMut<'static, Option<ContentRef>>,
+                std::array::IntoIter<&'static [u8], 5>,
+            >,
+        >()
+        + size_of::<Option<(&'static mut Option<ContentRef>, &'static [u8])>>()
+        + size_of::<std::slice::IterMut<'static, Option<ContentRef>>>()
+        + size_of::<Option<&'static mut Option<ContentRef>>>()
+        + size_of::<Option<ContentRef>>()
+        + size_of::<Result<Option<ContentRef>, ProviderError>>()
+        + size_of::<bool>();
+    wrapper * super::super::outer::OUTER_WORK_MAXIMUM_DEPTH
+        + <PacketControlSelection as HistoricalType>::borrowed_header_counter_scratch_data()
+        + <ContentRef as HistoricalType>::borrowed_header_counter_scratch_data() * 13
+        + <PacketNative5CoordinatorInstallation as HistoricalType>::borrowed_header_counter_scratch_data()
+        + <PacketNative5CaptureProfile as HistoricalType>::borrowed_header_counter_scratch_data()
+        + <Option<PacketNative5ConfirmationSelection> as HistoricalType>::borrowed_header_counter_scratch_data()
+        + <Option<PacketNative5AckEmitterSelection> as HistoricalType>::borrowed_header_counter_scratch_data()
+        + <Option<CanonicalAckCodecMetadataExtent> as HistoricalType>::borrowed_header_counter_scratch_data()
+        + <crate::reference_packet::service::PacketNative5ProtocolMetadataLimits as HistoricalType>::borrowed_header_counter_scratch_data()
+}

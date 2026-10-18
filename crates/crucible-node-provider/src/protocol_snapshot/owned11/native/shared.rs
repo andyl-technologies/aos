@@ -338,3 +338,32 @@ mod fresh_policy_class_tests {
         Ok(())
     }
 }
+
+/// Names actual fixed local and returned headers of this handwritten reader.
+///
+/// Empty maps and `Option` payloads remain real controls when `build` is false;
+/// no tree entries, backing allocations or owning reconstruction are included.
+pub(super) fn borrowed_validation_headers_data() -> usize {
+    use std::mem::size_of;
+
+    fn header<T>() -> usize {
+        size_of::<Option<T>>() + size_of::<Result<Option<T>, ProviderError>>()
+    }
+
+    header::<Rc<HistoricalNativePolicy>>()
+        + header::<HistoricalNativePolicy>()
+        + header::<Rc<HistoricalNativeBoot>>()
+        + header::<HistoricalNativeBoot>()
+        + header::<Rc<DecodedCompactOriginalFrames>>()
+        + header::<DecodedCompactOriginalFrames>()
+        + header::<Rc<super::blob::HistoricalNativeBlobLedger>>()
+        + header::<super::blob::HistoricalNativeBlobLedger>()
+        + size_of::<Option<NativeArchiveClass>>()
+        + size_of::<Option<&'static NativeSharedEntry>>()
+        + size_of::<Option<&'static Rc<HistoricalNativePolicy>>>()
+        + size_of::<Option<&'static Rc<HistoricalNativeBoot>>>()
+        + size_of::<Option<&'static Rc<DecodedCompactOriginalFrames>>>()
+        + size_of::<Option<&'static Rc<super::blob::HistoricalNativeBlobLedger>>>()
+        + size_of::<(usize, usize)>()
+        + size_of::<Result<(usize, usize), ProviderError>>()
+}

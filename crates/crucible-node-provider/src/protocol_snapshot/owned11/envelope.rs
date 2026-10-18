@@ -452,3 +452,40 @@ mod tests {
         assert_eq!(serde_json::to_vec(&restored).unwrap(), encoded);
     }
 }
+
+/// Names fixed controls of borrowed Envelope validation, excluding reconstruction.
+pub(crate) fn borrowed_validation_counter_scratch_data() -> usize {
+    use std::mem::size_of;
+
+    size_of::<ValidatedHistoricalEnvelope<'static, 'static>>()
+        + size_of::<Result<ValidatedHistoricalEnvelope<'static, 'static>, ProviderError>>()
+        + size_of::<Cursor<'static>>()
+        + size_of::<HistoricalString<'static>>()
+        + size_of::<Result<HistoricalString<'static>, ProviderError>>()
+        + size_of::<[Option<HistoricalString<'static>>; 7]>()
+        + size_of::<
+            std::iter::Zip<
+                std::slice::IterMut<'static, Option<HistoricalString<'static>>>,
+                std::array::IntoIter<&'static [u8], 7>,
+            >,
+        >()
+        + size_of::<
+            Option<(
+                &'static mut Option<HistoricalString<'static>>,
+                &'static [u8],
+            )>,
+        >()
+        + size_of::<MessageKind>()
+        + size_of::<Method>()
+        + size_of::<U64>()
+        + size_of::<u64>()
+        + size_of::<ValidatedHistoricalJson<'static, 'static>>() * 2
+        + size_of::<Result<ValidatedHistoricalJson<'static, 'static>, ProviderError>>()
+        + size_of::<MetadataRecordRows<'static>>()
+        + size_of::<HistoricalJsonLimits>()
+        + size_of::<&'static str>() * 2
+        + size_of::<Option<u8>>()
+        + size_of::<std::str::Bytes<'static>>()
+        + size_of::<Result<(), ProviderError>>()
+        + super::json_value::borrowed_validation_counter_scratch_data()
+}

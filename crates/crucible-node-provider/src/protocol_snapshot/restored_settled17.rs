@@ -353,6 +353,7 @@ mod tests {
 
 mod import_geometry;
 pub use import_geometry::{
+    Initial15NativeImportGeometryAttempt, Initial15NativeImportGeometryConstructionData,
     RestoredSettledNative17AllocationDemand, RestoredSettledNativeImportClass,
     RestoredSettledNativeImportGeometryData,
 };

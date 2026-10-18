@@ -43,3 +43,17 @@ pub(super) fn bank(
     plan.fill_preowned(&mut bytes)?;
     Ok(Some(bytes))
 }
+
+/// Names actual fixed local and returned headers of this handwritten reader.
+///
+/// Empty maps and `Option` payloads remain real controls when `build` is false;
+/// no tree entries, backing allocations or owning reconstruction are included.
+pub(super) fn borrowed_validation_headers_data() -> usize {
+    use std::mem::size_of;
+
+    fn header<T>() -> usize {
+        size_of::<Option<T>>() + size_of::<Result<Option<T>, ProviderError>>()
+    }
+
+    header::<Vec<u8>>()
+}

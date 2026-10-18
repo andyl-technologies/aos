@@ -295,3 +295,42 @@ super::super::retained_storage::fields!(
 );
 
 pub(crate) mod current17;
+
+/// Names actual fixed local and returned headers of this handwritten reader.
+///
+/// Empty maps and `Option` payloads remain real controls when `build` is false;
+/// no tree entries, backing allocations or owning reconstruction are included.
+pub(super) fn borrowed_validation_headers_data() -> usize {
+    use std::mem::size_of;
+
+    fn header<T>() -> usize {
+        size_of::<Option<T>>() + size_of::<Result<Option<T>, ProviderError>>()
+    }
+
+    fn field<T: super::super::typed::HistoricalType>() -> usize {
+        header::<T>() + T::borrowed_header_counter_scratch_data()
+    }
+
+    field::<usize>()
+        + field::<usize>()
+        + field::<usize>()
+        + field::<usize>()
+        + field::<usize>()
+        + field::<usize>()
+        + field::<usize>()
+        + field::<usize>()
+        + field::<usize>()
+        + field::<usize>()
+        + field::<usize>()
+        + field::<usize>()
+        + field::<usize>()
+        + field::<usize>()
+        + field::<NativeCaptureSdkStateData>()
+        + field::<usize>()
+        + field::<usize>()
+        + header::<HistoricalNativeCaptureSdkOwner>()
+        + header::<Rc<HistoricalNativePolicy>>()
+        + header::<Rc<DecodedCompactOriginalFrames>>()
+        + size_of::<RetainedProtocolMetadataFacts>()
+        + size_of::<Result<RetainedProtocolMetadataFacts, ProviderError>>()
+}

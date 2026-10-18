@@ -588,3 +588,43 @@ super::super::retained_storage::fields!(
 );
 
 pub(crate) mod current17;
+
+/// Names actual fixed local and returned headers of this handwritten reader.
+///
+/// Empty maps and `Option` payloads remain real controls when `build` is false;
+/// no tree entries, backing allocations or owning reconstruction are included.
+pub(super) fn borrowed_validation_headers_data() -> usize {
+    use std::mem::size_of;
+
+    fn header<T>() -> usize {
+        size_of::<Option<T>>() + size_of::<Result<Option<T>, ProviderError>>()
+    }
+
+    fn field<T: super::super::typed::HistoricalType>() -> usize {
+        header::<T>() + T::borrowed_header_counter_scratch_data()
+    }
+
+    field::<U64>()
+        + field::<U64>()
+        + field::<U64>()
+        + field::<String>()
+        + field::<PacketNativeStartupAllocationRow>()
+        + field::<PacketNativeStartupAllocationRow>()
+        + field::<Option<PacketNativeStartupAllocationRow>>()
+        + field::<PacketNativeStartupAllocation>()
+        + field::<bool>()
+        + field::<u32>()
+        + field::<PacketNativeStartupAllocationRow>()
+        + field::<PacketNativeStartupAllocationRow>()
+        + field::<Option<PacketNativeStartupAllocationRow>>()
+        + field::<u64>()
+        + field::<u64>()
+        + field::<usize>()
+        + field::<usize>()
+        + header::<HistoricalNativeStartupBoot>()
+        + header::<HistoricalNativeStartupBootstrap>()
+        + header::<[u8; 336]>()
+        + header::<[u8; 32]>()
+        + header::<[u8; 32]>()
+        + header::<[u8; 32]>()
+}

@@ -284,6 +284,19 @@ closed_unit!(
 );
 
 impl HistoricalType for PacketNative5CaptureProfile {
+    fn borrowed_header_counter_scratch_data() -> usize {
+        use std::mem::size_of;
+
+        size_of::<Option<Self>>()
+            + size_of::<Result<Option<Self>, ProviderError>>()
+            + Fields::counter_scratch_data()
+            + size_of::<[&'static [u8]; 3]>()
+            + size_of::<std::array::IntoIter<&'static [u8], 3>>()
+            + size_of::<&'static str>()
+            + size_of::<u64>()
+            + <U64 as HistoricalType>::borrowed_header_counter_scratch_data() * 3
+    }
+
     fn read(
         input: &[u8],
         ledger: &mut Ledger<'_, '_, '_>,

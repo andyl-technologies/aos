@@ -266,6 +266,12 @@ historical_unit_enum!(OperatingMode { "exact" => Exact, "quantized" => Quantized
 historical_unit_enum!(SchedulingRole { "active" => Active, "event_driven" => EventDriven, "autonomous" => Autonomous });
 
 impl HistoricalType for crate::envelope::Envelope {
+    fn borrowed_header_counter_scratch_data() -> usize {
+        std::mem::size_of::<Option<Self>>()
+            + std::mem::size_of::<Result<Option<Self>, ProviderError>>()
+            + super::envelope::borrowed_validation_counter_scratch_data()
+    }
+
     fn read(
         input: &[u8],
         ledger: &mut Ledger<'_, '_, '_>,

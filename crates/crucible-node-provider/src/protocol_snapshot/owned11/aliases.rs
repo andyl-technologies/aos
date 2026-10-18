@@ -224,6 +224,60 @@ impl HistoricalAliasViews<'_, '_> {
     }
 }
 
+/// Counts the exact required first-group bank using this reader's row grammar.
+///
+/// Repeated group-kind and view equality need the independently funded complete
+/// validator. This prewalk checks bounds and first/backward topology only and
+/// cannot construct a validated alias owner.
+pub(crate) fn required_summary_entries_data(
+    input: &[u8],
+    maximum_rows: usize,
+) -> Result<usize, ProviderError> {
+    if maximum_rows == 0 || maximum_rows > 131_072 {
+        return Err(invalid());
+    }
+    let mut fields = Fields::array(input)?;
+    let mut rows = 0usize;
+    let mut groups = 0usize;
+    while let Some(field) = fields.next()? {
+        let (_, group) = row(field)?;
+        rows = rows.checked_add(1).ok_or_else(invalid)?;
+        if rows > maximum_rows || group > groups {
+            return Err(invalid());
+        }
+        if group == groups {
+            groups = groups.checked_add(1).ok_or_else(invalid)?;
+        }
+    }
+    fields.finish()?;
+    Ok(groups)
+}
+
+/// Names the real topology prewalk and complete alias validator fixed views.
+pub(crate) fn borrowed_validation_counter_scratch_data() -> usize {
+    use std::mem::size_of;
+    size_of::<ValidatedHistoricalAliases<'static, 'static>>()
+        + size_of::<HistoricalAliasViews<'static, 'static>>()
+        + size_of::<HistoricalAliasSummary>()
+        + size_of::<super::typed::Fields<'static>>() * 2
+        + super::typed::Fields::counter_scratch_data()
+        + size_of::<&mut [HistoricalAliasSummary]>()
+        + size_of::<std::slice::IterMut<'static, HistoricalAliasSummary>>()
+        + size_of::<std::iter::Take<std::slice::IterMut<'static, HistoricalAliasSummary>>>()
+        + size_of::<std::slice::Iter<'static, HistoricalAliasSummary>>()
+        + size_of::<std::iter::Enumerate<std::slice::Iter<'static, HistoricalAliasSummary>>>()
+        + size_of::<Option<(usize, &'static HistoricalAliasSummary)>>()
+        + size_of::<MetadataSharedKind>()
+        + size_of::<Result<(MetadataSharedKind, usize), ProviderError>>()
+        + size_of::<Option<&[u8]>>()
+        + size_of::<usize>() * 4
+        + size_of::<[u8; 32]>()
+        + size_of::<blake3::Hasher>()
+        + size_of::<blake3::Hash>()
+        + size_of::<Result<usize, ProviderError>>()
+        + size_of::<Result<(), ProviderError>>()
+}
+
 fn row(input: &[u8]) -> Result<(MetadataSharedKind, usize), ProviderError> {
     let mut fields = Fields::array(input)?;
     let kind = match plain_string(fields.next()?.ok_or_else(invalid)?)? {

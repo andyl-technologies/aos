@@ -185,6 +185,32 @@ pub struct ValidatedCompactBytes<'a> {
 }
 
 impl<'a> ValidatedCompactBytes<'a> {
+    /// Names fixed borrowed validation/range controls without an encoder bank.
+    ///
+    /// This excludes owning decoded storage and the4096-byte serialization
+    /// buffer, neither of which is used by validate or copy_range.
+    pub const fn validation_counter_scratch_data() -> usize {
+        use std::mem::size_of;
+        size_of::<Self>()
+            + size_of::<Cursor<'static>>()
+            + size_of::<[u8; 3]>() * 2
+            + size_of::<std::slice::Iter<'static, [u8; 4]>>()
+            + size_of::<std::iter::Enumerate<std::slice::Iter<'static, [u8; 4]>>>()
+            + size_of::<std::slice::IterMut<'static, u8>>()
+            + size_of::<std::iter::Enumerate<std::slice::IterMut<'static, u8>>>()
+            + size_of::<Option<(usize, &'static [u8; 4])>>()
+            + size_of::<Option<(usize, &'static mut u8)>>()
+            + size_of::<(&[[u8; 4]], &[u8])>()
+            + size_of::<&[u8]>() * 3
+            + size_of::<usize>() * 10
+            + size_of::<u8>() * 4
+            + size_of::<bool>() * 2
+            + size_of::<Result<Self, ProviderError>>()
+            + size_of::<Result<usize, ProviderError>>()
+            + size_of::<Result<u8, ProviderError>>()
+            + size_of::<Result<(), ProviderError>>()
+    }
+
     /// Validates the entire canonical tuple without allocation or byte copies.
     ///
     /// `maximum_input_bytes` bounds the complete encoded tuple and
