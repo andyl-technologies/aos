@@ -409,13 +409,33 @@ fn admit_after_recovery(
         ))
         .map_err(io::Error::other)?;
     if admitted.descriptor() != &descriptor
-        || admitted.future_hold_bytes() != 3 * HOLD + bytes.len() as u64 + 1
+        || admitted.future_hold_bytes() != HOLD + bytes.len() as u64 + 1
         || admitted.charged_reserved_bytes() > HARD_LIMIT
         || admitted.synchronized_chunk_bytes() == 0
         || fs::read(inputs.root.join("state/cache/records.toml"))? == before
     {
         return Err(invalid(
             "post-recovery admission lacks actual durable funding",
+        ));
+    }
+    let state = runtime
+        .block_on(CacheState::load(
+            &TokioLocalFs,
+            &inputs.root.join("state/cache"),
+            STATE,
+        ))
+        .map_err(io::Error::other)?
+        .ok_or_else(|| invalid("post-recovery admission snapshot missing"))?;
+    if state.reservations.len() != 3
+        || state
+            .reservations
+            .iter()
+            .map(|hold| hold.bytes)
+            .sum::<u64>()
+            != 3 * HOLD + bytes.len() as u64 + 1
+    {
+        return Err(invalid(
+            "post-recovery owner total differs from retained operation holds",
         ));
     }
     drop(admitted);
