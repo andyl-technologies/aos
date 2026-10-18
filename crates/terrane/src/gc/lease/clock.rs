@@ -52,6 +52,41 @@ impl TestClock {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Self::native_ticks();
     }
 
+    /// Pauses elapsed time during quiescent fixture setup without losing sampled progress.
+    ///
+    /// The caller must have completed every effect using this clock. Setup can
+    /// then obtain real native leases and checkpoints before resuming actual
+    /// timer progression with [`Self::enable_timer`].
+    ///
+    /// # Panics
+    /// Panics if the configured test clock cannot advance one whole second.
+    #[cfg(feature = "tokio")]
+    #[allow(
+        clippy::expect_used,
+        reason = "Invalid fixture clock bounds deliberately panic before recovery setup."
+    )]
+    pub(crate) fn pause_timer(&self) {
+        let wall = self
+            .now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("test clock predates Unix epoch")
+            .as_secs()
+            .checked_add(1)
+            .expect("test wall clock exhausted");
+        let ticks = self
+            .monotonic()
+            .as_secs()
+            .checked_add(1)
+            .expect("test monotonic clock exhausted");
+        let mut timer = self
+            .timer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.wall.store(wall, Ordering::SeqCst);
+        self.ticks.store(ticks, Ordering::SeqCst);
+        *timer = None;
+    }
+
     fn elapsed(&self) -> Option<Duration> {
         self.timer
             .lock()

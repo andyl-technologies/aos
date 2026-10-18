@@ -62,8 +62,14 @@ async fn sync_fault(
     };
     assert_eq!(actual.phase, expected);
     drop(collection);
+    // Recovery setup is not an expiry test: competing real fixture IO can
+    // otherwise consume its ten-second lease before acquisition is acknowledged.
+    // Only this quiescent setup uses the injected clock; deletion itself keeps
+    // the unchanged full D wait, renewal and current-lease checks under real time.
+    fixture.clock.pause_timer();
     fixture.reopen().await;
     let mut fresh = fresh_collection(&fixture, 301).await;
+    fixture.clock.enable_timer();
     let done = fresh
         .resume_local_delete(fixture.repository.coordinator(), &key)
         .await
