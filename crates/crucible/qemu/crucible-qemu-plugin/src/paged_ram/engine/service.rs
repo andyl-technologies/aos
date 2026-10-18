@@ -206,9 +206,15 @@ impl FaultService {
             }
         };
         self.stop.store(true, Ordering::Release);
-        join_stopped_worker(&self.worker, operation.as_ref(), |error| {
-            self.retain_cleanup_failure(error);
-        })
+        join_stopped_worker(
+            &self.worker,
+            operation.as_ref(),
+            |error| {
+                self.failed.store(true, Ordering::Release);
+                self.lifetime.failed(error.clone());
+            },
+            |error| self.retain_cleanup_failure(error),
+        )
     }
 
     fn retain_cleanup_failure(&self, error: &RamError) {
@@ -506,32 +512,47 @@ fn wait_for_worker_return(
 fn join_stopped_worker(
     worker: &Mutex<Option<JoinHandle<Result<(), RamError>>>>,
     operation: &dyn SourceOperation,
-    retain_failure: impl FnOnce(&RamError),
+    retain_worker_failure: impl FnOnce(&RamError),
+    retain_cleanup_failure: impl FnOnce(&RamError),
 ) -> Result<(), RamError> {
     let mut worker = match worker.try_lock() {
         Ok(worker) => worker,
         Err(_) => {
             let error = RamError::Invariant("paging worker owner unavailable");
-            retain_failure(&error);
+            retain_cleanup_failure(&error);
             return Err(error);
         }
     };
     // The actor never locks this slot. Keep it exclusive until the actual join
     // and Cleanup post complete, so empty cannot expose a half-finished stop.
-    let result: Result<(), RamError> = (|| {
-        wait_for_worker_return(worker.as_ref(), operation)?;
-        if let Some(worker) = worker.take() {
-            worker
-                .join()
-                .map_err(|_| RamError::Invariant("paging worker panicked during shutdown"))??;
-        }
-        operation.complete()?;
-        Ok(())
-    })();
-    if let Err(error) = &result {
-        retain_failure(error);
+    if let Err(error) = wait_for_worker_return(worker.as_ref(), operation) {
+        retain_cleanup_failure(&error);
+        return Err(error);
     }
-    result
+
+    let joined = match worker.take() {
+        Some(worker) => worker
+            .join()
+            .map_err(|_| RamError::Invariant("paging worker panicked during shutdown"))
+            .and_then(std::convert::identity),
+        None => Ok(()),
+    };
+    if let Err(error) = &joined {
+        retain_worker_failure(error);
+    }
+
+    // A failed actor still needs the independent Cleanup deadline check. Do
+    // not commit successful operation accounting for its failed disposition.
+    let post = if joined.is_ok() {
+        operation.complete()
+    } else {
+        operation.wait_slice().map(|_| ())
+    }
+    .map_err(RamError::from);
+    if let Err(error) = &post {
+        retain_cleanup_failure(error);
+    }
+    joined.and(post)
 }
 
 pub(super) extern "C" fn operational_rearm(generation: u64) -> c_int {
@@ -829,7 +850,7 @@ mod worker_join_tests {
             checked: AtomicUsize::new(0),
         };
 
-        let result = join_stopped_worker(&worker, &operation, |_| {});
+        let result = join_stopped_worker(&worker, &operation, |_| {}, |_| {});
 
         assert!(
             matches!(result, Err(RamError::Io(error)) if error.raw_os_error() == Some(libc::ETIMEDOUT))
@@ -853,7 +874,7 @@ mod worker_join_tests {
                 checked: AtomicUsize::new(0),
             };
 
-            let result = join_stopped_worker(&worker, &operation, |_| {});
+            let result = join_stopped_worker(&worker, &operation, |_| {}, |_| {});
 
             assert!(
                 matches!(result, Err(RamError::Io(error)) if error.raw_os_error() == Some(libc::ETIMEDOUT))
@@ -918,7 +939,7 @@ mod worker_join_tests {
             };
             let failure_retained = Cell::new(false);
 
-            let result = join_stopped_worker(&worker, &operation, |error| {
+            let result = join_stopped_worker(&worker, &operation, |_| {}, |error| {
                 assert!(matches!(
                     worker.try_lock(),
                     Err(std::sync::TryLockError::WouldBlock)
@@ -936,3 +957,6 @@ mod worker_join_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod worker_failure_tests;

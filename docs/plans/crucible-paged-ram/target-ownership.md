@@ -145,6 +145,11 @@ checks the prior clean membership-release history. An empty slot during join
 cannot authorize another worker, and these local checks issue no native Source
 or parent constructor custody.
 
+A worker error or panic retains its original cause before the independent final
+Cleanup deadline check. That check uses the same operation and stores its own
+failure separately; failed worker disposition never commits successful operation
+accounting. The worker-slot mutex remains held through both publications.
+
 ## Factory and runtime integration
 
 1. Use `retain_fork_target_factory` to retain the real shared factory facade.
