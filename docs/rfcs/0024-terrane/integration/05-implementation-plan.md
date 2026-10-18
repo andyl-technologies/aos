@@ -9029,7 +9029,7 @@ Resumed qualification:
   preserved for review, with no clean-shutdown or root-cause claim. Full cold
   policy recovery, HOST-32, Running publication, NativeReady and BKT-15 remain
   open; no complete host task is accepted.
-- Inline publication candidate `9fda72f6c1`: the actual Running owner now accepts
+- Inline publication candidate `ce872b0d9f`: the actual Running owner now accepts
   bounded encoded inline input, verifies it and synchronizes a reservation before
   creating an anonymous project-inheriting plaintext source or submitting the
   publisher copy. The exclusive turn checks the original job, exact claim,
@@ -9040,14 +9040,37 @@ Resumed qualification:
   inode allocation, full-project charged/reserved usage and logical future
   holds. Read accessors borrow immutable fields without embedded-state locks.
   Real guest controls cover pre-Resume refusal, repeated invalid inputs,
-  publication, no-replace and a stopped-publisher cancellation. Twenty-file
-  source review, syntax checks and provisional all-target builds pass; exact
-  source nextest, formatter pair, image and guest qualification are pending.
-  A strict Clippy attempt fails on inherited dead-code and test-assertion
-  findings; no clean-Clippy or task acceptance is claimed. Existing standalone
+  publication, no-replace and a stopped-publisher cancellation. Full source
+  review, formatter pair, immutable image, independent source/image verification
+  and actual ext4 guest pass on unchanged source: 47 selected filesystem cases,
+  eight manifest/mixed recovery cases, both new publication controls and three
+  process-confinement controls. The supervisor checks the exact existing private
+  publisher staging directory and original inode; no post-result I/O diagnostic
+  appears in this run. Local nextest on identical crate bytes executes 111
+  cases with 110 passing;
+  the non-UTF-8-name fixture fails during setup on the host ZFS filesystem.
+  That unchanged case passes in the selected native ext4 suite. A separate full
+  ext4 nextest runner is still under review: archive creation and extraction
+  succeed, but its first successful exit supplies no per-test results and is
+  not accepted as execution evidence. Six existing privileged VM cases remain
+  ignored in the ordinary nextest inventory. Existing standalone
   residence transfer, manifest Running publication, retirement, consumer leases
   and bucket readiness remain open. No frozen identity, encoding, bucket key,
   store trait, dependency or wire format changes.
+- Filesystem quality candidate `a697ea647c`: scopes intentional panic-assertion
+  lints to existing test modules, use the standard no-op waker, clarify aligned
+  validation and hexadecimal pairs, and bind receive-loop monotonic reads at the
+  native clock boundary. Test path suffixes use random bytes rather than wall
+  time. All-target build, four actual focused nextest cases and both formatters
+  pass on unchanged source. Both original real-signal deadline assertions pass.
+  Strict Clippy now reports 23 remaining errors: twenty unused integration or
+  lifetime-retention findings and three large-value layout findings. Required
+  application target compilation is running; no strict-Clippy pass is claimed.
+  Follow-up `49972406ae` carries the original queued completion box through
+  either Resume outcome, boxes large repair/inspection values and counts command
+  pointees in the checked storage envelope. Full diff and syntax review pass;
+  build, existing tests and native qualification are queued. No component change
+  accepts a complete T2 task or changes frozen formats, traits or dependencies.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
   and all seven strict Clippy/documentation profiles pass. The interface,
   commit-path, status and schema gates pass on unchanged final source, including
