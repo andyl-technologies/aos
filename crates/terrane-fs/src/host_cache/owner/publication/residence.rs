@@ -1,9 +1,9 @@
 //! Reads verified sealed ranges under original completed publication custody.
 //!
 //! Durable residence rows locate candidates. Only the physical worker's genuine
-//! completed job, current synchronized pins and actual sealed descriptor permit
-//! source preparation. Subsequent plaintext and seal reads never lock embedded
-//! state.
+//! completed job or independently verified and resumed recovery, current
+//! synchronized pins and actual sealed descriptor permit source preparation.
+//! Subsequent plaintext and seal reads never lock embedded state.
 //! This grants no consumer lease, Store readiness or caller-selected backing.
 
 use super::{PublicationJob, invalid, state};
@@ -22,6 +22,8 @@ use terrane::host::cache::{HostDomainLocation, ResidenceRecord};
 use terrane_core::identity::{Identity, IdentityKind, TERRANE_V1};
 use tokio::sync::oneshot;
 
+mod recovered;
+
 use super::super::{
     RETAINED_LEASE_DEADLINE,
     retention::{Command, Custody, NativeMetadataOwner, NativeOwnerExecutor},
@@ -29,7 +31,7 @@ use super::super::{
 
 /// Retains an original pinned sealed range for reads outside embedded state.
 ///
-/// The physical job keeps the actual publication pin and backing alive after
+/// Physical custody keeps the actual durable funding and backing alive after
 /// receipt or owner destruction. This source grants no native handle, new
 /// consumer lease or writable cache authority. Its immutable read operations
 /// never consult the command queue or lock embedded state.
@@ -53,7 +55,7 @@ impl NativeResidentChunkSource {
     ///
     /// Each call checks the retained inode and kernel seal before and after a
     /// positioned read, then verifies the actual chunk identity and boundary.
-    /// Original physical job ownership keeps its durable pin and descriptor
+    /// Original physical custody keeps its durable pin and descriptor
     /// alive throughout use. Concurrent readers never share a file cursor.
     ///
     /// # Errors
@@ -93,13 +95,13 @@ impl NativeResidentChunkSource {
 }
 
 impl NativeMetadataOwner {
-    /// Retains a pinned source from this worker's completed Running publication.
+    /// Retains a pinned source from this worker's completed publication or recovery.
     ///
     /// Preparation resolves the exact durable residence through the original
     /// job registry and checks current synchronized funding and canonical
-    /// metadata. Subsequent reads use only the retained immutable source and
-    /// never enter the queue or embedded state. Cold/recovered publications
-    /// require their separate verified recovery registry.
+    /// metadata. Recovered manifests require independently inspected backing
+    /// and the actual acknowledged Resume. Subsequent reads use only retained
+    /// immutable resources and never enter the queue or embedded state.
     ///
     /// # Errors
     /// Refuses a full/stopped queue, absent Resume, missing current publication,
@@ -128,7 +130,7 @@ impl NativeMetadataOwner {
 }
 
 struct Source {
-    job: Arc<Mutex<PublicationJob>>,
+    origin: Origin,
     body: Arc<PeerPublishedObject<HostDomainLocation>>,
     span: NativeChunkSpan,
     row: ResidenceRecord,
@@ -136,6 +138,11 @@ struct Source {
     project: u32,
     publisher_uid: u32,
     allocation_limit: usize,
+}
+
+enum Origin {
+    Publication(Arc<Mutex<PublicationJob>>),
+    Recovery(recovered::RecoveredSource),
 }
 
 /// Prepares only a registered physical publication on the retained worker thread.
@@ -157,10 +164,6 @@ pub(in crate::host_cache::owner) fn retain(
     check_native(&source)?;
     context.check_current().map_err(io::Error::other)?;
     {
-        let job = source
-            .job
-            .lock()
-            .map_err(|_| invalid("resident publication poisoned"))?;
         let owner = executor
             .custody()
             .lock()
@@ -172,10 +175,10 @@ pub(in crate::host_cache::owner) fn retain(
                 .residences
                 .iter()
                 .any(|row| same_row(row, &source.row))
-            || registration(&owner, &job, &identity, &source.row)? != source.span
         {
             return Err(invalid("resident source registration changed"));
         }
+        check_origin(&owner, &source, &identity)?;
     }
     Ok(NativeResidentChunkSource { identity, source })
 }
@@ -214,25 +217,15 @@ impl NativeResidentChunkSource {
     /// # Errors
     /// Refuses changed original job, pins, metadata, range or snapshot provenance.
     pub(super) fn check_protected(&self, owner: &Custody) -> io::Result<()> {
-        let job = self
-            .source
-            .job
-            .lock()
-            .map_err(|_| invalid("resident publication poisoned"))?;
         if !owner
             .state
             .residences
             .iter()
             .any(|row| self.matches_record(row))
-            || registration(owner, &job, &self.identity, &self.source.row)? != self.source.span
-            || !job
-                .body
-                .as_ref()
-                .is_some_and(|body| Arc::ptr_eq(body, &self.source.body))
         {
             return Err(invalid("retained source lost original publication custody"));
         }
-        Ok(())
+        check_origin(owner, &self.source, &self.identity)
     }
 
     /// Recognizes only the original checked residence, without choosing another body.
@@ -297,7 +290,7 @@ fn select_locked(
                 .ok_or_else(|| invalid("resident body absent"))?,
         );
         return Ok(Source {
-            job: Arc::clone(resource),
+            origin: Origin::Publication(Arc::clone(resource)),
             body,
             span,
             row,
@@ -307,10 +300,30 @@ fn select_locked(
             allocation_limit: owner.preparation.config.reads.max_allocation_bytes,
         });
     }
-    Err(io::Error::new(
-        io::ErrorKind::NotFound,
-        "resident chunk lacks its original completed publication",
-    ))
+    recovered::select(executor, owner, identity, row)
+}
+
+fn check_origin(owner: &Custody, source: &Source, identity: &Identity) -> io::Result<()> {
+    let span = match &source.origin {
+        Origin::Publication(resource) => {
+            let job = resource
+                .lock()
+                .map_err(|_| invalid("resident publication poisoned"))?;
+            if !job
+                .body
+                .as_ref()
+                .is_some_and(|body| Arc::ptr_eq(body, &source.body))
+            {
+                return Err(invalid("resident descriptor differs from original job"));
+            }
+            registration(owner, &job, identity, &source.row)?
+        }
+        Origin::Recovery(recovered) => recovered.check_registration(owner, source, identity)?,
+    };
+    if span != source.span {
+        return Err(invalid("resident source range changed"));
+    }
+    Ok(())
 }
 
 fn registration(
@@ -319,26 +332,10 @@ fn registration(
     identity: &Identity,
     row: &ResidenceRecord,
 ) -> io::Result<NativeChunkSpan> {
-    owner.check_current()?;
-    let written = owner
-        .synchronized_state
-        .as_ref()
-        .ok_or_else(|| invalid("resident snapshot unverified"))?;
-    let (_, snapshot) = owner
-        .snapshot
-        .as_ref()
-        .ok_or_else(|| invalid("resident snapshot absent"))?;
-    if (written.device, written.inode) != (snapshot.dev(), snapshot.ino()) {
-        return Err(invalid("resident snapshot writer incarnation changed"));
+    check_snapshot(owner)?;
+    if !job.started || !job.complete {
+        return Err(invalid("resident publication is not complete"));
     }
-    if owner.recovery_required
-        || !job.started
-        || !job.complete
-        || owner.generation != written.generation
-    {
-        return Err(invalid("resident publication is not complete and current"));
-    }
-    super::super::recovery_manifest_state::require_same(&owner.state, &written.state)?;
     let hash = state::hex(job.claim.descriptor().digest());
     let pin_owner = format!("publication:{}", job.token);
     if !owner.state.reservations.iter().any(|hold| {
@@ -373,15 +370,44 @@ fn registration(
     if let Some(manifest) = &job.manifest {
         manifest.retained.check_registration(owner)?;
     }
+    claim_span(owner, &job.claim, identity, row)
+}
+
+fn check_snapshot(owner: &Custody) -> io::Result<()> {
+    owner.check_current()?;
+    let written = owner
+        .synchronized_state
+        .as_ref()
+        .ok_or_else(|| invalid("resident snapshot unverified"))?;
+    let (_, snapshot) = owner
+        .snapshot
+        .as_ref()
+        .ok_or_else(|| invalid("resident snapshot absent"))?;
+    if (written.device, written.inode) != (snapshot.dev(), snapshot.ino()) {
+        return Err(invalid("resident snapshot writer incarnation changed"));
+    }
+    if owner.recovery_required || owner.generation != written.generation {
+        return Err(invalid("resident publication is not complete and current"));
+    }
+    super::super::recovery_manifest_state::require_same(&owner.state, &written.state)?;
+    Ok(())
+}
+
+fn claim_span(
+    owner: &Custody,
+    claim: &terrane::host::publication::PublicationClaim,
+    identity: &Identity,
+    row: &ResidenceRecord,
+) -> io::Result<NativeChunkSpan> {
     let plan = NativeResidencePlan::new(
         owner.preparation.layout(),
-        &job.claim,
+        claim,
         owner.preparation.config.inventory_entries,
     )?;
     let span = plan
         .span(identity)?
         .ok_or_else(|| invalid("resident chunk absent from verified claim"))?;
-    if row.object != hash
+    if row.object != state::hex(claim.descriptor().digest())
         || row.chunk != state::hex(identity.digest())
         || row.offset != span.offset
         || row.length != span.length as u64

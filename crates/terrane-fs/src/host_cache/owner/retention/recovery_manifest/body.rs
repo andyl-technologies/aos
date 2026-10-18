@@ -39,6 +39,11 @@ impl RecoveryManifestBodyRetention {
         &self.custody.body
     }
 
+    /// Shares the original registered descriptor without reopening its private namespace.
+    pub(in crate::host_cache) fn body_arc(&self) -> Arc<PeerPublishedObject<HostDomainLocation>> {
+        Arc::clone(&self.custody.body)
+    }
+
     /// Borrows lifetime-free durable metadata custody without a state lock.
     pub(crate) fn backing(&self) -> &RecoveryManifestBackingRetention {
         &self.custody.backing

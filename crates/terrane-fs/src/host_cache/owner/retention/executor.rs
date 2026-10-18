@@ -89,14 +89,26 @@ impl NativeOwnerExecutor {
         &self,
     ) -> io::Result<Arc<PublisherRunningContext>> {
         self.check_physical_worker()?;
-        let context = self
-            .running
-            .as_ref()
-            .ok_or_else(|| io::Error::other("encoded admission requires acknowledged Resume"))?;
         let owner = self
             .custody
             .lock()
             .map_err(|_| io::Error::other("admission custody poisoned"))?;
+        self.admission_context_locked(&owner)
+    }
+
+    /// Retains genuine acknowledged custody while its physical worker holds policy.
+    ///
+    /// # Errors
+    /// Refuses another worker, absent or uncertain Resume, or foreign/faulted custody.
+    pub(in crate::host_cache::owner) fn admission_context_locked(
+        &self,
+        owner: &Custody,
+    ) -> io::Result<Arc<PublisherRunningContext>> {
+        self.check_physical_worker()?;
+        let context = self
+            .running
+            .as_ref()
+            .ok_or_else(|| io::Error::other("encoded admission requires acknowledged Resume"))?;
         owner.check_current()?;
         if owner.faulted
             || owner.recovery_required

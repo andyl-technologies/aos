@@ -344,6 +344,7 @@ pub(super) fn run(
                 "manifest refusal lost original funded faulted custody",
             ));
         }
+        refuse_resident_source(owner, runtime, inputs)?;
         println!(
             "PASS actual {} retained metadata funding and faulted custody; no Resume",
             case.refusal_label()
@@ -359,6 +360,7 @@ pub(super) fn run(
         return Err(invalid("nonempty recovery lacks actual bounded accounting"));
     }
     check_policy(runtime, inputs, case, true)?;
+    refuse_resident_source(owner, runtime, inputs)?;
     let before = fs::read(inputs.root.join("state/cache/records.toml"))?;
     runtime
         .block_on(owner.resume_recovered(completed))
@@ -368,6 +370,7 @@ pub(super) fn run(
             "manifest Resume changed its durable recovery policy",
         ));
     }
+    read_recovered_sources(owner, runtime, inputs)?;
     if case.mixed() {
         println!(
             "PASS actual mixed recovery adopted inline and manifest bytes and acknowledged Resume; no Ready"
@@ -377,6 +380,70 @@ pub(super) fn run(
             "PASS actual manifest recovery reconstructed verified residences and acknowledged Resume; no Ready"
         );
     }
+    Ok(())
+}
+
+fn refuse_resident_source(
+    owner: &NativeMetadataOwner,
+    runtime: &tokio::runtime::Runtime,
+    inputs: &Inputs,
+) -> io::Result<()> {
+    let fixture = Fixture::new()?;
+    let range = ChunkProfile::cdc_1m([0; 32])
+        .ranges(&fixture.plaintext)
+        .next()
+        .ok_or_else(|| invalid("recovery fixture has no actual chunk"))?;
+    let identity = TERRANE_V1
+        .calculate(IdentityKind::Chunk, &fixture.plaintext[range])
+        .map_err(io::Error::other)?;
+    let before = fs::read(inputs.root.join("state/cache/records.toml"))?;
+    if runtime
+        .block_on(owner.retain_resident_chunk(identity))
+        .is_ok()
+        || fs::read(inputs.root.join("state/cache/records.toml"))? != before
+    {
+        return Err(invalid(
+            "recovery issued a resident source without acknowledged Resume",
+        ));
+    }
+    println!("PASS actual recovered source refused without acknowledged Resume; policy unchanged");
+    Ok(())
+}
+
+fn read_recovered_sources(
+    owner: &NativeMetadataOwner,
+    runtime: &tokio::runtime::Runtime,
+    inputs: &Inputs,
+) -> io::Result<()> {
+    let fixture = Fixture::new()?;
+    let before = fs::read(inputs.root.join("state/cache/records.toml"))?;
+    for range in ChunkProfile::cdc_1m([0; 32]).ranges(&fixture.plaintext) {
+        let bytes = &fixture.plaintext[range.clone()];
+        let identity = TERRANE_V1
+            .calculate(IdentityKind::Chunk, bytes)
+            .map_err(io::Error::other)?;
+        let source = runtime.block_on(owner.retain_resident_chunk(identity))?;
+        let stalled = runtime.block_on(owner.stall_policy_for_fixture())?;
+        let actual = source.read_verified()?;
+        drop(stalled);
+        if actual != bytes
+            || source.span().offset != range.start as u64
+            || source.span().length != bytes.len()
+            || source.span().final_chunk != (range.end == fixture.plaintext.len())
+        {
+            return Err(invalid(
+                "actual recovered source differs from verified manifest range",
+            ));
+        }
+    }
+    if fs::read(inputs.root.join("state/cache/records.toml"))? != before {
+        return Err(invalid(
+            "recovered source read changed durable recovery custody",
+        ));
+    }
+    println!(
+        "PASS actual recovered manifest ranges read while embedded policy held; original custody unchanged"
+    );
     Ok(())
 }
 
