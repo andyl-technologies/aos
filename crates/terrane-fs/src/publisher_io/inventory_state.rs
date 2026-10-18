@@ -183,6 +183,9 @@ impl StateInventory {
 
     /// Matches an existing record to actual verified inline or manifest content.
     ///
+    /// An unbound manifest key remains a candidate until funded native adoption
+    /// independently verifies plaintext and can quarantine a rejected inode.
+    ///
     /// # Errors
     /// Rejects changed sources/custody, invalid content, malformed state, seal
     /// conflict and exhausted retained-metadata budgets.
@@ -202,19 +205,6 @@ impl StateInventory {
             return Err(invalid("unsafe canonical inventory inode"));
         }
         let measured = crate::verity::measure(&*file)?;
-        file.seek(SeekFrom::Start(0))?;
-        // The manifest identity authenticates canonical metadata, never assembled
-        // bytes. This separately checks exact length, ordered chunks and every
-        // required whole-file hash under that authenticated claim.
-        claim.verify_reader(file)?;
-        verified.recheck(inventory)?;
-        if !same_inode_snapshot(&observed, &file.metadata()?)
-            || crate::verity::measure(&*file)? != measured
-        {
-            return Err(invalid(
-                "canonical inventory inode changed during verification",
-            ));
-        }
         // Only the actual retained private directory supplies this parser path.
         // No request path or private record bytes can create a claim authority.
         let state = FsPublicationState::new(
@@ -231,13 +221,33 @@ impl StateInventory {
             .iter_mut()
             .find(|record| record.name == expected_name)
         else {
-            // State loss is reconstructed by later actual adoption, never by
-            // interpreting an absent record as an existing durable binding.
+            // This remains an unadopted candidate, not a verified body or
+            // reconstructed binding. Actual funded adoption must verify its
+            // plaintext and quarantine a mismatch while retaining metadata.
+            verified.recheck(inventory)?;
+            if !same_inode_snapshot(&observed, &file.metadata()?)
+                || crate::verity::measure(&*file)? != measured
+            {
+                return Err(invalid("unbound inventory candidate changed"));
+            }
             return Ok(());
         };
         if record.kind != RecordKind::Binding || record.body.is_some() {
             return Err(invalid(
                 "publication-state record matched multiple canonical bodies",
+            ));
+        }
+        file.seek(SeekFrom::Start(0))?;
+        // The manifest identity authenticates canonical metadata, never assembled
+        // bytes. This separately checks exact length, ordered chunks and every
+        // required whole-file hash under that authenticated claim.
+        claim.verify_reader(file)?;
+        verified.recheck(inventory)?;
+        if !same_inode_snapshot(&observed, &file.metadata()?)
+            || crate::verity::measure(&*file)? != measured
+        {
+            return Err(invalid(
+                "canonical inventory inode changed during verification",
             ));
         }
         let retained_bytes = retain_source_budget(self.retained_bytes, claim)?;

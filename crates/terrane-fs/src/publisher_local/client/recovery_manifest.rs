@@ -3,7 +3,8 @@
 //! The native publisher proves current directory-relative canonical custody.
 //! The response supplies both the verified file and its lifecycle observation;
 //! an inventory candidate supplies only its expected key, never a prior inode.
-//! These methods remain outside owner dispatch until full recovery integration.
+//! The physical recovery executor retains accepted resources before correlation;
+//! these exchanges grant no Running publisher or serving authority.
 
 use std::{fs::File, io, os::fd::AsFd, sync::Arc};
 
