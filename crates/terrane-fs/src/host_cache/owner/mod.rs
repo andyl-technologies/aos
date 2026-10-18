@@ -7,6 +7,7 @@
 
 mod admission;
 mod config;
+mod consumer;
 mod index_io;
 #[cfg(feature = "native-test-fixtures")]
 mod policy_stall_fixture;
@@ -41,6 +42,7 @@ pub use admission::{
     NativeMetadataAdmissionError,
 };
 pub use config::{IndexRepairPolicy, NativeCacheOwnerConfig};
+pub use consumer::{NativeConsumerLease, NativeLeaseAccounting};
 #[cfg(feature = "native-test-fixtures")]
 pub use policy_stall_fixture::NativePolicyStall;
 pub use preparation::NativeCachePreparation;

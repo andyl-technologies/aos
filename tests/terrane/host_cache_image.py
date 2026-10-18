@@ -29,6 +29,9 @@ UNIT_PREFIXES = ("host_cache::owner::", "host_cache::recovery_inspection::",
 UNIT_PROFILE = {"opt_level": "s", "debuginfo": 0, "debug_assertions": True,
                 "overflow_checks": True, "test": True}
 UNIT_TESTS = (
+    'host_cache::owner::consumer::sweep::tests::delayed_sweep_uses_original_expiry_and_never_restarts_grace',
+    'host_cache::owner::consumer::sweep::tests::explicit_grace_has_no_second_grace_and_retained_producers_do_not_expire',
+    'host_cache::owner::consumer::sweep::tests::partial_pin_expiry_is_persisted_without_releasing_the_remaining_owner',
     'host_cache::owner::admission::io::tests::actual_admission_byte_check_is_positioned_and_rejects_modified_inode_bytes',
     'host_cache::owner::admission::memory::tests::simultaneous_active_copies_and_state_headers_are_checked',
     'host_cache::owner::admission::metadata::tests::actual_metadata_pair_rejects_wrong_index_key_class_and_window',
@@ -90,7 +93,7 @@ def unit_inventory(output):
                    and len(names) == len(set(names)) and 0 < len(names) <= 4096
                    and int(lines[-1].split()[0]) == len(names), "invalid FS unit inventory")
     selected = sorted(name for name in names if name.startswith(UNIT_PREFIXES))
-    shared.require(selected == sorted(UNIT_TESTS) and len(selected) == 48,
+    shared.require(selected == sorted(UNIT_TESTS) and len(selected) == len(UNIT_TESTS),
                    "FS unit module-prefix inventory changed")
     return sorted(names)
 
@@ -298,7 +301,7 @@ def main():
         "publisher-confinement", "publisher-reject-descriptor", "publisher-reject-stdio",
         "seed-mixed-manifest", "seed-mixed-bad-manifest",
         "recover-mixed-manifest", "refuse-mixed-manifest",
-        "publish-inline", "publish-inline-cancel", "publish-inline-transfer",
+        "consumer-leases", "publish-inline", "publish-inline-cancel", "publish-inline-transfer",
         "publish-inline-transfer-cancel", "publish-inline-transfer-conflict",
         "retain-running", "retain-running-cancel",
         "publish-manifest", "publish-manifest-cancel", "publish-manifest-bad-whole",

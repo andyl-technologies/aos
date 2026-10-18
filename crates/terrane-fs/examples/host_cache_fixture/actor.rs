@@ -27,6 +27,7 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
     if !matches!(
         mode,
         "prepare"
+            | "consumer-leases"
             | "empty"
             | "refuse"
             | "late-refuse"
@@ -95,6 +96,15 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
         .enable_all()
         .build()?;
     match mode {
+        "consumer-leases" => {
+            super::consumer::run(
+                &owner,
+                &runtime,
+                &inputs,
+                Arc::clone(&confinement),
+                original,
+            )?;
+        }
         "publish-manifest"
         | "publish-manifest-cancel"
         | "publish-manifest-bad-whole"

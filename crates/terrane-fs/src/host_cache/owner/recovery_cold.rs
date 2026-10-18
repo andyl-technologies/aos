@@ -48,6 +48,25 @@ impl ColdPolicy {
         &self.state.residences
     }
 
+    /// Recognizes the original ledger's metadata allowance for a consumer lease.
+    ///
+    /// This compares policy data only. Cleanup additionally requires the actual
+    /// completed recovery and acknowledged Running owner; this issues no read
+    /// handle and cannot establish native backing from a token.
+    pub(super) fn retained_consumer_hold(&self, token: &str, owner: &str) -> Option<u64> {
+        if !self.state.leases.iter().any(|lease| {
+            lease.owner == format!("consumer:{token}")
+                || lease.owner == format!("consumer-grace:{token}")
+        }) {
+            return None;
+        }
+        self.state
+            .reservations
+            .iter()
+            .find(|hold| hold.id == token && hold.owner == owner)
+            .map(|hold| hold.bytes)
+    }
+
     /// Adds the genuine new bootstrap hold while preserving every cold record.
     ///
     /// # Errors

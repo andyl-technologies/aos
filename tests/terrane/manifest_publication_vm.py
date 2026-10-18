@@ -515,3 +515,149 @@ def reuse_case(driver, publisher, uuid, suffix):
         if process.poll() is None:
             process.kill()
             process.wait(timeout=5)
+
+
+def run_consumer_leases(driver, helper, uuid):
+    """Checks actual durable consumer effects independently of opaque API replies."""
+    import subprocess
+
+    case = "consumer-leases"
+    environment = driver.actor_environment(case, uuid)
+    environment.update(TERRANE_LEASE_FOREIGN_ROOT=str(driver.root("lease-foreign")),
+                       TERRANE_LEASE_FOREIGN_PROJECT=str(driver.project("lease-foreign")))
+    process = subprocess.Popen(driver.role_command(840, [driver.IMAGE / "bin/host_cache_fixture", "consumer-leases"]),
+                               env=environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT)
+    lines = driver.Lines(process)
+    stopped = False
+    policy = driver.root(case) / "state/cache/records.toml"
+    plaintext = b"actual consumer lease retains original immutable backing"
+    try:
+        lines.until("actual pin and policy-held read checked", timeout=20)
+        print(driver.process_status(process, 840), flush=True)
+        ready = [row.split() for row in lines.bytes.decode().splitlines()
+                 if row.startswith("READY consumer lease ")]
+        driver.require(len(ready) == 1, "missing actual consumer pin completion")
+        name, expiry, inode = ready[0][3:6]
+        expiry, inode = int(expiry), int(inode[:-1])
+        token = name.removeprefix("consumer:")
+        driver.require(name == "consumer:" + token and len(token) == 32
+                       and all(c in "0123456789abcdef" for c in token),
+                       "consumer owner is not a unique operation identifier")
+        initial = tomllib.loads(policy.read_text())
+        pins = [row for row in initial["pins"] if row["owner"] == name]
+        driver.require(len(pins) == 1 and pins[0]["expires"] == expiry,
+                       "acknowledged consumer pin missing from actual snapshot")
+        digest = pins[0]["hash"]
+        body = driver.root(case) / "sealed" / digest[:2] / digest
+        metadata = body.stat()
+        driver.require(body.read_bytes() == plaintext and metadata.st_ino == inode
+                       and metadata.st_uid == metadata.st_gid == 841
+                       and metadata.st_nlink == 1 and metadata.st_mode & 0o7777 == 0o400,
+                       "consumer backing differs from original actual sealed inode")
+        held = {"id": token, "owner": driver.owner(case), "bytes": 262144}
+        leased = {"owner": name, "expires": expiry}
+        driver.require(initial["reservations"].count(held) == 1
+                       and initial["leases"].count(leased) == 1
+                       and len(initial["reservations"]) == 3 and len(initial["pins"]) == 2
+                       and len(initial["leases"]) == 2 and len(initial["residences"]) == 1,
+                       "consumer pin lacks exact own future hold or producer policy")
+        baseline = {group: [row for row in rows if row != removed]
+                    for group, rows, removed in [
+                        ("pins", initial["pins"], pins[0]),
+                        ("leases", initial["leases"], leased),
+                        ("reservations", initial["reservations"], held)]}
+        baseline["residences"] = initial["residences"]
+        publication = [row for row in baseline["leases"] if row["owner"].startswith("publication:")]
+        driver.require(len(publication) == 1 and publication[0]["expires"] == 9223372036854775807
+                       and baseline["pins"] == [{"owner": publication[0]["owner"], "hash": digest,
+                                                "expires": 9223372036854775807}]
+                       and sorted(row["bytes"] for row in baseline["reservations"])
+                       == [262144, 262144 + 2 * len(plaintext)],
+                       "consumer baseline lost independently funded original publication")
+        foreign = tomllib.loads((driver.root("lease-foreign") / "state/cache/records.toml").read_text())
+        driver.require(len(foreign["reservations"]) == 1
+                       and foreign["reservations"][0]["owner"] == driver.owner("lease-foreign")
+                       and foreign["reservations"][0]["bytes"] == 262144
+                       and all(foreign[group] == [] for group in ["pins", "leases", "residences"]),
+                       "foreign actual native owner changed policy during misrouted commands")
+
+        helper.send_signal(signal.SIGSTOP)
+        stopped = True
+        deadline = time.monotonic() + 1
+        while True:
+            status = (pathlib.Path("/proc") / str(helper.pid) / "status").read_text()
+            if any(row.startswith("State:\tT") for row in status.splitlines()):
+                break
+            driver.require(helper.poll() is None and time.monotonic() < deadline,
+                           "quota helper did not acknowledge actual stopped renewal control")
+            time.sleep(0.005)
+        process.stdin.write(b"renew\n")
+        process.stdin.flush()
+        lines.until("CANCELLED consumer renewal waiter; original grant read while quota helper stopped", timeout=1)
+        driver.require(time.monotonic() < deadline,
+                       "consumer read or cancellation stalled on actual embedded/quota locks")
+        driver.require(tomllib.loads(policy.read_text()) == initial,
+                       "stopped quota preflight already changed acknowledged consumer policy")
+        helper.send_signal(signal.SIGCONT)
+        stopped = False
+        deadline = time.monotonic() + 10
+        while True:
+            renewed = tomllib.loads(policy.read_text())
+            if {"owner": name, "expires": expiry + 90} in renewed["leases"]:
+                break
+            driver.require(process.poll() is None and time.monotonic() < deadline,
+                           "dropped renewal waiter cancelled physical durable work")
+            time.sleep(0.01)
+        expected = dict(initial)
+        expected["leases"] = [dict(row, expires=expiry + 90) if row["owner"] == name else row
+                              for row in initial["leases"]]
+        expected["pins"] = [dict(row, expires=expiry + 90) if row["owner"] == name else row
+                            for row in initial["pins"]]
+        driver.require(renewed == expected,
+                       "accepted abandoned renewal changed unrelated actual policy or funding")
+        print("PASS actual dropped consumer renewal completed durable update before any barrier; original grant read with quota helper stopped", flush=True)
+        process.stdin.write(b"completed\n")
+        process.stdin.flush()
+        lines.until("release grace retained without inode duplication")
+        repins = [row.split() for row in lines.bytes.decode().splitlines()
+                  if row.startswith("READY consumer re-pin ")]
+        driver.require(len(repins) == 1, "missing actual consumer re-pin completion")
+        second, second_expiry, grace = repins[0][3:6]
+        second_expiry, grace = int(second_expiry), int(grace[:-1])
+        during = tomllib.loads(policy.read_text())
+        grace_owner = "consumer-grace:" + token
+        driver.require(second != name and grace > int(time.time())
+                       and {"owner": grace_owner, "expires": grace} in during["leases"]
+                       and {"owner": grace_owner, "hash": digest, "expires": grace} in during["pins"]
+                       and {"owner": second, "expires": second_expiry} in during["leases"]
+                       and {"owner": second, "hash": digest, "expires": second_expiry} in during["pins"]
+                       and len(during["leases"]) == len(during["pins"]) == 3
+                       and len(during["reservations"]) == 4 and held in during["reservations"]
+                       and {"id": second.removeprefix("consumer:"), "owner": driver.owner(case),
+                            "bytes": 262144} in during["reservations"]
+                       and during["residences"] == baseline["residences"]
+                       and body.stat().st_ino == inode and body.read_bytes() == plaintext,
+                       "release or immediate re-pin lost grace or duplicated native backing")
+        process.stdin.write(b"expiry\n")
+        process.stdin.flush()
+        lines.until("EXPIRED actual consumer grant; renewal refused while durable grace remains", timeout=10)
+        driver.require(tomllib.loads(policy.read_text()) == during,
+                       "expiry was acknowledged as an early decrement before original grace")
+        output, _ = process.communicate(timeout=40)
+        print(output.decode(), end="", flush=True)
+        full = (lines.bytes + output).decode()
+        result = "PASS actual consumer pin, held-policy read, cancelled renewal, foreign-owner refusal, release, re-pin and periodic expiry; original inode and producer records retained"
+        driver.require(process.returncode == 0 and full.splitlines().count(result) == 1,
+                       "native consumer lifecycle did not actually complete")
+        final = tomllib.loads(policy.read_text())
+        driver.require(all(final[group] == rows for group, rows in baseline.items())
+                       and body.stat().st_ino == inode and body.read_bytes() == plaintext,
+                       "periodic expiry failed actual own-hold cleanup or changed original backing")
+        print("PASS actual consumer release grace and periodic expiry removed exactly their own durable holds, pins and leases; original producer and inode preserved", flush=True)
+    finally:
+        if stopped and helper.poll() is None:
+            helper.send_signal(signal.SIGCONT)
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)

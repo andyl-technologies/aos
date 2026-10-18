@@ -268,22 +268,7 @@ async fn pin(
     super::super::super::snapshot::persist(executor, write).await?;
     // Only owned actual descriptors cross these filesystem operations. Neither
     // embedded custody nor the publisher RPC mutex is held during native IO.
-    body.handle().sync_all()?;
-    let root = File::from(rustix::fs::openat(
-        &body.layout().root,
-        ".",
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        rustix::fs::Mode::empty(),
-    )?);
-    let observed_root = root.metadata()?;
-    if (observed_root.dev(), observed_root.ino())
-        != body.layout().directory_binding("layout-root")?
-    {
-        return Err(invalid("inline pin synchronization root changed"));
-    }
-    rustix::fs::syncfs(&root)?;
-    let allocated_inode_bytes = synchronized_allocated_bytes(body.handle())?;
-    check_native_body(&body, project, publisher_uid)?;
+    let allocated_inode_bytes = synchronize_body(&body, project, publisher_uid)?;
     running.check_current().map_err(io::Error::other)?;
     {
         let mut job = resource

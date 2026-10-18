@@ -6,6 +6,7 @@
 //! Acknowledged contexts and failed handoffs remain outside embedded custody,
 //! preventing a reference cycle and retaining resources before cancellable replies.
 
+use super::super::consumer::{ConsumerJob, ReadBudget, ReadView};
 use super::Custody;
 use crate::{
     host_cache::CompletedRecovery,
@@ -26,6 +27,8 @@ pub(in crate::host_cache::owner) struct NativeOwnerExecutor {
     admission_jobs: Vec<Arc<Mutex<super::super::admission::AdmissionJob>>>,
     publications: Vec<Arc<Mutex<super::super::publication::PublicationJob>>>,
     inline_sources: Vec<Arc<Mutex<super::super::publication::RecoveredInlineJob>>>,
+    consumers: Vec<Arc<Mutex<ConsumerJob>>>,
+    consumer_reads: Arc<ReadBudget>,
     adopted_inline: Vec<super::super::recovery_inline::AdoptedInline>,
     manifest_sources: Vec<Arc<crate::host_cache::NativeManifestSource>>,
     manifest_bodies: Vec<
@@ -42,7 +45,7 @@ pub(in crate::host_cache::owner) struct NativeOwnerExecutor {
 
 impl NativeOwnerExecutor {
     /// Retains actual initialized custody on the physical worker, without cloning it.
-    pub(super) fn new(custody: Arc<Mutex<Custody>>) -> Self {
+    pub(super) fn new(custody: Arc<Mutex<Custody>>, consumer_reads: Arc<ReadBudget>) -> Self {
         Self {
             custody,
             worker: thread::current().id(),
@@ -51,6 +54,8 @@ impl NativeOwnerExecutor {
             admission_jobs: Vec::new(),
             publications: Vec::new(),
             inline_sources: Vec::new(),
+            consumers: Vec::new(),
+            consumer_reads,
             adopted_inline: Vec::new(),
             manifest_sources: Vec::new(),
             manifest_bodies: Vec::new(),
@@ -146,6 +151,7 @@ impl NativeOwnerExecutor {
             .len()
             .saturating_add(self.publications.len())
             .saturating_add(self.inline_sources.len())
+            .saturating_add(self.consumers.len())
             >= limit
         {
             return Err(io::Error::new(
@@ -215,6 +221,7 @@ impl NativeOwnerExecutor {
             .len()
             .saturating_add(self.publications.len())
             .saturating_add(self.inline_sources.len())
+            .saturating_add(self.consumers.len())
             >= limit
         {
             return Err(io::Error::new(
@@ -275,6 +282,7 @@ impl NativeOwnerExecutor {
             .len()
             .saturating_add(self.publications.len())
             .saturating_add(self.inline_sources.len())
+            .saturating_add(self.consumers.len())
             >= limit
         {
             return Err(io::Error::new(
@@ -313,6 +321,115 @@ impl NativeOwnerExecutor {
         if effect_free {
             self.inline_sources
                 .retain(|entry| !Arc::ptr_eq(entry, resource));
+        }
+        Ok(())
+    }
+
+    /// Shares this actual owner's configured global read budget.
+    pub(in crate::host_cache::owner) fn consumer_read_budget(&self) -> Arc<ReadBudget> {
+        Arc::clone(&self.consumer_reads)
+    }
+
+    /// Registers original source and view resources before consumer pin effects.
+    ///
+    /// # Errors
+    /// Refuses another worker, an exhausted joint registry or unavailable memory.
+    pub(in crate::host_cache::owner) fn register_consumer_job(
+        &mut self,
+        job: ConsumerJob,
+    ) -> io::Result<Arc<Mutex<ConsumerJob>>> {
+        self.check_physical_worker()?;
+        let limit = self
+            .custody
+            .lock()
+            .map_err(|_| io::Error::other("consumer custody poisoned"))?
+            .preparation
+            .config
+            .state
+            .records;
+        if self
+            .admission_jobs
+            .len()
+            .saturating_add(self.publications.len())
+            .saturating_add(self.inline_sources.len())
+            .saturating_add(self.consumers.len())
+            >= limit
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::StorageFull,
+                "consumer registry capacity exhausted",
+            ));
+        }
+        self.consumers.try_reserve(1).map_err(io::Error::other)?;
+        let resource = Arc::new(Mutex::new(job));
+        self.consumers.push(Arc::clone(&resource));
+        Ok(resource)
+    }
+
+    /// Resolves an original read view only through this physical registry.
+    ///
+    /// # Errors
+    /// Refuses another worker, poisoned custody and foreign/unretained views.
+    pub(in crate::host_cache::owner) fn consumer_job_for_view(
+        &self,
+        view: &Arc<ReadView>,
+    ) -> io::Result<Arc<Mutex<ConsumerJob>>> {
+        self.check_physical_worker()?;
+        for resource in &self.consumers {
+            let job = resource
+                .lock()
+                .map_err(|_| io::Error::other("consumer job poisoned"))?;
+            if job.matches_view(view, &self.custody) {
+                return Ok(Arc::clone(resource));
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "consumer lease belongs to another physical owner or has retired",
+        ))
+    }
+
+    /// Borrows only actual jobs retained by this physical consumer registry.
+    pub(in crate::host_cache::owner) fn consumer_jobs(&self) -> &[Arc<Mutex<ConsumerJob>>] {
+        &self.consumers
+    }
+
+    /// Reclaims an acquisition only before any attempted durable mutation.
+    ///
+    /// # Errors
+    /// Refuses another worker or poisoned resources; uncertain effects stay owned.
+    pub(in crate::host_cache::owner) fn reclaim_consumer_job(
+        &mut self,
+        resource: &Arc<Mutex<ConsumerJob>>,
+    ) -> io::Result<()> {
+        self.check_physical_worker()?;
+        if resource
+            .lock()
+            .map_err(|_| io::Error::other("consumer job poisoned"))?
+            .is_effect_free()
+        {
+            self.consumers.retain(|job| !Arc::ptr_eq(job, resource));
+        }
+        Ok(())
+    }
+
+    /// Reclaims removed jobs only after every actual started read closes backing.
+    ///
+    /// # Errors
+    /// Refuses another worker or a poisoned job rather than losing its resources.
+    pub(in crate::host_cache::owner) fn reclaim_removed_consumer_jobs(&mut self) -> io::Result<()> {
+        self.check_physical_worker()?;
+        let mut index = 0;
+        while index < self.consumers.len() {
+            let reclaim = self.consumers[index]
+                .lock()
+                .map_err(|_| io::Error::other("consumer job poisoned"))?
+                .can_reclaim();
+            if reclaim {
+                self.consumers.remove(index);
+            } else {
+                index += 1;
+            }
         }
         Ok(())
     }
@@ -751,5 +868,19 @@ impl PublisherRunningTurn<'_> {
         drop(custody);
         self.funding.check(&self.executor.custody)?;
         Ok(())
+    }
+}
+
+impl Drop for NativeOwnerExecutor {
+    fn drop(&mut self) {
+        // Revocation needs no embedded or RPC lock and performs no durable IO.
+        // Pins remain on disk for a future genuine recovery and expiry sweep.
+        for resource in &self.consumers {
+            let job = match resource.lock() {
+                Ok(job) => job,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            job.revoke_view();
+        }
     }
 }

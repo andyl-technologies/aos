@@ -10,6 +10,8 @@ mod actor;
 mod admission;
 #[path = "host_cache_fixture/config.rs"]
 mod config;
+#[path = "host_cache_fixture/consumer.rs"]
+mod consumer;
 #[path = "host_cache_fixture/manifest_publication.rs"]
 mod manifest_publication;
 #[path = "host_cache_fixture/network.rs"]
@@ -55,6 +57,7 @@ fn main() -> std::process::ExitCode {
             "seed-mixed-bad-manifest",
             "recover-mixed-manifest",
             "refuse-mixed-manifest",
+            "consumer-leases",
             "publish-inline",
             "publish-inline-cancel",
             "publish-inline-transfer",

@@ -7,7 +7,7 @@
 
 mod io;
 mod manifest;
-mod residence;
+pub(super) mod residence;
 mod state;
 
 pub use manifest::NativeManifestPublication;

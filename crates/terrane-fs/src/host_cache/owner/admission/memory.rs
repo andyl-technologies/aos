@@ -186,6 +186,10 @@ fn check_parts(
     let physical = size_of::<AdmissionJob>()
         + size_of::<super::super::publication::PublicationJob>()
         + size_of::<super::super::publication::RecoveredInlineJob>()
+        + size_of::<super::super::consumer::ConsumerJob>()
+        + size_of::<super::super::consumer::ReadView>()
+        + size_of::<super::super::publication::NativeResidentChunkSource>()
+        + 512 // Consumer identities, source row strings, token and Arc headers.
         + 256 // Generated source token, row hashes and retained Arc headers.
         + 2 * size_of::<PendingFile>()
         + 3 * size_of::<DirectoryProgress>()
@@ -193,6 +197,10 @@ fn check_parts(
         + 32 * size_of::<String>()
         + 32 * 128;
     add(jobs, physical)?;
+
+    // Owner-wide consumer read permits bound simultaneous verified plaintext
+    // buffers independently of the serialized physical metadata command.
+    add(queued, window)?;
 
     // Queued commands keep large repair custody behind a box. Resume retains
     // its original queued completion box through either RPC outcome. Count the

@@ -59,6 +59,7 @@ CASES = [
     "publication-manifest-dictionary",
     "publication-manifest-reuse",
     "publication-manifest-reuse-bad-whole",
+    "consumer-leases", "lease-foreign",
 ] + [row[0] for row in MANIFEST_CASES]
 
 LABELS = ["layout-root", "chunks", "objects", "sealed", "staging", "quarantine",
@@ -977,9 +978,9 @@ def filesystem_unit_cases():
                             "scratch_device": temporary.stat().st_dev, "elf_sha256": unit_hash})
             print("FS_UNIT_RESULT " + json.dumps(records[-1], sort_keys=True), flush=True)
             shutil.rmtree(temporary)
-        require(len(records) == 48 and hashlib.sha256(unit_elf.read_bytes()).hexdigest() == unit_hash,
+        require(len(records) == len(contract["UNIT_TESTS"]) and hashlib.sha256(unit_elf.read_bytes()).hexdigest() == unit_hash,
                 "incomplete FS ext4 unit execution or changed executable")
-        print("PASS all48 focused FS unit cases on ext4; no native Ready claim", flush=True)
+        print(f"PASS all{len(records)} focused FS unit cases on ext4; no native Ready claim", flush=True)
     finally:
         shutil.rmtree(temporary_root)
 
@@ -1072,6 +1073,7 @@ def main():
         actor("edquot", "edquot", uuid)
         admission_cases(helper, uuid)
         publication_cases(publisher, uuid)
+        runpy.run_path(str(IMAGE / "share/manifest_publication_vm.py"))["run_consumer_leases"](sys.modules[__name__], helper, uuid)
         inline_transfer_cases(publisher, uuid)
         # Preserve resource facts at the failed preparation boundary without
         # changing limits, retrying physical work or weakening its assertions.

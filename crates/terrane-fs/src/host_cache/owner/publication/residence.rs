@@ -14,6 +14,7 @@ use crate::{
 };
 use rustix::fs::OFlags;
 use std::{
+    fs::File,
     io,
     os::unix::fs::{FileExt, MetadataExt},
     sync::{Arc, Mutex, mpsc},
@@ -224,7 +225,7 @@ impl NativeResidentChunkSource {
     ///
     /// # Errors
     /// Refuses changed original job, pins, metadata, range or snapshot provenance.
-    pub(super) fn check_protected(&self, owner: &Custody) -> io::Result<()> {
+    pub(in crate::host_cache::owner) fn check_protected(&self, owner: &Custody) -> io::Result<()> {
         if !owner
             .state
             .residences
@@ -234,6 +235,51 @@ impl NativeResidentChunkSource {
             return Err(invalid("retained source lost original publication custody"));
         }
         check_origin(owner, &self.source, &self.identity)
+    }
+
+    /// Checks original immutable backing under a separately synchronized consumer pin.
+    ///
+    /// Producer funding can retire after handoff. The caller must independently
+    /// check its original consumer job and current durable pin; this method
+    /// supplies no replacement authority from a row or raw descriptor.
+    ///
+    /// # Errors
+    /// Refuses foreign layouts, changed native backing or a changed verified span.
+    pub(in crate::host_cache::owner) fn check_consumer_backing(
+        &self,
+        owner: &Custody,
+    ) -> io::Result<()> {
+        check_snapshot(owner)?;
+        if !Arc::ptr_eq(self.source.body.layout(), owner.preparation.layout())
+            || claim_span(
+                owner,
+                self.source.body.claim(),
+                &self.identity,
+                &self.source.row,
+            )? != self.source.span
+        {
+            return Err(invalid(
+                "consumer source differs from its original verified backing",
+            ));
+        }
+        check_native(&self.source)
+    }
+
+    /// Borrows the containing verified object's digest for durable pin policy.
+    pub(in crate::host_cache::owner) fn protected_object_digest(&self) -> &[u8] {
+        self.source.body.claim().descriptor().digest()
+    }
+
+    /// Synchronizes the original sealed source outside embedded state.
+    ///
+    /// # Errors
+    /// Refuses changed native backing, synchronization failure or changed layout.
+    pub(in crate::host_cache::owner) fn synchronize_pin_backing(&self) -> io::Result<u64> {
+        synchronize_body(
+            &self.source.body,
+            self.source.project,
+            self.source.publisher_uid,
+        )
     }
 
     /// Recognizes only the original checked residence, without choosing another body.
@@ -388,7 +434,11 @@ fn registration(
     claim_span(owner, &job.claim, identity, row)
 }
 
-fn check_snapshot(owner: &Custody) -> io::Result<()> {
+/// Checks actual snapshot provenance and the complete synchronized policy state.
+///
+/// # Errors
+/// Refuses changed custody, writer incarnation, generation or persisted records.
+pub(in crate::host_cache::owner) fn check_snapshot(owner: &Custody) -> io::Result<()> {
     owner.check_current()?;
     let written = owner
         .synchronized_state
@@ -476,4 +526,30 @@ fn same_row(first: &ResidenceRecord, second: &ResidenceRecord) -> bool {
         && first.object == second.object
         && first.offset == second.offset
         && first.length == second.length
+}
+
+/// Synchronizes actual immutable backing and its bound native filesystem.
+///
+/// # Errors
+/// Refuses changed inode/project/seal or layout-root binding and native IO failures.
+fn synchronize_body(
+    body: &PeerPublishedObject<HostDomainLocation>,
+    project: u32,
+    publisher_uid: u32,
+) -> io::Result<u64> {
+    check_native_body(body, project, publisher_uid)?;
+    body.handle().sync_all()?;
+    let root = File::from(rustix::fs::openat(
+        &body.layout().root,
+        ".",
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )?);
+    let observed = root.metadata()?;
+    if (observed.dev(), observed.ino()) != body.layout().directory_binding("layout-root")? {
+        return Err(invalid("pin synchronization root changed"));
+    }
+    rustix::fs::syncfs(&root)?;
+    check_native_body(body, project, publisher_uid)?;
+    crate::host_quota::synchronized_allocated_bytes(body.handle())
 }

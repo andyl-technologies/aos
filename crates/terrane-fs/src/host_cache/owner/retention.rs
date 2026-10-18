@@ -52,8 +52,9 @@ pub(crate) use recovery_manifest::{
 /// This owner admits verified encoded chunks and metadata pairs only after
 /// actual recovery and acknowledged publisher Resume. Funded inline and manifest
 /// publication, coordinated standalone transfer and bounded retained-range reads
-/// use the same physical queue. Eviction and consumer serving readiness remain
-/// separate unsupported commands.
+/// use the same physical queue. Durable consumer leases use bounded immutable
+/// read views, renewal, release grace and periodic expiry. Eviction and full
+/// tier serving readiness remain separate unsupported commands.
 /// Cold records remain untrusted candidates until recovery reconciles
 /// them. Dropping an awaiting request does not cancel physical execution.
 pub struct NativeMetadataOwner {
@@ -61,11 +62,15 @@ pub struct NativeMetadataOwner {
     pub(super) admission_bounds: super::admission::AdmissionBounds,
     /// Bounded admission to physical work retained independently of reply waiters.
     pub(super) commands: Option<mpsc::SyncSender<Command>>,
+    /// Shares the actual finite read budget with this worker's original views.
+    pub(super) consumer_reads: Arc<super::consumer::ReadBudget>,
     worker: Option<std::thread::JoinHandle<()>>,
 }
 
 /// Transfers complete command ownership to the retained physical executor.
 pub(super) enum Command {
+    /// Transfers an owned consumer lifecycle operation to the physical worker.
+    Consumer(super::consumer::ConsumerCommand),
     /// Holds actual embedded policy only in explicitly enabled native fixtures.
     #[cfg(feature = "native-test-fixtures")]
     HoldPolicyForFixture {
@@ -234,6 +239,10 @@ impl NativeMetadataOwner {
     /// unsafe/malformed state custody, another state writer and cold scratch.
     pub fn start(preparation: NativeCachePreparation) -> io::Result<Self> {
         let admission_bounds = super::admission::AdmissionBounds::new(&preparation.config)?;
+        let consumer_reads = Arc::new(super::consumer::ReadBudget::new(
+            preparation.config.queued_commands,
+        ));
+        let worker_reads = Arc::clone(&consumer_reads);
         let (commands, receive) = mpsc::sync_channel(preparation.config.queued_commands);
         let (ready, startup) = mpsc::sync_channel(1);
         let worker = std::thread::Builder::new()
@@ -256,12 +265,25 @@ impl NativeMetadataOwner {
                         return;
                     }
                 };
-                let mut executor = NativeOwnerExecutor::new(custody);
+                let mut executor = NativeOwnerExecutor::new(custody, worker_reads);
                 if ready.send(Ok(())).is_err() {
                     return;
                 }
-                while let Ok(command) = receive.recv() {
+                loop {
+                    let command = match receive.recv_timeout(std::time::Duration::from_secs(1)) {
+                        Ok(command) => command,
+                        Err(mpsc::RecvTimeoutError::Timeout) => {
+                            let _ =
+                                runtime.block_on(super::consumer::sweep_background(&mut executor));
+                            continue;
+                        }
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    };
+                    let _ = runtime.block_on(super::consumer::sweep_background(&mut executor));
                     match command {
+                        Command::Consumer(command) => {
+                            runtime.block_on(super::consumer::execute(&mut executor, command));
+                        }
                         #[cfg(feature = "native-test-fixtures")]
                         Command::HoldPolicyForFixture { started, released } => {
                             match executor.custody().lock() {
@@ -369,6 +391,7 @@ impl NativeMetadataOwner {
         Ok(Self {
             admission_bounds,
             commands: Some(commands),
+            consumer_reads,
             worker: Some(worker),
         })
     }
