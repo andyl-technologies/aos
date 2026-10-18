@@ -8696,9 +8696,8 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
 
 Status: in progress, resumed without sub-agents (2026-10-17). T1's 22 tasks and
 89 current gates are complete; its identity, encoding, bucket-key and Store-trait
-freeze applies. Preserved implementation worktrees cover the five T2 tasks,
-including
-dedicated publisher-transport, host-quota, native confinement and recovery
+freeze applies. Preserved worktrees cover the five T2 tasks, including dedicated
+publisher-transport, host-quota, native confinement and recovery
 inspection components.
 Shared module declarations,
 dependency edges, kernel prerequisites and check wiring precede worker edits.
@@ -8941,14 +8940,30 @@ Resumed qualification:
   the successful build. This does not qualify native existing enrollment or
   dependency Clippy.
 - Snapshot transition `2adeb253d9`: full review of all thirteen changed files
-  finds no guard crossing a snapshot await. The actual physical executor,
+  finds no guard crossing a snapshot await. Its all-target native build and six
+  selected admission/snapshot regressions pass. The actual physical executor,
   generation and write identity remain checked through sync and bounded readback;
-  abandonment invalidates completion provenance. Compilation and runtime
-  qualification are next; no native result is inferred from source review.
+  abandonment invalidates completion provenance. Genuine native admission is
+  subsequently qualified on the combined candidate below.
+- Native admission `341ada166e`: image build, independent completed-image
+  verification and actual ext4 guest all pass with unchanged source. All 47
+  selected unit cases execute individually with none ignored under UID/GID 842,
+  empty capabilities and no supplementary groups. Actual Resume, repeated
+  invalid-input refusals, canonical chunk and metadata-pair admission, finite
+  preflight capacity refusal and completion after dropping an accepted waiter
+  pass. The existing recovery controls and actual kernel EDQUOT after 8,323,072
+  written bytes remain intact. Qualification exposes and fixes an unencodable
+  retained-lease deadline using the existing signed TOML representation; the
+  real snapshot regression now includes lease and pin rows. A separate passing
+  fixture regression verifies honest pack hashes, a valid first manifest and a
+  later schema-invalid body. Earlier failures remain archived. This is component
+  evidence, not sealed Running publication, live R, NativeReady, BKT-15 or full
+  host-task acceptance.
 - Surface candidate `6cb1fcf235`: shared prerequisite `38a1ee21f6` is integrated
   through a normal merge, preserving the previous frozen candidate and receipts.
-  The full current-trunk gate aggregate is running. Remaining surface checks,
-  application compilation, strict lint and formatting precede task acceptance.
+  The full current-trunk gate aggregate and required application test-target
+  compilation are running. Remaining surface checks, strict lint and formatting
+  precede task acceptance.
 
 The shared glue dependency now names
 the existing Core types directly, and the crate-graph audit includes the current
