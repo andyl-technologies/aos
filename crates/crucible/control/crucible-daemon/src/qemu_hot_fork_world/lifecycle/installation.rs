@@ -104,9 +104,10 @@ impl std::error::Error for HotForkInstallationHistory {
         if let Some(first) = &self.construction {
             return Some(first);
         }
-        self.post_body
-            .as_ref()
-            .and_then(|body| body.first_failure())
+        match self.post_body.as_ref() {
+            Some(body) if body.first_failure().is_some() => Some(body),
+            _ => None,
+        }
     }
 }
 
@@ -364,10 +365,14 @@ mod completed_history_tests {
         };
 
         assert!(!history.is_empty());
-        let first = std::error::Error::source(&history)
+        let retained = std::error::Error::source(&history)
             .unwrap()
-            .downcast_ref::<crate::ProductionVmConstructionCleanupError>()
+            .downcast_ref::<crate::ProductionVmConstructionPostBody>()
             .unwrap();
+        assert!(std::ptr::eq(retained, history.post_body.as_ref().unwrap()));
+        let Some(crate::LifecycleFailureRef::BodyCleanup(first)) = retained.first_failure() else {
+            panic!("the actual typed cleanup report remains in the retained body");
+        };
         let crate::ProductionVmConstructionCleanupError::Authority(
             LifecycleApiError::LoopFactory { message },
         ) = first

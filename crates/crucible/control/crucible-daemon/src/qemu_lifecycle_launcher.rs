@@ -39,6 +39,7 @@ pub use target_construction::TargetConstructionStorage;
 pub(crate) use target_construction::TargetMemberAdmission;
 #[cfg(target_os = "linux")]
 pub use target_construction::TargetPreparationFailure;
+pub use pending_construction::CanonicalContextError;
 mod fresh_generation;
 mod retained_node;
 use retained_node::RetainedNodeLaunch;

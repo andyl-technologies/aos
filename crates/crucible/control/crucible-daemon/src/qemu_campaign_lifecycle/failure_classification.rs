@@ -77,19 +77,17 @@ pub(crate) fn production_lifecycle_failure_class(
 }
 
 fn prepared_source_first_class(
-    first: &(dyn std::error::Error + 'static),
+    first: crate::LifecycleFailureRef<'_>,
 ) -> SchedulerOperationalFailureClass {
-    let Some(first) = first.downcast_ref::<QemuAttemptProductionVmLifecycleError>() else {
-        // A native-only fallback is later cleanup history, not an initiating
-        // request whose retry class can authorize another attempt.
+    let crate::LifecycleFailureRef::Lifecycle(first) = first else {
+        // Later cleanup history cannot authorize another initiating attempt.
         return SchedulerOperationalFailureClass::Terminal;
     };
     if matches!(
         first,
         QemuAttemptProductionVmLifecycleError::PreparedSource(_)
     ) {
-        // Raw Pending history must never contain its own protected report.
-        // Refuse an invalid nested report without recursively locking Main.
+        // Refuse a nested report without recursively locking its same Main.
         return SchedulerOperationalFailureClass::Terminal;
     }
     production_lifecycle_failure_class(first)
@@ -278,7 +276,7 @@ mod protected_first_tests {
             std::io::Error::other("actual model copy refusal"),
         ));
         assert_eq!(
-            prepared_source_first_class(&retry),
+            prepared_source_first_class(crate::LifecycleFailureRef::Lifecycle(&retry)),
             SchedulerOperationalFailureClass::Retryable
         );
 
@@ -286,7 +284,7 @@ mod protected_first_tests {
             ProductionAttemptCheckpointRestoreError::Canceled,
         ));
         assert_eq!(
-            prepared_source_first_class(&canceled),
+            prepared_source_first_class(crate::LifecycleFailureRef::Lifecycle(&canceled)),
             SchedulerOperationalFailureClass::Canceled
         );
 
@@ -299,7 +297,7 @@ mod protected_first_tests {
         let (report, _) = failure.into_parts();
         let canceled = QemuAttemptProductionVmLifecycleError::ResourceBeginInstallation(report);
         assert_eq!(
-            prepared_source_first_class(&canceled),
+            prepared_source_first_class(crate::LifecycleFailureRef::Lifecycle(&canceled)),
             SchedulerOperationalFailureClass::Canceled
         );
 
@@ -316,7 +314,7 @@ mod protected_first_tests {
         let (report, _) = failure.into_parts();
         let quarantined = QemuAttemptProductionVmLifecycleError::ResourceBeginInstallation(report);
         assert_eq!(
-            prepared_source_first_class(&quarantined),
+            prepared_source_first_class(crate::LifecycleFailureRef::Lifecycle(&quarantined)),
             SchedulerOperationalFailureClass::Terminal
         );
     }
@@ -332,7 +330,7 @@ mod protected_first_tests {
         };
         let pointer = message.as_ptr();
         assert_eq!(
-            prepared_source_first_class(&cleanup),
+            prepared_source_first_class(crate::LifecycleFailureRef::Realization(&cleanup)),
             SchedulerOperationalFailureClass::Terminal
         );
         let QemuVmRealizationError::ExecutorUnavailable { message, .. } = &cleanup else {
@@ -341,7 +339,7 @@ mod protected_first_tests {
         assert_eq!(message.as_ptr(), pointer);
         let foreign = std::io::Error::other("unrecognized projection");
         assert_eq!(
-            prepared_source_first_class(&foreign),
+            prepared_source_first_class(crate::LifecycleFailureRef::Io(&foreign)),
             SchedulerOperationalFailureClass::Terminal
         );
     }

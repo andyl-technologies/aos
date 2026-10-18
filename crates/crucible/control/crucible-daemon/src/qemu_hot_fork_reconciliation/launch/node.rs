@@ -262,14 +262,14 @@ impl<G: crate::QemuAttemptResourceGuard> TargetNodeConstruction<G> {
     }
 
     /// Borrows the actual first launch or rollback cause from this row.
-    pub(crate) fn first_failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+    pub(crate) fn first_failure(&self) -> Option<crate::LifecycleFailureRef<'_>> {
         self.first
             .as_ref()
-            .map(|first| first as &dyn std::error::Error)
+            .map(crate::LifecycleFailureRef::TargetLaunch)
             .or_else(|| {
                 self.first_rollback
                     .as_ref()
-                    .map(|first| first as &dyn std::error::Error)
+                    .map(crate::LifecycleFailureRef::Realization)
             })
     }
 

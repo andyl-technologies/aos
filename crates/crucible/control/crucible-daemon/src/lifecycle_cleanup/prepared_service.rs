@@ -12,6 +12,9 @@ use super::*;
 use crate::packaged_qemu_executor::{RetainedServiceStart, RetainedTemplateService};
 
 pub(crate) type PreparedSourceProjection =
+    for<'a> fn(&'a (dyn Any + Send)) -> Option<super::LifecycleFailureRef<'a>>;
+
+pub(crate) type PreparedSourceHistoryProjection =
     for<'a> fn(&'a (dyn Any + Send)) -> Option<&'a (dyn std::error::Error + 'static)>;
 
 /// Returns terminal metadata without extracting its body or issuing native work.
@@ -21,13 +24,13 @@ pub(crate) type TerminalMetadataReturn = fn(&mut ProductionVmConstructionPostBod
 #[derive(Clone, Copy)]
 pub(crate) struct PreparedSourceProjections {
     pub(crate) first: PreparedSourceProjection,
-    pub(crate) history: PreparedSourceProjection,
+    pub(crate) history: PreparedSourceHistoryProjection,
     pub(crate) terminal_metadata_return: Option<TerminalMetadataReturn>,
 }
 
 pub(super) struct PreparedCell {
     pub(super) projection: Option<PreparedSourceProjection>,
-    pub(super) history_projection: Option<PreparedSourceProjection>,
+    pub(super) history_projection: Option<PreparedSourceHistoryProjection>,
     pub(super) terminal_metadata_return: Option<TerminalMetadataReturn>,
     pub(super) terminal_access: Option<ServiceMainPreclaimError>,
     pub(super) terminal_receiver: Option<ServiceMainReceiver>,

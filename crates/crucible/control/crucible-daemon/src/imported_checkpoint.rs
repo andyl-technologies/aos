@@ -574,10 +574,10 @@ impl std::fmt::Display for ImportedCheckpointHandoffFailure {
 
 impl std::error::Error for ImportedCheckpointHandoffFailure {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.terminal
-            .as_ref()
-            .and_then(|terminal| terminal.first_failure())
-            .or(Some(&self.first))
+        match self.terminal.as_ref() {
+            Some(terminal) if terminal.first_failure().is_some() => Some(terminal),
+            _ => Some(&self.first),
+        }
     }
 }
 

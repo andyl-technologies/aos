@@ -508,32 +508,25 @@ impl ProductionQemuHotForkExactSourceCaptureError {
             },
             Self::Preparation(first) => first
                 .with_first_error(|first| {
-                    if let Some(first) =
-                        first.downcast_ref::<QemuAttemptProductionVmLifecycleError>()
-                    {
-                        return crate::qemu_campaign_lifecycle::production_lifecycle_failure_class(
-                            first,
-                        );
-                    }
-                    if let Some(crucible_control_api::LifecycleApiError::AttemptOperational {
-                        class, ..
-                    }) = first.downcast_ref::<crucible_control_api::LifecycleApiError>()
-                    {
-                        return *class;
-                    }
-                    if let Some(first) =
-                        first.downcast_ref::<crate::vm_lifecycle::HotForkSourcePreparationError>()
-                        && matches!(
-                            first,
-                            crate::vm_lifecycle::HotForkSourcePreparationError::BoundaryMismatch
-                        )
-                    {
-                        return SchedulerOperationalFailureClass::Terminal;
-                    }
-                    if canceled {
-                        SchedulerOperationalFailureClass::Canceled
-                    } else {
-                        SchedulerOperationalFailureClass::Retryable
+                    use crate::LifecycleFailureRef as Failure;
+
+                    match first {
+                        Failure::Lifecycle(first) => {
+                            crate::qemu_campaign_lifecycle::production_lifecycle_failure_class(
+                                first,
+                            )
+                        }
+                        Failure::Control(
+                            crucible_control_api::LifecycleApiError::AttemptOperational {
+                                class,
+                                ..
+                            },
+                        ) => *class,
+                        Failure::Preparation(
+                            crate::vm_lifecycle::HotForkSourcePreparationError::BoundaryMismatch,
+                        ) => SchedulerOperationalFailureClass::Terminal,
+                        _ if canceled => SchedulerOperationalFailureClass::Canceled,
+                        _ => SchedulerOperationalFailureClass::Retryable,
                     }
                 })
                 .unwrap_or(SchedulerOperationalFailureClass::Terminal),

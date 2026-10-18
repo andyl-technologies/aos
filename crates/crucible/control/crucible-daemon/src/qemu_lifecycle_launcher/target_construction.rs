@@ -127,22 +127,24 @@ impl TargetConstructionStorage {
 
     /// Borrows unchanged per-member return history from its prepaid row.
     #[cfg(target_os = "linux")]
-    pub(crate) fn first_cleanup_failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+    pub(crate) fn first_cleanup_failure(
+        &self,
+    ) -> Option<&crucible_qemu_host::QemuForkTargetConstructionError> {
         self.members
             .iter()
             .find_map(|row| row.first_cleanup.as_ref())
-            .map(|first| first as &dyn std::error::Error)
     }
 
     /// Borrows the original concrete child's first rollback report.
     #[cfg(target_os = "linux")]
     pub(crate) fn first_reconciliation_failure(
         &self,
-    ) -> Option<&(dyn std::error::Error + 'static)> {
+    ) -> Option<
+        &crate::QemuHotForkAttemptReconciliationError<crate::LinuxQemuHotForkReconciliationError>,
+    > {
         self.members
             .iter()
             .find_map(|row| row.first_reconciliation.as_ref())
-            .map(|first| first as &dyn std::error::Error)
     }
 
     /// Advances one retained child once through its actual saved Target Cleanup.
@@ -468,11 +470,12 @@ impl TargetConstructionStorage {
 
     /// Borrows the actual first landing refusal without changing its custody.
     #[cfg(target_os = "linux")]
-    pub(crate) fn first_admission_failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+    pub(crate) fn first_admission_failure(
+        &self,
+    ) -> Option<&crucible_host_resources::host_services::process_birth::NativePoolRefusal> {
         self.members
             .iter()
             .find_map(|row| row.first_admission.as_ref())
-            .map(|first| first as &dyn std::error::Error)
     }
 
     /// Moves actual history only after every issued member's exact return.

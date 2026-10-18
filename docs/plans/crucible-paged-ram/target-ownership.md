@@ -64,6 +64,20 @@ postcheck separately. The ordinary error chain borrows that concrete error, or
 the actual post when only the post refused. Recovery and cleanup retain the
 same Loop Box and partial fields; diagnostic inspection authorizes no retry.
 
+Prepared Main reports and terminal bodies now project their initiating failure
+through `LifecycleFailureRef`, a closed enum of concrete borrowed causes. Source
+and Target constructors, Service watchdogs, replay classification and Source
+capture use that same view. Selection preserves the previous phase priority and
+each caller's retry and cancellation decisions. Later cleanup cannot replace an
+existing initiating cause.
+The protected callback cannot return a borrowed cause beyond its observation,
+and recursive inspection of the same Main remains terminal. Owners, report pins,
+locks and epoch checks are unchanged; the view allocates no replacement report.
+Aggregate standard error chains end at their retained body, whose typed first
+projection remains available. Complete history visitors still use erased error
+references and require a separate streaming cutover; this change does not waive
+the remaining source-policy findings.
+
 Promoted children retain their original return pair and a bounded-step lineage
 controller. Descendant retirement keeps each parent checkout until exclusive
 ownership permits the next ancestor handoff. These runtime paths compile but do

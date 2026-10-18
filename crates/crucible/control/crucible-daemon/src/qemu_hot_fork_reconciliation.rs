@@ -222,7 +222,7 @@ pub(crate) enum QemuHotForkPublicationDisposition {
 
 /// Monotonic phase of one hot-fork reconciliation owner.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum QemuHotForkReconciliationPhase {
+pub enum QemuHotForkReconciliationPhase {
     /// The child exists but its private QMP endpoint is not authenticated.
     AwaitingChildAdmission,
     /// The private child channel is authenticated and modeled work may run.
@@ -353,7 +353,7 @@ pub(crate) trait QemuHotForkReconciliationBackend {
 
 /// Failure while advancing a hot-fork reconciliation state.
 #[derive(Debug, Error)]
-pub(crate) enum QemuHotForkAttemptReconciliationError<E>
+pub enum QemuHotForkAttemptReconciliationError<E>
 where
     E: Error + 'static,
 {

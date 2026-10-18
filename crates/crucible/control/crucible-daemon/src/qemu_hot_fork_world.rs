@@ -138,7 +138,7 @@ struct ExpectedWorldSource {
 
 /// Reason one child was refused before it could enter a world transaction.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-pub(crate) enum QemuHotForkWorldChildAdmissionFailure {
+pub enum QemuHotForkWorldChildAdmissionFailure {
     /// The continuation does not retain a source QEMU for this node.
     #[error("hot-fork child node is not a retained source member of the captured world")]
     UnexpectedNode,
@@ -210,7 +210,7 @@ impl<C> Error for QemuHotForkWorldChildAdmissionError<C> where C: 'static {}
 /// The report carries no replacement owner or allocated roster. Callers can
 /// inspect the same assembly and continue admission or drive its cleanup.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
-pub(crate) enum QemuHotForkWorldPublicationFailure {
+pub enum QemuHotForkWorldPublicationFailure {
     /// At least one expected child has not completed admission.
     #[error("hot-fork world is missing {count} retained source children")]
     MissingChildren {

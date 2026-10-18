@@ -411,7 +411,9 @@ impl ProductionVmConstructionPostBody {
     }
 
     /// Borrows the actual first owned report after its protected terminal move.
-    pub fn first_failure(&self) -> Option<&(dyn Error + 'static)> {
+    pub fn first_failure(&self) -> Option<super::LifecycleFailureRef<'_>> {
+        use super::LifecycleFailureRef as Failure;
+
         self.terminal
             .as_ref()
             .and_then(super::terminal::TerminalCustody::first_failure)
@@ -419,21 +421,17 @@ impl ProductionVmConstructionPostBody {
                 self.source_retirement_history
                     .as_ref()
                     .filter(|history| !history.is_empty())
-                    .map(|first| first as &dyn Error)
+                    .map(Failure::SourceRetirement)
             })
-            .or_else(|| {
-                self.source_history
-                    .as_ref()
-                    .map(|first| first as &dyn Error)
-            })
+            .or_else(|| self.source_history.as_ref().map(Failure::SourceCleanup))
             .or_else(|| {
                 self.constructor_first
                     .iter()
                     .flatten()
                     .next()
-                    .map(|first| first as &dyn Error)
+                    .map(Failure::Control)
             })
-            .or_else(|| self.cleanup_first.as_ref().map(|first| first as &dyn Error))
+            .or_else(|| self.cleanup_first.as_ref().map(Failure::BodyCleanup))
             .or_else(|| {
                 self.returns
                     .iter()
@@ -487,20 +485,17 @@ impl WorldReturn {
 }
 
 impl NativeReturn {
-    fn first_failure(&self) -> Option<&(dyn Error + 'static)> {
+    fn first_failure(&self) -> Option<super::LifecycleFailureRef<'_>> {
+        use super::LifecycleFailureRef as Failure;
+
         match self {
             Self::Target(_) => None,
             Self::World(world) => world
                 .first
                 .as_ref()
-                .map(|first| first as &dyn Error)
-                .or_else(|| world.observation.as_ref().map(|first| first as &dyn Error))
-                .or_else(|| {
-                    world
-                        .observer_first
-                        .as_ref()
-                        .map(|first| first as &dyn Error)
-                }),
+                .map(Failure::NativeReturn)
+                .or_else(|| world.observation.as_ref().map(Failure::ServiceBirth))
+                .or_else(|| world.observer_first.as_ref().map(Failure::Operational)),
         }
     }
 }
@@ -525,11 +520,7 @@ impl fmt::Display for ProductionVmConstructionPostBody {
     }
 }
 
-impl Error for ProductionVmConstructionPostBody {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        self.first_failure()
-    }
-}
+impl Error for ProductionVmConstructionPostBody {}
 
 impl Drop for ProductionVmConstructionPostBody {
     fn drop(&mut self) {

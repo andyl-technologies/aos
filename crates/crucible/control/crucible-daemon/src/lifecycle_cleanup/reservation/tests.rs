@@ -928,6 +928,12 @@ fn no_component_history(
     None
 }
 
+fn no_component_first(
+    _owner: &(dyn std::any::Any + Send),
+) -> Option<crate::LifecycleFailureRef<'_>> {
+    None
+}
+
 #[test]
 fn actual_prepared_panic_retains_its_file_and_does_not_repeat_cleanup()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -945,7 +951,7 @@ fn actual_prepared_panic_retains_its_file_and_does_not_repeat_cleanup()
             at: ComponentPanicAt::Cleanup,
         }),
         prepared_service::PreparedSourceProjections {
-            first: no_component_history,
+            first: no_component_first,
             history: no_component_history,
             terminal_metadata_return: None,
         },
@@ -986,7 +992,7 @@ fn actual_prepared_postbody_panic_keeps_payload_without_a_second_transfer()
             at: ComponentPanicAt::PostBody,
         }),
         prepared_service::PreparedSourceProjections {
-            first: no_component_history,
+            first: no_component_first,
             history: no_component_history,
             terminal_metadata_return: None,
         },

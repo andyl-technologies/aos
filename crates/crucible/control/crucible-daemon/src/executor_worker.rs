@@ -51,7 +51,7 @@ pub(crate) use assignment_supervision::start_original_assignment;
 mod context;
 mod result;
 
-pub(crate) use context::SelectedCheckpointSlotError;
+pub use context::SelectedCheckpointSlotError;
 pub use context::{AttemptExecutionContext, ExecutionQuantumBudgetError};
 pub use result::*;
 pub(crate) use result::{

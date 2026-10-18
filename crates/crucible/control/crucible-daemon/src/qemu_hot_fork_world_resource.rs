@@ -164,7 +164,7 @@ pub(crate) enum QemuHotForkWorldReleaseReadiness {
 
 /// Refuses an unobservable or terminal aggregate release observation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
-pub(crate) enum QemuHotForkWorldReleaseReadinessError {
+pub enum QemuHotForkWorldReleaseReadinessError {
     /// Another participant currently holds the same registry.
     #[error("hot-fork world resource registry remains borrowed")]
     Borrowed,

@@ -85,7 +85,7 @@ pub(crate) struct RetainedServiceStartRefusal;
 /// terminal body. These variants preserve the exact lower producer errors;
 /// this phase cannot accept an executor/Source retirement report as admission.
 #[derive(Debug, Error)]
-pub(crate) enum RetainedServiceAdmissionError {
+pub enum RetainedServiceAdmissionError {
     /// The actual registry, cap, context or Original boundary refused.
     #[error(transparent)]
     HostOperational(#[from] HostOperationalError),
@@ -135,7 +135,7 @@ pub(crate) struct RetainedServiceStart {
 
 /// Preserves the actual payer refusal or initiating Service failure.
 #[derive(Debug, Error)]
-pub(crate) enum RetainedServiceStartCause {
+pub enum RetainedServiceStartCause {
     /// The same genuine Main role refused before Service effects.
     #[error(transparent)]
     Preclaim(crate::lifecycle_cleanup::ServiceMainPreclaimError),
@@ -336,51 +336,33 @@ impl RetainedServiceStart {
     }
 
     /// Borrows the actual first watchdog failure without moving its stop body.
-    pub(crate) fn watchdog_first_failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+    pub(crate) fn watchdog_first_failure(&self) -> Option<crate::LifecycleFailureRef<'_>> {
+        use crate::LifecycleFailureRef as Failure;
+
         let stop = self.watchdog_stop()?;
         stop.watcher_failure
             .as_ref()
             .and_then(|history| {
-                match history.trigger.as_ref() {
+                let trigger = match history.trigger.as_ref() {
                     Some(
                         crate::supervision::ServiceWatchdogTrigger::Original(first)
                         | crate::supervision::ServiceWatchdogTrigger::Caller(first),
-                    ) => Some(first as &dyn std::error::Error),
+                    ) => Some(Failure::Supervision(first)),
                     Some(crate::supervision::ServiceWatchdogTrigger::Cancellation) | None => None,
-                }
-                .or_else(|| {
-                    history
-                        .cancellation
-                        .as_ref()
-                        .map(|first| first as &dyn std::error::Error)
-                })
-                .or_else(|| {
-                    history
-                        .pager_cancellation
-                        .as_ref()
-                        .map(|first| first as &dyn std::error::Error)
-                })
+                };
+                trigger
+                    .or_else(|| history.cancellation.as_ref().map(Failure::Supervision))
+                    .or_else(|| {
+                        history
+                            .pager_cancellation
+                            .as_ref()
+                            .map(Failure::Operational)
+                    })
             })
-            .or_else(|| {
-                stop.completion
-                    .as_ref()
-                    .map(|first| first as &dyn std::error::Error)
-            })
-            .or_else(|| {
-                stop.caller
-                    .as_ref()
-                    .map(|first| first as &dyn std::error::Error)
-            })
-            .or_else(|| {
-                stop.cancellation
-                    .as_ref()
-                    .map(|first| first as &dyn std::error::Error)
-            })
-            .or_else(|| {
-                stop.pager_cancellation
-                    .as_ref()
-                    .map(|first| first as &dyn std::error::Error)
-            })
+            .or_else(|| stop.completion.as_ref().map(Failure::Supervision))
+            .or_else(|| stop.caller.as_ref().map(Failure::Supervision))
+            .or_else(|| stop.cancellation.as_ref().map(Failure::Supervision))
+            .or_else(|| stop.pager_cancellation.as_ref().map(Failure::Operational))
     }
 
     /// Visits each raw watchdog cause while its same actor-paid body stays held.

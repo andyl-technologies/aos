@@ -21,6 +21,7 @@ mod hot_fork_capture;
 mod native_observation;
 mod post_body;
 mod prepared;
+pub use prepared::CanonicalContextError;
 mod target_nodes;
 use prepared::SourcePreparationHistory;
 

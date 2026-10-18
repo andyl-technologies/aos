@@ -153,9 +153,17 @@ impl PreparedSourceFailure {
     ///
     /// Returns `None` when the exact role is unavailable or has no first cause.
     /// Neither outcome claims physical closure or permits another Source.
+    /// Borrowed causes cannot escape the protected observation:
+    ///
+    /// ```compile_fail
+    /// use crucible_daemon::{LifecycleFailureRef, PreparedSourceFailure};
+    /// fn escape(failure: &PreparedSourceFailure) -> Option<LifecycleFailureRef<'_>> {
+    ///     failure.with_first_error(|cause| cause)
+    /// }
+    /// ```
     pub fn with_first_error<R>(
         &self,
-        apply: impl FnOnce(&(dyn Error + 'static)) -> R,
+        apply: impl FnOnce(LifecycleFailureRef<'_>) -> R,
     ) -> Option<R> {
         let mut apply = Some(apply);
         if let Some(result) = self
@@ -164,9 +172,11 @@ impl PreparedSourceFailure {
         {
             return result;
         }
-        self.access
-            .as_ref()
-            .and_then(|first| apply.take().map(|apply| apply(first)))
+        self.access.as_ref().and_then(|first| {
+            apply
+                .take()
+                .map(|apply| apply(LifecycleFailureRef::Role(first)))
+        })
     }
 
     /// Borrows each stored history without moving it outside its paid role.
@@ -251,7 +261,7 @@ impl PreparedSourceRetirement {
         }
     }
 
-    fn with_first_error<R>(&self, apply: impl FnOnce(&(dyn Error + 'static)) -> R) -> Option<R> {
+    fn with_first_error<R>(&self, apply: impl FnOnce(LifecycleFailureRef<'_>) -> R) -> Option<R> {
         let queue = self.key.queue.upgrade()?;
         let slot = queue.slots.get(self.key.index)?;
         if slot.epoch.load(Ordering::Acquire) != self.key.epoch {
@@ -264,7 +274,7 @@ impl PreparedSourceRetirement {
         if service.epoch == self.key.epoch
             && let Some(first) = service.start.as_ref().and_then(|start| start.first())
         {
-            return Some(apply(first));
+            return Some(apply(LifecycleFailureRef::Service(first)));
         }
         if service.epoch == self.key.epoch
             && let Some(first) = service
@@ -272,7 +282,7 @@ impl PreparedSourceRetirement {
                 .as_ref()
                 .and_then(|start| start.adopted_semantic_shutdown_failure())
         {
-            return Some(apply(first));
+            return Some(apply(LifecycleFailureRef::Scheduler(first)));
         }
         drop(service);
         let prepared = slot.prepared.try_lock().ok()?;
@@ -288,7 +298,7 @@ impl PreparedSourceRetirement {
         if prepared.epoch == self.key.epoch
             && let Some(first) = &prepared.terminal_access
         {
-            return Some(apply(first));
+            return Some(apply(LifecycleFailureRef::Role(first)));
         }
         drop(prepared);
         let service = slot.service.try_lock().ok()?;
@@ -460,7 +470,10 @@ impl fmt::Display for PreparedSourceFailure {
 
 impl Error for PreparedSourceFailure {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
-        self.access.as_ref().map(|first| first as &dyn Error)
+        match self.access.as_ref() {
+            Some(first) => Some(first),
+            None => None,
+        }
     }
 }
 

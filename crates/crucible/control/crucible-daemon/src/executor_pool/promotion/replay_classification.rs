@@ -26,25 +26,25 @@ fn classify_replay_lifecycle(
     }
 }
 
-fn classify_raw_replay_first(first: &(dyn std::error::Error + 'static)) -> PromotionFailureClass {
-    if let Some(first) = first.downcast_ref::<crate::QemuAttemptProductionVmLifecycleError>() {
-        // A protected report cannot be followed while its same Main role is
-        // already projecting this raw first. Unobservable custody is terminal.
-        if matches!(
-            first,
-            crate::QemuAttemptProductionVmLifecycleError::PreparedSource(_)
-        ) {
-            return PromotionFailureClass::Terminal;
+fn classify_raw_replay_first(first: crate::LifecycleFailureRef<'_>) -> PromotionFailureClass {
+    use crate::LifecycleFailureRef as Failure;
+
+    match first {
+        Failure::Lifecycle(first) => {
+            // Reentering the same protected Main report cannot establish a class.
+            if matches!(
+                first,
+                crate::QemuAttemptProductionVmLifecycleError::PreparedSource(_)
+            ) {
+                PromotionFailureClass::Terminal
+            } else {
+                classify_replay_lifecycle(first)
+            }
         }
-        return classify_replay_lifecycle(first);
+        Failure::Realization(first) => classify_realization_failure(first),
+        Failure::GuardCleanup(first) => classify_native_replay_cleanup(first),
+        _ => PromotionFailureClass::Terminal,
     }
-    if let Some(first) = first.downcast_ref::<QemuVmRealizationError>() {
-        return classify_realization_failure(first);
-    }
-    if let Some(first) = first.downcast_ref::<crate::QemuAttemptResourceGuardCleanupFailure>() {
-        return classify_native_replay_cleanup(first);
-    }
-    PromotionFailureClass::Terminal
 }
 
 pub(super) fn classify_replay_cleanup(

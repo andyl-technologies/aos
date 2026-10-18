@@ -8,6 +8,7 @@ mod retirement_input;
 mod startup;
 pub(crate) use retirement_input::ServiceRetirementInput;
 pub(crate) use startup::{RetainedServiceStart, RetainedServiceStartRefusal};
+pub use startup::{RetainedServiceAdmissionError, RetainedServiceStartCause};
 
 use super::*;
 use crate::supervision::AssignmentHostWatchdogGuard;

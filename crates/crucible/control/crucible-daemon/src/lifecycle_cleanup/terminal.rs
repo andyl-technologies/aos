@@ -7,7 +7,7 @@
 
 use std::any::Any;
 
-use super::prepared_service::PreparedSourceProjection;
+use super::prepared_service::{PreparedSourceHistoryProjection, PreparedSourceProjection};
 use super::*;
 use crate::packaged_qemu_executor::RetainedServiceStart;
 
@@ -23,7 +23,7 @@ pub(super) struct TerminalFields {
     pub(super) metadata_return: Option<super::prepared_service::TerminalMetadataReturn>,
     pub(super) prepared: Option<Box<dyn Any + Send>>,
     pub(super) projection: Option<PreparedSourceProjection>,
-    pub(super) history_projection: Option<PreparedSourceProjection>,
+    pub(super) history_projection: Option<PreparedSourceHistoryProjection>,
     pub(super) service: Option<RetainedServiceStart>,
     pub(super) control_failure:
         Option<crucible_host_resources::host_services::process_birth::ServiceBirthError>,
@@ -35,7 +35,7 @@ pub(super) struct TerminalFields {
 }
 
 impl TerminalCustody {
-    pub(super) fn first_failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+    pub(super) fn first_failure(&self) -> Option<LifecycleFailureRef<'_>> {
         self.fields.first_failure()
     }
 
@@ -69,16 +69,18 @@ impl TerminalFields {
         }
     }
 
-    pub(super) fn first_failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+    pub(super) fn first_failure(&self) -> Option<LifecycleFailureRef<'_>> {
+        use LifecycleFailureRef as Failure;
+
         self.service
             .as_ref()
             .and_then(RetainedServiceStart::first)
-            .map(|first| first as &dyn std::error::Error)
+            .map(Failure::Service)
             .or_else(|| {
                 self.service
                     .as_ref()
                     .and_then(RetainedServiceStart::adopted_semantic_shutdown_failure)
-                    .map(|first| first as &dyn std::error::Error)
+                    .map(Failure::Scheduler)
             })
             .or_else(|| {
                 self.prepared
@@ -90,23 +92,11 @@ impl TerminalFields {
             .or_else(|| {
                 self.prepared_cleanup_first
                     .as_ref()
-                    .map(|first| first as &dyn std::error::Error)
+                    .map(Failure::BodyCleanup)
             })
-            .or_else(|| {
-                self.cleanup_first
-                    .as_ref()
-                    .map(|first| first as &dyn std::error::Error)
-            })
-            .or_else(|| {
-                self.control_failure
-                    .as_ref()
-                    .map(|first| first as &dyn std::error::Error)
-            })
-            .or_else(|| {
-                self.access
-                    .as_ref()
-                    .map(|first| first as &dyn std::error::Error)
-            })
+            .or_else(|| self.cleanup_first.as_ref().map(Failure::BodyCleanup))
+            .or_else(|| self.control_failure.as_ref().map(Failure::ServiceBirth))
+            .or_else(|| self.access.as_ref().map(Failure::Role))
     }
 }
 
@@ -167,34 +157,28 @@ pub(super) fn visit_service_history(
 /// Selects an actual supplemental failure after initiating causes were checked.
 pub(super) fn first_service_tail_failure(
     start: &RetainedServiceStart,
-) -> Option<&(dyn std::error::Error + 'static)> {
+) -> Option<LifecycleFailureRef<'_>> {
+    use LifecycleFailureRef as Failure;
+
     start
         .admission_post_failure()
-        .map(|first| first as &dyn std::error::Error)
+        .map(Failure::Supervision)
         .or_else(|| {
             start
                 .admission_completion_failure()
-                .map(|first| first as &dyn std::error::Error)
+                .map(Failure::Supervision)
         })
-        .or_else(|| {
-            start
-                .projection_post_failure()
-                .map(|first| first as &dyn std::error::Error)
-        })
+        .or_else(|| start.projection_post_failure().map(Failure::Supervision))
         .or_else(|| {
             start
                 .imported_genesis_post_failure()
-                .map(|first| first as &dyn std::error::Error)
+                .map(Failure::Supervision)
         })
-        .or_else(|| {
-            start
-                .cleanup_failure()
-                .map(|first| first as &dyn std::error::Error)
-        })
+        .or_else(|| start.cleanup_failure().map(Failure::Operational))
         .or_else(|| {
             start
                 .retained_completion_failure()
-                .map(|first| first as &dyn std::error::Error)
+                .map(Failure::Supervision)
         })
         .or_else(|| start.watchdog_first_failure())
         .or_else(|| {
@@ -211,29 +195,16 @@ pub(super) fn first_service_tail_failure(
 
 fn first_imported_return_failure(
     history: &crate::imported_checkpoint::ImportedCheckpointReturn,
-) -> Option<&(dyn std::error::Error + 'static)> {
+) -> Option<LifecycleFailureRef<'_>> {
+    use LifecycleFailureRef as Failure;
+
     history
         .first
         .as_ref()
-        .map(|first| first as &dyn std::error::Error)
-        .or_else(|| {
-            history
-                .launch_post
-                .as_ref()
-                .map(|first| first as &dyn std::error::Error)
-        })
-        .or_else(|| {
-            history
-                .completion
-                .as_ref()
-                .map(|first| first as &dyn std::error::Error)
-        })
-        .or_else(|| {
-            history
-                .return_post
-                .as_ref()
-                .map(|first| first as &dyn std::error::Error)
-        })
+        .map(Failure::Supervision)
+        .or_else(|| history.launch_post.as_ref().map(Failure::Supervision))
+        .or_else(|| history.completion.as_ref().map(Failure::Supervision))
+        .or_else(|| history.return_post.as_ref().map(Failure::Supervision))
 }
 
 fn visit_imported_return_history(

@@ -156,9 +156,12 @@ pub mod imported_checkpoint;
 mod lifecycle_cleanup;
 pub use lifecycle_cleanup::{
     PreparedSourceFailure, PreparedSourceRefusal, PreparedSourceRetirement, PreparedSourceSelector,
-    ProductionVmConstructionPostBody, ServiceInputReturn, ServiceMainReceiver, SourceBodyReturn,
-    SourceMainProducer, WorldLifecycleCleanupReservation,
+    LifecycleFailureRef, ProductionVmConstructionPostBody, ServiceInputReturn,
+    ServiceMainPreclaimError, ServiceMainReceiver, SourceBodyReturn, SourceMainProducer,
+    WorldLifecycleCleanupReservation,
 };
+pub use packaged_qemu_executor::{RetainedServiceAdmissionError, RetainedServiceStartCause};
+pub use qemu_hot_fork_world_factory::{TargetMainAdmissionError, TargetSetupFailure};
 mod provider_error_custody;
 pub use host_operational_registry::HostOperationalRegistry;
 pub mod finding_production_replay;
@@ -641,11 +644,19 @@ pub(crate) use qemu_campaign_resume::{
 pub(crate) use qemu_hot_first_router::QemuHotFirstExecutionRouter;
 #[cfg(target_os = "linux")]
 pub(crate) use qemu_hot_fork_reconciliation::{
-    LinuxQemuHotForkReconciliationBackend, LinuxQemuHotForkReconciliationError,
-    LinuxQemuHotForkSourceWorldAttemptLaunchError, LinuxQemuHotForkWorldAttemptLaunchFailure,
-    QemuHotForkAttemptReconciliation, QemuHotForkAttemptReconciliationError,
-    QemuHotForkReconciliationStep, QemuHotForkWorldChildSourceBasis,
+    LinuxQemuHotForkReconciliationBackend, LinuxQemuHotForkSourceWorldAttemptLaunchError,
+    QemuHotForkAttemptReconciliation, QemuHotForkReconciliationStep,
+    QemuHotForkWorldChildSourceBasis,
 };
+#[cfg(target_os = "linux")]
+pub use qemu_hot_fork_reconciliation::{
+    LinuxQemuHotForkReconciliationError, LinuxQemuHotForkWorldAttemptLaunchFailure,
+    QemuHotForkAttemptReconciliationError, QemuHotForkReconciliationPhase,
+};
+pub use qemu_hot_fork_world::{
+    QemuHotForkWorldChildAdmissionFailure, QemuHotForkWorldPublicationFailure,
+};
+pub use qemu_hot_fork_world_resource::QemuHotForkWorldReleaseReadinessError;
 #[cfg(target_os = "linux")]
 pub(crate) use qemu_hot_fork_source_capture::ProductionQemuHotForkSourceFactory;
 #[cfg(target_os = "linux")]

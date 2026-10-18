@@ -61,6 +61,7 @@ mod source_selection;
 use source_selection::SelectedTargetSource;
 mod runtime;
 pub(crate) mod target_construction;
+pub use target_construction::{TargetMainAdmissionError, TargetSetupFailure};
 mod target_operations;
 #[cfg(test)]
 use target_operations::TargetBeginFailure;

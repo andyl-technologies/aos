@@ -85,7 +85,7 @@ impl<F: QemuAttemptResourceGuardFactory> TargetMainAdmissionFailure<F> {
 
 /// Separates pure geometry from the same authentic Main's admission refusal.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum TargetMainAdmissionError {
+pub enum TargetMainAdmissionError {
     /// The selected constructor's real layout cannot be represented.
     #[error("selected Target constructor geometry refused: {0}")]
     Geometry(#[source] LifecycleApiError),
@@ -220,9 +220,7 @@ where
     )
 }
 
-fn project_first<F>(
-    owner: &(dyn std::any::Any + Send),
-) -> Option<&(dyn std::error::Error + 'static)>
+fn project_first<F>(owner: &(dyn std::any::Any + Send)) -> Option<crate::LifecycleFailureRef<'_>>
 where
     F: QemuAttemptResourceGuardFactory + Send + 'static,
     F::Guard: QemuAttemptProcessResourceGuard + Send + 'static,
@@ -247,7 +245,7 @@ where
 
 /// Preserves an actual setup refusal beside the still-canonical owners.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum TargetSetupFailure {
+pub enum TargetSetupFailure {
     /// The original model copy refused its admitted allocation.
     #[error(transparent)]
     ModelCopy(#[from] crucible_engine::EngineError),
@@ -785,15 +783,17 @@ where
     }
 
     /// Borrows actual history retained in this Main-paid constructor body.
-    pub(crate) fn first_failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+    pub(crate) fn first_failure(&self) -> Option<crate::LifecycleFailureRef<'_>> {
+        use crate::LifecycleFailureRef as Failure;
+
         if let Some(first) = &self.first_main {
-            return Some(first);
+            return Some(Failure::TargetMain(first));
         }
         if let Some(first) = &self.first_setup {
-            return Some(first);
+            return Some(Failure::TargetSetup(first));
         }
         if let Some(first) = &self.first_preparation {
-            return Some(first);
+            return Some(Failure::TargetPreparation(first));
         }
         #[cfg(target_os = "linux")]
         if let Some(first) = self
@@ -801,7 +801,7 @@ where
             .as_ref()
             .and_then(TargetConstructionStorage::first_admission_failure)
         {
-            return Some(first);
+            return Some(Failure::NativeAdmission(first));
         }
         #[cfg(target_os = "linux")]
         if let Some(first) = self
@@ -809,7 +809,7 @@ where
             .as_ref()
             .and_then(TargetConstructionStorage::first_cleanup_failure)
         {
-            return Some(first);
+            return Some(Failure::NativeTargetCleanup(first));
         }
         #[cfg(target_os = "linux")]
         if let Some(first) = self
@@ -817,7 +817,7 @@ where
             .as_ref()
             .and_then(TargetConstructionStorage::first_reconciliation_failure)
         {
-            return Some(first);
+            return Some(Failure::NativeReconciliation(first));
         }
         if let Some(first) = self
             .nodes
@@ -827,17 +827,15 @@ where
             return Some(first);
         }
         if let Some(first) = &self.first_begin {
-            return Some(first);
+            return Some(Failure::GuardBegin(first));
         }
         if let Some(first) = &self.first_reconciliation {
-            return Some(first);
+            return Some(Failure::Control(first));
         }
         if let Some(first) = &self.first_readiness {
-            return Some(first);
+            return Some(Failure::WorldReadiness(first));
         }
-        self.first_aggregate
-            .as_ref()
-            .map(|first| first as &dyn std::error::Error)
+        self.first_aggregate.as_ref().map(Failure::GuardCleanup)
     }
 }
 
@@ -905,9 +903,6 @@ where
     F: QemuAttemptResourceGuardFactory + Send + 'static,
     F::Guard: QemuAttemptProcessResourceGuard + Send + 'static,
 {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.first_failure()
-    }
 }
 
 impl<F> crucible_control_api::ProductionVmCleanupOwner for PendingTargetConstruction<F>
@@ -1217,7 +1212,7 @@ where
         self.physically_returned
     }
 
-    fn first_failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+    fn first_failure(&self) -> Option<crate::LifecycleFailureRef<'_>> {
         PendingTargetConstruction::first_failure(self)
     }
 }

@@ -18,12 +18,16 @@ pub(super) enum SourcePreparationFirst {
     Selection(#[from] crate::executor_worker::SelectedCheckpointSlotError),
 }
 
+/// Preserves a refusal to use or restore the same canonical Service context.
 #[derive(Debug, thiserror::Error)]
-pub(super) enum CanonicalContextError {
+pub enum CanonicalContextError {
+    /// The genuine containing Main refused the context observation.
     #[error(transparent)]
     Main(#[from] crate::lifecycle_cleanup::ServiceMainPreclaimError),
+    /// The retained context belongs to another World request.
     #[error("retained Service context does not match this World request")]
     Mismatch,
+    /// The original selected-root slot refused its context transfer.
     #[error(transparent)]
     Selection(#[from] crate::executor_worker::SelectedCheckpointSlotError),
 }
@@ -55,6 +59,49 @@ pub(super) struct SourcePreparationHistory {
         Option<crate::vm_lifecycle::ProductionVmHotForkSourcePreparationHistory>,
 }
 
+impl SourcePreparationHistory {
+    fn first_failure(&self) -> Option<crate::LifecycleFailureRef<'_>> {
+        use crate::LifecycleFailureRef as Failure;
+        use crate::vm_lifecycle::ProductionVmHotForkSourcePreparationError as First;
+
+        match self.first.as_ref() {
+            Some(SourcePreparationFirst::Lifecycle(first)) => {
+                return Some(Failure::Lifecycle(first));
+            }
+            Some(SourcePreparationFirst::Role(first)) => return Some(Failure::Role(first)),
+            Some(SourcePreparationFirst::Selection(first)) => {
+                return Some(Failure::Selection(first));
+            }
+            Some(SourcePreparationFirst::WorkerGeometry(first)) => {
+                return Some(Failure::Backend(first));
+            }
+            None => {}
+        }
+        if let Some(history) = &self.preparation {
+            match history.first_error() {
+                Some(First::Scheduler { source, .. }) => return Some(Failure::Scheduler(source)),
+                Some(First::Backend { source, .. }) => return Some(Failure::Backend(source)),
+                Some(First::Allocation(source)) => return Some(Failure::Allocation(source)),
+                Some(First::Original(source)) => return Some(Failure::Control(source)),
+                Some(First::EventIdentity(source)) => return Some(Failure::Engine(source)),
+                Some(First::PostRefused) | None => {
+                    if let Some(post) = history.post_failure() {
+                        return Some(Failure::Control(post));
+                    }
+                }
+                Some(first) => return Some(Failure::Preparation(first)),
+            }
+        }
+        self.native
+            .as_ref()
+            .map(Failure::Realization)
+            .or_else(|| self.cleanup_first.as_ref().map(Failure::ServiceBirth))
+            .or_else(|| self.cleanup_post.as_ref().map(Failure::Supervision))
+            .or_else(|| self.context_restore.as_ref().map(Failure::Context))
+            .or_else(|| self.body_acceptance.as_ref().map(Failure::Role))
+    }
+}
+
 impl std::fmt::Display for SourcePreparationHistory {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -71,52 +118,7 @@ impl std::fmt::Display for SourcePreparationHistory {
     }
 }
 
-impl std::error::Error for SourcePreparationHistory {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self.first.as_ref() {
-            Some(SourcePreparationFirst::Lifecycle(first)) => return Some(first),
-            Some(SourcePreparationFirst::Role(first)) => return Some(first),
-            Some(SourcePreparationFirst::Selection(first)) => return Some(first),
-            Some(SourcePreparationFirst::WorkerGeometry(first)) => return Some(first),
-            None => {}
-        }
-
-        if let Some(history) = &self.preparation {
-            use crate::vm_lifecycle::ProductionVmHotForkSourcePreparationError as First;
-
-            match history.first_error() {
-                Some(First::Scheduler { source, .. }) => return Some(source),
-                Some(First::Backend { source, .. }) => return Some(source),
-                Some(First::Allocation(source)) => return Some(source),
-                Some(First::Original(source)) => return Some(source),
-                Some(First::EventIdentity(source)) => return Some(source),
-                Some(First::PostRefused) | None => {
-                    if let Some(post) = history.post_failure() {
-                        return Some(post);
-                    }
-                }
-                Some(first) => return Some(first),
-            }
-        }
-
-        if let Some(first) = &self.native {
-            return Some(first);
-        }
-        if let Some(first) = &self.cleanup_first {
-            return Some(first);
-        }
-        if let Some(first) = &self.cleanup_post {
-            return Some(first);
-        }
-        if let Some(first) = &self.context_restore {
-            return Some(first);
-        }
-        if let Some(first) = &self.body_acceptance {
-            return Some(first);
-        }
-        None
-    }
-}
+impl std::error::Error for SourcePreparationHistory {}
 
 impl<F> PendingSourceConstruction<F>
 where
@@ -720,14 +722,14 @@ where
     }
 
     /// Borrows the original typed construction cause without moving custody.
-    pub(crate) fn first_error(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        std::error::Error::source(&self.history)
+    pub(crate) fn first_error(&self) -> Option<crate::LifecycleFailureRef<'_>> {
+        self.history.first_failure()
     }
 
     /// Projects only this concrete Pending type from its original Main Box.
     pub(crate) fn project_first_error(
         owner: &(dyn std::any::Any + Send),
-    ) -> Option<&(dyn std::error::Error + 'static)> {
+    ) -> Option<crate::LifecycleFailureRef<'_>> {
         owner.downcast_ref::<Self>().and_then(Self::first_error)
     }
 
@@ -1027,10 +1029,9 @@ mod history_tests {
             ..SourcePreparationHistory::default()
         };
 
-        let original = std::error::Error::source(&history)
-            .unwrap()
-            .downcast_ref::<crate::QemuAttemptProductionVmLifecycleError>()
-            .unwrap();
+        let Some(crate::LifecycleFailureRef::Lifecycle(original)) = history.first_failure() else {
+            panic!("the original lifecycle cause remains selected");
+        };
         let crate::QemuAttemptProductionVmLifecycleError::ResourceInstallation(original) = original
         else {
             panic!("original typed cause was replaced");
@@ -1062,10 +1063,9 @@ mod history_tests {
             ..Default::default()
         };
 
-        let original = std::error::Error::source(&history)
-            .unwrap()
-            .downcast_ref::<crucible_engine::SchedulerError>()
-            .unwrap();
+        let Some(crate::LifecycleFailureRef::Scheduler(original)) = history.first_failure() else {
+            panic!("the original scheduler capture cause remains selected");
+        };
 
         let crucible_engine::SchedulerError::BoundaryViolation { message } = original else {
             panic!("the actual capture leaf remains selected");
@@ -1105,10 +1105,9 @@ mod history_tests {
             ..Default::default()
         };
 
-        let original = std::error::Error::source(&history)
-            .unwrap()
-            .downcast_ref::<crucible_control_api::LifecycleApiError>()
-            .unwrap();
+        let Some(crate::LifecycleFailureRef::Control(original)) = history.first_failure() else {
+            panic!("the actual capture post remains selected");
+        };
 
         let crucible_control_api::LifecycleApiError::LoopFactory { message } = original else {
             panic!("the actual post remains selected instead of its marker");
@@ -1147,10 +1146,9 @@ mod history_tests {
             ..SourcePreparationHistory::default()
         };
 
-        let original = std::error::Error::source(&history)
-            .unwrap()
-            .downcast_ref::<crate::QemuAttemptProductionVmLifecycleError>()
-            .unwrap();
+        let Some(crate::LifecycleFailureRef::Lifecycle(original)) = history.first_failure() else {
+            panic!("the original lifecycle cause remains selected");
+        };
         let crate::QemuAttemptProductionVmLifecycleError::ResourceInstallation(
             QemuVmRealizationError::ExecutorUnavailable { message, .. },
         ) = original
@@ -1189,10 +1187,9 @@ mod history_tests {
             ..SourcePreparationHistory::default()
         };
 
-        let original = std::error::Error::source(&history)
-            .unwrap()
-            .downcast_ref::<crate::QemuAttemptProductionVmLifecycleError>()
-            .unwrap();
+        let Some(crate::LifecycleFailureRef::Lifecycle(original)) = history.first_failure() else {
+            panic!("the original lifecycle cause remains selected");
+        };
         let crate::QemuAttemptProductionVmLifecycleError::ResourceBeginInstallation(report) =
             original
         else {

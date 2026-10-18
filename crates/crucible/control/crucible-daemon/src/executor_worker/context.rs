@@ -13,7 +13,7 @@ use std::sync::{
 
 /// Refuses a checked one-shot selected-checkpoint slot operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
-pub(crate) enum SelectedCheckpointSlotError {
+pub enum SelectedCheckpointSlotError {
     /// Another operation still borrows this same selection slot.
     #[error("selected checkpoint slot is busy")]
     Busy,

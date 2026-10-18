@@ -665,7 +665,7 @@ pub(crate) struct ServiceMainPreclaim {
 
 /// Preserves an exact pre-Service selection or retained-Main refusal inline.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum ServiceMainPreclaimError {
+pub enum ServiceMainPreclaimError {
     /// The original preclaimed role cannot be authenticated before Service.
     #[error("{0}")]
     Role(&'static str),

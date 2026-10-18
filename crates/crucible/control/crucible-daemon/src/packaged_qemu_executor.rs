@@ -109,6 +109,7 @@ pub(crate) use hot_fork::retained_service::{
     RetainedServiceStart, RetainedServiceStartRefusal, RetainedTemplateService,
     RetainedTemplateServiceFactory, ServiceRetirementInput,
 };
+pub use hot_fork::retained_service::{RetainedServiceAdmissionError, RetainedServiceStartCause};
 pub(crate) mod ram_catalog;
 pub use ram_catalog::{PackagedRamCatalogConfig, PackagedRamCatalogConfigError};
 

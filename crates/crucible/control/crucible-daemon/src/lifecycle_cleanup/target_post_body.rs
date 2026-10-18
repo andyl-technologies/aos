@@ -5,7 +5,6 @@
 //! destruction is checked by the containing role before each Target operation.
 
 use std::any::Any;
-use std::error::Error;
 
 use super::prepared_service::PreparedSourceSelector;
 
@@ -24,7 +23,7 @@ pub(crate) trait TargetConstructionPostBody: Send + 'static {
     fn source_selector(&self) -> &PreparedSourceSelector;
 
     /// Borrows the actual unchanged first cause from this same retained owner.
-    fn first_failure(&self) -> Option<&(dyn Error + 'static)>;
+    fn first_failure(&self) -> Option<super::LifecycleFailureRef<'_>>;
 }
 
 pub(super) struct TargetReturn {
