@@ -7,6 +7,13 @@
 
 pub(super) mod admission;
 pub(super) mod driver;
+mod diagnostics;
+pub use diagnostics::{
+    NativeBlockRecoveryObservation, NativeFlightDiagnosticMode, NativeFlightOutputChannel,
+    NativeFlightTimerObservation, NativeFourVcpuDiagnostic, NativePartitionVariant,
+    NativePluginFlightDiagnostic, NativePluginFlightOutput, NativeRuntimeTraceSummary,
+    NativeRuntimeTraceVariant,
+};
 
 #[cfg(feature = "private-measurement-domain")]
 mod inputs;

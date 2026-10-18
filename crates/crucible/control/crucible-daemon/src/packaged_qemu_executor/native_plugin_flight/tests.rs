@@ -205,7 +205,7 @@ fn idle_evidence(timer_generation: u64) -> IdleEvidence {
         wake_outcome: AdvanceOutcome::ReachedHorizon,
         wake_fingerprint: fingerprint,
         wake_sample: FingerprintSample::default(),
-        timer_fire: VirtualTimerFireEvidence {
+        timer_fire: NativeFlightTimerObservation {
             generation: timer_generation,
             armed_deadline_ps: 4_000,
             armed_deadline_tick: 4_000,

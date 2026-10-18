@@ -16,6 +16,31 @@ pub(crate) enum NativeObservationError {
     /// A bounded evidence or trace operation failed.
     #[error("{0}")]
     Io(#[from] std::io::Error),
+    /// Application output failed before both independently attempted trace closes.
+    #[error(
+        "native diagnostic output: {source}; reference trace close: {reference:?}; hostile trace close: {hostile:?}"
+    )]
+    DiagnosticOutput {
+        /// The original application write error.
+        #[source]
+        source: std::io::Error,
+        /// The independent reference trace close refusal.
+        reference: Option<Box<crucible_store::content_store::StoreError>>,
+        /// The independent hostile trace close refusal.
+        hostile: Option<Box<crucible_store::content_store::StoreError>>,
+    },
+    /// Reference trace close failed, retaining the later hostile close independently.
+    #[error("finalize reference runtime trace: {source}; hostile: {hostile:?}")]
+    ReferenceTraceFinalization {
+        /// The original reference close refusal.
+        #[source]
+        source: Box<crucible_store::content_store::StoreError>,
+        /// The independent hostile close refusal.
+        hostile: Option<Box<crucible_store::content_store::StoreError>>,
+    },
+    /// Only the hostile trace close failed.
+    #[error("finalize hostile runtime trace: {0}")]
+    HostileTraceFinalization(#[source] Box<crucible_store::content_store::StoreError>),
     /// A lifecycle operation refused its current state or authority.
     #[error("{0}")]
     Lifecycle(#[source] Box<crucible_control_api::LifecycleApiError>),

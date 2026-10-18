@@ -86,6 +86,7 @@ fn inputs(budget: &DecodeBudget) -> Result<NativePluginFlightInputs, NativePlugi
         Path::new("/immutable/kernel"),
         Path::new("/immutable/initrd"),
         Path::new("/immutable/firmware"),
+        metadata_output,
         budget,
     )
 }
@@ -131,6 +132,7 @@ fn canceled_original_and_relative_asset_refuse_without_native_effects() {
             Path::new("relative"),
             Path::new("/initrd"),
             Path::new("/firmware"),
+            metadata_output,
             &budget,
         ),
         Err(NativePluginFlightInputError::RelativePath)
@@ -141,4 +143,9 @@ fn canceled_original_and_relative_asset_refuse_without_native_effects() {
         inputs(&budget),
         Err(NativePluginFlightInputError::Admission(_))
     ));
+}
+
+// Metadata controls admit no native execution; this callback owns no output state.
+fn metadata_output(_record: super::super::NativePluginFlightDiagnostic<'_>) -> std::io::Result<()> {
+    Ok(())
 }

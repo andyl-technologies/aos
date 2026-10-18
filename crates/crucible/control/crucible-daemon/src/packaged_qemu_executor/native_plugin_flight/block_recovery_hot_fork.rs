@@ -14,7 +14,10 @@ use crucible_device::block::{
 use crucible_engine::{AdvanceOutcome, ObservableEventPayload, SimulationBackend, VirtualTime};
 use crucible_qemu_host::QemuLiveNodeStepGateConfig;
 
-use super::{DISK_BYTES, MEMORY_BYTES, RR_SWITCH_QUANTUM, prepare_live_hot_fork_template};
+use super::{
+    DISK_BYTES, MEMORY_BYTES, RR_SWITCH_QUANTUM, NativeBlockRecoveryObservation,
+    prepare_live_hot_fork_template,
+};
 
 const BLOCK_BYTES: u64 = 4 * 1024 * 1024;
 const COMPLETION_CEILING_TICKS: u64 = 100_000_000_000_000;
@@ -34,15 +37,6 @@ const CONSECUTIVE_STALLED_ADVANCE_LIMIT: usize = 4;
 pub(super) const BLOCK_RECOVERY_READY_MARKER: &[u8] = b"CRUCIBLE_BLOCK_RECOVERY_READY";
 pub(super) const BLOCK_COMPLETE_MARKER: &[u8] = b"CRUCIBLE_BLOCK_WRITE_COMPLETE";
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct BlockRecoveryHotForkEvidence {
-    pub(super) template_generation: u64,
-    pub(super) recovery_started_tick: u64,
-    pub(super) recovery_nanos: u64,
-    pub(super) pause_logical_icount: u64,
-    pub(super) pause_raw_icount: u64,
-}
-
 // crucible-lint: allow rust-allow -- the production subflight receives each authenticated executable and guest artifact explicitly.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run(
@@ -54,7 +48,7 @@ pub(super) fn run(
     firmware: &Path,
     run_root: &Path,
     diagnostic_liveness_trace: bool,
-) -> Result<BlockRecoveryHotForkEvidence, NativeObservationError> {
+) -> Result<NativeBlockRecoveryObservation, NativeObservationError> {
     recovery_timing_margin_nanos(
         GUEST_RECOVERY_WAIT_NANOS,
         READINESS_SLICE_NANOS,
@@ -160,7 +154,7 @@ pub(super) fn run(
         ));
     }
 
-    Ok(BlockRecoveryHotForkEvidence {
+    Ok(NativeBlockRecoveryObservation {
         template_generation: primary.template_generation,
         recovery_started_tick,
         recovery_nanos: RECOVERY_NANOS,

@@ -7,6 +7,7 @@
 use crucible_engine::owned_decode::{DecodeAdmissionError, DecodeBudget, DecodeCustody};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use super::NativePluginFlightOutput;
 
 /// Selects one existing positive native assertion program.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -32,6 +33,7 @@ pub(super) struct NativePluginFlightInputBody {
     pub(super) kernel: PathBuf,
     pub(super) initrd: PathBuf,
     pub(super) firmware: PathBuf,
+    pub(super) output: NativePluginFlightOutput,
 }
 
 /// Reports admission or allocation failure before an input body is published.
@@ -62,6 +64,7 @@ impl NativePluginFlightInputs {
         kernel: &Path,
         initrd: &Path,
         firmware: &Path,
+        output: NativePluginFlightOutput,
         budget: &DecodeBudget,
     ) -> Result<Self, NativePluginFlightInputError> {
         if [kernel, initrd, firmware]
@@ -82,6 +85,7 @@ impl NativePluginFlightInputs {
                 kernel,
                 initrd,
                 firmware,
+                output,
             }),
             _custody: budget.custody(),
         })

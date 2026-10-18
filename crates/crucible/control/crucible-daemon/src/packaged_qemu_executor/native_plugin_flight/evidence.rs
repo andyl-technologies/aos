@@ -67,25 +67,8 @@ pub(super) struct IdleEvidence {
     pub(super) wake_outcome: AdvanceOutcome,
     pub(super) wake_fingerprint: ExecutionFingerprint,
     pub(super) wake_sample: FingerprintSample,
-    pub(super) timer_fire: VirtualTimerFireEvidence,
+    pub(super) timer_fire: NativeFlightTimerObservation,
     pub(super) on_demand_acknowledgements: usize,
-}
-
-/// Numeric certificate for the plugin-validated native timer callback.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct VirtualTimerFireEvidence {
-    pub(super) generation: u64,
-    pub(super) armed_deadline_ps: u64,
-    pub(super) armed_deadline_tick: u64,
-    pub(super) retirement_step_ps: u64,
-    pub(super) armed_raw_icount: u64,
-    pub(super) fired_expire_ps: u64,
-    pub(super) fired_virtual_ps: u64,
-    pub(super) fired_raw_icount: u64,
-    pub(super) published_wake_tick: u64,
-    pub(super) post_wake_tick: u64,
-    pub(super) completed: u32,
-    pub(super) reserved: u32,
 }
 
 pub(super) fn idle_evidence_matches_across_runs(

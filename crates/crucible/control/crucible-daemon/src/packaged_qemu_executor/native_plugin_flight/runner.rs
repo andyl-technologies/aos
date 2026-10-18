@@ -108,25 +108,20 @@ where
                 context,
                 input.scenario(),
             )?;
+            let program = super::driver::FlightProgram {
+                qemu: self.lifecycle.executable(),
+                plugin: self.lifecycle.plugin(),
+                kernel: &inputs.body.kernel,
+                initrd: &inputs.body.initrd,
+                firmware: &inputs.body.firmware,
+                run_root: self.lifecycle.run_state_root(),
+                output: inputs.body.output,
+            };
             match inputs.body.kind {
-                NativePluginFlightKind::FourVcpu => super::driver::run_four(
-                    &mut factory,
-                    self.lifecycle.executable(),
-                    self.lifecycle.plugin(),
-                    &inputs.body.kernel,
-                    &inputs.body.initrd,
-                    &inputs.body.firmware,
-                    self.lifecycle.run_state_root(),
-                ),
-                NativePluginFlightKind::BlockRecovery => super::driver::run_block(
-                    &mut factory,
-                    self.lifecycle.executable(),
-                    self.lifecycle.plugin(),
-                    &inputs.body.kernel,
-                    &inputs.body.initrd,
-                    &inputs.body.firmware,
-                    self.lifecycle.run_state_root(),
-                ),
+                NativePluginFlightKind::FourVcpu => super::driver::run_four(&mut factory, program),
+                NativePluginFlightKind::BlockRecovery => {
+                    super::driver::run_block(&mut factory, program)
+                }
             }
         })();
         // Attempt cleanup on diagnostic errors too. The exact Source slot owns
@@ -174,8 +169,14 @@ where
             .map_err(AttemptWorkerFailure::Terminal)?;
         // The required positive assertions ran in this actual accepted worker;
         // cancellation follows their real physical cleanup, as in the original driver.
-        println!("gate=gate:production-rust-plugin-flight");
-        println!("production_accepted_assignment=true");
+        (inputs.body.output)(super::NativePluginFlightDiagnostic::AcceptedAssignment).map_err(
+            |first| {
+                AttemptWorkerFailure::Terminal(NativeFlightError::Observation {
+                    first: first.into(),
+                    cleanup: None,
+                })
+            },
+        )?;
         context.cancellation().cancel();
         Err(AttemptWorkerFailure::Canceled(NativeFlightError::Complete))
     }

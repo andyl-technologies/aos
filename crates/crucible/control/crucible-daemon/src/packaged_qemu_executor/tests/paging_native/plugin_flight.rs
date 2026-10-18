@@ -214,26 +214,24 @@ impl AttemptExecutionModel for PluginFlightModel {
         let kernel = environment::environment_path("CRUCIBLE_PAGING_KERNEL");
         let firmware = environment::environment_path("CRUCIBLE_PLUGIN_FLIGHT_FIRMWARE");
         let run_root = self.config.host.run_root();
-        let result = if self.block {
-            driver::run_block(
-                &mut factory,
-                &qemu,
-                &plugin,
-                &kernel,
-                &environment::environment_path("CRUCIBLE_PLUGIN_FLIGHT_BLOCK_INITRD"),
-                &firmware,
-                run_root,
-            )
+        let initrd = if self.block {
+            environment::environment_path("CRUCIBLE_PLUGIN_FLIGHT_BLOCK_INITRD")
         } else {
-            driver::run_four(
-                &mut factory,
-                &qemu,
-                &plugin,
-                &kernel,
-                &environment::environment_path("CRUCIBLE_PLUGIN_FLIGHT_IDLE_INITRD"),
-                &firmware,
-                run_root,
-            )
+            environment::environment_path("CRUCIBLE_PLUGIN_FLIGHT_IDLE_INITRD")
+        };
+        let program = driver::FlightProgram {
+            qemu: &qemu,
+            plugin: &plugin,
+            kernel: &kernel,
+            initrd: &initrd,
+            firmware: &firmware,
+            run_root,
+            output: native_diagnostic_output,
+        };
+        let result = if self.block {
+            driver::run_block(&mut factory, program)
+        } else {
+            driver::run_four(&mut factory, program)
         };
         result.unwrap_or_else(|error| panic!("admitted native plugin assertion failed: {error}"));
         self.complete = true;
@@ -241,5 +239,20 @@ impl AttemptExecutionModel for PluginFlightModel {
         Err(AttemptWorkerFailure::Canceled(std::io::Error::other(
             "native plugin assertions completed and actual worlds reaped",
         )))
+    }
+}
+
+// This fixture is the application output boundary for its actual admitted Main.
+fn native_diagnostic_output(
+    record: crate::NativePluginFlightDiagnostic<'_>,
+) -> std::io::Result<()> {
+    use std::io::Write;
+    match record.channel() {
+        crate::NativeFlightOutputChannel::StandardOutput => {
+            write!(std::io::stdout().lock(), "{record}")
+        }
+        crate::NativeFlightOutputChannel::StandardError => {
+            write!(std::io::stderr().lock(), "{record}")
+        }
     }
 }

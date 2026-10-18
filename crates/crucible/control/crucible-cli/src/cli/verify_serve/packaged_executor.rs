@@ -104,6 +104,10 @@ struct PackagedExecutorDeployment {
 pub(super) mod host_operation_budgets;
 
 #[cfg(feature = "private-native-observation")]
+#[path = "native_plugin_diagnostics.rs"]
+mod native_plugin_diagnostics;
+
+#[cfg(feature = "private-native-observation")]
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NativePluginFlightDeployment {
@@ -458,6 +462,7 @@ pub(super) fn prepare_cli_packaged_executor(
             &inputs.kernel,
             &inputs.initrd,
             &inputs.firmware,
+            native_plugin_diagnostics::emit,
             &decoding,
         )
         .map_err(|first| serve_error(format!("native observation inputs: {first}")))?;

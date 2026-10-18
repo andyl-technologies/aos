@@ -34,6 +34,18 @@ pub(super) struct RuntimeTraceSummary {
 }
 
 impl RuntimeTraceSummary {
+    pub(super) fn diagnostic(&self) -> super::super::NativeRuntimeTraceSummary<'_> {
+        super::super::NativeRuntimeTraceSummary {
+            bytes: self.bytes,
+            rows: self.rows,
+            raw_sha256: &self.raw_sha256,
+            post_boundary_rows: self.post_boundary_rows,
+            post_boundary_sha256: &self.post_boundary_sha256,
+            prefix: &self.prefix,
+            tail: &self.tail,
+        }
+    }
+
     pub(super) fn report(&self) -> String {
         format!(
             "schema=crucible-runtime-trace-summary-v1\n\
@@ -327,10 +339,10 @@ impl Seek for TraceSpool {
 }
 
 impl RuntimeTraceSummary {
-    pub(super) fn finish(&self) -> Result<(), NativeObservationError> {
+    pub(super) fn finish(&self) -> Result<(), crucible_store::content_store::StoreError> {
         let spool = std::mem::replace(&mut *self.normalized_spool.borrow_mut(), TraceSpool::Closed);
         match spool {
-            TraceSpool::Catalog(spool) => spool.finish().map_err(Into::into),
+            TraceSpool::Catalog(spool) => spool.finish(),
             #[cfg(test)]
             TraceSpool::Fixture(_) => Ok(()),
             TraceSpool::Closed => Ok(()),
@@ -375,6 +387,14 @@ mod tests {
             .expect("reference trace should validate");
         let candidate = summarize_fixture(&mut Cursor::new(TRACE), 160_000, 8_000_000)
             .expect("candidate trace should validate");
+        let diagnostic = reference.diagnostic();
+        assert_eq!(diagnostic.to_string(), reference.report());
+        assert_eq!(
+            diagnostic.raw_sha256.as_ptr(),
+            reference.raw_sha256.as_ptr()
+        );
+        assert_eq!(diagnostic.prefix.as_ptr(), reference.prefix.as_ptr());
+        assert!(std::ptr::eq(diagnostic.tail, &reference.tail));
         assert!(
             compare("reference", &reference, "candidate", &candidate)
                 .expect("untouched spools should compare")

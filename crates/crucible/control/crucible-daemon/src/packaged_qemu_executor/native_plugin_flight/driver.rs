@@ -20,6 +20,11 @@
 #![forbid(unsafe_code)]
 
 use crate::NativeObservationError;
+use super::{
+    NativeBlockRecoveryObservation, NativeFlightDiagnosticMode, NativeFlightTimerObservation,
+    NativeFourVcpuDiagnostic, NativePluginFlightDiagnostic, NativePluginFlightOutput,
+    NativeRuntimeTraceVariant,
+};
 
 use crate::qemu_lifecycle_launcher::ObservedNativeNode;
 
@@ -49,6 +54,9 @@ mod block_recovery_hot_fork;
 
 #[path = "runtime_trace.rs"]
 mod runtime_trace;
+
+#[path = "output.rs"]
+mod output;
 
 #[path = "partition_probe.rs"]
 mod partition_probe;
@@ -95,18 +103,34 @@ const BLOCK_RECOVERY_ONLY_ENVIRONMENT: &str =
     "CRUCIBLE_PRODUCTION_PLUGIN_FLIGHT_BLOCK_RECOVERY_ONLY";
 const PHASE4_PARTITION_PROBE_ENVIRONMENT: &str = "CRUCIBLE_PHASE4_PARTITION_PROBE";
 
+/// Borrows the admitted assets, lifecycle paths and application output callback.
+#[derive(Clone, Copy)]
+pub(in crate::packaged_qemu_executor) struct FlightProgram<'a> {
+    pub(in crate::packaged_qemu_executor) qemu: &'a Path,
+    pub(in crate::packaged_qemu_executor) plugin: &'a Path,
+    pub(in crate::packaged_qemu_executor) kernel: &'a Path,
+    pub(in crate::packaged_qemu_executor) initrd: &'a Path,
+    pub(in crate::packaged_qemu_executor) firmware: &'a Path,
+    pub(in crate::packaged_qemu_executor) run_root: &'a Path,
+    pub(in crate::packaged_qemu_executor) output: NativePluginFlightOutput,
+}
+
 pub(in crate::packaged_qemu_executor) fn run_four(
     factory: &mut dyn super::admission::FlightAdmission,
-    qemu: &Path,
-    plugin: &Path,
-    kernel: &Path,
-    idle_initrd: &Path,
-    firmware: &Path,
-    run_root: &Path,
+    program: FlightProgram<'_>,
 ) -> Result<(), NativeObservationError> {
+    let FlightProgram {
+        qemu,
+        plugin,
+        kernel,
+        initrd,
+        firmware,
+        run_root,
+        output,
+    } = program;
     let selectable_catalog_plan = readiness_selectable_catalog_plan()?;
     let config = QemuLiveNodeStepGateConfig::new(qemu, plugin, kernel, firmware, run_root)
-        .with_initrd(idle_initrd)
+        .with_initrd(initrd)
         .with_vm_shape(128, 4)
         .with_rr_switch_quantum(RR_SWITCH_QUANTUM)
         .with_whitebox(crucible_qemu_host::QemuLaunchPluginSwitch::On)
@@ -128,7 +152,14 @@ pub(in crate::packaged_qemu_executor) fn run_four(
             Some(partition_probe::POST_SELECTION_SPAN_PS),
         )?;
         let fine = run_once(factory, &config, false, Some(partition_probe::FINE_STEP_PS))?;
-        publish_trace_summary(&coarse.diagnostics.trace.report());
+        let traces = output::TracePair {
+            reference: &coarse.diagnostics.trace,
+            hostile: &fine.diagnostics.trace,
+        };
+        traces.emit(
+            output,
+            NativePluginFlightDiagnostic::ReferenceTrace(coarse.diagnostics.trace.diagnostic()),
+        )?;
         compare_boundaries("partitioned replay", &coarse.boundaries, &fine.boundaries)?;
         if !idle_evidence_matches_across_runs(&coarse.idle, &fine.idle) {
             return Err(format!(
@@ -145,17 +176,27 @@ pub(in crate::packaged_qemu_executor) fn run_four(
             fine.partition_probe
                 .as_ref()
                 .ok_or("missing fine partition probe")?,
+            |record| traces.emit(output, record),
         )?;
-        println!("PASS");
-        println!("diagnostic_mode=phase4-partition-probe");
-        coarse.diagnostics.trace.finish()?;
-        fine.diagnostics.trace.finish()?;
+        traces.emit(output, NativePluginFlightDiagnostic::Pass)?;
+        traces.emit(
+            output,
+            NativePluginFlightDiagnostic::Mode(NativeFlightDiagnosticMode::PartitionProbe),
+        )?;
+        traces.finish()?;
         return Ok(());
     }
 
     let reference = run_once(factory, &config, false, None)?;
     let hostile = run_once(factory, &config, true, None)?;
-    publish_trace_summary(&reference.diagnostics.trace.report());
+    let traces = output::TracePair {
+        reference: &reference.diagnostics.trace,
+        hostile: &hostile.diagnostics.trace,
+    };
+    traces.emit(
+        output,
+        NativePluginFlightDiagnostic::ReferenceTrace(reference.diagnostics.trace.diagnostic()),
+    )?;
     compare_boundaries(
         "host-preempted restart",
         &reference.boundaries,
@@ -199,153 +240,53 @@ pub(in crate::packaged_qemu_executor) fn run_four(
 
     // Keep the validated, bounded evidence visible if the independent block
     // recovery subflight fails before the normal result file is emitted.
-    eprintln!(
-        "PRODUCTION_PLUGIN_RUNTIME_TRACE_REFERENCE_SUMMARY_BEGIN\n{}\
-         PRODUCTION_PLUGIN_RUNTIME_TRACE_REFERENCE_SUMMARY_END",
-        reference.diagnostics.trace.report()
-    );
-    eprintln!(
-        "PRODUCTION_PLUGIN_RUNTIME_TRACE_HOSTILE_SUMMARY_BEGIN\n{}\
-         PRODUCTION_PLUGIN_RUNTIME_TRACE_HOSTILE_SUMMARY_END",
-        hostile.diagnostics.trace.report()
-    );
-    eprintln!(
-        "production_runtime_trace_comparison={}",
-        runtime_trace::compare(
-            "reference",
-            &reference.diagnostics.trace,
-            "hostile",
-            &hostile.diagnostics.trace,
-        )?
-    );
+    traces.emit(
+        output,
+        NativePluginFlightDiagnostic::RuntimeTrace {
+            variant: NativeRuntimeTraceVariant::Reference,
+            summary: reference.diagnostics.trace.diagnostic(),
+        },
+    )?;
+    traces.emit(
+        output,
+        NativePluginFlightDiagnostic::RuntimeTrace {
+            variant: NativeRuntimeTraceVariant::Hostile,
+            summary: hostile.diagnostics.trace.diagnostic(),
+        },
+    )?;
+    let comparison = runtime_trace::compare(
+        "reference",
+        &reference.diagnostics.trace,
+        "hostile",
+        &hostile.diagnostics.trace,
+    )?;
+    traces.emit(
+        output,
+        NativePluginFlightDiagnostic::RuntimeComparison(&comparison),
+    )?;
+    drop(comparison);
 
-    println!("rust_plugin_loaded=true");
-    println!("diskless_multiboot_runs={}", production_variants.len());
-    println!("fingerprint_flight_variants=reference,host-preempted");
-    println!("vcpu_count=4");
-    println!("rr_switch_quantum={RR_SWITCH_QUANTUM}");
-    println!("sample_count={}", reference.boundaries.len());
-    println!("sample_target_picoseconds=2000000,2000001,2000051,4000000,8000000");
-    println!("sample_stream_restart_identical=true");
-    println!("on_demand_worker_acknowledgements={on_demand_acknowledgements}");
-    println!("on_demand_boundary_stream_bit_identical=true");
-    println!(
-        "instruction_exact_window_lower_picoseconds={}",
-        instruction_exact.lower_target
-    );
-    println!(
-        "instruction_exact_window_upper_picoseconds={}",
-        instruction_exact.upper_target
-    );
-    println!("instruction_exact_window_width_picoseconds={FLIGHT_TICKS_PER_INSTRUCTION}");
-    println!("fractional_phase_window_lower_picoseconds={FRACTIONAL_PHASE_LOWER_TARGET}");
-    println!("fractional_phase_window_upper_picoseconds={INSTRUCTION_EXACT_LOWER_TARGET}");
-    println!("fractional_phase_no_retirement=true");
-    println!("fractional_phase_timer_projection_changed=true");
-    println!("fractional_phase_fingerprint_changed=true");
-    println!("instruction_exact_raw_retirement_successor=true");
-    println!(
-        "instruction_exact_lower_rr_vcpu={}",
-        instruction_exact.lower_rr_vcpu
-    );
-    println!(
-        "instruction_exact_upper_rr_vcpu={}",
-        instruction_exact.upper_rr_vcpu
-    );
-    println!(
-        "instruction_exact_lower_rr_position={}",
-        instruction_exact.lower_rr_position
-    );
-    println!(
-        "instruction_exact_upper_rr_position={}",
-        instruction_exact.upper_rr_position
-    );
-    println!("instruction_exact_rr_successor=true");
-    println!(
-        "instruction_exact_changed_components={}",
-        instruction_exact.changed_components.join(",")
-    );
-    println!(
-        "instruction_exact_first_differing_state_component={}",
-        instruction_exact.first_differing_state_component
-    );
-    println!(
-        "instruction_exact_owning_vcpu_state_projection={}",
-        instruction_exact.owning_vcpu_state_projection
-    );
-    println!("instruction_exact_state_projection_changed=true");
-    println!("instruction_exact_fingerprint_changed=true");
-    println!("instruction_exact_localization=one-instruction-window");
-    println!("bounded_scheduler_preemption_applied=true");
-    println!("pending_quantum_preemption_certified=true");
-    println!("scheduler_preemption_mailbox_decisions=2");
-    println!("scheduler_vcpu_switch_applied=true");
-    println!("scheduler_interrupt_applied=true");
-    println!("readiness_setup_marker_authenticated=true");
-    println!(
-        "readiness_setup_marker_icount={}",
-        reference.idle.setup_marker_icount
-    );
-    println!("all_vcpus_halted_observed=true");
-    println!("exact_timer_deadline_observed=true");
-    println!("queued_idle_wake_reached_exact_deadline=true");
-    println!("actual_virtual_timer_fire_authenticated=true");
-    println!(
-        "timer_witness_generation={}",
-        reference.idle.timer_fire.generation
-    );
-    println!(
-        "timer_witness_armed_deadline_ps={}",
-        reference.idle.timer_fire.armed_deadline_ps
-    );
-    println!(
-        "timer_witness_armed_deadline_tick={}",
-        reference.idle.timer_fire.armed_deadline_tick
-    );
-    println!("timer_witness_ticks_per_instruction={FLIGHT_TICKS_PER_INSTRUCTION}");
-    println!(
-        "timer_witness_retirement_step_ps={}",
-        reference.idle.timer_fire.retirement_step_ps
-    );
-    println!(
-        "timer_witness_armed_raw_icount={}",
-        reference.idle.timer_fire.armed_raw_icount
-    );
-    println!(
-        "timer_witness_fired_expire_ps={}",
-        reference.idle.timer_fire.fired_expire_ps
-    );
-    println!(
-        "timer_witness_fired_virtual_ps={}",
-        reference.idle.timer_fire.fired_virtual_ps
-    );
-    println!(
-        "timer_witness_fired_raw_icount={}",
-        reference.idle.timer_fire.fired_raw_icount
-    );
-    println!(
-        "timer_witness_published_wake_tick={}",
-        reference.idle.timer_fire.published_wake_tick
-    );
-    println!(
-        "timer_witness_post_wake_tick={}",
-        reference.idle.timer_fire.post_wake_tick
-    );
-    println!(
-        "timer_witness_completed={}",
-        reference.idle.timer_fire.completed
-    );
-    println!(
-        "timer_witness_reserved={}",
-        reference.idle.timer_fire.reserved
-    );
-    println!("idle_wake_stream_restart_identical=true");
-
-    println!("component_failures=0");
-    println!("per_vcpu_register_files_present=true");
-    println!("sample_logical_picoseconds_equal_target=true");
-    reference.diagnostics.trace.finish()?;
-    hostile.diagnostics.trace.finish()?;
+    let report = NativeFourVcpuDiagnostic {
+        runs: production_variants.len(),
+        samples: reference.boundaries.len(),
+        acknowledgements: on_demand_acknowledgements,
+        rr_switch_quantum: RR_SWITCH_QUANTUM,
+        ticks_per_instruction: FLIGHT_TICKS_PER_INSTRUCTION,
+        fractional_target: FRACTIONAL_PHASE_LOWER_TARGET,
+        lower_target: instruction_exact.lower_target,
+        upper_target: instruction_exact.upper_target,
+        lower_rr_vcpu: instruction_exact.lower_rr_vcpu,
+        upper_rr_vcpu: instruction_exact.upper_rr_vcpu,
+        lower_rr_position: instruction_exact.lower_rr_position,
+        upper_rr_position: instruction_exact.upper_rr_position,
+        changed_components: &instruction_exact.changed_components,
+        first_differing_state_component: &instruction_exact.first_differing_state_component,
+        owning_vcpu_state_projection: &instruction_exact.owning_vcpu_state_projection,
+        setup_marker_icount: reference.idle.setup_marker_icount,
+        timer: reference.idle.timer_fire,
+    };
+    traces.emit(output, NativePluginFlightDiagnostic::FourVcpu(&report))?;
+    traces.finish()?;
     Ok(())
 }
 
@@ -366,31 +307,6 @@ fn parse_block_recovery_only(
         )
         .into()),
     }
-}
-
-fn print_block_recovery_evidence(hot_fork: block_recovery_hot_fork::BlockRecoveryHotForkEvidence) {
-    println!("block_recovery_hot_fork_subflight=true");
-    println!(
-        "block_recovery_start_tick={}",
-        hot_fork.recovery_started_tick
-    );
-    println!("block_recovery_nanos={}", hot_fork.recovery_nanos);
-    println!("block_recovery_write_completed=true");
-    println!(
-        "block_recovery_pause_logical_icount={}",
-        hot_fork.pause_logical_icount
-    );
-    println!(
-        "block_recovery_pause_raw_icount={}",
-        hot_fork.pause_raw_icount
-    );
-    println!(
-        "hot_fork_template_generation={}",
-        hot_fork.template_generation
-    );
-    println!("hot_fork_template_draining=true");
-    println!("hot_fork_template_prepared=true");
-    println!("hot_fork_preparation_order=block-recovery-settled,draining,prepared");
 }
 
 fn run_once(
@@ -706,7 +622,7 @@ fn probe_idle_wake(
         )
         .into());
     }
-    let timer_fire = VirtualTimerFireEvidence {
+    let timer_fire = NativeFlightTimerObservation {
         generation: native_witness.generation,
         armed_deadline_ps: native_witness.deadline_ps,
         armed_deadline_tick: native_witness.deadline_tick,
@@ -866,29 +782,29 @@ fn validate_sample(sample: FingerprintSample, target: u64) -> Result<(), NativeO
 #[path = "tests.rs"]
 mod tests;
 
-fn publish_trace_summary(report: &str) {
-    println!("PRODUCTION_PLUGIN_REFERENCE_TRACE_SUMMARY_BEGIN");
-    print!("{report}");
-    println!("PRODUCTION_PLUGIN_REFERENCE_TRACE_SUMMARY_END");
-}
-
 pub(in crate::packaged_qemu_executor) fn run_block(
     factory: &mut dyn super::admission::FlightAdmission,
-    qemu: &Path,
-    plugin: &Path,
-    kernel: &Path,
-    initrd: &Path,
-    firmware: &Path,
-    run_root: &Path,
+    program: FlightProgram<'_>,
 ) -> Result<(), NativeObservationError> {
+    let FlightProgram {
+        qemu,
+        plugin,
+        kernel,
+        initrd,
+        firmware,
+        run_root,
+        output,
+    } = program;
     let diagnostic = block_recovery_only_requested()?;
     let evidence = block_recovery_hot_fork::run(
         factory, qemu, plugin, kernel, initrd, firmware, run_root, diagnostic,
     )?;
     if diagnostic {
-        println!("diagnostic_mode=block-recovery-only");
+        output(NativePluginFlightDiagnostic::Mode(
+            NativeFlightDiagnosticMode::BlockRecoveryOnly,
+        ))?;
     }
-    print_block_recovery_evidence(evidence);
+    output(NativePluginFlightDiagnostic::BlockRecovery(evidence))?;
     Ok(())
 }
 
@@ -908,6 +824,10 @@ pub(in crate::packaged_qemu_executor) fn evidence_resident_bound()
             bytes.checked_add(2 * TARGETS.len() * std::mem::size_of::<BoundaryEvidence>())
         })
         .and_then(|bytes| bytes.checked_add(std::mem::size_of::<node_run::DrivenFlight>()))
+        // Each independently failed trace close retains its existing typed StoreError box.
+        .and_then(|bytes| {
+            bytes.checked_add(2 * std::mem::size_of::<crucible_store::content_store::StoreError>())
+        })
         .and_then(|bytes| bytes.checked_add(32 * 1024))
         .and_then(|bytes| bytes.checked_add(runtime_trace::resident_bound()))
         .and_then(|bytes| bytes.checked_add(partition_probe::resident_bound()))

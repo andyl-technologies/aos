@@ -86,6 +86,20 @@ Source cleanup's scoped accessor borrows its actual cause under the original
 receipt lock. Borrowed records cannot escape a protected callback. Observed
 status remains diagnostic data and grants no cleanup or native-return authority.
 
+The private native assertion driver emits closed borrowed diagnostic records.
+The application binds its synchronous output function through the original
+admitted input body; the existing body-size query prices that field before
+allocation and worker birth. The CLI adapter uses its inherited standard streams.
+Canonical rows, early trace visibility, stream selection and final accepted-worker
+markers retain their original ordering. The driver formats bounded trace context
+without allocating a success transcript or joining changed-component strings.
+An application output refusal remains the first cause while both original trace
+closes are attempted and their independent store failures are retained. Trace
+finalization also attempts the hostile close when the reference close refuses.
+Accepted-worker output follows actual Source retirement, and cancellation follows
+successful output. The application owns inherited-stream supervision; this
+interface change does not qualify strict native exit deadlines or VM performance.
+
 Promoted children retain their original return pair and a bounded-step lineage
 controller. Descendant retirement keeps each parent checkout until exclusive
 ownership permits the next ancestor handoff. These runtime paths compile but do

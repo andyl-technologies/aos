@@ -98,6 +98,14 @@ use crate::{
 
 #[cfg(all(target_os = "linux", any(test, feature = "private-measurement-domain")))]
 mod native_plugin_flight;
+#[cfg(all(target_os = "linux", any(test, feature = "private-measurement-domain")))]
+pub use native_plugin_flight::{
+    NativeBlockRecoveryObservation, NativeFlightDiagnosticMode, NativeFlightOutputChannel,
+    NativeFlightTimerObservation, NativeFourVcpuDiagnostic, NativePartitionVariant,
+    NativePluginFlightDiagnostic, NativePluginFlightOutput, NativeRuntimeTraceSummary,
+    NativeRuntimeTraceVariant,
+};
+
 #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
 pub use native_plugin_flight::{
     NativePluginFlightInputError, NativePluginFlightInputs, NativePluginFlightKind,

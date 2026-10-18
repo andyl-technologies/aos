@@ -756,6 +756,14 @@ pub use packaged_qemu_executor::{
     NativePluginFlightInputError, NativePluginFlightInputs, NativePluginFlightKind,
 };
 
+#[cfg(all(target_os = "linux", any(test, feature = "private-measurement-domain")))]
+pub use packaged_qemu_executor::{
+    NativeBlockRecoveryObservation, NativeFlightDiagnosticMode, NativeFlightOutputChannel,
+    NativeFlightTimerObservation, NativeFourVcpuDiagnostic, NativePartitionVariant,
+    NativePluginFlightDiagnostic, NativePluginFlightOutput, NativeRuntimeTraceSummary,
+    NativeRuntimeTraceVariant,
+};
+
 /// Interactive replay construction, evidence, and terminal actor cleanup.
 pub mod interactive_replay;
 pub use interactive_replay::{

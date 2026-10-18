@@ -8,6 +8,7 @@
 use crate::NativeObservationError;
 
 use super::*;
+use super::super::NativePartitionVariant;
 
 // The next physical stop occurs this measured 1 us after the authenticated
 // timer wake. Smaller ceilings may project a safe frontier while QEMU is parked.
@@ -132,30 +133,34 @@ pub(super) fn run(
 pub(super) fn compare(
     coarse: &PartitionProbe,
     fine: &PartitionProbe,
+    mut output: impl FnMut(NativePluginFlightDiagnostic<'_>) -> Result<(), NativeObservationError>,
 ) -> Result<(), NativeObservationError> {
-    for (name, probe) in [("coarse", coarse), ("fine", fine)] {
-        println!(
-            "phase4_partition_initial variant={name} logical={} raw={} bias={} rr={}/{}/{}",
-            probe.initial_calibration.logical_icount,
-            probe.initial_calibration.raw_icount,
-            probe.initial_calibration.offset()?,
-            probe.initial_sample.rr_current_vcpu,
-            probe.initial_sample.rr_position_in_quantum,
-            probe.initial_sample.rr_switch_quantum,
-        );
+    for (variant, probe) in [
+        (NativePartitionVariant::Coarse, coarse),
+        (NativePartitionVariant::Fine, fine),
+    ] {
+        output(NativePluginFlightDiagnostic::PartitionInitial {
+            variant,
+            logical: probe.initial_calibration.logical_icount,
+            raw: probe.initial_calibration.raw_icount,
+            bias: probe.initial_calibration.offset()?,
+            rr_vcpu: probe.initial_sample.rr_current_vcpu,
+            rr_position: probe.initial_sample.rr_position_in_quantum,
+            rr_quantum: probe.initial_sample.rr_switch_quantum,
+        })?;
         for step in &probe.steps {
-            println!(
-                "phase4_partition_step variant={name} target={} projected={} outcome={:?} logical={} raw={} bias={} rr={}/{}/{}",
-                step.target,
-                step.projected,
-                step.outcome,
-                step.calibration.logical_icount,
-                step.calibration.raw_icount,
-                step.calibration.offset()?,
-                step.sample.rr_current_vcpu,
-                step.sample.rr_position_in_quantum,
-                step.sample.rr_switch_quantum,
-            );
+            output(NativePluginFlightDiagnostic::PartitionStep {
+                variant,
+                target: step.target,
+                projected: step.projected,
+                outcome: &step.outcome,
+                logical: step.calibration.logical_icount,
+                raw: step.calibration.raw_icount,
+                bias: step.calibration.offset()?,
+                rr_vcpu: step.sample.rr_current_vcpu,
+                rr_position: step.sample.rr_position_in_quantum,
+                rr_quantum: step.sample.rr_switch_quantum,
+            })?;
         }
     }
 
@@ -186,13 +191,12 @@ pub(super) fn compare(
         )
         .into());
     }
-    println!(
-        "phase4_partition_exact_match=true target={} coarse_steps={} fine_steps={}",
-        coarse_final.target,
-        coarse.steps.len(),
-        fine.steps.len(),
-    );
-    println!("phase4_partition_span_ps={POST_SELECTION_SPAN_PS}");
+    output(NativePluginFlightDiagnostic::PartitionMatched {
+        target: coarse_final.target,
+        coarse_steps: coarse.steps.len(),
+        fine_steps: fine.steps.len(),
+        span: POST_SELECTION_SPAN_PS,
+    })?;
     Ok(())
 }
 
