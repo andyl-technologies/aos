@@ -444,7 +444,9 @@ fn chunks(
                 ));
             }
         }
-        unchanged(inputs, &baseline, &names)?;
+        unchanged(inputs, &baseline, &names).inspect_err(|error| {
+            eprintln!("admission invalid-chunk iteration {index}: {error}");
+        })?;
     }
     let oversized = vec![7; WINDOW + 1];
     let original_capacity = oversized.capacity();
@@ -469,45 +471,54 @@ fn chunks(
     unchanged(inputs, &baseline, &names)?;
     let mut holds = Vec::new();
     verify_chunk(owner, runtime, inputs, &plaintext, &mut holds)?;
+    // Stay below the minimum boundary so this is a genuinely valid final chunk,
+    // independently of where the content-defined cutter would stop larger data.
+    let refusal_length = inputs
+        .owner_config()?
+        .location
+        .chunk_profile()
+        .minimum()
+        .checked_sub(1)
+        .ok_or_else(|| invalid("fixture profile has no positive final chunk"))?;
+    let refusal_plaintext = vec![54; refusal_length];
+    let refusal_descriptor = descriptor(&refusal_plaintext)?;
+    let refusal_encoded = raw(&refusal_plaintext);
+    let refusal_hold = hold(refusal_encoded.len(), [hex(refusal_descriptor.digest())])?;
     for value in 33..53 {
-        let plaintext = vec![value; 65536];
-        let declared = descriptor(&plaintext)?;
-        let encoded = raw(&plaintext);
-        let snapshot = state_bytes(inputs)?;
-        let names = namespace(inputs)?;
-        match runtime.block_on(owner.admit_chunk(
-            declared.clone(),
-            ChunkPosition::Final,
-            encoded.clone(),
-        )) {
-            Ok(receipt) => {
-                let expected_hold = hold(encoded.len(), [hex(declared.digest())])?;
-                let (allocated, directories) = canonical(inputs, &chunk_path(&declared), &encoded)?;
-                if receipt.descriptor() != &declared
-                    || receipt.synchronized_chunk_bytes() != allocated
-                    || receipt.synchronized_directory_bytes() != directories
-                    || receipt.future_hold_bytes() != expected_hold.bytes
-                    || receipt.charged_reserved_bytes() != quota(inputs)?
-                {
-                    return Err(invalid("capacity sequence acknowledgment differs"));
-                }
-                holds.push(expected_hold);
-                drop(receipt);
-                check_state(runtime, inputs, &holds)?;
+        let protected = holds.iter().try_fold(HOLD, |total, hold| {
+            total
+                .checked_add(hold.bytes)
+                .ok_or_else(|| invalid("fixture protected hold sum overflow"))
+        })?;
+        let proposed = quota(inputs)?
+            .checked_add(protected)
+            .and_then(|total| total.checked_add(refusal_hold.bytes))
+            .ok_or_else(|| invalid("fixture preflight budget overflow"))?;
+        if proposed > CAPACITY {
+            let snapshot = state_bytes(inputs)?;
+            let names = namespace(inputs)?;
+            // Final reconciliation can also reject capacity after allocation.
+            // This separate valid probe's future hold ALONE exceeds the fresh
+            // charge budget, so its refusal must precede policy/namespace effects.
+            match runtime.block_on(owner.admit_chunk(
+                refusal_descriptor.clone(),
+                ChunkPosition::Final,
+                refusal_encoded.clone(),
+            )) {
+                Err(NativeChunkAdmissionError::Accepted(error))
+                    if error.kind() == io::ErrorKind::StorageFull
+                        && error.to_string()
+                            == "actual charge and future admission holds exceed capacity" => {}
+                _ => return Err(invalid("known preflight capacity deficit did not refuse")),
             }
-            Err(NativeChunkAdmissionError::Accepted(error))
-                if error.kind() == io::ErrorKind::StorageFull
-                    && error.to_string()
-                        == "actual charge and future admission holds exceed capacity" =>
-            {
-                unchanged(inputs, &snapshot, &names)?;
-                check_state(runtime, inputs, &holds)?;
-                return emit(
-                    "PASS actual repeated chunk refusals, valid canonical admission and finite policy capacity; no Ready",
-                );
-            }
-            Err(error) => return Err(io::Error::other(error)),
+            unchanged(inputs, &snapshot, &names)?;
+            check_state(runtime, inputs, &holds)?;
+            return emit(
+                "PASS actual repeated chunk refusals, valid canonical admission and finite policy capacity; no Ready",
+            );
         }
+        let plaintext = vec![value; 65536];
+        verify_chunk(owner, runtime, inputs, &plaintext, &mut holds)?;
     }
     Err(invalid(
         "bounded admission sequence did not reach policy capacity",
