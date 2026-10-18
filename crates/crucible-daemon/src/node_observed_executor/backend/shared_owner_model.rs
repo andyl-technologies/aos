@@ -32,6 +32,8 @@ pub(super) struct Journal {
     pub begins: Vec<Id>,
     /// Records original immutable staging before any semantic consumption.
     pub stages: Vec<Id>,
+    /// Records accepted administrative input commitments without consuming bytes.
+    pub input_commitments: Vec<Id>,
     /// Records genuine common publication acknowledgements.
     pub acknowledgements: Vec<Id>,
     /// Keeps an original native operation pending while another owner completes.
@@ -42,6 +44,7 @@ pub(super) struct Journal {
     outcomes: BTreeMap<Id, OperationOutcome>,
     input: Option<ModelInput>,
     ready: Option<ReadyAttestation>,
+    armed_world: Option<ActivationRecord>,
     quarantined: bool,
 }
 
@@ -52,6 +55,52 @@ struct ModelInput {
     acknowledgement: NativeInputAcknowledgement,
     deliveries: Vec<Delivery>,
     payloads: Vec<InputPayload>,
+    commitment: Option<ModelInputCommitment>,
+}
+
+/// Retains the actual accepted commitment, including its original World authority.
+struct ModelInputCommitment {
+    activation: WorldActivation,
+    stage_operation: Id,
+    batch: Id,
+    node: Id,
+    inventory: ContentRef,
+    cutoff: Position,
+}
+
+impl ModelInputCommitment {
+    fn matches(&self, commit: &InputCustodyCommit) -> bool {
+        self.activation.same_authority(commit.activation())
+            && self.activation.record() == commit.activation().record()
+            && self.stage_operation == *commit.stage_operation()
+            && self.batch == *commit.batch()
+            && self.node == *commit.node()
+            && self.inventory == *commit.inventory()
+            && self.cutoff == commit.cutoff()
+    }
+}
+
+impl ModelInput {
+    fn authenticate_commitment(
+        &self,
+        commit: &InputCustodyCommit,
+        route: &NodeRoute,
+        world: &ActivationRecord,
+    ) -> Result<(), OperationFailure> {
+        let original = &self.acknowledgement;
+        if commit.activation().record() != world
+            || commit.node() != &route.node
+            || original.owners != route.owners
+            || original.stage_operation != *commit.stage_operation()
+            || original.batch != *commit.batch()
+            || original.node != *commit.node()
+            || original.inventory != *commit.inventory()
+            || original.cutoff != commit.cutoff()
+        {
+            return Err(refused("foreign model input commitment"));
+        }
+        Ok(())
+    }
 }
 
 struct OwnerState {
@@ -178,6 +227,7 @@ impl SimulationNode for ModelNode {
         };
         let mut journal = self.journal.borrow_mut();
         journal.ready = Some(ready.clone());
+        journal.armed_world = Some(world.clone());
         self.owner.borrow_mut().cursor = world.boundary;
         Ok(ready)
     }
@@ -218,6 +268,7 @@ impl SimulationNode for ModelNode {
             acknowledgement: acknowledgement.clone(),
             deliveries: batch.deliveries().to_vec(),
             payloads: batch.payloads().to_vec(),
+            commitment: None,
         });
         Ok(acknowledgement)
     }
@@ -241,6 +292,82 @@ impl SimulationNode for ModelNode {
         }
     }
 
+    fn commit_input_custody(
+        &mut self,
+        commit: &InputCustodyCommit,
+    ) -> Result<(), OperationFailure> {
+        let owner = self.owner.borrow();
+        if owner.active.is_some() || owner.staged.as_ref() != Some(commit.node()) {
+            return Err(refused(
+                "model input commitment has no original staging reservation",
+            ));
+        }
+        let mut journal = self.journal.borrow_mut();
+        let world = journal
+            .armed_world
+            .as_ref()
+            .ok_or_else(|| refused("model input commitment has no armed World"))?;
+        let input = journal
+            .input
+            .as_ref()
+            .ok_or_else(|| refused("model input commitment has no retained bytes"))?;
+        input.authenticate_commitment(commit, &self.route, world)?;
+        if let Some(original) = &input.commitment {
+            return if original.matches(commit) {
+                Ok(())
+            } else {
+                Err(refused(
+                    "model input commitment cannot replace its original authority",
+                ))
+            };
+        }
+        // This synchronous consumer accepts custody of the same retained bytes.
+        // Semantic delivery remains deferred until its causal operation polls.
+        let original = ModelInputCommitment {
+            activation: commit.activation().clone(),
+            stage_operation: commit.stage_operation().clone(),
+            batch: commit.batch().clone(),
+            node: commit.node().clone(),
+            inventory: commit.inventory().clone(),
+            cutoff: commit.cutoff(),
+        };
+        journal
+            .input
+            .as_mut()
+            .ok_or_else(|| refused("model staged bytes disappeared"))?
+            .commitment = Some(original);
+        journal
+            .input_commitments
+            .push(commit.stage_operation().clone());
+        Ok(())
+    }
+
+    fn validate_input_custody_commit(
+        &self,
+        commit: &InputCustodyCommit,
+    ) -> Result<(), OperationFailure> {
+        let journal = self.journal.borrow();
+        let world = journal
+            .armed_world
+            .as_ref()
+            .ok_or_else(|| refused("model input commitment has no armed World"))?;
+        let input = journal
+            .input
+            .as_ref()
+            .ok_or_else(|| refused("model input commitment has no retained bytes"))?;
+        input.authenticate_commitment(commit, &self.route, world)?;
+        if !input
+            .commitment
+            .as_ref()
+            .is_some_and(|original| original.matches(commit))
+        {
+            return Err(refused(
+                "model input custody commitment is absent or changed",
+            ));
+        }
+        Ok(())
+    }
+
     fn begin_operation(&mut self, admission: &OperationAdmission) -> Submission {
         let mut owner = self.owner.borrow_mut();
         assert!(
@@ -255,6 +382,13 @@ impl SimulationNode for ModelNode {
         if let Some(staged) = &owner.staged {
             assert_eq!(staged, &self.route.node);
             assert!(admission.inputs().is_some());
+            assert!(
+                self.journal
+                    .borrow()
+                    .input
+                    .as_ref()
+                    .is_some_and(|input| input.commitment.is_some())
+            );
         }
         let mut journal = self.journal.borrow_mut();
         assert!(

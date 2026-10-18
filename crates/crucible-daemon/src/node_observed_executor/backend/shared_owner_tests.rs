@@ -203,6 +203,10 @@ fn backpressured_first_alias_does_not_starve_its_runnable_consumer_sibling() {
     assert_eq!(harness.journals[1].borrow().stages, vec![id("stage/0/z")]);
     assert_eq!(harness.journals[1].borrow().begins, vec![id("observe/0/z")]);
 
+    assert_eq!(
+        harness.journals[1].borrow().input_commitments,
+        vec![id("stage/0/z")]
+    );
     assert!(harness.journals[1].borrow().semantic_inputs.is_empty());
     harness.finish_round();
     assert_eq!(

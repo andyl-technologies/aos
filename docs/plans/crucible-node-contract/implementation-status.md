@@ -1785,3 +1785,11 @@ and production application-target qualification are tracked independently.
 The final all-feature/all-target check passes across Core, Daemon, Provider, API,
 Session and QEMU in 2 minutes 16 seconds. This is compiler qualification; the
 production application-target gate must be refreshed for this checkpoint.
+
+A following test-only shared-owner fixture repair implements the missing actual
+source-consumed commitment callbacks. It retains the same armed activation,
+staged bytes, commitment tuple and opaque World authority. All four shared-owner
+controls pass; the original starvation control also verifies that administrative
+commitment does not deliver semantic input before causal polling. Production
+refusal defaults are unchanged. The nine packaged-input failures still require
+a correctly configured full Daemon rerun.
