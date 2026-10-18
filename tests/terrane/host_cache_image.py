@@ -273,7 +273,10 @@ def main():
     listed = subprocess.run([str(output / "bin/host_cache_fixture"), "--list"],
                             env=dict(os.environ, LD_LIBRARY_PATH=library_path), check=True,
                             text=True, capture_output=True).stdout.splitlines()
-    expected = ["host-cache:" + name for name in ["prepare", "empty", "refuse", "late-refuse", "cancel", "edquot", "hold", "start-refuse"]]
+    expected = ["host-cache:" + name for name in [
+        "prepare", "empty", "refuse", "late-refuse", "cancel", "edquot", "hold", "start-refuse",
+        "admit-chunk", "admit-metadata", "admit-cancel",
+    ]]
     shared.require(listed == expected, "cache fixture exact selector inventory mismatch")
     unit_elf = output / "bin" / UNIT_NAME
     unit_hash = digest(unit_elf)

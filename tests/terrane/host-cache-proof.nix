@@ -1,5 +1,6 @@
 # Bounded native owner component evidence, outside owning gate registration.
-# Empty recovery does not authorize Resume, native admission or BKT-15 readiness.
+# Empty recovery and encoded admission do not authorize sealed serving or
+# BKT-15 readiness.
 {
   pkgs,
   lib,

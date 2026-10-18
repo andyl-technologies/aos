@@ -27,7 +27,8 @@ PUB_RUNTIME = pathlib.Path("/run/terrane-publish")
 HARD = 8 * 1024 * 1024
 EPOCH = "00000000000000000000000000000001"
 CASES = ["empty", "pin", "lease", "reservation", "residence", "unknown",
-         "state-file", "state-directory", "cancel", "edquot", "exclusive"]
+         "state-file", "state-directory", "cancel", "edquot", "exclusive",
+         "admission-chunk", "admission-metadata", "admission-cancel"]
 LABELS = ["layout-root", "chunks", "objects", "sealed", "staging", "quarantine",
           "pending-delete", "state"]
 BUDGET = HARD * len(CASES)
@@ -304,6 +305,65 @@ def exclusive_case(uuid):
             process.wait(timeout=5)
 
 
+def admission_cases(helper, uuid):
+    """Requires actual Resume and exact native chunk/pair completion witnesses."""
+    acknowledgement = "ACK actual empty recovery Resume; no Ready"
+    for case, mode, witness in [
+        ("admission-chunk", "admit-chunk",
+         "PASS actual repeated chunk refusals, valid canonical admission and finite policy capacity; no Ready"),
+        ("admission-metadata", "admit-metadata",
+         "PASS actual repeated metadata refusals and fully verified canonical pair with retained holds; no Ready"),
+    ]:
+        output = actor(case, mode, uuid)
+        require(output.splitlines() == [acknowledgement, witness],
+                "missing exact encoded-admission completion: " + case)
+
+    process = controlled_actor("admission-cancel", "admit-cancel", uuid)
+    stopped = False
+    try:
+        lines = Lines(process)
+        lines.until("READY actual admission Resume acknowledged; wait for stopped-helper control")
+        require(acknowledgement.encode() in lines.bytes,
+                "cancellation fixture never acknowledged actual Resume")
+        process_status(process, 840)
+
+        # Bound the whole stopped interval below one second and inside the query
+        # deadline. Enqueue only after the real helper is observed stopped.
+        deadline = time.monotonic() + 0.8
+        helper.send_signal(signal.SIGSTOP)
+        stopped = True
+        while True:
+            status = (pathlib.Path("/proc") / str(helper.pid) / "status").read_text()
+            require(helper.poll() is None, "quota helper exited before admission cancellation")
+            if any(line.startswith("State:\tT") or line.startswith("State:\tt")
+                   for line in status.splitlines()):
+                break
+            require(time.monotonic() < deadline, "helper stop was not acknowledged")
+            time.sleep(0.005)
+        process.stdin.write(b"enqueue\n")
+        process.stdin.flush()
+        lines.until("CANCELLED accepted admission waiter; physical owner retained",
+                    timeout=max(0, deadline - time.monotonic()))
+        require(time.monotonic() < deadline, "admission cancellation exceeded stopped interval")
+        helper.send_signal(signal.SIGCONT)
+        stopped = False
+
+        # An arbitrary later error cannot prove completion of the abandoned job.
+        # The actor requires a second valid acknowledgment and checks both actual
+        # canonical bodies and their still-durable holds before emitting this line.
+        output, _ = process.communicate(b"resumed\n", timeout=15)
+        print(output.decode(), end="", flush=True)
+        require(process.returncode == 0 and output.decode().splitlines() == [
+            "PASS dropped admission waiter retained physical completion, both canonical inodes and durable holds; no Ready"
+        ], "missing exact physical completion after dropping admission waiter")
+    finally:
+        if stopped and helper.poll() is None:
+            helper.send_signal(signal.SIGCONT)
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+
+
 def verify_image():
     """Independently checks final ELF bytes and retained original Cargo events."""
     identity = json.loads((IMAGE / "share/identity.json").read_text())
@@ -551,7 +611,8 @@ def main():
         cancel_case(helper, uuid)
         exclusive_case(uuid)
         actor("edquot", "edquot", uuid)
-        print("PASS bounded native cache component cases; Resume/admission/BKT15 remain unqualified", flush=True)
+        admission_cases(helper, uuid)
+        print("PASS bounded native cache recovery and encoded admission; sealed publication/BKT15 remain unqualified", flush=True)
     finally:
         for child in reversed(children):
             if child.poll() is None:
