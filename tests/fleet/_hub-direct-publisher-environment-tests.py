@@ -71,6 +71,7 @@ class PublisherEnvironmentTests(unittest.TestCase):
 
             self.assertTrue(result.stdout.startswith(b"Hybrid Fleet Publisher <fleet-publisher@example.test> "))
             self.assertEqual(environment.get("HOME"), os.environ.get("HOME"))
+            self.assertEqual(environment["AOS_CONFIG_HOME"], str(root / ".config/aos"))
             self.assertEqual(environment["XDG_CONFIG_HOME"], str(root / ".config"))
             self.assertEqual(environment["XDG_DATA_HOME"], str(root / ".local/share"))
             self.assertNotIn("'--global'", program)
@@ -85,10 +86,13 @@ class PublisherEnvironmentTests(unittest.TestCase):
 
             for environment in environments:
                 self.assertEqual(environment.get("HOME"), os.environ.get("HOME"))
+                self.assertEqual(environment["AOS_CONFIG_HOME"], str(root / ".config/aos"))
                 self.assertEqual(environment["XDG_CONFIG_HOME"], str(root / ".config"))
                 self.assertEqual(environment["XDG_DATA_HOME"], str(root / ".local/share"))
                 self.assertEqual(environment["XDG_CACHE_HOME"], str(root / ".cache"))
-            self.assertEqual(environments[0], environments[1])
+            differing_keys = sorted(key for key in environments[0].keys() | environments[1].keys()
+                if environments[0].get(key) != environments[1].get(key))
+            self.assertEqual(differing_keys, [])
 
     def test_publication_scoped_roots_cannot_leak_between_invocations(self):
         program = retained_guest("_hub-direct-concurrent-publications.py", "start_direct_publication", "supervisor")
@@ -97,7 +101,7 @@ class PublisherEnvironmentTests(unittest.TestCase):
         second = actual_environment(program, Path("/var/lib/hybrid-client/publisher-b"))
 
         self.assertEqual(dict(os.environ), original)
-        for key in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"):
+        for key in ("AOS_CONFIG_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"):
             self.assertNotEqual(first[key], second[key])
         self.assertEqual(first.get("HOME"), second.get("HOME"))
 

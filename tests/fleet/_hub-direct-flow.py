@@ -168,28 +168,58 @@ def install_direct_guest_file(machine, python, path, body):
 
 
 def read_direct_guest_file(machine, python, path, maximum_bytes):
-    """Capture an actual bounded regular file while preserving its private bytes."""
+    """Capture one unchanged regular file through bounded private responses."""
+    if type(maximum_bytes) is not int or maximum_bytes < 0:
+        raise ValueError("actual file capture bound is invalid")
     captured = json.loads(direct_guest_python(machine, python, """
         import hashlib, os, stat
-        from pathlib import Path
 
+        fields = ('st_dev', 'st_ino', 'st_size', 'st_mtime_ns', 'st_ctime_ns')
         descriptor = os.open(selected['path'], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(descriptor, 'rb') as source:
             before = os.fstat(source.fileno())
             if not stat.S_ISREG(before.st_mode) or before.st_size > selected['maximumBytes']:
                 raise ValueError('actual capture is not a bounded regular file')
-            body = source.read(selected['maximumBytes'] + 1)
+            digest = hashlib.file_digest(source, 'sha256').hexdigest()
             after = os.fstat(source.fileno())
-        fields = ('st_dev', 'st_ino', 'st_size', 'st_mtime_ns', 'st_ctime_ns')
-        if len(body) != before.st_size or any(getattr(before, key) != getattr(after, key) for key in fields):
+        if any(getattr(before, key) != getattr(after, key) for key in fields):
             raise ValueError('actual capture changed while reading')
-        print(json.dumps({'sha256': hashlib.sha256(body).hexdigest(),
-            'body': base64.b64encode(body).decode()}))
+        print(json.dumps({'sha256': digest,
+            'identity': {key: getattr(before, key) for key in fields}}))
     """, {"path": path, "maximumBytes": maximum_bytes}))
-    body = base64.b64decode(captured["body"], validate=True)
-    if len(body) > maximum_bytes or hashlib.sha256(body).hexdigest() != captured["sha256"]:
+    identity = captured["identity"]
+    size = identity["st_size"]
+    if type(size) is not int or not 0 <= size <= maximum_bytes:
+        raise ValueError("actual guest file capture size differs")
+
+    body = bytearray()
+    while len(body) < size:
+        length = min(1024 * 1024, size - len(body))
+        block = json.loads(direct_guest_python(machine, python, """
+            import os, stat
+
+            fields = ('st_dev', 'st_ino', 'st_size', 'st_mtime_ns', 'st_ctime_ns')
+            descriptor = os.open(selected['path'], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(descriptor, 'rb') as source:
+                before = os.fstat(source.fileno())
+                if (not stat.S_ISREG(before.st_mode)
+                        or {key: getattr(before, key) for key in fields} != selected['identity']):
+                    raise ValueError('actual capture identity changed between chunks')
+                source.seek(selected['offset'])
+                body = source.read(selected['length'])
+                after = os.fstat(source.fileno())
+                if (len(body) != selected['length'] or any(
+                        getattr(before, key) != getattr(after, key) for key in fields)):
+                    raise ValueError('actual capture changed while reading a chunk')
+            print(json.dumps({'body': base64.b64encode(body).decode()}))
+        """, {"path": path, "identity": identity, "offset": len(body), "length": length}))
+        decoded = base64.b64decode(block["body"], validate=True)
+        if len(decoded) != length:
+            raise ValueError("actual guest file chunk changed in transport")
+        body.extend(decoded)
+    if hashlib.sha256(body).hexdigest() != captured["sha256"]:
         raise ValueError("actual guest file capture changed in transport")
-    return body
+    return bytes(body)
 
 
 def capture_direct_artifacts(worker, tools):

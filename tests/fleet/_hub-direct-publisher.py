@@ -47,7 +47,8 @@ def assert_direct_fifo_checkpoint(client, tools, registry, signed, token):
         if not stat.S_ISFIFO(before.st_mode) or Path('/').stat().st_uid != 0:
             raise ValueError('FIFO admission fixture lacks actual trusted-root custody')
         environment = dict(os.environ)
-        environment.update(XDG_CONFIG_HOME=selected['home']+'/.config',
+        environment.update(AOS_CONFIG_HOME=selected['home']+'/.config/aos',
+            XDG_CONFIG_HOME=selected['home']+'/.config',
             XDG_DATA_HOME=selected['home']+'/.local/share',
             XDG_CACHE_HOME=selected['home']+'/.cache', SSL_CERT_FILE='/etc/ssl/certs/ca-certificates.crt')
         started = time.time_ns()
@@ -132,7 +133,8 @@ def prepare_direct_signed_surface(client, python, apr, git, openssh, nix,
         home.mkdir(mode=0o700, parents=True, exist_ok=False)
         surface = '/var/lib/hybrid-client/' + name + '-surface'
         environment = dict(os.environ)
-        environment.update(XDG_CONFIG_HOME=str(home / '.config'),
+        environment.update(AOS_CONFIG_HOME=str(home / '.config/aos'),
+            XDG_CONFIG_HOME=str(home / '.config'),
             XDG_DATA_HOME=str(home / '.local/share'), XDG_CACHE_HOME=str(home / '.cache'),
             NIX_REMOTE='', NIX_CONF_DIR=str(home / '.config/nix'),
             GIT_AUTHOR_NAME='Hybrid Fleet Publisher', GIT_AUTHOR_EMAIL='fleet-publisher@example.test',

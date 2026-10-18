@@ -2800,15 +2800,22 @@
       f"NarHash: sha256:{gc_nar_digest}\n"
       f"NarSize: {len(gc_nar_bytes)}\n"
   )
-  gc_registration = json.loads(client.succeed(
+  # Hybrid parses narinfo in the Worker and forwards its semantic projection.
+  # The legacy registration RPC carries raw text and is refused by Native.
+  gc_narinfo_upload = json.loads(client.succeed(
       f"{CURL} -fsS -X POST -H 'cf-connecting-ip: 192.0.2.10' "
       "-H 'Content-Type: application/json' -H 'Connect-Protocol-Version: 1' "
       f"-H 'Authorization: Bearer {session_token}' "
-      f"--data {shlex.quote(json.dumps({'cacheId': 'fleet/objects', 'narinfos': [{'storeHash': gc_store_hash, 'narinfo': gc_narinfo}]}))} "
-      "https://aos.fleet.test/aos.hub.v1.BinaryCacheService/RegisterCacheNarinfos",
+      f"--data {shlex.quote(json.dumps({'cacheId': 'fleet/objects', 'path': f'{gc_store_hash}.narinfo', 'size': len(gc_narinfo.encode())}))} "
+      "https://aos.fleet.test/aos.hub.v1.BinaryCacheService/CreateCacheObjectUploads",
       timeout=60,
-  ))
-  assert int(gc_registration["registered"]) == 1, gc_registration
+  )))
+  client.succeed(
+      f"{CURL} -fsS -X PUT -H 'cf-connecting-ip: 192.0.2.10' "
+      f"-H 'Authorization: Bearer {session_token}' "
+      f"--data-binary {shlex.quote(gc_narinfo)} {shlex.quote(gc_narinfo_upload['uploadUrl'])}",
+      timeout=60,
+  )
 
   gc_replica = json.loads(client.succeed(hub_command(
       "placement show cache:fleet/objects replica"
