@@ -28,3 +28,6 @@ impl CompleteOriginalRestorationSource {
         self.inner.authenticate_birth()
     }
 }
+
+#[path = "settled17/prebirth_loan.rs"]
+mod prebirth_loan;

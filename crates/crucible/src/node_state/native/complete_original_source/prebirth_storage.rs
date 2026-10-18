@@ -34,16 +34,45 @@ impl CompleteOriginalSource {
         let owners = self.archive.owners();
         let issued = self.native_issued.get();
         let host = &self.host.selection_data().owner.owner.id;
-        if owners.len() != issued.len()
-            || owners.iter().filter(|row| &row.owner == host).count() != 1
-            || owners
-                .iter()
-                .enumerate()
-                .any(|(index, row)| issued[index] != (&row.owner != host))
-        {
+        if owners.len() != issued.len() {
+            return Err(RuntimeError::OutstandingObligations);
+        }
+        let mut host_count = 0usize;
+        for (index, row) in owners.iter().enumerate() {
+            host_count += usize::from(&row.owner == host);
+            if issued[index] != (&row.owner != host) {
+                return Err(RuntimeError::OutstandingObligations);
+            }
+        }
+        if host_count != 1 {
             return Err(RuntimeError::OutstandingObligations);
         }
         self.authenticate_birth()
+    }
+}
+
+impl CompleteOriginalSource {
+    /// Names the actual unbound/all-issued prebirth phase guard workspace.
+    pub(super) fn collecting_prebirth_phase_counter_scratch_data() -> usize {
+        use std::cell::Ref;
+        use std::mem::size_of;
+
+        size_of::<&Self>()
+            + size_of::<&CompleteOriginalSourcePurpose>()
+            + size_of::<Ref<'static, CollectingTargetPhase>>()
+            + size_of::<Result<Ref<'static, CollectingTargetPhase>, std::cell::BorrowError>>()
+            + size_of::<Ref<'static, Option<Rc<()>>>>()
+            + size_of::<Result<Ref<'static, Option<Rc<()>>>, std::cell::BorrowError>>()
+            + size_of::<&[NativeOwnerState]>()
+            + size_of::<std::iter::Enumerate<std::slice::Iter<'static, NativeOwnerState>>>()
+            + size_of::<(usize, &NativeOwnerState)>()
+            + size_of::<&Id>()
+            + size_of::<[bool; 4]>()
+            + size_of::<usize>()
+            + size_of::<std::thread::Thread>()
+            + size_of::<std::thread::ThreadId>()
+            + size_of::<u32>()
+            + size_of::<Result<(), RuntimeError>>()
     }
 }
 
@@ -145,7 +174,8 @@ impl CompleteOriginalRestorationSource {
         use std::cell::Ref;
         use std::mem::size_of;
 
-        NativeArchiveRecord::original_archive_owned_counter_scratch_data()
+        CompleteOriginalSource::collecting_prebirth_phase_counter_scratch_data()
+            + NativeArchiveRecord::original_archive_owned_counter_scratch_data()
             + VerifiedStateContent::capture_owned_counter_scratch_data()
             + Self::historical_coordinator_checkpoint17_counter_scratch_data()
             + RetainedCold17Collection::retained_counter_scratch_data()

@@ -506,3 +506,6 @@ impl ConformanceRuntime {
         )
     }
 }
+
+#[path = "complete_capture/prebirth_collection17.rs"]
+mod prebirth_collection17;

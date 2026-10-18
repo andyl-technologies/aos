@@ -198,7 +198,8 @@ impl OriginalRestoredSettledColdGroup {
     /// Names the cold root, partial outputs and direct raw getter views.
     pub(crate) fn counter_scratch_data() -> usize {
         use std::mem::size_of;
-        size_of::<Self>()
+        collection_loan::counter_scratch_data()
+            + size_of::<Self>()
             + size_of::<&Self>()
             + size_of::<crate::node_state::RetainedCold17Collection>()
             + size_of::<crate::node_state::RetainedCold17MemberView<'static>>()
@@ -252,109 +253,22 @@ impl OriginalRestoredSettledColdGroup {
         source: &Rc<PacketCompleteSemanticSource>,
         ticket: &'a CompleteOriginalNativeTicket,
     ) -> Result<OriginalRestoredSettledColdOwnerMetadata<'a>, RuntimeError> {
-        if self.process != std::process::id() || self.thread != std::thread::current().id() {
-            return Err(RuntimeError::ForeignAuthority);
-        }
         self.origin()?;
         let collection = self
             .collection
             .as_ref()
             .ok_or(RuntimeError::OwnerUnavailable)?;
-        collection.authenticate_completed_data(self.archive.archive())?;
-        collection.authenticate_production_declaration_data(self.archive.archive())?;
         let expected = self
             .sources
             .get(selected)
             .ok_or(RuntimeError::ForeignAuthority)?;
-        if !Rc::ptr_eq(expected, source) {
-            return Err(RuntimeError::ForeignAuthority);
-        }
-        ticket.authenticate_source(&self.archive)?;
-        let owner = ticket.owner()?;
-        let owner_index = self
-            .archive
-            .archive()
-            .owners()
-            .iter()
-            .position(|row| std::ptr::eq(row, owner))
-            .ok_or(RuntimeError::ForeignAuthority)?;
-        let retained = collection.member_data(self.archive.archive(), owner_index)?;
-        if &owner.state != retained.references[0] {
-            return Err(RuntimeError::ForeignAuthority);
-        }
-        let data = ticket.restored_native_import_construction_data()?;
-        data.authenticate_original_references_data(retained.references)?;
-        let content = self.archive.content();
-        let body = |reference| content.get(reference).ok_or(RuntimeError::InvalidReceipt);
-        let input = RestoredSettledNative17Input {
-            snapshot: (retained.references[0], body(retained.references[0])?),
-            current_protocol: (retained.references[1], body(retained.references[1])?),
-            control: (retained.references[2], body(retained.references[2])?),
-            anchor: (retained.references[3], body(retained.references[3])?),
-            journal: (retained.references[4], body(retained.references[4])?),
-        };
-        // The same immutable Source and fixed sealed-owner slots retain these
-        // exact bodies. Full body hashing occurred under the strict constructor's
-        // admission; this signing loan performs no unquoted repeated body walk.
-        if data.archived_input_byte_extents_data()
-            != input.roles_data().map(|(_, bytes)| bytes.len())
-        {
-            return Err(RuntimeError::InvalidReceipt);
-        }
-        let native = retained.native;
-        if native
-            .body_reference()
-            .map_err(|_| RuntimeError::InvalidReceipt)?
-            != retained.references[1]
-            || native
-                .encoded_body()
-                .map_err(|_| RuntimeError::InvalidReceipt)?
-                .len()
-                != input.current_protocol.1.len()
-        {
-            return Err(RuntimeError::InvalidReceipt);
-        }
-        let controller = retained.controller;
-        controller
-            .parts_data()
-            .map_err(|_| RuntimeError::InvalidReceipt)?;
-        let node = retained.node;
-        let source_history = retained.source_history;
-        if node.node_data() != &source.installation().descriptor.id
-            || !owner.evidence.contains(source_history.reference_data())
-            || content.get(source_history.reference_data()).is_none()
-            || content.get(node.reference_data()).is_none()
-        {
-            return Err(RuntimeError::InvalidReceipt);
-        }
-        let limits = source_history.original_generic_limits_data();
-        let installed = source.installation();
-        if limits
-            != (
-                installed.maximum_operations,
-                installed.maximum_semantic_bytes,
-                installed.maximum_result_bytes,
-                installed.maximum_authorization_bytes,
-            )
-            || source_history.historical_associations_count_data() > limits.0
-            || node.retained_semantic_credit_data() > limits.1
-        {
-            return Err(RuntimeError::ResourceLimit);
-        }
-        Ok(OriginalRestoredSettledColdOwnerMetadata {
-            source: expected,
-            owner,
-            host: self.archive.restored_host_record_data()?,
-            native,
-            controller,
-            node,
-            source_history,
-            input,
-            controller_reference: retained.controller_reference,
-            native_before_reference: retained.native_before_reference,
-            native_limits: retained.native_limits,
-            source_decode_axes: retained.source_decode_axes,
-        })
+        OriginalRestoredSettledColdOwnerMetadata::from_retained_collection_data(
+            &self.archive,
+            collection,
+            expected,
+            source,
+            ticket,
+        )
     }
 
     /// Revalidates the actual current checkpoint under separately admitted work.
@@ -372,27 +286,8 @@ impl OriginalRestoredSettledColdGroup {
         source: &Rc<PacketCompleteSemanticSource>,
         ticket: &'a CompleteOriginalNativeTicket,
     ) -> Result<OriginalRestoredSettledColdOwnerView<'a>, RuntimeError> {
-        let metadata = self.original_owner_metadata_data(selected, source, ticket)?;
-        let checkpoint = metadata.source_history.current_checkpoint_data()?;
-        metadata
-            .native
-            .authenticate_current_checkpoint_data(checkpoint.0, checkpoint.1, checkpoint.2)
-            .map_err(|_| RuntimeError::InvalidReceipt)?;
-
-        Ok(OriginalRestoredSettledColdOwnerView {
-            source: metadata.source,
-            owner: metadata.owner,
-            host: metadata.host,
-            native: metadata.native,
-            controller: metadata.controller,
-            node: metadata.node,
-            source_history: metadata.source_history,
-            input: metadata.input,
-            controller_reference: metadata.controller_reference,
-            native_before_reference: metadata.native_before_reference,
-            native_limits: metadata.native_limits,
-            source_decode_axes: metadata.source_decode_axes,
-        })
+        self.original_owner_metadata_data(selected, source, ticket)?
+            .authenticate_current_checkpoint_data()
     }
 }
 
@@ -432,3 +327,6 @@ impl OriginalCompleteHistoricalColdGroup {
         }
     }
 }
+
+#[path = "cold/collection_loan.rs"]
+mod collection_loan;

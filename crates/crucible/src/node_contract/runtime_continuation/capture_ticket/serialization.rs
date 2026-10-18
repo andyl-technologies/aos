@@ -719,7 +719,10 @@ mod tests {
 }
 
 pub(super) fn counter_scratch_data() -> usize {
-    std::mem::size_of::<Credit>() + std::mem::size_of::<Container<'_>>()
+    std::mem::size_of::<(usize, usize)>()
+        + std::mem::size_of::<Result<(usize, usize), RuntimeError>>()
+        + std::mem::size_of::<Credit>()
+        + std::mem::size_of::<Container<'_>>()
 }
 
 /// Quotes actual selected DOM/canonical output and BTree FromIterator phases.
@@ -937,6 +940,68 @@ mod selected_map_root_controls {
                     requested - 1,
                 )
                 .is_err()
+            );
+        }
+    }
+}
+
+/// Returns both axes of the same defining selected-constructor Credit walk.
+///
+/// The caller independently funds the real serializer's typed formatter work
+/// before entry. This constructs no DOM or canonical bank and uses no future
+/// typed-decoder slot. Its output is allocation DATA only, not admission.
+pub(super) fn borrowed_constructor_geometry(
+    value: &impl Serialize,
+    maximum: usize,
+) -> Result<(usize, usize), RuntimeError> {
+    let mut credit = Credit {
+        used: 0,
+        maximum,
+        depth: 0,
+        map_key: false,
+        future_decode: false,
+        selected_constructor: true,
+        encoded_upper: 0,
+        maximum_decode_slot: 0,
+    };
+    value
+        .serialize(&mut credit)
+        .map_err(|_| RuntimeError::ResourceLimit)?;
+    let output = credit
+        .encoded_upper
+        .checked_mul(4)
+        .and_then(|n| n.checked_add(256))
+        .ok_or(RuntimeError::ResourceLimit)?;
+    credit
+        .add(output)
+        .map_err(|_| RuntimeError::ResourceLimit)?;
+    Ok((credit.used, credit.encoded_upper))
+}
+
+#[cfg(test)]
+mod borrowed_constructor_geometry_tests {
+    use super::*;
+
+    #[test]
+    fn borrowed_geometry_preserves_constructor_cost_and_bounds_actual_encoding() {
+        for value in [
+            serde_json::json!({}),
+            serde_json::json!({"nested": ["quote\"\n", {"unicode": "δ"}], "count": 13}),
+        ] {
+            let original = original_constructor_value_allocations(&value, usize::MAX).unwrap();
+            let (requested, encoded) = borrowed_constructor_geometry(&value, usize::MAX).unwrap();
+            let actual = crucible_node_contract::canonical::canonical_json(&value).unwrap();
+
+            assert_eq!(requested, original);
+            assert!(encoded >= actual.len());
+            assert_eq!(
+                borrowed_constructor_geometry(&value, requested).unwrap(),
+                (requested, encoded)
+            );
+            assert!(borrowed_constructor_geometry(&value, requested - 1).is_err());
+            assert_eq!(
+                original_constructor_value_allocations(&value, usize::MAX).unwrap(),
+                original
             );
         }
     }

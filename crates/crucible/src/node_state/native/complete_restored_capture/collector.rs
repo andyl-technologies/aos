@@ -865,15 +865,15 @@ impl RetainedCold17Collection {
         owner_index: usize,
     ) -> Result<RetainedCold17MemberView<'_>, RuntimeError> {
         self.authenticate_completed_data(archive)?;
-        let mut members = self
-            .members
-            .iter()
-            .flatten()
-            .filter(|member| member.owner_index == owner_index);
-        let member = members.next().ok_or(RuntimeError::ForeignAuthority)?;
-        if members.next().is_some() {
-            return Err(RuntimeError::ForeignAuthority);
+        let mut selected = None;
+        for bank in &self.members {
+            for member in bank {
+                if member.owner_index == owner_index && selected.replace(member).is_some() {
+                    return Err(RuntimeError::ForeignAuthority);
+                }
+            }
         }
+        let member = selected.ok_or(RuntimeError::ForeignAuthority)?;
         let objects = member
             .objects
             .as_ref()
@@ -1217,3 +1217,6 @@ pub(crate) fn counter_scratch_data() -> usize {
         + crate::node_adapters::cnp::OriginalInitial15ArchivedGroup::terminal_counter_scratch_data()
         + super::initial15_history::HistoricalInitial15Scope17::counter_scratch_data()
 }
+
+#[path = "collector/loan_counter.rs"]
+mod loan_counter;

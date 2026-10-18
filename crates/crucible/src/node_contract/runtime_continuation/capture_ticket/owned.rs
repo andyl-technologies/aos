@@ -885,3 +885,21 @@ mod decoded_node17;
 
 #[path = "decoded_initial15.rs"]
 mod decoded_initial15;
+
+impl NodeRuntime {
+    /// Quotes actual borrowed DOM/canonical construction and its encoded upper.
+    ///
+    /// The caller admits the defining fixed counter and each actual custom
+    /// formatter temporary before invoking this serializer walk. It creates no
+    /// Value, canonical buffer, decoded owner or live allocation permission.
+    ///
+    /// # Errors
+    /// Refuses the unchanged constructor serializer's depth/shape restrictions,
+    /// checked layout overflow or requested work above `maximum`.
+    pub(crate) fn borrowed_serialization_geometry_data(
+        value: &impl serde::Serialize,
+        maximum: usize,
+    ) -> Result<(usize, usize), RuntimeError> {
+        super::serialization::borrowed_constructor_geometry(value, maximum)
+    }
+}
