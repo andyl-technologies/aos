@@ -131,8 +131,9 @@ impl Finding {
     ) -> Result<Self, CampaignCodecError> {
         let reproduction_version = basis.reproduction.content_id().schema_version();
         let minimized_version = minimized.map(|id| id.content_id().schema_version());
-        let reproduction_versions_match = reproduction_version == RETENTION_SCHEMA_VERSION
-            && minimized_version.is_none_or(|version| version == RETENTION_SCHEMA_VERSION);
+        let current = crate::reproduction::REPRODUCTION_SCHEMA_VERSION;
+        let reproduction_versions_match = reproduction_version == current
+            && minimized_version.is_none_or(|version| version == current);
         if !reproduction_versions_match {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "finding schema disagrees with reproduction versions",

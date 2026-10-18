@@ -288,6 +288,23 @@ pub(super) static EVENT_KIND_CATALOG: &[EventKindCatalogEntry] = &[
         attributes: &["from", "link", "reason", "to"],
     },
     EventKindCatalogEntry {
+        kind: "native_console_byte",
+        class: SchedulerEventLogClass::Observational,
+        sources: &["node"],
+        attributes: &[
+            "byte",
+            "device",
+            "emitted_ps",
+            "logical_generation",
+            "node",
+            "node_sequence",
+            "raw_prefix",
+            "stream",
+            "stream_sequence",
+            "vcpu",
+        ],
+    },
+    EventKindCatalogEntry {
         kind: "network_delivered",
         class: SchedulerEventLogClass::Observational,
         sources: &["engine", "node"],

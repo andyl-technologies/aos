@@ -141,7 +141,7 @@ fn choice_objects() -> (SelectableDeclaration, ChoiceDomain, ChoiceOpportunity) 
 fn finding(label: &str, occurrence_root: ContentId) -> Finding {
     let observation = ObservationId::from_content_id(ContentId::for_bytes(
         ObjectKind::Observation,
-        14,
+        16,
         format!("{label}-observation").as_bytes(),
     ))
     .expect("observation id");
@@ -159,7 +159,7 @@ fn finding(label: &str, occurrence_root: ContentId) -> Finding {
             observation,
             ReproductionArtifactId::from_content_id(ContentId::for_bytes(
                 ObjectKind::Finding,
-                2,
+                3,
                 format!("{label}-reproduction").as_bytes(),
             ))
             .expect("reproduction id"),
@@ -578,8 +578,8 @@ fn finding_object_reads_authenticate_exact_child_kind_and_identity() {
             configuration_artifact,
             hash("finding-object-fingerprint"),
         ),
-        1,
-        b"reproduce".to_vec(),
+        crate::ReproductionPayload::new(1, b"reproduce".to_vec(), Vec::new())
+            .expect("reproduction payload"),
     )
     .expect("reproduction");
     let finding = Finding::new_current_for_test(

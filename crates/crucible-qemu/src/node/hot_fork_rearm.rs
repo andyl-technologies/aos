@@ -159,8 +159,6 @@ impl QemuNode {
 
         self.release_hot_fork_plugin_endpoints()
             .map_err(QemuHotForkSourceRearmError::Detach)?;
-        self.release_hot_fork_child_console()
-            .map_err(QemuHotForkSourceRearmError::Detach)?;
         self.release_hot_fork_child_qmp()
             .map_err(QemuHotForkSourceRearmError::Detach)?;
         self.detach_hot_fork_child_diagnostics_with_consumer(launch.diagnostics_mut())
@@ -224,15 +222,6 @@ impl QemuNode {
                         .hot_fork_child_qmp_stage
                         .as_ref()
                         .is_some_and(QemuHotForkChildQmpStage::host_endpoint_available)
-            })
-            && self.hot_fork_child_console_stage().is_some_and(|stage| {
-                stage.state() == QemuHotForkChildConsoleStageState::Installed
-                    && stage.template_generation() == request.template_generation()
-                    && stage.console_generation() == request.console_generation()
-                    && !self
-                        .hot_fork_child_console_stage
-                        .as_ref()
-                        .is_some_and(QemuHotForkChildConsoleStage::host_endpoint_available)
             })
             && self.hot_fork_plugin_endpoint_stage().is_some_and(|stage| {
                 stage.state() == QemuHotForkPluginEndpointStageState::Installed

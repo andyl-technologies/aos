@@ -56,8 +56,17 @@ pub const LIFECYCLE_SESSION_MAILBOX_CAPACITY: usize = 16;
 /// Default actor-yield budget for lifecycle startup commands.
 pub const LIFECYCLE_SESSION_STARTUP_MAX_ACTOR_YIELDS: u64 = 128;
 
-/// Maximum canonical campaign replay-closure bytes accepted by one resume request.
+/// Maximum total campaign replay-closure frame bytes accepted by one resume request.
+///
+/// This is the unary resume request's own message allowance for the closure;
+/// each frame is separately bounded by [`RESUME_REPLAY_CLOSURE_FRAME_MAX_BYTES`].
 pub const RESUME_REPLAY_CLOSURE_MAX_BYTES: usize = 128 * 1024 * 1024;
+
+/// Maximum bytes of one campaign replay-closure frame, the component-message bound.
+pub const RESUME_REPLAY_CLOSURE_FRAME_MAX_BYTES: usize = 64 * 1024 * 1024;
+
+/// Maximum campaign replay-closure frames, root included, in one resume request.
+pub const RESUME_REPLAY_CLOSURE_MAX_FRAMES: usize = 32_769;
 
 /// Maximum combined canonical observation proof and raw evidence bytes accepted by resume.
 pub const RESUME_OBSERVATION_SOURCE_MAX_BYTES: usize = 128 * 1024 * 1024;
@@ -299,7 +308,7 @@ mod session_contract;
 pub use session_contract::*;
 use session_contract::{
     inline_scenario_form, resume_observation_source_identity, resume_replay_closure_identity,
-    scenario_form_white_box_policies,
+    scenario_form_white_box_policies, validate_resume_replay_closure_frames,
 };
 
 /// Error returned by lifecycle unary API methods.
@@ -1698,7 +1707,7 @@ fn validate_resume_replay_closure_binding(
         &request.schedule,
         &request.checkpoint,
         closure.schema_version(),
-        closure.payload(),
+        closure.frames(),
     );
     if closure.identity() != expected {
         return Err(LifecycleApiError::ResumeReplayClosure {
@@ -1739,7 +1748,7 @@ fn validate_resume_replay_closure_presence(
 ) -> Result<(), LifecycleApiError> {
     let requires_closure = has_validator
         || schedule
-            .decisions()
+            .decision_history()
             .iter()
             .any(|decision| matches!(decision, Decision::Selection(_)));
     let Some(closure) = closure else {
@@ -1753,14 +1762,7 @@ fn validate_resume_replay_closure_presence(
             Ok(())
         };
     };
-    if closure.payload_len() > RESUME_REPLAY_CLOSURE_MAX_BYTES {
-        return Err(LifecycleApiError::ResumeReplayClosure {
-            message: format!(
-                "campaign replay closure has {} bytes, maximum is {RESUME_REPLAY_CLOSURE_MAX_BYTES}",
-                closure.payload_len()
-            ),
-        });
-    }
+    validate_resume_replay_closure_frames(closure.frames())?;
     if !has_validator {
         return Err(LifecycleApiError::ResumeReplayClosure {
             message: String::from(

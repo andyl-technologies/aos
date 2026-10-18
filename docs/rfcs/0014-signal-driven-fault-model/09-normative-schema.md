@@ -392,7 +392,13 @@ form. The adapter stores at most 262,144 keyed contact-service states and
 and custody records whose owning frame is no longer live fold into an exact
 settled service cursor and cumulative
 counters; path admission fails atomically if its complete hop set would exceed
-the live-record bound.
+the live-record bound. A contact-service state is keyed by its window, and no
+reservation can start at or after the window's traffic end, which never exceeds
+its `end`. Once the current coordinate reaches `end` and the state holds no
+live reservation, the adapter drops it, so the keyed-state count tracks open
+windows and live reservations rather than every window used during the run.
+Checkpoints apply the same rule at their coordinate, and restore rejects a
+closed, empty contact-service state.
 
 An `overflow` policy artifact has `disposition`, optional `timeout_nanos`, and
 optional `typed_error`. `timeout_nanos` is required only for `timeout`, and
@@ -546,7 +552,7 @@ in schema order and arrays in canonical or semantic order as appropriate.
 
 ## 9.10 Network adapter checkpoint encoding
 
-Network adapter checkpoint semantic version 8 encodes the evaluation
+Network adapter checkpoint semantic version 12 encodes the evaluation
 coordinate, per-coordinate and journal sequences, observation journal, token
 buckets, queues, burst state, state machines, connection tables, shared-medium
 ledgers, backpressure, custody queues, contact-service reservations, and all
@@ -557,20 +563,24 @@ sequence joins, broken reservation references, and every exceeded bound. No
 earlier checkpoint version is accepted through a compatibility or legacy
 decoding path.
 
-The enclosing production fault-runtime checkpoint is version 4 and binds the
+The enclosing production fault-runtime checkpoint is version 8 and binds the
 network adapter bytes to the scheduler network checkpoint, committed scheduler
 frontier, pending routed frames, live QEMU node snapshots, and the canonical
-network-state digest. The QEMU node-continuation checkpoint is independently
-version 7. For each node it captures both shared-memory network rings, the next
-router-to-plugin producer sequence, the next host-consumer sequence for the
-plugin-to-router ring, and the next plugin-producer sequence after all live
-outbound frames. Restore requires the live outbound frames to form the exact
-contiguous sequence interval between those two cursors. A fresh plugin process
-receives the authenticated producer cursor as a required launch argument before
-registering its TX callback; it cannot reset plugin-local sequence state to
-zero. Neither codec accepts an older version or synthesizes an omitted cursor.
-After restoring these cursors, the host accepts QEMU's acknowledged `cont`
-transition and publishes the next scheduler ceiling before requiring further
-QMP progress. An idle restored simulator may park on the plugin barrier
-immediately after `cont`, so a pre-ceiling `query-status` would form a control
-ordering cycle. The first bounded node step is the required execution proof.
+network-state digest. It records referenced signal events as their emitted
+count, cumulative `event_log_bytes` charge, and history chain digest, together
+with the retained events, per-signal retired frontiers, and the live
+subscriptions each block or 9p consumer last reported. The QEMU
+node-continuation checkpoint is independently version 7. For each node it
+captures both shared-memory network rings, the next router-to-plugin producer
+sequence, the next host-consumer sequence for the plugin-to-router ring, and the
+next plugin-producer sequence after all live outbound frames. Restore requires
+the live outbound frames to form the exact contiguous sequence interval between
+those two cursors. A fresh plugin process receives the authenticated producer
+cursor as a required launch argument before registering its TX callback; it
+cannot reset plugin-local sequence state to zero. Neither codec accepts an older
+version or synthesizes an omitted cursor. After restoring these cursors, the
+host accepts QEMU's acknowledged `cont` transition and publishes the next
+scheduler ceiling before requiring further QMP progress. An idle restored
+simulator may park on the plugin barrier immediately after `cont`, so a
+pre-ceiling `query-status` would form a control ordering cycle. The first
+bounded node step is the required execution proof.

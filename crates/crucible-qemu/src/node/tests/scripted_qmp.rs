@@ -66,6 +66,13 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
 
     fn resume_after_checkpoint(&mut self) -> Result<(), QemuNodeChannelError> {
         self.log.lock().unwrap().push(ChannelCall::QmpContinue);
+        if self.fail_resume_once {
+            self.fail_resume_once = false;
+            return Err(QemuNodeChannelError::new(
+                "resume_after_checkpoint",
+                "injected QMP resume failure",
+            ));
+        }
         Ok(())
     }
 
@@ -303,15 +310,6 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
             ));
         };
         *bound = true;
-        let mut child_console = self.child_console_state.lock().unwrap();
-        let Some((_name, _socket_cookie, _template_generation, bound)) = child_console.as_mut()
-        else {
-            return Err(QemuNodeChannelError::new(
-                "install hot-fork plugin endpoints",
-                "scripted child console stage is absent",
-            ));
-        };
-        *bound = true;
         Ok(crate::QmpHotForkPluginEndpointState::one_template_staged(
             1,
             1,
@@ -350,11 +348,6 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
         }
         if let Some((_name, _socket_cookie, _template_generation, bound)) =
             self.child_qmp_state.lock().unwrap().as_mut()
-        {
-            *bound = false;
-        }
-        if let Some((_name, _socket_cookie, _template_generation, bound)) =
-            self.child_console_state.lock().unwrap().as_mut()
         {
             *bound = false;
         }
@@ -544,90 +537,6 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
             true,
         ))
     }
-
-    fn install_hot_fork_child_console(
-        &mut self,
-        name: &crate::QmpDescriptorName,
-        _descriptor: std::os::fd::BorrowedFd<'_>,
-        socket_cookie: u64,
-        template_generation: u64,
-    ) -> Result<crate::QmpHotForkChildConsoleState, QemuNodeChannelError> {
-        self.log
-            .lock()
-            .unwrap()
-            .push(ChannelCall::QmpHotForkInstallChildConsole {
-                name: name.as_str().to_owned(),
-                socket_cookie,
-                template_generation,
-            });
-        if self.fail_descriptor_install {
-            return Err(QemuNodeChannelError::new(
-                "install hot-fork child console",
-                "injected descriptor transfer failure",
-            ));
-        }
-        let state = crate::QmpHotForkChildConsoleState::one_template_staged(
-            1,
-            template_generation,
-            name.clone(),
-            socket_cookie,
-            34,
-            false,
-        );
-        *self.child_console_state.lock().unwrap() =
-            Some((name.clone(), socket_cookie, template_generation, false));
-        Ok(state)
-    }
-
-    fn close_hot_fork_child_console(
-        &mut self,
-        name: &crate::QmpDescriptorName,
-        socket_cookie: u64,
-    ) -> Result<(), QemuNodeChannelError> {
-        self.log
-            .lock()
-            .unwrap()
-            .push(ChannelCall::QmpHotForkCloseChildConsole {
-                name: name.as_str().to_owned(),
-                socket_cookie,
-            });
-        if self.fail_descriptor_close {
-            return Err(QemuNodeChannelError::new(
-                "close hot-fork child console",
-                "injected descriptor close failure",
-            ));
-        }
-        if self.child_qmp_state.lock().unwrap().is_none() {
-            return Err(QemuNodeChannelError::new(
-                "close hot-fork child console",
-                "scripted predecessor child QMP stage was already released",
-            ));
-        }
-        *self.child_console_state.lock().unwrap() = None;
-        Ok(())
-    }
-
-    fn query_hot_fork_child_console(
-        &mut self,
-    ) -> Result<crate::QmpHotForkChildConsoleState, QemuNodeChannelError> {
-        let state = self.child_console_state.lock().unwrap();
-        let (name, socket_cookie, template_generation, bound) =
-            state.as_ref().ok_or_else(|| {
-                QemuNodeChannelError::new(
-                    "query hot-fork child console",
-                    "scripted child console stage is absent",
-                )
-            })?;
-        Ok(crate::QmpHotForkChildConsoleState::one_template_staged(
-            1,
-            *template_generation,
-            name.clone(),
-            *socket_cookie,
-            34,
-            *bound,
-        ))
-    }
-
     fn query_hot_fork_template(
         &mut self,
     ) -> Result<crate::QmpHotForkTemplateState, QemuNodeChannelError> {
@@ -641,12 +550,12 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
             .request_basis_mismatch_after_queries
             .is_some_and(|threshold| *template_query_count > threshold)
         {
-            crate::QmpHotForkRequest::for_test(1, 2, 1, 1, 1, 7, 1, 15, 8, 9, 10, 11, 12, 13, 0)
+            crate::QmpHotForkRequest::for_test(1, 2, 1, 1, 7, 1, 15, 8, 9, 10, 11, 12, 13, 0)
         } else {
             exact_hot_fork_request()
         };
         let resources_are_sealed = self
-            .child_console_state
+            .child_qmp_state
             .lock()
             .unwrap()
             .as_ref()

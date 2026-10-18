@@ -526,8 +526,8 @@ pub(crate) fn select_finding_debug_checkpoint(
             let configuration = decoded.configuration().clone();
             if !reproduction
                 .schedule
-                .decisions()
-                .starts_with(configuration.schedule.decisions())
+                .decision_history()
+                .starts_with(configuration.schedule.decision_history())
             {
                 return Err(CampaignServiceFailure::IntegrityFailure);
             }

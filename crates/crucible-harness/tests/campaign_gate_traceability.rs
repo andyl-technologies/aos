@@ -52,6 +52,7 @@ const RFC_SOURCES: &[&str] = &[
     include_str!("../../../docs/rfcs/0020-crucible-campaigns/12-decisions-and-open-questions.md"),
     include_str!("../../../docs/rfcs/0020-crucible-campaigns/13-worked-network-campaign.md"),
     include_str!("../../../docs/rfcs/0020-crucible-campaigns/14-automated-release-validation.md"),
+    include_str!("../../../docs/rfcs/0020-crucible-campaigns/15-segmented-event-log.md"),
 ];
 
 #[test]
@@ -267,6 +268,60 @@ fn exact_targets_fail_closed_on_source_and_runner_drift() {
             .iter()
             .any(|failure| failure.contains("omits evidence proven=typed-product"))
     );
+}
+
+#[test]
+fn literal_cargo_recipe_authenticates_the_current_equivalence_flight() {
+    let gate = find_campaign_gate("gate:hot-fork-equivalence").expect("registered gate");
+    let CampaignGateContract::Automated { targets, nix_attr } = gate.contract;
+    let target = &targets[0];
+    let CampaignGateTargetKind::LibExact {
+        selectors, ignored, ..
+    } = target.kind
+    else {
+        panic!("equivalence gate must retain its library selector contract");
+    };
+    let nix = include_str!("../../../tests/crucible/phase7-qemu-hot-fork-equivalence-vm.nix");
+    let recipe = "test --frozen --offline --release --no-run -p crucible-daemon --lib";
+    assert_eq!(nix.matches(recipe).count(), 1);
+
+    let failures =
+        library_selector_nix_failures(gate.name, target.package, nix_attr, selectors, nix, ignored);
+    assert!(failures.is_empty(), "{failures:?}");
+
+    for (case, rejected) in [
+        (
+            "wrong package",
+            nix.replace(recipe, &recipe.replace("crucible-daemon", "crucible-api")),
+        ),
+        (
+            "non-library target",
+            nix.replace(recipe, &recipe.replace("--lib", "--bins")),
+        ),
+        ("missing command", nix.replace(recipe, "")),
+        (
+            "non-test command",
+            nix.replace(recipe, &recipe.replacen("test", "build", 1)),
+        ),
+        (
+            "unbound recipe string",
+            nix.replace("cargoBuildCommands = [", "unrelated = ["),
+        ),
+    ] {
+        let failures = library_selector_nix_failures(
+            gate.name,
+            target.package,
+            nix_attr,
+            selectors,
+            &rejected,
+            ignored,
+        );
+        assert_eq!(
+            failures,
+            ["gate:hot-fork-equivalence: library Nix flight does not build crucible-daemon --lib"],
+            "{case}",
+        );
+    }
 }
 
 #[test]
@@ -971,7 +1026,8 @@ fn library_selector_nix_failures(
     ignored: bool,
 ) -> Vec<String> {
     let mut failures = Vec::new();
-    let directly_runs_package = contains_word_sequence(nix, &["-p", package, "--lib"]);
+    let directly_runs_package = contains_word_sequence(nix, &["-p", package, "--lib"])
+        || cargo_build_commands_test_library(nix, package);
     let runs_parameterized_helper = contains_word_sequence(nix, &["-p", "\"$package\"", "--lib"])
         && contains_word_sequence(nix, &["run_exact_lib_test", package]);
     if !directly_runs_package && !runs_parameterized_helper {
@@ -1029,6 +1085,30 @@ fn library_selector_nix_failures(
     }
 
     failures
+}
+
+// mkCargoPackage accepts literal Cargo argument strings rather than shell commands.
+// Restrict quote removal to that list so unrelated Nix strings are not build evidence.
+fn cargo_build_commands_test_library(nix: &str, package: &str) -> bool {
+    let Some((_, commands)) = nix.split_once("cargoBuildCommands = [") else {
+        return false;
+    };
+    let Some((commands, _)) = commands.split_once("];") else {
+        return false;
+    };
+
+    commands.lines().any(|line| {
+        let Some(command) = line
+            .trim()
+            .strip_prefix('"')
+            .and_then(|line| line.strip_suffix('"'))
+        else {
+            return false;
+        };
+
+        command.split_whitespace().next() == Some("test")
+            && contains_word_sequence(command, &["-p", package, "--lib"])
+    })
 }
 
 fn contains_word_sequence(text: &str, expected: &[&str]) -> bool {

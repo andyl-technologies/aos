@@ -235,6 +235,17 @@ impl AnchoredDirectory {
         &self.path
     }
 
+    /// Duplicates the retained directory descriptor.
+    ///
+    /// The duplicate keeps resolving names inside the same inode after the
+    /// directory is renamed, which lets a reader outlive a staged-to-visible
+    /// rename without trusting any pathname.
+    pub(crate) fn try_clone_descriptor(&self) -> Result<File, AnchoredFsError> {
+        self.directory
+            .try_clone()
+            .map_err(|source| io_error("clone-directory-descriptor", &self.path, source))
+    }
+
     /// Syncs the retained directory inode.
     pub(crate) fn sync(&self) -> Result<(), AnchoredFsError> {
         self.directory

@@ -26,6 +26,15 @@ use crate::{
 
 use super::*;
 
+#[path = "node/tests/boundary_observation.rs"]
+mod boundary_observation;
+
+#[path = "node/tests/console_output.rs"]
+mod console_output;
+
+#[path = "node/tests/completed_boundary.rs"]
+mod completed_boundary;
+
 #[path = "node/tests/child_exit.rs"]
 mod child_exit;
 #[path = "node/tests/fault_command.rs"]
@@ -46,27 +55,6 @@ mod sequence_restore;
 mod shutdown_and_preemption;
 
 type SharedLog = Arc<Mutex<Vec<ChannelCall>>>;
-
-#[test]
-fn logical_time_calibration_checks_scaled_raw_retirement() {
-    let calibration = QemuLogicalTimeCalibration {
-        logical_icount: 2_107,
-        raw_icount: 42,
-    };
-    assert!(matches!(calibration.offset(), Ok(7)));
-
-    let underflow = QemuLogicalTimeCalibration {
-        logical_icount: 2_099,
-        raw_icount: 42,
-    };
-    assert!(underflow.offset().is_err());
-
-    let overflow = QemuLogicalTimeCalibration {
-        logical_icount: u64::MAX,
-        raw_icount: u64::MAX,
-    };
-    assert!(overflow.offset().is_err());
-}
 
 type SharedFaultCommands = Arc<Mutex<Vec<(FaultCommandHeaderV1, Vec<u8>)>>>;
 type SharedFaultEvents = Arc<Mutex<VecDeque<DequeuedFaultEvent>>>;
@@ -137,15 +125,6 @@ enum ChannelCall {
         template_generation: u64,
     },
     QmpHotForkCloseChildQmp {
-        name: String,
-        socket_cookie: u64,
-    },
-    QmpHotForkInstallChildConsole {
-        name: String,
-        socket_cookie: u64,
-        template_generation: u64,
-    },
-    QmpHotForkCloseChildConsole {
         name: String,
         socket_cookie: u64,
     },
@@ -233,6 +212,7 @@ struct ScriptedQmpMachineControl {
     log: SharedLog,
     track_process_endpoint_retirement: bool,
     fail_stop: bool,
+    fail_resume_once: bool,
     fail_snapshot: bool,
     timeout_snapshot: bool,
     plugin_resources: Option<crate::QmpHotForkPluginResourceInventory>,
@@ -249,7 +229,6 @@ struct ScriptedQmpMachineControl {
     >,
     diagnostic_state: SharedRetainedStreamState,
     child_qmp_state: SharedRetainedStreamState,
-    child_console_state: SharedRetainedStreamState,
     process_contract_state: SharedProcessContractState,
     child_files_state: SharedChildFilesState,
     fail_descriptor_install: bool,
@@ -739,6 +718,7 @@ impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
                 .collect();
         }
         Ok(QemuAsyncQuantumCompletion {
+            completed_boundary: None,
             ceiling: Icount { retired: horizon },
             outcome,
             final_state,
@@ -910,7 +890,6 @@ impl QemuHostIoRuntime for ScriptedHostIoRuntime {
         _shmem_fd: std::os::fd::BorrowedFd<'_>,
         _wake_fd: std::os::fd::BorrowedFd<'_>,
         _region_len: u64,
-        _console: Option<crate::QemuHotForkChildConsoleObservation>,
     ) -> Result<Box<dyn QemuHostIoRuntime>, QemuAsyncDriverRuntimeError> {
         self.log
             .lock()
@@ -1400,13 +1379,6 @@ fn hot_fork_plugin_endpoints_bind_the_installed_private_ring_generation()
     assert_eq!(child_qmp.monitor_generation(), 7);
     assert!(!child_qmp.resource_plan_bound());
     assert!(node.take_hot_fork_child_qmp_host_endpoint().is_err());
-    let child_console = node.stage_hot_fork_child_console()?;
-    assert_eq!(
-        child_console.state(),
-        crate::QemuHotForkChildConsoleStageState::Installed
-    );
-    assert_eq!(child_console.console_generation(), 1);
-    assert!(!child_console.resource_plan_bound());
     let proof = node.stage_hot_fork_plugin_endpoints()?;
     assert_eq!(
         proof.state(),
@@ -1432,13 +1404,6 @@ fn hot_fork_plugin_endpoints_bind_the_installed_private_ring_generation()
             .ok_or("child QMP stage disappeared after plugin seal")?
             .resource_plan_bound()
     );
-    assert!(
-        node.hot_fork_child_console_stage()
-            .ok_or("child console stage disappeared after plugin seal")?
-            .resource_plan_bound()
-    );
-    let child_console_observation = node.clone_hot_fork_child_console_observation()?;
-    drop(child_console_observation);
     let child_qmp_host = node.take_hot_fork_child_qmp_host_endpoint()?;
     assert_eq!(
         child_qmp_host.descriptor_name(),
@@ -1472,13 +1437,6 @@ fn hot_fork_plugin_endpoints_bind_the_installed_private_ring_generation()
             .ok_or("child QMP stage disappeared after plugin release")?
             .resource_plan_bound()
     );
-    assert!(
-        !node
-            .hot_fork_child_console_stage()
-            .ok_or("child console stage disappeared after plugin release")?
-            .resource_plan_bound()
-    );
-    node.release_hot_fork_child_console()?;
     node.release_hot_fork_child_qmp()?;
     let diagnostic_capture = node.release_hot_fork_child_diagnostics()?;
     assert_eq!(
@@ -1493,7 +1451,7 @@ fn hot_fork_plugin_endpoints_bind_the_installed_private_ring_generation()
         diagnostic_capture.template_generation(),
         diagnostics.template_generation()
     );
-    assert_eq!(diagnostic_capture.bytes(), b"scripted child diagnostics");
+    assert_eq!(diagnostic_capture.tail(), b"scripted child diagnostics");
     node.release_hot_fork_private_ring_mapping()?;
     let calls = recorded(&log);
     assert!(calls.iter().any(|call| {
@@ -1521,15 +1479,6 @@ fn hot_fork_plugin_endpoints_bind_the_installed_private_ring_generation()
                 && *identity == proof.identity()
         )
     }));
-    let console_close = calls
-        .iter()
-        .position(|call| matches!(call, ChannelCall::QmpHotForkCloseChildConsole { .. }))
-        .ok_or("child console close was not recorded")?;
-    let qmp_close = calls
-        .iter()
-        .position(|call| matches!(call, ChannelCall::QmpHotForkCloseChildQmp { .. }))
-        .ok_or("child QMP close was not recorded")?;
-    assert!(console_close < qmp_close);
     node.shutdown_child()?;
     Ok(())
 }
@@ -1546,6 +1495,38 @@ fn sealed_hot_fork_node_with_log(
     let (mut node, log) = prepared_hot_fork_node_with_log(script)?;
     node.install_test_hot_fork_child_process_contract_stage(13, 1)?;
     Ok((node, log))
+}
+
+/// Owns the scripted child planes used by console installer reattempt controls.
+#[cfg(target_os = "linux")]
+type ConsoleReattemptSchedulerContinuation = (
+    QemuNode,
+    QemuHotForkSchedulerNodeContinuation,
+    Box<dyn crate::QemuNodeExternalProcessControl>,
+    QemuHotForkChildDiagnosticConsumer,
+);
+
+/// Retains the original scripted fork's typed planes for installer controls.
+#[cfg(target_os = "linux")]
+pub(in crate::node) fn console_reattempt_scheduler_continuation(
+    launch: Option<&crate::QemuLaunchArtifactIdentity>,
+) -> Result<ConsoleReattemptSchedulerContinuation, Box<dyn Error>> {
+    let (mut node, _log) = sealed_hot_fork_node_with_log(DescriptorScript::SchedulerContinuation)?;
+    // The scripted process owns modeled immutable artifacts, not a real plugin.
+    // Bind the source before its genuine fork/host-continuation capture.
+    node.authenticated_launch = launch.cloned();
+    let mut process_owner = ScriptedHotForkChildOwner::default();
+    let launch = node.fork_prepared_hot_fork_template(&mut process_owner)?;
+    let (_parent, process, child_qmp, diagnostics, continuation) = launch.into_parts();
+    let scheduler = continuation.into_scheduler_node_continuation(child_qmp)?;
+    Ok((
+        node,
+        scheduler,
+        Box::new(ScriptedExternalProcessControl {
+            basis: process.basis,
+        }),
+        diagnostics,
+    ))
 }
 
 #[cfg(target_os = "linux")]
@@ -1580,6 +1561,12 @@ pub(crate) fn node_set_hot_fork_source(
         return Ok(node);
     }
     node_set_failing_hot_fork_source_with_log(shared_log())
+}
+
+/// Moves a scripted node into the state a failed staging exchange leaves.
+#[cfg(target_os = "linux")]
+pub(crate) fn quarantine_for_test(node: &mut QemuNode) {
+    node.lifecycle_state = QemuNodeLifecycleState::Quarantined;
 }
 
 #[cfg(target_os = "linux")]
@@ -1654,7 +1641,7 @@ pub(crate) fn node_set_source_with_retained_file(
 
 #[cfg(target_os = "linux")]
 fn exact_hot_fork_request() -> crate::QmpHotForkRequest {
-    crate::QmpHotForkRequest::for_test(1, 1, 1, 1, 1, 7, 1, 15, 8, 9, 10, 11, 12, 13, 0)
+    crate::QmpHotForkRequest::for_test(1, 1, 1, 1, 7, 1, 15, 8, 9, 10, 11, 12, 13, 0)
 }
 
 #[cfg(target_os = "linux")]
@@ -1933,12 +1920,18 @@ fn selectable_reply_is_not_published_before_qemu_confirms_pause() -> Result<(), 
     Ok(())
 }
 
+#[path = "node_tests/campaign_marker_resume_tests.rs"]
+mod campaign_marker_resume;
 #[path = "node_tests/exact_lifecycle_tests.rs"]
 mod exact_lifecycle;
 #[path = "node_tests/fault_event_budget.rs"]
 mod fault_event_budget;
 #[path = "node_tests/fingerprint.rs"]
 mod fingerprint;
+
+#[cfg(target_os = "linux")]
+#[path = "node_tests/fingerprint_publication.rs"]
+mod fingerprint_publication;
 
 #[cfg(unix)]
 fn held_hot_fork_ring_image() -> Result<
@@ -2010,6 +2003,7 @@ fn scripted_hot_fork_capture_node(
             log: Arc::clone(&log),
             track_process_endpoint_retirement: false,
             fail_stop: false,
+            fail_resume_once: false,
             fail_snapshot: false,
             timeout_snapshot: false,
             plugin_resources: Some(
@@ -2027,7 +2021,6 @@ fn scripted_hot_fork_capture_node(
             private_ring_state: Arc::new(Mutex::new(None)),
             diagnostic_state: Arc::new(Mutex::new(None)),
             child_qmp_state: Arc::new(Mutex::new(None)),
-            child_console_state: Arc::new(Mutex::new(None)),
             process_contract_state: Arc::new(Mutex::new(None)),
             child_files_state: Arc::new(Mutex::new(None)),
             fail_descriptor_install: matches!(descriptor_script, DescriptorScript::InstallFailure),
@@ -2126,6 +2119,7 @@ fn scripted_node_with_runtime(
             fail_plugin_quit,
             fail_shmem_advance,
             fail_qmp_stop: false,
+            fail_qmp_resume_once: false,
             fail_qmp_snapshot,
             qmp_snapshot_timeout: false,
             fingerprint_retry_countdown: 0,
@@ -2142,6 +2136,7 @@ struct ScriptedNodeOptions {
     fail_plugin_quit: bool,
     fail_shmem_advance: bool,
     fail_qmp_stop: bool,
+    fail_qmp_resume_once: bool,
     fail_qmp_snapshot: bool,
     qmp_snapshot_timeout: bool,
     fingerprint_retry_countdown: u8,
@@ -2202,6 +2197,7 @@ fn scripted_node_with_fault_events(
             log: Arc::clone(&log),
             track_process_endpoint_retirement: false,
             fail_stop: false,
+            fail_resume_once: false,
             fail_snapshot: false,
             timeout_snapshot: false,
             plugin_resources: Some(
@@ -2214,7 +2210,6 @@ fn scripted_node_with_fault_events(
             private_ring_state: Arc::new(Mutex::new(None)),
             diagnostic_state: Arc::new(Mutex::new(None)),
             child_qmp_state: Arc::new(Mutex::new(None)),
-            child_console_state: Arc::new(Mutex::new(None)),
             process_contract_state: Arc::new(Mutex::new(None)),
             child_files_state: Arc::new(Mutex::new(None)),
             fail_descriptor_install: false,
@@ -2310,6 +2305,7 @@ fn scripted_node_with_coverage(
             log: Arc::clone(&log),
             track_process_endpoint_retirement: options.track_process_endpoint_retirement,
             fail_stop: options.fail_qmp_stop,
+            fail_resume_once: options.fail_qmp_resume_once,
             fail_snapshot: options.fail_qmp_snapshot,
             timeout_snapshot: options.qmp_snapshot_timeout,
             plugin_resources: Some(
@@ -2322,7 +2318,6 @@ fn scripted_node_with_coverage(
             private_ring_state: Arc::new(Mutex::new(None)),
             diagnostic_state: Arc::new(Mutex::new(None)),
             child_qmp_state: Arc::new(Mutex::new(None)),
-            child_console_state: Arc::new(Mutex::new(None)),
             process_contract_state: Arc::new(Mutex::new(None)),
             child_files_state: Arc::new(Mutex::new(None)),
             fail_descriptor_install: false,

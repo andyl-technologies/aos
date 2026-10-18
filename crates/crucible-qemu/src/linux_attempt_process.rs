@@ -403,6 +403,40 @@ impl LinuxQemuHotForkChildProcessAuthority {
         &self.identity
     }
 
+    /// Observes terminal readiness of the retained pidfd without waiting.
+    ///
+    /// This advisory observation neither reaps the child nor supplies its exit
+    /// code, which remains owned by the source QEMU. A false result means only
+    /// that this instantaneous observation did not report termination.
+    ///
+    /// # Errors
+    ///
+    /// Returns an availability error when the single zero-time kernel poll
+    /// fails or reports an invalid descriptor. Interrupted calls are not retried.
+    pub fn terminal_readiness_observed(&self) -> Result<bool, QemuVmRealizationError> {
+        use rustix::event::{PollFd, PollFlags, Timespec, poll};
+
+        let mut descriptors = [PollFd::new(&self.pidfd, PollFlags::IN)];
+        let timeout = Timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        poll(&mut descriptors, Some(&timeout)).map_err(|source| {
+            QemuVmRealizationError::ExecutorUnavailable {
+                operation: "observe retained hot-fork child pidfd",
+                message: source.to_string(),
+            }
+        })?;
+        let events = descriptors[0].revents();
+        if events.intersects(PollFlags::ERR | PollFlags::NVAL) {
+            return Err(QemuVmRealizationError::ExecutorUnavailable {
+                operation: "observe retained hot-fork child pidfd",
+                message: format!("invalid pidfd poll events: {events:?}"),
+            });
+        }
+        Ok(events.contains(PollFlags::IN))
+    }
+
     /// Sends `SIGTERM` through the exact retained pidfd.
     ///
     /// # Errors
@@ -715,6 +749,59 @@ mod tests {
         child.kill()?;
         child.wait()?;
         assert!(verify_pidfd_process_id(&pidfd, process_id).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn child_terminal_readiness_is_nonblocking_and_does_not_reap()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::process::{Command, Stdio};
+
+        let mut child = Command::new(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "linux_attempt_process::tests::readiness_child",
+                "--ignored",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()?;
+        let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+            let process_id = child.id();
+            let pid = Pid::from_raw(i32::try_from(process_id)?).ok_or("invalid child PID")?;
+            let descriptor = pidfd_open(pid, PidfdFlags::empty())?;
+            let identity =
+                crate::linux_process_identity(process_id)?.ok_or("child identity absent")?;
+            let basis = QemuHotForkChildProcessBasis::from_unvalidated_test_process_ids(
+                std::process::id(),
+                process_id,
+            );
+            let authority = LinuxQemuHotForkChildProcessAuthority::from_unvalidated_test_parts(
+                basis, identity, descriptor,
+            );
+            assert!(!authority.terminal_readiness_observed()?);
+            assert!(child.try_wait()?.is_none());
+
+            drop(child.stdin.take());
+            let status = child.wait()?;
+            assert!(status.success());
+            assert!(authority.terminal_readiness_observed()?);
+            assert_eq!(authority.basis(), basis);
+            Ok(())
+        })();
+        if result.is_err() {
+            let _kill = child.kill();
+            let _reap = child.wait();
+        }
+        result
+    }
+
+    /// Owns no runtime authority; the independent test parent supplies stdin.
+    #[test]
+    #[ignore = "independently owned pidfd-readiness fixture subprocess"]
+    fn readiness_child() -> Result<(), Box<dyn std::error::Error>> {
+        let mut bytes = Vec::new();
+        std::io::stdin().read_to_end(&mut bytes)?;
         Ok(())
     }
 }

@@ -482,6 +482,19 @@ rather than falling back to work proportional to the virtual disk. The closure
 is durably published before transient QMP snapshots are deleted and only nodes
 that were running are resumed. No second full-file staging tree is created.
 
+Publication writes each node's QEMU snapshot envelope and each failed node's
+host-I/O continuation to a staged object in the object directory as it is
+encoded, one nested owner at a time, and hashes it in the same pass. The
+manifest names the staged identity, and publication links the
+re-authenticated file into place. `fat_checkpoint_bytes` therefore bounds each
+envelope as it is written and the closure by its staged length. It is a
+stored-size contract, never the size of one in-memory buffer (RFC section
+15.12, CMEAS-37). Restore reads one envelope at a time and checks it is
+canonical by comparing a streamed re-encoding with the stored bytes. Block
+page sets and the 9p tree still travel inside the host-I/O envelope until
+they are externalized as content-addressed page objects, as overlay and RAM
+layers already are.
+
 Version-nine sparse overlay artifacts carry a logical `length`, no dense
 `chunks`, and strictly ordered, nonoverlapping, nonadjacent extents. Each
 extent contains a `start_chunk` and one or more consecutive BLAKE3 chunk
@@ -517,8 +530,13 @@ alternate monolithic VMState reader or restore path.
 stream. Production publication uses
 `crucible.executor.exact-checkpoint-root@exact-manifest.5`. The root commits to
 the version-nine closure manifest and its direct-or-delta RAM layers, device
-state, scheduler continuation, immutable backing, fault checkpoint, and bounded
-choice records discovered before the pause. The assignment ledger stages that
+state, scheduler continuation and the sealed event-log segments it references
+(RFC section 15.12), immutable backing, fault checkpoint, and the
+replay closure of choice records discovered before the pause: a version 2
+closure root child plus one `checkpoint-choice-frame-NNNNNNNN` child per frame
+of at most 64 MiB (RFC section 15.8). Loading reads only the closure root;
+replay validation reads each frame when it reaches it and authenticates it
+against the root's digest. The assignment ledger stages that
 root before publication, and publication makes
 the authenticated children durable before exposing the root. A process-local
 replay claim is issued only by a completed guarded raw-to-promoted comparison;
@@ -528,10 +546,10 @@ never process-launch authority. Sparse overlay restore authenticates the exact
 extent manifest and every named chunk before atomically exposing a file whose
 omitted ranges are zero holes.
 
-The complete multi-node production continuation uses version nine of the same
+The complete multi-node production continuation uses version eleven of the same
 typed root rather than flattening a potentially large object set into one
 generic envelope. The registered leaves are the canonical
-`crucible.production-exact-closure@device-state.9` manifest and exact opaque
+`crucible.production-exact-closure@device-state.11` manifest and exact opaque
 production objects under
 `crucible.executor.production-checkpoint-object@device-state.5`. Every object
 retains its production BLAKE3 identity and declared length in a registered
@@ -840,6 +858,18 @@ paths instead of repeatedly forking every descendant from genesis. Template
 promotion is bounded by predicted reuse, prepare cost, memory pressure, depth,
 and retention policy. Evicting any hub leaves its semantic node and exact/thin
 realizations intact.
+
+Promotion currently begins at thin-path roots. A fresh thin attempt that stops
+at a published next-choice boundary, and whose non-destructive final drain
+proves no final events remain, may keep its complete paused world as a depth-0
+root keyed by lineage and that child configuration. Sealing receives the same
+empty final-event list whether or not the world is kept, so retention never
+changes the observation. The root's thin fallback names the published child
+artifact and is persisted before the source becomes reusable. The root is
+admitted only after its observation disposition is durable, fit-or-reject at
+initial hotness, so it never evicts genesis or another retained source. Only
+branches whose parent is that published configuration reuse it. Promoting a
+forked descendant at its own stop boundary remains future work.
 
 - **[HFORK-21]** Every writable mapping in a template capability profile MUST be
   classified as private-COW, replaced in the child, reconstructed in the child,

@@ -77,12 +77,18 @@
         needle = ".take(SESSION_EVENT_LOG_REPLAY_BATCH_SIZE)";
       }
       {
-        label = "retained replay seeks by cursor";
-        needle = "entries.partition_point(|entry| entry.sequence() < cursor.next_sequence)";
+        label = "retained replay reads a bounded chunk at the cursor";
+        needle = ".chunk_from(cursor.next_sequence, SESSION_EVENT_LOG_REPLAY_BATCH_SIZE)";
       }
       {
+        label = "retained replay seeks the sealed segment holding the cursor";
+        needle = "let index = self.sealed.partition_point(|segment| segment.end() <= from);";
+      }
+      {
+        # rustfmt splits the discarded send across lines; matching the whole
+        # statement keeps `let _ =` in the asserted shape.
         label = "broadcast send is non-fatal";
-        needle = "let _ = self.inner.tail.send(frame);";
+        needle = "let _ = self\n                .inner\n                .tail\n                .send(SessionEventLogFrame::new(entry.clone(), generation));";
       }
       {
         label = "actor exposes hub";
@@ -94,7 +100,7 @@
       }
       {
         label = "running quantum publishes entries";
-        needle = "self.event_log.append_entries(entries);";
+        needle = "self.event_log.append_entries(entries)?;";
       }
       {
         label = "actor yields after quantum";

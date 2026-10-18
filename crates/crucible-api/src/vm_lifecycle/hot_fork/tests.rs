@@ -125,8 +125,8 @@ fn exact_boundary_from_continuation(
     ProductionVmExactHotForkSourceBoundary {
         configuration: continuation.configuration.clone(),
         scheduler: Arc::clone(&continuation.scheduler),
-        event_log_objects: Arc::clone(&continuation.event_log_objects),
         signal_artifact_objects: Arc::clone(&continuation.signal_artifact_objects),
+        fault_trace_objects: Arc::clone(&continuation.fault_trace_objects),
         node_generations: continuation.node_generations.clone(),
         node_service_states: continuation.node_service_states.clone(),
         host_io,
@@ -166,7 +166,7 @@ fn sibling_continuations_share_captured_backing_until_one_branch_changes() {
     let (_source, mut captured) = permanently_failed_continuation();
     let original_bytes = vec![7; 4096];
     let original = ContentHash::from_bytes(&original_bytes);
-    Arc::make_mut(&mut captured.event_log_objects).insert(original, original_bytes);
+    Arc::make_mut(&mut captured.signal_artifact_objects).insert(original, original_bytes);
 
     let mut first = captured
         .try_clone_for_branch()
@@ -176,32 +176,28 @@ fn sibling_continuations_share_captured_backing_until_one_branch_changes() {
         .unwrap_or_else(|error| panic!("clone second host branch: {error}"));
 
     assert!(Arc::ptr_eq(
-        &first.event_log_objects,
-        &second.event_log_objects
-    ));
-    assert!(Arc::ptr_eq(
         &first.signal_artifact_objects,
         &second.signal_artifact_objects
     ));
 
     let replacement_bytes = vec![9; 4096];
     let replacement = ContentHash::from_bytes(&replacement_bytes);
-    Arc::make_mut(&mut first.event_log_objects).insert(replacement, replacement_bytes);
+    Arc::make_mut(&mut first.signal_artifact_objects).insert(replacement, replacement_bytes);
     assert!(!Arc::ptr_eq(
-        &first.event_log_objects,
-        &second.event_log_objects
+        &first.signal_artifact_objects,
+        &second.signal_artifact_objects
     ));
     assert_eq!(
-        first.event_log_objects.get(&replacement),
+        first.signal_artifact_objects.get(&replacement),
         Some(&vec![9; 4096])
     );
-    assert!(!second.event_log_objects.contains_key(&replacement));
+    assert!(!second.signal_artifact_objects.contains_key(&replacement));
     assert_eq!(
-        second.event_log_objects.get(&original),
+        second.signal_artifact_objects.get(&original),
         Some(&vec![7; 4096])
     );
     assert_eq!(
-        captured.event_log_objects.get(&original),
+        captured.signal_artifact_objects.get(&original),
         Some(&vec![7; 4096])
     );
 }
@@ -213,9 +209,10 @@ fn host_continuation_clone_cost_is_bounded_across_siblings() {
     const MAX_PRIVATE_GROWTH_KIB: u64 = 64 * 1024;
 
     let (source, mut captured) = active_multi_node_continuation();
-    let event_bytes = vec![3; OBJECT_BYTES];
-    let event = ContentHash::from_bytes(&event_bytes);
-    Arc::make_mut(&mut captured.event_log_objects).insert(event, event_bytes);
+    let first_artifact_bytes = vec![3; OBJECT_BYTES];
+    let first_artifact = ContentHash::from_bytes(&first_artifact_bytes);
+    Arc::make_mut(&mut captured.signal_artifact_objects)
+        .insert(first_artifact, first_artifact_bytes);
     let signal_bytes = vec![5; OBJECT_BYTES];
     let signal = ContentHash::from_bytes(&signal_bytes);
     Arc::make_mut(&mut captured.signal_artifact_objects).insert(signal, signal_bytes);
@@ -241,20 +238,18 @@ fn host_continuation_clone_cost_is_bounded_across_siblings() {
             .unwrap_or_else(|error| panic!("active sibling host I/O should validate: {error}"));
         assert!(Arc::ptr_eq(&captured.scheduler, &sibling.scheduler));
         assert!(Arc::ptr_eq(
-            &captured.event_log_objects,
-            &sibling.event_log_objects
-        ));
-        assert!(Arc::ptr_eq(
             &captured.signal_artifact_objects,
             &sibling.signal_artifact_objects
         ));
-        assert_eq!(sibling.event_log_objects[&event].len(), OBJECT_BYTES);
+        assert_eq!(
+            sibling.signal_artifact_objects[&first_artifact].len(),
+            OBJECT_BYTES
+        );
         assert_eq!(sibling.signal_artifact_objects[&signal].len(), OBJECT_BYTES);
         assert_eq!(sibling.active_host_io, captured.active_host_io);
         assert!(sibling.failed_host_io.is_empty());
     }
     assert_eq!(Arc::strong_count(&captured.scheduler), SIBLINGS + 1);
-    assert_eq!(Arc::strong_count(&captured.event_log_objects), SIBLINGS + 1);
     assert_eq!(
         Arc::strong_count(&captured.signal_artifact_objects),
         SIBLINGS + 1
@@ -320,9 +315,6 @@ fn time_host_clone<T>(clone: impl FnOnce() -> T) -> (T, u128) {
 #[test]
 fn child_materialization_retains_immutable_scheduler_and_closure_backing() {
     let (_source, mut captured) = permanently_failed_continuation();
-    let event_bytes = vec![3; 4 * 1024 * 1024];
-    let event = ContentHash::from_bytes(&event_bytes);
-    Arc::make_mut(&mut captured.event_log_objects).insert(event, event_bytes);
     let signal_bytes = vec![5; 4 * 1024 * 1024];
     let signal = ContentHash::from_bytes(&signal_bytes);
     Arc::make_mut(&mut captured.signal_artifact_objects).insert(signal, signal_bytes);
@@ -337,15 +329,10 @@ fn child_materialization_retains_immutable_scheduler_and_closure_backing() {
         &captured.scheduler,
         &restored.checkpoint.scheduler
     ));
-    assert_eq!(captured.event_log_objects[&event].len(), 4 * 1024 * 1024);
     assert_eq!(
         captured.signal_artifact_objects[&signal].len(),
         4 * 1024 * 1024
     );
-    assert!(Arc::ptr_eq(
-        &captured.event_log_objects,
-        &restored.checkpoint.event_log_objects
-    ));
     assert!(Arc::ptr_eq(
         &captured.signal_artifact_objects,
         &restored.checkpoint.signal_artifact_objects

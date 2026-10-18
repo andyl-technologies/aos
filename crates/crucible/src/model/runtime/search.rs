@@ -140,14 +140,8 @@ pub(in crate::model) fn fleet_artifacts_are_byte_identical(
     single.discovered_failures.iter().all(|single_failure| {
         let key = (single_failure.fingerprint, single_failure.configuration);
         fleet_by_finding.get(&key).is_some_and(|fleet_failure| {
-            single_failure
-                .reproduction_artifact
-                .artifact
-                .canonical_bytes()
-                == fleet_failure
-                    .reproduction_artifact
-                    .artifact
-                    .canonical_bytes()
+            single_failure.reproduction_artifact.artifact.id()
+                == fleet_failure.reproduction_artifact.artifact.id()
         })
     })
 }
@@ -238,14 +232,8 @@ pub(in crate::model) fn fleet_equivalence_divergence(
         let fleet_failure = fleet_by_finding.get(&(fingerprint, configuration));
         match (single_failure, fleet_failure) {
             (Some(single_failure), Some(fleet_failure))
-                if single_failure
-                    .reproduction_artifact
-                    .artifact
-                    .canonical_bytes()
-                    != fleet_failure
-                        .reproduction_artifact
-                        .artifact
-                        .canonical_bytes() =>
+                if single_failure.reproduction_artifact.artifact.id()
+                    != fleet_failure.reproduction_artifact.artifact.id() =>
             {
                 return FleetEquivalenceDivergence {
                     reason: "artifact-bytes-differ",

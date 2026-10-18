@@ -4,6 +4,7 @@
   lib,
   attrPath,
   campaignComposition ? null,
+  ackPollExperiment ? false,
   testing ? import ../../lib/testing {inherit pkgs lib;},
 }: let
   repoRoot = ../..;
@@ -46,6 +47,13 @@
   cargoDeps = import ./_cargo-deps.nix {
     inherit pkgs lib;
     src = source;
+  };
+  clockReadGuest = import ./phase7-guest-clock-read-guest.nix {
+    inherit pkgs source cargoDeps;
+  };
+  clockRuntimeGuest = import ./phase7-guest-clock-read-guest.nix {
+    inherit pkgs source cargoDeps;
+    runtimeObserver = import ./phase7-clock-vvar-observer.nix {inherit pkgs;};
   };
   guest = import ./_nginx-curl-http-200-guest.nix {inherit pkgs;};
   idleGuest = import ./phase2-qemu-live-plugin-quantum-guest.nix {inherit pkgs;};
@@ -92,11 +100,13 @@
             --manifest-path crates/Cargo.toml \
             --target-dir "$TMPDIR/target" \
             -p crucible-qemu \
+            ${lib.optionalString ackPollExperiment "--features test-support"} \
             --example crucible-qemu-production-plugin-flight
           cargo test --frozen --offline \
             --manifest-path crates/Cargo.toml \
             --target-dir "$TMPDIR/target" \
             -p crucible-qemu \
+            ${lib.optionalString ackPollExperiment "--features test-support"} \
             --example crucible-qemu-production-plugin-flight
           cargo test --frozen --offline \
             --manifest-path crates/Cargo.toml \
@@ -183,6 +193,11 @@
 
     result=/tmp/production-plugin-result
     runtime_trace=/tmp/production-reference-runtime-determinism.summary
+    # Observe the original pending wait before crash cleanup changes the slot.
+    # This host-only reporter keeps its existing 256-row/512-KiB runtime bound;
+    # it does not install the separate plugin time-ownership observer.
+    export CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS=256
+    export CRUCIBLE_TIME_OWNERSHIP_WITNESS=0
     ${productionFlightCommand} "$runtime_trace" > "$result"
     test -f "$runtime_trace"
     test ! -L "$runtime_trace"
@@ -460,6 +475,47 @@
     inherit rootfsDeps;
     testScript = blockRecoveryTestScript;
   };
+  timeOwnershipDiagnostic = import ./phase7-time-ownership-live.nix {
+    inherit pkgs testing productionFlightCommand rootfsDeps attemptHostSetupScript;
+  };
+  guestClockReadEquivalence = import ./phase7-guest-clock-read-live.nix {
+    inherit pkgs testing attemptHostSetupScript;
+    rootfsDeps = rootfsDeps ++ [clockReadGuest];
+    clockReadFlightCommand = ''
+      ${pkgs.coreutils}/bin/timeout -k 15 900 \
+        ${flight}/bin/crucible-qemu-production-plugin-flight \
+        ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
+        ${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so \
+        ${pkgs.linux}/boot/vmlinuz-* \
+        ${clockReadGuest}/initrd.img \
+        ${blockGuest}/initrd.img \
+        ${pkgs.qemu-crucible}/share/qemu/bios-256k.bin \
+        /sys/fs/cgroup/crucible /tmp/attempts/run \
+    '';
+  };
+  linuxBootAckPollPair =
+    if ackPollExperiment
+    then
+      import ./phase7-linux-boot-ack-poll.nix {
+        inherit pkgs testing rootfsDeps attemptHostSetupScript productionFlightCommand;
+      }
+    else null;
+  guestClockRuntimeConversion = import ./phase7-guest-clock-read-live.nix {
+    inherit pkgs testing attemptHostSetupScript;
+    runtimeAnchor = true;
+    rootfsDeps = rootfsDeps ++ [clockRuntimeGuest];
+    clockReadFlightCommand = ''
+      ${pkgs.coreutils}/bin/timeout -k 15 900 \
+        ${flight}/bin/crucible-qemu-production-plugin-flight \
+        ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
+        ${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so \
+        ${pkgs.linux}/boot/vmlinuz-* \
+        ${clockRuntimeGuest}/initrd.img \
+        ${blockGuest}/initrd.img \
+        ${pkgs.qemu-crucible}/share/qemu/bios-256k.bin \
+        /sys/fs/cgroup/crucible /tmp/attempts/run \
+    '';
+  };
   partitionDiagnostic = testing.mkVMTest {
     name = "crucible-phase4-qemu-clock-partition-diagnostic";
     memory = 8192;
@@ -498,6 +554,10 @@
             blockRecoveryDiagnostic
             blockRecoveryTestScript
             partitionDiagnostic
+            timeOwnershipDiagnostic
+            guestClockReadEquivalence
+            linuxBootAckPollPair
+            guestClockRuntimeConversion
             ;
         };
     };

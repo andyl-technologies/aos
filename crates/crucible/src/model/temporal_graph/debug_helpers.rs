@@ -57,10 +57,7 @@ pub(in crate::model) fn debug_configuration_is_ancestor_or_self(
 ) -> bool {
     candidate.def.id == current.def.id
         && candidate.schedule.len() <= current.schedule.len()
-        && current
-            .schedule
-            .decisions()
-            .starts_with(candidate.schedule.decisions())
+        && current.schedule.starts_with(&candidate.schedule)
 }
 
 pub(in crate::model) fn debug_configurations_are_linearly_related(
@@ -68,14 +65,8 @@ pub(in crate::model) fn debug_configurations_are_linearly_related(
     current: &Configuration,
 ) -> bool {
     candidate.def.id == current.def.id
-        && (current
-            .schedule
-            .decisions()
-            .starts_with(candidate.schedule.decisions())
-            || candidate
-                .schedule
-                .decisions()
-                .starts_with(current.schedule.decisions()))
+        && (current.schedule.starts_with(&candidate.schedule)
+            || candidate.schedule.starts_with(&current.schedule))
 }
 
 pub(in crate::model) fn debug_runtime_node_material(

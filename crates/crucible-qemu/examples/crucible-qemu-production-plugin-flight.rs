@@ -30,10 +30,7 @@ use crucible::{
     ObservableEvent, ObservableEventPayload, PreemptionDecision, PreemptionKind, SimulationBackend,
     VcpuId, VirtualTime,
 };
-use crucible_protocol::selectable_catalog_plan::{
-    SELECTABLE_NATIVE_HANDOFF_TICKS_PS, SelectableCatalogPlan, SelectablePlanContinuation,
-    SelectablePlanDeclaration, SelectablePlanLimits, SelectablePlanPresence,
-};
+use crucible_protocol::selectable_catalog_plan::SELECTABLE_NATIVE_HANDOFF_TICKS_PS;
 use crucible_protocol::{SelectionReply, SelectionReplyStatus};
 use crucible_qemu::{
     BoundedSchedulerPreemptionEvidence, LinuxQemuAttemptHostConfig, LinuxQemuAttemptHostFactory,
@@ -51,6 +48,16 @@ mod runtime_trace;
 
 #[path = "crucible-qemu-production-plugin-flight/partition_probe.rs"]
 mod partition_probe;
+
+#[path = "crucible-qemu-production-plugin-flight/time_ownership.rs"]
+mod time_ownership;
+
+#[path = "crucible-qemu-production-plugin-flight/guest_clock_reads.rs"]
+mod guest_clock_reads;
+
+#[cfg(feature = "test-support")]
+#[path = "crucible-qemu-production-plugin-flight/linux_ack_poll.rs"]
+mod linux_ack_poll;
 
 const MEMORY_BYTES: u64 = 512 * 1024 * 1024;
 const DISK_BYTES: u64 = 1024 * 1024 * 1024;
@@ -86,6 +93,8 @@ const PRODUCTION_RUNTIME_TRACE_BYTES: u64 = 256 * 1024 * 1024;
 const BLOCK_RECOVERY_ONLY_ENVIRONMENT: &str =
     "CRUCIBLE_PRODUCTION_PLUGIN_FLIGHT_BLOCK_RECOVERY_ONLY";
 const PHASE4_PARTITION_PROBE_ENVIRONMENT: &str = "CRUCIBLE_PHASE4_PARTITION_PROBE";
+const TIME_OWNERSHIP_ENVIRONMENT: &str = "CRUCIBLE_TIME_OWNERSHIP_WITNESS";
+const LINUX_ACK_PAIR_ENVIRONMENT: &str = "CRUCIBLE_LINUX_BOOT_ACK_POLL_PAIR";
 
 fn main() -> ExitCode {
     match run() {
@@ -154,7 +163,8 @@ fn run() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    let selectable_catalog_plan = readiness_selectable_catalog_plan()?;
+    let clock_read_flight = guest_clock_reads::requested()?;
+    let selectable_catalog_plan = guest_clock_reads::selectable_catalog_plan(clock_read_flight)?;
     let config = QemuLiveNodeStepGateConfig::new(qemu, plugin, kernel, firmware, run_root)
         .with_initrd(idle_initrd)
         .with_vm_shape(128, 4)
@@ -169,6 +179,39 @@ fn run() -> Result<(), Box<dyn Error>> {
         // The exact four-vCPU guest authenticated readiness after about 110
         // host seconds. Keep a finite per-advance guard with measured headroom.
         .with_completion_timeout(Duration::from_secs(300));
+
+    #[cfg(not(feature = "test-support"))]
+    if std::env::var_os(LINUX_ACK_PAIR_ENVIRONMENT).is_some() {
+        return Err("Linux ACK polling comparison requires the test-support feature".into());
+    }
+    #[cfg(feature = "test-support")]
+    if linux_ack_poll::requested()? {
+        return Ok(linux_ack_poll::run(&mut factory, &config, qemu)?);
+    }
+
+    if clock_read_flight {
+        return guest_clock_reads::run(&mut factory, &config, qemu, reference_trace_output);
+    }
+
+    if std::env::var(TIME_OWNERSHIP_ENVIRONMENT).as_deref() == Ok("1") {
+        let reference = run_once(&mut factory, &config, qemu, false, None)?;
+        let hostile = run_once(&mut factory, &config, qemu, true, None)?;
+        compare_boundaries(
+            "clock ownership restart",
+            &reference.boundaries,
+            &hostile.boundaries,
+        )?;
+        if !idle_evidence_matches_across_runs(&reference.idle, &hostile.idle) {
+            return Err("clock ownership idle/wake evidence changed across runs".into());
+        }
+        fs::write(reference_trace_output, reference.diagnostics.trace.report())?;
+        println!("PASS");
+        println!("diagnostic_mode=time-ownership");
+        println!("loaded_production_plugin=true");
+        println!("idle_hold_clock_unchanged=true");
+        println!("authorized_exact_timer_wake_raw_unchanged=true");
+        return Ok(());
+    }
 
     if std::env::var_os(PHASE4_PARTITION_PROBE_ENVIRONMENT).is_some() {
         let coarse = run_once(
@@ -464,6 +507,8 @@ struct FlightRun {
     on_demand_acknowledgements: usize,
     shutdown: QemuShutdownReport,
     diagnostics: RuntimeDeterminismDiagnostics,
+    #[cfg(feature = "test-support")]
+    boot_probe: Option<linux_ack_poll::BootProbe>,
 }
 
 #[derive(Debug)]
@@ -878,6 +923,17 @@ fn run_once(
     hostile: bool,
     partition_step_ps: Option<u64>,
 ) -> Result<FlightRun, Box<dyn Error>> {
+    run_once_with_boot_probe(factory, config, qemu, hostile, partition_step_ps, false)
+}
+
+fn run_once_with_boot_probe(
+    factory: &mut LinuxQemuAttemptHostFactory,
+    config: &QemuLiveNodeStepGateConfig,
+    qemu: &Path,
+    hostile: bool,
+    partition_step_ps: Option<u64>,
+    boot_probe_enabled: bool,
+) -> Result<FlightRun, Box<dyn Error>> {
     let mut owner = factory.begin(4, MEMORY_BYTES, DISK_BYTES)?;
     let mut directory = owner.prepare_generation_run_directory(config.resource_requirements())?;
     directory.prepare_fresh_artifacts_guarded(qemu, None, owner.process_contract()?)?;
@@ -998,6 +1054,17 @@ fn run_once(
         rr_position_in_quantum: final_busy_sample.rr_position_in_quantum,
     };
 
+    #[cfg(not(feature = "test-support"))]
+    if boot_probe_enabled {
+        return Err("Linux boot segment requires the test-support feature".into());
+    }
+    #[cfg(feature = "test-support")]
+    let boot_probe = if boot_probe_enabled {
+        Some(linux_ack_poll::probe(&mut node)?)
+    } else {
+        None
+    };
+
     let idle = match probe_idle_wake(&mut node) {
         Ok(idle) => idle,
         Err(source) => {
@@ -1067,11 +1134,15 @@ fn run_once(
         (Ok(_), Err(error)) => return Err(error.into()),
     };
     Ok(FlightRun {
-        on_demand_acknowledgements: boundaries.len() + idle.on_demand_acknowledgements,
+        on_demand_acknowledgements: boundaries.len()
+            + idle.on_demand_acknowledgements
+            + if boot_probe_enabled { 2 } else { 0 },
         boundaries,
         instruction_exact,
         idle,
         partition_probe,
+        #[cfg(feature = "test-support")]
+        boot_probe,
         shutdown,
         diagnostics: RuntimeDeterminismDiagnostics {
             baseline: runtime_baseline,
@@ -1132,6 +1203,21 @@ fn node_state_failure(
          timer_witness={timer_witness:?}"
     )
     .into()
+}
+
+/// Retains the original wake inputs separately from post-shutdown observations.
+fn idle_wake_failure_context(
+    halted_at: Icount,
+    deadline: Icount,
+    armed: QemuLogicalTimeCalibration,
+    prior_timer_generation: Option<u64>,
+    source: impl std::fmt::Display,
+) -> String {
+    format!(
+        "halted_at_ps={}; requested_deadline_ps={}; armed_logical_ps={}; \
+         armed_raw_instructions={}; prior_timer_generation={prior_timer_generation:?}; {source}",
+        halted_at.retired, deadline.retired, armed.logical_icount, armed.raw_icount,
+    )
 }
 
 fn probe_idle_wake(node: &mut QemuNode) -> Result<IdleEvidence, Box<dyn Error>> {
@@ -1237,6 +1323,10 @@ fn probe_idle_wake(node: &mut QemuNode) -> Result<IdleEvidence, Box<dyn Error>> 
     }
     let prior_timer_witness = node.virtual_timer_fire_witness()?;
 
+    if std::env::var(TIME_OWNERSHIP_ENVIRONMENT).as_deref() == Ok("1") {
+        time_ownership::hold(node, armed_calibration)?;
+    }
+
     let wake = match SimulationBackend::step_to(
         node,
         VirtualTime {
@@ -1244,7 +1334,16 @@ fn probe_idle_wake(node: &mut QemuNode) -> Result<IdleEvidence, Box<dyn Error>> 
         },
     ) {
         Ok(observation) => observation,
-        Err(source) => return Err(node_state_failure(node, "virtual-timer wake", source)),
+        Err(source) => {
+            let context = idle_wake_failure_context(
+                at,
+                deadline,
+                armed_calibration,
+                prior_timer_witness.map(|witness| witness.generation),
+                source,
+            );
+            return Err(node_state_failure(node, "virtual-timer wake", context));
+        }
     };
     if wake.reached.ticks != deadline.retired {
         return Err(format!("idle wake missed exact deadline: {wake:?}").into());
@@ -1342,21 +1441,6 @@ fn authenticate_readiness_marker(
         ));
     }
     Ok(retired_icount.retired)
-}
-
-fn readiness_selectable_catalog_plan() -> Result<SelectableCatalogPlan, Box<dyn Error>> {
-    let declaration = SelectablePlanDeclaration::new(
-        READINESS_SELECTABLE_ID,
-        vec![1],
-        vec![1],
-        vec![String::from("readiness")],
-        SelectablePlanPresence::Required,
-    )?;
-    Ok(SelectableCatalogPlan::new(
-        SelectablePlanLimits::new(1, 1, 1)?,
-        vec![declaration],
-        SelectablePlanContinuation::cold(),
-    )?)
 }
 
 fn install_preemption(

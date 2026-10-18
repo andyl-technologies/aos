@@ -1,8 +1,8 @@
 //! Root-authenticated input and decision order for physical QEMU replay.
 
 use crucible::{
-    BackendInput, Configuration, NodeId, ScheduledEventPayload, SchedulerEventLogClass,
-    SchedulerEventLogPayload, SimInstant, SingleSchedulerCheckpoint, World,
+    BackendInput, Configuration, EventLogSegmentReader, NodeId, ScheduledEventPayload,
+    SchedulerEventLogClass, SchedulerEventLogPayload, SimInstant, SingleSchedulerCheckpoint, World,
 };
 use crucible_qemu::QemuVmRealizationError;
 
@@ -22,6 +22,7 @@ pub(super) fn authenticated_replay_steps(
     world: &World,
     configuration: &Configuration,
     scheduler: &SingleSchedulerCheckpoint,
+    event_log_segments: &(impl EventLogSegmentReader + ?Sized),
     process_generation: u64,
     node: &NodeId,
     expected_inbound: u64,
@@ -34,7 +35,7 @@ pub(super) fn authenticated_replay_steps(
             "multi-generation replay lacks authenticated generation transitions",
         ));
     }
-    if scheduler.retained_event_log_base_events() != 0 {
+    if scheduler.event_log_base_events() != 0 {
         return Err(invalid_input("scheduler retained only an event-log suffix"));
     }
     let mut nodes = world
@@ -54,7 +55,11 @@ pub(super) fn authenticated_replay_steps(
     let mut next_decision = 0_usize;
     let mut next_sequence = 0_u64;
     let mut inbound = 0_u64;
-    for entry in scheduler.retained_event_log_entries() {
+    // Entries stream from the referenced segments, one segment resident at a
+    // time; a segment that cannot be read or authenticated refuses replay.
+    for entry in scheduler.event_log_entries(event_log_segments) {
+        let entry =
+            entry.map_err(|_| invalid_input("scheduler event-log segment is unreadable"))?;
         if entry.sequence() != next_sequence
             || !entry.has_valid_content_hash()
             || !entry.class_matches_catalog()
@@ -71,7 +76,7 @@ pub(super) fn authenticated_replay_steps(
             SchedulerEventLogPayload::Decision(decision) => {
                 let expected = configuration
                     .schedule
-                    .decisions()
+                    .decision_history()
                     .get(next_decision)
                     .ok_or_else(|| invalid_input("event log has an extra replay decision"))?;
                 if entry.class() != SchedulerEventLogClass::Causal || decision != expected {
@@ -132,7 +137,7 @@ pub(super) fn authenticated_replay_steps(
             _ => {}
         }
     }
-    if next_decision != configuration.schedule.decisions().len() {
+    if next_decision != configuration.schedule.decision_history().len() {
         return Err(invalid_input(
             "event log omits an authenticated replay decision",
         ));

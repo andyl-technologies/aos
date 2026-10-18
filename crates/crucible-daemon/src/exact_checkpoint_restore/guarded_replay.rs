@@ -10,6 +10,7 @@ use crucible::{
     AdvanceOutcome, Configuration, Decision, Icount, SIM_TICKS_PER_INSTRUCTION, ScenarioDefForm,
     SingleSchedulerCheckpoint,
 };
+use crucible_api::ProductionEventLogSegments;
 use crucible_campaign::{CampaignHash, ConfigurationId, ScenarioDefId, SelectionOrigin};
 use crucible_protocol::SelectionReply;
 use crucible_protocol::selectable_catalog_plan::{
@@ -23,9 +24,10 @@ use crucible_qemu::{
 use crate::QemuAttemptProcessResourceGuard;
 use crate::guest_selectable::{resolve_guest_selectable, selected_guest_reply};
 use crate::qemu_campaign_lifecycle::{
-    GuardedCampaignReplayClosure, GuardedCampaignReplaySelection,
+    GuardedCampaignReplayChoices, GuardedCampaignReplaySelection,
 };
 
+mod contract_context;
 mod network_inputs;
 
 use network_inputs::{ReplayStep, authenticated_replay_steps};
@@ -40,9 +42,11 @@ const MAX_REPLAY_STALLED_REISSUES: u8 = 2;
 /// Root-bound scheduler evidence required to reconstruct physical replay.
 pub(crate) struct GuardedReplayAdmission<'a> {
     /// Authenticated guest choices for the target schedule.
-    pub(crate) choices: &'a GuardedCampaignReplayClosure,
+    pub(crate) choices: &'a GuardedCampaignReplayChoices,
     /// Complete authenticated scheduler event prefix.
     pub(crate) scheduler: &'a SingleSchedulerCheckpoint,
+    /// Read access to the sealed event-log segments `scheduler` names.
+    pub(crate) event_log_segments: &'a ProductionEventLogSegments,
     /// Exact target QEMU process generation.
     pub(crate) process_generation: u64,
 }
@@ -133,6 +137,7 @@ where
             world,
             configuration,
             admission.scheduler,
+            admission.event_log_segments,
             admission.process_generation,
             self.executor.node(),
             snapshot.node_continuation().next_router_inbound_sequence(),
@@ -163,6 +168,9 @@ where
         );
         let mut thin = self.observe_realization(result)?;
 
+        // Steps visit decisions in increasing order, so one cursor walks the
+        // schedule and the closure frames once.
+        let mut choices = admission.choices.cursor(&configuration.schedule);
         let mut current = genesis;
         for step in steps {
             let decision_index = match step {
@@ -173,16 +181,15 @@ where
                 }
                 ReplayStep::Decision { index } => index,
             };
-            let decision = &configuration.schedule.decisions()[decision_index];
+            let decision = &configuration.schedule.decision_history()[decision_index];
             let next = crucible::try_step(&current, decision.clone()).map_err(|source| {
                 QemuVmRealizationError::InvalidCheckpoint {
                     role: "baked-genesis replay target",
                     message: format!("decision violates the scenario model: {source}"),
                 }
             })?;
-            let recorded = admission
-                .choices
-                .selection_for_decision(decision_index, &configuration.schedule)
+            let recorded = choices
+                .selection_for_decision(decision_index)
                 .map_err(|error| invalid_replay_selection(error.to_string()))?;
             match recorded {
                 Some(recorded) => {
@@ -196,7 +203,7 @@ where
                             target_icount,
                             source,
                             &current,
-                            recorded,
+                            &recorded,
                         )?;
                     } else {
                         reject_unrecorded_local_request(self)?;
@@ -679,9 +686,10 @@ fn recorded_guest_reply(
         || discovery.opportunity() != recorded.opportunity()
         || discovery.domain() != recorded.domain()
     {
-        return Err(invalid_replay_selection(
-            "physical guest request differs from the authenticated replay choice",
-        ));
+        return Err(invalid_replay_selection(format!(
+            "physical guest request differs from the authenticated replay choice; {}",
+            contract_context::ReplayContractContext::new(current, recorded, &discovery, request),
+        )));
     }
 
     let selection = recorded.selection();

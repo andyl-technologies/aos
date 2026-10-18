@@ -218,6 +218,24 @@ pub(super) fn drain_exact_pending(
     pending.clone()
 }
 
+fn boundary_precedes_shared_fault(frontier_ticks: u64) -> bool {
+    frontier_ticks < scenario::PERMANENT_FAILURE_NANOS * crucible::SIM_TICKS_PER_NS
+}
+
+#[test]
+fn source_boundary_preserves_the_exact_shared_fault_deadline()
+-> Result<(), crucible::TimeConversionError> {
+    let pre_fault = crucible::VirtualInstant::from_nanoseconds(1_000_000_000)?;
+    let fault = crucible::VirtualInstant::from_nanoseconds(scenario::PERMANENT_FAILURE_NANOS)?;
+
+    assert!(boundary_precedes_shared_fault(pre_fault.ticks));
+    assert!(boundary_precedes_shared_fault(fault.ticks - 1));
+    assert!(!boundary_precedes_shared_fault(fault.ticks));
+    assert!(!boundary_precedes_shared_fault(fault.ticks + 1));
+    assert!(!boundary_precedes_shared_fault(u64::MAX));
+    Ok(())
+}
+
 pub(super) fn capture_boundary_evidence(
     lifecycle: &mut impl QemuFreshAttemptLifecycleOwner,
     source: &crucible::ScenarioDefForm,
@@ -259,7 +277,7 @@ pub(super) fn capture_boundary_evidence(
     match topology {
         EquivalenceTopology::MultiNode => {
             assert!(
-                fault_evidence.frontier.ticks < scenario::PERMANENT_FAILURE_NANOS,
+                boundary_precedes_shared_fault(fault_evidence.frontier.ticks),
                 "exact source boundary must precede the shared fault"
             );
             assert!(pre_event_queue_and_cache_present(&fault_evidence));
@@ -364,6 +382,16 @@ pub(super) fn normalized_fault_evidence(
     evidence
 }
 
+/// Reads every work item of a segmented trace in order.
+fn trace_items(
+    trace: &crucible::model::ResolvedEffectTrace,
+) -> Vec<crucible::model::ResolvedReplayWorkItem> {
+    trace
+        .items()
+        .collect::<Result<Vec<_>, _>>()
+        .expect("resolved-effect trace must read")
+}
+
 fn assert_shared_fault_evidence(evidence: &ProductionFaultEvidenceSnapshot) {
     const EVENT_NANOS: u64 = 30_000_000_000;
     const SHARED: [(&str, EffectKind); 3] = [
@@ -374,12 +402,13 @@ fn assert_shared_fault_evidence(evidence: &ProductionFaultEvidenceSnapshot) {
         ("shared-power-block", EffectKind::StorageVolatileCacheLoss),
         ("shared-power-node", EffectKind::NodeLifecycle),
     ];
-    let trace = evidence
-        .resolved_effect_trace
-        .as_ref()
-        .expect("shared fault trace must be present");
+    let trace = trace_items(
+        evidence
+            .resolved_effect_trace
+            .as_ref()
+            .expect("shared fault trace must be present"),
+    );
     let work_item = trace
-        .work_items
         .iter()
         .find(|item| {
             item.records.iter().any(|record| {
@@ -407,28 +436,24 @@ fn assert_shared_fault_evidence(evidence: &ProductionFaultEvidenceSnapshot) {
                 && record.cause == BindingActionCause::Signal
         }));
     }
-    assert!(
-        trace
-            .work_items
-            .iter()
-            .flat_map(|item| &item.records)
-            .any(|record| {
-                record.binding.as_str() == "ninep-read-errno"
-                    && record.effect == EffectKind::NinePResult
-                    && record.action_kind == BindingActionKind::Apply
-                    && record.phase == FaultPhase::Resolve
-                    && record.lifetime == EffectLifetime::Opportunity
-                    && record.coordinate.virtual_ticks >= EVENT_NANOS * crucible::SIM_TICKS_PER_NS
-                    && record.cause == BindingActionCause::Signal
-            })
-    );
+    assert!(trace.iter().flat_map(|item| &item.records).any(|record| {
+        record.binding.as_str() == "ninep-read-errno"
+            && record.effect == EffectKind::NinePResult
+            && record.action_kind == BindingActionKind::Apply
+            && record.phase == FaultPhase::Resolve
+            && record.lifetime == EffectLifetime::Opportunity
+            && record.coordinate.virtual_ticks >= EVENT_NANOS * crucible::SIM_TICKS_PER_NS
+            && record.cause == BindingActionCause::Signal
+    }));
 }
 
 fn assert_reactivation_evidence(evidence: &ProductionFaultEvidenceSnapshot) {
-    let trace = evidence
-        .resolved_effect_trace
-        .as_ref()
-        .expect("reactivation trace must be present");
+    let trace = trace_items(
+        evidence
+            .resolved_effect_trace
+            .as_ref()
+            .expect("reactivation trace must be present"),
+    );
     for (binding, nanos) in [
         ("inactive-power-off-curl", scenario::INACTIVE_WORLD_NANOS),
         (
@@ -437,21 +462,15 @@ fn assert_reactivation_evidence(evidence: &ProductionFaultEvidenceSnapshot) {
         ),
         ("reactivate-curl", scenario::REACTIVATION_NANOS),
     ] {
-        assert!(
-            trace
-                .work_items
-                .iter()
-                .flat_map(|item| &item.records)
-                .any(|record| {
-                    record.binding.as_str() == binding
-                        && record.effect == EffectKind::NodeLifecycle
-                        && record.action_kind == BindingActionKind::Apply
-                        && record.phase == FaultPhase::Boundary
-                        && record.lifetime == EffectLifetime::Impulse
-                        && record.coordinate.virtual_ticks == nanos * crucible::SIM_TICKS_PER_NS
-                        && record.cause == BindingActionCause::Signal
-                })
-        );
+        assert!(trace.iter().flat_map(|item| &item.records).any(|record| {
+            record.binding.as_str() == binding
+                && record.effect == EffectKind::NodeLifecycle
+                && record.action_kind == BindingActionKind::Apply
+                && record.phase == FaultPhase::Boundary
+                && record.lifetime == EffectLifetime::Impulse
+                && record.coordinate.virtual_ticks == nanos * crucible::SIM_TICKS_PER_NS
+                && record.cause == BindingActionCause::Signal
+        }));
     }
 }
 

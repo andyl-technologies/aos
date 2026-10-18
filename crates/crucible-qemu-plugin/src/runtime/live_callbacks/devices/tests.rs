@@ -16,6 +16,7 @@ use crucible_shmem::{
 };
 
 mod adapters;
+mod block_floor;
 mod callbacks;
 mod idle_advance;
 

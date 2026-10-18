@@ -344,8 +344,9 @@ fn authority_adapters_bind_canonical_messages_without_prevalidation_writes() {
             &debugger_bytes,
         )
         .to_hex(),
-        // The v3 active scan-index anchor changes the authenticated snapshot precondition.
-        "2fec8c39c706f7be694e061175b30cb714fd48f72d5926f3e665e808a6c07151",
+        // The genesis choice-source and direct-selection index anchors change
+        // the authenticated snapshot precondition.
+        "1573cdf17c308ff54c5d20ed6afb0022644c1ab0d39792c52aae282da63c24c6",
     );
     let decoded_debugger =
         DebuggerSubmission::from_canonical_bytes(&debugger_bytes).expect("decode debugger");
@@ -457,8 +458,9 @@ fn authority_adapters_bind_canonical_messages_without_prevalidation_writes() {
     assert_eq!(
         CampaignHash::derive("crucible.test.planner-submission-vector.v1", &planner_bytes,)
             .to_hex(),
-        // The v3 active scan-index anchor changes the authenticated snapshot precondition.
-        "1d7d211325d9dc315b60e5712bd957727d6cfa4fd89984acfbddb408801caa00",
+        // The genesis choice-source and direct-selection index anchors change
+        // the authenticated snapshot precondition.
+        "fcba2dc6f4620dac945c91e7874600f3a56606cfa3245b3d7a3734c361f19b5c",
     );
     let decoded_planner =
         PlannerSubmission::from_canonical_bytes(&planner_bytes).expect("decode planner");
@@ -717,10 +719,18 @@ fn branch_request_is_one_lazy_exact_indexed_delta_and_replays() {
             .map(CampaignFactId::content_id)
     );
     assert_ne!(prior_roots.exploration, next_roots.exploration);
-    let entries = repository
+    let mut cursor = repository
         .merkle
-        .verify_closure_objects(next_roots.exploration)
-        .expect("exploration closure");
+        .closure_cursor(next_roots.exploration)
+        .expect("exploration root");
+    let mut exploration_values = BTreeSet::new();
+    while let Some(step) = repository
+        .merkle
+        .advance_closure_cursor(&mut cursor)
+        .expect("exploration closure")
+    {
+        exploration_values.extend(step.values);
+    }
     let frontier_index = repository
         .merkle
         .get(next_roots.exploration, frontier_index_anchor_key())
@@ -737,7 +747,7 @@ fn branch_request_is_one_lazy_exact_indexed_delta_and_replays() {
         .expect("scan index lookup")
         .expect("scan index");
     assert_eq!(
-        entries.values,
+        exploration_values,
         BTreeSet::from([
             accepted.request.content_id(),
             frontier_index,

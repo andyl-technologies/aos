@@ -21,8 +21,9 @@ use crucible_protocol::SelectionRequest;
 use crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest;
 
 use super::{
-    GuardedDefaultCampaignRun, GuardedDefaultCampaignRunRequest,
-    QemuObservedFreshAttemptLifecycleFactory, run_guarded_default_campaign_with_runner,
+    DiscardGuardedCampaignProgress, GuardedCampaignRunSink, GuardedDefaultCampaignRun,
+    GuardedDefaultCampaignRunRequest, QemuObservedFreshAttemptLifecycleFactory,
+    run_guarded_default_campaign_with_runner_into,
 };
 use crate::{
     AttemptExecutionContext, AttemptWorkerFailure, CapturedAttemptCheckpoint,
@@ -32,15 +33,11 @@ use crate::{
 
 const TEST_SELECTION_APPLIED_MARKER: &str = "campaign-save-fixture-selection-applied";
 
-fn test_effect_trace() -> Result<Vec<u8>, SchedulerError> {
-    ResolvedEffectTrace {
-        mode: FaultReplayMode::RecomputedCause,
-        work_items: Vec::new(),
-        cursor: 0,
-    }
-    .canonical_bytes()
-    .map_err(|error| SchedulerError::BoundaryViolation {
-        message: format!("fixture effect trace did not encode: {error}"),
+fn test_effect_trace() -> Result<ResolvedEffectTrace, SchedulerError> {
+    ResolvedEffectTrace::empty(FaultReplayMode::RecomputedCause).map_err(|error| {
+        SchedulerError::BoundaryViolation {
+            message: format!("fixture effect trace did not build: {error}"),
+        }
     })
 }
 
@@ -153,7 +150,7 @@ impl QemuFreshAttemptLifecycleOwner for TestLifecycle {
         };
         let mut configuration = request.configuration;
         let replay_index = configuration.schedule.len();
-        let next_replay_decision = self.replay_target.decisions().get(replay_index);
+        let next_replay_decision = self.replay_target.decision_history().get(replay_index);
         if replay_index < self.replay_target.len()
             && !matches!(next_replay_decision, Some(crucible::Decision::Selection(_)))
         {
@@ -321,7 +318,9 @@ impl QemuFreshAttemptLifecycleOwner for TestLifecycle {
         Ok(())
     }
 
-    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
+    fn resolved_effect_trace(
+        &self,
+    ) -> Result<Option<crucible::model::ResolvedEffectTrace>, SchedulerError> {
         Ok(Some(test_effect_trace()?))
     }
 
@@ -410,8 +409,12 @@ pub fn run_guarded_default_campaign_test_fixture_with_choice_offer(
     request: GuardedDefaultCampaignRunRequest,
     offer_choice: bool,
 ) -> Result<GuardedDefaultCampaignRun, Box<dyn Error + Send + Sync>> {
-    run_guarded_default_campaign_test_fixture_with_trace_inner(request, Some(offer_choice))
-        .map(|(campaign, _)| campaign)
+    run_guarded_default_campaign_test_fixture_with_trace_inner(
+        request,
+        Some(offer_choice),
+        &mut DiscardGuardedCampaignProgress,
+    )
+    .map(|(campaign, _)| campaign)
 }
 
 /// Runs the modeled fixture with trace capture and explicit choice publication.
@@ -426,7 +429,27 @@ pub fn run_guarded_default_campaign_test_fixture_with_trace_and_choice_offer(
     (GuardedDefaultCampaignRun, GuardedDefaultCampaignTestTrace),
     Box<dyn Error + Send + Sync>,
 > {
-    run_guarded_default_campaign_test_fixture_with_trace_inner(request, Some(offer_choice))
+    run_guarded_default_campaign_test_fixture_with_trace_inner(
+        request,
+        Some(offer_choice),
+        &mut DiscardGuardedCampaignProgress,
+    )
+}
+
+/// Runs the modeled fixture and streams its progress into `sink`.
+///
+/// # Errors
+///
+/// Returns the same errors as [`run_guarded_default_campaign_test_fixture`].
+pub fn run_guarded_default_campaign_test_fixture_into_sink(
+    request: GuardedDefaultCampaignRunRequest,
+    offer_choice: bool,
+    sink: &mut dyn GuardedCampaignRunSink,
+) -> Result<
+    (GuardedDefaultCampaignRun, GuardedDefaultCampaignTestTrace),
+    Box<dyn Error + Send + Sync>,
+> {
+    run_guarded_default_campaign_test_fixture_with_trace_inner(request, Some(offer_choice), sink)
 }
 
 /// Runs the modeled campaign lifecycle and returns its explicit reply-application trace.
@@ -443,12 +466,17 @@ pub fn run_guarded_default_campaign_test_fixture_with_trace(
     (GuardedDefaultCampaignRun, GuardedDefaultCampaignTestTrace),
     Box<dyn Error + Send + Sync>,
 > {
-    run_guarded_default_campaign_test_fixture_with_trace_inner(request, None)
+    run_guarded_default_campaign_test_fixture_with_trace_inner(
+        request,
+        None,
+        &mut DiscardGuardedCampaignProgress,
+    )
 }
 
 fn run_guarded_default_campaign_test_fixture_with_trace_inner(
     request: GuardedDefaultCampaignRunRequest,
     offer_choice: Option<bool>,
+    sink: &mut dyn GuardedCampaignRunSink,
 ) -> Result<
     (GuardedDefaultCampaignRun, GuardedDefaultCampaignTestTrace),
     Box<dyn Error + Send + Sync>,
@@ -555,7 +583,7 @@ fn run_guarded_default_campaign_test_fixture_with_trace_inner(
         });
     let runner = QemuFreshExecutionRunner::new(factory, QemuFreshModeledDriver);
 
-    run_guarded_default_campaign_with_runner(request, runner, evidence)
+    run_guarded_default_campaign_with_runner_into(request, runner, evidence, sink)
         .map(|campaign| (campaign, trace))
         .map_err(|error| Box::new(error) as Box<dyn Error + Send + Sync>)
 }

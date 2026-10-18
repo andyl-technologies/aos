@@ -47,6 +47,7 @@ pub(crate) struct FindingTriageReplayManifest {
     payload_schema: u32,
     payload_bytes: u64,
     chunks: Vec<FindingTriageReplayChunkDescriptor>,
+    log_segments: Vec<FindingTriageReplayLogSegment>,
 }
 
 impl FindingTriageReplayManifest {
@@ -56,6 +57,7 @@ impl FindingTriageReplayManifest {
         payload_schema: u32,
         payload_bytes: usize,
         chunks: Vec<FindingTriageReplayChunkDescriptor>,
+        log_segments: Vec<FindingTriageReplayLogSegment>,
     ) -> Result<Self, CampaignCodecError> {
         if payload_schema == 0 {
             return Err(CampaignCodecError::InvalidValue {
@@ -67,6 +69,7 @@ impl FindingTriageReplayManifest {
                 limit: "finding-triage-replay-payload-bytes",
             })?;
         validate_chunk_descriptors(payload_bytes, &chunks)?;
+        validate_log_segments(&log_segments)?;
         Ok(Self {
             schema_version: MANIFEST_SCHEMA_VERSION,
             reproduction,
@@ -74,6 +77,7 @@ impl FindingTriageReplayManifest {
             payload_schema,
             payload_bytes,
             chunks,
+            log_segments,
         })
     }
 
@@ -83,6 +87,10 @@ impl FindingTriageReplayManifest {
 
     pub(crate) fn chunks(&self) -> &[FindingTriageReplayChunkDescriptor] {
         &self.chunks
+    }
+
+    pub(crate) fn log_segments(&self) -> &[FindingTriageReplayLogSegment] {
+        &self.log_segments
     }
 
     pub(crate) const fn reproduction(&self) -> ReproductionArtifactId {
@@ -108,11 +116,12 @@ impl FindingTriageReplayManifest {
                 reason: "finding triage replay payload length disagrees with manifest",
             });
         }
-        FindingTriageReplayEvidence::new(
+        FindingTriageReplayEvidence::new_with_log_segments(
             self.reproduction,
             self.observed_signature,
             self.payload_schema,
             payload,
+            self.log_segments,
         )
     }
 
@@ -128,6 +137,12 @@ impl FindingTriageReplayManifest {
                 .enumerate()
                 .map(|(index, chunk)| (chunk_role(index), chunk.content)),
         );
+        children.extend(
+            self.log_segments
+                .iter()
+                .enumerate()
+                .map(|(index, segment)| (format!("log.segment.{index}"), segment.content())),
+        );
         children
     }
 }
@@ -140,6 +155,7 @@ impl Canonical for FindingTriageReplayManifest {
         self.payload_schema.encode(encoder);
         self.payload_bytes.encode(encoder);
         self.chunks.encode(encoder);
+        self.log_segments.encode(encoder);
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
@@ -162,6 +178,7 @@ impl Canonical for FindingTriageReplayManifest {
                 "finding-triage-replay-payload-chunk-count",
                 FindingTriageReplayChunkDescriptor::decode,
             )?,
+            decode_log_segments(decoder)?,
         )
     }
 }
@@ -188,16 +205,28 @@ impl FindingTriageReplayChunk {
         codec::decode(bytes)
     }
 
+    #[cfg(test)]
     pub(super) fn canonical_bytes(&self) -> Vec<u8> {
         codec::encode(self)
     }
 
-    pub(super) fn envelope(&self) -> Result<ObjectEnvelope, CampaignCodecError> {
+    /// Builds the chunk envelope for `payload` without an intermediate copy.
+    ///
+    /// The body is the canonical encoding of a chunk holding `payload`.
+    pub(super) fn envelope_for(payload: &[u8]) -> Result<ObjectEnvelope, CampaignCodecError> {
+        if payload.is_empty() || payload.len() > PAYLOAD_CHUNK_BYTES {
+            return Err(CampaignCodecError::LimitExceeded {
+                limit: "finding-triage-replay-payload-chunk-bytes",
+            });
+        }
+        let mut body = Encoder::new();
+        CHUNK_SCHEMA_VERSION.encode(&mut body);
+        body.sequence(payload, |encoder, byte| byte.encode(encoder));
         ObjectEnvelope::for_record_versioned(
             CampaignRecordKind::FindingTriageReplayEvidenceChunk,
             CHUNK_SCHEMA_VERSION,
             Default::default(),
-            self.canonical_bytes(),
+            body.finish(),
         )
     }
 }

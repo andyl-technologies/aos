@@ -23,6 +23,8 @@ use crucible_api::{ProductionVmLifecycleLoop, ProductionVmLifecycleResumeState};
 use crucible_campaign::ExactCheckpointId;
 use crucible_cas::content_store::StoreError;
 
+use crate::attempt_event_log::AttemptEventLogError;
+use crate::qemu_campaign_driver::{DEFAULT_MAXIMUM_EVENT_LOG_BYTES, RetainedAttemptLog};
 use crate::qemu_campaign_lifecycle::{
     QemuObservedFreshAttemptLifecycle, QemuObservedFreshAttemptLifecycleFactory,
     QemuObservedFreshAttemptLifecycleFactoryError, classify_production_lifecycle_failure,
@@ -32,8 +34,7 @@ use crate::{
     AttemptCheckpointResult, AttemptExecutionContext, AttemptExecutionProduct,
     AttemptWorkerFailure, CheckpointHandoffFailure, CrucibleAttemptExecution,
     CrucibleExecutionOutcome, CrucibleExecutionRunner, CrucibleMaterializationTier,
-    ExactCheckpointStore, MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES, MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES,
-    QemuAttemptProcessResourceGuard, QemuAttemptProductionVmLifecycleFactory,
+    ExactCheckpointStore, QemuAttemptProcessResourceGuard, QemuAttemptProductionVmLifecycleFactory,
     QemuAttemptResourceGuardFactory, QemuAttemptStartReplayProof, QemuFreshAttemptDriver,
     QemuFreshAttemptLifecycle, QemuFreshAttemptLifecycleOwner, QemuFreshDriveOutcome,
     QemuFreshStartMaterialization, QemuOrdinaryResumeRunner, QemuSavepointReplayProof,
@@ -214,7 +215,7 @@ where
         context: &AttemptExecutionContext,
     ) -> Result<Self::Lifecycle, AttemptWorkerFailure<Self::Error>> {
         let fingerprint_nodes = self
-            .prepare_observation(basis.source)
+            .prepare_observation(basis.source, context)
             .map_err(map_observed_evidence_failure::<F::Error>)?;
         let lifecycle = self
             .inner_mut()
@@ -292,6 +293,8 @@ pub(crate) enum QemuProductionExactResumeExecutionRunnerError<F, D> {
         /// Stable name of the exceeded bound.
         limit: &'static str,
     },
+    /// The restored event log could not be retained as an attempt log.
+    EventLog(crate::QemuFreshModeledDriverError),
     /// Modeled driving or result construction failed.
     Driver(D),
     /// A checkpoint was returned without a sticky checkpoint request.
@@ -341,6 +344,9 @@ impl<F, D> std::fmt::Display for QemuProductionExactResumeExecutionRunnerError<F
                     "production checkpoint event log exceeded `{limit}`"
                 )
             }
+            Self::EventLog(error) => {
+                write!(formatter, "retain production checkpoint event log: {error}")
+            }
             Self::Driver(_) => formatter.write_str("resumed production campaign driver failed"),
             Self::UnsolicitedCheckpoint => formatter
                 .write_str("resumed production campaign driver returned an unsolicited checkpoint"),
@@ -380,6 +386,7 @@ where
             | Self::TerminalFingerprintCapture(error)
             | Self::Cleanup(error) => Some(error),
             Self::CheckpointHandoff(error) => Some(error),
+            Self::EventLog(error) => Some(error),
             Self::CleanupAfterRunner { failure, .. } => Some(failure.as_ref()),
             Self::MissingCheckpoint
             | Self::IncompleteEventLog(_)
@@ -643,17 +650,6 @@ fn resume_start_materialization<F, D>(
             QemuProductionExactResumeExecutionRunnerError::IncompleteEventLog(base),
         ));
     }
-    if events.len() > MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES {
-        return Err(resume_event_log_limit("campaign-event-log-entry-count"));
-    }
-    let bytes = events.iter().try_fold(0usize, |total, entry| {
-        total
-            .checked_add(entry.canonical_material_len())
-            .ok_or_else(|| resume_event_log_limit("campaign-event-log-bytes"))
-    })?;
-    if bytes > MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES {
-        return Err(resume_event_log_limit("campaign-event-log-bytes"));
-    }
     let attempt_event_count = match proof {
         QemuResumeReplayProof::AttemptStart(Some(proof)) => proof
             .attempt_event_count(attempt_start, &events)
@@ -675,10 +671,19 @@ fn resume_start_materialization<F, D>(
                 ))?
         }
     };
+    let events = RetainedAttemptLog::from_entries(DEFAULT_MAXIMUM_EVENT_LOG_BYTES, events)
+        .map_err(|error| match error {
+            crate::QemuFreshModeledDriverError::EventLog(
+                AttemptEventLogError::StorageLimit { .. }
+                | AttemptEventLogError::EntryTooLarge { .. },
+            ) => resume_event_log_limit("attempt-event-log-bytes"),
+            error => AttemptWorkerFailure::Terminal(
+                QemuProductionExactResumeExecutionRunnerError::EventLog(error),
+            ),
+        })?;
     Ok(QemuFreshStartMaterialization::from_resume_parts(
         configuration,
         events,
-        bytes,
         completed_quanta,
         frontier,
         quiescence,
@@ -750,7 +755,8 @@ fn map_resume_checkpoint_capture_failure<F, D>(
         | SchedulerError::BoundaryViolation { .. }
         | SchedulerError::ResourceLimit { .. }
         | SchedulerError::TimeConversion(_)
-        | SchedulerError::TopologyActivationInPast { .. } => None,
+        | SchedulerError::TopologyActivationInPast { .. }
+        | SchedulerError::UndeclaredConsoleMatcher(_) => None,
     };
     let error = QemuProductionExactResumeExecutionRunnerError::CheckpointCapture(error);
     match class {
@@ -772,7 +778,8 @@ fn map_resume_terminal_fingerprint_capture_failure<F, D>(
         | SchedulerError::BoundaryViolation { .. }
         | SchedulerError::ResourceLimit { .. }
         | SchedulerError::TimeConversion(_)
-        | SchedulerError::TopologyActivationInPast { .. } => None,
+        | SchedulerError::TopologyActivationInPast { .. }
+        | SchedulerError::UndeclaredConsoleMatcher(_) => None,
     };
     let error = QemuProductionExactResumeExecutionRunnerError::TerminalFingerprintCapture(error);
     match class {

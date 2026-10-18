@@ -54,12 +54,12 @@ type QemuVcpuTbTransCbFn = extern "C" fn(*mut QemuPluginTb, *mut c_void);
 type QemuVcpuInsnExecCbFn = extern "C" fn(c_uint, *mut c_void);
 type QemuRegisterTbTransCbFn =
     extern "C" fn(QemuPluginId, Option<QemuVcpuTbTransCbFn>, *mut c_void);
-type QemuRegisterTbExecCbFn =
+pub(super) type QemuRegisterTbExecCbFn =
     extern "C" fn(*mut QemuPluginTb, Option<QemuVcpuInsnExecCbFn>, c_int, *mut c_void);
-type QemuTbNInsnsFn = extern "C" fn(*const QemuPluginTb) -> usize;
-type QemuTbGetInsnFn = extern "C" fn(*const QemuPluginTb, usize) -> *mut QemuPluginInsn;
-type QemuInsnDataFn = extern "C" fn(*const QemuPluginInsn, *mut c_void, usize) -> usize;
-type QemuRegisterInsnExecCbFn =
+pub(super) type QemuTbNInsnsFn = extern "C" fn(*const QemuPluginTb) -> usize;
+pub(super) type QemuTbGetInsnFn = extern "C" fn(*const QemuPluginTb, usize) -> *mut QemuPluginInsn;
+pub(super) type QemuInsnDataFn = extern "C" fn(*const QemuPluginInsn, *mut c_void, usize) -> usize;
+pub(super) type QemuRegisterInsnExecCbFn =
     extern "C" fn(*mut QemuPluginInsn, Option<QemuVcpuInsnExecCbFn>, c_int, *mut c_void);
 type QemuGetRegistersFn = extern "C" fn() -> *mut GArray;
 pub(super) type QemuReadRegisterFn =

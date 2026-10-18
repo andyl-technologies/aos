@@ -31,7 +31,7 @@ fn fresh_runner_replays_authenticated_signal_fault_plan_before_driver() {
         .resolve_branch(&selection)
         .expect("fresh runner signal branch");
     let replay = crucible::SignalFaultCampaignReplayPlan::new(
-        branch.selected().clone(),
+        branch.selected().to_configuration(),
         vec![branch.clone()],
     )
     .expect("fresh runner signal replay plan");
@@ -217,9 +217,11 @@ fn fresh_replay_applies_campaign_selection_at_exact_guest_request() {
         replies: Arc::clone(&replies),
         signal_fault_branches: VecDeque::new(),
         terminal_after_replay: false,
+        released_host_outcome: None,
         checkpoint_ready: true,
         fingerprint_error: false,
         fingerprint_node_override: Arc::new(Mutex::new(None)),
+        network_park: None,
     };
     let mut current = parent.clone();
     let diagnostic_config = crate::GuestSelectableBoundaryDiagnosticConfig::new(4)
@@ -289,9 +291,11 @@ fn fresh_replay_applies_campaign_selection_at_exact_guest_request() {
         replies: Arc::clone(&drift_replies),
         signal_fault_branches: VecDeque::new(),
         terminal_after_replay: false,
+        released_host_outcome: None,
         checkpoint_ready: true,
         fingerprint_error: false,
         fingerprint_node_override: Arc::new(Mutex::new(None)),
+        network_park: None,
     };
     let mut drift_current = parent.clone();
     let mut drift_materialization = QemuFreshStartMaterialization::genesis();

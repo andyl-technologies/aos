@@ -367,8 +367,6 @@ fn run_one_lifecycle(
     wait_for_child_exit(node, child_generation)?;
     node.release_hot_fork_plugin_endpoints()
         .map_err(|source| qmp_operation("release plugin endpoints", source))?;
-    node.release_hot_fork_child_console()
-        .map_err(|source| qmp_operation("release child console", source))?;
     node.release_hot_fork_child_qmp()
         .map_err(|source| qmp_operation("release child QMP", source))?;
     let _capture = node

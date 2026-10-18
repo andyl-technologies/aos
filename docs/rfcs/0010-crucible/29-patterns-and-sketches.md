@@ -1230,13 +1230,16 @@ check, precisely because the model collapsed them into one ([EXEC-31]).
   [PAT-9]; realized by the 15 I/O sub-node tasks (spec 15).
   Completed by `checks.crucible.phase3.blockCowOverlayPattern`. The concrete
   block sub-node uses `BaseImage` as an immutable content-addressed base and
-  `CowOverlay` as an in-memory 4 KiB copy-on-write page layer. Overlay pages are
-  stored in a `BTreeMap`, dirty page bases in a `BTreeSet`, reads consult the
-  overlay before falling back to `BaseImage`, writes copy up from the base and
-  patch only overlay pages, and `dirty_delta` captures only pages dirtied since
-  the last checkpoint boundary in deterministic order. `BlockSnapshot` carries
-  the overlay delta, full overlay page set, dirty set, RNG cursor, active faults,
-  in-flight responses, base hash, and device length; restore stacks the delta
-  over the parent and reinstates the dirty set, while `BlockDevice::materialize`
-  copies base bytes into a fresh image before applying overlay pages, so the
-  base image is never mutated.
+  `CowOverlay` as a 4 KiB copy-on-write page layer whose page bytes live in a
+  `BlockPageStore`. The overlay page table is a `BTreeMap` of 4 MiB chunks and
+  the dirty pages are per-chunk `ChunkPageBits` in a `BTreeMap`, so every
+  capture visits pages in ascending order. Reads consult the overlay before
+  falling back to `BaseImage`, writes copy up from the base and patch only
+  overlay pages (a page shared with a clone or snapshot is copied first), and
+  `CowOverlay::freeze` captures a `BlockOverlayImage` naming each chunk by its
+  BLAKE3 identity with present and dirty page bitmaps. `BlockSnapshot` carries
+  that image, RNG cursor, active faults, in-flight responses, base hash, and
+  device length, never page bytes; restore authenticates every stored chunk,
+  rebuilds the overlay with its dirty set, and `BlockDevice::materialize_to`
+  streams base bytes with overlay pages applied, so the base image is never
+  mutated.

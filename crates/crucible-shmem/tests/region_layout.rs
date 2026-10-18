@@ -344,10 +344,19 @@ fn region_layout_computes_offsets_and_directed_rings() {
         layout.selectable_reply_ring_hdr_off
             + u64::from(layout.selectable_reply_ring_count) * RING_HEADER_SIZE as u64
     );
+    let selectable_reply_end = layout.selectable_reply_ring_data_off
+        + layout.selectable_reply_entry_count() * layout.selectable_reply_entry_stride;
+    assert_eq!(
+        layout.native_console_off,
+        selectable_reply_end.div_ceil(128) * 128
+    );
+    assert_eq!(
+        layout.native_console_stride,
+        crucible_shmem::native_console::NATIVE_CONSOLE_SEGMENT_BYTES as u64
+    );
     assert_eq!(
         layout.region_size,
-        layout.selectable_reply_ring_data_off
-            + layout.selectable_reply_entry_count() * layout.selectable_reply_entry_stride
+        layout.native_console_off + u64::from(layout.vm_node_count) * layout.native_console_stride
     );
     assert_eq!(
         layout.frame_entry_count(),

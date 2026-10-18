@@ -8,18 +8,15 @@
 use super::*;
 
 mod boundary;
+mod fold;
+mod replay;
 
-use boundary::evaluate_window;
+pub use replay::{MeasurementReplay, ModelSampleProjector};
 
-/// Maximum normalized metric samples accepted by one evaluation.
-pub const MAX_MEASUREMENT_RUNTIME_SAMPLES: usize = 1_000_000;
-/// Maximum aggregate canonical bytes across normalized runtime samples.
-pub const MAX_MEASUREMENT_RUNTIME_SAMPLE_BYTES: usize = 64 * 1024 * 1024;
-/// Maximum definition-by-event visits accepted by one evaluation.
-pub const MAX_MEASUREMENT_EVENT_VISITS: usize = 4_000_000;
-/// Maximum model-metric-by-event visits accepted by sample projection.
-pub const MAX_MODEL_MEASUREMENT_EVENT_VISITS: usize = 4_000_000;
-/// Maximum canonical scheduler entries accepted by one evaluation.
+/// Maximum scheduler entries accepted by the slice-based entry points.
+///
+/// [`MeasurementReplay`] streams entries and has no entry bound; this bound
+/// applies only where a caller already holds the complete log in memory.
 pub const MAX_MEASUREMENT_EVENT_ENTRIES: usize = 1_000_000;
 /// Maximum terminal per-node counters accepted by one evaluation.
 pub const MAX_MEASUREMENT_TERMINAL_NODES: usize = 65_536;
@@ -394,62 +391,34 @@ pub enum MeasurementWindowOutcome {
     },
 }
 
-impl MeasurementWindowOutcome {
-    fn includes_entry(&self, entry: &SchedulerEventLogEntry) -> bool {
-        let begin = match self {
-            Self::NotStarted => return false,
-            Self::Open { begin } | Self::Completed { begin, .. } | Self::TimedOut { begin, .. } => {
-                begin
-            }
-        };
-        let end = match self {
-            Self::Completed { end, .. } => Some(end),
-            Self::TimedOut { timeout, .. } => Some(timeout),
-            Self::NotStarted | Self::Open { .. } => None,
-        };
-
-        let after_begin = entry.at() > begin.at
-            || (entry.at() == begin.at
-                && begin
-                    .sequence
-                    .is_none_or(|sequence| entry.sequence() >= sequence));
-        let before_end = end.is_none_or(|end| {
-            entry.at() < end.at
-                || (entry.at() == end.at
-                    && end
-                        .sequence
-                        .is_none_or(|sequence| entry.sequence() <= sequence))
-        });
-        after_begin && before_end
-    }
-}
-
-/// Exact samples and recomputed aggregate for one metric.
+/// Admitted sample count and recomputed aggregate for one metric.
+///
+/// The aggregate is absent only when the window did not complete and admitted
+/// no sample for an aggregation that is undefined on an empty window. A
+/// completed window always carries its aggregate. The samples themselves are
+/// a pure function of the replayed log and are not retained (RFC-0020
+/// CMEAS-23).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct MeasurementMetricOutcome {
-    samples: Vec<MeasurementRuntimeSample>,
-    aggregate: MeasurementAggregateValue,
-    evidence: Vec<ContentHash>,
+    samples: u64,
+    aggregate: Option<MeasurementAggregateValue>,
 }
 
 impl MeasurementMetricOutcome {
-    /// Returns samples in canonical scheduler order.
+    /// Returns how many samples the window admitted.
     #[must_use]
-    pub fn samples(&self) -> &[MeasurementRuntimeSample] {
-        &self.samples
+    pub const fn samples(&self) -> u64 {
+        self.samples
     }
 
     /// Returns the recomputed exact aggregate.
+    ///
+    /// Returns `None` when an uncommitted window admitted no sample for a
+    /// first, last, min, max, exact-mean, or event-delta aggregation.
     #[must_use]
-    pub const fn aggregate(&self) -> &MeasurementAggregateValue {
-        &self.aggregate
-    }
-
-    /// Returns the event hash corresponding to every sample.
-    #[must_use]
-    pub fn evidence(&self) -> &[ContentHash] {
-        &self.evidence
+    pub const fn aggregate(&self) -> Option<&MeasurementAggregateValue> {
+        self.aggregate.as_ref()
     }
 }
 
@@ -516,7 +485,7 @@ impl MeasurementEvaluation {
         preflight_evaluation_bytes(definitions, &outcomes)?;
         let canonical = canonical_evaluation_json(definitions, &outcomes)?;
         let id = ContentHash::from_canonical_hex_bytes(
-            "crucible.model.measurement-evaluation.v2",
+            "crucible.model.measurement-evaluation.v3",
             &canonical,
         );
         Ok(Self {
@@ -636,9 +605,9 @@ pub enum MeasurementEvaluationError {
 ///
 /// # Errors
 ///
-/// Returns [`MeasurementEvaluationError`] when the log is unauthenticated or
-/// non-dense, a model-source event lacks a required typed attribute, or the
-/// deterministic visit, sample-count, or sample-byte bound is exceeded.
+/// Returns [`MeasurementEvaluationError`] when the log is unauthenticated,
+/// non-dense, or longer than [`MAX_MEASUREMENT_EVENT_ENTRIES`], or a
+/// model-source event lacks a required typed attribute.
 pub fn derive_model_measurement_samples(
     definitions: &MeasurementDefinitions,
     entries: &[SchedulerEventLogEntry],
@@ -650,87 +619,22 @@ pub fn derive_model_measurement_samples(
 
 /// Appends model-owned samples to an independently normalized sample stream.
 ///
-/// This is the bounded mixed-source path: the runtime sample-count and byte
-/// limits apply to the existing guest samples plus newly derived model samples,
-/// and no second model-sample vector is allocated.
+/// This slice path materializes every sample; it serves callers that already
+/// hold a bounded log in memory. Streaming callers feed
+/// [`ModelSampleProjector`] output straight into a [`MeasurementReplay`].
 ///
 /// # Errors
 ///
-/// Returns the same errors as [`derive_model_measurement_samples`], including
-/// when `samples` already exceeds the runtime sample bound or the combined
-/// stream exceeds a count or byte limit.
+/// Returns the same errors as [`derive_model_measurement_samples`].
 pub fn append_model_measurement_samples(
     definitions: &MeasurementDefinitions,
     entries: &[SchedulerEventLogEntry],
     samples: &mut Vec<MeasurementRuntimeSample>,
 ) -> Result<(), MeasurementEvaluationError> {
     validate_measurement_event_log(entries)?;
-    if samples.len() > MAX_MEASUREMENT_RUNTIME_SAMPLES {
-        return Err(MeasurementEvaluationError::LimitExceeded {
-            limit: "measurement-runtime-samples",
-        });
-    }
-
-    let model_metrics = definitions
-        .definitions()
-        .iter()
-        .flat_map(|definition| {
-            definition
-                .metrics
-                .iter()
-                .filter(|metric| metric.source != MetricSource::Guest)
-                .map(move |metric| (&definition.id, metric))
-        })
-        .collect::<Vec<_>>();
-    let visits = model_metrics.len().checked_mul(entries.len()).ok_or(
-        MeasurementEvaluationError::LimitExceeded {
-            limit: "model-measurement-event-visits",
-        },
-    )?;
-    if visits > MAX_MODEL_MEASUREMENT_EVENT_VISITS {
-        return Err(MeasurementEvaluationError::LimitExceeded {
-            limit: "model-measurement-event-visits",
-        });
-    }
-
-    let remaining = MAX_MEASUREMENT_RUNTIME_SAMPLES
-        .checked_sub(samples.len())
-        .ok_or(MeasurementEvaluationError::LimitExceeded {
-            limit: "measurement-runtime-samples",
-        })?;
-    samples.reserve(visits.min(remaining).min(4_096));
-    let mut sample_bytes = preflight_runtime_sample_bytes(samples)?;
-    for (measurement, metric) in model_metrics {
-        for entry in entries {
-            let Some(value) = model_sample_value(metric, entry)? else {
-                continue;
-            };
-            if samples.len() == MAX_MEASUREMENT_RUNTIME_SAMPLES {
-                return Err(MeasurementEvaluationError::LimitExceeded {
-                    limit: "measurement-runtime-samples",
-                });
-            }
-            let sample = MeasurementRuntimeSample::new(
-                entry.sequence(),
-                measurement.clone(),
-                metric.id.clone(),
-                value,
-            );
-            let separator = usize::from(!samples.is_empty());
-            let encoded_sample_bytes = encoded_runtime_sample_len(&sample)?;
-            sample_bytes = sample_bytes
-                .checked_add(separator)
-                .and_then(|length| length.checked_add(encoded_sample_bytes))
-                .ok_or(MeasurementEvaluationError::LimitExceeded {
-                    limit: "measurement-runtime-sample-bytes",
-                })?;
-            if sample_bytes > MAX_MEASUREMENT_RUNTIME_SAMPLE_BYTES {
-                return Err(MeasurementEvaluationError::LimitExceeded {
-                    limit: "measurement-runtime-sample-bytes",
-                });
-            }
-            samples.push(sample);
-        }
+    let projector = ModelSampleProjector::new(definitions);
+    for entry in entries {
+        projector.project(entry, samples)?;
     }
     Ok(())
 }
@@ -836,85 +740,22 @@ pub fn evaluate_measurements(
     terminal: &MeasurementTerminalState,
 ) -> Result<MeasurementEvaluation, MeasurementEvaluationError> {
     validate_measurement_event_log(entries)?;
-    validate_terminal_state(entries, terminal)?;
-    if samples.len() > MAX_MEASUREMENT_RUNTIME_SAMPLES {
-        return Err(MeasurementEvaluationError::LimitExceeded {
-            limit: "measurement-runtime-samples",
+
+    let mut by_sequence = BTreeMap::<u64, Vec<MeasurementRuntimeSample>>::new();
+    for sample in samples {
+        by_sequence.entry(sample.sequence).or_default().push(sample);
+    }
+    let mut replay = MeasurementReplay::new(definitions, terminal)?;
+    for entry in entries {
+        let carried = by_sequence.remove(&entry.sequence()).unwrap_or_default();
+        replay.observe(entry, carried)?;
+    }
+    if let Some(sequence) = by_sequence.keys().next() {
+        return Err(MeasurementEvaluationError::UnknownSampleSequence {
+            sequence: *sequence,
         });
     }
-    preflight_runtime_sample_bytes(&samples)?;
-    let boundary_nodes =
-        definitions
-            .definitions()
-            .iter()
-            .try_fold(0_usize, |total, definition| {
-                let begin = boundary_node_count(&definition.begin)?;
-                let end = boundary_node_count(&definition.end)?;
-                total
-                    .checked_add(begin)
-                    .and_then(|total| total.checked_add(end))
-                    .ok_or(MeasurementEvaluationError::LimitExceeded {
-                        limit: "measurement-event-visits",
-                    })
-            })?;
-    let visits = boundary_nodes
-        .checked_mul(entries.len().saturating_add(1))
-        .ok_or(MeasurementEvaluationError::LimitExceeded {
-            limit: "measurement-event-visits",
-        })?;
-    if visits > MAX_MEASUREMENT_EVENT_VISITS {
-        return Err(MeasurementEvaluationError::LimitExceeded {
-            limit: "measurement-event-visits",
-        });
-    }
-    let samples = validate_and_index_samples(definitions, entries, samples)?;
-    let mut outcomes = BTreeMap::new();
-    for definition in definitions.definitions() {
-        let window = evaluate_window(definition, entries, terminal)?;
-        let mut metrics = BTreeMap::new();
-        for metric in &definition.metrics {
-            let retained = samples
-                .get(&(definition.id.clone(), metric.id.clone()))
-                .into_iter()
-                .flatten()
-                .filter(|sample| {
-                    event_for_sequence(entries, sample.sequence)
-                        .is_some_and(|entry| window.includes_entry(entry))
-                })
-                .cloned()
-                .collect::<Vec<_>>();
-            let aggregate = aggregate_metric_samples(
-                metric,
-                &retained
-                    .iter()
-                    .map(|sample| sample.value.clone())
-                    .collect::<Vec<_>>(),
-            )?;
-            let evidence = retained
-                .iter()
-                .map(|sample| {
-                    event_for_sequence(entries, sample.sequence)
-                        .map(SchedulerEventLogEntry::content_hash)
-                        .ok_or(MeasurementEvaluationError::UnknownSampleSequence {
-                            sequence: sample.sequence,
-                        })
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            metrics.insert(
-                metric.id.clone(),
-                MeasurementMetricOutcome {
-                    samples: retained,
-                    aggregate,
-                    evidence,
-                },
-            );
-        }
-        outcomes.insert(
-            definition.id.clone(),
-            MeasurementOutcome { window, metrics },
-        );
-    }
-    MeasurementEvaluation::new(definitions.content_hash(), outcomes)
+    replay.finish()
 }
 
 /// Recomputes and authenticates one retained canonical evaluation body.
@@ -938,34 +779,17 @@ pub fn verify_measurement_evaluation(
     Ok(evaluation)
 }
 
-// Recomputes one aggregate only after the full evaluator has authenticated the
-// metric declaration and normalized every sample against its declared type.
+/// Aggregates a complete sample list through the same fold replay uses.
+#[cfg(test)]
 fn aggregate_metric_samples(
     definition: &MetricDefinition,
     samples: &[MeasurementSampleValue],
 ) -> Result<MeasurementAggregateValue, MeasurementEvaluationError> {
-    match &definition.aggregation {
-        Aggregation::Count => Ok(MeasurementAggregateValue::Unsigned(
-            u64::try_from(samples.len())
-                .map_err(|_| MeasurementEvaluationError::ArithmeticOverflow)?,
-        )),
-        Aggregation::Sum => aggregate_sum(&definition.value_type, samples),
-        Aggregation::Min => aggregate_extreme(samples, std::cmp::Ordering::Less),
-        Aggregation::Max => aggregate_extreme(samples, std::cmp::Ordering::Greater),
-        Aggregation::ExactMean => aggregate_mean(samples),
-        Aggregation::Histogram { upper_bounds } => aggregate_histogram(samples, upper_bounds),
-        Aggregation::First => samples.first().cloned().map(Into::into).ok_or(
-            MeasurementEvaluationError::EmptySamples {
-                aggregation: "first",
-            },
-        ),
-        Aggregation::Last => samples.last().cloned().map(Into::into).ok_or(
-            MeasurementEvaluationError::EmptySamples {
-                aggregation: "last",
-            },
-        ),
-        Aggregation::EventDelta => aggregate_delta(samples),
+    let mut fold = fold::MetricFold::new(definition);
+    for sample in samples {
+        fold.observe(sample);
     }
+    fold.aggregate()
 }
 
 #[derive(serde::Serialize)]
@@ -985,46 +809,6 @@ fn canonical_evaluation_json(
     .map_err(|error| MeasurementEvaluationError::CanonicalEncoding {
         reason: error.to_string(),
     })
-}
-
-fn preflight_runtime_sample_bytes(
-    samples: &[MeasurementRuntimeSample],
-) -> Result<usize, MeasurementEvaluationError> {
-    let mut counter = BoundedJsonByteCounter {
-        length: 0,
-        maximum: MAX_MEASUREMENT_RUNTIME_SAMPLE_BYTES,
-        exceeded: false,
-    };
-    let encoded = serde_json::to_writer(&mut counter, samples);
-    if counter.exceeded {
-        return Err(MeasurementEvaluationError::LimitExceeded {
-            limit: "measurement-runtime-sample-bytes",
-        });
-    }
-    encoded.map_err(|error| MeasurementEvaluationError::CanonicalEncoding {
-        reason: error.to_string(),
-    })?;
-    Ok(counter.length)
-}
-
-fn encoded_runtime_sample_len(
-    sample: &MeasurementRuntimeSample,
-) -> Result<usize, MeasurementEvaluationError> {
-    let mut counter = BoundedJsonByteCounter {
-        length: 0,
-        maximum: MAX_MEASUREMENT_RUNTIME_SAMPLE_BYTES,
-        exceeded: false,
-    };
-    let encoded = serde_json::to_writer(&mut counter, sample);
-    if counter.exceeded {
-        return Err(MeasurementEvaluationError::LimitExceeded {
-            limit: "measurement-runtime-sample-bytes",
-        });
-    }
-    encoded.map_err(|error| MeasurementEvaluationError::CanonicalEncoding {
-        reason: error.to_string(),
-    })?;
-    Ok(counter.length)
 }
 
 fn preflight_evaluation_bytes(
@@ -1137,130 +921,6 @@ pub fn validate_measurement_event_log(
     Ok(())
 }
 
-fn validate_terminal_state(
-    entries: &[SchedulerEventLogEntry],
-    terminal: &MeasurementTerminalState,
-) -> Result<(), MeasurementEvaluationError> {
-    if terminal.node_icounts.len() > MAX_MEASUREMENT_TERMINAL_NODES {
-        return Err(MeasurementEvaluationError::LimitExceeded {
-            limit: "measurement-terminal-nodes",
-        });
-    }
-    for entry in entries {
-        if entry.at() > terminal.at {
-            return Err(MeasurementEvaluationError::TerminalBeforeEvent {
-                sequence: entry.sequence(),
-            });
-        }
-        if let Some(node) = &entry.time().stamp.node
-            && terminal
-                .node_icounts
-                .get(node)
-                .zip(entry.time().stamp.retired)
-                .is_some_and(|(terminal, observed)| terminal.retired < observed.retired)
-        {
-            return Err(MeasurementEvaluationError::TerminalIcountRegression {
-                node: node.clone(),
-            });
-        }
-    }
-    if terminal
-        .scenario_ready_at
-        .is_some_and(|ready| ready > terminal.at)
-    {
-        return Err(MeasurementEvaluationError::TerminalBeforeEvent {
-            sequence: entries.last().map_or(0, SchedulerEventLogEntry::sequence),
-        });
-    }
-    Ok(())
-}
-
-fn boundary_node_count(selector: &BoundarySelector) -> Result<usize, MeasurementEvaluationError> {
-    let children = match selector {
-        BoundarySelector::All { selectors } | BoundarySelector::Any { selectors } => selectors,
-        _ => return Ok(1),
-    };
-    children.iter().try_fold(1_usize, |total, child| {
-        total.checked_add(boundary_node_count(child)?).ok_or(
-            MeasurementEvaluationError::LimitExceeded {
-                limit: "measurement-event-visits",
-            },
-        )
-    })
-}
-
-type SampleIndex = BTreeMap<(MeasurementId, MetricId), Vec<MeasurementRuntimeSample>>;
-
-fn validate_and_index_samples(
-    definitions: &MeasurementDefinitions,
-    entries: &[SchedulerEventLogEntry],
-    mut samples: Vec<MeasurementRuntimeSample>,
-) -> Result<SampleIndex, MeasurementEvaluationError> {
-    samples.sort_by(|left, right| {
-        (left.sequence, &left.measurement, &left.metric).cmp(&(
-            right.sequence,
-            &right.measurement,
-            &right.metric,
-        ))
-    });
-    let definitions_by_id = definitions
-        .definitions()
-        .iter()
-        .map(|definition| (&definition.id, definition))
-        .collect::<BTreeMap<_, _>>();
-    let mut indexed = BTreeMap::<_, Vec<_>>::new();
-    let mut previous: Option<(u64, &MeasurementId, &MetricId)> = None;
-    for sample in &samples {
-        if event_for_sequence(entries, sample.sequence).is_none() {
-            return Err(MeasurementEvaluationError::UnknownSampleSequence {
-                sequence: sample.sequence,
-            });
-        }
-        if previous
-            .as_ref()
-            .is_some_and(|(sequence, measurement, metric)| {
-                *sequence == sample.sequence
-                    && *measurement == &sample.measurement
-                    && *metric == &sample.metric
-            })
-        {
-            return Err(MeasurementEvaluationError::DuplicateSample {
-                measurement: sample.measurement.clone(),
-                metric: sample.metric.clone(),
-                sequence: sample.sequence,
-            });
-        }
-        let definition = definitions_by_id.get(&sample.measurement).ok_or_else(|| {
-            MeasurementEvaluationError::UnknownSampleTarget {
-                kind: "measurement",
-                id: sample.measurement.as_str().to_owned(),
-            }
-        })?;
-        let metric = definition
-            .metrics
-            .iter()
-            .find(|metric| metric.id == sample.metric)
-            .ok_or_else(|| MeasurementEvaluationError::UnknownSampleTarget {
-                kind: "metric",
-                id: sample.metric.as_str().to_owned(),
-            })?;
-        if !sample_matches_type(&sample.value, &metric.value_type) {
-            return Err(MeasurementEvaluationError::SampleTypeMismatch {
-                measurement: sample.measurement.clone(),
-                metric: sample.metric.clone(),
-            });
-        }
-        previous = Some((sample.sequence, &sample.measurement, &sample.metric));
-    }
-    for sample in samples {
-        indexed
-            .entry((sample.measurement.clone(), sample.metric.clone()))
-            .or_default()
-            .push(sample);
-    }
-    Ok(indexed)
-}
-
 fn sample_matches_type(value: &MeasurementSampleValue, kind: &MetricValueType) -> bool {
     match (value, kind) {
         (MeasurementSampleValue::Signed(_), MetricValueType::SignedInteger)
@@ -1285,183 +945,6 @@ fn sample_matches_type(value: &MeasurementSampleValue, kind: &MetricValueType) -
             },
         ) => usize::try_from(*maximum_elements).is_ok_and(|maximum| values.len() <= maximum),
         _ => false,
-    }
-}
-
-fn event_for_sequence(
-    entries: &[SchedulerEventLogEntry],
-    sequence: u64,
-) -> Option<&SchedulerEventLogEntry> {
-    let first = entries.first()?.sequence();
-    let index = sequence
-        .checked_sub(first)
-        .and_then(|value| usize::try_from(value).ok())?;
-    entries
-        .get(index)
-        .filter(|entry| entry.sequence() == sequence)
-}
-
-fn aggregate_sum(
-    value_type: &MetricValueType,
-    samples: &[MeasurementSampleValue],
-) -> Result<MeasurementAggregateValue, MeasurementEvaluationError> {
-    match value_type {
-        MetricValueType::SignedInteger => samples
-            .iter()
-            .try_fold(0_i64, |total, sample| match sample {
-                MeasurementSampleValue::Signed(value) => total
-                    .checked_add(*value)
-                    .ok_or(MeasurementEvaluationError::ArithmeticOverflow),
-                _ => Err(MeasurementEvaluationError::ArithmeticOverflow),
-            })
-            .map(MeasurementAggregateValue::Signed),
-        MetricValueType::UnsignedInteger => samples
-            .iter()
-            .try_fold(0_u64, |total, sample| match sample {
-                MeasurementSampleValue::Unsigned(value) => total
-                    .checked_add(*value)
-                    .ok_or(MeasurementEvaluationError::ArithmeticOverflow),
-                _ => Err(MeasurementEvaluationError::ArithmeticOverflow),
-            })
-            .map(MeasurementAggregateValue::Unsigned),
-        MetricValueType::ReducedRational => samples
-            .iter()
-            .try_fold(
-                ReducedRational::from_unsigned(0),
-                |total, sample| match sample {
-                    MeasurementSampleValue::Rational(value) => total.checked_add(*value),
-                    _ => Err(MeasurementEvaluationError::ArithmeticOverflow),
-                },
-            )
-            .map(MeasurementAggregateValue::Rational),
-        MetricValueType::Boolean
-        | MetricValueType::Enumerated { .. }
-        | MetricValueType::IntegerVector { .. } => {
-            Err(MeasurementEvaluationError::ArithmeticOverflow)
-        }
-    }
-}
-
-fn aggregate_extreme(
-    samples: &[MeasurementSampleValue],
-    desired: std::cmp::Ordering,
-) -> Result<MeasurementAggregateValue, MeasurementEvaluationError> {
-    let mut selected =
-        samples
-            .first()
-            .cloned()
-            .ok_or(MeasurementEvaluationError::EmptySamples {
-                aggregation: if desired == std::cmp::Ordering::Less {
-                    "min"
-                } else {
-                    "max"
-                },
-            })?;
-    for sample in &samples[1..] {
-        let ordering = compare_samples(sample, &selected)?;
-        if ordering == desired {
-            selected = sample.clone();
-        }
-    }
-    Ok(selected.into())
-}
-
-fn compare_samples(
-    left: &MeasurementSampleValue,
-    right: &MeasurementSampleValue,
-) -> Result<std::cmp::Ordering, MeasurementEvaluationError> {
-    match (left, right) {
-        (MeasurementSampleValue::Signed(left), MeasurementSampleValue::Signed(right)) => {
-            Ok(left.cmp(right))
-        }
-        (MeasurementSampleValue::Unsigned(left), MeasurementSampleValue::Unsigned(right)) => {
-            Ok(left.cmp(right))
-        }
-        (MeasurementSampleValue::Rational(left), MeasurementSampleValue::Rational(right)) => {
-            left.checked_cmp(*right)
-        }
-        (MeasurementSampleValue::Boolean(left), MeasurementSampleValue::Boolean(right)) => {
-            Ok(left.cmp(right))
-        }
-        _ => Err(MeasurementEvaluationError::ArithmeticOverflow),
-    }
-}
-
-fn aggregate_mean(
-    samples: &[MeasurementSampleValue],
-) -> Result<MeasurementAggregateValue, MeasurementEvaluationError> {
-    if samples.is_empty() {
-        return Err(MeasurementEvaluationError::EmptySamples {
-            aggregation: "exact_mean",
-        });
-    }
-    let total = samples
-        .iter()
-        .try_fold(ReducedRational::from_unsigned(0), |total, sample| {
-            let value = match sample {
-                MeasurementSampleValue::Signed(value) => ReducedRational::from_signed(*value),
-                MeasurementSampleValue::Unsigned(value) => ReducedRational::from_unsigned(*value),
-                MeasurementSampleValue::Rational(value) => *value,
-                _ => return Err(MeasurementEvaluationError::ArithmeticOverflow),
-            };
-            total.checked_add(value)
-        })?;
-    total
-        .checked_divide_by(
-            u64::try_from(samples.len())
-                .map_err(|_| MeasurementEvaluationError::ArithmeticOverflow)?,
-        )
-        .map(MeasurementAggregateValue::Rational)
-}
-
-fn aggregate_histogram(
-    samples: &[MeasurementSampleValue],
-    upper_bounds: &[i64],
-) -> Result<MeasurementAggregateValue, MeasurementEvaluationError> {
-    let mut bins = vec![0_u64; upper_bounds.len().saturating_add(1)];
-    for sample in samples {
-        let bin = match sample {
-            MeasurementSampleValue::Signed(value) => {
-                upper_bounds.partition_point(|bound| *bound < *value)
-            }
-            MeasurementSampleValue::Unsigned(value) => upper_bounds.partition_point(|bound| {
-                bound.is_negative() || u64::try_from(*bound).is_ok_and(|bound| bound < *value)
-            }),
-            _ => return Err(MeasurementEvaluationError::ArithmeticOverflow),
-        };
-        bins[bin] = bins[bin]
-            .checked_add(1)
-            .ok_or(MeasurementEvaluationError::ArithmeticOverflow)?;
-    }
-    Ok(MeasurementAggregateValue::Histogram(bins))
-}
-
-fn aggregate_delta(
-    samples: &[MeasurementSampleValue],
-) -> Result<MeasurementAggregateValue, MeasurementEvaluationError> {
-    let first = samples
-        .first()
-        .ok_or(MeasurementEvaluationError::EmptySamples {
-            aggregation: "event_delta",
-        })?;
-    let last = samples
-        .last()
-        .ok_or(MeasurementEvaluationError::EmptySamples {
-            aggregation: "event_delta",
-        })?;
-    match (first, last) {
-        (MeasurementSampleValue::Signed(first), MeasurementSampleValue::Signed(last)) => last
-            .checked_sub(*first)
-            .map(MeasurementAggregateValue::Signed)
-            .ok_or(MeasurementEvaluationError::ArithmeticOverflow),
-        (MeasurementSampleValue::Unsigned(first), MeasurementSampleValue::Unsigned(last)) => last
-            .checked_sub(*first)
-            .map(MeasurementAggregateValue::Unsigned)
-            .ok_or(MeasurementEvaluationError::ArithmeticOverflow),
-        (MeasurementSampleValue::Rational(first), MeasurementSampleValue::Rational(last)) => last
-            .checked_sub(*first)
-            .map(MeasurementAggregateValue::Rational),
-        _ => Err(MeasurementEvaluationError::ArithmeticOverflow),
     }
 }
 

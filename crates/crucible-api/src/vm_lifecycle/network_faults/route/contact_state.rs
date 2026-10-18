@@ -195,6 +195,31 @@ pub(in super::super) fn prune_network_contact_services(
                 .unwrap_or(key.start_ticks),
         );
     }
+    retain_open_contact_services(&mut state.contact_services, now);
+}
+
+/// Drops contact-service states whose window closed and that hold no
+/// reservation.
+///
+/// Service keys carry their window, and every reservation path rejects a
+/// start at or after the traffic end, which never exceeds `end_ticks`. Once
+/// `now` reaches `end_ticks`, an empty state can never be read or served
+/// again, so keeping it would only grow the map with run length. States with
+/// live custody reservations stay until those reservations settle.
+pub(in super::super) fn retain_open_contact_services(
+    services: &mut BTreeMap<NetworkContactServiceKey, NetworkContactServiceState>,
+    now: u64,
+) {
+    services.retain(|key, service| !contact_service_is_expired(key, service, now));
+}
+
+/// Reports whether a contact-service state can never be served again.
+pub(in super::super) fn contact_service_is_expired(
+    key: &NetworkContactServiceKey,
+    service: &NetworkContactServiceState,
+    now: u64,
+) -> bool {
+    key.end_ticks <= now && service.reservations.is_empty()
 }
 
 pub(in super::super) fn network_contact_reservation_count(

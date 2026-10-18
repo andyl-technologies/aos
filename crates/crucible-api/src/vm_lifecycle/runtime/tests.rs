@@ -997,6 +997,7 @@ pub(in crate::vm_lifecycle) fn production_loop_without_backends(
         source.plan().fault_signals().resource_limits(),
         source.world().fault_topology().clone(),
         source.world().links().to_vec(),
+        Arc::new(crucible::segment_store::SharedSegmentStore::new()),
     );
     let run_directory = ProductionRunDirectory::temporary()
         .unwrap_or_else(|error| panic!("test run directory should build: {error}"));
@@ -1040,7 +1041,8 @@ pub(in crate::vm_lifecycle) fn production_loop_without_backends(
             transaction: 0,
             phase: ProductionLifecycleJournalPhase::Idle,
             nodes: Vec::new().into(),
-            completed_exits: Vec::new().into(),
+            exit_log: ProductionLifecycleExitLog::empty(),
+            pending_exits: Vec::new(),
         },
         lifecycle_persistence: LifecycleStatePersistence::new(run_directory.path())
             .unwrap_or_else(|error| panic!("test lifecycle state should initialize: {error}")),
@@ -1063,6 +1065,7 @@ pub(in crate::vm_lifecycle) fn production_loop_without_backends(
         repository_exact_ram_rebase: None,
         recorded_controls: Vec::new(),
         signal_artifact_objects: Arc::new(BTreeMap::new()),
+        fault_trace_segments: Arc::new(crucible::segment_store::SharedSegmentStore::new()),
         debug_backend_paths: BTreeMap::new(),
         debug_gateway: None,
         debug_attach: None,
@@ -1688,7 +1691,7 @@ fn production_lifecycle_pauses_on_a_new_live_signal_fault_frontier() {
         panic!("the exact live producer frontier must yield one campaign discovery")
     };
     let normalized = crucible::SignalFaultSelectable::from_records(
-        &outcome.configuration,
+        &crucible::ConfigurationPrefix::whole(&outcome.configuration),
         discovery.declaration(),
         discovery.opportunity(),
         discovery.domain(),
@@ -1766,7 +1769,7 @@ fn production_lifecycle_authenticates_typed_signal_branch_before_checkpointing()
             control: Vec::new(),
         })
         .unwrap_or_else(|error| panic!("observed sentinel branch should inject: {error}"));
-    assert_eq!(outcome.configuration, *branch.selected());
+    assert!(branch.selected().matches(&outcome.configuration));
     assert_eq!(outcome.decisions, branch.decisions());
     assert!(outcome.discovered_choices.is_empty());
     assert!(lifecycle.signal_fault_branches.is_empty());

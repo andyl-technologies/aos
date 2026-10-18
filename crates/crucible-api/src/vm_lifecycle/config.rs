@@ -178,6 +178,7 @@ impl ProductionVmLifecycleConfig {
             app_random_branch_plans: BTreeMap::new(),
             signal_artifacts: None,
             fault_replay: None,
+            fault_trace_segments: None,
             world_artifacts: None,
             bounded_scheduler_preemption: None,
         }
@@ -263,6 +264,20 @@ impl ProductionVmLifecycleConfig {
     #[must_use]
     pub const fn with_run_ceiling_ticks(mut self, ceiling: u64) -> Self {
         self.run_ceiling_ticks = ceiling;
+        self
+    }
+
+    /// Returns this configuration without a lifecycle virtual-time ceiling.
+    ///
+    /// The scheduler then never clamps advancement to a lifecycle horizon.
+    /// Each attempt's authored stop frontier, such as a campaign policy's
+    /// virtual-time deadline, bounds modeled time instead, and operational
+    /// limits such as the attempt's execution-quantum allowance bound the
+    /// rest. Pair this with a rendezvous interval so every physical RUN still
+    /// returns to the scheduler at a finite boundary.
+    #[must_use]
+    pub const fn without_run_ceiling(mut self) -> Self {
+        self.run_ceiling_ticks = u64::MAX;
         self
     }
 
@@ -478,6 +493,25 @@ impl ProductionVmLifecycleConfig {
         self
     }
 
+    /// Returns this configuration with the store receiving sealed trace segments.
+    ///
+    /// The fault runtime and the campaign network effect log seal their
+    /// resolved-effect trace segments (RFC-0020 section 15) into `segments`,
+    /// and exported traces read them back from it. Without a store, each
+    /// lifecycle keeps its segments in a private in-memory store.
+    #[must_use]
+    pub fn with_fault_trace_segments(mut self, segments: Arc<dyn SegmentSink>) -> Self {
+        self.fault_trace_segments = Some(segments);
+        self
+    }
+
+    /// Returns the configured trace segment store, or a fresh in-memory one.
+    pub(super) fn fault_trace_segments(&self) -> Arc<dyn SegmentSink> {
+        self.fault_trace_segments
+            .clone()
+            .unwrap_or_else(|| Arc::new(crucible::segment_store::SharedSegmentStore::new()))
+    }
+
     /// Returns this configuration with the authoritative signal artifact store.
     ///
     /// Exact checkpoints copy every transitively referenced signal object into
@@ -507,6 +541,69 @@ impl ProductionVmLifecycleConfig {
         self.quantum_budget
             .saturating_add(node_count)
             .saturating_add(1)
+    }
+}
+
+impl ProductionVmLifecycleConfig {
+    /// Reports whether `other` launches and drives guests exactly as `self` does.
+    ///
+    /// A retained source world keeps every process this configuration
+    /// launched, so a replacement may differ only in start-specific replay
+    /// inputs and host completion bounds. Shared stores and preemption flights
+    /// compare by identity because a copy would be a different authority.
+    pub(super) fn launch_basis_matches(&self, other: &Self) -> bool {
+        self.executable == other.executable
+            && self.plugin == other.plugin
+            && self.native_guest_architecture == other.native_guest_architecture
+            && self.guest_assets == other.guest_assets
+            && self.initrd == other.initrd
+            && self.kernel_cmdline_prefix == other.kernel_cmdline_prefix
+            && self.root_image_format == other.root_image_format
+            && self.run_state_root == other.run_state_root
+            && self.run_ceiling_ticks == other.run_ceiling_ticks
+            && self.quantum_budget == other.quantum_budget
+            && self.maximum_host_workers == other.maximum_host_workers
+            && self.rendezvous_interval_ticks == other.rendezvous_interval_ticks
+            && self.coverage == other.coverage
+            && self.rr_control_boundary_trace == other.rr_control_boundary_trace
+            && self.debug_gateway_executable == other.debug_gateway_executable
+            && self.debug == other.debug
+            && self.fault_replay == other.fault_replay
+            && match (&self.fault_trace_segments, &other.fault_trace_segments) {
+                (None, None) => true,
+                (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+                _ => false,
+            }
+            && same_store(
+                self.signal_artifacts.as_ref(),
+                other.signal_artifacts.as_ref(),
+            )
+            && same_store(
+                self.world_artifacts.as_ref(),
+                other.world_artifacts.as_ref(),
+            )
+            && match (
+                &self.bounded_scheduler_preemption,
+                &other.bounded_scheduler_preemption,
+            ) {
+                (None, None) => true,
+                (Some(left), Some(right)) => Arc::ptr_eq(&left.pending, &right.pending),
+                _ => false,
+            }
+    }
+
+    /// Reports whether this configuration still schedules a branch boundary.
+    pub(super) fn has_pending_branch_boundary(&self) -> bool {
+        self.branch.is_some() || !self.continuation_branches.is_empty()
+    }
+}
+
+fn same_store(left: Option<&Arc<dyn DagStore>>, right: Option<&Arc<dyn DagStore>>) -> bool {
+    match (left, right) {
+        (None, None) => true,
+        // Compare data addresses only; vtable addresses are not unique.
+        (Some(left), Some(right)) => std::ptr::addr_eq(Arc::as_ptr(left), Arc::as_ptr(right)),
+        _ => false,
     }
 }
 

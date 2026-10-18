@@ -245,6 +245,29 @@ pub enum DeviceError {
         found: [u8; 32],
     },
 
+    /// The host storage behind the copy-on-write overlay failed.
+    ///
+    /// Overlay pages live in a run-owned page store. A failed read or write
+    /// there is a host fault, not guest-visible device behavior, so the device
+    /// operation fails closed instead of answering the guest.
+    #[error("block page store {operation} failed: {kind}")]
+    BlockPageStore {
+        /// The store operation that failed.
+        operation: &'static str,
+        /// The host I/O error class.
+        kind: std::io::ErrorKind,
+    },
+
+    /// A block snapshot's overlay image cannot be restored or read.
+    ///
+    /// The overlay chunks are missing, fail content authentication, or violate
+    /// the canonical chunk geometry recorded in the snapshot.
+    #[error("block overlay image is invalid: {reason}")]
+    BlockOverlayImage {
+        /// The deterministic validation failure.
+        reason: &'static str,
+    },
+
     /// A block wire message failed to decode at the device boundary.
     ///
     /// Hostile request bytes are answered in band with an error-status response
@@ -273,6 +296,15 @@ pub enum DeviceError {
     FrameEntry {
         /// The underlying frame-entry validation failure.
         source: FrameEntryError,
+    },
+
+    /// A mapped reply ring belongs to another physical device family.
+    #[error("shared-memory response producer {actual} differs from reserved producer {expected}")]
+    ShmemResponseSource {
+        /// Reserved producer required by the device adapter.
+        expected: u32,
+        /// Producer from the supplied mapped descriptor.
+        actual: u32,
     },
 
     /// A shared-memory SPSC ring operation failed.

@@ -251,6 +251,12 @@ impl<M> SynchronousCampaignExecutor<M> {
         }
     }
 
+    /// Bounds each attempt's encoded event log at `maximum_bytes`.
+    pub(super) fn with_maximum_event_log_bytes(mut self, maximum_bytes: u64) -> Self {
+        self.worker = self.worker.with_maximum_event_log_bytes(maximum_bytes);
+        self
+    }
+
     pub(super) fn with_checkpoint_capture(
         mut self,
         checkpoints: Arc<ExactCheckpointStore>,

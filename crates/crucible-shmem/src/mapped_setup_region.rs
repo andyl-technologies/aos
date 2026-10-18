@@ -37,6 +37,8 @@ mod device_rings;
 mod fault_transports;
 #[path = "mapped_setup_region/hot_fork.rs"]
 mod hot_fork;
+#[path = "mapped_setup_region/native_console.rs"]
+mod native_console;
 pub use hot_fork::{
     HOT_FORK_RING_IMAGE_SCHEMA_VERSION, HotForkChildMappingInstallError,
     HotForkMappingDispositionError, HotForkRingImage, HotForkRingImageError,

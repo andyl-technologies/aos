@@ -20,9 +20,9 @@ use super::{
 /// QMP command name used for QEMU's retained template-preparation coordinator.
 pub const QMP_HOT_FORK_TEMPLATE_COMMAND: &str = "crucible-hot-fork-template";
 /// Version of the QEMU-owned template-preparation transaction contract.
-pub const QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION: u32 = 29;
+pub const QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION: u32 = 30;
 /// Version of the resource-stage record nested in the template report.
-pub const QMP_HOT_FORK_TEMPLATE_RESOURCE_STAGE_SCHEMA_VERSION: u32 = 13;
+pub const QMP_HOT_FORK_TEMPLATE_RESOURCE_STAGE_SCHEMA_VERSION: u32 = 14;
 
 const QMP_HOT_FORK_AIO_PROOF: u64 = 1_u64 << 3;
 const QMP_HOT_FORK_RCU_PROOF: u64 = 1_u64 << 4;
@@ -90,9 +90,6 @@ pub struct QmpHotForkTemplateResourceStageState {
     qmp_staged: bool,
     qmp_generation: u64,
     qmp_resource_plan_bound: bool,
-    console_staged: bool,
-    console_generation: u64,
-    console_resource_plan_bound: bool,
     plugin_endpoints_staged: bool,
     plugin_endpoint_generation: u64,
     plugin_private_ring_generation: u64,
@@ -122,9 +119,6 @@ impl QmpHotForkTemplateResourceStageState {
             qmp_staged: false,
             qmp_generation: 0,
             qmp_resource_plan_bound: false,
-            console_staged: false,
-            console_generation: 0,
-            console_resource_plan_bound: false,
             plugin_endpoints_staged: false,
             plugin_endpoint_generation: 0,
             plugin_private_ring_generation: 0,
@@ -194,24 +188,6 @@ impl QmpHotForkTemplateResourceStageState {
     #[must_use]
     pub const fn qmp_resource_plan_bound(self) -> bool {
         self.qmp_resource_plan_bound
-    }
-
-    /// Returns whether QEMU retains one branch-private child console stream.
-    #[must_use]
-    pub const fn console_staged(self) -> bool {
-        self.console_staged
-    }
-
-    /// Returns the current child-console mutation generation.
-    #[must_use]
-    pub const fn console_generation(self) -> u64 {
-        self.console_generation
-    }
-
-    /// Returns whether the child-console contribution is in the sealed plan.
-    #[must_use]
-    pub const fn console_resource_plan_bound(self) -> bool {
-        self.console_resource_plan_bound
     }
 
     /// Returns whether QEMU retains one branch-private plugin endpoint pair.
@@ -377,9 +353,6 @@ impl QmpHotForkTemplateState {
                 qmp_staged: true,
                 qmp_generation: request.qmp_generation(),
                 qmp_resource_plan_bound: true,
-                console_staged: true,
-                console_generation: request.console_generation(),
-                console_resource_plan_bound: true,
                 plugin_endpoints_staged: true,
                 plugin_endpoint_generation: request.plugin_endpoint_generation(),
                 plugin_private_ring_generation: request.private_ring_generation(),

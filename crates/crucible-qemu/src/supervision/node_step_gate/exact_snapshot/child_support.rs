@@ -113,8 +113,9 @@ pub(super) fn describe_child_diagnostics(
 ) -> String {
     match diagnostics.drain_available() {
         Ok(_drained) => format!(
-            "child diagnostics: {:?}",
-            String::from_utf8_lossy(diagnostics.retained())
+            "child diagnostics (omitted_prefix_bytes={}): {:?}",
+            diagnostics.omitted_bytes(),
+            String::from_utf8_lossy(diagnostics.retained_tail())
         ),
         Err(source) => format!("child diagnostics unavailable: {source}"),
     }

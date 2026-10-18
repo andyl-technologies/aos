@@ -191,3 +191,103 @@ fn timeout_and_duplicate_responses_must_fit_one_transport_frame() {
         Err(DeviceError::InvalidBlockFaultDirective { .. })
     ));
 }
+
+/// Retired epochs cannot be pruned below the newest epoch the frontend sent.
+///
+/// A reset that answers a queued request with `RetryPreserveId` does not grant
+/// a preserved-retry authorization. The frontend waits out recovery and then
+/// resubmits the same pre-reset identity, and a request stamped with the new
+/// epoch may cross the ring first. The host still needs the retired epoch's
+/// policy to dispose of that resubmission, so a "highest observed epoch" floor
+/// is not a sound pruning bound for `retired_transport_epochs`.
+#[test]
+fn preserved_identity_of_a_retired_epoch_may_follow_a_newer_epoch_request() {
+    let base = BaseImage::new(vec![0; 32]);
+    let mut durable = CowOverlay::new();
+    let mut state = state(BlockCompletionDurability::Durable);
+    let after_recovery = 1_000_000;
+
+    let first = BlockRequest::read(0, 0, 4);
+    let mut opening = ResolvedBlockFaultDirective::fault_free(&first, 32);
+    opening.execution_ticks = 0;
+    state
+        .install(first.identity(), opening)
+        .unwrap_or_else(|error| panic!("opening directive installs: {error}"));
+    state
+        .execute(&base, &mut durable, &first, 0)
+        .unwrap_or_else(|error| panic!("opening request executes: {error}"));
+
+    let retried = BlockRequest::read(7, 0, 4);
+    state
+        .install(
+            retried.identity(),
+            ResolvedBlockFaultDirective::fault_free(&retried, 32),
+        )
+        .unwrap_or_else(|error| panic!("queued directive installs: {error}"));
+    let responses = state
+        .apply_transport_reset(
+            BlockTransportReset {
+                next_epoch: 1,
+                recovery_nanos: 50,
+                request_ids: BlockTransportRequestIds::NewEpochFromZero,
+                reenumerate_declared: false,
+                preserve_duplicate_history: false,
+                failure_result: BlockErrorCode::IoError,
+                unadmitted: BlockTransportUnadmitted::WaitForRecovery,
+                queued: BlockTransportPending::RetryPreserveId,
+                executing: BlockTransportPending::Fail,
+                resolved: BlockTransportResolved::Complete,
+                completed_undelivered: BlockTransportUndelivered::Complete,
+                preserve_controller_buffer: true,
+                preserve_volatile_cache: true,
+            },
+            0,
+        )
+        .unwrap_or_else(|error| panic!("transport reset applies: {error}"));
+    let disposition = BlockResponse::decode(&responses[0].payload)
+        .unwrap_or_else(|error| panic!("reset disposition decodes: {error}"));
+    assert_eq!(disposition.status, BlockStatus::RetryPreserveId);
+
+    // A fresh request in the new epoch crosses the ring before the retry.
+    let newer = BlockRequest {
+        epoch: 1,
+        ..BlockRequest::read(0, 0, 4)
+    };
+    let mut newer_directive = ResolvedBlockFaultDirective::fault_free(&newer, 32);
+    newer_directive.execution_ticks = after_recovery;
+    state
+        .install(newer.identity(), newer_directive)
+        .unwrap_or_else(|error| panic!("newer-epoch directive installs: {error}"));
+    state
+        .execute(&base, &mut durable, &newer, after_recovery)
+        .unwrap_or_else(|error| panic!("newer-epoch request executes: {error}"));
+
+    // The pre-reset identity is disposed of by epoch 0's retained policy.
+    let disposed = state
+        .dispose_retired_transport_request_if_needed(&retried)
+        .unwrap_or_else(|error| panic!("retired epoch policy must remain: {error}"))
+        .unwrap_or_else(|| panic!("stale retry must receive a reset disposition"));
+    let disposed = BlockResponse::decode(&disposed.payload)
+        .unwrap_or_else(|error| panic!("retry disposition decodes: {error}"));
+    assert_eq!(disposed.status, BlockStatus::RetryPreserveId);
+    assert!(state.retired_transport_epochs.contains_key(&0));
+
+    // That disposition authorized the identity, so its next submission runs.
+    let mut resubmitted = ResolvedBlockFaultDirective::fault_free(&retried, 32);
+    resubmitted.execution_ticks = after_recovery;
+    state
+        .install(retried.identity(), resubmitted)
+        .unwrap_or_else(|error| panic!("authorized directive installs: {error}"));
+    let computed = state
+        .execute(&base, &mut durable, &retried, after_recovery)
+        .unwrap_or_else(|error| panic!("authorized pre-reset identity executes: {error}"));
+    let completed = BlockResponse::decode(
+        &computed
+            .primary
+            .unwrap_or_else(|| panic!("authorized request completes"))
+            .payload,
+    )
+    .unwrap_or_else(|error| panic!("authorized response decodes: {error}"));
+    assert_eq!(completed.status, BlockStatus::Ok);
+    assert_eq!(completed.identity(), retried.identity());
+}

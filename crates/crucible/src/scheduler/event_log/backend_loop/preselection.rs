@@ -334,8 +334,12 @@ impl<B, I> BackendQuantumLoop<SingleScheduler, B, I> {
         selection: SelectionDecision,
     ) -> Result<SchedulerEventLogAppend, SchedulerError> {
         let before_selection = self.loop_impl.clone();
-        if let Some(held) = self.held_host_continuation.as_ref() {
-            held.lineage.ensure_extension_room()?;
+        if let Some(held) = self.held_host_continuation.as_mut() {
+            held.prepare_canonical_extension(
+                &before_selection,
+                &self.held_stop_controller,
+                self.held_union_generation,
+            )?;
             if !held.lineage.context_is_current(&before_selection) {
                 return Err(SchedulerError::BoundaryViolation {
                     message: String::from("live selection changed its retained canonical union"),

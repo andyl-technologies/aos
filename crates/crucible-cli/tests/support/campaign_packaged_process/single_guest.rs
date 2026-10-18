@@ -4,8 +4,8 @@
 //! The static initramfs registers real guest choices and reports their selected
 //! values. Its attached small root disk still uses the production writable
 //! overlay, pinned descriptors, credentials, and project quota.
-//! Both flights enable the bounded control callback witness, including the
-//! fork materialization, replay, and restore stages of the second flight.
+//! The boot flight retains callback streams. Materialization, replay, and
+//! restore retain fixed failure summaries without routine callback/native traces.
 
 use super::*;
 use crucible_campaign::{AttemptExecutionScope, AttemptId, CampaignFactId, ExactCheckpointId};
@@ -17,6 +17,10 @@ const VIRTUAL_BUDGET_PS: u64 = 2_000_000_000_000;
 const HOST_WATCHDOG: Duration = Duration::from_secs(180);
 const SELECTED_MARKER: &str = "selected-fast-q7";
 const COMPLETION_MARKER: &str = "selected-fast-q7-progress-000003";
+const MATERIALIZATION_STOP_CONDITIONS: [&str; 2] = ["scenario-complete", COMPLETION_MARKER];
+
+#[path = "single_guest/policy.rs"]
+mod policy;
 
 #[test]
 #[ignore = "requires packaged QEMU, cgroup v2, and project quotas in the dedicated VM"]
@@ -28,6 +32,33 @@ fn public_single_guest_executes_and_cleans_up() -> Result<(), Box<dyn Error>> {
 #[ignore = "requires packaged QEMU, cgroup v2, and project quotas in the dedicated VM"]
 fn public_single_guest_forks_replays_and_restores() -> Result<(), Box<dyn Error>> {
     run_single_guest(true)
+}
+
+#[test]
+fn materialization_guest_choices_do_not_select_native_network_marker_parking()
+-> Result<(), Box<dyn Error>> {
+    let node = WorldNode {
+        id: NodeId {
+            name: "single".into(),
+        },
+        arch: VmArchitecture::X86_64,
+        memory_mib: 128,
+        cmdline: String::new(),
+        ready_point: ReadyPoint::FixedIcount {
+            icount: Icount { retired: 0 },
+        },
+        white_box: WhiteBoxPolicy::Enabled,
+        smp_vcpus: 1,
+        kernel: None,
+        root_image: None,
+        initrd: None,
+    };
+    let world = World::from_nodes_and_links(vec![node], Vec::new())?;
+    let selectables = guest_choice::guest_choice_selectables_with_prefix(&world, "campaign")?;
+    let native_network = crucible_session::engine::NetworkFaultSelectable::declaration()?;
+
+    assert!(selectables.declaration(native_network.name()).is_none());
+    Ok(())
 }
 
 fn run_single_guest(materialization: bool) -> Result<(), Box<dyn Error>> {
@@ -45,17 +76,31 @@ fn run_single_guest(materialization: bool) -> Result<(), Box<dyn Error>> {
         &compiled,
         packaged.qemu_build_id(),
         Some(VIRTUAL_BUDGET_PS),
+        if materialization {
+            &MATERIALIZATION_STOP_CONDITIONS
+        } else {
+            &["scenario-complete"]
+        },
     )?;
     let authority = guest_choice::write_component_authority(&fixture)?;
     let hot_fork = materialization
         .then(|| guest_choice::materialization_flight_deployment(&fixture))
         .transpose()?;
-    let mut service = guest_choice::start_callback_witness_flight_service(
-        &fixture,
-        &authority,
-        hot_fork.as_deref(),
-        4400,
-    )?;
+    let mut service = if materialization {
+        guest_choice::start_materialization_flight_service(
+            &fixture,
+            &authority,
+            hot_fork.as_deref(),
+            Some(50_000),
+        )?
+    } else {
+        guest_choice::start_callback_witness_flight_service(
+            &fixture,
+            &authority,
+            hot_fork.as_deref(),
+            4400,
+        )?
+    };
     let mut processes = process_audit::ProcessAudit::default();
     stage("guest-start");
     guest_choice::grant_and_start_guest_choice_campaign(&fixture)?;
@@ -105,8 +150,12 @@ fn run_single_guest(materialization: bool) -> Result<(), Box<dyn Error>> {
         stage("retire-fork-source");
         service.stop()?;
         processes.verify_cleanup()?;
-        service =
-            guest_choice::start_callback_witness_flight_service(&fixture, &authority, None, 4400)?;
+        service = guest_choice::start_materialization_flight_service(
+            &fixture,
+            &authority,
+            None,
+            Some(50_000),
+        )?;
         assert_eq!(
             choice_at(&fixture, &selected_recovery, "campaign.retry-quanta")?,
             quanta_choice
@@ -365,7 +414,12 @@ fn capture_and_restore(
     service.stop()?;
     processes.verify_cleanup()?;
     let authority = guest_choice::write_component_authority(fixture)?;
-    *service = guest_choice::start_materialization_flight_service(fixture, &authority, None)?;
+    *service = guest_choice::start_materialization_flight_service(
+        fixture,
+        &authority,
+        None,
+        Some(50_000),
+    )?;
 
     stage("restore-selected-guest-state");
     let known = guest_choice::attempt_states(fixture)?.into_keys().collect();

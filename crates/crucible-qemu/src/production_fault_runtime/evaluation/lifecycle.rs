@@ -30,7 +30,7 @@ impl ProductionFaultRuntime {
                 value: self.resource_limits.event_records,
             })?;
         let mut canonical_current = usize::try_from(production_record_state_usage(
-            &self.emitted_events,
+            self.referenced_events.usage(),
             &self.pending_qemu_observations,
             &self.pending_qemu_events,
             &self.qemu_issued_actions,
@@ -43,8 +43,7 @@ impl ProductionFaultRuntime {
             value: u64::MAX,
         })?;
         let (_event_records, event_log_bytes) = production_event_state_usage(
-            &self.emitted_events,
-            &[],
+            self.referenced_events.usage(),
             &self.pending_qemu_observations,
             &[],
             &self.pending_qemu_events,

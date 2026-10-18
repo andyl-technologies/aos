@@ -59,6 +59,7 @@ fn prepare_setup_maps_validates_and_arms_wake_fd_before_ready_ack() {
     assert_eq!(completion.registered_wake_fd(), None);
     assert!(completion.app_random_branch_plan().entries().is_empty());
     assert!(completion.selectable_catalog_plan().is_some());
+    assert!(completion.native_console_plan().is_none());
     assert!(io.written().is_empty());
     assert_eq!(io.flush_count(), 0);
 
@@ -82,6 +83,136 @@ fn prepare_setup_maps_validates_and_arms_wake_fd_before_ready_ack() {
         SETUP_ACK_STATUS_READY
     );
     assert_eq!(io.flush_count(), 1);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn prepare_setup_retains_and_transfers_authenticated_native_console_plan()
+-> Result<(), Box<dyn std::error::Error>> {
+    let layout = valid_layout();
+    let (composite, console) = console_setup_plan()?;
+    let setup = ReceivedSetup {
+        region_len: layout.region_size,
+        descriptors: ReceivedSetupDescriptors {
+            shmem_fd: valid_region_file(layout).into(),
+            wake_fd: wake_fd().into(),
+            plugin_setup_plan_fd: test_sealed_setup_plan_fd(&composite.encode()?),
+        },
+    };
+    let mut io = ScriptedIo::default();
+
+    let mut completion =
+        prepare_setup_completion(&mut io, setup, plugin_handshake(1, layout.node_count))?;
+
+    assert_eq!(completion.native_console_plan(), Some(&console));
+    assert!(completion.selectable_catalog_plan().is_some());
+    assert_eq!(completion.registered_wake_fd(), None);
+    assert!(io.written().is_empty());
+
+    assert_eq!(completion.take_native_console_plan(), Some(console));
+    assert!(completion.native_console_plan().is_none());
+    assert!(completion.take_native_console_plan().is_none());
+    assert!(completion.selectable_catalog_plan().is_some());
+    assert_eq!(completion.validated_layout(), layout);
+    assert_nonblocking(completion.wake_fd().as_raw_fd());
+    assert!(io.written().is_empty());
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn prepare_setup_refuses_invalid_console_or_old_composite_version_before_ready()
+-> Result<(), Box<dyn std::error::Error>> {
+    let layout = valid_layout();
+    let (composite, console) = console_setup_plan()?;
+    let mut invalid_console = composite.encode()?;
+    let console_offset = invalid_console.len() - console.encode()?.len();
+    invalid_console[console_offset] = 0;
+    let mut old_version = composite.encode()?;
+    old_version[8..12].copy_from_slice(&2_u32.to_be_bytes());
+
+    for (bytes, old_version) in [(invalid_console, false), (old_version, true)] {
+        let setup = ReceivedSetup {
+            region_len: layout.region_size,
+            descriptors: ReceivedSetupDescriptors {
+                shmem_fd: valid_region_file(layout).into(),
+                wake_fd: wake_fd().into(),
+                plugin_setup_plan_fd: test_sealed_setup_plan_fd(&bytes),
+            },
+        };
+        let mut io = ScriptedIo::default();
+
+        let error = match prepare_setup_completion(
+            &mut io,
+            setup,
+            plugin_handshake(1, layout.node_count),
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("invalid sealed setup plan must not produce completion"),
+        };
+
+        if old_version {
+            assert!(matches!(
+                error,
+                PluginSetupError::ValidatePluginSetupPlan {
+                    source: PluginSetupPlanDescriptorError::DecodeComposite {
+                        source: PluginSetupPlanError::UnsupportedVersion { version: 2 },
+                    },
+                }
+            ));
+        } else {
+            assert!(matches!(
+                error,
+                PluginSetupError::ValidatePluginSetupPlan {
+                    source: PluginSetupPlanDescriptorError::DecodeComposite {
+                        source: PluginSetupPlanError::NativeConsole { .. },
+                    },
+                }
+            ));
+        }
+        assert_eq!(
+            decode_single_setup_ack(io.written()),
+            SETUP_ACK_STATUS_SETUP_FAILED
+        );
+        assert_eq!(io.flush_count(), 1);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn console_setup_plan()
+-> Result<(PluginSetupPlan, NativeConsoleSetupPlan), Box<dyn std::error::Error>> {
+    use crucible_protocol::{
+        native_console::{NativeConsoleDevice, NativeConsolePlan, NativeConsoleStream},
+        selectable_catalog_plan::{SelectablePlanContinuation, SelectablePlanLimits},
+    };
+
+    // Modeled plan shape only; these controls do not resolve a native UART.
+    let device = NativeConsoleDevice::Serial16550;
+    let console = NativeConsoleSetupPlan::new(
+        NativeConsolePlan {
+            slot: 1,
+            logical_generation: 0,
+            node_sequence_base: 0,
+            streams: vec![NativeConsoleStream {
+                stream: 1,
+                device,
+                device_identity: device.fixed_console_identity(),
+                owner_mask: 1,
+                sequence_base: 0,
+            }],
+        },
+        7,
+        13,
+    )?;
+    let selectable = SelectableCatalogPlan::new(
+        SelectablePlanLimits::new(1, 1, 1)?,
+        Vec::new(),
+        SelectablePlanContinuation::cold(),
+    )?;
+    let composite = PluginSetupPlan::new(AppRandomBranchPlan::default(), selectable)
+        .with_native_console(console.clone());
+    Ok((composite, console))
 }
 
 #[test]

@@ -249,7 +249,13 @@ fn delivery_order(decisions: &[Decision]) -> Vec<EventKey> {
 }
 
 fn delivery_order_from_report(report: &SchedulerLivenessReport) -> Vec<EventKey> {
-    delivery_order(report.final_configuration.schedule.decisions())
+    delivery_order(
+        &report
+            .final_configuration
+            .schedule
+            .decision_history()
+            .to_vec(),
+    )
 }
 
 fn scenario_node(

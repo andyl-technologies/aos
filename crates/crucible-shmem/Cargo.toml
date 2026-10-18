@@ -5,6 +5,11 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 publish = false
 
+[features]
+default = []
+# Explicit public-protocol writer fixtures; never supplies a native phase.
+test-support = []
+
 [lints]
 workspace = true
 

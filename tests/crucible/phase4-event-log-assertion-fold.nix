@@ -78,8 +78,8 @@
     ]
     ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
       {
-        label = "offline reconstructs condition prefix from recorded log";
-        needle = "condition_prefix_from_recorded_log";
+        label = "offline reconstructs condition prefixes from the recorded log";
+        needle = "pub struct AssertionLogCheck";
       }
       {
         label = "offline checker feeds shared evaluator";

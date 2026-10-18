@@ -651,6 +651,26 @@ where
         self.host.quarantine();
         self.terminal = true;
     }
+
+    fn detach_execution_cancellation(&mut self) -> Result<(), QemuVmRealizationError> {
+        if self.terminal {
+            return Err(QemuVmRealizationError::Executor {
+                operation: "detach QEMU attempt cancellation",
+                message: String::from("attempt resource guard is already terminal"),
+            });
+        }
+        self.check_operational_boundary()?;
+        self.cancellation_registration = None;
+        // `cancel` stores the flag before reading the hook under the same
+        // lock, so a cancel whose hook could still have run is visible here.
+        if self.cancellation.is_canceled() {
+            return Err(QemuVmRealizationError::Canceled {
+                operation: "detach QEMU attempt cancellation",
+            });
+        }
+        self.cancellation = ExecutionCancellation::default();
+        Ok(())
+    }
 }
 
 impl<H> QemuAttemptProcessResourceGuard for ComposedQemuAttemptResourceGuard<H>

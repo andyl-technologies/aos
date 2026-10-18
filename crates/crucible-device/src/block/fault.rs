@@ -37,6 +37,7 @@ pub(in crate::block) use helpers::{keyed_discard_bytes, request_in_capacity};
 mod observation_effects;
 mod state_admission;
 pub use state_admission::BlockExecutionServiceSummary;
+mod media_retirement;
 mod observation_revision;
 mod state_execution;
 
@@ -903,6 +904,15 @@ pub struct BlockFaultState {
     observation_changed: bool,
     config: BlockDurabilityConfig,
     transport_epoch: Option<u64>,
+    // The highest `oldest_live_epoch` acknowledged by an admitted request. The
+    // frontend never submits an epoch below it again ([IO-35]).
+    oldest_live_transport_epoch: u64,
+    // One policy per `NewEpochFromZero` reset, kept from the acknowledged
+    // oldest live epoch upward. The highest epoch the frontend has sent is not
+    // a sound floor: a reset that answers a request with `RetryPreserveId`
+    // grants no authorization, so the frontend resubmits the pre-reset
+    // identity after recovery, possibly behind newer-epoch requests, and its
+    // disposal still reads this policy. The frontend's own acknowledgment is.
     retired_transport_epochs: BTreeMap<u64, BlockRetiredTransportEpoch>,
     retry_preserve_authorizations: BTreeSet<BlockRequestIdentity>,
     recovery_until_ticks: Option<u64>,

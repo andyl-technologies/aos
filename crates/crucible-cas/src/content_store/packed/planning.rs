@@ -61,7 +61,7 @@ impl PackedRepackReport {
         self.plan
     }
 
-    /// Returns accounting before the index-generation switch.
+    /// Returns accounting before the index-root switch.
     #[must_use]
     pub const fn before(self) -> PackedStorageAccounting {
         self.before
@@ -105,7 +105,8 @@ pub struct PackedRepackPlan {
     pub(super) configuration: [u8; 32],
     pub(super) instance: [u8; 32],
     pub(super) generation: u64,
-    pub(super) index_digest: [u8; 32],
+    /// Digest of the exact index root, which commits base, journal, and pack table.
+    pub(super) root_digest: [u8; 32],
     pub(super) before: PackedStorageAccounting,
 }
 
@@ -128,7 +129,7 @@ impl PackedRepackPlan {
         encode_repack_plan(self)
     }
 
-    /// Strictly decodes one canonical v1 plan.
+    /// Strictly decodes one canonical v2 plan.
     ///
     /// # Errors
     ///

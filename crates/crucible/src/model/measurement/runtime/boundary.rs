@@ -256,77 +256,141 @@ impl BoundaryProgress {
     }
 }
 
-pub(super) fn evaluate_window(
-    definition: &MeasurementDefinition,
-    entries: &[SchedulerEventLogEntry],
-    terminal: &MeasurementTerminalState,
-) -> Result<MeasurementWindowOutcome, MeasurementEvaluationError> {
-    let mut begin = BoundaryProgress::new(&definition.begin, terminal.scenario_ready_at);
-    let mut end = BoundaryProgress::new(&definition.end, terminal.scenario_ready_at);
-    let mut timeout = TimeoutProgress::new(definition.timeout.as_ref());
-    let mut begin_evidence = begin.satisfied.clone();
-    if let Some(opened) = &begin_evidence {
-        end.activate(opened.at);
-        timeout.open(opened, entries.first());
+/// Incremental replay state for one measurement window.
+///
+/// The window advances one scheduler entry at a time and decides its outcome
+/// as soon as the end boundary or timeout completes; terminal-only boundaries
+/// are resolved by [`Self::finish`].
+pub(super) struct WindowProgress<'definition> {
+    definition: &'definition MeasurementDefinition,
+    begin: BoundaryProgress,
+    end: BoundaryProgress,
+    timeout: TimeoutProgress,
+    opened: Option<MeasurementBoundaryEvidence>,
+    // A window opened before any entry seeds its timeout baseline from the
+    // first entry it sees, matching a window opened by that entry.
+    timeout_awaits_first_entry: bool,
+    decided: Option<MeasurementWindowOutcome>,
+}
+
+impl<'definition> WindowProgress<'definition> {
+    pub(super) fn new(
+        definition: &'definition MeasurementDefinition,
+        scenario_ready_at: Option<VirtualTime>,
+    ) -> Self {
+        let begin = BoundaryProgress::new(&definition.begin, scenario_ready_at);
+        let mut end = BoundaryProgress::new(&definition.end, scenario_ready_at);
+        let opened = begin.satisfied.clone();
+        if let Some(opened) = &opened {
+            end.activate(opened.at);
+        }
+        Self {
+            definition,
+            begin,
+            end,
+            timeout: TimeoutProgress::new(definition.timeout.as_ref()),
+            timeout_awaits_first_entry: opened.is_some(),
+            opened,
+            decided: None,
+        }
     }
 
-    for entry in entries {
-        if begin_evidence.is_none() {
-            begin_evidence = begin.observe(entry, &definition.cohort);
-            if let Some(evidence) = &begin_evidence {
-                end.activate(evidence.at);
-                timeout.open(evidence, Some(entry));
+    /// Advances the window by one entry and reports whether it lies inside.
+    ///
+    /// An entry is inside when the window is open at it: on or after the
+    /// begin boundary and no later than the entry that completes the end
+    /// boundary or timeout. Membership is final when reported, except for a
+    /// begin boundary that only the terminal coordinate resolves, which
+    /// [`Self::is_opened`] lets the caller anticipate.
+    pub(super) fn observe(&mut self, entry: &SchedulerEventLogEntry) -> bool {
+        if self.decided.is_some() {
+            return false;
+        }
+        if self.timeout_awaits_first_entry {
+            self.timeout_awaits_first_entry = false;
+            if let Some(opened) = &self.opened {
+                self.timeout.open(opened, Some(entry));
             }
         }
-        let Some(opened) = &begin_evidence else {
-            continue;
+
+        if self.opened.is_none() {
+            self.opened = self.begin.observe(entry, &self.definition.cohort);
+            if let Some(opened) = &self.opened {
+                self.end.activate(opened.at);
+                self.timeout.open(opened, Some(entry));
+            }
+        }
+        let Some(opened) = &self.opened else {
+            return false;
         };
         if !entry_not_before_boundary(entry, opened) {
-            continue;
+            return false;
         }
-        if let Some(completed) = end
-            .observe(entry, &definition.cohort)
+
+        if let Some(completed) = self
+            .end
+            .observe(entry, &self.definition.cohort)
             .filter(|completed| event_boundary_not_before(opened, completed))
         {
-            return Ok(MeasurementWindowOutcome::Completed {
+            self.decided = Some(MeasurementWindowOutcome::Completed {
                 begin: opened.clone(),
                 end: completed,
             });
-        }
-        if let Some(expired) = timeout.observe(entry) {
-            return Ok(MeasurementWindowOutcome::TimedOut {
+        } else if let Some(expired) = self.timeout.observe(entry) {
+            self.decided = Some(MeasurementWindowOutcome::TimedOut {
                 begin: opened.clone(),
                 timeout: expired,
             });
         }
+        true
     }
 
-    if begin_evidence.is_none() {
-        begin_evidence = begin.observe_terminal(terminal);
-        if let Some(opened) = &begin_evidence {
-            end.activate(opened.at);
-            timeout.open(opened, None);
+    /// Reports whether an observed entry has opened the window.
+    pub(super) const fn is_opened(&self) -> bool {
+        self.opened.is_some()
+    }
+
+    pub(super) fn finish(
+        mut self,
+        terminal: &MeasurementTerminalState,
+    ) -> MeasurementWindowOutcome {
+        if let Some(decided) = self.decided {
+            return decided;
         }
+        if self.timeout_awaits_first_entry
+            && let Some(opened) = &self.opened
+        {
+            self.timeout.open(opened, None);
+        }
+
+        if self.opened.is_none() {
+            self.opened = self.begin.observe_terminal(terminal);
+            if let Some(opened) = &self.opened {
+                self.end.activate(opened.at);
+                self.timeout.open(opened, None);
+            }
+        }
+        let Some(opened) = self.opened else {
+            return MeasurementWindowOutcome::NotStarted;
+        };
+        if let Some(completed) = self
+            .end
+            .observe_terminal(terminal)
+            .filter(|completed| completed.at >= opened.at)
+        {
+            return MeasurementWindowOutcome::Completed {
+                begin: opened,
+                end: completed,
+            };
+        }
+        if let Some(expired) = self.timeout.observe_terminal(terminal) {
+            return MeasurementWindowOutcome::TimedOut {
+                begin: opened,
+                timeout: expired,
+            };
+        }
+        MeasurementWindowOutcome::Open { begin: opened }
     }
-    let Some(opened) = begin_evidence else {
-        return Ok(MeasurementWindowOutcome::NotStarted);
-    };
-    if let Some(completed) = end
-        .observe_terminal(terminal)
-        .filter(|completed| completed.at >= opened.at)
-    {
-        return Ok(MeasurementWindowOutcome::Completed {
-            begin: opened,
-            end: completed,
-        });
-    }
-    if let Some(expired) = timeout.observe_terminal(terminal) {
-        return Ok(MeasurementWindowOutcome::TimedOut {
-            begin: opened,
-            timeout: expired,
-        });
-    }
-    Ok(MeasurementWindowOutcome::Open { begin: opened })
 }
 
 fn entry_not_before_boundary(

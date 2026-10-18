@@ -110,9 +110,11 @@ fn replay_plan_preserves_input_decision_input_order_and_rejects_wrong_generation
             configuration: scheduler.configuration().clone(),
             control: Vec::new(),
         })?;
+        let segments = scheduler.event_log_segment_store();
         let input_count = scheduler
             .checkpoint()?
-            .retained_event_log_entries()
+            .event_log_entries(segments.as_ref())
+            .collect::<Result<Vec<_>, _>>()?
             .iter()
             .filter(|entry| {
                 matches!(
@@ -129,8 +131,18 @@ fn replay_plan_preserves_input_decision_input_order_and_rejects_wrong_generation
         }
     }
     let checkpoint = scheduler.checkpoint()?;
+    let segments = scheduler.event_log_segment_store();
+    let segments = segments.as_ref();
     let configuration = scheduler.configuration();
-    let steps = authenticated_replay_steps(&world, configuration, &checkpoint, 1, &receiver, 2)?;
+    let steps = authenticated_replay_steps(
+        &world,
+        configuration,
+        &checkpoint,
+        segments,
+        1,
+        &receiver,
+        2,
+    )?;
 
     assert_eq!(steps.len(), 5);
     assert!(matches!(steps[0], ReplayStep::Input { delivery, .. } if delivery.ticks == 1));
@@ -139,11 +151,11 @@ fn replay_plan_preserves_input_decision_input_order_and_rejects_wrong_generation
     assert!(matches!(steps[3], ReplayStep::Input { delivery, .. } if delivery.ticks == 2));
     assert!(matches!(steps[4], ReplayStep::Decision { index: 2 }));
     assert!(matches!(
-        configuration.schedule.decisions()[1],
+        configuration.schedule.decision_history()[1],
         Decision::Preemption(_)
     ));
     let sender_steps =
-        authenticated_replay_steps(&world, configuration, &checkpoint, 1, &sender, 0)?;
+        authenticated_replay_steps(&world, configuration, &checkpoint, segments, 1, &sender, 0)?;
     assert!(matches!(
         sender_steps.as_slice(),
         [
@@ -153,15 +165,41 @@ fn replay_plan_preserves_input_decision_input_order_and_rejects_wrong_generation
         ]
     ));
     assert!(
-        authenticated_replay_steps(&world, configuration, &checkpoint, 2, &receiver, 2,).is_err()
+        authenticated_replay_steps(
+            &world,
+            configuration,
+            &checkpoint,
+            segments,
+            2,
+            &receiver,
+            2,
+        )
+        .is_err()
     );
     assert!(
-        authenticated_replay_steps(&world, configuration, &checkpoint, 1, &receiver, 1,).is_err()
+        authenticated_replay_steps(
+            &world,
+            configuration,
+            &checkpoint,
+            segments,
+            1,
+            &receiver,
+            1,
+        )
+        .is_err()
     );
     let wrong_world = World::from_nodes(vec![world_node("sender"), world_node("receiver")])?;
     assert!(
-        authenticated_replay_steps(&wrong_world, configuration, &checkpoint, 1, &receiver, 2,)
-            .is_err()
+        authenticated_replay_steps(
+            &wrong_world,
+            configuration,
+            &checkpoint,
+            segments,
+            1,
+            &receiver,
+            2,
+        )
+        .is_err()
     );
     Ok(())
 }

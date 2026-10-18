@@ -151,7 +151,7 @@ fn deterministic_run_material(form: &ScenarioDefForm) -> RunMaterial {
     let configuration = recorder.into_configuration();
 
     RunMaterial {
-        schedule: configuration.schedule.decisions().to_vec(),
+        schedule: configuration.schedule.decision_history().to_vec(),
         launch: launch_material(form),
         node_fingerprint: run_node_to_fingerprint(
             form,

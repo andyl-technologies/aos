@@ -1,139 +1,122 @@
-//! Borrowed, allocation-bounded checkpoint capacity preflight.
+//! Allocation-bounded checkpoint capacity preflight.
+//!
+//! An owned continuation commits a boundary to its live backend before it
+//! records the boundary's work item, so a checkpoint that would exceed
+//! `fat_checkpoint_bytes` must be refused before the commit. The preflight
+//! measures the complete candidate checkpoint without re-encoding the recorded
+//! trace: sealed work items are not part of the checkpoint, and the open
+//! tail's encoded length is tracked by the writer as items are appended.
+//! Digests not known before the commit are measured at their widest encoding,
+//! so the measurement is an upper bound that refuses early by at most a few
+//! digest widths and never admits a checkpoint beyond the limit.
 
 use serde::Serialize;
 use serde::ser::{SerializeSeq, Serializer};
 
 use super::*;
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the borrowed wire mirrors every canonical record coordinate"
-)]
+/// Coordinates of the one work item an evaluation would record.
+pub(super) struct CapacityWorkItemContext<'a> {
+    pub(super) coordinate: FaultCoordinate,
+    pub(super) same_coordinate_sequence: u64,
+    pub(super) opportunity: Option<&'a FaultOpportunity>,
+    pub(super) derivation_fingerprint: ContentHash,
+    pub(super) precondition_digest: ContentHash,
+    pub(super) evidence_digest: ContentHash,
+}
+
+/// Refuses an evaluation whose recorded work item would make the complete
+/// checkpoint exceed its byte or replay-counter limits.
+///
+/// `candidate` is the bounded checkpoint after the previewed evaluation; the
+/// trace position and replay cursor come from `trace`.
 pub(super) fn preflight_checkpoint_with_actions(
-    checkpoint: &FaultRuntimeCheckpoint,
+    candidate: &FaultRuntimeCheckpoint,
+    trace: &FaultTraceState,
     actions: &[ResolvedBindingAction],
-    coordinate: FaultCoordinate,
-    same_coordinate_sequence: u64,
-    opportunity: Option<&FaultOpportunity>,
-    derivation_fingerprint: ContentHash,
-    precondition_digest: ContentHash,
-    evidence_digest: ContentHash,
+    context: CapacityWorkItemContext<'_>,
 ) -> Result<(), FaultRuntimeError> {
-    let _ = checkpoint_bytes_with_actions(
-        checkpoint,
-        actions,
-        coordinate,
-        same_coordinate_sequence,
-        opportunity,
-        derivation_fingerprint,
-        precondition_digest,
-        evidence_digest,
-    )?;
+    let _ = candidate_checkpoint_len(candidate, trace, actions, &context)?;
     Ok(())
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the borrowed wire mirrors every canonical record coordinate"
-)]
-fn checkpoint_bytes_with_actions(
-    checkpoint: &FaultRuntimeCheckpoint,
+/// Returns an upper bound on the encoded length of the checkpoint after
+/// recording one work item for `actions`.
+fn candidate_checkpoint_len(
+    candidate: &FaultRuntimeCheckpoint,
+    trace: &FaultTraceState,
     actions: &[ResolvedBindingAction],
-    coordinate: FaultCoordinate,
-    same_coordinate_sequence: u64,
-    opportunity: Option<&FaultOpportunity>,
-    derivation_fingerprint: ContentHash,
-    precondition_digest: ContentHash,
-    evidence_digest: ContentHash,
-) -> Result<Vec<u8>, FaultRuntimeError> {
-    let work_items = u64::try_from(checkpoint.recorded_work_items.len())
-        .map_err(|_| FaultRuntimeError::CountOverflow("thin_replay_events"))?;
-    checkpoint
-        .resource_limits
-        .reserve("thin_replay_events", work_items, 1)
-        .map_err(FaultRuntimeError::ResourceLimit)?;
-    let existing_records = checkpoint
-        .recorded_work_items
-        .iter()
-        .try_fold(0_u64, |total, item| {
-            total.checked_add(u64::try_from(item.records.len()).ok()?)
-        })
-        .ok_or(FaultRuntimeError::CountOverflow("resolved_effect_records"))?;
-    checkpoint
-        .resource_limits
-        .reserve(
-            "resolved_effect_records",
-            existing_records,
-            u64::try_from(actions.len())
-                .map_err(|_| FaultRuntimeError::CountOverflow("resolved_effect_records"))?,
-        )
-        .map_err(FaultRuntimeError::ResourceLimit)?;
+    context: &CapacityWorkItemContext<'_>,
+) -> Result<u64, FaultRuntimeError> {
     if actions
         .iter()
-        .any(|action| action.opportunity != opportunity.map(FaultOpportunity::id))
+        .any(|action| action.opportunity != context.opportunity.map(FaultOpportunity::id))
     {
         return Err(FaultRuntimeError::InvalidReplayTrace);
     }
+    let records = u64::try_from(actions.len())
+        .map_err(|_| FaultRuntimeError::CountOverflow("resolved_effect_records"))?;
+    trace.recorded.reserve(records)?;
 
     let work_item = CapacityWorkItem {
-        coordinate,
-        same_coordinate_sequence,
-        opportunity,
-        derivation_fingerprint,
+        coordinate: context.coordinate,
+        same_coordinate_sequence: context.same_coordinate_sequence,
+        opportunity: context.opportunity,
+        derivation_fingerprint: context.derivation_fingerprint,
         actions,
-        precondition_digest,
-        evidence_digest,
+        precondition_digest: context.precondition_digest,
+        evidence_digest: context.evidence_digest,
     };
-    let wire = CapacityCheckpoint {
-        semantic_version: checkpoint.semantic_version,
-        signal_plan: checkpoint.signal_plan,
-        resource_limits: &checkpoint.resource_limits,
-        binding_runtime: &checkpoint.binding_runtime,
-        adapters: &checkpoint.adapters,
-        replay: checkpoint.replay.as_ref(),
-        recorded_work_items: RecordedWorkItems {
-            existing: &checkpoint.recorded_work_items,
-            appended: work_item,
-        },
-        retained_effects: &checkpoint.retained_effects,
-        branch_parent: checkpoint.branch_parent,
-        poisoned: checkpoint.poisoned,
-    };
-    super::super::runtime::checkpoint_codec::encode(&wire, checkpoint.resource_limits)
+    let item_bytes = encoded_len(&work_item)?;
+    if item_bytes > MAX_RESOLVED_EFFECT_TRACE_ITEM_BYTES as u64 {
+        return Err(FaultRuntimeError::TraceItemTooLarge { bytes: item_bytes });
+    }
+    let item_bytes =
+        usize::try_from(item_bytes).map_err(|_| FaultRuntimeError::CheckpointEncoding)?;
+    let shell = trace.recorded.capacity_shell(item_bytes, records)?;
+
+    let mut measured = candidate.clone();
+    measured.recorded = shell.position.clone();
+    measured.replay = trace
+        .replay
+        .as_ref()
+        .map(ResolvedEffectTraceReader::replay_cursor);
+    let length = shell.encoded_len(encoded_len(&measured)?);
+
+    let configured = candidate.resource_limits.fat_checkpoint_bytes;
+    let hard = FaultResourceLimits::compiled_maximum().fat_checkpoint_bytes;
+    if length > configured || length > hard {
+        return Err(FaultRuntimeError::ResourceLimit(
+            FaultResourceLimitError::Exceeded {
+                field: "fat_checkpoint_bytes",
+                current: 0,
+                requested: length,
+                configured,
+                hard,
+            },
+        ));
+    }
+    Ok(length)
 }
 
-#[derive(Serialize)]
-struct CapacityCheckpoint<'a> {
-    semantic_version: u16,
-    signal_plan: ContentHash,
-    resource_limits: &'a FaultResourceLimits,
-    binding_runtime: &'a BindingRuntimeCheckpoint,
-    adapters: &'a BTreeMap<FaultAdapter, AdapterCheckpointState>,
-    replay: Option<&'a ResolvedEffectTrace>,
-    recorded_work_items: RecordedWorkItems<'a>,
-    retained_effects: &'a BTreeSet<ContentHash>,
-    branch_parent: Option<ContentHash>,
-    poisoned: bool,
+/// Counts a value's CBOR encoding without retaining the bytes.
+fn encoded_len(value: &impl Serialize) -> Result<u64, FaultRuntimeError> {
+    let mut counter = ByteCounter(0);
+    ciborium::ser::into_writer(value, &mut counter)
+        .map_err(|_| FaultRuntimeError::CheckpointEncoding)?;
+    Ok(counter.0)
 }
 
-struct RecordedWorkItems<'a> {
-    existing: &'a [ResolvedReplayWorkItem],
-    appended: CapacityWorkItem<'a>,
-}
+struct ByteCounter(u64);
 
-impl Serialize for RecordedWorkItems<'_> {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let length = self
-            .existing
-            .len()
-            .checked_add(1)
-            .ok_or_else(|| serde::ser::Error::custom("work-item count overflow"))?;
-        let mut sequence = serializer.serialize_seq(Some(length))?;
-        for item in self.existing {
-            sequence.serialize_element(item)?;
-        }
-        sequence.serialize_element(&self.appended)?;
-        sequence.end()
+impl std::io::Write for ByteCounter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 = self.0.saturating_add(bytes.len() as u64);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }
 
@@ -305,10 +288,21 @@ mod tests {
     use super::super::test_support::*;
     use super::*;
 
+    fn context(coordinate: FaultCoordinate) -> CapacityWorkItemContext<'static> {
+        CapacityWorkItemContext {
+            coordinate,
+            same_coordinate_sequence: 0,
+            opportunity: None,
+            derivation_fingerprint: crate::model::fault_signal::runtime::WIDEST_CONTENT_HASH,
+            precondition_digest: crate::model::fault_signal::runtime::WIDEST_CONTENT_HASH,
+            evidence_digest: crate::model::fault_signal::runtime::WIDEST_CONTENT_HASH,
+        }
+    }
+
     #[test]
-    fn borrowed_capacity_wire_matches_a_real_host_record_candidate() {
+    fn measured_candidate_length_bounds_the_checkpoint_after_recording() {
         let plan = test_plan();
-        let seed = ContentHash::from_bytes(b"borrowed-capacity-wire-equivalence");
+        let seed = ContentHash::from_bytes(b"capacity-length-equivalence");
         let coordinate = FaultCoordinate {
             virtual_ticks: 0,
             retired_instructions: None,
@@ -321,50 +315,48 @@ mod tests {
             manifests(),
         )
         .unwrap_or_else(|error| panic!("runtime: {error}"));
-        let evaluation = runtime
+        let mut preview = FaultExecutionRuntime::new(
+            &plan,
+            &NoArtifacts,
+            SignalBoundarySnapshot::default(),
+            seed,
+            manifests(),
+        )
+        .unwrap_or_else(|error| panic!("preview runtime: {error}"));
+        let evaluation = preview
             .preview_boundary(coordinate, 0)
             .unwrap_or_else(|error| panic!("preview: {error}"));
         assert_eq!(evaluation.actions.len(), 1);
-        let checkpoint = runtime
-            .checkpoint()
-            .unwrap_or_else(|error| panic!("checkpoint: {error}"));
-        let derivation = ContentHash::from_bytes(b"capacity-equivalence-derivation");
-        let precondition = ContentHash::from_bytes(b"capacity-equivalence-precondition");
-        let evidence = ContentHash::from_bytes(b"capacity-equivalence-evidence");
-        let borrowed = checkpoint_bytes_with_actions(
-            &checkpoint,
-            &evaluation.actions,
-            coordinate,
-            0,
-            None,
-            derivation,
-            precondition,
-            evidence,
-        )
-        .unwrap_or_else(|error| panic!("borrowed candidate: {error}"));
+        let candidate = preview
+            .bounded_checkpoint()
+            .unwrap_or_else(|error| panic!("bounded checkpoint: {error}"));
 
-        let records = evaluation
-            .actions
-            .iter()
-            .map(|action| {
-                ResolvedEffectRecord::from_committed_action(
-                    action,
-                    None,
-                    0,
-                    derivation,
-                    Some(precondition),
-                    evidence,
-                )
-            })
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap_or_else(|error| panic!("records: {error}"));
-        let item = ResolvedReplayWorkItem::new(coordinate, 0, None, derivation, records)
-            .unwrap_or_else(|error| panic!("work item: {error}"));
-        let mut actual = checkpoint;
-        actual.recorded_work_items.push(item);
-        let actual = actual
+        let measured = candidate_checkpoint_len(
+            &candidate,
+            &runtime.trace,
+            &evaluation.actions,
+            &context(coordinate),
+        )
+        .unwrap_or_else(|error| panic!("measured candidate: {error}"));
+
+        // The widest placeholder digests bound the committed digests' width:
+        // a work item carries one derivation digest and each record carries
+        // derivation, precondition, and evidence digests.
+        runtime
+            .evaluate_boundary(coordinate, 0)
+            .unwrap_or_else(|error| panic!("boundary: {error}"));
+        let actual = runtime
+            .checkpoint()
+            .unwrap_or_else(|error| panic!("checkpoint: {error}"))
             .canonical_bytes()
-            .unwrap_or_else(|error| panic!("actual candidate: {error}"));
-        assert_eq!(borrowed, actual);
+            .unwrap_or_else(|error| panic!("checkpoint bytes: {error}"));
+        assert_eq!(runtime.trace.recorded.position().tail().len(), 1);
+        let actual = actual.len() as u64;
+        let placeholder_slack = 32 * (1 + 3 * evaluation.actions.len() as u64);
+        assert!(measured >= actual, "{measured} < {actual}");
+        assert!(
+            measured <= actual + placeholder_slack,
+            "{measured} >> {actual}"
+        );
     }
 }

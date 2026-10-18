@@ -168,7 +168,7 @@ impl ProductionVmLifecycleLoop {
                 message: format!("encode production scheduler checkpoint evidence: {error}"),
             }
         })?;
-        let segments = checkpoint.event_log_segment_dependencies().to_vec();
+        let segments = checkpoint.event_log_segment_dependencies();
         let bytes =
             checkpoint
                 .canonical_bytes()
@@ -208,6 +208,7 @@ impl ProductionVmLifecycleLoop {
         // earlier admitted ancestor; its withheld TX suffix is not snapshot state.
         if self.pending_held_host_outcomes.is_some()
             || self.inner.live_network_preselection().is_some()
+            || self.inner.has_campaign_parks()
             || self.inner.loop_impl().pending_branch_effect_choice_count() != 0
             || !self.signal_fault_branches.is_empty()
             || self.inner.pending_network_output_count() != 0
@@ -391,20 +392,18 @@ impl ProductionVmLifecycleLoop {
                     });
                 }
             };
-        let emitted_events = runtime.emitted_events().to_vec();
+        let referenced_events = runtime.referenced_events().evidence();
         drop(runtime);
 
         let network = self.inner.network_output_interceptor();
         let resolved_effect_trace = super::network_faults::trace_with_campaign_network_records(
             resolved_effect_trace,
-            network.campaign_effect_records(),
-            network.resource_limits(),
+            network.campaign_effect_log(),
             crucible::model::FaultReplayMode::RecomputedCause,
         )?;
         let locked_effect_trace = super::network_faults::trace_with_campaign_network_records(
             locked_effect_trace,
-            network.campaign_effect_records(),
-            network.resource_limits(),
+            network.campaign_effect_log(),
             crucible::model::FaultReplayMode::LockedEffect,
         )?;
         let network_outages = self
@@ -518,10 +517,15 @@ impl ProductionVmLifecycleLoop {
                 });
             }
 
+            // The evidence reads at most the first 4 KiB, so restore only the
+            // overlay chunks covering it; the rest of a large overlay is never
+            // loaded onto the heap.
+            let mut inspected = block.device_snapshot().clone();
+            inspected.overlay = inspected.overlay.window(0, 4_096);
             let mut restored = crucible_device::block::BlockDevice::restore(
-                block.device_snapshot(),
+                &inspected,
                 binding.base.clone(),
-                None,
+                &crucible_device::BlockPageStore::memory(),
             )
             .map_err(|error| SchedulerError::BoundaryViolation {
                 message: format!("restore failed-node block continuation for diagnostics: {error}"),
@@ -564,7 +568,7 @@ impl ProductionVmLifecycleLoop {
             frontier,
             resolved_effect_trace,
             locked_effect_trace,
-            emitted_events,
+            referenced_events,
             network_outages,
             network_queues,
             block_devices,
@@ -1148,7 +1152,9 @@ impl ProductionVmLifecycleLoop {
             .with_timer_fires(scheduler.trigger_actions().armed_timers.clone())
             .with_scheduler_quiescence(scheduler.quiescence()?)
             .with_world_white_box_policies(&self.trigger_world);
-        let firings = pass.evaluate_event_graph(&entrypoints, &mut self.trigger_state);
+        let firings = pass
+            .evaluate_event_graph(&entrypoints, &mut self.trigger_state)
+            .map_err(SchedulerError::UndeclaredConsoleMatcher)?;
         if firings.is_empty() {
             return Ok(None);
         }
@@ -1215,6 +1221,11 @@ impl ProductionVmLifecycleLoop {
                 self.inner.loop_impl().condition_event_log_prefix(),
                 &mut self.assertion_oracle,
             );
+            if let Some(failure) = self.assertion_evaluator.assertion_fold_failure() {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!("assertion evaluation failed closed: {failure}"),
+                });
+            }
             let assertion_events = assertion_outcomes
                 .iter()
                 .filter_map(assertion_state_event_from_outcome)
@@ -1236,11 +1247,13 @@ impl ProductionVmLifecycleLoop {
             .with_timer_fires(scheduler.trigger_actions().armed_timers.clone())
             .with_scheduler_quiescence(scheduler.quiescence()?)
             .with_world_white_box_policies(&self.trigger_world);
-            let firings = pass.evaluate_event_graph_at_frontier(
-                &self.trigger_graph,
-                &mut self.trigger_state,
-                scheduler.frontier(),
-            );
+            let firings = pass
+                .evaluate_event_graph_at_frontier(
+                    &self.trigger_graph,
+                    &mut self.trigger_state,
+                    scheduler.frontier(),
+                )
+                .map_err(SchedulerError::UndeclaredConsoleMatcher)?;
             if firings.is_empty() && !assertions_changed {
                 return Ok(appends);
             }

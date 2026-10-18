@@ -3,9 +3,10 @@
 use super::*;
 use crucible::model::{
     FaultContractError, FaultDirection, FaultOperation, FaultReplayMode, FaultRuntimeError, Icount,
-    OpportunityPayload, Plan, Properties, ReadyPoint, ResolvedEffectTrace, ResolvedReplayWorkItem,
-    ScenarioSelectableLimits, ScenarioSelectables, Seed, SignalId, SignalProgramError,
-    WhiteBoxPolicy, World, WorldFaultDomain, WorldFaultTargetRef, WorldFaultTopology, WorldNode,
+    OpportunityPayload, Plan, Properties, ReadyPoint, ResolvedEffectRecord, ResolvedEffectTrace,
+    ResolvedReplayWorkItem, ScenarioSelectableLimits, ScenarioSelectables, Seed, SignalId,
+    SignalProgramError, WhiteBoxPolicy, World, WorldFaultDomain, WorldFaultTargetRef,
+    WorldFaultTopology, WorldNode,
 };
 use crucible::{
     Configuration, Decision, EngineError, NetworkFaultCampaignBranch,
@@ -329,38 +330,42 @@ fn campaign_effect_trace_keeps_its_own_fingerprint_and_replays_canonically()
         derivation_fingerprint: signal_fingerprint,
         records: Vec::new(),
     };
-    let signal = ResolvedEffectTrace {
-        mode: FaultReplayMode::RecomputedCause,
-        work_items: vec![signal_item.clone()],
-        cursor: 0,
-    };
-    let combined = trace_with_campaign_network_records(
-        Some(signal),
-        std::slice::from_ref(&campaign),
-        FaultResourceLimits::default(),
+    let limits = FaultResourceLimits::default();
+    let segments: Arc<dyn crucible::segment_store::SegmentSink> =
+        Arc::new(crucible::segment_store::SharedSegmentStore::new());
+    let signal = ResolvedEffectTrace::from_items(
         FaultReplayMode::RecomputedCause,
-    )?
-    .ok_or(CampaignChoiceTestError::Missing(
-        "missing combined effect trace",
-    ))?;
-    assert_eq!(combined.work_items.len(), 2);
-    assert_eq!(
-        combined.work_items[0].derivation_fingerprint,
-        signal_fingerprint
-    );
-    assert_eq!(
-        combined.work_items[1].derivation_fingerprint,
-        action.mapped_digest
-    );
-    assert_eq!(combined.work_items[1].records, vec![campaign.clone()]);
-
-    let decoded = ResolvedEffectTrace::from_canonical_bytes(
-        &combined.canonical_bytes()?,
-        FaultResourceLimits::default(),
+        [signal_item.clone()],
+        limits,
     )?;
+    let mut log = super::super::CampaignRecordLog::new(Arc::clone(&segments), limits);
+    log.push(campaign.clone())?;
+    let combined =
+        trace_with_campaign_network_records(Some(signal), &log, FaultReplayMode::RecomputedCause)?
+            .ok_or(CampaignChoiceTestError::Missing(
+                "missing combined effect trace",
+            ))?;
+    let items = combined.items().collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0].derivation_fingerprint, signal_fingerprint);
+    assert_eq!(items[1].derivation_fingerprint, action.mapped_digest);
+    assert_eq!(items[1].records, vec![campaign.clone()]);
+
+    let bundle = combined.to_bundle_bytes(usize::MAX)?;
+    let decoded = ResolvedEffectTrace::from_bundle_bytes(&bundle, usize::MAX)?;
     assert_eq!(decoded, combined);
-    let (signal_replay, campaign_replay) = split_campaign_network_trace(decoded, true)?;
-    assert_eq!(signal_replay.work_items, vec![signal_item]);
-    assert_eq!(campaign_replay, vec![campaign]);
+    let (signal_replay, campaign_replay) =
+        split_campaign_network_trace(decoded, true, &segments, limits)?;
+    assert_eq!(
+        signal_replay.items().collect::<Result<Vec<_>, _>>()?,
+        vec![signal_item]
+    );
+    let campaign_records = campaign_replay
+        .items()
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .flat_map(|item| item.records)
+        .collect::<Vec<_>>();
+    assert_eq!(campaign_records, vec![campaign]);
     Ok(())
 }

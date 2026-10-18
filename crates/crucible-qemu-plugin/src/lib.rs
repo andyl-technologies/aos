@@ -162,9 +162,10 @@ pub use args::{
 pub use block_io::{
     BlockGuestCompletion, BlockGuestCompletionError, BlockInboundHead, BlockInboundRing,
     BlockIoError, BlockOperation, BlockOutboundRing, BlockPoll, BlockRequest, BlockRequestIdentity,
-    BlockRequestToken, BlockResponse, BlockResponseErrorCode, BlockResponseStatus, BlockSubmit,
-    BlockTransportEvent, BlockTransportPending, BlockTransportRequestIds, BlockTransportReset,
-    BlockTransportResolved, BlockTransportUnadmitted, BlockTransportUndelivered, BlockWireError,
+    BlockRequestStamp, BlockRequestToken, BlockResponse, BlockResponseErrorCode,
+    BlockResponseStatus, BlockSubmit, BlockTransportEvent, BlockTransportPending,
+    BlockTransportRequestIds, BlockTransportReset, BlockTransportResolved,
+    BlockTransportUnadmitted, BlockTransportUndelivered, BlockWireError,
     PendingBlockTransportEvent, PluginBlockIo, handle_block_poll_callback,
     handle_block_submit_callback,
 };

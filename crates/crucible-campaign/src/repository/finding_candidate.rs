@@ -85,7 +85,7 @@ impl CampaignRepository {
             if !visited.insert(id) {
                 continue;
             }
-            if visited.len() > MAX_CAMPAIGN_CLOSURE_OBJECTS {
+            if visited.len() > MAX_EXACT_PIN_CLOSURE_OBJECTS {
                 return Err(integrity("finding-exact-pin-closure-object-limit"));
             }
             if id.kind() != ObjectKind::ExactManifest && !is_opaque_campaign_leaf(id.kind()) {
@@ -335,7 +335,7 @@ impl CampaignRepository {
         failure: &'static str,
     ) -> Result<(), CampaignRepositoryError> {
         let mut cursor = descendant;
-        for _ in 0..MAX_SNAPSHOT_ANCESTRY {
+        for _ in 0..MAX_CAMPAIGN_SNAPSHOT_ANCESTRY {
             if cursor == ancestor {
                 return Ok(());
             }
@@ -559,7 +559,7 @@ impl CampaignRepository {
             if !visited.insert(id) {
                 continue;
             }
-            if visited.len() > MAX_CAMPAIGN_CLOSURE_OBJECTS {
+            if visited.len() > MAX_EXACT_PIN_CLOSURE_OBJECTS {
                 return Err(integrity("finding-exact-pin-closure-object-limit"));
             }
 

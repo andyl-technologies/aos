@@ -1,142 +1,120 @@
 //! Canonical physical formats for the packed content-store leaf.
 //!
-//! This module owns strict v1 pack manifests, durable index bodies, and
-//! generation-bound repack plans. All decoders reject trailing data and every
+//! This module owns strict v1 pack manifests, generation-bound v2 repack
+//! plans, and the fixed-width binary record encodings shared by the index
+//! base, pack table, and journal. All decoders reject trailing data and every
 //! checksum is domain-separated from logical [`ContentId`] identity.
+//!
+//! Fixed-width records encode a [`ContentId`] as 37 bytes:
+//!
+//! ```text
+//! object_kind_code_u8      # 0 campaign-fact through 13 trace
+//! schema_version_u32
+//! content_digest[32]
+//! ```
+//!
+//! Codes follow [`ObjectKind`] declaration order, so the byte order of an
+//! encoded identity equals the derived `Ord` of [`ContentId`].
 
-use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 
 use super::{
-    ContentId, INDEX_CHECKSUM_DOMAIN, INDEX_DIGEST_DOMAIN, INDEX_MAGIC, IndexEntry, IndexState,
-    MAX_INDEX_BYTES, MAX_LOGICAL_OBJECTS, MAX_PACK_BYTES, MAX_PACK_ENTRIES, MAX_PACKS,
-    PACK_ID_DOMAIN, PACK_MAGIC, PACK_MANIFEST_DOMAIN, PackId, PackManifestEntry, PackedRepackPlan,
+    ContentId, IndexEntry, MAX_PACK_BYTES, MAX_PACK_ENTRIES, ObjectKind, PACK_ID_DOMAIN,
+    PACK_MAGIC, PACK_MANIFEST_DOMAIN, PackId, PackManifestEntry, PackedRepackPlan,
     PackedRepackPlanId, PackedStorageAccounting, REPACK_PLAN_CHECKSUM_DOMAIN,
     REPACK_PLAN_ID_DOMAIN, REPACK_PLAN_MAGIC, StoreError,
 };
 
-pub(super) fn encode_index(
-    index: &IndexState,
-    configuration: [u8; 32],
-) -> Result<Vec<u8>, StoreError> {
-    if index.entries.len() > MAX_LOGICAL_OBJECTS || index.pack_ids().len() > MAX_PACKS {
-        return Err(StoreError::Quota);
+/// Encoded width of one binary [`ContentId`].
+pub(super) const CONTENT_ID_BYTES: usize = 1 + 4 + 32;
+
+/// Upper bound on one pack's encoded manifest.
+///
+/// Canonical content-ID text is at most 93 bytes, so 128 bytes per identity
+/// leaves headroom without letting a corrupt header request a large buffer.
+const MAX_PACK_MANIFEST_BYTES: u64 = MAX_PACK_ENTRIES as u64 * (2 + 128 + 16);
+
+/// Returns the registered fixed-width record code of `kind`.
+///
+/// The match is exhaustive, so a new [`ObjectKind`] cannot be encoded until it
+/// receives a code here and in [`object_kind_from_code`].
+const fn object_kind_code(kind: ObjectKind) -> u8 {
+    match kind {
+        ObjectKind::CampaignFact => 0,
+        ObjectKind::CampaignSnapshot => 1,
+        ObjectKind::MerkleNode => 2,
+        ObjectKind::Scenario => 3,
+        ObjectKind::Configuration => 4,
+        ObjectKind::Policy => 5,
+        ObjectKind::ExactManifest => 6,
+        ObjectKind::RamExtent => 7,
+        ObjectKind::DiskExtent => 8,
+        ObjectKind::DeviceState => 9,
+        ObjectKind::Observation => 10,
+        ObjectKind::Finding => 11,
+        ObjectKind::Projection => 12,
+        ObjectKind::Trace => 13,
     }
-    let entry_count = u32::try_from(index.entries.len()).map_err(|_| StoreError::Quota)?;
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(INDEX_MAGIC);
-    bytes.extend_from_slice(&configuration);
-    bytes.extend_from_slice(&index.instance);
-    bytes.extend_from_slice(&index.generation.to_be_bytes());
-    match index.last_repack_plan {
-        None => bytes.push(0),
-        Some(plan) => {
-            bytes.push(1);
-            bytes.extend_from_slice(&plan.0);
-        }
-    }
-    bytes.extend_from_slice(&entry_count.to_be_bytes());
-    for (id, entry) in &index.entries {
-        let id = id.to_string();
-        let id_length = u16::try_from(id.len()).map_err(|_| StoreError::Quota)?;
-        bytes.extend_from_slice(&id_length.to_be_bytes());
-        bytes.extend_from_slice(id.as_bytes());
-        bytes.extend_from_slice(&entry.pack.0);
-        bytes.extend_from_slice(&entry.offset.to_be_bytes());
-        bytes.extend_from_slice(&entry.length.to_be_bytes());
-    }
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(INDEX_CHECKSUM_DOMAIN);
-    hasher.update(&bytes);
-    bytes.extend_from_slice(hasher.finalize().as_bytes());
-    Ok(bytes)
 }
 
-pub(super) fn decode_index(
-    bytes: &[u8],
-    configuration: [u8; 32],
-) -> Result<IndexState, StoreError> {
-    let fixed = INDEX_MAGIC.len() + 32 + 32 + 8 + 1 + 4 + 32;
-    if bytes.len() < fixed || bytes.len() as u64 > MAX_INDEX_BYTES {
-        return Err(StoreError::Incompatible);
-    }
-    let checksum_offset = bytes.len() - 32;
-    let (payload, checksum) = bytes.split_at(checksum_offset);
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(INDEX_CHECKSUM_DOMAIN);
-    hasher.update(payload);
-    if hasher.finalize().as_bytes() != checksum {
-        return Err(StoreError::Incompatible);
-    }
-    let mut cursor = PackedCursor::new(payload);
-    if cursor.fixed(INDEX_MAGIC.len())? != INDEX_MAGIC || cursor.array_32()? != configuration {
-        return Err(StoreError::Incompatible);
-    }
-    let instance = cursor.array_32()?;
-    let generation = cursor.u64()?;
-    let last_repack_plan = match cursor.u8()? {
-        0 => None,
-        1 => Some(PackedRepackPlanId(cursor.array_32()?)),
-        _ => return Err(StoreError::Incompatible),
-    };
-    let count = usize::try_from(cursor.u32()?).map_err(|_| StoreError::Quota)?;
-    if count > MAX_LOGICAL_OBJECTS {
-        return Err(StoreError::Quota);
-    }
-    let mut entries = BTreeMap::new();
-    let mut prior = None;
-    for _ in 0..count {
-        let id_length = usize::from(cursor.u16()?);
-        let id = std::str::from_utf8(cursor.fixed(id_length)?)
-            .map_err(|_| StoreError::Incompatible)
-            .and_then(|id| ContentId::parse(id).map_err(|_| StoreError::Incompatible))?;
-        let entry = IndexEntry {
-            pack: PackId(cursor.array_32()?),
-            offset: cursor.u64()?,
-            length: cursor.u64()?,
-        };
-        if prior.is_some_and(|prior| id <= prior) || entries.insert(id, entry).is_some() {
-            return Err(StoreError::Incompatible);
-        }
-        prior = Some(id);
-    }
-    if !cursor.is_empty() {
-        return Err(StoreError::Incompatible);
-    }
-    if entries
-        .values()
-        .map(|entry| entry.pack)
-        .collect::<BTreeSet<_>>()
-        .len()
-        > MAX_PACKS
-    {
-        return Err(StoreError::Quota);
-    }
-    Ok(IndexState {
-        instance,
-        generation,
-        last_repack_plan,
-        entries,
+/// Inverts [`object_kind_code`]; unknown codes indicate a corrupt record.
+const fn object_kind_from_code(code: u8) -> Option<ObjectKind> {
+    Some(match code {
+        0 => ObjectKind::CampaignFact,
+        1 => ObjectKind::CampaignSnapshot,
+        2 => ObjectKind::MerkleNode,
+        3 => ObjectKind::Scenario,
+        4 => ObjectKind::Configuration,
+        5 => ObjectKind::Policy,
+        6 => ObjectKind::ExactManifest,
+        7 => ObjectKind::RamExtent,
+        8 => ObjectKind::DiskExtent,
+        9 => ObjectKind::DeviceState,
+        10 => ObjectKind::Observation,
+        11 => ObjectKind::Finding,
+        12 => ObjectKind::Projection,
+        13 => ObjectKind::Trace,
+        _ => return None,
     })
 }
 
-pub(super) fn packed_index_digest(
-    index: &IndexState,
-    configuration: [u8; 32],
-) -> Result<[u8; 32], StoreError> {
-    let bytes = encode_index(index, configuration)?;
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(INDEX_DIGEST_DOMAIN);
-    hasher.update(&bytes);
-    Ok(*hasher.finalize().as_bytes())
+/// Writes the fixed-width binary form of `id` into `output`.
+pub(super) fn encode_content_id(id: ContentId, output: &mut [u8; CONTENT_ID_BYTES]) {
+    output[0] = object_kind_code(id.kind());
+    output[1..5].copy_from_slice(&id.schema_version().to_be_bytes());
+    output[5..].copy_from_slice(&id.digest());
+}
+
+/// Decodes one fixed-width binary [`ContentId`].
+pub(super) fn decode_content_id(bytes: &[u8]) -> Result<ContentId, StoreError> {
+    let bytes: &[u8; CONTENT_ID_BYTES] = bytes.try_into().map_err(|_| StoreError::Incompatible)?;
+    let kind = object_kind_from_code(bytes[0]).ok_or(StoreError::Incompatible)?;
+    let mut cursor = PackedCursor::new(&bytes[1..]);
+    Ok(ContentId {
+        kind,
+        schema_version: cursor.u32()?,
+        digest: cursor.array_32()?,
+    })
+}
+
+/// Validates one index entry's pack geometry.
+pub(super) fn validate_index_entry(entry: IndexEntry) -> Result<(), StoreError> {
+    if entry
+        .offset
+        .checked_add(entry.length)
+        .is_none_or(|end| end > MAX_PACK_BYTES)
+    {
+        return Err(StoreError::Incompatible);
+    }
+    Ok(())
 }
 
 pub(super) fn new_repack_plan(
     configuration: [u8; 32],
     instance: [u8; 32],
     generation: u64,
-    index_digest: [u8; 32],
+    root_digest: [u8; 32],
     before: PackedStorageAccounting,
 ) -> PackedRepackPlan {
     let mut plan = PackedRepackPlan {
@@ -144,7 +122,7 @@ pub(super) fn new_repack_plan(
         configuration,
         instance,
         generation,
-        index_digest,
+        root_digest,
         before,
     };
     plan.id = repack_plan_id(&encode_repack_plan(&plan));
@@ -157,7 +135,7 @@ pub(super) fn encode_repack_plan(plan: &PackedRepackPlan) -> Vec<u8> {
     bytes.extend_from_slice(&plan.configuration);
     bytes.extend_from_slice(&plan.instance);
     bytes.extend_from_slice(&plan.generation.to_be_bytes());
-    bytes.extend_from_slice(&plan.index_digest);
+    bytes.extend_from_slice(&plan.root_digest);
     bytes.extend_from_slice(&plan.before.generation.to_be_bytes());
     bytes.extend_from_slice(&plan.before.logical_objects.to_be_bytes());
     bytes.extend_from_slice(&plan.before.logical_bytes.to_be_bytes());
@@ -191,7 +169,7 @@ pub(super) fn decode_repack_plan(bytes: &[u8]) -> Result<PackedRepackPlan, Store
     let configuration = cursor.array_32()?;
     let instance = cursor.array_32()?;
     let generation = cursor.u64()?;
-    let index_digest = cursor.array_32()?;
+    let root_digest = cursor.array_32()?;
     let before = PackedStorageAccounting {
         generation: cursor.u64()?,
         logical_objects: cursor.u64()?,
@@ -207,20 +185,23 @@ pub(super) fn decode_repack_plan(bytes: &[u8]) -> Result<PackedRepackPlan, Store
         configuration,
         instance,
         generation,
-        index_digest,
+        root_digest,
         before,
     ))
 }
 
+/// Checks the structural relationships every authentic accounting satisfies.
+///
+/// Object and pack counts have no store-wide ceiling; each pack is still
+/// bounded by [`MAX_PACK_BYTES`], which bounds referenced physical bytes.
 fn validate_repack_accounting(accounting: PackedStorageAccounting) -> Result<(), StoreError> {
-    let maximum_physical_bytes = (MAX_PACKS as u64)
+    let physical_bound_exceeded = accounting
+        .packs
         .checked_mul(MAX_PACK_BYTES)
-        .ok_or(StoreError::Quota)?;
-    if accounting.logical_objects > MAX_LOGICAL_OBJECTS as u64
-        || accounting.packs > MAX_PACKS as u64
-        || accounting.packs > accounting.logical_objects
+        .is_some_and(|maximum| accounting.physical_bytes > maximum);
+    if accounting.packs > accounting.logical_objects
         || accounting.logical_bytes > accounting.physical_bytes
-        || accounting.physical_bytes > maximum_physical_bytes
+        || physical_bound_exceeded
         || (accounting.logical_objects != 0 && accounting.packs == 0)
         || (accounting.logical_objects == 0
             && (accounting.logical_bytes != 0
@@ -312,7 +293,7 @@ pub(super) fn read_pack_header(
     let manifest_length = usize::try_from(cursor.u32()?).map_err(|_| StoreError::Quota)?;
     if count == 0
         || count > MAX_PACK_ENTRIES
-        || u64::try_from(manifest_length).map_err(|_| StoreError::Quota)? > MAX_INDEX_BYTES
+        || u64::try_from(manifest_length).map_err(|_| StoreError::Quota)? > MAX_PACK_MANIFEST_BYTES
     {
         return Err(StoreError::Incompatible);
     }
@@ -389,17 +370,18 @@ pub(super) fn pack_fixed_header_length() -> u64 {
     PACK_MAGIC.len() as u64 + 32 + 4 + 4 + 32
 }
 
-struct PackedCursor<'a> {
+/// Strict forward reader over one bounded byte slice.
+pub(super) struct PackedCursor<'a> {
     bytes: &'a [u8],
     position: usize,
 }
 
 impl<'a> PackedCursor<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
+    pub(super) const fn new(bytes: &'a [u8]) -> Self {
         Self { bytes, position: 0 }
     }
 
-    fn fixed(&mut self, length: usize) -> Result<&'a [u8], StoreError> {
+    pub(super) fn fixed(&mut self, length: usize) -> Result<&'a [u8], StoreError> {
         let end = self
             .position
             .checked_add(length)
@@ -410,20 +392,20 @@ impl<'a> PackedCursor<'a> {
         Ok(bytes)
     }
 
-    fn array_32(&mut self) -> Result<[u8; 32], StoreError> {
+    pub(super) fn array_32(&mut self) -> Result<[u8; 32], StoreError> {
         self.fixed(32)?
             .try_into()
             .map_err(|_| StoreError::Incompatible)
     }
 
-    fn u8(&mut self) -> Result<u8, StoreError> {
+    pub(super) fn u8(&mut self) -> Result<u8, StoreError> {
         self.fixed(1)?
             .first()
             .copied()
             .ok_or(StoreError::Incompatible)
     }
 
-    fn u16(&mut self) -> Result<u16, StoreError> {
+    pub(super) fn u16(&mut self) -> Result<u16, StoreError> {
         Ok(u16::from_be_bytes(
             self.fixed(2)?
                 .try_into()
@@ -431,7 +413,7 @@ impl<'a> PackedCursor<'a> {
         ))
     }
 
-    fn u32(&mut self) -> Result<u32, StoreError> {
+    pub(super) fn u32(&mut self) -> Result<u32, StoreError> {
         Ok(u32::from_be_bytes(
             self.fixed(4)?
                 .try_into()
@@ -439,7 +421,7 @@ impl<'a> PackedCursor<'a> {
         ))
     }
 
-    fn u64(&mut self) -> Result<u64, StoreError> {
+    pub(super) fn u64(&mut self) -> Result<u64, StoreError> {
         Ok(u64::from_be_bytes(
             self.fixed(8)?
                 .try_into()
@@ -447,7 +429,47 @@ impl<'a> PackedCursor<'a> {
         ))
     }
 
-    const fn is_empty(&self) -> bool {
+    pub(super) const fn is_empty(&self) -> bool {
         self.position == self.bytes.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts for exact failure localization.
+    #![allow(clippy::expect_used)]
+
+    use super::*;
+
+    #[test]
+    fn binary_content_ids_round_trip_and_preserve_identity_order() {
+        let mut encoded = Vec::new();
+        for code in 0..=u8::MAX {
+            let Some(kind) = object_kind_from_code(code) else {
+                continue;
+            };
+            assert_eq!(object_kind_code(kind), code);
+            for schema_version in [0, 1, u32::MAX] {
+                let id = ContentId::for_bytes(kind, schema_version, &[code]);
+                let mut bytes = [0_u8; CONTENT_ID_BYTES];
+                encode_content_id(id, &mut bytes);
+                assert_eq!(decode_content_id(&bytes).expect("decode content id"), id);
+                encoded.push((bytes, id));
+            }
+        }
+
+        let mut by_bytes = encoded.clone();
+        by_bytes.sort_by_key(|(bytes, _id)| *bytes);
+        let mut by_identity = encoded;
+        by_identity.sort_by_key(|(_bytes, id)| *id);
+        assert_eq!(by_bytes, by_identity);
+
+        assert_eq!(by_bytes.len(), 14 * 3);
+        let mut unknown = [0_u8; CONTENT_ID_BYTES];
+        unknown[0] = 14;
+        assert!(matches!(
+            decode_content_id(&unknown),
+            Err(StoreError::Incompatible)
+        ));
     }
 }

@@ -40,11 +40,15 @@ in
         || pathString == "${repoRootString}/pkgs/kernel/linux.nix"
         || pathString == "${repoRootString}/pkgs/tools"
         || lib.hasPrefix "${repoRootString}/pkgs/tools/crucible" pathString
+        # Evidence read by the Crucible ability-adapter baseline gate.
+        || pathString == "${repoRootString}/pkgs/tools/aos-ability-crucible.nix"
         || pathString == "${repoRootString}/stdenv"
         || pathString == "${repoRootString}/stdenv/phases.nix"
         || pathString == "${repoRootString}/modules"
         || pathString == "${repoRootString}/modules/base"
         || pathString == "${repoRootString}/modules/base/build.nix"
+        || pathString == "${repoRootString}/modules/profiles"
+        || pathString == "${repoRootString}/modules/profiles/ability-crucible.nix"
         || pathString == "${repoRootString}/tests"
         || lib.hasPrefix "${repoRootString}/tests/crucible" pathString
       );

@@ -101,7 +101,7 @@ fn event_log_segment_binary_round_trips_to_same_bytes() {
 }
 
 #[test]
-fn event_log_v4_rejects_v3_and_missing_or_wrong_backend_input_stamp() {
+fn event_log_v6_rejects_prior_versions_and_missing_or_wrong_backend_input_stamp() {
     let consumer = SchedulerNodeId {
         node: NodeId {
             name: String::from("consumer"),
@@ -149,12 +149,15 @@ fn event_log_v4_rejects_v3_and_missing_or_wrong_backend_input_stamp() {
     let material =
         scheduler_event_log_segment_material(scheduler_event_log_empty_prefix(), &[entry]);
 
-    let mut old_version = material.encode();
-    old_version[16..20].copy_from_slice(&3_u32.to_le_bytes());
-    assert!(matches!(
-        decode_scheduler_event_log_segment(&old_version),
-        Err(SchedulerEventLogSegmentDecodeError::UnsupportedVersion { version: 3 })
-    ));
+    for version in [3_u32, 5] {
+        let mut old_version = material.encode();
+        old_version[16..20].copy_from_slice(&version.to_le_bytes());
+        assert!(matches!(
+            decode_scheduler_event_log_segment(&old_version),
+            Err(SchedulerEventLogSegmentDecodeError::UnsupportedVersion { version: rejected })
+                if rejected == version
+        ));
+    }
 
     for stamp_node in [None, Some(String::from("wrong-node"))] {
         let mut malformed = material.clone();
@@ -209,4 +212,61 @@ fn idle_jump_preserves_exact_tick_and_unchanged_raw_retirement_in_event_stamp() 
         decode_scheduler_event_log_segment(&material.encode()),
         Ok(material)
     );
+}
+
+fn quantum_boundary_entry() -> SchedulerEventLogEntry {
+    scheduler_event_log_entry(
+        99_672,
+        VirtualTime {
+            ticks: 4_128_000_000_000,
+        },
+        SchedulerEventLogPayload::EvaluationBoundary(SchedulerEvaluationBoundaryKind::Quantum),
+    )
+}
+
+fn entry_material(entry: &SchedulerEventLogEntry) -> String {
+    scheduler_event_log_entry_material(
+        entry.sequence,
+        &entry.at,
+        &entry.source,
+        entry.level,
+        entry.class,
+        &entry.event_payload,
+        &entry.payload,
+    )
+}
+
+#[test]
+fn derived_evaluation_boundary_uses_compact_identity_material() {
+    let entry = quantum_boundary_entry();
+
+    let material = entry_material(&entry);
+
+    assert_eq!(
+        material,
+        format!(
+            "entry_form=evaluation-boundary\nsequence=99672\nat_virtual_time_ticks={}\nat_tick={}\nkind=quantum",
+            entry.at.virtual_time.ticks, entry.at.stamp.tick.ticks,
+        )
+    );
+    assert_eq!(entry.canonical_material_len(), material.len());
+    assert!(entry.has_valid_content_hash());
+}
+
+#[test]
+fn evaluation_boundary_with_underived_fields_keeps_full_identity_material() {
+    let compact = quantum_boundary_entry();
+    let mut debug_level = compact.clone();
+    debug_level.level = EventLevel::Debug;
+    let mut node_stamped = compact.clone();
+    node_stamped.at.stamp.node = Some(NodeId {
+        name: String::from("router-a"),
+    });
+
+    for entry in [debug_level, node_stamped] {
+        let material = entry_material(&entry);
+        assert!(material.starts_with("sequence=99672\n"), "{material}");
+        assert!(material.ends_with("payload=evaluation-boundary\nkind=Quantum"));
+        assert_ne!(material, entry_material(&compact));
+    }
 }

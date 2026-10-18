@@ -693,3 +693,81 @@ fn hot_world_runner_materializes_a_guest_branch_and_enqueues_its_exact_reply() {
 
     run_branch_through_hot_world_runner(input, true);
 }
+
+#[test]
+fn only_branches_from_a_later_parent_name_the_published_boundary() {
+    let genesis_branch = branch_execution_input(
+        ChoiceSource::Scheduler {
+            producer: String::from("delivery-order"),
+        },
+        ChoiceDomain::Boolean(BooleanDomain::new(1).expect("scheduler branch domain")),
+        ChoiceValue::Boolean(false),
+        ChoiceValue::Boolean(true),
+        "scheduler.delivery-order",
+    );
+    let crate::CrucibleResolvedAttemptStart::Branch {
+        parent,
+        selection,
+        selected,
+    } = genesis_branch.start()
+    else {
+        panic!("branch fixture must resolve a branch start")
+    };
+    // A branch whose parent is the genesis branch's child reuses only a
+    // root retained at that published boundary.
+    let later_branch = CrucibleAttemptExecution::from_test_parts(
+        genesis_branch.lineage().clone(),
+        genesis_branch.scenario().clone(),
+        genesis_branch.attempt().clone(),
+        genesis_branch.path().clone(),
+        crate::CrucibleResolvedAttemptStart::Branch {
+            parent: selected.clone(),
+            selection: selection.clone(),
+            selected: selected.clone(),
+        },
+    );
+    let discovery = execution_input_for_scenario_configuration(
+        genesis_branch.scenario().clone(),
+        selected.clone(),
+    );
+
+    let key = |input: &CrucibleAttemptExecution, context: &AttemptExecutionContext| {
+        QemuHotForkSourceWorldKey::for_execution(
+            input,
+            context,
+            context.runtime_basis().expect("runtime basis"),
+        )
+        .expect("derive source key")
+    };
+    let genesis_key = key(&genesis_branch, &execution_context(&genesis_branch, 0x61));
+    let later_key = key(&later_branch, &execution_context(&later_branch, 0x62));
+    let discovery_key = key(&discovery, &execution_context(&discovery, 0x63));
+    let checkpoint = crucible_campaign::ExactCheckpointId::parse(&format!(
+        "crucible.executor.exact-checkpoint-root@exact-manifest.5.{}",
+        "64".repeat(32)
+    ))
+    .expect("exact checkpoint id");
+    let resumed_context =
+        execution_context(&later_branch, 0x64).with_resume_checkpoint(Some(checkpoint));
+    let resumed_key = key(&later_branch, &resumed_context);
+
+    assert_eq!(
+        genesis_key.boundary(),
+        QemuHotForkSourceWorldBoundary::CanonicalGenesis
+    );
+    assert_eq!(genesis_key.configuration(), parent.id());
+    assert_eq!(
+        later_key.boundary(),
+        QemuHotForkSourceWorldBoundary::PublishedBoundary
+    );
+    assert_eq!(later_key.configuration(), selected.id());
+    // Discovery from the same configuration never reuses a published root.
+    assert_eq!(
+        discovery_key.boundary(),
+        QemuHotForkSourceWorldBoundary::CanonicalGenesis
+    );
+    assert_eq!(
+        resumed_key.boundary(),
+        QemuHotForkSourceWorldBoundary::ExactCheckpoint(checkpoint)
+    );
+}

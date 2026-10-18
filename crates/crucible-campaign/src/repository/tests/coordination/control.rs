@@ -57,6 +57,64 @@ fn create_and_control_form_linear_authenticated_history() {
 }
 
 #[test]
+fn stale_pause_does_not_reserve_its_command_identity() {
+    let (repository, lineage, policy) = fixture();
+    let genesis = repository
+        .create("pause-refresh", &lineage, &policy, &BTreeMap::new())
+        .expect("create");
+    let resumed = repository
+        .apply_control(
+            "pause-refresh",
+            &command(
+                "resume",
+                genesis.snapshot_id(),
+                CampaignControlAction::Resume,
+            ),
+        )
+        .expect("running head");
+    let stale = command(
+        "pause",
+        genesis.snapshot_id(),
+        CampaignControlAction::Pause(crate::ActiveAttemptPolicy::Drain),
+    );
+
+    assert!(matches!(
+        repository.apply_control("pause-refresh", &stale),
+        Err(CampaignRepositoryError::Stale { expected, current })
+            if expected == genesis.snapshot_id() && current == resumed.new_snapshot
+    ));
+    assert_eq!(
+        repository
+            .head("pause-refresh")
+            .expect("unchanged head")
+            .snapshot_id(),
+        resumed.new_snapshot
+    );
+    assert_eq!(
+        repository.state("pause-refresh").expect("state"),
+        CampaignState::Running
+    );
+
+    let fresh = ControlRequest {
+        expected_snapshot: resumed.new_snapshot,
+        ..stale
+    };
+    let paused = repository
+        .apply_control("pause-refresh", &fresh)
+        .expect("same command ID with fresh precondition");
+    assert!(!paused.replayed);
+    assert_eq!(
+        repository.state("pause-refresh").expect("state"),
+        CampaignState::Paused
+    );
+    let replayed = repository
+        .apply_control("pause-refresh", &fresh)
+        .expect("accepted command remains idempotent");
+    assert!(replayed.replayed);
+    assert_eq!(replayed.new_snapshot, paused.new_snapshot);
+}
+
+#[test]
 fn policy_activation_cannot_change_campaign_reproducibility_mode() {
     let (repository, lineage, policy) = fixture();
     let genesis = repository

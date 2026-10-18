@@ -538,6 +538,7 @@ fn write_back_graph_config(endpoint: StoreS3EndpointId, root: &Path) -> StoreGra
 
 #[test]
 fn s3_graph_admin_drives_global_gc_across_restart() {
+    let spill_parent = tempfile::tempdir().expect("GC spill parent");
     let temp = tempfile::TempDir::new().expect("temporary S3 GC root");
     let ref_root = temp.path().join("refs");
     let ledger_root = temp.path().join("ledger");
@@ -580,6 +581,7 @@ fn s3_graph_admin_drives_global_gc_across_restart() {
         None,
         None,
         &admin,
+        spill_parent.path(),
     )
     .expect("plan S3 GC");
     assert_eq!(prepared.plan().physical().len(), 1);
@@ -587,7 +589,13 @@ fn s3_graph_admin_drives_global_gc_across_restart() {
     assert_eq!(prepared.plan().physical()[0].objects(), 2);
     assert_eq!(prepared.candidates().len(), 1);
     assert_eq!(
-        prepared.candidates().iter().next().expect("orphan").id(),
+        prepared
+            .candidates()
+            .entries_for_test()
+            .into_iter()
+            .next()
+            .expect("orphan")
+            .id(),
         orphan
     );
     let (journal, _) =
@@ -637,6 +645,7 @@ fn s3_graph_admin_drives_global_gc_across_restart() {
 
 #[test]
 fn s3_publication_after_planning_invalidates_apply_without_deletion() {
+    let spill_parent = tempfile::tempdir().expect("GC spill parent");
     let temp = tempfile::TempDir::new().expect("temporary stale S3 GC root");
     let service = Arc::new(MemoryS3Service::new());
     let (graph, admin) = build_graph(service);
@@ -657,6 +666,7 @@ fn s3_publication_after_planning_invalidates_apply_without_deletion() {
         None,
         None,
         &admin,
+        spill_parent.path(),
     )
     .expect("plan stale S3 GC");
     let (mut journal, _) =
@@ -688,6 +698,7 @@ fn s3_publication_after_planning_invalidates_apply_without_deletion() {
 
 #[test]
 fn s3_gc_retains_multiple_refs_and_transfer_during_backend_faults() {
+    let spill_parent = tempfile::tempdir().expect("GC spill parent");
     let temp = tempfile::TempDir::new().expect("temporary S3 recovery root");
     let service = Arc::new(MemoryS3Service::new());
     let (graph, admin) = build_graph(service.clone());
@@ -766,6 +777,7 @@ fn s3_gc_retains_multiple_refs_and_transfer_during_backend_faults() {
                 None,
                 CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers),
                 &admin,
+                spill_parent.path(),
             )
             .is_err(),
             "GC planning accepted S3 fault {fault}"
@@ -799,6 +811,7 @@ fn s3_gc_retains_multiple_refs_and_transfer_during_backend_faults() {
             None,
             CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers),
             &admin,
+            spill_parent.path(),
         )
         .is_err(),
         "GC planning accepted corrupted retained S3 bytes"
@@ -818,12 +831,25 @@ fn s3_gc_retains_multiple_refs_and_transfer_during_backend_faults() {
         None,
         CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers),
         &admin,
+        spill_parent.path(),
     )
     .expect("plan healthy S3 recovery GC");
-    assert!(prepared.roots().iter().any(|id| id == transfer_id));
+    assert!(
+        prepared
+            .roots()
+            .entries_for_test()
+            .into_iter()
+            .any(|id| id == transfer_id)
+    );
     assert_eq!(prepared.candidates().len(), 1);
     assert_eq!(
-        prepared.candidates().iter().next().expect("orphan").id(),
+        prepared
+            .candidates()
+            .entries_for_test()
+            .into_iter()
+            .next()
+            .expect("orphan")
+            .id(),
         orphan_id
     );
 
@@ -854,6 +880,7 @@ fn s3_gc_retains_multiple_refs_and_transfer_during_backend_faults() {
         None,
         CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers),
         &admin,
+        spill_parent.path(),
     )
     .expect("replan after S3 recovery");
     let (mut journal, _) =
@@ -990,6 +1017,7 @@ fn publish_paused_s3_campaign(repository: &CampaignRepository) -> [CampaignSnaps
 
 #[test]
 fn paused_derived_s3_campaign_recovers_with_pending_write_back_transfer_and_gc() {
+    let spill_parent = tempfile::tempdir().expect("GC spill parent");
     let temp = tempfile::TempDir::new().expect("temporary paused S3 recovery root");
     let service = Arc::new(MemoryS3Service::new());
     let config = write_back_graph_config(service.endpoint.clone(), temp.path());
@@ -1068,6 +1096,7 @@ fn paused_derived_s3_campaign_recovers_with_pending_write_back_transfer_and_gc()
                 Some(graph.as_ref()),
                 CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers),
                 &admin,
+                spill_parent.path(),
             )
             .is_err(),
             "GC planning accepted fault {fault}"
@@ -1107,6 +1136,7 @@ fn paused_derived_s3_campaign_recovers_with_pending_write_back_transfer_and_gc()
             Some(graph.as_ref()),
             CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers),
             &admin,
+            spill_parent.path(),
         )
         .is_err(),
         "GC planning accepted corrupt paused S3 head"
@@ -1124,13 +1154,21 @@ fn paused_derived_s3_campaign_recovers_with_pending_write_back_transfer_and_gc()
         Some(graph.as_ref()),
         CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers),
         &admin,
+        spill_parent.path(),
     )
     .expect("plan recovered paused campaign GC");
-    assert!(prepared.roots().iter().any(|id| id == transfer_id));
+    assert!(
+        prepared
+            .roots()
+            .entries_for_test()
+            .into_iter()
+            .any(|id| id == transfer_id)
+    );
     assert!(
         prepared
             .candidates()
-            .iter()
+            .entries_for_test()
+            .into_iter()
             .any(|candidate| candidate.id() == orphan_id)
     );
     let (mut stale, _) = DirectoryCampaignGcJournal::create(temp.path().join("stale"), &prepared)
@@ -1164,6 +1202,7 @@ fn paused_derived_s3_campaign_recovers_with_pending_write_back_transfer_and_gc()
         Some(graph.as_ref()),
         CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers),
         &admin,
+        spill_parent.path(),
     )
     .expect("replan after third derived publication");
     let (mut journal, _) =

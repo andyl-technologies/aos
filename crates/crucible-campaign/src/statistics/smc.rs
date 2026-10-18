@@ -228,13 +228,70 @@ pub enum SmcUncertaintyStatement {
     GenealogicallyCorrelatedNoIidInterval,
 }
 
+/// Compact per-stage record of one generation that supplied SMC transitions.
+///
+/// A report keeps one summary per stage instead of every generation's particle
+/// slots, so its size grows with the stage count rather than with the total
+/// number of transitions. The identity authenticates the complete generation,
+/// which the owner can recompute from the same snapshot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StatisticalGenerationSummary {
+    id: StatisticalGenerationId,
+    completed_stage: u32,
+    next_stage: u32,
+    resampled: bool,
+    normalization_factor: StatisticalRational,
+}
+
+impl StatisticalGenerationSummary {
+    pub(crate) fn from_generation(generation: &StatisticalGeneration) -> Self {
+        Self {
+            id: generation.id(),
+            completed_stage: generation.completed_stage(),
+            next_stage: generation.next_stage(),
+            resampled: generation.resampled(),
+            normalization_factor: generation.normalization_factor(),
+        }
+    }
+
+    /// Returns the semantic identity of the complete generation.
+    #[must_use]
+    pub const fn id(&self) -> StatisticalGenerationId {
+        self.id
+    }
+
+    /// Returns the completely observed parent stage.
+    #[must_use]
+    pub const fn completed_stage(&self) -> u32 {
+        self.completed_stage
+    }
+
+    /// Returns the stage whose transitions consumed this generation.
+    #[must_use]
+    pub const fn next_stage(&self) -> u32 {
+        self.next_stage
+    }
+
+    /// Returns whether ancestor selection reset the carried estimator weights.
+    #[must_use]
+    pub const fn resampled(&self) -> bool {
+        self.resampled
+    }
+
+    /// Returns the average pre-resampling weight, or one without resampling.
+    #[must_use]
+    pub const fn normalization_factor(&self) -> StatisticalRational {
+        self.normalization_factor
+    }
+}
+
 /// Complete owner-replayed estimate after every predeclared SMC stage.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SequentialMonteCarloEstimateReport {
     snapshot: CampaignSnapshotId,
     policy: CampaignPolicyId,
     resampling_algorithm: SmcResamplingAlgorithm,
-    generations: Vec<StatisticalGeneration>,
+    generations: Vec<StatisticalGenerationSummary>,
     normalization_product: StatisticalRational,
     final_particles: Vec<StatisticalParticleOutcome>,
     diagnostics: StatisticalWeightDiagnostics,
@@ -245,7 +302,7 @@ impl SequentialMonteCarloEstimateReport {
         snapshot: CampaignSnapshotId,
         policy: CampaignPolicyId,
         resampling_algorithm: SmcResamplingAlgorithm,
-        generations: Vec<StatisticalGeneration>,
+        generations: Vec<StatisticalGenerationSummary>,
         normalization_product: StatisticalRational,
         final_particles: Vec<StatisticalParticleOutcome>,
         diagnostics: StatisticalWeightDiagnostics,
@@ -257,7 +314,7 @@ impl SequentialMonteCarloEstimateReport {
                     || particle.stage()
                         != generations
                             .last()
-                            .map_or(0, StatisticalGeneration::next_stage)
+                            .map_or(0, StatisticalGenerationSummary::next_stage)
             })
             || normalization_product.numerator() == 0
         {
@@ -300,9 +357,9 @@ impl SequentialMonteCarloEstimateReport {
         SmcSupportValidation::ExactFinitePositive
     }
 
-    /// Returns every generation that supplied a post-initial transition.
+    /// Returns one summary per generation that supplied a post-initial transition.
     #[must_use]
-    pub fn generations(&self) -> &[StatisticalGeneration] {
+    pub fn generations(&self) -> &[StatisticalGenerationSummary] {
         &self.generations
     }
 
@@ -1292,7 +1349,7 @@ mod tests {
                 .expect("proposal ID"),
             AttemptId::from_content_id(content_id(ObjectKind::CampaignFact, 9, label))
                 .expect("attempt ID"),
-            ObservationId::from_content_id(content_id(ObjectKind::Observation, 14, label))
+            ObservationId::from_content_id(content_id(ObjectKind::Observation, 16, label))
                 .expect("observation ID"),
             BranchPathId::from_content_id(content_id(ObjectKind::CampaignFact, 2, label))
                 .expect("path ID"),
@@ -1603,7 +1660,7 @@ mod tests {
                 .expect("shared attempt ID");
         let observation = ObservationId::from_content_id(content_id(
             ObjectKind::Observation,
-            14,
+            16,
             "shared-observation",
         ))
         .expect("shared observation ID");
@@ -1639,7 +1696,7 @@ mod tests {
             snapshot_id("duplicate-estimate-snapshot"),
             policy,
             SmcResamplingAlgorithm::SystematicV1,
-            vec![generation],
+            vec![StatisticalGenerationSummary::from_generation(&generation)],
             StatisticalRational::new(3, 2).expect("normalization product"),
             outcomes,
             StatisticalWeightDiagnostics::new(
@@ -1662,7 +1719,7 @@ mod tests {
         );
         assert_eq!(
             estimate.estimate_event(&BTreeSet::from([ObservationId::from_content_id(
-                content_id(ObjectKind::Observation, 14, "unknown-observation",)
+                content_id(ObjectKind::Observation, 16, "unknown-observation",)
             )
             .expect("unknown observation ID")])),
             Err(CampaignCodecError::InvalidValue {

@@ -18,6 +18,7 @@
     + builtins.readFile ../../crates/crucible-device/src/block_overlay_codec_test.rs
     + builtins.readFile ../../crates/crucible-device/src/block_snapshot_array_test.rs;
   overlay = builtins.readFile ../../crates/crucible-device/src/block/overlay.rs;
+  overlayImage = builtins.readFile ../../crates/crucible-device/src/block/overlay_image.rs;
   device =
     import ./_rust-module-source.nix {
       inherit lib;
@@ -48,16 +49,24 @@
         needle = "`BTreeMap`";
       }
       {
-        label = "completion names ordered dirty set";
-        needle = "`BTreeSet`";
+        label = "completion names dirty page bitmaps";
+        needle = "`ChunkPageBits`";
       }
       {
-        label = "completion names dirty delta";
-        needle = "`dirty_delta`";
+        label = "completion names page store";
+        needle = "`BlockPageStore`";
+      }
+      {
+        label = "completion names overlay freeze";
+        needle = "`CowOverlay::freeze`";
+      }
+      {
+        label = "completion names chunked overlay image";
+        needle = "`BlockOverlayImage`";
       }
       {
         label = "completion names materialize";
-        needle = "`BlockDevice::materialize`";
+        needle = "`BlockDevice::materialize_to`";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/15-io-subnodes.md" ioDoc [
@@ -88,8 +97,8 @@
         needle = "pub struct BaseImage";
       }
       {
-        label = "base bytes private";
-        needle = "bytes: Vec<u8>";
+        label = "base bytes private and shared";
+        needle = "bytes: Arc<[u8]>";
       }
       {
         label = "base content hash";
@@ -104,40 +113,52 @@
         needle = "pub struct CowOverlay";
       }
       {
-        label = "ordered overlay pages";
-        needle = "pages: BTreeMap<u64, [u8; PAGE_SIZE]>";
+        label = "ordered overlay chunk table";
+        needle = "chunks: BTreeMap<u64, Arc<OverlayChunk>>";
       }
       {
-        label = "ordered dirty set";
-        needle = "dirty: BTreeSet<u64>";
+        label = "ordered dirty page bitmaps";
+        needle = "dirty: BTreeMap<u64, ChunkPageBits>";
+      }
+      {
+        label = "overlay pages held in a page store";
+        needle = "store: BlockPageStore";
       }
       {
         label = "overlay read wins";
-        needle = "self.pages.get(&pb)";
+        needle = "match self.stored_page(pb) {";
       }
       {
         label = "base fallback read";
-        needle = "let page = base.read_page(pb);";
+        needle = "None => target.copy_from_slice(&base.read_page(pb)[page_off..page_off + take])";
       }
       {
         label = "copy-up from base";
-        needle = "self.pages.entry(pb).or_insert_with(|| base.read_page(pb))";
+        needle = "let mut copy = base.read_page(page_base);";
+      }
+      {
+        label = "shared page copied before patch";
+        needle = ".patch_if_unique(page_off, bytes)";
       }
       {
         label = "dirty page tracking";
-        needle = "self.dirty.insert(pb)";
+        needle = "self.dirty.entry(chunk_index).or_default().insert(slot);";
       }
       {
-        label = "delta captures dirty pages";
-        needle = "pub fn dirty_delta(&self) -> OverlayDelta";
+        label = "chunk identity is the BLAKE3 key of its bytes";
+        needle = "let identity = nonzero.then(|| *hasher.finalize().as_bytes());";
       }
       {
-        label = "delta iterates dirty set";
-        needle = "for &pb in &self.dirty";
+        label = "freeze captures chunks with dirty pages";
+        needle = "BlockOverlayImage::from_live(length, &self.chunks, &self.dirty)";
       }
       {
-        label = "materialize copies base first";
-        needle = "let mut image = base.bytes().to_vec();";
+        label = "dirty pages iterate in ascending order";
+        needle = ".flat_map(|(chunk, bits)| bits.iter().map(move |slot| page_base_at(*chunk, slot)))";
+      }
+      {
+        label = "materialize streams base under overlay pages";
+        needle = "None => page[..span].copy_from_slice(&base.read_page(page_base)[..span]),";
       }
     ]
     ++ forbiddenFor "crates/crucible-device/src/block/overlay.rs" overlay [
@@ -154,38 +175,74 @@
         needle = "bytes_mut";
       }
     ]
+    ++ failuresFor "crates/crucible-device/src/block/overlay_image.rs" overlayImage [
+      {
+        label = "chunked overlay image type";
+        needle = "pub struct BlockOverlayImage";
+      }
+      {
+        label = "ordered image chunks";
+        needle = "chunks: BTreeMap<u64, ImageChunk>";
+      }
+      {
+        label = "image chunk records carry dirty pages";
+        needle = "pub dirty: ChunkPageBits,";
+      }
+      {
+        label = "decoded dirty pages stay within present pages";
+        needle = "!record.dirty.is_subset(&record.present)";
+      }
+      {
+        label = "stored chunks authenticated against identity";
+        needle = "if *blake3::hash(bytes).as_bytes() != identity {";
+      }
+      {
+        label = "restore reinstates dirty pages";
+        needle = "dirty.insert(*index, chunk.dirty);";
+      }
+    ]
+    ++ forbiddenFor "crates/crucible-device/src/block/overlay_image.rs" overlayImage [
+      {
+        label = "unordered image chunk map";
+        needle = "HashMap";
+      }
+      {
+        label = "unordered image page set";
+        needle = "HashSet";
+      }
+    ]
     ++ failuresFor "crates/crucible-device/src/block/device.rs" device [
       {
         label = "block snapshot type";
         needle = "pub struct BlockSnapshot";
       }
       {
-        label = "snapshot captures delta";
-        needle = "overlay_delta: self.overlay.dirty_delta()";
+        label = "snapshot freezes overlay chunks";
+        needle = "overlay: self.overlay.freeze(self.base.len())";
       }
       {
-        label = "snapshot captures full overlay pages";
-        needle = "full_pages: self.overlay.all_pages().clone()";
+        label = "snapshot carries chunked overlay image";
+        needle = "pub overlay: BlockOverlayImage";
       }
       {
-        label = "snapshot captures dirty set";
-        needle = "dirty: self.overlay.dirty_pages().clone()";
+        label = "snapshot chunk records carry present and dirty pages";
+        needle = "struct OverlayChunkWire(u64, Option<[u8; 32]>, [u64; 16], [u64; 16]);";
       }
       {
         label = "checkpoint clears dirty set";
         needle = "self.overlay.clear_dirty();";
       }
       {
-        label = "restore stacks delta";
-        needle = "overlay.apply_delta(&snapshot.overlay_delta)";
+        label = "restore rebuilds overlay from authenticated chunks";
+        needle = "let overlay = snapshot.overlay.materialize_into(store)?;";
       }
       {
-        label = "restore reinstates dirty set";
-        needle = "overlay.set_dirty(snapshot.dirty.clone())";
+        label = "restore validation authenticates chunks";
+        needle = "snapshot.overlay.verify()";
       }
       {
         label = "materialize delegates overlay";
-        needle = "self.overlay.materialize(&self.base)";
+        needle = "self.overlay.materialize_to(&self.base, output)";
       }
     ]
     ++ failuresFor "crates/crucible-device/src/block.rs" blockModule [
@@ -218,8 +275,16 @@
         needle = "regression_restore_preserves_mid_epoch_dirty_set";
       }
       {
-        label = "delta page hash test";
-        needle = "delta_pages_are_blake3_keyed";
+        label = "overlay chunk hash test";
+        needle = "overlay_chunks_are_blake3_keyed";
+      }
+      {
+        label = "disk and heap overlay equivalence test";
+        needle = "disk_overlay_matches_heap_overlay_and_reference_across_writes_forks_and_restores";
+      }
+      {
+        label = "stored chunk authentication test";
+        needle = "restore_authenticates_every_stored_chunk";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -301,9 +366,9 @@ in
             tasks=${taskList}
             component=crucible-block-cow-overlay
             base_image=read-only-content-addressed
-            overlay_pages=BTreeMap-4KiB
-            dirty_pages=BTreeSet-deterministic-delta
-            materialize=copy-base-then-overlay
+            overlay_pages=BTreeMap-4MiB-chunks-of-4KiB-pages
+            dirty_pages=BTreeMap-chunk-bitmaps-deterministic
+            materialize=stream-base-under-overlay
             RESULT
           '';
         }

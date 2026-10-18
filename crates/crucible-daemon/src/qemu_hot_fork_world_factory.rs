@@ -68,6 +68,11 @@ pub(crate) enum QemuHotForkSourceWorldBoundary {
     CanonicalGenesis,
     /// The source is at one completely authenticated exact-checkpoint boundary.
     ExactCheckpoint(ExactCheckpointId),
+    /// The source is a thin attempt's world kept at its published child boundary.
+    ///
+    /// The configuration is the child of a durably accepted observation, whose
+    /// stored configuration artifact is the source's thin fallback.
+    PublishedBoundary,
 }
 
 /// Failure while deriving the exact retained-source lookup key for an attempt.
@@ -112,6 +117,22 @@ impl QemuHotForkSourceWorldKey {
             scenario,
             profile,
             boundary: QemuHotForkSourceWorldBoundary::ExactCheckpoint(checkpoint),
+        }
+    }
+
+    /// Binds a retained world to the published child boundary of a thin attempt.
+    #[must_use]
+    pub(crate) const fn new_published(
+        lineage: CampaignLineageId,
+        scenario: ContentHash,
+        configuration: ContentHash,
+        profile: ExecutorCompatibilityProfile,
+    ) -> Self {
+        Self {
+            template: crate::HotCheckpointPoolKey::new(lineage, configuration),
+            scenario,
+            profile,
+            boundary: QemuHotForkSourceWorldBoundary::PublishedBoundary,
         }
     }
 
@@ -160,9 +181,19 @@ impl QemuHotForkSourceWorldKey {
         };
         let scenario = input.scenario().scenario_def().id();
         let profile = ExecutorCompatibilityProfile::from_lineage(input.lineage());
+        // Only a branch from a later parent can reuse a published-boundary
+        // root. Discovery keeps the genesis key: continuing a configuration
+        // from a retained world is proven only for a recorded branch edge.
+        let published_parent = matches!(
+            input.start(),
+            crate::CrucibleResolvedAttemptStart::Branch { parent, .. } if !parent.is_genesis()
+        );
         Ok(match context.resume_checkpoint() {
             Some(checkpoint) => {
                 Self::new_exact(lineage, scenario, configuration, profile, checkpoint)
+            }
+            None if published_parent => {
+                Self::new_published(lineage, scenario, configuration, profile)
             }
             None => Self::new(lineage, scenario, configuration, profile),
         })
@@ -478,7 +509,7 @@ where
     ) -> Result<QemuHotForkWorldLifecycleStart<Self::Lifecycle>, AttemptWorkerFailure<Self::Error>>
     {
         let fingerprint_nodes = self
-            .prepare_observation(input.scenario())
+            .prepare_observation(input.scenario(), context)
             .map_err(|failure| {
                 failure.map(QemuObservedFreshAttemptLifecycleFactoryError::Evidence)
             })?;
@@ -522,6 +553,7 @@ where
     run_state_root: PathBuf,
     shutdown_policy: QemuShutdownPolicy,
     async_policy: QemuAsyncDriverPolicy,
+    stopped_restore_ack: Option<crucible_qemu::QemuStoppedRestoreAckCapability>,
     #[cfg(test)]
     node_launch_nanoseconds: Vec<(String, u64)>,
 }
@@ -548,9 +580,24 @@ where
             run_state_root: run_state_root.into(),
             shutdown_policy,
             async_policy,
+            stopped_restore_ack: None,
             #[cfg(test)]
             node_launch_nanoseconds: Vec::new(),
         }
+    }
+
+    /// Retains stopped-Restore support from the selected source launch pair.
+    ///
+    /// The packaged executor checks that pair against its actual lifecycle
+    /// paths before constructing this factory. A missing receipt keeps
+    /// console Restore unsupported; non-console installation remains valid.
+    #[must_use]
+    pub fn with_stopped_restore_ack(
+        mut self,
+        capability: crucible_qemu::QemuStoppedRestoreAckCapability,
+    ) -> Self {
+        self.stopped_restore_ack = Some(capability);
+        self
     }
 
     /// Selects the campaign store used for recoverable terminal restarts.
@@ -1096,6 +1143,7 @@ where
                 self.shutdown_policy,
                 async_policy,
                 QemuCrashDetector::new(node.name.clone()),
+                self.stopped_restore_ack.as_ref(),
             ) {
                 let message = error.to_string();
                 quarantine_failed_assembly(source_world, resources, assembly, Some(child));

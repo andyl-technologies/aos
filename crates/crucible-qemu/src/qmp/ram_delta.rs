@@ -498,6 +498,25 @@ pub(crate) struct QmpCheckpointRestore {
 }
 
 impl QmpCheckpointRestore {
+    #[cfg(test)]
+    pub(crate) const fn for_test(identity: QmpCheckpointIdentity, topology: ContentHash) -> Self {
+        // Explicit external whole-load provider; production obtains this value
+        // only from the original authenticated QMP restore response parser.
+        Self {
+            identity,
+            topology,
+            ram_layers: 1,
+            ram_bytes: 1,
+            device_bytes: 1,
+        }
+    }
+
+    /// Returns the authenticated checkpoint, target and frontier loaded by QEMU.
+    #[must_use]
+    pub const fn identity(self) -> QmpCheckpointIdentity {
+        self.identity
+    }
+
     /// Returns the canonical restored RAMBlock topology identity.
     #[must_use]
     pub const fn topology(self) -> ContentHash {
@@ -988,7 +1007,9 @@ mod tests {
             "candidate-active": false,
         });
 
-        assert!(parse_checkpoint_epoch_state(QmpCommandKind::QueryCheckpointEpoch, &value).is_err());
+        assert!(
+            parse_checkpoint_epoch_state(QmpCommandKind::QueryCheckpointEpoch, &value).is_err()
+        );
     }
 
     #[test]

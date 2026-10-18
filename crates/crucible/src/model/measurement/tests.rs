@@ -199,6 +199,33 @@ fn measurement_references_and_aggregation_fail_closed() -> Result<(), Box<dyn Er
         MeasurementDefinitions::new(&world, &plan, &properties, vec![wrong_unit]),
         Err(MeasurementDefinitionError::IncompatibleSource { .. })
     ));
+
+    // A level source reports a coordinate at every entry, so aggregates that
+    // grow with the entry count are rejected while endpoints are admitted.
+    for (aggregation, tag) in [
+        (Aggregation::Count, "count"),
+        (Aggregation::Sum, "sum"),
+        (Aggregation::ExactMean, "exact_mean"),
+        (
+            Aggregation::Histogram {
+                upper_bounds: vec![10],
+            },
+            "histogram",
+        ),
+    ] {
+        let mut level_count = definition("level-count", "duration")?;
+        level_count.metrics[0].aggregation = aggregation;
+        assert!(matches!(
+            MeasurementDefinitions::new(&world, &plan, &properties, vec![level_count]),
+            Err(MeasurementDefinitionError::LevelSourceAggregation { aggregation, .. })
+                if aggregation == tag
+        ));
+    }
+    for aggregation in [Aggregation::Min, Aggregation::Max, Aggregation::Last] {
+        let mut level_endpoint = definition("level-endpoint", "duration")?;
+        level_endpoint.metrics[0].aggregation = aggregation;
+        MeasurementDefinitions::new(&world, &plan, &properties, vec![level_endpoint])?;
+    }
     Ok(())
 }
 

@@ -514,6 +514,50 @@ fn bound_replay_factory_reuses_one_capacity_with_fresh_private_directories()
     Ok(())
 }
 
+fn limits(
+    disk_bytes: u64,
+    execution_quanta: u64,
+) -> Result<AttemptResourceLimits, QemuVmRealizationError> {
+    AttemptResourceLimits::new(1, 1024 * 1024, disk_bytes, execution_quanta)
+        .map_err(|error| world_resource_error(error.to_string()))
+}
+
+/// A replay after primary work requests only the unspent quantum allowance.
+#[test]
+fn bound_replay_factory_leases_a_narrowed_quantum_ceiling() -> Result<(), QemuVmRealizationError> {
+    let finishes = Arc::new(AtomicUsize::new(0));
+    let quarantines = Arc::new(AtomicUsize::new(0));
+    let mut owner = QemuHotForkWorldResourceOwner::new(
+        guard(Arc::clone(&finishes), Arc::clone(&quarantines))?,
+        1,
+    )?;
+    finish_primary_lifecycle(&mut owner, "primary")?;
+    let (binding, mut factory) = bound_auxiliary_resources(&owner)?;
+    let cancellation = owner.cancellation.clone();
+    let gigabyte = 1024 * 1024 * 1024;
+
+    for refused in [limits(gigabyte, 3)?, limits(gigabyte / 2, 1)?] {
+        assert!(factory.begin(refused, cancellation.clone(), None).is_err());
+    }
+
+    let narrowed = limits(gigabyte, 1)?;
+    let mut replay = factory
+        .begin(narrowed, cancellation, None)
+        .map_err(|failure| failure.into_parts().0)?;
+    assert!(matches!(
+        replay,
+        QemuHotForkWorldAuxiliaryResourceGuard::Retained(_)
+    ));
+    assert_eq!(replay.resource_limits(), narrowed);
+    replay.finish()?;
+
+    drop(binding);
+    owner.finish()?;
+    assert_eq!(finishes.load(Ordering::Acquire), 1);
+    assert_eq!(quarantines.load(Ordering::Acquire), 0);
+    Ok(())
+}
+
 #[test]
 fn auxiliary_cleanup_failure_quarantines_and_poisons_the_aggregate()
 -> Result<(), QemuVmRealizationError> {

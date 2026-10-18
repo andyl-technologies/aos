@@ -9,7 +9,12 @@
 }: let
   productionFlight = import ./phase7-production-rust-plugin-flight.nix {
     inherit pkgs lib;
-    attrPath = "checks.crucible.phase7.productionRustPluginFlight";
+    # The check label enters VM init, so identical uncomposed evidence must
+    # share the canonical raw flight rather than create another physical run.
+    attrPath =
+      if campaignComposition == null
+      then "checks.crucible.phase7.productionRustPluginFlight.rawGate"
+      else "checks.crucible.phase7.productionRustPluginFlight";
     inherit campaignComposition;
   };
   projectionManifest = import ./phase2-qemu-fingerprint-projection-manifest.nix {inherit pkgs lib;};

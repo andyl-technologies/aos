@@ -400,26 +400,19 @@ fn validate_recovered_finding_replay_captures(
         .map_err(Box::new)?;
 
     for (capture, (reproduction, observed_signature)) in loaded.iter().zip(bindings) {
-        let crate::LoadedFindingReplayCapture::Complete {
-            bytes,
-            content_hash,
-        } = capture
-        else {
+        let crate::LoadedFindingReplayCapture::Complete(objects) = capture else {
             continue;
         };
-        let capture = crate::FindingProductionReplayCapture::from_canonical_bytes(bytes, limits)
-            .map_err(AttemptResultRecoveryFailure::ProductionReplay)
-            .map_err(Box::new)?;
-        if capture
-            .content_hash(limits)
-            .map_err(AttemptResultRecoveryFailure::ProductionReplay)
-            .map_err(Box::new)?
-            != *content_hash
-        {
-            return Err(Box::new(AttemptResultRecoveryFailure::ProductionReplay(
-                crate::FindingProductionReplayCaptureError::CaptureBinding,
-            )));
-        }
+        // Decoding checks the manifest against its root identity, so the
+        // capture content is the one the candidate references.
+        let capture = crate::FindingProductionReplayCapture::from_objects(
+            objects.root(),
+            objects.manifest(),
+            objects.leaves(),
+            limits,
+        )
+        .map_err(AttemptResultRecoveryFailure::ProductionReplay)
+        .map_err(Box::new)?;
         capture
             .validate_binding(reproduction, &observed_signature)
             .map_err(AttemptResultRecoveryFailure::ProductionReplay)
@@ -698,6 +691,7 @@ pub(crate) fn publish_prepared_semantic_attempt_result(
     exact_authenticator: &dyn FindingExactCheckpointAuthenticator,
     result: &PreparedSemanticAttemptResult,
 ) -> Result<ObservationId, AttemptResultPublicationFailure> {
+    publish_log_segments(store, result)?;
     for evidence in result.measurement_replay_evidence() {
         let expected = match evidence.id() {
             Ok(expected) => expected,
@@ -714,6 +708,31 @@ pub(crate) fn publish_prepared_semantic_attempt_result(
         finding.publish_for_executor(store, exact_authenticator)?;
     }
     Ok(observation)
+}
+
+/// Publishes every attempt-log segment `result` references as a trace leaf.
+///
+/// Segments are published before any replay leaf that references them, so no
+/// published leaf names an absent segment (RFC-0020 CCOMP-29). Each segment is
+/// read and authenticated one at a time, so publication memory stays bounded
+/// by one segment. Republishing an identical segment is idempotent.
+///
+/// # Errors
+///
+/// Returns an error when a segment cannot be read, fails authentication, or
+/// cannot be published under its identity.
+pub(crate) fn publish_log_segments(
+    store: &CampaignExecutorStore,
+    result: &PreparedSemanticAttemptResult,
+) -> Result<(), AttemptResultPublicationFailure> {
+    for segment in result.referenced_log_segments() {
+        let bytes = crate::AttemptLogSegmentSource::segment(result.log_segments(), segment.id)
+            .map_err(|source| crate::AttemptEventLogError::Store { source })
+            .and_then(|bytes| crate::decode_segment(&segment, &bytes).map(|_| bytes))
+            .map_err(crate::CrucibleMeasurementError::from)?;
+        store.publish_executor_trace_leaf(segment.id, crate::ATTEMPT_LOG_SEGMENT_SCHEMA, &bytes)?;
+    }
+    Ok(())
 }
 
 /// Aborts a stably conflicting prepared publication before immutable writes.

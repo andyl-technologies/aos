@@ -21,6 +21,7 @@ use crucible_protocol::{
     DescriptorHandoverError, ReceivedSetup, SETUP_ACK_STATUS_READY, SETUP_ACK_STATUS_SETUP_FAILED,
     SetupCompletionError,
     app_random_branch_plan::AppRandomBranchPlan,
+    native_console::NativeConsoleSetupPlan,
     plugin_send_setup_ack,
     plugin_setup_plan::{PLUGIN_SETUP_PLAN_MAX_BYTES, PluginSetupPlan, PluginSetupPlanError},
     recv_setup_with_descriptors,
@@ -164,6 +165,7 @@ pub struct PluginSetupCompletion {
     wake_fd: ArmedWakeFd,
     app_random_branch_plan: AppRandomBranchPlan,
     selectable_catalog_plan: Option<SelectableCatalogPlan>,
+    native_console_plan: Option<NativeConsoleSetupPlan>,
     registered_wake_fd: Option<RegisteredWakeFd>,
 }
 
@@ -225,6 +227,19 @@ impl PluginSetupCompletion {
     /// Transfers the validated catalog plan into the pinned live callback owner.
     pub(crate) fn take_selectable_catalog_plan(&mut self) -> Option<SelectableCatalogPlan> {
         self.selectable_catalog_plan.take()
+    }
+
+    /// Returns the sealed console plan until the native installation owner takes it.
+    ///
+    /// Descriptor admission alone does not prove frontend resolution or readiness.
+    #[must_use]
+    pub(crate) const fn native_console_plan(&self) -> Option<&NativeConsoleSetupPlan> {
+        self.native_console_plan.as_ref()
+    }
+
+    /// Transfers the admitted console plan into the retained native installation owner.
+    pub(crate) fn take_native_console_plan(&mut self) -> Option<NativeConsoleSetupPlan> {
+        self.native_console_plan.take()
     }
 
     /// Returns evidence that the wake fd was registered with QEMU.
@@ -440,6 +455,7 @@ where
         wake_fd,
         app_random_branch_plan: decoded_plans.app_random_branch_plan,
         selectable_catalog_plan: decoded_plans.selectable_catalog_plan,
+        native_console_plan: decoded_plans.native_console_plan,
         registered_wake_fd: None,
     })
 }
@@ -470,6 +486,7 @@ fn shared_memory_identity(fd: BorrowedFd<'_>) -> Result<(u64, u64), i32> {
 struct DecodedPluginSetupPlans {
     app_random_branch_plan: AppRandomBranchPlan,
     selectable_catalog_plan: Option<SelectableCatalogPlan>,
+    native_console_plan: Option<NativeConsoleSetupPlan>,
 }
 
 #[cfg(target_os = "linux")]
@@ -569,10 +586,11 @@ fn read_plugin_setup_plan(
     }
     let plan = PluginSetupPlan::decode(&bytes)
         .map_err(|source| PluginSetupPlanDescriptorError::DecodeComposite { source })?;
-    let (app_random_branch_plan, selectable_catalog_plan) = plan.into_parts();
+    let (app_random_branch_plan, selectable_catalog_plan, native_console_plan) = plan.into_parts();
     Ok(DecodedPluginSetupPlans {
         app_random_branch_plan,
         selectable_catalog_plan: Some(selectable_catalog_plan),
+        native_console_plan,
     })
 }
 

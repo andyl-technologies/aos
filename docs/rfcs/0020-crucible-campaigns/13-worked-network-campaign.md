@@ -106,6 +106,16 @@ boundaries. They are not merely guest log messages: the host verifies that all
 VMs, the virtual fabric, observation streams, and logical time have reached the
 declared boundary.
 
+VMs reach these markers at staggered times. Each VM parks at its marker and
+consumes nothing until every VM has parked, while peers that are still running
+may keep sending toward it. A frame already inside a World link at the
+all-parked boundary is part of the checkpointed fabric, not unsettled work:
+the boundary admits it, while device I/O, scheduler events, and output not yet
+inside a link still hold the boundary open. When the parks join, a frame that
+fell due while its receiver was parked becomes due at the receiver's first
+deliverable instant after the boundary, in emission order. Later frames keep
+their exact delivery times.
+
 ## Selectables
 
 ### Guest response choices

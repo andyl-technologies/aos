@@ -1,0 +1,309 @@
+diff --git a/accel/tcg/crucible-control-delivery-summary.c b/accel/tcg/crucible-control-delivery-summary.c
+new file mode 100644
+--- /dev/null
++++ b/accel/tcg/crucible-control-delivery-summary.c
+@@ -0,0 +1,219 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/* BQL-owned advisory observations, included by the original RR owner. */
++
++#define RR_CONTROL_SUMMARY_MAX_ROW_BYTES 512
++#define RR_CONTROL_SUMMARY_MAX_PHASES 12
++#define RR_CONTROL_SUMMARY_MAX_BYTES \
++    ((RR_CONTROL_SUMMARY_MAX_PHASES + 1) * RR_CONTROL_SUMMARY_MAX_ROW_BYTES)
++
++static const char * const rr_control_summary_phases[] = {
++    "request", "coalesce", "claim", "defer", "rearm", "complete-bh",
++    "callback-enter", "registered-enter", "registered-return", "cancel",
++    "advance-settled", "wake-stopped",
++};
++
++G_STATIC_ASSERT(ARRAY_SIZE(rr_control_summary_phases) ==
++                RR_CONTROL_SUMMARY_MAX_PHASES);
++
++/* Each field is independently sampled; neither BQL nor this cache is a receipt. */
++typedef struct RRControlSummarySample {
++    uint64_t observation;
++    uint64_t request;
++    uint64_t ack;
++    uint64_t complete;
++    uintptr_t rr_token;
++    uintptr_t token;
++    uint64_t owner;
++    unsigned int state;
++    unsigned int runstate;
++    bool deferred;
++    bool available;
++} RRControlSummarySample;
++
++static struct {
++    bool enabled;
++    bool dumped;
++    pid_t pid;
++    uint64_t observations;
++    RRControlSummarySample phases[RR_CONTROL_SUMMARY_MAX_PHASES];
++} rr_control_summary;
++
++void rr_crucible_sim_control_summary_configure(void)
++{
++    int saved_errno = errno;
++#ifdef CONFIG_LINUX
++    const char *value;
++#endif
++
++    /* An unowned diagnostic call cannot inspect or mutate the private cache. */
++    if (!bql_locked()) {
++        errno = saved_errno;
++        return;
++    }
++#ifdef CONFIG_LINUX
++    value = getenv("CRUCIBLE_NATIVE_CONTROL_DELIVERY_SUMMARY");
++
++    rr_control_summary.enabled = value && strcmp(value, "1") == 0 &&
++                                 rr_crucible_sim_mode();
++#else
++    rr_control_summary.enabled = false;
++#endif
++    errno = saved_errno;
++}
++
++bool rr_crucible_sim_control_summary_enabled(void)
++{
++    return bql_locked() && rr_control_summary.enabled;
++}
++
++static void rr_control_summary_bind_pid(void)
++{
++    pid_t pid = getpid();
++
++    if (rr_control_summary.pid != pid) {
++        /* Only diagnostic state is reset; inherited native epochs stay intact. */
++        rr_control_summary.pid = pid;
++        rr_control_summary.observations = 0;
++        rr_control_summary.dumped = false;
++        memset(rr_control_summary.phases, 0,
++               sizeof(rr_control_summary.phases));
++    }
++}
++
++static RRControlSummarySample rr_control_summary_sample(
++    uint64_t request, uint64_t ack, uint64_t complete,
++    uintptr_t rr_token, uintptr_t token, bool deferred)
++{
++    return (RRControlSummarySample) {
++        .observation = rr_control_summary.observations,
++        .request = request,
++        .ack = ack,
++        .complete = complete,
++        .rr_token = rr_token,
++        .token = token,
++        .owner = icount_crucible_rr_current_vcpu(),
++        .state = qatomic_read(&rr_tcg_exec_state),
++        .runstate = runstate_get(),
++        .deferred = deferred,
++        .available = true,
++    };
++}
++
++static void rr_control_summary_retain(
++    const char *phase, uint64_t request, uint64_t ack, uint64_t complete,
++    uintptr_t rr_token, uintptr_t token, bool deferred)
++{
++    int saved_errno = errno;
++    unsigned int index;
++
++    if (!rr_crucible_sim_control_summary_enabled()) {
++        errno = saved_errno;
++        return;
++    }
++    rr_control_summary_bind_pid();
++    if (rr_control_summary.dumped ||
++        rr_control_summary.observations == UINT64_MAX) {
++        errno = saved_errno;
++        return;
++    }
++    for (index = 0; index < ARRAY_SIZE(rr_control_summary_phases); index++) {
++        if (strcmp(phase, rr_control_summary_phases[index]) == 0) {
++            rr_control_summary.observations++;
++            rr_control_summary.phases[index] = rr_control_summary_sample(
++                request, ack, complete, rr_token, token, deferred);
++            break;
++        }
++    }
++    errno = saved_errno;
++}
++
++static bool rr_control_summary_format_row(
++    char *row, size_t capacity, const char *kind, const char *phase,
++    const RRControlSummarySample *sample, pid_t pid, size_t *bytes)
++{
++    int length = g_snprintf(
++        row, capacity,
++        "CRUCIBLE-NATIVE-CONTROL-SUMMARY-V1 scope=before-cancel kind=%s"
++        " phase=%s pid=%" PRId64 " sample=%" PRIu64 " request=%" PRIu64
++        " ack=%" PRIu64 " complete=%" PRIu64 " rr_token=0x%" PRIxPTR
++        " token=0x%" PRIxPTR " deferred=%d state=%u runstate=%u"
++        " owner=%" PRIu64 "\n",
++        kind, phase, (int64_t)pid, sample->observation, sample->request,
++        sample->ack, sample->complete, sample->rr_token, sample->token,
++        sample->deferred, sample->state, sample->runstate, sample->owner);
++
++    if (length <= 0 || (size_t)length >= capacity ||
++        length > RR_CONTROL_SUMMARY_MAX_ROW_BYTES) {
++        return false;
++    }
++    *bytes = length;
++    return true;
++}
++
++void rr_crucible_sim_control_summary_dump(
++    uint64_t request, uint64_t ack, uint64_t complete,
++    uintptr_t rr_token, uintptr_t token, bool deferred)
++{
++    int saved_errno = errno;
++#ifdef CONFIG_LINUX
++    char output[RR_CONTROL_SUMMARY_MAX_BYTES + 1];
++    RRControlSummarySample current;
++    struct stat status;
++    size_t bytes = 0;
++    size_t row_bytes;
++    unsigned int index;
++    int flags;
++    ssize_t written;
++
++    if (!rr_crucible_sim_control_summary_enabled()) {
++        goto out;
++    }
++    rr_control_summary_bind_pid();
++    if (rr_control_summary.dumped) {
++        goto out;
++    }
++    /* At most one attempt per actual PID, including an unavailable sink. */
++    rr_control_summary.dumped = true;
++    flags = fcntl(STDERR_FILENO, F_GETFL);
++    if (flags < 0 || (flags & O_ACCMODE) == O_RDONLY ||
++        fstat(STDERR_FILENO, &status) < 0 || !S_ISREG(status.st_mode)) {
++        goto out;
++    }
++    current = rr_control_summary_sample(
++        request, ack, complete, rr_token, token, deferred);
++    if (!rr_control_summary_format_row(
++            output, RR_CONTROL_SUMMARY_MAX_ROW_BYTES + 1, "current", "cancel",
++            &current, rr_control_summary.pid, &row_bytes)) {
++        goto out;
++    }
++    bytes += row_bytes;
++    for (index = 0; index < ARRAY_SIZE(rr_control_summary_phases); index++) {
++        const RRControlSummarySample *sample =
++            &rr_control_summary.phases[index];
++
++        if (!sample->available) {
++            continue;
++        }
++        if (!rr_control_summary_format_row(
++                output + bytes, RR_CONTROL_SUMMARY_MAX_ROW_BYTES + 1,
++                "latest", rr_control_summary_phases[index], sample,
++                rr_control_summary.pid, &row_bytes)) {
++            goto out;
++        }
++        bytes += row_bytes;
++    }
++    /* No stdio lock, flush or retry: a failed/short write is advisory only. */
++    written = write(STDERR_FILENO, output, bytes);
++    (void)written;
++
++out:
++#else
++    (void)request;
++    (void)ack;
++    (void)complete;
++    (void)rr_token;
++    (void)token;
++    (void)deferred;
++#endif
++    errno = saved_errno;
++}
+diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
+--- a/accel/tcg/tcg-accel-ops-rr.c
++++ b/accel/tcg/tcg-accel-ops-rr.c
+@@ -586,6 +586,8 @@
+         schedule_token, qatomic_read(&rr_tcg_exec_state));
+ }
+ 
++#include "crucible-control-delivery-summary.c"
++
+ static const char * const rr_control_delivery_trace_phases[] = {
+     "request", "defer", "rearm", "complete-bh", "callback-enter",
+     "registered-enter", "registered-return", "cancel", "advance-settled",
+@@ -620,6 +622,10 @@
+     bool emit;
+     pid_t pid;
+     char states[64];
++
++    rr_control_summary_retain(phase, request_generation, ack_generation,
++                              complete_generation, rr_schedule_token,
++                              schedule_token, deferred);
+ 
+     if (!rr_crucible_sim_mode() ||
+         !trace_event_get_state_backends(TRACE_CRUCIBLE_SIM_RR_CONTROL_DELIVERY)) {
+diff --git a/accel/tcg/tcg-accel-ops-rr.h b/accel/tcg/tcg-accel-ops-rr.h
+--- a/accel/tcg/tcg-accel-ops-rr.h
++++ b/accel/tcg/tcg-accel-ops-rr.h
+@@ -226,6 +226,13 @@
+                                              uint64_t ack_generation,
+                                              uint64_t complete_generation,
+                                              uintptr_t schedule_token);
++/* Private BQL-owned diagnostic helpers; no process protocol or CPU authority. */
++void rr_crucible_sim_control_summary_configure(void);
++bool rr_crucible_sim_control_summary_enabled(void);
++void rr_crucible_sim_control_summary_dump(
++    uint64_t request, uint64_t ack, uint64_t complete,
++    uintptr_t rr_token, uintptr_t token, bool deferred);
++
+ /* Observe delivery without changing control ownership or canonical state. */
+ /* Uses the existing explicitly enabled delivery diagnostic event. */
+ bool rr_crucible_sim_control_delivery_trace_enabled(void);
+diff --git a/plugins/api-system.c b/plugins/api-system.c
+--- a/plugins/api-system.c
++++ b/plugins/api-system.c
+@@ -1576,6 +1576,9 @@
+                           request_generation);
+     qatomic_store_release(&qemu_plugin_rr_control_schedule_token,
+                           schedule_token);
++    if (rr_crucible_sim_control_summary_enabled()) {
++        qemu_plugin_trace_control_delivery("claim");
++    }
+     rr_crucible_sim_trace_control_boundary(
+         "ack", request_generation, request_generation,
+         complete_generation, schedule_token);
+@@ -1592,6 +1595,13 @@
+     uint64_t complete_generation = qatomic_load_acquire(
+         &qemu_plugin_rr_control_complete_generation);
+ 
++    if (rr_crucible_sim_control_summary_enabled()) {
++        rr_crucible_sim_control_summary_dump(
++            request_generation,
++            qatomic_load_acquire(&qemu_plugin_rr_control_ack_generation),
++            complete_generation, rr_schedule_token, schedule_token,
++            qatomic_load_acquire(&qemu_plugin_control_boundary_deferred));
++    }
+     qatomic_store_release(&qemu_plugin_control_boundary_deferred, false);
+     if (schedule_token != 0) {
+         qatomic_cmpxchg(&qemu_plugin_control_boundary_scheduled,
+@@ -1622,6 +1632,9 @@
+ 
+     /* Coalesce only while the RR thread has not claimed the prior request. */
+     if (request_generation != acknowledged_generation) {
++        if (rr_crucible_sim_control_summary_enabled()) {
++            qemu_plugin_trace_control_delivery("coalesce");
++        }
+         qemu_plugin_trace_rr_control_boundary_state("coalesce");
+         return;
+     }
+@@ -2341,6 +2354,7 @@
+     aio_set_fd_handler(qemu_get_aio_context(), fd,
+                        qemu_plugin_wake_fd_read, NULL, NULL, NULL,
+                        (void *)(intptr_t)fd);
++    rr_crucible_sim_control_summary_configure();
+     return 0;
+ }
+ 

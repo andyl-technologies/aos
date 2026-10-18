@@ -17,13 +17,13 @@ impl FaultBindingRuntime<'_> {
         same_coordinate_sequence: u64,
         opportunity: Option<&FaultOpportunity>,
         derivation_fingerprint: ContentHash,
-        trace: &ResolvedEffectTrace,
+        trace: &ResolvedEffectTraceReader,
     ) -> Result<Vec<ResolvedBindingAction>, BindingRuntimeError> {
         let item = trace
             .work_item_for_context(coordinate, same_coordinate_sequence, opportunity)
             .map_err(BindingRuntimeError::Runtime)?;
         let records = item.map_or_else(Vec::new, |item| item.records.clone());
-        if trace.mode == FaultReplayMode::RecomputedCause {
+        if trace.mode() == FaultReplayMode::RecomputedCause {
             if item.is_none()
                 || item.is_some_and(|item| item.derivation_fingerprint != derivation_fingerprint)
                 || records.len() != generated.len()
@@ -33,7 +33,7 @@ impl FaultBindingRuntime<'_> {
                     .any(|(record, action)| !record.matches_recomputed_action(action))
             {
                 return Err(replay_mismatch(
-                    trace.cursor,
+                    trace.cursor_index(),
                     opportunity.map(FaultOpportunity::id),
                 ));
             }
@@ -63,7 +63,7 @@ impl FaultBindingRuntime<'_> {
                 .validate()
                 .map_err(FaultRuntimeError::Contract)
                 .map_err(BindingRuntimeError::Runtime)?;
-            if matches!(trace.mode, FaultReplayMode::OutcomeOnlyNetwork(_))
+            if matches!(trace.mode(), FaultReplayMode::OutcomeOnlyNetwork(_))
                 && (record.effect.descriptor().adapter != FaultAdapter::Network
                     || record.opportunity.is_none())
             {
@@ -71,7 +71,7 @@ impl FaultBindingRuntime<'_> {
                     FaultRuntimeError::InvalidReplayTrace,
                 ));
             }
-            let action = match trace.mode {
+            let action = match trace.mode() {
                 FaultReplayMode::OutcomeOnlyNetwork(_) => outcome_action(
                     &record,
                     opportunity.ok_or(BindingRuntimeError::Runtime(
@@ -126,15 +126,12 @@ fn mapping_output_values(output: &ResolvedMappingOutput) -> Vec<SignalValue> {
 }
 
 pub(super) fn verify_replay_results(
-    trace: &mut ResolvedEffectTrace,
+    trace: &mut ResolvedEffectTraceReader,
     actions: &[ResolvedBindingAction],
     results: &[PreparedActionResult],
     verification: ReplayActionVerification,
 ) -> Result<(), BindingRuntimeError> {
-    let item = verification
-        .consumed
-        .then(|| trace.work_items.get(trace.cursor))
-        .flatten();
+    let item = verification.consumed.then(|| trace.current()).flatten();
     let records = item.map_or(&[][..], |item| item.records.as_slice());
     let matches = records.len() == actions.len()
         && actions.len() == results.len()
@@ -143,7 +140,7 @@ pub(super) fn verify_replay_results(
             .zip(actions)
             .zip(results)
             .all(|((record, action), result)| {
-                let coordinate_matches = match trace.mode {
+                let coordinate_matches = match trace.mode() {
                     FaultReplayMode::OutcomeOnlyNetwork(_) => {
                         result.observation.coordinate == action.coordinate
                     }
@@ -158,7 +155,7 @@ pub(super) fn verify_replay_results(
     if !matches {
         return Err(BindingRuntimeError::AdapterCommit(
             FaultRuntimeError::ReplayMismatch {
-                index: trace.cursor,
+                index: trace.cursor_index(),
                 expected: records.first().and_then(|record| record.opportunity),
                 observed: verification.observed,
             },
@@ -179,7 +176,7 @@ pub(super) struct ReplayActionVerification {
 }
 
 pub(super) fn verify_replay_action_shapes(
-    trace: &ResolvedEffectTrace,
+    trace: &ResolvedEffectTraceReader,
     actions: &[ResolvedBindingAction],
     coordinate: FaultCoordinate,
     same_coordinate_sequence: u64,
@@ -194,7 +191,7 @@ pub(super) fn verify_replay_action_shapes(
         && records
             .iter()
             .zip(actions)
-            .all(|(record, action)| match trace.mode {
+            .all(|(record, action)| match trace.mode() {
                 FaultReplayMode::RecomputedCause => record.matches_recomputed_action(action),
                 FaultReplayMode::LockedEffect => record.locked_action() == *action,
                 FaultReplayMode::OutcomeOnlyNetwork(_) => opportunity
@@ -203,7 +200,7 @@ pub(super) fn verify_replay_action_shapes(
     if !matches {
         return Err(BindingRuntimeError::Runtime(
             FaultRuntimeError::ReplayMismatch {
-                index: trace.cursor,
+                index: trace.cursor_index(),
                 expected: records.first().and_then(|record| record.opportunity),
                 observed,
             },
@@ -239,16 +236,15 @@ pub(super) fn stage_resolved_replay_work_item(
     same_coordinate_sequence: u64,
     derivation_fingerprint: ContentHash,
     resource_limits: FaultResourceLimits,
-    current_records: usize,
+    current_records: u64,
 ) -> Result<ResolvedReplayWorkItem, BindingRuntimeError> {
     let requested = u64::try_from(actions.len())
         .map_err(|_| BindingRuntimeError::CountOverflow("resolved_effect_records"))?;
     let mut records = Vec::new();
     records.try_reserve_exact(actions.len()).map_err(|_| {
-        let current = u64::try_from(current_records).unwrap_or(u64::MAX);
         BindingRuntimeError::ResourceLimit(FaultResourceLimitError::Exceeded {
             field: "resolved_effect_records",
-            current,
+            current: current_records,
             requested,
             configured: resource_limits.resolved_effect_records,
             hard: FaultResourceLimits::compiled_maximum().resolved_effect_records,

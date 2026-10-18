@@ -325,6 +325,14 @@ fn largest_scalar_record_stays_within_fixture_line_bound_and_missing_views_are_n
     snapshot.control_boundary_ack = u32::MAX;
     snapshot.control_boundary_fault_command_frontier = u64::MAX;
     snapshot.control_boundary_capture_request = u32::MAX;
+    snapshot.advance_publication_sequence = u64::MAX - 1;
+    snapshot.advance_stop_condition = u8::MAX;
+    runtime.wait_observation = WaitObservation::with_budget(256);
+    runtime.wait_observation.region_inode = Some(u64::MAX);
+    runtime
+        .wait_observation
+        .retain_initial_advance(&snapshot, Some(u64::MAX));
+    runtime.wait_observation.checkpoint_idle_unreleased = Some(true);
     let clamp = ClampExpectation {
         request: PendingControlBoundary {
             generation: u32::MAX - 1,
@@ -336,13 +344,33 @@ fn largest_scalar_record_stays_within_fixture_line_bound_and_missing_views_are_n
         acknowledgement_seen: false,
         device_progress: false,
     };
-    let largest = Some((u64::MAX, u64::MAX));
+    let key = crucible_shmem::FrameDeliveryKey {
+        delivery_icount: u64::MAX,
+        src_node: u32::MAX,
+        seq: u32::MAX,
+    };
+    runtime.wait_observation.device_deadlines.set(Some(
+        super::super::device_wait_observation::DeviceDeadlines {
+            block: super::super::device_wait_observation::CompletionCandidate::worker(
+                Some(u64::MAX),
+                Some((u64::MAX, Some(u32::MAX), u64::MAX, u64::MAX)),
+            ),
+            ninep: super::super::device_wait_observation::CompletionCandidate::queued(
+                Some(u64::MAX),
+                Some((key, u32::MAX)),
+            ),
+            accelerator: Some(u64::MAX),
+        },
+    ));
+    let largest = (u64::MAX, u64::MAX);
     let indices = RingIndices {
-        tx: largest,
-        rx: largest,
-        fault_command: largest,
-        fault_event: largest,
-        fault_result: largest,
+        tx: Some(largest),
+        rx: Some(largest),
+        fault_command: Some(largest),
+        fault_event: Some(largest),
+        fault_result: Some(largest),
+        block: Some((largest, largest)),
+        ninep: Some((largest, largest)),
     };
     let mut bytes = Vec::new();
     write_observation(
@@ -354,7 +382,26 @@ fn largest_scalar_record_stays_within_fixture_line_bound_and_missing_views_are_n
         Duration::MAX,
         &indices,
     )?;
-    assert!(bytes.len() < 2048);
+    assert!(
+        bytes.len() < 2048,
+        "maximum clamp row bytes={}",
+        bytes.len()
+    );
+    bytes.clear();
+    write_observation(
+        &mut bytes,
+        &runtime,
+        "advance-pending",
+        &snapshot,
+        None,
+        Duration::MAX,
+        &indices,
+    )?;
+    assert!(
+        bytes.len() < 2048,
+        "maximum advance row bytes={}",
+        bytes.len()
+    );
 
     let original = plugin.node_slot(0)?.snapshot();
     // Every accessor must reject a slot outside its admitted mapped layout.
@@ -374,5 +421,359 @@ fn largest_scalar_record_stays_within_fixture_line_bound_and_missing_views_are_n
         "fault_command_read_write=None fault_event_read_write=None fault_result_read_write=None"
     ));
     assert_eq!(plugin.node_slot(0)?.snapshot(), original);
+    Ok(())
+}
+
+#[test]
+fn device_wait_observation_keeps_matching_head_separate_from_newer_worker_pin() {
+    use super::super::device_wait_observation::{
+        CompletionCandidate, DeviceDeadlines, write_deadlines,
+    };
+    let head = crucible_shmem::FrameDeliveryKey {
+        delivery_icount: 10,
+        src_node: 3,
+        seq: 7,
+    };
+    let queued = DeviceDeadlines {
+        block: CompletionCandidate::queued(Some(10), Some((head, 21))),
+        ninep: CompletionCandidate::queued(Some(10), None),
+        accelerator: Some(20),
+    };
+    let mut bytes = Vec::new();
+    write_deadlines(&mut bytes, Some(queued)).unwrap_or_else(|e| panic!("queue observation: {e}"));
+    let row = std::str::from_utf8(&bytes).unwrap_or_else(|e| panic!("row: {e}"));
+    assert!(row.contains("device_min_families=3"));
+    assert!(row.contains("block_head=10:3:7:21 block_owner_request=21"));
+    assert!(row.contains("ninep_owner_request=unavailable"));
+
+    let worker = DeviceDeadlines {
+        block: CompletionCandidate::worker(Some(10), Some((8, Some(22), 11, 50))),
+        ..queued
+    };
+    bytes.clear();
+    write_deadlines(&mut bytes, Some(worker)).unwrap_or_else(|e| panic!("worker observation: {e}"));
+    let row = std::str::from_utf8(&bytes).unwrap_or_else(|e| panic!("row: {e}"));
+    assert!(row.contains("block_head=unavailable block_owner_request=unavailable"));
+    assert!(row.contains("block_pin=8:Some(22):11:50"));
+    assert!(row.contains("device_min_families=3"));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn device_wait_observation_reads_actual_mapped_block_head_without_consuming_it() {
+    let allocation =
+        crucible_shmem::RegionAllocation::new_model(crucible_shmem::RegionConfig::new(1, 4))
+            .unwrap_or_else(|e| panic!("allocation: {e}"));
+    let layout = allocation.layout();
+    let mut file = std::fs::File::from(
+        crate::spawn::memfd_region(layout.region_size).unwrap_or_else(|e| panic!("region: {e}")),
+    );
+    file.write_all(
+        &allocation
+            .setup_region_bytes()
+            .unwrap_or_else(|e| panic!("region bytes: {e}")),
+    )
+    .unwrap_or_else(|e| panic!("region write: {e}"));
+    let wake = tempfile::tempfile().unwrap_or_else(|e| panic!("wake: {e}"));
+    let mut plugin = crucible_shmem::mmap_setup_region(file.as_fd(), layout.region_size)
+        .unwrap_or_else(|e| panic!("map: {e}"));
+    let mut block = super::super::QemuLiveBlockIoServicer::from_shmem_fd(
+        file.as_fd(),
+        layout.region_size,
+        0,
+        4096,
+    )
+    .unwrap_or_else(|e| panic!("block: {e}"));
+    for (sequence, request_id) in [(7, 21), (8, 22)] {
+        let payload = crucible_device::BlockRequest::read(request_id, 0, 8)
+            .encode()
+            .unwrap_or_else(|e| panic!("request: {e}"));
+        let frame = crucible_shmem::FrameEntry::new(0, 0, sequence, &payload)
+            .unwrap_or_else(|e| panic!("frame: {e}"));
+        let pair = plugin
+            .node_directed_ring_pair_mut(
+                0,
+                0,
+                crucible_shmem::SLOT_BLK_IO as u32,
+                crucible_shmem::SLOT_BLK_IO as u32,
+                0,
+            )
+            .unwrap_or_else(|e| panic!("ring: {e}"));
+        pair.first
+            .header
+            .enqueue(pair.first.entries, &frame)
+            .unwrap_or_else(|e| panic!("enqueue: {e}"));
+        assert_eq!(
+            block
+                .process_one_storage_request()
+                .unwrap_or_else(|e| panic!("compute: {e}"))
+                .processed,
+            1
+        );
+    }
+    let original = block
+        .completion_head_observation()
+        .unwrap_or_else(|e| panic!("head: {e}"));
+    assert_eq!(original.1.map(|(_, request)| request), Some(21));
+    let runtime =
+        QemuLiveHostIoRuntime::from_shmem_fd(file.as_fd(), wake.as_fd(), layout.region_size, 0)
+            .unwrap_or_else(|e| panic!("runtime: {e}"));
+    let mut runtime = runtime
+        .with_block_servicer(block, super::super::BlockIoDiagnostics::shared())
+        .unwrap_or_else(|e| panic!("attach: {e}"));
+    let before = runtime.wait_ring_indices();
+    runtime
+        .publish_device_completion_deadline()
+        .unwrap_or_else(|e| panic!("ordinary publication: {e}"));
+    assert!(runtime.wait_observation.device_deadlines.get().is_none());
+    let ordinary = plugin
+        .node_slot(0)
+        .unwrap_or_else(|e| panic!("slot: {e}"))
+        .device_completion_deadline_tick();
+    runtime.wait_observation = WaitObservation::with_budget(256);
+    runtime
+        .publish_device_completion_deadline()
+        .unwrap_or_else(|e| panic!("observed publication: {e}"));
+    assert_eq!(
+        plugin
+            .node_slot(0)
+            .unwrap_or_else(|e| panic!("slot: {e}"))
+            .device_completion_deadline_tick(),
+        ordinary
+    );
+    assert_eq!(Some(ordinary), original.0);
+    assert_eq!(runtime.wait_ring_indices(), before);
+    let mut row = Vec::new();
+    super::super::device_wait_observation::write_deadlines(
+        &mut row,
+        runtime.wait_observation.device_deadlines.get(),
+    )
+    .unwrap_or_else(|e| panic!("row: {e}"));
+    let row = std::str::from_utf8(&row).unwrap_or_else(|e| panic!("row text: {e}"));
+    assert!(row.contains("block_owner_request=21"));
+    assert!(!row.contains("block_owner_request=22"));
+    let retained = runtime
+        .block
+        .as_ref()
+        .unwrap_or_else(|| panic!("block owner"))
+        .lock_servicer("inspect test retained head")
+        .unwrap_or_else(|e| panic!("owner: {e}"))
+        .completion_head_observation()
+        .unwrap_or_else(|e| panic!("retained head: {e}"));
+    assert_eq!(retained, original);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn device_wait_observation_reads_actual_mapped_ninep_head_and_preserves_delivery_frontier() {
+    let allocation =
+        crucible_shmem::RegionAllocation::new_model(crucible_shmem::RegionConfig::new(1, 4))
+            .unwrap_or_else(|e| panic!("allocation: {e}"));
+    let layout = allocation.layout();
+    let mut file = std::fs::File::from(
+        crate::spawn::memfd_region(layout.region_size).unwrap_or_else(|e| panic!("region: {e}")),
+    );
+    file.write_all(
+        &allocation
+            .setup_region_bytes()
+            .unwrap_or_else(|e| panic!("region bytes: {e}")),
+    )
+    .unwrap_or_else(|e| panic!("region write: {e}"));
+    let wake = tempfile::tempfile().unwrap_or_else(|e| panic!("wake: {e}"));
+    let mut plugin = crucible_shmem::mmap_setup_region(file.as_fd(), layout.region_size)
+        .unwrap_or_else(|e| panic!("map: {e}"));
+    let mut ninep =
+        super::super::QemuLive9pIoServicer::from_shmem_fd(file.as_fd(), layout.region_size, 0)
+            .unwrap_or_else(|e| panic!("ninep: {e}"));
+    let version = b"9P2000.L";
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&((7 + 4 + 2 + version.len()) as u32).to_le_bytes());
+    payload.push(crucible_device::ninep::codec::TVERSION);
+    payload.extend_from_slice(&9_u16.to_le_bytes());
+    payload.extend_from_slice(&4096_u32.to_le_bytes());
+    payload.extend_from_slice(&(version.len() as u16).to_le_bytes());
+    payload.extend_from_slice(version);
+    let frame = crucible_shmem::FrameEntry::new(0, 0, 77, &payload)
+        .unwrap_or_else(|e| panic!("frame: {e}"));
+    {
+        let pair = plugin
+            .node_directed_ring_pair_mut(
+                0,
+                0,
+                crucible_shmem::SLOT_9P_IO as u32,
+                crucible_shmem::SLOT_9P_IO as u32,
+                0,
+            )
+            .unwrap_or_else(|e| panic!("ring: {e}"));
+        pair.first
+            .header
+            .enqueue(pair.first.entries, &frame)
+            .unwrap_or_else(|e| panic!("enqueue: {e}"));
+    }
+    assert_eq!(
+        ninep
+            .service(0)
+            .unwrap_or_else(|e| panic!("compute: {e}"))
+            .processed,
+        1
+    );
+    let original = ninep.completion_head_observation();
+    assert_eq!(original.1.map(|(_, request)| request), Some(77));
+    let runtime =
+        QemuLiveHostIoRuntime::from_shmem_fd(file.as_fd(), wake.as_fd(), layout.region_size, 0)
+            .unwrap_or_else(|e| panic!("runtime: {e}"));
+    let mut runtime =
+        runtime.with_ninep_servicer(ninep, super::super::NinepIoDiagnostics::shared());
+    let before = runtime.wait_ring_indices();
+    runtime
+        .publish_device_completion_deadline()
+        .unwrap_or_else(|e| panic!("ordinary publication: {e}"));
+    assert!(runtime.wait_observation.device_deadlines.get().is_none());
+    let ordinary = plugin
+        .node_slot(0)
+        .unwrap_or_else(|e| panic!("slot: {e}"))
+        .device_completion_deadline_tick();
+    runtime.wait_observation = WaitObservation::with_budget(256);
+    runtime
+        .publish_device_completion_deadline()
+        .unwrap_or_else(|e| panic!("observed publication: {e}"));
+    assert_eq!(Some(ordinary), original.0);
+    assert_eq!(runtime.wait_ring_indices(), before);
+    assert_eq!(
+        runtime
+            .ninep
+            .as_ref()
+            .unwrap_or_else(|| panic!("ninep owner"))
+            .servicer
+            .completion_head_observation(),
+        original
+    );
+    let mut row = Vec::new();
+    super::super::device_wait_observation::write_deadlines(
+        &mut row,
+        runtime.wait_observation.device_deadlines.get(),
+    )
+    .unwrap_or_else(|e| panic!("row: {e}"));
+    let row = std::str::from_utf8(&row).unwrap_or_else(|e| panic!("text: {e}"));
+    assert!(row.contains("device_min_families=2"));
+    assert!(row.contains("ninep_owner_request=77"));
+}
+
+#[test]
+fn original_idle_guard_context_distinguishes_plugin_republication_from_scheduler_authorization()
+-> Result<(), Box<dyn std::error::Error>> {
+    use super::super::boundary::{
+        checkpoint_idle_coordinate, checkpoint_idle_publication_is_unreleased,
+    };
+
+    let (mut runtime, plugin) = mapped_runtime()?;
+    runtime.wait_observation = WaitObservation::with_budget(4);
+    let slot = plugin.node_slot(0)?;
+    let ceiling = crucible_shmem::authorize_advance_ceiling(0, 1000, None)?;
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)?;
+    slot.publish_idle(100, 100)?;
+    let initial = slot.snapshot();
+    let coordinate = checkpoint_idle_coordinate(&initial);
+    let indices = runtime.wait_ring_indices();
+    runtime.wait_observation.begin(Duration::from_secs(300));
+    runtime
+        .wait_observation
+        .retain_initial_advance(&initial, coordinate);
+
+    for expected_new_authorization in [false, false, true] {
+        if expected_new_authorization {
+            let ceiling = crucible_shmem::authorize_advance_ceiling(0, 2000, None)?;
+            slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)?;
+        }
+        slot.publish_idle(100, 100)?;
+        let current = slot.snapshot();
+        let unreleased = checkpoint_idle_publication_is_unreleased(coordinate, &current);
+        assert!(unreleased);
+        assert_ne!(current.publish_gen, initial.publish_gen);
+        assert_eq!(
+            current.advance_publication_sequence != initial.advance_publication_sequence,
+            expected_new_authorization
+        );
+        runtime.wait_observation.checkpoint_idle_unreleased = Some(unreleased);
+        let mut bytes = Vec::new();
+        runtime.emit_pending_wait_to(
+            "advance-pending",
+            &current,
+            None,
+            Duration::from_secs(295),
+            &mut bytes,
+        );
+        let record = std::str::from_utf8(&bytes)?;
+        assert!(record.contains("initial_checkpoint_idle_ps=Some(100) "));
+        assert!(record.contains(&format!(
+            "initial_advance_sequence=Some({}) ",
+            initial.advance_publication_sequence
+        )));
+        assert!(record.contains("initial_advance_ceiling_ps=Some(1000) "));
+        assert!(record.contains("checkpoint_idle_unreleased=Some(true) "));
+        assert!(record.contains(&format!(
+            "advance_sequence={} ",
+            current.advance_publication_sequence
+        )));
+        assert_eq!(slot.snapshot(), current);
+        assert_eq!(runtime.wait_ring_indices(), indices);
+        assert!(runtime.completed_boundary.is_none());
+    }
+
+    slot.publish_reached_icount(101)?;
+    let released = slot.snapshot();
+    assert!(!checkpoint_idle_publication_is_unreleased(
+        coordinate, &released
+    ));
+    runtime.wait_observation.checkpoint_idle_unreleased = Some(false);
+    let mut bytes = Vec::new();
+    runtime.emit_pending_wait_to(
+        "advance-pending",
+        &released,
+        None,
+        Duration::from_secs(290),
+        &mut bytes,
+    );
+    assert!(std::str::from_utf8(&bytes)?.contains("checkpoint_idle_unreleased=Some(false) "));
+    assert_eq!(
+        runtime.wait_observation.slice_timeout,
+        Duration::from_secs(300)
+    );
+    assert_eq!(
+        runtime
+            .wait_observation
+            .initial_advance
+            .map(|value| value.checkpoint_idle_coordinate),
+        Some(Some(100))
+    );
+    Ok(())
+}
+
+#[test]
+fn disabled_or_unacquired_initial_context_remains_unavailable()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (mut runtime, plugin) = mapped_runtime()?;
+    let snapshot = plugin.node_slot(0)?.snapshot();
+    for budget in [0, 1] {
+        runtime.wait_observation = WaitObservation::with_budget(budget);
+        runtime.wait_observation.begin(Duration::from_secs(300));
+        if budget == 0 {
+            runtime
+                .wait_observation
+                .retain_initial_advance(&snapshot, Some(100));
+        }
+        assert!(runtime.wait_observation.initial_advance.is_none());
+        let mut bytes = Vec::new();
+        runtime.emit_pending_wait_to(
+            "advance-pending",
+            &snapshot,
+            None,
+            Duration::from_secs(295),
+            &mut bytes,
+        );
+        let row = std::str::from_utf8(&bytes)?;
+        assert!(row.contains("initial_checkpoint_idle_ps=None initial_advance_sequence=None "));
+        assert!(row.contains("checkpoint_idle_unreleased=None "));
+    }
     Ok(())
 }

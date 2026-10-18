@@ -63,7 +63,11 @@ pub(super) fn device() -> NinepDevice {
 pub(super) fn ninep_snapshot_codec_round_trips_complete_device_state() {
     let mut device = device();
     ok(device.commit_visibility_update(
-        [7; 32],
+        NinepVisibilityUpdateKey {
+            slot: [7; 32],
+            update_id: [8; 32],
+            generation: 3,
+        },
         NinepObjectVersion {
             path: "/alpha".to_string(),
             version: 2,
@@ -78,7 +82,49 @@ pub(super) fn ninep_snapshot_codec_round_trips_complete_device_state() {
         },
         NinepVisibilityRelease::AtTicks(15),
         0,
+        &[],
     ));
+
+    // An event-released update latched from a consumed emission exercises the
+    // event cursor and latch fields of the snapshot.
+    let emission = NinepEventEmission {
+        event: [9; 32],
+        coordinate: NinepEventCoordinate {
+            ticks: 20,
+            sequence: 1,
+        },
+    };
+    ok(device.observe_visibility_events(&[emission], 1));
+    ok(device.commit_visibility_update(
+        NinepVisibilityUpdateKey {
+            slot: [10; 32],
+            update_id: [11; 32],
+            generation: 1,
+        },
+        NinepObjectVersion {
+            path: "/zeta".to_string(),
+            version: 2,
+            mode: 0o100_644,
+            data: b"released".to_vec(),
+            deleted: false,
+        },
+        NinepVisibilityPolicy {
+            scope: NinepVisibilityScope::Global,
+            atomic_metadata_and_data: false,
+            retain_deleted_objects: false,
+        },
+        NinepVisibilityRelease::OnEvent {
+            event: [9; 32],
+            after: NinepEventCoordinate {
+                ticks: 10,
+                sequence: 0,
+            },
+        },
+        5,
+        &[emission],
+    ));
+    assert_eq!(device.visibility_state().event_cursor(), 1);
+
     let snapshot = device.snapshot();
     let bytes = ok(snapshot.to_canonical_bytes());
     assert_eq!(ok(NinepSnapshot::from_canonical_bytes(&bytes)), snapshot);
@@ -106,7 +152,7 @@ pub(super) fn ninep_snapshot_codec_round_trips_complete_device_state() {
 
     let mut unsupported_version = bytes.clone();
     let version_index = b"crucible.ninep-snapshot.v".len();
-    assert_eq!(unsupported_version[version_index], b'4');
+    assert_eq!(unsupported_version[version_index], b'6');
     unsupported_version[version_index] = b'?';
     assert_eq!(
         NinepSnapshot::from_canonical_bytes(&unsupported_version),
@@ -114,7 +160,7 @@ pub(super) fn ninep_snapshot_codec_round_trips_complete_device_state() {
     );
 
     let mut prior_version = bytes.clone();
-    prior_version[version_index] = b'3';
+    prior_version[version_index] = b'5';
     assert_eq!(
         NinepSnapshot::from_canonical_bytes(&prior_version),
         Err(NinepSnapshotCodecError::Version)

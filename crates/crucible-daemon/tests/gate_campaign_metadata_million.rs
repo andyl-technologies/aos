@@ -14,16 +14,16 @@ use std::sync::{
 use std::time::Duration;
 
 use crucible_campaign::{
-    AlternativeId, AttemptQueue, AuthorizedPlannerService, BranchBudget, BranchRequest,
-    BranchRequestCause, BudgetGrant, CampaignCommandId, CampaignControlAction, CampaignHash,
-    CampaignLineage, CampaignMode, CampaignPlannerDriver, CampaignPlannerStepOutcome,
-    CampaignPolicy, CampaignRepository, CampaignSeed, CandidateSource, CanonicalFrontierPlanner,
+    AlternativeId, AuthorizedPlannerService, BranchBudget, BranchRequest, BranchRequestCause,
+    BudgetGrant, CampaignCommandId, CampaignControlAction, CampaignHash, CampaignLineage,
+    CampaignMode, CampaignPlannerDriver, CampaignPlannerStepOutcome, CampaignPolicy,
+    CampaignRepository, CampaignSeed, CandidateSource, CanonicalFrontierPlanner,
     ChoiceClassContext, ChoiceCoordinate, ChoiceDomain, ChoiceOpportunity, ChoiceSource,
-    ChoiceValue, ControlRequest, DaemonEpoch, DebuggerAuthorityKey, DiscreteAlternative,
-    DiscreteDomain, ExactRational, ExplorerPolicy, FairnessPolicy, MAX_CAMPAIGN_SNAPSHOT_ANCESTRY,
+    ChoiceValue, ControlRequest, DebuggerAuthorityKey, DiscreteAlternative, DiscreteDomain,
+    ExactRational, ExplorerPolicy, FairnessPolicy, MAX_CAMPAIGN_SNAPSHOT_ANCESTRY,
     PlannerAuthorityKey, PlannerClient, PlannerDisposition, PlanningBudget,
     ProgressiveWideningPolicy, PuctPolicy, RetentionPolicy, ScenarioDefId, SelectableDeclaration,
-    StopCondition, WorkerSlotId,
+    StopCondition,
 };
 use crucible_cas::content_store::{
     DirectoryRefBackend, ObjectKind, StoreGraph, StoreGraphAdmin, StoreGraphConfig, StoreNodeId,
@@ -34,6 +34,11 @@ use rustix::time::{ClockId, Timespec, clock_gettime};
 
 #[path = "gate_campaign_metadata_million/store_profile.rs"]
 mod campaign_store_profile;
+
+#[path = "support/campaign_queue_scan.rs"]
+mod campaign_queue_scan;
+
+use campaign_queue_scan::{QueueScanMeasurement, scan_queue};
 
 const CAMPAIGN: &str = "million-real-admissions";
 const REQUEST_SIZE: usize = 16;
@@ -137,7 +142,7 @@ fn million_real_admissions_fit_compact_metadata_budget() -> Result<(), Box<dyn E
     );
     assert!(worker.is_absolute());
 
-    let measured = run_corpus(&root, &worker, REQUIRED_ADMISSIONS)?;
+    let measured = run_corpus(&root, &worker, REQUIRED_ADMISSIONS, PAGE_SIZE)?;
     assert_eq!(measured.admissions, REQUIRED_ADMISSIONS);
     assert_eq!(measured.request_count, REQUIRED_ADMISSIONS / REQUEST_SIZE);
     assert_eq!(measured.hot_claimable, REQUIRED_ADMISSIONS);
@@ -188,11 +193,37 @@ fn small_real_admission_corpus_exercises_the_same_path() -> Result<(), Box<dyn E
         .unwrap_or(2);
     assert!((1..=256).contains(&request_count));
     let admissions = request_count * REQUEST_SIZE;
-    let measured = run_corpus(&root, &worker, admissions)?;
+    let measured = run_corpus(&root, &worker, admissions, 7)?;
     assert_eq!(measured.hot_claimable, admissions);
     assert_eq!(measured.cold_claimable, measured.hot_claimable);
     assert!(measured.index_bytes > 0);
     assert!(measured.physical_bytes > 0);
+    assert!(measured.hot_queue.scanned_entries > admissions);
+    assert!(measured.hot_queue.pages > 1);
+
+    // Walk the same authenticated mixed accounting root one entry at a time.
+    // This exercises actual empty pages, rather than replacing
+    // repository paging with a scripted sequence.
+    let (blobs, _maintenance) = sqlite_blob_graph(&root)?;
+    let reopened = CampaignRepository::with_component_authorities(
+        blobs,
+        Arc::new(DirectoryRefBackend::new(root.join("refs"))),
+        PlannerAuthorityKey::from_bytes([0x91; 32])?,
+        DebuggerAuthorityKey::from_bytes([0x92; 32])?,
+    )?;
+    let snapshot = reopened.head(CAMPAIGN)?.snapshot_id();
+    let single_entries = scan_queue(&reopened, CAMPAIGN, snapshot, 1, 1_000_000)?;
+    assert!(single_entries.empty_pages > 0);
+    assert_eq!(single_entries.attempts, admissions);
+    assert_eq!(
+        single_entries.scanned_entries,
+        measured.hot_queue.scanned_entries
+    );
+    assert_eq!(
+        single_entries.ordered_attempts_digest,
+        measured.hot_queue.ordered_attempts_digest
+    );
+    assert!(scan_queue(&reopened, CAMPAIGN, snapshot, 1, 1).is_err());
     Ok(())
 }
 
@@ -204,6 +235,7 @@ struct CorpusMeasurement {
     cold_claimable: usize,
     hot_pages: usize,
     cold_pages: usize,
+    hot_queue: QueueScanMeasurement,
     objects: u64,
     index_bytes: u64,
     logical_bytes: u64,
@@ -233,6 +265,7 @@ fn run_corpus(
     root: &Path,
     worker: &Path,
     admissions: usize,
+    page_size: usize,
 ) -> Result<CorpusMeasurement, Box<dyn Error>> {
     assert_eq!(admissions % REQUEST_SIZE, 0);
     assert!(admissions > 0);
@@ -471,9 +504,15 @@ fn run_corpus(
         planner_elapsed,
         true,
     )?;
+    if let Some(profiler) = &profiler {
+        profiler.report(admissions / REQUEST_SIZE, "before-hot-queue");
+    }
     let hot_started = clock_gettime(ClockId::Monotonic);
-    let (hot_claimable, hot_pages) = scan_queue(&repository, parent)?;
+    let hot_queue = scan_queue(&repository, CAMPAIGN, parent, page_size, 1_000_000)?;
     let hot_elapsed = measurement_elapsed_since(hot_started)?;
+    if let Some(profiler) = &profiler {
+        profiler.report(admissions / REQUEST_SIZE, "hot-queue");
+    }
     drop(planner);
     drop(repository);
 
@@ -502,11 +541,24 @@ fn run_corpus(
     drop(physical);
     let (warm_allocated_bytes, warm_physical_bytes) = storage_tree_bytes(root)?;
     drop(maintenance);
+    let profile_cold_store = profiler.is_some();
+    drop(profiler);
     drop(blobs);
 
+    let cold_open_started = clock_gettime(ClockId::Monotonic);
     let (cold_blobs, cold_maintenance) = sqlite_blob_graph(root)?;
+    let cold_profiler = profile_cold_store.then(|| {
+        Arc::new(campaign_store_profile::ProfileBackend::new(Arc::clone(
+            &cold_blobs,
+        )))
+    });
+    let cold_backend: Arc<dyn crucible_cas::content_store::ImmutableBlobBackend> =
+        match &cold_profiler {
+            Some(profiler) => profiler.clone(),
+            None => cold_blobs.clone(),
+        };
     let cold = CampaignRepository::with_component_authorities(
-        cold_blobs,
+        cold_backend,
         Arc::new(DirectoryRefBackend::new(root.join("refs"))),
         PlannerAuthorityKey::from_bytes([0x91; 32])?,
         debugger_authority,
@@ -518,9 +570,23 @@ fn run_corpus(
         planner_elapsed,
         true,
     )?;
+    let cold_open_elapsed = measurement_elapsed_since(cold_open_started)?;
     let cold_started = clock_gettime(ClockId::Monotonic);
     assert_eq!(cold.head(CAMPAIGN)?.snapshot_id(), parent);
-    let (cold_claimable, cold_pages) = scan_queue(&cold, parent)?;
+    if let Some(profiler) = &cold_profiler {
+        profiler.report(admissions / REQUEST_SIZE, "cold-validation");
+    }
+    let cold_validation_elapsed = measurement_elapsed_since(cold_started)?;
+    let cold_queue_started = clock_gettime(ClockId::Monotonic);
+    let cold_queue = scan_queue(&cold, CAMPAIGN, parent, page_size, 1_000_000)?;
+    let cold_queue_elapsed = measurement_elapsed_since(cold_queue_started)?;
+    if let Some(profiler) = &cold_profiler {
+        profiler.report(admissions / REQUEST_SIZE, "cold-queue");
+    }
+    assert_eq!(
+        cold_queue, hot_queue,
+        "cold queue changed ordered identities or work"
+    );
     let cold_elapsed = measurement_elapsed_since(cold_started)?;
     let (cold_allocated_bytes, cold_physical_bytes) = storage_tree_bytes(root)?;
     let allocated_bytes = warm_allocated_bytes.max(cold_allocated_bytes);
@@ -541,10 +607,11 @@ fn run_corpus(
     let measured = CorpusMeasurement {
         admissions,
         request_count: admissions / REQUEST_SIZE,
-        hot_claimable,
-        cold_claimable,
-        hot_pages,
-        cold_pages,
+        hot_claimable: hot_queue.attempts,
+        cold_claimable: cold_queue.attempts,
+        hot_pages: hot_queue.pages,
+        cold_pages: cold_queue.pages,
+        hot_queue,
         objects: inventory.objects(),
         index_bytes,
         logical_bytes: inventory.logical_bytes(),
@@ -554,6 +621,18 @@ fn run_corpus(
         planner_worker_peak_rss_kib,
         combined_peak_rss_upper_bound_kib,
     };
+    println!(
+        "campaign_admission_queue_profile snapshot={parent} page_size={page_size} scanned_entries={} empty_pages={} maximum_page_attempts={} ordered_attempts_digest={} hot_queue_ns={} cold_open_ns={} cold_validation_ns={} cold_queue_ns={} cold_reopen_queue_ns={}",
+        measured.hot_queue.scanned_entries,
+        measured.hot_queue.empty_pages,
+        measured.hot_queue.maximum_page_attempts,
+        measured.hot_queue.ordered_attempts_digest,
+        hot_elapsed.as_nanos(),
+        cold_open_elapsed.as_nanos(),
+        cold_validation_elapsed.as_nanos(),
+        cold_queue_elapsed.as_nanos(),
+        cold_elapsed.as_nanos(),
+    );
     println!(
         "campaign_million_profile admissions={} requests={} request_size={REQUEST_SIZE} hot_claimable={} cold_claimable={} hot_pages={} cold_pages={} objects={} index_bytes={} logical_bytes={} physical_bytes={} allocated_bytes={} coordinator_peak_rss_kib={} planner_worker_peak_rss_kib={} combined_peak_rss_upper_bound_kib={} setup_ns={} planner_ns={} hot_queue_ns={} cold_reopen_queue_ns={}",
         measured.admissions,
@@ -638,47 +717,6 @@ fn publish_request(
         BranchBudget::new(REQUEST_SIZE as u64, REQUEST_SIZE as u64)?,
         StopCondition::NextChoice,
     )?)
-}
-
-fn scan_queue(
-    repository: &CampaignRepository,
-    snapshot: crucible_campaign::CampaignSnapshotId,
-) -> Result<(usize, usize), Box<dyn Error>> {
-    let mut cursor = None;
-    let mut attempts = 0_usize;
-    let mut pages = 0_usize;
-    let mut queue = AttemptQueue::new(DaemonEpoch::from_bytes([0x94; 16])?, 1)?;
-
-    loop {
-        let page = repository.project_claimable_attempts(CAMPAIGN, cursor, PAGE_SIZE)?;
-        assert_eq!(page.snapshot(), snapshot);
-        assert!(page.scanned_entries() <= PAGE_SIZE);
-        assert!(page.attempts().len() <= PAGE_SIZE);
-        attempts = attempts
-            .checked_add(page.attempts().len())
-            .ok_or("attempt count overflow")?;
-        pages = pages.checked_add(1).ok_or("page count overflow")?;
-
-        if !page.attempts().is_empty() {
-            let reservation = queue
-                .reserve_from_page(&page, WorkerSlotId::new(0))?
-                .ok_or("nonempty page did not yield a reservation")?;
-            assert_eq!(reservation.attempt(), page.attempts()[0]);
-            queue.release(reservation)?;
-        }
-        let next = page.next();
-        assert!(
-            next.is_none() || next != cursor,
-            "queue cursor did not advance"
-        );
-        cursor = next;
-        if cursor.is_none() {
-            break;
-        }
-        assert!(pages <= 1_000_000, "paged queue did not terminate");
-    }
-    assert_eq!(queue.reservation_count(), 0);
-    Ok((attempts, pages))
 }
 
 fn storage_tree_bytes(root: &Path) -> Result<(u64, u64), Box<dyn Error>> {

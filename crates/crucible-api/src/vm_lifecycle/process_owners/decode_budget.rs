@@ -5,7 +5,6 @@ struct DurableDecodeShape {
     current_processes: usize,
     staged_processes: usize,
     lifecycle_nodes: usize,
-    completed_exits: usize,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -54,13 +53,11 @@ pub(in crate::vm_lifecycle) fn enter_durable_decode_shape(
     current_processes: usize,
     staged_processes: usize,
     lifecycle_nodes: usize,
-    completed_exits: usize,
 ) -> DurableDecodeShapeGuard {
     let shape = DurableDecodeShape {
         current_processes,
         staged_processes,
         lifecycle_nodes,
-        completed_exits,
     };
     let previous = DURABLE_DECODE_SHAPE.replace(Some(shape));
     let previous_allocation = DURABLE_DECODE_ALLOCATION.replace(None);
@@ -129,12 +126,6 @@ pub(super) fn lifecycle_nodes_expected() -> Option<usize> {
         .map(|shape| shape.lifecycle_nodes)
 }
 
-pub(super) fn completed_exits_expected() -> Option<usize> {
-    DURABLE_DECODE_SHAPE
-        .get()
-        .map(|shape| shape.completed_exits)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -142,7 +133,7 @@ mod tests {
 
     #[test]
     fn lifecycle_record_allocation_reports_previously_owned_record_usage() {
-        let _guard = enter_durable_decode_shape(0, 0, 1, usize::MAX);
+        let _guard = enter_durable_decode_shape(0, 0, 1);
         let mut first = serde_json::Deserializer::from_str("[1]");
         let _records: FallibleLifecycleRecords<u8> = deserialize_records(&mut first, Some(1))
             .unwrap_or_else(|error| panic!("first record should decode: {error}"));

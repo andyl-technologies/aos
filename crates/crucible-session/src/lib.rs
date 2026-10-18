@@ -18,12 +18,15 @@ pub mod engine {
     pub use crucible::model::{
         Aggregation, BoundarySelector, CohortPolicy, EffectSpecification, FaultCoordinate,
         FaultDirection, FaultOperation, FaultReplayMode, FaultResourceLimits,
-        MeasurementDefinition, MeasurementDefinitions, MeasurementId, MetricDefinition, MetricId,
-        MetricSource, MetricValueType, ModeledMeasurementTimeout, NetworkEffectSpecification,
-        ResolvedEffectTrace, SignalId, UnitId, WorldFaultDomain, WorldFaultTargetRef,
+        MeasurementDefinition, MeasurementDefinitions, MeasurementId, MeasurementInstanceKey,
+        MetricDefinition, MetricId, MetricSource, MetricValueType, ModeledMeasurementTimeout,
+        NetworkEffectSpecification, ResolvedEffectTrace, ResolvedEffectTraceManifest,
+        ResolvedReplayWorkItem, SignalId, UnitId, WorldFaultDomain, WorldFaultTargetRef,
         WorldFaultTopology, WorldNetworkInterface, WorldNetworkPath, WorldNetworkPathHop,
-        WorldNetworkSegment, WorldNetworkSegmentKind, WorldNetworkTechnology, reduce,
+        WorldNetworkSegment, WorldNetworkSegmentKind, WorldNetworkTechnology,
+        decode_resolved_effect_trace_segment, reduce,
     };
+    pub use crucible::segment_store::{ContentId, SegmentSink, SegmentSource, SharedSegmentStore};
     pub use crucible::{
         Action, AssertionDef, AssertionId, AssertionPhase, AssertionQuantifierKind,
         BlackBoxHostOracle, CRASH_RESTART_SCENARIO_NAME, Checkpoint, CheckpointKind,
@@ -33,17 +36,18 @@ pub mod engine {
         DebugCheckpointStride, DebugCliSurfaceContract, DebugCoordinate, DebugGdbEndpoint,
         DebugReverseStepGrain, Decision, DeliveryOrderDecision, EngineError, EventAttributeValue,
         EventDiagnosticPayload, EventGraph, EventId, EventKey, EventLevel, EventLog,
-        EventLogCoverageFeedback, EventLogCoverageObservation, EventLogTickStamp, EventLogOffset,
-        EventLogTime, EventPayload, EventSource, ExampleCorpusError, ExampleScenarioVerifyReport,
-        ExecutionFingerprint, FAILURE_TRIAGE_REPLAY_EVIDENCE_SCHEMA_VERSION,
-        FAULT_CAMPAIGN_FAMILY_NAME, FailureCluster, FailureClusterFinding, FailureClusterReport,
-        FailureClusterReportFailure, FailureClusterReportFormat, FailureClusterReportSet,
-        FailureClusteringResult, FailureFindingsLedger, FailureKind,
-        FailureMinimizationDisposition, FailurePropertyViolationRecord, FailureRecordedEventLog,
-        FailureSignature, FailureSignatureNormalization,
-        FailureSignaturePreservingMinimizationResult, FailureSignaturePreservingMinimizationRun,
-        FailureTimeoutBudgetKind, FailureTimeoutRecord, FailureTriageReplayEvidence,
-        FailureTriageResult, FailureTriageSignatureSelfCheck, FailureTriageSignatureSelfCheckInput,
+        EventLogCoverageFeedback, EventLogCoverageFold, EventLogCoverageObservation,
+        EventLogCoverageSet, EventLogOffset, EventLogTickStamp, EventLogTime, EventPayload,
+        EventSource, ExampleCorpusError, ExampleScenarioVerifyReport, ExecutionFingerprint,
+        FAILURE_TRIAGE_REPLAY_EVIDENCE_SCHEMA_VERSION, FAULT_CAMPAIGN_FAMILY_NAME, FailureCluster,
+        FailureClusterFinding, FailureClusterReport, FailureClusterReportFailure,
+        FailureClusterReportFormat, FailureClusterReportSet, FailureClusteringResult,
+        FailureFindingsLedger, FailureKind, FailureMinimizationDisposition,
+        FailurePropertyViolationRecord, FailureRecordedEventLog, FailureSignature,
+        FailureSignatureNormalization, FailureSignaturePreservingMinimizationResult,
+        FailureSignaturePreservingMinimizationRun, FailureTimeoutBudgetKind, FailureTimeoutRecord,
+        FailureTriageReplayEvidence, FailureTriageReplaySegments, FailureTriageResult,
+        FailureTriageSignatureSelfCheck, FailureTriageSignatureSelfCheckInput,
         FailureTriageStoredArtifact, FamilySpace, FaultSignalPlan, FindingDiscoveryPath,
         FindingReproductionArtifact, FingerprintSample, GenesisCheckpoint, GuestMeasurementEvent,
         GuestMeasurementValue, GuestSemanticMarkerDetail, HAPPY_PATH_SCENARIO_NAME,
@@ -69,12 +73,12 @@ pub mod engine {
         TemporalGraph, TemporalGraphReplayEvidence, TemporalGraphSampledSearchRun,
         TemporalGraphSearchRun, TemporalGraphStoreError, TimerId, TopologyShape, TopologySizeRange,
         UnifiedGraphOperationEvidence, UnifiedGraphOperationKind, UnifiedGraphOperationReport,
-        VcpuId, VirtualInstant, VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldBlockLatency,
-        WorldIoCoreConfig, WorldIoNode, WorldIoNodeKind, WorldNinePLatency, WorldNode,
-        WorldNodeDef, bake, built_in_example_corpus, crash_restart_scenario, fault_campaign_family,
-        happy_path_scenario, is_live_world_network_selection, materialize_search_plans,
-        partition_recovery_scenario, run_fault_campaign_example, try_step,
-        verify_example_scenario_runs,
+        VcpuId, VirtualInstant, VirtualTime, VmArchitecture, WhiteBoxPolicy, World,
+        WorldBlockLatency, WorldIoCoreConfig, WorldIoNode, WorldIoNodeKind, WorldNinePLatency,
+        WorldNode, WorldNodeDef, bake, built_in_example_corpus, crash_restart_scenario,
+        fault_campaign_family, happy_path_scenario, is_live_world_network_selection,
+        materialize_search_plans, partition_recovery_scenario, run_fault_campaign_example,
+        try_step, verify_example_scenario_runs,
     };
 }
 
@@ -88,20 +92,20 @@ use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crucible::{
-    Action, BackendError, Checkpoint, CodePoint, Condition, ConditionEvaluationError,
-    ConditionEvaluationPass, ConditionEventLogPrefix, ConditionLeaf, ConditionLeafOracle,
-    Configuration, ContentHash, ControlOperation, ControlOperationKind, DagStore,
-    DebugAttachReport, DebugAttachRequest, DebugCoordinate, DebugGdbEndpoint, DebugGotoReport,
-    DebugGotoRequest, DebugNonCanonicalBranchAction, DebugNonCanonicalBranchReport,
-    DebugNonCanonicalBranchRequest, DebugReverseContinueReport, DebugReverseContinueRequest,
-    DebugReverseStepGrain, DebugReverseStepReport, DebugReverseStepRequest,
-    DebugRuntimeRepositionRequest, Decision, EngineError, FingerprintSample, GdbListen, MemPlace,
-    NodeId, ObservableEventPayload, QuantumLoop, QuantumOutcome, QuantumRequest,
-    QuantumTerminalVerdict, ResolvedCodePoint, ResolvedMemPlace, RuntimeState, Schedule,
-    ScheduledEventPayload, SchedulerError, SchedulerEvaluationBoundaryKind, SchedulerEventLogClass,
-    SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulerLivenessScenario,
-    SchedulerQuiescence, SchedulerWorldInstantiationError, SimDuration, SingleScheduler,
-    TemporalGraph, VirtualTime, WhiteBoxPolicy, World, WorldIoLayoutPolicy,
+    Action, BackendError, Checkpoint, CodePoint, Condition, ConditionEvaluationPass,
+    ConditionEventLogPrefix, ConditionLeaf, ConditionLeafOracle, Configuration, ContentHash,
+    ControlOperation, ControlOperationKind, DagStore, DebugAttachReport, DebugAttachRequest,
+    DebugCoordinate, DebugGdbEndpoint, DebugGotoReport, DebugGotoRequest,
+    DebugNonCanonicalBranchAction, DebugNonCanonicalBranchReport, DebugNonCanonicalBranchRequest,
+    DebugReverseContinueReport, DebugReverseContinueRequest, DebugReverseStepGrain,
+    DebugReverseStepReport, DebugReverseStepRequest, DebugRuntimeRepositionRequest, Decision,
+    EngineError, FingerprintSample, GdbListen, MemPlace, NodeId, ObservableEventPayload,
+    QuantumLoop, QuantumOutcome, QuantumRequest, QuantumTerminalVerdict, ResolvedCodePoint,
+    ResolvedMemPlace, RuntimeState, Schedule, ScheduledEventPayload, SchedulerError,
+    SchedulerEvaluationBoundaryKind, SchedulerEventLogClass, SchedulerEventLogEntry,
+    SchedulerEventLogPayload, SchedulerLivenessScenario, SchedulerQuiescence,
+    SchedulerWorldInstantiationError, SimDuration, SingleScheduler, TemporalGraph, VirtualTime,
+    WhiteBoxPolicy, World, WorldIoLayoutPolicy,
 };
 use crucible_protocol::guest_introspection::{
     GUEST_INTROSPECTION_FEATURE_CHANNEL_ID, GuestIntrospectionFailureCode,
@@ -123,12 +127,16 @@ mod session_commands;
 mod session_core;
 #[path = "session/debug_coordinator.rs"]
 mod session_debug_coordinator;
+#[path = "session/debug_history.rs"]
+mod session_debug_history;
 #[path = "session/engine.rs"]
 mod session_engine;
 #[path = "session/exploration.rs"]
 mod session_exploration;
 #[path = "session/exploration/support.rs"]
 mod session_exploration_support;
+#[path = "session/segmented_log.rs"]
+mod session_segmented_log;
 #[path = "session/streams.rs"]
 mod session_streams;
 
@@ -137,9 +145,11 @@ pub use session_breakpoint_metadata::*;
 pub use session_commands::*;
 pub use session_core::*;
 pub use session_debug_coordinator::*;
+use session_debug_history::SessionDebugHistory;
 pub use session_engine::*;
 pub use session_exploration::*;
 use session_exploration_support::*;
+pub use session_segmented_log::SessionEventLogStoreError;
 pub use session_streams::*;
 
 #[cfg(test)]

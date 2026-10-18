@@ -449,7 +449,9 @@ pub enum EngineError {
     /// A debug coordinate could not be resolved in the temporal graph.
     DebugTimeTravelCoordinateNotFound {
         /// Coordinate that had no graph checkpoint at or before it.
-        coordinate: DebugCoordinate,
+        ///
+        /// Boxed because a resolved coordinate carries a whole configuration.
+        coordinate: Box<DebugCoordinate>,
     },
     /// A debug time-travel operation named a node absent from the runtime.
     DebugTimeTravelUnknownNode {
@@ -457,6 +459,15 @@ pub enum EngineError {
         node: NodeId,
         /// Configuration whose runtime was inspected.
         configuration: ContentHash,
+    },
+    /// A reverse-continue condition names a console pattern with no matcher.
+    DebugReverseContinueInvalidConsolePattern {
+        /// Node whose console stream the pattern matches.
+        node: NodeId,
+        /// The refused pattern.
+        pattern: String,
+        /// Why no streaming matcher exists for the pattern.
+        reason: String,
     },
     /// A reverse-continue scan could not build a checked condition prefix.
     DebugReverseContinueInvalidPrefix {
@@ -825,6 +836,9 @@ impl fmt::Display for EngineError {
             Self::DebugReverseContinueInvalidPrefix { reason, .. } => {
                 write!(f, "debug reverse-continue condition prefix is invalid: {reason}")
             }
+            Self::DebugReverseContinueInvalidConsolePattern { reason, .. } => {
+                write!(f, "debug reverse-continue console pattern is invalid: {reason}")
+            }
             Self::ScenarioFamilyInvalidSpace { reason } => {
                 write!(f, "scenario family parameter space is invalid: {reason}")
             }
@@ -927,7 +941,7 @@ pub(super) fn replay_suffix(
     }
 
     let mut replayed = start.clone();
-    for decision in suffix.decisions() {
+    for decision in suffix.decision_history() {
         replayed = try_step(&replayed, decision.clone())?;
     }
 
@@ -957,7 +971,7 @@ pub(super) fn replay_suffix(
         scheduler.search_frontier = SearchFrontierChoices::empty();
     }
     let event_log = runtime.event_log;
-    scheduler.apply_decisions(suffix.decisions());
+    scheduler.apply_decisions(suffix.decision_history());
     runtime_for_configuration_with_scheduler(
         &replayed,
         node_blobs,
@@ -1430,7 +1444,9 @@ pub(super) fn partial_order_canonical_representative(
     configuration: &Configuration,
     policy: &PartialOrderReductionPolicy,
 ) -> Option<Configuration> {
-    let mut decisions = configuration.schedule.decisions().to_vec();
+    // The canonical-representative search reorders decisions in place, so it
+    // works on its own owned copy of the schedule.
+    let mut decisions = configuration.schedule.decision_history().to_vec();
     let mut changed = false;
     let mut swapped = true;
     while swapped {
@@ -1544,225 +1560,6 @@ fn append_decisions(parent: &Configuration, decisions: &[Decision]) -> Option<Co
 
 pub(super) fn schedule_from_decisions(decisions: Vec<Decision>) -> Schedule {
     Schedule::from_decisions(decisions)
-}
-
-pub(super) fn minimization_candidates(
-    config: MinimizationConfig,
-    artifact: ContentHash,
-    schedule: &Schedule,
-    maximum_candidates: usize,
-) -> Result<Vec<MinimizationCandidate>, EngineError> {
-    if !config.validates_schedule(schedule) {
-        return Err(EngineError::UnifiedOperationEvidenceMismatch {
-            operation: "finding minimization",
-            reason: "automatic interesting window does not match the original schedule",
-        });
-    }
-    let decisions = schedule.decisions();
-    let removable_start = config
-        .interesting_window()
-        .map_or(0, InterestingScheduleWindow::start);
-    let mut candidates = Vec::new();
-    {
-        let mut collector = MinimizationCandidateCollector {
-            seed: config.seed,
-            artifact,
-            decisions,
-            removable_start,
-            candidates: &mut candidates,
-            maximum_candidates,
-            remaining_work: maximum_candidates,
-            admitted_kept_indices: BTreeSet::new(),
-        };
-        collector.collect_campaign_branch_suffix_reductions();
-        for kept_len in 0..decisions.len().saturating_sub(removable_start) {
-            if collector.is_finished() {
-                break;
-            }
-            let mut kept_indices = (0..removable_start).collect::<Vec<_>>();
-            collector.collect_for_len(
-                removable_start + kept_len,
-                removable_start,
-                &mut kept_indices,
-            );
-        }
-    }
-    candidates.sort_by(|left, right| {
-        left.schedule
-            .len()
-            .cmp(&right.schedule.len())
-            .then_with(|| left.order_key.cmp(&right.order_key))
-            .then_with(|| left.removed_indices.cmp(&right.removed_indices))
-    });
-    Ok(candidates)
-}
-
-pub(super) fn minimization_candidate_limit(artifact: &ReproductionArtifact) -> usize {
-    // A candidate retains one kept schedule and the complementary removed
-    // decisions. Twice the complete artifact bytes plus fixed metadata is a
-    // conservative language-independent upper bound for that representation.
-    let per_candidate = artifact
-        .to_compact_binary()
-        .len()
-        .checked_mul(2)
-        .and_then(|bytes| {
-            artifact
-                .schedule()
-                .len()
-                .checked_mul(std::mem::size_of::<usize>())
-                .and_then(|index_bytes| bytes.checked_add(index_bytes))
-        })
-        .and_then(|bytes| bytes.checked_add(1_024))
-        .unwrap_or(usize::MAX);
-    MAX_MINIMIZATION_CANDIDATE_WORK_BYTES
-        .checked_div(per_candidate.max(1))
-        .unwrap_or(0)
-        .min(MAX_MINIMIZATION_CANDIDATES)
-}
-
-struct MinimizationCandidateCollector<'a> {
-    seed: Seed,
-    artifact: ContentHash,
-    decisions: &'a [Decision],
-    removable_start: usize,
-    candidates: &'a mut Vec<MinimizationCandidate>,
-    maximum_candidates: usize,
-    remaining_work: usize,
-    admitted_kept_indices: BTreeSet<Vec<usize>>,
-}
-
-impl MinimizationCandidateCollector<'_> {
-    fn is_full(&self) -> bool {
-        self.candidates.len() >= self.maximum_candidates
-    }
-
-    fn is_finished(&self) -> bool {
-        self.is_full() || self.remaining_work == 0
-    }
-
-    fn collect_campaign_branch_suffix_reductions(&mut self) {
-        if !self.decisions[self.removable_start..]
-            .iter()
-            .any(is_campaign_branch_selection)
-        {
-            return;
-        }
-
-        // Always retain the empty candidate, then reserve the remaining bounded
-        // window for exact branch prefixes that can remove a trailing suffix.
-        self.admit_candidate((0..self.removable_start).collect());
-        for index in self.removable_start..self.decisions.len().saturating_sub(1) {
-            if self.is_finished() {
-                break;
-            }
-            if is_campaign_branch_selection(&self.decisions[index]) {
-                self.admit_candidate((0..=index).collect());
-            }
-        }
-    }
-
-    fn admit_candidate(&mut self, kept_indices: Vec<usize>) {
-        if !self.spend_work() || !self.admitted_kept_indices.insert(kept_indices.clone()) {
-            return;
-        }
-        self.candidates
-            .push(minimization_candidate_from_kept_indices(
-                self.seed,
-                self.artifact,
-                self.decisions,
-                &kept_indices,
-            ));
-    }
-
-    fn spend_work(&mut self) -> bool {
-        let Some(remaining) = self.remaining_work.checked_sub(1) else {
-            return false;
-        };
-        self.remaining_work = remaining;
-        true
-    }
-
-    fn collect_for_len(&mut self, kept_len: usize, start: usize, kept_indices: &mut Vec<usize>) {
-        if self.is_finished() {
-            return;
-        }
-        if kept_indices.len() == kept_len {
-            self.admit_candidate(kept_indices.clone());
-            return;
-        }
-        let remaining = kept_len - kept_indices.len();
-        let max_start = self.decisions.len().saturating_sub(remaining);
-        for index in start..=max_start {
-            if self.is_finished() {
-                break;
-            }
-            if is_campaign_branch_selection(&self.decisions[index]) && kept_indices.len() != index {
-                // A campaign branch selection authenticates the complete
-                // schedule prefix at its original index. Reject the branch as
-                // soon as that prefix can no longer be complete.
-                self.spend_work();
-                continue;
-            }
-            kept_indices.push(index);
-            self.collect_for_len(kept_len, index + 1, kept_indices);
-            kept_indices.pop();
-        }
-    }
-}
-
-fn is_campaign_branch_selection(decision: &Decision) -> bool {
-    matches!(decision, Decision::Selection(selection) if selection.is_campaign_branch())
-}
-
-pub(super) fn minimization_candidate_from_kept_indices(
-    seed: Seed,
-    artifact: ContentHash,
-    decisions: &[Decision],
-    kept_indices: &[usize],
-) -> MinimizationCandidate {
-    let kept = kept_indices.iter().copied().collect::<BTreeSet<_>>();
-    let schedule = Schedule::from_decisions(
-        kept_indices
-            .iter()
-            .copied()
-            .map(|index| decisions[index].clone()),
-    );
-    let removed_indices = (0..decisions.len())
-        .filter(|index| !kept.contains(index))
-        .collect::<Vec<_>>();
-    let removed_decisions = removed_indices
-        .iter()
-        .copied()
-        .map(|index| decisions[index].clone())
-        .collect::<Vec<_>>();
-    MinimizationCandidate {
-        order_key: minimization_candidate_key(seed, artifact, &schedule, &removed_indices),
-        removed_indices,
-        removed_decisions,
-        schedule,
-    }
-}
-
-pub(super) fn minimization_candidate_key(
-    seed: Seed,
-    artifact: ContentHash,
-    schedule: &Schedule,
-    removed_indices: &[usize],
-) -> ContentHash {
-    let removed = removed_indices
-        .iter()
-        .map(|index| index.to_string())
-        .collect::<Vec<_>>()
-        .join(",");
-    ContentHash::from_canonical_material(
-        "crucible.minimization.candidate.v1",
-        &format!(
-            "seed={}\nartifact={}\nkept_schedule={}\nremoved={removed}",
-            seed.to_hex(),
-            content_hash_hex(artifact),
-            content_hash_hex(schedule.content_hash())
-        ),
-    )
 }
 
 pub(super) fn partial_order_reduction_key(

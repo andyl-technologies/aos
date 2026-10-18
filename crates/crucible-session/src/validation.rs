@@ -466,7 +466,10 @@ pub fn resume_session_from_validation_dag<P, C>(
     parent_loop: P,
     checkpoint: ContentHash,
     session_loop: C,
-) -> Result<SessionResume<C>, SessionError> {
+) -> Result<SessionResume<C>, SessionError>
+where
+    C: QuantumLoop,
+{
     let mut engine = engine_from_validation_dag(configuration, graph, parent_loop);
     engine.resume_session_from_checkpoint(checkpoint, session_loop)
 }
@@ -486,6 +489,7 @@ pub fn fork_session_from_validation_checkpoint<P, C>(
 ) -> Result<SessionFork<C>, SessionError>
 where
     P: QuantumLoop,
+    C: QuantumLoop,
 {
     let mut engine = started_engine_from_validation_dag(configuration, graph, parent_loop)?;
     engine.fork_child_from_checkpoint(checkpoint, child_loop)
@@ -507,6 +511,7 @@ pub fn fork_session_from_validation_base<P, C, I>(
 ) -> Result<SessionFork<C>, SessionError>
 where
     P: QuantumLoop,
+    C: QuantumLoop,
     I: IntoIterator<Item = Decision>,
 {
     let mut engine = started_engine_from_validation_dag(configuration, graph, parent_loop)?;

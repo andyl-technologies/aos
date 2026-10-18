@@ -256,7 +256,9 @@ fn append_boundary(scheduler: &mut SingleScheduler, ticks: u64) -> Vec<u8> {
 }
 
 fn run_complete_black_box_scenario(name: &str, world: &World, graph: &EventGraph) -> BlackBoxRun {
-    let mut scheduler = SingleScheduler::new(scenario(name, world)).expect("scheduler builds");
+    let mut scheduler =
+        SingleScheduler::new(scenario(name, world).with_trigger_console_matchers(graph))
+            .expect("scheduler builds");
     let mut graph_state = EventGraphState::new();
     let mut segment_bytes = Vec::new();
     let mut trigger_log = Vec::<SchedulerEventLogEntry>::new();
@@ -266,7 +268,9 @@ fn run_complete_black_box_scenario(name: &str, world: &World, graph: &EventGraph
         .expect("readiness observations should append");
     segment_bytes.push(ready_observations.segment_bytes);
 
-    let ready = scheduler.evaluate_event_graph(graph, &mut graph_state, NoGuestSideLeaves);
+    let ready = scheduler
+        .evaluate_event_graph(graph, &mut graph_state, NoGuestSideLeaves)
+        .expect("console matchers are declared");
     assert_eq!(fired_names(&ready), vec!["wait-ready"]);
     let ready_append = scheduler
         .apply_trigger_firings(&ready)
@@ -274,7 +278,9 @@ fn run_complete_black_box_scenario(name: &str, world: &World, graph: &EventGraph
     segment_bytes.push(ready_append.segment_bytes);
     trigger_log.extend(ready_append.entries);
     segment_bytes.push(append_boundary(&mut scheduler, 40));
-    let timer = scheduler.evaluate_event_graph(graph, &mut graph_state, NoGuestSideLeaves);
+    let timer = scheduler
+        .evaluate_event_graph(graph, &mut graph_state, NoGuestSideLeaves)
+        .expect("console matchers are declared");
     assert_eq!(fired_names(&timer), vec!["timer-observed"]);
     let timer_append = scheduler
         .apply_trigger_firings(&timer)
@@ -287,7 +293,9 @@ fn run_complete_black_box_scenario(name: &str, world: &World, graph: &EventGraph
         .expect("convergence observations should append");
     segment_bytes.push(convergence.segment_bytes);
 
-    let pass = scheduler.evaluate_event_graph(graph, &mut graph_state, NoGuestSideLeaves);
+    let pass = scheduler
+        .evaluate_event_graph(graph, &mut graph_state, NoGuestSideLeaves)
+        .expect("console matchers are declared");
     assert_eq!(fired_names(&pass), vec!["pass-on-black-box-convergence"]);
     let pass_append = scheduler
         .apply_trigger_firings(&pass)
@@ -315,7 +323,9 @@ fn run_complete_black_box_scenario(name: &str, world: &World, graph: &EventGraph
 }
 
 fn run_black_box_violation_path(name: &str, world: &World, graph: &EventGraph) -> BlackBoxRun {
-    let mut scheduler = SingleScheduler::new(scenario(name, world)).expect("scheduler builds");
+    let mut scheduler =
+        SingleScheduler::new(scenario(name, world).with_trigger_console_matchers(graph))
+            .expect("scheduler builds");
     let mut graph_state = EventGraphState::new();
     let mut segment_bytes = Vec::new();
     let mut trigger_log = Vec::<SchedulerEventLogEntry>::new();
@@ -325,7 +335,9 @@ fn run_black_box_violation_path(name: &str, world: &World, graph: &EventGraph) -
         .expect("readiness observations should append");
     segment_bytes.push(ready_observations.segment_bytes);
 
-    let ready = scheduler.evaluate_event_graph(graph, &mut graph_state, NoGuestSideLeaves);
+    let ready = scheduler
+        .evaluate_event_graph(graph, &mut graph_state, NoGuestSideLeaves)
+        .expect("console matchers are declared");
     assert_eq!(fired_names(&ready), vec!["wait-ready"]);
     let ready_append = scheduler
         .apply_trigger_firings(&ready)
@@ -338,7 +350,9 @@ fn run_black_box_violation_path(name: &str, world: &World, graph: &EventGraph) -
         .expect("violation observations should append");
     segment_bytes.push(violation.segment_bytes);
 
-    let fail = scheduler.evaluate_event_graph(graph, &mut graph_state, NoGuestSideLeaves);
+    let fail = scheduler
+        .evaluate_event_graph(graph, &mut graph_state, NoGuestSideLeaves)
+        .expect("console matchers are declared");
     assert_eq!(fired_names(&fail), vec!["fail-on-property-violation"]);
     let fail_append = scheduler
         .apply_trigger_firings(&fail)

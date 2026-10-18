@@ -17,6 +17,7 @@ mod error;
 mod fingerprint_projection;
 mod helpers;
 mod modes;
+mod native_console;
 mod plugin_config;
 #[cfg(test)]
 mod profile_tests;
@@ -77,8 +78,6 @@ pub use whitebox_setup::{
 
 /// Stable QEMU chardev identifier for output-only guest console capture.
 pub const QEMU_CONSOLE_CHARDEV_ID: &str = "crucible-console";
-/// Stable run-directory Unix socket carrying output-only guest console bytes.
-pub const QEMU_CONSOLE_SOCKET_FILE_NAME: &str = "crucible-console.sock";
 /// Run-directory file containing the RR control-boundary trace when enabled.
 pub const QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME: &str = "crucible-rr-control-boundary.trace";
 pub(crate) const QEMU_RR_CONTROL_BOUNDARY_TRACE_SELECTION: &str =
@@ -87,8 +86,10 @@ pub(crate) const QEMU_RR_CONTROL_DELIVERY_TRACE_SELECTION: &str =
     "enable=crucible_sim_rr_control_delivery";
 const CONTROL_CALLBACK_WITNESS_ENV: &str = "CRUCIBLE_CONTROL_CALLBACK_WITNESS";
 pub(crate) const QEMU_IDLE_PREFIX_TRACE_SELECTION: &str = "enable=crucible_sim_idle_*";
+// Writable-file reservation added to pre-spawn admission for an enabled RR
+// trace. Readers stream the trace, so it is not a retention limit; the
+// attempt's aggregate writable ceiling bounds the file itself.
 pub(crate) const MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_BYTES: u64 = 4 * 1024 * 1024;
-pub(crate) const MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_LINES: usize = 65_536;
 /// Fixed child-relative file used by the runtime-determinism diagnostic trace.
 pub const QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME: &str = "crucible-runtime-determinism.trace";
 pub(crate) const QEMU_RUNTIME_DETERMINISM_TRACE_SELECTION: &str =
@@ -96,8 +97,9 @@ pub(crate) const QEMU_RUNTIME_DETERMINISM_TRACE_SELECTION: &str =
 // Keep the diagnostic trace sparse enough that the bounded retained tail
 // includes the QMP exchange after a 60-second command timeout.
 pub(crate) const QEMU_RUNTIME_LIVENESS_TRACE_SELECTION: &str = "enable=*qmp*";
+// Default writable-file reservation for an enabled runtime or QMP liveness
+// trace; callers that stream larger traces raise the budget explicitly.
 pub(crate) const MAXIMUM_RUNTIME_DETERMINISM_TRACE_BYTES: u64 = 32 * 1024 * 1024;
-pub(crate) const MAXIMUM_RUNTIME_DETERMINISM_TRACE_LINES: usize = 131_072;
 pub(crate) const MAXIMUM_STREAMED_RUNTIME_DETERMINISM_TRACE_BYTES: u64 = 256 * 1024 * 1024;
 /// Stable QEMU chardev identifier for fork-time debug guest activation.
 pub const QEMU_DEBUG_GUEST_ACTIVATION_CHARDEV_ID: &str = "crucible-debug-activation";
@@ -390,6 +392,7 @@ pub struct QemuLaunchCommand {
     qmp: Option<QemuQmpChannelConfig>,
     plugin_coverage: QemuLaunchPluginSwitch,
     plugin_fault_node_hash: [u8; 32],
+    plugin_process_generation: u64,
     fault_capability_requirement: crate::QemuFaultCapabilityRequirement,
     resource_requirements: QemuLaunchResourceRequirements,
     plugin_setup_plan: crucible_protocol::plugin_setup_plan::PluginSetupPlan,
@@ -554,6 +557,17 @@ impl QemuLaunchCommand {
         self.plugin_fault_node_hash
     }
 
+    /// Returns the process incarnation encoded in this validated launch.
+    #[must_use]
+    pub(crate) const fn plugin_process_generation(&self) -> u64 {
+        self.plugin_process_generation
+    }
+
+    /// Returns the exact encoded composite plan retained by command construction.
+    pub(crate) const fn plugin_setup_plan_digest(&self) -> [u8; 32] {
+        self.plugin_setup_plan_digest
+    }
+
     /// Returns the exact fault manifest bound to this launch identity.
     #[must_use]
     pub const fn fault_capability_requirement(&self) -> &crate::QemuFaultCapabilityRequirement {
@@ -714,10 +728,10 @@ impl QemuLaunchCommandBuilder {
         self
     }
 
-    /// Returns a builder that captures guest serial output in the node run directory.
+    /// Returns a builder that captures guest serial output through native origins.
     ///
-    /// The character device is an output sink only from Crucible's perspective:
-    /// no host-to-guest write operation is exposed by the runtime.
+    /// The fixed native backend accepts no host input. Its closed UART plan and
+    /// bounded admission policy are part of the sealed setup descriptor.
     #[must_use]
     pub const fn with_console_capture(mut self) -> Self {
         self.console_capture = true;
@@ -893,9 +907,7 @@ impl QemuLaunchCommandBuilder {
             )?;
             args.extend([
                 "-chardev".to_owned(),
-                format!(
-                    "socket,id={QEMU_CONSOLE_CHARDEV_ID},path={QEMU_CONSOLE_SOCKET_FILE_NAME},server=on,wait=off"
-                ),
+                native_console::NATIVE_CONSOLE_CHARDEV_ARGUMENT.to_owned(),
             ]);
         }
         args.extend(self.vm.qemu_args());
@@ -968,7 +980,15 @@ impl QemuLaunchCommandBuilder {
         validate_pre_spawn_qemu_launch_args(&args)
             .map_err(|source| QemuLaunchCommandError::PreSpawnValidation { source })?;
 
-        let plugin_setup_plan = self.plugin.plugin_setup_plan();
+        let mut plugin_setup_plan = self.plugin.plugin_setup_plan();
+        if self.console_capture {
+            let console = native_console::closed_launch_plan(
+                executable_architecture,
+                self.profile.smp_vcpus,
+                self.plugin.slot(),
+            )?;
+            plugin_setup_plan = plugin_setup_plan.with_native_console(console);
+        }
         let plugin_setup_plan_bytes = plugin_setup_plan
             .encode()
             .map_err(|_source| QemuLaunchCommandError::InvalidPluginSetupPlan)?;
@@ -983,6 +1003,7 @@ impl QemuLaunchCommandBuilder {
             qmp: self.qmp,
             plugin_coverage: self.plugin.coverage(),
             plugin_fault_node_hash: self.plugin.fault_node_hash(),
+            plugin_process_generation: self.plugin.process_generation(),
             fault_capability_requirement,
             resource_requirements,
             plugin_setup_plan,

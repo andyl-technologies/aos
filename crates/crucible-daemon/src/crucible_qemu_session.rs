@@ -108,6 +108,27 @@ pub trait QemuAttemptResourceGuard: QemuAttemptOperationalBoundary {
     /// operational diagnostic failure.
     fn finish(&mut self) -> Result<(), QemuVmRealizationError>;
 
+    /// Detaches the attempt's cancellation before its world outlives the attempt.
+    ///
+    /// A world retained as a hot-fork source keeps this guard's process and
+    /// resource enforcement, but later cancellation of the finished attempt
+    /// must not reach it. A conforming guard first observes any cancellation
+    /// that already won, then stops watching the attempt signal. Guards that
+    /// cannot prove the detach use the default refusal, so callers shut the
+    /// world down instead of retaining it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuVmRealizationError::Canceled`] when the attempt was
+    /// canceled first, or an operational error when the guard is terminal or
+    /// cannot detach. The guard then stays bound to the attempt.
+    fn detach_execution_cancellation(&mut self) -> Result<(), QemuVmRealizationError> {
+        Err(QemuVmRealizationError::Executor {
+            operation: "detach QEMU attempt cancellation",
+            message: String::from("resource guard cannot outlive its attempt"),
+        })
+    }
+
     /// Transfers enforcement to a supervisor-owned quarantine after failed reap.
     ///
     /// This operation is infallible and idempotent. It must keep every resource

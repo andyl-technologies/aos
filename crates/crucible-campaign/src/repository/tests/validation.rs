@@ -94,7 +94,7 @@ fn full_closure_walk_rejects_missing_shared_nested_and_corrupt_merkle_leaves() {
         )
         .expect("nested map")
         .content_id();
-    assert!(repository.merkle.verify_closure_objects(shared).is_err());
+    assert!(repository.merkle.verify_closure(shared).is_err());
 
     for root in [shared, nested] {
         assert!(matches!(
@@ -630,7 +630,7 @@ fn objective_scan_cursor_tracks_a_late_lower_ordinal_observation() {
 }
 
 #[test]
-fn objective_scan_work_is_linear_as_completed_history_grows() {
+fn objective_scan_and_beam_page_work_stay_bounded_as_completed_history_grows() {
     let (repository, lineage, base_policy) = fixture();
     let policy = CampaignPolicy::new(
         CampaignPolicy::identity(
@@ -652,7 +652,10 @@ fn objective_scan_work_is_linear_as_completed_history_grows() {
             base_policy.admits_scenario_defaults(),
         ),
     )
-    .expect("Beam objective scan policy");
+    .expect("Beam objective scan policy")
+    // Operator-caused cohorts must count toward guidance for the final page to settle.
+    .with_intervention_learning_policy(InterventionLearningPolicy::IncludeInGuidance)
+    .expect("intervention-learning Beam objective scan policy");
     let name = "objective-scan-linear-growth";
     repository
         .create_funded(name, &lineage, &policy, &BTreeMap::new())
@@ -764,19 +767,209 @@ fn objective_scan_work_is_linear_as_completed_history_grows() {
             .read_snapshot(evaluated.new_snapshot.content_id())
             .expect("load growing Beam snapshot");
         repository
-            .project_beam_planner(&snapshot, &policy)
+            .project_beam_frontier(&snapshot, &policy)
             .expect("project growing Beam history");
     }
 
     assert_eq!(visited, ATTEMPTS * 2);
-    let cache = repository
-        .beam_projection_cache
-        .lock()
-        .expect("Beam projection cache");
-    let cache = cache.as_ref().expect("Beam projection cache entry");
-    assert!(cache.full_observation_root_visits < 32);
-    assert!(cache.delta_snapshot_visits <= ATTEMPTS as usize * 8);
-    assert_eq!(cache.target_attempt_visits, 0);
+
+    // Continue the final child. Its page must touch only its own source and
+    // single-attempt cohort, however many earlier completions exist.
+    let last_label = format!("objective-linear-{}", ATTEMPTS - 1);
+    let last_child = ConfigurationId::from_hash(CampaignHash::derive(
+        "test-progressive-child",
+        last_label.as_bytes(),
+    ));
+    let last_child_content = repository
+        .publish_configuration_artifact(
+            lineage.scenario(),
+            lineage.scenario_content(),
+            last_child,
+            1,
+            format!("progressive child:{last_label}").into_bytes(),
+        )
+        .expect("republish final child");
+    // Reuse the label so the request continues the discovered opportunity,
+    // but give it a fresh operator command.
+    let discovered = branch_request(
+        &repository,
+        &lineage,
+        last_child_content,
+        last_child,
+        &last_label,
+    );
+    let continuation = BranchRequest::new(
+        BranchRequest::identity(
+            discovered.branch_point(),
+            discovered.parent(),
+            discovered.opportunity(),
+            discovered.domain(),
+        ),
+        discovered.source().clone(),
+        BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
+            "test",
+            b"objective-linear-continuation",
+        ))),
+        discovered.budget(),
+        discovered.stop().clone(),
+    )
+    .expect("final-child continuation");
+    let continued = repository
+        .submit_known_branch_request(
+            name,
+            repository
+                .head(name)
+                .expect("continuation head")
+                .snapshot_id(),
+            &continuation,
+        )
+        .expect("submit final-child continuation");
+    let snapshot = repository
+        .read_snapshot(continued.new_snapshot.content_id())
+        .expect("load continuation snapshot");
+    let position = PlanningScanPosition::new(
+        continuation.branch_point(),
+        continuation.id().expect("continuation id"),
+    );
+
+    let mut work = super::projection::BeamPageWork::default();
+    let page = repository
+        .project_beam_page_measured(&snapshot, &policy, &[position], &mut work)
+        .expect("project final-child Beam page");
+
+    let state = page.candidates[&position].cohort_state();
+    assert!(
+        matches!(state, crate::PlannerBeamCohortState::Settled(_)),
+        "the final cohort must settle: {state:?}"
+    );
+    assert_eq!(page.selections.len(), 1);
+    assert_eq!(
+        work.decoded_observations, 2,
+        "only the source observation and its one cohort member are decoded"
+    );
+}
+
+#[test]
+fn choice_source_index_keeps_the_earliest_admission_across_out_of_order_completions() {
+    let (repository, lineage, base_policy) = fixture();
+    let policy = CampaignPolicy::new(
+        CampaignPolicy::identity(
+            base_policy.scenario(),
+            base_policy.campaign_seed(),
+            CampaignMode::Streaming,
+            base_policy.explorer().clone(),
+        ),
+        CampaignPolicy::rules(
+            base_policy.choice_policies().clone(),
+            base_policy.objectives().clone(),
+            base_policy.guidance().clone(),
+            base_policy.stop_conditions().clone(),
+            base_policy.fairness(),
+            base_policy.retention(),
+            base_policy.admits_scenario_defaults(),
+        ),
+    )
+    .expect("streaming choice-source policy");
+    let name = "choice-source-earliest";
+    let genesis = repository
+        .create_funded(name, &lineage, &policy, &BTreeMap::new())
+        .expect("create choice-source campaign");
+    let request = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "choice-source-producing",
+    );
+    let requested = repository
+        .submit_known_branch_request(name, genesis.snapshot_id(), &request)
+        .expect("submit producing request");
+
+    // Admit two siblings, then complete them in reverse admission order with
+    // the same child artifact and discovered opportunity.
+    let mut admitted = Vec::new();
+    let mut head = requested.new_snapshot;
+    for (ordinal, value) in [(1, false), (2, true)] {
+        let proposal = finite_proposal(
+            &request,
+            &policy,
+            &repository.head(name).expect("proposal head"),
+            ChoiceValue::Boolean(value),
+            ordinal,
+        );
+        let issued = repository
+            .issue_proposal(name, head, &proposal)
+            .expect("issue sibling proposal");
+        let (selection, path, attempt) = branch_attempt(&repository, &request, &proposal);
+        let admission = repository
+            .admit_proposal(
+                name,
+                issued.new_snapshot,
+                issued.proposal,
+                &selection,
+                &path,
+                &attempt,
+            )
+            .expect("admit sibling");
+        head = admission.new_snapshot;
+        admitted.push((admission, path));
+    }
+    let [(first_admitted, first_path), (second_admitted, second_path)] =
+        <[_; 2]>::try_from(admitted).unwrap_or_else(|_| panic!("two admitted siblings"));
+    let first = generated_observation(
+        &repository,
+        &lineage,
+        &first_admitted,
+        &first_path,
+        request.opportunity(),
+        "choice-source-shared-child",
+    );
+    let second = generated_observation(
+        &repository,
+        &lineage,
+        &second_admitted,
+        &second_path,
+        request.opportunity(),
+        "choice-source-shared-child",
+    );
+    assert_eq!(first.child_content(), second.child_content());
+    let indexed_source = |snapshot: CampaignSnapshotId| {
+        let loaded = repository
+            .read_snapshot(snapshot.content_id())
+            .expect("load indexed snapshot");
+        repository
+            .choice_source_observation(
+                loaded.snapshot.roots().observations,
+                first.child_content(),
+                request.opportunity(),
+            )
+            .expect("read choice-source slot")
+    };
+
+    let second_observed = repository
+        .publish_observation(name, head, &second)
+        .expect("streaming accepts ordinal two first");
+    assert_eq!(
+        indexed_source(second_observed.new_snapshot),
+        Some(second.id().expect("second id").content_id())
+    );
+    let first_observed = repository
+        .publish_observation(name, second_observed.new_snapshot, &first)
+        .expect("streaming accepts late ordinal one");
+    assert_eq!(
+        indexed_source(first_observed.new_snapshot),
+        Some(first.id().expect("first id").content_id()),
+        "a late earlier admission must lower the slot"
+    );
+
+    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    assert_eq!(
+        restarted
+            .head(name)
+            .expect("cold validation recomputes the slot")
+            .snapshot_id(),
+        first_observed.new_snapshot
+    );
 }
 
 #[test]
@@ -1259,7 +1452,7 @@ fn generated_observation_with_coverage(
             properties,
             coverage,
         ),
-        BTreeSet::from([opportunity]),
+        stored_choice_set(repository, BTreeSet::from([opportunity])),
     )
     .expect("progressive observation")
 }
@@ -2467,13 +2660,25 @@ fn head_rejects_genesis_without_canonical_configuration_membership() {
             empty,
         )
         .expect("planner-scan index anchor");
+    let observations = repository
+        .merkle
+        .insert(empty, choice_source_index_anchor_key(), empty)
+        .expect("choice-source index anchor");
+    let observations = repository
+        .merkle
+        .insert(
+            observations.content_id(),
+            direct_selection_index_anchor_key(),
+            empty,
+        )
+        .expect("direct-selection index anchor");
     let malformed = CampaignSnapshot::genesis(
         CampaignLineageId::from_content_id(lineage_content).expect("lineage id"),
         CampaignPolicyId::from_content_id(policy_content).expect("policy id"),
         crate::CampaignRoots {
             graph: graph.content_id(),
             exploration: exploration.content_id(),
-            observations: empty,
+            observations: observations.content_id(),
             corpus: empty,
             coverage: empty,
             findings: empty,

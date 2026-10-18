@@ -123,10 +123,31 @@ impl BlockFaultState {
             });
         }
         if let Some(transport_epoch) = self.transport_epoch {
-            if self
-                .retired_transport_epochs
-                .keys()
-                .any(|epoch| *epoch >= transport_epoch)
+            // Each `NewEpochFromZero` reset retires exactly the current epoch
+            // and pruning removes only a prefix, so retained epochs are one
+            // contiguous run from the acknowledged floor up to the epoch below
+            // the live one.
+            let floor = self.oldest_live_transport_epoch;
+            let retained_run_is_contiguous = match (
+                self.retired_transport_epochs.first_key_value(),
+                self.retired_transport_epochs.last_key_value(),
+            ) {
+                (Some((first, _)), Some((last, _))) => {
+                    *first >= floor
+                        && last.checked_add(1) == Some(transport_epoch)
+                        && u64::try_from(self.retired_transport_epochs.len()).ok()
+                            == last
+                                .checked_sub(*first)
+                                .and_then(|span| span.checked_add(1))
+                }
+                _ => true,
+            };
+            if floor > transport_epoch
+                || !retained_run_is_contiguous
+                || self
+                    .retired_transport_epochs
+                    .keys()
+                    .any(|epoch| *epoch >= transport_epoch)
                 || self.retry_preserve_authorizations.iter().any(|identity| {
                     identity.epoch >= transport_epoch
                         || !self.retired_transport_epochs.contains_key(&identity.epoch)
@@ -138,7 +159,8 @@ impl BlockFaultState {
                     reason: "restored retired block transport state is inconsistent",
                 });
             }
-        } else if !self.retired_transport_epochs.is_empty()
+        } else if self.oldest_live_transport_epoch != 0
+            || !self.retired_transport_epochs.is_empty()
             || !self.retry_preserve_authorizations.is_empty()
         {
             return Err(DeviceError::InvalidBlockFaultDirective {

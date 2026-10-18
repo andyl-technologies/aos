@@ -37,9 +37,21 @@ pub(super) struct ClampExpectation {
     pub(super) device_progress: bool,
 }
 
+/// Copies the original coherent initial scheduler publication and idle guard.
+#[derive(Clone, Copy)]
+struct InitialAdvanceObservation {
+    checkpoint_idle_coordinate: Option<u64>,
+    sequence: u64,
+    ceiling_ps: u64,
+    stop_condition: u8,
+}
+
 /// Keeps diagnostic-only state outside checkpoints and runtime counters.
 pub(super) struct WaitObservation {
     remaining: u16,
+    initial_advance: Option<InitialAdvanceObservation>,
+    checkpoint_idle_unreleased: Option<bool>,
+    pub(super) device_deadlines: Cell<Option<super::device_wait_observation::DeviceDeadlines>>,
     slice_timeout: Duration,
     slice_remaining: Duration,
     consumed_slices: Duration,
@@ -64,6 +76,9 @@ impl WaitObservation {
 
     fn with_budget(maximum: u16) -> Self {
         Self {
+            initial_advance: None,
+            checkpoint_idle_unreleased: None,
+            device_deadlines: Cell::new(None),
             remaining: if (1..=256).contains(&maximum) {
                 maximum
             } else {
@@ -78,7 +93,29 @@ impl WaitObservation {
         }
     }
 
+    pub(super) fn is_enabled(&self) -> bool {
+        self.remaining != 0
+    }
+
+    /// Retains only values from the owner's already acquired initial snapshot.
+    pub(super) fn retain_initial_advance(
+        &mut self,
+        snapshot: &NodeSlotSnapshot,
+        checkpoint_idle_coordinate: Option<u64>,
+    ) {
+        if self.remaining != 0 {
+            self.initial_advance = Some(InitialAdvanceObservation {
+                checkpoint_idle_coordinate,
+                sequence: snapshot.advance_publication_sequence,
+                ceiling_ps: snapshot.max_advance_icount,
+                stop_condition: snapshot.advance_stop_condition,
+            });
+        }
+    }
+
     pub(super) fn begin(&mut self, timeout: Duration) {
+        self.initial_advance = None;
+        self.checkpoint_idle_unreleased = None;
         self.slice_timeout = timeout;
         self.slice_remaining = timeout;
         self.consumed_slices = Duration::ZERO;
@@ -138,9 +175,22 @@ struct RingIndices {
     fault_command: Option<(u64, u64)>,
     fault_event: Option<(u64, u64)>,
     fault_result: Option<(u64, u64)>,
+    block: Option<((u64, u64), (u64, u64))>,
+    ninep: Option<((u64, u64), (u64, u64))>,
 }
 
 impl QemuLiveHostIoRuntime {
+    /// Copies the original guard decision without another mapped-state read.
+    pub(super) fn observe_pending_advance_wait(
+        &mut self,
+        snapshot: &NodeSlotSnapshot,
+        checkpoint_idle_unreleased: bool,
+        remaining: Duration,
+    ) {
+        self.wait_observation.checkpoint_idle_unreleased = Some(checkpoint_idle_unreleased);
+        self.observe_pending_wait("advance-pending", snapshot, None, remaining);
+    }
+
     /// Emits the original snapshot before sleeping, without servicing payloads.
     pub(super) fn observe_pending_wait(
         &mut self,
@@ -214,13 +264,34 @@ impl QemuLiveHostIoRuntime {
             .fault_result_transport_mut(self.vm_slot)
             .ok()
             .map(|transport| (transport.ring.read_index(), transport.ring.write_index()));
+        let block = self.device_ring_frontiers(crucible_shmem::SLOT_BLK_IO as u32);
+        let ninep = self.device_ring_frontiers(crucible_shmem::SLOT_9P_IO as u32);
         RingIndices {
+            block,
+            ninep,
             tx: network.map(|indices| indices.0),
             rx: network.map(|indices| indices.1),
             fault_command,
             fault_event,
             fault_result,
         }
+    }
+
+    fn device_ring_frontiers(&mut self, source: u32) -> Option<((u64, u64), (u64, u64))> {
+        let pair = self
+            .region
+            .node_directed_ring_pair_mut(self.vm_slot, self.vm_slot, source, source, self.vm_slot)
+            .ok()?;
+        Some((
+            (
+                pair.first.header.read_index(),
+                pair.first.header.write_index(),
+            ),
+            (
+                pair.second.header.read_index(),
+                pair.second.header.write_index(),
+            ),
+        ))
     }
 }
 
@@ -234,10 +305,14 @@ fn write_observation(
     indices: &RingIndices,
 ) -> std::io::Result<()> {
     let request = clamp.map(|clamp| clamp.request);
+    let initial = runtime.wait_observation.initial_advance;
+    let unreleased = (phase == "advance-pending")
+        .then_some(runtime.wait_observation.checkpoint_idle_unreleased)
+        .flatten();
     // Legacy *_icount slot coordinates are picosecond ticks; only the raw
     // logical-time partner counts retired instructions (shmem::TICKS_PER_NS).
     // None explicitly means unavailable, including advance's absent ACK fence.
-    writeln!(
+    write!(
         sink,
         "CRUCIBLE-HOST-WAIT-V1 phase={phase} slot={} region_inode={:?} current_ps={} max_ps={} idle_ps={} raw_instructions={} status={} device_active={} publish_gen={} wake={} observed_ack={} expected_ack={:?} request={:?} request_fault_frontier={:?} observed_fault_frontier={} request_capture={:?} observed_capture={} expected_current_ps={:?} expected_idle_ps={:?} acknowledgement_seen={:?} device_progress={:?} scheduler_pending_gen={:?} device_pending_gen={:?} host_remaining_ms={} host_published_device_deadline_ps={:?} tx_read_write={:?} rx_read_write={:?} fault_command_read_write={:?} fault_event_read_write={:?} fault_result_read_write={:?}",
         runtime.vm_slot,
@@ -273,7 +348,30 @@ fn write_observation(
         indices.fault_command,
         indices.fault_event,
         indices.fault_result,
-    )
+    )?;
+    if phase == "advance-pending" {
+        write!(
+            sink,
+            " initial_checkpoint_idle_ps={:?} initial_advance_sequence={:?} initial_advance_ceiling_ps={:?} initial_advance_stop={:?} checkpoint_idle_unreleased={:?} advance_sequence={} advance_stop={}",
+            initial.and_then(|initial| initial.checkpoint_idle_coordinate),
+            initial.map(|initial| initial.sequence),
+            initial.map(|initial| initial.ceiling_ps),
+            initial.map(|initial| initial.stop_condition),
+            unreleased,
+            snapshot.advance_publication_sequence,
+            snapshot.advance_stop_condition,
+        )?;
+    }
+    write!(
+        sink,
+        " block_io={:?} ninep_io={:?}",
+        indices.block, indices.ninep
+    )?;
+    super::device_wait_observation::write_deadlines(
+        sink,
+        runtime.wait_observation.device_deadlines.get(),
+    )?;
+    writeln!(sink)
 }
 
 #[cfg(test)]

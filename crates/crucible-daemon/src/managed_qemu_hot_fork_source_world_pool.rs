@@ -1,8 +1,10 @@
 //! Durable managed ownership for complete retained QEMU source worlds.
 //!
 //! This pool applies the shared [`HotCheckpointManager`] policy to atomic
-//! multi-node source worlds. Canonical factories admit scenario genesis, while
-//! production-restored tokens admit later exact-checkpoint frontiers. The pool
+//! multi-node source worlds. Canonical factories admit scenario genesis,
+//! production-restored tokens admit later exact-checkpoint frontiers, and
+//! thin attempts admit the worlds they stopped with at a published child
+//! boundary as depth-0 roots with a thin fallback. The pool
 //! exact-matches scenario and executor compatibility, distinguishes retained
 //! frontiers even when their modeled configurations are equal, persists an
 //! exact/thin fallback before admission, charges conservatively measured QEMU
@@ -81,20 +83,32 @@ impl ManagedQemuHotForkSourceWorld {
         key: QemuHotForkSourceWorldKey,
         source: ProductionVmHotForkSourceWorld,
     ) -> Result<Self, ManagedQemuHotForkSourceWorldBindingFailure> {
-        Self::bind_at_boundary(key, source, true)
+        Self::bind_at_boundary(key, source, BindingBoundary::CanonicalGenesis)
     }
 
     fn bind_authenticated_exact(
         key: QemuHotForkSourceWorldKey,
         source: ProductionVmHotForkSourceWorld,
     ) -> Result<Self, ManagedQemuHotForkSourceWorldBindingFailure> {
-        Self::bind_at_boundary(key, source, false)
+        Self::bind_at_boundary(key, source, BindingBoundary::ExactCheckpoint)
+    }
+
+    /// Binds a thin attempt's retained world to its published child boundary.
+    ///
+    /// The key must name that boundary, and the source must have advanced past
+    /// genesis without reaching a terminal verdict, so it can never shadow the
+    /// canonical genesis source or stand in for a finished run.
+    fn bind_published_root(
+        key: QemuHotForkSourceWorldKey,
+        source: ProductionVmHotForkSourceWorld,
+    ) -> Result<Self, ManagedQemuHotForkSourceWorldBindingFailure> {
+        Self::bind_at_boundary(key, source, BindingBoundary::PublishedRoot)
     }
 
     fn bind_at_boundary(
         key: QemuHotForkSourceWorldKey,
         mut source: ProductionVmHotForkSourceWorld,
-        require_canonical_genesis: bool,
+        boundary: BindingBoundary,
     ) -> Result<Self, ManagedQemuHotForkSourceWorldBindingFailure> {
         let actual_scenario = source.continuation().configuration().def.id();
         let actual_configuration = source.continuation().configuration().id();
@@ -109,12 +123,22 @@ impl ManagedQemuHotForkSourceWorld {
                 source, error,
             ));
         }
-        if require_canonical_genesis
-            && let Some(detail) = canonical_genesis_reuse_boundary_error(&source)
-        {
+        let boundary_error = match boundary {
+            BindingBoundary::CanonicalGenesis => {
+                canonical_genesis_reuse_boundary_error(&source).map(|detail| {
+                    ManagedQemuHotForkSourceWorldBindingError::NonCanonicalBoundary { detail }
+                })
+            }
+            BindingBoundary::ExactCheckpoint => None,
+            BindingBoundary::PublishedRoot => {
+                published_root_boundary_error(&key, &source).map(|detail| {
+                    ManagedQemuHotForkSourceWorldBindingError::NonPublishedBoundary { detail }
+                })
+            }
+        };
+        if let Some(error) = boundary_error {
             return Err(ManagedQemuHotForkSourceWorldBindingFailure::new(
-                source,
-                ManagedQemuHotForkSourceWorldBindingError::NonCanonicalBoundary { detail },
+                source, error,
             ));
         }
 
@@ -245,6 +269,17 @@ impl ManagedQemuHotForkSourceWorld {
     }
 }
 
+/// Boundary predicate checked before a source enters managed ownership.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BindingBoundary {
+    /// The canonical scenario-genesis frontier of a factory-captured source.
+    CanonicalGenesis,
+    /// A restored exact checkpoint authenticated by its sealed token.
+    ExactCheckpoint,
+    /// The published child boundary of a retained thin attempt.
+    PublishedRoot,
+}
+
 /// Failed source-world key binding retaining the prepared source.
 #[must_use = "recover or quarantine the returned source world"]
 pub struct ManagedQemuHotForkSourceWorldBindingFailure {
@@ -314,6 +349,12 @@ pub enum ManagedQemuHotForkSourceWorldBindingError {
     /// configuration identity does not represent.
     #[error("source world is not at the canonical genesis reuse boundary: {detail}")]
     NonCanonicalBoundary {
+        /// Failed boundary predicate and its captured values.
+        detail: String,
+    },
+    /// A published-root source is not at an advanced, nonterminal boundary.
+    #[error("source world is not at a published child reuse boundary: {detail}")]
+    NonPublishedBoundary {
         /// Failed boundary predicate and its captured values.
         detail: String,
     },
@@ -414,6 +455,27 @@ fn canonical_genesis_reuse_boundary_error(
                 node.service_state(),
             ));
         }
+    }
+    None
+}
+
+fn published_root_boundary_error(
+    key: &QemuHotForkSourceWorldKey,
+    source: &ProductionVmHotForkSourceWorld,
+) -> Option<String> {
+    let continuation = source.continuation();
+    let boundary_matches =
+        key.boundary() == crate::QemuHotForkSourceWorldBoundary::PublishedBoundary;
+    if !boundary_matches
+        || continuation.configuration().schedule.is_empty()
+        || continuation.terminal_verdict().is_some()
+    {
+        return Some(format!(
+            "key_boundary={:?} schedule_len={} terminal={}",
+            key.boundary(),
+            continuation.configuration().schedule.len(),
+            continuation.terminal_verdict().is_some(),
+        ));
     }
     None
 }
@@ -588,6 +650,11 @@ where
     retention: R,
     records: BTreeMap<HotCheckpointFallbackSlot, HotCheckpointFallbackRecord>,
     active: BTreeMap<HotCheckpointPoolKey, HotCheckpointFallbackSlot>,
+    /// Admission ordinal of each retained source. A source forked from an
+    /// earlier source is always admitted after it, so shutdown retires
+    /// sources newest first and never reaps an origin before its descendants.
+    admissions: BTreeMap<HotCheckpointPoolKey, u64>,
+    next_admission: u64,
     checked_out: BTreeMap<
         u64,
         (
@@ -603,6 +670,8 @@ where
 }
 
 mod pool;
+mod published_roots;
+pub(crate) use published_roots::ManagedQemuPublishedRootSink;
 
 /// Shared process-wide source pool that mints one checkout session per worker.
 pub struct SharedManagedQemuHotForkSourceWorldPool<D, R>
@@ -671,17 +740,17 @@ where
         &self,
         source: AuthenticatedExactQemuHotForkSource,
         signals: HotCheckpointHotnessSignals,
-    ) -> Result<HotCheckpointAdmissionCommit, SharedManagedQemuHotForkExactAdmissionFailure<D::Error>>
+    ) -> Result<HotCheckpointAdmissionCommit, SharedManagedQemuHotForkAdmissionFailure<D::Error>>
     {
         let mut pool = match self.pool.lock() {
             Ok(pool) => pool,
             Err(_error) => {
                 let _retained_for_process_lifetime = Box::leak(Box::new(source));
-                return Err(SharedManagedQemuHotForkExactAdmissionFailure::Poisoned);
+                return Err(SharedManagedQemuHotForkAdmissionFailure::Poisoned);
             }
         };
         pool.admit_authenticated_exact_source(source, signals)
-            .map_err(SharedManagedQemuHotForkExactAdmissionFailure::Admission)
+            .map_err(SharedManagedQemuHotForkAdmissionFailure::Admission)
     }
 
     pub(crate) fn retain_cold_fallback(
@@ -720,7 +789,7 @@ where
     }
 }
 
-pub(crate) enum SharedManagedQemuHotForkExactAdmissionFailure<E> {
+pub(crate) enum SharedManagedQemuHotForkAdmissionFailure<E> {
     Poisoned,
     Admission(ManagedQemuHotForkAuthenticatedAdmissionFailure<E>),
 }
@@ -806,6 +875,9 @@ where
 }
 
 #[cfg(test)]
+pub(crate) mod test_support;
+
+#[cfg(test)]
 #[path = "managed_qemu_hot_fork_source_world_pool/tests.rs"]
 mod tests;
 
@@ -815,7 +887,10 @@ fn source_slot(key: HotCheckpointPoolKey) -> HotCheckpointPoolSlot {
 
 fn manager_source_key(key: &QemuHotForkSourceWorldKey) -> HotCheckpointPoolKey {
     match key.boundary() {
-        crate::QemuHotForkSourceWorldBoundary::CanonicalGenesis => key.template_key(),
+        // A published root's configuration has a nonempty schedule, so its
+        // lineage/configuration coordinate never collides with genesis.
+        crate::QemuHotForkSourceWorldBoundary::CanonicalGenesis
+        | crate::QemuHotForkSourceWorldBoundary::PublishedBoundary => key.template_key(),
         crate::QemuHotForkSourceWorldBoundary::ExactCheckpoint(checkpoint) => {
             let material = format!(
                 "configuration={}\ncheckpoint={}",

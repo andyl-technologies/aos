@@ -12,6 +12,13 @@ use crucible_shmem::{
     AdvanceStopCondition, FrameEntry, FutexError, FutexWait, FutexWaitOutcome, NodeSlot,
     NodeSlotError, RegionControlAction, RegionHeader, RingHeader, SpscRingError, WakeAction,
 };
+
+/// Supported version of the Linux paused stopped-Restore ACK notification operation.
+///
+/// The canonical plugin package derives its immutable operation marker from
+/// this compiled producer's version. This is separate from the public layout
+/// ABI and does not grant native console authority.
+pub const STOPPED_RESTORE_ACK_NOTIFICATION_VERSION: u32 = 1;
 #[cfg(unix)]
 use crucible_shmem::{
     MappedSetupRegion, RegionHeaderSnapshot, RegionSetupValidationError, ValidatedSetupRegion,
@@ -132,9 +139,35 @@ impl PluginShmemOrdering {
         slot.control_boundary_token()
     }
 
-    /// Release-acknowledges a drained host-control request after publication.
-    pub fn acknowledge_control_boundary(slot: &NodeSlot) -> u32 {
-        slot.acknowledge_control_boundary()
+    /// Release-acknowledges a drained request, notifying stopped-boundary waiters.
+    ///
+    /// The public pause bit is acquire-sampled after coherent publication and
+    /// native claim release. A Restore installer owns that bit until accepting
+    /// the exact odd ACK. Ordinary running-node controls keep their existing
+    /// syscall-free acknowledgement; checkpoint pauses may also notify.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FutexError`] if the shared ACK wake fails after publication.
+    pub fn acknowledge_control_boundary(
+        slot: &NodeSlot,
+        header: &RegionHeader,
+    ) -> Result<u32, FutexError> {
+        Self::acknowledge_with_stopped_notification(slot, header, |slot| {
+            slot.acknowledge_control_boundary_and_notify()
+        })
+    }
+
+    fn acknowledge_with_stopped_notification(
+        slot: &NodeSlot,
+        header: &RegionHeader,
+        notify: impl FnOnce(&NodeSlot) -> Result<u32, FutexError>,
+    ) -> Result<u32, FutexError> {
+        if header.pause_requested() {
+            notify(slot)
+        } else {
+            Ok(slot.acknowledge_control_boundary())
+        }
     }
 
     /// Publishes the exact boundary, classifying a scheduler ceiling as idle.
@@ -308,6 +341,7 @@ impl PluginShmemOrdering {
 
 #[cfg(test)]
 mod tests {
+    use crucible_shmem::FutexError;
     use crucible_shmem::{
         AdvanceStopCondition, FrameEntry, KIND_VM, NodeSlot, RegionConfig, RegionHeader,
         RegionLayout, RingHeader,
@@ -365,6 +399,72 @@ mod tests {
         };
         assert_eq!(dequeued.delivery_key(), frame.delivery_key());
         assert_eq!(PluginShmemOrdering::consumer_read_index(&header), 1);
+    }
+
+    #[test]
+    fn ordinary_running_control_ack_does_not_call_stopped_notification()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let header = RegionHeader::new(RegionLayout::for_config(RegionConfig::new(1, 2))?);
+        let slot = NodeSlot::new(KIND_VM);
+        let request = slot.request_control_boundary(0, None)?;
+
+        let acknowledgement =
+            PluginShmemOrdering::acknowledge_with_stopped_notification(&slot, &header, |_| {
+                panic!("ordinary running-node ACK attempted a futex notification")
+            })?;
+
+        assert_eq!(acknowledgement, request + 1);
+        assert_eq!(slot.control_boundary_token(), request + 1);
+        assert!(!header.pause_requested());
+        Ok(())
+    }
+
+    #[test]
+    fn paused_restore_ack_uses_current_pause_bit_and_surfaces_notification_failure()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let header = RegionHeader::new(RegionLayout::for_config(RegionConfig::new(1, 2))?);
+        let slot = NodeSlot::new(KIND_VM);
+        slot.arm_external_state_restore_ceiling(100)?;
+        let generation = slot.arm_logical_time_restore(100)?;
+        header.request_pause([&slot])?;
+        let request = slot.request_control_boundary(0, None)?;
+        let restore = slot
+            .pending_logical_time_restore()
+            .ok_or("Restore request absent")?;
+        slot.acknowledge_logical_time_restore(restore, 100, 2)?;
+
+        assert_eq!(
+            PluginShmemOrdering::acknowledge_control_boundary(&slot, &header)?,
+            request + 1
+        );
+        let snapshot = slot.snapshot();
+        assert_eq!(snapshot.logical_time_restore_ack, generation);
+        assert_eq!(snapshot.current_icount, 100);
+        assert_eq!(snapshot.logical_time_raw_icount, 2);
+        assert!(header.pause_requested());
+
+        // Notification failure is an explicit modeled syscall result; the
+        // shared-memory kernel tests exercise the actual successful syscall.
+        let failure = FutexError::Syscall {
+            operation: "modeled stopped ACK wake",
+            errno: libc::EPERM,
+        };
+        assert_eq!(
+            PluginShmemOrdering::acknowledge_with_stopped_notification(&slot, &header, |slot| {
+                assert_eq!(slot.acknowledge_control_boundary(), request + 1);
+                Err(failure.clone())
+            }),
+            Err(failure)
+        );
+        assert_eq!(slot.control_boundary_token(), request + 1);
+        header.clear_pause();
+        assert_eq!(
+            PluginShmemOrdering::acknowledge_with_stopped_notification(&slot, &header, |_| {
+                panic!("cleared pause bit used stale stopped notification scope")
+            })?,
+            request + 1
+        );
+        Ok(())
     }
 
     #[test]

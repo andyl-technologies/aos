@@ -11,21 +11,77 @@ fn observation_ordinal_key_preserves_the_persisted_two_layer_identity() {
 }
 
 #[test]
+fn coverage_frequency_upserts_count_new_identities_and_skip_saturated_ones() {
+    let (repository, _, _) = fixture();
+    let fresh = CampaignHash::derive("test.coverage-frequency", b"fresh");
+    let repeated = CampaignHash::derive("test.coverage-frequency", b"repeated");
+    let saturated = CampaignHash::derive("test.coverage-frequency", b"saturated");
+    let coverage = repository
+        .publish_coverage_projection(
+            &CoverageProjection::new(
+                BTreeSet::from([fresh, repeated, saturated]),
+                BTreeSet::new(),
+            )
+            .expect("coverage"),
+        )
+        .expect("publish coverage");
+    let record = |count| {
+        let value = crate::CoverageIdentityFrequency::new(count).expect("frequency");
+        repository
+            .put_coverage_identity_frequency(value)
+            .expect("publish frequency")
+    };
+    let mut root = repository.merkle.empty().expect("empty root").content_id();
+    root = repository
+        .merkle
+        .insert(root, coverage_identity_frequency_key(repeated), record(3))
+        .expect("index repeated identity")
+        .content_id();
+    root = repository
+        .merkle
+        .insert(
+            root,
+            coverage_identity_frequency_key(saturated),
+            record(crate::COVERAGE_IDENTITY_FREQUENCY_SATURATION),
+        )
+        .expect("index saturated identity")
+        .content_id();
+
+    let mut upserts = BTreeMap::new();
+    let records = repository
+        .coverage_frequency_upserts(root, coverage, &mut upserts)
+        .expect("frequency upserts");
+
+    let expected = |count| {
+        crate::CoverageIdentityFrequency::new(count)
+            .expect("frequency")
+            .content_id()
+            .expect("frequency id")
+    };
+    assert_eq!(
+        upserts,
+        BTreeMap::from([
+            (coverage_identity_frequency_key(fresh), expected(1)),
+            (coverage_identity_frequency_key(repeated), expected(4)),
+        ])
+    );
+    assert_eq!(
+        records
+            .iter()
+            .map(|record| record.count())
+            .collect::<Vec<_>>(),
+        vec![1, 4]
+    );
+}
+
+#[test]
 fn observation_growth_bound_rebases_and_remains_restart_readable() {
     let (repository, lineage, policy) = fixture();
     let (_, admitted, observation) =
         admitted_observation_fixture(&repository, &lineage, &policy, "observation-growth");
-    assert_eq!(
-        observation_successor_growth(
-            crate::observation::MAX_DISCOVERED_CHOICES,
-            crate::exploration::MAX_BRANCH_PATH_EDGES,
-            true,
-            MAX_FEEDBACK_FRONTIER_UPDATES,
-        )
-        .expect("maximum observation growth"),
-        MAX_OBSERVATION_SUCCESSOR_GROWTH
-    );
-    let growth = observation_successor_growth(observation.discovered_choices().len(), 0, true, 0)
+    let discovered = usize::try_from(observation.discovered_choices().entry_count())
+        .expect("fixture discovered-choice count");
+    let growth = observation_successor_growth(discovered, 0, false, true, 0, 1)
         .expect("fixture observation growth");
     repository
         .validated_heads
@@ -33,19 +89,20 @@ fn observation_growth_bound_rebases_and_remains_restart_readable() {
         .expect("validation checkpoints")
         .get_mut(&admitted.new_snapshot.content_id())
         .expect("admitted checkpoint")
-        .closure_objects = MAX_CAMPAIGN_CLOSURE_OBJECTS - growth;
+        .closure_objects = usize::MAX / 2;
 
     let accepted = repository
         .publish_observation("observation-growth", admitted.new_snapshot, &observation)
-        .expect("full-validation observation rebase");
+        .expect("incremental observation from a large checkpoint");
     let checkpoint_objects = repository
         .validated_heads
         .lock()
         .expect("validation checkpoints")
         .get(&accepted.new_snapshot.content_id())
-        .expect("rebased observation checkpoint")
+        .expect("incremental observation checkpoint")
         .closure_objects;
-    assert!(checkpoint_objects < MAX_OBSERVATION_SUCCESSOR_GROWTH);
+    // The owner growth bound is charged on top of the parent count.
+    assert!(checkpoint_objects - usize::MAX / 2 >= growth);
 
     repository
         .validated_heads
@@ -85,7 +142,7 @@ fn observation_evidence_preflight_rejects_nested_invalid_records_without_writes(
             observation.properties(),
             observation.coverage(),
         ),
-        observation.discovered_choices().clone(),
+        discovered_choice_ids(&repository, &observation),
     )
     .expect("structurally valid nested observation");
     let nested_id = nested.id().expect("nested observation id");
@@ -188,7 +245,6 @@ fn choice_validation_cache_is_compact_shared_and_checks_copied_contracts() {
         representative.get_or_insert(opportunity);
     }
     assert_eq!(cache.contracts.len(), 1);
-    assert_eq!(cache.insertion_order.len(), 1);
 
     let mut forged_bytes =
         crate::codec::encode(representative.as_ref().expect("representative opportunity"));
@@ -274,7 +330,7 @@ fn strict_observations_commit_in_global_admission_order() {
             first_observation.properties(),
             first_observation.coverage(),
         ),
-        BTreeSet::from([second_request.opportunity()]),
+        stored_choice_set(&repository, BTreeSet::from([second_request.opportunity()])),
     )
     .expect("second observation");
 

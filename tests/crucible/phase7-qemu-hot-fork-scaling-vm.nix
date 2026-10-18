@@ -6,7 +6,38 @@
   lib,
   attrPath ? "checks.crucible.phase7.gates.hotForkScaling.rawGate",
   taskIds ? [],
+  # A unique inner-VM sample runs only the genuine performance case. The
+  # independent full scaling/lifecycle obligations keep their default path.
+  performanceSample ? null,
 }: let
+  validSample =
+    performanceSample
+    == null
+    || (
+      builtins.isAttrs performanceSample
+      && builtins.attrNames performanceSample == ["id" "revision"]
+      && builtins.isString performanceSample.id
+      && builtins.match "[0-9a-f]{32}" performanceSample.id != null
+      && builtins.isString performanceSample.revision
+      && builtins.match "[0-9a-f]{40}" performanceSample.revision != null
+    );
+  provenance = import ./_campaign-performance-provenance.nix {
+    inherit pkgs;
+    revision =
+      if performanceSample == null
+      then "unmeasured"
+      else performanceSample.revision;
+    sampleId =
+      if !validSample
+      then throw "campaign performance sample requires exact id/revision fields"
+      else if performanceSample == null
+      then null
+      else performanceSample.id;
+  };
+  provenanceFile = pkgs.writeTextFile {
+    name = "campaign-performance-source-manifest.json";
+    text = provenance.text;
+  };
   source = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
   guest = import ./_nginx-curl-http-200-guest.nix {inherit pkgs;};
@@ -80,6 +111,7 @@ in
     hostCpuPinIndex = 0;
     rootfsDeps = [
       flight
+      provenanceFile
       guest
       scenario
       pkgs.crucible
@@ -94,6 +126,10 @@ in
     ];
     testScript = ''
       set -euo pipefail
+      printf 'campaign_performance_provenance_json=%s\n' "$(cat ${provenanceFile})"
+      ${lib.optionalString (performanceSample != null) ''
+        export CRUCIBLE_CAMPAIGN_PERF_SAMPLE_ID=${lib.escapeShellArg performanceSample.id}
+      ''}
       cleanup_attempt_mount() {
         ${pkgs.util-linux}/bin/umount /tmp/attempts > /dev/null 2>&1 || true
       }
@@ -325,6 +361,11 @@ in
         exit 1
       fi
 
+      if ${
+        if performanceSample == null
+        then "true"
+        else "false"
+      }; then
       run_host_clone_test \
         crucible_api \
         vm_lifecycle::hot_fork::tests::host_continuation_clone_cost_is_bounded_across_siblings \
@@ -542,6 +583,8 @@ in
         hot_checkpoint_fallback_authentication=exact-checkpoint-id \
         /tmp/manager-pressure-result
 
+      fi
+
       run_exact_lib_test \
         crucible-daemon \
         qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_hot_fork_meets_whole_world_performance_ratchets \
@@ -591,6 +634,11 @@ in
       require_exact_test_marker \
         final_store_verified_objects=2 /tmp/final-resource-audit-result
 
+      if ${
+        if performanceSample == null
+        then "true"
+        else "false"
+      }; then
       cat /tmp/host-clone-cost-result \
         /tmp/fault-clone-cost-result \
         /tmp/daemon-scaling-result \
@@ -624,7 +672,19 @@ in
         'check=${attrPath}' \
         'tasks=${builtins.concatStringsSep "," taskIds}' \
         >> /tmp/hot-fork-scaling-measurements
+      else
+        cat /tmp/performance-ratchet-result /tmp/final-resource-audit-result \
+          > /tmp/hot-fork-scaling-measurements
+        printf '%s\n' \
+          PASS \
+          'gate=gate:campaign-performance-sample' \
+          'scope=single-original-performance-case' \
+          'check=${attrPath}' \
+          >> /tmp/hot-fork-scaling-measurements
+      fi
+      printf '%s\n' CRUCIBLE_CAMPAIGN_COMPLETED_MEASUREMENTS_BEGIN_V2
       cat /tmp/hot-fork-scaling-measurements
+      printf '%s\n' CRUCIBLE_CAMPAIGN_COMPLETED_MEASUREMENTS_END_V2
       ${pkgs.util-linux}/bin/umount /tmp/attempts
       trap - EXIT HUP INT TERM
     '';

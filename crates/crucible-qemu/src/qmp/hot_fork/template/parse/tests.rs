@@ -2,7 +2,7 @@
 
 use super::super::native_worker_tests::prepared_report;
 use super::{
-    QMP_HOT_FORK_PLUGIN_RING_PROOF, QMP_HOT_FORK_TEMPLATE_RESOURCE_STAGE_SCHEMA_VERSION,
+    QMP_HOT_FORK_PLUGIN_RING_PROOF, QMP_HOT_FORK_TEMPLATE_RESOURCE_STAGE_SCHEMA_VERSION, QmpError,
     QmpHotForkPluginBarrierState, QmpHotForkTemplateResourceStageState,
     parse_hot_fork_template_state, plugin_ring_proof_shape_valid, resource_stage_shape_valid,
 };
@@ -23,9 +23,9 @@ fn failure_diagnostic_rejects_unknown_or_unbounded_values() {
     report["failure-detail"] = json!("native source denied permission change");
     assert!(parse_hot_fork_template_state(&report).is_ok());
 
-    report["schema-version"] = json!(28);
-    assert!(parse_hot_fork_template_state(&report).is_err());
     report["schema-version"] = json!(29);
+    assert!(parse_hot_fork_template_state(&report).is_err());
+    report["schema-version"] = json!(30);
 
     report["failure-stage"] = json!("unknown-stage");
     assert!(parse_hot_fork_template_state(&report).is_err());
@@ -54,9 +54,6 @@ fn resource_stage_requires_exact_template_and_private_ring_generations() {
         qmp_staged: true,
         qmp_generation: 14,
         qmp_resource_plan_bound: true,
-        console_staged: true,
-        console_generation: 15,
-        console_resource_plan_bound: true,
         plugin_endpoints_staged: true,
         plugin_endpoint_generation: 12,
         plugin_private_ring_generation: 11,
@@ -155,7 +152,6 @@ fn resource_stage_requires_exact_template_and_private_ring_generations() {
         plugin_child_plan_bound: false,
         diagnostics_resource_plan_bound: false,
         qmp_resource_plan_bound: false,
-        console_resource_plan_bound: false,
         plugin_child_resource_plan_bound: false,
         readiness_proof_acknowledged: false,
         ..bound
@@ -226,4 +222,62 @@ fn resource_stage_requires_exact_template_and_private_ring_generations() {
         QMP_HOT_FORK_PLUGIN_RING_PROOF,
         forged_proof
     ));
+}
+
+#[test]
+fn staged_plugin_endpoints_require_the_current_qmp_and_diagnostics_chain() -> Result<(), QmpError> {
+    use super::{
+        QmpCommandKind, parse_hot_fork_plugin_barrier_state_for,
+        parse_hot_fork_template_resource_stage,
+    };
+    use serde_json::Value;
+
+    let report = prepared_report();
+    let plugin = parse_hot_fork_plugin_barrier_state_for(
+        QmpCommandKind::HotForkTemplate,
+        &report["plugin-barrier"],
+    )?;
+    let mut resources = report["resource-stage"].clone();
+    resources["template-generation"] = json!(0);
+    for field in [
+        "plugin-barrier-generation",
+        "worker-mask",
+        "parent-resume-worker-mask",
+        "child-reinitialize-worker-mask",
+        "parent-process-generation",
+        "child-process-generation",
+    ] {
+        resources[field] = json!(0);
+    }
+    for field in [
+        "diagnostics-resource-plan-bound",
+        "qmp-resource-plan-bound",
+        "worker-disposition-bound",
+        "transaction-bound",
+        "plugin-child-plan-bound",
+        "plugin-child-resource-plan-bound",
+        "readiness-proof-acknowledged",
+    ] {
+        resources[field] = json!(false);
+    }
+    let parse = |value: &Value| {
+        parse_hot_fork_template_resource_stage(value, 4, false, plugin, &|| {
+            QmpError::MalformedTypedResponse {
+                command: QmpCommandKind::HotForkTemplate,
+                response: value.to_string(),
+            }
+        })
+    };
+    assert!(parse(&resources).is_ok());
+
+    // Endpoint staging requires QMP even before a transaction or Ready
+    // proof exists. Withholding later authority does not admit bad shape.
+    resources["qmp-staged"] = json!(false);
+    assert!(parse(&resources).is_err());
+    resources["diagnostics-staged"] = json!(false);
+    assert!(parse(&resources).is_err());
+
+    resources["qmp-staged"] = json!(true);
+    assert!(parse(&resources).is_err());
+    Ok(())
 }

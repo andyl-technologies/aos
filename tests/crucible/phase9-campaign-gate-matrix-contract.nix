@@ -38,6 +38,38 @@ in
           authenticate_campaign_matrix_raw_result \
             good gate:campaign-model disabled disabled-id /system-disabled /executor-disabled
 
+          for changed_field in executor configuration toplevel; do
+            case "$changed_field" in
+              executor)
+                write_result changed gate:campaign-model disabled disabled-id /system-disabled /foreign-executor
+                ;;
+              configuration)
+                write_result changed gate:campaign-model disabled foreign-id /system-disabled /executor-disabled
+                ;;
+              toplevel)
+                write_result changed gate:campaign-model disabled disabled-id /foreign-system /executor-disabled
+                ;;
+            esac
+            if authenticate_campaign_matrix_raw_result \
+                changed gate:campaign-model disabled disabled-id \
+                /system-disabled /executor-disabled; then
+              echo "changed $changed_field was accepted" >&2
+              exit 1
+            fi
+          done
+
+          for field in gate campaign_mode campaign_configuration_identity campaign_toplevel executor_derivation; do
+            cp good duplicate
+            # Even a second foreign gate line must not accompany the expected gate.
+            printf '%s\n' "$field=foreign" >> duplicate
+            if authenticate_campaign_matrix_raw_result \
+                duplicate gate:campaign-model disabled disabled-id \
+                /system-disabled /executor-disabled; then
+              echo "duplicate $field was accepted" >&2
+              exit 1
+            fi
+          done
+
           write_result crossed-mode gate:campaign-model enabled enabled-id /system-enabled /executor-enabled
           if authenticate_campaign_matrix_raw_result \
               crossed-mode gate:campaign-model disabled disabled-id \

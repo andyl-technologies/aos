@@ -156,8 +156,8 @@ fn selected_start_derives_matching_scheduler_and_plugin_branch_plans() {
         Decision::Selection(SelectionDecision::new(&selection)),
     );
 
-    let (scheduler, plugins) =
-        app_random_branch_replay(&target).expect("selected target should derive plans");
+    let (scheduler, plugins) = app_random_branch_replay(&target, AppRandomLaunchWindow::Genesis)
+        .expect("selected target should derive plans");
 
     assert_eq!(
         scheduler.get(&parent.id()),
@@ -177,6 +177,13 @@ fn selected_start_derives_matching_scheduler_and_plugin_branch_plans() {
                 && entry.selection_id()
                     == selection.id().expect("selection id").content_id().digest()
     ));
+
+    // A launch restored at the target has already served this request.
+    let (scheduler, plugins) =
+        app_random_branch_replay(&target, AppRandomLaunchWindow::RestoredTarget)
+            .expect("restored target should derive empty plans");
+    assert!(scheduler.is_empty());
+    assert!(plugins.is_empty());
 }
 
 #[test]
@@ -206,20 +213,15 @@ fn promoted_signal_fault_branch_is_admitted_only_by_its_typed_plan() {
         .resolve_branch(&selection)
         .expect("candidate should reconstruct");
 
-    let empty = crucible::SignalFaultCampaignReplayPlan::empty(branch.selected().clone());
+    let selected = branch.selected().to_configuration();
+    let empty = crucible::SignalFaultCampaignReplayPlan::empty(selected.clone());
     assert_eq!(
-        unsupported_fresh_replay_decision(branch.selected(), &empty),
+        unsupported_fresh_replay_decision(&selected, &empty),
         Some(1)
     );
-    let plan = crucible::SignalFaultCampaignReplayPlan::new(
-        branch.selected().clone(),
-        vec![branch.clone()],
-    )
-    .expect("typed replay plan");
-    assert_eq!(
-        unsupported_fresh_replay_decision(branch.selected(), &plan),
-        None
-    );
+    let plan = crucible::SignalFaultCampaignReplayPlan::new(selected.clone(), vec![branch.clone()])
+        .expect("typed replay plan");
+    assert_eq!(unsupported_fresh_replay_decision(&selected, &plan), None);
 }
 
 #[test]
@@ -255,8 +257,8 @@ fn app_random_projection_ignores_a_campaign_selection_outside_its_owned_stream()
         Decision::Selection(SelectionDecision::new(&selection)),
     );
 
-    let (selections, plans) =
-        app_random_branch_replay(&target).expect("foreign producer stays outside this adapter");
+    let (selections, plans) = app_random_branch_replay(&target, AppRandomLaunchWindow::Genesis)
+        .expect("foreign producer stays outside this adapter");
     assert!(selections.is_empty());
     assert!(plans.is_empty());
 }
@@ -711,250 +713,6 @@ fn lifecycle_construction_failure_quarantines_installed_guard() {
     assert_eq!(counters.quarantines.load(Ordering::SeqCst), 1);
 }
 
-struct FakeFreshLifecycle {
-    order: Arc<Mutex<Vec<&'static str>>>,
-    completed_quanta: u64,
-    promotion_observations: Option<Arc<Mutex<Vec<bool>>>>,
-    cleanup_error: bool,
-    pending: Vec<crucible_qemu::QemuNodeSelectablePendingRequest>,
-    replies: Arc<Mutex<Vec<crucible_protocol::SelectionReply>>>,
-    signal_fault_branches: VecDeque<crucible::SignalFaultCampaignBranch>,
-    terminal_after_replay: bool,
-    checkpoint_ready: bool,
-    fingerprint_error: bool,
-    fingerprint_node_override: Arc<Mutex<Option<crucible::NodeId>>>,
-}
-
-impl FakeFreshLifecycle {
-    fn complete_quantum(
-        &mut self,
-        outcome: crucible::QuantumOutcome,
-    ) -> Result<crucible::QuantumOutcome, crucible::SchedulerError> {
-        self.completed_quanta = self.completed_quanta.checked_add(1).ok_or_else(|| {
-            crucible::SchedulerError::BoundaryViolation {
-                message: String::from("fake lifecycle quantum coordinate overflowed"),
-            }
-        })?;
-        Ok(outcome)
-    }
-}
-
-impl QemuFreshAttemptLifecycleOwner for FakeFreshLifecycle {
-    fn enable_signal_fault_campaign_promotion(&mut self) {
-        self.order
-            .lock()
-            .expect("fresh lifecycle order")
-            .push("promotion");
-        if let Some(observations) = &self.promotion_observations {
-            observations
-                .lock()
-                .expect("promotion observations")
-                .push(true);
-        }
-    }
-
-    fn set_attempt_stop_frontier(
-        &mut self,
-        _frontier: Option<crucible::VirtualTime>,
-    ) -> Result<(), SchedulerError> {
-        Ok(())
-    }
-
-    fn drive_quantum(
-        &mut self,
-        request: crucible::QuantumRequest,
-    ) -> Result<crucible::QuantumOutcome, crucible::SchedulerError> {
-        self.order
-            .lock()
-            .expect("fresh lifecycle order")
-            .push("replay");
-        if let Some(branch) = self.signal_fault_branches.front().cloned()
-            && branch.parent() == &request.configuration
-        {
-            self.signal_fault_branches.pop_front();
-            return self.complete_quantum(crucible::QuantumOutcome {
-                configuration: branch.selected().clone(),
-                frontier: branch.frontier(),
-                advanced_node: None,
-                resolved_events: Vec::new(),
-                decisions: branch.decisions().to_vec(),
-                discovered_choices: Vec::new(),
-                event_log_entries: Vec::new(),
-                event_log_segment_bytes: Vec::new(),
-                event_log_segment_text: String::new(),
-                event_log_segment_hash: None,
-                event_log_offset: crucible::EventLogOffset::default(),
-                scheduler_quiescence: None,
-            });
-        }
-        let configuration = accepted_step(
-            &request.configuration,
-            Decision::RngDraw(RngDecision {
-                stream: RngStreamId::from_name("fresh-runner-non-genesis"),
-                value: 7,
-            }),
-        );
-        let next_frontier = self.completed_quanta.saturating_add(1);
-        self.complete_quantum(crucible::QuantumOutcome {
-            configuration,
-            frontier: VirtualTime {
-                ticks: next_frontier,
-            },
-            advanced_node: None,
-            resolved_events: Vec::new(),
-            decisions: Vec::new(),
-            discovered_choices: Vec::new(),
-            event_log_entries: Vec::new(),
-            event_log_segment_bytes: Vec::new(),
-            event_log_segment_text: String::new(),
-            event_log_segment_hash: None,
-            event_log_offset: crucible::EventLogOffset::default(),
-            scheduler_quiescence: None,
-        })
-    }
-
-    fn completed_quanta(&self) -> u64 {
-        self.completed_quanta
-    }
-
-    fn event_log_offset(&self) -> Result<crucible::EventLogOffset, SchedulerError> {
-        Ok(crucible::EventLogOffset::default())
-    }
-
-    fn terminal_verdict_for_stop(&mut self) -> Option<crucible::QuantumTerminalVerdict> {
-        (self.terminal_after_replay && self.completed_quanta > 0).then(|| {
-            crucible::QuantumTerminalVerdict::Failed(vec![String::from(
-                "selected property was violated",
-            )])
-        })
-    }
-
-    fn prepare_terminal_checkpoint(
-        &mut self,
-        cause: crucible::CheckpointTerminalCause,
-    ) -> Result<(), crucible::SchedulerError> {
-        assert_eq!(
-            cause,
-            crucible::CheckpointTerminalCause::Failed(vec![String::from(
-                "selected property was violated",
-            )])
-        );
-        self.order
-            .lock()
-            .expect("fresh lifecycle order")
-            .push("terminal-cause");
-        Ok(())
-    }
-
-    fn exact_checkpoint_ready(&mut self) -> Result<bool, crucible::SchedulerError> {
-        Ok(self.checkpoint_ready)
-    }
-
-    fn drain_pending_selectable_requests(
-        &mut self,
-    ) -> Result<Vec<crucible_qemu::QemuNodeSelectablePendingRequest>, crucible::SchedulerError>
-    {
-        Ok(std::mem::take(&mut self.pending))
-    }
-
-    fn apply_selectable_reply(
-        &mut self,
-        _parent: &crucible::Configuration,
-        _decision: crucible::SelectionDecision,
-        _selected: &crucible::Configuration,
-        _pending: &crucible_qemu::QemuNodeSelectablePendingRequest,
-        reply: &crucible_protocol::SelectionReply,
-    ) -> Result<Vec<crucible::SchedulerEventLogEntry>, crucible::SchedulerError> {
-        self.replies
-            .lock()
-            .expect("fresh lifecycle replies")
-            .push(reply.clone());
-        Ok(Vec::new())
-    }
-
-    fn capture_attempt_checkpoint(
-        &mut self,
-        _context: &crate::AttemptExecutionContext,
-    ) -> Result<crate::CapturedAttemptCheckpoint, crucible::SchedulerError> {
-        self.order
-            .lock()
-            .expect("fresh lifecycle order")
-            .push("capture");
-        Ok(test_checkpoint_capture())
-    }
-
-    fn replay_launch_profiles(
-        &self,
-    ) -> Result<Vec<ProductionVmNodeReplayLaunchProfile>, crucible::SchedulerError> {
-        Err(crucible::SchedulerError::BoundaryViolation {
-            message: String::from("fake fresh lifecycle has no replay launch profiles"),
-        })
-    }
-
-    fn fault_evidence_snapshot(
-        &self,
-    ) -> Result<ProductionFaultEvidenceSnapshot, crucible::SchedulerError> {
-        Err(crucible::SchedulerError::BoundaryViolation {
-            message: String::from("fake lifecycle has no production fault evidence"),
-        })
-    }
-
-    fn pending_network_output_count(&self) -> usize {
-        0
-    }
-
-    fn sample_fingerprint(
-        &mut self,
-        node: crucible::NodeId,
-    ) -> Result<crucible::FingerprintSample, crucible::SchedulerError> {
-        if self.fingerprint_error {
-            return Err(crucible::SchedulerError::BoundaryViolation {
-                message: format!("injected missing fingerprint node `{}`", node.name),
-            });
-        }
-        Ok(crucible::FingerprintSample {
-            node: self
-                .fingerprint_node_override
-                .lock()
-                .expect("fingerprint node override")
-                .clone()
-                .unwrap_or(node),
-            at: VirtualTime {
-                ticks: self.completed_quanta,
-            },
-            fingerprint: crucible::ExecutionFingerprint {
-                hash: crucible::ContentHash::from_bytes(&self.completed_quanta.to_le_bytes()),
-            },
-        })
-    }
-
-    fn prepare_terminal_fingerprints(&mut self) -> Result<(), crucible::SchedulerError> {
-        Ok(())
-    }
-
-    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, crucible::SchedulerError> {
-        Ok(Some(b"resolved-effect-test".to_vec()))
-    }
-
-    fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, crucible::SchedulerError> {
-        self.order
-            .lock()
-            .expect("fresh lifecycle order")
-            .push("shutdown");
-        if self.cleanup_error {
-            Err(crucible::SchedulerError::BoundaryViolation {
-                message: String::from("injected fresh lifecycle cleanup failure"),
-            })
-        } else {
-            Ok(vec![SchedulerEventLogEntry::execution_budget_exhausted(
-                7,
-                VirtualTime { ticks: 11 },
-                "final-drain-test",
-            )])
-        }
-    }
-}
-
 #[test]
 fn observed_lifecycle_retains_only_successful_execution_evidence() {
     let scenario = ScenarioDef::from_canonical_material_with_seed(
@@ -973,9 +731,11 @@ fn observed_lifecycle_retains_only_successful_execution_evidence() {
         replies: Arc::new(Mutex::new(Vec::new())),
         signal_fault_branches: VecDeque::new(),
         terminal_after_replay: false,
+        released_host_outcome: None,
         checkpoint_ready: true,
         fingerprint_error: false,
         fingerprint_node_override: Arc::new(Mutex::new(None)),
+        network_park: None,
     };
     let evidence = QemuAttemptExecutionEvidence::default();
     let mut observed = QemuObservedFreshAttemptLifecycle::new(
@@ -1007,7 +767,7 @@ fn observed_lifecycle_retains_only_successful_execution_evidence() {
     assert_eq!(snapshot.frontier(), VirtualTime { ticks: 2 });
     assert_eq!(snapshot.latest_quantum_start_events(), Some(0));
     assert_eq!(snapshot.semantic_stop_events(), Some(0));
-    assert_eq!(snapshot.event_log_entries().len(), 1);
+    assert_eq!(snapshot.event_log_len(), 1);
     assert_eq!(snapshot.execution_fingerprints().len(), 2);
     assert_eq!(snapshot.execution_fingerprints()[0].at.ticks, 0);
     assert_eq!(snapshot.execution_fingerprints()[1].at.ticks, 1);
@@ -1022,7 +782,12 @@ fn observed_lifecycle_retains_only_successful_execution_evidence() {
     );
     assert_eq!(
         snapshot.resolved_effect_trace(),
-        Some(b"resolved-effect-test".as_slice())
+        Some(
+            &crucible::model::ResolvedEffectTrace::empty(
+                crucible::model::FaultReplayMode::RecomputedCause
+            )
+            .expect("empty effect trace")
+        )
     );
     assert_eq!(
         *order.lock().expect("standalone lifecycle order"),
@@ -1076,9 +841,11 @@ fn observed_lifecycle_rejects_a_mismatched_terminal_fingerprint_atomically() {
         replies: Arc::new(Mutex::new(Vec::new())),
         signal_fault_branches: VecDeque::new(),
         terminal_after_replay: false,
+        released_host_outcome: None,
         checkpoint_ready: true,
         fingerprint_error: false,
         fingerprint_node_override: Arc::clone(&fingerprint_node_override),
+        network_park: None,
     };
     let evidence = QemuAttemptExecutionEvidence::default();
     let mut observed =
@@ -1126,9 +893,11 @@ fn observed_lifecycle_does_not_publish_staged_fingerprints_when_cleanup_fails() 
         replies: Arc::new(Mutex::new(Vec::new())),
         signal_fault_branches: VecDeque::new(),
         terminal_after_replay: false,
+        released_host_outcome: None,
         checkpoint_ready: true,
         fingerprint_error: false,
         fingerprint_node_override: Arc::new(Mutex::new(None)),
+        network_park: None,
     };
     let evidence = QemuAttemptExecutionEvidence::default();
     let mut observed =
@@ -1361,7 +1130,9 @@ impl QemuFreshAttemptLifecycleOwner for BoundaryCaptureLifecycle {
         Ok(())
     }
 
-    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, crucible::SchedulerError> {
+    fn resolved_effect_trace(
+        &self,
+    ) -> Result<Option<crucible::model::ResolvedEffectTrace>, crucible::SchedulerError> {
         Ok(None)
     }
 
@@ -1473,9 +1244,11 @@ impl QemuFreshAttemptLifecycleFactory for FakeFreshLifecycleFactory {
             replies: Arc::new(Mutex::new(Vec::new())),
             signal_fault_branches: signal_fault_replay.branches().iter().cloned().collect(),
             terminal_after_replay: self.terminal_after_replay,
+            released_host_outcome: None,
             checkpoint_ready: self.checkpoint_ready,
             fingerprint_error: false,
             fingerprint_node_override: Arc::new(Mutex::new(None)),
+            network_park: None,
         })
     }
 }
@@ -1567,9 +1340,11 @@ impl QemuFreshAttemptLifecycleFactory for PromotionRecordingFreshLifecycleFactor
             replies: Arc::new(Mutex::new(Vec::new())),
             signal_fault_branches: signal_fault_replay.branches().iter().cloned().collect(),
             terminal_after_replay: false,
+            released_host_outcome: None,
             checkpoint_ready: true,
             fingerprint_error: false,
             fingerprint_node_override: Arc::new(Mutex::new(None)),
+            network_park: None,
         })
     }
 }
@@ -1941,6 +1716,7 @@ fn private_fresh_replay_can_preserve_descendant_continuation_controls() {
     let controls = validated_attempt_continuations(&replay)
         .unwrap_or_else(|()| panic!("private replay continuation controls should validate"));
     let actual = controls
+        .controls()
         .iter()
         .map(|control| {
             (
@@ -2466,7 +2242,7 @@ fn assert_composed_candidate_replay_retains_choice_and_measurement(
         .start()
         .configuration()
         .schedule
-        .decisions()
+        .decision_history()
         .iter()
         .cloned()
         .collect();
@@ -2511,7 +2287,7 @@ fn assert_composed_candidate_replay_retains_choice_and_measurement(
     assert_eq!(evidence.selections(), &[selection]);
     assert_eq!(measurement_replay_evidence.len(), 1);
     assert_eq!(
-        measurement_replay_evidence[0].configuration(),
+        measurement_replay_evidence[0].evidence().configuration(),
         evidence.configuration().configuration()
     );
     let triage = outcome
@@ -2522,8 +2298,8 @@ fn assert_composed_candidate_replay_retains_choice_and_measurement(
         triage.failure(),
         crucible::FailureClusterReportFailure::Property(_)
     ));
-    assert!(!triage.causal_entries().is_empty());
-    assert!(triage.recorded_event_frames().is_empty());
+    assert!(triage.event_log_manifest().entry_count() > 0);
+    assert!(!triage.referenced_segments().is_empty());
 
     let signature = outcome
         .signature()
@@ -2550,8 +2326,13 @@ fn assert_composed_candidate_replay_retains_choice_and_measurement(
     let minimization_target = signature.clone();
     let prepared =
         crate::crucible_artifact::prepare_automatic_signature_preserving_finding_with_outcomes(
-            PreparedSemanticAttemptResult::new(owned.clone(), Vec::new(), None)
-                .expect("prepared composed observation"),
+            PreparedSemanticAttemptResult::new(
+                owned.clone(),
+                Vec::new(),
+                crate::MemorySegmentStore::default(),
+                None,
+            )
+            .expect("prepared composed observation"),
             crate::crucible_artifact::AutomaticFindingPreparation {
                 signature,
                 finding: &candidate,
@@ -2559,12 +2340,13 @@ fn assert_composed_candidate_replay_retains_choice_and_measurement(
                 exact_retention: crate::crucible_artifact::test_disabled_finding_exact_retention()
                     .expect("test disabled finding retention"),
                 seed: Seed::from_bytes([0x75; 32]),
+                record_store: crate::ReplayRecordStore::default(),
             },
             |replay_candidate| {
                 let decisions = replay_candidate
                     .artifact
                     .schedule()
-                    .decisions()
+                    .decision_history()
                     .iter()
                     .cloned()
                     .collect::<VecDeque<_>>();
@@ -2601,8 +2383,12 @@ fn assert_composed_candidate_replay_retains_choice_and_measurement(
     let durable_bytes = prepared
         .canonical_bytes()
         .expect("encode rich prepared result");
-    let decoded = PreparedSemanticAttemptResult::from_canonical_bytes(&durable_bytes)
-        .expect("decode rich prepared result after restart");
+    let decoded = PreparedSemanticAttemptResult::from_canonical_bytes(
+        &durable_bytes,
+        prepared.log_segments().clone(),
+        prepared.replay_record_sources(),
+    )
+    .expect("decode rich prepared result after restart");
     let finding = decoded.finding().expect("decoded rich finding");
     let triage_ids = finding
         .bundle()
@@ -2884,8 +2670,7 @@ fn automatic_wrapper_retains_supplemental_violation_when_offline_source_also_fai
         .load_finding_triage_replay_evidence(triage.minimization_original())
         .expect("load supplemental triage evidence");
     let reproduction = finding.original();
-    let artifact = crucible::ReproductionArtifact::from_compact_binary(reproduction.payload())
-        .expect("decode supplemental reproduction");
+    let artifact = finding.original_artifact().clone();
     let native_finding = FindingReproductionArtifact {
         discovery_path: FindingDiscoveryPath::StateSpaceSearch,
         finding_fingerprint: crucible::ContentHash {
@@ -2897,9 +2682,22 @@ fn automatic_wrapper_retains_supplemental_violation_when_offline_source_also_fai
         replay: artifact.replay().expect("replay supplemental reproduction"),
         artifact,
     };
+    // The record's log segments are served by the repository, one at a time.
+    let segments = crucible::SharedSegmentStore::new();
+    for (index, segment) in retained.log_segments().iter().enumerate() {
+        let bytes = repository
+            .read_finding_triage_replay_log_segment(
+                triage.minimization_original(),
+                u32::try_from(index).expect("segment index"),
+            )
+            .expect("read supplemental triage log segment");
+        crucible::SegmentSink::put_segment(&segments, segment.content(), &bytes)
+            .expect("hold supplemental triage log segment");
+    }
     let replay = crucible::FailureTriageReplayEvidence::from_compact_binary(
         native_finding,
         retained.payload(),
+        std::sync::Arc::new(segments),
     )
     .expect("decode supplemental triage payload");
     let crucible::FailureClusterReportFailure::Property(actual) = replay.failure() else {
@@ -3004,7 +2802,9 @@ fn finding_candidate_replay_retains_authenticated_execution_quanta_timeout() {
         panic!("execution-bound candidate must be observable")
     };
     let (_, _, _, triage) = evidence.into_parts();
-    let (failures, causal_entries, _, _, _) = triage.into_parts();
+    let triage = triage.into_parts();
+    let causal_entries = triage.log_entries_for_test();
+    let failures = triage.failures;
     let mut timeouts = failures.iter().filter_map(|failure| match failure {
         crucible::FailureClusterReportFailure::Timeout(timeout) => Some(timeout),
         crucible::FailureClusterReportFailure::Property(_)
@@ -3071,7 +2871,7 @@ fn property_failure_precedes_a_coincident_execution_quanta_timeout() {
         panic!("coincident property and timeout candidate must be observable")
     };
     let (_, _, _, triage) = evidence.into_parts();
-    let (failures, _, _, _, _) = triage.into_parts();
+    let failures = triage.into_parts().failures;
 
     assert!(
         matches!(
@@ -3143,7 +2943,7 @@ fn composed_candidate_replay_retains_signal_fault_choice_and_measurement_leaf() 
         .resolve_branch(&selection)
         .expect("signal-fault branch")
         .selected()
-        .clone();
+        .to_configuration();
     let input = finding_candidate_input_with_configuration(&base, configuration);
 
     assert_composed_candidate_replay_retains_choice_and_measurement(
@@ -3358,6 +3158,10 @@ impl CrucibleExecutionRunner for PreparedSemanticResultRunner {
 
 #[path = "tests/continuation_admission.rs"]
 mod continuation_admission;
+
+#[path = "tests/fresh_lifecycle_fake.rs"]
+mod fresh_lifecycle_fake;
+use fresh_lifecycle_fake::FakeFreshLifecycle;
 
 #[path = "tests/fresh_execution.rs"]
 mod fresh_execution;
@@ -3929,3 +3733,15 @@ fn test_checkpoint_capture() -> CapturedAttemptCheckpoint {
 fn test_checkpoint_product() -> AttemptExecutionProduct {
     AttemptExecutionProduct::exact_checkpoint(test_checkpoint_capture())
 }
+
+#[path = "tests/released_publication.rs"]
+mod released_publication;
+
+#[path = "tests/network_fault_replay.rs"]
+mod network_fault_replay;
+
+#[path = "tests/replay_limits.rs"]
+mod replay_limits;
+
+#[path = "tests/published_root_retention.rs"]
+mod published_root_retention;

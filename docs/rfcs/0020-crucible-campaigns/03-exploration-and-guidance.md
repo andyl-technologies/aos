@@ -263,10 +263,12 @@ local acceptance, import, and restart.
 
 Generator implementation-version 10 defines view-dependent
 `mutate_near_corpus` over a stepped integer domain. For the request's exact
-branch point, the owner scans at most 4,096 authenticated completed-observation
-credits. A credit contributes an anchor only when its branch attempt names the
-request's exact opportunity and domain and its observation child remains in the
-exact snapshot corpus. Anchors deduplicate in canonical integer order. For each
+branch point, the owner streams the snapshot's direct-selection index (§01) in
+ascending value order. Every entry is a completed branch selection made at that
+point; descendants that reached it through a deeper branch never appear. An
+entry contributes an anchor only when its selection names the request's exact
+opportunity and domain and its observation child remains in the exact snapshot
+corpus. Anchors deduplicate in canonical integer order. For each
 anchor in that order, the owner tries the legal one-step lower value and then
 the legal one-step upper value, followed by distance two in the same lower-then-
 upper order, through the declared `maximum_distance`. Out-of-domain values and
@@ -282,12 +284,18 @@ candidate exists, the continuation waits for the next completed branch-point
 credit rather than claiming domain exhaustion. It closes only at the request's
 proposal budget.
 
-The owner admits at most 4,096 legal-step distance, 4,096 proposals, and 65,536
-anchor-distance work units per recomputation. It charges at most 128 MiB of
-canonical credit, observation, and attempt bodies, in addition to the shared
-selection resolver's existing 4,096-ID and 128-MiB unique-record budget. Every
-limit and the exact proposal-set continuation are recomputed during local
-acceptance, import, and restart.
+The owner admits at most 4,096 legal-step distance and 4,096 proposals. Because
+anchors arrive in candidate order, the owner stops at the first unproposed
+candidate or once the first `maximum_proposals` candidates are known, without
+reading later anchors, and it skips runs of already emitted values instead of
+probing every distance. Neither the number of direct children nor the number of
+descendant credits at the point bounds the recomputation. Each index page holds
+at most 4,096 entries; the owner charges at most 128 MiB of canonical
+observation and attempt bodies per page, in addition to the shared selection
+resolver's 4,096-ID and 128-MiB unique-record budget for that page. Every limit
+and the exact proposal-set continuation are recomputed during local acceptance,
+import, and restart. The streamed order is identical to the whole-set order for
+every corpus the former 4,096-credit and 65,536-work-unit bounds admitted.
 
 The current progressive implementation uses an exact feedback-sensitive
 interval order with its stratified prefix, visit thresholds, midpoint rule,
@@ -351,8 +359,8 @@ landmark when one remains and its ordinary lower midpoint otherwise. Objective
 reward sums, visit counts, observations, evaluations, property verdicts, and
 active-policy contracts come from the same bounded owner projection already
 used by PUCT; uninterpreted or unauthenticated measurement payloads never enter
-the term. The existing 65,536-credit, 65,536-evaluation, 128-MiB evidence, and
-4,096-proposal bounds also bound every numerator, denominator, and comparison.
+the term. Every numerator and denominator is a checked per-edge sum from that
+projection, and the 4,096-proposal bound also bounds every comparison.
 
 It also includes a direct coverage-novelty discontinuity term before the
 objective interval terms. For one completed
@@ -372,8 +380,8 @@ cardinality, and lower offset. The winning interval retains the exact
 landmark-or-midpoint value rule. Coverage identities, visit counts, and edge
 ownership come from the same bounded, snapshot-authenticated projection used by
 PUCT; executor arrival order and duplicate coverage identities cannot affect
-the term. Existing credit, observation, coverage-identity, evidence-byte, and
-proposal bounds therefore also bound this comparison.
+the term. Checked per-edge sums and the proposal bound therefore also bound
+this comparison.
 
 It includes a direct finding-reward discontinuity term before the coverage
 interval terms. For one completed
@@ -392,14 +400,14 @@ objective, landmark, PUCT, cardinality, and lower-offset terms. The winning
 interval retains the same landmark-or-midpoint value rule. Finding signatures,
 occurrences, observation paths, weights, and visit counts come from the bounded
 snapshot owner; duplicate or unauthenticated occurrences cannot affect this
-term. Existing finding-root, occurrence, body-byte, credit, and proposal bounds
-also bound every comparison.
+term. Existing finding-root, occurrence, body-byte, and proposal bounds also
+bound every comparison.
 
 Current implementation-version 16 ranks inverse-frequency coverage rarity
-before the finding interval terms. Let `Q = 65,536`, the canonical observation
-ceiling, and let `f(i)` be coverage identity `i`'s positive occurrence count
-across the exact snapshot. Every occurrence of `i` in a credited observation
-contributes `floor(Q / f(i))` to that observation's semantic edge. Let `A_e` be
+before the finding interval terms. Let `Q = 65,536`, a fixed rarity scale, and
+let `f(i)` be coverage identity `i`'s positive canonical-observation frequency
+in the exact snapshot. Every occurrence of `i` in a credited observation
+contributes `max(1, floor(Q / f(i)))` to that observation's semantic edge. Let `A_e` be
 the checked sum for edge `e`; an exterior or unobserved endpoint uses
 `(A_e, N_e) = (0, 1)`. Compare
 
@@ -410,11 +418,12 @@ A(a, b) = abs(A_a * N_b - A_b * N_a) / (N_a * N_b)
 as an exact nonnegative rational, then compare finding, unique
 coverage, objective, landmark, PUCT, cardinality, and lower-offset terms. The
 winning interval retains the same landmark-or-midpoint rule. Because
-`1 <= f(i) <= Q`, every contribution is positive and bounded; globally unique
-identities receive the largest mass while repeated identities retain decreasing
-but nonzero guidance. The owner derives both unique novelty and rarity from one
-bounded canonical observation scan, so arrival order, duplicate causes, and
-unauthenticated coverage cannot affect either term.
+`f(i) >= 1` and the floor is raised to one, every contribution lies in
+`1..=Q`; globally unique identities receive the largest mass while repeated
+identities retain decreasing but nonzero guidance, and frequencies beyond `Q`
+contribute one. The owner derives both unique novelty and rarity from the
+snapshot's coverage-identity frequency index, so arrival order, duplicate
+causes, and unauthenticated coverage cannot affect either term.
 
 Any noncurrent or unknown implementation version is rejected before proposal
 issuance or expansion projection.
@@ -520,8 +529,10 @@ unauthenticated telemetry or opaque measurement payloads.
   only from exact completed branch selections whose children remain in the
   snapshot corpus, reproduce the canonical anchor and lower-then-upper distance
   order in §03.2, and use the exact previously proposed value set as its
-  portable continuation. It MUST enforce the 4,096-credit, 4,096-distance,
-  4,096-proposal, 65,536-work-unit, and two 128-MiB input-resolution bounds
+  portable continuation. It MUST read anchors from the direct-selection index
+  rather than from the descendant credit index, MUST NOT retain more than one
+  index page plus the emitted candidate window, and MUST enforce the
+  4,096-distance, 4,096-proposal, and per-page 128-MiB input-resolution bounds
   during local acceptance, import, and restart. Noncurrent corpus-
   mutation versions MUST remain suspended.
 - **[GUIDE-27]** Rarity-progressive implementation-version 16 MUST enforce the
@@ -622,9 +633,10 @@ The repository now rebuilds the completed-visit portion of those statistics
 from the exact snapshot's idempotent branch-point credit index. Every credited
 observation must name one and only one matching scoped path segment; the result
 partitions parent visits by `BranchEdgeId`, so convergence and duplicate causes
-cannot add credit. One projection admits at most 65,536 credits and 128 MiB of
-canonical credit, observation, attempt, and path bodies. It is identical after
-restart and fails closed for noncurrent unscoped paths.
+cannot add credit. The owner streams the credit index once and holds one
+accumulator per completed edge, so the number of credits is not bounded; one
+branch point may have at most 65,536 completed edges. The projection is
+identical after restart and fails closed for noncurrent unscoped paths.
 
 The repository also derives a policy-bound PUCT projection from that partition.
 Each completed edge receives the raw source weight of the proposal belonging
@@ -643,32 +655,51 @@ remaining micros one at a time in ascending `BranchEdgeId` order. The deficit
 is strictly less than the number of edges, so the normalized prior mass sums to
 exactly `S`. This reduces bit-for-bit to the original uniform rule when every
 weight is one. Exactly one least-visited edge owns the fairness reservation,
-with `BranchEdgeId` breaking visit-count ties. The 128-MiB visit-projection work
-bound also charges each unique authenticated attempt-admission, proposal, and
-branch-request body used to establish prior provenance.
+with `BranchEdgeId` breaking visit-count ties. The attempt-admission, proposal,
+and branch-request bodies that establish prior provenance are read through a
+bounded cache; a miss rereads and reauthenticates the same records.
 
-Coverage novelty is owner-recomputed from the exact snapshot. The owner takes
-the union of coverage identities named by canonical observations credited to
-the requested branch point, then counts each target identity across every
-canonical observation in that snapshot. An identity is a novelty event only
-when its global occurrence count is exactly one. Each such event is credited
-once to the semantic edge of its credited observation; an edge's Boolean PUCT
-novelty predicate is true when its event count is nonzero. Shared identities,
-duplicate causes, and conflicting observations therefore add no novelty. The
-fold scans at most 1,000,000 observation-root entries and 65,536 canonical
-observations, visits at most 1,000,000 coverage identities, retains at most
-65,536 branch-relevant identities, and charges at most 128 MiB of unique
-canonical observation and coverage bodies. It is read-only and identical after
+Coverage novelty is owner-recomputed from the exact snapshot. Each canonical
+observation transition maintains a global coverage-identity frequency index in
+the coverage root: every identity of the observation's coverage projection
+gains one count in a shared `crucible.campaign.coverage-identity-frequency`
+record. Counts saturate at `floor(Q / 2) + 1 = 32,769`, where every rarity
+contribution is already one and the identity is not unique, so saturated
+identities stop generating writes without changing any guidance value.
+Conflicting observations add no count. Successor validation re-derives these
+upserts with the rest of the observation transition.
+
+```text
+coverage root:
+  coverage.projection(id)            -> CoverageProjection
+  coverage.identity-frequency(i)     -> CoverageIdentityFrequency { count }
+```
+
+For each credited observation, the owner looks up every identity of its
+coverage projection in that index; an identity without an entry fails closed.
+An identity is a novelty event only when its global frequency is exactly one.
+Each such event is credited once to the semantic edge of its credited
+observation; an edge's Boolean PUCT novelty predicate is true when its event
+count is nonzero. Shared identities, duplicate causes, and conflicting
+observations therefore add no novelty. The fold never scans the observation
+root, retains no identity set, and is read-only and identical after
 restart/import.
 
-The same scan retains inverse-frequency rarity without a second repository
-pass. With `Q = 65,536`, every occurrence of identity `i` contributes
-`floor(Q / f(i))` to its credited semantic edge, where `f(i)` is that
+The same lookups yield inverse-frequency rarity. With the fixed scale
+`Q = 65,536`, every occurrence of identity `i` contributes
+`max(1, floor(Q / f(i)))` to its credited semantic edge, where `f(i)` is that
 identity's positive global canonical-observation frequency. The checked
 per-edge sum is zero only for an edge without coverage, gives globally unique
 identities maximum mass, and gives repeated identities decreasing nonzero
-mass. It inherits the novelty fold's exact snapshot, identity, observation,
-byte, and restart bounds.
+mass. Coverage terms are cached per coverage projection within one batch.
+
+- **[CCOMP-37]** Branch guidance projections MUST NOT hold memory that grows
+  with campaign length and MUST NOT scan a complete observation root. Visits,
+  priors, coverage novelty and rarity, finding occurrences, and objective
+  rewards MUST be folded in one streamed pass over each branch point's credit
+  index, holding one accumulator per completed edge, and global coverage
+  frequencies MUST be read from the snapshot's saturating coverage-identity
+  frequency index.
 
 Owner-verified findings contribute a policy-weighted positive reward. The
 closed signal names are `finding.property-violation`, `finding.divergence`, and
@@ -679,10 +710,11 @@ cluster occurrence contributes its signal weight once to that observation's
 semantic edge and therefore backpropagates through every branch point on the
 recorded path. Unconfigured classes contribute nothing. Per-edge event counts
 are retained in the projection for explanation; the weighted sum saturates at
-signed `i64::MAX` before entering PUCT. One fold scans at most 65,536 finding-
-root entries, 1,000,000 aggregate occurrence entries, and 128 MiB of canonical
-finding bodies. Complete snapshot authentication precedes the shallow bounded
-fold, so large reproduction bodies are not reparsed per projection.
+signed `i64::MAX` before entering PUCT. One finding-root scan per projection
+batch serves every branch point; it visits at most 65,536 finding-root entries,
+1,000,000 aggregate occurrence entries, and 128 MiB of canonical finding bodies.
+Complete snapshot authentication precedes the shallow bounded scan, so large
+reproduction bodies are not reparsed per projection.
 
 Owner-published objective evaluations contribute signed scalar reward. For each
 canonical observation credited to the projection batch, the owner looks up the
@@ -693,10 +725,11 @@ truncation toward zero, and saturated to signed 64-bit range. Those converted
 values are summed exactly per semantic edge and clamped once to signed 64-bit
 range. One nested observation therefore contributes once to every branch point
 on its authenticated cumulative path without being decoded again per edge.
-The request batch admits at most 65,536 unique evaluations and 128 MiB of
-globally deduplicated canonical evaluation, observation, and property-verdict
-bodies. Objective, visit, novelty, and finding projection share the same
-aggregate credited-observation ceiling.
+Each credited observation costs one point lookup and at most one evaluation
+body. The evaluation's compact basis was authenticated at publication and by
+the snapshot closure walk that precedes projection, so the projection checks
+only its policy and observation basis. No batch-wide ceiling applies to
+credited observations or evaluations.
 
 The active tree-search policy adds the signed objective sum to the saturating
 positive finding reward and produces the exact decomposed fixed-point score for
@@ -715,14 +748,13 @@ the coordinator's exact authenticated continuation state and next legal
 candidate for every served source. It advertises
 `canonical-frontier-puct-v1`, and the coordinator supplies an exact
 `PlannerCandidateGuidanceV2` beside every Ready offer, recomputed from the
-authenticated view and active policy. A whole served page is one bounded
-projection batch: at most 65,536 aggregate credited observations and 128 MiB of
-credit/path bodies, one bounded observation-root novelty scan, one bounded
-finding-root scan, and at most 128 MiB of unique decoded choice-domain bodies.
-Shared branch points, observations, objective evaluations, findings, coverage
-bodies, and domains are not reparsed per offer. Objective work additionally
-admits at most 65,536 unique evaluations and 128 MiB of their deduplicated
-evaluation/observation/property basis bodies.
+authenticated view and active policy. A whole served page is one projection
+batch: one streamed pass over each served branch point's credit index, point
+lookups in the coverage-identity frequency index and the objective-evaluation
+keys, one bounded finding-root scan, and at most 128 MiB of unique decoded
+choice-domain bodies. Shared priors, coverage terms, objective rewards,
+findings, and domains are read through bounded caches rather than reparsed per
+offer.
 Prospective normalization is shared by `(BranchPointId, raw_weight)` and
 charges at most 1,000,000 completed-edge visits per served page, preventing
 many distinct explicit weights from multiplying a large completed-edge set.
@@ -820,6 +852,15 @@ survivor-selection record is at most 32 MiB. One decision admits at most 128 MiB
 of aggregate canonical evaluation and explanation bodies, charged while
 records are loaded or built.
 
+A Beam survivor decision belongs to one closed cohort: the modeled observations
+of one producing request, or of one standalone attempt. Beam membership is
+projected per served planner page from snapshot indexes; no owner retains
+campaign-wide decoded observations. Novelty scoring may visit at most
+4,000,000 coverage identities and retain at most 256 MiB of representative
+coverage projections per cohort. One page's projected candidates and survivor
+bundles total at most 256 MiB. Each bound is charged per decision or per page,
+never across the campaign's history.
+
 A survivor decision is a content-addressed fact naming the exact policy,
 selection rule, every considered objective evaluation, selected configuration
 set, and one explanation per considered configuration. Explanations distinguish
@@ -876,9 +917,9 @@ Retrospective search frontiers MUST NOT be mislabeled as discoveries at a later
 observation child.
 
 The production lifecycle implements that live boundary by snapshotting the
-retained frontier count before each scheduler quantum. Only a frontier first
-recorded during that call whose parent and virtual time still equal the current
-scheduler boundary is eligible. The lifecycle returns it through a zero-node-
+scheduler's recorded-frontier sequence before each scheduler quantum. Only a
+frontier first recorded during that call whose parent and virtual time still
+equal the current scheduler boundary is eligible. The lifecycle returns it through a zero-node-
 progress quantum result before further guest execution; decisions already
 settled at that same pre-quantum boundary remain in the result. At most 4,096
 such frontiers and 128 MiB of unique canonical declaration, domain, and
@@ -954,7 +995,11 @@ declaration, offered domain, producer instance, probability model, and stop
 condition before the parent observation exists; it does not guess a concrete
 runtime opportunity identity. The initial endpoint count must equal the
 particle count, reused model IDs must name identical distributions, and the
-product of stage and particle counts is capped.
+product of stage and particle counts is capped at 65,536 transitions. That cap
+is an admission limit on replay time, not on memory: owner replay and portable
+verification both stream executions in stage and slot order, retain one
+generation plus compact source summaries for the immediately preceding stage,
+and therefore hold `O(particle_count)` state however many stages complete.
 
 The version-one systematic resampler uses one rejection-sampled exact offset
 derived from the campaign seed, next-stage coordinate, and nonce. Observation
@@ -992,7 +1037,12 @@ branch-request schema v10 are the sole current encodings for every operation.
 
 A complete SMC report leaves the final population unresampled, preserves slot
 multiplicity, and multiplies every prefinal resampling normalization factor into
-the ordinary fixed-denominator importance estimate. It also exposes the
+the ordinary fixed-denominator importance estimate. Instead of every
+generation's particle slots, it records one compact summary per consumed
+generation: the generation identity, its completed and next stage, whether it
+resampled, and its normalization factor. Internal estimates and planner
+request derivation fold executions read from the snapshot roots and never
+assemble portable evidence. It also exposes the
 realized-weight self-normalized estimate with an explicit finite-sample-bias
 label. Exact effective sample size and maximum-weight concentration are
 descriptive diagnostics; shared genealogy precludes an IID uncertainty
@@ -1014,6 +1064,23 @@ that select the same semantic outcome retain their sampling multiplicity even
 when semantic attempt deduplication reuses one canonical observation, while
 shared ancestry keeps weight diagnostics descriptive rather than an IID
 confidence claim.
+
+Portable statistical evidence lets a client replay a finished report without
+repository access. It is a transport form, never production identity, and is
+split so that no single message carries a campaign's complete evidence. The
+version-2 manifest binds the snapshot, planning view, policy, lineage, total
+item count, and an ordered list of chunk descriptors (index, first item, item
+count, and chunk digest). Each version-1 chunk carries a contiguous run of
+items in replay order: every stage-zero draw in coordinate order, then every
+SMC transition in stage and slot order. A chunk or manifest is at most 64 MiB
+and a chunk carries at most 65,536 items; a manifest names at most 262,144
+chunks, which must tile the policy's item range exactly. The owner derives the
+manifest by replaying every item once and serves each chunk by rebuilding it
+deterministically from its descriptor, so neither side retains the complete
+evidence. A verifier accepts chunks only complete, in manifest order, and
+matching their descriptors, and replays them through the same incremental
+replay the owner uses. The earlier unversioned single-message bundle is no
+longer accepted.
 
 An operator or debugger proposal used as an attempt's `ExecutionBasis` is an
 intervention, not a draw from the campaign's proposal distribution. Its
@@ -1066,15 +1133,18 @@ oracle.
 
 The implemented deterministic schedule minimizer admits a shortest-first
 lexicographic window, then orders that bounded window with seeded
-content-address tie-breaks. One run considers at most 4,096 candidates and
-admits at most 128 MiB of conservative candidate-copy work, including the kept
-schedule, complementary removed decisions, and removed-index vector. The
-effective candidate count is the lesser of those two compiled bounds. Campaign
-reproduction schema v2 retains the seed plus both compiled bounds as the exact
-policy, every attempted candidate's artifact/schedule/replayed-state identities
-and observed fingerprint, and the final replayed state. Candidate generation
-stops at the policy bound; it does not allocate the complete combinatorial
-candidate space.
+content-address tie-breaks. One run considers at most 4,096 candidates,
+independent of schedule length. Each admitted candidate is held as a compact
+descriptor: the kept schedule prefix plus the few additional kept indexes, the
+kept schedule's content address, and its seeded order key, both streamed from
+the original schedule. A candidate's schedule is materialized only for its own
+replay, one candidate at a time, and its removed decisions are recorded as
+index ranges into the original schedule. Campaign reproduction schema v3
+retains minimization policy v4 (the seed, the 4,096-candidate bound, and any
+automatic interesting window) as the exact policy, every attempted candidate's
+artifact/schedule/replayed-state identities and observed fingerprint, and the
+final replayed state. Candidate generation stops at the policy bound; it does
+not allocate the complete combinatorial candidate space.
 
 - **[GUIDE-19]** Reduction MUST explore when equivalence or independence is
   uncertain. Guidance score similarity is not proof of semantic equivalence.

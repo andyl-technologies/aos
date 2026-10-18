@@ -65,8 +65,8 @@
         needle = "pub fn finalize_prefix";
       }
       {
-        label = "observed-state host predicate input";
-        needle = "ObservedState<'_>";
+        label = "observed-batch host predicate input";
+        needle = "batch: &ObservedBatch<'_>";
       }
       {
         label = "always quantifier branch";
@@ -177,8 +177,8 @@
         needle = "Predicate::named(\"saw-ordering\")";
       }
       {
-        label = "observed ordering facts supplied to host predicate";
-        needle = "state.ordering_facts()";
+        label = "observed ordering facts folded by host predicate";
+        needle = "batch.ordering_facts()";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

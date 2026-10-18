@@ -155,14 +155,16 @@ fn mixed_late_notices_share_existing_32_row_child_tail() {
     assert!(summary.len() <= 32 * 512 + 256);
 }
 
-#[test]
-fn late_stop_notices_survive_the_original_owned_socket_capture()
--> Result<(), Box<dyn std::error::Error>> {
+/// Streams the late stop-notice fixture through a consumer bound to one child.
+fn late_stop_notice_capture(
+    child_process_id: u32,
+) -> Result<super::super::QemuHotForkChildDiagnosticCapture, Box<dyn std::error::Error>> {
     use std::io::Write as _;
     use std::net::Shutdown;
 
     let mut pair = super::super::create_diagnostic_pair(2)?;
     let mut consumer = pair.take_consumer()?;
+    consumer.bind_child_process_id(child_process_id);
     pair.child
         .write_all(STAGE.replace("pid=153", "pid=154").as_bytes())?;
     pair.child.write_all(b"\n")?;
@@ -182,14 +184,22 @@ fn late_stop_notices_survive_the_original_owned_socket_capture()
 
     assert_eq!(capture.socket_cookie(), pair.socket_cookie);
     assert_eq!(capture.template_generation(), 2);
-    let summary = capture.control_diagnostics_summary(153);
+    assert!(consumer.finish_detached_capture().is_err());
+    Ok(capture)
+}
+
+#[test]
+fn late_stop_notices_survive_the_original_owned_socket_capture()
+-> Result<(), Box<dyn std::error::Error>> {
+    let summary = late_stop_notice_capture(153)?.control_diagnostics_summary();
     assert!(summary.contains("accepted_rows=80 rejected_rows=1 tail_rows=32 omitted_rows=48"));
     assert!(summary.ends_with(&STAGE.replace("token=4502", "token=4439")));
+
+    // The fold attributes rows to the child bound at fork.
     assert!(
-        capture
-            .control_diagnostics_summary(154)
+        late_stop_notice_capture(154)?
+            .control_diagnostics_summary()
             .contains("accepted_rows=1 rejected_rows=80")
     );
-    assert!(consumer.finish_detached_capture().is_err());
     Ok(())
 }

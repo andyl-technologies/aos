@@ -260,7 +260,12 @@ fn public_paused_composed_campaign_survives_s3_outage_repack_archive_and_gc()
     {
         let journal = DirectoryCampaignGcJournal::open(&source.journal)?;
         assert!(
-            journal.roots().iter().any(|root| root == pending_policy),
+            journal
+                .roots()
+                .iter()?
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .any(|root| root == pending_policy),
             "GC omitted the pending write-back policy root"
         );
     }

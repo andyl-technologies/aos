@@ -288,55 +288,45 @@ pub(in crate::repository) fn integer_step_neighbor(
     }
 }
 
-pub(in crate::repository) fn charge_corpus_mutation_input(
-    prior: usize,
-    bytes: usize,
-) -> Result<usize, CampaignRepositoryError> {
-    let total = prior
-        .checked_add(bytes)
-        .ok_or_else(|| integrity("corpus-mutation-generator-input-byte-limit"))?;
-    if total > crate::CORPUS_MUTATION_GENERATOR_MAX_INPUT_BYTES {
-        return Err(integrity("corpus-mutation-generator-input-byte-limit"));
-    }
-    Ok(total)
-}
-
-pub(in crate::repository) fn charge_branch_edge_visit_evidence(
-    prior: usize,
-    bytes: usize,
-) -> Result<usize, CampaignRepositoryError> {
-    let total = prior
-        .checked_add(bytes)
-        .ok_or_else(|| integrity("branch-edge-visit-projection-byte-limit"))?;
-    if total > crate::MAX_BRANCH_EDGE_VISIT_PROJECTION_BYTES {
-        return Err(integrity("branch-edge-visit-projection-byte-limit"));
-    }
-    Ok(total)
-}
-
-pub(in crate::repository) fn charge_unique_branch_prior_record(
-    charged: &mut BTreeSet<ContentId>,
-    content: ContentId,
-    encoded_len: impl FnOnce() -> usize,
-    evidence_bytes: &mut usize,
+/// Adds `amount` to one key's checked count, leaving zero amounts unrecorded.
+pub(in crate::repository) fn add_edge_count<K: Ord>(
+    counts: &mut BTreeMap<K, u64>,
+    key: K,
+    amount: u64,
+    overflow: &'static str,
 ) -> Result<(), CampaignRepositoryError> {
-    if charged.insert(content) {
-        *evidence_bytes = charge_branch_edge_visit_evidence(*evidence_bytes, encoded_len())?;
+    if amount == 0 {
+        return Ok(());
     }
+    let total = counts.entry(key).or_default();
+    *total = total
+        .checked_add(amount)
+        .ok_or_else(|| integrity(overflow))?;
     Ok(())
 }
 
-pub(in crate::repository) fn charge_branch_edge_visit_credits(
-    prior: u64,
-    credits: u64,
-) -> Result<u64, CampaignRepositoryError> {
-    let total = prior
-        .checked_add(credits)
-        .ok_or_else(|| integrity("branch-edge-visit-projection-count"))?;
-    if total > crate::MAX_BRANCH_EDGE_VISIT_PROJECTION_CREDITS {
-        return Err(integrity("branch-edge-visit-projection-count"));
+/// Keeps the prior of the lowest admission ordinal credited to each edge.
+pub(super) fn merge_edge_prior_basis(
+    basis: &mut BTreeMap<crate::BranchEdgeId, AttemptProposalPrior>,
+    edge: crate::BranchEdgeId,
+    prior: AttemptProposalPrior,
+) -> Result<(), CampaignRepositoryError> {
+    match basis.entry(edge) {
+        std::collections::btree_map::Entry::Vacant(entry) => {
+            entry.insert(prior);
+        }
+        std::collections::btree_map::Entry::Occupied(mut entry) => {
+            let current = *entry.get();
+            if prior.admission_ordinal < current.admission_ordinal {
+                entry.insert(prior);
+            } else if prior.admission_ordinal == current.admission_ordinal
+                && prior.raw_weight != current.raw_weight
+            {
+                return Err(integrity("branch-edge-prior-basis-conflict"));
+            }
+        }
     }
-    Ok(total)
+    Ok(())
 }
 
 pub(in crate::repository) fn charge_branch_prior_normalization_visits(
@@ -352,58 +342,16 @@ pub(in crate::repository) fn charge_branch_prior_normalization_visits(
     Ok(total)
 }
 
-pub(in crate::repository) fn coverage_guidance_for_identities(
-    identities: &[crate::CampaignHash],
-    frequencies: &BTreeMap<crate::CampaignHash, u64>,
-) -> Result<(u64, u64), CampaignRepositoryError> {
-    identities
-        .iter()
-        .try_fold((0_u64, 0_u64), |(events, rarity), identity| {
-            let frequency = frequencies
-                .get(identity)
-                .copied()
-                .filter(|frequency| *frequency != 0)
-                .ok_or_else(|| integrity("branch-novelty-target-cache-mismatch"))?;
-            let events = if frequency == 1 {
-                events
-                    .checked_add(1)
-                    .ok_or_else(|| integrity("branch-novelty-event-count-overflow"))?
-            } else {
-                events
-            };
-            let rarity = rarity
-                .checked_add(crate::MAX_BRANCH_NOVELTY_OBSERVATIONS / frequency)
-                .ok_or_else(|| integrity("branch-rarity-weight-overflow"))?;
-            Ok((events, rarity))
-        })
-}
-
-pub(in crate::repository) fn charge_branch_novelty_work(
-    prior: usize,
-    bytes: usize,
-) -> Result<usize, CampaignRepositoryError> {
-    let total = prior
-        .checked_add(bytes)
-        .ok_or_else(|| integrity("branch-novelty-projection-byte-limit"))?;
-    if total > crate::MAX_BRANCH_NOVELTY_PROJECTION_BYTES {
-        return Err(integrity("branch-novelty-projection-byte-limit"));
-    }
-    Ok(total)
-}
-
-pub(in crate::repository) fn charge_branch_novelty_identity_visits(
-    prior: u64,
-    identities: usize,
-) -> Result<u64, CampaignRepositoryError> {
-    let identities =
-        u64::try_from(identities).map_err(|_| integrity("branch-novelty-identity-visit-limit"))?;
-    let total = prior
-        .checked_add(identities)
-        .ok_or_else(|| integrity("branch-novelty-identity-visit-limit"))?;
-    if total > crate::MAX_BRANCH_NOVELTY_IDENTITY_VISITS {
-        return Err(integrity("branch-novelty-identity-visit-limit"));
-    }
-    Ok(total)
+/// Returns one occurrence's inverse-frequency rarity, `max(1, floor(Q / f))`.
+///
+/// `f` is the identity's positive global frequency, saturated by the
+/// coverage-identity frequency index; every saturated or larger frequency
+/// contributes one.
+pub(in crate::repository) fn branch_rarity_contribution(frequency: u64) -> u64 {
+    crate::BRANCH_RARITY_SCALE
+        .checked_div(frequency)
+        .unwrap_or(0)
+        .max(1)
 }
 
 pub(in crate::repository) fn charge_branch_finding_work(
@@ -432,43 +380,6 @@ pub(in crate::repository) fn charge_branch_finding_occurrence_visits(
     Ok(total)
 }
 
-pub(in crate::repository) fn charge_branch_objective_work(
-    prior: usize,
-    bytes: usize,
-) -> Result<usize, CampaignRepositoryError> {
-    let total = prior
-        .checked_add(bytes)
-        .ok_or_else(|| integrity("branch-objective-projection-byte-limit"))?;
-    if total > crate::MAX_BRANCH_OBJECTIVE_PROJECTION_BYTES {
-        return Err(integrity("branch-objective-projection-byte-limit"));
-    }
-    Ok(total)
-}
-
-pub(in crate::repository) fn charge_branch_objective_record(
-    prior: usize,
-    id: ContentId,
-    bytes: usize,
-    charged: &mut BTreeSet<ContentId>,
-) -> Result<usize, CampaignRepositoryError> {
-    if !charged.insert(id) {
-        return Ok(prior);
-    }
-    charge_branch_objective_work(prior, bytes)
-}
-
-pub(in crate::repository) fn charge_branch_objective_evaluations(
-    prior: usize,
-) -> Result<usize, CampaignRepositoryError> {
-    let total = prior
-        .checked_add(1)
-        .ok_or_else(|| integrity("branch-objective-evaluation-count"))?;
-    if total > crate::MAX_BRANCH_OBJECTIVE_EVALUATIONS {
-        return Err(integrity("branch-objective-evaluation-count"));
-    }
-    Ok(total)
-}
-
 pub(in crate::repository) fn charge_planner_guidance_domain_work(
     prior: usize,
     bytes: usize,
@@ -480,59 +391,6 @@ pub(in crate::repository) fn charge_planner_guidance_domain_work(
         return Err(integrity("planner-guidance-domain-byte-limit"));
     }
     Ok(total)
-}
-
-pub(in crate::repository) fn corpus_mutation_integer_candidates(
-    domain: &IntegerDomain,
-    anchors: &BTreeSet<IntegerValue>,
-    maximum_distance: u64,
-    maximum_candidates: usize,
-) -> Result<Vec<IntegerValue>, CampaignRepositoryError> {
-    if maximum_distance == 0
-        || maximum_distance > crate::CORPUS_MUTATION_GENERATOR_MAX_DISTANCE
-        || maximum_candidates > crate::CORPUS_MUTATION_GENERATOR_MAX_PROPOSALS as usize
-    {
-        return Err(integrity("corpus-mutation-generator-owner-limit"));
-    }
-
-    let mut candidates = Vec::new();
-    let mut seen = BTreeSet::new();
-    let mut work = 0_usize;
-    for anchor in anchors.iter().copied() {
-        let mut lower = Some(anchor);
-        let mut upper = Some(anchor);
-        for _ in 0..maximum_distance {
-            work = work
-                .checked_add(1)
-                .ok_or_else(|| integrity("corpus-mutation-generator-work-limit"))?;
-            if work > crate::CORPUS_MUTATION_GENERATOR_MAX_WORK_ITEMS {
-                return Err(integrity("corpus-mutation-generator-work-limit"));
-            }
-
-            lower = lower.and_then(|value| integer_step_neighbor(value, domain.step(), false));
-            upper = upper.and_then(|value| integer_step_neighbor(value, domain.step(), true));
-            let mut admitted = false;
-            for candidate in [lower, upper].into_iter().flatten() {
-                if domain.contains_integer(candidate) && seen.insert(candidate) {
-                    candidates.push(candidate);
-                    admitted = true;
-                    if candidates.len() == maximum_candidates {
-                        return Ok(candidates);
-                    }
-                }
-            }
-            if lower.is_none() && upper.is_none() {
-                break;
-            }
-            if !admitted
-                && lower.is_none_or(|value| !domain.contains_integer(value))
-                && upper.is_none_or(|value| !domain.contains_integer(value))
-            {
-                break;
-            }
-        }
-    }
-    Ok(candidates)
 }
 
 pub(in crate::repository) fn stratified_integer_candidate_count(

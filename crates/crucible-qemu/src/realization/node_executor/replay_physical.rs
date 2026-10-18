@@ -53,6 +53,17 @@ impl QemuReplayValidationExecutor {
         Vec<crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest>,
         QemuVmRealizationError,
     > {
+        self.measure_replay(ReplayPhase::ChoiceDrain, |executor| {
+            executor.drain_replay_selectable_requests_untimed()
+        })
+    }
+
+    fn drain_replay_selectable_requests_untimed(
+        &mut self,
+    ) -> Result<
+        Vec<crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest>,
+        QemuVmRealizationError,
+    > {
         self.active_node
             .as_mut()
             .ok_or_else(|| QemuVmRealizationError::Executor {
@@ -73,6 +84,16 @@ impl QemuReplayValidationExecutor {
     /// Returns an error when no replay node is active or the physical pending
     /// request does not accept the exact recorded reply.
     pub fn enqueue_replay_selectable_reply(
+        &mut self,
+        pending: &crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest,
+        reply: &crucible_protocol::SelectionReply,
+    ) -> Result<(), QemuVmRealizationError> {
+        self.measure_replay(ReplayPhase::ChoiceReply, |executor| {
+            executor.enqueue_replay_selectable_reply_untimed(pending, reply)
+        })
+    }
+
+    fn enqueue_replay_selectable_reply_untimed(
         &mut self,
         pending: &crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest,
         reply: &crucible_protocol::SelectionReply,
@@ -100,6 +121,17 @@ impl QemuReplayValidationExecutor {
     /// Returns an error when the observation is stale, the input belongs to
     /// another node or a past boundary, or the QEMU transport rejects it.
     pub fn enqueue_materialized_replay_input(
+        &mut self,
+        thin: QemuReplayOracleThinObservation,
+        input: BackendInput,
+        delivery: crucible::SimInstant,
+    ) -> Result<QemuReplayOracleThinObservation, QemuVmRealizationError> {
+        self.measure_replay(ReplayPhase::Input, |executor| {
+            executor.enqueue_materialized_replay_input_untimed(thin, input, delivery)
+        })
+    }
+
+    fn enqueue_materialized_replay_input_untimed(
         &mut self,
         thin: QemuReplayOracleThinObservation,
         input: BackendInput,
@@ -169,6 +201,23 @@ impl QemuReplayValidationExecutor {
         ),
         QemuVmRealizationError,
     > {
+        self.measure_replay(ReplayPhase::Advance, |executor| {
+            executor.advance_materialized_replay_to_ceiling_untimed(thin, ceiling)
+        })
+    }
+
+    fn advance_materialized_replay_to_ceiling_untimed(
+        &mut self,
+        thin: QemuReplayOracleThinObservation,
+        ceiling: Icount,
+    ) -> Result<
+        (
+            QemuReplayOracleThinObservation,
+            AdvanceOutcome,
+            Option<Icount>,
+        ),
+        QemuVmRealizationError,
+    > {
         self.validate_observation(
             &thin.authority,
             thin.generation,
@@ -179,6 +228,7 @@ impl QemuReplayValidationExecutor {
         self.validate_active_replay_runtime(&runtime)?;
 
         let current = replay_node_icount(&runtime, &self.node)?;
+        self.performance.observe_physical(current.retired);
         if ceiling.retired <= current.retired {
             return Err(QemuVmRealizationError::InvalidCheckpoint {
                 role: "thin replay physical boundary",
@@ -236,6 +286,7 @@ impl QemuReplayValidationExecutor {
         runtime
             .node_icounts
             .insert(self.node.clone(), current_icount);
+        self.performance.observe_physical(current_icount.retired);
         runtime.event_log = self.event_log.offset();
         let generation = self.issue_observation_generation()?;
         self.thin_observation_generation = Some(generation);
@@ -259,6 +310,16 @@ impl QemuReplayValidationExecutor {
     ///
     /// Returns an error when the observation or transition is stale or invalid.
     pub fn apply_materialized_replay_decision(
+        &mut self,
+        thin: QemuReplayOracleThinObservation,
+        request: QemuVmReplayRequest,
+    ) -> Result<QemuReplayOracleThinObservation, QemuVmRealizationError> {
+        self.measure_replay(ReplayPhase::ModelDecision, |executor| {
+            executor.apply_materialized_replay_decision_untimed(thin, request)
+        })
+    }
+
+    fn apply_materialized_replay_decision_untimed(
         &mut self,
         thin: QemuReplayOracleThinObservation,
         request: QemuVmReplayRequest,

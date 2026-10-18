@@ -1,14 +1,14 @@
-# Crucible shmem ABI golden vector v30.
-abi_version=30
+# Crucible shmem ABI golden vector v31, including the appended per-VM region size.
+abi_version=31
 total_len=19424
-0=4352554353484d311e
+0=4352554353484d311f
 12=20
 16=08
 20=0c
 25=21
 33=27
 40=2012
-48=80448102
+48=804b9102
 56=e803
 60=01
 64=502420
