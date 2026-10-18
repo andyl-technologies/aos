@@ -9180,8 +9180,39 @@ Resumed qualification:
   Required application target compilation is running for this revision. The
   finite guest disk is 512 MiB, accommodating all 32 declared
   8 MiB project ceilings without changing any individual quota. Existing sealed
-  range sources, dictionary-specific runtime evidence, completed retirement,
-  consumer leases and NativeReady remain required; no complete task is accepted.
+  range sources, completed retirement, consumer leases and NativeReady remain
+  required; no complete task is accepted.
+- Dictionary publication follow-up `1d189e2dd9`: actual native admission rejects
+  a dictionary-coded source before its dependency is admitted, preserving the
+  synchronized snapshot. A distinct genuinely admitted dictionary then enables
+  the compressed source and complete Running manifest publication. Independent
+  guest checks compare sealed bytes with the raw publication, require the two
+  manifest sources' original inodes in pending retirement, and keep the unchanged
+  dictionary canonical with both original admission pins and leases. Exact
+  reservation checks include the encoded source and dictionary lengths and their
+  separate future holds. Both focused fixture tests, the formatter pair,
+  immutable image, independent source verification and actual ext4 component
+  pass. All four manifest-publication controls, both Running-retention controls,
+  eight manifest/mixed recovery controls and all 47 selected filesystem cases
+  execute successfully. Review verifies 3,475 image inputs, the actual unit ELF,
+  all 41 exact selectors and empty unit capability sets; no post-result guest
+  I/O diagnostic appears. Production Rust, dependencies and frozen interfaces
+  are unchanged from `5c2d01343d`; the full 117-case result above covers that
+  unchanged production source. No full host task is accepted.
+- Retained-range reader candidate `c2774508ce`: the physical worker now resolves
+  an existing residence only through its original completed Running publication
+  job, latest synchronized policy, original reservation, lease and object pin.
+  Canonical reconstruction metadata derives the exact first range. Bounded
+  positioned plaintext and kernel-seal checks run outside embedded-state locks;
+  canonical inode, native project and current registration are rechecked before
+  returning bytes. Guest controls drop publication receipts before reading both
+  repeated and final chunks, reject missing chunks and manifest identities, and
+  require unchanged durable pins and holds. Source review, all-target build and
+  the formatter pair pass. A diagnostic reaching all targets with dead-code
+  checks disabled passes; strict Clippy still reports the same nineteen existing
+  findings. Immutable image and actual guest qualification are running. This
+  path accepts only completed Running jobs; recovered reads, source reuse in
+  another assembly, consumer leases and NativeReady remain required.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
   and all seven strict Clippy/documentation profiles pass. The interface,
   commit-path, status and schema gates pass on unchanged final source, including
@@ -9199,9 +9230,9 @@ Resumed qualification:
   was stopped after the policy fix and supplies no aggregate success.
 
 All five T2 task checkboxes remain open. The transport and cache results above
-accept components only. Manifest Running publication, full host isolation,
-NativeReady, BKT-15 and actual four-role deployment remain unqualified. The
-zero-wipe requirement conflict remains stopped; T3 and branch work stay deferred.
+accept components only. Complete manifest reuse and retirement, full host
+isolation, NativeReady, BKT-15 and actual four-role deployment remain unqualified.
+The zero-wipe requirement conflict remains stopped; T3 and branch work stay deferred.
 
 The shared glue dependency now names
 the existing Core types directly, and the crate-graph audit includes the current
