@@ -67,6 +67,27 @@ stream to EOF but are not parsed as envelopes. A missing child, wrong record
 subtype, malformed ancestry transition, cycle, or traversal-limit breach
 rejects publication/import rather than yielding a partially readable head.
 
+A snapshot closure is authenticated inductively rather than by one depth-first
+walk through every parent edge. Walking from the head toward genesis, each
+transition step authenticates the child envelope, then authenticates each
+changed trie root as a diff against the parent's root at the same role: only
+node positions whose identity or count changed are read, and each changed leaf
+value is walked with the prior value at its key as a covered predecessor. The
+transition fact and every newly linked graph are walked relative to exact
+anchors proven to be owned by the parent: its direct children, index-bound
+records such as the planner head, earlier savepoint facts, and admitted origin
+attempts. An older snapshot named by a newly reachable record is an obligation
+that the walk discharges when it reaches that ancestor; one that is not an
+ancestor receives its own complete validation. Every object reachable from the
+head first becomes reachable at genesis or at exactly one transition, so the
+union of these deltas is the complete closure, while each step's visited set
+and trie cursor are dropped before the next step. A cycle would need a hash
+fixpoint because each child embeds its parent's identity. Mutation-command
+uniqueness follows from the grow-only `accounting.command` index: every
+command-bearing successor proves its command absent from the parent's index.
+Complete trie roots that are not diffed are authenticated by a cursor that
+retains only the unvisited siblings on its current path.
+
 Compression, encryption, sparse representation, pack membership, pack byte
 range, local path, bucket, multipart layout, tier, cache state, and copy count
 are physical placement. They may change without changing the logical ID.
@@ -1706,6 +1727,39 @@ stores, verifies every object, then creates or advances the destination ref.
 Supported closure policies are `metadata`, `findings`, `debug`, `executable`,
 and `mirror`. A metadata archive can be inspected without downloading RAM.
 
+An archive manifest partitions the represented closure into selected and
+omitted inventories of 4,096-entry canonical pages whose identities are the
+manifest envelope's children. The inventory limit is therefore a format limit:
+with at most 65,536 pages, any partition of `(65,536 - 1) * 4,096 =
+268,431,360` objects fits one manifest. Planning streams the source head's
+inductively validated closure, mirror retained-root closures, and selected
+checkpoint closures into an external sort in private scratch storage beside
+the repository, profiles each object as the sorted stream passes, and spools
+finished page envelopes to the same scratch storage. The plan stays free of
+store effects; staging or publishing places the spooled pages. Each
+ordered-entry digest hashes the canonical sequence length first, so it is
+measured in one pass and hashed in a second. The debug policy's finding closure is
+computed by joining the spilled parent-to-child edges round by round from the
+findings root. Inspection replays pages from the store, checks page order and
+digests in streaming passes, merge-compares the selected inventory with the
+spilled source closure for executable archives, proves every selected child
+declared by an anti-join against a spilled child set, and computes debug
+reachability over spilled selected edges.
+
+Before copying starts, the source and destination each record the archive's
+direct object inventory in a durable campaign transfer journal
+(`crucible.campaign.transfer-journal` v2), and campaign GC treats every
+recorded object as a direct root until the operation completes. A record is a
+directory named by the operation ID that holds 4,096-entry canonical page
+files and a header naming the operation, role, manifest, page and object
+counts, and a digest over the page checksums. Pages are synced before the
+header, which becomes visible last by rename and directory sync; opening the
+journal removes a record directory that has no header. Repeating `begin`
+re-encodes and compares every page, `contains` reads only the header, and the
+GC fence streams one page at a time and fails closed on a missing, extra,
+corrupt, or digest-mismatched page. A transfer record therefore admits every
+inventory an archive manifest admits.
+
 Offline maintenance transfer first exactly pauses the campaign and pins its closure,
 ensures its complete executable closure in the destination store, verifies
 compatibility, restores on the destination during a separate operator action,
@@ -1718,6 +1772,17 @@ pager is implied.
 - **[CSTORE-18]** Initial exact restore MUST require all execution-required
   logical objects to be locally readable and authenticated before modeled
   execution resumes; remote demand paging is outside this RFC.
+- **[CSTORE-30]** Archive planning and inspection memory MUST be independent of
+  the represented closure and inventory sizes outside one closure walk's own
+  traversal state: closure, finding-reachability, child, and page sets MUST be
+  externally sorted or spooled in private scratch storage that is removed on
+  success and failure, and the manifest digests MUST equal the digests of the
+  in-memory canonical entry sequences.
+- **[CSTORE-31]** A campaign transfer journal record MUST admit every archive
+  inventory that a manifest admits, and journal begin, lookup, and GC root
+  enumeration memory MUST be independent of the inventory size outside one
+  canonical page; a record MUST become visible only after all of its pages are
+  durable.
 
 ## 06.10 Pinning, eviction, and garbage collection
 
@@ -1954,6 +2019,27 @@ canonical bytes above. Its 32-byte manifest hash is
 allocation proportional to a claimed count, bound every individual string,
 require strict order and exact EOF, and recompute terminal candidate count and
 logical-byte totals.
+
+The entry limit is a format bound, not a memory budget. Planning and apply
+never hold a complete root set, reachable closure, physical inventory, or
+candidate list in memory. Roots, closure identities, and each fenced physical
+inventory are spilled as fixed-width, order-preserving records into bounded
+in-memory runs, sorted, and merged at a bounded fan-in into one private
+owner-only scratch directory. Planning writes both manifests by streaming
+merge-joins of those runs; apply re-sorts the journaled candidates by identity
+and merge-joins them against the reproduced pending write-back, reachable, and
+per-leaf inventory streams before it advances the journal. The scratch records
+are process-private and are not a published format. Planning scratch lives in
+a caller-supplied persistent directory; the CLI uses the journal's parent.
+Apply scratch lives inside the journal directory. Both are removed on success
+and on every error; a crash can leave only scratch data, which never affects a
+later plan. Scratch exhaustion fails closed before any deletion. A planning
+inventory that lists one logical object twice on one leaf is rejected, and
+apply counts every duplicate placement against its planned candidate set.
+Journal manifest handles read the journal's own durable copies, and a full
+manifest read re-derives the manifest hash, so a journal file replaced after
+open fails before apply deletes anything. The repository's closure traversal
+still keeps its own visited set, bounded by the campaign-closure work bound.
 
 The registered `crucible.campaign.gc-plan` schema v1 is the bounded immutable
 header that composes these independently fenced inputs. It does not embed the
@@ -2195,6 +2281,12 @@ policy-aware plan, including non-write tiers and completed write-back staging.
 - **[CSTORE-20]** Physical eviction, pack compaction, and pin removal MUST be
   plan/apply operations that preserve every still-required logical object and
   leave interruption-safe recovery evidence.
+- **[CSTORE-29]** GC planning and apply memory MUST be independent of root,
+  closure, inventory, and candidate set sizes outside the repository's own
+  traversal state: those sets MUST be externally sorted in private persistent
+  scratch storage that is removed on success and failure, scratch failure MUST
+  fail closed before deletion, and the resulting manifests MUST be the same
+  canonical byte streams an in-memory construction would produce.
 
 ## 06.11 Confidentiality and authorization
 

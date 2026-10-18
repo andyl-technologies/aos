@@ -90,13 +90,20 @@ root = {source_root:?}
         assert_eq!(planned["phase"], "planned");
         assert!(json_u64(&planned, "reachable_cache_candidates")? > 0);
         let owned = DirectoryCampaignGcJournal::open(journal)?;
-        assert!(owned.candidates().iter().any(|candidate| {
-            candidate.id() == id
-                && candidate.backend() == CACHE_NODE
-                && matches!(candidate.reason(), CampaignGcCandidateReason::ReachableCache {
+        assert!(
+            owned
+                .candidates()
+                .iter()?
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .any(|candidate| {
+                    candidate.id() == id
+                        && candidate.backend() == CACHE_NODE
+                        && matches!(candidate.reason(), CampaignGcCandidateReason::ReachableCache {
                     required_backend
                 } if required_backend == SOURCE_NODE)
-        }));
+                })
+        );
         Ok(planned)
     }
 
@@ -412,7 +419,9 @@ fn public_tier_gc_preserves_cache_without_an_authenticated_required_copy()
     assert!(
         !DirectoryCampaignGcJournal::open(&tier.flight.journal)?
             .candidates()
-            .iter()
+            .iter()?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
             .any(|candidate| candidate.id() == id)
     );
     let applied = run_json(

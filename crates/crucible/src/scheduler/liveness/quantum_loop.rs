@@ -113,6 +113,10 @@ impl QuantumLoop for SingleScheduler {
         self.drive_authoritative_quantum(request)
     }
 
+    fn sealed_event_log_store(&self) -> Option<Arc<dyn DagStore>> {
+        Some(self.event_log_segment_store())
+    }
+
     fn backend_step_ceiling(
         &self,
         outcome: &QuantumOutcome,
@@ -579,7 +583,7 @@ impl SingleScheduler {
                     projected.remove(0);
                 }
                 if selected_here.is_none() && !branch_choices.is_empty() {
-                    self.search_frontiers.push(SearchRuntimeFrontier {
+                    self.record_search_frontier(SearchRuntimeFrontier {
                         configuration: branch_configuration,
                         at: admission_boundary,
                         choices: SearchFrontierChoices::from_decision_sequences(branch_choices),

@@ -425,7 +425,7 @@ fn publish_observation_for_attempt_with(
             properties,
             coverage,
         ),
-        discovered_choices,
+        stored_choice_set(repository, discovered_choices),
     )
     .expect("statistical observation");
     let result = repository
@@ -926,7 +926,7 @@ fn two_edge_statistical_flight_reports_the_full_unequal_probability_product() {
             observation.properties(),
             observation.coverage(),
         ),
-        observation.discovered_choices().clone(),
+        discovered_choice_ids(&repository, observation),
     )
     .expect("structurally valid corrupted observation");
     let mut corrupted_draws = draws.clone();

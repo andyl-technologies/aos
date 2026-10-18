@@ -425,15 +425,27 @@ The daemon's local prepared-publication formats use this closed registry:
 
 | Schema name | Current version | Contract |
 |---|---:|---|
-| `crucible.executor.prepared-semantic-attempt-result` | 9 | Contains the observation, optional canonical resolved-effect trace, content-ordered raw measurement replay leaves, and optional finding closure. Leaves name their attempt-log segments by identity; the payload carries no segment bytes. |
-| `crucible.executor.prepared-result-journal-state` | 3 | Binds the execution key, observation/finding IDs, raw-leaf count and ordered-ID-set hash, referenced-segment count and ordered-reference hash, payload limit, length, and hash. |
-| `crucible.attempt.event-log-segment` | 1 | One sealed, content-addressed run of attempt-log entries. The journal owns a copy of every segment its result references. |
+| `crucible.executor.prepared-semantic-attempt-result` | 11 | Contains the observation, optional resolved-effect trace manifest, content-ordered raw measurement replay leaves, and optional finding closure. Leaves name their attempt-log segments, the observation its trace segments, and the finding its retained replay records in eight first-seen tables, by identity; the payload carries no segment or replay-record bytes. |
+| `crucible.executor.prepared-result-journal-state` | 4 | Binds the execution key, observation/finding IDs, raw-leaf count and ordered-ID-set hash, referenced-segment count and ordered-reference hash (attempt-log segments, then resolved-effect trace segments, under hash domain v2), retained-record count and ordered-ID hash, payload limit, length, and hash. |
+| `crucible.attempt.event-log-segment` | 1 | One sealed, content-addressed run of attempt-log entries. The journal owns a copy of every segment its result references, attempt-log and resolved-effect trace alike. |
 
-Readers accept only prepared-result version 9 and journal-state version 3. A
+Readers accept only prepared-result version 11 and journal-state version 4. A
 state file and its result payload must use those exact current versions;
 mismatches fail closed. Decoding a prepared result reads and authenticates
-every referenced segment from the stores it is given, one segment at a time;
-a missing, substituted, or corrupt segment fails closed.
+every referenced segment and retained replay record from the stores it is
+given, one at a time; a missing, substituted, or corrupt segment or record
+fails closed.
+
+Finding minimization replays a candidate up to twice per reduction step, and
+the choice opportunities and selections each replay yields grow with the
+replayed run. The replay transcript therefore writes each distinct record to a
+record directory under the executor's attempt namespace as it arrives and
+keeps only identities in memory. Staging a journal copies every retained
+record into the journal's own `records/` directory beside `segments/`, and
+reopening reads records only from there. The distinct records of both passes
+are charged against a per-finding allowance equal to the run-length
+publication allowance for replay-capture segments, and their count against the
+prepared-result reader's replay-validation reference allowance.
 
 The prepared-result codec validates raw-leaf closure ownership without claiming
 measurement semantics. It checks each singleton edge and its trace ID, scenario,
@@ -619,10 +631,12 @@ is the authenticated parent snapshot at which the first observation was already
 visible; using the successor that publishes the finding would create a
 content-address cycle.
 
-The sole current `ReproductionArtifact` schema v2 binds the semantic scenario and configuration,
+The sole current `ReproductionArtifact` schema v3 binds the semantic scenario and configuration,
 their exact `ScenarioArtifactId` and `ConfigurationArtifactId`, the stable
-failure fingerprint, and at most 32 MiB of self-contained execution-model
-bytes. The campaign layer does not trust those opaque bytes by inspection. A
+failure fingerprint, at most 34 MiB of static execution-model bytes, and the
+ordered run-length segments those bytes reference, each a trace-leaf child
+with its encoded length ([§15.11](15-segmented-event-log.md#1511-segmented-reproduction-schedules)).
+The campaign layer does not trust those opaque bytes by inspection. A
 typed execution-model adapter replays them, re-derives all identities and the
 failure fingerprint, and only then publishes the immutable record.
 
@@ -668,7 +682,8 @@ checkpoint bodies they name.
 
 The separate checked `GetCampaignFindingObject` capability authenticates one
 exact finding membership and returns only its requested representative/latest
-observation or original/minimized reproduction artifact. The
+observation, original/minimized reproduction artifact, or one schedule
+segment of either reproduction. The
 `explain-finding` porcelain composes the representative-observation and
 original-reproduction reads, then requires both responses to carry the same
 finding and the reproduction's exact configuration artifact to equal the
@@ -679,11 +694,16 @@ body reads.
 A rich candidate may additionally name four closed triage replay roles:
 minimization-original, minimization-selected, verification-original, and
 verification-selected. The current `FindingTriageReplayEvidence` storage
-contract uses a small schema-v2 manifest root that commits the reproduction,
-observed campaign signature, payload schema, total payload length, and one to
-three ordered schema-v1 chunk children of at most 32 MiB each. The opaque
-execution-model payload is bounded at 80 MiB, and the evidence ID is always
-the stored manifest root ID.
+contract uses a small schema-v3 manifest root that commits the reproduction,
+observed campaign signature, payload schema, total payload length, one
+ordered schema-v1 chunk child of at most 32 MiB, and the attempt-log segments
+the payload references, each named in payload order as an owned trace leaf
+by content ID and length. The opaque execution-model payload is bounded at
+32 MiB: it references each replayed attempt log by its manifest and embeds no
+log entries or recording frames ([CMEAS-27]). The evidence ID is always the
+stored manifest root ID. A record's log segments are published before the
+record, and the finding occurrence-object service serves them by role and
+position, one segment per response.
 
 `GetCampaignFindingTriageReplaySegment` is the only checked service operation
 that transfers these stored envelopes. Its request binds the principal,
@@ -705,7 +725,11 @@ and response as its own blob in an evidence store as it arrives. A per-finding
 evidence record names the finding-level exchanges, the report projection, and
 occurrence chunks of at most 1,024 occurrences; each chunk entry names its page
 exchange, its three object exchanges, and the ordered segment exchanges of all
-four replay roles. The ledger itself is a manifest of `(finding, record)` pairs
+four replay roles, each followed by a content-addressed list of the exchanges
+that served that role's log segments in record order. The record and each chunk
+entry also name, for the original and any minimized reproduction, a
+content-addressed list of the reproduction's schedule-segment exchanges in
+manifest order. The ledger itself is a manifest of `(finding, record)` pairs
 in canonical finding-ID order, bounded at 16 MiB, whose content address is the
 triage result's stored-ledger key. Offline import authenticates one finding and
 one occurrence at a time: a store-backed service answers only requests whose
@@ -730,7 +754,9 @@ typed route details from the failover marker, and unsigned guest metric samples;
 raw packet payloads and unrelated guest marker details are not rendered.
 
 - **[CMEAS-11]** Every finding MUST carry a self-contained `(scenario, seed,
-  schedule)` reproduction artifact and verify it before publication.
+  schedule)` reproduction artifact and verify it before publication. The
+  artifact's schedule segments are part of it; they are retained as its
+  content children ([CCOMP-32]).
 - **[CMEAS-12]** Retaining an exact closure improves debug startup but MUST NOT be
   required to reproduce the finding.
 

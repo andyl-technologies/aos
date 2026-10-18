@@ -4,7 +4,12 @@ use serde::{Deserialize, Serialize};
 
 use super::*;
 
-const MAGIC: &[u8] = b"crucible.single-scheduler-continuation.v7\0";
+#[path = "checkpoint/event_log_continuation.rs"]
+mod event_log_continuation;
+pub use event_log_continuation::CheckpointEventLogEntries;
+use event_log_continuation::{EventLogWire, restore_event_log};
+
+const MAGIC: &[u8] = b"crucible.single-scheduler-continuation.v10\0";
 /// Maximum canonical byte length of one complete single-scheduler continuation.
 pub const MAX_SINGLE_SCHEDULER_CHECKPOINT_BYTES: usize =
     MAX_SINGLE_SCHEDULER_CHECKPOINT_PAYLOAD_BYTES + MAGIC.len();
@@ -44,6 +49,7 @@ struct SingleSchedulerWire {
     decision_rng_cursor: DecisionRngState,
     branch_network_choices: Vec<SelectionDecision>,
     search_frontiers: Vec<SearchRuntimeFrontierWire>,
+    retired_search_frontiers: u64,
     event_log: EventLogWire,
     trigger_actions: TriggerActionState,
     frontier: u64,
@@ -70,23 +76,16 @@ struct RuntimeNodeWire {
     vcpu_idle_states: Vec<SchedulerVcpuIdleState>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct EventLogWire {
-    prefix: ContentHash,
-    appended_segment: Option<ContentHash>,
-    segment_dependencies: Vec<ContentHash>,
-    bytes: u64,
-    events: u64,
-    condition_entries: Vec<SchedulerEventLogEntry>,
-    condition_base_events: u64,
-}
-
+/// One retained search frontier, named relative to the checkpoint schedule.
+///
+/// Every frontier parent is a prefix of the scheduler configuration that
+/// recorded it, so the wire keeps only the prefix length and the parent's
+/// canonical identity instead of a second copy of the schedule.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SearchRuntimeFrontierWire {
-    scenario: ContentHash,
-    schedule: Vec<u8>,
+    parent_len: u64,
+    parent: ContentHash,
     at: u64,
     choices: Vec<Vec<u8>>,
 }
@@ -153,8 +152,11 @@ impl SingleScheduler {
                 search_frontiers: self
                     .search_frontiers
                     .iter()
-                    .map(SearchRuntimeFrontierWire::from)
-                    .collect(),
+                    .map(|frontier| {
+                        SearchRuntimeFrontierWire::capture(&self.configuration, frontier)
+                    })
+                    .collect::<Result<_, _>>()?,
+                retired_search_frontiers: self.retired_search_frontiers,
                 event_log: EventLogWire::from(&self.event_log),
                 trigger_actions: self.trigger_actions.clone(),
                 frontier: self.frontier.ticks,
@@ -169,31 +171,37 @@ impl SingleScheduler {
         })
     }
 
-    /// Reads and authenticates every event-log segment required by the current prefix.
+    /// Checks that the segment store holds every sealed event-log segment.
+    ///
+    /// Capture names sealed segments by reference, so this checks presence
+    /// only; readers authenticate each segment's bytes when they decode it.
     ///
     /// # Errors
     ///
-    /// Returns [`SingleSchedulerCheckpointError::EventLog`] when a retained
-    /// segment is missing or its bytes no longer match its content identity.
-    pub fn event_log_dependency_objects(
-        &self,
-    ) -> Result<Vec<(ContentHash, Vec<u8>)>, SingleSchedulerCheckpointError> {
-        self.event_log
-            .segment_dependencies
-            .iter()
-            .map(|identity| {
-                let bytes = self
-                    .event_log
-                    .segment_store
-                    .store
-                    .get(identity)
-                    .map_err(|_| SingleSchedulerCheckpointError::EventLog)?;
-                if ContentHash::from_bytes(&bytes) != *identity {
-                    return Err(SingleSchedulerCheckpointError::EventLog);
-                }
-                Ok((*identity, bytes))
-            })
-            .collect()
+    /// Returns [`SingleSchedulerCheckpointError::EventLog`] when a sealed
+    /// segment is absent or the store cannot answer.
+    pub fn verify_event_log_segments(&self) -> Result<(), SingleSchedulerCheckpointError> {
+        for segment in self.event_log.sealed.iter() {
+            let present = self
+                .event_log
+                .segment_store
+                .store
+                .exists(&segment.object)
+                .map_err(|_| SingleSchedulerCheckpointError::EventLog)?;
+            if !present {
+                return Err(SingleSchedulerCheckpointError::EventLog);
+            }
+        }
+        Ok(())
+    }
+
+    /// Returns the content-addressed store holding this scheduler's sealed segments.
+    ///
+    /// A carrier that outlives the scheduler, such as a hot-fork continuation,
+    /// keeps this handle to read the segments its continuation names.
+    #[must_use]
+    pub fn event_log_segment_store(&self) -> Arc<dyn DagStore> {
+        Arc::clone(&self.event_log.segment_store.store)
     }
 }
 
@@ -213,25 +221,24 @@ impl From<&RuntimeSchedulerNode> for RuntimeNodeWire {
     }
 }
 
-impl From<&EventLog> for EventLogWire {
-    fn from(log: &EventLog) -> Self {
-        Self {
-            prefix: log.offset.prefix,
-            appended_segment: log.offset.appended_segment,
-            segment_dependencies: log.segment_dependencies.to_vec(),
-            bytes: log.offset.bytes,
-            events: log.offset.events,
-            condition_entries: log.retained_entries().to_vec(),
-            condition_base_events: log.condition_base_events,
+impl SearchRuntimeFrontierWire {
+    /// Names `frontier` as a prefix of the scheduler's `configuration`.
+    ///
+    /// A parent that is not a prefix of the scheduler configuration has no
+    /// compact name, so capture fails closed instead of copying its schedule.
+    fn capture(
+        configuration: &Configuration,
+        frontier: &SearchRuntimeFrontier,
+    ) -> Result<Self, SingleSchedulerCheckpointError> {
+        let parent = &frontier.configuration;
+        if parent.def != configuration.def || !configuration.schedule.starts_with(&parent.schedule)
+        {
+            return Err(SingleSchedulerCheckpointError::Configuration);
         }
-    }
-}
-
-impl From<&SearchRuntimeFrontier> for SearchRuntimeFrontierWire {
-    fn from(frontier: &SearchRuntimeFrontier) -> Self {
-        Self {
-            scenario: frontier.configuration.def.id(),
-            schedule: frontier.configuration.schedule.to_compact_binary(),
+        Ok(Self {
+            parent_len: u64::try_from(parent.schedule.len())
+                .map_err(|_| SingleSchedulerCheckpointError::Configuration)?,
+            parent: parent.id(),
             at: frontier.at.ticks,
             choices: frontier
                 .choices
@@ -241,7 +248,7 @@ impl From<&SearchRuntimeFrontier> for SearchRuntimeFrontierWire {
                     Schedule::from_decisions(choice.decisions().to_vec()).to_compact_binary()
                 })
                 .collect(),
-        }
+        })
     }
 }
 
@@ -375,14 +382,13 @@ impl SingleSchedulerCheckpoint {
     }
 
     /// Returns the exact unified event-log boundary retained by this continuation.
+    ///
+    /// The offset is the log's chain position: its prefix hash commits to
+    /// every appended segment, so two continuations at equal offsets carry
+    /// equal entries (RFC-0020 CCOMP-30).
     #[must_use]
     pub fn event_log_offset(&self) -> EventLogOffset {
-        EventLogOffset {
-            prefix: self.wire.event_log.prefix,
-            appended_segment: self.wire.event_log.appended_segment,
-            bytes: self.wire.event_log.bytes,
-            events: self.wire.event_log.events,
-        }
+        self.wire.event_log.offset()
     }
 
     /// Returns the active branch frontier cap, if branch admission is pending.
@@ -406,31 +412,68 @@ impl SingleSchedulerCheckpoint {
         &self.wire.decision_rng_cursor
     }
 
-    /// Returns the ordered event-log segment identities retained by this continuation.
+    /// Returns the sealed event-log segments this continuation references, in order.
+    ///
+    /// The segments cover the dense entries from
+    /// [`Self::event_log_base_events`] up to the open tail.
     #[must_use]
-    pub fn event_log_segment_dependencies(&self) -> &[ContentHash] {
-        &self.wire.event_log.segment_dependencies
+    pub fn event_log_segments(&self) -> &[EventLogSegmentRef] {
+        &self.wire.event_log.segments
     }
 
-    /// Returns the exact event entries retained for condition and evidence replay.
+    /// Returns the store identities of [`Self::event_log_segments`], in order.
     ///
-    /// A scheduler created at run genesis retains a zero-based complete prefix.
-    /// A continuation reconstructed from an offset-only source may instead
-    /// retain a suffix whose first sequence is reported by
-    /// [`Self::retained_event_log_base_events`]. Callers that require complete
-    /// run evidence must reject a nonzero base or load the authenticated prior
-    /// segment closure before interpreting this slice as the whole run.
+    /// These are the event-log objects an exact checkpoint closure retains.
     #[must_use]
-    pub fn retained_event_log_entries(&self) -> &[SchedulerEventLogEntry] {
-        &self.wire.event_log.condition_entries
+    pub fn event_log_segment_dependencies(&self) -> Vec<ContentHash> {
+        self.wire
+            .event_log
+            .segments
+            .iter()
+            .map(|segment| segment.object)
+            .collect()
     }
 
-    /// Returns the dense sequence preceding the retained event-entry suffix.
+    /// Returns the dense sequence preceding the first referenced entry.
     ///
-    /// Zero means [`Self::retained_event_log_entries`] starts at run genesis.
+    /// Zero means the referenced segments and tail cover the run from genesis.
+    /// A continuation reconstructed from an offset-only source covers only a
+    /// suffix; callers that require complete run evidence must reject it.
     #[must_use]
-    pub const fn retained_event_log_base_events(&self) -> u64 {
-        self.wire.event_log.condition_base_events
+    pub const fn event_log_base_events(&self) -> u64 {
+        self.wire.event_log.base_events
+    }
+
+    /// Visits every referenced event-log entry in order.
+    ///
+    /// Sealed segments are read from `reader` one at a time and authenticated
+    /// against their references before any of their entries is visited; the
+    /// open tail follows.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SingleSchedulerCheckpointError::EventLog`], converted into
+    /// `E`, when a segment cannot be read or fails authentication, or the
+    /// first error `visit` returns.
+    pub fn try_for_each_event_log_entry<E: From<SingleSchedulerCheckpointError>>(
+        &self,
+        reader: &(impl EventLogSegmentReader + ?Sized),
+        mut visit: impl FnMut(&SchedulerEventLogEntry) -> Result<(), E>,
+    ) -> Result<(), E> {
+        self.wire
+            .event_log
+            .try_for_each_entry(reader, |entry| visit(&entry))
+    }
+
+    /// Returns a pull reader over every referenced event-log entry, in order.
+    ///
+    /// The reader holds at most one decoded segment.
+    #[must_use]
+    pub fn event_log_entries<'a, R: EventLogSegmentReader + ?Sized>(
+        &'a self,
+        reader: &'a R,
+    ) -> CheckpointEventLogEntries<'a, R> {
+        CheckpointEventLogEntries::new(&self.wire.event_log, reader)
     }
 
     /// Encodes the complete scheduler continuation canonically.
@@ -527,7 +570,7 @@ impl SingleSchedulerCheckpoint {
         restore_nodes(&mut staged, &self.wire.nodes)?;
         restore_event_log(&mut staged.event_log, &self.wire.event_log)?;
         let search_frontiers =
-            restore_search_frontiers(&configuration.def, &self.wire.search_frontiers)?;
+            restore_search_frontiers(&configuration, &self.wire.search_frontiers)?;
 
         staged.configuration = configuration;
         staged.quantum_budget = self.wire.quantum_budget;
@@ -574,6 +617,7 @@ impl SingleSchedulerCheckpoint {
         staged.branch_network_choices = self.wire.branch_network_choices.clone();
         staged.app_random_branch_selections.clear();
         staged.search_frontiers = search_frontiers;
+        staged.retired_search_frontiers = self.wire.retired_search_frontiers;
         staged.trigger_actions = self.wire.trigger_actions.clone();
         staged.frontier = VirtualTime {
             ticks: self.wire.frontier,
@@ -658,18 +702,8 @@ fn validate_wire(wire: &SingleSchedulerWire) -> Result<(), SingleSchedulerCheckp
             }
         }
     }
-    if wire.event_log.events < wire.event_log.condition_base_events {
-        return Err(SingleSchedulerCheckpointError::EventLog);
-    }
-    let condition_entry_count =
-        usize::try_from(wire.event_log.events - wire.event_log.condition_base_events)
-            .map_err(|_| SingleSchedulerCheckpointError::EventLog)?;
-    if condition_entry_count != wire.event_log.condition_entries.len() {
-        return Err(SingleSchedulerCheckpointError::EventLog);
-    }
+    wire.event_log.validate()?;
     for frontier in &wire.search_frontiers {
-        Schedule::from_compact_binary(&frontier.schedule)
-            .map_err(|_| SingleSchedulerCheckpointError::State)?;
         for choice in &frontier.choices {
             Schedule::from_compact_binary(choice)
                 .map_err(|_| SingleSchedulerCheckpointError::State)?;
@@ -729,69 +763,25 @@ fn restore_nodes(
     Ok(())
 }
 
-fn restore_event_log(
-    log: &mut EventLog,
-    checkpoint: &EventLogWire,
-) -> Result<(), SingleSchedulerCheckpointError> {
-    let offset = EventLogOffset {
-        prefix: checkpoint.prefix,
-        appended_segment: checkpoint.appended_segment,
-        bytes: checkpoint.bytes,
-        events: checkpoint.events,
-    };
-    if checkpoint.appended_segment != checkpoint.segment_dependencies.last().copied()
-        && !(checkpoint.appended_segment.is_none() && checkpoint.segment_dependencies.is_empty())
-    {
-        return Err(SingleSchedulerCheckpointError::EventLog);
-    }
-    let condition_prefix = if checkpoint.condition_entries.is_empty() {
-        ConditionEventLogPrefix::genesis()
-            .with_base_sequence(checkpoint.condition_base_events)
-            .with_event_log_offset(offset)
-    } else {
-        ConditionEventLogPrefix::from_scheduler_event_log_entries_with_base_sequence(
-            checkpoint.condition_entries.clone(),
-            checkpoint.condition_base_events,
-        )
-        .map_err(|_| SingleSchedulerCheckpointError::EventLog)?
-        .with_event_log_offset(offset)
-    };
-    log.prefix = scheduler_event_log_prefix_for_resume(offset);
-    log.segment_dependencies = crate::History::from(checkpoint.segment_dependencies.clone());
-    log.offset = offset;
-    log.bytes = offset.bytes;
-    log.events = offset.events;
-    log.condition_base_events = checkpoint.condition_base_events;
-    log.condition_prefix = condition_prefix;
-    Ok(())
-}
-
 fn restore_search_frontiers(
-    scenario: &ScenarioDef,
+    configuration: &Configuration,
     checkpoints: &[SearchRuntimeFrontierWire],
 ) -> Result<Vec<SearchRuntimeFrontier>, SingleSchedulerCheckpointError> {
     checkpoints
         .iter()
         .map(|checkpoint| {
-            if checkpoint.scenario != scenario.id() {
-                return Err(SingleSchedulerCheckpointError::Configuration);
-            }
-            let schedule = Schedule::from_compact_binary(&checkpoint.schedule)
-                .map_err(|_| SingleSchedulerCheckpointError::State)?;
+            let parent = restore_frontier_parent(configuration, checkpoint)?;
             let choices = checkpoint
                 .choices
                 .iter()
                 .map(|bytes| {
                     Schedule::from_compact_binary(bytes)
-                        .map(|schedule| schedule.decisions().to_vec())
+                        .map(|schedule| schedule.decision_history().to_vec())
                         .map_err(|_| SingleSchedulerCheckpointError::State)
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(SearchRuntimeFrontier {
-                configuration: Configuration {
-                    def: scenario.clone(),
-                    schedule,
-                },
+                configuration: parent,
                 at: VirtualTime {
                     ticks: checkpoint.at,
                 },
@@ -799,6 +789,34 @@ fn restore_search_frontiers(
             })
         })
         .collect()
+}
+
+/// Rebuilds one frontier parent from its prefix of the restored schedule.
+///
+/// The whole-schedule parent shares the restored configuration; a shorter
+/// prefix is materialized once. Either way the canonical identity must equal
+/// the recorded parent identity.
+fn restore_frontier_parent(
+    configuration: &Configuration,
+    checkpoint: &SearchRuntimeFrontierWire,
+) -> Result<Configuration, SingleSchedulerCheckpointError> {
+    let len = usize::try_from(checkpoint.parent_len)
+        .map_err(|_| SingleSchedulerCheckpointError::Configuration)?;
+    let parent = if len == configuration.schedule.len() {
+        configuration.clone()
+    } else {
+        Configuration {
+            def: configuration.def.clone(),
+            schedule: configuration
+                .schedule
+                .prefix(len)
+                .map_err(|_| SingleSchedulerCheckpointError::Configuration)?,
+        }
+    };
+    if parent.id() != checkpoint.parent {
+        return Err(SingleSchedulerCheckpointError::Configuration);
+    }
+    Ok(parent)
 }
 
 /// Failure to encode, decode, validate, or restore an exact scheduler continuation.

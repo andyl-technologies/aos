@@ -400,26 +400,19 @@ fn validate_recovered_finding_replay_captures(
         .map_err(Box::new)?;
 
     for (capture, (reproduction, observed_signature)) in loaded.iter().zip(bindings) {
-        let crate::LoadedFindingReplayCapture::Complete {
-            bytes,
-            content_hash,
-        } = capture
-        else {
+        let crate::LoadedFindingReplayCapture::Complete(objects) = capture else {
             continue;
         };
-        let capture = crate::FindingProductionReplayCapture::from_canonical_bytes(bytes, limits)
-            .map_err(AttemptResultRecoveryFailure::ProductionReplay)
-            .map_err(Box::new)?;
-        if capture
-            .content_hash(limits)
-            .map_err(AttemptResultRecoveryFailure::ProductionReplay)
-            .map_err(Box::new)?
-            != *content_hash
-        {
-            return Err(Box::new(AttemptResultRecoveryFailure::ProductionReplay(
-                crate::FindingProductionReplayCaptureError::CaptureBinding,
-            )));
-        }
+        // Decoding checks the manifest against its root identity, so the
+        // capture content is the one the candidate references.
+        let capture = crate::FindingProductionReplayCapture::from_objects(
+            objects.root(),
+            objects.manifest(),
+            objects.leaves(),
+            limits,
+        )
+        .map_err(AttemptResultRecoveryFailure::ProductionReplay)
+        .map_err(Box::new)?;
         capture
             .validate_binding(reproduction, &observed_signature)
             .map_err(AttemptResultRecoveryFailure::ProductionReplay)

@@ -34,6 +34,7 @@ use crucible_campaign::{
     ExecutorCompatibilityProfile,
 };
 
+use super::AppRandomLaunchWindow;
 use super::continuation::production_lifecycle_config_for_start;
 use super::{
     AttemptExecutionContext, AttemptExecutionProduct, AttemptWorkerFailure,
@@ -140,7 +141,7 @@ pub(super) enum QemuPublishedRootAttempt<L, P, E> {
     Declined {
         lifecycle: L,
         pending: P,
-        trace: Option<Vec<u8>>,
+        trace: Option<crucible::model::ResolvedEffectTrace>,
         /// Entries a nonempty final drain appended before shutdown.
         drained: Vec<SchedulerEventLogEntry>,
     },
@@ -174,7 +175,14 @@ pub(super) fn prepare_production_retained_source(
     source: &ScenarioDefForm,
     boundary: &Configuration,
 ) -> QemuRetainedSourcePreparation<ProductionVmLifecycleLoop> {
-    let config = match production_lifecycle_config_for_start(base, source, boundary, None, &[]) {
+    let config = match production_lifecycle_config_for_start(
+        base,
+        source,
+        boundary,
+        AppRandomLaunchWindow::RestoredTarget,
+        None,
+        &[],
+    ) {
         Ok(config) => config.with_unbounded_advance_completion(),
         Err(_error) => return QemuRetainedSourcePreparation::Recovered(lifecycle),
     };
@@ -257,7 +265,7 @@ where
         &mut self,
         mut lifecycle: F::Lifecycle,
         pending: D::Pending,
-        trace: Option<Vec<u8>>,
+        trace: Option<crucible::model::ResolvedEffectTrace>,
         plan: QemuPublishedRootPlan,
         input: &CrucibleAttemptExecution,
     ) -> RetentionAttempt<F, D> {
@@ -476,10 +484,11 @@ fn prepared_world_mismatch(
     if continuation.configuration().def.id() != input.scenario().scenario_def().id() {
         return Some("prepared scenario differs from the authenticated attempt");
     }
-    if !plan
-        .proof
-        .matches_checkpoint(continuation.configuration(), continuation.scheduler())
-    {
+    if !plan.proof.matches_checkpoint(
+        continuation.configuration(),
+        continuation.scheduler(),
+        continuation.event_log_segments(),
+    ) {
         return Some("prepared scheduler boundary differs from the sealed replay proof");
     }
     if continuation.terminal_verdict().is_some() {

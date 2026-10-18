@@ -152,13 +152,85 @@ impl<T> History<T> {
         }
     }
 
+    /// Returns an iterator over the elements whose indices fall in `range`.
+    ///
+    /// Positioning costs constant time, like [`History::iter_from`]. A range
+    /// that ends beyond the history is clipped to its length.
+    pub fn range(&self, range: std::ops::Range<usize>) -> std::iter::Take<Iter<'_, T>> {
+        let len = range.end.min(self.len()).saturating_sub(range.start);
+        self.iter_from(range.start).take(len)
+    }
+
     /// Returns `true` when `prefix` equals the first `prefix.len()` elements.
+    ///
+    /// Like [`History::prefix_eq`], sealed chunks the two histories share are
+    /// not compared element by element.
     #[must_use]
     pub fn starts_with(&self, prefix: &Self) -> bool
     where
         T: PartialEq,
     {
-        prefix.len() <= self.len() && self.iter().zip(prefix.iter()).all(|(a, b)| a == b)
+        self.prefix_eq(prefix, prefix.len())
+    }
+
+    /// Returns `true` when the elements from `start` onward begin with `other`.
+    ///
+    /// The comparison positions at `start` in constant time and reads only
+    /// `other.len()` elements of this history.
+    #[must_use]
+    pub fn has_run_at(&self, start: usize, other: &[T]) -> bool
+    where
+        T: PartialEq,
+    {
+        start
+            .checked_add(other.len())
+            .is_some_and(|end| end <= self.len())
+            && self.iter_from(start).zip(other).all(|(a, b)| a == b)
+    }
+
+    /// Returns `true` when both histories hold at least `len` elements and
+    /// their first `len` elements are equal.
+    ///
+    /// Sealed chunks that both histories share are skipped without comparing
+    /// their elements, so comparing a history with a clone that has grown
+    /// since costs time proportional to the unshared part only.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use crucible::History;
+    ///
+    /// let mut base = History::new();
+    /// base.extend([1, 2, 3]);
+    /// let mut grown = base.clone();
+    /// grown.push(4);
+    ///
+    /// assert!(grown.prefix_eq(&base, 3));
+    /// assert!(!grown.prefix_eq(&base, 4));
+    /// ```
+    #[must_use]
+    pub fn prefix_eq(&self, other: &Self, len: usize) -> bool
+    where
+        T: PartialEq,
+    {
+        if len > self.len() || len > other.len() {
+            return false;
+        }
+
+        let mut start = 0;
+        while start < len {
+            let chunk = start / CHUNK_LEN;
+            let end = len.min((chunk + 1) * CHUNK_LEN);
+            let shared = match (self.sealed.get(chunk), other.sealed.get(chunk)) {
+                (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+                _ => false,
+            };
+            if !shared && (start..end).any(|index| self.get(index) != other.get(index)) {
+                return false;
+            }
+            start = end;
+        }
+        true
     }
 
     /// Returns `true` when the history holds an element equal to `value`.
@@ -221,6 +293,54 @@ impl<T: Clone> History<T> {
     /// Removes every element without disturbing other clones.
     pub fn clear(&mut self) {
         *self = Self::new();
+    }
+
+    /// Returns the first `len` elements as a history that shares this one's
+    /// sealed chunks, or `None` when `len` exceeds the length.
+    ///
+    /// Only the chunk pointer table and at most one partial chunk are copied,
+    /// so a prefix of a long history costs memory proportional to its chunk
+    /// count rather than to its elements.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use crucible::History;
+    ///
+    /// let mut log = History::new();
+    /// log.extend(0..200);
+    /// let prefix = log.prefix(130).expect("prefix within the history");
+    ///
+    /// assert_eq!(prefix.len(), 130);
+    /// assert!(log.starts_with(&prefix));
+    /// assert!(log.prefix(201).is_none());
+    /// ```
+    #[must_use]
+    pub fn prefix(&self, len: usize) -> Option<Self> {
+        if len > self.len() {
+            return None;
+        }
+        if len == self.len() {
+            return Some(self.clone());
+        }
+
+        // Every sealed chunk is full, so the prefix keeps the first `full`
+        // chunks whole and copies `partial` elements of the next one.
+        let full = len / CHUNK_LEN;
+        let partial = len % CHUNK_LEN;
+        let sealed = if full == self.sealed.len() {
+            Arc::clone(&self.sealed)
+        } else {
+            Arc::new(self.sealed.get(..full)?.to_vec())
+        };
+        let next: &[T] = match self.sealed.get(full) {
+            Some(chunk) => chunk,
+            None => &self.tail,
+        };
+        Some(Self {
+            sealed,
+            tail: Arc::new(next.get(..partial)?.to_vec()),
+        })
     }
 
     /// Copies the elements into an owned vector.
@@ -460,6 +580,39 @@ mod tests {
     }
 
     #[test]
+    fn prefixes_share_sealed_chunks_and_grow_independently() {
+        let source_len = 3 * CHUNK_LEN + 7;
+        let mut source = History::new();
+        source.extend(reference(source_len));
+
+        for len in [
+            0,
+            1,
+            CHUNK_LEN - 1,
+            CHUNK_LEN,
+            CHUNK_LEN + 1,
+            3 * CHUNK_LEN,
+            source_len - 1,
+            source_len,
+        ] {
+            let Some(mut prefix) = source.prefix(len) else {
+                panic!("prefix {len} is within the source");
+            };
+
+            assert_eq!(prefix.to_vec(), reference(len));
+            assert!(source.starts_with(&prefix));
+            for chunk in 0..len / CHUNK_LEN {
+                assert!(Arc::ptr_eq(&prefix.sealed[chunk], &source.sealed[chunk]));
+            }
+
+            prefix.extend([usize::MAX; CHUNK_LEN + 1]);
+            assert_eq!(prefix.len(), len + CHUNK_LEN + 1);
+            assert_eq!(source.to_vec(), reference(source_len));
+        }
+        assert!(source.prefix(source_len + 1).is_none());
+    }
+
+    #[test]
     fn matches_vec_semantics_across_chunk_boundaries() {
         for len in [
             0,
@@ -551,6 +704,81 @@ mod tests {
         assert_ne!(left, shorter);
         assert_ne!(left, changed);
         assert_eq!(reference(CHUNK_LEN * 2), left);
+    }
+
+    #[test]
+    fn prefix_equality_compares_shared_and_copied_storage_alike() {
+        let base = History::from(reference(2 * CHUNK_LEN + 3));
+        let mut grown = base.clone();
+        grown.extend([7, 8, 9]);
+        let copied = History::from(reference(2 * CHUNK_LEN + 3));
+        let mut changed = base.clone();
+        if let Some(element) = changed.get_mut(CHUNK_LEN + 1) {
+            *element = usize::MAX;
+        }
+
+        for len in [0, 1, CHUNK_LEN, CHUNK_LEN + 2, 2 * CHUNK_LEN + 3] {
+            assert!(grown.prefix_eq(&base, len), "shared prefix {len}");
+            assert!(copied.prefix_eq(&base, len), "copied prefix {len}");
+        }
+        assert!(!grown.prefix_eq(&base, 2 * CHUNK_LEN + 4));
+        assert!(changed.prefix_eq(&base, CHUNK_LEN + 1));
+        assert!(!changed.prefix_eq(&base, CHUNK_LEN + 2));
+    }
+
+    #[test]
+    fn range_clips_to_the_history_and_crosses_chunks() {
+        let history = History::from(reference(2 * CHUNK_LEN + 5));
+
+        let middle = (CHUNK_LEN - 2)..(CHUNK_LEN + 3);
+        assert!(
+            history
+                .range(middle.clone())
+                .eq(reference(2 * CHUNK_LEN + 5)[middle].iter())
+        );
+        assert!(
+            history
+                .range((2 * CHUNK_LEN)..usize::MAX)
+                .copied()
+                .eq((2 * CHUNK_LEN)..(2 * CHUNK_LEN + 5))
+        );
+        assert_eq!(history.range(5..5).count(), 0);
+        // A reversed range is empty rather than a panic.
+        assert_eq!(
+            history.range(std::ops::Range { start: 9, end: 3 }).count(),
+            0
+        );
+        assert_eq!(history.range((3 * CHUNK_LEN)..(4 * CHUNK_LEN)).count(), 0);
+    }
+
+    #[test]
+    fn starts_with_compares_unshared_chunks_by_content() {
+        let prefix = History::from(reference(CHUNK_LEN + 3));
+        let mut extended = prefix.clone();
+        extended.extend((CHUNK_LEN + 3)..(3 * CHUNK_LEN));
+        let rebuilt = History::from(reference(3 * CHUNK_LEN));
+        let mut diverged = rebuilt.clone();
+        if let Some(first) = diverged.get_mut(0) {
+            *first = usize::MAX;
+        }
+
+        assert!(extended.starts_with(&prefix));
+        assert!(rebuilt.starts_with(&prefix));
+        assert!(!diverged.starts_with(&prefix));
+        assert!(!prefix.starts_with(&extended));
+        assert!(prefix.starts_with(&History::new()));
+    }
+
+    #[test]
+    fn has_run_at_matches_only_complete_runs() {
+        let history = History::from(reference(CHUNK_LEN + 4));
+        let run = reference(CHUNK_LEN + 4)[(CHUNK_LEN - 1)..(CHUNK_LEN + 2)].to_vec();
+
+        assert!(history.has_run_at(CHUNK_LEN - 1, &run));
+        assert!(!history.has_run_at(CHUNK_LEN, &run));
+        assert!(!history.has_run_at(CHUNK_LEN + 3, &[CHUNK_LEN + 3, CHUNK_LEN + 4]));
+        assert!(!history.has_run_at(usize::MAX, &[0]));
+        assert!(history.has_run_at(CHUNK_LEN + 4, &[]));
     }
 
     #[test]

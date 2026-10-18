@@ -18,3 +18,6 @@ crucible-sim = { path = "../crucible-sim" }
 crucible-shmem = { path = "../crucible-shmem" }
 serde = { workspace = true }
 ciborium = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

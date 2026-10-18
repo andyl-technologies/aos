@@ -24,8 +24,7 @@ use crucible_api::{
 use crucible_campaign::{
     AttemptContinuationInput, AttemptStartMode, CampaignHash, ChoiceDiscovery, ChoiceOpportunityId,
     ChoiceSource, ConfigurationArtifact, ConfigurationId, ExactCheckpointId,
-    MAX_OBSERVATION_CHOICE_DISCOVERIES, MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES, SelectionOrigin,
-    StopCondition,
+    MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES, SelectionOrigin, StopCondition,
 };
 use crucible_cas::content_store::StoreError;
 use crucible_protocol::SelectionReply;
@@ -60,7 +59,7 @@ use crate::{
 };
 
 mod app_random_branch_replay;
-use app_random_branch_replay::app_random_branch_replay;
+use app_random_branch_replay::{AppRandomLaunchWindow, app_random_branch_replay};
 
 mod interactive_session;
 pub use interactive_session::{
@@ -79,6 +78,10 @@ pub use remote_observation_resume::RemoteObservationResumeFactory;
 
 mod resume_admission;
 use resume_admission::validate_exact_resume_request;
+
+mod attempt_config;
+pub(crate) use attempt_config::config_for_assignment_host_watchdog;
+use attempt_config::config_for_attempt_trace_storage;
 
 mod network_fault_replay;
 use network_fault_replay::{
@@ -143,6 +146,9 @@ pub enum QemuAttemptProductionVmLifecycleError {
     /// The modeled continuation control is malformed for the authenticated scenario.
     #[error("derive modeled continuation control")]
     InvalidContinuationInput,
+    /// The attempt's resolved-effect trace directory could not be created.
+    #[error("create production VM resolved-effect trace storage: {0}")]
+    TraceStorage(#[source] std::io::Error),
 }
 
 mod resource_admission;
@@ -521,12 +527,17 @@ pub trait QemuFreshAttemptLifecycleOwner {
     /// be sampled at the terminal boundary.
     fn prepare_terminal_fingerprints(&mut self) -> Result<(), SchedulerError>;
 
-    /// Copies the exact resolved-effect trace retained by the live fault runtime.
+    /// Exports the exact resolved-effect trace retained by the live fault runtime.
+    ///
+    /// The result is a segmented trace handle; its segments stay in the
+    /// lifecycle's segment store.
     ///
     /// # Errors
     ///
-    /// Returns [`SchedulerError`] when retained effect evidence cannot be encoded.
-    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError>;
+    /// Returns [`SchedulerError`] when retained effect evidence cannot be exported.
+    fn resolved_effect_trace(
+        &self,
+    ) -> Result<Option<crucible::model::ResolvedEffectTrace>, SchedulerError>;
 
     /// Settles the final boundary without teardown so the world may be retained.
     ///
@@ -763,7 +774,9 @@ impl QemuFreshAttemptLifecycleOwner for ProductionVmLifecycleLoop {
         ProductionVmLifecycleLoop::prepare_terminal_fingerprints(self)
     }
 
-    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
+    fn resolved_effect_trace(
+        &self,
+    ) -> Result<Option<crucible::model::ResolvedEffectTrace>, SchedulerError> {
         // crucible-lint: allow host-nondeterminism-state -- this copies scheduler-retained replay evidence without feeding it into execution.
         QuantumLoop::resolved_effect_trace(self)
     }
@@ -806,32 +819,41 @@ pub(crate) use evidence::{
 };
 
 mod campaign_run;
-pub(crate) use campaign_run::GuardedCampaignReplaySelection;
+#[cfg(any(test, feature = "test-support"))]
+pub use campaign_run::GuardedCampaignRunRecorder;
 #[cfg(any(test, feature = "test-support"))]
 pub use campaign_run::test_support::{
     GuardedDefaultCampaignTestTrace, run_guarded_default_campaign_test_fixture,
+    run_guarded_default_campaign_test_fixture_into_sink,
     run_guarded_default_campaign_test_fixture_with_choice_offer,
     run_guarded_default_campaign_test_fixture_with_trace,
     run_guarded_default_campaign_test_fixture_with_trace_and_choice_offer,
 };
 pub use campaign_run::{
+    DEFAULT_GUARDED_CAMPAIGN_MAX_CHOICES, DiscardGuardedCampaignProgress,
     GuardedCampaignBranchAcceptance, GuardedCampaignExploration,
     GuardedCampaignExplorationCompletion, GuardedCampaignExplorationStrategy,
-    GuardedCampaignFindingExport, GuardedCampaignFindingObjectProof,
-    GuardedCampaignFindingOccurrenceObjectProof, GuardedCampaignFindingOccurrenceProof,
-    GuardedCampaignFindingOracle, GuardedCampaignFindingOracleError,
-    GuardedCampaignFindingOracleEvaluation, GuardedCampaignFindingOracleSource,
-    GuardedCampaignFindingOracleSourceLoadError, GuardedCampaignFindingProof,
-    GuardedCampaignFindingQueryProof, GuardedCampaignFindingTriageReplayProof,
-    GuardedCampaignFindingTriageReplaySegmentProof, GuardedCampaignFindingTriageReplaySet,
-    GuardedCampaignReplayClosure, GuardedCampaignReplayClosureError,
-    GuardedCampaignSupplementalFinding, GuardedCampaignTimeoutEvidence,
-    GuardedDefaultCampaignInvariantError, GuardedDefaultCampaignObservation,
-    GuardedDefaultCampaignObservationSource, GuardedDefaultCampaignProductionRunnerError,
-    GuardedDefaultCampaignResumeProof, GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError,
-    GuardedDefaultCampaignRunRequest, GuardedDefaultCampaignSavepoint,
-    GuardedDefaultCampaignSupervisorError, GuardedDefaultCampaignWatchFrame,
-    run_guarded_default_campaign, validate_remote_resume_replay_closure,
+    GuardedCampaignFindingExport, GuardedCampaignFindingExportFrame,
+    GuardedCampaignFindingExportFrames, GuardedCampaignFindingExportReadError,
+    GuardedCampaignFindingObjectProof, GuardedCampaignFindingOccurrenceObjectProof,
+    GuardedCampaignFindingOccurrenceQueryProof, GuardedCampaignFindingOracle,
+    GuardedCampaignFindingOracleError, GuardedCampaignFindingOracleEvaluation,
+    GuardedCampaignFindingOracleSource, GuardedCampaignFindingOracleSourceLoadError,
+    GuardedCampaignFindingQueryProof, GuardedCampaignFindingTriageReplaySegmentProof,
+    GuardedCampaignReplayClosure, GuardedCampaignReplayClosureError, GuardedCampaignRunSink,
+    GuardedCampaignRunSinkError, GuardedCampaignSupplementalFinding,
+    GuardedCampaignTimeoutEvidence, GuardedDefaultCampaignInvariantError,
+    GuardedDefaultCampaignObservation, GuardedDefaultCampaignObservationSource,
+    GuardedDefaultCampaignProductionRunnerError, GuardedDefaultCampaignResumeProof,
+    GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError, GuardedDefaultCampaignRunRequest,
+    GuardedDefaultCampaignSavepoint, GuardedDefaultCampaignSupervisorError,
+    GuardedDefaultCampaignWatchFrame, run_guarded_default_campaign,
+    run_guarded_default_campaign_with_sink, validate_remote_resume_replay_closure,
+};
+pub(crate) use campaign_run::{
+    GuardedCampaignReplayChoices, GuardedCampaignReplaySelection, MAX_REPLAY_CLOSURE_FRAME_BYTES,
+    MAX_REPLAY_CLOSURE_FRAMES, MAX_REPLAY_CLOSURE_ROOT_BYTES, REPLAY_CLOSURE_OBJECT_KIND,
+    REPLAY_CLOSURE_OBJECT_SCHEMA_VERSION, closure_object_id,
 };
 
 /// Narrow modeled-execution view of one guarded fresh QEMU lifecycle.
@@ -1247,7 +1269,7 @@ pub trait QemuFreshAttemptDriver {
         &mut self,
         pending: Self::Pending,
         final_events: Vec<SchedulerEventLogEntry>,
-        _resolved_effect_trace: Option<Vec<u8>>,
+        _resolved_effect_trace: Option<crucible::model::ResolvedEffectTrace>,
     ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>> {
         self.seal(pending, final_events)
     }
@@ -1351,9 +1373,10 @@ impl<F, D> QemuFreshExecutionRunner<F, D> {
         F: QemuFreshAttemptLifecycleFactory,
         D: crate::qemu_campaign_driver::QemuFindingReplayDriver,
     {
-        let continuations = validated_attempt_continuations(input).map_err(|()| {
+        let validated_continuations = validated_attempt_continuations(input).map_err(|()| {
             AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::InvalidContinuationInput)
         })?;
+        let continuations = validated_continuations.controls();
         if !self
             .lifecycles
             .configure_attempt_continuations(&continuations)
@@ -1496,7 +1519,15 @@ impl<F, D> QemuFreshExecutionRunner<F, D> {
             }
         };
         let evidence = match expected_replay {
-            Some(expected) => evidence.compare_against_expected_replay(expected),
+            Some(expected) => {
+                evidence
+                    .compare_against_expected_replay(expected)
+                    .map_err(|error| {
+                        Box::new(map_fresh_driver_failure(AttemptWorkerFailure::Terminal(
+                            error,
+                        )))
+                    })?
+            }
             None => evidence,
         };
         Ok(QemuFindingCandidateReplayOutcome::Observed(Box::new(
@@ -1725,13 +1756,6 @@ impl QemuFreshStartMaterialization {
                 },
             ));
         }
-        if self.replayed_discoveries.len() == MAX_OBSERVATION_CHOICE_DISCOVERIES {
-            return Err(GuestSelectableError::Campaign(
-                crucible_campaign::CampaignCodecError::LimitExceeded {
-                    limit: "finding-replay-choice-discovery-count",
-                },
-            ));
-        }
         let bytes = discovery
             .declaration()
             .canonical_bytes()
@@ -1921,6 +1945,9 @@ pub enum QemuFreshStartReplayError {
     /// Origin replay stopped at a configuration different from the claimed boundary.
     #[error("selected continuation origin replay reached a different configuration")]
     OriginReachedMismatch,
+    /// An earlier origin could not be rebuilt from the decoded terminal origin.
+    #[error("selected continuation origin materialization failed: {0}")]
+    OriginMaterialization(#[source] crate::crucible_execution::CrucibleOriginMaterializationError),
     /// Replay exhausted the attempt's admitted execution-quanta ceiling.
     #[error("fresh start replay exhausted the admitted execution-quanta ceiling")]
     QuantumLimit,
@@ -2151,25 +2178,6 @@ enum QemuFreshRunnerResult<P> {
     Checkpoint(AttemptCheckpointResult),
 }
 
-/// Applies the remaining assignment deadline to one newly constructed QEMU lifecycle.
-pub(crate) fn config_for_assignment_host_watchdog(
-    config: ProductionVmLifecycleConfig,
-    context: &AttemptExecutionContext,
-) -> Result<ProductionVmLifecycleConfig, QemuAttemptProductionVmLifecycleError> {
-    let Some(remaining) = context.remaining_host_watchdog() else {
-        // Campaign advances use virtual bounds. The finite per-operation
-        // ceiling remains a polling slice and transport/lifecycle safety bound.
-        return Ok(config.with_unbounded_advance_completion());
-    };
-    if remaining.is_zero() {
-        return Err(QemuAttemptProductionVmLifecycleError::HostWatchdogExpired);
-    }
-    // The campaign's explicit assignment watchdog supersedes the fixed
-    // transport fallback. Its separate timer interrupts a child even when
-    // many short QEMU awaits would each finish within this initial remainder.
-    Ok(config.with_completion_timeout(remaining))
-}
-
 impl<R> QemuAttemptProductionVmLifecycleFactory<R> {
     /// Creates a factory from trusted lifecycle configuration and host resources.
     #[must_use]
@@ -2258,10 +2266,12 @@ where
             &self.config,
             source,
             installed.configuration(),
+            AppRandomLaunchWindow::RestoredTarget,
             None,
             &[],
         )?;
         let config = config_for_assignment_host_watchdog(config, context)?;
+        let config = config_for_attempt_trace_storage(config, context)?;
         let decoded = installed.into_decoded();
         self.with_attempt_launcher(context, source, maximum_nodes, |launcher| {
             build_production_vm_exact_resume_lifecycle(scenario, source, &config, decoded, launcher)
@@ -2307,15 +2317,10 @@ where
         .map_err(|error| {
             QemuAttemptProductionVmLifecycleError::CheckpointRestore(Box::new(error))
         })?;
-        let scheduler = boundary.scheduler();
-        if scheduler.retained_event_log_base_events() != 0 {
-            return Err(QemuAttemptProductionVmLifecycleError::InvalidResumeBoundary);
-        }
-        let proof = QemuSavepointReplayProof::from_reached_boundary(
+        let proof = QemuSavepointReplayProof::from_checkpoint(
             boundary.configuration(),
-            scheduler.quanta(),
-            scheduler.frontier(),
-            scheduler.retained_event_log_entries(),
+            boundary.scheduler(),
+            boundary.event_log_segments(),
         )
         .map_err(|_| QemuAttemptProductionVmLifecycleError::InvalidResumeBoundary)?;
         let selected = crate::qemu_campaign_driver::QemuSelectedResumeBoundary::new(
@@ -2348,6 +2353,7 @@ where
         }
 
         let config = config_for_assignment_host_watchdog(config, context)?;
+        let config = config_for_attempt_trace_storage(config, context)?;
         self.with_attempt_launcher(context, source, maximum_nodes, |launcher| {
             build_production_vm_lifecycle_loop_with_launcher(scenario, source, &config, launcher)
         })
@@ -2451,6 +2457,7 @@ where
             &self.config,
             source,
             start,
+            AppRandomLaunchWindow::Genesis,
             Some(signal_fault_replay),
             &std::mem::take(&mut self.authenticated_network_selections),
         )

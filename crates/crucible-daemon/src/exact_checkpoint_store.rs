@@ -8,7 +8,8 @@
 //! ```text
 //! ExactCheckpointRootV5
 //!   production-manifest -> ProductionExactCheckpointClosureV9
-//!   checkpoint-choice-closure -> bounded owned replay selections
+//!   checkpoint-choice-closure -> owned replay-closure root
+//!   checkpoint-choice-frame-* -> replay-closure frames, at most 64 MiB each
 //!   production-object-index-* -> ProductionCheckpointIndexV1
 //!     object-<native-hash> -> opaque typed production object
 //! ```
@@ -58,7 +59,7 @@ pub use production::{
 /// Attempt-owned production closure awaiting no-write immutable-store preparation.
 pub struct CapturedAttemptCheckpoint {
     closure: ProductionExactCheckpointClosure,
-    choice_closure: Option<Vec<u8>>,
+    choice_closure: Option<crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure>,
 }
 
 impl fmt::Debug for CapturedAttemptCheckpoint {
@@ -81,18 +82,18 @@ impl CapturedAttemptCheckpoint {
         }
     }
 
-    pub(crate) fn with_choice_closure(mut self, bytes: Vec<u8>) -> Self {
-        self.choice_closure = Some(bytes);
+    pub(crate) fn with_choice_closure(
+        mut self,
+        closure: crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure,
+    ) -> Self {
+        self.choice_closure = Some(closure);
         self
     }
 
-    fn choice_closure_bytes(&self) -> Result<Vec<u8>, ExactCheckpointStoreError> {
-        match &self.choice_closure {
-            Some(bytes) => Ok(bytes.clone()),
-            None => crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::empty()
-                .to_canonical_bytes()
-                .map_err(|_| invalid_root("empty choice closure could not be encoded")),
-        }
+    fn choice_closure(&self) -> crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure {
+        self.choice_closure
+            .clone()
+            .unwrap_or_else(crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::empty)
     }
 
     /// Returns the semantic scenario authenticated by this capture.
@@ -393,7 +394,7 @@ impl ExactCheckpointStore {
         &self,
         capture: &CapturedAttemptCheckpoint,
     ) -> Result<PreparedAttemptCheckpoint, ExactCheckpointStoreError> {
-        let choices = capture.choice_closure_bytes()?;
+        let choices = capture.choice_closure();
         self.prepare_production_closure_inner(capture.closure.clone(), choices, None)
             .map(PreparedAttemptCheckpoint)
     }
@@ -416,7 +417,7 @@ impl ExactCheckpointStore {
         if cancellation.is_canceled() {
             return Err(ExactCheckpointStoreError::Canceled);
         }
-        let choices = capture.choice_closure_bytes()?;
+        let choices = capture.choice_closure();
         self.prepare_production_closure_with_cancellation(
             capture.closure.clone(),
             choices,
@@ -431,10 +432,11 @@ impl ExactCheckpointStore {
         closure: ProductionExactCheckpointClosure,
         cancellation: &ExecutionCancellation,
     ) -> Result<PreparedProductionExactCheckpoint, ExactCheckpointStoreError> {
-        let choices = crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::empty()
-            .to_canonical_bytes()
-            .map_err(|_| invalid_root("empty choice closure could not be encoded"))?;
-        self.prepare_production_closure_with_cancellation(closure, choices, cancellation)
+        self.prepare_production_closure_with_cancellation(
+            closure,
+            crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::empty(),
+            cancellation,
+        )
     }
 
     /// Publishes one prepared production checkpoint through root-last ordering.
@@ -547,30 +549,29 @@ impl FindingExactCheckpointAuthenticator for ExactFindingCheckpointAuthenticator
             || ConfigurationId::from_hash(CampaignHash::from_bytes(
                 decoded.configuration().id().bytes,
             )) != configuration
-            || scheduler.retained_event_log_base_events() != 0
-            || scheduler.retained_event_log_entries().len() as u64 != checkpoint_events
+            || scheduler.event_log_base_events() != 0
         {
             return Err(FindingExactCheckpointAuthenticationError::AuthenticationFailed);
         }
 
-        // The checkpoint's retained log must equal the leaf's over their
-        // shared prefix; only the segments spanning it are read.
-        let retained = scheduler
-            .retained_event_log_entries()
-            .get(..shared_len)
-            .ok_or(FindingExactCheckpointAuthenticationError::AuthenticationFailed)?;
-        let mut expected = retained.iter();
-        leaf.try_for_each_entry_in(&segments, 0..shared_events, |entry| {
-            if expected.next() == Some(entry) {
+        // The checkpoint's log must equal the leaf's over their shared
+        // prefix. Both sides stream in lockstep, so each holds at most one
+        // decoded segment, and only the segments spanning the prefix are read.
+        let mut expected = scheduler
+            .event_log_entries(decoded.event_log_segments())
+            .take(shared_len);
+        let mut compared = 0_usize;
+        leaf.try_for_each_entry_in(&segments, 0..shared_events, |entry| match expected.next() {
+            Some(Ok(checkpoint_entry)) if checkpoint_entry == *entry => {
+                compared += 1;
                 Ok(())
-            } else {
-                Err(crate::CrucibleMeasurementError::EvidenceBindingMismatch {
-                    binding: "checkpoint-event-prefix",
-                })
             }
+            _ => Err(crate::CrucibleMeasurementError::EvidenceBindingMismatch {
+                binding: "checkpoint-event-prefix",
+            }),
         })
         .map_err(|_| FindingExactCheckpointAuthenticationError::AuthenticationFailed)?;
-        if expected.next().is_some() {
+        if compared != shared_len {
             return Err(FindingExactCheckpointAuthenticationError::AuthenticationFailed);
         }
         Ok(())

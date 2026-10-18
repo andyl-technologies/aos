@@ -522,8 +522,18 @@ pub struct SingleScheduler {
     /// The parent includes the seeded raw RNG draw. A selection is removed only
     /// after the live guest request and selected value validate successfully.
     pub(super) app_random_branch_selections: BTreeMap<ContentHash, SelectionDecision>,
-    /// Live World-network frontiers captured in execution order.
+    /// Search frontiers retained at the current admission boundary, in
+    /// execution order.
+    ///
+    /// A frontier whose virtual time precedes the scheduler frontier can never
+    /// again authenticate a campaign branch or become a discovery, so it is
+    /// retired from the front when the next frontier is recorded.
     pub(super) search_frontiers: Vec<SearchRuntimeFrontier>,
+    /// Number of frontiers retired from the front of `search_frontiers`.
+    ///
+    /// Together with the retained length it numbers every frontier ever
+    /// recorded, so callers can name the frontiers first seen by one quantum.
+    pub(super) retired_search_frontiers: u64,
     pub(super) event_log: EventLog,
     pub(super) trigger_actions: TriggerActionState,
     pub(super) trigger_static_topology: Option<WorldStaticTopology>,

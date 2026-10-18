@@ -1,6 +1,7 @@
 //! Focused tests for physical choice boundaries and replay cleanup.
 
 use super::*;
+use crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -462,7 +463,7 @@ fn guarded_replay_reaches_two_recorded_guest_choices_and_rejects_drift()
         Icount { retired: 5_000 },
         &source,
         &after_rng,
-        first_record,
+        &first_record,
     )?;
     let after_second_icount = replay_one_local_guest_choice(
         &mut replay,
@@ -470,7 +471,7 @@ fn guarded_replay_reaches_two_recorded_guest_choices_and_rejects_drift()
         Icount { retired: 5_000 },
         &source,
         &after_first,
-        second_record,
+        &second_record,
     )?;
     assert_eq!(after_second_icount.retired, 4_100);
     assert_eq!(replay.advances.len(), 3);
@@ -504,7 +505,7 @@ fn guarded_replay_reaches_two_recorded_guest_choices_and_rejects_drift()
             Icount { retired: 5_000 },
             &source,
             &after_first,
-            second_record,
+            &second_record,
         )
         .is_err()
     );
@@ -525,7 +526,7 @@ fn guarded_replay_reaches_two_recorded_guest_choices_and_rejects_drift()
             Icount { retired: 5_000 },
             &source,
             &after_first,
-            second_record,
+            &second_record,
         )
         .is_err()
     );

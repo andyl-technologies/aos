@@ -46,6 +46,34 @@ pub(super) fn configuration_hash(configuration: &Configuration) -> ContentHash {
     }
 }
 
+/// Computes [`configuration_hash`] for the first `len` decisions of `schedule`.
+///
+/// The canonical encoding writes the decision count before the decisions, so
+/// one prefix identity cannot be extended into another; each costs one pass
+/// over its own decisions. Nothing is copied. Returns `None` when `len`
+/// exceeds the schedule.
+pub(super) fn configuration_prefix_hash(
+    def: &ScenarioDef,
+    schedule: &Schedule,
+    len: usize,
+) -> Option<ContentHash> {
+    if len > schedule.len() {
+        return None;
+    }
+
+    let mut hasher = MaterialHasher::new();
+    hasher.write_bytes(b"crucible.configuration.v2");
+    write_content_hash(&mut hasher, &def.id());
+    write_seed(&mut hasher, def.seed());
+    hasher.write_u64(len as u64);
+    for decision in schedule.decision_history().iter().take(len) {
+        write_decision(&mut hasher, decision);
+    }
+    Some(ContentHash {
+        bytes: hasher.finish(),
+    })
+}
+
 /// Extends a schedule's running decision chain by one decision.
 ///
 /// The chain commits to every decision in order, so a chain value together

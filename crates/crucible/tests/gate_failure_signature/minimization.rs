@@ -215,6 +215,7 @@ fn per_cluster_reports_render_same_content_deterministically() -> Result<(), Box
     stale_property_signature.at_icount_report_only = Some(icount(999));
     stale_property_signature.causal_cone = Some(FailureCausalCone::from_canonical_material(
         "causal_cone_events=1\nentry.cone_index=0\nentry.kind=stale-report-detail",
+        1,
     ));
     assert_eq!(
         stale_property_signature

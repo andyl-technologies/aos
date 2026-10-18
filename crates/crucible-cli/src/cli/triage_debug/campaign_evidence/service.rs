@@ -11,11 +11,15 @@
 
 use super::record::{
     CampaignFindingEvidenceRecord, CampaignOccurrenceChunkWriter, CampaignOccurrenceExchanges,
-    TRIAGE_REPLAY_ROLES,
+    CampaignTriageRoleExchanges, TRIAGE_REPLAY_ROLES,
+};
+use super::reproduction::{
+    capture_finding_reproduction_segments, capture_occurrence_reproduction_segments,
 };
 use super::store::{
     CampaignExchangeRef, MAX_CAMPAIGN_EXCHANGE_BLOB_BYTES, put_evidence_blob, read_evidence_blob,
 };
+use super::triage_segments::capture_occurrence_triage_log_segments;
 use super::*;
 
 /// Principal, campaign snapshot, and finding that one capture reads.
@@ -28,9 +32,9 @@ pub(crate) struct CampaignFindingCaptureScope {
 }
 
 /// Capture scope narrowed to one retained candidate bundle.
-struct CampaignFindingOccurrenceScope<'a> {
-    finding: &'a CampaignFindingCaptureScope,
-    bundle: crucible_campaign::FindingCandidateBundleId,
+pub(super) struct CampaignFindingOccurrenceScope<'a> {
+    pub(super) finding: &'a CampaignFindingCaptureScope,
+    pub(super) bundle: crucible_campaign::FindingCandidateBundleId,
 }
 
 /// Finds the findings page that admits `scope.finding`.
@@ -151,21 +155,36 @@ where
         crucible_campaign::CampaignFindingObjectKind::Observation,
         store,
     )?;
-    let reproduction = capture_campaign_finding_object(
+    let (reproduction, reproduction_response) = capture_campaign_finding_object_with_response(
         client,
         scope,
         crucible_campaign::CampaignFindingObjectKind::Reproduction,
         store,
     )?;
+    let reproduction_segments = capture_finding_reproduction_segments(
+        client,
+        scope,
+        false,
+        finding_reproduction(&reproduction_response, false)?,
+        store,
+    )?;
     let minimized = finding
         .minimized()
         .map(|_| {
-            capture_campaign_finding_object(
+            let (exchange, response) = capture_campaign_finding_object_with_response(
                 client,
                 scope,
                 crucible_campaign::CampaignFindingObjectKind::MinimizedReproduction,
                 store,
-            )
+            )?;
+            let segments = capture_finding_reproduction_segments(
+                client,
+                scope,
+                true,
+                finding_reproduction(&response, true)?,
+                store,
+            )?;
+            Ok::<_, CliError>((exchange, segments))
         })
         .transpose()?;
 
@@ -201,12 +220,30 @@ where
         membership: membership_exchange,
         observation,
         reproduction,
-        minimized,
+        reproduction_segments,
+        minimized: minimized.map(|(exchange, _)| exchange),
+        minimized_segments: minimized.map(|(_, segments)| segments),
         report,
         occurrence_count,
         chunks,
     }
     .put(store)
+}
+
+/// Returns the reproduction a finding-object response carries.
+fn finding_reproduction(
+    response: &crucible_campaign::GetCampaignFindingObjectResponse,
+    minimized: bool,
+) -> Result<&crucible_campaign::ReproductionArtifact, CliError> {
+    match (minimized, response.object()) {
+        (false, crucible_campaign::CampaignFindingObject::Reproduction(reproduction))
+        | (true, crucible_campaign::CampaignFindingObject::MinimizedReproduction(reproduction)) => {
+            Ok(reproduction)
+        }
+        _ => Err(artifact_error(
+            "campaign finding reproduction response has another object kind",
+        )),
+    }
 }
 
 /// Captures one occurrence page, its objects, and its replays.
@@ -273,36 +310,74 @@ where
             crucible_campaign::CampaignFindingOccurrenceObjectKind::Reproduction,
             store,
         )?;
-    let minimized = capture_campaign_finding_occurrence_object(
+    let (minimized, minimized_response) = capture_campaign_finding_occurrence_object_with_response(
         client,
         &occurrence_scope,
         crucible_campaign::CampaignFindingOccurrenceObjectKind::MinimizedReproduction,
         store,
     )?;
 
+    // The report projection decodes the original reproduction's artifact, so
+    // its segments are authenticated as they are captured.
+    let wants_report = report.is_none() && bundle.triage_evidence().is_some();
+    let (reproduction_segments, reproduction_artifact) = capture_occurrence_reproduction_segments(
+        client,
+        &occurrence_scope,
+        false,
+        occurrence_reproduction(&reproduction_response)?,
+        wants_report,
+        store,
+    )?;
+    let (minimized_segments, _) = capture_occurrence_reproduction_segments(
+        client,
+        &occurrence_scope,
+        true,
+        occurrence_minimized_reproduction(&minimized_response)?,
+        false,
+        store,
+    )?;
+
     let triage = match bundle.triage_evidence() {
         None => None,
         Some(evidence) => {
-            let mut roles: [Vec<CampaignExchangeRef>; 4] = Default::default();
+            let mut roles: [CampaignTriageRoleExchanges; 4] = Default::default();
             for ((role, _), exchanges) in TRIAGE_REPLAY_ROLES.iter().zip(&mut roles) {
-                let (captured, proof) = capture_campaign_finding_triage_replay(
+                let (captured, proof, record) = capture_campaign_finding_triage_replay(
                     client,
                     &occurrence_scope,
                     *role,
                     triage_role_evidence(&evidence, *role),
                     store,
                 )?;
+                // One replay's log segments are resident only while its
+                // report projection, if any, is decoded.
+                let (log_segments, segments) = capture_occurrence_triage_log_segments(
+                    client,
+                    &occurrence_scope,
+                    *role,
+                    &record,
+                    store,
+                )?;
                 if report.is_none()
                     && *role
                         == crucible_campaign::CampaignFindingTriageReplayRole::MinimizationOriginal
                 {
+                    let artifact = reproduction_artifact.clone().ok_or_else(|| {
+                        artifact_error("campaign occurrence reproduction was not decoded")
+                    })?;
                     *report = Some(campaign_triage_report_from_replay(
                         evidence.minimization_original(),
                         occurrence_reproduction(&reproduction_response)?,
+                        artifact,
                         &proof,
+                        &record,
+                        segments,
                     )?);
                 }
-                *exchanges = captured;
+                *exchanges = CampaignTriageRoleExchanges {
+                    segments: captured,
+                    log_segments,
+                };
             }
             Some(roles)
         }
@@ -313,7 +388,9 @@ where
             page,
             observation,
             reproduction,
+            reproduction_segments,
             minimized,
+            minimized_segments,
             triage,
         },
         response.next_after(),
@@ -333,13 +410,28 @@ fn occurrence_reproduction(
     }
 }
 
+fn occurrence_minimized_reproduction(
+    response: &crucible_campaign::GetCampaignFindingOccurrenceObjectResponse,
+) -> Result<&crucible_campaign::ReproductionArtifact, CliError> {
+    match response.object() {
+        crucible_campaign::CampaignFindingOccurrenceObject::MinimizedReproduction(reproduction) => {
+            Ok(reproduction)
+        }
+        _ => Err(artifact_error(
+            "campaign occurrence minimized proof has another object kind",
+        )),
+    }
+}
+
 /// Decodes the report projection from one minimization-original replay.
 fn campaign_triage_report_from_replay(
     expected: crucible_campaign::FindingTriageReplayEvidenceId,
     reproduction: &crucible_campaign::ReproductionArtifact,
+    artifact: crucible::ReproductionArtifact,
     proof: &CampaignFindingTriageReplayProof,
+    record: &crucible_campaign::FindingTriageReplayEvidence,
+    log_segments: crucible::FailureTriageReplaySegments,
 ) -> Result<TriageFindingEvidence, CliError> {
-    let record = reassemble_campaign_triage_replay_proof(proof)?;
     if proof.segments.iter().any(|segment| {
         segment.request.role()
             != crucible_campaign::CampaignFindingTriageReplayRole::MinimizationOriginal
@@ -355,22 +447,21 @@ fn campaign_triage_report_from_replay(
             "campaign occurrence triage payload has an incompatible semantic binding",
         ));
     }
-    let artifact = crucible::ReproductionArtifact::from_compact_binary(reproduction.payload())
-        .map_err(|error| artifact_error(format!("campaign reproduction is invalid: {error}")))?;
     let replay = crucible::FailureTriageReplayEvidence::from_compact_binary_for_reproduction(
         crucible::ContentHash {
             bytes: reproduction.finding_fingerprint().as_bytes(),
         },
         artifact,
         record.payload(),
+        log_segments,
     )
     .map_err(|error| {
         artifact_error(format!(
             "campaign occurrence triage payload is invalid: {error}"
         ))
     })?;
-    validate_campaign_native_signature_binding(&record, reproduction, &replay)?;
-    Ok(triage_finding_evidence_from_replay(&replay))
+    validate_campaign_native_signature_binding(record, reproduction, &replay)?;
+    triage_finding_evidence_from_replay(&replay)
 }
 
 fn capture_campaign_finding_object<S>(
@@ -379,6 +470,26 @@ fn capture_campaign_finding_object<S>(
     kind: crucible_campaign::CampaignFindingObjectKind,
     store: &crucible::LocalDagStore,
 ) -> Result<CampaignExchangeRef, CliError>
+where
+    S: crucible_campaign::CampaignService,
+    S::Error: crucible_campaign::CampaignServiceFailureSource,
+{
+    capture_campaign_finding_object_with_response(client, scope, kind, store)
+        .map(|(exchange, _)| exchange)
+}
+
+fn capture_campaign_finding_object_with_response<S>(
+    client: &crucible_campaign::CampaignClient<S>,
+    scope: &CampaignFindingCaptureScope,
+    kind: crucible_campaign::CampaignFindingObjectKind,
+    store: &crucible::LocalDagStore,
+) -> Result<
+    (
+        CampaignExchangeRef,
+        crucible_campaign::GetCampaignFindingObjectResponse,
+    ),
+    CliError,
+>
 where
     S: crucible_campaign::CampaignService,
     S::Error: crucible_campaign::CampaignServiceFailureSource,
@@ -394,11 +505,12 @@ where
     let response = client
         .get_campaign_finding_object(&request)
         .map_err(|error| artifact_error(format!("query campaign finding object: {error}")))?;
-    CampaignExchangeRef::put(
+    let exchange = CampaignExchangeRef::put(
         store,
         &request.canonical_bytes(),
         &response.canonical_bytes(),
-    )
+    )?;
+    Ok((exchange, response))
 }
 
 fn capture_campaign_finding_occurrence_object<S>(
@@ -461,7 +573,14 @@ fn capture_campaign_finding_triage_replay<S>(
     role: crucible_campaign::CampaignFindingTriageReplayRole,
     evidence: crucible_campaign::FindingTriageReplayEvidenceId,
     store: &crucible::LocalDagStore,
-) -> Result<(Vec<CampaignExchangeRef>, CampaignFindingTriageReplayProof), CliError>
+) -> Result<
+    (
+        Vec<CampaignExchangeRef>,
+        CampaignFindingTriageReplayProof,
+        crucible_campaign::FindingTriageReplayEvidence,
+    ),
+    CliError,
+>
 where
     S: crucible_campaign::CampaignFindingOccurrenceService,
     S::Error: crucible_campaign::CampaignServiceFailureSource,
@@ -543,8 +662,8 @@ where
         }
     }
     let proof = CampaignFindingTriageReplayProof { segments };
-    reassemble_campaign_triage_replay_proof(&proof)?;
-    Ok((exchanges, proof))
+    let record = reassemble_campaign_triage_replay_proof(&proof)?;
+    Ok((exchanges, proof, record))
 }
 
 fn object_segment_count(stored_envelope_bytes: u64) -> Result<u32, CliError> {
@@ -646,8 +765,37 @@ impl StoredCampaignFindingService {
         ] {
             insert_exchange(&mut service.occurrence_objects, exchange);
         }
-        for exchange in occurrence.triage.iter().flatten().flatten() {
+        for exchange in occurrence
+            .triage
+            .iter()
+            .flatten()
+            .flat_map(|role| &role.segments)
+        {
             insert_exchange(&mut service.triage_segments, *exchange);
+        }
+        service
+    }
+
+    /// Serves the finding-object exchanges of one reproduction's segments.
+    pub(super) fn for_finding_objects(
+        store: &crucible::LocalDagStore,
+        exchanges: &[CampaignExchangeRef],
+    ) -> Self {
+        let mut service = Self::empty(store);
+        for exchange in exchanges {
+            insert_exchange(&mut service.objects, *exchange);
+        }
+        service
+    }
+
+    /// Serves the occurrence-object exchanges of one reproduction's segments.
+    pub(super) fn for_occurrence_objects(
+        store: &crucible::LocalDagStore,
+        exchanges: &[CampaignExchangeRef],
+    ) -> Self {
+        let mut service = Self::empty(store);
+        for exchange in exchanges {
+            insert_exchange(&mut service.occurrence_objects, *exchange);
         }
         service
     }

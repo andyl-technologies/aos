@@ -1009,12 +1009,15 @@ impl CampaignRepository {
         {
             return Err(integrity("savepoint-capture-changed-unrelated-root"));
         }
+        let command_key = map_key_hash("accounting.command", request.command.as_hash());
+        // Upserts would silently replace a reused command, so the grow-only
+        // command index proves absence before accepting the new owner.
+        if self.merkle.get(prior.accounting, command_key)?.is_some() {
+            return Err(integrity("savepoint-capture-reused-command"));
+        }
         let transition_id = CampaignFactId::from_content_id(transition_content)?;
         let accounting_upserts = BTreeMap::from([
-            (
-                map_key_hash("accounting.command", request.command.as_hash()),
-                transition_content,
-            ),
+            (command_key, transition_content),
             (
                 savepoint_capture_request_key(transition_id),
                 transition_content,
@@ -1077,11 +1080,12 @@ impl CampaignRepository {
                 "savepoint-capture-resolution-changed-unrelated-root",
             ));
         }
+        let command_key = map_key_hash("accounting.command", resolution.command.as_hash());
+        if self.merkle.get(prior.accounting, command_key)?.is_some() {
+            return Err(integrity("savepoint-capture-resolution-reused-command"));
+        }
         let accounting_upserts = BTreeMap::from([
-            (
-                map_key_hash("accounting.command", resolution.command.as_hash()),
-                transition_content,
-            ),
+            (command_key, transition_content),
             (
                 savepoint_capture_resolution_key(resolution.request),
                 transition_content,
@@ -1139,10 +1143,11 @@ impl CampaignRepository {
         let source_key = savepoint_continuation_source_key(selection.continuation);
         let indexed_basis = self.merkle.get(prior.accounting, basis_key)?;
         let indexed_source = self.merkle.get(prior.accounting, source_key)?;
-        let mut upserts = BTreeMap::from([(
-            map_key_hash("accounting.command", selection.command.as_hash()),
-            transition_content,
-        )]);
+        let command_key = map_key_hash("accounting.command", selection.command.as_hash());
+        if self.merkle.get(prior.accounting, command_key)?.is_some() {
+            return Err(integrity("savepoint-continuation-reused-command"));
+        }
+        let mut upserts = BTreeMap::from([(command_key, transition_content)]);
         match (indexed_basis, indexed_source) {
             (None, None) => {
                 let expected_admission = AttemptAdmission::new(

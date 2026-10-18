@@ -148,6 +148,7 @@ fn campaign_resume_projection_preserves_source_oracle_watch_and_cleanup() {
     resume_plan.watch_streams_live_status = true;
     let ResumeCampaignFixture {
         campaign,
+        progress,
         checkpoints,
         checkpoint_directory,
         checkpoint_root,
@@ -157,7 +158,7 @@ fn campaign_resume_projection_preserves_source_oracle_watch_and_cleanup() {
         StopCondition::VirtualTimePicoseconds(10),
         true,
     );
-    let result = campaign_resume_workflow_report(&resume_plan, &evidence, &campaign);
+    let result = campaign_resume_workflow_report(&resume_plan, &evidence, &campaign, &progress);
     let proof = campaign.resume().cloned().or_panic("campaign resume proof");
     let terminal_observation = campaign.terminal().id();
     drop(campaign);
@@ -228,8 +229,9 @@ fn campaign_resume_projects_quiescence_observation() {
         false,
     );
 
-    let report = campaign_resume_workflow_report(&plan, &evidence, &fixture.campaign)
-        .or_panic("project quiescence observation resume");
+    let report =
+        campaign_resume_workflow_report(&plan, &evidence, &fixture.campaign, &fixture.progress)
+            .or_panic("project quiescence observation resume");
     let stop = fixture.campaign.terminal().observation().stop();
     let StopOutcome::ObservationReached(proof) = stop else {
         panic!("quiescence resume requires an observation proof");
@@ -260,8 +262,9 @@ fn campaign_resume_projects_property_violation_observation() {
         false,
     );
 
-    let report = campaign_resume_workflow_report(&plan, &evidence, &fixture.campaign)
-        .or_panic("project property observation resume");
+    let report =
+        campaign_resume_workflow_report(&plan, &evidence, &fixture.campaign, &fixture.progress)
+            .or_panic("project property observation resume");
     let stop = fixture.campaign.terminal().observation().stop();
     let StopOutcome::ObservationReached(proof) = stop else {
         panic!("property resume requires an observation proof");
@@ -298,6 +301,7 @@ fn campaign_resume_projection_does_not_rewind_for_an_earlier_deadline() {
     resume_plan.max_virtual_time_ticks = Some(3);
     let ResumeCampaignFixture {
         campaign,
+        progress,
         checkpoints,
         checkpoint_directory,
         checkpoint_root,
@@ -314,7 +318,7 @@ fn campaign_resume_projection_does_not_rewind_for_an_earlier_deadline() {
     );
     assert_eq!(campaign.evidence().frontier(), source_frontier);
 
-    let result = campaign_resume_workflow_report(&resume_plan, &evidence, &campaign);
+    let result = campaign_resume_workflow_report(&resume_plan, &evidence, &campaign, &progress);
     drop(campaign);
     let report = complete_transient_checkpoint_workflow(
         checkpoints,

@@ -527,7 +527,14 @@ fn public_composed_store_flight_evicts_cache_and_flushes_write_back() -> Result<
     );
     {
         let journal = DirectoryCampaignGcJournal::open(&fixture.base.journal)?;
-        assert!(journal.roots().iter().any(|root| root == policy));
+        assert!(
+            journal
+                .roots()
+                .iter()?
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .any(|root| root == policy)
+        );
     }
 
     let applied = run_json(
@@ -563,7 +570,14 @@ fn public_composed_store_flight_evicts_cache_and_flushes_write_back() -> Result<
     assert_eq!(after_maintenance["plan_version"], "v1");
     {
         let journal = DirectoryCampaignGcJournal::open(&fixture.after_maintenance_gc_journal)?;
-        assert!(!journal.roots().iter().any(|root| root == policy));
+        assert!(
+            !journal
+                .roots()
+                .iter()?
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .any(|root| root == policy)
+        );
     }
 
     let mut restarted = fixture.base.start_service(None)?;

@@ -44,7 +44,7 @@ pub(super) struct CampaignStoreGcReport {
     phase: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     apply_status: Option<&'static str>,
-    roots: usize,
+    roots: u64,
     reachable_objects: Option<u64>,
     candidates: u64,
     unreachable_candidates: u64,
@@ -307,8 +307,15 @@ pub(super) fn run_campaign_store_gc(
 
     let report = match args.operation {
         CampaignStoreGcCommand::Plan => {
+            // Planning scratch goes beside the journal, on the same durable
+            // storage the operator chose for it.
+            let spill_parent = args
+                .journal
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."));
             let planned = authority
-                .plan(&mut ledger, Some(&mut exact_pins))
+                .plan(&mut ledger, Some(&mut exact_pins), spill_parent)
                 .map_err(|error| {
                     maintenance_error(format!("campaign GC planning failed: {error}"))
                 })?;
@@ -393,15 +400,6 @@ pub(super) fn run_campaign_store_gc(
             let transition = journal.cancel().map_err(|error| {
                 maintenance_error(format!("campaign GC cancellation failed: {error}"))
             })?;
-            let unreachable_candidates = journal
-                .candidates()
-                .iter()
-                .filter(|candidate| {
-                    matches!(candidate.reason(), CampaignGcCandidateReason::Unreachable)
-                })
-                .count();
-            let unreachable_candidates = u64::try_from(unreachable_candidates)
-                .map_err(|_| maintenance_error("campaign GC candidate count overflow"))?;
             CampaignStoreGcReport {
                 schema: CAMPAIGN_GC_REPORT_SCHEMA,
                 operation: "cancel",
@@ -417,13 +415,8 @@ pub(super) fn run_campaign_store_gc(
                 roots,
                 reachable_objects: None,
                 candidates: journal.candidates().summary().candidates(),
-                unreachable_candidates,
-                reachable_cache_candidates: journal
-                    .candidates()
-                    .summary()
-                    .candidates()
-                    .checked_sub(unreachable_candidates)
-                    .ok_or_else(|| maintenance_error("campaign GC candidate count underflow"))?,
+                unreachable_candidates: journal.candidates().unreachable_candidates(),
+                reachable_cache_candidates: journal.candidates().reachable_cache_candidates(),
                 candidate_logical_bytes: journal.candidates().logical_bytes(),
                 cache_required_copies: required_copies,
                 physical,
@@ -438,32 +431,33 @@ fn cache_required_copy_report(
     plan: &CampaignGcPlan,
     candidates: &CampaignGcCandidateManifest,
 ) -> Result<Vec<CampaignStoreGcRequiredCopyReport>, CliError> {
-    candidates
-        .iter()
-        .filter_map(|candidate| {
-            let CampaignGcCandidateReason::ReachableCache { required_backend } = candidate.reason()
-            else {
-                return None;
-            };
-            Some((candidate, required_backend))
-        })
-        .map(|(candidate, required_backend)| {
-            let basis = plan
-                .physical()
-                .iter()
-                .find(|basis| basis.backend() == required_backend)
-                .ok_or_else(|| maintenance_error("campaign GC required-copy basis is absent"))?;
-            let identity = basis.storage_identity();
-            Ok(CampaignStoreGcRequiredCopyReport {
-                candidate_backend: candidate.backend().to_owned(),
-                content: candidate.id().to_string(),
-                logical_bytes: candidate.logical_length(),
-                required_backend: required_backend.clone(),
-                required_storage_identity: identity.to_hex(),
-                required_generation: basis.generation().to_hex(),
-            })
-        })
-        .collect()
+    let manifest_error = |error| {
+        maintenance_error(format!(
+            "campaign GC candidate manifest read failed: {error}"
+        ))
+    };
+    let mut report = Vec::new();
+    for candidate in candidates.iter().map_err(manifest_error)? {
+        let candidate = candidate.map_err(manifest_error)?;
+        let CampaignGcCandidateReason::ReachableCache { required_backend } = candidate.reason()
+        else {
+            continue;
+        };
+        let basis = plan
+            .physical()
+            .iter()
+            .find(|basis| basis.backend() == required_backend)
+            .ok_or_else(|| maintenance_error("campaign GC required-copy basis is absent"))?;
+        report.push(CampaignStoreGcRequiredCopyReport {
+            candidate_backend: candidate.backend().to_owned(),
+            content: candidate.id().to_string(),
+            logical_bytes: candidate.logical_length(),
+            required_backend: required_backend.clone(),
+            required_storage_identity: basis.storage_identity().to_hex(),
+            required_generation: basis.generation().to_hex(),
+        });
+    }
+    Ok(report)
 }
 
 fn physical_report(plan: &crucible_daemon::CampaignGcPlan) -> Vec<CampaignStoreGcPhysicalReport> {

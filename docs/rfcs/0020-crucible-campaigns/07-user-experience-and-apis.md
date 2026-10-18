@@ -456,14 +456,25 @@ of one exact indexed finding: its representative observation and original
 reproduction artifact. It rejects a mismatched finding, dependency kind,
 configuration artifact, or reproduction fingerprint before reporting the
 stable signature, causal identities, occurrence projection, modeled stop,
-evidence-set IDs, replay configuration, and payload profile.
+evidence-set IDs, replay configuration, and payload profile. Both explanation
+reports (`crucible.cli.campaign-finding-explanation.v2` and
+`crucible.cli.campaign-attempt-explanation.v6`) name an observation's
+discovered choices by the root and entry count of its paged discovered-choice
+map rather than listing every opportunity; `choices` pages the campaign's
+discovered opportunities.
 `explain-attempt` first authenticates the immutable attempt start and path,
 execution-basis cause and ordinal, branch selection and proposal provenance
 when present, plus a canonical completion or proved absence. For a completed
 attempt, it then reads the observation-linked measurement event leaf and any
-resolved-effect leaf through separately authorized, 1 MiB trace chunks. The
-client verifies the complete content ID before decoding either leaf. Its
-`crucible.cli.campaign-attempt-explanation.v4` JSON includes a bounded
+resolved-effect trace through separately authorized, 1 MiB trace chunks. The
+server reads only each requested byte range of a leaf, so a leaf costs linear
+work. Each trace kind bounds one leaf, never a whole run: a resolved-effect
+manifest is at most 1 MiB, a resolved-effect segment
+(`ResolvedEffectSegment`, admitted only when the observation lists it) at most
+16 MiB, and a measurement leaf at most 64 MiB. The client verifies each leaf's
+complete content ID before decoding it, and streams a resolved-effect trace
+one authenticated segment at a time against its manifest. Its
+attempt-explanation JSON includes a bounded
 `effect_evidence` object with schema
 `crucible.cli.campaign-attempt-effect-evidence.v2`: up to 4096 applied network
 records, guest semantic marker identities, typed route observations, and

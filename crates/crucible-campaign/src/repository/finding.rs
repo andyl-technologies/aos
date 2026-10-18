@@ -379,18 +379,20 @@ impl CampaignRepository {
                 return Err(integrity("finding-candidate-configuration-target-mismatch"));
             }
             Some(FindingTarget::ChoiceOpportunity(opportunity))
-                if !observation.discovered_choices().contains(&opportunity) =>
+                if !self.observation_discovers(observation, opportunity)? =>
             {
                 return Err(integrity("finding-candidate-choice-target-mismatch"));
             }
             _ => {}
         }
-        let observation_children = observation
-            .content_children()
-            .into_iter()
-            .map(|(_, id)| id)
-            .collect::<BTreeSet<_>>();
-        if !signature.causal_evidence().is_subset(&observation_children) {
+        let mut causal_evidence_owned = true;
+        for evidence in signature.causal_evidence() {
+            if !self.observation_owns(observation, *evidence)? {
+                causal_evidence_owned = false;
+                break;
+            }
+        }
+        if !causal_evidence_owned {
             return Err(integrity(
                 "finding-candidate-evidence-is-not-observation-owned",
             ));

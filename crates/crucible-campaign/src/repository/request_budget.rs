@@ -143,7 +143,7 @@ impl CampaignRepository {
         if final_ordinal < ledger.spent_attempts() {
             return Err(integrity("request-budget-admission-sequence-regressed"));
         }
-        if final_ordinal > MAX_CAMPAIGN_CLOSURE_OBJECTS as u64 {
+        if final_ordinal > MAX_REQUEST_SPENDING_ADMISSIONS {
             return Err(integrity("request-budget-admission-index-limit"));
         }
         let empty = MerkleMap::empty_content_id()?;

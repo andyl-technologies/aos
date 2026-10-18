@@ -6,7 +6,8 @@
 
 use super::*;
 use crucible_campaign::{
-    CampaignArchivePlan, CampaignArchivePolicy, CampaignSnapshotId, ObjectEnvelope,
+    CampaignArchivePlan, CampaignArchivePolicy, CampaignRepositoryError, CampaignSnapshotId,
+    ObjectEnvelope,
 };
 use crucible_cas::content_store::{
     DirectoryRefBackend, MutableRefBackend, RefName, StoreError, StoreGraphConfig,
@@ -71,12 +72,15 @@ pub(super) fn transfer_after_interruption(
 ) -> Result<(Value, Value), Box<dyn Error>> {
     let plan = source_plan(source, snapshot)?;
     assert!(!plan.manifest().checkpoint_selections().is_empty());
-    assert!(plan.selected().iter().any(|entry| {
-        matches!(
+    let mut exact_state_selected = false;
+    plan.visit_selected(|entry| {
+        exact_state_selected |= matches!(
             entry.id().kind(),
             ObjectKind::RamExtent | ObjectKind::DeviceState
-        )
-    }));
+        );
+        Ok::<(), CampaignRepositoryError>(())
+    })?;
+    assert!(exact_state_selected);
     let window = InterruptedCopy::refuse(source, destination, snapshot, &plan)?;
     let (preflight, complete) = window.repair_gc_and_retry(source, destination, snapshot)?;
 
@@ -172,7 +176,7 @@ impl InterruptedCopy {
         let original_bytes =
             ObjectEnvelope::for_archive_manifest(plan.manifest())?.canonical_bytes();
         let backend = directory_backend(destination);
-        for (id, _) in plan.transfer_objects() {
+        for (id, _) in plan.transfer_objects()? {
             assert!(
                 !backend.contains(id)?,
                 "destination already contained selected transfer bytes"
@@ -195,7 +199,7 @@ impl InterruptedCopy {
         require_transfer_corruption(source, destination, snapshot, manifest)?;
 
         let objects = plan
-            .transfer_objects()
+            .transfer_objects()?
             .into_iter()
             .collect::<BTreeMap<_, _>>();
         let source_journal = journal_inventory(source)?;
@@ -219,11 +223,11 @@ impl InterruptedCopy {
             .collect::<BTreeMap<_, _>>();
         assert!(!preceding.is_empty());
         authenticate_ids(&backend, &preceding)?;
-        let transferred = plan
-            .selected()
-            .iter()
-            .filter(|entry| entry.id() != manifest)
-            .count();
+        let mut transferred = 0_usize;
+        plan.visit_selected(|entry| {
+            transferred += usize::from(entry.id() != manifest);
+            Ok::<(), CampaignRepositoryError>(())
+        })?;
         assert!(transferred > 0);
         Ok(Self {
             manifest,
@@ -320,7 +324,8 @@ fn require_transfer_corruption(
 
 #[derive(Debug, PartialEq, Eq)]
 struct JournalInventory {
-    records: BTreeMap<String, Vec<u8>>,
+    /// Each record directory's files by name, keyed by operation ID.
+    records: BTreeMap<String, BTreeMap<String, Vec<u8>>>,
     roots: BTreeMap<ContentId, u64>,
 }
 
@@ -337,13 +342,25 @@ fn journal_inventory(fixture: &FlightFixture) -> Result<JournalInventory, Box<dy
     let mut records = BTreeMap::new();
     for entry in fs::read_dir(root.join("records"))? {
         let entry = entry?;
-        assert!(entry.file_type()?.is_file());
+        assert!(entry.file_type()?.is_dir());
         let name = entry
             .file_name()
             .into_string()
             .map_err(|_| "non-UTF8 transfer record")?;
-        assert!(name.ends_with(".transfer"));
-        assert!(records.insert(name, fs::read(entry.path())?).is_none());
+        assert!(name.len() == 64 && name.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        let mut files = BTreeMap::new();
+        for file in fs::read_dir(entry.path())? {
+            let file = file?;
+            assert!(file.file_type()?.is_file());
+            let file_name = file
+                .file_name()
+                .into_string()
+                .map_err(|_| "non-UTF8 transfer record file")?;
+            assert!(file_name == "header" || file_name.starts_with("page-"));
+            assert!(files.insert(file_name, fs::read(file.path())?).is_none());
+        }
+        assert!(files.contains_key("header"));
+        assert!(records.insert(name, files).is_none());
     }
     assert_eq!(summary.records(), records.len() as u64);
     assert_eq!(summary.roots(), roots.len() as u64);
@@ -374,15 +391,26 @@ fn reclaim_orphan_under_transfer_roots(
     assert!(
         journal
             .candidates()
-            .iter()
+            .iter()?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
             .any(|candidate| candidate.id() == orphan)
     );
     for id in objects.keys() {
-        assert!(journal.roots().iter().any(|root| root == *id));
+        assert!(
+            journal
+                .roots()
+                .iter()?
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .any(|root| root == *id)
+        );
         assert!(
             !journal
                 .candidates()
-                .iter()
+                .iter()?
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
                 .any(|candidate| candidate.id() == *id)
         );
     }

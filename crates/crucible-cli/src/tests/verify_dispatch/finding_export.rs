@@ -96,9 +96,8 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
         FindingExactPins, FindingExactRetention, FindingExactRetentionDisposition, FindingKind,
         FindingMinimizationAttempt, FindingMinimizationEvidence, FindingSignature,
         FindingSignatureMinimizationEvidence, FindingTarget, FindingTriageEvidenceSet,
-        FindingTriageReplayEvidence, MeasurementSet, Observation, PropertyEvidence,
-        PropertyVerdict, PropertyVerdictSet, RepositoryCampaignService, RetentionPolicy,
-        ScenarioDefId, StopOutcome,
+        MeasurementSet, Observation, PropertyEvidence, PropertyVerdict, PropertyVerdictSet,
+        RepositoryCampaignService, RetentionPolicy, ScenarioDefId, StopOutcome,
     };
     use crucible_cas::content_store::{MemoryBlobBackend, MemoryRefBackend};
     use crucible_daemon::campaign_store_composition::{
@@ -290,7 +289,8 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
     )?;
     let observed = repository.publish_observation(CAMPAIGN, observation_snapshot, &observation)?;
     let campaign_fingerprint = CampaignHash::from_bytes(fingerprint.bytes);
-    let reproduction_payload = model_finding.artifact.to_compact_binary();
+    let reproduction_payload =
+        crucible_daemon::crucible_reproduction_payload(&model_finding.artifact)?;
     assert_eq!(
         model_finding.artifact.scenario_form().id().to_hex(),
         scenario.to_hex()
@@ -298,15 +298,16 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
     assert_eq!(configuration.id().to_hex(), child.to_hex());
     assert_eq!(
         model_finding.artifact.id().to_hex(),
-        crucible::ContentHash::from_bytes(&reproduction_payload).to_hex()
+        crucible::ContentHash::from_bytes(&model_finding.artifact.to_compact_binary()).to_hex()
     );
+    publish_reproduction_segments(&repository, &model_finding.artifact)?;
+    publish_reproduction_segments(&repository, &minimized_model_finding.artifact)?;
     let original = repository.publish_reproduction_artifact(
         scenario,
         scenario_artifact,
         child,
         child_artifact,
         campaign_fingerprint,
-        crucible_daemon::CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V4,
         reproduction_payload.clone(),
     )?;
     let replayed_state = CampaignHash::from_bytes(minimized_model_finding.replay.state.bytes);
@@ -336,8 +337,7 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
         minimized_child,
         minimized_child_artifact,
         campaign_fingerprint,
-        crucible_daemon::CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V4,
-        minimized_model_finding.artifact.to_compact_binary(),
+        crucible_daemon::crucible_reproduction_payload(&minimized_model_finding.artifact)?,
         minimization.clone(),
     )?;
     let signature = FindingSignature::new(
@@ -363,20 +363,18 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
         replay_pass.clone(),
         replay_pass,
     )?;
-    let native_replay = crucible::FailureTriageReplayEvidence::new(
+    let native_replay = crucible_core::test_support::replay_evidence_for_test(
         report.finding.clone(),
         report.failure.clone(),
-        report.causal_entries.clone(),
+        &report.causal_entries,
         report.recorded_event_log.coverage_fingerprint(),
-        report.recorded_event_frames.clone(),
     )?;
     let minimized_report = triage_evidence_for_finding(minimized_model_finding.clone(), &report)?;
-    let minimized_native_replay = crucible::FailureTriageReplayEvidence::new(
+    let minimized_native_replay = crucible_core::test_support::replay_evidence_for_test(
         minimized_report.finding.clone(),
         minimized_report.failure.clone(),
-        minimized_report.causal_entries.clone(),
+        &minimized_report.causal_entries,
         minimized_report.recorded_event_log.coverage_fingerprint(),
-        minimized_report.recorded_event_frames.clone(),
     )?;
     let mut verification_entries = minimized_report.causal_entries.clone();
     // A later diagnostic distinguishes the independent replay's raw log while
@@ -384,13 +382,13 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
     verification_entries.push(finding_export_observational_entry(
         "finding-export-verification-complete",
     ));
-    let verification_selected_native_replay = crucible::FailureTriageReplayEvidence::new(
-        minimized_report.finding.clone(),
-        minimized_report.failure.clone(),
-        verification_entries,
-        minimized_report.recorded_event_log.coverage_fingerprint(),
-        minimized_report.recorded_event_frames.clone(),
-    )?;
+    let verification_selected_native_replay =
+        crucible_core::test_support::replay_evidence_for_test(
+            minimized_report.finding.clone(),
+            minimized_report.failure.clone(),
+            &verification_entries,
+            minimized_report.recorded_event_log.coverage_fingerprint(),
+        )?;
     assert_eq!(
         minimized_native_replay.signature(),
         verification_selected_native_replay.signature()
@@ -400,30 +398,30 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
         verification_selected_native_replay.to_compact_binary()?
     );
 
+    // Each record's log segments are published before the record that names
+    // them, as the repository requires.
     let publish_triage_replay = |reproduction,
                                  observed_signature: &FindingSignature,
-                                 payload: Vec<u8>|
+                                 native: &crucible::FailureTriageReplayEvidence|
      -> Result<_, Box<dyn Error>> {
-        let evidence = FindingTriageReplayEvidence::new(
-            reproduction,
-            observed_signature.clone(),
-            crucible::FAILURE_TRIAGE_REPLAY_EVIDENCE_SCHEMA_VERSION,
-            payload,
-        )?;
+        let evidence = finding_export_triage_record(reproduction, observed_signature, native)?;
+        for segment in evidence.log_segments() {
+            let bytes = crucible::SegmentSource::segment(
+                native.log_segments().as_ref(),
+                segment.content(),
+            )?;
+            repository.publish_finding_triage_replay_log_segment(*segment, &bytes)?;
+        }
         Ok(repository.publish_finding_triage_replay_evidence(&evidence)?)
     };
     let triage_evidence = FindingTriageEvidenceSet::new(
-        publish_triage_replay(original, &signature, native_replay.to_compact_binary()?)?,
+        publish_triage_replay(original, &signature, &native_replay)?,
+        publish_triage_replay(minimized, &minimized_signature, &minimized_native_replay)?,
+        publish_triage_replay(original, &signature, &native_replay)?,
         publish_triage_replay(
             minimized,
             &minimized_signature,
-            minimized_native_replay.to_compact_binary()?,
-        )?,
-        publish_triage_replay(original, &signature, native_replay.to_compact_binary()?)?,
-        publish_triage_replay(
-            minimized,
-            &minimized_signature,
-            verification_selected_native_replay.to_compact_binary()?,
+            &verification_selected_native_replay,
         )?,
     );
     let bundle = FindingCandidateBundle::new_with_exact_retention(
@@ -771,22 +769,18 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
     alternate_selected_entries.push(finding_export_observational_entry(
         "finding-export-second-valid-occurrence",
     ));
-    let alternate_selected_replay = crucible::FailureTriageReplayEvidence::new(
+    let alternate_selected_replay = crucible_core::test_support::replay_evidence_for_test(
         minimized_report.finding.clone(),
         minimized_report.failure.clone(),
-        alternate_selected_entries,
+        &alternate_selected_entries,
         minimized_report.recorded_event_log.coverage_fingerprint(),
-        minimized_report.recorded_event_frames.clone(),
     )?;
     assert_eq!(
         alternate_selected_replay.signature(),
         minimized_native_replay.signature()
     );
-    let alternate_selected = publish_triage_replay(
-        minimized,
-        &minimized_signature,
-        alternate_selected_replay.to_compact_binary()?,
-    )?;
+    let alternate_selected =
+        publish_triage_replay(minimized, &minimized_signature, &alternate_selected_replay)?;
     let duplicate_bundle = FindingCandidateBundle::new_with_exact_retention(
         FindingCandidateCore::new(
             observed.observation,
@@ -827,19 +821,20 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
     assert_eq!(duplicate_loaded.ledger.signed_findings().len(), 1);
     assert_eq!(duplicate_loaded.evidence.finding(0)?.occurrence_count, 2);
 
-    let frame_distinct_replay = crucible::FailureTriageReplayEvidence::new(
+    // Distinct coverage changes only the native signature's coverage class and
+    // evidence binding, which the campaign signature does not carry.
+    let coverage_distinct_replay = crucible_core::test_support::replay_evidence_for_test(
         report.finding.clone(),
         report.failure.clone(),
-        report.causal_entries.clone(),
-        report.recorded_event_log.coverage_fingerprint(),
-        vec![b"distinct authenticated event frame".to_vec()],
+        &report.causal_entries,
+        crucible::ContentHash::from_bytes(b"distinct authenticated replay coverage"),
     )?;
-    assert_ne!(frame_distinct_replay.signature(), native_replay.signature());
-    let frame_distinct_original = publish_triage_replay(
-        original,
-        &signature,
-        frame_distinct_replay.to_compact_binary()?,
-    )?;
+    assert_ne!(
+        coverage_distinct_replay.signature(),
+        native_replay.signature()
+    );
+    let coverage_distinct_original =
+        publish_triage_replay(original, &signature, &coverage_distinct_replay)?;
     let conflicting_bundle = FindingCandidateBundle::new_with_exact_retention(
         FindingCandidateCore::new(
             observed.observation,
@@ -850,7 +845,7 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
             FindingExactPins::default(),
         ),
         Some(FindingTriageEvidenceSet::new(
-            frame_distinct_original,
+            coverage_distinct_original,
             triage_evidence.minimization_selected(),
             triage_evidence.verification_original(),
             triage_evidence.verification_selected(),
@@ -886,22 +881,34 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
         model_finding.clone(),
         finding_export_violation(&model_finding, FOREIGN_PROPERTY)?,
     )?;
-    let foreign_native_replay = crucible::FailureTriageReplayEvidence::new(
+    let foreign_native_replay = crucible_core::test_support::replay_evidence_for_test(
         foreign_report.finding,
         foreign_report.failure,
-        foreign_report.causal_entries,
+        &foreign_report.causal_entries,
         foreign_report.recorded_event_log.coverage_fingerprint(),
-        foreign_report.recorded_event_frames,
     )?;
     assert_ne!(
         foreign_native_replay.signature().property,
         native_replay.signature().property
     );
-    let foreign_original = publish_triage_replay(
-        original,
-        &signature,
-        foreign_native_replay.to_compact_binary()?,
-    )?;
+
+    // In isolation, a record whose native payload names another property is
+    // refused by the signature binding alone.
+    let foreign_evidence =
+        finding_export_triage_record(original, &signature, &foreign_native_replay)?;
+    assert!(matches!(
+        crate::cli_triage_debug::campaign_evidence::decode_campaign_triage_replay_record(
+            &foreign_evidence,
+            &repository.load_reproduction_artifact(original)?,
+            model_finding.clone(),
+            foreign_native_replay.log_segments().clone(),
+        ),
+        Err(CliError::Artifact(message))
+            if message.contains("disagrees with its observed campaign signature")
+    ));
+
+    let foreign_original = publish_triage_replay(original, &signature, &foreign_native_replay)?;
+    assert_eq!(foreign_original, foreign_evidence.id()?);
     let foreign_bundle = FindingCandidateBundle::new_with_exact_retention(
         FindingCandidateCore::new(
             observed.observation,
@@ -934,6 +941,9 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
         Some(report),
         &evidence_store,
     )?;
+    // The finding still holds the coverage-distinct occurrence above, and
+    // occurrence pages follow candidate-bundle identity. Whichever of the two
+    // tampered occurrences is authenticated first refuses the ledger.
     assert!(matches!(
         load(
             &crate::cli_triage_debug::campaign_evidence::campaign_findings_ledger_bytes(&[(
@@ -943,6 +953,7 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
         ),
         Err(CliError::Artifact(message))
             if message.contains("disagrees with its observed campaign signature")
+                || message.contains("conflicting authenticated native signatures")
     ));
     Ok(())
 }
@@ -969,6 +980,30 @@ fn finding_export_violation(
         .ok_or_else(|| std::io::Error::other("fixture assertion did not fail at its boundary"))?;
     violation.reproduction_artifact = finding.artifact.id();
     Ok(violation)
+}
+
+/// Builds the campaign record of `native`, naming each of its log segments.
+fn finding_export_triage_record(
+    reproduction: crucible_campaign::ReproductionArtifactId,
+    observed_signature: &crucible_campaign::FindingSignature,
+    native: &crucible::FailureTriageReplayEvidence,
+) -> Result<crucible_campaign::FindingTriageReplayEvidence, Box<dyn Error>> {
+    let log_segments = native
+        .referenced_segments()
+        .iter()
+        .map(|segment| {
+            crucible_campaign::FindingTriageReplayLogSegment::new(segment.id, segment.encoded_bytes)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(
+        crucible_campaign::FindingTriageReplayEvidence::new_with_log_segments(
+            reproduction,
+            observed_signature.clone(),
+            crucible::FAILURE_TRIAGE_REPLAY_EVIDENCE_SCHEMA_VERSION,
+            native.to_compact_binary()?,
+            log_segments,
+        )?,
+    )
 }
 
 fn finding_export_observational_entry(name: &str) -> crucible::SchedulerEventLogEntry {

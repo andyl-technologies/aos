@@ -10,7 +10,11 @@ use super::super::record::{
     CampaignFindingEvidenceRecord, CampaignOccurrenceExchanges, MAX_OCCURRENCES_PER_CHUNK,
     TRIAGE_REPLAY_ROLES, read_occurrence_chunk,
 };
+use super::super::reproduction::{
+    authenticate_finding_reproduction, authenticate_occurrence_reproduction,
+};
 use super::super::store::CampaignExchangeRef;
+use super::super::triage_segments::authenticate_occurrence_triage_log_segments;
 use super::*;
 
 /// Largest reassembled triage replay transfer accepted for one role.
@@ -22,6 +26,10 @@ pub(crate) struct AuthenticatedCampaignFindingHead {
     pub(crate) observation: crucible_campaign::Observation,
     pub(crate) reproduction: crucible_campaign::ReproductionArtifact,
     pub(crate) minimized_reproduction: Option<crucible_campaign::ReproductionArtifact>,
+    /// Crucible artifact decoded from the reproduction's authenticated segments.
+    pub(crate) reproduction_artifact: crucible::ReproductionArtifact,
+    /// Crucible artifact of the minimized reproduction, present with it.
+    pub(crate) minimized_artifact: Option<crucible::ReproductionArtifact>,
 }
 
 /// Everything one occurrence authentication reads besides its own exchanges.
@@ -196,11 +204,32 @@ pub(crate) fn authenticate_campaign_finding_head(
         })
         .transpose()?;
 
+    let reproduction_artifact = authenticate_finding_reproduction(
+        evidence,
+        record,
+        false,
+        &reproduction,
+        record.reproduction_segments,
+    )?;
+    let minimized_artifact = match (&minimized_reproduction, record.minimized_segments) {
+        (Some(minimized), Some(segments)) => Some(authenticate_finding_reproduction(
+            evidence, record, true, minimized, segments,
+        )?),
+        (None, None) => None,
+        _ => {
+            return Err(artifact_error(format!(
+                "finding {index} minimized reproduction and its segment list disagree"
+            )));
+        }
+    };
+
     Ok(AuthenticatedCampaignFindingHead {
         finding,
         observation,
         reproduction,
         minimized_reproduction,
+        reproduction_artifact,
+        minimized_artifact,
     })
 }
 
@@ -440,13 +469,38 @@ pub(crate) fn authenticate_campaign_occurrence(
         )));
     }
 
+    // Both reproductions' segments are authenticated for every occurrence,
+    // so no captured evidence goes unchecked.
+    let original_artifact = authenticate_occurrence_reproduction(
+        context.evidence,
+        record,
+        bundle_id,
+        false,
+        reproduction,
+        exchanges.reproduction_segments,
+    )?;
+    let selected_artifact = authenticate_occurrence_reproduction(
+        context.evidence,
+        record,
+        bundle_id,
+        true,
+        minimized,
+        exchanges.minimized_segments,
+    )?;
+
     match (&exchanges.triage, bundle.triage_evidence()) {
         (Some(roles), Some(evidence_set)) => {
-            let original =
-                campaign_model_finding_reproduction(&context.template.finding, reproduction)?;
-            let selected =
-                campaign_model_finding_reproduction(&context.template.finding, minimized)?;
-            for ((role, _), segments) in TRIAGE_REPLAY_ROLES.iter().zip(roles) {
+            let original = campaign_model_finding_reproduction(
+                &context.template.finding,
+                reproduction,
+                original_artifact,
+            )?;
+            let selected = campaign_model_finding_reproduction(
+                &context.template.finding,
+                minimized,
+                selected_artifact,
+            )?;
+            for ((role, _), exchanges) in TRIAGE_REPLAY_ROLES.iter().zip(roles) {
                 let evidence_id = triage_role_evidence(&evidence_set, *role);
                 let replay = authenticate_campaign_triage_replay(
                     context,
@@ -456,16 +510,28 @@ pub(crate) fn authenticate_campaign_occurrence(
                         role: *role,
                         evidence: evidence_id,
                     },
-                    segments,
+                    &exchanges.segments,
                     &client,
+                )?;
+                let log_segments = authenticate_occurrence_triage_log_segments(
+                    context.evidence,
+                    record,
+                    bundle_id,
+                    *role,
+                    &replay,
+                    exchanges.log_segments,
                 )?;
                 let (reproduction, model_finding) = if triage_role_is_selected(*role) {
                     (minimized, selected.clone())
                 } else {
                     (reproduction, original.clone())
                 };
-                let native =
-                    decode_campaign_triage_replay_record(&replay, reproduction, model_finding)?;
+                let native = decode_campaign_triage_replay_record(
+                    &replay,
+                    reproduction,
+                    model_finding,
+                    log_segments,
+                )?;
                 drop(replay);
                 on_replay(page, *role, native)?;
             }
@@ -706,7 +772,10 @@ pub(crate) fn validate_campaign_triage_finding(
         || item.reproduction.finding_fingerprint() != item.finding.signature().fingerprint()
         || item.reproduction.finding_fingerprint() != report_fingerprint
         || item.reproduction.configuration().as_hash() != report_configuration
-        || item.reproduction.payload() != item.report.finding.artifact.to_compact_binary()
+        || crucible_daemon::crucible_reproduction_payload(&item.report.finding.artifact)
+            .ok()
+            .as_ref()
+            != Some(item.reproduction.reproduction_payload())
         || !report_failure_matches
     {
         return Err(artifact_error(format!(

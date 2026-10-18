@@ -97,11 +97,12 @@ where
         context: &AttemptExecutionContext,
         target: &crate::qemu_campaign_driver::QemuSelectedResumeBoundary,
     ) -> Result<crate::QemuSavepointReplayProof, QemuCheckpointReplayFailure<F::Error>> {
-        let continuations = validated_attempt_continuations(input).map_err(|()| {
+        let validated_continuations = validated_attempt_continuations(input).map_err(|()| {
             Box::new(AttemptWorkerFailure::Terminal(
                 QemuFreshExecutionRunnerError::InvalidContinuationInput,
             ))
         })?;
+        let continuations = validated_continuations.controls();
         if !self
             .lifecycles
             .configure_attempt_continuations(&continuations)
@@ -287,7 +288,9 @@ pub(super) fn production_continuation_plan(
                 if schedule.to_compact_binary() != *bytes {
                     return Err(QemuAttemptProductionVmLifecycleError::InvalidContinuationInput);
                 }
-                let [Decision::Selection(decision)] = schedule.decisions() else {
+                let (1, Some(Decision::Selection(decision))) =
+                    (schedule.len(), schedule.decision(0))
+                else {
                     return Err(QemuAttemptProductionVmLifecycleError::InvalidContinuationInput);
                 };
                 let selection = decision
@@ -310,14 +313,20 @@ pub(super) fn production_continuation_plan(
     }
 }
 
+/// Derives the lifecycle configuration that launches `start`.
+///
+/// `window` says whether the launch replays `start` from genesis or restores
+/// a checkpoint at `start`; only a genesis launch carries app-random branch
+/// substitutions.
 pub(super) fn production_lifecycle_config_for_start(
     config: &ProductionVmLifecycleConfig,
     source: &ScenarioDefForm,
     start: &Configuration,
+    window: AppRandomLaunchWindow,
     signal_fault_replay: Option<&crucible::SignalFaultCampaignReplayPlan>,
     authenticated_network_selections: &[SelectionDecision],
 ) -> Result<ProductionVmLifecycleConfig, QemuAttemptProductionVmLifecycleError> {
-    let (selections, plans) = app_random_branch_replay(start)
+    let (selections, plans) = app_random_branch_replay(start, window)
         .map_err(QemuAttemptProductionVmLifecycleError::InvalidAppRandomBranchReplay)?;
     if plans.keys().any(|node| {
         !source
@@ -382,9 +391,10 @@ where
                 QemuFreshExecutionRunnerError::PriorRetentionPending,
             ));
         }
-        let continuations = validated_attempt_continuations(input).map_err(|()| {
+        let validated_continuations = validated_attempt_continuations(input).map_err(|()| {
             AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::InvalidContinuationInput)
         })?;
+        let continuations = validated_continuations.controls();
         let continuation_free = continuations.is_empty();
         if !self
             .lifecycles
@@ -779,9 +789,10 @@ where
         context: &AttemptExecutionContext,
         target: &crate::qemu_campaign_driver::QemuSelectedResumeBoundary,
     ) -> Result<QemuSavepointReplayProof, AttemptWorkerFailure<Self::Error>> {
-        let continuations = validated_attempt_continuations(input).map_err(|()| {
+        let validated_continuations = validated_attempt_continuations(input).map_err(|()| {
             AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::InvalidContinuationInput)
         })?;
+        let continuations = validated_continuations.controls();
         if !self
             .lifecycles
             .configure_attempt_continuations(&continuations)
@@ -910,7 +921,14 @@ pub(super) fn replay_selected_origins<F, D>(
     let mut segment_start = base.as_ref().clone();
     let mut signal_fault_replay = base_signal_fault_replay.clone();
 
+    // Origins are materialized one at a time, so only the current segment's
+    // reached configuration is resident beside the terminal origin.
     for origin in origins.iter() {
+        let origin = origin.map_err(|error| {
+            AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
+                QemuFreshStartReplayError::OriginMaterialization(error),
+            ))
+        })?;
         let segment =
             input.for_origin_replay(origin.attempt().clone(), segment_start, signal_fault_replay);
         let mut facade = QemuFreshAttemptLifecycle::new(lifecycle);

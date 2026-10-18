@@ -362,6 +362,8 @@ fn production_ninep_coordinator_mutates_result_and_visibility_state() {
     .unwrap_or_else(|error| panic!("test production fault runtime should build: {error}"));
     let coordinator = ProductionNinepFaultCoordinator {
         runtime: Arc::new(Mutex::new(runtime)),
+        consumer: ReferencedEventConsumer::ninep_visibility(&target)
+            .unwrap_or_else(|error| panic!("test 9p consumer should derive: {error}")),
         cursor: Arc::new(Mutex::new(ProductionFaultEvaluationCursor::default())),
         observations: Arc::new(Mutex::new(ProductionFaultObservationJournal::default())),
         world,
@@ -532,15 +534,23 @@ fn restored_ninep_event_cursor_beyond_the_runtime_fails_closed() {
         &nodes,
     )
     .unwrap_or_else(|error| panic!("test production fault runtime should build: {error}"));
+    let target = ResolvedFaultTarget::NinePDevice {
+        device: ContentHash::from_bytes(b"ninep-device"),
+    };
+    let consumer = ReferencedEventConsumer::ninep_visibility(&target)
+        .unwrap_or_else(|error| panic!("test 9p consumer should derive: {error}"));
+    let mut runtime = runtime;
+    runtime
+        .bind_referenced_event_consumers(&[consumer])
+        .unwrap_or_else(|error| panic!("test 9p consumer should bind: {error}"));
     let mut coordinator = ProductionNinepFaultCoordinator::new(
         Arc::new(Mutex::new(runtime)),
+        consumer,
         Arc::new(Mutex::new(ProductionFaultEvaluationCursor::default())),
         Arc::new(Mutex::new(ProductionFaultObservationJournal::default())),
         World::from_nodes(Vec::new())
             .unwrap_or_else(|error| panic!("empty test world should build: {error}")),
-        ResolvedFaultTarget::NinePDevice {
-            device: ContentHash::from_bytes(b"ninep-device"),
-        },
+        target,
         FaultResourceLimits::compiled_maximum(),
     );
     let (_region, mut servicer) = test_ninep_servicer();
@@ -561,7 +571,7 @@ fn restored_ninep_event_cursor_beyond_the_runtime_fails_closed() {
         },
     };
     servicer
-        .observe_visibility_events(&[emission])
+        .observe_visibility_events(&[emission], 1)
         .unwrap_or_else(|error| panic!("test emission should feed: {error}"));
     coordinator.verified_event_cursor = None;
     assert!(coordinator.feed_visibility_events(&mut servicer).is_err());

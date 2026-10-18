@@ -12,17 +12,19 @@ pub(super) struct ProductionSourcePreparation {
     pub(super) native_retirement: Option<ProductionExactCheckpointRetirement>,
     pub(super) promotion_source: Option<ExactCheckpointId>,
     pub(super) promotion_evidence: Option<Vec<u8>>,
-    pub(super) choice_closure: Vec<u8>,
+    pub(super) choice_closure: crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure,
     pub(super) reuse: Option<ProductionRepositoryReuse>,
 }
 
-type ProductionRootChildren = (
-    ContentId,
-    Vec<ContentId>,
-    Option<ExactCheckpointId>,
-    Option<ContentId>,
-    ContentId,
-);
+/// The children of one production root, by role.
+pub(super) struct ProductionRootChildren {
+    pub(super) manifest: ContentId,
+    pub(super) indexes: Vec<ContentId>,
+    pub(super) promotion_source: Option<ExactCheckpointId>,
+    pub(super) promotion_evidence: Option<ContentId>,
+    pub(super) choice_closure: ContentId,
+    pub(super) choice_frames: Vec<ContentId>,
+}
 
 #[cfg(test)]
 pub(super) fn prepare_production_source(
@@ -42,9 +44,7 @@ pub(super) fn prepare_production_source(
         native_retirement: None,
         promotion_source: None,
         promotion_evidence: None,
-        choice_closure: crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::empty()
-            .to_canonical_bytes()
-            .map_err(|_| invalid_root("empty choice closure could not be encoded"))?,
+        choice_closure: crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::empty(),
         reuse: None,
     })
 }
@@ -171,25 +171,9 @@ pub(super) fn prepare_production_source_with_cancellation(
             "replay-oracle source and evidence must be prepared together",
         ));
     }
-    if choice_closure.is_empty()
-        || choice_closure.len() as u64 > MAX_PRODUCTION_CHOICE_CLOSURE_BYTES
-    {
-        return Err(invalid_root("checkpoint choice closure length is invalid"));
-    }
-    crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::from_canonical_bytes(
-        &choice_closure,
-    )
-    .map_err(|_| invalid_root("checkpoint choice closure is malformed"))?;
-    let mut choice_closure = BlobHandle::from_bytes(choice_closure);
-    if let Some(cancellation) = cancellation.as_ref() {
-        choice_closure = cancellation_blob_handle(choice_closure, cancellation.clone());
-    }
-    let choice_id = ContentId::for_source(
-        ObjectKind::Observation,
-        PRODUCTION_CHOICE_CLOSURE_SCHEMA_VERSION,
-        &choice_closure,
-    )
-    .map_err(map_checkpoint_store_error)?;
+    // The closure was authenticated when it was built or loaded; its root
+    // names every frame by digest, so only identities enter the root here.
+    let choice_id = choice_closure.root_id();
 
     let body = encode_production_root_body(ProductionRootBody {
         production_identity,
@@ -207,6 +191,9 @@ pub(super) fn prepare_production_source_with_cancellation(
         PRODUCTION_CHOICE_CLOSURE_ROLE,
         choice_id,
     )?);
+    for (index, identity) in choice_closure.frame_ids().enumerate() {
+        children.insert(ContentChild::new(choice_frame_role(index)?, identity)?);
+    }
     if let Some(source) = promotion_source {
         children.insert(ContentChild::new(
             PRODUCTION_PROMOTION_SOURCE_ROLE,
@@ -246,7 +233,7 @@ pub(super) fn prepare_production_source_with_cancellation(
         production_identity,
         promotion_source,
         promotion_evidence,
-        choice_closure: (choice_id, choice_closure),
+        choice_closure,
         scenario,
         configuration,
         object_bytes,
@@ -433,15 +420,12 @@ pub(super) fn decode_production_root_children(
 ) -> Result<ProductionRootChildren, ExactCheckpointStoreError> {
     let expected = usize::try_from(index_count)
         .map_err(|_| invalid_root("production index count is not representable"))?;
-    if !matches!(envelope.children().len(), count if count == expected.saturating_add(2) || count == expected.saturating_add(4))
-    {
-        return Err(invalid_root("production root child count mismatch"));
-    }
     let mut manifest = None;
     let mut promotion_source = None;
     let mut promotion_evidence = None;
     let mut choice_closure = None;
     let mut indexes = vec![None; expected];
+    let mut choice_frames = BTreeMap::new();
     for child in envelope.children() {
         if child.role() == PRODUCTION_MANIFEST_ROLE {
             if manifest.replace(child.id()).is_some()
@@ -478,6 +462,22 @@ pub(super) fn decode_production_root_children(
             }
             continue;
         }
+        if let Some(suffix) = child
+            .role()
+            .strip_prefix(PRODUCTION_CHOICE_FRAME_ROLE_PREFIX)
+        {
+            let index = decode_role_ordinal(suffix)
+                .filter(|index| choice_frame_role(*index).ok().as_deref() == Some(child.role()))
+                .ok_or_else(|| invalid_root("checkpoint choice frame role is invalid"))?;
+            if child.id().kind() != crate::qemu_campaign_lifecycle::REPLAY_CLOSURE_OBJECT_KIND
+                || child.id().schema_version()
+                    != crate::qemu_campaign_lifecycle::REPLAY_CLOSURE_OBJECT_SCHEMA_VERSION
+                || choice_frames.insert(index, child.id()).is_some()
+            {
+                return Err(invalid_root("checkpoint choice frame child is invalid"));
+            }
+            continue;
+        }
         let suffix = child
             .role()
             .strip_prefix(PRODUCTION_INDEX_ROLE_PREFIX)
@@ -502,13 +502,45 @@ pub(super) fn decode_production_root_children(
         .into_iter()
         .collect::<Option<Vec<_>>>()
         .ok_or_else(|| invalid_root("production index child sequence is incomplete"))?;
-    Ok((
+    // Frame roles are dense from zero, so the map's keys are 0..len exactly.
+    if choice_frames
+        .keys()
+        .enumerate()
+        .any(|(position, index)| position != *index)
+    {
+        return Err(invalid_root(
+            "checkpoint choice frame sequence is incomplete",
+        ));
+    }
+    Ok(ProductionRootChildren {
         manifest,
         indexes,
         promotion_source,
         promotion_evidence,
-        choice_closure.ok_or_else(|| invalid_root("checkpoint choice closure child is missing"))?,
-    ))
+        choice_closure: choice_closure
+            .ok_or_else(|| invalid_root("checkpoint choice closure child is missing"))?,
+        choice_frames: choice_frames.into_values().collect(),
+    })
+}
+
+/// Parses a canonical eight-digit lowercase hexadecimal role ordinal.
+fn decode_role_ordinal(suffix: &str) -> Option<usize> {
+    let canonical = suffix.len() == 8
+        && suffix
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'));
+    canonical
+        .then(|| usize::from_str_radix(suffix, 16).ok())
+        .flatten()
+}
+
+pub(super) fn choice_frame_role(index: usize) -> Result<String, ExactCheckpointStoreError> {
+    if index >= crate::qemu_campaign_lifecycle::MAX_REPLAY_CLOSURE_FRAMES {
+        return Err(invalid_root(
+            "checkpoint choice frame ordinal is out of range",
+        ));
+    }
+    Ok(format!("{PRODUCTION_CHOICE_FRAME_ROLE_PREFIX}{index:08x}"))
 }
 
 pub(super) fn validate_production_checkpoint_bytes(

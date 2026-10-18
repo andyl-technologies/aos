@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::io;
 use std::sync::Arc;
 
 use crucible::{
@@ -313,6 +314,49 @@ fn namespace_gives_each_attempt_its_own_removable_directory() {
     assert!(!first_path.exists());
     assert!(second_path.is_dir());
     assert!(AttemptLogNamespace::create(namespace.root()).is_err());
+}
+
+#[test]
+fn trace_sink_charges_each_new_segment_once_against_its_budget() {
+    use crucible_cas::segment_store::SegmentSink;
+
+    let parent = tempfile::tempdir().unwrap_or_else(|error| panic!("temporary parent: {error}"));
+    let namespace = AttemptLogNamespace::create(parent.path().join("event-logs"))
+        .unwrap_or_else(|error| panic!("namespace: {error}"));
+    let segment = |text: &str| {
+        let bytes = text.as_bytes().to_vec();
+        (ContentId::for_bytes(ObjectKind::Trace, 1, &bytes), bytes)
+    };
+    let (first, first_bytes) = segment("first trace segment");
+    let (second, second_bytes) = segment("second trace segment");
+    let budget = (first_bytes.len() + second_bytes.len() - 1) as u64;
+    let sink = namespace
+        .create_trace_sink(budget)
+        .unwrap_or_else(|error| panic!("trace sink: {error}"));
+
+    sink.put_segment(first, &first_bytes)
+        .unwrap_or_else(|error| panic!("first segment: {error}"));
+    // A present identity is not charged again.
+    sink.put_segment(first, &first_bytes)
+        .unwrap_or_else(|error| panic!("repeated segment: {error}"));
+    assert_eq!(sink.charged_bytes(), first_bytes.len() as u64);
+
+    let Err(refused) = sink.put_segment(second, &second_bytes) else {
+        panic!("a segment beyond the budget is refused");
+    };
+    assert_eq!(refused.kind(), std::io::ErrorKind::QuotaExceeded);
+    assert_eq!(sink.charged_bytes(), first_bytes.len() as u64);
+    assert!(sink.segment(second).is_err());
+
+    assert_eq!(
+        sink.segment(first)
+            .unwrap_or_else(|error| panic!("read back: {error}")),
+        first_bytes
+    );
+    assert!(
+        sink.put_segment(second, &first_bytes).is_err(),
+        "foreign bytes never enter the directory"
+    );
 }
 
 #[test]

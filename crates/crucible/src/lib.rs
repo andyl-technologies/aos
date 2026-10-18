@@ -19,9 +19,12 @@
 //! snapshots independent of run length,
 //! [`node_time`] owns backend-counter to scheduler-time rebasing,
 //! [`backend`] owns the VM backend boundary, [`event_catalog`] owns the versioned
-//! event-kind catalog, [`scheduler`] owns the quantum-loop boundary, [`trigger`]
-//! owns event-graph control flow, [`native_console`] owns logical byte-origin
-//! encoding without execution authority, [`tracing_bridge`] owns opt-in host diagnostic
+//! event-kind catalog, [`scheduler`] owns the quantum-loop boundary,
+//! [`segment_store`] re-exports the content-addressed storage shared by
+//! segmented logs, [`attempt_log`] owns the attempt event log's segment and
+//! manifest formats, [`trigger`] owns event-graph control flow,
+//! [`native_console`] owns logical byte-origin encoding without execution
+//! authority, [`tracing_bridge`] owns opt-in host diagnostic
 //! mirroring to `tracing`, `local_backend` provides the production local
 //! backend, and `sim_backend` provides the feature-gated in-process QEMU test
 //! double.
@@ -30,6 +33,7 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
+pub mod attempt_log;
 pub mod backend;
 pub mod decision;
 pub mod device;
@@ -43,6 +47,7 @@ pub mod model;
 pub mod native_console;
 pub mod node_time;
 pub mod scheduler;
+pub use crucible_cas::segment_store;
 #[cfg(feature = "test-double")]
 mod sim_backend;
 pub mod tracing_bridge;
@@ -51,6 +56,10 @@ pub mod trigger;
 /// Portable canonical campaign vocabulary owned by `crucible-campaign`.
 pub use crucible_campaign as campaign;
 
+pub use attempt_log::{
+    AttemptEventLogError, AttemptLogEntries, AttemptLogManifest, AttemptLogSegmentRef,
+    seal_attempt_log,
+};
 pub use backend::{
     AdvanceOutcome, Backend, BackendDispatchContract, BackendEffect, BackendError, BackendInput,
     BackendIoComputedReply, BackendIoInventory, BackendIoInventoryAuthority, BackendIoNativeCap,
@@ -66,11 +75,12 @@ pub use backend::{MockSimulationBackend, MockSimulationBackendState};
 pub use crucible_device::{ResolvedNetworkFrameEffects, ResolvedNetworkFrameEffectsError};
 pub use decision::{
     AppRandomSelectable, AppRandomSelectableError, DecisionRecordError, DecisionRecorder,
-    MAX_SIGNAL_FAULT_CAMPAIGN_BRANCHES, MAX_SIGNAL_FAULT_CAMPAIGN_CANDIDATES,
-    NETWORK_FAULT_CAMPAIGN_ADAPTER, NetworkFaultCampaignBranch, NetworkFaultCampaignReplayPlan,
-    NetworkFaultPhase, NetworkFaultSelectable, NetworkFaultSelectableError,
-    SIGNAL_FAULT_CAMPAIGN_ADAPTER, SignalFaultCampaignBranch, SignalFaultCampaignReplayPlan,
-    SignalFaultSelectable, SignalFaultSelectableError, app_random_stream_belongs_to_node,
+    MAX_NETWORK_FAULT_CAMPAIGN_BRANCHES, MAX_SIGNAL_FAULT_CAMPAIGN_BRANCHES,
+    MAX_SIGNAL_FAULT_CAMPAIGN_CANDIDATES, NETWORK_FAULT_CAMPAIGN_ADAPTER,
+    NetworkFaultCampaignBranch, NetworkFaultCampaignReplayPlan, NetworkFaultPhase,
+    NetworkFaultSelectable, NetworkFaultSelectableError, SIGNAL_FAULT_CAMPAIGN_ADAPTER,
+    SignalFaultCampaignBranch, SignalFaultCampaignReplayPlan, SignalFaultSelectable,
+    SignalFaultSelectableError, app_random_stream_belongs_to_node,
     validate_app_random_model_selection,
 };
 pub use device::{LinkEmitDecisionRecord, NetworkLinkDirection, device_overlay, device_stream_id};
@@ -108,14 +118,14 @@ pub use model::{
     AppRandomBranchConfig, AppRandomBranchError, AppRandomBranchRun, AppRandomDrawSite,
     AppRandomSampleBudget, AssertionDef, AssertionId, AssertionPhase,
     AssertionProximityGuidanceSignal, BackendRngEvidence, Checkpoint, CheckpointKind,
-    CheckpointMeta, ChoiceTag, CodePoint, Configuration, ContentAddressedBlobRef, ContentHash,
-    CoverageGuidanceSignal, CoverageGuidedCorpus, CoverageGuidedCorpusAdmission,
-    CoverageGuidedCorpusAdmissionDecision, CoverageGuidedCorpusConfig, CoverageGuidedCorpusEntry,
-    CoverageGuidedCorpusEntryOrigin, CoverageGuidedCorpusError, CoverageGuidedCorpusRun,
-    CoverageGuidedFuzzConfig, CoverageGuidedFuzzIteration, CoverageGuidedFuzzRun,
-    CoverageGuidedFuzzThroughputReport, CoverageGuidedFuzzThroughputTarget,
-    CoverageGuidedFuzzingEvidence, CowDeltaKind, CowDeltaRef, CowSharingStats,
-    DEFAULT_ADAPTIVE_UCB_EXPLORATION_WEIGHT_MICROS, DEFAULT_APP_RANDOM_DRAW_CAP,
+    CheckpointMeta, ChoiceTag, CodePoint, Configuration, ConfigurationPrefix,
+    ContentAddressedBlobRef, ContentHash, CoverageGuidanceSignal, CoverageGuidedCorpus,
+    CoverageGuidedCorpusAdmission, CoverageGuidedCorpusAdmissionDecision,
+    CoverageGuidedCorpusConfig, CoverageGuidedCorpusEntry, CoverageGuidedCorpusEntryOrigin,
+    CoverageGuidedCorpusError, CoverageGuidedCorpusRun, CoverageGuidedFuzzConfig,
+    CoverageGuidedFuzzIteration, CoverageGuidedFuzzRun, CoverageGuidedFuzzThroughputReport,
+    CoverageGuidedFuzzThroughputTarget, CoverageGuidedFuzzingEvidence, CowDeltaKind, CowDeltaRef,
+    CowSharingStats, DEFAULT_ADAPTIVE_UCB_EXPLORATION_WEIGHT_MICROS, DEFAULT_APP_RANDOM_DRAW_CAP,
     DEFAULT_COVERAGE_GUIDED_FUZZ_THROUGHPUT_TARGET, DagStore, DagStoreError,
     DagStoreReproductionArtifact, DebugAttachChannelKind, DebugAttachChannelSet, DebugAttachReport,
     DebugAttachRequest, DebugBreakpointClientKind, DebugBreakpointMechanism, DebugBreakpointReport,
@@ -146,23 +156,23 @@ pub use model::{
     FailureRecordedEventLog, FailureSignature, FailureSignatureKey, FailureSignatureNormalization,
     FailureSignaturePreservingMinimizationResult, FailureSignaturePreservingMinimizationRun,
     FailureSymmetryCanonicalizer, FailureTimeoutBudgetKind, FailureTimeoutRecord,
-    FailureTriageChangedCluster, FailureTriageReplayEvidence, FailureTriageResult,
-    FailureTriageResultDiff, FailureTriageResultIdentity, FailureTriageSignatureCheckRecord,
-    FailureTriageSignatureMismatch, FailureTriageSignatureSelfCheck,
-    FailureTriageSignatureSelfCheckInput, FailureTriageStoredArtifact, FamilyParams, FamilySpace,
-    FaultSignalPlan, FindingDiscoveryPath, FindingReproductionArtifact,
-    FindingReproductionArtifactError, FleetEquivalenceDivergence, FleetEquivalenceReport,
-    FleetFindingSetEntry, FleetWorkClaim, FleetWorkStealingConfig, FleetWorkStealingSearchRun,
-    FramePredicate, FrontierChild, FrontierCoveredChild, FrontierReductionPolicy,
-    FrontierReductionReason, FrontierReductionReport, GenesisCheckpoint, GuestWorkloadBinary,
-    GuestWorkloadConfigTreeDelivery, GuestWorkloadConfigTreeRef, GuestWorkloadLoadPatternFixture,
-    GuestWorkloadParameterKey, GuestWorkloadPattern, GuestWorkloadScalarParameter,
-    GuestWorkloadSeed, GuestWorkloadSpikeMode, GuestWorkloadTimeSource,
-    GuidanceDeterminismLintReport, GuidanceObservation, GuidanceRarityTable, GuidanceScore,
-    GuidanceSearchConfig, GuidanceSearchState, GuidanceSignal, GuidanceSignalComposition,
-    GuidanceSignalInput, GuidanceSignalKind, GuidanceSignalWeight, Icount,
-    InterestingScheduleWindow, InterestingScheduleWindowBasis, IoEventKind, IrqVector, LinkDef,
-    LinkId, LinkLossProbability, LocalDagStore, MAX_APP_RANDOM_SAMPLES_PER_DRAW,
+    FailureTriageChangedCluster, FailureTriageReplayEvidence, FailureTriageReplaySegments,
+    FailureTriageResult, FailureTriageResultDiff, FailureTriageResultIdentity,
+    FailureTriageSignatureCheckRecord, FailureTriageSignatureMismatch,
+    FailureTriageSignatureSelfCheck, FailureTriageSignatureSelfCheckInput,
+    FailureTriageStoredArtifact, FamilyParams, FamilySpace, FaultSignalPlan, FindingDiscoveryPath,
+    FindingReproductionArtifact, FindingReproductionArtifactError, FleetEquivalenceDivergence,
+    FleetEquivalenceReport, FleetFindingSetEntry, FleetWorkClaim, FleetWorkStealingConfig,
+    FleetWorkStealingSearchRun, FramePredicate, FrontierChild, FrontierCoveredChild,
+    FrontierReductionPolicy, FrontierReductionReason, FrontierReductionReport, GenesisCheckpoint,
+    GuestWorkloadBinary, GuestWorkloadConfigTreeDelivery, GuestWorkloadConfigTreeRef,
+    GuestWorkloadLoadPatternFixture, GuestWorkloadParameterKey, GuestWorkloadPattern,
+    GuestWorkloadScalarParameter, GuestWorkloadSeed, GuestWorkloadSpikeMode,
+    GuestWorkloadTimeSource, GuidanceDeterminismLintReport, GuidanceObservation,
+    GuidanceRarityTable, GuidanceScore, GuidanceSearchConfig, GuidanceSearchState, GuidanceSignal,
+    GuidanceSignalComposition, GuidanceSignalInput, GuidanceSignalKind, GuidanceSignalWeight,
+    Icount, InterestingScheduleWindow, InterestingScheduleWindowBasis, IoEventKind, IrqVector,
+    LinkDef, LinkId, LinkLossProbability, LocalDagStore, MAX_APP_RANDOM_SAMPLES_PER_DRAW,
     MAX_AUTOMATIC_INTERESTING_WINDOW_DECISIONS, MAX_FAILURE_TRIAGE_REPLAY_EVIDENCE_BYTES,
     MAX_MINIMIZATION_CANDIDATES, MIN_LINK_LATENCY, MarkerId, MaterializationPolicy,
     MaterializationTrigger, MaterializedSearchMutation, MaterializedSearchPlan, MaterializedState,
@@ -173,12 +183,13 @@ pub use model::{
     PartialOrderIndependenceProof, PartialOrderReductionKey, PartialOrderReductionPolicy,
     PendingFrame, PinnedConfiguration, PinnedScenario, Plan, Predicate, PreemptionBranchConfig,
     PreemptionBranchRun, PreemptionDecision, PreemptionKind, Properties, Property, PropertyKind,
-    ReachabilityExpectation, ReachableDisposition, ReadyPoint, RegexProgram, ReplayOracleCheck,
-    ReproductionArtifact, ReproductionEventLogArtifact, ReproductionEventLogReplay,
-    ReproductionReplay, ResolvedFaultTarget, RngDecision, RngStreamId, RngStreamPosition,
-    RuntimeState, SIM_TICKS_PER_INSTRUCTION, SIM_TICKS_PER_NS, ScenarioBuilder, ScenarioDef,
-    ScenarioDefForm, ScenarioFamily, ScenarioSelectableLimits, ScenarioSelectables, Schedule,
-    ScheduleError, ScheduleIndexRanges, SchedulerNodeId, SchedulerState, SchedulingNodeKind,
+    ReachabilityExpectation, ReachableDisposition, ReadyPoint, RecordedEventLogSegments,
+    RegexProgram, ReplayOracleCheck, ReproductionArtifact, ReproductionEventLogArtifact,
+    ReproductionEventLogReplay, ReproductionReplay, ResidentScheduleSegments, ResolvedFaultTarget,
+    RngDecision, RngStreamId, RngStreamPosition, RuntimeState, SIM_TICKS_PER_INSTRUCTION,
+    SIM_TICKS_PER_NS, ScenarioBuilder, ScenarioDef, ScenarioDefForm, ScenarioFamily,
+    ScenarioSelectableLimits, ScenarioSelectables, Schedule, ScheduleError, ScheduleIndexRanges,
+    ScheduleManifest, ScheduleSegmentRef, SchedulerNodeId, SchedulerState, SchedulingNodeKind,
     SchedulingPoint, SearchAssertionFinding, SearchBudget, SearchDiscoveredFailure,
     SearchExpansion, SearchFailureOracle, SearchFrontierChoice, SearchFrontierChoices,
     SearchReplayOracleBisectionRequest, SearchReplayOracleSamplingConfig,
@@ -217,6 +228,7 @@ pub use native_console::{
 pub use node_time::NodeTimeMapping;
 #[cfg(feature = "test-double")]
 pub use scheduler::SchedulerRunCeilingHandoffError;
+pub use segment_store::{SegmentSink, SegmentSource, SegmentSources, SharedSegmentStore};
 /// Shared-memory ABI version used by Crucible backends and artifacts.
 pub const SHMEM_ABI_VERSION: u32 = include!("../../crucible-shmem/src/abi_version.in");
 pub use scheduler::{
@@ -224,17 +236,19 @@ pub use scheduler::{
     BackendDeviceGroupOwner, BackendFixedInputResult, BackendFixedInputState,
     BackendNetworkAdmission, BackendNetworkOutputInterceptor, BackendNetworkSettlement,
     BackendQuantumLoop, BackendRunCapBoundary, BackendRunDispatchBoundary, BackendRunInputBoundary,
-    BackendRunResult, CheckpointTerminalCause, ComposedRunVerdict, ComposedRunVerdictFailure,
-    ConcurrentBackendRun, ConcurrentBackendRunOutcome, ConcurrentBackendRunResult,
-    ConcurrentQuantumLoop, ConcurrentSimulationBackend, ConservativeAdvanceAuthorization,
-    ControlOperation, ControlOperationKind, DeviceGroupSelectionPublication, EventAttributeValue,
+    BackendRunResult, CheckpointEventLogEntries, CheckpointTerminalCause, ComposedRunVerdict,
+    ComposedRunVerdictFailure, ConcurrentBackendRun, ConcurrentBackendRunOutcome,
+    ConcurrentBackendRunResult, ConcurrentQuantumLoop, ConcurrentSimulationBackend,
+    ConservativeAdvanceAuthorization, ControlOperation, ControlOperationKind,
+    DeviceGroupSelectionPublication, EVENT_LOG_SEAL_TARGET_BYTES, EventAttributeValue,
     EventDiagnosticPayload, EventLevel, EventLog, EventLogAssertionProximityProjection,
     EventLogAssertionProximityProjectionEntry, EventLogCausalDigest, EventLogCausalDivergencePoint,
     EventLogCausalProjection, EventLogCausalProjectionEntry, EventLogCausalSummary,
     EventLogCoverageFeedback, EventLogCoverageFeedbackConsumer, EventLogCoverageFold,
     EventLogCoverageObservation, EventLogCoverageProjection, EventLogCoverageProjectionEntry,
-    EventLogDeterminismComparison, EventLogDeterminismMismatch, EventLogTickStamp, EventLogTime,
-    EventPayload, EventSource, ExactLocalEvent, FailedCapNegotiation, FailedDispatchResolution,
+    EventLogCoverageSet, EventLogDeterminismComparison, EventLogDeterminismMismatch,
+    EventLogSegmentReader, EventLogSegmentRef, EventLogTickStamp, EventLogTime, EventPayload,
+    EventSource, ExactLocalEvent, FailedCapNegotiation, FailedDispatchResolution,
     FailedInputResolution, HeldHostStopKind, HeldHostStopWitness, IoCompletion,
     LiveNetworkPreselection, MAX_SINGLE_SCHEDULER_CHECKPOINT_BYTES, NetworkDroppedFrameEvidence,
     NetworkInFlightDropEvidence, NetworkLookahead, NodeTimelineProjection,
@@ -268,12 +282,12 @@ pub use scheduler::{
     event_log_assertion_proximity_projection, event_log_causal_projection,
     event_log_coverage_projection, exact_local_event_from_io_completion,
     exact_local_event_from_scheduled_event, exact_local_event_from_timer_deadline_ns,
-    horizon_from_exact_local_event, horizon_from_network_lookahead, is_causal_event_log_entry,
-    is_live_world_network_selection, lookahead_for_node, network_horizon_from_lookahead,
-    next_exact_local_event, next_scheduled_event_key, ordered_scheduled_events,
-    ordered_timeline_keys, rendezvous_cap_for, resolve_due_scheduled_events,
-    scheduled_event_delivery_time, scheduled_event_resolve_class, scheduler_rr_run_subdivision,
-    unresolved_cross_node_dependencies,
+    first_event_log_causal_mismatch, horizon_from_exact_local_event,
+    horizon_from_network_lookahead, is_causal_event_log_entry, is_live_world_network_selection,
+    lookahead_for_node, network_horizon_from_lookahead, next_exact_local_event,
+    next_scheduled_event_key, ordered_scheduled_events, ordered_timeline_keys, rendezvous_cap_for,
+    resolve_due_scheduled_events, scheduled_event_delivery_time, scheduled_event_resolve_class,
+    scheduler_rr_run_subdivision, unresolved_cross_node_dependencies,
 };
 #[cfg(feature = "test-double")]
 pub use sim_backend::{
@@ -337,6 +351,82 @@ pub mod test_support {
         O: HostAssertionPredicate,
     {
         crate::trigger::unchecked_host_assertion_oracle_for_test(oracle)
+    }
+
+    /// Seals a complete test log into a fresh in-memory segment store.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `entries` are not dense from sequence zero or an entry
+    /// exceeds the segment bound.
+    #[must_use]
+    pub fn sealed_log_for_test(
+        entries: &[SchedulerEventLogEntry],
+    ) -> (
+        crate::AttemptLogManifest,
+        crate::FailureTriageReplaySegments,
+    ) {
+        let store = crate::SharedSegmentStore::new();
+        let manifest = crate::seal_attempt_log(entries, &store)
+            .unwrap_or_else(|error| panic!("test log should seal: {error}"));
+        (manifest, std::sync::Arc::new(store))
+    }
+
+    /// Builds replay evidence for one test replay log.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`crate::FailureTriageReplayEvidence::new`].
+    ///
+    /// # Panics
+    ///
+    /// Panics when `entries` cannot be sealed; see [`sealed_log_for_test`].
+    pub fn replay_evidence_for_test(
+        finding: crate::FindingReproductionArtifact,
+        failure: crate::FailureClusterReportFailure,
+        entries: &[SchedulerEventLogEntry],
+        coverage_fingerprint: ContentHash,
+    ) -> Result<crate::FailureTriageReplayEvidence, crate::EngineError> {
+        let (manifest, segments) = sealed_log_for_test(entries);
+        crate::FailureTriageReplayEvidence::new(
+            finding,
+            failure,
+            manifest,
+            segments,
+            coverage_fingerprint,
+        )
+    }
+
+    /// Builds paired divergence evidence for two test logs sealed together.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of
+    /// [`crate::FailureTriageReplayEvidence::new_paired_divergence`].
+    ///
+    /// # Panics
+    ///
+    /// Panics when either log cannot be sealed; see [`sealed_log_for_test`].
+    pub fn paired_divergence_evidence_for_test(
+        finding: crate::FindingReproductionArtifact,
+        expected: &[SchedulerEventLogEntry],
+        reproduced: &[SchedulerEventLogEntry],
+        coverage_fingerprint: ContentHash,
+    ) -> Result<crate::FailureTriageReplayEvidence, crate::EngineError> {
+        let store = std::sync::Arc::new(crate::SharedSegmentStore::new());
+        let seal = |entries| {
+            crate::seal_attempt_log(entries, store.as_ref())
+                .unwrap_or_else(|error| panic!("test log should seal: {error}"))
+        };
+        let expected = seal(expected);
+        let reproduced = seal(reproduced);
+        crate::FailureTriageReplayEvidence::new_paired_divergence(
+            finding,
+            expected,
+            reproduced,
+            store,
+            coverage_fingerprint,
+        )
     }
 
     /// Builds a scheduler observable event-log entry for integration tests.

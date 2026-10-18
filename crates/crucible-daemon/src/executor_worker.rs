@@ -121,6 +121,17 @@ impl ResolvedAttemptOrigin {
     pub const fn source_stop_bytes(&self) -> u64 {
         self.source_stop_bytes
     }
+
+    /// Binds an origin without repository resolution, for decode tests.
+    #[cfg(test)]
+    pub(crate) const fn from_test_parts(attempt: Attempt, reached: ConfigurationArtifact) -> Self {
+        Self {
+            attempt,
+            reached,
+            source_stop: None,
+            source_stop_bytes: 0,
+        }
+    }
 }
 
 /// Immutable repository-resolved input for one local guest execution.
@@ -631,6 +642,43 @@ impl AttemptExecutionContext {
             .as_deref()
             .map(crate::AttemptLogNamespace::create_store)
             .transpose()
+    }
+
+    /// Creates the sink that receives one attempt's resolved-effect trace segments.
+    ///
+    /// Segments go to a new directory under the event-log namespace and are
+    /// charged against `maximum_event_log_bytes`, like each retained copy of
+    /// the attempt log. Returns `None` when the executor configured no
+    /// namespace, in which case the lifecycle keeps its trace in memory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the trace directory cannot be created.
+    pub(crate) fn create_fault_trace_sink(
+        &self,
+    ) -> std::io::Result<Option<Arc<dyn crucible_cas::segment_store::SegmentSink>>> {
+        let Some(namespace) = self.event_log_namespace.as_deref() else {
+            return Ok(None);
+        };
+        let sink = namespace.create_trace_sink(self.maximum_event_log_bytes)?;
+        Ok(Some(Arc::new(sink)))
+    }
+
+    /// Creates the store that receives one finding preparation's replay records.
+    ///
+    /// Records go to a new directory under the event-log namespace, or stay in
+    /// memory when the executor configured none.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the record directory cannot be created.
+    pub(crate) fn create_replay_record_store(&self) -> std::io::Result<crate::ReplayRecordStore> {
+        Ok(match self.event_log_namespace.as_deref() {
+            Some(namespace) => {
+                crate::ReplayRecordStore::directory(namespace.create_directory("records")?)
+            }
+            None => crate::ReplayRecordStore::memory(),
+        })
     }
 
     /// Returns the resource limits available to a newly launched process owner.

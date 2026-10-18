@@ -14,8 +14,8 @@ impl<'a> FaultBindingRuntime<'a> {
         same_coordinate_sequence: u64,
         opportunity: Option<&FaultOpportunity>,
         sink: &mut dyn FaultActionSink,
-        mut replay: Option<&mut ResolvedEffectTrace>,
-        mut recorded: Option<&mut Vec<ResolvedReplayWorkItem>>,
+        mut replay: Option<&mut ResolvedEffectTraceReader>,
+        mut recorded: Option<&mut ResolvedEffectTraceWriter>,
         verify_replay_outcomes: bool,
     ) -> Result<BindingEvaluation, BindingRuntimeError> {
         self.ensure_usable()?;
@@ -51,6 +51,11 @@ impl<'a> FaultBindingRuntime<'a> {
                 ..BindingEvaluation::default()
             });
         }
+        // Load the replay segment holding the cursor before any state
+        // changes, so a committed evaluation never performs replay I/O.
+        if let Some(reader) = replay.as_deref_mut() {
+            reader.prepare().map_err(BindingRuntimeError::Runtime)?;
+        }
         let evaluator_checkpoint = self
             .evaluator
             .checkpoint()
@@ -59,11 +64,14 @@ impl<'a> FaultBindingRuntime<'a> {
         let active = self.active.clone();
         let consumed_opportunities = self.consumed_opportunities.clone();
         let consumed_search_overrides = self.consumed_search_overrides.clone();
+        // The reader shares its decoded segment, so this copy is O(1).
         let replay_before = replay.as_deref().cloned();
-        let recorded_before = recorded.as_deref().map_or(0, Vec::len);
+        let recorded_before = recorded
+            .as_deref()
+            .map_or(0, ResolvedEffectTraceWriter::work_items);
         let authoritative_replay = replay
             .as_deref()
-            .is_some_and(|trace| !matches!(trace.mode, FaultReplayMode::RecomputedCause));
+            .is_some_and(|trace| !matches!(trace.mode(), FaultReplayMode::RecomputedCause));
         let mut model_evaluation = if authoritative_replay {
             Ok(BindingEvaluation::default())
         } else {
@@ -96,24 +104,18 @@ impl<'a> FaultBindingRuntime<'a> {
                         .map_or(derivation_fingerprint, |item| item.derivation_fingerprint),
                     _ => derivation_fingerprint,
                 };
-                let recorded_effects_before = recorded
-                    .as_deref()
-                    .map(|work_items| recorded_effect_count(work_items))
-                    .transpose()?
-                    .unwrap_or(0);
-                if let Some(work_items) = recorded.as_deref() {
-                    reserve_usize_runtime(
-                        self.resource_limits,
-                        "thin_replay_events",
-                        work_items.len(),
-                        1,
-                    )?;
-                    reserve_usize_runtime(
-                        self.resource_limits,
-                        "resolved_effect_records",
-                        recorded_effects_before,
-                        evaluation.actions.len(),
-                    )?;
+                // The writer keeps running counters, so admission is O(1)
+                // regardless of how many work items were recorded.
+                if let Some(writer) = recorded.as_deref() {
+                    let requested = u64::try_from(evaluation.actions.len()).map_err(|_| {
+                        BindingRuntimeError::CountOverflow("resolved_effect_records")
+                    })?;
+                    writer.reserve(requested).map_err(|error| match error {
+                        FaultRuntimeError::ResourceLimit(error) => {
+                            BindingRuntimeError::ResourceLimit(error)
+                        }
+                        error => BindingRuntimeError::Runtime(error),
+                    })?;
                 }
                 let replay_verification = if verify_replay_outcomes {
                     replay
@@ -139,14 +141,13 @@ impl<'a> FaultBindingRuntime<'a> {
                         same_coordinate_sequence,
                         recording_derivation_fingerprint,
                         self.resource_limits,
-                        recorded_effects_before,
+                        recorded
+                            .as_deref()
+                            .map_or(0, ResolvedEffectTraceWriter::records),
                     )?)
                 } else {
                     None
                 };
-                if let Some(work_items) = recorded.as_deref_mut() {
-                    try_reserve_runtime(work_items, self.resource_limits, "thin_replay_events", 1)?;
-                }
                 try_reserve_runtime(
                     &mut evaluation.observations,
                     self.resource_limits,
@@ -163,14 +164,16 @@ impl<'a> FaultBindingRuntime<'a> {
                 {
                     verify_replay_results(trace, &evaluation.actions, &results, verification)?;
                 }
-                if let (Some(work_items), Some(staged)) =
-                    (recorded.as_deref_mut(), staged_work_item)
-                {
-                    work_items.push(finalize_resolved_replay_work_item(
-                        staged,
-                        &evaluation.actions,
-                        &results,
-                    )?);
+                if let (Some(writer), Some(staged)) = (recorded.as_deref_mut(), staged_work_item) {
+                    // The backend has committed, so a refused append (for
+                    // example, a segment store failure) poisons the runtime.
+                    writer
+                        .append(finalize_resolved_replay_work_item(
+                            staged,
+                            &evaluation.actions,
+                            &results,
+                        )?)
+                        .map_err(BindingRuntimeError::AdapterCommit)?;
                 }
                 evaluation
                     .observations
@@ -202,8 +205,15 @@ impl<'a> FaultBindingRuntime<'a> {
                 if let (Some(trace), Some(before)) = (replay, replay_before.as_ref()) {
                     *trace = before.clone();
                 }
-                if let Some(records) = recorded {
-                    records.truncate(recorded_before);
+                // Appending is the last fallible step of an evaluation, so a
+                // failed evaluation never retained its work item. A sealed
+                // segment cannot be withdrawn; fail closed if that changes.
+                if recorded
+                    .as_deref()
+                    .is_some_and(|writer| writer.work_items() != recorded_before)
+                {
+                    self.poisoned = true;
+                    return Err(error);
                 }
                 self.evaluator = match SignalEvaluator::restore(
                     self.program,

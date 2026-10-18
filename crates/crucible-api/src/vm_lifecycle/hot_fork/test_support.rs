@@ -498,6 +498,7 @@ fn lifecycle_without_backends(
         source.plan().fault_signals().resource_limits(),
         source.world().fault_topology().clone(),
         source.world().links().to_vec(),
+        Arc::new(crucible::segment_store::SharedSegmentStore::new()),
     );
     let run_directory = ProductionRunDirectory::temporary()
         .map_err(|error| test_support_error("construct temporary test run directory", error))?;
@@ -583,6 +584,7 @@ fn lifecycle_without_backends(
         repository_exact_ram_rebase: None,
         recorded_controls: Vec::new(),
         signal_artifact_objects: Arc::new(BTreeMap::new()),
+        fault_trace_segments: Arc::new(crucible::segment_store::SharedSegmentStore::new()),
         debug_backend_paths: BTreeMap::new(),
         debug_gateway: None,
         debug_attach: None,

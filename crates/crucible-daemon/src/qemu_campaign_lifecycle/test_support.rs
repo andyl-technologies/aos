@@ -25,8 +25,11 @@ use crate::{AttemptExecutionContext, AttemptWorkerFailure, CapturedAttemptCheckp
 /// Shared record of the lifecycle effects a fixture observed, in order.
 pub(crate) type Order = Arc<Mutex<Vec<&'static str>>>;
 
-/// Resolved-effect trace every scripted lifecycle reports.
-pub(crate) const RETENTION_TRACE: &[u8] = b"retention-trace";
+/// Returns the resolved-effect trace every scripted lifecycle reports.
+pub(crate) fn retention_trace() -> crucible::model::ResolvedEffectTrace {
+    crucible::model::ResolvedEffectTrace::empty(crucible::model::FaultReplayMode::LockedEffect)
+        .expect("empty locked-effect trace")
+}
 
 /// What source preparation does with a drained lifecycle.
 pub(crate) enum Preparation {
@@ -176,8 +179,10 @@ impl QemuFreshAttemptLifecycleOwner for RetentionLifecycle {
         Ok(())
     }
 
-    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
-        Ok(Some(RETENTION_TRACE.to_vec()))
+    fn resolved_effect_trace(
+        &self,
+    ) -> Result<Option<crucible::model::ResolvedEffectTrace>, SchedulerError> {
+        Ok(Some(retention_trace()))
     }
 
     fn drain_final_events_for_retention(

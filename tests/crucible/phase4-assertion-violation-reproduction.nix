@@ -194,10 +194,17 @@ in
       version = "0";
       src = crucibleSrc;
 
+      # The crucible crate links the campaign store's SQLite backend, so its
+      # test binaries need SQLite at link time.
+      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+      runtimeDeps = [pkgs.sqlite];
       buildDeps = [
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
+
+        pkgs.pkg-config
+        pkgs.sqlite
       ];
 
       phases = [

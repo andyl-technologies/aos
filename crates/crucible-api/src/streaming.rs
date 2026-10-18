@@ -461,6 +461,12 @@ pub enum StreamingApiError {
         /// Number of skipped frames reported by the event-log stream.
         skipped: u64,
     },
+    /// A sealed event-log segment needed for replay could not be read back.
+    #[error("streaming event-log replay is unavailable: {reason}")]
+    EventLogUnavailable {
+        /// Segment-store failure reported by the session event log.
+        reason: String,
+    },
 }
 
 /// In-process streaming API handle for one live session.
@@ -638,10 +644,13 @@ impl InProcessStreamingSession {
             .map(ReproductionCommandRecord::from)
             .filter(|record| record.at_sequence <= attach_tail.next_sequence)
             .collect();
-        let snapshot = AttachSnapshot::from_event_log(
-            self.event_log.snapshot_through(attach_tail),
-            reproduction,
-        );
+        let summary = self
+            .event_log
+            .snapshot_through(attach_tail)
+            .map_err(|error| StreamingApiError::EventLogUnavailable {
+                reason: error.to_string(),
+            })?;
+        let snapshot = AttachSnapshot::from_event_log(summary, reproduction);
         let live = self.live.read();
         state_updates.set_sequence_floor(live.state_transition_sequence);
         Ok((
@@ -848,6 +857,9 @@ fn stream_error(error: SessionEventLogStreamError) -> StreamingApiError {
         SessionEventLogStreamError::Lagged { skipped } => {
             StreamingApiError::EventStreamLagged { skipped }
         }
+        SessionEventLogStreamError::Unavailable(error) => StreamingApiError::EventLogUnavailable {
+            reason: error.to_string(),
+        },
     }
 }
 
@@ -1008,7 +1020,8 @@ fn session_error_rejection_kind(error: &SessionError) -> CommandRejectionKind {
         | SessionError::ControlReplayInitialConfigurationMismatch { .. }
         | SessionError::ControlReplayRecordInvalid { .. }
         | SessionError::ControlReplayTerminalSamplingCleanup { .. }
-        | SessionError::DebugRuntimeRepositionMismatch(_) => CommandRejectionKind::Internal,
+        | SessionError::DebugRuntimeRepositionMismatch(_)
+        | SessionError::EventLogStore(_) => CommandRejectionKind::Internal,
     }
 }
 

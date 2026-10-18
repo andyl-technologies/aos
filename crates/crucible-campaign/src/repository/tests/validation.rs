@@ -94,7 +94,7 @@ fn full_closure_walk_rejects_missing_shared_nested_and_corrupt_merkle_leaves() {
         )
         .expect("nested map")
         .content_id();
-    assert!(repository.merkle.verify_closure_objects(shared).is_err());
+    assert!(repository.merkle.verify_closure(shared).is_err());
 
     for root in [shared, nested] {
         assert!(matches!(
@@ -1452,7 +1452,7 @@ fn generated_observation_with_coverage(
             properties,
             coverage,
         ),
-        BTreeSet::from([opportunity]),
+        stored_choice_set(repository, BTreeSet::from([opportunity])),
     )
     .expect("progressive observation")
 }

@@ -1474,7 +1474,7 @@
       }
       {
         label = "baseline count field";
-        needle = "crates/crucible-api/src/server.rs\tstringly error\tResult<_, String>\t\t32";
+        needle = "crates/crucible-api/src/server.rs\tstringly error\tResult<_, String>\t\t26";
       }
     ];
     phaseWiringFailures =

@@ -6,9 +6,10 @@
 //! lists are bounded by in-flight requests rather than by run length.
 //!
 //! ```text
-//! b"crucible.device-scheduling-subnode.v2\0" || CBOR {
+//! b"crucible.device-scheduling-subnode.v3\0" || CBOR {
 //!     sub_node, sub_node_kind, target, device_id,
 //!     device_kind, device: nested canonical snapshot bytes,
+//!     block_chunks: [(identity, bytes)] ascending by identity,
 //!     modeled:  [{ modeled_icount, src_node, seq, payload }] in key order,
 //!     resolved: [{ modeled_icount, modeled_src_node, modeled_seq,
 //!                  delivery_icount, src_node, seq, payload?, decisions }]
@@ -18,6 +19,11 @@
 //!
 //! Every resolved entry names exactly one modeled entry and every modeled entry
 //! has exactly one resolved entry.
+//!
+//! A block snapshot names its overlay chunks by identity only. This scheduler
+//! double has no object store of its own, so the continuation carries exactly
+//! the chunk objects its block snapshot names, and decoding binds them back as
+//! the snapshot's chunk source. Each chunk is authenticated when restored.
 
 use std::collections::BTreeSet;
 
@@ -26,7 +32,7 @@ use serde::{Deserialize, Serialize};
 use super::{DeviceSchedulingSubNode, ModeledCompletion, PendingCompletion, ScheduledDevice};
 use crate::Schedule;
 
-const MAGIC: &[u8] = b"crucible.device-scheduling-subnode.v2\0";
+const MAGIC: &[u8] = b"crucible.device-scheduling-subnode.v3\0";
 const MAX_BYTES: usize = 1_073_741_824;
 
 /// Complete mutable continuation of one scheduler-owned I/O sub-node.
@@ -56,6 +62,7 @@ struct CheckpointWire {
     device_id: String,
     device_kind: u8,
     device: Vec<u8>,
+    block_chunks: BlockChunkObjects,
     modeled: Vec<ModeledWire>,
     resolved: Vec<ResolvedWire>,
 }
@@ -158,18 +165,20 @@ impl DeviceSchedulingSubNodeCheckpoint {
     /// checkpoint larger than the compiled ceiling.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, DeviceSchedulingSubNodeCheckpointError> {
         self.validate()?;
-        let (device_kind, device) = match &self.device {
+        let (device_kind, device, block_chunks) = match &self.device {
             DeviceCheckpoint::Block(snapshot) => (
                 1,
                 snapshot
                     .to_canonical_bytes()
                     .map_err(|_| DeviceSchedulingSubNodeCheckpointError::Nested)?,
+                block_chunk_objects(snapshot)?,
             ),
             DeviceCheckpoint::Ninep(snapshot) => (
                 2,
                 snapshot
                     .to_canonical_bytes()
                     .map_err(|_| DeviceSchedulingSubNodeCheckpointError::Nested)?,
+                Vec::new(),
             ),
         };
         let wire = CheckpointWire {
@@ -179,6 +188,7 @@ impl DeviceSchedulingSubNodeCheckpoint {
             device_id: self.device_id.clone(),
             device_kind,
             device,
+            block_chunks,
             modeled: self
                 .modeled
                 .iter()
@@ -235,11 +245,14 @@ impl DeviceSchedulingSubNodeCheckpoint {
         let wire: CheckpointWire = ciborium::de::from_reader(payload)
             .map_err(|_| DeviceSchedulingSubNodeCheckpointError::Malformed)?;
         let device = match wire.device_kind {
-            1 => DeviceCheckpoint::Block(Box::new(
-                crucible_device::BlockSnapshot::from_canonical_bytes(&wire.device)
-                    .map_err(|_| DeviceSchedulingSubNodeCheckpointError::Nested)?,
-            )),
-            2 => DeviceCheckpoint::Ninep(Box::new(
+            1 => {
+                let mut snapshot =
+                    crucible_device::BlockSnapshot::from_canonical_bytes(&wire.device)
+                        .map_err(|_| DeviceSchedulingSubNodeCheckpointError::Nested)?;
+                bind_block_chunk_objects(&mut snapshot, wire.block_chunks)?;
+                DeviceCheckpoint::Block(Box::new(snapshot))
+            }
+            2 if wire.block_chunks.is_empty() => DeviceCheckpoint::Ninep(Box::new(
                 crucible_device::NinepSnapshot::from_canonical_bytes(&wire.device)
                     .map_err(|_| DeviceSchedulingSubNodeCheckpointError::Nested)?,
             )),
@@ -271,7 +284,7 @@ impl DeviceSchedulingSubNodeCheckpoint {
                     src_node: completion.src_node,
                     seq: completion.seq,
                     payload: completion.payload,
-                    decisions: decisions.decisions().to_vec(),
+                    decisions: decisions.decision_history().to_vec(),
                 })
             })
             .collect::<Result<Vec<_>, DeviceSchedulingSubNodeCheckpointError>>()?;
@@ -326,6 +339,55 @@ impl DeviceSchedulingSubNodeCheckpoint {
         }
         Ok(())
     }
+}
+
+/// Inline block overlay chunk objects as `(identity, bytes)`, ascending by identity.
+type BlockChunkObjects = Vec<([u8; 32], Vec<u8>)>;
+
+/// Collects the chunk objects a block snapshot names, ascending by identity.
+fn block_chunk_objects(
+    snapshot: &crucible_device::BlockSnapshot,
+) -> Result<BlockChunkObjects, DeviceSchedulingSubNodeCheckpointError> {
+    let chunks = snapshot
+        .overlay
+        .chunks()
+        .map_err(|_| DeviceSchedulingSubNodeCheckpointError::Nested)?;
+    let mut objects = std::collections::BTreeMap::new();
+    for chunk in chunks {
+        let mut bytes = Vec::new();
+        if let Some(identity) = snapshot
+            .overlay
+            .read_chunk(chunk.index, &mut bytes)
+            .map_err(DeviceSchedulingSubNodeCheckpointError::Device)?
+        {
+            objects.insert(identity, bytes);
+        }
+    }
+    Ok(objects.into_iter().collect())
+}
+
+/// Binds decoded chunk objects as the block snapshot's chunk source.
+///
+/// The objects must be strictly ascending and exactly the set the snapshot
+/// names; their content is authenticated when the snapshot is restored.
+fn bind_block_chunk_objects(
+    snapshot: &mut crucible_device::BlockSnapshot,
+    objects: BlockChunkObjects,
+) -> Result<(), DeviceSchedulingSubNodeCheckpointError> {
+    let named = snapshot
+        .overlay_chunk_identities()
+        .map_err(|_| DeviceSchedulingSubNodeCheckpointError::Nested)?;
+    if objects.len() != named.len()
+        || objects
+            .iter()
+            .zip(&named)
+            .any(|((identity, _), expected)| identity != expected)
+    {
+        return Err(DeviceSchedulingSubNodeCheckpointError::Nested);
+    }
+    let source: std::collections::BTreeMap<[u8; 32], Vec<u8>> = objects.into_iter().collect();
+    snapshot.bind_overlay_source(std::sync::Arc::new(source));
+    Ok(())
 }
 
 /// Failure to encode, decode, validate, or restore one I/O sub-node continuation.
@@ -438,7 +500,7 @@ mod tests {
         let payload = bytes
             .strip_prefix(MAGIC)
             .unwrap_or_else(|| panic!("current magic prefix"));
-        let mut previous = b"crucible.device-scheduling-subnode.v1\0".to_vec();
+        let mut previous = b"crucible.device-scheduling-subnode.v2\0".to_vec();
         previous.extend_from_slice(payload);
 
         assert!(matches!(

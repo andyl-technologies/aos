@@ -203,29 +203,42 @@ command or acknowledgement.
 | `resolved_effect_records` | 268,435,456 | 1,073,741,824 |
 | `replay_first_mismatch_context_bytes` | 16,777,216 | 67,108,864 |
 
+`thin_replay_events` and `resolved_effect_records` bound the running work-item
+and record counters of the segmented resolved-effect trace (RFC-0020 section
+15.10). They are checked against the counters before an append, never by
+collecting the trace, and a checkpoint stores the counters beside the sealed
+segment references and the open tail; `fat_checkpoint_bytes` bounds that
+encoded position.
+
 Logs and checkpoints are chunked content-addressed artifacts. Reaching a byte or
 record bound is a typed terminal result; retaining fewer records is allowed only
 under an authored observability policy that still preserves every transition,
 decision, effect, and referenced full-value artifact required for explanation.
 `event_records` is one aggregate ceiling across referenced events, pending
 observations, raw QEMU occurrences, issued-action and commit ledgers, and active
-rule identities. The host derives the remaining capacity before a plugin
+rule identities. Referenced events count cumulatively: each emission is charged
+once, when its evaluation stages, against running record and byte counters that
+the production checkpoint stores beside a history chain digest. The runtime
+retains only the occurrences a registered block or 9p consumer can still select
+(RFC-0020 CMEAS-26), so neither accounting nor checkpointing rescans the emitted
+history. Pending observations and raw occurrences drain at every boundary and
+are measured directly. The host derives the remaining capacity before a plugin
 control pump or fault transaction. It freezes every non-target node at its
 current ownership, arms only the node whose control callback is about to run,
 and subtracts newly staged records before arming the next node. Restore first
 authenticates the complete checkpoint identity and requires empty live
 occurrence-event ownership, then installs the same aggregate policy before its
-first fingerprint control pump and requires ownership to remain empty after
-that pump. It never gives each collection or node an independent copy of the
-authored allowance; LIMIT-2 coordinates report the complete canonical current
-count and the plan-authored aggregate ceiling rather than a per-node remainder.
-Before any production adapter APPLY can become visible, the controller also
-owns the deterministic emitted-event, boot-request, and explorer-choice
-publication batch and reserves those persistent destinations plus the exact
-evaluation-observation tail. Publishing that model-owned batch after APPLY only
-moves staged owners. QEMU occurrence evidence, which cannot exist before APPLY,
-uses the separately bounded, fallible raw-event drain described above and
-poisons the continuation if authentication or typed allocation fails.
+first fingerprint control pump and requires ownership to remain empty after that
+pump. It never gives each collection or node an independent copy of the authored
+allowance; LIMIT-2 coordinates report the complete canonical current count and
+the plan-authored aggregate ceiling rather than a per-node remainder. Before any
+production adapter APPLY can become visible, the controller also owns the
+deterministic emitted-event, boot-request, and explorer-choice publication batch
+and reserves those persistent destinations plus the exact evaluation-observation
+tail. Publishing that model-owned batch after APPLY only moves staged owners.
+QEMU occurrence evidence, which cannot exist before APPLY, uses the separately
+bounded, fallible raw-event drain described above and poisons the continuation
+if authentication or typed allocation fails.
 
 The controller's terminal-lifecycle process ownership uses one versioned
 `run-state.json` envelope (version 3) and an append-only
@@ -285,8 +298,8 @@ durably removes abandoned transaction staging before another capture.
 The raised
 resource policy is carried only by the versioned node-v7, host-I/O-v4,
 block-snapshot-v3, block-fault-state-v2, 9p-snapshot-v5, I/O-core-v2,
-production-runtime-v6, and VM-snapshot-v4 formats; production runtime identity
-uses the v9 domain and VM snapshot identity uses the
+production-runtime-v8, and VM-snapshot-v4 formats; production runtime identity
+uses the v11 domain and VM snapshot identity uses the
 `exact-snapshot.v7` domain, so old policy identities cannot alias new artifacts.
 
 ## 13.8 Search limits

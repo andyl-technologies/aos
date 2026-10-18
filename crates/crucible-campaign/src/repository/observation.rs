@@ -20,10 +20,16 @@ struct ObservationProjection {
     observations: BTreeMap<CampaignHash, ContentId>,
     corpus: BTreeMap<CampaignHash, ContentId>,
     coverage: BTreeMap<CampaignHash, ContentId>,
+    // Distinct frequency records named by the coverage upserts; publication
+    // stores them before it advances the coverage root.
+    coverage_frequencies: BTreeSet<crate::CoverageIdentityFrequency>,
     accounting: BTreeMap<CampaignHash, ContentId>,
 }
 
 mod candidate_validation;
+mod choice_sets;
+
+pub use choice_sets::{DiscoveredChoices, ProducedSelections};
 mod direct_selection;
 mod strict_order;
 
@@ -63,21 +69,20 @@ impl CampaignRepository {
                 return Err(integrity("observation-selection-publication-id-mismatch"));
             }
         }
+        self.publish_candidate_choice_sets(candidate)?;
         let child = self.put_configuration_artifact(candidate.child())?;
         let measurements = self.put_measurement_set(candidate.measurements())?;
         let properties = self.put_property_verdict_set(candidate.properties())?;
         let coverage = self.put_coverage_projection(candidate.coverage())?;
-        if let Some(bytes) = candidate.resolved_effect_trace() {
+        if let (Some(manifest), Some(segments)) = (
+            candidate.resolved_effect_trace_manifest(),
+            candidate.resolved_effect_trace_segments(),
+        ) {
             let trace = candidate
                 .observation()
                 .resolved_effect_trace()
                 .ok_or_else(|| integrity("observation-trace-identity-missing"))?;
-            let receipt = self
-                .blobs
-                .put_if_absent(trace, &BlobHandle::from_bytes(bytes.to_vec()))?;
-            if receipt.id != trace {
-                return Err(integrity("observation-trace-publication-id-mismatch"));
-            }
+            self.publish_resolved_effect_trace(trace, manifest, segments)?;
         }
         let observation = self.put_observation(candidate.observation())?;
 
@@ -91,6 +96,47 @@ impl CampaignRepository {
         }
         self.verify_campaign_closure(observation)?;
         ObservationId::from_content_id(observation).map_err(Into::into)
+    }
+
+    /// Publishes a segmented resolved-effect trace one segment at a time.
+    ///
+    /// Each segment is read from the producer's stores, authenticated against
+    /// the identity the observation lists, and stored before the next one is
+    /// read, so publication holds at most one segment in memory. The manifest
+    /// leaf is stored last. A failure can leave earlier authenticated segments
+    /// as unreferenced content-addressed leaves for ordinary collection.
+    fn publish_resolved_effect_trace(
+        &self,
+        trace: &ResolvedEffectTraceRef,
+        manifest_bytes: &[u8],
+        sources: &SegmentSources,
+    ) -> Result<(), CampaignRepositoryError> {
+        for &segment in trace.segments() {
+            if self.blobs.contains(segment)? {
+                continue;
+            }
+            let bytes = sources
+                .segment(segment)
+                .map_err(|_| integrity("observation-trace-segment-unavailable"))?;
+            if bytes.len() > MAX_SEGMENT_BYTES || !segment.authenticates(&bytes) {
+                return Err(integrity("observation-trace-segment-mismatch"));
+            }
+            let receipt = self
+                .blobs
+                .put_if_absent(segment, &BlobHandle::from_bytes(bytes))?;
+            if receipt.id != segment {
+                return Err(integrity("observation-trace-publication-id-mismatch"));
+            }
+        }
+
+        let manifest = trace.manifest();
+        let receipt = self
+            .blobs
+            .put_if_absent(manifest, &BlobHandle::from_bytes(manifest_bytes.to_vec()))?;
+        if receipt.id != manifest {
+            return Err(integrity("observation-trace-publication-id-mismatch"));
+        }
+        Ok(())
     }
 
     /// Publishes a canonical exact measurement set without advancing a campaign.
@@ -307,6 +353,13 @@ impl CampaignRepository {
         roots.exploration = self.insert_upserts(roots.exploration, &projection.exploration)?;
         roots.observations = self.insert_upserts(roots.observations, &projection.observations)?;
         roots.corpus = self.insert_upserts(roots.corpus, &projection.corpus)?;
+        for frequency in &projection.coverage_frequencies {
+            if self.put_coverage_identity_frequency(*frequency)? != frequency.content_id()? {
+                return Err(integrity(
+                    "coverage-identity-frequency-publication-id-mismatch",
+                ));
+            }
+        }
         roots.coverage = self.insert_upserts(roots.coverage, &projection.coverage)?;
         roots.accounting = self.insert_upserts(roots.accounting, &projection.accounting)?;
         roots.coordination = self.coordination_with_parent_result(current_content, &current)?;
@@ -322,11 +375,13 @@ impl CampaignRepository {
         )?;
         let next_content = self.put_snapshot(&next)?;
         let closure_growth_upper = observation_successor_growth(
-            observation.discovered_choices().len(),
+            usize::try_from(observation.discovered_choices().entry_count())
+                .map_err(|_| integrity("observation-successor-growth-overflow"))?,
             projection.credits.len(),
             projection.direct_selection.is_some(),
             projection.indexed_path.is_some(),
             projection.frontier_updates.len(),
+            projection.coverage.len(),
         )?;
         let checkpoint = self.prepare_local_successor_checkpoint(
             current_content,
@@ -492,6 +547,7 @@ impl CampaignRepository {
                 )]),
                 corpus: BTreeMap::new(),
                 coverage: BTreeMap::new(),
+                coverage_frequencies: BTreeSet::new(),
                 accounting: BTreeMap::new(),
             });
         }
@@ -512,7 +568,10 @@ impl CampaignRepository {
                 observation.child_content().content_id(),
             );
         }
-        for choice_id in observation.discovered_choices() {
+        // The discovered set is read page by page. Its key order is also the
+        // nested choice index's key order, so index upserts are its entries.
+        let mut choice_index_upserts = BTreeMap::new();
+        self.for_each_discovered_choice(observation, |choice_id| {
             let choice = self.read_opportunity_cached(choice_id.content_id(), choice_cache)?;
             graph.insert(
                 map_key_content("graph.choice-opportunity", choice_id.content_id()),
@@ -521,22 +580,22 @@ impl CampaignRepository {
             graph.insert(
                 branch_point_opportunity_key(
                     choice.branch_point_id(observation.child()),
-                    *choice_id,
+                    choice_id,
                 ),
                 choice_id.content_id(),
             );
-        }
+            if maintain_choice_index {
+                choice_index_upserts
+                    .insert(choice_index_order_key(choice_id), choice_id.content_id());
+            }
+            Ok(())
+        })?;
         self.validate_compatible_upserts(roots.graph, &graph, "observation-graph-conflict")?;
-        let mut choice_index_upserts = BTreeMap::new();
-        if maintain_choice_index && !observation.discovered_choices().is_empty() {
+        if !choice_index_upserts.is_empty() {
             let choice_index = self
                 .merkle
                 .get(roots.graph, choice_index_anchor_key())?
                 .unwrap_or(MerkleMap::empty_content_id()?);
-            for choice_id in observation.discovered_choices() {
-                choice_index_upserts
-                    .insert(choice_index_order_key(*choice_id), choice_id.content_id());
-            }
             self.validate_compatible_upserts(
                 choice_index,
                 &choice_index_upserts,
@@ -667,10 +726,12 @@ impl CampaignRepository {
             );
         }
 
-        let coverage = BTreeMap::from([(
+        let mut coverage = BTreeMap::from([(
             map_key_content("coverage.projection", observation.coverage().content_id()),
             observation.coverage().content_id(),
         )]);
+        let coverage_frequencies =
+            self.coverage_frequency_upserts(roots.coverage, observation.coverage(), &mut coverage)?;
         let mut accounting = BTreeMap::from([
             (
                 map_key_content(
@@ -759,8 +820,63 @@ impl CampaignRepository {
             observations,
             corpus,
             coverage,
+            coverage_frequencies,
             accounting,
         })
+    }
+
+    /// Adds one canonical observation's coverage to the global
+    /// coverage-identity frequency index.
+    ///
+    /// Every identity of the coverage projection gains one count, except
+    /// identities already at the saturation point, which add no upsert.
+    /// Absent identities start at one. The returned records are the distinct
+    /// values the upserts name.
+    pub(super) fn coverage_frequency_upserts(
+        &self,
+        coverage_root: ContentId,
+        coverage: crate::CoverageProjectionId,
+        upserts: &mut BTreeMap<CampaignHash, ContentId>,
+    ) -> Result<BTreeSet<crate::CoverageIdentityFrequency>, CampaignRepositoryError> {
+        let projection = self.read_coverage_projection(coverage.content_id())?;
+        let first = crate::CoverageIdentityFrequency::new(1)?;
+
+        // Records are shared by value, so a campaign holds at most one per
+        // count and this map stays small however many identities it serves.
+        let mut decoded = BTreeMap::<ContentId, crate::CoverageIdentityFrequency>::new();
+        let mut encoded = BTreeMap::<crate::CoverageIdentityFrequency, ContentId>::new();
+        let mut records = BTreeSet::new();
+        for identity in projection.identities() {
+            let key = coverage_identity_frequency_key(*identity);
+            let next = match self.merkle.get(coverage_root, key)? {
+                None => first,
+                Some(content) => {
+                    let current = match decoded.get(&content) {
+                        Some(current) => *current,
+                        None => {
+                            let current = self.read_coverage_identity_frequency(content)?;
+                            decoded.insert(content, current);
+                            current
+                        }
+                    };
+                    if current.is_saturated() {
+                        continue;
+                    }
+                    current.incremented()
+                }
+            };
+            let content = match encoded.get(&next) {
+                Some(content) => *content,
+                None => {
+                    let content = next.content_id()?;
+                    encoded.insert(next, content);
+                    content
+                }
+            };
+            upserts.insert(key, content);
+            records.insert(next);
+        }
+        Ok(records)
     }
 
     fn expansion_credits(

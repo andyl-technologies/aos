@@ -53,11 +53,11 @@
     ++ failuresFor "crates/crucible-qemu-plugin/src/block_io.rs" blockIo [
       {
         label = "wire version";
-        needle = "const BLOCK_WIRE_VERSION: u8 = 4";
+        needle = "const BLOCK_REQUEST_WIRE_VERSION: u8 = 5";
       }
       {
         label = "request header length";
-        needle = "const BLOCK_REQUEST_HEADER_LEN: usize = 28";
+        needle = "const BLOCK_REQUEST_HEADER_LEN: usize = 36";
       }
       {
         label = "response header length";
@@ -73,7 +73,7 @@
       }
       {
         label = "request decode";
-        needle = "pub fn decode(payload: &[u8]) -> Result<(BlockRequestIdentity, Self), BlockWireError>";
+        needle = "pub fn decode(payload: &[u8]) -> Result<(BlockRequestStamp, Self), BlockWireError>";
       }
       {
         label = "response decode";
@@ -255,10 +255,17 @@ in
       version = "0";
       src = crucibleSrc;
 
+      # The plugin's test-only crucible dependency links the campaign
+      # store's SQLite backend, so the lib-test link needs it.
+      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+      runtimeDeps = [pkgs.sqlite];
       buildDeps = [
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
+
+        pkgs.pkg-config
+        pkgs.sqlite
       ];
 
       phases = [
@@ -332,7 +339,8 @@ in
             tasks=${taskList}
             component=crucible-block-wire-abi
             gate=gate:abi-conformance,gate:layer1-injection
-            block_wire_version=3
+            block_request_wire_version=5
+            block_response_wire_version=4
             fixed_endianness=little
             reserved_bytes=zero-emit-reject-on-receive
             route=vm-slot-to-SLOT_BLK_IO-and-back

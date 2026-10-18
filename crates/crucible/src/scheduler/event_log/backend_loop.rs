@@ -969,4 +969,8 @@ where
     fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
         self.shutdown_backend_owner()
     }
+
+    fn sealed_event_log_store(&self) -> Option<Arc<dyn DagStore>> {
+        self.loop_impl.sealed_event_log_store()
+    }
 }

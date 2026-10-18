@@ -93,6 +93,7 @@ pub(super) fn repository_service_failure(
             CampaignServiceFailure::InvalidTransition { state: *state }
         }
         CampaignRepositoryError::Poisoned => CampaignServiceFailure::IntegrityFailure,
+        CampaignRepositoryError::Scratch { .. } => CampaignServiceFailure::Unavailable,
     }
 }
 
@@ -685,6 +686,33 @@ where
                         .read_reproduction_artifact(minimized.content_id())?,
                 )
             }
+            CampaignFindingObjectKind::ReproductionPayloadSegment { minimized, index } => {
+                let reproduction = if minimized {
+                    finding
+                        .minimized()
+                        .ok_or(CampaignRepositoryError::InvalidRequest {
+                            reason: "campaign-finding-has-no-minimized-reproduction",
+                        })?
+                } else {
+                    finding.reproduction()
+                };
+                let record = self
+                    .repository
+                    .read_reproduction_artifact(reproduction.content_id())?;
+                let segment = usize::try_from(index)
+                    .ok()
+                    .and_then(|index| record.payload_segments().get(index))
+                    .ok_or(CampaignRepositoryError::InvalidRequest {
+                        reason: "campaign-finding-reproduction-segment-index",
+                    })?;
+                CampaignFindingObject::ReproductionPayloadSegment {
+                    minimized,
+                    index,
+                    bytes: self
+                        .repository
+                        .read_reproduction_payload_segment(reproduction, segment.content())?,
+                }
+            }
         };
         Ok(GetCampaignFindingObjectResponse::new(
             request,
@@ -1026,12 +1054,25 @@ where
         let (measurement_set, trace) = match request.kind() {
             CampaignTraceKind::ResolvedEffect => (
                 None,
-                observation.resolved_effect_trace().ok_or(
-                    CampaignRepositoryError::InvalidRequest {
+                observation
+                    .resolved_effect_trace()
+                    .ok_or(CampaignRepositoryError::InvalidRequest {
                         reason: "campaign-observation-has-no-resolved-effect-trace",
-                    },
-                )?,
+                    })?
+                    .manifest(),
             ),
+            CampaignTraceKind::ResolvedEffectSegment(segment) => {
+                if !observation
+                    .resolved_effect_trace()
+                    .is_some_and(|trace| trace.contains_segment(segment))
+                {
+                    return Err(CampaignRepositoryError::InvalidRequest {
+                        reason: "campaign-resolved-effect-trace-segment-is-not-owned",
+                    }
+                    .into());
+                }
+                (None, segment)
+            }
             CampaignTraceKind::MeasurementEventLog => {
                 let measurements = self
                     .repository
@@ -1058,9 +1099,12 @@ where
                 (Some(measurements), segment)
             }
         };
-        let (total_bytes, chunk) =
-            self.repository
-                .load_trace_chunk(trace, request.offset(), request.limit())?;
+        let (total_bytes, chunk) = self.repository.load_trace_chunk(
+            trace,
+            request.offset(),
+            request.limit(),
+            request.kind().max_leaf_bytes(),
+        )?;
         Ok(GetCampaignTraceChunkResponse::new(
             request,
             head.snapshot().clone(),

@@ -69,7 +69,7 @@ fn adapter_checkpoint(
         observations:
             super::super::super::super::storage_faults::ProductionFaultObservationJournal::default(),
         effect_state,
-        campaign_records: Vec::new(),
+        campaign_records: CampaignRecordLogPosition::empty(),
         campaign_replay_identity: None,
         campaign_marker_releases: Vec::new(),
     }

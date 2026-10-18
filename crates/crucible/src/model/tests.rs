@@ -4,22 +4,13 @@ use super::*;
 
 #[test]
 fn compact_schedule_rejects_collection_reservations_larger_than_remaining_input() {
+    // An empty schedule ends with its manifest's segment count. Decision
+    // counts inside a segment are covered by the segment codec tests.
     let mut outer = Schedule::empty().to_compact_binary();
     let outer_count = outer.len() - std::mem::size_of::<u64>();
     outer[outer_count..].copy_from_slice(&1_000_000_u64.to_le_bytes());
     let error = Schedule::from_compact_binary(&outer)
-        .expect_err("a schedule count cannot reserve beyond its encoded input");
-    assert!(error.to_string().contains("remaining binary input"));
-
-    let schedule = Schedule::from_decisions([Decision::DeliveryOrder(DeliveryOrderDecision {
-        at: VirtualTime { ticks: 0 },
-        order: Vec::new(),
-    })]);
-    let mut nested = schedule.to_compact_binary();
-    let delivery_count = nested.len() - std::mem::size_of::<u64>();
-    nested[delivery_count..].copy_from_slice(&1_000_000_u64.to_le_bytes());
-    let error = Schedule::from_compact_binary(&nested)
-        .expect_err("a delivery-order count cannot reserve beyond its encoded input");
+        .expect_err("a segment count cannot reserve beyond its encoded input");
     assert!(error.to_string().contains("remaining binary input"));
 }
 
@@ -167,7 +158,7 @@ fn failure_signature_for_test(property: &str) -> FailureSignature {
         coverage_class: FailureCoverageClass::from_coverage_fingerprint(coverage),
         evidence_binding: coverage,
         causal_slice_hash: Some(coverage),
-        causal_cone: Some(FailureCausalCone::from_canonical_material(property)),
+        causal_cone: Some(FailureCausalCone::from_canonical_material(property, 0)),
         at_icount_report_only: None,
     }
 }
@@ -202,6 +193,37 @@ fn delivery_at(ticks: u64) -> Decision {
         at: VirtualTime { ticks },
         order: Vec::new(),
     })
+}
+
+#[test]
+fn schedule_prefixes_share_storage_and_match_rebuilt_schedules() {
+    let def = ScenarioDef::from_canonical_material("schedule-prefix-sharing", "fixture");
+    let schedule = Schedule::from_decisions((0..200).map(delivery_at));
+
+    for len in [0, 1, 63, 64, 65, 130, 199, 200] {
+        let prefix = schedule.prefix(len).expect("prefix within the schedule");
+        let rebuilt =
+            Schedule::from_decisions(schedule.decision_history().iter().take(len).cloned());
+
+        assert_eq!(prefix, rebuilt);
+        assert_eq!(prefix.decision_chain(), rebuilt.decision_chain());
+        assert_eq!(
+            prefix.app_random_decisions(),
+            rebuilt.app_random_decisions()
+        );
+        assert_eq!(
+            Configuration {
+                def: def.clone(),
+                schedule: prefix,
+            }
+            .id(),
+            Configuration {
+                def: def.clone(),
+                schedule: rebuilt,
+            }
+            .id()
+        );
+    }
 }
 
 #[test]

@@ -304,19 +304,20 @@ impl QemuLive9pIoServicer {
             .map_err(|source| QemuLive9pIoServicerError::Device { source })
     }
 
-    /// Latches visibility updates from signal emissions appended since the
-    /// last call.
+    /// Latches visibility updates from the retained signal emissions appended
+    /// since the last call, consuming every emission below `consumed_through`.
     ///
     /// # Errors
     ///
-    /// Returns [`QemuLive9pIoServicerError::Device`] when the emission cursor
-    /// would overflow.
+    /// Returns [`QemuLive9pIoServicerError::Device`] when `consumed_through`
+    /// precedes the emission cursor or cannot hold `emissions`.
     pub fn observe_visibility_events(
         &mut self,
         emissions: &[NinepEventEmission],
+        consumed_through: u64,
     ) -> Result<(), QemuLive9pIoServicerError> {
         self.device
-            .observe_visibility_events(emissions)
+            .observe_visibility_events(emissions, consumed_through)
             .map_err(|source| QemuLive9pIoServicerError::Device { source })
     }
 

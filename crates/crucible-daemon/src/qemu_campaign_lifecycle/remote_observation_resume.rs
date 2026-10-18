@@ -208,10 +208,12 @@ impl RemoteObservationResumeFactory {
                 Arc::clone(&checkpoints),
             ),
         );
-        let campaign =
-            run_guarded_default_campaign_with_host(campaign_request, workspace.factory()).map_err(
-                |error| observation_error(format!("authenticate source campaign: {error}")),
-            )?;
+        let campaign = run_guarded_default_campaign_with_host(
+            campaign_request,
+            workspace.factory(),
+            &mut super::DiscardGuardedCampaignProgress,
+        )
+        .map_err(|error| observation_error(format!("authenticate source campaign: {error}")))?;
         let captured = campaign
             .resume()
             .and_then(|proof| proof.source_savepoint())
@@ -296,7 +298,7 @@ fn decode_replay_closure(
             envelope.schema_version(),
         )));
     }
-    GuardedCampaignReplayClosure::from_canonical_bytes(envelope.payload())
+    GuardedCampaignReplayClosure::from_frame_objects(envelope.frames())
         .map_err(|error| observation_error(format!("decode replay closure: {error}")))
 }
 

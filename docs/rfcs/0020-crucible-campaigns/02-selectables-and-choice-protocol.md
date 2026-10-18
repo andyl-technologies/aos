@@ -231,17 +231,25 @@ preemption, and typed selections in one canonical grammar. Runtime admission
 accepts only that grammar and current Checkpoint V4; noncurrent encodings fail
 closed. Domain-specific applied-effect evidence remains in the event log and
 adapter checkpoint state.
-Campaign execution resolves no more than 4,096 selection decisions in one
-configuration and permits at most 256 MiB of conservative aggregate
-schedule-prefix byte work across campaign-branch provenance checks. The latter
-is computed as encoded schedule bytes times campaign-branch selection count, so
-it bounds repeated deep clones and hashes even when an early decision contains
-a maximum-sized variable-length value. The resolver preflights both bounds in
-one linear scan before repository reads; selection-free schedules therefore
-remain linear in schedule length. Repository resolution is one bounded batch:
-at most 128 MiB of unique canonical selection, opportunity, declaration, and
-domain bodies are admitted, and repeated dependencies are decoded once and
-shared across resolved selections.
+Campaign execution applies no count bound to the selection decisions of one
+configuration; the configuration artifact's payload ceiling bounds them. Each
+campaign-branch provenance check names its parent as an identified prefix of
+the one decoded configuration instead of copying it, and a replay plan keeps
+its promoted branches as prefixes of its target, so retained branch state is
+linear in schedule length. Identifying a prefix still hashes it once, because
+the canonical configuration identity commits to the decision count before the
+decisions. That cost is time, not memory, and the payload ceiling times the
+campaign-branch count bounds it. Selection decisions are decoded in one linear
+scan before repository reads, so selection-free schedules remain linear in
+schedule length. Repository resolution is streamed: a
+selection resolver authenticates one selection, its opportunity, declaration,
+and domain at a time and hands it to the caller before reading the next, so it
+imposes no count or aggregate-byte bound of its own. Declarations and domains
+shared by many opportunities are decoded once while they fit the resolver's
+64 MiB cache; a cache miss re-reads and re-authenticates the record. A caller
+that must reserve memory may bound the resolver's resident decoded records,
+covering its caches and the current selection's uncached records; the resolver
+empties its caches before reporting that bound as exceeded.
 
 - **[SEL-12]** A recorded selection MUST contain enough information to replay
   without consulting campaign state or drawing randomness.

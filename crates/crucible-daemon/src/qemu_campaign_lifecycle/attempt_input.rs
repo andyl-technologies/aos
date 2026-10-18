@@ -7,41 +7,65 @@
 
 use super::*;
 
+/// Controlled continuations of one attempt, each paired with its source origin.
+///
+/// Source origins are materialized from the decoded ancestry and share the
+/// terminal origin's decision storage, so this owns them while lifecycle
+/// factories borrow them through [`ValidatedAttemptContinuations::controls`].
+#[derive(Debug, Default)]
+pub(super) struct ValidatedAttemptContinuations {
+    continuations: Vec<(AttemptContinuationInput, CrucibleAttemptOrigin)>,
+}
+
+impl ValidatedAttemptContinuations {
+    /// Returns the modeled controls from the oldest source boundary through
+    /// the current attempt.
+    pub(super) fn controls(&self) -> Vec<QemuAttemptContinuation<'_>> {
+        self.continuations
+            .iter()
+            .map(|(input, source)| QemuAttemptContinuation {
+                input,
+                source: source.reached(),
+            })
+            .collect()
+    }
+}
+
 pub(super) fn validated_attempt_continuations(
     input: &CrucibleAttemptExecution,
-) -> Result<Vec<QemuAttemptContinuation<'_>>, ()> {
+) -> Result<ValidatedAttemptContinuations, ()> {
     let Some((origins, terminal_input)) = input.continuation_replay_basis() else {
         return input
             .attempt()
             .continuation_input()
             .is_none()
-            .then(Vec::new)
+            .then(ValidatedAttemptContinuations::default)
             .ok_or(());
     };
     let mut continuations = Vec::new();
-    let mut source = None;
+    let mut source: Option<CrucibleAttemptOrigin> = None;
     for origin in origins.iter() {
+        let origin = origin.map_err(|_| ())?;
         if let Some(continuation_input) = origin.attempt().continuation_input() {
-            continuations.push(validated_attempt_continuation(
-                continuation_input,
-                source.ok_or(())?,
-            )?);
+            let source = source.take().ok_or(())?;
+            validate_source_frontier(continuation_input, &source)?;
+            continuations.push((continuation_input.clone(), source));
         }
         source = Some(origin);
     }
     if let Some(continuation_input) = terminal_input {
-        continuations.push(validated_attempt_continuation(
-            continuation_input,
-            source.ok_or(())?,
-        )?);
+        let source = source.ok_or(())?;
+        validate_source_frontier(continuation_input, &source)?;
+        continuations.push((continuation_input.clone(), source));
     }
-    Ok(continuations)
+    Ok(ValidatedAttemptContinuations { continuations })
 }
 
-fn validated_attempt_continuation<'a>(
-    continuation_input: &'a AttemptContinuationInput,
-    source: &'a CrucibleAttemptOrigin,
-) -> Result<QemuAttemptContinuation<'a>, ()> {
+/// Checks that a continuation starts exactly at its source origin's stop.
+fn validate_source_frontier(
+    continuation_input: &AttemptContinuationInput,
+    source: &CrucibleAttemptOrigin,
+) -> Result<(), ()> {
     let source_frontier_ticks = match (source.attempt().stop(), source.source_stop()) {
         (
             StopCondition::VirtualTimePicoseconds(requested),
@@ -68,11 +92,7 @@ fn validated_attempt_continuation<'a>(
     if source_frontier_ticks != continuation_input.source_frontier_ticks() {
         return Err(());
     }
-
-    Ok(QemuAttemptContinuation {
-        input: continuation_input,
-        source: source.reached(),
-    })
+    Ok(())
 }
 
 pub(super) fn unsupported_fresh_replay_decision(
@@ -86,7 +106,7 @@ pub(super) fn unsupported_fresh_replay_decision(
         .branches()
         .iter()
         .filter(|branch| branch.decisions().len() == 2)
-        .map(|branch| branch.parent().schedule.len() + 1)
+        .map(|branch| branch.parent().len() + 1)
         .collect::<BTreeSet<_>>();
     target
         .schedule

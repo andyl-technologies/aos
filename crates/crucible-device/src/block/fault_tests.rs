@@ -19,6 +19,8 @@ mod retained;
 mod retirement;
 #[path = "fault_tests/transport.rs"]
 mod transport;
+#[path = "fault_tests/transport_floor.rs"]
+mod transport_floor;
 
 fn state(durability: BlockCompletionDurability) -> BlockFaultState {
     BlockFaultState::new(BlockDurabilityConfig {

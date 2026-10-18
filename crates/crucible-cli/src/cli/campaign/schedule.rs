@@ -389,13 +389,19 @@ irq = 32
         assert_eq!(report.schedule, schedule.content_hash().to_hex());
         assert_eq!(schedule.to_compact_binary(), bytes);
         assert!(matches!(
-            schedule.decisions()[0],
+            schedule.decision_history()[0],
             Decision::DeliveryOrder(_)
         ));
-        assert!(matches!(schedule.decisions()[1], Decision::RngDraw(_)));
-        assert!(matches!(schedule.decisions()[2], Decision::Override(_)));
         assert!(matches!(
-            schedule.decisions()[3],
+            schedule.decision_history()[1],
+            Decision::RngDraw(_)
+        ));
+        assert!(matches!(
+            schedule.decision_history()[2],
+            Decision::Override(_)
+        ));
+        assert!(matches!(
+            schedule.decision_history()[3],
             Decision::Preemption(PreemptionDecision {
                 at: VirtualInstant { ticks: 1000 },
                 kind: PreemptionKind::VcpuSwitch { .. },
@@ -403,7 +409,7 @@ irq = 32
             })
         ));
         assert!(matches!(
-            schedule.decisions()[4],
+            schedule.decision_history()[4],
             Decision::Preemption(PreemptionDecision {
                 at: VirtualInstant { ticks: 2000 },
                 kind: PreemptionKind::InterruptAt { .. },

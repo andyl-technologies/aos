@@ -41,7 +41,7 @@ fn refusal_message(
         .selection_for_decision(0, &target.schedule)?
         .ok_or("recorded choice absent")?;
     let current = Configuration::genesis(source.scenario_def());
-    match recorded_guest_reply(source, node, &current, record, pending) {
+    match recorded_guest_reply(source, node, &current, &record, pending) {
         Err(QemuVmRealizationError::InvalidCheckpoint { role, message }) => {
             assert_eq!(role, "guarded replay guest selection");
             assert!(message.starts_with(
@@ -64,7 +64,7 @@ fn matching_contract_preserves_original_reply() -> Result<(), Box<dyn std::error
     let scenario = ScenarioDefId::from_hash(CampaignHash::from_bytes(source.id().bytes));
     let discovery = resolve_guest_selectable(scenario, &source, &node, &pending)?;
 
-    let reply = recorded_guest_reply(&source, &node, &current, record, &pending)?;
+    let reply = recorded_guest_reply(&source, &node, &current, &record, &pending)?;
 
     assert_eq!(
         reply,

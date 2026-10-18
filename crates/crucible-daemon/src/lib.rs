@@ -177,6 +177,7 @@ mod qemu_hot_fork_world_factory;
 mod qemu_hot_fork_world_resource;
 pub mod qemu_lifecycle_launcher;
 pub mod qemu_resource_guard;
+mod replay_record_store;
 pub mod repository_admission;
 mod supervision;
 
@@ -191,9 +192,10 @@ pub use assignment_ledger::{
 };
 pub use attempt_event_log::{
     ATTEMPT_LOG_SEGMENT_SCHEMA, ATTEMPT_LOG_SEGMENT_TARGET_BYTES, AttemptEventLogError,
-    AttemptEventLogVisitError, AttemptLogManifest, AttemptLogSegmentRef, AttemptLogSegmentSource,
-    AttemptLogSegmentSources, MAX_ATTEMPT_LOG_ENTRY_BYTES, MAX_ATTEMPT_LOG_MANIFEST_SEGMENTS,
-    MAX_ATTEMPT_LOG_SEGMENT_BYTES, MemorySegmentStore, decode_segment,
+    AttemptEventLogVisitError, AttemptLogEntries, AttemptLogManifest, AttemptLogSegmentRef,
+    AttemptLogSegmentSource, AttemptLogSegmentSources, MAX_ATTEMPT_LOG_ENTRY_BYTES,
+    MAX_ATTEMPT_LOG_MANIFEST_SEGMENTS, MAX_ATTEMPT_LOG_SEGMENT_BYTES, MemorySegmentStore,
+    decode_segment,
 };
 pub(crate) use attempt_event_log::{AttemptLogNamespace, AttemptLogStore};
 pub use automatic_finding_runner::{
@@ -309,7 +311,7 @@ pub use control_responsiveness::{
 };
 pub use crucible_artifact::{
     AutomaticFindingPreparationError, AutomaticFindingReplayOutcome,
-    CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V4, CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V4,
+    CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V5, CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V5,
     CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V5, CrucibleArtifactError, CrucibleCampaignArtifactStore,
     CrucibleFindingReplayEvidence, CrucibleFindingReplayTranscript,
     FindingProductionReplayMaterialOutcome, FindingReplayIncompatibility,
@@ -317,8 +319,9 @@ pub use crucible_artifact::{
     MAX_CRUCIBLE_FINDING_REPLAY_RECORDS, MAX_CRUCIBLE_FINDING_REPLAYS_PER_PASS,
     MAX_PREPARED_SEMANTIC_RESULT_BYTES, PreparedCrucibleFindingCandidate,
     PreparedSemanticAttemptResult, PreparedSemanticResultCodecError,
+    RepositoryReproductionSegments, crucible_reproduction_payload,
     decode_crucible_configuration_artifact, decode_crucible_configuration_artifact_with_selections,
-    decode_crucible_configuration_artifact_with_signal_fault_replay,
+    decode_crucible_configuration_artifact_with_signal_fault_replay, decode_crucible_reproduction,
     decode_crucible_scenario_artifact, encode_crucible_configuration_artifact,
     encode_crucible_scenario_artifact,
 };
@@ -437,8 +440,9 @@ pub use finding_production_replay::{
     FINDING_PRODUCTION_REPLAY_CAPTURE_SCHEMA_VERSION, FindingProductionReplayAsset,
     FindingProductionReplayCapture, FindingProductionReplayCaptureError,
     FindingProductionReplayCaptureInput, FindingProductionReplayCaptureLimits,
-    FindingProductionReplayCaptureMaterial, FindingProductionReplayCaptureOutcome,
-    FindingProductionReplayDeployment, FindingProductionReplayExecutionSide,
+    FindingProductionReplayCaptureMaterial, FindingProductionReplayCaptureObjects,
+    FindingProductionReplayCaptureOutcome, FindingProductionReplayDeployment,
+    FindingProductionReplayEventLog, FindingProductionReplayExecutionSide,
     FindingProductionReplayGuestAssets, FindingProductionReplayIncomplete,
     FindingProductionReplayRecipe, FindingProductionReplayRootImageFormat,
     FindingProductionReplayRuntimeIdentity, FindingProductionReplaySelectedSide,
@@ -448,7 +452,7 @@ pub use finding_production_replay::{
 };
 pub use finding_replay_capture_store::{
     FindingReplayCaptureInput, FindingReplayCaptureStore, FindingReplayCaptureStoreError,
-    LoadedFindingReplayCapture, PreparedFindingReplayCaptureSet,
+    LoadedFindingReplayCapture, LoadedFindingReplayCaptureObjects, PreparedFindingReplayCaptureSet,
 };
 pub use guest_selectable::{
     GuestSelectableBoundaryDiagnosticConfig, GuestSelectableBoundaryDiagnosticConfigError,
@@ -577,8 +581,7 @@ pub use qemu_campaign_driver::{
 pub use qemu_campaign_lifecycle::{
     InteractiveQemuSessionError, QemuAttemptContinuation, QemuAttemptProductionVmLifecycleError,
     QemuFinalBoundaryDrain, QemuFreshAttemptDriver, QemuFreshAttemptLifecycle,
-    QemuFreshDriveOutcome,
-    QemuFreshExecutionRunnerError, QemuFreshGenesisCheckpointCandidate,
+    QemuFreshDriveOutcome, QemuFreshExecutionRunnerError, QemuFreshGenesisCheckpointCandidate,
     QemuFreshGenesisCheckpointError, QemuFreshStartMaterialization, QemuFreshStartReplayError,
     build_guarded_interactive_qemu_session,
 };
@@ -639,5 +642,12 @@ pub use qemu_resource_guard::{
     MAX_QEMU_ATTEMPT_GENERATION_NODES, QemuAttemptCancellationSignal, QemuAttemptGenerationLease,
     QemuAttemptGenerationResourceOwner, QemuAttemptHostResourceFactory,
     QemuAttemptHostResourceOwner, SharedQemuAttemptHostResourceFactory,
+};
+pub use replay_record_store::{
+    MAX_REPLAY_RECORD_BYTES, MemoryReplayRecordStore, ReplayRecordError, ReplayRecordSource,
+    ReplayRecordSources,
+};
+pub(crate) use replay_record_store::{
+    ReplayRecord, ReplayRecordStore, load_replay_record, load_replay_record_by_content,
 };
 pub use repository_admission::RepositoryAttemptAdmission;

@@ -384,11 +384,10 @@ pub(crate) fn triage_property_evidence_for_violation_with_recording(
         triage_causal_entries_from_frames(&recorded_event_frames)?
     };
     let recorded_event_log =
-        crucible_model::FailureRecordedEventLog::from_causal_entries_coverage_and_frames(
+        crucible_model::FailureRecordedEventLog::from_causal_entries_and_coverage(
             &finding,
             &entries,
             coverage_fingerprint,
-            &recorded_event_frames,
         )?;
     let failure = crucible_model::FailureClusterReportFailure::property(
         crucible_model::FailurePropertyViolationRecord::new(violation),
@@ -440,11 +439,10 @@ pub(crate) fn triage_timeout_evidence(
         ),
     );
     let recorded_event_log =
-        crucible_model::FailureRecordedEventLog::from_causal_entries_coverage_and_frames(
+        crucible_model::FailureRecordedEventLog::from_causal_entries_and_coverage(
             &finding,
             &entries,
             coverage_fingerprint,
-            &recorded_event_frames,
         )?;
     let discovery_signature = crucible_model::FailureSignature::from_recorded_timeout(
         &finding,

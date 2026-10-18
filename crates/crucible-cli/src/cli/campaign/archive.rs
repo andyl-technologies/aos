@@ -13,9 +13,11 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crucible_campaign::{
-    ArchiveObjectEntry, CampaignArchiveInspection, CampaignArchivePlan, CampaignArchivePolicy,
-    CampaignName, CampaignSnapshotId,
+    ArchiveInventoryDisposition, ArchiveObjectEntry, CampaignArchiveInspection,
+    CampaignArchivePlan, CampaignArchivePolicy, CampaignName, CampaignRepositoryError,
+    CampaignSnapshotId,
 };
+use crucible_daemon::PreparedCampaignLocalService;
 use crucible_daemon::campaign_store_composition::{
     ContentId, DurabilityRequirement, ImmutableBlobBackend, ObjectKind, RefName, SensitivityClass,
 };
@@ -269,7 +271,7 @@ fn run_archive_inspection(
     let inspection = prepared
         .inspect_campaign_archive_ref(&args.archive)
         .map_err(|error| archive_error(format!("archive inspection failed: {error}")))?;
-    render_inspection_report(&inspection_report(&inspection)?, format)
+    render_inspection_report(&inspection_report(&prepared, &inspection)?, format)
 }
 
 fn prepare_archive_transfer_basis(
@@ -368,27 +370,31 @@ fn plan_report(
     campaign: Option<&CampaignName>,
     durability: DurabilityRequirement,
 ) -> Result<CampaignArchivePlanReport, CliError> {
-    let selected_bytes = plan
-        .selected()
-        .iter()
-        .try_fold(0_u64, |total, entry| {
-            total.checked_add(entry.logical_length())
-        })
-        .ok_or_else(|| archive_error("archive selected-byte total overflow"))?;
-    let transfer_objects = plan.transfer_objects();
-    let transfer_bytes = transfer_objects
-        .iter()
-        .try_fold(0_u64, |total, (_, bytes)| total.checked_add(*bytes))
-        .ok_or_else(|| archive_error("archive transfer-byte total overflow"))?;
+    // Both inventories are replayed from the plan's spool rather than held.
+    let mut selected = ArchiveClassTotals::new();
+    plan.visit_selected(|entry| selected.add(entry))
+        .map_err(|error| error.into_cli("archive plan replay failed"))?;
+    let mut transfer_objects = 0_usize;
+    let mut transfer_bytes = 0_u64;
+    plan.visit_transfer_objects(|_, bytes| {
+        transfer_objects = transfer_objects
+            .checked_add(1)
+            .ok_or_else(|| archive_error("archive transfer-object count overflow"))?;
+        transfer_bytes = transfer_bytes
+            .checked_add(bytes)
+            .ok_or_else(|| archive_error("archive transfer-byte total overflow"))?;
+        Ok::<(), ArchiveReplayError>(())
+    })
+    .map_err(|error| error.into_cli("archive plan replay failed"))?;
+
     let metadata_overhead = transfer_bytes
-        .checked_sub(selected_bytes)
+        .checked_sub(selected.logical_bytes)
         .ok_or_else(|| archive_error("archive transfer-byte accounting is inconsistent"))?;
+    let selected_objects = selected.objects;
     let metadata_overhead_objects = transfer_objects
-        .len()
-        .checked_sub(plan.selected().len())
+        .checked_sub(selected_objects)
         .ok_or_else(|| archive_error("archive transfer-object accounting is inconsistent"))?;
-    let classes = classify_entries(
-        plan.selected(),
+    let classes = selected.reports(
         metadata_overhead_objects,
         metadata_overhead,
         durability.minimum_durable_placements(),
@@ -407,9 +413,9 @@ fn plan_report(
         policy: policy_name(plan.manifest().policy()),
         archive: archive.to_owned(),
         campaign: campaign.map(|campaign| campaign.as_str().to_owned()),
-        selected_objects: plan.selected().len(),
-        omitted_objects: plan.omitted().len(),
-        transfer_objects: transfer_objects.len(),
+        selected_objects,
+        omitted_objects: inventory_count(plan.manifest().omitted_count())?,
+        transfer_objects,
         minimum_durable_placements: durability.minimum_durable_placements(),
         allow_deferred_write: durability.allows_deferred_write(),
         classes,
@@ -418,9 +424,19 @@ fn plan_report(
 }
 
 fn inspection_report(
+    prepared: &PreparedCampaignLocalService,
     inspection: &CampaignArchiveInspection,
 ) -> Result<CampaignArchiveInspectionReport, CliError> {
-    let classes = classify_entries(inspection.selected(), 0, 0, 1)?;
+    let mut selected = ArchiveClassTotals::new();
+    prepared
+        .visit_campaign_archive_entries(
+            inspection,
+            ArchiveInventoryDisposition::Selected,
+            |entry| selected.add(entry),
+        )
+        .map_err(|error| error.into_cli("archive inventory replay failed"))?;
+    let selected_objects = selected.objects;
+    let classes = selected.reports(0, 0, 1)?;
     let sensitive_classes = classes
         .iter()
         .filter(|class| class.sensitive && class.logical_bytes != 0)
@@ -432,8 +448,8 @@ fn inspection_report(
         manifest: inspection.manifest_id().to_string(),
         source_snapshot: inspection.manifest().source_snapshot().to_string(),
         policy: policy_name(inspection.manifest().policy()),
-        selected_objects: inspection.selected().len(),
-        omitted_objects: inspection.omitted().len(),
+        selected_objects,
+        omitted_objects: inventory_count(inspection.manifest().omitted_count())?,
         omitted_inventory_verified: inspection.omitted_inventory_verified(),
         classes,
         sensitive_classes,
@@ -441,28 +457,70 @@ fn inspection_report(
     })
 }
 
-fn classify_entries(
-    entries: &[ArchiveObjectEntry],
-    metadata_overhead_objects: usize,
-    metadata_overhead: u64,
-    placements: u16,
-) -> Result<Vec<ArchiveByteReport>, CliError> {
-    let mut classes = BTreeMap::<ArchiveByteClass, ArchiveByteAccumulator>::new();
-    for class in ArchiveByteClass::ALL {
-        classes.insert(class, ArchiveByteAccumulator::default());
+fn inventory_count(count: u64) -> Result<usize, CliError> {
+    usize::try_from(count).map_err(|_| archive_error("archive inventory count is unrepresentable"))
+}
+
+/// Failure while replaying an archive inventory into a report.
+enum ArchiveReplayError {
+    /// The repository could not replay or authenticate the inventory.
+    Campaign(CampaignRepositoryError),
+    /// The report itself failed, for example on a counter overflow.
+    Report(CliError),
+}
+
+impl ArchiveReplayError {
+    fn into_cli(self, context: &str) -> CliError {
+        match self {
+            Self::Campaign(error) => archive_error(format!("{context}: {error}")),
+            Self::Report(error) => error,
+        }
     }
-    if metadata_overhead != 0 || metadata_overhead_objects != 0 {
-        let metadata = classes
-            .get_mut(&ArchiveByteClass::Metadata)
-            .ok_or_else(|| archive_error("archive metadata class is unavailable"))?;
-        metadata.objects = u64::try_from(metadata_overhead_objects)
-            .map_err(|_| archive_error("archive metadata object count is unrepresentable"))?;
-        metadata.logical_bytes = metadata_overhead;
+}
+
+impl From<CampaignRepositoryError> for ArchiveReplayError {
+    fn from(error: CampaignRepositoryError) -> Self {
+        Self::Campaign(error)
     }
-    for entry in entries {
-        let class = entry_class(*entry);
-        let aggregate = classes
-            .get_mut(&class)
+}
+
+impl From<CliError> for ArchiveReplayError {
+    fn from(error: CliError) -> Self {
+        Self::Report(error)
+    }
+}
+
+/// Per-class object and byte totals accumulated one selected entry at a time.
+struct ArchiveClassTotals {
+    classes: BTreeMap<ArchiveByteClass, ArchiveByteAccumulator>,
+    objects: usize,
+    logical_bytes: u64,
+}
+
+impl ArchiveClassTotals {
+    fn new() -> Self {
+        Self {
+            classes: ArchiveByteClass::ALL
+                .into_iter()
+                .map(|class| (class, ArchiveByteAccumulator::default()))
+                .collect(),
+            objects: 0,
+            logical_bytes: 0,
+        }
+    }
+
+    fn add(&mut self, entry: ArchiveObjectEntry) -> Result<(), ArchiveReplayError> {
+        self.objects = self
+            .objects
+            .checked_add(1)
+            .ok_or_else(|| archive_error("archive selected-object count overflow"))?;
+        self.logical_bytes = self
+            .logical_bytes
+            .checked_add(entry.logical_length())
+            .ok_or_else(|| archive_error("archive selected-byte total overflow"))?;
+        let aggregate = self
+            .classes
+            .get_mut(&entry_class(entry))
             .ok_or_else(|| archive_error("archive byte class is unavailable"))?;
         aggregate.objects = aggregate
             .objects
@@ -473,29 +531,57 @@ fn classify_entries(
             .checked_add(entry.logical_length())
             .ok_or_else(|| archive_error("archive class byte count overflow"))?;
         aggregate.sensitive |= entry.sensitivity() != SensitivityClass::Metadata;
+        Ok(())
     }
-    ArchiveByteClass::ALL
-        .into_iter()
-        .map(|class| {
-            let aggregate = classes
-                .remove(&class)
-                .ok_or_else(|| archive_error("archive byte class is unavailable"))?;
-            let logical_replication_obligation_bytes = aggregate
+
+    fn reports(
+        mut self,
+        metadata_overhead_objects: usize,
+        metadata_overhead: u64,
+        placements: u16,
+    ) -> Result<Vec<ArchiveByteReport>, CliError> {
+        if metadata_overhead != 0 || metadata_overhead_objects != 0 {
+            let metadata = self
+                .classes
+                .get_mut(&ArchiveByteClass::Metadata)
+                .ok_or_else(|| archive_error("archive metadata class is unavailable"))?;
+            let overhead_objects = u64::try_from(metadata_overhead_objects)
+                .map_err(|_| archive_error("archive metadata object count is unrepresentable"))?;
+            metadata.objects = metadata
+                .objects
+                .checked_add(overhead_objects)
+                .ok_or_else(|| archive_error("archive class object count overflow"))?;
+            metadata.logical_bytes = metadata
                 .logical_bytes
-                .checked_mul(u64::from(placements))
-                .ok_or_else(|| archive_error("archive logical replication-byte count overflow"))?;
-            Ok(ArchiveByteReport {
-                class: class.name(),
-                objects: aggregate.objects,
-                logical_bytes: aggregate.logical_bytes,
-                logical_replication_obligation_bytes,
-                // Compressed, encrypted, deduplicated, or packed placements do
-                // not expose per-object physical storage through transfer receipts.
-                physical_bytes: None,
-                sensitive: aggregate.sensitive,
+                .checked_add(metadata_overhead)
+                .ok_or_else(|| archive_error("archive class byte count overflow"))?;
+        }
+        ArchiveByteClass::ALL
+            .into_iter()
+            .map(|class| {
+                let aggregate = self
+                    .classes
+                    .remove(&class)
+                    .ok_or_else(|| archive_error("archive byte class is unavailable"))?;
+                let logical_replication_obligation_bytes = aggregate
+                    .logical_bytes
+                    .checked_mul(u64::from(placements))
+                    .ok_or_else(|| {
+                        archive_error("archive logical replication-byte count overflow")
+                    })?;
+                Ok(ArchiveByteReport {
+                    class: class.name(),
+                    objects: aggregate.objects,
+                    logical_bytes: aggregate.logical_bytes,
+                    logical_replication_obligation_bytes,
+                    // Compressed, encrypted, deduplicated, or packed placements do
+                    // not expose per-object physical storage through transfer receipts.
+                    physical_bytes: None,
+                    sensitive: aggregate.sensitive,
+                })
             })
-        })
-        .collect()
+            .collect()
+    }
 }
 
 const fn entry_class(entry: ArchiveObjectEntry) -> ArchiveByteClass {

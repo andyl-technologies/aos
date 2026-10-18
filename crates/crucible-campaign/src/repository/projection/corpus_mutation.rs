@@ -20,6 +20,9 @@
 
 use super::*;
 
+/// Direct-selection index entries authenticated per page.
+const DIRECT_SELECTION_PAGE_ITEMS: usize = 4_096;
+
 /// Outcome of feeding one anchor to a [`CorpusMutationWalk`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::repository) enum CorpusMutationStep {
@@ -248,9 +251,9 @@ impl CampaignRepository {
         )? {
             let mut after = None;
             loop {
-                let page =
-                    self.merkle
-                        .scan(branch_root, after, MAX_SELECTION_RESOLUTION_RECORDS)?;
+                let page = self
+                    .merkle
+                    .scan(branch_root, after, DIRECT_SELECTION_PAGE_ITEMS)?;
                 for anchor in self.direct_selection_page_anchors(request, view, page.entries())? {
                     if let Some(additional) = pending_additional.filter(|value| *value < anchor) {
                         pending_additional = None;
@@ -336,9 +339,10 @@ impl CampaignRepository {
             selections.push(selection);
         }
 
-        let resolved = self.resolve_selections(&selections)?;
+        let mut resolver = self.selection_resolver();
         let mut anchors = Vec::with_capacity(entries.len());
-        for (((key, _), selection_id), resolved) in entries.iter().zip(&selections).zip(resolved) {
+        for ((key, _), selection_id) in entries.iter().zip(&selections) {
+            let resolved = resolver.resolve(*selection_id)?;
             let selection = resolved.selection();
             if !matches!(
                 selection.origin(),

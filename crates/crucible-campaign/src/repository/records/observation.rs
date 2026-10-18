@@ -4,20 +4,26 @@ use super::*;
 use crate::ObservationCondition;
 
 impl CampaignRepository {
-    /// Reads one bounded authenticated slice of a retained trace leaf.
+    /// Reads one bounded slice of a retained trace leaf.
     ///
     /// Callers must first establish that an authenticated observation or
-    /// measurement set owns `trace`; this method checks the content bytes.
+    /// measurement set owns `trace`. Only the requested range is read: the
+    /// backend integrity-checks ranged reads, and the reader authenticates the
+    /// assembled leaf against its content identity, so the cost of reading a
+    /// leaf is linear in its length rather than in its length times its chunk
+    /// count.
     ///
     /// # Errors
     ///
-    /// Returns an error for an invalid identity, oversized leaf, bad content
-    /// hash, offset beyond EOF, or a chunk larger than one MiB.
+    /// Returns an error for an invalid identity, a leaf longer than
+    /// `max_bytes`, an offset beyond EOF, a chunk larger than one MiB, or a
+    /// failed backend read.
     pub fn load_trace_chunk(
         &self,
         trace: ContentId,
         offset: u64,
         limit: u32,
+        max_bytes: u64,
     ) -> Result<(u64, Vec<u8>), CampaignRepositoryError> {
         if trace.kind() != ObjectKind::Trace
             || trace.schema_version() == 0
@@ -26,19 +32,19 @@ impl CampaignRepository {
         {
             return Err(integrity("campaign-trace-chunk-request-invalid"));
         }
-        let bytes = self.blobs.read(trace, None)?.read_all(64 * 1024 * 1024)?;
-        if ContentId::for_bytes(ObjectKind::Trace, trace.schema_version(), &bytes) != trace {
-            return Err(integrity("campaign-trace-content-id-mismatch"));
+        let total = self.blobs.read(trace, None)?.logical_length();
+        if total > max_bytes {
+            return Err(integrity("campaign-trace-leaf-oversized"));
         }
-        let total =
-            u64::try_from(bytes.len()).map_err(|_| integrity("campaign-trace-length-overflow"))?;
         if offset > total {
             return Err(integrity("campaign-trace-offset-out-of-range"));
         }
-        let start =
-            usize::try_from(offset).map_err(|_| integrity("campaign-trace-offset-overflow"))?;
-        let end = start.saturating_add(limit as usize).min(bytes.len());
-        Ok((total, bytes[start..end].to_vec()))
+
+        let length = u64::from(limit).min(total - offset);
+        let range = crucible_cas::content_store::ByteRange::new(offset, length)
+            .map_err(|_| integrity("campaign-trace-offset-overflow"))?;
+        let chunk = self.blobs.read(trace, Some(range))?.read_all(length)?;
+        Ok((total, chunk))
     }
 
     pub(in crate::repository) fn read_measurement_set(
@@ -64,6 +70,30 @@ impl CampaignRepository {
             return Err(integrity("property-verdict-set-envelope-shape"));
         }
         Ok(value)
+    }
+
+    pub(in crate::repository) fn read_coverage_identity_frequency(
+        &self,
+        id: ContentId,
+    ) -> Result<crate::CoverageIdentityFrequency, CampaignRepositoryError> {
+        let envelope =
+            self.require_record_kind(id, crate::CampaignRecordKind::CoverageIdentityFrequency)?;
+        let value = crate::CoverageIdentityFrequency::from_canonical_bytes(envelope.body())?;
+        if value.content_id()? != id {
+            return Err(integrity("coverage-identity-frequency-envelope-shape"));
+        }
+        Ok(value)
+    }
+
+    pub(in crate::repository) fn put_coverage_identity_frequency(
+        &self,
+        value: crate::CoverageIdentityFrequency,
+    ) -> Result<ContentId, CampaignRepositoryError> {
+        self.put_envelope(crate::ObjectEnvelope::for_record(
+            crate::CampaignRecordKind::CoverageIdentityFrequency,
+            BTreeSet::new(),
+            value.canonical_bytes(),
+        )?)
     }
 
     pub(in crate::repository) fn read_coverage_projection(
@@ -261,17 +291,15 @@ impl CampaignRepository {
         let properties = self.read_property_verdict_set(observation.properties().content_id())?;
         self.read_coverage_projection(observation.coverage().content_id())?;
         if let Some(trace) = observation.resolved_effect_trace() {
-            if trace.kind() != ObjectKind::Trace || trace.schema_version() != 1 {
-                return Err(integrity("observation-trace-kind-mismatch"));
-            }
-            self.blobs.read(trace, None)?.read_all(64 * 1024 * 1024)?;
+            self.validate_resolved_effect_trace_leaves(trace)?;
         }
-        for choice in observation.discovered_choices() {
+        self.for_each_discovered_choice(observation, |choice| {
             let choice = self.read_opportunity_cached(choice.content_id(), choice_cache)?;
             if choice.scenario() != child.scenario() {
                 return Err(integrity("observation-choice-scenario-mismatch"));
             }
-        }
+            Ok(())
+        })?;
         self.validate_observation_produced_selections(observation, &child)?;
         if observation.stop().reached_next_choice() && observation.discovered_choices().is_empty() {
             return Err(integrity("next-choice-observation-has-no-choice"));
@@ -302,6 +330,28 @@ impl CampaignRepository {
             return Err(integrity(
                 "assertion-observation-stop-has-no-failed-property",
             ));
+        }
+        Ok(())
+    }
+
+    /// Requires every leaf of a segmented trace to be present within its
+    /// bound, without reading the trace.
+    ///
+    /// Leaves were authenticated when they were stored; readers authenticate
+    /// them again against the manifest before decoding.
+    fn validate_resolved_effect_trace_leaves(
+        &self,
+        trace: &ResolvedEffectTraceRef,
+    ) -> Result<(), CampaignRepositoryError> {
+        let manifest = self.blobs.read(trace.manifest(), None)?.logical_length();
+        if manifest > MAX_RESOLVED_EFFECT_TRACE_MANIFEST_BYTES as u64 {
+            return Err(integrity("observation-trace-manifest-oversized"));
+        }
+        for &segment in trace.segments() {
+            let length = self.blobs.read(segment, None)?.logical_length();
+            if length > MAX_SEGMENT_BYTES as u64 {
+                return Err(integrity("observation-trace-segment-oversized"));
+            }
         }
         Ok(())
     }

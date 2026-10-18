@@ -1,56 +1,95 @@
 //! 9p visibility event feeding and frontier advancement for the production
 //! coordinator.
 //!
-//! The production runtime's emitted events are append-only and checkpointed,
-//! and the 9p visibility state records how many of them it has consumed. Each
-//! service pass converts and feeds only the emissions appended since then, so
-//! its cost is proportional to new emissions rather than to the run's history.
-//! A newly committed event-released update scans the consumed prefix once, by
-//! exact signal identity, for emissions that already release it.
+//! The production runtime counts every referenced event it emits but retains,
+//! in its referenced-event window, only the events a live subscription can
+//! still use. The 9p visibility state records how many emissions it has
+//! consumed. Each service pass feeds the retained emissions appended since
+//! then and advances the cursor over retired ones, which release no live
+//! update, so its cost is proportional to new retained emissions rather than
+//! to the run's history. After the pass the coordinator reports every live
+//! event-released update as a subscription, which keeps the emission that
+//! releases it until the next pass feeds it.
 //!
 //! The first pass after construction or a rollback verifies every live latch
-//! against the consumed prefix, so a restored 9p continuation that disagrees
-//! with the restored runtime fails closed instead of advancing.
+//! against the retained consumed emissions, so a restored 9p continuation that
+//! disagrees with the restored runtime fails closed instead of advancing.
 
 use super::*;
 
-use crucible::model::ReferencedSignalEvent;
 use crucible_device::NinepEventEmission;
 
 impl ProductionNinepFaultCoordinator {
-    /// Feeds the emissions appended since the visibility state's cursor,
-    /// first verifying the consumed prefix when it has not been verified.
+    /// Feeds the retained emissions appended since the visibility state's
+    /// cursor, first verifying the consumed ones when they are unverified.
     pub(super) fn feed_visibility_events(
         &mut self,
         servicer: &mut LiveNinepServicer,
     ) -> Result<(), DeviceRuntimeError> {
         let cursor = servicer.visibility_state().event_cursor();
-        let appended = {
+        let live = ninep_event_subscriptions(servicer.visibility_state());
+        let (appended, consumed_through) = {
             let runtime = self.runtime.lock().map_err(|_| {
                 storage_error(
                     "read 9p visibility events",
                     "fault runtime lock is poisoned",
                 )
             })?;
-            let (consumed, appended) = split_emitted_events(runtime.emitted_events(), cursor)?;
+            runtime
+                .verify_referenced_event_subscriptions(self.consumer, &live)
+                .map_err(|error| storage_error("verify 9p visibility events", error))?;
+            let window = runtime.referenced_events();
+            if cursor > window.emitted() {
+                return Err(storage_error(
+                    "read 9p visibility events",
+                    "9p visibility event cursor exceeds the emitted events",
+                ));
+            }
             if self.verified_event_cursor != Some(cursor) {
                 servicer
                     .visibility_state()
-                    .verify_event_latches(&ninep_event_emissions(consumed)?)
+                    .verify_event_latches(&ninep_event_emissions(window.retained_before(cursor))?)
                     .map_err(|error| storage_error("verify 9p visibility events", error))?;
             }
-            ninep_event_emissions(appended)?
+            (
+                ninep_event_emissions(window.retained_from(cursor))?,
+                window.emitted(),
+            )
         };
 
         servicer
-            .observe_visibility_events(&appended)
+            .observe_visibility_events(&appended, consumed_through)
             .map_err(|error| storage_error("feed 9p visibility events", error))?;
         self.verified_event_cursor = Some(servicer.visibility_state().event_cursor());
         Ok(())
     }
 
-    /// Returns the consumed emissions of `event`, which latch a newly
-    /// committed update subscribed to `key`.
+    /// Reports every live event-released update so the runtime keeps the
+    /// emission that releases it.
+    pub(super) fn report_visibility_subscriptions(
+        &self,
+        servicer: &LiveNinepServicer,
+    ) -> Result<(), DeviceRuntimeError> {
+        let live = ninep_event_subscriptions(servicer.visibility_state());
+        self.runtime
+            .lock()
+            .map_err(|_| {
+                storage_error(
+                    "report 9p visibility subscriptions",
+                    "fault runtime lock is poisoned",
+                )
+            })?
+            .report_referenced_event_subscriptions(self.consumer, live)
+            .map_err(|error| storage_error("report 9p visibility subscriptions", error))
+    }
+
+    /// Returns the retained consumed emissions of `event`, which latch a
+    /// newly committed update subscribed to `key`.
+    ///
+    /// The committing evaluation follows every emitted event in scheduler
+    /// order, so no consumed emission lies strictly after its subscription;
+    /// the device still filters them, which keeps the latch exact even if an
+    /// emission were retained out of that order.
     pub(super) fn prior_visibility_emissions(
         &self,
         state: &NinepVisibilityState,
@@ -63,17 +102,17 @@ impl ProductionNinepFaultCoordinator {
                 "fault runtime lock is poisoned",
             )
         })?;
-        let (consumed, _appended) =
-            split_emitted_events(runtime.emitted_events(), state.event_cursor())?;
 
         // Identifier parsing is the identity on valid text, so comparing the
         // signal text selects exactly the emissions whose event key is `key`.
-        Ok(consumed
+        Ok(runtime
+            .referenced_events()
+            .retained_before(state.event_cursor())
             .iter()
-            .filter(|emitted| emitted.signal.as_str() == event.as_str())
-            .map(|emitted| NinepEventEmission {
+            .filter(|retained| retained.event().signal.as_str() == event.as_str())
+            .map(|retained| NinepEventEmission {
                 event: key,
-                coordinate: emission_coordinate(emitted),
+                coordinate: emission_coordinate(retained),
             })
             .collect())
     }
@@ -150,48 +189,40 @@ impl ProductionNinepFaultCoordinator {
     }
 }
 
-/// Returns the scheduler coordinate of one emitted signal event.
-fn emission_coordinate(event: &ReferencedSignalEvent) -> NinepEventCoordinate {
+/// Returns the scheduler coordinate of one retained emission.
+fn emission_coordinate(retained: &RetainedReferencedEvent) -> NinepEventCoordinate {
+    let coordinate = retained.coordinate();
     NinepEventCoordinate {
-        ticks: event.coordinate.virtual_ticks,
-        sequence: event.same_coordinate_sequence,
+        ticks: coordinate.ticks,
+        sequence: coordinate.sequence,
     }
 }
 
-/// Converts emitted signal events into the 9p emissions they latch.
+/// Converts retained emissions into the 9p emissions they latch.
 fn ninep_event_emissions(
-    events: &[ReferencedSignalEvent],
+    events: &[RetainedReferencedEvent],
 ) -> Result<Vec<NinepEventEmission>, DeviceRuntimeError> {
-    events
-        .iter()
-        .map(|event| {
-            let signal = FaultObjectId::parse(event.signal.as_str())
-                .map_err(|error| storage_error("read 9p visibility events", error))?;
-            Ok(NinepEventEmission {
-                event: storage_recovery_event_key(&signal),
-                coordinate: emission_coordinate(event),
-            })
-        })
-        .collect()
+    let mut emissions = Vec::new();
+    emissions
+        .try_reserve_exact(events.len())
+        .map_err(|_| storage_error("read 9p visibility events", "emission allocation failed"))?;
+    emissions.extend(events.iter().map(|retained| NinepEventEmission {
+        event: retained.key(),
+        coordinate: emission_coordinate(retained),
+    }));
+    Ok(emissions)
 }
 
-/// Splits the emitted events into the prefix a visibility state with
-/// `cursor` has consumed and the emissions appended after it.
-///
-/// A cursor beyond the emitted events fails closed: the 9p continuation does
-/// not belong to this runtime continuation.
-fn split_emitted_events(
-    events: &[ReferencedSignalEvent],
-    cursor: u64,
-) -> Result<(&[ReferencedSignalEvent], &[ReferencedSignalEvent]), DeviceRuntimeError> {
-    usize::try_from(cursor)
-        .ok()
-        .filter(|cursor| *cursor <= events.len())
-        .map(|cursor| events.split_at(cursor))
-        .ok_or_else(|| {
-            storage_error(
-                "read 9p visibility events",
-                "9p visibility event cursor exceeds the emitted events",
-            )
+/// Returns every live event-released update as a referenced-event subscription.
+fn ninep_event_subscriptions(state: &NinepVisibilityState) -> Vec<ReferencedEventSubscription> {
+    state
+        .event_subscriptions()
+        .map(|(event, after)| ReferencedEventSubscription {
+            event,
+            after: ReferencedEventCoordinate {
+                ticks: after.ticks,
+                sequence: after.sequence,
+            },
         })
+        .collect()
 }

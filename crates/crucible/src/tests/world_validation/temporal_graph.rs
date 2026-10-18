@@ -453,7 +453,7 @@ pub(in crate::tests) fn generated_schedule(seed: u64, len: u64) -> Schedule {
 }
 
 pub(in crate::tests) fn swap_first_two_decisions(schedule: &Schedule) -> Schedule {
-    let decisions = schedule.decisions();
+    let decisions = schedule.decision_history();
     let mut swapped = Schedule::empty();
 
     if decisions.len() < 2 {
@@ -462,7 +462,7 @@ pub(in crate::tests) fn swap_first_two_decisions(schedule: &Schedule) -> Schedul
 
     swapped = swapped.appended(decisions[1].clone());
     swapped = swapped.appended(decisions[0].clone());
-    for decision in &decisions[2..] {
+    for decision in decisions.iter_from(2) {
         swapped = swapped.appended(decision.clone());
     }
 

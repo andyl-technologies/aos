@@ -7,20 +7,22 @@
 //! modeled driver applies (RFC-0020 CCOMP-25 through CCOMP-28). An executor
 //! attempt seals the copy into its own directory, like the driver's log.
 //! Sealed segments are shared, so a snapshot copies only the open tail.
+//!
+//! The resolved-effect trace is retained the same way: the snapshot holds a
+//! segmented trace handle whose segments stay in the lifecycle's segment
+//! store, so retaining a long trace costs its manifest, not its items.
 
 use std::convert::Infallible;
 use std::sync::{Arc, Mutex};
 
+use crucible::model::ResolvedEffectTrace;
 use crucible::{FingerprintSample, SchedulerError, SchedulerEventLogEntry};
 
-use super::{
-    MAX_EXECUTION_FINGERPRINT_SAMPLES, MAX_RESOLVED_EFFECT_TRACE_BYTES,
-    MAX_TERMINAL_FINGERPRINT_SAMPLES,
-};
+use super::{MAX_EXECUTION_FINGERPRINT_SAMPLES, MAX_TERMINAL_FINGERPRINT_SAMPLES};
 use crate::DEFAULT_MAXIMUM_EVENT_LOG_BYTES;
 use crate::attempt_event_log::{
-    AttemptEventLog, AttemptEventLogError, AttemptEventLogVisitError, AttemptLogSegmentRef,
-    AttemptLogStore, MAX_ATTEMPT_LOG_ENTRY_BYTES,
+    AttemptEventLog, AttemptEventLogError, AttemptEventLogVisitError, AttemptLogManifest,
+    AttemptLogSegmentRef, AttemptLogSegmentSources, AttemptLogStore, MAX_ATTEMPT_LOG_ENTRY_BYTES,
 };
 
 /// Scheduler progress and reproduction evidence from one QEMU attempt.
@@ -33,7 +35,7 @@ pub struct QemuAttemptExecutionEvidenceSnapshot {
     event_log: RecordedEventLog,
     execution_fingerprints: Vec<FingerprintSample>,
     terminal_fingerprints: Option<Vec<FingerprintSample>>,
-    resolved_effect_trace: Option<Vec<u8>>,
+    resolved_effect_trace: Option<ResolvedEffectTrace>,
 }
 
 impl QemuAttemptExecutionEvidenceSnapshot {
@@ -110,6 +112,67 @@ impl QemuAttemptExecutionEvidenceSnapshot {
         self.event_log.try_for_each_from(0, visit)
     }
 
+    /// Seals a complete replay log of `prefix`, the recorded entries, and an
+    /// optional host-owned `terminal` entry, and returns its manifest.
+    ///
+    /// The recorded sealed segments are referenced, not copied. Only the
+    /// prefix and the recorded open tail with the terminal entry are encoded
+    /// as new segments, written to the recording's own store, so the returned
+    /// sources read every segment the manifest names. `prefix` must end where
+    /// the recording begins.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AttemptEventLogError`] when the parts are not dense from
+    /// sequence zero, a new segment cannot be encoded or stored, or the
+    /// combined log references more segments than one manifest may.
+    pub(crate) fn seal_replay_capture_log(
+        &self,
+        prefix: &[SchedulerEventLogEntry],
+        terminal: Option<&SchedulerEventLogEntry>,
+    ) -> Result<(AttemptLogManifest, AttemptLogSegmentSources), AttemptEventLogError> {
+        let mut store = match &self.event_log.log {
+            Some(log) => log.store().clone(),
+            None => self.event_log.store.clone().unwrap_or_default(),
+        };
+        let mut segments = Vec::new();
+
+        // The prefix precedes the recording, so its segments come first.
+        if !prefix.is_empty() {
+            let mut log = AttemptEventLog::new(store, u64::MAX, 0);
+            log.append_all(prefix)?;
+            log.seal()?;
+            segments.extend_from_slice(log.sealed_segments());
+            store = log.into_store();
+        }
+
+        let prefix_end = prefix.len() as u64;
+        let (tail, tail_start) = match &self.event_log.log {
+            Some(log) => {
+                if log.first_sequence() != prefix_end {
+                    return Err(AttemptEventLogError::NonDense {
+                        expected: prefix_end,
+                        actual: log.first_sequence(),
+                    });
+                }
+                segments.extend_from_slice(log.sealed_segments());
+                let tail = log.tail();
+                (tail, log.next_sequence() - tail.len() as u64)
+            }
+            None => (&[][..], prefix_end),
+        };
+
+        // The open tail and the terminal entry close the log as new segments.
+        let mut log = AttemptEventLog::new(store, u64::MAX, tail_start);
+        log.append_all(tail)?;
+        log.append_all(terminal.map(std::slice::from_ref).unwrap_or_default())?;
+        log.seal()?;
+        segments.extend_from_slice(log.sealed_segments());
+
+        let manifest = AttemptLogManifest::new(segments)?;
+        Ok((manifest, log.into_store().into()))
+    }
+
     /// Copies every retained scheduler entry into memory, for assertions.
     #[cfg(test)]
     pub(crate) fn event_log_entries(
@@ -130,10 +193,10 @@ impl QemuAttemptExecutionEvidenceSnapshot {
         self.terminal_fingerprints.as_deref()
     }
 
-    /// Returns the encoded resolved-effect trace retained by the live runtime.
+    /// Returns the segmented resolved-effect trace retained by the live runtime.
     #[must_use]
-    pub fn resolved_effect_trace(&self) -> Option<&[u8]> {
-        self.resolved_effect_trace.as_deref()
+    pub const fn resolved_effect_trace(&self) -> Option<&ResolvedEffectTrace> {
+        self.resolved_effect_trace.as_ref()
     }
 }
 
@@ -408,39 +471,18 @@ impl QemuAttemptExecutionEvidence {
         Ok(())
     }
 
+    /// Records the final drain, trace, and terminal fingerprints.
+    ///
+    /// The trace is a segmented handle: its length is bounded by the authored
+    /// replay counters the fault runtime enforced while recording, not by an
+    /// evidence byte ceiling (RFC-0020 section 15).
     pub(super) fn complete(
         &self,
         entries: &[SchedulerEventLogEntry],
-        resolved_effect_trace: Option<Vec<u8>>,
+        resolved_effect_trace: Option<ResolvedEffectTrace>,
         terminal_fingerprints: Option<Vec<FingerprintSample>>,
-    ) -> Result<(), SchedulerError> {
-        self.complete_with_trace_limit(
-            entries,
-            resolved_effect_trace,
-            terminal_fingerprints,
-            MAX_RESOLVED_EFFECT_TRACE_BYTES,
-        )
-    }
-
-    fn complete_with_trace_limit(
-        &self,
-        entries: &[SchedulerEventLogEntry],
-        resolved_effect_trace: Option<Vec<u8>>,
-        terminal_fingerprints: Option<Vec<FingerprintSample>>,
-        trace_byte_limit: usize,
     ) -> Result<(), SchedulerError> {
         let mut snapshot = self.snapshot.lock().map_err(|_| evidence_poisoned())?;
-        if resolved_effect_trace
-            .as_ref()
-            .is_some_and(|trace| trace.len() > trace_byte_limit)
-        {
-            return Err(evidence_limit(
-                "qemu-resolved-effect-trace-bytes",
-                0,
-                resolved_effect_trace.as_ref().map_or(0, Vec::len) as u64,
-                trace_byte_limit as u64,
-            ));
-        }
         if terminal_fingerprints
             .as_ref()
             .is_some_and(|samples| samples.len() > MAX_TERMINAL_FINGERPRINT_SAMPLES)
@@ -453,8 +495,8 @@ impl QemuAttemptExecutionEvidence {
             ));
         }
 
-        // Both bounded payloads were validated above and the append is
-        // all-or-nothing, so a rejected final drain preserves the last
+        // The bounded fingerprint payload was validated above and the append
+        // is all-or-nothing, so a rejected final drain preserves the last
         // complete evidence snapshot for diagnosis.
         snapshot.event_log.append(entries)?;
         snapshot.resolved_effect_trace = resolved_effect_trace;
@@ -890,6 +932,67 @@ mod tests {
     }
 
     #[test]
+    fn replay_capture_log_references_recorded_segments_by_identity() {
+        let evidence = QemuAttemptExecutionEvidence::default();
+        let frontier = VirtualTime { ticks: 19 };
+        let reason = "segment-fixture-".repeat(4096);
+        let entries = (0..401)
+            .map(|sequence| {
+                SchedulerEventLogEntry::execution_budget_exhausted(sequence, frontier, &reason)
+            })
+            .collect::<Vec<_>>();
+        let (prefix, rest) = entries.split_at(10);
+        let (recorded, terminal) = rest.split_at(390);
+
+        // A resumed attempt records only what follows its prefix.
+        evidence
+            .record(1, frontier, recorded)
+            .expect("record the resumed attempt");
+        let snapshot = evidence.snapshot().expect("snapshot");
+        let recorded_segments = snapshot
+            .event_log
+            .log
+            .as_ref()
+            .expect("recorded log")
+            .sealed_segments()
+            .to_vec();
+        assert!(recorded_segments.len() > 1, "the fixture spans segments");
+
+        let (manifest, sources) = snapshot
+            .seal_replay_capture_log(prefix, terminal.first())
+            .expect("seal capture log");
+        let read_back = manifest
+            .entries(&sources)
+            .collect::<Result<Vec<_>, _>>()
+            .expect("read capture log");
+
+        assert_eq!(read_back, entries);
+        assert_eq!(manifest.entry_count(), 401);
+        // The recording's sealed segments are reused, not re-encoded; only the
+        // prefix and the closing tail become new segments around them.
+        let start = manifest
+            .segments()
+            .iter()
+            .position(|segment| *segment == recorded_segments[0])
+            .expect("recorded segments are referenced");
+        assert_eq!(start, 1, "the prefix fits in one leading segment");
+        assert_eq!(
+            manifest.segments()[start..start + recorded_segments.len()],
+            recorded_segments[..]
+        );
+        assert_eq!(
+            manifest.segments().len(),
+            recorded_segments.len() + 2,
+            "one prefix segment and one closing tail segment"
+        );
+
+        assert!(matches!(
+            snapshot.seal_replay_capture_log(&prefix[..9], None),
+            Err(AttemptEventLogError::NonDense { .. })
+        ));
+    }
+
+    #[test]
     fn recordings_under_a_namespace_seal_into_their_own_directory() {
         let parent = tempfile::tempdir().expect("temporary parent");
         let namespace = crate::AttemptLogNamespace::create(parent.path().join("event-logs"))
@@ -995,30 +1098,48 @@ mod tests {
     }
 
     #[test]
-    fn effect_trace_limit_refusal_preserves_final_events_and_prior_evidence() {
+    fn completion_retains_the_segmented_effect_trace_handle() {
         let evidence = QemuAttemptExecutionEvidence::default();
         evidence
             .record(3, VirtualTime { ticks: 11 }, &[])
             .expect("seed evidence");
-        let before = evidence.snapshot().expect("snapshot before refusal");
-        let final_entry = SchedulerEventLogEntry::execution_budget_exhausted(
-            0,
-            VirtualTime { ticks: 12 },
-            "final-evidence-limit-fixture",
-        );
+        let item = crucible::model::ResolvedReplayWorkItem {
+            coordinate: crucible::model::FaultCoordinate {
+                virtual_ticks: 12,
+                retired_instructions: None,
+            },
+            same_coordinate_sequence: 0,
+            opportunity: None,
+            target: None,
+            operation: None,
+            direction: None,
+            phase: None,
+            network_frame_key: None,
+            network_producer_direction_key: None,
+            derivation_fingerprint: ContentHash::from_bytes(b"retained-trace-fixture"),
+            records: Vec::new(),
+        };
+        let trace = ResolvedEffectTrace::from_items(
+            crucible::model::FaultReplayMode::RecomputedCause,
+            [item.clone()],
+            crucible::model::FaultResourceLimits::default(),
+        )
+        .expect("trace fixture");
 
-        let error = evidence
-            .complete_with_trace_limit(&[final_entry], Some(vec![0xa5, 0x5a]), None, 1)
-            .expect_err("the effect-trace byte ceiling must reject the final evidence");
+        evidence
+            .complete(&[], Some(trace.clone()), Some(Vec::new()))
+            .expect("complete evidence");
 
-        assert!(matches!(
-            error,
-            SchedulerError::ResourceLimit {
-                field: "qemu-resolved-effect-trace-bytes",
-                ..
-            }
-        ));
-        assert_eq!(evidence.snapshot().expect("snapshot after refusal"), before);
+        let snapshot = evidence.snapshot().expect("completed snapshot");
+        let retained = snapshot
+            .resolved_effect_trace()
+            .expect("the completed snapshot retains the trace");
+        assert_eq!(retained, &trace);
+        let items = retained
+            .items()
+            .collect::<Result<Vec<_>, _>>()
+            .expect("retained items stay readable");
+        assert_eq!(items, vec![item]);
     }
 
     #[test]
@@ -1041,12 +1162,7 @@ mod tests {
             vec![sample; MAX_TERMINAL_FINGERPRINT_SAMPLES.saturating_add(1)];
 
         let error = evidence
-            .complete_with_trace_limit(
-                &[],
-                Some(vec![0xa5]),
-                Some(terminal_fingerprints),
-                MAX_RESOLVED_EFFECT_TRACE_BYTES,
-            )
+            .complete(&[], None, Some(terminal_fingerprints))
             .expect_err("the terminal fingerprint ceiling must reject the final evidence");
 
         assert!(matches!(

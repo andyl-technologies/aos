@@ -3,20 +3,59 @@
 use super::*;
 
 impl BlockDevice {
-    /// Builds a block device over `base` with the given core and latency model.
+    /// Builds a block device over `base` with a heap-backed overlay.
     ///
     /// The base image is held read-only and never mutated ([IO-5]); the overlay
-    /// starts empty so every read falls through to the base.
+    /// starts empty so every read falls through to the base. Production devices
+    /// use [`Self::new_with_store`] so overlay pages live on disk.
     #[must_use]
     pub fn new(core: IoCore, base: BaseImage, latency: BlockLatency) -> Self {
+        Self::new_with_store(core, base, latency, BlockPageStore::memory())
+    }
+
+    /// Builds a block device whose copied-up overlay pages go to `store`.
+    ///
+    /// The overlay starts empty; see [`Self::new`].
+    #[must_use]
+    pub fn new_with_store(
+        core: IoCore,
+        base: BaseImage,
+        latency: BlockLatency,
+        store: BlockPageStore,
+    ) -> Self {
         let storage_faults = BlockFaultState::write_through(base.len());
         Self {
             core,
             base,
-            overlay: CowOverlay::new(),
+            overlay: CowOverlay::with_store(store),
             storage_faults,
             latency,
         }
+    }
+
+    /// Returns the store that receives this device's copied-up overlay pages.
+    #[must_use]
+    pub fn page_store(&self) -> &BlockPageStore {
+        self.overlay.store()
+    }
+
+    /// Moves a still-empty overlay onto `store`.
+    ///
+    /// Owners that create the device before its run directory's store use
+    /// this once, before the first write or restore.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError::InvalidBlockFaultDirective`] when the overlay
+    /// already holds pages, so no page is ever split across stores silently.
+    pub fn use_page_store(&mut self, store: BlockPageStore) -> Result<(), DeviceError> {
+        if self.overlay.page_count() != 0 {
+            return Err(DeviceError::InvalidBlockFaultDirective {
+                reason: "the block page store must be chosen before device mutation",
+            });
+        }
+        self.overlay = CowOverlay::with_store(store);
+        Ok(())
     }
 
     /// Returns the device length in bytes (the base image size, [IO-6]).

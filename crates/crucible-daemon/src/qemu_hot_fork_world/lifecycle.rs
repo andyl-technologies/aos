@@ -619,7 +619,9 @@ where
         Ok(())
     }
 
-    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
+    fn resolved_effect_trace(
+        &self,
+    ) -> Result<Option<crucible::model::ResolvedEffectTrace>, SchedulerError> {
         // crucible-lint: allow host-nondeterminism-state -- this copies the scheduler-retained RecomputedCause trace; the observation never feeds back into modeled execution.
         QuantumLoop::resolved_effect_trace(&self.lifecycle)
     }

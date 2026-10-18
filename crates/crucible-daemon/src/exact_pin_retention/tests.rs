@@ -3,6 +3,7 @@
 // crucible-lint: allow panic-shortcut -- fixtures use panic shortcuts for failure localization.
 #![allow(clippy::expect_used)]
 
+use crate::campaign_gc::ManifestEntriesForTest;
 use crucible_campaign::{
     CampaignCommandId, CampaignLineage, CampaignMode, CampaignPolicy, CampaignSeed, ExactRational,
     ExplorerPolicy, FairnessPolicy, PinChange, PinRequest, ProgressiveWideningPolicy, PuctPolicy,
@@ -110,6 +111,7 @@ struct Fixture {
 
 #[test]
 fn gc_requires_current_selection_and_ignores_stale_record_after_unpin() {
+    let spill_parent = tempfile::tempdir().expect("GC spill parent");
     let temp = tempfile::tempdir().expect("exact-pin GC root");
     let node = StoreNodeId::new("durable").expect("store node");
     let (graph, admin) = StoreGraph::build_with_admin(StoreGraphConfig {
@@ -153,6 +155,7 @@ fn gc_requires_current_selection_and_ignores_stale_record_after_unpin() {
             None,
             None,
             &admin,
+            spill_parent.path(),
         ),
         Err(crate::CampaignGcPlanningError::MissingExactPinMaterialization { .. })
     ));
@@ -164,6 +167,7 @@ fn gc_requires_current_selection_and_ignores_stale_record_after_unpin() {
         None,
         Some(&mut selections),
         &admin,
+        spill_parent.path(),
     )
     .expect("plan with exact materialization");
     let exact_closure = fixture
@@ -171,15 +175,18 @@ fn gc_requires_current_selection_and_ignores_stale_record_after_unpin() {
         .authenticated_production_closure_ids(fixture.checkpoint)
         .expect("complete exact checkpoint closure");
     assert!(exact_closure.len() > 1);
-    assert!(
-        exact_closure
-            .iter()
-            .all(|id| planned.roots().iter().any(|root| root == *id))
-    );
+    assert!(exact_closure.iter().all(|id| {
+        planned
+            .roots()
+            .entries_for_test()
+            .into_iter()
+            .any(|root| root == *id)
+    }));
     assert!(
         planned
             .candidates()
-            .iter()
+            .entries_for_test()
+            .into_iter()
             .all(|candidate| !exact_closure.contains(&candidate.id()))
     );
     let (mut journal, _) =
@@ -229,18 +236,21 @@ fn gc_requires_current_selection_and_ignores_stale_record_after_unpin() {
         None,
         Some(&mut selections),
         &admin,
+        spill_parent.path(),
     )
     .expect("plan after unpin with stale selection record");
     assert!(
         !after_unpin
             .roots()
-            .iter()
+            .entries_for_test()
+            .into_iter()
             .any(|root| root == fixture.checkpoint.content_id())
     );
     assert!(
         after_unpin
             .candidates()
-            .iter()
+            .entries_for_test()
+            .into_iter()
             .any(|candidate| candidate.id() == fixture.checkpoint.content_id())
     );
     drop(admin);
@@ -285,12 +295,19 @@ fn selection_authenticates_pin_and_checkpoint_and_survives_restart() {
             &bytes,
         )
         .to_hex(),
-        // The current closure includes the v7 scheduler continuation, its
+        // The current closure includes the v10 scheduler continuation, which
+        // names sealed event-log segments, carries only the open tail, and
+        // names retained search-frontier parents by prefix, its
         // World-bound I/O ledger, the v3 host-assertion continuation, and the
-        // genesis observation choice-source and direct-selection index anchors.
+        // genesis observation choice-source and direct-selection index anchors,
+        // the v11 closure's resolved-effect trace-segment catalog and its
+        // (here empty) block overlay chunk list, a version 2
+        // replay-closure root as the checkpoint choice child, the version 8
+        // production fault runtime with its referenced-event window, and the
+        // version 5 schedule transport inside its configuration payload.
         // Authenticate the pin and closure above before pinning these
         // recanonicalized selection bytes.
-        "1c7ed772bdc71ea518b4eebf613402c81dfb187d3cde683ecfe92dc1c30cee85"
+        "ad10a38f4998cd58fa68ae6ec15788d7086bb68fa4e910a395702284d08945bc"
     );
     drop(store);
 

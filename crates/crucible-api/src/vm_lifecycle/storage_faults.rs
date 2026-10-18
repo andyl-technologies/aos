@@ -45,15 +45,17 @@ use crucible_qemu::{
     QemuLive9pIoServiceStep, QemuLive9pIoServicer,
     QemuLive9pResponseEvidence as LiveNinepResponseEvidence, QemuLiveBlockIoDeliveryStep,
     QemuLiveBlockIoIntakeStep, QemuLiveBlockIoServiceStep, QemuLiveBlockIoServicer,
-    QemuNinepFaultCoordinator, QemuSharedBlockDevice, ResolvedVolatileCacheLoss, StorageArrayError,
-    StorageFaultResolutionContext, StorageFaultResolutionError, VolatileCacheLossReplay,
-    block_delivery_fault_opportunity, block_durability_config, block_persistence_fault_opportunity,
-    block_request_fault_opportunity, block_request_persistence_fault_opportunity,
-    merge_block_fault_phase_directive, plan_storage_array_write, read_storage_array,
-    resolve_block_controller_transition, resolve_block_fault_directive,
-    resolve_block_persistence_media_directive, resolve_storage_array_baseline,
-    resolve_storage_array_policy, resolve_storage_array_rebuild_failure,
-    resolve_storage_array_rebuild_service, resolve_volatile_cache_loss,
+    QemuNinepFaultCoordinator, QemuSharedBlockDevice, ReferencedEventConsumer,
+    ReferencedEventCoordinate, ReferencedEventSubscription, ResolvedVolatileCacheLoss,
+    RetainedReferencedEvent, StorageArrayError, StorageFaultResolutionContext,
+    StorageFaultResolutionError, VolatileCacheLossReplay, block_delivery_fault_opportunity,
+    block_durability_config, block_persistence_fault_opportunity, block_request_fault_opportunity,
+    block_request_persistence_fault_opportunity, merge_block_fault_phase_directive,
+    plan_storage_array_write, read_storage_array, resolve_block_controller_transition,
+    resolve_block_fault_directive, resolve_block_persistence_media_directive,
+    resolve_storage_array_baseline, resolve_storage_array_policy,
+    resolve_storage_array_rebuild_failure, resolve_storage_array_rebuild_service,
+    resolve_volatile_cache_loss, retained_recovery_subscriptions,
     storage_array_rebuild_fault_opportunity, storage_recovery_event_key,
 };
 
@@ -93,6 +95,8 @@ struct EvaluatedStoragePhase {
 /// Coordinates one live block servicer with the authoritative signal runtime.
 pub(super) struct ProductionBlockFaultCoordinator {
     runtime: Arc<Mutex<ProductionFaultRuntime>>,
+    /// Referenced-event consumer identity of this device's block recovery.
+    consumer: ReferencedEventConsumer,
     cursor: SharedProductionFaultEvaluationCursor,
     observations: ProductionStorageObservations,
     devices: ProductionBlockDevices,
@@ -114,6 +118,7 @@ impl ProductionBlockFaultCoordinator {
     )]
     pub(super) fn new(
         runtime: Arc<Mutex<ProductionFaultRuntime>>,
+        consumer: ReferencedEventConsumer,
         cursor: SharedProductionFaultEvaluationCursor,
         observations: ProductionStorageObservations,
         devices: ProductionBlockDevices,
@@ -150,6 +155,7 @@ impl ProductionBlockFaultCoordinator {
             .map(|array| array.id.as_str().to_owned());
         Self {
             runtime,
+            consumer,
             cursor,
             observations,
             devices,
@@ -696,6 +702,27 @@ impl ProductionBlockFaultCoordinator {
             ));
         }
         Ok(())
+    }
+
+    /// Reports every retained completion's recovery subscription after a
+    /// service step, so the runtime keeps the event that can release it.
+    fn report_recovery_subscriptions(
+        &self,
+        servicer: &QemuLiveBlockIoServicer,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        let live = servicer
+            .retained_recovery_subscriptions()
+            .map_err(|error| storage_error("inspect retained block completions", error))?;
+        self.runtime
+            .lock()
+            .map_err(|_| {
+                storage_error(
+                    "report storage recovery subscriptions",
+                    "fault runtime lock is poisoned",
+                )
+            })?
+            .report_referenced_event_subscriptions(self.consumer, live)
+            .map_err(|error| storage_error("report storage recovery subscriptions", error))
     }
 
     fn evaluate_phase(
@@ -1638,32 +1665,40 @@ impl QemuBlockFaultCoordinator for ProductionBlockFaultCoordinator {
         let storage_state = servicer
             .storage_fault_state()
             .map_err(|error| storage_error("inspect retained block completions", error))?;
-        let recovery_events = self
-            .runtime
-            .lock()
-            .map_err(|_| {
+        // The runtime retains, for every reported retained completion, the
+        // earliest event that can release it, so selecting the earliest
+        // retained candidate equals selecting over the complete history.
+        let recovery_events = {
+            let runtime = self.runtime.lock().map_err(|_| {
                 storage_error(
                     "read storage recovery events",
                     "fault runtime lock is poisoned",
                 )
-            })?
-            .emitted_events()
-            .iter()
-            .filter(|event| event.coordinate.virtual_ticks <= now_ticks)
-            .map(|event| {
-                (
-                    event.signal.clone(),
-                    event.coordinate.virtual_ticks,
-                    event.same_coordinate_sequence,
-                    event.evidence,
+            })?;
+            runtime
+                .verify_referenced_event_subscriptions(
+                    self.consumer,
+                    &retained_recovery_subscriptions(&storage_state),
                 )
-            })
-            .collect::<Vec<_>>();
+                .map_err(|error| storage_error("verify storage recovery events", error))?;
+            runtime
+                .referenced_events()
+                .retained()
+                .iter()
+                .filter(|retained| retained.event().coordinate.virtual_ticks <= now_ticks)
+                .map(|retained| {
+                    let coordinate = retained.coordinate();
+                    (
+                        retained.key(),
+                        coordinate.ticks,
+                        coordinate.sequence,
+                        retained.event().evidence,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
         let mut releases = std::collections::BTreeMap::new();
-        for (signal, event_ticks, event_sequence, event_evidence) in recovery_events {
-            let signal = crucible::model::FaultObjectId::parse(signal.as_str())
-                .map_err(|error| storage_error("resolve storage recovery event", error))?;
-            let key = storage_recovery_event_key(&signal);
+        for (key, event_ticks, event_sequence, event_evidence) in recovery_events {
             for identity in storage_state.retained_recoveries_for(key, event_ticks, event_sequence)
             {
                 let retained = storage_state.retained_completion(identity).ok_or_else(|| {
@@ -1802,6 +1837,7 @@ impl QemuBlockFaultCoordinator for ProductionBlockFaultCoordinator {
             absorb_intake(&mut aggregate, intake)?;
         }
         self.settle_opportunities(servicer, guest_icount, now_ticks, &mut aggregate)?;
+        self.report_recovery_subscriptions(servicer)?;
         Ok(aggregate)
     }
 }
@@ -1809,6 +1845,8 @@ impl QemuBlockFaultCoordinator for ProductionBlockFaultCoordinator {
 /// Coordinates one live 9p servicer with the authoritative signal runtime.
 pub(super) struct ProductionNinepFaultCoordinator {
     runtime: Arc<Mutex<ProductionFaultRuntime>>,
+    /// Referenced-event consumer identity of this export's 9p visibility.
+    consumer: ReferencedEventConsumer,
     cursor: SharedProductionFaultEvaluationCursor,
     observations: ProductionStorageObservations,
     world: World,
@@ -1824,6 +1862,7 @@ impl ProductionNinepFaultCoordinator {
     /// Binds one World 9p target to the shared production continuation.
     pub(super) fn new(
         runtime: Arc<Mutex<ProductionFaultRuntime>>,
+        consumer: ReferencedEventConsumer,
         cursor: SharedProductionFaultEvaluationCursor,
         observations: ProductionStorageObservations,
         world: World,
@@ -1832,6 +1871,7 @@ impl ProductionNinepFaultCoordinator {
     ) -> Self {
         Self {
             runtime,
+            consumer,
             cursor,
             observations,
             world,
@@ -2285,6 +2325,7 @@ impl ProductionNinepFaultCoordinator {
             *shared_commit_started = delivered.delivered > 0;
             result.delivered = delivered.delivered;
             result.next_completion_icount = delivered.next_completion_icount;
+            self.report_visibility_subscriptions(servicer)?;
             return Ok(result);
         }
 
@@ -2407,6 +2448,7 @@ impl ProductionNinepFaultCoordinator {
             result.computed_completion_icount = processed.computed_completion_icount;
             result.next_completion_icount = processed.next_completion_icount;
         }
+        self.report_visibility_subscriptions(servicer)?;
         Ok(result)
     }
 }

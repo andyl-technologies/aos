@@ -187,6 +187,17 @@ impl QemuVmSnapshot {
         &self.host_io
     }
 
+    /// Attaches the source that serves the block overlay chunks of a decoded snapshot.
+    ///
+    /// The snapshot identity covers the chunk identities, not the source, so
+    /// binding never changes [`Self::id`].
+    pub fn bind_block_overlay_source(
+        &mut self,
+        source: Arc<dyn crucible_device::BlockOverlayChunkSource>,
+    ) {
+        self.host_io.bind_block_overlay_source(source);
+    }
+
     /// Returns the scheduler-facing node continuation paired with this snapshot.
     #[must_use]
     pub const fn node_continuation(&self) -> &crate::QemuNodeContinuationCheckpoint {

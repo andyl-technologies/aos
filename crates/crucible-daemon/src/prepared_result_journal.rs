@@ -5,15 +5,17 @@
 //! ```text
 //! <namespace>/.lock-runtime-owner
 //! <namespace>/.lock-<execution-key-digest>
-//! <namespace>/<execution-key-digest>/result-v3
-//! <namespace>/<execution-key-digest>/state-v3
+//! <namespace>/<execution-key-digest>/result-v4
+//! <namespace>/<execution-key-digest>/state-v4
 //! <namespace>/<execution-key-digest>/segments/<segment-digest>.segment
+//! <namespace>/<execution-key-digest>/records/<record-digest>.record
 //! <namespace>/.staged-<execution-key-digest>/...
 //! ```
 //!
 //! The result contains the complete typed observation/finding closure and
-//! names its attempt-log segments by identity; the journal holds its own
-//! authenticated copy of each referenced segment. State
+//! names its attempt-log and resolved-effect trace segments and its finding
+//! replay records by identity; the journal holds its own authenticated copy
+//! of each one. State
 //! binds its hash and exact publication IDs to the lineage, attempt, and
 //! versioned execution scope. The complete pair remains hidden until the
 //! operational ledger grants `Publishing`, then one rename makes it visible.
@@ -23,12 +25,12 @@
 //! orphan may be removed.
 //!
 //! ```text
-//! state-v3 := magic, key-digest, lineage, attempt, scope, execution,
+//! state-v4 := magic, key-digest, lineage, attempt, scope, execution,
 //!             payload-limit, observation, measurement-evidence-count,
 //!             measurement-evidence-set-hash, segment-count, segment-set-hash,
-//!             finding-present, [finding], payload-length, payload-hash,
-//!             state-checksum
-//! result-v3 := prepared-semantic-attempt-result-v9
+//!             record-count, record-set-hash, finding-present, [finding],
+//!             payload-length, payload-hash, state-checksum
+//! result-v4 := prepared-semantic-attempt-result-v11
 //! ```
 //!
 //! State is bounded at 16 KiB. The result has both the format ceiling and the
@@ -54,19 +56,22 @@ use crate::{
 const JOURNAL_LOCK_PREFIX: &str = ".lock-";
 const JOURNAL_OWNER_LOCK: &str = ".lock-runtime-owner";
 const JOURNAL_STAGED_PREFIX: &str = ".staged-";
-const JOURNAL_RESULT_FILE: &str = "result-v3";
-const JOURNAL_STATE_FILE: &str = "state-v3";
-const JOURNAL_STATE_MAGIC_V3: &[u8] = b"crucible.executor.prepared-result-journal-state.v3\0";
-const JOURNAL_STATE_HASH_DOMAIN_V3: &str = "crucible.executor.prepared-result-journal-state.v3";
+const JOURNAL_RESULT_FILE: &str = "result-v4";
+const JOURNAL_STATE_FILE: &str = "state-v4";
+const JOURNAL_STATE_MAGIC_V4: &[u8] = b"crucible.executor.prepared-result-journal-state.v4\0";
+const JOURNAL_STATE_HASH_DOMAIN_V4: &str = "crucible.executor.prepared-result-journal-state.v4";
 const JOURNAL_MEASUREMENT_EVIDENCE_HASH_DOMAIN: &str =
     "crucible.executor.prepared-result-journal-measurement-evidence.v1";
 const MAX_JOURNAL_STATE_BYTES: usize = 16 * 1024;
-// Result, state, their two staging temporaries, and the segment directory.
-const MAX_ORPHAN_DIRECTORY_ENTRIES: usize = 5;
+// Result, state, their two staging temporaries, and the segment and record
+// directories.
+const MAX_ORPHAN_DIRECTORY_ENTRIES: usize = 6;
 const MAX_RUNTIME_JOURNAL_ENTRIES: usize = 1_000_000;
 
 static JOURNAL_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+mod objects;
+mod records;
 mod segments;
 
 /// Descriptor-bound process authority for one prepared-result namespace.
@@ -265,9 +270,10 @@ impl DirectoryPreparedResultJournal {
         let payload = result.canonical_bytes_with_limit(maximum_payload_bytes)?;
         let state = encode_state(key, execution, maximum_payload_bytes, &result, &payload)?;
         let root_authority = create_staging_directory(namespace, key)?;
-        // Segments land before the result and state, so a journal with both
-        // files always owns every segment its result references.
+        // Segments and records land before the result and state, so a journal
+        // with both files always owns everything its result names.
         let result = segments::stage_segments(&root_authority, result)?;
+        let result = records::stage_records(&root_authority, result)?;
         initialize_new(&root_authority, &payload, &state)?;
         namespace.verify()?;
         Ok((
@@ -542,10 +548,12 @@ impl DirectoryPreparedResultJournal {
         )?;
         envelope.validate_payload(&payload)?;
         let log_segments = segments::open_segments(&root_authority, envelope.segments.0)?;
+        let replay_records = records::open_records(&root_authority, envelope.records.0)?;
         let result = PreparedSemanticAttemptResult::from_canonical_bytes_with_limit(
             &payload,
             maximum_payload_bytes,
             log_segments,
+            replay_records,
         )?;
         envelope.validate_result(&result)?;
         validate_result_key(key, &result)?;
@@ -713,6 +721,9 @@ pub enum PreparedResultJournalError {
     /// The operational payload ceiling is zero or exceeds the format ceiling.
     #[error("prepared-result journal payload limit is invalid")]
     InvalidPayloadLimit,
+    /// A retained finding replay record could not be staged into the journal.
+    #[error(transparent)]
+    ReplayRecord(#[from] crate::ReplayRecordError),
     /// A referenced attempt-log segment could not be staged into the journal.
     #[error("prepared-result journal cannot stage log segment {segment}: {source}")]
     Segment {
@@ -790,10 +801,11 @@ fn encode_state(
         .transpose()?;
     let (measurement_evidence_count, measurement_evidence_hash) =
         measurement_evidence_identity(result)?;
-    let (segment_count, segment_hash) =
-        segments::segment_set_identity(&result.referenced_log_segments());
+    let (segment_count, segment_hash) = segments::segment_set_identity(result);
+    let (record_count, record_hash) =
+        records::record_set_identity(&result.referenced_replay_records());
     let mut state = Vec::new();
-    state.extend_from_slice(JOURNAL_STATE_MAGIC_V3);
+    state.extend_from_slice(JOURNAL_STATE_MAGIC_V4);
     state.extend_from_slice(&key.storage_digest().as_bytes());
     push_text(&mut state, &key.lineage().content_id().encode())?;
     push_text(&mut state, &key.attempt().content_id().encode())?;
@@ -813,6 +825,8 @@ fn encode_state(
     state.extend_from_slice(&measurement_evidence_hash);
     state.extend_from_slice(&segment_count.to_be_bytes());
     state.extend_from_slice(&segment_hash);
+    state.extend_from_slice(&record_count.to_be_bytes());
+    state.extend_from_slice(&record_hash);
     match finding {
         Some(finding) => {
             state.push(1);
@@ -826,7 +840,7 @@ fn encode_state(
             .to_be_bytes(),
     );
     state.extend_from_slice(blake3::hash(payload).as_bytes());
-    let checksum_key = blake3::derive_key(JOURNAL_STATE_HASH_DOMAIN_V3, JOURNAL_STATE_MAGIC_V3);
+    let checksum_key = blake3::derive_key(JOURNAL_STATE_HASH_DOMAIN_V4, JOURNAL_STATE_MAGIC_V4);
     let checksum = blake3::keyed_hash(&checksum_key, &state);
     state.extend_from_slice(checksum.as_bytes());
     if state.len() > MAX_JOURNAL_STATE_BYTES {
@@ -840,6 +854,7 @@ struct JournalStateEnvelope<'a> {
     observation: &'a [u8],
     measurement_evidence: Option<(usize, [u8; 32])>,
     segments: (u64, [u8; 32]),
+    records: (u64, [u8; 32]),
     finding: Option<&'a [u8]>,
     payload_length: usize,
     payload_hash: [u8; 32],
@@ -879,7 +894,10 @@ impl JournalStateEnvelope<'_> {
             _ => {}
         }
 
-        if segments::segment_set_identity(&result.referenced_log_segments()) != self.segments {
+        if segments::segment_set_identity(result) != self.segments {
+            return Err(PreparedResultJournalError::InvalidState);
+        }
+        if records::record_set_identity(&result.referenced_replay_records()) != self.records {
             return Err(PreparedResultJournalError::InvalidState);
         }
 
@@ -910,13 +928,13 @@ fn decode_state<'a>(
         .checked_sub(32)
         .ok_or(PreparedResultJournalError::InvalidState)?;
     let (body, checksum) = state.split_at(checksum_offset);
-    let checksum_key = blake3::derive_key(JOURNAL_STATE_HASH_DOMAIN_V3, JOURNAL_STATE_MAGIC_V3);
+    let checksum_key = blake3::derive_key(JOURNAL_STATE_HASH_DOMAIN_V4, JOURNAL_STATE_MAGIC_V4);
     if blake3::keyed_hash(&checksum_key, body).as_bytes() != checksum {
         return Err(PreparedResultJournalError::InvalidState);
     }
 
     let mut decoder = JournalStateDecoder::new(body);
-    decoder.expect_exact(JOURNAL_STATE_MAGIC_V3)?;
+    decoder.expect_exact(JOURNAL_STATE_MAGIC_V4)?;
     decoder.expect_exact(key.storage_digest().as_bytes().as_slice())?;
     decoder.expect_bytes(key.lineage().content_id().encode().as_bytes())?;
     decoder.expect_bytes(key.attempt().content_id().encode().as_bytes())?;
@@ -948,6 +966,11 @@ fn decode_state<'a>(
         .take(32)?
         .try_into()
         .map_err(|_| PreparedResultJournalError::InvalidState)?;
+    let record_count = decoder.u64()?;
+    let record_hash = decoder
+        .take(32)?
+        .try_into()
+        .map_err(|_| PreparedResultJournalError::InvalidState)?;
     let finding = match decoder.byte()? {
         0 => None,
         1 => Some(decoder.bytes()?),
@@ -969,6 +992,7 @@ fn decode_state<'a>(
         observation,
         measurement_evidence,
         segments: (segment_count, segment_hash),
+        records: (record_count, record_hash),
         finding,
         payload_length,
         payload_hash,
@@ -1124,7 +1148,8 @@ fn remove_orphan_directory(
     if expected_identity.is_some_and(|expected| expected != root_authority.identity()) {
         return Err(PreparedResultJournalError::RecoveryRequired);
     }
-    segments::remove_segments_directory(&root_authority, root)?;
+    objects::remove_objects_directory(&root_authority, root, &segments::SEGMENTS)?;
+    objects::remove_objects_directory(&root_authority, root, &records::RECORDS)?;
     let mut entries = Vec::new();
     for name in root_authority
         .entry_names(MAX_ORPHAN_DIRECTORY_ENTRIES + 1, "read-journal-orphan")
@@ -1339,6 +1364,7 @@ fn validate_runtime_journal_directory(
     let mut result_present = false;
     let mut state_present = false;
     let mut segments_present = false;
+    let mut records_present = false;
     let mut local_entries = 0usize;
     for entry_name in journal
         .entry_names(
@@ -1359,9 +1385,24 @@ fn validate_runtime_journal_directory(
         let name = entry_name
             .into_string()
             .map_err(|_| PreparedResultJournalError::InvalidDirectory)?;
-        if name == segments::JOURNAL_SEGMENTS_DIRECTORY {
+        if name == segments::SEGMENTS.directory {
             segments_present = true;
-            segments::validate_segments_directory(journal, incomplete, total_entries)?;
+            objects::validate_objects_directory(
+                journal,
+                &segments::SEGMENTS,
+                incomplete,
+                total_entries,
+            )?;
+            continue;
+        }
+        if name == records::RECORDS.directory {
+            records_present = true;
+            objects::validate_objects_directory(
+                journal,
+                &records::RECORDS,
+                incomplete,
+                total_entries,
+            )?;
             continue;
         }
         let maximum = if name == JOURNAL_RESULT_FILE {
@@ -1389,8 +1430,8 @@ fn validate_runtime_journal_directory(
             return Err(PreparedResultJournalError::InvalidState);
         }
     }
-    if !incomplete && (!result_present || !state_present || !segments_present || local_entries != 3)
-    {
+    let complete = result_present && state_present && segments_present && records_present;
+    if !incomplete && (!complete || local_entries != 4) {
         return Err(PreparedResultJournalError::Incomplete);
     }
     Ok(())
@@ -1583,7 +1624,7 @@ mod tests {
     }
 
     #[test]
-    fn journal_v3_owns_raw_measurement_leaf() {
+    fn journal_v4_owns_raw_measurement_leaf() {
         let namespace = TempDir::new().expect("journal namespace");
         let runtime = PreparedResultJournalNamespace::open(namespace.path()).expect("runtime");
         let key = semantic_key(b"measurement-evidence");
@@ -1591,7 +1632,7 @@ mod tests {
         let result = measurement_result(0x64, key.attempt());
         let payload = result
             .canonical_bytes_with_limit(TEST_PAYLOAD_LIMIT)
-            .expect("v3 prepared result");
+            .expect("v4 prepared result");
 
         let (journal, disposition) = DirectoryPreparedResultJournal::create(
             &runtime,
@@ -1600,24 +1641,26 @@ mod tests {
             TEST_PAYLOAD_LIMIT,
             result.clone(),
         )
-        .expect("create v3 journal");
+        .expect("create v4 journal");
         assert_eq!(disposition, PreparedResultJournalCreateDisposition::Created);
         assert_eq!(journal.result(), &result);
         assert_eq!(journal.result().measurement_replay_evidence().len(), 1);
         assert_eq!(
-            fs::read(journal.root().join(JOURNAL_RESULT_FILE)).expect("v3 payload"),
+            fs::read(journal.root().join(JOURNAL_RESULT_FILE)).expect("v4 payload"),
             payload
         );
         assert_eq!(
             blake3::hash(&payload).to_hex().as_str(),
-            "0721c3cae13267791d3a755fc84413ba6ad871735d80e78476c0f8f070020f2e"
+            "13002d852b42a775d0ed3634370fe6c8fb4e66ebed5d908c41e2d7f3b5a258fc"
         );
-        let state = fs::read(journal.root().join(JOURNAL_STATE_FILE)).expect("v3 state");
+        // The state commits the segment-set identity, whose version 4 domain
+        // also covers reproduction schedule and triage log segments.
+        let state = fs::read(journal.root().join(JOURNAL_STATE_FILE)).expect("v4 state");
         assert_eq!(
             blake3::hash(&state).to_hex().as_str(),
-            "a191dfe83c8f2760139a26446ebeb3d74f2fcc146a1a23ac414c6e9e20e70b65"
+            "41f41509ec123ff9c1d3e498015221d43211096fb037d5de742a6f105b575e86"
         );
-        journal.remove().expect("remove v3 journal");
+        journal.remove().expect("remove v4 journal");
     }
 
     #[test]
@@ -1714,7 +1757,7 @@ mod tests {
         let staged = staged_path(namespace.path(), key);
         fs::create_dir(&staged).expect("partial staging directory");
         fs::write(staged.join(JOURNAL_RESULT_FILE), b"partial").expect("partial result");
-        fs::write(staged.join(".state-v3.123.0"), b"partial")
+        fs::write(staged.join(".state-v4.123.0"), b"partial")
             .expect("partial atomic state temporary");
         let runtime = PreparedResultJournalNamespace::open(namespace.path()).expect("runtime");
         assert!(matches!(
@@ -1979,7 +2022,8 @@ mod tests {
         assert_eq!(
             PreparedSemanticAttemptResult::from_canonical_bytes(
                 &encoded,
-                crate::AttemptLogSegmentSources::default()
+                crate::AttemptLogSegmentSources::default(),
+                crate::ReplayRecordSources::default(),
             )
             .expect("decoded measurement result"),
             result

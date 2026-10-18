@@ -173,6 +173,10 @@ fn expected_children(
             let value = CoverageProjection::from_canonical_bytes(body)?;
             content_children(value.content_children())
         }
+        CampaignRecordKind::CoverageIdentityFrequency => {
+            crate::CoverageIdentityFrequency::from_canonical_bytes(body)?;
+            Ok(BTreeSet::new())
+        }
         CampaignRecordKind::Observation => {
             let value = Observation::from_canonical_bytes(body)?;
             content_children(value.content_children())

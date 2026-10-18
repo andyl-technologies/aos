@@ -62,11 +62,11 @@ impl QemuFreshAttemptLifecycleOwner for FakeFreshLifecycle {
             .expect("fresh lifecycle order")
             .push("replay");
         if let Some(branch) = self.signal_fault_branches.front().cloned()
-            && branch.parent() == &request.configuration
+            && branch.parent().matches(&request.configuration)
         {
             self.signal_fault_branches.pop_front();
             return self.complete_quantum(crucible::QuantumOutcome {
-                configuration: branch.selected().clone(),
+                configuration: branch.selected().to_configuration(),
                 frontier: branch.frontier(),
                 advanced_node: None,
                 resolved_events: Vec::new(),
@@ -321,8 +321,17 @@ impl QemuFreshAttemptLifecycleOwner for FakeFreshLifecycle {
         Ok(())
     }
 
-    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, crucible::SchedulerError> {
-        Ok(Some(b"resolved-effect-test".to_vec()))
+    fn resolved_effect_trace(
+        &self,
+    ) -> Result<Option<crucible::model::ResolvedEffectTrace>, crucible::SchedulerError> {
+        Ok(Some(
+            crucible::model::ResolvedEffectTrace::empty(
+                crucible::model::FaultReplayMode::RecomputedCause,
+            )
+            .map_err(|error| crucible::SchedulerError::BoundaryViolation {
+                message: format!("fixture effect trace did not build: {error}"),
+            })?,
+        ))
     }
 
     fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, crucible::SchedulerError> {

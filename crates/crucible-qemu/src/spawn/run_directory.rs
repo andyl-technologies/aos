@@ -288,6 +288,39 @@ impl QemuPreparedRunDirectory {
         )
     }
 
+    /// Creates the private page store for this generation's block overlay.
+    ///
+    /// The store is an unnamed (`O_TMPFILE`) file inside the pinned run
+    /// directory, so its blocks are charged to the attempt's storage quota and
+    /// are freed when the last handle closes, including on abnormal exit. It
+    /// has no name for the QEMU child or any other process to open.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuSpawnError::Io`] when the directory identity changed or
+    /// the filesystem cannot create an unnamed file.
+    pub fn create_block_page_store(
+        &self,
+    ) -> Result<crucible_device::BlockPageStore, QemuSpawnError> {
+        self.revalidate_identity()?;
+        let file = openat(
+            &self.directory,
+            ".",
+            OFlags::RDWR | OFlags::TMPFILE | OFlags::CLOEXEC,
+            Mode::from_bits_truncate(0o600),
+        )
+        .map_err(|source| QemuSpawnError::Io {
+            operation: "create unnamed block page store",
+            source: source.into(),
+        })?;
+        crucible_device::BlockPageStore::from_unnamed_file(File::from(file)).map_err(|source| {
+            QemuSpawnError::Io {
+                operation: "adopt unnamed block page store",
+                source,
+            }
+        })
+    }
+
     fn prepare_diagnostic_trace(
         &self,
         file_name: &'static str,

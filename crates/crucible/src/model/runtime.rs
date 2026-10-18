@@ -457,8 +457,11 @@ fn preemption_choice_error(error: crucible_campaign::CampaignCodecError) -> Engi
 }
 
 fn preemption_alternative_id(preemption: &PreemptionDecision) -> crucible_campaign::AlternativeId {
-    let bytes =
-        Schedule::from_decisions([Decision::Preemption(preemption.clone())]).to_compact_binary();
+    // The alternative identity is defined over the logical version 4 schedule
+    // bytes, so it does not move with the schedule's transport encoding.
+    let bytes = schedule_v4_bytes(&Schedule::from_decisions([Decision::Preemption(
+        preemption.clone(),
+    )]));
     crucible_campaign::AlternativeId::from_hash(crucible_campaign::CampaignHash::derive(
         "crucible.preemption.alternative.v1",
         &bytes,
@@ -474,7 +477,7 @@ fn preemption_alternative_id(preemption: &PreemptionDecision) -> crucible_campai
 pub fn validate_preemption_branch_schedule(
     configuration: &Configuration,
 ) -> Result<(), EngineError> {
-    let decisions = configuration.schedule.decisions();
+    let decisions = configuration.schedule.decision_history();
     if !decisions.iter().enumerate().any(|(index, decision)| {
         matches!(decision, Decision::Selection(selection) if selection.preemption_config().is_some()
             || (selection.is_campaign_branch()
@@ -492,7 +495,7 @@ pub fn validate_preemption_branch_schedule(
                     .ok_or_else(|| preemption_producer_mismatch(index))?;
                 let expected = preemption_choice_at(&parent, config, preemption)
                     .ok_or_else(|| preemption_producer_mismatch(index))?;
-                if expected.as_slice() != &decisions[index..index + 2] {
+                if !configuration.schedule.has_decisions_at(index, &expected) {
                     return Err(preemption_producer_mismatch(index));
                 }
             } else if let Some(Decision::Preemption(preemption)) = decisions.get(index + 1)

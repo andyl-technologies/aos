@@ -186,8 +186,8 @@ pub(super) fn assert_fixed_typed_choice_replay_closure(stop: &StopCondition) {
 
     assert_eq!(schedule.len(), 1);
     assert!(matches!(
-        schedule.decisions(),
-        [crucible::Decision::Selection(_)]
+        schedule.decision(0),
+        Some(crucible::Decision::Selection(_))
     ));
     campaign
         .replay_closure()

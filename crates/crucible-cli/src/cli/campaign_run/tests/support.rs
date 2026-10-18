@@ -141,9 +141,7 @@ pub(super) fn resume_evidence_for_scenario(
     };
     let checkpoint =
         checkpoint_for_resume_configuration(&configuration, frontier).or_panic("resume checkpoint");
-    let replay_closure =
-        GuardedCampaignReplayClosure::from_canonical_bytes(b"CCRC\0\0\0\x01\0\0\0\0")
-            .or_panic("canonical empty replay closure");
+    let replay_closure = GuardedCampaignReplayClosure::empty();
     replay_closure
         .validate_for_schedule(&scenario_form, &schedule)
         .or_panic("replay closure matches fixture schedule");
@@ -219,6 +217,7 @@ pub(super) fn typed_selection_schedule(scenario: &crucible::ScenarioDef) -> Sche
 
 pub(super) struct ResumeCampaignFixture {
     pub(super) campaign: GuardedDefaultCampaignRun,
+    pub(super) progress: CampaignRunProgress,
     pub(super) checkpoints: Arc<ExactCheckpointStore>,
     pub(super) checkpoint_directory: TempDir,
     pub(super) checkpoint_root: PathBuf,
@@ -290,11 +289,13 @@ pub(super) fn try_resume_campaign_fixture(
     } else {
         request
     };
+    let mut progress = CampaignRunProgress::default();
     let (campaign, _trace) =
-        run_guarded_default_campaign_test_fixture_with_trace_and_choice_offer(request, false)?;
+        run_guarded_default_campaign_test_fixture_into_sink(request, false, &mut progress)?;
 
     Ok(ResumeCampaignFixture {
         campaign,
+        progress,
         checkpoints,
         checkpoint_directory,
         checkpoint_root,
@@ -351,7 +352,7 @@ pub(super) fn capture_only_remote_observation_factory(
                 },
             )
             .and_then(|closure| {
-                GuardedCampaignReplayClosure::from_canonical_bytes(closure.payload()).map_err(
+                GuardedCampaignReplayClosure::from_frame_objects(closure.frames()).map_err(
                     |error| crucible_api::LifecycleApiError::ResumeObservationSource {
                         message: format!("decode test remote replay closure: {error}"),
                     },

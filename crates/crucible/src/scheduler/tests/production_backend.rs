@@ -549,8 +549,8 @@ fn signal_fault_branch_admission_requires_the_exact_typed_boundary() {
     let (configuration, append) = scheduler
         .append_signal_fault_campaign_branch(&branch)
         .expect("exact typed branch should append");
-    assert_eq!(configuration, *branch.selected());
-    assert_eq!(scheduler.configuration(), branch.selected());
+    assert!(branch.selected().matches(&configuration));
+    assert!(branch.selected().matches(scheduler.configuration()));
     assert!(branch.decisions().iter().all(|decision| {
         append
             .entries

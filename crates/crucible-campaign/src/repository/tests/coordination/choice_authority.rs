@@ -719,10 +719,18 @@ fn branch_request_is_one_lazy_exact_indexed_delta_and_replays() {
             .map(CampaignFactId::content_id)
     );
     assert_ne!(prior_roots.exploration, next_roots.exploration);
-    let entries = repository
+    let mut cursor = repository
         .merkle
-        .verify_closure_objects(next_roots.exploration)
-        .expect("exploration closure");
+        .closure_cursor(next_roots.exploration)
+        .expect("exploration root");
+    let mut exploration_values = BTreeSet::new();
+    while let Some(step) = repository
+        .merkle
+        .advance_closure_cursor(&mut cursor)
+        .expect("exploration closure")
+    {
+        exploration_values.extend(step.values);
+    }
     let frontier_index = repository
         .merkle
         .get(next_roots.exploration, frontier_index_anchor_key())
@@ -739,7 +747,7 @@ fn branch_request_is_one_lazy_exact_indexed_delta_and_replays() {
         .expect("scan index lookup")
         .expect("scan index");
     assert_eq!(
-        entries.values,
+        exploration_values,
         BTreeSet::from([
             accepted.request.content_id(),
             frontier_index,

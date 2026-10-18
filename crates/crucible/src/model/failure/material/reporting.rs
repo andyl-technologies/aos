@@ -221,15 +221,32 @@ pub(in crate::model) fn failure_report_excerpt(
     causal_index: usize,
     excerpt_len: usize,
     canonicalizer: &FailureSymmetryCanonicalizer,
-) -> Vec<FailureClusterReportCausalStep> {
+) -> Result<Vec<FailureClusterReportCausalStep>, EngineError> {
     if excerpt_len == 0 {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let start = causal_index.saturating_add(1).saturating_sub(excerpt_len);
-    event_log.projection.entries()[start..=causal_index]
+    Ok(event_log
+        .causal_window(start..=causal_index)?
         .iter()
         .map(|entry| failure_cluster_report_causal_step(entry, canonicalizer))
-        .collect()
+        .collect())
+}
+
+/// Returns the report steps of every causal-cone entry through `causal_index`.
+///
+/// The report renders the cone, so this holds its steps; the log itself is
+/// streamed.
+pub(in crate::model) fn failure_report_causal_chain(
+    event_log: &FailureRecordedEventLog,
+    causal_index: usize,
+    canonicalizer: &FailureSymmetryCanonicalizer,
+) -> Result<Vec<FailureClusterReportCausalStep>, EngineError> {
+    let mut chain = Vec::new();
+    try_for_each_cone_entry(event_log, causal_index, canonicalizer, |_, entry| {
+        chain.push(failure_cluster_report_causal_step(entry, canonicalizer));
+    })?;
+    Ok(chain)
 }
 
 pub(in crate::model) fn failure_cluster_report_causal_step(

@@ -5,37 +5,46 @@
 //! and the occurrence chunks in order:
 //!
 //! ```text
-//! crucible.failure-triage.finding-evidence.v1
+//! crucible.failure-triage.finding-evidence.v2
 //! campaign=nightly-search
 //! snapshot=crucible-campaign-snapshot:...
 //! finding=crucible-campaign-finding:...
 //! membership=<request hash> <response hash>
 //! observation=<request hash> <response hash>
 //! reproduction=<request hash> <response hash>
+//! reproduction_segments=<hash>
 //! minimized=<request hash> <response hash>
+//! minimized_segments=<hash>
 //! report=<hash>
 //! occurrence_count=1
 //! occurrence_chunk_count=1
 //! occurrence_chunk.0=<hash>
 //! ```
 //!
-//! `minimized=none` records a finding without a minimized reproduction. Each
-//! chunk holds at most [`MAX_OCCURRENCES_PER_CHUNK`] consecutive occurrences.
-//! An occurrence names its page exchange, its three object exchanges, and,
-//! when its bundle carries triage evidence, the ordered segment exchanges of
-//! all four replay roles:
+//! A `*_segments` hash names the segment list of that reproduction's payload
+//! segment exchanges (see the `reproduction` module). `minimized=none` and
+//! `minimized_segments=none` record a finding without a minimized
+//! reproduction. Each chunk holds at most [`MAX_OCCURRENCES_PER_CHUNK`]
+//! consecutive occurrences. An occurrence names its page exchange, its three
+//! object exchanges, both reproductions' segment lists, and, when its bundle
+//! carries triage evidence, the ordered segment exchanges of all four replay
+//! roles, each followed by the segment list of the attempt-log segments that
+//! role's record names (see the `triage_segments` module):
 //!
 //! ```text
-//! crucible.failure-triage.finding-occurrences.v1
+//! crucible.failure-triage.finding-occurrences.v3
 //! first_occurrence=0
 //! occurrence_count=1
 //! occurrence.0.page=<request hash> <response hash>
 //! occurrence.0.observation=<request hash> <response hash>
 //! occurrence.0.reproduction=<request hash> <response hash>
+//! occurrence.0.reproduction_segments=<hash>
 //! occurrence.0.minimized=<request hash> <response hash>
+//! occurrence.0.minimized_segments=<hash>
 //! occurrence.0.triage=present
 //! occurrence.0.minimization_original.segment_count=1
 //! occurrence.0.minimization_original.segment.0=<request hash> <response hash>
+//! occurrence.0.minimization_original.log_segments=<hash>
 //! ...
 //! ```
 //!
@@ -51,11 +60,11 @@ use super::store::{
 use super::*;
 
 /// Schema line of one finding's evidence record.
-pub(super) const FINDING_EVIDENCE_SCHEMA: &str = "crucible.failure-triage.finding-evidence.v1";
+pub(super) const FINDING_EVIDENCE_SCHEMA: &str = "crucible.failure-triage.finding-evidence.v2";
 
 /// Schema line of one occurrence chunk.
 pub(super) const FINDING_OCCURRENCES_SCHEMA: &str =
-    "crucible.failure-triage.finding-occurrences.v1";
+    "crucible.failure-triage.finding-occurrences.v3";
 
 /// Largest number of occurrences one chunk holds.
 ///
@@ -70,7 +79,7 @@ pub(super) const MAX_TRIAGE_REPLAY_SEGMENTS: usize = 8;
 /// [`crucible_campaign::MAX_FINDING_OCCURRENCES`] occurrences.
 const MAX_FINDING_EVIDENCE_RECORD_BYTES: usize = 128 * 1024;
 
-/// Chunk bound: 1,024 occurrences of at most 41 lines below 200 bytes each.
+/// Chunk bound: 1,024 occurrences of at most 47 lines below 200 bytes each.
 const MAX_OCCURRENCE_CHUNK_BYTES: usize = 8 * 1024 * 1024;
 
 /// Replay roles in the canonical order the bundle names them.
@@ -103,7 +112,11 @@ pub(crate) struct CampaignFindingEvidenceRecord {
     pub(super) membership: CampaignExchangeRef,
     pub(super) observation: CampaignExchangeRef,
     pub(super) reproduction: CampaignExchangeRef,
+    /// Segment list of the reproduction's payload segment exchanges.
+    pub(super) reproduction_segments: crucible::ContentHash,
     pub(super) minimized: Option<CampaignExchangeRef>,
+    /// Segment list of the minimized reproduction, present with it.
+    pub(super) minimized_segments: Option<crucible::ContentHash>,
     /// Single-finding reproduction-ledger projection of the report evidence.
     pub(super) report: crucible::ContentHash,
     pub(super) occurrence_count: u64,
@@ -116,9 +129,22 @@ pub(crate) struct CampaignOccurrenceExchanges {
     pub(super) page: CampaignExchangeRef,
     pub(super) observation: CampaignExchangeRef,
     pub(super) reproduction: CampaignExchangeRef,
+    /// Segment list of the reproduction's payload segment exchanges.
+    pub(super) reproduction_segments: crucible::ContentHash,
     pub(super) minimized: CampaignExchangeRef,
-    /// Segment exchanges in [`TRIAGE_REPLAY_ROLES`] order.
-    pub(super) triage: Option<[Vec<CampaignExchangeRef>; 4]>,
+    /// Segment list of the minimized reproduction's payload segment exchanges.
+    pub(super) minimized_segments: crucible::ContentHash,
+    /// Replay exchanges in [`TRIAGE_REPLAY_ROLES`] order.
+    pub(super) triage: Option<[CampaignTriageRoleExchanges; 4]>,
+}
+
+/// Exchange references that resolve one triage replay role.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct CampaignTriageRoleExchanges {
+    /// Ordered storage-segment exchanges of the replay record.
+    pub(super) segments: Vec<CampaignExchangeRef>,
+    /// Segment list of the attempt-log segment exchanges the record names.
+    pub(super) log_segments: crucible::ContentHash,
 }
 
 impl CampaignFindingEvidenceRecord {
@@ -133,9 +159,18 @@ impl CampaignFindingEvidenceRecord {
             format!("observation={}", self.observation.encode()),
             format!("reproduction={}", self.reproduction.encode()),
             format!(
+                "reproduction_segments={}",
+                self.reproduction_segments.to_hex()
+            ),
+            format!(
                 "minimized={}",
                 self.minimized
                     .map_or_else(|| String::from("none"), CampaignExchangeRef::encode)
+            ),
+            format!(
+                "minimized_segments={}",
+                self.minimized_segments
+                    .map_or_else(|| String::from("none"), |segments| segments.to_hex())
             ),
             format!("report={}", self.report.to_hex()),
             format!("occurrence_count={}", self.occurrence_count),
@@ -163,10 +198,23 @@ impl CampaignFindingEvidenceRecord {
         let membership = lines.exchange("membership")?;
         let observation = lines.exchange("observation")?;
         let reproduction = lines.exchange("reproduction")?;
+        let reproduction_segments = parse_evidence_hash(
+            "reproduction_segments",
+            lines.field("reproduction_segments")?,
+        )?;
         let minimized = match lines.field("minimized")? {
             "none" => None,
             value => Some(CampaignExchangeRef::parse("minimized", value)?),
         };
+        let minimized_segments = match lines.field("minimized_segments")? {
+            "none" => None,
+            value => Some(parse_evidence_hash("minimized_segments", value)?),
+        };
+        if minimized.is_some() != minimized_segments.is_some() {
+            return Err(artifact_error(
+                "evidence minimized reproduction and its segment list disagree",
+            ));
+        }
         let report = parse_evidence_hash("report", lines.field("report")?)?;
         let occurrence_count = lines.number("occurrence_count")?;
         if occurrence_count > u64::from(crucible_campaign::MAX_FINDING_OCCURRENCES) {
@@ -196,7 +244,9 @@ impl CampaignFindingEvidenceRecord {
             membership,
             observation,
             reproduction,
+            reproduction_segments,
             minimized,
+            minimized_segments,
             report,
             occurrence_count,
             chunks,
@@ -332,19 +382,34 @@ pub(super) fn encode_occurrence_chunk(
             occurrence.reproduction.encode()
         ));
         lines.push(format!(
+            "{prefix}.reproduction_segments={}",
+            occurrence.reproduction_segments.to_hex()
+        ));
+        lines.push(format!(
             "{prefix}.minimized={}",
             occurrence.minimized.encode()
+        ));
+        lines.push(format!(
+            "{prefix}.minimized_segments={}",
+            occurrence.minimized_segments.to_hex()
         ));
         let Some(triage) = &occurrence.triage else {
             lines.push(format!("{prefix}.triage=none"));
             continue;
         };
         lines.push(format!("{prefix}.triage=present"));
-        for ((_, label), segments) in TRIAGE_REPLAY_ROLES.iter().zip(triage) {
-            lines.push(format!("{prefix}.{label}.segment_count={}", segments.len()));
-            lines.extend(segments.iter().enumerate().map(|(segment, exchange)| {
+        for ((_, label), role) in TRIAGE_REPLAY_ROLES.iter().zip(triage) {
+            lines.push(format!(
+                "{prefix}.{label}.segment_count={}",
+                role.segments.len()
+            ));
+            lines.extend(role.segments.iter().enumerate().map(|(segment, exchange)| {
                 format!("{prefix}.{label}.segment.{segment}={}", exchange.encode())
             }));
+            lines.push(format!(
+                "{prefix}.{label}.log_segments={}",
+                role.log_segments.to_hex()
+            ));
         }
     }
     canonical_text(lines)
@@ -386,12 +451,14 @@ pub(super) fn parse_occurrence_chunk(
         let page = lines.exchange(&format!("{prefix}.page"))?;
         let observation = lines.exchange(&format!("{prefix}.observation"))?;
         let reproduction = lines.exchange(&format!("{prefix}.reproduction"))?;
+        let reproduction_segments = lines.hash(&format!("{prefix}.reproduction_segments"))?;
         let minimized = lines.exchange(&format!("{prefix}.minimized"))?;
+        let minimized_segments = lines.hash(&format!("{prefix}.minimized_segments"))?;
         let triage = match lines.field(&format!("{prefix}.triage"))? {
             "none" => None,
             "present" => {
-                let mut roles: [Vec<CampaignExchangeRef>; 4] = Default::default();
-                for ((_, label), segments) in TRIAGE_REPLAY_ROLES.iter().zip(&mut roles) {
+                let mut roles: [CampaignTriageRoleExchanges; 4] = Default::default();
+                for ((_, label), role) in TRIAGE_REPLAY_ROLES.iter().zip(&mut roles) {
                     let segment_count = lines.number(&format!("{prefix}.{label}.segment_count"))?;
                     if segment_count == 0 || segment_count > MAX_TRIAGE_REPLAY_SEGMENTS as u64 {
                         return Err(artifact_error(format!(
@@ -399,9 +466,10 @@ pub(super) fn parse_occurrence_chunk(
                         )));
                     }
                     for segment in 0..segment_count {
-                        segments
+                        role.segments
                             .push(lines.exchange(&format!("{prefix}.{label}.segment.{segment}"))?);
                     }
+                    role.log_segments = lines.hash(&format!("{prefix}.{label}.log_segments"))?;
                 }
                 Some(roles)
             }
@@ -415,7 +483,9 @@ pub(super) fn parse_occurrence_chunk(
             page,
             observation,
             reproduction,
+            reproduction_segments,
             minimized,
+            minimized_segments,
             triage,
         });
     }
@@ -490,6 +560,10 @@ impl<'a> StrictLines<'a> {
         CampaignExchangeRef::parse(name, self.field(name)?)
     }
 
+    fn hash(&mut self, name: &str) -> Result<crucible::ContentHash, CliError> {
+        parse_evidence_hash(name, self.field(name)?)
+    }
+
     fn finish(mut self) -> Result<(), CliError> {
         if self.lines.next().is_some() {
             let kind = self.kind;
@@ -528,18 +602,31 @@ mod tests {
             page: exchange(seed),
             observation: exchange(seed.wrapping_add(1)),
             reproduction: exchange(seed.wrapping_add(2)),
+            reproduction_segments: crucible::ContentHash::from_bytes(&[seed, 2]),
             minimized: exchange(seed.wrapping_add(3)),
+            minimized_segments: crucible::ContentHash::from_bytes(&[seed, 3]),
             triage: triage.then(|| {
                 [
-                    vec![exchange(seed.wrapping_add(4))],
-                    vec![
-                        exchange(seed.wrapping_add(5)),
-                        exchange(seed.wrapping_add(6)),
-                    ],
-                    vec![exchange(seed.wrapping_add(7))],
-                    vec![exchange(seed.wrapping_add(8))],
+                    role(vec![exchange(seed.wrapping_add(4))], seed, 4),
+                    role(
+                        vec![
+                            exchange(seed.wrapping_add(5)),
+                            exchange(seed.wrapping_add(6)),
+                        ],
+                        seed,
+                        5,
+                    ),
+                    role(vec![exchange(seed.wrapping_add(7))], seed, 7),
+                    role(vec![exchange(seed.wrapping_add(8))], seed, 8),
                 ]
             }),
+        }
+    }
+
+    fn role(segments: Vec<CampaignExchangeRef>, seed: u8, tag: u8) -> CampaignTriageRoleExchanges {
+        CampaignTriageRoleExchanges {
+            segments,
+            log_segments: crucible::ContentHash::from_bytes(&[seed, tag, 0xff]),
         }
     }
 
@@ -584,7 +671,9 @@ mod tests {
             membership: exchange(1),
             observation: exchange(2),
             reproduction: exchange(3),
+            reproduction_segments: crucible::ContentHash::from_bytes(b"reproduction segments"),
             minimized: None,
+            minimized_segments: None,
             report: crucible::ContentHash::from_bytes(b"report"),
             occurrence_count: MAX_OCCURRENCES_PER_CHUNK + 1,
             chunks: vec![
@@ -605,6 +694,15 @@ mod tests {
         for rejected in [
             text.replacen("occurrence_chunk_count=2", "occurrence_chunk_count=1", 1),
             text.replacen("minimized=none", "minimized=", 1),
+            // A segment list without its minimized reproduction.
+            text.replacen(
+                "minimized_segments=none",
+                &format!(
+                    "minimized_segments={}",
+                    record.reproduction_segments.to_hex()
+                ),
+                1,
+            ),
             text.replacen(
                 FINDING_EVIDENCE_SCHEMA,
                 "crucible.failure-triage.finding-evidence.v0",

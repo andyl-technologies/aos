@@ -117,20 +117,91 @@ impl CampaignRepository {
         ConfigurationArtifactId::from_content_id(content).map_err(Into::into)
     }
 
-    /// Publishes verifier-backed self-contained finding reproduction bytes.
+    /// Publishes one run-length segment of a reproduction payload.
+    ///
+    /// Segments are publishable before the reproduction that names them, so a
+    /// writer streams them one at a time and publishes the record last. A
+    /// segment no record names is unreachable and collected.
+    ///
+    /// # Errors
+    ///
+    /// Returns an integrity error when `bytes` do not derive the segment's
+    /// identity and length, or a store error when placement fails.
+    pub fn publish_reproduction_payload_segment(
+        &self,
+        segment: ReproductionPayloadSegment,
+        bytes: &[u8],
+    ) -> Result<ContentId, CampaignRepositoryError> {
+        if bytes.len() as u64 != segment.bytes() || !segment.content().authenticates(bytes) {
+            return Err(integrity("finding-reproduction-payload-segment-identity"));
+        }
+        let receipt = self
+            .blobs
+            .put_if_absent(segment.content(), &BlobHandle::from_bytes(bytes.to_vec()))?;
+        if receipt.id != segment.content() {
+            return Err(integrity(
+                "finding-reproduction-payload-segment-publication",
+            ));
+        }
+        Ok(segment.content())
+    }
+
+    /// Reads one authenticated payload segment that `reproduction` names.
+    ///
+    /// # Errors
+    ///
+    /// Returns an integrity error when the reproduction does not name
+    /// `segment`, or when the stored bytes do not derive its identity and
+    /// length; returns a store error when the record or segment is
+    /// unavailable.
+    pub fn read_reproduction_payload_segment(
+        &self,
+        reproduction: ReproductionArtifactId,
+        segment: ContentId,
+    ) -> Result<Vec<u8>, CampaignRepositoryError> {
+        let artifact = self.read_reproduction_artifact(reproduction.content_id())?;
+        let segment = artifact
+            .reproduction_payload()
+            .names_segment(segment)
+            .ok_or_else(|| integrity("finding-reproduction-payload-segment-is-not-owned"))?;
+        let bytes = self
+            .blobs
+            .read(segment.content(), None)?
+            .read_all(segment.bytes())?;
+        if bytes.len() as u64 != segment.bytes() || !segment.content().authenticates(&bytes) {
+            return Err(integrity("finding-reproduction-payload-segment-content"));
+        }
+        Ok(bytes)
+    }
+
+    /// Requires every payload segment to be stored with its declared length.
+    fn require_reproduction_payload_segments(
+        &self,
+        payload: &ReproductionPayload,
+    ) -> Result<(), CampaignRepositoryError> {
+        for segment in payload.segments() {
+            let stored = self.blobs.read(segment.content(), None)?;
+            if stored.logical_length() != segment.bytes() {
+                return Err(integrity("finding-reproduction-payload-segment-length"));
+            }
+        }
+        Ok(())
+    }
+
+    /// Publishes a verifier-backed self-contained finding reproduction.
     ///
     /// The execution-model adapter remains responsible for replaying the
     /// payload and proving its semantic identities and failure fingerprint.
     /// This repository boundary authenticates the already-published exact
-    /// scenario/configuration basis before the first write.
+    /// scenario/configuration basis and payload segments before the first
+    /// write.
     ///
     /// # Errors
     ///
     /// Returns a canonical, integrity, or store error when the payload is
-    /// invalid, its exact artifact basis is absent or inconsistent, or the
-    /// resulting reproduction cannot be placed and authenticated.
-    // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
-    #[allow(clippy::too_many_arguments)]
+    /// invalid, its exact artifact basis or a payload segment is absent or
+    /// inconsistent, or the resulting reproduction cannot be placed and
+    /// authenticated.
     pub fn publish_reproduction_artifact(
         &self,
         scenario: ScenarioDefId,
@@ -138,8 +209,7 @@ impl CampaignRepository {
         configuration: ConfigurationId,
         configuration_artifact: ConfigurationArtifactId,
         finding_fingerprint: CampaignHash,
-        payload_schema: u32,
-        bytes: Vec<u8>,
+        payload: ReproductionPayload,
     ) -> Result<ReproductionArtifactId, CampaignRepositoryError> {
         let artifact = ReproductionArtifact::new(
             crate::ReproductionArtifactBasis::new(
@@ -149,9 +219,9 @@ impl CampaignRepository {
                 configuration_artifact,
                 finding_fingerprint,
             ),
-            payload_schema,
-            bytes,
+            payload,
         )?;
+        self.require_reproduction_payload_segments(artifact.reproduction_payload())?;
         let stored_scenario = self.read_scenario_artifact(scenario_artifact.content_id())?;
         let stored_configuration =
             self.read_configuration_artifact(configuration_artifact.content_id())?;
@@ -189,8 +259,7 @@ impl CampaignRepository {
         configuration: ConfigurationId,
         configuration_artifact: ConfigurationArtifactId,
         finding_fingerprint: CampaignHash,
-        payload_schema: u32,
-        bytes: Vec<u8>,
+        payload: ReproductionPayload,
         minimization: FindingMinimizationEvidence,
     ) -> Result<ReproductionArtifactId, CampaignRepositoryError> {
         let artifact = ReproductionArtifact::new_minimized(
@@ -201,10 +270,10 @@ impl CampaignRepository {
                 configuration_artifact,
                 finding_fingerprint,
             ),
-            payload_schema,
-            bytes,
+            payload,
             minimization,
         )?;
+        self.require_reproduction_payload_segments(artifact.reproduction_payload())?;
         let original = self.read_reproduction_artifact(
             artifact
                 .minimization()
@@ -232,8 +301,7 @@ impl CampaignRepository {
             || !accepted_candidate
                 && (artifact.configuration() != original.configuration()
                     || artifact.configuration_artifact() != original.configuration_artifact()
-                    || artifact.payload_schema() != original.payload_schema()
-                    || artifact.payload() != original.payload())
+                    || artifact.reproduction_payload() != original.reproduction_payload())
         {
             return Err(integrity("finding-minimization-artifact-basis-mismatch"));
         }

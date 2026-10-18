@@ -482,6 +482,19 @@ rather than falling back to work proportional to the virtual disk. The closure
 is durably published before transient QMP snapshots are deleted and only nodes
 that were running are resumed. No second full-file staging tree is created.
 
+Publication writes each node's QEMU snapshot envelope and each failed node's
+host-I/O continuation to a staged object in the object directory as it is
+encoded, one nested owner at a time, and hashes it in the same pass. The
+manifest names the staged identity, and publication links the
+re-authenticated file into place. `fat_checkpoint_bytes` therefore bounds each
+envelope as it is written and the closure by its staged length. It is a
+stored-size contract, never the size of one in-memory buffer (RFC section
+15.12, CMEAS-37). Restore reads one envelope at a time and checks it is
+canonical by comparing a streamed re-encoding with the stored bytes. Block
+page sets and the 9p tree still travel inside the host-I/O envelope until
+they are externalized as content-addressed page objects, as overlay and RAM
+layers already are.
+
 Version-nine sparse overlay artifacts carry a logical `length`, no dense
 `chunks`, and strictly ordered, nonoverlapping, nonadjacent extents. Each
 extent contains a `start_chunk` and one or more consecutive BLAKE3 chunk
@@ -517,8 +530,13 @@ alternate monolithic VMState reader or restore path.
 stream. Production publication uses
 `crucible.executor.exact-checkpoint-root@exact-manifest.5`. The root commits to
 the version-nine closure manifest and its direct-or-delta RAM layers, device
-state, scheduler continuation, immutable backing, fault checkpoint, and bounded
-choice records discovered before the pause. The assignment ledger stages that
+state, scheduler continuation and the sealed event-log segments it references
+(RFC section 15.12), immutable backing, fault checkpoint, and the
+replay closure of choice records discovered before the pause: a version 2
+closure root child plus one `checkpoint-choice-frame-NNNNNNNN` child per frame
+of at most 64 MiB (RFC section 15.8). Loading reads only the closure root;
+replay validation reads each frame when it reaches it and authenticates it
+against the root's digest. The assignment ledger stages that
 root before publication, and publication makes
 the authenticated children durable before exposing the root. A process-local
 replay claim is issued only by a completed guarded raw-to-promoted comparison;
@@ -528,10 +546,10 @@ never process-launch authority. Sparse overlay restore authenticates the exact
 extent manifest and every named chunk before atomically exposing a file whose
 omitted ranges are zero holes.
 
-The complete multi-node production continuation uses version nine of the same
+The complete multi-node production continuation uses version eleven of the same
 typed root rather than flattening a potentially large object set into one
 generic envelope. The registered leaves are the canonical
-`crucible.production-exact-closure@device-state.9` manifest and exact opaque
+`crucible.production-exact-closure@device-state.11` manifest and exact opaque
 production objects under
 `crucible.executor.production-checkpoint-object@device-state.5`. Every object
 retains its production BLAKE3 identity and declared length in a registered

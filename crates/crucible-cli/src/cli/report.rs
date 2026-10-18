@@ -53,6 +53,9 @@ pub(super) struct CampaignTriageFindingEvidence {
     pub(super) observation: crucible_campaign::Observation,
     pub(super) reproduction: crucible_campaign::ReproductionArtifact,
     pub(super) minimized_reproduction: Option<crucible_campaign::ReproductionArtifact>,
+    /// Crucible artifact of the minimized reproduction, decoded from its
+    /// authenticated segments. The original's is `report.finding.artifact`.
+    pub(super) minimized_artifact: Option<crucible::ReproductionArtifact>,
     pub(super) report: TriageFindingEvidence,
     pub(super) occurrence_count: u64,
 }

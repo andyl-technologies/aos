@@ -324,19 +324,20 @@ pub(super) fn assert_campaign_save_exports_closure(
             .campaign
             .resume()
             .or_panic("v6 replay retains its source authentication");
-        let accepted_source = replay
-            .campaign
-            .observations()
-            .iter()
-            .find(|observation| observation.id() == source.source_observation())
-            .or_panic("v6 replay retains its accepted source observation");
+        let accepted_source = source.source_observation_record();
+        assert_eq!(accepted_source.id(), source.source_observation());
         assert!(matches!(
             accepted_source.observation().stop(),
             StopOutcome::ObservationReached(actual) if actual.as_ref() == source_proof
         ));
         assert!(source.source_savepoint().is_some());
-        campaign_resume_workflow_report(&replay_plan, &handle_evidence, &replay.campaign)
-            .or_panic("v6 source observation is reproduced before continuation");
+        campaign_resume_workflow_report(
+            &replay_plan,
+            &handle_evidence,
+            &replay.campaign,
+            &replay.progress,
+        )
+        .or_panic("v6 source observation is reproduced before continuation");
 
         let mut remote_plan = handle_resume_plan.clone();
         remote_plan.max_virtual_time = None;

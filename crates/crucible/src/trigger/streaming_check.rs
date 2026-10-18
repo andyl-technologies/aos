@@ -47,10 +47,23 @@ impl RecordedLogShape {
         }
     }
 
+    /// Describes a log of `entries` entries whose last entry is stamped
+    /// `final_at`, for callers that stream the log and keep only its tail time.
+    #[must_use]
+    pub const fn with_final_time(entries: u64, final_at: Option<VirtualTime>) -> Self {
+        Self { entries, final_at }
+    }
+
     /// Describes a complete in-memory log.
     #[must_use]
     pub fn of(entries: &[SchedulerEventLogEntry]) -> Self {
         Self::new(entries.len() as u64, entries.last())
+    }
+
+    /// Returns the number of entries the log holds.
+    #[must_use]
+    pub const fn entries(&self) -> u64 {
+        self.entries
     }
 }
 

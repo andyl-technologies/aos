@@ -168,7 +168,7 @@ impl ProductionVmLifecycleLoop {
                 message: format!("encode production scheduler checkpoint evidence: {error}"),
             }
         })?;
-        let segments = checkpoint.event_log_segment_dependencies().to_vec();
+        let segments = checkpoint.event_log_segment_dependencies();
         let bytes =
             checkpoint
                 .canonical_bytes()
@@ -392,20 +392,18 @@ impl ProductionVmLifecycleLoop {
                     });
                 }
             };
-        let emitted_events = runtime.emitted_events().to_vec();
+        let referenced_events = runtime.referenced_events().evidence();
         drop(runtime);
 
         let network = self.inner.network_output_interceptor();
         let resolved_effect_trace = super::network_faults::trace_with_campaign_network_records(
             resolved_effect_trace,
-            network.campaign_effect_records(),
-            network.resource_limits(),
+            network.campaign_effect_log(),
             crucible::model::FaultReplayMode::RecomputedCause,
         )?;
         let locked_effect_trace = super::network_faults::trace_with_campaign_network_records(
             locked_effect_trace,
-            network.campaign_effect_records(),
-            network.resource_limits(),
+            network.campaign_effect_log(),
             crucible::model::FaultReplayMode::LockedEffect,
         )?;
         let network_outages = self
@@ -519,10 +517,15 @@ impl ProductionVmLifecycleLoop {
                 });
             }
 
+            // The evidence reads at most the first 4 KiB, so restore only the
+            // overlay chunks covering it; the rest of a large overlay is never
+            // loaded onto the heap.
+            let mut inspected = block.device_snapshot().clone();
+            inspected.overlay = inspected.overlay.window(0, 4_096);
             let mut restored = crucible_device::block::BlockDevice::restore(
-                block.device_snapshot(),
+                &inspected,
                 binding.base.clone(),
-                None,
+                &crucible_device::BlockPageStore::memory(),
             )
             .map_err(|error| SchedulerError::BoundaryViolation {
                 message: format!("restore failed-node block continuation for diagnostics: {error}"),
@@ -565,7 +568,7 @@ impl ProductionVmLifecycleLoop {
             frontier,
             resolved_effect_trace,
             locked_effect_trace,
-            emitted_events,
+            referenced_events,
             network_outages,
             network_queues,
             block_devices,

@@ -15,13 +15,17 @@
 //! ```text
 //! emitted events:  e0  e1  e2 | e3  e4
 //!                             ^ event_cursor = 3
-//! commit:    latch from the matching prefix e0..e2
+//! commit:    latch from the matching retained prefix of e0..e2
 //! advance:   caller feeds e3, e4; event_cursor = 5
-//! restore:   verify every live latch against e0..e(event_cursor - 1)
+//! restore:   verify every live latch against the retained e0..e2
 //! ```
 //!
-//! Each step costs time in the number of new emissions, and the cursor rolls
-//! back and restores with the rest of the 9p continuation.
+//! The fault runtime retires an emission once it can release no live update,
+//! so the caller may feed and verify a subset of each range: one that holds,
+//! for every live update, the earliest emission that releases it. A retired
+//! emission advances the cursor without latching. Each step costs time in the
+//! number of new emissions, and the cursor rolls back and restores with the
+//! rest of the 9p continuation.
 
 use super::*;
 
@@ -137,22 +141,64 @@ impl NinepVisibilityState {
         Ok(())
     }
 
-    /// Verifies every live latch against the emissions the cursor consumed.
+    /// Consumes emissions up to fault-runtime index `consumed_through` and
+    /// latches every live update that the retained ones release.
     ///
-    /// `emissions` must be exactly the first [`NinepVisibilityState::event_cursor`]
-    /// fault-runtime emissions. Each live event-released update must hold the
-    /// earliest of them that releases it, or no latch when none does, so a
-    /// restored continuation cannot carry a latch that no emission produced.
+    /// `emissions` are the retained emissions with indexes in
+    /// `event_cursor..consumed_through`, in append order. The others retired
+    /// because they release no live update, so they only advance the cursor.
     ///
     /// # Errors
     ///
-    /// Returns [`DeviceError`] when the emission count differs from the cursor
-    /// or any live latch differs from the one the emissions determine.
+    /// Returns [`DeviceError`] without mutating the state when
+    /// `consumed_through` precedes the cursor or cannot hold `emissions`.
+    pub fn observe_events_through(
+        &mut self,
+        emissions: &[NinepEventEmission],
+        consumed_through: u64,
+    ) -> Result<(), DeviceError> {
+        let count = u64::try_from(emissions.len())
+            .map_err(|_| invalid("9p visibility event cursor overflow"))?;
+        if consumed_through
+            .checked_sub(self.event_cursor)
+            .is_none_or(|range| range < count)
+        {
+            return Err(invalid("9p visibility events end before the event cursor"));
+        }
+        self.observe_events(emissions)?;
+        self.event_cursor = consumed_through;
+        Ok(())
+    }
+
+    /// Returns the event subscription of every live event-released update.
+    ///
+    /// Each pair is the subscribed event and the coordinate strictly after
+    /// which an emission releases the update, whether or not it has latched.
+    pub fn event_subscriptions(
+        &self,
+    ) -> impl Iterator<Item = ([u8; 32], NinepEventCoordinate)> + '_ {
+        self.updates.values().filter_map(event_subscription)
+    }
+
+    /// Verifies every live latch against the consumed emissions still retained.
+    ///
+    /// `emissions` are consumed fault-runtime emissions in append order, at
+    /// most [`NinepVisibilityState::event_cursor`] of them, and must include
+    /// for every live event-released update the earliest consumed emission
+    /// that releases it. Each such update must hold that emission as its
+    /// latch, or no latch when none exists, so a restored continuation cannot
+    /// carry a latch that no emission produced.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError`] when more emissions are supplied than the
+    /// cursor consumed or any live latch differs from the one the emissions
+    /// determine.
     pub fn verify_event_latches(
         &self,
         emissions: &[NinepEventEmission],
     ) -> Result<(), DeviceError> {
-        if u64::try_from(emissions.len()).ok() != Some(self.event_cursor) {
+        if !u64::try_from(emissions.len()).is_ok_and(|count| count <= self.event_cursor) {
             return Err(invalid(
                 "9p visibility event cursor disagrees with the emitted events",
             ));

@@ -1,9 +1,21 @@
 //! Block-device checkpoint snapshot representation.
+//!
+//! The overlay is carried as a [`BlockOverlayImage`]: chunk records naming
+//! each written 4 MiB chunk by content identity, never page bytes. Whoever
+//! persists the encoded snapshot persists the chunk objects beside it, and
+//! whoever decodes it binds a [`BlockOverlayChunkSource`] before restore.
+//!
+//! ```text
+//! b"crucible.block-snapshot.v7\0" || CBOR {
+//!     core: bytes, base_hash: [u8; 32], device_length: u64,
+//!     overlay: [(chunk_index, identity?, present[16], dirty[16])] ascending,
+//!     storage_faults: bytes, latency: [u64; 5],
+//! }
+//! ```
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
-use serde::ser::SerializeSeq;
-use serde::{Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 
 use crate::inflight::PendingResponse;
 use crate::snapshot_codec::{
@@ -12,78 +24,78 @@ use crate::snapshot_codec::{
 };
 use crate::subnode::{IoCoreSnapshot, IoCoreSnapshotCodecError};
 
-use super::super::overlay::{OverlayDelta, PAGE_SIZE};
+use super::super::overlay_image::{
+    BlockOverlayChunk, BlockOverlayChunkSource, BlockOverlayImage, ChunkPageBits,
+};
 use super::super::{BlockFaultState, BlockFaultStateCodecError};
 use super::BlockLatency;
 
-const BLOCK_SNAPSHOT_MAGIC: &[u8] = b"crucible.block-snapshot.v6\0";
-const MAX_BLOCK_SNAPSHOT_PAGES: u64 = 4_194_304;
-/// Compiled byte ceiling for one block-device snapshot.
+const BLOCK_SNAPSHOT_MAGIC: &[u8] = b"crucible.block-snapshot.v7\0";
+
+/// Compiled byte ceiling for one encoded block-device snapshot.
+///
+/// The envelope holds the I/O core and storage-fault continuations, which
+/// carry their own ceilings, plus the overlay chunk records. Overlay page
+/// bytes are never inline, so this ceiling does not grow with written device
+/// content.
 pub const MAX_BLOCK_SNAPSHOT_BYTES: u64 = 1_073_741_824;
 
-type SnapshotBytes = BoundedVec<u8, MAX_BLOCK_SNAPSHOT_BYTES>;
-type SnapshotPage = BoundedVec<u8, { PAGE_SIZE as u64 }>;
-type SnapshotPages = BoundedVec<(u64, SnapshotPage), MAX_BLOCK_SNAPSHOT_PAGES>;
-type SnapshotDirtyPages = BoundedVec<u64, MAX_BLOCK_SNAPSHOT_PAGES>;
+/// The overlay record count is bounded by the device geometry (at most one
+/// record per 4 MiB chunk of the device, checked after decoding) and by the
+/// admitted input length, not by a separate count ceiling.
+const OVERLAY_RECORDS_BOUNDED_BY_GEOMETRY: u64 = u64::MAX;
 
-#[derive(serde::Serialize, serde::Deserialize)]
+type SnapshotBytes = BoundedVec<u8, MAX_BLOCK_SNAPSHOT_BYTES>;
+type OverlayRecords = BoundedVec<OverlayChunkWire, OVERLAY_RECORDS_BOUNDED_BY_GEOMETRY>;
+
+#[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BlockSnapshotWire {
     core: SnapshotBytes,
     base_hash: [u8; 32],
     device_length: u64,
-    overlay_delta: SnapshotPages,
-    full_pages: SnapshotPages,
-    dirty: SnapshotDirtyPages,
+    overlay: OverlayRecords,
     storage_faults: SnapshotBytes,
     latency: [u64; 5],
 }
 
-#[derive(Serialize)]
-struct BlockSnapshotEncodeWire<'a> {
-    core: SnapshotBytes,
-    base_hash: [u8; 32],
-    device_length: u64,
-    overlay_delta: SnapshotPagesRef<'a>,
-    full_pages: SnapshotPagesRef<'a>,
-    dirty: SnapshotDirtyPagesRef<'a>,
-    storage_faults: SnapshotBytes,
-    latency: [u64; 5],
-}
+/// One overlay chunk record: index, identity, present bitmap, dirty bitmap.
+#[derive(Serialize, Deserialize)]
+struct OverlayChunkWire(u64, Option<[u8; 32]>, [u64; 16], [u64; 16]);
 
-struct SnapshotPagesRef<'a>(&'a BTreeMap<u64, [u8; PAGE_SIZE]>);
-
-impl Serialize for SnapshotPagesRef<'_> {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut sequence = serializer.serialize_seq(Some(self.0.len()))?;
-        for (offset, page) in self.0 {
-            sequence.serialize_element(&(*offset, page.as_slice()))?;
-        }
-        sequence.end()
+impl From<BlockOverlayChunk> for OverlayChunkWire {
+    fn from(chunk: BlockOverlayChunk) -> Self {
+        Self(
+            chunk.index,
+            chunk.identity,
+            chunk.present.words(),
+            chunk.dirty.words(),
+        )
     }
 }
 
-struct SnapshotDirtyPagesRef<'a>(&'a BTreeSet<u64>);
-
-impl Serialize for SnapshotDirtyPagesRef<'_> {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut sequence = serializer.serialize_seq(Some(self.0.len()))?;
-        for offset in self.0 {
-            sequence.serialize_element(offset)?;
+impl From<OverlayChunkWire> for BlockOverlayChunk {
+    fn from(wire: OverlayChunkWire) -> Self {
+        Self {
+            index: wire.0,
+            identity: wire.1,
+            present: ChunkPageBits::from_words(wire.2),
+            dirty: ChunkPageBits::from_words(wire.3),
         }
-        sequence.end()
     }
 }
 
 /// The device half of a block sub-node's `MaterializedState` ([IO-11], [IO-23]).
 ///
-/// Holds the overlay delta (dirty pages only), a full-overlay page set for
-/// self-contained restore, the dirty page set (so a mid-epoch restore preserves
-/// the next checkpoint's delta, [IO-7]), the latency model (part of the `World`,
-/// [IO-10]), the in-flight responses
-/// (inside `core`), the base hash, and the device length. It **never** holds the
-/// base image bytes ([TEMP-9]); restore re-supplies the content-addressed base
-/// and verifies its hash.
+/// Holds the overlay image (chunk records naming every written 4 MiB chunk by
+/// content identity, plus the present and dirty page sets so a mid-epoch
+/// restore preserves the next checkpoint's dirty bookkeeping, [IO-7]), the
+/// latency model (part of the `World`, [IO-10]), the in-flight responses
+/// (inside `core`), the base hash, and the device length. It **never** holds
+/// the base image bytes ([TEMP-9]); restore re-supplies the content-addressed
+/// base and verifies its hash.
+///
+/// Cloning a snapshot shares the overlay image; it copies no page bytes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockSnapshot {
     /// The uniform-core snapshot: clock, rings, in-flight responses.
@@ -92,12 +104,8 @@ pub struct BlockSnapshot {
     pub base_hash: [u8; 32],
     /// The device length in bytes (the base image size).
     pub device_length: u64,
-    /// The overlay delta: only pages dirtied since the last checkpoint boundary.
-    pub overlay_delta: OverlayDelta,
-    /// The full overlay page set, for parent-free self-contained restore.
-    pub full_pages: BTreeMap<u64, [u8; PAGE_SIZE]>,
-    /// The dirty page set at snapshot time.
-    pub dirty: BTreeSet<u64>,
+    /// The chunked, content-addressed overlay image with its dirty page set.
+    pub overlay: BlockOverlayImage,
     /// Volatile cache, durability frontiers, retained versions, and directives.
     pub storage_faults: BlockFaultState,
     /// The deterministic latency model parameters.
@@ -105,10 +113,10 @@ pub struct BlockSnapshot {
 }
 
 impl BlockSnapshot {
-    /// Returns the number of pages in the captured delta.
+    /// Returns the number of pages dirtied since the last checkpoint boundary.
     #[must_use]
     pub fn delta_page_count(&self) -> usize {
-        self.overlay_delta.pages.len()
+        self.overlay.dirty_page_count()
     }
 
     /// Returns the in-flight responses captured in the snapshot.
@@ -117,13 +125,42 @@ impl BlockSnapshot {
         &self.core.inflight
     }
 
+    /// Attaches the content-addressed source that serves decoded overlay chunks.
+    ///
+    /// A decoded snapshot names its overlay chunks by identity only; restore
+    /// reads and authenticates them through this source.
+    pub fn bind_overlay_source(&mut self, source: Arc<dyn BlockOverlayChunkSource>) {
+        self.overlay.bind_source(source);
+    }
+
+    /// Returns the distinct identities of every nonzero overlay chunk, ascending.
+    ///
+    /// These are the content-addressed objects a persisted snapshot depends on.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlockSnapshotCodecError::Overlay`] when a live overlay page
+    /// cannot be read while its chunk identity is computed.
+    pub fn overlay_chunk_identities(&self) -> Result<Vec<[u8; 32]>, BlockSnapshotCodecError> {
+        let mut identities = self
+            .overlay
+            .chunks()
+            .map_err(|_| BlockSnapshotCodecError::Overlay)?
+            .into_iter()
+            .filter_map(|chunk| chunk.identity)
+            .collect::<Vec<_>>();
+        identities.sort_unstable();
+        identities.dedup();
+        Ok(identities)
+    }
+
     /// Encodes the complete block-device continuation canonically.
     ///
     /// # Errors
     ///
     /// Returns [`BlockSnapshotCodecError`] for invalid device geometry,
-    /// inconsistent overlay state, an invalid nested continuation, or an
-    /// over-limit serialized checkpoint.
+    /// inconsistent overlay state, an unreadable overlay page, an invalid
+    /// nested continuation, or an over-limit serialized checkpoint.
     pub fn to_canonical_bytes(&self) -> Result<Vec<u8>, BlockSnapshotCodecError> {
         self.to_canonical_bytes_with_limit(MAX_BLOCK_SNAPSHOT_BYTES)
     }
@@ -139,9 +176,15 @@ impl BlockSnapshot {
         &self,
         maximum: u64,
     ) -> Result<Vec<u8>, BlockSnapshotCodecError> {
-        admit_snapshot_resources(self)?;
         validate_snapshot(self, maximum)?;
-        let wire = BlockSnapshotEncodeWire {
+        let records = self
+            .overlay
+            .chunks()
+            .map_err(|_| BlockSnapshotCodecError::Overlay)?
+            .into_iter()
+            .map(OverlayChunkWire::from)
+            .collect::<Vec<_>>();
+        let wire = BlockSnapshotWire {
             core: bounded_bytes(
                 self.core
                     .canonical_bytes_with_limit(maximum.min(MAX_BLOCK_SNAPSHOT_BYTES))
@@ -150,9 +193,8 @@ impl BlockSnapshot {
             )?,
             base_hash: self.base_hash,
             device_length: self.device_length,
-            overlay_delta: SnapshotPagesRef(&self.overlay_delta.pages),
-            full_pages: SnapshotPagesRef(&self.full_pages),
-            dirty: SnapshotDirtyPagesRef(&self.dirty),
+            overlay: OverlayRecords::new(records, "block overlay chunk records")
+                .map_err(map_resource_error)?,
             storage_faults: bounded_bytes(
                 self.storage_faults
                     .to_canonical_bytes_with_limit(maximum.min(MAX_BLOCK_SNAPSHOT_BYTES))
@@ -178,6 +220,9 @@ impl BlockSnapshot {
     }
 
     /// Decodes and validates a complete block-device continuation.
+    ///
+    /// The decoded overlay has no chunk source; bind one with
+    /// [`Self::bind_overlay_source`] before restoring.
     ///
     /// # Errors
     ///
@@ -211,6 +256,14 @@ impl BlockSnapshot {
         let wire: BlockSnapshotWire = ciborium::de::from_reader(payload).map_err(|error| {
             map_decode_error(error).map_or(BlockSnapshotCodecError::Malformed, map_resource_error)
         })?;
+        let overlay = BlockOverlayImage::from_chunks(
+            wire.device_length,
+            wire.overlay
+                .into_inner()
+                .into_iter()
+                .map(BlockOverlayChunk::from),
+        )
+        .map_err(|_| BlockSnapshotCodecError::Invalid)?;
         let snapshot = Self {
             core: IoCoreSnapshot::from_canonical_bytes_with_limit(
                 wire.core.as_slice(),
@@ -219,11 +272,7 @@ impl BlockSnapshot {
             .map_err(map_io_core_error)?,
             base_hash: wire.base_hash,
             device_length: wire.device_length,
-            overlay_delta: OverlayDelta {
-                pages: decode_pages(wire.overlay_delta)?,
-            },
-            full_pages: decode_pages(wire.full_pages)?,
-            dirty: wire.dirty.into_inner().into_iter().collect(),
+            overlay,
             storage_faults: BlockFaultState::from_canonical_bytes_with_limit(
                 wire.storage_faults.as_slice(),
                 wire.device_length,
@@ -238,7 +287,6 @@ impl BlockSnapshot {
                 wire.latency[4],
             ),
         };
-        admit_snapshot_resources(&snapshot)?;
         validate_snapshot(&snapshot, maximum)?;
         if snapshot.to_canonical_bytes_with_limit(maximum)?.as_slice() != bytes {
             return Err(BlockSnapshotCodecError::Noncanonical);
@@ -281,25 +329,9 @@ pub enum BlockSnapshotCodecError {
     /// The accepted representation is not byte-canonical.
     #[error("noncanonical block snapshot")]
     Noncanonical,
-}
-
-fn decode_pages(
-    pages: SnapshotPages,
-) -> Result<BTreeMap<u64, [u8; PAGE_SIZE]>, BlockSnapshotCodecError> {
-    let pages = pages.into_inner();
-    if pages.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
-        return Err(BlockSnapshotCodecError::Noncanonical);
-    }
-    pages
-        .into_iter()
-        .map(|(offset, bytes)| {
-            let page = bytes
-                .into_inner()
-                .try_into()
-                .map_err(|_| BlockSnapshotCodecError::Invalid)?;
-            Ok((offset, page))
-        })
-        .collect()
+    /// A live overlay page could not be read while its chunk was identified.
+    #[error("block snapshot overlay page is unreadable")]
+    Overlay,
 }
 
 fn bounded_bytes(
@@ -364,21 +396,6 @@ fn map_block_fault_error(error: BlockFaultStateCodecError) -> BlockSnapshotCodec
     }
 }
 
-fn resource_limit(
-    field: &'static str,
-    current: u64,
-    requested: u64,
-    hard: u64,
-) -> BlockSnapshotCodecError {
-    BlockSnapshotCodecError::ResourceLimit {
-        field,
-        current,
-        requested,
-        configured: hard,
-        hard,
-    }
-}
-
 fn validate_snapshot(
     snapshot: &BlockSnapshot,
     maximum: u64,
@@ -391,46 +408,11 @@ fn validate_snapshot(
         .storage_faults
         .validate_restore(snapshot.device_length)
         .map_err(|_| BlockSnapshotCodecError::Nested)?;
-    let maximum_pages = snapshot.device_length.div_ceil(PAGE_SIZE as u64);
-    for pages in [&snapshot.overlay_delta.pages, &snapshot.full_pages] {
-        if u64::try_from(pages.len()).map_or(true, |count| count > maximum_pages)
-            || pages
-                .keys()
-                .any(|offset| offset % PAGE_SIZE as u64 != 0 || *offset >= snapshot.device_length)
-        {
-            return Err(BlockSnapshotCodecError::Invalid);
-        }
-    }
-    if snapshot
-        .overlay_delta
-        .pages
-        .iter()
-        .any(|(offset, page)| snapshot.full_pages.get(offset) != Some(page))
-        || snapshot
-            .dirty
-            .iter()
-            .any(|offset| !snapshot.full_pages.contains_key(offset))
-    {
+    // Chunk geometry (every record inside the device, dirty within present)
+    // is enforced whenever an image is built, so only the length binding
+    // remains to check here.
+    if snapshot.overlay.length() != snapshot.device_length {
         return Err(BlockSnapshotCodecError::Invalid);
-    }
-    Ok(())
-}
-
-fn admit_snapshot_resources(snapshot: &BlockSnapshot) -> Result<(), BlockSnapshotCodecError> {
-    for (field, count) in [
-        ("block overlay delta", snapshot.overlay_delta.pages.len()),
-        ("block full pages", snapshot.full_pages.len()),
-        ("block dirty pages", snapshot.dirty.len()),
-    ] {
-        let requested = u64::try_from(count).unwrap_or(u64::MAX);
-        if requested > MAX_BLOCK_SNAPSHOT_PAGES {
-            return Err(resource_limit(
-                field,
-                0,
-                requested,
-                MAX_BLOCK_SNAPSHOT_PAGES,
-            ));
-        }
     }
     Ok(())
 }

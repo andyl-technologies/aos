@@ -1,358 +1,29 @@
-//! Allocation-aware canonical codec for standalone resolved-effect traces.
-
-use std::marker::PhantomData;
-
-use serde::de::{IgnoredAny, SeqAccess, Visitor};
-use serde::{Deserialize, Deserializer};
+//! Allocation-aware CBOR helpers shared by fault-runtime artifacts.
+//!
+//! Canonical fault artifacts are admitted by encoded size before decoding.
+//! [`scratch_bytes`] scans an encoded value once to find its longest text or
+//! byte string, so the decoder's scratch buffer is sized to the input rather
+//! than to a fixed guess. Collection sizes are bounded by the encoded input and
+//! by the fallible owned-allocation budget, never by a whole-trace ceiling:
+//! run-length traces are decoded one bounded segment at a time.
 
 use super::*;
 
 const MAX_DEPTH: usize = 128;
-const HARD_WORK_ITEMS: u64 = FaultResourceLimits::compiled_maximum().thin_replay_events;
-const HARD_RECORDS: u64 = FaultResourceLimits::compiled_maximum().resolved_effect_records;
 
-pub(super) fn encode(
-    trace: &ResolvedEffectTrace,
-    limits: FaultResourceLimits,
-) -> Result<Vec<u8>, FaultRuntimeError> {
-    trace.validate(limits)?;
-    checkpoint_codec::encode_prefixed(trace, RESOLVED_EFFECT_TRACE_MAGIC, limits)
-}
-
-pub(super) fn decode(
-    payload: &[u8],
-    limits: FaultResourceLimits,
-    scratch_bytes: usize,
-) -> Result<ResolvedEffectTrace, FaultRuntimeError> {
-    let _budget = super::super::fallible_decode::DecodeBudgetGuard::enter(limits);
-    let scratch_requested = u64::try_from(scratch_bytes)
-        .map_err(|_| FaultRuntimeError::CountOverflow("fat_checkpoint_bytes"))?;
-    let mut scratch = Vec::new();
-    scratch.try_reserve_exact(scratch_bytes).map_err(|_| {
-        resource(
-            "fat_checkpoint_bytes",
-            0,
-            scratch_requested,
-            limits.fat_checkpoint_bytes,
-            FaultResourceLimits::compiled_maximum().fat_checkpoint_bytes,
-        )
-    })?;
-    scratch.resize(scratch_bytes, 0);
-    let wire: TraceWire =
-        ciborium::de::from_reader_with_buffer(payload, &mut scratch).map_err(map_decode_error)?;
-    let count = u64::try_from(wire.work_items.values.len())
-        .map_err(|_| FaultRuntimeError::CountOverflow("thin_replay_events"))?;
-    let mut work_items = Vec::new();
-    work_items
-        .try_reserve_exact(wire.work_items.values.len())
-        .map_err(|_| {
-            resource(
-                "thin_replay_events",
-                0,
-                count,
-                limits.thin_replay_events,
-                HARD_WORK_ITEMS,
-            )
-        })?;
-    work_items.extend(
-        wire.work_items
-            .values
-            .into_iter()
-            .map(ResolvedReplayWorkItem::from),
-    );
-    Ok(ResolvedEffectTrace {
-        mode: wire.mode,
-        work_items,
-        cursor: wire.cursor,
-    })
-}
-
-pub(super) fn preflight(
-    payload: &[u8],
-    limits: FaultResourceLimits,
-) -> Result<usize, FaultRuntimeError> {
+/// Returns the scratch length needed to decode one canonical CBOR value.
+///
+/// # Errors
+///
+/// Returns [`FaultRuntimeError::CheckpointEncoding`] for malformed CBOR, a
+/// value nested beyond the supported depth, or trailing bytes.
+pub(super) fn scratch_bytes(payload: &[u8]) -> Result<usize, FaultRuntimeError> {
     let mut cursor = CborCursor::new(payload);
-    let fields = cursor.map_len()?;
-    for _ in 0..fields {
-        let field = cursor.text()?;
-        if field == b"work_items" {
-            scan_work_items(&mut cursor, limits)?;
-        } else {
-            cursor.skip_value(0)?;
-        }
-    }
+    cursor.skip_value(0)?;
     if cursor.offset != payload.len() {
         return Err(FaultRuntimeError::CheckpointEncoding);
     }
     Ok(cursor.max_scalar_bytes)
-}
-
-pub(super) fn checkpoint_preflight(
-    payload: &[u8],
-    limits: FaultResourceLimits,
-) -> Result<usize, FaultRuntimeError> {
-    let mut cursor = CborCursor::new(payload);
-    let fields = cursor.map_len()?;
-    for _ in 0..fields {
-        let field = cursor.text()?;
-        match field {
-            b"recorded_work_items" => scan_work_items(&mut cursor, limits)?,
-            b"replay" if cursor.peek_byte()? != 0xf6 => {
-                let replay_fields = cursor.map_len()?;
-                for _ in 0..replay_fields {
-                    let replay_field = cursor.text()?;
-                    if replay_field == b"work_items" {
-                        scan_work_items(&mut cursor, limits)?;
-                    } else {
-                        cursor.skip_value(0)?;
-                    }
-                }
-            }
-            _ => cursor.skip_value(0)?,
-        }
-    }
-    if cursor.offset != payload.len() {
-        return Err(FaultRuntimeError::CheckpointEncoding);
-    }
-    Ok(cursor.max_scalar_bytes)
-}
-
-fn scan_work_items(
-    cursor: &mut CborCursor<'_>,
-    limits: FaultResourceLimits,
-) -> Result<(), FaultRuntimeError> {
-    let work_items = cursor.array_len()?;
-    admit(
-        "thin_replay_events",
-        0,
-        work_items,
-        limits.thin_replay_events,
-        HARD_WORK_ITEMS,
-    )?;
-    let mut records = 0_u64;
-    for _ in 0..work_items {
-        let item_fields = cursor.map_len()?;
-        for _ in 0..item_fields {
-            let item_field = cursor.text()?;
-            if item_field == b"records" {
-                let additional = cursor.array_len()?;
-                admit(
-                    "resolved_effect_records",
-                    records,
-                    additional,
-                    limits.resolved_effect_records,
-                    HARD_RECORDS,
-                )?;
-                records = records.checked_add(additional).ok_or_else(|| {
-                    resource(
-                        "resolved_effect_records",
-                        records,
-                        additional,
-                        limits.resolved_effect_records,
-                        HARD_RECORDS,
-                    )
-                })?;
-                for _ in 0..additional {
-                    cursor.skip_value(0)?;
-                }
-            } else {
-                cursor.skip_value(0)?;
-            }
-        }
-    }
-    Ok(())
-}
-
-trait BoundField {
-    const FIELD: &'static str;
-    const MAX: u64;
-}
-
-struct WorkItemBound;
-impl BoundField for WorkItemBound {
-    const FIELD: &'static str = "thin_replay_events";
-    const MAX: u64 = HARD_WORK_ITEMS;
-}
-
-struct RecordBound;
-impl BoundField for RecordBound {
-    const FIELD: &'static str = "resolved_effect_records";
-    const MAX: u64 = HARD_RECORDS;
-}
-
-struct BoundedVec<T, F> {
-    values: Vec<T>,
-    field: PhantomData<F>,
-}
-
-impl<'de, T: Deserialize<'de>, F: BoundField> Deserialize<'de> for BoundedVec<T, F> {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct BoundedVisitor<T, F>(PhantomData<(T, F)>);
-
-        impl<'de, T: Deserialize<'de>, F: BoundField> Visitor<'de> for BoundedVisitor<T, F> {
-            type Value = BoundedVec<T, F>;
-
-            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(formatter, "at most {} {}", F::MAX, F::FIELD)
-            }
-
-            fn visit_seq<A: SeqAccess<'de>>(
-                self,
-                mut sequence: A,
-            ) -> Result<Self::Value, A::Error> {
-                let hint = sequence.size_hint().unwrap_or(0);
-                let requested = u64::try_from(hint).unwrap_or(u64::MAX);
-                let configured = super::super::fallible_decode::configured(F::FIELD, F::MAX);
-                let current = super::super::fallible_decode::collection_current(F::FIELD);
-                if current
-                    .checked_add(requested)
-                    .is_none_or(|total| total > configured || total > F::MAX)
-                {
-                    return Err(serde::de::Error::custom(resource_message(
-                        F::FIELD,
-                        current,
-                        requested,
-                        configured,
-                        F::MAX,
-                    )));
-                }
-                let mut values = Vec::new();
-                values.try_reserve_exact(hint).map_err(|_| {
-                    serde::de::Error::custom(resource_message(
-                        F::FIELD,
-                        current,
-                        requested,
-                        configured,
-                        F::MAX,
-                    ))
-                })?;
-                loop {
-                    let current = u64::try_from(values.len()).unwrap_or(u64::MAX);
-                    if current >= F::MAX {
-                        if sequence.next_element::<IgnoredAny>()?.is_some() {
-                            return Err(serde::de::Error::custom(resource_message(
-                                F::FIELD,
-                                super::super::fallible_decode::collection_current(F::FIELD)
-                                    .saturating_add(current),
-                                1,
-                                configured,
-                                F::MAX,
-                            )));
-                        }
-                        break;
-                    }
-                    if values.len() == values.capacity() {
-                        values.try_reserve(1).map_err(|_| {
-                            serde::de::Error::custom(resource_message(
-                                F::FIELD,
-                                super::super::fallible_decode::collection_current(F::FIELD)
-                                    .saturating_add(current),
-                                1,
-                                configured,
-                                F::MAX,
-                            ))
-                        })?;
-                    }
-                    let Some(value) = sequence.next_element()? else {
-                        break;
-                    };
-                    values.push(value);
-                }
-                super::super::fallible_decode::commit_collection(F::FIELD, requested)
-                    .map_err(serde::de::Error::custom)?;
-                Ok(BoundedVec {
-                    values,
-                    field: PhantomData,
-                })
-            }
-        }
-
-        deserializer.deserialize_seq(BoundedVisitor(PhantomData))
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TraceWire {
-    mode: FaultReplayMode,
-    work_items: BoundedVec<WorkItemWire, WorkItemBound>,
-    cursor: usize,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WorkItemWire {
-    coordinate: FaultCoordinate,
-    same_coordinate_sequence: u64,
-    opportunity: Option<ContentHash>,
-    target: Option<ResolvedFaultTarget>,
-    operation: Option<FaultOperation>,
-    direction: Option<FaultDirection>,
-    phase: Option<FaultPhase>,
-    network_frame_key: Option<ContentHash>,
-    network_producer_direction_key: Option<ContentHash>,
-    derivation_fingerprint: ContentHash,
-    records: BoundedVec<ResolvedEffectRecord, RecordBound>,
-}
-
-impl From<WorkItemWire> for ResolvedReplayWorkItem {
-    fn from(value: WorkItemWire) -> Self {
-        Self {
-            coordinate: value.coordinate,
-            same_coordinate_sequence: value.same_coordinate_sequence,
-            opportunity: value.opportunity,
-            target: value.target,
-            operation: value.operation,
-            direction: value.direction,
-            phase: value.phase,
-            network_frame_key: value.network_frame_key,
-            network_producer_direction_key: value.network_producer_direction_key,
-            derivation_fingerprint: value.derivation_fingerprint,
-            records: value.records.values,
-        }
-    }
-}
-
-fn admit(
-    field: &'static str,
-    current: u64,
-    requested: u64,
-    configured: u64,
-    hard: u64,
-) -> Result<(), FaultRuntimeError> {
-    let total = current
-        .checked_add(requested)
-        .ok_or_else(|| resource(field, current, requested, configured, hard))?;
-    if total > configured || total > hard {
-        return Err(resource(field, current, requested, configured, hard));
-    }
-    Ok(())
-}
-
-fn resource(
-    field: &'static str,
-    current: u64,
-    requested: u64,
-    configured: u64,
-    hard: u64,
-) -> FaultRuntimeError {
-    FaultRuntimeError::ResourceLimit(FaultResourceLimitError::Exceeded {
-        field,
-        current,
-        requested,
-        configured,
-        hard,
-    })
-}
-
-fn resource_message(
-    field: &'static str,
-    current: u64,
-    requested: u64,
-    configured: u64,
-    hard: u64,
-) -> String {
-    super::super::fallible_decode::resource_message(field, current, requested, configured, hard)
 }
 
 pub(super) fn map_decode_error<T>(error: ciborium::de::Error<T>) -> FaultRuntimeError {
@@ -390,6 +61,22 @@ pub(super) fn map_decode_error<T>(error: ciborium::de::Error<T>) -> FaultRuntime
     resource(field, current, requested, configured, hard)
 }
 
+fn resource(
+    field: &'static str,
+    current: u64,
+    requested: u64,
+    configured: u64,
+    hard: u64,
+) -> FaultRuntimeError {
+    FaultRuntimeError::ResourceLimit(FaultResourceLimitError::Exceeded {
+        field,
+        current,
+        requested,
+        configured,
+        hard,
+    })
+}
+
 struct CborCursor<'a> {
     bytes: &'a [u8],
     offset: usize,
@@ -403,32 +90,6 @@ impl<'a> CborCursor<'a> {
             offset: 0,
             max_scalar_bytes: 0,
         }
-    }
-
-    fn map_len(&mut self) -> Result<u64, FaultRuntimeError> {
-        self.container_len(5)
-    }
-
-    fn array_len(&mut self) -> Result<u64, FaultRuntimeError> {
-        self.container_len(4)
-    }
-
-    fn container_len(&mut self, major: u8) -> Result<u64, FaultRuntimeError> {
-        let initial = self.byte()?;
-        if initial >> 5 != major {
-            return Err(FaultRuntimeError::CheckpointEncoding);
-        }
-        self.argument(initial & 0x1f)
-    }
-
-    fn text(&mut self) -> Result<&'a [u8], FaultRuntimeError> {
-        let initial = self.byte()?;
-        if initial >> 5 != 3 {
-            return Err(FaultRuntimeError::CheckpointEncoding);
-        }
-        let length = self.argument(initial & 0x1f)?;
-        self.observe_scalar(length)?;
-        self.take(length)
     }
 
     fn skip_value(&mut self, depth: usize) -> Result<(), FaultRuntimeError> {
@@ -481,13 +142,6 @@ impl<'a> CborCursor<'a> {
             .ok_or(FaultRuntimeError::CheckpointEncoding)?;
         self.offset += 1;
         Ok(value)
-    }
-
-    fn peek_byte(&self) -> Result<u8, FaultRuntimeError> {
-        self.bytes
-            .get(self.offset)
-            .copied()
-            .ok_or(FaultRuntimeError::CheckpointEncoding)
     }
 
     fn array<const N: usize>(&mut self) -> Result<[u8; N], FaultRuntimeError> {

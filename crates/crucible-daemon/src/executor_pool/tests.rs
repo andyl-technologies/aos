@@ -1918,7 +1918,11 @@ fn retained_measurement_trace_publishes_the_named_beam_objective() {
             retained.properties(),
             retained.coverage(),
         ),
-        retained.discovered_choices().clone(),
+        candidate
+            .discovered_opportunities()
+            .iter()
+            .copied()
+            .collect(),
     )
     .expect("observation with retained measurement trace");
     let expected = crate::evaluate_crucible_objectives(
@@ -2123,7 +2127,11 @@ fn recover_complete_prepared_journal(
             observation.properties(),
             observation.coverage(),
         ),
-        observation.discovered_choices().clone(),
+        candidate
+            .discovered_opportunities()
+            .iter()
+            .copied()
+            .collect(),
     )
     .expect("observation with raw measurement evidence");
     let candidate = ObservationCandidate::new(
@@ -2446,7 +2454,7 @@ fn incomplete_prepared_journal_fails_closed_without_guest_execution() {
             .expect("journal directory name")
     ));
     std::fs::rename(&journal_root, &staged_root).expect("interrupt journal publication");
-    std::fs::remove_file(staged_root.join("state-v3")).expect("leave partial staged journal");
+    std::fs::remove_file(staged_root.join("state-v4")).expect("leave partial staged journal");
 
     let observer: Arc<dyn PausedCheckpointObserver> =
         Arc::new(RecordingPausedCheckpointObserver::default());

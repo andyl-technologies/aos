@@ -560,17 +560,28 @@ fn retain_and_cleanup_product_finding(
     assert!(
         journal
             .candidates()
-            .iter()
+            .iter()?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
             .any(|candidate| candidate.id() == orphan)
     );
-    assert!(!journal.roots().iter().any(|root| root == orphan));
+    assert!(
+        !journal
+            .roots()
+            .iter()?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .any(|root| root == orphan)
+    );
     let finding_checkpoints = original_proof.finding().exact_pin_retention().all();
     assert!(!finding_checkpoints.is_empty());
     for checkpoint in finding_checkpoints {
         assert!(
             !journal
                 .candidates()
-                .iter()
+                .iter()?
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
                 .any(|candidate| candidate.id() == checkpoint.content_id()),
             "authenticated finding checkpoint entered the deletion manifest"
         );

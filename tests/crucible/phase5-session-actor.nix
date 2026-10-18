@@ -178,11 +178,18 @@ in
       version = "0";
       src = crucibleSrc;
 
+      # crucible-session reaches the campaign store's SQLite backend through
+      # crucible, so its lib-test binary needs SQLite at link time.
+      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+      runtimeDeps = [pkgs.sqlite];
       buildDeps =
         [
           pkgs.coreutils
           pkgs.rust
           pkgs.sed
+
+          pkgs.pkg-config
+          pkgs.sqlite
         ]
         ++ dependencies;
 

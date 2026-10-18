@@ -462,7 +462,7 @@ impl CampaignRepository {
             maximum_bytes,
         )?;
         let mut discovered_opportunities = Vec::new();
-        for opportunity in observation.discovered_choices().iter().copied() {
+        self.for_each_discovered_choice(&observation, |opportunity| {
             let opportunity = self.collect_statistical_opportunity_evidence(opportunity)?;
             charge_statistical_execution_evidence(
                 &mut charged_bytes,
@@ -470,7 +470,8 @@ impl CampaignRepository {
                 maximum_bytes,
             )?;
             discovered_opportunities.push(opportunity);
-        }
+            Ok(())
+        })?;
 
         let basis_content = self
             .merkle

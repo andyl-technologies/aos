@@ -1,4 +1,5 @@
-//! Evidence-store capture and rewriting helpers for finding export tests.
+//! Evidence-store capture, publication, and rewriting helpers for finding
+//! export tests.
 //!
 //! Tamper cases edit stored record and chunk text directly, then re-hash every
 //! enclosing object, so a rejection proves authentication rather than a broken
@@ -102,4 +103,21 @@ pub(super) fn ledger_with_record(
     Ok(std::str::from_utf8(ledger)?
         .replacen(&record.to_hex(), &replacement.to_hex(), 1)
         .into_bytes())
+}
+
+/// Publishes a model reproduction's schedule segments before its record.
+pub(super) fn publish_reproduction_segments(
+    repository: &crucible_campaign::CampaignRepository,
+    artifact: &crucible::ReproductionArtifact,
+) -> Result<(), Box<dyn Error>> {
+    let segments = crucible::SharedSegmentStore::new();
+    let manifest = artifact.schedule().write_segments(&segments)?;
+    for segment in manifest.segments() {
+        let bytes = crucible::SegmentSource::segment(&segments, segment.id)?;
+        repository.publish_reproduction_payload_segment(
+            crucible_campaign::ReproductionPayloadSegment::new(segment.id, segment.encoded_bytes)?,
+            &bytes,
+        )?;
+    }
+    Ok(())
 }

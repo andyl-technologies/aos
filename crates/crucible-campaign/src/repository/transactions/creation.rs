@@ -30,6 +30,39 @@ impl CampaignRepository {
             validated_heads: Mutex::new(BTreeMap::new()),
             planner_authority: None,
             debugger_authority: None,
+            scratch_directory: None,
+        }
+    }
+
+    /// Places archive planning and inspection spills under `parent`.
+    ///
+    /// Archive planning and inspection external-sort closure-sized identity
+    /// sets and spool inventory pages. Each operation creates its own
+    /// owner-only directory inside `parent` and removes it when the operation
+    /// finishes or fails. `parent` must be an existing directory on real disk
+    /// beside the repository's durable state, never a memory-backed
+    /// filesystem. Without a scratch directory those spills stay in process
+    /// memory, which suits in-memory repositories and small fixtures.
+    #[must_use]
+    pub fn with_scratch_directory(mut self, parent: impl Into<std::path::PathBuf>) -> Self {
+        self.scratch_directory = Some(parent.into());
+        self
+    }
+
+    /// Opens fresh spill storage for one archive operation.
+    pub(in crate::repository) fn spill_storage(
+        &self,
+    ) -> Result<crate::spill::SpillStorage, CampaignRepositoryError> {
+        match &self.scratch_directory {
+            Some(parent) => {
+                crate::spill::SpillStorage::directory(parent, ".crucible-archive-spill").map_err(
+                    |source| CampaignRepositoryError::Scratch {
+                        operation: "create-archive-spill-directory",
+                        source,
+                    },
+                )
+            }
+            None => Ok(crate::spill::SpillStorage::Memory),
         }
     }
 
@@ -464,7 +497,7 @@ impl CampaignRepository {
         mut current: ContentId,
         requested: CampaignSnapshotId,
     ) -> Result<LoadedSnapshot, CampaignRepositoryError> {
-        for _ in 0..MAX_SNAPSHOT_ANCESTRY {
+        for _ in 0..MAX_CAMPAIGN_SNAPSHOT_ANCESTRY {
             let loaded = self.read_snapshot(current)?;
             if current == requested.content_id() {
                 return Ok(loaded);

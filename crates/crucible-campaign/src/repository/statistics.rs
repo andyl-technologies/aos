@@ -344,7 +344,7 @@ impl CampaignRepository {
         }
         let selector = generation.selector();
         let mut selected = None;
-        for opportunity_id in observation.discovered_choices().iter().copied() {
+        self.for_each_discovered_choice(&observation, |opportunity_id| {
             let opportunity = self.read_opportunity(opportunity_id.content_id())?;
             if opportunity.declaration_semantics() == selector.declaration()
                 && opportunity.domain_semantics() == selector.domain()
@@ -354,7 +354,8 @@ impl CampaignRepository {
             {
                 return Err(integrity("SMC selector matches multiple opportunities"));
             }
-        }
+            Ok(())
+        })?;
         let opportunity = selected.ok_or_else(|| {
             if matches!(
                 observation.stop(),

@@ -2,10 +2,7 @@
 
 use super::*;
 use crate::executor_supervisor::AllowAllAttemptAdmission;
-use crucible::{
-    EventLogTime, FailureClusterReportFailure, FailureTriageReplayEvidence, Icount, NodeId,
-    SchedulerEventLogEntry,
-};
+use crucible::{EventLogTime, FailureClusterReportFailure, Icount, NodeId, SchedulerEventLogEntry};
 use crucible_campaign::{
     CampaignRecordKind, FindingCandidateCore, FindingExactRetentionDisposition,
     FindingExactRetentionIncomplete,
@@ -221,12 +218,11 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
     )
     .expect("capture finding reproduction");
     let (expected, reproduced) = prepared_finding_triage_logs();
-    let triage_probe = FailureTriageReplayEvidence::new_paired_divergence(
+    let triage_probe = crucible::test_support::paired_divergence_evidence_for_test(
         finding,
-        expected,
-        reproduced,
+        &expected,
+        &reproduced,
         ContentHash::from_bytes(b"prepared-finding-triage-coverage"),
-        Vec::new(),
     )
     .expect("derive prepared finding divergence");
     let FailureClusterReportFailure::Divergence(divergence) = triage_probe.failure() else {
@@ -352,35 +348,40 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
     assert!(matches!(
         PreparedSemanticAttemptResult::from_canonical_bytes(
             &invalid_magic,
-            crate::AttemptLogSegmentSources::default()
+            crate::AttemptLogSegmentSources::default(),
+            crate::ReplayRecordSources::default(),
         ),
         Err(PreparedSemanticResultCodecError::Version)
     ));
     assert_eq!(
         PreparedSemanticAttemptResult::from_canonical_bytes(
             &observation_bytes,
-            crate::AttemptLogSegmentSources::default()
+            crate::AttemptLogSegmentSources::default(),
+            crate::ReplayRecordSources::default(),
         )
         .expect("decode observation result"),
         observation_result
     );
 
-    let trace_bytes = crucible::model::ResolvedEffectTrace {
-        mode: crucible::model::FaultReplayMode::LockedEffect,
-        work_items: Vec::new(),
-        cursor: 0,
-    }
-    .canonical_bytes()
-    .expect("canonical resolved effect trace");
-    let trace_id = crucible_cas::content_store::ContentId::for_bytes(
-        crucible_cas::content_store::ObjectKind::Trace,
-        1,
-        &trace_bytes,
-    );
+    let trace =
+        crucible::model::ResolvedEffectTrace::empty(crucible::model::FaultReplayMode::LockedEffect)
+            .expect("empty resolved effect trace");
+    let trace_manifest = trace
+        .manifest()
+        .canonical_bytes()
+        .expect("canonical resolved effect trace manifest");
+    let trace_reference = crucible_campaign::ResolvedEffectTraceRef::new(
+        trace
+            .manifest()
+            .content_id()
+            .expect("trace manifest identity"),
+        trace.manifest().segment_ids().collect(),
+    )
+    .expect("trace reference");
     let trace_observation = observation_candidate_with_measurements
         .observation()
         .clone()
-        .with_resolved_effect_trace(trace_id)
+        .with_resolved_effect_trace(trace_reference)
         .expect("trace child");
     let trace_candidate = ObservationCandidate::new(
         observation_candidate_with_measurements.child().clone(),
@@ -395,8 +396,8 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
         trace_observation,
     )
     .expect("trace observation candidate")
-    .with_resolved_effect_trace(trace_bytes.clone())
-    .expect("trace bytes");
+    .with_resolved_effect_trace(trace_manifest, trace.segments().clone())
+    .expect("trace manifest");
     let trace_result = PreparedSemanticAttemptResult::new(
         trace_candidate,
         observation_result.measurement_replay_evidence().to_vec(),
@@ -410,6 +411,7 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
                 .canonical_bytes()
                 .expect("trace result encoding"),
             trace_result.log_segments().clone(),
+            trace_result.replay_record_sources(),
         )
         .expect("trace result decoding"),
         trace_result
@@ -443,7 +445,8 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
     assert_eq!(
         PreparedSemanticAttemptResult::from_canonical_bytes(
             &terminal_bytes,
-            crate::AttemptLogSegmentSources::default()
+            crate::AttemptLogSegmentSources::default(),
+            crate::ReplayRecordSources::default(),
         )
         .expect("decode terminal observation result"),
         terminal_result
@@ -453,7 +456,8 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
     assert!(matches!(
         PreparedSemanticAttemptResult::from_canonical_bytes(
             &truncated_terminal_bytes,
-            crate::AttemptLogSegmentSources::default()
+            crate::AttemptLogSegmentSources::default(),
+            crate::ReplayRecordSources::default(),
         ),
         Err(PreparedSemanticResultCodecError::Truncated)
     ));
@@ -519,6 +523,7 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
                 evidence: None,
             },
             seed,
+            record_store: crate::ReplayRecordStore::default(),
         },
         |candidate| {
             let candidate_scenario =
@@ -572,12 +577,11 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
             .expect("candidate replay evidence");
 
             let (expected, reproduced) = prepared_finding_triage_logs();
-            let triage = FailureTriageReplayEvidence::new_paired_divergence(
+            let triage = crucible::test_support::paired_divergence_evidence_for_test(
                 candidate.clone(),
-                expected,
-                reproduced,
+                &expected,
+                &reproduced,
                 ContentHash::from_bytes(b"prepared-finding-triage-coverage"),
-                Vec::new(),
             )
             .expect("incompatibility triage replay evidence");
             Ok(AutomaticFindingReplayOutcome::observed_with_triage(
@@ -604,7 +608,8 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
         .expect("encode typed incompatibility result");
     let decoded_incompatibility = PreparedSemanticAttemptResult::from_canonical_bytes(
         &incompatibility_bytes,
-        crate::AttemptLogSegmentSources::default(),
+        incompatibility_result.log_segments().clone(),
+        incompatibility_result.replay_record_sources(),
     )
     .expect("decode typed incompatibility result");
     assert_eq!(decoded_incompatibility, incompatibility_result);
@@ -733,6 +738,7 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
                 evidence: None,
             },
             seed,
+            record_store: crate::ReplayRecordStore::default(),
         },
         |candidate| {
             let candidate_scenario =
@@ -777,12 +783,11 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
             )
             .expect("candidate replay evidence");
             let (expected, reproduced) = prepared_finding_triage_logs();
-            let triage = FailureTriageReplayEvidence::new_paired_divergence(
+            let triage = crucible::test_support::paired_divergence_evidence_for_test(
                 candidate.clone(),
-                expected,
-                reproduced,
+                &expected,
+                &reproduced,
                 ContentHash::from_bytes(b"prepared-finding-triage-coverage"),
-                Vec::new(),
             )
             .expect("observed finding triage replay evidence");
             Ok(AutomaticFindingReplayOutcome::observed_with_triage(
@@ -823,12 +828,16 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
 
     let measurement_records = prepared_finding
         .replay_records
+        .ids
         .measurements
         .iter()
-        .map(|measurement| {
+        .map(|id| {
             (
-                measurement.id().expect("replay measurement ID"),
-                measurement,
+                *id,
+                prepared_finding
+                    .replay_records
+                    .load::<MeasurementSet>(*id)
+                    .expect("replay measurement record"),
             )
         })
         .collect::<BTreeMap<_, _>>();
@@ -880,7 +889,6 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
         .expect("shared replay is observed");
     let original_measurement = measurement_records
         .get(&original_measurement_id)
-        .copied()
         .expect("shared replay measurement");
     let retained = original_measurement.evaluation();
     let mut tampered_payload = retained.payload().to_vec();
@@ -899,8 +907,7 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
     let mut tampered_finding = prepared_finding.clone();
     tampered_finding
         .replay_records
-        .measurements
-        .push(tampered_measurement);
+        .insert_for_test(&tampered_measurement, |ids| &mut ids.measurements);
     let RecordedFindingReplay::Observed { measurements, .. } =
         &mut tampered_finding.verification_replays[verification_replay]
     else {
@@ -925,7 +932,8 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
     assert_eq!(
         PreparedSemanticAttemptResult::from_canonical_bytes(
             &observed_finding_bytes,
-            crate::AttemptLogSegmentSources::default()
+            observed_finding_result.log_segments().clone(),
+            observed_finding_result.replay_record_sources(),
         )
         .expect("decode observed finding result"),
         observed_finding_result
@@ -976,8 +984,7 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
     let mut finding_with_unused_measurement = prepared_finding.clone();
     finding_with_unused_measurement
         .replay_records
-        .measurements
-        .push(unused_measurements);
+        .insert_for_test(&unused_measurements, |ids| &mut ids.measurements);
     assert!(matches!(
         PreparedSemanticAttemptResult::new(
             observation_candidate_with_measurements.clone(),
@@ -1063,16 +1070,19 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
         .expect("encode prepared semantic result");
     let decoded = PreparedSemanticAttemptResult::from_canonical_bytes(
         &durable_bytes,
-        crate::AttemptLogSegmentSources::default(),
+        durable_result.log_segments().clone(),
+        durable_result.replay_record_sources(),
     )
     .expect("decode prepared semantic result");
     assert_eq!(decoded, durable_result);
+    assert_journal_owns_replay_records(&durable_result);
     let mut trailing = durable_bytes.clone();
     trailing.push(0);
     assert!(matches!(
         PreparedSemanticAttemptResult::from_canonical_bytes(
             &trailing,
-            crate::AttemptLogSegmentSources::default()
+            durable_result.log_segments().clone(),
+            durable_result.replay_record_sources(),
         ),
         Err(PreparedSemanticResultCodecError::TrailingBytes)
     ));

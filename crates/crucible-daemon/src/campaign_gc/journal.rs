@@ -18,6 +18,12 @@
 //! reacquires its exclusive process lock and re-fsyncs both the journal and its
 //! parent before treating a visible transition as durable. The containing
 //! namespace must be owned exclusively by the daemon operator.
+//!
+//! The journal's manifest handles read its own durable files, never the
+//! planner's scratch copies, and hold no entries in memory. Apply may create
+//! one private scratch directory inside the journal for external sorting; it
+//! is removed when apply returns, and a leftover from a crash holds only
+//! scratch data.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -129,12 +135,21 @@ impl DirectoryCampaignGcJournal {
             Ok(()) => {
                 let lock = acquire_lock(&root)?;
                 initialize_new(&root, prepared)?;
+                // The handles must name the journal's durable copies, which
+                // are revalidated here, rather than the planner's scratch.
+                let (roots, candidates) = open_manifests(&root)?;
+                if roots != *prepared.roots() {
+                    return Err(CampaignGcJournalError::RootManifestMismatch);
+                }
+                if candidates != *prepared.candidates() {
+                    return Err(CampaignGcJournalError::CandidateManifestMismatch);
+                }
                 let journal = Self {
                     root,
                     _lock: lock,
                     plan: prepared.plan().clone(),
-                    roots: prepared.roots().clone(),
-                    candidates: prepared.candidates().clone(),
+                    roots,
+                    candidates,
                     phase: CampaignGcJournalPhase::Planned,
                 };
                 Ok((journal, CampaignGcJournalCreateDisposition::Created))
@@ -175,13 +190,7 @@ impl DirectoryCampaignGcJournal {
             "read-journal-plan",
         )?;
         let plan = CampaignGcPlan::from_canonical_bytes(&plan_bytes)?;
-        let mut roots_file = open_read(&root.join(JOURNAL_ROOTS_FILE), "open-journal-roots")?;
-        let roots = CampaignGcRootManifest::from_canonical_reader(&mut roots_file)?;
-        let mut candidates_file = open_read(
-            &root.join(JOURNAL_CANDIDATES_FILE),
-            "open-journal-candidates",
-        )?;
-        let candidates = CampaignGcCandidateManifest::from_canonical_reader(&mut candidates_file)?;
+        let (roots, candidates) = open_manifests(&root)?;
         validate_record_binding(&plan, &roots, &candidates)?;
 
         let state_bytes = read_bounded_file(
@@ -413,6 +422,23 @@ fn validate_record_binding(
         return Err(CampaignGcJournalError::CandidateManifestMismatch);
     }
     Ok(())
+}
+
+/// Opens and validates the journal's durable root and candidate manifests.
+///
+/// Each file is probed first so a missing record reports an incomplete
+/// journal and an unreadable one names its path.
+fn open_manifests(
+    root: &Path,
+) -> Result<(CampaignGcRootManifest, CampaignGcCandidateManifest), CampaignGcJournalError> {
+    let roots_path = root.join(JOURNAL_ROOTS_FILE);
+    drop(open_read(&roots_path, "open-journal-roots")?);
+    let roots = CampaignGcRootManifest::open(roots_path)?;
+
+    let candidates_path = root.join(JOURNAL_CANDIDATES_FILE);
+    drop(open_read(&candidates_path, "open-journal-candidates")?);
+    let candidates = CampaignGcCandidateManifest::open(candidates_path)?;
+    Ok((roots, candidates))
 }
 
 fn acquire_lock(root: &Path) -> Result<OwnedAdvisoryLock, CampaignGcJournalError> {

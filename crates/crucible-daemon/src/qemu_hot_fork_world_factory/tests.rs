@@ -646,7 +646,9 @@ impl QemuFreshAttemptLifecycleOwner for BranchReplayLifecycle {
         })
     }
 
-    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
+    fn resolved_effect_trace(
+        &self,
+    ) -> Result<Option<crucible::model::ResolvedEffectTrace>, SchedulerError> {
         Ok(None)
     }
 
@@ -887,7 +889,9 @@ impl QemuFreshAttemptLifecycleOwner for InheritedBoundaryLifecycle {
         })
     }
 
-    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
+    fn resolved_effect_trace(
+        &self,
+    ) -> Result<Option<crucible::model::ResolvedEffectTrace>, SchedulerError> {
         Ok(None)
     }
 

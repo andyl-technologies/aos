@@ -156,8 +156,8 @@ fn selected_start_derives_matching_scheduler_and_plugin_branch_plans() {
         Decision::Selection(SelectionDecision::new(&selection)),
     );
 
-    let (scheduler, plugins) =
-        app_random_branch_replay(&target).expect("selected target should derive plans");
+    let (scheduler, plugins) = app_random_branch_replay(&target, AppRandomLaunchWindow::Genesis)
+        .expect("selected target should derive plans");
 
     assert_eq!(
         scheduler.get(&parent.id()),
@@ -177,6 +177,13 @@ fn selected_start_derives_matching_scheduler_and_plugin_branch_plans() {
                 && entry.selection_id()
                     == selection.id().expect("selection id").content_id().digest()
     ));
+
+    // A launch restored at the target has already served this request.
+    let (scheduler, plugins) =
+        app_random_branch_replay(&target, AppRandomLaunchWindow::RestoredTarget)
+            .expect("restored target should derive empty plans");
+    assert!(scheduler.is_empty());
+    assert!(plugins.is_empty());
 }
 
 #[test]
@@ -206,20 +213,15 @@ fn promoted_signal_fault_branch_is_admitted_only_by_its_typed_plan() {
         .resolve_branch(&selection)
         .expect("candidate should reconstruct");
 
-    let empty = crucible::SignalFaultCampaignReplayPlan::empty(branch.selected().clone());
+    let selected = branch.selected().to_configuration();
+    let empty = crucible::SignalFaultCampaignReplayPlan::empty(selected.clone());
     assert_eq!(
-        unsupported_fresh_replay_decision(branch.selected(), &empty),
+        unsupported_fresh_replay_decision(&selected, &empty),
         Some(1)
     );
-    let plan = crucible::SignalFaultCampaignReplayPlan::new(
-        branch.selected().clone(),
-        vec![branch.clone()],
-    )
-    .expect("typed replay plan");
-    assert_eq!(
-        unsupported_fresh_replay_decision(branch.selected(), &plan),
-        None
-    );
+    let plan = crucible::SignalFaultCampaignReplayPlan::new(selected.clone(), vec![branch.clone()])
+        .expect("typed replay plan");
+    assert_eq!(unsupported_fresh_replay_decision(&selected, &plan), None);
 }
 
 #[test]
@@ -255,8 +257,8 @@ fn app_random_projection_ignores_a_campaign_selection_outside_its_owned_stream()
         Decision::Selection(SelectionDecision::new(&selection)),
     );
 
-    let (selections, plans) =
-        app_random_branch_replay(&target).expect("foreign producer stays outside this adapter");
+    let (selections, plans) = app_random_branch_replay(&target, AppRandomLaunchWindow::Genesis)
+        .expect("foreign producer stays outside this adapter");
     assert!(selections.is_empty());
     assert!(plans.is_empty());
 }
@@ -780,7 +782,12 @@ fn observed_lifecycle_retains_only_successful_execution_evidence() {
     );
     assert_eq!(
         snapshot.resolved_effect_trace(),
-        Some(b"resolved-effect-test".as_slice())
+        Some(
+            &crucible::model::ResolvedEffectTrace::empty(
+                crucible::model::FaultReplayMode::RecomputedCause
+            )
+            .expect("empty effect trace")
+        )
     );
     assert_eq!(
         *order.lock().expect("standalone lifecycle order"),
@@ -1123,7 +1130,9 @@ impl QemuFreshAttemptLifecycleOwner for BoundaryCaptureLifecycle {
         Ok(())
     }
 
-    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, crucible::SchedulerError> {
+    fn resolved_effect_trace(
+        &self,
+    ) -> Result<Option<crucible::model::ResolvedEffectTrace>, crucible::SchedulerError> {
         Ok(None)
     }
 
@@ -1707,6 +1716,7 @@ fn private_fresh_replay_can_preserve_descendant_continuation_controls() {
     let controls = validated_attempt_continuations(&replay)
         .unwrap_or_else(|()| panic!("private replay continuation controls should validate"));
     let actual = controls
+        .controls()
         .iter()
         .map(|control| {
             (
@@ -2232,7 +2242,7 @@ fn assert_composed_candidate_replay_retains_choice_and_measurement(
         .start()
         .configuration()
         .schedule
-        .decisions()
+        .decision_history()
         .iter()
         .cloned()
         .collect();
@@ -2288,8 +2298,8 @@ fn assert_composed_candidate_replay_retains_choice_and_measurement(
         triage.failure(),
         crucible::FailureClusterReportFailure::Property(_)
     ));
-    assert!(!triage.causal_entries().is_empty());
-    assert!(triage.recorded_event_frames().is_empty());
+    assert!(triage.event_log_manifest().entry_count() > 0);
+    assert!(!triage.referenced_segments().is_empty());
 
     let signature = outcome
         .signature()
@@ -2330,12 +2340,13 @@ fn assert_composed_candidate_replay_retains_choice_and_measurement(
                 exact_retention: crate::crucible_artifact::test_disabled_finding_exact_retention()
                     .expect("test disabled finding retention"),
                 seed: Seed::from_bytes([0x75; 32]),
+                record_store: crate::ReplayRecordStore::default(),
             },
             |replay_candidate| {
                 let decisions = replay_candidate
                     .artifact
                     .schedule()
-                    .decisions()
+                    .decision_history()
                     .iter()
                     .cloned()
                     .collect::<VecDeque<_>>();
@@ -2375,6 +2386,7 @@ fn assert_composed_candidate_replay_retains_choice_and_measurement(
     let decoded = PreparedSemanticAttemptResult::from_canonical_bytes(
         &durable_bytes,
         prepared.log_segments().clone(),
+        prepared.replay_record_sources(),
     )
     .expect("decode rich prepared result after restart");
     let finding = decoded.finding().expect("decoded rich finding");
@@ -2658,8 +2670,7 @@ fn automatic_wrapper_retains_supplemental_violation_when_offline_source_also_fai
         .load_finding_triage_replay_evidence(triage.minimization_original())
         .expect("load supplemental triage evidence");
     let reproduction = finding.original();
-    let artifact = crucible::ReproductionArtifact::from_compact_binary(reproduction.payload())
-        .expect("decode supplemental reproduction");
+    let artifact = finding.original_artifact().clone();
     let native_finding = FindingReproductionArtifact {
         discovery_path: FindingDiscoveryPath::StateSpaceSearch,
         finding_fingerprint: crucible::ContentHash {
@@ -2671,9 +2682,22 @@ fn automatic_wrapper_retains_supplemental_violation_when_offline_source_also_fai
         replay: artifact.replay().expect("replay supplemental reproduction"),
         artifact,
     };
+    // The record's log segments are served by the repository, one at a time.
+    let segments = crucible::SharedSegmentStore::new();
+    for (index, segment) in retained.log_segments().iter().enumerate() {
+        let bytes = repository
+            .read_finding_triage_replay_log_segment(
+                triage.minimization_original(),
+                u32::try_from(index).expect("segment index"),
+            )
+            .expect("read supplemental triage log segment");
+        crucible::SegmentSink::put_segment(&segments, segment.content(), &bytes)
+            .expect("hold supplemental triage log segment");
+    }
     let replay = crucible::FailureTriageReplayEvidence::from_compact_binary(
         native_finding,
         retained.payload(),
+        std::sync::Arc::new(segments),
     )
     .expect("decode supplemental triage payload");
     let crucible::FailureClusterReportFailure::Property(actual) = replay.failure() else {
@@ -2778,7 +2802,9 @@ fn finding_candidate_replay_retains_authenticated_execution_quanta_timeout() {
         panic!("execution-bound candidate must be observable")
     };
     let (_, _, _, triage) = evidence.into_parts();
-    let (failures, causal_entries, _, _, _) = triage.into_parts();
+    let triage = triage.into_parts();
+    let causal_entries = triage.log_entries_for_test();
+    let failures = triage.failures;
     let mut timeouts = failures.iter().filter_map(|failure| match failure {
         crucible::FailureClusterReportFailure::Timeout(timeout) => Some(timeout),
         crucible::FailureClusterReportFailure::Property(_)
@@ -2845,7 +2871,7 @@ fn property_failure_precedes_a_coincident_execution_quanta_timeout() {
         panic!("coincident property and timeout candidate must be observable")
     };
     let (_, _, _, triage) = evidence.into_parts();
-    let (failures, _, _, _, _) = triage.into_parts();
+    let failures = triage.into_parts().failures;
 
     assert!(
         matches!(
@@ -2917,7 +2943,7 @@ fn composed_candidate_replay_retains_signal_fault_choice_and_measurement_leaf() 
         .resolve_branch(&selection)
         .expect("signal-fault branch")
         .selected()
-        .clone();
+        .to_configuration();
     let input = finding_candidate_input_with_configuration(&base, configuration);
 
     assert_composed_candidate_replay_retains_choice_and_measurement(

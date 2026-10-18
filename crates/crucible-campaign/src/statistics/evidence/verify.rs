@@ -370,8 +370,15 @@ fn verify_execution_common(
         .iter()
         .map(|evidence| evidence.opportunity().id())
         .collect::<Result<BTreeSet<_>, _>>()?;
+    let discovered_root =
+        crate::observation::derive_choice_set_root(discovered.iter().map(|opportunity| {
+            (
+                crate::choice_set_key(*opportunity),
+                opportunity.content_id(),
+            )
+        }))?;
     if discovered.len() != execution.discovered_opportunities().len()
-        || discovered != *observation.discovered_choices()
+        || discovered_root != observation.discovered_choices()
     {
         return Err(invalid(
             "statistical discovered opportunity closure is inexact",

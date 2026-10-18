@@ -6,7 +6,7 @@ pub(super) fn execute_local_qemu_campaign(
     backend: &ResolvedLocalBackend,
     run_plan: &RunInvocationPlan,
     lifecycle: crucible_api::ProductionVmLifecycleConfig,
-) -> Result<GuardedDefaultCampaignRun, CliError> {
+) -> Result<(GuardedDefaultCampaignRun, CampaignRunProgress), CliError> {
     if !batch_campaign_run_eligible(run_plan) {
         return Err(backend_error(
             "the requested run shape does not have an exact batch campaign QEMU adapter",
@@ -48,6 +48,8 @@ pub(super) fn execute_local_qemu_campaign(
         request
     };
 
-    run_guarded_default_campaign(request)
-        .map_err(|error| campaign_run_error("execute shared campaign owner", error))
+    let mut progress = CampaignRunProgress::default();
+    let campaign = run_guarded_default_campaign_with_sink(request, &mut progress)
+        .map_err(|error| campaign_run_error("execute shared campaign owner", error))?;
+    Ok((campaign, progress))
 }

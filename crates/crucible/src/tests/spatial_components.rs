@@ -457,6 +457,40 @@ fn scenario_family_pins_concrete_validated_instances() -> Result<(), Box<dyn std
 }
 
 #[test]
+fn stored_reproduction_reads_its_schedule_from_segments() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (world, plan, properties) = spatial_fixture()?;
+    let form = ScenarioDefForm::from_components(&world, &plan, &properties, Seed::from_u64(43))?;
+    let schedule = Schedule::from_decisions((0..9_u64).map(|index| {
+        Decision::RngDraw(RngDecision {
+            stream: RngStreamId::for_node("a"),
+            value: index,
+        })
+    }));
+    let artifact = ReproductionArtifact::from_recorded_parts(form, schedule);
+    let store = crate::SharedSegmentStore::new();
+    let (stored, manifest) = artifact.to_stored_form()?;
+    assert_eq!(artifact.schedule().write_segments(&store)?, manifest);
+
+    assert_eq!(
+        ReproductionArtifact::stored_form_schedule_manifest(&stored)?,
+        manifest
+    );
+    let decoded = ReproductionArtifact::from_stored_form(&stored, &store)?;
+    assert_eq!(decoded, artifact);
+    assert_eq!(decoded.id(), artifact.id());
+
+    let transport = artifact.to_compact_binary();
+    assert_eq!(artifact.id(), ContentHash::from_bytes(&transport));
+    let transported = ReproductionArtifact::from_compact_binary(&transport)?;
+    assert_eq!(transported.id(), artifact.id());
+    assert!(
+        ReproductionArtifact::from_stored_form(&stored, &crate::SharedSegmentStore::new()).is_err()
+    );
+    Ok(())
+}
+
+#[test]
 fn reproduction_artifact_is_self_contained_and_replay_checked()
 -> Result<(), Box<dyn std::error::Error>> {
     let (world, plan, properties) = spatial_fixture()?;

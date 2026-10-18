@@ -1,6 +1,6 @@
 //! Pure reconstruction of repository-authenticated lifecycle state.
 //!
-//! The lower exact-checkpoint verifier owns the v9 manifest and object
+//! The lower exact-checkpoint verifier owns the v11 manifest and object
 //! relation. This module decodes each authenticated semantic object once into
 //! the API-owned lifecycle types without installing a native closure or
 //! exposing artifact identities and readers.
@@ -34,6 +34,16 @@ impl DecodedProductionExactCheckpoint {
     #[must_use]
     pub fn scheduler(&self) -> &SingleSchedulerCheckpoint {
         &self.checkpoint.scheduler
+    }
+
+    /// Returns read access to the sealed event-log segments the scheduler names.
+    ///
+    /// Pass it to [`SingleSchedulerCheckpoint::event_log_entries`] to stream
+    /// the checkpoint's log; each segment is read from the repository and
+    /// authenticated one at a time.
+    #[must_use]
+    pub const fn event_log_segments(&self) -> &ProductionEventLogSegments {
+        &self.checkpoint.event_log_segments
     }
 
     /// Derives the hot-fork source boundary from this authenticated closure.
@@ -188,8 +198,8 @@ impl ProductionVmExactNodeRestoreAdmissions {
 struct SemanticObjects {
     schedule: Option<Schedule>,
     scheduler: Option<SingleSchedulerCheckpoint>,
-    event_log_objects: BTreeMap<usize, (ContentHash, Vec<u8>)>,
     signal_artifact_objects: BTreeMap<ContentHash, Vec<u8>>,
+    fault_trace_objects: BTreeMap<ContentHash, Vec<u8>>,
     trigger_state: Option<EventGraphState>,
     assertion_state: Option<HostAssertionEvaluatorCheckpoint>,
     lifecycle_state: Option<DecodedLifecycle>,
@@ -230,6 +240,12 @@ pub fn decode_authenticated_production_exact_checkpoint(
     open: Arc<dyn Fn(ContentHash) -> io::Result<Box<dyn Read + Send>> + Send + Sync>,
 ) -> Result<DecodedProductionExactCheckpoint, LifecycleApiError> {
     let mut objects = SemanticObjects::default();
+    // Event-log segments are not visited; the decoded checkpoint reads them
+    // through `open`, one at a time, when a consumer streams its log.
+    let event_log_segments = closure.event_log_segments().to_vec();
+    // Block overlay chunks are not visited either; every decoded block
+    // snapshot reads them through `open` when it is restored (CMEAS-33).
+    let block_overlay_chunks = closure.block_overlay_chunks().to_vec();
     let semantic_open = Arc::clone(&open);
     let targets = closure
         .visit_semantic_objects(
@@ -244,12 +260,45 @@ pub fn decode_authenticated_production_exact_checkpoint(
             ))
         })?;
 
+    let chunk_source = RepositoryChunkSource::shared(Arc::clone(&open));
+    for target in objects.targets.values_mut() {
+        target
+            .snapshot
+            .bind_block_overlay_source(Arc::clone(&chunk_source));
+    }
+    for failed in objects.failed_host_io.values_mut() {
+        failed
+            .host_io
+            .bind_block_overlay_source(Arc::clone(&chunk_source));
+    }
+    require_named_block_overlay_chunks(
+        &block_overlay_chunks,
+        objects
+            .targets
+            .values()
+            .map(|target| target.snapshot.host_io())
+            .chain(
+                objects
+                    .failed_host_io
+                    .values()
+                    .map(|failed| &failed.host_io),
+            )
+            .filter_map(|host_io| host_io.block())
+            .map(|block| block.device_snapshot()),
+    )?;
     let expected_snapshots = objects
         .targets
         .iter()
         .map(|(node, target)| (node.clone(), target.snapshot_object))
         .collect();
-    let mut checkpoint = decode_semantic_checkpoint(identity, scenario, source, objects)?;
+    let mut checkpoint = decode_semantic_checkpoint(
+        identity,
+        scenario,
+        source,
+        objects,
+        &event_log_segments,
+        ProductionEventLogSegments::repository(Arc::clone(&open)),
+    )?;
     checkpoint.repository_restore = Some(RepositoryExactRestoreAuthority {
         targets,
         configuration: Arc::new(checkpoint.configuration.clone()),
@@ -289,16 +338,6 @@ fn collect_semantic_object(
                 return Err(duplicate("scheduler"));
             }
         }
-        ExactCheckpointSemanticObjectRole::EventLogSegment { index, identity } => {
-            let value = fallible_copy(bytes, "event-log object")?;
-            if objects
-                .event_log_objects
-                .insert(index, (identity, value))
-                .is_some()
-            {
-                return Err(duplicate("event-log object"));
-            }
-        }
         ExactCheckpointSemanticObjectRole::SignalArtifact { identity, .. } => {
             let value = fallible_copy(bytes, "signal artifact")?;
             if objects
@@ -307,6 +346,16 @@ fn collect_semantic_object(
                 .is_some()
             {
                 return Err(duplicate("signal artifact"));
+            }
+        }
+        ExactCheckpointSemanticObjectRole::FaultTraceSegment { identity, .. } => {
+            let value = fallible_copy(bytes, "trace segment")?;
+            if objects
+                .fault_trace_objects
+                .insert(identity, value)
+                .is_some()
+            {
+                return Err(duplicate("trace segment"));
             }
         }
         ExactCheckpointSemanticObjectRole::TriggerState => {
@@ -472,6 +521,8 @@ fn decode_semantic_checkpoint(
     scenario: &ScenarioDef,
     source: &ScenarioDefForm,
     mut objects: SemanticObjects,
+    event_log_identities: &[ContentHash],
+    event_log_segments: ProductionEventLogSegments,
 ) -> Result<ProductionVmExactCheckpointSet, LifecycleApiError> {
     let schedule = take_role(&mut objects.schedule, "schedule")?;
     let configuration = Configuration {
@@ -487,32 +538,14 @@ fn decode_semantic_checkpoint(
             "exact checkpoint scheduler continuation does not match its configuration",
         ));
     }
-    let mut event_log_objects = BTreeMap::new();
-    let mut ordered_event_log_identities = Vec::new();
-    ordered_event_log_identities
-        .try_reserve_exact(objects.event_log_objects.len())
-        .map_err(|_| loop_factory_error("allocate ordered event-log identity validation"))?;
-    for (expected_index, (index, (object_identity, bytes))) in
-        objects.event_log_objects.into_iter().enumerate()
-    {
-        if index != expected_index || event_log_objects.insert(object_identity, bytes).is_some() {
-            return Err(loop_factory_error(
-                "exact checkpoint event-log indices are duplicated or noncontiguous",
-            ));
-        }
-        ordered_event_log_identities.push(object_identity);
-    }
-    if scheduler.event_log_segment_dependencies() != ordered_event_log_identities {
+    if scheduler.event_log_segment_dependencies() != event_log_identities {
         return Err(loop_factory_error(
             "exact checkpoint event-log dependencies do not match authenticated objects",
         ));
     }
 
     let signal_store = MemoryDagStore::new();
-    for (object_identity, bytes) in event_log_objects
-        .iter()
-        .chain(objects.signal_artifact_objects.iter())
-    {
+    for (object_identity, bytes) in &objects.signal_artifact_objects {
         let stored = signal_store.put(bytes).map_err(|error| {
             loop_factory_error(format!("reconstruct in-memory checkpoint DAG: {error}"))
         })?;
@@ -534,6 +567,8 @@ fn decode_semantic_checkpoint(
     let assertion_state = take_role(&mut objects.assertion_state, "assertion state")?;
     let lifecycle = take_role(&mut objects.lifecycle_state, "lifecycle state")?;
     let fault_checkpoint = take_role(&mut objects.fault_checkpoint, "fault checkpoint")?;
+    validate_fault_trace_objects(Some(&fault_checkpoint), &objects.fault_trace_objects)
+        .map_err(|error| loop_factory_error(error.to_string()))?;
 
     let configuration = Arc::new(configuration);
     let mut targets = BTreeMap::new();
@@ -599,8 +634,9 @@ fn decode_semantic_checkpoint(
         identity,
         configuration: configuration.as_ref().clone(),
         scheduler: Arc::new(scheduler),
-        event_log_objects: Arc::new(event_log_objects),
+        event_log_segments,
         signal_artifact_objects: Arc::new(objects.signal_artifact_objects),
+        fault_trace_objects: Arc::new(objects.fault_trace_objects),
         trigger_state,
         assertion_state,
         terminal_verdict: lifecycle.terminal,

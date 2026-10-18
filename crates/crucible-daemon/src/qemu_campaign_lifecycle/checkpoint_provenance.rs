@@ -49,7 +49,6 @@ impl QemuCheckpointChoiceProvenance {
             &self.configuration.schedule,
             &self.discoveries,
         )
-        .and_then(|closure| closure.to_canonical_bytes())
         .map_err(|error| SchedulerError::BoundaryViolation {
             message: format!("authenticate checkpoint choice records: {error}"),
         })?;

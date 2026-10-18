@@ -37,7 +37,10 @@ fn names_this_process_for_an_unlinked_open_file() {
     file.write_all(b"held").expect("retained bytes");
     fs::remove_file(&path).expect("unlink retained file");
 
-    let report = deleted_file_holders(&directory.0);
+    // Concurrent processes on the filesystem may fill the bounded report;
+    // inspect only this one.
+    let own_process = std::process::id();
+    let report = deleted_file_holders_among(&directory.0, |pid| pid == own_process);
 
     assert!(
         report.contains(&format!("pid {} ", std::process::id())),

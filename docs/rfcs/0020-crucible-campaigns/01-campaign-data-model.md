@@ -84,10 +84,11 @@ configuration record binds its semantic `ConfigurationId`, its
 Repository reads resolve these records and recheck every cross-record binding;
 validation is not limited to the campaign-creation path.
 
-Finding reproduction uses the same exact-artifact rule. The current schema-v2
+Finding reproduction uses the same exact-artifact rule. The current schema-v3
 `ReproductionArtifact` binds semantic and exact scenario/configuration
-identities, a stable failure fingerprint, verifier-checked self-contained
-execution-model bytes, its original reproduction, the exact minimization
+identities, a stable failure fingerprint, verifier-checked static
+execution-model bytes with the ordered schedule segments they reference, its
+original reproduction, the exact minimization
 policy, bounded candidate history, and the final replayed state. The current
 schema-v4 `Finding` binds its normalized signature, representative and
 occurrence observations, reproduction artifacts, authenticated first-seen
@@ -779,7 +780,7 @@ pub enum AttemptAdmissionRole {
 }
 
 pub struct Observation {
-    pub schema_version: u32, // exact current schema v13
+    pub schema_version: u32, // exact current schema v16
     pub attempt: AttemptId,
     pub child: ConfigurationId,
     pub child_content: ConfigurationArtifactId,
@@ -788,24 +789,53 @@ pub struct Observation {
     pub measurements: MeasurementSetId,
     pub properties: PropertyVerdictSetId,
     pub coverage: CoverageProjectionId,
-    pub discovered_choices: CanonicalSet<ChoiceOpportunityId>,
-    pub produced_selections: CanonicalSet<SelectionId>,
-    pub resolved_effect_trace: Option<ContentId>,
+    pub discovered_choices: MerkleMapRoot, // opportunity key -> ChoiceOpportunityId
+    pub produced_selections: MerkleMapRoot, // selected opportunity key -> SelectionId
+    pub resolved_effect_trace: Option<ResolvedEffectTraceRef>,
+}
+
+pub struct ResolvedEffectTraceRef {
+    pub manifest: ContentId,      // Trace schema 4 manifest leaf
+    pub segments: Vec<ContentId>, // Trace schema 1 segments, manifest order
 }
 ```
 
-Observation schema v14 is the sole current encoding. It carries the current
-stop outcome plus the bounded canonical set of selections produced while execution
-continued through choices discovered by that attempt. Each selection must
-resolve to exactly one of the observation's discovered opportunities, and no
-opportunity may be selected twice. The selection IDs are envelope children, so
-the accepted observation roots the complete replay closure. The combined
-discovered-opportunity and produced-selection count cannot exceed the
-envelope's 65,529 variable-child allowance. An optional schema-1 trace leaf
-retains the canonical resolved effects from the same completed attempt. Its
-content identity is an observation child; producer and public reader decode
-the bounded trace against the Crucible fault contract. Any other observation schema is
-rejected.
+Observation schema v16 is the sole current encoding. Its choice material is
+paged: the opportunities an attempt discovered and the selections it produced
+while continuing through them are two Merkle maps, and the observation encodes
+only each map's root identity and entry count. Both maps use the
+order-preserving key of an opportunity, its raw content digest, which is also
+the key of the snapshot graph's nested choice index:
+
+```text
+discovered-choices  : digest(opportunity) -> opportunity content ID
+produced-selections : digest(selected opportunity) -> selection content ID
+```
+
+Each root is one envelope child, so the observation's size and child count do
+not grow with the number of choices and no envelope-derived count bound
+applies. Each selection must resolve to one of the observation's discovered
+opportunities; keying the produced map by opportunity makes "no opportunity is
+selected twice" structural, and a `NextChoice` observation leaves a discovery
+unresolved exactly when the produced map is smaller than the discovered one.
+Readers page both maps with ordinary bounded scans and compare the walked
+entry count with the committed count. Through the two roots the accepted
+observation still roots the complete replay closure. The resident bound on
+one attempt's choice material is operational: the executor's candidate charges
+at most 128 MiB of unique canonical choice records, as section 04a states.
+An optional segmented resolved-effect
+trace (§15) retains the canonical resolved effects from the same completed
+attempt. The observation names its Trace schema 4 manifest leaf as child
+`resolved-effect-trace` and each Trace schema 1 segment, in manifest order,
+as child `resolved-effect-trace.segment.NNNN`; at most 4,095 distinct
+segments are listed, so the fixed roles, the manifest, and the segments
+always fit the envelope's child allowance. The campaign repository treats
+both leaf kinds as opaque: a candidate carries the manifest bytes, at most
+1 MiB, plus read handles to the producer's segment stores, and publication
+streams and authenticates one segment at a time, so no repository bound
+grows with the trace. Producer and public reader decode the manifest and
+each segment against the Crucible fault contract. Any other observation
+schema is rejected.
 
 Stop-condition tags 5 and 6 add `ExecutionQuanta` and
 `VirtualTimeOrExecutionQuanta`. Both quantum bounds are absolute scheduler
@@ -847,7 +877,7 @@ the attempt event-log byte bound, or the host completion watchdog. These
 refusals are operational failures, never `PolicyTimeout` evidence.
 
 These stop tags occur only in the current enclosing records: `Attempt` v9,
-`BranchRequest` v10, `CampaignFact` v15, `Observation` v14, and discovery-service
+`BranchRequest` v10, `CampaignFact` v15, `Observation` v16, and discovery-service
 request v4. A noncurrent enclosing schema is rejected before interpreting the
 stop body.
 
@@ -903,8 +933,9 @@ semantic attempt when stop and other execution inputs also match. Requests with
 different stop conditions still share the edge but may admit distinct attempts.
 The semantic child identity and exact child artifact are both present: graph
 deduplication uses the former, while closure validation and replay retain the
-latter. Measurement, property, coverage, path, and discovered-choice records
-are exact children of the observation envelope.
+latter. Measurement, property, coverage, and path records and the roots of
+the discovered-choice and produced-selection maps are exact children of the
+observation envelope.
 This is campaign-knowledge deduplication, not a loss of audit history.
 
 A finite source is bounded by the request even when the selectable's legal

@@ -717,8 +717,11 @@ impl QemuLiveBlockIoServicer {
     ///
     /// The immutable base image is shared, while [`BlockDevice::restore`]
     /// reconstructs an independent copy-on-write overlay, durability frontier,
-    /// request queue, and in-flight response continuation. The source servicer
-    /// and its notification channel remain unchanged.
+    /// request queue, and in-flight response continuation. The branch shares
+    /// the source's page store: existing pages are shared copy-on-write and
+    /// the branch's new pages are allocated beside them, so a fork copies no
+    /// page bytes. The source servicer and its notification channel remain
+    /// unchanged.
     ///
     /// # Errors
     ///
@@ -732,7 +735,10 @@ impl QemuLiveBlockIoServicer {
         execution_binding: ContentHash,
     ) -> Result<Self, QemuLiveBlockIoServicerError> {
         let checkpoint = self.checkpoint(execution_binding)?;
-        let base = self.device.lock()?.base().clone();
+        let (base, store) = {
+            let device = self.device.lock()?;
+            (device.base().clone(), device.page_store().clone())
+        };
         let mut continuation = Self::from_bound_parts(
             shmem_fd,
             region_len,
@@ -741,6 +747,7 @@ impl QemuLiveBlockIoServicer {
             checkpoint.device.latency,
             self.world_binding.clone(),
         )?;
+        continuation.use_page_store(store)?;
         continuation.restore_checkpoint(execution_binding, &checkpoint)?;
         Ok(continuation)
     }
@@ -875,6 +882,27 @@ impl QemuLiveBlockIoServicer {
         })
     }
 
+    /// Moves the device's still-empty overlay onto `store`.
+    ///
+    /// Production launch passes the unnamed page store created in the run's
+    /// quota-accounted directory, so copied-up guest pages live on disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveBlockIoServicerError::Device`] when the overlay
+    /// already holds pages, and
+    /// [`QemuLiveBlockIoServicerError::DeviceLockPoisoned`] when another thread
+    /// panicked while holding the device lock.
+    pub fn use_page_store(
+        &mut self,
+        store: crucible_device::BlockPageStore,
+    ) -> Result<(), QemuLiveBlockIoServicerError> {
+        self.device
+            .lock()?
+            .use_page_store(store)
+            .map_err(|source| QemuLiveBlockIoServicerError::Device { source })
+    }
+
     /// Replaces the deterministic latency model for future block admissions.
     ///
     /// This is the production activation seam for a model that must take effect
@@ -894,6 +922,10 @@ impl QemuLiveBlockIoServicer {
     }
 
     /// Restores a block-device continuation onto the checkpoint-paired region.
+    ///
+    /// The restored overlay keeps its pages on the heap. Production restores
+    /// in place through [`Self::restore_checkpoint`], which writes restored
+    /// pages to the live device's run-owned page store.
     ///
     /// # Errors
     ///
@@ -928,8 +960,12 @@ impl QemuLiveBlockIoServicer {
         if base.len() != checkpoint.size_bytes {
             return Err(QemuLiveBlockIoServicerError::CheckpointBindingMismatch);
         }
-        let device = BlockDevice::restore(&checkpoint.device, base, None)
-            .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
+        let device = BlockDevice::restore(
+            &checkpoint.device,
+            base,
+            &crucible_device::BlockPageStore::memory(),
+        )
+        .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
         let pair = region
             .node_directed_ring_pair_mut(
                 checkpoint.vm_slot,
@@ -1052,8 +1088,11 @@ impl QemuLiveBlockIoServicer {
         checkpoint: &QemuLiveBlockIoServicerCheckpoint,
     ) -> Result<(), QemuLiveBlockIoServicerError> {
         self.validate_checkpoint(expected_execution_binding, checkpoint)?;
-        let base = self.device.lock()?.base().clone();
-        let staged_device = BlockDevice::restore(&checkpoint.device, base, None)
+        let (base, store) = {
+            let device = self.device.lock()?;
+            (device.base().clone(), device.page_store().clone())
+        };
+        let staged_device = BlockDevice::restore(&checkpoint.device, base, &store)
             .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
         let pair = self
             .region
@@ -1136,7 +1175,9 @@ impl QemuLiveBlockIoServicer {
             .and_then(|_| checkpoint.responses.canonical_bytes())
             .map_err(DeviceError::from)
             .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
-        let _staged_device = BlockDevice::restore(&checkpoint.device, device.base().clone(), None)
+        // Validate without writing pages: stored overlay chunks are streamed
+        // through their source and authenticated one at a time.
+        BlockDevice::validate_restore(&checkpoint.device, device.base())
             .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
         drop(device);
         let pause_requested = self.region.header_snapshot().pause_requested != 0;
@@ -1580,6 +1621,26 @@ impl QemuLiveBlockIoServicer {
     /// thread panicked while holding the authoritative device lock.
     pub fn storage_fault_state(&self) -> Result<BlockFaultState, QemuLiveBlockIoServicerError> {
         Ok(self.device.lock()?.storage_fault_state().clone())
+    }
+
+    /// Returns the recovery subscription of every retained completion.
+    ///
+    /// Each subscription names the completion's recovery event and the
+    /// coordinate strictly after which an emission releases it. The production
+    /// coordinator reports them to the fault runtime, which keeps every
+    /// referenced event that can still release one, without cloning the
+    /// complete storage-fault continuation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveBlockIoServicerError::DeviceLockPoisoned`] when another
+    /// thread panicked while holding the authoritative device lock.
+    pub fn retained_recovery_subscriptions(
+        &self,
+    ) -> Result<Vec<crate::ReferencedEventSubscription>, QemuLiveBlockIoServicerError> {
+        Ok(crate::retained_recovery_subscriptions(
+            self.device.lock()?.storage_fault_state(),
+        ))
     }
 
     /// Returns the aggregate pending count and largest retained request extent.

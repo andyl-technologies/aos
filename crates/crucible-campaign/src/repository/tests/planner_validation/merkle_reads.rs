@@ -84,7 +84,7 @@ fn fresh_closure_refuses_missing_or_corrupt_nodes_retained_by_ancestry() {
         cold.validate_snapshot_ancestry_with_validation_reads(
             corpus.head,
             &mut choices,
-            MAX_SNAPSHOT_ANCESTRY,
+            MAX_CAMPAIGN_SNAPSHOT_ANCESTRY,
             Some(&mut planner),
             Some(&mut nodes),
         )

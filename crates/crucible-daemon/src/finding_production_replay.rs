@@ -6,37 +6,45 @@
 //! contains no filesystem paths or live process authority. It can therefore be
 //! authenticated by a campaign record and exported with a findings ledger.
 //!
-//! The canonical CBOR payload has this logical shape:
+//! A capture is published as a bounded manifest envelope whose children are
+//! content-addressed leaves. Each side's scheduler log stays a sequence of
+//! attempt-log segments referenced by its manifest, so neither a capture nor
+//! its publication holds a run-length log in memory (RFC-0020 section 15.8):
 //!
 //! ```text
-//! CaptureWire {
-//!   schema_version: 3,
-//!   model_reproduction,
-//!   recipe,
-//!   deployment: { runtime, root_image_format, guest_assets, initrd },
-//!   selected_side,
-//!   sides: [{ outcome, completed_quanta, frontier_ticks, event_log,
-//!             terminal_fingerprints, resolved_effect_trace }],
-//!   campaign_replay_closure,
-//!   lifecycle_objects: [{ identity, bytes }],
+//! envelope "crucible.executor.finding-production-replay-capture" v5 {
+//!   body: CaptureManifest {
+//!     schema_version: 5, reproduction, observed_signature,
+//!     finding_fingerprint, model_reproduction: leaf, recipe,
+//!     deployment: { runtime, root_image_format,
+//!                   guest_assets: [{ architecture, kernel, root_image,
+//!                                    kernel_cmdline_prefix }],
+//!                   initrd },
+//!     selected_side,
+//!     sides: [{ outcome, completed_quanta, frontier_ticks,
+//!               event_log: { entry_count, chain, segments },
+//!               terminal_fingerprints, resolved_effect_trace: leaf? }],
+//!     campaign_replay_closure: { root: leaf, frames: [leaf] },
+//!     lifecycle_objects: [{ identity, leaf }],
+//!   }
+//!   children: one role-tagged child per leaf and per log segment
 //! }
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::convert::Infallible;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use crucible::model::ResolvedEffectTrace;
 use crucible::{
     ContentHash, DagStore, FindingReproductionArtifact, FingerprintSample, MemoryDagStore, NodeId,
     ReproductionArtifact, SchedulerEventLogEntry, VirtualTime, VmArchitecture,
-    compare_event_log_determinism,
 };
 use crucible_campaign::{FindingKind, FindingSignature, ReproductionArtifactId};
+use crucible_cas::content_store::ContentId;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::attempt_event_log::AttemptEventLogVisitError;
+use crate::AttemptEventLogError;
 use crate::qemu_campaign_lifecycle::{
     GuardedCampaignReplayClosure, GuardedCampaignReplayClosureError,
     QemuAttemptExecutionEvidenceSnapshot,
@@ -65,51 +73,62 @@ pub use deployment::{
     FindingProductionReplayRuntimeIdentity, capture_finding_replay_deployment,
     capture_finding_replay_shared_context,
 };
-mod wire;
-use wire::{
-    BoundedHashWriter, BoundedVecWriter, CanonicalComparisonWriter, CaptureWire, CaptureWireRef,
-    preflight_canonical_cbor,
+mod event_log;
+pub use event_log::FindingProductionReplayEventLog;
+mod manifest;
+pub use manifest::{
+    FINDING_PRODUCTION_REPLAY_CAPTURE_SCHEMA, FindingProductionReplayCaptureObjects,
+    FindingProductionReplayLeaf, FindingProductionReplayLeafRole,
+    MAX_FINDING_PRODUCTION_REPLAY_MANIFEST_BYTES, decode_finding_production_replay_manifest,
 };
+#[cfg(test)]
+// crucible-lint: allow panic-shortcut -- shared fixtures fail at the exact setup step.
+#[allow(clippy::expect_used)]
+pub(crate) mod test_support;
 #[cfg(test)]
 // crucible-lint: allow panic-shortcut -- test fixtures require exact setup or failure localization.
 #[allow(clippy::expect_used)]
 mod tests;
+mod wire;
 
 /// Maximum sides retained for one finding replay.
 pub const MAX_FINDING_PRODUCTION_REPLAY_SIDES: usize = 2;
 
-/// Maximum scheduler entries retained by one replay side.
-pub const MAX_FINDING_PRODUCTION_REPLAY_EVENTS: usize = 1_000_000;
-
-/// Maximum canonical scheduler material retained by one replay side.
-pub const MAX_FINDING_PRODUCTION_REPLAY_EVENT_BYTES: usize = 64 * 1024 * 1024;
-
 /// Maximum content-addressed lifecycle objects retained by one replay.
+///
+/// Lifecycle objects are the scenario's signal artifacts and World I/O base
+/// images, so their number is fixed by the authored scenario rather than by
+/// how long a replay runs.
 pub const MAX_FINDING_PRODUCTION_REPLAY_LIFECYCLE_OBJECTS: usize = 65_536;
 
 /// Maximum aggregate bytes retained for portable guest boot assets.
 pub const MAX_FINDING_PRODUCTION_REPLAY_GUEST_ASSET_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
-/// Current canonical production replay capture schema.
-pub const FINDING_PRODUCTION_REPLAY_CAPTURE_SCHEMA_VERSION: u32 = 3;
+/// Maximum bytes in one side's resolved-effect trace bundle.
+///
+/// A capture carries the trace as one bundle leaf rather than as
+/// segment-referenced children, so the bundle keeps a carrier bound.
+pub const MAX_FINDING_PRODUCTION_REPLAY_TRACE_BUNDLE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Current production replay capture schema.
+pub const FINDING_PRODUCTION_REPLAY_CAPTURE_SCHEMA_VERSION: u32 = 5;
 
 const MAX_RUNTIME_IDENTITY_FIELD_BYTES: usize = 1_024;
 
 /// Bounds applied before a private replay capture can enter a campaign object.
+///
+/// Every bound here is fixed by the authored scenario. Replay-side event logs
+/// are bounded by the attempt's operational `maximum_event_log_bytes` when
+/// they are recorded and are referenced by segment, so no capture bound grows
+/// with the replayed run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FindingProductionReplayCaptureLimits {
-    /// Maximum scheduler entries retained for each executed side.
-    pub max_events_per_side: usize,
-    /// Maximum canonical scheduler bytes retained for each executed side.
-    pub max_event_bytes_per_side: usize,
     /// Maximum number of content-addressed lifecycle objects.
     pub max_lifecycle_objects: usize,
     /// Maximum aggregate bytes in lifecycle objects.
     pub max_lifecycle_bytes: u64,
     /// Maximum aggregate bytes in guest kernels, root images, and initrd.
     pub max_guest_asset_bytes: u64,
-    /// Maximum encoded size accepted by the portable capture codec.
-    pub max_encoded_bytes: u64,
 }
 
 impl FindingProductionReplayCaptureLimits {
@@ -128,22 +147,11 @@ impl FindingProductionReplayCaptureLimits {
             .fault_signals()
             .resource_limits()
             .fat_checkpoint_bytes;
-        let event_bytes = u64::try_from(MAX_FINDING_PRODUCTION_REPLAY_EVENT_BYTES)
-            .unwrap_or(u64::MAX)
-            .saturating_mul(u64::try_from(MAX_FINDING_PRODUCTION_REPLAY_SIDES).unwrap_or(u64::MAX));
-        let model_bytes = u64::try_from(artifact.to_compact_binary().len()).unwrap_or(u64::MAX);
 
         Self {
-            max_events_per_side: MAX_FINDING_PRODUCTION_REPLAY_EVENTS,
-            max_event_bytes_per_side: MAX_FINDING_PRODUCTION_REPLAY_EVENT_BYTES,
             max_lifecycle_objects: MAX_FINDING_PRODUCTION_REPLAY_LIFECYCLE_OBJECTS,
             max_lifecycle_bytes: lifecycle_bytes,
             max_guest_asset_bytes: MAX_FINDING_PRODUCTION_REPLAY_GUEST_ASSET_BYTES,
-            max_encoded_bytes: lifecycle_bytes
-                .saturating_add(MAX_FINDING_PRODUCTION_REPLAY_GUEST_ASSET_BYTES)
-                .saturating_add(event_bytes)
-                .saturating_add(model_bytes)
-                .saturating_add(1024 * 1024),
         }
     }
 }
@@ -247,45 +255,53 @@ impl FindingProductionReplayRecipe {
 }
 
 /// One completed side of a private production replay.
+///
+/// The side's scheduler log is held by reference, as segments, and every
+/// constructor authenticates each segment once, so a held side proves its log
+/// is dense from sequence zero and never passes its terminal frontier.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FindingProductionReplayExecutionSide {
     outcome: FindingProductionReplayTerminalOutcome,
     completed_quanta: u64,
     frontier: VirtualTime,
-    event_log: Vec<SchedulerEventLogEntry>,
+    event_log: FindingProductionReplayEventLog,
     terminal_fingerprints: Vec<FingerprintSample>,
-    resolved_effect_trace: Option<Vec<u8>>,
+    /// Transport bundle of the segmented resolved-effect trace (RFC-0020
+    /// section 15.8), published as one capture leaf.
+    resolved_effect_trace: Option<Arc<[u8]>>,
 }
 
 impl FindingProductionReplayExecutionSide {
-    /// Copies a complete process-local snapshot with its retained event prefix.
+    /// Captures a complete process-local snapshot with its retained event prefix.
+    ///
+    /// The snapshot's sealed segments are referenced rather than copied; only
+    /// `event_log_prefix` and the snapshot's open tail are sealed as new
+    /// segments, into the snapshot's own segment store.
     ///
     /// # Errors
     ///
     /// Returns [`FindingProductionReplayCaptureError`] when the combined log
-    /// is incomplete, invalid, or exceeds `limits`.
+    /// is invalid or a new segment cannot be stored.
     pub fn from_snapshot(
         outcome: FindingProductionReplayTerminalOutcome,
         event_log_prefix: &[SchedulerEventLogEntry],
         snapshot: &QemuAttemptExecutionEvidenceSnapshot,
-        limits: FindingProductionReplayCaptureLimits,
     ) -> Result<FindingProductionReplayCaptureOutcome<Self>, FindingProductionReplayCaptureError>
     {
-        Self::from_snapshot_with_terminal_entry(outcome, event_log_prefix, snapshot, None, limits)
+        Self::from_snapshot_with_terminal_entry(outcome, event_log_prefix, snapshot, None)
     }
 
     /// Includes one authenticated host-owned terminal marker after native QEMU evidence.
     ///
     /// # Errors
     ///
-    /// Returns [`FindingProductionReplayCaptureError`] when the combined log is invalid or
-    /// exceeds `limits`.
+    /// Returns [`FindingProductionReplayCaptureError`] when the combined log
+    /// is invalid or a new segment cannot be stored.
     pub(crate) fn from_snapshot_with_terminal_entry(
         outcome: FindingProductionReplayTerminalOutcome,
         event_log_prefix: &[SchedulerEventLogEntry],
         snapshot: &QemuAttemptExecutionEvidenceSnapshot,
         terminal_entry: Option<&SchedulerEventLogEntry>,
-        limits: FindingProductionReplayCaptureLimits,
     ) -> Result<FindingProductionReplayCaptureOutcome<Self>, FindingProductionReplayCaptureError>
     {
         if event_log_prefix.is_empty()
@@ -297,68 +313,21 @@ impl FindingProductionReplayExecutionSide {
                 FindingProductionReplayIncomplete::MissingEventLogPrefix,
             ));
         }
-        let count_limit = || FindingProductionReplayCaptureError::LimitExceeded {
-            limit: "finding-production-replay-event-count",
-        };
-        let bytes_limit = || FindingProductionReplayCaptureError::LimitExceeded {
-            limit: "finding-production-replay-event-bytes",
-        };
-        let event_count = usize::try_from(snapshot.event_log_len())
-            .ok()
-            .and_then(|native| event_log_prefix.len().checked_add(native))
-            .and_then(|count| count.checked_add(usize::from(terminal_entry.is_some())))
-            .ok_or_else(count_limit)?;
-        if event_count > limits.max_events_per_side {
-            return Err(count_limit());
-        }
 
-        // The native entries are segmented. Their size is summed in one
-        // streaming pass, so an oversized capture is refused before any
-        // entry is copied.
-        let mut event_bytes =
-            event_log_prefix
-                .iter()
-                .chain(terminal_entry)
-                .try_fold(0_usize, |total, entry| {
-                    total
-                        .checked_add(entry.canonical_material_len())
-                        .ok_or_else(bytes_limit)
-                })?;
-        snapshot
-            .try_for_each_event_log_entry(|entry| {
-                event_bytes = event_bytes
-                    .checked_add(entry.canonical_material_len())
-                    .ok_or_else(bytes_limit)?;
-                Ok(())
-            })
-            .map_err(|error| match error {
-                AttemptEventLogVisitError::Log(_) => {
-                    FindingProductionReplayCaptureError::InvalidEventLog
-                }
-                AttemptEventLogVisitError::Visit(error) => error,
-            })?;
-        if event_bytes > limits.max_event_bytes_per_side {
-            return Err(bytes_limit());
-        }
-
-        let mut event_log = Vec::new();
-        event_log
-            .try_reserve_exact(event_count)
-            .map_err(|_| count_limit())?;
-        event_log.extend_from_slice(event_log_prefix);
-        snapshot
-            .try_for_each_event_log_entry(|entry| {
-                event_log.push(entry.clone());
-                Ok::<(), Infallible>(())
-            })
-            .map_err(|_| FindingProductionReplayCaptureError::InvalidEventLog)?;
-        event_log.extend(terminal_entry.cloned());
-        validate_event_log_parts(&[], &event_log, snapshot.frontier())?;
+        let (manifest, segments) = snapshot
+            .seal_replay_capture_log(event_log_prefix, terminal_entry)
+            .map_err(event_log_error)?;
+        let event_log = FindingProductionReplayEventLog::new(manifest, segments);
+        event_log.validate(snapshot.frontier())?;
         let Some(terminal_fingerprints) = snapshot.terminal_fingerprints() else {
             return Ok(FindingProductionReplayCaptureOutcome::Incomplete(
                 FindingProductionReplayIncomplete::MissingTerminalFingerprints,
             ));
         };
+        let resolved_effect_trace = snapshot
+            .resolved_effect_trace()
+            .map(trace_bundle)
+            .transpose()?;
 
         Ok(FindingProductionReplayCaptureOutcome::Complete(Self {
             outcome,
@@ -366,8 +335,28 @@ impl FindingProductionReplayExecutionSide {
             frontier: snapshot.frontier(),
             event_log,
             terminal_fingerprints: terminal_fingerprints.to_vec(),
-            resolved_effect_trace: snapshot.resolved_effect_trace().map(ToOwned::to_owned),
+            resolved_effect_trace,
         }))
+    }
+
+    /// Rebuilds a decoded side and authenticates its log.
+    fn from_parts(
+        outcome: FindingProductionReplayTerminalOutcome,
+        completed_quanta: u64,
+        frontier: VirtualTime,
+        event_log: FindingProductionReplayEventLog,
+        terminal_fingerprints: Vec<FingerprintSample>,
+        resolved_effect_trace: Option<Arc<[u8]>>,
+    ) -> Result<Self, FindingProductionReplayCaptureError> {
+        event_log.validate(frontier)?;
+        Ok(Self {
+            outcome,
+            completed_quanta,
+            frontier,
+            event_log,
+            terminal_fingerprints,
+            resolved_effect_trace,
+        })
     }
 
     /// Returns the observed terminal result.
@@ -390,7 +379,7 @@ impl FindingProductionReplayExecutionSide {
 
     /// Returns the complete scheduler event log observed for this side.
     #[must_use]
-    pub fn event_log(&self) -> &[SchedulerEventLogEntry] {
+    pub const fn event_log(&self) -> &FindingProductionReplayEventLog {
         &self.event_log
     }
 
@@ -400,27 +389,53 @@ impl FindingProductionReplayExecutionSide {
         &self.terminal_fingerprints
     }
 
-    /// Returns the resolved signal-effect trace, when the scenario has one.
+    /// Returns the resolved signal-effect trace bundle, when the scenario has one.
+    ///
+    /// [`ResolvedEffectTrace::from_bundle_bytes`] decodes it and authenticates
+    /// every segment.
     #[must_use]
     pub fn resolved_effect_trace(&self) -> Option<&[u8]> {
         self.resolved_effect_trace.as_deref()
     }
 }
 
-fn validate_event_log_parts(
-    prefix: &[SchedulerEventLogEntry],
-    suffix: &[SchedulerEventLogEntry],
-    frontier: VirtualTime,
-) -> Result<(), FindingProductionReplayCaptureError> {
-    for (sequence, entry) in prefix.iter().chain(suffix).enumerate() {
-        let sequence = u64::try_from(sequence)
-            .map_err(|_| FindingProductionReplayCaptureError::InvalidEventLog)?;
-        if entry.sequence() != sequence || !entry.has_valid_content_hash() || entry.at() > frontier
-        {
-            return Err(FindingProductionReplayCaptureError::InvalidEventLog);
-        }
+/// Copies a segmented trace into the bundle a portable capture carries.
+///
+/// The bundle length is known from the manifest, so a trace above
+/// [`MAX_FINDING_PRODUCTION_REPLAY_TRACE_BUNDLE_BYTES`] is refused before any
+/// segment is read.
+fn trace_bundle(
+    trace: &ResolvedEffectTrace,
+) -> Result<Arc<[u8]>, FindingProductionReplayCaptureError> {
+    let length = trace
+        .bundle_len()
+        .map_err(|_| FindingProductionReplayCaptureError::InvalidResolvedEffectTrace)?;
+    if length > MAX_FINDING_PRODUCTION_REPLAY_TRACE_BUNDLE_BYTES {
+        return Err(FindingProductionReplayCaptureError::LimitExceeded {
+            limit: "finding-production-replay-resolved-effect-trace-bytes",
+        });
     }
-    Ok(())
+    let maximum = usize::try_from(MAX_FINDING_PRODUCTION_REPLAY_TRACE_BUNDLE_BYTES)
+        .map_err(|_| FindingProductionReplayCaptureError::InvalidResolvedEffectTrace)?;
+    trace
+        .to_bundle_bytes(maximum)
+        .map(Arc::from)
+        .map_err(|_| FindingProductionReplayCaptureError::InvalidResolvedEffectTrace)
+}
+
+/// Classifies a failure to seal or read a replay-side log.
+///
+/// Entries that do not continue the log densely are invalid evidence; any
+/// other failure is the segment store's.
+fn event_log_error(error: AttemptEventLogError) -> FindingProductionReplayCaptureError {
+    match error {
+        AttemptEventLogError::NonDense { .. }
+        | AttemptEventLogError::InvalidSegment { .. }
+        | AttemptEventLogError::InvalidManifest { .. } => {
+            FindingProductionReplayCaptureError::InvalidEventLog
+        }
+        error => FindingProductionReplayCaptureError::EventLogStore(error),
+    }
 }
 
 /// Immutable replay inputs shared by captures of the same finding candidate.
@@ -428,12 +443,29 @@ fn validate_event_log_parts(
 /// Large guest assets and lifecycle objects live behind one [`Arc`] so the
 /// original, minimized, and verification records can retain the same content
 /// without copying it into every in-memory capture.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct FindingProductionReplaySharedContext {
     recipe: FindingProductionReplayRecipe,
     deployment: FindingProductionReplayDeployment,
     lifecycle_objects: BTreeMap<ContentHash, Vec<u8>>,
+    /// Publication leaf identities of the assets and lifecycle objects.
+    ///
+    /// The four capture roles of one finding share this context, so each
+    /// large object is hashed for publication once rather than per role.
+    leaf_ids: OnceLock<BTreeMap<ContentHash, ContentId>>,
 }
+
+// The leaf-identity memo is a pure function of the content, so equality
+// compares only the content.
+impl PartialEq for FindingProductionReplaySharedContext {
+    fn eq(&self, other: &Self) -> bool {
+        self.recipe == other.recipe
+            && self.deployment == other.deployment
+            && self.lifecycle_objects == other.lifecycle_objects
+    }
+}
+
+impl Eq for FindingProductionReplaySharedContext {}
 
 impl FindingProductionReplaySharedContext {
     /// Captures and validates immutable path-free replay inputs.
@@ -449,13 +481,23 @@ impl FindingProductionReplaySharedContext {
         lifecycle_objects: BTreeMap<ContentHash, Vec<u8>>,
         limits: FindingProductionReplayCaptureLimits,
     ) -> Result<Self, FindingProductionReplayCaptureError> {
-        let context = Self {
+        let context = Self::from_validated_parts(recipe, deployment, lifecycle_objects);
+        validate_shared_context(finding.artifact.scenario_form(), &context, limits)?;
+        Ok(context)
+    }
+
+    /// Assembles a context whose content the caller validates.
+    const fn from_validated_parts(
+        recipe: FindingProductionReplayRecipe,
+        deployment: FindingProductionReplayDeployment,
+        lifecycle_objects: BTreeMap<ContentHash, Vec<u8>>,
+    ) -> Self {
+        Self {
             recipe,
             deployment,
             lifecycle_objects,
-        };
-        validate_shared_context(finding.artifact.scenario_form(), &context, limits)?;
-        Ok(context)
+            leaf_ids: OnceLock::new(),
+        }
     }
 
     /// Returns the exact production runtime recipe.
@@ -491,7 +533,7 @@ pub struct FindingProductionReplayCaptureMaterial {
     shared_context: Arc<FindingProductionReplaySharedContext>,
     selected_side: FindingProductionReplaySelectedSide,
     sides: Arc<[FindingProductionReplayExecutionSide]>,
-    campaign_replay_closure: Arc<[u8]>,
+    campaign_replay_closure: GuardedCampaignReplayClosure,
 }
 
 /// Shared owned inputs for one production replay capture.
@@ -591,10 +633,7 @@ impl FindingProductionReplayCaptureMaterial {
             shared_context,
             selected_side,
             sides: sides.into(),
-            campaign_replay_closure: campaign_replay_closure
-                .to_canonical_bytes()
-                .map_err(FindingProductionReplayCaptureError::ReplayClosure)?
-                .into(),
+            campaign_replay_closure: campaign_replay_closure.clone(),
         };
         material.validate(limits)?;
         Ok(material)
@@ -686,7 +725,7 @@ impl FindingProductionReplayCaptureMaterial {
 
     /// Returns the authenticated campaign choice closure.
     #[must_use]
-    pub fn campaign_replay_closure(&self) -> &[u8] {
+    pub const fn campaign_replay_closure(&self) -> &GuardedCampaignReplayClosure {
         &self.campaign_replay_closure
     }
 
@@ -719,6 +758,11 @@ impl FindingProductionReplayCaptureMaterial {
 }
 
 /// A self-contained, path-free capture of one private production replay.
+///
+/// Every constructor authenticates the complete capture, including each side
+/// log's segments, so holding a capture proves its content. Publication uses
+/// [`Self::prepare_objects`], and a published capture is read back with
+/// [`Self::from_objects`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FindingProductionReplayCapture {
     reproduction: ReproductionArtifactId,
@@ -728,7 +772,7 @@ pub struct FindingProductionReplayCapture {
     shared_context: Arc<FindingProductionReplaySharedContext>,
     selected_side: FindingProductionReplaySelectedSide,
     sides: Arc<[FindingProductionReplayExecutionSide]>,
-    campaign_replay_closure: Arc<[u8]>,
+    campaign_replay_closure: GuardedCampaignReplayClosure,
 }
 
 impl FindingProductionReplayCapture {
@@ -758,91 +802,6 @@ impl FindingProductionReplayCapture {
             input,
         )?
         .bind(reproduction, observed_signature, limits)
-    }
-
-    /// Decodes and authenticates canonical portable capture bytes.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`FindingProductionReplayCaptureError`] for an oversized,
-    /// malformed, noncanonical, incomplete, or inconsistent capture.
-    pub fn from_canonical_bytes(
-        bytes: &[u8],
-        limits: FindingProductionReplayCaptureLimits,
-    ) -> Result<Self, FindingProductionReplayCaptureError> {
-        let encoded_bytes = u64::try_from(bytes.len()).map_err(|_| {
-            FindingProductionReplayCaptureError::LimitExceeded {
-                limit: "finding-production-replay-encoded-bytes",
-            }
-        })?;
-        if encoded_bytes > limits.max_encoded_bytes {
-            return Err(FindingProductionReplayCaptureError::LimitExceeded {
-                limit: "finding-production-replay-encoded-bytes",
-            });
-        }
-        preflight_canonical_cbor(bytes)
-            .map_err(|()| FindingProductionReplayCaptureError::DecodeBounds)?;
-        let wire: CaptureWire =
-            ciborium::from_reader(bytes).map_err(FindingProductionReplayCaptureError::Decode)?;
-        if wire.schema_version != FINDING_PRODUCTION_REPLAY_CAPTURE_SCHEMA_VERSION {
-            return Err(FindingProductionReplayCaptureError::UnsupportedSchema {
-                actual: wire.schema_version,
-            });
-        }
-        let value = Self::try_from(wire)?;
-        value.validate(limits)?;
-        if !value.matches_canonical_bytes(bytes, limits)? {
-            return Err(FindingProductionReplayCaptureError::Noncanonical);
-        }
-        Ok(value)
-    }
-
-    /// Encodes this capture in its canonical portable form.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`FindingProductionReplayCaptureError`] when validation,
-    /// allocation, or encoding fails.
-    pub fn to_canonical_bytes(
-        &self,
-        limits: FindingProductionReplayCaptureLimits,
-    ) -> Result<Vec<u8>, FindingProductionReplayCaptureError> {
-        self.validate(limits)?;
-        let wire = CaptureWireRef::from(self);
-        let mut writer = BoundedVecWriter::new(limits.max_encoded_bytes);
-        if let Err(error) = ciborium::into_writer(&wire, &mut writer) {
-            if writer.limit_exceeded() {
-                return Err(FindingProductionReplayCaptureError::LimitExceeded {
-                    limit: "finding-production-replay-encoded-bytes",
-                });
-            }
-            return Err(FindingProductionReplayCaptureError::Encode(error));
-        }
-        Ok(writer.into_inner())
-    }
-
-    /// Returns the content address of the canonical capture bytes.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`FindingProductionReplayCaptureError`] when canonical encoding
-    /// fails under `limits`.
-    pub fn content_hash(
-        &self,
-        limits: FindingProductionReplayCaptureLimits,
-    ) -> Result<ContentHash, FindingProductionReplayCaptureError> {
-        self.validate(limits)?;
-        let wire = CaptureWireRef::from(self);
-        let mut writer = BoundedHashWriter::new(limits.max_encoded_bytes);
-        if let Err(error) = ciborium::into_writer(&wire, &mut writer) {
-            if writer.limit_exceeded() {
-                return Err(FindingProductionReplayCaptureError::LimitExceeded {
-                    limit: "finding-production-replay-encoded-bytes",
-                });
-            }
-            return Err(FindingProductionReplayCaptureError::Encode(error));
-        }
-        Ok(writer.finish())
     }
 
     /// Reauthenticates the durable campaign identities bound into this capture.
@@ -906,7 +865,7 @@ impl FindingProductionReplayCapture {
 
     /// Returns the authenticated campaign choice closure.
     #[must_use]
-    pub fn campaign_replay_closure(&self) -> &[u8] {
+    pub const fn campaign_replay_closure(&self) -> &GuardedCampaignReplayClosure {
         &self.campaign_replay_closure
     }
 
@@ -920,24 +879,6 @@ impl FindingProductionReplayCapture {
     #[must_use]
     pub const fn shared_context(&self) -> &Arc<FindingProductionReplaySharedContext> {
         &self.shared_context
-    }
-
-    fn matches_canonical_bytes(
-        &self,
-        expected: &[u8],
-        limits: FindingProductionReplayCaptureLimits,
-    ) -> Result<bool, FindingProductionReplayCaptureError> {
-        let wire = CaptureWireRef::from(self);
-        let mut writer = CanonicalComparisonWriter::new(expected, limits.max_encoded_bytes);
-        if let Err(error) = ciborium::into_writer(&wire, &mut writer) {
-            if writer.limit_exceeded() {
-                return Err(FindingProductionReplayCaptureError::LimitExceeded {
-                    limit: "finding-production-replay-encoded-bytes",
-                });
-            }
-            return Err(FindingProductionReplayCaptureError::Encode(error));
-        }
-        Ok(writer.matches())
     }
 
     fn validate(

@@ -51,7 +51,7 @@ fn gate_minimization_shrinks_schedule_and_rng_decisions_deterministically()
     let minimized_schedule = first.minimized.artifact.schedule();
     assert_eq!(minimized_schedule.len(), 1);
     assert!(matches!(
-        &minimized_schedule.decisions()[0],
+        &minimized_schedule.decision_history()[0],
         Decision::Override(decision)
             if decision.point.key == "critical-assertion" && decision.choice.name == "fail"
     ));
@@ -191,10 +191,11 @@ fn gate_minimization_preserves_campaign_branch_prefixes_and_reduces_suffixes()
         |candidate| {
             let schedule = candidate.artifact.schedule();
             if let Some(index) = schedule
-                .decisions()
+                .decision_history()
                 .iter()
                 .position(|decision| decision == &branch)
-                && (index != prefix.len() || schedule.decisions()[..index] != prefix)
+                && (index != prefix.len()
+                    || !schedule.decision_history().range(0..index).eq(&prefix))
             {
                 return Err(EngineError::ScenarioSerialization {
                     reason: "campaign branch selection lost its authenticated prefix".to_owned(),
@@ -219,10 +220,12 @@ fn gate_minimization_preserves_campaign_branch_prefixes_and_reduces_suffixes()
     );
     assert!(replayed_schedules.iter().all(|schedule| {
         schedule
-            .decisions()
+            .decision_history()
             .iter()
             .position(|decision| decision == &branch)
-            .is_none_or(|index| index == prefix.len() && schedule.decisions()[..index] == prefix)
+            .is_none_or(|index| {
+                index == prefix.len() && schedule.decision_history().range(0..index).eq(&prefix)
+            })
     }));
 
     Ok(())
@@ -320,11 +323,15 @@ fn automatic_minimization_uses_the_bounded_terminal_suffix_without_a_campaign_br
     let window = config
         .interesting_window()
         .expect("automatic minimization selects a window");
-    let immutable_prefix = schedule.decisions()[..window.start()].to_vec();
+    let immutable_prefix = schedule
+        .decision_history()
+        .range(0..window.start())
+        .cloned()
+        .collect::<Vec<_>>();
 
     let run = original.minimize(config, |candidate| {
-        let decisions = candidate.artifact.schedule().decisions();
-        Ok((decisions.starts_with(&immutable_prefix)).then_some(target))
+        let decisions = candidate.artifact.schedule().decision_history();
+        Ok(decisions.has_run_at(0, &immutable_prefix).then_some(target))
     })?;
 
     assert_eq!(
@@ -336,7 +343,7 @@ fn automatic_minimization_uses_the_bounded_terminal_suffix_without_a_campaign_br
         InterestingScheduleWindowBasis::TerminalSuffix
     );
     assert_eq!(
-        run.minimized.artifact.schedule().decisions(),
+        run.minimized.artifact.schedule().decision_history(),
         immutable_prefix
     );
     assert!(run.attempts.iter().all(|attempt| {
@@ -406,7 +413,7 @@ fn failure_fingerprint_for_schedule(
 
 fn retained_event_log(schedule: &Schedule) -> Result<RecordedAssertionLog, EngineError> {
     let mut entries = schedule
-        .decisions()
+        .decision_history()
         .iter()
         .enumerate()
         .map(|(sequence, decision)| {
@@ -444,7 +451,7 @@ fn retained_event_log(schedule: &Schedule) -> Result<RecordedAssertionLog, Engin
 }
 
 fn schedule_emits_forbidden_marker(schedule: &Schedule) -> bool {
-    let has_critical = schedule.decisions().iter().any(|decision| {
+    let has_critical = schedule.decision_history().iter().any(|decision| {
         matches!(
             decision,
             Decision::Override(override_decision)
@@ -455,7 +462,7 @@ fn schedule_emits_forbidden_marker(schedule: &Schedule) -> bool {
     let guards = ["guard-left", "guard-right"]
         .into_iter()
         .filter(|guard| {
-            schedule.decisions().iter().any(|decision| {
+            schedule.decision_history().iter().any(|decision| {
                 matches!(
                     decision,
                     Decision::Override(override_decision)

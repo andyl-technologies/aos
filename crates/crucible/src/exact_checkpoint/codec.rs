@@ -1,4 +1,4 @@
-//! Canonical v9 checkpoint envelope, manifest, and shape verification.
+//! Canonical v11 checkpoint envelope, manifest, and shape verification.
 
 use super::*;
 
@@ -122,15 +122,14 @@ pub(super) fn decode_root_children(
 ) -> Result<RepositoryRootChildren, ExactCheckpointRelationError> {
     let count = usize::try_from(index_count)
         .map_err(|_| ExactCheckpointRelationError::RepositoryRootMismatch)?;
-    if !matches!(envelope.children().len(), length if length == count.saturating_add(2) || length == count.saturating_add(4))
-    {
-        return Err(ExactCheckpointRelationError::RepositoryRootMismatch);
-    }
     let mut manifest = None;
     let mut promotion_source = None;
     let mut promotion_evidence = None;
     let mut choice_closure = None;
     let mut indexes = vec![None; count];
+    // Choice-closure frames are opaque here; the root must still name them
+    // under dense, canonical ordinals.
+    let mut choice_frames = std::collections::BTreeSet::new();
     for child in envelope.children() {
         match child.role() {
             MANIFEST_ROLE => {
@@ -164,6 +163,18 @@ pub(super) fn decode_root_children(
                     return Err(ExactCheckpointRelationError::RepositoryRootMismatch);
                 }
             }
+            role if role.starts_with(CHOICE_FRAME_ROLE_PREFIX) => {
+                let index = role
+                    .strip_prefix(CHOICE_FRAME_ROLE_PREFIX)
+                    .and_then(canonical_role_ordinal)
+                    .ok_or(ExactCheckpointRelationError::RepositoryRootMismatch)?;
+                if child.id().kind() != ObjectKind::Observation
+                    || child.id().schema_version() != CHOICE_FRAME_SCHEMA_VERSION
+                    || !choice_frames.insert(index)
+                {
+                    return Err(ExactCheckpointRelationError::RepositoryRootMismatch);
+                }
+            }
             role => {
                 let suffix = role
                     .strip_prefix(INDEX_ROLE_PREFIX)
@@ -185,7 +196,13 @@ pub(super) fn decode_root_children(
             }
         }
     }
-    if promotion_source.is_some() != promotion_evidence.is_some() || choice_closure.is_none() {
+    if promotion_source.is_some() != promotion_evidence.is_some()
+        || choice_closure.is_none()
+        || choice_frames
+            .iter()
+            .enumerate()
+            .any(|(position, index)| position != *index)
+    {
         return Err(ExactCheckpointRelationError::RepositoryRootMismatch);
     }
     Ok(RepositoryRootChildren {
@@ -195,6 +212,17 @@ pub(super) fn decode_root_children(
             .collect::<Option<Vec<_>>>()
             .ok_or(ExactCheckpointRelationError::RepositoryRootMismatch)?,
     })
+}
+
+/// Parses a canonical eight-digit lowercase hexadecimal role ordinal.
+fn canonical_role_ordinal(suffix: &str) -> Option<usize> {
+    let canonical = suffix.len() == 8
+        && suffix
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'));
+    canonical
+        .then(|| usize::from_str_radix(suffix, 16).ok())
+        .flatten()
 }
 
 pub(super) fn decode_index_page(
@@ -467,6 +495,8 @@ pub(super) fn validate_closure_structure(
     closure: &ExactCheckpointClosureRecord,
 ) -> Result<(), ExactCheckpointRelationError> {
     if !strictly_sorted(&closure.signal_artifacts)
+        || !strictly_sorted(&closure.fault_trace_segments)
+        || !strictly_sorted(&closure.block_overlay_chunks)
         || closure
             .event_log_segments
             .iter()
@@ -516,6 +546,18 @@ pub(super) fn validate_closure_structure(
     {
         return Err(ExactCheckpointRelationError::InvalidStructure);
     }
+    // A block overlay chunk covers at most one 4 MiB chunk of its device.
+    for chunk in &closure.block_overlay_chunks {
+        let object = closure
+            .objects
+            .binary_search_by_key(chunk, |object| object.identity)
+            .ok()
+            .and_then(|index| closure.objects.get(index))
+            .ok_or(ExactCheckpointRelationError::InvalidStructure)?;
+        if object.length > ARTIFACT_CHUNK_BYTES {
+            return Err(ExactCheckpointRelationError::InvalidStructure);
+        }
+    }
     for target in &closure.targets {
         if target.overlay.length == 0 {
             return Err(ExactCheckpointRelationError::InvalidStructure);
@@ -544,6 +586,8 @@ pub(super) fn manifest_object_identities(
     ]);
     identities.extend(closure.event_log_segments.iter().copied());
     identities.extend(closure.signal_artifacts.iter().copied());
+    identities.extend(closure.fault_trace_segments.iter().copied());
+    identities.extend(closure.block_overlay_chunks.iter().copied());
     identities.extend(
         closure
             .failed_host_io

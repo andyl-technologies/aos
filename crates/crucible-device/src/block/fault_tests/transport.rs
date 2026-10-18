@@ -264,7 +264,7 @@ fn preserved_identity_of_a_retired_epoch_may_follow_a_newer_epoch_request() {
 
     // The pre-reset identity is disposed of by epoch 0's retained policy.
     let disposed = state
-        .dispose_retired_transport_request_if_needed(retried.identity())
+        .dispose_retired_transport_request_if_needed(&retried)
         .unwrap_or_else(|error| panic!("retired epoch policy must remain: {error}"))
         .unwrap_or_else(|| panic!("stale retry must receive a reset disposition"));
     let disposed = BlockResponse::decode(&disposed.payload)

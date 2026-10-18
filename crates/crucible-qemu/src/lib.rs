@@ -256,7 +256,9 @@ pub use production_fault_runtime::{
     ProductionFaultRuntime, ProductionFaultRuntimeCheckpoint,
     ProductionFaultRuntimeCheckpointCodecError, ProductionFaultRuntimeError,
     ProductionNetworkStateCheckpoint, QemuNodeLifecycleDecision, QemuNodeLifecycleIntent,
-    QemuNodeLifecycleRelease, QemuNodeLifecycleWork,
+    QemuNodeLifecycleRelease, QemuNodeLifecycleWork, ReferencedEventConsumer,
+    ReferencedEventCoordinate, ReferencedEventEvidence, ReferencedEventSubscription,
+    ReferencedEventWindow, RetainedReferencedEvent, retained_recovery_subscriptions,
 };
 pub use production_fault_sink::ProductionFaultActionSink;
 pub use qmp::{

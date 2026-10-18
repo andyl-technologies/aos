@@ -61,7 +61,8 @@ fn encoded_pending_completion_and_fork_clone_retain_the_actual_source_key() {
         .checkpoint()
         .and_then(|checkpoint| checkpoint.canonical_bytes())
         .expect("pending origin checkpoint");
-    assert!(encoded.starts_with(b"crucible.single-scheduler-continuation.v7\0"));
+    let current = b"crucible.single-scheduler-continuation.v10\0";
+    assert!(encoded.starts_with(current));
 
     for _ in 0..2 {
         let decoded = SingleSchedulerCheckpoint::from_canonical_bytes(&encoded)
@@ -73,9 +74,12 @@ fn encoded_pending_completion_and_fork_clone_retain_the_actual_source_key() {
         assert_eq!(restored.pending_events, scheduler.pending_events);
         assert_eq!(restored.clone().pending_events, scheduler.pending_events);
     }
-    for version in *b"36" {
-        let mut retired = encoded.clone();
-        retired[b"crucible.single-scheduler-continuation.v".len()] = version;
+    for version in ["3", "6", "7", "8", "9"] {
+        let retired = [
+            format!("crucible.single-scheduler-continuation.v{version}\0").as_bytes(),
+            &encoded[current.len()..],
+        ]
+        .concat();
         assert!(matches!(
             SingleSchedulerCheckpoint::from_canonical_bytes(&retired),
             Err(SingleSchedulerCheckpointError::Version)

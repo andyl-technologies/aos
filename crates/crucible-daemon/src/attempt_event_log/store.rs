@@ -11,6 +11,13 @@
 //!   callers, transport bundles, and tests.
 //! - [`AttemptLogStore`] is the store an executor attempt writes: a directory
 //!   created in the executor's [`AttemptLogNamespace`], or memory without one.
+//! - [`BoundedSegmentSink`] admits an attempt's resolved-effect trace segments
+//!   into their own attempt directory under a byte budget.
+//!
+//! The read trait and the source chain are the shared
+//! [`crucible_cas::segment_store`] contracts, so a directory that holds an
+//! attempt's event-log segments also holds its resolved-effect trace segments
+//! (RFC-0020 section 15), and one prepared-result journal stages both.
 //!
 //! A directory holds one file per segment, named by the lowercase hex digest
 //! of its identity:
@@ -31,6 +38,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crucible::SchedulerEventLogEntry;
 use crucible_cas::content_store::{ContentId, ObjectKind};
+use crucible_cas::segment_store::{SegmentSink, SegmentSources};
 
 use super::{
     ATTEMPT_LOG_SEGMENT_SCHEMA, AttemptEventLog, AttemptEventLogError, AttemptLogManifest,
@@ -40,19 +48,25 @@ use super::{
 /// Distinguishes concurrent in-flight writes within one process.
 static PARTIAL_WRITE_ORDINAL: AtomicU64 = AtomicU64::new(0);
 
+/// Suffix of one complete segment file.
+const SEGMENT_FILE_SUFFIX: &str = ".segment";
+
 /// Read access to sealed segments, addressed by content identity.
 ///
 /// Readers authenticate every segment they receive against its reference, so
-/// a source only needs to return the bytes it holds under an identity.
-pub trait AttemptLogSegmentSource {
-    /// Reads one encoded segment.
-    ///
-    /// # Errors
-    ///
-    /// Returns an I/O error when the segment is absent, unreadable, or larger
-    /// than [`MAX_ATTEMPT_LOG_SEGMENT_BYTES`].
-    fn segment(&self, id: ContentId) -> io::Result<Vec<u8>>;
-}
+/// a source only needs to return the bytes it holds under an identity. This
+/// is the segment-store read contract every segmented log shares.
+pub use crucible_cas::segment_store::SegmentSource as AttemptLogSegmentSource;
+
+/// Shared read handles to every store that may hold a result's segments.
+///
+/// A prepared result references its log segments by identity and keeps these
+/// handles instead of the bytes, so its size does not grow with the attempt
+/// log. Lookups try each store in order. Every reader authenticates the bytes
+/// it receives against the referencing [`AttemptLogSegmentRef`], so a store
+/// that lacks a segment, or holds foreign bytes under its name, can only make
+/// a read fail.
+pub type AttemptLogSegmentSources = SegmentSources;
 
 /// Writable storage for the segments an attempt seals.
 pub(crate) trait AttemptLogSegmentStore: AttemptLogSegmentSource {
@@ -124,19 +138,19 @@ impl DirectorySegmentStore {
         &self.directory
     }
 
-    fn path(&self, id: ContentId) -> PathBuf {
+    /// Reports whether the directory already holds a complete segment for `id`.
+    ///
+    /// Complete segment files appear only by rename, so a present file holds
+    /// exactly the bytes its identity names.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the file's presence cannot be determined.
+    pub(crate) fn contains(&self, id: ContentId) -> io::Result<bool> {
         self.directory
             .path()
-            .join(format!("{}.segment", digest_hex(id)))
-    }
-
-    fn partial_path(&self, id: ContentId) -> PathBuf {
-        let ordinal = PARTIAL_WRITE_ORDINAL.fetch_add(1, Ordering::Relaxed);
-        self.directory.path().join(format!(
-            ".{}.{}.{ordinal}.partial",
-            digest_hex(id),
-            std::process::id()
-        ))
+            .join(format!("{}{SEGMENT_FILE_SUFFIX}", digest_hex(id)))
+            .try_exists()
     }
 }
 
@@ -151,39 +165,114 @@ impl Eq for DirectorySegmentStore {}
 
 impl AttemptLogSegmentStore for DirectorySegmentStore {
     fn put(&mut self, id: ContentId, bytes: &[u8]) -> io::Result<()> {
-        let path = self.path(id);
-        // Segments are content-addressed and only ever appear by rename, so a
-        // present file already holds exactly these bytes.
-        if path.try_exists()? {
-            return Ok(());
-        }
+        write_content_file(self.directory.path(), id, SEGMENT_FILE_SUFFIX, bytes)
+    }
+}
 
-        let staging = self.partial_path(id);
-        let written = fs::File::create_new(&staging).and_then(|mut file| {
-            file.write_all(bytes)?;
-            file.sync_all()
-        });
-        match written.and_then(|()| fs::rename(&staging, &path)) {
-            Ok(()) => Ok(()),
-            Err(error) => {
-                let _ = fs::remove_file(&staging);
-                Err(error)
-            }
+/// The directory also receives resolved-effect trace segments sealed by the
+/// attempt's fault runtime, through the shared sink contract.
+impl SegmentSink for DirectorySegmentStore {
+    fn put_segment(&self, id: ContentId, bytes: &[u8]) -> io::Result<()> {
+        if !id.authenticates(bytes) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "segment bytes do not derive their identity",
+            ));
         }
+        self.clone().put(id, bytes)
     }
 }
 
 impl AttemptLogSegmentSource for DirectorySegmentStore {
     fn segment(&self, id: ContentId) -> io::Result<Vec<u8>> {
-        let path = self.path(id);
-        let length = fs::metadata(&path)?.len();
-        if length > MAX_ATTEMPT_LOG_SEGMENT_BYTES as u64 {
+        read_content_file(
+            self.directory.path(),
+            id,
+            SEGMENT_FILE_SUFFIX,
+            MAX_ATTEMPT_LOG_SEGMENT_BYTES,
+        )
+    }
+}
+
+/// Directory sink that charges each newly stored segment against a byte budget.
+///
+/// An executor attempt's resolved-effect trace grows with virtual time like
+/// its event log, so its segments go to host storage rather than memory and
+/// observe the same operational bound, the deployment's
+/// `maximum_event_log_bytes`. Each identity is charged once, when it is first
+/// written; storing a present identity again is free, because the directory
+/// already holds its bytes. A write that would exceed the budget is refused
+/// before any byte reaches the directory.
+#[derive(Debug)]
+pub(crate) struct BoundedSegmentSink {
+    store: DirectorySegmentStore,
+    maximum_bytes: u64,
+    charged_bytes: AtomicU64,
+}
+
+impl BoundedSegmentSink {
+    /// Admits at most `maximum_bytes` of distinct segments into `store`.
+    pub(crate) const fn new(store: DirectorySegmentStore, maximum_bytes: u64) -> Self {
+        Self {
+            store,
+            maximum_bytes,
+            charged_bytes: AtomicU64::new(0),
+        }
+    }
+
+    /// Returns the encoded bytes of every distinct segment stored so far.
+    pub(crate) fn charged_bytes(&self) -> u64 {
+        self.charged_bytes.load(Ordering::Acquire)
+    }
+
+    /// Reserves `length` bytes of the budget, or refuses without charging.
+    fn reserve(&self, length: u64) -> io::Result<()> {
+        self.charged_bytes
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |charged| {
+                charged
+                    .checked_add(length)
+                    .filter(|total| *total <= self.maximum_bytes)
+            })
+            .map(|_| ())
+            .map_err(|charged| {
+                io::Error::new(
+                    io::ErrorKind::QuotaExceeded,
+                    format!(
+                        "resolved-effect trace segments would use {} of the attempt's \
+                         {}-byte maximum_event_log_bytes",
+                        charged.saturating_add(length),
+                        self.maximum_bytes
+                    ),
+                )
+            })
+    }
+}
+
+impl AttemptLogSegmentSource for BoundedSegmentSink {
+    fn segment(&self, id: ContentId) -> io::Result<Vec<u8>> {
+        self.store.segment(id)
+    }
+}
+
+impl SegmentSink for BoundedSegmentSink {
+    fn put_segment(&self, id: ContentId, bytes: &[u8]) -> io::Result<()> {
+        if !id.authenticates(bytes) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "attempt log segment exceeds its format bound",
+                "segment bytes do not derive their identity",
             ));
         }
-        fs::read(path)
+        if self.store.contains(id)? {
+            return Ok(());
+        }
+
+        // Two writers racing on one new identity may both be charged. The
+        // overcount is conservative: it can only refuse earlier.
+        let length = bytes.len() as u64;
+        self.reserve(length)?;
+        self.store.put_segment(id, bytes).inspect_err(|_| {
+            self.charged_bytes.fetch_sub(length, Ordering::AcqRel);
+        })
     }
 }
 
@@ -324,50 +413,9 @@ impl AttemptLogSegmentSource for MemorySegmentStore {
     }
 }
 
-/// Shared read handles to every store that may hold a result's segments.
-///
-/// A prepared result references its log segments by identity and keeps these
-/// handles instead of the bytes, so its size does not grow with the attempt
-/// log. Lookups try each store in order. Every reader authenticates the bytes
-/// it receives against the referencing [`AttemptLogSegmentRef`], so a store
-/// that lacks a segment, or holds foreign bytes under its name, can only make
-/// a read fail.
-#[derive(Clone, Default)]
-pub struct AttemptLogSegmentSources {
-    sources: Vec<Arc<dyn AttemptLogSegmentSource + Send + Sync>>,
-}
-
-impl AttemptLogSegmentSources {
-    /// Adds `source` after every store already held.
-    pub fn push(&mut self, source: Arc<dyn AttemptLogSegmentSource + Send + Sync>) {
-        self.sources.push(source);
-    }
-
-    /// Adds every store of `other` after the stores already held.
-    pub fn extend(&mut self, other: Self) {
-        self.sources.extend(other.sources);
-    }
-
-    /// Returns whether no store is held.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.sources.is_empty()
-    }
-
-    /// Reads through one attempt's segment directory.
-    pub(crate) fn from_directory(store: DirectorySegmentStore) -> Self {
-        let mut sources = Self::default();
-        sources.push(Arc::new(store));
-        sources
-    }
-}
-
-impl std::fmt::Debug for AttemptLogSegmentSources {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("AttemptLogSegmentSources")
-            .field("stores", &self.sources.len())
-            .finish()
+impl From<DirectorySegmentStore> for AttemptLogSegmentSources {
+    fn from(store: DirectorySegmentStore) -> Self {
+        Self::single(Arc::new(store))
     }
 }
 
@@ -378,21 +426,6 @@ impl From<MemorySegmentStore> for AttemptLogSegmentSources {
             sources.push(Arc::new(store));
         }
         sources
-    }
-}
-
-impl AttemptLogSegmentSource for AttemptLogSegmentSources {
-    fn segment(&self, id: ContentId) -> io::Result<Vec<u8>> {
-        let mut last_error = None;
-        for source in &self.sources {
-            match source.segment(id) {
-                Ok(bytes) => return Ok(bytes),
-                Err(error) => last_error = Some(error),
-            }
-        }
-        Err(last_error.unwrap_or_else(|| {
-            io::Error::new(io::ErrorKind::NotFound, "attempt log segment absent")
-        }))
     }
 }
 
@@ -438,7 +471,7 @@ impl From<AttemptLogStore> for AttemptLogSegmentSources {
     fn from(store: AttemptLogStore) -> Self {
         match store {
             AttemptLogStore::Memory(store) => store.into(),
-            AttemptLogStore::Directory(store) => Self::from_directory(store),
+            AttemptLogStore::Directory(store) => store.into(),
         }
     }
 }
@@ -453,6 +486,8 @@ impl From<AttemptLogStore> for AttemptLogSegmentSources {
 /// ```text
 /// <namespace>/
 ///   attempt-<16 hex digits>/      one attempt log's AttemptLogDirectory
+///   trace-<16 hex digits>/        one attempt's resolved-effect trace segments
+///   records-<16 hex digits>/      one finding preparation's replay records
 /// ```
 #[derive(Debug)]
 pub(crate) struct AttemptLogNamespace {
@@ -489,16 +524,108 @@ impl AttemptLogNamespace {
     ///
     /// Returns an I/O error when the directory cannot be created.
     pub(crate) fn create_store(&self) -> io::Result<AttemptLogStore> {
-        let ordinal = self.next_directory.fetch_add(1, Ordering::Relaxed);
-        let directory =
-            AttemptLogDirectory::create(self.root.join(format!("attempt-{ordinal:016x}")))?;
+        let directory = self.create_directory("attempt")?;
         Ok(AttemptLogStore::Directory(DirectorySegmentStore::new(
             directory,
         )))
     }
+
+    /// Creates a new, empty trace-segment sink bounded by `maximum_bytes`.
+    ///
+    /// The directory is removed when the last handle to it drops, so it
+    /// lives as long as any trace that reads from it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the directory cannot be created.
+    pub(crate) fn create_trace_sink(&self, maximum_bytes: u64) -> io::Result<BoundedSegmentSink> {
+        let directory = self.create_directory("trace")?;
+        Ok(BoundedSegmentSink::new(
+            DirectorySegmentStore::new(directory),
+            maximum_bytes,
+        ))
+    }
+
+    /// Creates a new, empty directory named `<family>-<ordinal>`.
+    ///
+    /// Every family shares one ordinal sequence, so names never collide. The
+    /// directory is removed when the last handle to it drops.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the directory cannot be created.
+    pub(crate) fn create_directory(&self, family: &str) -> io::Result<Arc<AttemptLogDirectory>> {
+        let ordinal = self.next_directory.fetch_add(1, Ordering::Relaxed);
+        AttemptLogDirectory::create(self.root.join(format!("{family}-{ordinal:016x}")))
+    }
 }
 
-/// Formats a segment identity's digest as lowercase hex.
+/// Writes one immutable content-addressed file into `directory`.
+///
+/// The file is named by the identity's digest and `suffix`. It is written to a
+/// uniquely named temporary file, synchronized, and renamed, so a reader never
+/// observes a partial file and concurrent writers of the same identity never
+/// truncate each other.
+///
+/// # Errors
+///
+/// Returns an I/O error when the file cannot be durably written.
+pub(crate) fn write_content_file(
+    directory: &Path,
+    id: ContentId,
+    suffix: &str,
+    bytes: &[u8],
+) -> io::Result<()> {
+    let digest = digest_hex(id);
+    let path = directory.join(format!("{digest}{suffix}"));
+    // Content files only ever appear by rename, so a present file already
+    // holds exactly the bytes its identity names.
+    if path.try_exists()? {
+        return Ok(());
+    }
+
+    let ordinal = PARTIAL_WRITE_ORDINAL.fetch_add(1, Ordering::Relaxed);
+    let staging = directory.join(format!(
+        ".{digest}.{}.{ordinal}.partial",
+        std::process::id()
+    ));
+    let written = fs::File::create_new(&staging).and_then(|mut file| {
+        file.write_all(bytes)?;
+        file.sync_all()
+    });
+    match written.and_then(|()| fs::rename(&staging, &path)) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let _ = fs::remove_file(&staging);
+            Err(error)
+        }
+    }
+}
+
+/// Reads one content-addressed file written by [`write_content_file`].
+///
+/// # Errors
+///
+/// Returns an I/O error when the file is absent, unreadable, or longer than
+/// `maximum_bytes`.
+pub(crate) fn read_content_file(
+    directory: &Path,
+    id: ContentId,
+    suffix: &str,
+    maximum_bytes: usize,
+) -> io::Result<Vec<u8>> {
+    let path = directory.join(format!("{}{suffix}", digest_hex(id)));
+    let length = fs::metadata(&path)?.len();
+    if length > maximum_bytes as u64 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "content file exceeds its format bound",
+        ));
+    }
+    fs::read(path)
+}
+
+/// Formats an identity's digest as lowercase hex.
 fn digest_hex(id: ContentId) -> String {
     id.digest()
         .iter()

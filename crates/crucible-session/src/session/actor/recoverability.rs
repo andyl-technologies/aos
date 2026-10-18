@@ -53,7 +53,8 @@ pub(in super::super) fn is_recoverable_command_rejection(
         | SessionError::ControlReplayInitialConfigurationMismatch { .. }
         | SessionError::ControlReplayRecordInvalid { .. }
         | SessionError::ControlReplayTerminalSamplingCleanup { .. }
-        | SessionError::DebugRuntimeRepositionMismatch(_) => false,
+        | SessionError::DebugRuntimeRepositionMismatch(_)
+        | SessionError::EventLogStore(_) => false,
     }
 }
 
@@ -68,6 +69,7 @@ pub(in super::super) fn is_autonomous_actor_error(error: &SessionError) -> bool 
             | SessionError::UnsupportedBreakpointAction { .. }
             | SessionError::UnsupportedBreakpointFault { .. }
             | SessionError::DebugRuntimeRepositionMismatch(_)
+            | SessionError::EventLogStore(_)
     )
 }
 

@@ -84,9 +84,9 @@ const LIVE_QEMU_EVENT_STREAM_MEDIA_TYPE: &str =
 const LIVE_QEMU_FINGERPRINT_STREAM_MEDIA_TYPE: &str =
     "application/vnd.crucible.live-qemu-fingerprint-stream.v1+bytes";
 const LIVE_QEMU_RESOLVED_EFFECT_TRACE_MEDIA_TYPE: &str =
-    "application/vnd.crucible.resolved-effect-trace.v1+cbor";
+    "application/vnd.crucible.resolved-effect-trace-bundle.v1";
 const CAMPAIGN_REPLAY_CLOSURE_MEDIA_TYPE: &str =
-    "application/vnd.crucible.campaign-replay-closure.v1+binary";
+    "application/vnd.crucible.campaign-replay-closure.v2+binary";
 const LIFECYCLE_ARTIFACT_BUNDLE_MEDIA_TYPE: &str =
     "application/vnd.crucible.lifecycle-artifact-bundle.v1+binary";
 const SIGNAL_MUTATION_PROVENANCE_MEDIA_TYPE: &str =
