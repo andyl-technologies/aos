@@ -19,9 +19,9 @@ mod reader;
 pub(crate) use borrowed::{BorrowedNativeCurrentGraph17Plan, NativeCurrentGraph17Rows};
 pub(crate) use limits::NativeCurrentGraph17ReadLimits;
 pub(crate) use reader::{
-    NativeCurrentGraph17Data, NativeCurrentGraph17DecodeAttempt,
-    read_native_current_graph17_into_data, read_native_current_graph17_with_limits_into_data,
-    read_native_current_graph17_with_admission_into_data, native_current_graph17_banks_data,
+    NativeCurrentGraph17Data, NativeCurrentGraph17DecodeAttempt, native_current_graph17_banks_data,
+    read_native_current_graph17_into_data, read_native_current_graph17_with_admission_into_data,
+    read_native_current_graph17_with_limits_into_data,
 };
 
 use super::owned11::typed::{Fields, invalid, plain_string};
