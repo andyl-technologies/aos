@@ -73,14 +73,14 @@ impl<'a> CheckpointFields17<'a> {
 }
 
 impl PacketControl {
-    /// Quotes a genuine Capture request's unchanged stopped Reactive checkpoint.
+    /// Quotes a genuine Capture request's unchanged stopped model checkpoint.
     ///
     /// This allocation-free DATA projection borrows the actual retained prior
     /// original and full Capture fields. Neither a matching cached pair nor this
     /// row supplies the actual prior published owner, Source proof or debit.
     ///
     /// # Errors
-    /// Refuses changed actual cache custody, unsupported Producer/active-grant
+    /// Refuses changed actual cache custody, unsupported model or active-grant
     /// state, overflow or an independently short complete bound.
     pub(crate) fn quote_capture17_checkpoint_data<'previous>(
         &self,

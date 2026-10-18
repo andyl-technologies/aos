@@ -2013,3 +2013,40 @@ packages, including 69 integration targets. Debug assertions and overflow
 checks remain enabled. Final test-target compilation takes 10 minutes
 29 seconds after prerequisites. This gate compiles tests without running them
 and does not qualify subsequent changes or native preservation.
+
+### Retained restoration construction and initial supervisor handoff
+
+The next restoration checkpoint retains the actual current17 Source, Host,
+manifest and prepared-scene owners before construction and before issuing each
+native ticket. Cold member slots now use independently funded, initially empty
+single-member banks. Failed reservations and partially decoded members remain
+owned and counted. Parent archive headers remain DATA checks; recursive native,
+Source and coordinator provenance are separate unfinished obligations. The
+functional checkpoint is `8cd5d22107`.
+
+Initial SDK attachment now retains its actual protocol supervisor in native
+custody before later Source callbacks. Node handoff authenticates that same
+witness, registry and operational handle. This correction is `284c005`; the
+existing native control gains test-only retained-failure reporting in
+`f0f5304c7b`. Formatting is separate in `d115fc9e5f`.
+
+The combined functional source passes six-crate all-feature/all-target checking
+in 44.84 seconds. The unfiltered ordinary library run passes 1,938 Core, 1,492
+Daemon, 1,431 Provider and twelve Contract tests, with the existing ignored
+populations unchanged. Core takes 7.68 seconds, Daemon 342.88 seconds and Provider
+11.71 seconds. Debug assertions, overflow checks and the default test stack remain
+enabled. The extended prepared-scene regression separately passes in 258.66
+seconds. Its machine-code entry frame decreases from approximately 2.27 MiB to
+625 KiB after the member-bank correction; this measures the test fixture's stack
+frame, not VM performance.
+
+The existing source-built native control still fails after 696.98 seconds. It
+now retains a constructed graph, all three actual nodes and the Host, without
+node, provider, preparation or attachment failure. It refuses before the inactive
+runtime phase begins, and its normal retirement path reclaims the children.
+Source review locates a stale initial-lifecycle census after preparation owners
+have moved into those nodes. A correction must authenticate and count the actual
+destination owners before this control can pass. No native preservation result
+or overall performance improvement follows from these library results. The
+production application-target gate above covers the earlier source checkpoint;
+the new checkpoint requires its own refreshed gate.
