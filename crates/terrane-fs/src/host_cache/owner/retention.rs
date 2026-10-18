@@ -81,7 +81,7 @@ pub(super) enum Command {
     },
     /// Transfers genuine completion through the sole physical Resume turn.
     Resume {
-        completed: super::CompletedRecovery,
+        completed: Box<super::CompletedRecovery>,
         response: oneshot::Sender<io::Result<()>>,
     },
     /// Runs actual recovery without enabling Resume or service readiness.
@@ -269,7 +269,7 @@ impl NativeMetadataOwner {
                             completed,
                             response,
                         } => {
-                            let result = executor.resume(completed);
+                            let result = executor.resume(*completed);
                             // The executor retains the physical outcome before reply.
                             let _ = response.send(result);
                         }
@@ -317,6 +317,8 @@ impl NativeMetadataOwner {
     /// The consumed completion and acknowledged context remain with the worker
     /// even if this waiter disappears. Success grants no Store readiness or
     /// native admission; running mutations require a separate concrete turn.
+    /// The completion is allocated before submission; a queue refusal returns
+    /// that same allocation for a later explicit retry.
     ///
     /// # Errors
     /// Refuses a full or stopped queue, foreign or stale completion, repeated
@@ -326,6 +328,8 @@ impl NativeMetadataOwner {
         completed: super::CompletedRecovery,
     ) -> Result<(), super::NativeResumeError> {
         use super::NativeResumeError;
+        let completed = Box::new(completed);
+
         let Some(commands) = self.commands.as_ref() else {
             return Err(NativeResumeError::Unsubmitted {
                 error: io::Error::other("metadata owner stopped"),

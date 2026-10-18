@@ -13,8 +13,11 @@ pub enum NativeResumeError {
     Unsubmitted {
         /// Describes the stopped or full queue.
         error: io::Error,
-        /// Retains the original completion without reconstructing its authority.
-        completed: CompletedRecovery,
+        /// Retains the original pre-submission allocation and its completion.
+        ///
+        /// A later explicit retry can pass `*completed` to `resume_recovered`.
+        /// No completion or recovery authority is reconstructed on refusal.
+        completed: Box<CompletedRecovery>,
     },
     /// Reports failure after queue acceptance, with custody retained by the owner.
     ///
