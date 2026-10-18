@@ -3,9 +3,9 @@
 //! The three independently decoded parent occurrences must name exactly one
 //! original archive. Shared immutable ancestry earns no allocation refund.
 
+use super::super::initial15_history::{HistoricalInitial15Scope17, Initial15ScopeMember17};
 use super::*;
 use crate::node_adapters::cnp::OriginalInitial15ArchivedGroup;
-use super::super::initial15_history::{HistoricalInitial15Scope17, Initial15ScopeMember17};
 
 impl RetainedCold17Collection {
     /// Completes one original group and scope beneath three exact parent occurrences.

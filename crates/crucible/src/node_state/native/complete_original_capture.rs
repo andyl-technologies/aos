@@ -17,7 +17,9 @@ use super::lineage_source::OriginalLineageCoordinator;
 use super::storage::Index;
 use super::*;
 use crate::node_contract::OriginalInputLineageLimits;
-use crucible_node_contract::{CaptureManifest, CaptureRepresentation, CapturedOwner, Id, canonical};
+use crucible_node_contract::{
+    CaptureManifest, CaptureRepresentation, CapturedOwner, Id, canonical,
+};
 
 #[path = "complete_original_capture/profile.rs"]
 mod profile;

@@ -103,9 +103,13 @@ pub use lineage_reader::{
 /// Adapts independently installed vendor profiles with original CNP custody.
 pub mod vendor;
 
-pub(crate) use semantic::{PacketCompleteInitialLifecycleIdentity, PacketCompleteInitialLifecycleQuote};
+pub(crate) use semantic::{
+    PacketCompleteInitialLifecycleIdentity, PacketCompleteInitialLifecycleQuote,
+};
 
-pub(crate) use semantic::{OriginalInitialLifecycleDiagnostics, original_construction_failure_reason};
+pub(crate) use semantic::{
+    OriginalInitialLifecycleDiagnostics, original_construction_failure_reason,
+};
 
 pub(crate) use semantic::{OriginalRestorationColdGroup, OriginalRestorationColdOwnerView};
 

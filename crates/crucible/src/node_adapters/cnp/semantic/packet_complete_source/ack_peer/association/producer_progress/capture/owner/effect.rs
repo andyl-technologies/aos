@@ -6,8 +6,8 @@ use super::super::{
 };
 use super::*;
 use crate::node_adapters::cnp::CnpSemanticSource;
-use crucible_node_provider::envelope::Nullable;
 use crucible_node_contract::{Extensions, Validate, canonical};
+use crucible_node_provider::envelope::Nullable;
 use crucible_node_provider::{
     bodies::{BeginKind, BeginRequest, CaptureArguments},
     reference_packet::service::{

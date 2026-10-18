@@ -7,7 +7,9 @@
 use super::super::archive_owner::ArchivedContentData;
 use super::{PacketCompleteArchivedSemantics, data::*, refused, unknown};
 use crate::node_contract::{NodeRuntime, OperationFailure};
-use crucible_node_contract::{ActivationManifest, ContentRef, Event, HashRef, Id, PreparedOwner, U64};
+use crucible_node_contract::{
+    ActivationManifest, ContentRef, Event, HashRef, Id, PreparedOwner, U64,
+};
 use crucible_node_provider::{
     bodies::BeginArguments, envelope::Method,
     protocol_snapshot::owned11::outer::HistoricalControllerState,

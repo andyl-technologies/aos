@@ -72,7 +72,9 @@ impl OriginalRetainedSupervisor {
         Self::metadata_counter_scratch_data()
             + std::mem::size_of::<&RetainedSupervisor>()
             + std::mem::size_of::<
-                &mut dyn FnMut(OriginalSupervisorProtocolView<'static>) -> Result<(), ProviderError>,
+                &mut dyn FnMut(
+                    OriginalSupervisorProtocolView<'static>,
+                ) -> Result<(), ProviderError>,
             >()
             + std::mem::size_of::<Result<(), ProviderError>>()
     }

@@ -250,8 +250,8 @@ impl RetainedCold17Collection {
             maximum,
         )
         .map_err(super::super::super::schema)?;
-        let member_slot = member_bank_requested_storage_data(1)
-            .map_err(super::super::super::schema)?;
+        let member_slot =
+            member_bank_requested_storage_data(1).map_err(super::super::super::schema)?;
         let member_work = member_construction_transient_storage_data()?;
         let retained = quote
             .checked_add(
@@ -264,7 +264,8 @@ impl RetainedCold17Collection {
             scope,
             Some(self),
             additional,
-            retained.checked_add(member_work)
+            retained
+                .checked_add(member_work)
                 .ok_or_else(|| refused("cold17 Journal member work overflow"))?,
         )?;
         self.construct_terminal_stage_data(

@@ -4,11 +4,11 @@
 //! inside an admitted constructor's fixed census workspace. It never supplies
 //! membership, native history, Source authenticity or restoration permission.
 
-use super::*;
 use super::super::terminal::{
     RestoredArchive17ValidationConstructionData, RestoredArchive17ValidationPrewalkData,
     RestoredArchive17ValidationStep,
 };
+use super::*;
 
 pub(super) fn terminal_cache_seed(
     scope: &CompleteRestoredSettledArchiveValidation<'_>,

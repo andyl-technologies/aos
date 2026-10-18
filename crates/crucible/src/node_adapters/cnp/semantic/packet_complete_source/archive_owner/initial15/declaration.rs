@@ -7,8 +7,8 @@
 
 use super::*;
 use crate::node_state::{
-    RestoredArchive17Initial15Work as TerminalWork, RestoredArchive17Initial15Role as TerminalRole,
     RestoredArchive17Initial15QualificationRole as QualificationRole,
+    RestoredArchive17Initial15Role as TerminalRole, RestoredArchive17Initial15Work as TerminalWork,
 };
 
 use crucible_node_contract::{CaptureManifest, Repeatability, Validate};

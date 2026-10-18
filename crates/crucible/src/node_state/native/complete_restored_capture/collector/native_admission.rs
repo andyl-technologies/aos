@@ -3,11 +3,11 @@
 //! Provider rows contain numeric layout DATA. The adapter separately binds them
 //! to this actual archive occurrence, Source slot and completed cache chronology.
 
-use super::*;
 use super::super::terminal::{
     RestoredArchive17ValidationAdmission, RestoredArchive17ValidationConstructionData,
     RestoredArchive17ValidationPrewalkData,
 };
+use super::*;
 use crucible_node_provider::{
     ProviderError,
     protocol_snapshot::restored_settled17::{

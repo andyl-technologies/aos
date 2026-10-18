@@ -4,16 +4,16 @@
 //! authenticated archive handle: only the selected top archive has that receipt.
 //! Native, Source and imported-role correspondence remain separate conjuncts.
 
-use super::*;
-use crucible_node_contract::{CaptureManifest, Id, Validate, canonical};
-use crucible_node_provider::protocol_snapshot::borrowed_json::BorrowedJsonFields as Fields;
-use serde_json::Value;
-use std::mem::size_of;
 use super::terminal::{
     RestoredArchive17ParentWork, RestoredArchive17SourceIndex,
     RestoredArchive17ValidationConstructionData, RestoredArchive17ValidationPrewalkData,
     RestoredArchive17ValidationStep,
 };
+use super::*;
+use crucible_node_contract::{CaptureManifest, Id, Validate, canonical};
+use crucible_node_provider::protocol_snapshot::borrowed_json::BorrowedJsonFields as Fields;
+use serde_json::Value;
+use std::mem::size_of;
 
 #[path = "parent_index/terminal.rs"]
 mod terminal_admission;

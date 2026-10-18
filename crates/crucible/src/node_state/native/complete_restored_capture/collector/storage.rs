@@ -9,11 +9,11 @@ impl RetainedCold17Collection {
     /// includes partial owners and both flatten iterators regardless of phase.
     pub(crate) fn retained_counter_scratch_data() -> usize {
         use crucible_node_provider::{
-            retained_metadata::RetainedProtocolMetadataFacts,
             reference_packet::service::complete_restore::activation::{
                 restoration_activation_retained_counter_scratch_data,
                 restoration_activation_retained_native_evidence_counter_scratch_data,
             },
+            retained_metadata::RetainedProtocolMetadataFacts,
         };
 
         size_of::<&Self>()

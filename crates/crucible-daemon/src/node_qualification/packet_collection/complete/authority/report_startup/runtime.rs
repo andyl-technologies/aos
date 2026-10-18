@@ -147,7 +147,9 @@ impl PacketCompleteReportStartupHolder {
         eprintln!(
             "retained runtime construction: attempted={:?} members={:?} graph={} nodes={:?} host={} provider_failure={} preparation_failure={} attachment_failure={}",
             held.runtime_attempted.each_ref().map(Cell::get),
-            held.runtime_members.each_ref().map(|member| member.get().is_some()),
+            held.runtime_members
+                .each_ref()
+                .map(|member| member.get().is_some()),
             owners.graph.is_some(),
             owners.nodes.each_ref().map(Option::is_some),
             owners.host.is_some(),

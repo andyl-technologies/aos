@@ -20,14 +20,14 @@ use std::cell::Cell;
 mod declaration;
 #[path = "initial15/decoded.rs"]
 mod decoded;
-#[path = "initial15/storage.rs"]
-mod storage;
 #[path = "initial15/parent_roles.rs"]
 mod parent_roles;
+#[path = "initial15/storage.rs"]
+mod storage;
 #[path = "initial15/terminal.rs"]
 pub(super) mod terminal;
-use terminal::{Initial15Terminal17, protocol_prepare_terminal_storage_data};
 use decoded::{Initial15DecodeStaging, Initial15DecodedOwner};
+use terminal::{Initial15Terminal17, protocol_prepare_terminal_storage_data};
 
 #[derive(Clone, Copy)]
 struct OriginalSemanticCaps {

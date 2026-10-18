@@ -1368,7 +1368,9 @@ pub use capture_allocation_receipt::{
     OriginalCaptureAllocationData, original_capture_allocation_witness_counter_scratch_data,
 };
 
-pub(crate) use ack_peer::{PacketCompleteInitialLifecycleIdentity, PacketCompleteInitialLifecycleQuote};
+pub(crate) use ack_peer::{
+    PacketCompleteInitialLifecycleIdentity, PacketCompleteInitialLifecycleQuote,
+};
 
 #[path = "packet_complete_source/invocation_snapshot.rs"]
 mod invocation_snapshot;
@@ -1425,7 +1427,9 @@ pub(crate) use ack_peer::OriginalSourceRestoredCaptureEncodingInputs;
 
 pub(crate) use ack_peer::OriginalSourceRestoredCaptureCountingBanksData;
 
-pub(crate) use archive_owner::{OriginalInitial15ArchivedGroup, OriginalInitial15ArchivedOwnerRead};
+pub(crate) use archive_owner::{
+    OriginalInitial15ArchivedGroup, OriginalInitial15ArchivedOwnerRead,
+};
 
 pub use ack_peer::OriginalSourceRestoredCaptureConstructionData;
 

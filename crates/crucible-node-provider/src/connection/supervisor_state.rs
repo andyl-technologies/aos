@@ -495,7 +495,6 @@ pub(crate) use retained_supervisor::{
 
 pub use retained_supervisor::RetainedSupervisorHistoricalData;
 
-
 #[cfg(test)]
 mod retention_working_state_tests {
     use super::*;
