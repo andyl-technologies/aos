@@ -9225,8 +9225,19 @@ Resumed qualification:
   The native fixture now holds the actual worker's policy mutex while each
   retained first/final range is read, releasing it only afterward. This control
   is compiled only for explicitly enabled native fixtures and supplies no source,
-  pin or readiness authority. Corrected immutable-image and actual guest
-  qualification are running. Recovered reads, source reuse in another assembly,
+  pin or readiness authority. Corrected all-target/native-only builds, seven
+  focused regressions, the formatter pair, immutable image, independent image
+  verification and actual ext4 component pass. All six retained first/final
+  reads complete with the real policy mutex held, across normal, cancelled-waiter
+  and dictionary-backed publication. All four manifest-publication controls,
+  both Running-retention controls, eight manifest/mixed recovery controls and
+  all 47 selected filesystem cases pass. Independent review verifies all 3,477
+  image inputs, the actual unit ELF and exact 41-selector inventory; no
+  post-result guest I/O diagnostic appears. The complete 118-case filesystem
+  run and required application target compilation are running on this revision.
+  Strict Clippy still reports nineteen existing findings; the diagnostic that
+  reaches all targets with dead-code checks disabled passes without changing
+  source lint policy. Recovered reads, source reuse in another assembly,
   consumer leases and NativeReady remain required; no complete task is accepted.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
   and all seven strict Clippy/documentation profiles pass. The interface,
