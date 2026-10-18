@@ -2466,10 +2466,26 @@
       "proxy-worker-origin-requests.log", after=origin_after,
   )
   origin_log = origin_file.read_text()
-  origin_request_bytes = [
-      int(size) for size in re.findall(r"request_bytes=(\d+)", origin_log)
+  origin_requests = [
+      (kind, int(size)) for kind, size in re.findall(
+          r"route_class=([a-z_]+) request_bytes=(\d+)", origin_log
+      )
   ]
-  assert origin_request_bytes and max(origin_request_bytes) < 64 * 1024, origin_request_bytes
+  assert origin_requests
+  assert len(origin_requests) == origin_log.count("hybrid_origin_request ")
+  # Stage revisions contain compressed metadata for up to 50,000 objects;
+  # manifest appends carry bounded descriptor batches. Neither contains file
+  # payloads. Keep ordinary controls below 64 KiB and use these RPCs' own caps.
+  metadata_request_limits = {
+      "staged_release_metadata": 8 * 1024 * 1024,
+      "publication_manifest_metadata": 256 * 1024,
+  }
+  for kind, size in origin_requests:
+      assert size < metadata_request_limits.get(kind, 64 * 1024), (kind, size)
+  print("hybrid Native metadata request maximum bytes:", {
+      kind: max(size for observed, size in origin_requests if observed == kind)
+      for kind in sorted({kind for kind, _ in origin_requests})
+  })
 
   selector = native.succeed(
       f"{POSTGRES}/psql -h {DATABASE_HOST} -U postgres -d postgres -At -F ' ' "

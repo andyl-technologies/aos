@@ -2036,10 +2036,13 @@ pub(crate) async fn proxy_origin(
         };
         body
     };
-    let route_class = if assertion.method == "GET" && assertion.path_and_query == "/-/instance" {
-        "instance_page"
-    } else {
-        "other"
+    let route_class = match (assertion.method.as_str(), assertion.path_and_query.as_str()) {
+        ("GET", "/-/instance") => "instance_page",
+        ("POST", "/aos.hub.v1.PublishService/UpsertStagedRelease") => "staged_release_metadata",
+        ("POST", "/aos.hub.v1.PublishService/AppendRegistryPublicationManifest") => {
+            "publication_manifest_metadata"
+        }
+        _ => "other",
     };
     let worker_elapsed_ms = (js_sys::Date::now() - request_started_ms).max(0.0) as u64;
     let native_elapsed_log = native_elapsed_ms
