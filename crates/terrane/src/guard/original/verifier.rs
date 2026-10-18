@@ -620,7 +620,7 @@ impl<S, C> Guard<S, C> {
     ///
     /// # Errors
     /// Rejects a non-head reference, absent native dispatch or poisoned state.
-    #[cfg(all(test, feature = "tokio", unix))]
+    #[cfg(all(test, feature = "tokio", feature = "surface-sdk", unix))]
     pub(crate) fn historical_lineage_encoding_for_tests(
         &self,
         reference: Option<&str>,
