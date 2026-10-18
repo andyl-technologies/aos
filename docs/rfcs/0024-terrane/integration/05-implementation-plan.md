@@ -8694,7 +8694,7 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
 
 ### T2 — Host tier
 
-Status: in progress (2026-10-16). T1's 22 tasks and 89 current gates are
+Status: paused at user request (2026-10-16). T1's 22 tasks and 89 current gates are
 complete; its identity, encoding, bucket-key and Store-trait freeze applies.
 Ten separate implementation worktrees cover the five T2 tasks, including
 dedicated publisher-transport, host-quota, native confinement and recovery
@@ -8862,21 +8862,72 @@ written bytes. Independent review verifies every compiler-input hash, executable
 runtime identity, case result and unchanged source guard. Resume, admission,
 BKT-15 and full host-task qualification remain outside that component result.
 
-The encoded-admission producer now has a separate source checkpoint. Review
-requires corrections for unused registry slots after effect-free rejection,
-phase-specific canonical file custody and checked active-memory overlaps before
-compilation. The separate bounded existing-Original inspection producer passes
-source review; its eleven new tests remain unrun. It retains genuine native
-exclusion without granting fresh-creator or host-readiness authority.
+The encoded-admission producer's corrected checkpoint `52b111c72c` passes
+source review for registry-slot reclamation after effect-free rejection,
+phase-specific canonical file custody and checked active-memory overlaps.
+Its all-target build and five selected tests pass, with all 6,477 source inputs
+unchanged. Strict library Clippy first stops in the shared dependency; after
+the two reviewed condition collapses, it reaches filesystem diagnostics that
+include mutex guards across actual awaits. An owned snapshot-write transition
+is required before retrying; resource custody must survive that transition.
+The separate bounded existing-Original inspection producer at `7129f2f203`
+builds and passes all eleven selected tests, with unchanged source guards.
+Corrected checkpoint `f36a6b5921` passes strict library, native all-target and
+SDK all-target Clippy, preserving all test cases and native instrumentation.
+The eleven-case runtime result remains separately pinned to `7129f2f203`.
+These current-UID tests retain genuine native exclusion without establishing
+privileged host enrollment, fresh-creator authority or host readiness.
 The module privacy correction passes source review and all eighty-eight
 declarative module checks at `655b57b853`, including both privacy regressions.
 Independent review verifies all 6,324 tracked inputs and the evaluated report.
 Tmpfiles retain non-public roots at mode `0750`, including override paths,
-without a
-second declaration widening them to `0755`. Actual four-role composition and
-full module-task acceptance remain pending. The combined surface and configured
-SDK candidate is assembled without changing their reviewed implementations;
-fresh task gates, aggregate checks and application qualification remain pending.
+without a second declaration widening them to `0755`. Actual four-role
+composition and full module-task acceptance remain pending. The combined surface
+and configured SDK candidate passes all four surface gates at `1d9b52a51e`.
+Its subsequent SDK image compilation exposes a missing shared namespace helper. The correction
+uses the exact helper already qualified by the first-enrollment native fixture.
+The corrected candidate `7f645904e6` compiles all three configured SDK image
+targets; independent review verifies compiler inputs, executables and runtime
+hashes. All eleven configured SDK unit cases and the ext4 example/CLI success
+and late-denial controls pass on that corrected candidate. Its interface and
+schema gates also pass, with unchanged source guards. The schema observer passes
+one actual case with none ignored. Status, commit-path, feature-matrix, aggregate
+and application qualification on the final candidate remain pending.
+
+The shared Linux glue dependency explicitly enables the filesystem crate's
+existing Tokio feature for the receipt-consuming enrollment API. Locked offline
+Cargo metadata and the crate-graph gate pass. Cargo.lock and the 632 external
+dependencies are unchanged, so the lockfile-driven vendor staging hashes remain
+unchanged. Full application compilation remains part of qualification.
+
+Preserved pause checkpoints:
+
+- Surface candidate `7f645904e6`: image, unit, native SDK, interface and schema
+  checks pass. The last schema check finishes successfully before pausing; all
+  build handles are closed. The remaining stages have not started.
+- Core `f36a6b5921`: strict library, native all-target and SDK all-target
+  Clippy pass. The eleven actual existing-inspection tests remain qualified at
+  `7129f2f203`; no privileged enrollment result is inferred.
+- Existing enrollment consumer `37fbf8839c`: complete consumer passes source
+  review. Its first build stops at an inherited filesystem inventory reborrow;
+  the reviewed one-line correction is committed but its retry has not started.
+  Resume with the bounded all-target `aos-terrane` build before tests or lint.
+- Snapshot transition `2adeb253d9`: implementation is committed and formatted;
+  full source review, compilation and cancellation/failure/native validation
+  remain pending. The earlier five-test result belongs to `52b111c72c`.
+- Native admission fixture `1c17289e1e`: three selectors pass source review,
+  preserving the eight existing controls. The external supervisor consumers,
+  compilation and native execution remain pending.
+- Quota clock `1268037a15`: the native clock boundary preserves the original
+  EINTR deadline and actual signal-test assertions. Compilation, lint and real
+  signal/native requalification remain pending; `bfe91091de` is preserved.
+
+Every implementation checkout retains its committed branch. Unmerged work is
+kept locally; no partial task merge or task acceptance is implied. Resume the
+final surface qualification after integrating shared prerequisite `38a1ee21f6`,
+then the existing consumer and snapshot/native-admission queues. The zero-wipe
+conflict above and actual four-role deployment remain unresolved. T3 and all
+branch worklines remain unstarted.
 
 The shared glue dependency now names
 the existing Core types directly, and the crate-graph audit includes the current

@@ -11,7 +11,7 @@ serde.workspace = true
 toml.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-terrane-fs.workspace = true
+terrane-fs = { workspace = true, features = ["tokio"] }
 
 [dev-dependencies]
 tokio.workspace = true
