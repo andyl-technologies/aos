@@ -91,6 +91,11 @@ impl PreparationOwners {
             .map_err(|_| RuntimeError::OwnerBusy)
     }
 
+    #[cfg(test)]
+    pub(super) fn original_initial_scratch_for_test(&self) -> Option<&CnpPreparationStorageScratch> {
+        self.scratch.as_ref()
+    }
+
     // These roots live inline in the actual holder. Only the concrete supervisor
     // backing is charged here; completed preparation/query rows are phase terms.
     pub(super) fn charge_supervisors(

@@ -100,6 +100,13 @@ impl InstalledCompleteScene {
         }
         self.attempted = true;
         let result = self.prepare_started();
+        #[cfg(test)]
+        if result.is_err() {
+            // Retirement revokes the witnesses needed to inspect this failure.
+            PacketCompleteReportStartupHolder::report_original_runtime_failure_for_test(
+                &self.original,
+            );
+        }
         if result.is_err() {
             // Only this call spent the entry. Refused duplicates must not retire
             // originals retained by an earlier attempt.
@@ -125,8 +132,13 @@ impl InstalledCompleteScene {
         if PacketCompleteReportStartupHolder::has_original_runtime_mechanism_data(&self.original)
             .map_err(|_| refused())?
         {
-            PacketCompleteReportStartupHolder::prepare_original_scene_runtime(&self.original)
-                .map_err(|_| refused())?;
+            let prepared =
+                PacketCompleteReportStartupHolder::prepare_original_scene_runtime(&self.original);
+            #[cfg(test)]
+            if let Err(error) = &prepared {
+                eprintln!("original runtime preparation refused: {error:?}");
+            }
+            prepared.map_err(|_| refused())?;
         }
         Ok(())
     }

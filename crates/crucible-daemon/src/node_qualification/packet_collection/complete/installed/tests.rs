@@ -232,13 +232,7 @@ fn source_built_packet_original_scene_reaches_inactive_runtime_and_reclaims() {
     // Keep the installed capsule and its real supervisor outside the unwind
     // boundary. Even a startup assertion must reclaim the same native children.
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let prepared = installed.prepare();
-        if prepared.is_err() {
-            PacketCompleteReportStartupHolder::report_original_runtime_failure_for_test(
-                &installed.original,
-            );
-        }
-        prepared.unwrap();
+        installed.prepare().unwrap();
         assert!(installed.attempted);
         assert!(installed.incoming.is_none());
         assert!(!installed.retired);

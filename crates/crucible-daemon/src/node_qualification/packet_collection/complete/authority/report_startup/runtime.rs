@@ -130,8 +130,9 @@ mod tests;
 impl PacketCompleteReportStartupHolder {
     /// Reports retained construction failures before the native control retires them.
     ///
-    /// This inspects existing slots without a Source callback, retry or owner
-    /// transfer. A busy diagnostic loan must not replace the original failure.
+    /// Closed data inspectors observe the existing owners before retirement
+    /// revokes their witnesses. No constructor, transport request or owner
+    /// transfer occurs. A busy diagnostic loan preserves the original failure.
     pub(in crate::node_qualification::packet_collection::complete) fn report_original_runtime_failure_for_test(
         original: &Rc<RefCell<Self>>,
     ) {
@@ -166,6 +167,40 @@ impl PacketCompleteReportStartupHolder {
             }
             if owners.unwinds[index].is_some() {
                 eprintln!("retained node failure: index={index} unwind retained");
+            }
+        }
+
+        if let Some(host) = &owners.host {
+            let storage = crucible::node_contract::SimulationNode::retained_requested_storage_precredit_data(
+                host,
+                usize::MAX,
+            );
+            eprintln!("retained host diagnostic: storage={storage:?}");
+        }
+
+        let Ok(preparations) = held.preparations.try_borrow() else {
+            eprintln!("retained runtime failure: preparation owners borrowed");
+            return;
+        };
+        for (index, node) in owners.nodes.iter().enumerate() {
+            let Some(node) = node else {
+                continue;
+            };
+            let source = &held.authority.roster.sources[index];
+            let identity = preparations
+                .original_initial_ticket_data(index)
+                .and_then(|ticket| {
+                    node.inspect_original_initial_preparation_data(&ticket, source, &held.plan)
+                });
+            eprintln!("retained node diagnostic: index={index} identity={identity:?}");
+
+            if let Some(scratch) = preparations.original_initial_scratch_for_test() {
+                let storage = node.retained_original_initial_requested_storage_precredit_data(
+                    source,
+                    scratch,
+                    usize::MAX,
+                );
+                eprintln!("retained node diagnostic: index={index} storage={storage:?}");
             }
         }
     }
