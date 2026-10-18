@@ -38,6 +38,9 @@ use super::*;
 #[path = "host_exact_tests/packet.rs"]
 mod packet;
 
+#[path = "host_exact_tests/seeded_faulted.rs"]
+mod seeded_faulted;
+
 fn id(value: &str) -> Id {
     Id::new(value).unwrap()
 }

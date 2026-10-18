@@ -91,6 +91,12 @@ output, actual compiler messages and all 4,126 included Rust/Cargo files against
 that commit. This is compilation only and excludes the later selected-executable
 buffer change and native runtime execution.
 
+The refresh at `5285b8095f` also passes, including the selected-executable bank
+change: all 167 test artifacts freshly compile across 48 application packages,
+including 69 integration targets. Its captured Rust/Cargo payload matches all
+4,126 included files at that commit. This remains compilation-only evidence and
+excludes the subsequent ordinary packet and transport routing changes.
+
 ### QEMU package
 
 The ordinary QEMU package passes 589 upstream TAP checks, 44 project model/cost
@@ -1324,6 +1330,17 @@ unsupported operations are refused. This does not qualify packet preservation
 or transport fault controls. Formatting and six-crate all-feature/all-target
 checking pass; the latter completes in 35.40 seconds.
 
+The existing seeded and faulted links also route ordinary exact demands through
+the same installed executor. Two controls pass in 13.26 seconds, exercising six
+fresh catalogs with seeded Block timing, opaque-packet corruption and
+duplication, and complete packet loss. Actual bytes, references, RNG-derived
+timing and causal publications match their oracles and repeat exactly. A
+separately consumed fault-decision journal supplies an output oracle; this does
+not inspect or qualify the executor's private journal. Changed programs and
+capabilities are refused. Independent source review, formatting and six-crate
+all-feature/all-target checking pass; the latter completes in 53.28 seconds.
+Preservation, runtime mutation and other control operations remain unenrolled.
+
 ### Selected executable measurement
 
 The selected startup/Prepare path now reads through a 256 KiB bank. It retains
@@ -1349,8 +1366,17 @@ reference initialization and measurement. All four full-roster controls pass
 in 26.28 seconds; six-crate, all-feature/all-target checking passes in 41.15
 seconds. The provider rebuild passes in 19.20 seconds. The actual startup test
 still fails with zero passes and one failure in 74.83 seconds; its precise next
-refusal remains under investigation. The application-target gate passes for
-the preceding layout checkpoint, not this measurement change.
+refusal remains under investigation. The application-target refresh also passes
+for this measurement change at `5285b8095f`; native runtime qualification remains
+separate.
+
+Failure-only diagnostics on the subsequent checkpoint isolate startup refusal
+to the first node's Hello reply: its retained SDK error is a socket read expiring
+with `WouldBlock`. The ordinary optimized test-profile provider also refuses;
+the latest probe records zero passes and one failure in 70.60 seconds, with
+original resources reclaimed. The provider's reason for withholding the reply
+remains under investigation. Temporary logging is removed after each probe;
+this diagnostic result does not qualify native startup or preservation.
 
 ## Known gaps and exit criteria
 
