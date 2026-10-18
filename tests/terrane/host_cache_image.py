@@ -29,6 +29,12 @@ UNIT_PREFIXES = ("host_cache::owner::", "host_cache::recovery_inspection::",
 UNIT_PROFILE = {"opt_level": "s", "debuginfo": 0, "debug_assertions": True,
                 "overflow_checks": True, "test": True}
 UNIT_TESTS = (
+    'host_cache::owner::admission::io::tests::actual_admission_byte_check_is_positioned_and_rejects_modified_inode_bytes',
+    'host_cache::owner::admission::memory::tests::simultaneous_active_copies_and_state_headers_are_checked',
+    'host_cache::owner::admission::metadata::tests::actual_metadata_pair_rejects_wrong_index_key_class_and_window',
+    'host_cache::owner::admission::tests::cancelled_started_phase_faults_without_native_authority_or_mutexes',
+    'host_cache::owner::admission::tests::untrusted_pair_input_is_bounded_with_checked_addition',
+    'host_cache::owner::snapshot::tests::actual_snapshot_io_retains_readback_and_rejects_replaced_inode',
     'host_cache::owner::config::tests::native_host_cache_config_refuses_ambiguous_custody_and_unfunded_capacity',
     'host_cache::owner::config::tests::native_host_cache_config_validation_needs_no_existing_paths',
     'host_cache::owner::config::tests::native_index_repair_policy_defaults_closed_and_funds_payload_overlap',
@@ -83,7 +89,7 @@ def unit_inventory(output):
                    and len(names) == len(set(names)) and 0 < len(names) <= 4096
                    and int(lines[-1].split()[0]) == len(names), "invalid FS unit inventory")
     selected = sorted(name for name in names if name.startswith(UNIT_PREFIXES))
-    shared.require(selected == sorted(UNIT_TESTS) and len(selected) == 41,
+    shared.require(selected == sorted(UNIT_TESTS) and len(selected) == 47,
                    "FS unit module-prefix inventory changed")
     return sorted(names)
 
