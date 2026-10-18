@@ -10,6 +10,7 @@ use crate::spawn::{ConfiguredProcessEnvelope, QemuProcessStageRetirement};
 #[derive(Default)]
 pub(super) struct ForkTargetSlot {
     next_epoch: u64,
+    returned_epoch: u64,
     last_reserved_process_generation: u64,
     reserved_process_generation: Option<u64>,
     occupied: Option<u64>,
@@ -22,12 +23,138 @@ pub(super) struct ForkTargetSlot {
     control: Option<OriginalNativeControlRetirement>,
     preparation: Option<Arc<HostOperationGuard>>,
     cleanup: Option<Arc<TargetCleanup>>,
+    cleanup_completion_failure:
+        Option<crucible_linux_resource::host_supervision::HostSupervisionError>,
     unsettled: Option<RetainedNativeHost>,
+}
+
+/// Preserves actual Target construction cleanup causes without another Box.
+///
+/// The physical owner remains in its canonical roster or containing guard.
+/// This report itself never grants cleanup or attests resource return.
+#[derive(Debug, thiserror::Error)]
+pub enum QemuForkTargetConstructionError {
+    /// The exact issuer, epoch, saved Cleanup or native control refused.
+    #[error("Target construction original refused: {0}")]
+    Original(#[from] OriginalActorAccountError),
+    /// An existing retained process or cgroup cleanup failed.
+    #[error("Target construction physical cleanup refused: {0}")]
+    Physical(#[source] QemuVmRealizationError),
+}
+
+impl QemuForkTargetConstructionError {
+    pub(super) fn into_realization(self) -> QemuVmRealizationError {
+        match self {
+            Self::Original(first) => original_error(first),
+            Self::Physical(first) => first,
+        }
+    }
+}
+
+/// Retains cleanup access to one genuinely occupied Target construction.
+///
+/// Only its original move-only permit creates this loan. It grants no launch,
+/// work or subdivision authority, and cannot select another Target epoch. The
+/// containing constructor retains its real Source owner until it observes this
+/// exact Target's return; loss of the roster is never inferred to mean closure.
+#[must_use = "retain the same Target construction loan until exact physical return"]
+pub struct QemuForkTargetConstructionLoan {
+    attempt: NativeAccountAttempt,
+    epoch: u64,
+    process_generation: u64,
+    returned: bool,
+    failed_permit: Option<crate::linux_attempt_host::LinuxQemuForkTargetPermit>,
+}
+
+impl QemuForkTargetConstructionLoan {
+    /// Returns the process generation reserved by this exact native Target role.
+    ///
+    /// This is distinct from the scheduler's modeled node generation and
+    /// supplies no authority to create a RAM registration or native process.
+    #[must_use]
+    pub const fn process_generation(&self) -> u64 {
+        self.process_generation
+    }
+
+    /// Borrows this exact Target's once-entered cleanup for a bounded close step.
+    ///
+    /// This enters no new preparation or clock. The saved Target origin alone
+    /// may admit its existing eligible Cleanup; returned or foreign epochs are
+    /// never reused to authorize another physical operation.
+    ///
+    /// # Errors
+    /// Preserves the same cached admission refusal, or refuses unavailable,
+    /// mismatched, returned, poisoned or terminal cleanup custody.
+    pub fn retained_cleanup(
+        &self,
+    ) -> Result<Arc<HostOperationGuard>, QemuForkTargetConstructionError> {
+        if self.returned {
+            return Err(OriginalActorAccountError::Unavailable.into());
+        }
+        let roster = self
+            .attempt
+            .roster
+            .upgrade()
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        let state = roster
+            .lock()
+            .map_err(|_| OriginalActorAccountError::Unavailable)?;
+        let slot = state
+            .slots
+            .get(self.attempt.index)
+            .filter(|slot| slot.active == Some(self.attempt.generation))
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        if slot.fork_target.occupied != Some(self.epoch)
+            || slot.fork_target.reserved_process_generation != Some(self.process_generation)
+        {
+            return Err(OriginalActorAccountError::Unavailable.into());
+        }
+        slot.fork_target.cleanup().map_err(Into::into)
+    }
+
+    /// Retries only this Target's canonical partial owners and saved Cleanup.
+    ///
+    /// A successful return means this exact Target role has closed. It does
+    /// not retire the parent Source, World or original family reservation.
+    ///
+    /// # Errors
+    /// Refuses foreign, stale, poisoned or still externally owned custody,
+    /// failed physical cleanup, or the original Target Cleanup's refusal.
+    pub fn try_finish(&mut self) -> Result<(), QemuForkTargetConstructionError> {
+        if self.returned {
+            return Ok(());
+        }
+        let (returned, result) = self
+            .attempt
+            .retry_target_construction(self.epoch, self.process_generation);
+        // Record the irreversible slot return before propagating its report.
+        self.returned |= returned;
+        if self.returned {
+            drop(self.failed_permit.take());
+        }
+        result
+    }
+
+    pub(in crate::linux_attempt_host) fn retain_failed_permit(
+        &mut self,
+        permit: crate::linux_attempt_host::LinuxQemuForkTargetPermit,
+    ) {
+        self.failed_permit = Some(permit);
+    }
+
+    /// Observes only the exact return already latched by this loan's retry.
+    ///
+    /// This fact issues no cleanup, return or new-work permission.
+    #[must_use]
+    pub const fn is_physically_returned(&self) -> bool {
+        self.returned
+    }
 }
 
 /// Shares this exact Target's once-entered Cleanup independently of roster locks.
 pub(super) struct TargetCleanup {
     preparation: Arc<HostOperationGuard>,
+    completed: bool,
     entered: std::sync::OnceLock<
         Result<
             Arc<HostOperationGuard>,
@@ -40,8 +167,41 @@ impl TargetCleanup {
     fn new(preparation: Arc<HostOperationGuard>) -> Self {
         Self {
             preparation,
+            completed: false,
             entered: std::sync::OnceLock::new(),
         }
+    }
+
+    // Native close receipts are checked by close_target_slot before this
+    // operation is reached. Completed only selects an observation of this SAME
+    // saved guard; it never substitutes for physical closure or a fresh guard.
+    fn complete_for_return(
+        &mut self,
+    ) -> Result<(), crucible_linux_resource::host_supervision::HostSupervisionError> {
+        use crucible_linux_resource::host_supervision::{
+            HostOperationClass, HostOperationState, HostSupervisionError,
+        };
+        let cleanup = self
+            .entered
+            .get_mut()
+            .ok_or(HostSupervisionError::Unavailable)?
+            .as_mut()
+            .map_err(|first| *first)?;
+        let guard = Arc::get_mut(cleanup).ok_or(HostSupervisionError::BorrowedOperation)?;
+        let observed = if self.completed {
+            guard.status()
+        } else {
+            let (completed, result) = guard.complete_observed();
+            self.completed |= completed;
+            result
+        }?;
+        if !self.completed
+            || observed.class != HostOperationClass::Cleanup
+            || observed.state != HostOperationState::Completed
+        {
+            return Err(HostSupervisionError::Unavailable);
+        }
+        Ok(())
     }
 
     pub(super) fn guard(&self) -> Result<Arc<HostOperationGuard>, OriginalActorAccountError> {
@@ -180,6 +340,80 @@ pub(super) fn retained_control_extent() -> Result<u64, OriginalActorAccountError
 }
 
 impl NativeAccountAttempt {
+    fn retry_target_construction(
+        &self,
+        epoch: u64,
+        process_generation: u64,
+    ) -> (bool, Result<(), QemuForkTargetConstructionError>) {
+        let unavailable =
+            || QemuForkTargetConstructionError::Original(OriginalActorAccountError::Unavailable);
+        let Some(roster) = self.roster.upgrade() else {
+            return (false, Err(unavailable()));
+        };
+        let Ok(mut state) = roster.lock() else {
+            return (false, Err(unavailable()));
+        };
+        let Some(slot) = state
+            .slots
+            .get_mut(self.index)
+            .filter(|slot| slot.active == Some(self.generation))
+        else {
+            return (false, Err(unavailable()));
+        };
+        if epoch == 0 || epoch > slot.fork_target.next_epoch {
+            return (false, Err(unavailable()));
+        }
+        if slot.fork_target.returned_epoch >= epoch {
+            return (true, Ok(()));
+        }
+        if slot.fork_target.occupied != Some(epoch)
+            || slot.fork_target.reserved_process_generation != Some(process_generation)
+        {
+            return (false, Err(unavailable()));
+        }
+        let result = if slot.fork_target.unsettled.is_some() {
+            retry_unsettled_target_raw(slot)
+        } else if slot.fork_target.physical_closed {
+            finish_target_control_return(slot)
+        } else if !slot.fork_target.born {
+            // begin_birth precedes the first dispatcher/cgroup effect. Every
+            // canonical physical field must also be absent before this exact
+            // logical role can close under its existing Cleanup.
+            let target = &slot.fork_target;
+            if target.envelope.is_some()
+                || target.process_binding.is_some()
+                || target.control.is_some()
+                || target.process_generation.is_some()
+                || target.ram_registration_generation.is_some()
+            {
+                Err(unavailable())
+            } else {
+                match target.cleanup() {
+                    Err(first) => Err(first.into()),
+                    Ok(cleanup) => {
+                        let before = cleanup.wait_slice().map(|_| ()).map_err(|first| {
+                            QemuForkTargetConstructionError::Original(first.into())
+                        });
+                        drop(cleanup);
+                        match before {
+                            Err(first) => Err(first),
+                            Ok(()) => {
+                                slot.fork_target.physical_closed = true;
+                                close_target_slot(slot)
+                                    .map_err(QemuForkTargetConstructionError::Original)
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            // A successfully returned host guard remains the physical owner;
+            // the cleanup loan must never steal it or attest its destruction.
+            Err(unavailable())
+        };
+        (slot.fork_target.returned_epoch >= epoch, result)
+    }
+
     pub(in crate::linux_attempt_host) fn fork_target_is_owned(&self) -> bool {
         let Some(roster) = self.roster.upgrade() else {
             return true;
@@ -197,7 +431,14 @@ impl NativeAccountAttempt {
     pub(in crate::linux_attempt_host) fn reserve_fork_target(
         &self,
         source: &crate::QemuChildProcessContract,
-    ) -> Result<ForkTargetReservation, OriginalActorAccountError> {
+    ) -> Result<
+        (
+            ForkTargetReservation,
+            QemuForkTargetConstructionLoan,
+            Option<crucible_linux_resource::host_services::process_birth::NativePoolRefusal>,
+        ),
+        OriginalActorAccountError,
+    > {
         self.require_live_launch_control()?;
         let roster = self
             .roster
@@ -248,36 +489,41 @@ impl NativeAccountAttempt {
         // enters the unchanged Main supervisor. Retries keep the same guard.
         let preparation = Arc::new(normal.begin_native_preparation()?);
         slot.fork_target.cleanup = Some(Arc::new(TargetCleanup::new(Arc::clone(&preparation))));
-        slot.fork_target.preparation = Some(preparation);
+        slot.fork_target.preparation = Some(Arc::clone(&preparation));
         slot.fork_target.next_epoch = epoch;
         slot.fork_target.occupied = Some(epoch);
         slot.fork_target.reserved_process_generation = Some(process_generation);
-        // Publish the saved operation and occupied Target before its Main-table
-        // landing admission. A refused postcut retains the same node debt.
-        let normal = slot
-            .credit
-            .as_ref()
-            .and_then(|credit| credit.original.as_ref())
-            .and_then(|original| original.normal.as_ref())
-            .ok_or(OriginalActorAccountError::Unavailable)?;
-        normal.reserve_node_target_window(
-            slot.fork_target
-                .preparation
-                .as_ref()
-                .ok_or(OriginalActorAccountError::Unavailable)?,
-        )?;
-        Ok(ForkTargetReservation {
+        // Mint the nonissuing cleanup borrow under this same locked actual
+        // issuer, before any fallible landing admission or postcut. There is
+        // no second roster lock/lookup that can lose a born role on refusal.
+        let cleanup = QemuForkTargetConstructionLoan {
             attempt: NativeAccountAttempt {
                 roster: Weak::clone(&self.roster),
                 index: self.index,
                 generation: self.generation,
             },
             epoch,
-            ceilings: (vcpus, resident, writable),
-            descriptors,
-            credentials,
-            consumed: false,
-        })
+            process_generation,
+            returned: false,
+            failed_permit: None,
+        };
+        let landing_refusal = normal.reserve_node_target_window(&preparation).err();
+        Ok((
+            ForkTargetReservation {
+                attempt: NativeAccountAttempt {
+                    roster: Weak::clone(&self.roster),
+                    index: self.index,
+                    generation: self.generation,
+                },
+                epoch,
+                ceilings: (vcpus, resident, writable),
+                descriptors,
+                credentials,
+                consumed: false,
+            },
+            cleanup,
+            landing_refusal,
+        ))
     }
 
     pub(in crate::linux_attempt_host) fn verify_fork_target_contract(
@@ -640,6 +886,7 @@ impl Drop for ForkTargetReservation {
             drop(slot.fork_target.cleanup.take());
             Arc::get_mut(preparation).ok_or(OriginalActorAccountError::Unavailable)?;
             slot.fork_target.preparation = None;
+            slot.fork_target.returned_epoch = self.epoch;
             slot.fork_target.occupied = None;
             Ok(())
         });
@@ -648,6 +895,9 @@ impl Drop for ForkTargetReservation {
 
 fn close_target_slot(slot: &mut NativeSlot) -> Result<(), OriginalActorAccountError> {
     let target = &mut slot.fork_target;
+    let epoch = target
+        .occupied
+        .ok_or(OriginalActorAccountError::Unavailable)?;
     if !target.physical_closed
         || target.unsettled.is_some()
         || target.control.is_some()
@@ -684,15 +934,13 @@ fn close_target_slot(slot: &mut NativeSlot) -> Result<(), OriginalActorAccountEr
     {
         return Err(OriginalActorAccountError::Unavailable);
     }
-    let cleanup = unique
-        .entered
-        .get_mut()
-        .ok_or(OriginalActorAccountError::Unavailable)?
-        .as_mut()
-        .map_err(|source| OriginalActorAccountError::from(*source))?;
-    Arc::get_mut(cleanup)
-        .ok_or(OriginalActorAccountError::Unavailable)?
-        .complete()?;
+    if let Err(post) = unique.complete_for_return() {
+        let first = *target.cleanup_completion_failure.get_or_insert(post);
+        return Err(OriginalActorAccountError::TargetCleanupBoundary {
+            source: first,
+            post: (post != first).then_some(post),
+        });
+    }
     drop(target.cleanup.take());
     let preparation = target
         .preparation
@@ -705,34 +953,97 @@ fn close_target_slot(slot: &mut NativeSlot) -> Result<(), OriginalActorAccountEr
     target.ram_registration_generation = None;
     target.born = false;
     target.physical_closed = false;
+    target.returned_epoch = epoch;
     target.occupied = None;
-    Ok(())
+    // Journal physical role return before delivering the actual historical
+    // completion cause. No later retry may repeat these irreversible closes.
+    match target.cleanup_completion_failure.take() {
+        Some(source) => {
+            Err(OriginalActorAccountError::TargetCleanupBoundary { source, post: None })
+        }
+        None => Ok(()),
+    }
 }
 
 pub(super) fn retry_unsettled_target(slot: &mut NativeSlot) -> Result<(), QemuVmRealizationError> {
+    retry_unsettled_target_raw(slot).map_err(QemuForkTargetConstructionError::into_realization)
+}
+
+fn retry_unsettled_target_raw(
+    slot: &mut NativeSlot,
+) -> Result<(), QemuForkTargetConstructionError> {
     let target = &mut slot.fork_target;
     if target.unsettled.is_none() {
         return Ok(());
     }
-    let cleanup = target.cleanup().map_err(original_error)?;
-    target
+    let cleanup = target
+        .cleanup()
+        .map_err(QemuForkTargetConstructionError::Original)?;
+    let work = target
         .unsettled
         .as_mut()
-        .ok_or_else(|| original_error(OriginalActorAccountError::Unavailable))?
-        .finish(&cleanup)?;
+        .ok_or(QemuForkTargetConstructionError::Original(
+            OriginalActorAccountError::Unavailable,
+        ))?
+        .finish(&cleanup);
+    if let Err(first) = work {
+        // Retain the actual post error, while recording bodies that this SAME
+        // retained owner already destroyed. The next attempt reconciles only
+        // remaining controls/role; it cannot repeat process or storage cleanup.
+        if target
+            .unsettled
+            .as_ref()
+            .is_some_and(RetainedNativeHost::bodies_returned)
+        {
+            target.unsettled = None;
+            target.envelope = None;
+            target.physical_closed = true;
+        }
+        return Err(QemuForkTargetConstructionError::Physical(first));
+    }
     target.unsettled = None;
     target.envelope = None;
     target.physical_closed = true;
+    drop(cleanup);
+    finish_target_control_return(slot)
+}
+
+fn finish_target_control_return(
+    slot: &mut NativeSlot,
+) -> Result<(), QemuForkTargetConstructionError> {
+    let target = &mut slot.fork_target;
     // Surviving native registry aliases deliberately keep this slot occupied.
     if let Some(pin) = target.control.as_mut() {
-        pin.close().map_err(|source| {
-            original_error(OriginalActorAccountError::NativeControlBoundary {
-                source,
-                original: cleanup.wait_slice().err(),
-            })
-        })?;
+        let cleanup = target
+            .cleanup
+            .as_ref()
+            .ok_or(QemuForkTargetConstructionError::Original(
+                OriginalActorAccountError::Unavailable,
+            ))?
+            .guard()
+            .map_err(QemuForkTargetConstructionError::Original)?;
+        let work = pin.close();
+        let post = cleanup.wait_slice();
+        match work {
+            Ok(()) => {
+                // Native alias closure is irreversible even when the SAME
+                // saved operation independently refuses the following post.
+                target.control = None;
+                post.map_err(|first| QemuForkTargetConstructionError::Original(first.into()))?;
+            }
+            Err(source) => {
+                return Err(QemuForkTargetConstructionError::Original(
+                    OriginalActorAccountError::NativeControlBoundary {
+                        source,
+                        original: post.err(),
+                    },
+                ));
+            }
+        }
     }
     target.control = None;
-    drop(cleanup);
-    close_target_slot(slot).map_err(original_error)
+    close_target_slot(slot).map_err(QemuForkTargetConstructionError::Original)
 }
+
+#[cfg(test)]
+mod construction_tests;

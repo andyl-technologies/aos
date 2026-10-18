@@ -26,8 +26,8 @@ use crate::crucible_artifact::{
     decode_crucible_configuration_artifact_from_repository,
 };
 use crate::executor_supervisor::SelectedExactCheckpointRoot;
+use crate::packaged_qemu_executor::RetainedTemplateServiceFactory;
 use crate::packaged_qemu_executor::guarded::RetainedOperationError;
-use crate::packaged_qemu_executor::{RetainedTemplateService, RetainedTemplateServiceFactory};
 use crate::qemu_campaign_resume::QemuExactResumeBasis;
 use crate::qemu_resource_guard::QemuAttemptSelectedHostResourceFactory;
 use crate::{
@@ -58,11 +58,11 @@ pub struct PreparedCampaignDebugLifecycle {
     pub(crate) source: ScenarioDefForm,
     pub(crate) configuration: Configuration,
     pub(crate) checkpoint: Checkpoint,
-    pub(crate) retention: SessionLifetimeRetention,
-    pub(crate) decoding: Option<crucible::owned_decode::DecodeBudget>,
     pub(crate) build_loop: Box<
         dyn FnOnce() -> Result<ProductionVmLifecycleLoop, CampaignDebugLifecycleBuildError> + Send,
     >,
+    pub(crate) retention: SessionLifetimeRetention,
+    pub(crate) decoding: Option<crucible::owned_decode::DecodeBudget>,
 }
 
 impl PreparedCampaignDebugLifecycle {
@@ -101,8 +101,7 @@ impl PreparedCampaignDebugLifecycle {
                 configuration,
                 checkpoint,
                 seed,
-                retention,
-                (decoding, build_loop),
+                (build_loop, retention, decoding),
             )
             .await
     }
@@ -128,16 +127,27 @@ impl CampaignDebugLifecycleBuildError {
 struct AuthenticatedDebugRestore {
     checkpoint: ExactCheckpointId,
     selected: Option<SelectedExactCheckpointRoot>,
-    service: Arc<Mutex<Option<RetainedTemplateService>>>,
-    operation: Arc<crucible_linux_resource::host_supervision::HostOperationGuard>,
+    service: crate::lifecycle_cleanup::ServiceMainHandle,
 }
 
-type GuardedResumeBuilder = dyn Fn(
-        &ScenarioDef,
-        &ScenarioDefForm,
-        &Configuration,
-        AuthenticatedDebugRestore,
-    ) -> Result<ProductionVmLifecycleLoop, CampaignDebugLifecycleBuildError>
+enum DebugSourceRequest<'a> {
+    Prepare,
+    Resume {
+        scenario: &'a ScenarioDef,
+        source: &'a ScenarioDefForm,
+        configuration: &'a Configuration,
+        restore: AuthenticatedDebugRestore,
+    },
+}
+
+enum DebugSourceOutput {
+    Prepared(crate::lifecycle_cleanup::ServiceMainHandle),
+    Restored(ProductionVmLifecycleLoop),
+}
+
+type GuardedResumeBuilder = dyn for<'a> Fn(
+        DebugSourceRequest<'a>,
+    ) -> Result<DebugSourceOutput, CampaignDebugLifecycleBuildError>
     + Send
     + Sync;
 
@@ -163,65 +173,93 @@ impl CampaignDebugQemuCapability {
     {
         let lifecycle = lifecycle.into();
         let restore_checkpoints = Arc::clone(&checkpoints);
-        let build_resume = Arc::new(
-            move |scenario: &ScenarioDef,
-                  source: &ScenarioDefForm,
-                  configuration: &Configuration,
-                  mut restore: AuthenticatedDebugRestore| {
-                // Session retention keeps the actual Service beyond restore.
-                // Final discharge still requires the registry's physical
-                // process, source-worker, and descriptor cleanup proof.
-                let mut retained = restore.service.lock().map_err(|_| {
-                    CampaignDebugLifecycleBuildError::new(std::io::Error::other(
-                        "campaign debug Service custody is unavailable",
-                    ))
-                })?;
-                let service = retained.as_mut().ok_or_else(|| {
-                    CampaignDebugLifecycleBuildError::new(std::io::Error::other(
-                        "campaign debug authentication Service is absent",
-                    ))
-                })?;
-                service
-                    .bind_authenticated_finding_debug(restore.checkpoint, &mut restore.selected)
-                    .map_err(CampaignDebugLifecycleBuildError::new)?;
-                restore.operation.wait_slice().map_err(|error| {
-                    service.context().cancellation().cancel();
-                    CampaignDebugLifecycleBuildError::new(error)
-                })?;
-
+        let build_resume: Arc<GuardedResumeBuilder> = Arc::new(move |request| match request {
+            DebugSourceRequest::Prepare => {
                 let resource_guards = ComposedQemuAttemptResourceGuardFactory::new(shared.clone());
                 let mut factory = QemuAttemptProductionVmLifecycleFactory::new(
                     Arc::clone(&lifecycle),
                     resource_guards,
                 );
-                match factory.begin_resume(
-                    &restore_checkpoints,
-                    restore.checkpoint,
-                    QemuExactResumeBasis::new(scenario, source, configuration, None),
-                    service.context(),
-                ) {
-                    Ok(lifecycle) => {
-                        if let Err(error) = restore.operation.complete() {
-                            drop(lifecycle);
-                            if let Some(service) = retained.take() {
-                                service.retain_after_unknown_cleanup();
-                            }
-                            return Err(CampaignDebugLifecycleBuildError::new(error));
-                        }
-                        Ok(lifecycle)
+                factory
+                    .prepare_source_construction()
+                    .map(DebugSourceOutput::Prepared)
+                    .map_err(CampaignDebugLifecycleBuildError::new)
+            }
+            DebugSourceRequest::Resume {
+                scenario,
+                source,
+                configuration,
+                mut restore,
+            } => {
+                type Resources<H> = ComposedQemuAttemptResourceGuardFactory<
+                    SharedQemuAttemptHostResourceFactory<H>,
+                >;
+                let prepared = crate::qemu_lifecycle_launcher::PreparedSourceHandle::<Resources<H>>::from_selector(
+                        restore.service.prepared_selector(),
+                    );
+                let result = restore.service.with_start(|start| {
+                    start.bind_debug_from_saved_original(restore.checkpoint, &mut restore.selected)
+                });
+                match result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(_)) => {
+                        return Err(CampaignDebugLifecycleBuildError::new(
+                            prepared.failure("bind debug selected root"),
+                        ));
                     }
-                    Err(error) => {
-                        // Launch failure can retain host resources before a
-                        // node enters the registry. An empty ledger is not
-                        // sufficient evidence to release this Service.
-                        if let Some(service) = retained.take() {
-                            service.retain_after_unknown_cleanup();
-                        }
-                        Err(CampaignDebugLifecycleBuildError::new(error))
+                    Err(first) => {
+                        return Err(CampaignDebugLifecycleBuildError::new(
+                            prepared.failure_with_refusal("bind debug selected root", first),
+                        ));
                     }
                 }
-            },
-        );
+                // Session retention holds the same one Main receiver across
+                // this builder and the actor body; these local projections
+                // stay inside that already registered receiver's lifetime.
+                let restored = (|| {
+                    let context = restore
+                        .service
+                        .with_ready(|service| service.context().clone())
+                        .map_err(|first| {
+                            CampaignDebugLifecycleBuildError::new(
+                                prepared
+                                    .failure_with_refusal("borrow debug restore context", first),
+                            )
+                        })?;
+                    let lifecycle = crate::qemu_campaign_lifecycle::resume_prepared_source(
+                        &prepared,
+                        lifecycle.as_ref(),
+                        None,
+                        &restore_checkpoints,
+                        restore.checkpoint,
+                        QemuExactResumeBasis::new(scenario, source, configuration, None),
+                        &context,
+                        crate::vm_lifecycle::RetainedConstructionExposure::Released,
+                    )
+                    .map_err(CampaignDebugLifecycleBuildError::new)?;
+                    match restore
+                        .service
+                        .with_start(|start| start.complete_authentication_original())
+                    {
+                        Ok(Ok(())) => Ok(lifecycle),
+                        Ok(Err(_)) => {
+                            drop(lifecycle);
+                            Err(CampaignDebugLifecycleBuildError::new(
+                                prepared.failure("complete debug restore original"),
+                            ))
+                        }
+                        Err(first) => {
+                            drop(lifecycle);
+                            Err(CampaignDebugLifecycleBuildError::new(
+                                prepared
+                                    .failure_with_refusal("complete debug restore original", first),
+                            ))
+                        }
+                    }
+                })();
+                restored.map(DebugSourceOutput::Restored)
+            }
+        });
         Self {
             checkpoints,
             services,
@@ -463,27 +501,56 @@ impl CanonicalCampaignDebugController {
             return Err(CampaignServiceFailure::IntegrityFailure);
         }
 
-        let authentication = self
-            .qemu
-            .services
-            .start_for_archive_authentication(&source, ExecutionCancellation::default())
-            .map_err(|_| CampaignServiceFailure::Unavailable)?;
-        let cancellation = authentication.context().cancellation().clone();
-        let supervisor = authentication
-            .context()
-            .host_operation_supervisor()
-            .ok_or(CampaignServiceFailure::Unavailable)?;
-        let operation = Arc::new(
-            supervisor
-                .begin(crucible_linux_resource::host_supervision::HostOperationClass::Restore)
-                .map_err(|_| CampaignServiceFailure::Unavailable)?,
-        );
-        let mut selection_boundary = || {
-            operation.wait_slice().map(|_| ()).map_err(|_| {
-                cancellation.cancel();
-                CampaignServiceFailure::Unavailable
-            })
+        let service = match (self.qemu.build_resume)(DebugSourceRequest::Prepare)
+            .map_err(|_| CampaignServiceFailure::Unavailable)?
+        {
+            DebugSourceOutput::Prepared(service) => service,
+            DebugSourceOutput::Restored(_unexpected) => {
+                return Err(CampaignServiceFailure::ProtocolViolation);
+            }
         };
+        let startup = service.with_start(|start| {
+            self.qemu.services.start_for_archive_authentication(
+                start,
+                &source,
+                ExecutionCancellation::default(),
+            )?;
+            start.begin_authentication_original(
+                crucible_linux_resource::host_supervision::HostOperationClass::Restore,
+            )
+        });
+        match startup {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => {
+                let _retained = service
+                    .prepared_selector()
+                    .typed::<()>()
+                    .failure("start debug authentication Service");
+                return Err(CampaignServiceFailure::Unavailable);
+            }
+            Err(first) => {
+                let _retained =
+                    service.failure_with_refusal("start debug authentication Service", first);
+                return Err(CampaignServiceFailure::Unavailable);
+            }
+        }
+        let service_borrow =
+            DebugServiceBorrow::new(service.prepared_selector().service_main_handle())
+                .map_err(|_| CampaignServiceFailure::Unavailable)?;
+        let cancellation = service_borrow
+            .cancellation
+            .as_ref()
+            .ok_or(CampaignServiceFailure::Unavailable)?;
+        let mut selection_boundary =
+            || match service.with_start(|start| start.check_authentication_original()) {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(_)) => Err(CampaignServiceFailure::Unavailable),
+                Err(first) => {
+                    let _retained =
+                        service.failure_with_refusal("check debug selection original", first);
+                    Err(CampaignServiceFailure::Unavailable)
+                }
+            };
         selection_boundary()?;
 
         let SelectedCampaignDebugCheckpoint {
@@ -505,14 +572,12 @@ impl CanonicalCampaignDebugController {
         let response_encoding = OpenCampaignDebugSessionResponse::prepare_encoding(checkpoint)
             .map_err(|_| CampaignServiceFailure::InvalidRequest)?;
         let build_resume = Arc::clone(&self.qemu.build_resume);
-        let service = Arc::new(Mutex::new(Some(authentication)));
         let restore = AuthenticatedDebugRestore {
             checkpoint,
             selected: Some(
                 SelectedExactCheckpointRoot::after_authenticated_campaign_finding(checkpoint),
             ),
-            service: Arc::clone(&service),
-            operation,
+            service,
         };
         let build_source = source
             .try_clone_admitted()
@@ -525,31 +590,59 @@ impl CanonicalCampaignDebugController {
         let destroy_inventory = Arc::clone(&self.inventory);
         let destroy_request = request.clone();
         let admitted = admit_with_inventory(&self.inventory, request, finding, |finding| {
-            let retention = SessionLifetimeRetention::new(Box::new(DebugSessionRetention {
-                _finding_proof: finding,
-                _checkpoint: loaded,
-                _reservation: Arc::clone(&reservation),
-                _service: service,
-            }))
-            .with_destroy_callback(move || {
+            let destroy_callback = move || {
                 destroy_inventory
                     .remove(&destroy_request)
                     .map_err(|error| SessionRetentionUpdateError::new(error.to_string()))
-            });
+            };
+            // The configured Arc header and this concrete closure are a
+            // separate fixed allocation. Captured payloads retain their
+            // existing admitted owners; this charges no invented allowance.
+            let callback_layout = std::alloc::Layout::new::<[std::sync::atomic::AtomicUsize; 2]>()
+                .extend(std::alloc::Layout::for_value(&destroy_callback))
+                .map_err(|first| {
+                    LifecycleApiError::ConfigurationCopy(
+                        crucible::owned_decode::DecodeAdmissionError::new(first),
+                    )
+                })?
+                .0
+                .pad_to_align();
+            let _same_request = crucible::owned_decode::require_current_custody()
+                .map_err(LifecycleApiError::ConfigurationCopy)?;
+            crucible::owned_decode::charge_bytes(callback_layout.size() as u64)
+                .map_err(LifecycleApiError::ConfigurationCopy)?;
+            let retention = SessionLifetimeRetention::try_new_admitted(DebugSessionRetention {
+                _finding_proof: finding,
+                _checkpoint: loaded,
+                _reservation: Arc::clone(&reservation),
+                _service: service_borrow,
+            })
+            .map_err(LifecycleApiError::ConfigurationCopy)?
+            .with_destroy_callback(destroy_callback);
+            let build_loop = move || match build_resume(DebugSourceRequest::Resume {
+                scenario: &build_scenario,
+                source: &build_source,
+                configuration: &build_configuration,
+                restore,
+            })? {
+                DebugSourceOutput::Restored(lifecycle) => Ok(lifecycle),
+                DebugSourceOutput::Prepared(_unexpected) => Err(
+                    CampaignDebugLifecycleBuildError::new(std::io::Error::other(
+                        "debug restore returned preparation instead of World",
+                    )),
+                ),
+            };
+            crucible::owned_decode::charge_bytes(
+                std::alloc::Layout::for_value(&build_loop).size() as u64
+            )
+            .map_err(LifecycleApiError::ConfigurationCopy)?;
             let lifecycle = PreparedCampaignDebugLifecycle {
                 source,
                 configuration,
                 checkpoint: modeled_checkpoint,
                 retention,
                 decoding: crucible::owned_decode::current_budget(),
-                build_loop: Box::new(move || {
-                    build_resume(
-                        &build_scenario,
-                        &build_source,
-                        &build_configuration,
-                        restore,
-                    )
-                }),
+                build_loop: Box::new(build_loop),
             };
             self.lifecycle.admit(lifecycle)
         })?;
@@ -671,7 +764,58 @@ struct DebugSessionRetention {
     _finding_proof: GetCampaignFindingObjectResponse,
     _checkpoint: Arc<LoadedProductionExactCheckpoint>,
     _reservation: Arc<DebugSessionReservationLease>,
-    _service: Arc<Mutex<Option<RetainedTemplateService>>>,
+    _service: DebugServiceBorrow,
+}
+
+// Declaration order destroys the retention's checkpoint aliases before this
+// final receiver. The actual actor/World body has its independent Main return.
+struct DebugServiceBorrow {
+    cancellation: Option<ExecutionCancellation>,
+    receiver: Option<crate::lifecycle_cleanup::ServiceMainReceiverHandle>,
+    service: crate::lifecycle_cleanup::ServiceMainHandle,
+}
+
+impl DebugServiceBorrow {
+    fn new(
+        service: crate::lifecycle_cleanup::ServiceMainHandle,
+    ) -> Result<Self, crate::PreparedSourceFailure> {
+        let receiver = service.retain_receiver_in_main().map_err(|first| {
+            service.failure_with_refusal("retain debug selection aliases", first)
+        })?;
+        let cancellation = match service.with_ready(|ready| ready.context().cancellation().clone())
+        {
+            Ok(cancellation) => cancellation,
+            Err(first) => {
+                let _returned = receiver.return_after_alias_destruction();
+                return Err(service.failure_with_refusal("borrow debug selection aliases", first));
+            }
+        };
+        Ok(Self {
+            cancellation: Some(cancellation),
+            receiver: Some(receiver),
+            service,
+        })
+    }
+}
+
+impl Drop for DebugServiceBorrow {
+    fn drop(&mut self) {
+        drop(self.cancellation.take());
+        if let Some(receiver) = self.receiver.take()
+            && let Err(first) = receiver.return_after_alias_destruction()
+        {
+            let _retained = self
+                .service
+                .failure_with_refusal("return debug selection aliases", first);
+        }
+        // Any refused atomic acknowledgment remains in the original Main slot.
+        // Dropping this selector cannot drop that actual receiver or its debt.
+        let _retained = self
+            .service
+            .prepared_selector()
+            .typed::<()>()
+            .failure("retire debug session Service");
+    }
 }
 
 /// Breaks equal complete-closure costs by semantic proximity, then root ID.

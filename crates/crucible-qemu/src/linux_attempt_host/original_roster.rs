@@ -22,6 +22,7 @@ mod fork_target;
 pub(super) mod process_purpose;
 mod target_dispatcher;
 pub(in crate::linux_attempt_host) use fork_target::ForkTargetReservation;
+pub use fork_target::{QemuForkTargetConstructionError, QemuForkTargetConstructionLoan};
 pub(crate) use target_dispatcher::TargetWatcherOriginal;
 mod retirement;
 
@@ -1018,6 +1019,15 @@ pub(super) struct RetainedNativeHost {
 }
 
 impl RetainedNativeHost {
+    // Each field is cleared only after its actual physical close above the
+    // independent Cleanup postcut. This observation does not issue cleanup.
+    fn bodies_returned(&self) -> bool {
+        self.process.is_none()
+            && self.storage.is_none()
+            && self.native_resources.is_none()
+            && self.unconfigured.is_none()
+    }
+
     fn finish(&mut self, cleanup: &HostOperationGuard) -> Result<(), QemuVmRealizationError> {
         cleanup
             .wait_slice()

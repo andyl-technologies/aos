@@ -50,6 +50,9 @@ mod runtime_trace;
 #[path = "partition_probe.rs"]
 mod partition_probe;
 
+#[path = "node_run.rs"]
+mod node_run;
+
 #[path = "evidence.rs"]
 mod evidence;
 use evidence::*;
@@ -392,115 +395,22 @@ fn run_once(
     partition_step_ps: Option<u64>,
 ) -> Result<FlightRun, Box<dyn Error>> {
     let mut owner = factory.begin(4, MEMORY_BYTES, DISK_BYTES)?;
-    let mut node = owner.launch(config, "plugin-flight-router", "plugin-flight-crash")?;
-    let preemption = hostile.then(BoundedSchedulerPreemptionEvidence::default);
-    let mut boundaries = Vec::with_capacity(TARGETS.len());
-
-    for (index, target) in TARGETS.into_iter().enumerate() {
-        if target == 4_000_000
-            && let Some(evidence) = &preemption
-        {
-            node.enable_bounded_scheduler_preemption(evidence.claim()?);
-        }
-        if target == 4_000_000 {
-            let at = aligned_preemption_tick(&mut node, 3_000_000, target)?;
-            install_preemption(
-                &mut node,
-                PreemptionKind::VcpuSwitch {
-                    from_vcpu: VcpuId { index: 0 },
-                    to_vcpu: VcpuId { index: 1 },
-                },
-                at,
-            )?;
-        } else if target == 8_000_000 {
-            let at = aligned_preemption_tick(&mut node, 6_000_000, target)?;
-            install_preemption(
-                &mut node,
-                PreemptionKind::InterruptAt {
-                    target_vcpu: VcpuId { index: 2 },
-                    irq: IrqVector { vector: 32 },
-                },
-                at,
-            )?;
-        }
-        let observation = match SimulationBackend::step_to(&mut node, VirtualTime { ticks: target })
-        {
-            Ok(observation) => observation,
-            Err(source) => {
-                return Err(node_state_failure(
-                    &mut node,
-                    &format!("busy target index {index} ({target})"),
-                    source,
-                ));
-            }
-        };
-        let outcome = observation.outcome;
-        if observation.requested_ceiling.ticks != target || observation.reached.ticks != target {
-            return Err(
-                format!("scheduler backend returned invalid boundary: {observation:?}").into(),
-            );
-        }
-        match outcome {
-            AdvanceOutcome::ReachedHorizon => {}
-            AdvanceOutcome::Paused { at } => {
-                return Err(
-                    format!("guest paused at {} before busy target {target}", at.retired).into(),
-                );
-            }
-        }
-        // This call requests a capture and waits for the exact generation ACK.
-        // Only the production plugin's digest worker publishes that ACK.
-        let fingerprint = node.execution_fingerprint()?;
-        let sample = node.fingerprint_sample()?;
-        validate_sample(sample, target)?;
-        let calibration = node.logical_time_calibration()?;
-        if calibration.logical_icount != target {
-            return Err(format!(
-                "logical/raw calibration did not bind busy target {target}: {calibration:?}"
-            )
-            .into());
-        }
-        boundaries.push(BoundaryEvidence {
-            target,
-            outcome,
-            fingerprint,
-            sample,
-            calibration,
-        });
-    }
-    if let Some(evidence) = preemption {
-        let report = evidence
-            .snapshot()
-            .ok_or("bounded preemption did not publish evidence")?;
-        if !report.applied || !report.pending_quantum_certified || report.perturbations == 0 {
-            return Err("bounded preemption did not overlap the live quantum".into());
-        }
-    }
-    let instruction_exact = instruction_exact_evidence(&boundaries)?;
-    let final_busy_sample = boundaries
-        .last()
-        .ok_or("production flight omitted its final busy boundary")?
-        .sample;
-    // These are passive shared-memory reads at the already-established 8M
-    // boundary. In particular, localization does not issue a QMP query or add
-    // another scheduler step that could perturb the ordering under inspection.
-    let runtime_baseline = RuntimeDeterminismBaseline {
-        calibration: node
-            .logical_time_calibration()
-            .map_err(|error| error.to_string()),
-        idle_state: node.idle_state().map_err(|error| error.to_string()),
-        timer_witness: node
-            .virtual_timer_fire_witness()
-            .map_err(|error| error.to_string()),
-        rr_current_vcpu: final_busy_sample.rr_current_vcpu,
-        rr_position_in_quantum: final_busy_sample.rr_position_in_quantum,
-    };
-
-    let idle = match probe_idle_wake(&mut node) {
-        Ok(idle) => idle,
-        Err(source) => {
-            let shutdown = node.shutdown_child();
-            drop(node);
+    let driven = owner.with_launch(
+        config,
+        "plugin-flight-router",
+        "plugin-flight-crash",
+        |node| node_run::drive(node, hostile, partition_step_ps),
+    )?;
+    let node_run::DrivenNode {
+        boundaries,
+        instruction_exact,
+        idle,
+        partition_probe,
+        shutdown,
+        runtime_baseline,
+    } = match driven {
+        node_run::DrivenFlight::Complete(run) => run,
+        node_run::DrivenFlight::IdleFailed { source, shutdown } => {
             let trace = match &shutdown {
                 Ok(report) if report.reaped && !report.leaked => {
                     owner.liveness_tail().map_err(|error| error.to_string())
@@ -510,7 +420,6 @@ fn run_once(
                 )),
             };
             let finish = owner.finish();
-
             return Err(format!(
                 "idle probe failed: hostile={hostile}; {source}; \
                  diagnostic_shutdown={shutdown:?}; diagnostic_finish={finish:?}; \
@@ -518,32 +427,13 @@ fn run_once(
             )
             .into());
         }
-    };
-
-    let partition_probe = match partition_step_ps
-        .map(|step| partition_probe::run(&mut node, idle.deadline, step))
-        .transpose()
-    {
-        Ok(probe) => probe,
-        Err(error) => {
-            let shutdown = node.shutdown_child();
-            drop(node);
+        node_run::DrivenFlight::PartitionFailed { source, shutdown } => {
             let finish = owner.finish();
             return Err(format!(
-                "post-selection partition probe failed: {error}; shutdown={shutdown:?}; finish={finish:?}"
-            )
-            .into());
+                "post-selection partition probe failed: {source}; shutdown={shutdown:?}; finish={finish:?}"
+            ).into());
         }
     };
-
-    let shutdown = node.shutdown_child()?;
-    drop(node);
-    if !shutdown.reaped || shutdown.leaked {
-        return Err(format!(
-            "QEMU did not cleanly reap after authenticated idle wake: {shutdown:?}"
-        )
-        .into());
-    }
     let raw_boundary = final_busy_raw_boundary(&runtime_baseline)?;
     let spool = owner.create_trace_spool()?;
     let trace_result = owner.inspect_trace(PRODUCTION_RUNTIME_TRACE_BYTES, |reader| {
@@ -984,6 +874,7 @@ pub(in crate::packaged_qemu_executor) fn evidence_resident_bound() -> Result<u64
         .and_then(|bytes| {
             bytes.checked_add(2 * TARGETS.len() * std::mem::size_of::<BoundaryEvidence>())
         })
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<node_run::DrivenFlight>()))
         .and_then(|bytes| bytes.checked_add(32 * 1024))
         .and_then(|bytes| bytes.checked_add(runtime_trace::resident_bound()))
         .and_then(|bytes| bytes.checked_add(partition_probe::resident_bound()))

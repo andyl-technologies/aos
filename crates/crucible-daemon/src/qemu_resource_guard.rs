@@ -66,6 +66,36 @@ pub trait QemuAttemptCancellationSignal: Send + Sync + 'static {
 /// artifact the child can mutate. Normal release is legal only after process
 /// reap; quarantine retains both process and filesystem enforcement.
 pub trait QemuAttemptHostResourceOwner {
+    /// Recovers only this selected Target's already-returned backing vector.
+    ///
+    /// Exact native loan receipts are checked inside `storage`. This operation
+    /// admits no host resource and grants no permission from an empty process.
+    #[cfg(target_os = "linux")]
+    fn recover_target_construction_storage(
+        &mut self,
+        _storage: &mut crate::TargetConstructionStorage,
+    ) -> bool {
+        false
+    }
+
+    /// Copies this actual containing World's identity without issuing resources.
+    ///
+    /// # Errors
+    /// Refuses owners without an actual selected native World. Coordinates
+    /// cannot replace the genuine per-member permits or their original payer.
+    #[cfg(target_os = "linux")]
+    fn native_world_identity(
+        &self,
+    ) -> Result<
+        crucible_linux_resource::host_services::process_birth::NativeWorldIdentity,
+        QemuVmRealizationError,
+    > {
+        Err(QemuVmRealizationError::ExecutorUnavailable {
+            operation: "observe actual native World identity",
+            message: String::from("owner has no selected native World"),
+        })
+    }
+
     /// Runs the concrete RAM companion while this exact Target remains borrowed.
     ///
     /// # Errors
@@ -157,9 +187,9 @@ pub trait QemuAttemptHostResourceOwner {
     /// # Errors
     /// Refuses non-source, terminal or already loaned physical ownership.
     #[cfg(target_os = "linux")]
-    fn lend_fork_target_permit(
+    fn prepare_fork_target(
         &mut self,
-    ) -> Result<crucible_qemu::LinuxQemuForkTargetPermit, QemuVmRealizationError> {
+    ) -> Result<crucible_qemu::QemuForkTargetPreparation, QemuVmRealizationError> {
         Err(QemuVmRealizationError::Executor {
             operation: "lend same-family QEMU target permit",
             message: String::from("host has no genuine source owner"),
@@ -449,17 +479,9 @@ pub trait QemuAttemptHostResourceFactory {
         })
     }
 
-    /// Reserves the genuine Main-paid Source cell before World admission.
-    ///
-    /// # Errors
-    /// Refuses absent, expired, occupied or uncertain actual Main ownership.
-    fn reserve_source_lifecycle_cleanup(
-        &self,
-    ) -> Result<crate::WorldLifecycleCleanupReservation, QemuVmRealizationError> {
-        Err(QemuVmRealizationError::ExecutorUnavailable {
-            operation: "reserve actual Source cleanup cell",
-            message: String::from("factory has no genuine Main cleanup owner"),
-        })
+    /// Selects the actual Main queue without issuing a native or Service role.
+    fn source_main_producer(&self) -> Option<crate::SourceMainProducer> {
+        None
     }
 
     /// Consumes a genuine source permit without allocating another project quota.
@@ -475,6 +497,28 @@ pub trait QemuAttemptHostResourceFactory {
         Err(QemuVmRealizationError::Executor {
             operation: "begin same-family QEMU target host",
             message: String::from("factory has no genuine target consumer"),
+        })
+    }
+
+    /// Installs the selected real Targets into their already retained storage.
+    ///
+    /// The callback borrows the actual optional host. Refusal leaves it there;
+    /// success may move it only into its containing guard. Implementations do
+    /// no fallible work after that move and never manufacture a Target permit.
+    ///
+    /// # Errors
+    /// Preserves genuine preparation, birth or composition refusal; a factory
+    /// without the selected native consumer refuses before calling `install`.
+    #[cfg(target_os = "linux")]
+    fn with_fork_target_world(
+        &mut self,
+        _members: &mut crate::TargetConstructionStorage,
+        _resources: AttemptResourceLimits,
+        _install: &mut dyn FnMut(&mut Option<Self::Owner>) -> Result<(), QemuVmRealizationError>,
+    ) -> Result<(), QemuVmRealizationError> {
+        Err(QemuVmRealizationError::ExecutorUnavailable {
+            operation: "begin selected same-family Target World",
+            message: String::from("factory has no actual selected Target consumer"),
         })
     }
 
@@ -736,16 +780,10 @@ where
             .retry_native_world_construction(loan)
     }
 
-    fn reserve_source_lifecycle_cleanup(
-        &self,
-    ) -> Result<crate::WorldLifecycleCleanupReservation, QemuVmRealizationError> {
-        let Some(cleanup) = self.cleanup.as_ref() else {
-            return Err(QemuVmRealizationError::ExecutorUnavailable {
-                operation: "reserve actual Source cleanup cell",
-                message: String::from("genuine Main cleanup handle is absent"),
-            });
-        };
-        cleanup.reserve_for_source()
+    fn source_main_producer(&self) -> Option<crate::SourceMainProducer> {
+        self.cleanup
+            .as_ref()
+            .map(|cleanup| cleanup.source_main_producer())
     }
 
     type Owner = H::Owner;
@@ -767,6 +805,22 @@ where
                 message: String::from("host-resource allocator lock is poisoned"),
             })?
             .begin_fork_target(permit, resources)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn with_fork_target_world(
+        &mut self,
+        members: &mut crate::TargetConstructionStorage,
+        resources: AttemptResourceLimits,
+        install: &mut dyn FnMut(&mut Option<Self::Owner>) -> Result<(), QemuVmRealizationError>,
+    ) -> Result<(), QemuVmRealizationError> {
+        self.host
+            .try_lock()
+            .map_err(|_| QemuVmRealizationError::ExecutorUnavailable {
+                operation: "borrow actual selected Target factory",
+                message: String::from("host-resource allocator is busy or poisoned"),
+            })?
+            .with_fork_target_world(members, resources, install)
     }
 
     fn begin(
@@ -961,6 +1015,8 @@ mod linux_world;
 pub use linux_world::LinuxWorldCancellationSignal;
 #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
 use linux_world::park_route_error;
+#[cfg(target_os = "linux")]
+pub(crate) use linux_world::{LinuxTargetWorldStorage, world_node_key};
 
 #[derive(Debug)]
 enum LinuxHostSet {
@@ -1070,6 +1126,16 @@ impl QemuAttemptHostResourceFactory for LinuxQemuAttemptHostResourceFactory {
             resources: effective,
             host: LinuxHostSet::Single(host),
         })
+    }
+
+    #[cfg(target_os = "linux")]
+    fn with_fork_target_world(
+        &mut self,
+        members: &mut crate::TargetConstructionStorage,
+        resources: AttemptResourceLimits,
+        install: &mut dyn FnMut(&mut Option<Self::Owner>) -> Result<(), QemuVmRealizationError>,
+    ) -> Result<(), QemuVmRealizationError> {
+        members.with_native_world(&mut self.host, resources, install)
     }
 
     fn begin(
@@ -1332,6 +1398,26 @@ impl QemuAttemptSelectedHostResourceFactory for LinuxQemuAttemptHostResourceFact
 
 impl QemuAttemptHostResourceOwner for LinuxQemuAttemptHostResourceOwner {
     #[cfg(target_os = "linux")]
+    fn recover_target_construction_storage(
+        &mut self,
+        storage: &mut crate::TargetConstructionStorage,
+    ) -> bool {
+        storage.recover_native_hosts(self)
+    }
+
+    fn native_world_identity(
+        &self,
+    ) -> Result<
+        crucible_linux_resource::host_services::process_birth::NativeWorldIdentity,
+        QemuVmRealizationError,
+    > {
+        match &self.host {
+            LinuxHostSet::World { identity, .. } => Ok(*identity),
+            LinuxHostSet::Single(_) => Err(linux_world::world_route_error()),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
     fn with_fork_target_ram_admission(
         &self,
         contract: &QemuChildProcessContract,
@@ -1394,10 +1480,10 @@ impl QemuAttemptHostResourceOwner for LinuxQemuAttemptHostResourceOwner {
         }
     }
 
-    fn lend_fork_target_permit(
+    fn prepare_fork_target(
         &mut self,
-    ) -> Result<crucible_qemu::LinuxQemuForkTargetPermit, QemuVmRealizationError> {
-        self.single_mut()?.lend_fork_target_permit()
+    ) -> Result<crucible_qemu::QemuForkTargetPreparation, QemuVmRealizationError> {
+        self.single_mut()?.prepare_fork_target()
     }
 
     fn prepare_fork_target_run_directory(
@@ -1732,10 +1818,8 @@ where
         self.host.retry_native_world_construction(loan)
     }
 
-    fn reserve_source_lifecycle_cleanup(
-        &self,
-    ) -> Result<crate::WorldLifecycleCleanupReservation, QemuVmRealizationError> {
-        self.host.reserve_source_lifecycle_cleanup()
+    fn source_main_producer(&self) -> Option<crate::SourceMainProducer> {
+        self.host.source_main_producer()
     }
 
     fn begin_world(
@@ -1779,6 +1863,29 @@ where
         ComposedQemuAttemptResourceGuard::from_installed_host(host, resources, cancellation, None)
     }
 
+    #[cfg(target_os = "linux")]
+    fn begin_fork_target_world(
+        &mut self,
+        members: &mut crate::TargetConstructionStorage,
+        resources: AttemptResourceLimits,
+        cancellation: ExecutionCancellation,
+    ) -> Result<(Self::Guard, Option<QemuVmRealizationError>), QemuVmRealizationError> {
+        let mut installed = None;
+        self.host
+            .with_fork_target_world(members, resources, &mut |host| {
+                let outcome = ComposedQemuAttemptResourceGuard::from_retained_target_host(
+                    host,
+                    resources,
+                    cancellation.clone(),
+                )?;
+                installed = Some(outcome);
+                Ok(())
+            })?;
+        installed.ok_or(QemuVmRealizationError::CleanupRetained {
+            operation: "retain actual composed Target World result",
+        })
+    }
+
     fn begin(
         &mut self,
         resources: AttemptResourceLimits,
@@ -1800,6 +1907,61 @@ impl<H> ComposedQemuAttemptResourceGuard<H>
 where
     H: QemuAttemptHostResourceOwner,
 {
+    /// Moves an already retained host only after all pre-guard setup succeeds.
+    ///
+    /// Main keeps `host` on every early refusal. The independent postcheck is
+    /// returned beside its actual guard, allowing the same Pending owner to
+    /// record G before reporting failure. This method performs no rollback.
+    #[cfg(target_os = "linux")]
+    fn from_retained_target_host(
+        host: &mut Option<H>,
+        resources: AttemptResourceLimits,
+        cancellation: ExecutionCancellation,
+    ) -> Result<(Self, Option<QemuVmRealizationError>), QemuVmRealizationError> {
+        let retained = host
+            .as_mut()
+            .ok_or(QemuVmRealizationError::CleanupRetained {
+                operation: "borrow selected Target host before composition",
+            })?;
+        if !retained.matches_admitted_limits(resources) {
+            return Err(QemuVmRealizationError::ExecutorUnavailable {
+                operation: "compose selected Target World",
+                message: String::from("host does not retain the admitted aggregate limits"),
+            });
+        }
+        let effective = retained.resource_limits();
+        let signal = retained.cancellation_signal()?;
+        let cancellation_failure = Arc::new(Mutex::new(None));
+        let hook: Arc<dyn ExecutionCancellationHook> = Arc::new(ProcessCancellationHook {
+            signal,
+            failure: Arc::clone(&cancellation_failure),
+        });
+        let registration = cancellation.register_hook(hook).map_err(|message| {
+            QemuVmRealizationError::Executor {
+                operation: "install selected Target cancellation hook",
+                message: String::from(message),
+            }
+        })?;
+
+        // Setup has only borrowed the Main-held host. G owns it before the
+        // next check can report a post refusal, so that report cannot erase H.
+        let retained = host.take().ok_or(QemuVmRealizationError::CleanupRetained {
+            operation: "move selected Target host into its actual guard",
+        })?;
+        let mut guard = Self {
+            resources: effective,
+            cancellation,
+            quantum_counter: QemuExecutionQuantumCounter::new(effective),
+            cancellation_failure,
+            cancellation_registration: Some(registration),
+            original_native_registry: None,
+            host: retained,
+            retirement: ComposedResourceRetirement::Active,
+        };
+        let first_post = guard.check_operational_boundary().err();
+        Ok((guard, first_post))
+    }
+
     // Both fresh admission and permit consumption retain the same cancellation
     // and quantum composition; the physical host is already installed here.
     fn from_installed_host(
@@ -1959,6 +2121,14 @@ impl<H> QemuAttemptResourceGuard for ComposedQemuAttemptResourceGuard<H>
 where
     H: QemuAttemptHostResourceOwner,
 {
+    #[cfg(target_os = "linux")]
+    fn recover_target_construction_storage(
+        &mut self,
+        storage: &mut crate::TargetConstructionStorage,
+    ) -> bool {
+        self.host.recover_target_construction_storage(storage)
+    }
+
     fn finish(&mut self) -> Result<(), crate::QemuAttemptResourceGuardCleanupFailure> {
         let original_registry = self.original_native_registry.is_some();
         self.finish_raw().map_err(|failure| {
@@ -1984,6 +2154,16 @@ impl<H> QemuAttemptProcessResourceGuard for ComposedQemuAttemptResourceGuard<H>
 where
     H: QemuAttemptHostResourceOwner,
 {
+    #[cfg(target_os = "linux")]
+    fn native_world_identity(
+        &self,
+    ) -> Result<
+        crucible_linux_resource::host_services::process_birth::NativeWorldIdentity,
+        QemuVmRealizationError,
+    > {
+        self.host.native_world_identity()
+    }
+
     fn native_resource_controller_for_node(
         &mut self,
         node: &NodeId,
@@ -2176,11 +2356,11 @@ where
     }
 
     #[cfg(target_os = "linux")]
-    fn lend_fork_target_permit_for_node(
+    fn prepare_fork_target_for_node(
         &mut self,
         node: &NodeId,
-    ) -> Result<crucible_qemu::LinuxQemuForkTargetPermit, QemuVmRealizationError> {
-        self.host.node_owner_mut(node)?.lend_fork_target_permit()
+    ) -> Result<crucible_qemu::QemuForkTargetPreparation, QemuVmRealizationError> {
+        self.host.node_owner_mut(node)?.prepare_fork_target()
     }
 
     #[cfg(target_os = "linux")]
@@ -2218,10 +2398,10 @@ where
     }
 
     #[cfg(target_os = "linux")]
-    fn lend_fork_target_permit(
+    fn prepare_fork_target(
         &mut self,
-    ) -> Result<crucible_qemu::LinuxQemuForkTargetPermit, QemuVmRealizationError> {
-        self.host.lend_fork_target_permit()
+    ) -> Result<crucible_qemu::QemuForkTargetPreparation, QemuVmRealizationError> {
+        self.host.prepare_fork_target()
     }
 
     #[cfg(target_os = "linux")]

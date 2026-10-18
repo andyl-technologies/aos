@@ -8,6 +8,8 @@ pub(super) struct CleanupReservation {
     epoch: u64,
     observed: ProductionVmCleanupStage,
     first_failure: Option<crate::ProductionVmConstructionCleanupError>,
+    terminal_history: Option<crate::ProductionVmConstructionPostBody>,
+    report_reference: bool,
 }
 
 /// Retains an original World reservation and its exact preborn Main cell.
@@ -19,7 +21,11 @@ pub(super) struct CleanupReservation {
 #[must_use = "retain the same reservation or move it into its owning cleanup path"]
 pub struct WorldLifecycleCleanupReservation {
     reservation: Box<
-        dyn ProductionVmCleanupReservation<Failure = crate::ProductionVmConstructionCleanupError>,
+        dyn ProductionVmCleanupReservation<
+                Failure = crate::ProductionVmConstructionCleanupError,
+                PostBody = crate::ProductionVmConstructionPostBody,
+                ReturnDestination = crate::lifecycle_cleanup::SourceBodyReturn,
+            >,
     >,
     cell: ReservedWorldCell,
 }
@@ -51,7 +57,10 @@ impl WorldLifecycleCleanupReservation {
         let Some(slot) = queue.slots.get(self.cell.index) else {
             return false;
         };
-        borrow_reserved_cell(slot, self.cell.epoch).is_some_and(|cell| cell.controls.is_none())
+        slot.is(CleanupPhase::Reserved)
+            && !!slot.work_is_open()
+            && borrow_reserved_cell(slot, self.cell.epoch)
+                .is_some_and(|cell| cell.controls.is_none())
     }
 
     /// Checks retained cell custody without publishing, returning or renewing it.
@@ -89,6 +98,7 @@ impl WorldLifecycleCleanupReservation {
             return Err(controls);
         }
         cell.controls = Some(controls);
+        cell.controls_bound = true;
         Ok(())
     }
 
@@ -96,24 +106,28 @@ impl WorldLifecycleCleanupReservation {
     pub(crate) fn into_reservation(
         self,
     ) -> Box<
-        dyn ProductionVmCleanupReservation<Failure = crate::ProductionVmConstructionCleanupError>,
+        dyn ProductionVmCleanupReservation<
+                Failure = crate::ProductionVmConstructionCleanupError,
+                PostBody = crate::ProductionVmConstructionPostBody,
+                ReturnDestination = crate::lifecycle_cleanup::SourceBodyReturn,
+            >,
     > {
         self.reservation
     }
 }
 
-fn borrow_reserved_cell(
+pub(super) fn borrow_reserved_cell(
     slot: &CleanupSlot,
     epoch: u64,
 ) -> Option<std::sync::MutexGuard<'_, CleanupCell>> {
-    if !slot.is(CleanupPhase::Reserved) {
+    if !(slot.is(CleanupPhase::Reserved) || slot.is(CleanupPhase::RetryingPrepared)) {
         return None;
     }
     let cell = slot.cell.try_lock().ok()?;
     if cell.epoch != epoch
         || cell.owner.is_some()
         || cell.handoff
-        || !slot.is(CleanupPhase::Reserved)
+        || !(slot.is(CleanupPhase::Reserved) || slot.is(CleanupPhase::RetryingPrepared))
     {
         return None;
     }
@@ -126,72 +140,82 @@ impl LifecycleCleanupHandle {
             .upgrade()
             .ok_or_else(|| refusal("containing Main cleanup owner is absent"))
     }
-
-    /// Reserves the same Main-paid constructor cell before World admission.
-    pub(crate) fn reserve_for_source(
-        &self,
-    ) -> Result<WorldLifecycleCleanupReservation, crucible_qemu::QemuVmRealizationError> {
-        let queue =
-            self.queue
-                .upgrade()
-                .ok_or(crucible_qemu::QemuVmRealizationError::CleanupRetained {
-                    operation: "retain actual Main Source cleanup queue",
-                })?;
-        queue._pool.verify_retained_main().map_err(|first| {
-            crucible_qemu::QemuVmRealizationError::ModelCopy {
-                source: Box::new(crucible_qemu::OriginalActorAccountError::NativePurpose(
-                    first,
-                )),
-            }
-        })?;
-        for (index, slot) in queue.slots.iter().enumerate() {
-            if !slot.claim(CleanupPhase::Free, CleanupPhase::Reserving) {
-                continue;
-            }
-            let epoch = initialize_reserved_slot(slot, (), |_, ()| {}).map_err(|(_, first)| {
-                crucible_qemu::QemuVmRealizationError::ModelCopy {
-                    source: Box::new(first),
-                }
-            })?;
-            return Ok(WorldLifecycleCleanupReservation {
-                reservation: Box::new(CleanupReservation {
-                    queue: Weak::clone(&self.queue),
-                    index,
-                    epoch,
-                    observed: ProductionVmCleanupStage::BodyRetained,
-                    first_failure: None,
-                }),
-                cell: ReservedWorldCell {
-                    queue: Weak::clone(&self.queue),
-                    index,
-                    epoch,
-                },
-            });
-        }
-        Err(crucible_qemu::QemuVmRealizationError::CleanupRetained {
-            operation: "reserve occupied Main Source cleanup cell",
-        })
-    }
 }
 
 impl ProductionVmCleanupReservation for CleanupReservation {
     type Failure = crate::ProductionVmConstructionCleanupError;
+    type PostBody = crate::ProductionVmConstructionPostBody;
+    type ReturnDestination = SourceBodyReturn;
+
+    fn prepare_return(
+        mut self: Box<Self>,
+    ) -> Result<
+        SourceBodyReturn,
+        Box<
+            dyn ProductionVmCleanupReservation<
+                    Failure = Self::Failure,
+                    PostBody = Self::PostBody,
+                    ReturnDestination = SourceBodyReturn,
+                >,
+        >,
+    > {
+        let Some(queue) = self.queue.upgrade() else {
+            return Err(self);
+        };
+        let Some(slot) = queue.slots.get(self.index) else {
+            return Err(self);
+        };
+        let mut cell = match slot.cell.lock() {
+            Ok(cell) => cell,
+            Err(_) => return Err(self),
+        };
+        if slot.epoch.load(Ordering::Acquire) != self.epoch
+            || cell.epoch != self.epoch
+            || !(slot.is(CleanupPhase::Reserved) || slot.is(CleanupPhase::RetryingPrepared))
+            || cell.owner.is_some()
+            || cell.handoff
+            || slot.external_return_reserved.load(Ordering::Acquire)
+            || self.report_reference
+            || !report_refs::register(slot, self.epoch)
+        {
+            return Err(self);
+        }
+        self.report_reference = true;
+        slot.external_return_reserved.store(true, Ordering::Release);
+        let index = self.index;
+        let epoch = self.epoch;
+        drop(cell);
+        Ok(SourceBodyReturn::new(queue, index, epoch, self))
+    }
 
     fn retain(
         self: Box<Self>,
         owner: Box<
-            dyn ProductionVmCleanupOwner<Failure = crate::ProductionVmConstructionCleanupError>,
+            dyn ProductionVmCleanupOwner<
+                    Failure = crate::ProductionVmConstructionCleanupError,
+                    PostBody = crate::ProductionVmConstructionPostBody,
+                >,
         >,
     ) -> Result<
-        Box<dyn ProductionVmCleanupHandoff<Failure = crate::ProductionVmConstructionCleanupError>>,
+        Box<
+            dyn ProductionVmCleanupHandoff<
+                    Failure = crate::ProductionVmConstructionCleanupError,
+                    PostBody = crate::ProductionVmConstructionPostBody,
+                >,
+        >,
         (
             Box<
                 dyn ProductionVmCleanupReservation<
-                    Failure = crate::ProductionVmConstructionCleanupError,
-                >,
+                        Failure = crate::ProductionVmConstructionCleanupError,
+                        PostBody = crate::ProductionVmConstructionPostBody,
+                        ReturnDestination = crate::lifecycle_cleanup::SourceBodyReturn,
+                    >,
             >,
             Box<
-                dyn ProductionVmCleanupOwner<Failure = crate::ProductionVmConstructionCleanupError>,
+                dyn ProductionVmCleanupOwner<
+                        Failure = crate::ProductionVmConstructionCleanupError,
+                        PostBody = crate::ProductionVmConstructionPostBody,
+                    >,
             >,
         ),
     > {
@@ -205,93 +229,211 @@ impl ProductionVmCleanupReservation for CleanupReservation {
             receipt
                 as Box<
                     dyn ProductionVmCleanupHandoff<
+                            Failure = crate::ProductionVmConstructionCleanupError,
+                            PostBody = crate::ProductionVmConstructionPostBody,
+                        >,
+                >
+        })
+    }
+
+    fn retain_returned(
+        self: Box<Self>,
+        owner: Box<
+            dyn ProductionVmCleanupOwner<
+                    Failure = crate::ProductionVmConstructionCleanupError,
+                    PostBody = crate::ProductionVmConstructionPostBody,
+                >,
+        >,
+    ) -> Result<
+        Box<
+            dyn ProductionVmCleanupHandoff<
+                    Failure = crate::ProductionVmConstructionCleanupError,
+                    PostBody = crate::ProductionVmConstructionPostBody,
+                >,
+        >,
+        (
+            Box<
+                dyn ProductionVmCleanupReservation<
                         Failure = crate::ProductionVmConstructionCleanupError,
+                        PostBody = crate::ProductionVmConstructionPostBody,
+                        ReturnDestination = crate::lifecycle_cleanup::SourceBodyReturn,
                     >,
+            >,
+            Box<
+                dyn ProductionVmCleanupOwner<
+                        Failure = crate::ProductionVmConstructionCleanupError,
+                        PostBody = crate::ProductionVmConstructionPostBody,
+                    >,
+            >,
+        ),
+    > {
+        let Some(queue) = self.queue.upgrade() else {
+            return Err((self, owner));
+        };
+        let Some(slot) = queue.slots.get(self.index) else {
+            return Err((self, owner));
+        };
+        self.publish_returned_owner(slot, owner).map(|receipt| {
+            receipt
+                as Box<
+                    dyn ProductionVmCleanupHandoff<
+                            Failure = crate::ProductionVmConstructionCleanupError,
+                            PostBody = crate::ProductionVmConstructionPostBody,
+                        >,
                 >
         })
     }
 }
 
-/// Initializes the already claimed cell before constructing its token/body.
-fn initialize_reserved_slot<T>(
-    slot: &CleanupSlot,
-    input: T,
-    attach: impl FnOnce(&mut CleanupCell, T),
-) -> Result<u64, (T, LifecycleApiError)> {
-    if !slot.is(CleanupPhase::Reserving) {
-        return Err((
-            input,
-            refusal("cleanup cell was not reserved before initialization"),
-        ));
-    }
-    let mut cell = match slot.cell.lock() {
-        Ok(cell) => cell,
-        Err(_) => {
-            slot.publish(CleanupPhase::DestructionRefused);
-            return Err((input, refusal("cleanup reservation ownership is poisoned")));
-        }
-    };
-    if cell.owner.is_some() || cell.controls.is_some() {
-        slot.publish(CleanupPhase::DestructionRefused);
-        return Err((input, refusal("free cleanup cell retains unknown custody")));
-    }
-    let epoch = match cell.epoch.checked_add(1) {
-        Some(epoch) => epoch,
-        None => {
-            slot.publish(CleanupPhase::DestructionRefused);
-            return Err((input, refusal("cleanup reservation epoch exhausted")));
-        }
-    };
-    cell.epoch = epoch;
-    cell.first_failure = None;
-    cell.handoff = false;
-    attach(&mut cell, input);
-    drop(cell);
-    slot.publish(CleanupPhase::Reserved);
-    Ok(epoch)
-}
-
 impl CleanupReservation {
+    pub(super) fn cancel_return_registration(&mut self, slot: &CleanupSlot) {
+        if self.report_reference {
+            self.report_reference = false;
+            report_refs::release(slot, self.epoch, false);
+        }
+    }
+
     /// Moves into the same claimed epoch; the containing handle selects slot.
     fn publish_owner(
         self: Box<Self>,
         slot: &CleanupSlot,
         owner: Box<
-            dyn ProductionVmCleanupOwner<Failure = crate::ProductionVmConstructionCleanupError>,
+            dyn ProductionVmCleanupOwner<
+                    Failure = crate::ProductionVmConstructionCleanupError,
+                    PostBody = crate::ProductionVmConstructionPostBody,
+                >,
         >,
     ) -> Result<
         Box<Self>,
         (
             Box<
                 dyn ProductionVmCleanupReservation<
-                    Failure = crate::ProductionVmConstructionCleanupError,
-                >,
+                        Failure = crate::ProductionVmConstructionCleanupError,
+                        PostBody = crate::ProductionVmConstructionPostBody,
+                        ReturnDestination = crate::lifecycle_cleanup::SourceBodyReturn,
+                    >,
             >,
             Box<
-                dyn ProductionVmCleanupOwner<Failure = crate::ProductionVmConstructionCleanupError>,
+                dyn ProductionVmCleanupOwner<
+                        Failure = crate::ProductionVmConstructionCleanupError,
+                        PostBody = crate::ProductionVmConstructionPostBody,
+                    >,
             >,
         ),
     > {
-        if !slot.claim(CleanupPhase::Reserved, CleanupPhase::Publishing) {
+        self.publish_owner_mode(slot, owner, false)
+    }
+
+    fn publish_returned_owner(
+        self: Box<Self>,
+        slot: &CleanupSlot,
+        owner: Box<
+            dyn ProductionVmCleanupOwner<
+                    Failure = crate::ProductionVmConstructionCleanupError,
+                    PostBody = crate::ProductionVmConstructionPostBody,
+                >,
+        >,
+    ) -> Result<
+        Box<Self>,
+        (
+            Box<
+                dyn ProductionVmCleanupReservation<
+                        Failure = crate::ProductionVmConstructionCleanupError,
+                        PostBody = crate::ProductionVmConstructionPostBody,
+                        ReturnDestination = crate::lifecycle_cleanup::SourceBodyReturn,
+                    >,
+            >,
+            Box<
+                dyn ProductionVmCleanupOwner<
+                        Failure = crate::ProductionVmConstructionCleanupError,
+                        PostBody = crate::ProductionVmConstructionPostBody,
+                    >,
+            >,
+        ),
+    > {
+        self.publish_owner_mode(slot, owner, true)
+    }
+
+    fn publish_owner_mode(
+        mut self: Box<Self>,
+        slot: &CleanupSlot,
+        owner: Box<
+            dyn ProductionVmCleanupOwner<
+                    Failure = crate::ProductionVmConstructionCleanupError,
+                    PostBody = crate::ProductionVmConstructionPostBody,
+                >,
+        >,
+        returned: bool,
+    ) -> Result<
+        Box<Self>,
+        (
+            Box<
+                dyn ProductionVmCleanupReservation<
+                        Failure = crate::ProductionVmConstructionCleanupError,
+                        PostBody = crate::ProductionVmConstructionPostBody,
+                        ReturnDestination = crate::lifecycle_cleanup::SourceBodyReturn,
+                    >,
+            >,
+            Box<
+                dyn ProductionVmCleanupOwner<
+                        Failure = crate::ProductionVmConstructionCleanupError,
+                        PostBody = crate::ProductionVmConstructionPostBody,
+                    >,
+            >,
+        ),
+    > {
+        if slot.epoch.load(Ordering::Acquire) != self.epoch {
             return Err((self, owner));
         }
-        // No legitimate queue operation locks Reserved/Publishing cells. The
-        // sole move-only token owns this publication, without a capacity search.
-        let mut cell = match slot.cell.lock() {
-            Ok(cell) => cell,
+        let was_quarantined =
+            returned && slot.claim(CleanupPhase::DestructionRefused, CleanupPhase::Publishing);
+        let claimed = was_quarantined
+            || slot.claim(CleanupPhase::Reserved, CleanupPhase::Publishing)
+            || (returned && slot.claim(CleanupPhase::RetryingPrepared, CleanupPhase::Publishing));
+        if !claimed {
+            return Err((self, owner));
+        }
+        // The external token is unique. Reserved/RetryingPrepared control
+        // borrows contain only fixed metadata moves; no prepared mutex, IO,
+        // user callback or destructor is awaited while holding this mutex.
+        let (mut cell, poisoned) = match slot.cell.lock() {
+            Ok(cell) => (cell, false),
+            Err(poison) if returned => (poison.into_inner(), true),
             Err(_) => {
                 slot.publish(CleanupPhase::DestructionRefused);
                 return Err((self, owner));
             }
         };
-        if cell.epoch != self.epoch || cell.owner.is_some() {
+        if cell.epoch != self.epoch
+            || cell.owner.is_some()
+            || cell.handoff
+            || slot.external_return_reserved.load(Ordering::Acquire)
+        {
             slot.publish(CleanupPhase::DestructionRefused);
             return Err((self, owner));
         }
+        if !report_refs::register(slot, self.epoch) {
+            slot.publish(CleanupPhase::DestructionRefused);
+            return Err((self, owner));
+        }
+        self.report_reference = true;
+        slot.request_retirement();
         cell.owner = Some(owner);
         cell.handoff = true;
+        if poisoned {
+            crate::ProductionVmConstructionCleanupError::retain_first(
+                &mut cell.first_failure,
+                crate::ProductionVmConstructionCleanupError::Poisoned,
+            );
+        }
         drop(cell);
-        slot.publish(CleanupPhase::Queued);
+        if poisoned || was_quarantined {
+            slot.publish(CleanupPhase::DestructionRefused);
+        } else if !slot.claim(CleanupPhase::Publishing, CleanupPhase::Queued) {
+            // A concurrently observed callback unwind may quarantine the same
+            // Main role. Custody is accepted, but that fact must not reopen it.
+            slot.publish(CleanupPhase::DestructionRefused);
+        }
         Ok(self)
     }
 
@@ -309,42 +451,30 @@ impl CleanupReservation {
         if slot.body_destroyed_epoch.load(Ordering::Acquire) >= self.epoch {
             self.observed = ProductionVmCleanupStage::BodyDestroyed;
         }
-        if !slot.claim(CleanupPhase::Closed, CleanupPhase::Completing) {
-            return Ok(self.observed);
-        }
-        let mut cell = match slot.cell.lock() {
-            Ok(cell) => cell,
-            Err(_) => {
-                slot.publish(CleanupPhase::DestructionRefused);
-                return Err(refusal("closed cleanup handoff custody is poisoned"));
+        if slot.controls_closed_epoch.load(Ordering::Acquire) >= self.epoch {
+            self.observed = ProductionVmCleanupStage::Complete;
+            let mut cell = slot
+                .cell
+                .try_lock()
+                .map_err(|_| refusal("completed handoff history is borrowed or poisoned"))?;
+            if cell.epoch != self.epoch || cell.owner.is_some() || cell.controls.is_some() {
+                return Err(refusal("completed handoff retains a different actual body"));
             }
-        };
-        if cell.epoch != self.epoch {
-            drop(cell);
-            slot.publish(CleanupPhase::Closed);
-            return Err(refusal("closed cleanup handoff epoch is stale"));
+            if self.first_failure.is_none() {
+                self.first_failure = cell.first_failure.take();
+            }
         }
-        if cell.owner.is_some() || cell.controls.is_some() || !cell.handoff {
-            slot.publish(CleanupPhase::DestructionRefused);
-            return Err(refusal("cleanup closure retains unknown physical custody"));
-        }
-        self.first_failure = cell.first_failure.take();
-        // Latch before publication can admit another epoch. The same Box owns
-        // both the historical cause and its actual completed physical fact.
-        self.observed = ProductionVmCleanupStage::Complete;
-        slot.completed_epoch.store(self.epoch, Ordering::Release);
-        drop(cell);
-        slot.publish(CleanupPhase::Free);
         Ok(self.observed)
     }
 }
 
 impl ProductionVmCleanupHandoff for CleanupReservation {
     type Failure = crate::ProductionVmConstructionCleanupError;
+    type PostBody = crate::ProductionVmConstructionPostBody;
 
     fn retry(&mut self) -> Result<ProductionVmCleanupStage, LifecycleApiError> {
-        if self.observed == ProductionVmCleanupStage::Complete {
-            return Ok(self.observed);
+        if self.terminal_history.is_some() {
+            return Ok(ProductionVmCleanupStage::Complete);
         }
         let queue = self
             .queue
@@ -382,9 +512,82 @@ impl ProductionVmCleanupHandoff for CleanupReservation {
         self.first_failure.as_ref()
     }
 
-    fn take_first_failure(&mut self) -> Option<crate::ProductionVmConstructionCleanupError> {
-        self.first_failure.take()
+    fn retain_post_body(&mut self) -> bool {
+        if self.terminal_history.is_some() {
+            return true;
+        }
+        if !self.report_reference {
+            return false;
+        }
+        let key = ServiceMainPreclaim {
+            queue: Weak::clone(&self.queue),
+            index: self.index,
+            epoch: self.epoch,
+        };
+        match terminal::take_terminal_body(&key) {
+            Ok(body) => {
+                // The same one report reference moves into the actual terminal
+                // body. No cache or strong queue edge remains in Main's cell.
+                self.report_reference = false;
+                self.observed = ProductionVmCleanupStage::Complete;
+                self.terminal_history = Some(body);
+                true
+            }
+            Err(_) => false,
+        }
     }
+
+    fn retained_post_body(&self) -> Option<&Self::PostBody> {
+        self.terminal_history.as_ref()
+    }
+
+    fn dispose(mut self: Box<Self>) {
+        let terminal = self.terminal_history.take();
+        dispose_receipt_before_terminal(self, terminal);
+    }
+
+    fn into_post_body(
+        mut self: Box<Self>,
+    ) -> Result<
+        Self::PostBody,
+        Box<dyn ProductionVmCleanupHandoff<Failure = Self::Failure, PostBody = Self::PostBody>>,
+    > {
+        if let Some(mut body) = self.terminal_history.take() {
+            if let Some(first) = self.first_failure.take() {
+                body.retain_cleanup_first(first);
+            }
+            // Deallocate the original token before exposing the role-bearing
+            // terminal value to a caller that may immediately dispose it.
+            drop(self);
+            return Ok(body);
+        }
+        if !self.report_reference {
+            return Err(self);
+        }
+        let key = ServiceMainPreclaim {
+            queue: Weak::clone(&self.queue),
+            index: self.index,
+            epoch: self.epoch,
+        };
+        match terminal::take_terminal_body(&key) {
+            Ok(mut body) => {
+                if let Some(first) = self.first_failure.take() {
+                    body.retain_cleanup_first(first);
+                }
+                self.report_reference = false;
+                Ok(body)
+            }
+            Err(_) => Err(self),
+        }
+    }
+}
+
+/// Keeps the role-bearing tail alive across the actual original Box drop.
+///
+/// The generic primitive also permits a nonissuing component drop-order control.
+fn dispose_receipt_before_terminal<T, P>(receipt: Box<T>, terminal: Option<P>) {
+    drop(receipt);
+    drop(terminal);
 }
 
 #[cfg(test)]
@@ -393,14 +596,43 @@ mod tests;
 /// Exercises the canonical cell and receipt without constructing a Main issuer.
 #[cfg(test)]
 pub(crate) fn component_owner_history_for_test(
-    owner: Box<dyn ProductionVmCleanupOwner<Failure = crate::ProductionVmConstructionCleanupError>>,
+    owner: Box<
+        dyn ProductionVmCleanupOwner<
+                Failure = crate::ProductionVmConstructionCleanupError,
+                PostBody = crate::ProductionVmConstructionPostBody,
+            >,
+    >,
     observe_retained: impl FnOnce(),
 ) -> crate::ProductionVmConstructionCleanupError {
     let slot = CleanupSlot {
+        export_abandoned: AtomicBool::new(false),
+        work_gate: crate::lifecycle_cleanup::work_gate::WorkGate::new(),
+        transport_return_sequence: AtomicU64::new(0),
+        controls_closed_epoch: AtomicU64::new(0),
+        worlds_returned_epoch: AtomicU64::new(0),
+
+        epoch: AtomicU64::new(1),
+        retirement_requested: AtomicBool::new(false),
+        external_return_reserved: AtomicBool::new(false),
+        external_receivers: AtomicUsize::new(0),
+        report_references: AtomicUsize::new(0),
+        terminal_disposed: AtomicBool::new(false),
         phase: AtomicU8::new(CleanupPhase::Queued as u8),
         body_destroyed_epoch: AtomicU64::new(0),
         completed_epoch: AtomicU64::new(0),
+        prepared: Mutex::new(prepared_service::PreparedCell::empty()),
+        service: Mutex::new(prepared_service::ServiceCell::installed(1, None)),
         cell: Mutex::new(CleanupCell {
+            controls_bound: false,
+            retirement_input: None,
+            retirement_input_reserved: false,
+            panic_payload: None,
+            post_body: None,
+            incoming_post_body: None,
+            owner_cleanup_complete: false,
+            owner_post_body_taken: false,
+            control_failure: None,
+
             epoch: 1,
             owner: Some(owner),
             controls: None,
@@ -414,6 +646,8 @@ pub(crate) fn component_owner_history_for_test(
         epoch: 1,
         observed: ProductionVmCleanupStage::BodyRetained,
         first_failure: None,
+        terminal_history: None,
+        report_reference: false,
     };
 
     let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -423,20 +657,20 @@ pub(crate) fn component_owner_history_for_test(
     assert!(poisoned.is_err());
     assert!(slot.cell.is_poisoned());
 
-    assert!(retry_slot(&slot, Some(1)).is_err());
+    assert!(super::driver::retry_body_and_controls(&slot, 1).is_err());
     assert_eq!(
         receipt.observe_slot(&slot).unwrap(),
         ProductionVmCleanupStage::BodyRetained
     );
     observe_retained();
-    retry_slot(&slot, Some(1)).unwrap();
+    super::driver::retry_body_and_controls(&slot, 1).unwrap();
     assert_eq!(
         receipt.observe_slot(&slot).unwrap(),
         ProductionVmCleanupStage::Complete
     );
     assert!(slot.cell.lock().unwrap().owner.is_none());
     assert_eq!(slot.body_destroyed_epoch.load(Ordering::Acquire), 1);
-    receipt.take_first_failure().unwrap()
+    receipt.first_failure.take().unwrap()
 }
 
 #[cfg(test)]
@@ -448,14 +682,16 @@ impl LifecycleCleanupHandle {
     pub(crate) fn unavailable_reservation_for_test() -> Box<
         dyn ProductionVmCleanupReservation<
             Failure = <crate::ProductionVmConstructionCustody as ProductionVmCleanupOwner>::Failure,
-        >,
-    > {
+            PostBody = <crate::ProductionVmConstructionCustody as ProductionVmCleanupOwner>::PostBody, ReturnDestination = crate::lifecycle_cleanup::SourceBodyReturn>,
+    >{
         Box::new(CleanupReservation {
             queue: Weak::new(),
             index: usize::MAX,
             epoch: 0,
             observed: ProductionVmCleanupStage::BodyRetained,
             first_failure: None,
+            terminal_history: None,
+            report_reference: false,
         })
     }
 }
@@ -464,10 +700,11 @@ impl LifecycleCleanupHandle {
 ///
 /// The actual reservation remains its sole token. This inline, move-only key
 /// supplies no budget, operation, cleanup clock, cell reservation or body lease.
+#[derive(Debug)]
 pub(crate) struct ServiceMainPreclaim {
-    queue: Weak<LifecycleCleanupQueue>,
-    index: usize,
-    epoch: u64,
+    pub(super) queue: Weak<LifecycleCleanupQueue>,
+    pub(super) index: usize,
+    pub(super) epoch: u64,
 }
 
 /// Preserves an exact pre-Service selection or retained-Main refusal inline.
@@ -504,6 +741,11 @@ impl ServiceMainPreclaim {
             .ok_or(ServiceMainPreclaimError::Role(
                 "pre-Service Main role is absent",
             ))?;
+        if !slot.is(CleanupPhase::Reserved) || !slot.work_is_open() {
+            return Err(ServiceMainPreclaimError::Role(
+                "pre-Service role has entered retirement",
+            ));
+        }
         let cell = borrow_reserved_cell(slot, self.epoch).ok_or(ServiceMainPreclaimError::Role(
             "pre-Service Main role is stale, borrowed or uncertain",
         ))?;
@@ -543,6 +785,63 @@ mod service_main_preclaim_tests {
                     "pre-Service containing Main is unavailable"
                 ))
             ));
+        }
+    }
+}
+
+/// Allocates only the original Main-paid token inside the locked producer cut.
+pub(super) fn new_world_reservation(
+    queue: &Weak<LifecycleCleanupQueue>,
+    index: usize,
+    epoch: u64,
+) -> WorldLifecycleCleanupReservation {
+    WorldLifecycleCleanupReservation {
+        reservation: Box::new(CleanupReservation {
+            queue: Weak::clone(queue),
+            index,
+            epoch,
+            observed: ProductionVmCleanupStage::BodyRetained,
+            first_failure: None,
+            terminal_history: None,
+            report_reference: false,
+        }),
+        cell: ReservedWorldCell {
+            queue: Weak::clone(queue),
+            index,
+            epoch,
+        },
+    }
+}
+
+impl Drop for CleanupReservation {
+    fn drop(&mut self) {
+        if self.terminal_history.is_some()
+            && let Some(queue) = self.queue.upgrade()
+            && let Some(slot) = queue.slots.get(self.index)
+            && slot.epoch.load(Ordering::Acquire) == self.epoch
+        {
+            // The used history guard extracts the terminal before disposing
+            // this Box. A raw caller bypassing that order cannot refund a role
+            // while this allocation is still alive. Terminal disposal requires
+            // TerminalOwned, so it cannot reverse this quarantine afterward.
+            slot.publish(CleanupPhase::DestructionRefused);
+        }
+        let key = ServiceMainPreclaim {
+            queue: Weak::clone(&self.queue),
+            index: self.index,
+            epoch: self.epoch,
+        };
+        // No raw cause outlives the token's actual report pin.
+        drop(self.first_failure.take());
+        if self.report_reference {
+            terminal::return_report_reference(&key, false);
+            self.report_reference = false;
+        }
+        if let Some(queue) = key.queue.upgrade()
+            && let Some(slot) = queue.slots.get(key.index)
+            && slot.epoch.load(Ordering::Acquire) == key.epoch
+        {
+            slot.request_retirement();
         }
     }
 }

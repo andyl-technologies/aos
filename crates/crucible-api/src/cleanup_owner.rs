@@ -15,12 +15,27 @@ pub trait ProductionVmCleanupOwner: Send {
     /// Failure retained in the receiving owner's existing cleanup history.
     type Failure: std::error::Error + Send + 'static;
 
+    /// Existing backend obligations retained after containing-body destruction.
+    type PostBody: Send + 'static;
+
     /// Retries cleanup through this same owner's existing saved authority.
     ///
     /// # Errors
     /// Preserves the complete owner on physical refusal or uncertain custody.
     /// This operation admits no replacement Original, permit, epoch, or budget.
     fn retry_cleanup(&mut self) -> Result<(), Self::Failure>;
+
+    /// Moves existing postbody obligations after successful physical cleanup.
+    ///
+    /// The receiver calls this before destroying this same Box. A backend with
+    /// authentic external obligations must move those actual owners; absence
+    /// does not prove native return or authorize release of an occupied role.
+    /// Independent rejected bodies retain all their obligations on refusal.
+    ///
+    /// # Errors
+    /// Keeps the body and untransferred obligations on incomplete or uncertain
+    /// custody. This operation supplies no replacement allocation or authority.
+    fn take_post_body(&mut self) -> Result<Option<Self::PostBody>, Self::Failure>;
 }
 
 /// Occupies one authenticated cleanup cell before lifecycle effects begin.
@@ -34,6 +49,34 @@ pub trait ProductionVmCleanupOwner: Send {
 pub trait ProductionVmCleanupReservation: Send {
     /// Failure retained in the receiving owner's existing cleanup history.
     type Failure: std::error::Error + Send + 'static;
+
+    /// Existing backend obligations retained after containing-body destruction.
+    type PostBody: Send + 'static;
+
+    /// Reserves the exact destination for a later external-body return.
+    type ReturnDestination: Send + 'static;
+
+    /// Moves this same token into its exclusive external-return destination.
+    ///
+    /// This pre-export custody operation performs no cleanup. Implementations
+    /// validate the original epoch and vacant destination before exporting a
+    /// body; the returned value retains the actual containing owner lifetime.
+    ///
+    /// # Errors
+    /// Returns this same token without exporting a body when its original
+    /// destination cannot be reserved. No replacement token is allocated.
+    fn prepare_return(
+        self: Box<Self>,
+    ) -> Result<
+        Self::ReturnDestination,
+        Box<
+            dyn ProductionVmCleanupReservation<
+                    Failure = Self::Failure,
+                    PostBody = Self::PostBody,
+                    ReturnDestination = Self::ReturnDestination,
+                >,
+        >,
+    >;
 
     /// Transfers the actual owner into this reservation's already occupied cell.
     ///
@@ -49,12 +92,49 @@ pub trait ProductionVmCleanupReservation: Send {
     /// the same retry; refusal certifies neither cleanup nor a reusable cell.
     fn retain(
         self: Box<Self>,
-        owner: Box<dyn ProductionVmCleanupOwner<Failure = Self::Failure>>,
+        owner: Box<
+            dyn ProductionVmCleanupOwner<Failure = Self::Failure, PostBody = Self::PostBody>,
+        >,
     ) -> Result<
-        Box<dyn ProductionVmCleanupHandoff<Failure = Self::Failure>>,
+        Box<dyn ProductionVmCleanupHandoff<Failure = Self::Failure, PostBody = Self::PostBody>>,
         (
-            Box<dyn ProductionVmCleanupReservation<Failure = Self::Failure>>,
-            Box<dyn ProductionVmCleanupOwner<Failure = Self::Failure>>,
+            Box<
+                dyn ProductionVmCleanupReservation<
+                        Failure = Self::Failure,
+                        PostBody = Self::PostBody,
+                        ReturnDestination = Self::ReturnDestination,
+                    >,
+            >,
+            Box<dyn ProductionVmCleanupOwner<Failure = Self::Failure, PostBody = Self::PostBody>>,
+        ),
+    >;
+
+    /// Accepts the original externally returned body without waiting on its
+    /// prepared-owner borrow. This is fixed custody delivery, not cleanup.
+    ///
+    /// The canonical implementation serializes only its short control metadata,
+    /// retains matching poisoned custody in quarantine, and never executes IO,
+    /// callbacks or destructors under that mutex. No replacement Box is born.
+    ///
+    /// # Errors
+    /// Returns both same owners on missing Main, stale epoch or an occupied
+    /// destination. Refusal certifies neither destruction nor physical return.
+    fn retain_returned(
+        self: Box<Self>,
+        owner: Box<
+            dyn ProductionVmCleanupOwner<Failure = Self::Failure, PostBody = Self::PostBody>,
+        >,
+    ) -> Result<
+        Box<dyn ProductionVmCleanupHandoff<Failure = Self::Failure, PostBody = Self::PostBody>>,
+        (
+            Box<
+                dyn ProductionVmCleanupReservation<
+                        Failure = Self::Failure,
+                        PostBody = Self::PostBody,
+                        ReturnDestination = Self::ReturnDestination,
+                    >,
+            >,
+            Box<dyn ProductionVmCleanupOwner<Failure = Self::Failure, PostBody = Self::PostBody>>,
         ),
     >;
 }
@@ -81,6 +161,9 @@ pub trait ProductionVmCleanupHandoff: Send {
     /// Failure retained in the receiving owner's existing cleanup history.
     type Failure: std::error::Error + Send + 'static;
 
+    /// Existing backend obligations retained after containing-body destruction.
+    type PostBody: Send + 'static;
+
     /// Performs one bounded cleanup attempt on this exact cell and epoch.
     ///
     /// # Errors
@@ -105,10 +188,38 @@ pub trait ProductionVmCleanupHandoff: Send {
     /// This historical cause does not change a factual `Complete` stage.
     fn first_failure(&self) -> Option<&Self::Failure>;
 
-    /// Moves the actual first cleanup cause from this completed receipt.
+    /// Retains the complete terminal body inside this same preborn token.
     ///
-    /// Returns `None` until physical completion has transferred the cause from
-    /// its exact cell, or after the same cause has already been taken. Moving
-    /// history neither renews cleanup nor changes the completed physical fact.
-    fn take_first_failure(&mut self) -> Option<Self::Failure>;
+    /// Returns true only after the backend's actual terminal-return checks and
+    /// once-only ownership transfer. False leaves the same token responsible;
+    /// body completion alone cannot supply native or containing-role closure.
+    /// This operation allocates no replacement Box and creates no authority.
+    fn retain_post_body(&mut self) -> bool;
+
+    /// Borrows the complete terminal body already retained by this same token.
+    ///
+    /// This is history access, not cleanup permission or a physical-return cut.
+    fn retained_post_body(&self) -> Option<&Self::PostBody>;
+
+    /// Destroys this token allocation before disposing its retained terminal body.
+    ///
+    /// The terminal body keeps its actual containing role until the original
+    /// token and every token-owned first cause have been destroyed. A pending
+    /// token still leaves its actual backend-owned body in that same backend.
+    fn dispose(self: Box<Self>);
+
+    /// Moves terminal obligations while retaining their actual containing role.
+    ///
+    /// Body/lease completion alone cannot replace independent native return or
+    /// final observer discharge. The returned value must keep its role until
+    /// actual nested reports and owners are destroyed. No new Box is allocated.
+    ///
+    /// # Errors
+    /// Returns this same driver while any actual obligation or role is pending.
+    fn into_post_body(
+        self: Box<Self>,
+    ) -> Result<
+        Self::PostBody,
+        Box<dyn ProductionVmCleanupHandoff<Failure = Self::Failure, PostBody = Self::PostBody>>,
+    >;
 }

@@ -43,6 +43,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use super::DEFAULT_RUN_RECONCILIATION_STEPS;
+use crate::completed_reproduction::CompletedReproductionPreparation;
 mod admitted;
 mod admitted_error;
 use admitted_error::AdmittedCampaignError;
@@ -167,6 +168,7 @@ pub(super) struct SynchronousCampaignExecutor<M> {
     exact_retention: Arc<dyn FindingExactRetentionSource>,
     exact_inventory: Arc<CampaignRunFindingExactRetentionSource>,
     worker: RepositoryAttemptWorker<M>,
+    prepare_reproduction: CompletedReproductionPreparation<M>,
     cancellation: ExecutionCancellation,
     admitted: Option<super::GuardedCampaignOwner>,
     caller_supervisor: Option<crucible_linux_resource::host_supervision::HostOperationSupervisor>,
@@ -189,9 +191,11 @@ impl<M> SynchronousCampaignExecutor<M> {
         model: M,
         cancellation: ExecutionCancellation,
         owner: super::GuardedCampaignOwner,
+        prepare_reproduction: CompletedReproductionPreparation<M>,
     ) -> Self {
         Self {
             worker: RepositoryAttemptWorker::new(store.clone(), model),
+            prepare_reproduction,
             store,
             exact_inventory: Arc::clone(&exact_retention),
             exact_retention,
@@ -215,6 +219,7 @@ impl<M> SynchronousCampaignExecutor<M> {
     ) -> Self {
         Self {
             worker: RepositoryAttemptWorker::new(store.clone(), model),
+            prepare_reproduction: crate::completed_reproduction::operation_only_preparation,
             store,
             exact_inventory: Arc::clone(&exact_retention),
             exact_retention,
@@ -253,9 +258,12 @@ pub(super) enum ComponentCaptureConfigurationError {
 }
 
 #[derive(Debug)]
-pub(super) enum SynchronousCampaignExecutorError<E> {
+pub(super) enum SynchronousCampaignExecutorCause<E> {
     Admitted(Box<AdmittedCampaignError<E>>),
     AuthorityUnavailable,
+    Prepared(crate::PreparedSourceFailure),
+    Retirement(crate::PreparedSourceRefusal),
+    Terminal(std::sync::Mutex<crate::ProductionVmConstructionPostBody>),
     Protocol(crucible_campaign::CampaignCodecError),
     #[cfg(any(test, feature = "test-support"))]
     Repository(crucible_campaign::CampaignRepositoryError),
@@ -289,13 +297,22 @@ pub(super) enum SynchronousCampaignExecutorError<E> {
     ReconciliationLimit,
 }
 
-impl<E: fmt::Display> fmt::Display for SynchronousCampaignExecutorError<E> {
+impl<E: fmt::Display> fmt::Display for SynchronousCampaignExecutorCause<E> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::AuthorityUnavailable => {
                 formatter.write_str("executor has no admitted execution authority")
             }
             Self::Admitted(error) => write!(formatter, "admitted campaign execution: {error}"),
+            Self::Prepared(error) => fmt::Display::fmt(error, formatter),
+            Self::Retirement(error) => fmt::Display::fmt(error, formatter),
+            Self::Terminal(history) => {
+                let history = match history.lock() {
+                    Ok(history) => history,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                fmt::Display::fmt(&*history, formatter)
+            }
             Self::Protocol(error) => write!(formatter, "executor protocol: {error}"),
             #[cfg(any(test, feature = "test-support"))]
             Self::Repository(error) => write!(formatter, "executor repository: {error}"),
@@ -359,13 +376,16 @@ impl<E: fmt::Display> fmt::Display for SynchronousCampaignExecutorError<E> {
     }
 }
 
-impl<E> Error for SynchronousCampaignExecutorError<E>
+impl<E> Error for SynchronousCampaignExecutorCause<E>
 where
     E: Error + 'static,
 {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Admitted(error) => Some(error.as_ref()),
+            Self::Prepared(error) => Some(error),
+            Self::Retirement(error) => Some(error),
+            Self::Terminal(_) => None,
             Self::Protocol(error) => Some(error),
             #[cfg(any(test, feature = "test-support"))]
             Self::Repository(error) => Some(error),
@@ -397,6 +417,53 @@ where
     }
 }
 
+/// Keeps the actual first cause and one independent projection-return refusal.
+pub(super) struct SynchronousCampaignExecutorError<E> {
+    cause: SynchronousCampaignExecutorCause<E>,
+    receiver_return: Option<crate::PreparedSourceFailure>,
+}
+
+impl<E> SynchronousCampaignExecutorError<E> {
+    pub(super) fn cause(&self) -> &SynchronousCampaignExecutorCause<E> {
+        &self.cause
+    }
+
+    pub(super) fn receiver_return(&self) -> Option<&crate::PreparedSourceFailure> {
+        self.receiver_return.as_ref()
+    }
+}
+
+impl<E> From<SynchronousCampaignExecutorCause<E>> for SynchronousCampaignExecutorError<E> {
+    fn from(cause: SynchronousCampaignExecutorCause<E>) -> Self {
+        Self {
+            cause,
+            receiver_return: None,
+        }
+    }
+}
+
+impl<E: fmt::Debug> fmt::Debug for SynchronousCampaignExecutorError<E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SynchronousCampaignExecutorError")
+            .field("cause", self.cause())
+            .field("receiver_return", &self.receiver_return())
+            .finish()
+    }
+}
+
+impl<E: fmt::Display> fmt::Display for SynchronousCampaignExecutorError<E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self.cause(), formatter)
+    }
+}
+
+impl<E: Error + 'static> Error for SynchronousCampaignExecutorError<E> {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        self.cause().source()
+    }
+}
+
 fn reconcile_model<M: AttemptExecutionModel>(
     model: &mut M,
     disposition: AttemptExecutionDisposition,
@@ -409,11 +476,15 @@ where
             Ok(AttemptExecutionReconciliationStep::Complete) => return Ok(()),
             Ok(AttemptExecutionReconciliationStep::Progressed) => {}
             Err(error) => {
-                return Err(SynchronousCampaignExecutorError::Reconciliation(error));
+                return Err(SynchronousCampaignExecutorError::from(
+                    SynchronousCampaignExecutorCause::Reconciliation(error),
+                ));
             }
         }
     }
-    Err(SynchronousCampaignExecutorError::ReconciliationLimit)
+    Err(SynchronousCampaignExecutorError::from(
+        SynchronousCampaignExecutorCause::ReconciliationLimit,
+    ))
 }
 
 impl<M> ExecutorService for SynchronousCampaignExecutor<M>
@@ -442,7 +513,9 @@ where
                 request,
             );
         }
-        Err(SynchronousCampaignExecutorError::AuthorityUnavailable)
+        Err(SynchronousCampaignExecutorError::from(
+            SynchronousCampaignExecutorCause::AuthorityUnavailable,
+        ))
     }
 }
 impl<M> ExecutorStatusService for SynchronousCampaignExecutor<M>
@@ -466,7 +539,9 @@ where
         if let Some(component) = self.component.as_mut() {
             return component.get_attempt_execution(request);
         }
-        Err(SynchronousCampaignExecutorError::AuthorityUnavailable)
+        Err(SynchronousCampaignExecutorError::from(
+            SynchronousCampaignExecutorCause::AuthorityUnavailable,
+        ))
     }
 }
 impl<M> ExecutorControlService for SynchronousCampaignExecutor<M>
@@ -490,7 +565,9 @@ where
         if let Some(component) = self.component.as_mut() {
             return component.checkpoint_attempt_execution(request);
         }
-        Err(SynchronousCampaignExecutorError::AuthorityUnavailable)
+        Err(SynchronousCampaignExecutorError::from(
+            SynchronousCampaignExecutorCause::AuthorityUnavailable,
+        ))
     }
     fn cancel_attempt_execution(
         &mut self,
@@ -508,7 +585,9 @@ where
         if let Some(component) = self.component.as_mut() {
             return component.cancel_attempt_execution(request);
         }
-        Err(SynchronousCampaignExecutorError::AuthorityUnavailable)
+        Err(SynchronousCampaignExecutorError::from(
+            SynchronousCampaignExecutorCause::AuthorityUnavailable,
+        ))
     }
 }
 impl<M> ExecutorResumeService for SynchronousCampaignExecutor<M>
@@ -532,7 +611,9 @@ where
         if let Some(component) = self.component.as_mut() {
             return component.resume_attempt_execution(request);
         }
-        Err(SynchronousCampaignExecutorError::AuthorityUnavailable)
+        Err(SynchronousCampaignExecutorError::from(
+            SynchronousCampaignExecutorCause::AuthorityUnavailable,
+        ))
     }
 }
 

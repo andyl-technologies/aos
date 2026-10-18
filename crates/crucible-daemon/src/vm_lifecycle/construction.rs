@@ -8,6 +8,10 @@
 use super::*;
 mod custody;
 #[cfg(target_os = "linux")]
+mod returned;
+#[cfg(target_os = "linux")]
+pub use returned::{MainSourceLifecycle, MainSourceLifecycleFailure, MainSourceLifecycleRefusal};
+#[cfg(target_os = "linux")]
 mod publication;
 pub(super) use custody::with_inputs as retain_construction_inputs;
 pub use custody::{
@@ -1794,7 +1798,7 @@ fn prepare_construction(
             debug_gateway_teardown_required: false,
             indeterminate_debug_candidate: None,
             retained_debug_construction: std::sync::Mutex::new(None),
-            construction_custody: None,
+            construction_custody: LifecycleConstructionCustody::Unissued(None),
             debug_runtime_evidence: Vec::new(),
             node_launcher,
             _run_directory: run_directory,

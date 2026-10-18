@@ -1,0 +1,244 @@
+//! Borrows Source nodes and prepaid Target rows on scoped concurrent workers.
+//!
+//! The containing Target Pending owns the entire NodeSet outside the Source
+//! mutex. Workers borrow nodes and rows; a panic never owns either value.
+//! Requested stack/page geometry is explicit and retained before Source birth.
+//! It is not a qualification of private std, pthread/TLS, guard or stack-cache
+//! allocation peaks, which remain separate owning resource obligations.
+
+use super::*;
+
+/// Captures the exact explicit request used by every selected fork worker.
+#[derive(Clone, Copy, Debug)]
+pub struct QemuHotForkWorkerGeometry {
+    requested_stack_bytes: usize,
+    rounded_request_bytes: usize,
+}
+
+impl QemuHotForkWorkerGeometry {
+    /// Captures the valid inherited override or the matched Linux Rust default.
+    ///
+    /// The request is captured before the Source query and reused unchanged by
+    /// Builder. Invalid environment values follow the matched std parser's
+    /// default behavior; zero remains a request, not proof of zero native stack.
+    ///
+    /// # Errors
+    /// Refuses invalid page geometry or overflowing page rounding.
+    pub fn capture() -> Result<Self, BackendError> {
+        let inherited = std::env::var_os("RUST_MIN_STACK");
+        Self::from_environment(inherited.as_deref(), rustix::param::page_size())
+    }
+
+    fn from_environment(
+        inherited: Option<&std::ffi::OsStr>,
+        page: usize,
+    ) -> Result<Self, BackendError> {
+        let requested = inherited
+            .and_then(|value| value.to_str().and_then(|value| value.parse::<usize>().ok()))
+            .unwrap_or(2 * 1024 * 1024);
+        Self::with_request(requested, page)
+    }
+
+    fn with_request(requested: usize, page: usize) -> Result<Self, BackendError> {
+        if !page.is_power_of_two() {
+            return Err(refused("fork worker page geometry is invalid"));
+        }
+        let rounded_request_bytes = requested
+            .checked_add(page - 1)
+            .map(|bytes| bytes & !(page - 1))
+            .ok_or_else(|| refused("fork worker stack request overflows"))?;
+        Ok(Self {
+            requested_stack_bytes: requested,
+            rounded_request_bytes,
+        })
+    }
+
+    /// Measures requested stacks and actual scoped-handle payloads only.
+    ///
+    /// This term excludes private std/pthread/TLS/guard/control peaks. Their
+    /// missing qualification must not be replaced by this partial measurement.
+    ///
+    /// # Errors
+    /// Refuses an empty selection or overflowing payload arithmetic.
+    pub fn requested_control_bytes(self, nodes: usize) -> Result<u64, BackendError> {
+        if nodes == 0 {
+            return Err(refused("fork worker selection is empty"));
+        }
+        let handles =
+            std::alloc::Layout::array::<std::thread::ScopedJoinHandle<'static, ()>>(nodes)
+                .map_err(|_| refused("fork worker handle extent overflows"))?;
+        self.rounded_request_bytes
+            .checked_mul(nodes)
+            .and_then(|bytes| bytes.checked_add(handles.size()))
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or_else(|| refused("fork worker requested extent overflows"))
+    }
+}
+
+/// Keeps the actual first refusal while all nodes and rows remain borrowed.
+#[derive(Debug, thiserror::Error)]
+pub enum QemuHotForkWorkerFailure {
+    /// The selected Source/token/row roster refused before spawning workers.
+    #[error(transparent)]
+    Source(#[from] BackendError),
+    /// Preparing the already-priced handle payload failed before spawning.
+    #[error("reserve fork worker handles: {0}")]
+    Handles(#[source] std::collections::TryReserveError),
+    /// The OS refused one worker after earlier workers may already have run.
+    #[error("start fork worker: {0}")]
+    Spawn(#[source] std::io::Error),
+}
+
+impl QemuNodeSet {
+    /// Runs the same selected concurrency with no per-node ownership transfer.
+    ///
+    /// `record_panic` must only move the received existing payload into that
+    /// row's vacant first-panic slot. It may not allocate, issue work or panic.
+    /// Actual Source permission remains in its genuine prepared token, existing
+    /// node supervisor and retained containing resource guard.
+    ///
+    /// # Errors
+    /// Preserves the first validation/allocation/spawn refusal. Every started
+    /// worker is joined before return; all rows and nodes remain in the caller's
+    /// actual Target Pending on either outcome.
+    pub fn with_prepared_hot_fork_sources_concurrent<D>(
+        &mut self,
+        prepared: &[QemuNodeSetPreparedHotForkTemplate],
+        rows: &mut [D],
+        geometry: QemuHotForkWorkerGeometry,
+        node_for: fn(&D) -> &NodeId,
+        operation: for<'a> fn(QemuNodeSetPreparedHotForkSource<'a>, &mut D),
+        record_panic: fn(&mut D, Box<dyn std::any::Any + Send>),
+    ) -> Result<(), QemuHotForkWorkerFailure>
+    where
+        D: Send,
+    {
+        if prepared.is_empty()
+            || !rows
+                .windows(2)
+                .all(|pair| node_for(&pair[0]) < node_for(&pair[1]))
+            || !prepared
+                .windows(2)
+                .all(|pair| pair[0].node() < pair[1].node())
+            || !prepared.iter().all(|token| {
+                rows.binary_search_by(|row| node_for(row).cmp(token.node()))
+                    .is_ok()
+            })
+        {
+            return Err(refused("fork worker rows differ from the exact prepared roster").into());
+        }
+        geometry.requested_control_bytes(prepared.len())?;
+        for token in prepared {
+            self.validate_retained_hot_fork_template(token)?;
+        }
+        let mut first = None;
+        thread::scope(|scope| {
+            let mut handles = Vec::new();
+            if let Err(error) = handles.try_reserve_exact(prepared.len()) {
+                first = Some(QemuHotForkWorkerFailure::Handles(error));
+                return;
+            }
+            let nodes = self.nodes.iter_mut().filter(|(node, _)| {
+                prepared
+                    .binary_search_by(|token| token.node().cmp(node))
+                    .is_ok()
+            });
+            let selected_rows = rows.iter_mut().filter(|row| {
+                prepared
+                    .binary_search_by(|token| token.node().cmp(node_for(row)))
+                    .is_ok()
+            });
+            for (((node, backend), token), row) in nodes.zip(prepared).zip(selected_rows) {
+                // Prior validation and immutable map keys make this exact pairing
+                // stable. Nodes are never removed or reconstructed in the map.
+                if node != token.node() {
+                    first = Some(refused("fork worker source pairing changed").into());
+                    break;
+                }
+                let worker = thread::Builder::new()
+                    .stack_size(geometry.requested_stack_bytes)
+                    .spawn_scoped(scope, move || {
+                        let result = catch_unwind(AssertUnwindSafe(|| {
+                            operation(
+                                QemuNodeSetPreparedHotForkSource {
+                                    source: backend,
+                                    prepared: token,
+                                },
+                                row,
+                            );
+                        }));
+                        if let Err(payload) = result {
+                            record_panic(row, payload);
+                        }
+                    });
+                match worker {
+                    Ok(worker) => handles.push(worker),
+                    Err(error) => {
+                        first = Some(QemuHotForkWorkerFailure::Spawn(error));
+                        break;
+                    }
+                }
+            }
+            // The only authored worker-panic callback is an infallible field
+            // move. Joining does not dispose any node, target or private file.
+            for worker in handles {
+                if let Err(payload) = worker.join() {
+                    std::panic::resume_unwind(payload);
+                }
+            }
+        });
+        match first {
+            Some(first) => Err(first),
+            None => Ok(()),
+        }
+    }
+}
+
+fn refused(message: impl Into<String>) -> BackendError {
+    BackendError::Rejected {
+        message: message.into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn original_linux_default_and_valid_inherited_request_are_preserved() {
+        let default = QemuHotForkWorkerGeometry::from_environment(None, 4096).unwrap();
+        assert_eq!(default.requested_stack_bytes, 2 * 1024 * 1024);
+        let selected = QemuHotForkWorkerGeometry::from_environment(
+            Some(std::ffi::OsStr::new("33554432")),
+            4096,
+        )
+        .unwrap();
+        assert_eq!(selected.requested_stack_bytes, 32 * 1024 * 1024);
+        let invalid = QemuHotForkWorkerGeometry::from_environment(
+            Some(std::ffi::OsStr::new("not-an-integer")),
+            4096,
+        )
+        .unwrap();
+        assert_eq!(invalid.requested_stack_bytes, default.requested_stack_bytes);
+        let zero =
+            QemuHotForkWorkerGeometry::from_environment(Some(std::ffi::OsStr::new("0")), 4096)
+                .unwrap();
+        assert_eq!(zero.requested_stack_bytes, 0);
+        // A zero request still has an unqualified native pthread minimum; this
+        // control intentionally asserts no mapping/physical-return fact.
+    }
+
+    #[test]
+    fn requested_stack_rounding_is_explicit_and_overflow_refuses() {
+        let exact = QemuHotForkWorkerGeometry::with_request(2 * 1024 * 1024, 4096).unwrap();
+        let rounded = QemuHotForkWorkerGeometry::with_request(2 * 1024 * 1024 + 1, 4096).unwrap();
+        assert_eq!(
+            rounded.rounded_request_bytes - exact.rounded_request_bytes,
+            4096
+        );
+        assert!(QemuHotForkWorkerGeometry::with_request(usize::MAX, 4096).is_err());
+        assert!(QemuHotForkWorkerGeometry::with_request(1, 3).is_err());
+        assert!(exact.requested_control_bytes(0).is_err());
+        assert!(exact.requested_control_bytes(usize::MAX).is_err());
+    }
+}

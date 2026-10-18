@@ -50,6 +50,7 @@ pub(in crate::qemu_campaign_lifecycle::campaign_run) enum AdmittedCampaignError<
         RetainedFailure<crate::packaged_qemu_executor::guarded::CompletedReproductionError>,
     ),
     Service(RetainedFailure<crate::PackagedQemuExecutorError>),
+    SourcePreparation(RetainedFailure<crate::QemuAttemptProductionVmLifecycleError>),
     Supervision(RetainedFailure<crucible_linux_resource::host_supervision::HostSupervisionError>),
     Preparation(
         RetainedFailure<
@@ -96,6 +97,7 @@ impl<E: fmt::Display> fmt::Display for AdmittedCampaignError<E> {
             Self::Io(source) => fmt::Display::fmt(source, formatter),
             Self::CompletedSource(source) => fmt::Display::fmt(source, formatter),
             Self::Service(source) => fmt::Display::fmt(source, formatter),
+            Self::SourcePreparation(source) => fmt::Display::fmt(source, formatter),
             Self::Supervision(source) => fmt::Display::fmt(source, formatter),
             Self::Preparation(source) => fmt::Display::fmt(source, formatter),
             Self::CaptureBinding(source) => fmt::Display::fmt(source, formatter),
@@ -119,6 +121,7 @@ impl<E: Error + 'static> Error for AdmittedCampaignError<E> {
             Self::Io(source) => Some(source),
             Self::CompletedSource(source) => Some(source),
             Self::Service(source) => Some(source),
+            Self::SourcePreparation(source) => Some(source),
             Self::Supervision(source) => Some(source),
             Self::Preparation(source) => Some(source),
             Self::CaptureBinding(source) => Some(source),
@@ -157,6 +160,12 @@ impl<E> From<crate::packaged_qemu_executor::guarded::CompletedReproductionError>
 {
     fn from(source: crate::packaged_qemu_executor::guarded::CompletedReproductionError) -> Self {
         Self::CompletedSource(RetainedFailure(Mutex::new(source)))
+    }
+}
+
+impl<E> From<crate::QemuAttemptProductionVmLifecycleError> for AdmittedCampaignError<E> {
+    fn from(source: crate::QemuAttemptProductionVmLifecycleError) -> Self {
+        Self::SourcePreparation(RetainedFailure(Mutex::new(source)))
     }
 }
 
@@ -281,6 +290,32 @@ mod tests {
         HostOperationBudgets, HostOperationClass, HostOperationState, HostOperationSupervisor,
         HostSupervisionError,
     };
+
+    #[test]
+    fn retained_source_preparation_preserves_the_original_typed_payload() {
+        let first = Box::new(std::io::Error::other("same preparation metadata cause"));
+        let first_pointer = first.as_ref() as *const std::io::Error;
+        let lifecycle = crate::QemuAttemptProductionVmLifecycleError::ModelCopy(first);
+
+        let retained = AdmittedCampaignError::<std::io::Error>::from(lifecycle);
+
+        let AdmittedCampaignError::SourcePreparation(source) = &retained else {
+            panic!("the lifecycle refusal must retain its typed carrier");
+        };
+        source
+            .with_source(|actual| {
+                let crate::QemuAttemptProductionVmLifecycleError::ModelCopy(first) = actual else {
+                    panic!("the original lifecycle cause changed variant");
+                };
+                assert!(std::ptr::eq(
+                    first.downcast_ref::<std::io::Error>().unwrap(),
+                    first_pointer,
+                ));
+            })
+            .unwrap();
+        assert!(source.source().is_none());
+        assert!(retained.source().is_some());
+    }
 
     #[test]
     fn retained_supervision_failure_preserves_original_cancellation() -> Result<(), Box<dyn Error>>

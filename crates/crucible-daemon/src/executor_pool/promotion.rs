@@ -199,6 +199,11 @@ fn classify_event_identity_failure(error: &crucible::EngineError) -> PromotionFa
     }
 }
 
+mod replay_classification;
+use replay_classification::{
+    classify_native_replay_cleanup, classify_replay_cleanup, classify_replay_failure,
+};
+
 fn classify_preparation_failure(
     error: &PausedCheckpointPromotionPreparationError,
 ) -> PromotionFailureClass {
@@ -227,25 +232,23 @@ fn classify_preparation_failure(
         PausedCheckpointPromotionPreparationError::Realization(error) => {
             classify_realization_failure(error)
         }
-        PausedCheckpointPromotionPreparationError::ResourceCleanup(report)
-        | PausedCheckpointPromotionPreparationError::RealizationCleanup {
-            cleanup: report, ..
-        } => {
-            if report.reports_terminal_quarantine() {
-                PromotionFailureClass::Terminal
-            } else {
-                classify_realization_failure(report.error())
-            }
+        PausedCheckpointPromotionPreparationError::ResourceCleanup(report) => {
+            classify_native_replay_cleanup(report)
+        }
+        PausedCheckpointPromotionPreparationError::RealizationCleanup { cleanup, .. } => {
+            classify_replay_cleanup(cleanup)
         }
         PausedCheckpointPromotionPreparationError::ComparisonCleanup { .. } => {
             PromotionFailureClass::Terminal
         }
-        PausedCheckpointPromotionPreparationError::ResourceBegin(report) => {
-            if report.was_quarantined() {
-                PromotionFailureClass::Terminal
-            } else {
-                classify_realization_failure(report.first_error())
+        PausedCheckpointPromotionPreparationError::SupervisedReplay { first, cleanup } => {
+            match cleanup {
+                Some(cleanup) => classify_replay_cleanup(cleanup),
+                None => classify_replay_failure(first),
             }
+        }
+        PausedCheckpointPromotionPreparationError::SupervisedCleanup(first) => {
+            classify_replay_cleanup(first)
         }
     }
 }
@@ -1028,7 +1031,7 @@ mod tests {
             first: QemuVmRealizationError::Canceled {
                 operation: "component initiating failure",
             },
-            cleanup: crate::QemuAttemptResourceGuardCleanupFailure::retained(raw()),
+            cleanup: crate::QemuAttemptResourceGuardCleanupFailure::retained(raw()).into(),
         };
         assert!(matches!(
             classify_preparation_failure(&both),
@@ -1044,6 +1047,10 @@ mod tests {
                 operation: "component initiating failure"
             }
         ));
+        let crate::paused_checkpoint_promotion::ProductionReplayCleanup::Native(cleanup) = cleanup
+        else {
+            unreachable!()
+        };
         assert!(matches!(
             cleanup.error(),
             QemuVmRealizationError::ExecutorUnavailable { .. }
@@ -1067,7 +1074,7 @@ mod tests {
         let address = message.as_ptr();
         let report = PausedCheckpointPromotionPreparationError::ComparisonCleanup {
             comparison,
-            cleanup,
+            cleanup: cleanup.into(),
         };
 
         assert!(matches!(
@@ -1087,6 +1094,10 @@ mod tests {
                 operation: "component comparison"
             }
         ));
+        let crate::paused_checkpoint_promotion::ProductionReplayCleanup::Native(cleanup) = cleanup
+        else {
+            unreachable!()
+        };
         let QemuVmRealizationError::ExecutorUnavailable { message, .. } = cleanup.error() else {
             unreachable!()
         };

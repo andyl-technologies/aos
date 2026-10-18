@@ -12,10 +12,27 @@ use super::*;
 pub(super) mod disk_basis;
 mod native_disk_seal;
 mod preparation;
+pub(crate) use preparation::ProductionVmHotForkSourcePreparationError as HotForkSourcePreparationError;
+pub use preparation::ProductionVmHotForkSourcePreparationHistory;
+pub(crate) use preparation::{SourcePreparationBoundary, SourceWorldPreparation};
+pub(in crate::vm_lifecycle) mod rearm_return;
 mod resource_usage;
+pub(super) mod shared_source;
+pub(crate) use shared_source::{MainSharedSource, PreparedSharedSource};
+#[cfg(test)]
+pub(crate) use shared_source::{
+    take_unissued_component_source, unissued_component_source, with_unique_component_source,
+};
+#[cfg(target_os = "linux")]
+pub(super) mod source_retirement;
 use disk_basis::ProductionVmHotForkDiskBasis;
 use native_disk_seal::ProductionVmHotForkDiskCustody;
 pub use resource_usage::ProductionVmHotForkSourceWorldResourceUsage;
+#[cfg(target_os = "linux")]
+pub use source_retirement::{
+    ProductionVmHotForkSourceRetirement, ProductionVmHotForkSourceRetirementFailure,
+    ProductionVmHotForkSourceRetirementHistory, SourceRetirementRefusal,
+};
 
 const MAXIMUM_HOT_FORK_RING_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 const MAXIMUM_HOT_FORK_ROLLBACK_POLLS_PER_NODE: usize = 100;
@@ -56,6 +73,12 @@ pub struct ProductionVmHotForkSourceWorld {
     pub(super) prepared: Vec<QemuNodeSetPreparedHotForkTemplate>,
     disk_custody: BTreeMap<NodeId, Arc<ProductionVmHotForkDiskCustody>>,
     cleanup_observer: Option<Arc<dyn ProductionHotForkCleanupObserver>>,
+    #[cfg(target_os = "linux")]
+    retirement: Option<source_retirement::SourceRetirementState>,
+    #[cfg(feature = "private-measurement-domain")]
+    managed_parent_park_history:
+        Option<crate::managed_qemu_hot_fork_source_world_pool::ManagedParentParkGate>,
+    target_backends_lent: bool,
 }
 
 /// Refuses access to a continuation retained by terminal source cleanup.
@@ -63,22 +86,43 @@ pub struct ProductionVmHotForkSourceWorld {
 #[error("prepared source world continuation is unavailable")]
 pub struct ProductionVmHotForkContinuationUnavailable;
 
+mod target_backends;
+pub(crate) use target_backends::TargetSourceBackends;
+
 impl ProductionVmHotForkSourceWorld {
-    /// Reports whether the actual source owner still retains a target loan.
+    /// Borrows only the actual launcher's original Main prepared-role selector.
     ///
-    /// This predicate only refuses cleanup. It grants no Source or Target role.
-    #[must_use]
-    pub fn fork_target_is_owned(&self) -> bool {
-        #[cfg(target_os = "linux")]
-        {
-            self.lifecycle
-                .as_deref()
-                .is_some_and(|lifecycle| lifecycle.node_launcher.fork_target_is_owned())
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            false
-        }
+    /// This nonissuing key creates no Source, Target, loan or resource credit.
+    /// The matching producer independently verifies its same occupied Source
+    /// epoch and actual Service phase before moving Target construction input.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn prepared_source_selector(&self) -> Option<crate::PreparedSourceSelector> {
+        self.lifecycle
+            .as_deref()
+            .and_then(|lifecycle| lifecycle.node_launcher.prepared_source_selector())
+    }
+
+    /// Borrows actual native coordinates from this exact retained Source.
+    ///
+    /// # Errors
+    /// Refuses changed Source ownership or an absent native World. The copied
+    /// identity itself neither retains credit nor creates a Target grant.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn native_world_identity(
+        &mut self,
+    ) -> Result<
+        crucible_linux_resource::host_services::process_birth::NativeWorldIdentity,
+        crate::qemu_lifecycle_launcher::TargetPreparationFailure,
+    > {
+        use crate::qemu_lifecycle_launcher::TargetPreparationFailure;
+        self.validate_source_ownership()
+            .map_err(TargetPreparationFailure::Source)?;
+        self.lifecycle
+            .as_deref()
+            .ok_or_else(|| loop_factory_error("Source lost its actual native World launcher"))?
+            .node_launcher
+            .native_world_identity()
+            .map_err(TargetPreparationFailure::Native)
     }
 
     /// Lends the genuine source's single same-family target permit.
@@ -89,22 +133,118 @@ impl ProductionVmHotForkSourceWorld {
     /// # Errors
     /// Refuses changed source ownership, absent live sources or a held target loan.
     #[cfg(target_os = "linux")]
-    pub fn lend_fork_target_permit(
+    pub fn prepare_fork_target(
         &mut self,
-    ) -> Result<crucible_qemu::LinuxQemuForkTargetPermit, LifecycleApiError> {
-        self.validate_source_ownership().map_err(|error| {
-            loop_factory_error(format!("authenticate same-family source world: {error}"))
-        })?;
+    ) -> Result<
+        crucible_qemu::QemuForkTargetPreparation,
+        crate::qemu_lifecycle_launcher::TargetPreparationFailure,
+    > {
+        self.validate_source_ownership()
+            .map_err(crate::qemu_lifecycle_launcher::TargetPreparationFailure::Source)?;
         if self.prepared.is_empty() {
-            return Err(loop_factory_error(
-                "target permit requires a retained live source",
-            ));
+            return Err(loop_factory_error("target permit requires a retained live source").into());
         }
         self.lifecycle
             .as_deref_mut()
             .ok_or_else(|| loop_factory_error("source world lost its actual lifecycle owner"))?
             .node_launcher
-            .lend_fork_target_permit()
+            .prepare_fork_target()
+    }
+
+    /// Corroborates the same already-lent rows without issuing Target authority.
+    pub(crate) fn matches_target_construction_storage(
+        &self,
+        storage: &crate::qemu_lifecycle_launcher::TargetConstructionStorage,
+    ) -> bool {
+        self.lifecycle.as_deref().is_some_and(|lifecycle| {
+            lifecycle
+                .node_launcher
+                .matches_target_construction_storage(storage)
+        })
+    }
+
+    /// Moves selected Target storage out of this actual checked-out Source.
+    ///
+    /// The same containing World keeps paying it while a Target owns it.
+    pub(crate) fn take_target_construction_storage(
+        &mut self,
+    ) -> Result<
+        crate::qemu_lifecycle_launcher::TargetConstructionStorage,
+        crate::qemu_lifecycle_launcher::TargetPreparationFailure,
+    > {
+        use crate::qemu_lifecycle_launcher::TargetPreparationFailure;
+        self.validate_source_ownership()
+            .map_err(TargetPreparationFailure::Source)?;
+        self.lifecycle
+            .as_deref_mut()
+            .ok_or_else(|| loop_factory_error("Source lost its actual lifecycle owner"))?
+            .node_launcher
+            .take_target_construction_storage()
+            .map_err(Into::into)
+    }
+
+    /// Restores the same unused/returned storage without admitting new work.
+    pub(crate) fn return_target_construction_storage(
+        &mut self,
+        storage: crate::qemu_lifecycle_launcher::TargetConstructionStorage,
+    ) -> Result<(), crate::qemu_lifecycle_launcher::TargetConstructionStorage> {
+        let Some(lifecycle) = self.lifecycle.as_deref_mut() else {
+            return Err(storage);
+        };
+        lifecycle
+            .node_launcher
+            .return_prepared_target_construction_storage(storage)
+    }
+
+    /// Lends the selected retained member's already admitted Target role.
+    ///
+    /// The exact physical Source inventory and the node-keyed launcher both
+    /// corroborate this member. No aggregate or first-node contract is used.
+    ///
+    /// # Errors
+    /// Refuses changed Source ownership, an absent physical member, terminal
+    /// native custody or an already occupied Target role.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn prepare_fork_target_for_node(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<
+        crucible_qemu::QemuForkTargetPreparation,
+        crate::qemu_lifecycle_launcher::TargetPreparationFailure,
+    > {
+        self.validate_source_ownership()
+            .map_err(crate::qemu_lifecycle_launcher::TargetPreparationFailure::Source)?;
+        if !self.prepared.iter().any(|prepared| prepared.node() == node) {
+            return Err(loop_factory_error(
+                "target permit requires the exact retained Source member",
+            )
+            .into());
+        }
+        self.lifecycle
+            .as_deref_mut()
+            .ok_or_else(|| loop_factory_error("source world lost its actual lifecycle owner"))?
+            .node_launcher
+            .prepare_fork_target_for_node(node)
+    }
+
+    /// Reports whether the actual source owner still retains a target loan.
+    ///
+    /// This predicate only refuses cleanup. It grants no Source or Target role.
+    #[must_use]
+    pub fn fork_target_is_owned(&self) -> bool {
+        if self.target_backends_lent {
+            return true;
+        }
+        #[cfg(target_os = "linux")]
+        {
+            self.lifecycle
+                .as_deref()
+                .is_some_and(|lifecycle| lifecycle.node_launcher.fork_target_is_owned())
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            false
+        }
     }
 
     /// Prepares a distinct target generation under the retained source quota.
@@ -144,6 +284,17 @@ impl ProductionVmHotForkSourceWorld {
     }
 
     fn require_unparked_source(&self) -> Result<(), SchedulerError> {
+        #[cfg(target_os = "linux")]
+        if self.retirement.is_some() {
+            return Err(hot_fork_boundary_error(
+                "same Source has entered irreversible retirement",
+            ));
+        }
+        if self.target_backends_lent {
+            return Err(hot_fork_boundary_error(
+                "Source backend set remains in its Target constructor",
+            ));
+        }
         if self.parent_park_drain_is_owned() {
             return Err(SchedulerError::Backend(
                 crucible::BackendError::Unsupported {
@@ -491,11 +642,45 @@ impl ProductionVmHotForkSourceWorld {
         // before preparing another transaction on this same stopped source.
         let disk_custody = std::mem::take(&mut self.disk_custody);
         let observer = self.cleanup_observer.clone();
-        let mut source = self
-            .recover()?
-            .prepare_hot_fork_source_world_with_disk_custody(disk_custody)?;
-        source.cleanup_observer = observer;
-        Ok(source)
+        #[cfg(feature = "private-measurement-domain")]
+        let managed_parent_park_history = self.managed_parent_park_history.take();
+        let lifecycle = match self.recover() {
+            Ok(lifecycle) => lifecycle,
+            Err(mut failure) => {
+                failure.metadata.get_or_insert_default().cleanup_observer = observer;
+                #[cfg(feature = "private-measurement-domain")]
+                {
+                    failure
+                        .metadata
+                        .get_or_insert_default()
+                        .managed_parent_park_history = managed_parent_park_history;
+                }
+                return Err(failure);
+            }
+        };
+        match lifecycle.prepare_hot_fork_source_world_with_disk_custody(disk_custody) {
+            Ok(mut source) => {
+                source.cleanup_observer = observer;
+                #[cfg(feature = "private-measurement-domain")]
+                {
+                    // The same one-shot Park record must survive Source rearm;
+                    // its pool selection remains a Weak alias of this record.
+                    source.managed_parent_park_history = managed_parent_park_history;
+                }
+                Ok(source)
+            }
+            Err(mut failure) => {
+                failure.metadata.get_or_insert_default().cleanup_observer = observer;
+                #[cfg(feature = "private-measurement-domain")]
+                {
+                    failure
+                        .metadata
+                        .get_or_insert_default()
+                        .managed_parent_park_history = managed_parent_park_history;
+                }
+                Err(failure)
+            }
+        }
     }
 
     /// Aborts every retained-template transaction and recovers the lifecycle.
@@ -579,6 +764,11 @@ impl ProductionVmHotForkSourceWorld {
             prepared: std::mem::take(&mut self.prepared),
             disk_custody: std::mem::take(&mut self.disk_custody),
             cleanup_observer: self.cleanup_observer.take(),
+            #[cfg(target_os = "linux")]
+            retirement: self.retirement.take(),
+            #[cfg(feature = "private-measurement-domain")]
+            managed_parent_park_history: self.managed_parent_park_history.take(),
+            target_backends_lent: false,
         };
         source.retire_owned()
     }
@@ -706,6 +896,20 @@ impl ProductionVmHotForkSourceWorld {
 
 impl Drop for ProductionVmHotForkSourceWorld {
     fn drop(&mut self) {
+        #[cfg(target_os = "linux")]
+        if self
+            .retirement
+            .as_ref()
+            .is_some_and(|state| state.body_closed)
+        {
+            // Canonical cleanup already observed every physical body cut.
+            // Only automatic field destruction remains; do not reissue IO.
+            return;
+        }
+        #[cfg(target_os = "linux")]
+        if self.retain_native_source_on_drop() {
+            return;
+        }
         if self.parent_park_drain_is_owned() || self.fork_target_is_owned() {
             // Keep all future-affecting host state and decode custody together
             // with the retained physical lifecycle, without allocating on Drop.
@@ -947,6 +1151,9 @@ impl std::error::Error for ProductionVmHotForkSourceWorldPreparationFailure {
 
 impl Drop for ProductionVmHotForkSourceWorldPreparationFailure {
     fn drop(&mut self) {
+        if self.retain_native_rearm_failure_on_drop() {
+            return;
+        }
         if matches!(
             &self.retained_source,
             Some(RetainedSourceRefusal::ParentPark(_))

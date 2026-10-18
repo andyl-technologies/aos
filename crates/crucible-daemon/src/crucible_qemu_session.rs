@@ -102,6 +102,19 @@ impl QemuExecutionQuantumCounter {
 /// be able to interrupt a blocked process operation rather than relying only
 /// on caller polling.
 pub trait QemuAttemptResourceGuard: QemuAttemptOperationalBoundary {
+    /// Recovers existing selected storage only after its exact native returns.
+    ///
+    /// The storage checks its genuine saved Target loans independently. This
+    /// method cannot substitute guard state, Arc uniqueness or error history
+    /// for physical role return; unsupported owners keep the storage unchanged.
+    #[cfg(target_os = "linux")]
+    fn recover_target_construction_storage(
+        &mut self,
+        _storage: &mut crate::TargetConstructionStorage,
+    ) -> bool {
+        false
+    }
+
     /// Attempts the same installed controls' cleanup after QEMU has been reaped.
     ///
     /// Successful return is idempotent. A refusal moves its actual cause to
@@ -129,6 +142,24 @@ pub trait QemuAttemptResourceGuard: QemuAttemptOperationalBoundary {
 /// the same pinned physical reservation; neither capability releases cgroup,
 /// quota, watcher or quarantine ownership. Retirement closes their authority.
 pub trait QemuAttemptProcessResourceGuard: QemuAttemptResourceGuard {
+    /// Copies this actual containing World's identity without issuing resources.
+    ///
+    /// # Errors
+    /// Refuses owners without an actual selected native World. Coordinates
+    /// cannot replace the genuine per-member permits or their original payer.
+    #[cfg(target_os = "linux")]
+    fn native_world_identity(
+        &self,
+    ) -> Result<
+        crucible_linux_resource::host_services::process_birth::NativeWorldIdentity,
+        QemuVmRealizationError,
+    > {
+        Err(QemuVmRealizationError::ExecutorUnavailable {
+            operation: "observe actual native World identity",
+            message: String::from("owner has no selected native World"),
+        })
+    }
+
     /// Pins this exact selected node's existing native kernel controller.
     ///
     /// # Errors
@@ -354,11 +385,11 @@ pub trait QemuAttemptProcessResourceGuard: QemuAttemptResourceGuard {
     /// # Errors
     /// Refuses an unknown node, unavailable Source or occupied Target.
     #[cfg(target_os = "linux")]
-    fn lend_fork_target_permit_for_node(
+    fn prepare_fork_target_for_node(
         &mut self,
         _node: &crucible::NodeId,
-    ) -> Result<crucible_qemu::LinuxQemuForkTargetPermit, QemuVmRealizationError> {
-        self.lend_fork_target_permit()
+    ) -> Result<crucible_qemu::QemuForkTargetPreparation, QemuVmRealizationError> {
+        self.prepare_fork_target()
     }
 
     /// Prepares Target storage under this selected Source's existing quota.
@@ -405,9 +436,9 @@ pub trait QemuAttemptProcessResourceGuard: QemuAttemptResourceGuard {
     /// # Errors
     /// Refuses non-source, terminal or already loaned physical ownership.
     #[cfg(target_os = "linux")]
-    fn lend_fork_target_permit(
+    fn prepare_fork_target(
         &mut self,
-    ) -> Result<crucible_qemu::LinuxQemuForkTargetPermit, QemuVmRealizationError> {
+    ) -> Result<crucible_qemu::QemuForkTargetPreparation, QemuVmRealizationError> {
         Err(QemuVmRealizationError::Executor {
             operation: "lend same-family QEMU target permit",
             message: String::from("guard has no genuine source owner"),
@@ -662,17 +693,12 @@ pub(crate) trait QemuAttemptResourceGuardFactory {
         })
     }
 
-    /// Reserves the genuine Main-paid Source cell before World admission.
+    /// Selects the genuine containing Main without reserving or entering work.
     ///
-    /// # Errors
-    /// Refuses absent, expired, occupied or uncertain actual Main ownership.
-    fn reserve_source_lifecycle_cleanup(
-        &self,
-    ) -> Result<crate::WorldLifecycleCleanupReservation, QemuVmRealizationError> {
-        Err(QemuVmRealizationError::ExecutorUnavailable {
-            operation: "reserve actual Source cleanup cell",
-            message: String::from("factory has no genuine Main cleanup owner"),
-        })
+    /// The private producer validates its actual queue and locks before it
+    /// constructs the fixed prepared bodies. The default grants no producer.
+    fn source_main_producer(&self) -> Option<crate::SourceMainProducer> {
+        None
     }
 
     /// Installs the selected World's genuine disjoint node owners together.
@@ -716,6 +742,27 @@ pub(crate) trait QemuAttemptResourceGuardFactory {
             message: String::from("factory has no genuine target consumer"),
         }
         .into())
+    }
+
+    /// Composes the selected Targets while preserving any actual installed guard.
+    ///
+    /// A returned optional error is the independent post-install refusal. Its
+    /// actual guard must be retained before the caller reports that cause.
+    ///
+    /// # Errors
+    /// Refuses unsupported factories or pre-guard composition. Actual host
+    /// ownership remains in the supplied Main-held selected storage on error.
+    #[cfg(target_os = "linux")]
+    fn begin_fork_target_world(
+        &mut self,
+        _members: &mut crate::TargetConstructionStorage,
+        _resources: AttemptResourceLimits,
+        _cancellation: ExecutionCancellation,
+    ) -> Result<(Self::Guard, Option<QemuVmRealizationError>), QemuVmRealizationError> {
+        Err(QemuVmRealizationError::ExecutorUnavailable {
+            operation: "compose actual selected Target World",
+            message: String::from("factory has no retained selected Target composition"),
+        })
     }
 
     /// Guard retained for the complete process lifetime.

@@ -6,6 +6,7 @@ mod storage;
 
 use storage::GenerationNodeState;
 pub use storage::QemuAttemptGenerationStorage;
+pub(crate) use storage::QemuGenerationStorageSelection;
 
 /// Typed refusal lending the same attempt's process contract to its stage.
 #[cfg(any(test, all(target_os = "linux", feature = "private-measurement-domain")))]
@@ -75,6 +76,13 @@ impl<G> QemuAttemptGenerationResourceOwner<G>
 where
     G: QemuAttemptResourceGuard,
 {
+    pub(crate) fn matches_storage_selection(
+        &self,
+        selection: &QemuGenerationStorageSelection,
+    ) -> bool {
+        selection.matches(&self.generations)
+    }
+
     pub(crate) fn with_guard_mut<T>(&mut self, apply: impl FnOnce(&mut G) -> T) -> T {
         apply(&mut self.guard)
     }
@@ -398,14 +406,27 @@ where
     }
 
     #[cfg(target_os = "linux")]
-    pub(crate) fn lend_fork_target_permit_for_node(
+    pub(crate) fn native_world_identity(
+        &self,
+    ) -> Result<
+        crucible_linux_resource::host_services::process_birth::NativeWorldIdentity,
+        QemuVmRealizationError,
+    > {
+        self.guard.native_world_identity()
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn prepare_fork_target_for_node(
         &mut self,
         node: &NodeId,
-    ) -> Result<crucible_qemu::LinuxQemuForkTargetPermit, LifecycleApiError> {
+    ) -> Result<
+        crucible_qemu::QemuForkTargetPreparation,
+        crate::qemu_lifecycle_launcher::TargetPreparationFailure,
+    > {
         self.check_operational_boundary()?;
         self.guard
-            .lend_fork_target_permit_for_node(node)
-            .map_err(|error| attempt_operational_error("lend exact node Target", error))
+            .prepare_fork_target_for_node(node)
+            .map_err(crate::qemu_lifecycle_launcher::TargetPreparationFailure::Native)
     }
 
     #[cfg(target_os = "linux")]
@@ -457,13 +478,16 @@ where
     /// # Errors
     /// Refuses terminal ownership, operational failure or missing source custody.
     #[cfg(target_os = "linux")]
-    pub(crate) fn lend_fork_target_permit(
+    pub(crate) fn prepare_fork_target(
         &mut self,
-    ) -> Result<crucible_qemu::LinuxQemuForkTargetPermit, LifecycleApiError> {
+    ) -> Result<
+        crucible_qemu::QemuForkTargetPreparation,
+        crate::qemu_lifecycle_launcher::TargetPreparationFailure,
+    > {
         self.check_operational_boundary()?;
         self.guard
-            .lend_fork_target_permit()
-            .map_err(|error| generation_error(format!("lend same-family target permit: {error}")))
+            .prepare_fork_target()
+            .map_err(crate::qemu_lifecycle_launcher::TargetPreparationFailure::Native)
     }
 
     /// Prepares the target's distinct generation under the actual source quota.

@@ -56,8 +56,16 @@ use crate::{
     QemuHotForkWorldResourceOwner, QemuProductionHotForkWorldLifecycle,
 };
 
+mod native;
+pub(crate) use native::PreparedTargetLaunch;
+mod source_selection;
+use source_selection::SelectedTargetSource;
+mod runtime;
+pub(crate) mod target_construction;
 mod target_operations;
-use target_operations::{NativeTargetOperations, TargetBeginFailure, WorldTargetOperations};
+#[cfg(test)]
+use target_operations::TargetBeginFailure;
+use target_operations::{NativeTargetOperations, WorldTargetOperations};
 
 /// Exact semantic and executor basis of one retained source world.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -413,18 +421,22 @@ impl QemuHotForkSourceWorldProvider for QemuSingleHotForkSourceWorldProvider {
             return Ok(None);
         };
         self.checked_out = Some(identity.clone());
-        Ok(Some(QemuHotForkSourceWorldLease::exclusive(
-            self.key.template_key(),
-            source,
-            identity,
-        )))
+        match QemuHotForkSourceWorldLease::exclusive(self.key.template_key(), source, identity) {
+            Ok(lease) => Ok(Some(lease)),
+            Err(source) => {
+                self.source = Some(source);
+                self.quarantined = true;
+                Ok(None)
+            }
+        }
     }
 
     fn restore(&mut self, source: QemuHotForkSourceWorldLease) {
         let mut source = match source.into_exclusive_source() {
             Ok(source) => source,
             Err(source) => {
-                let _retained_for_process_lifetime = Box::leak(source);
+                self.quarantined = true;
+                drop(source);
                 return;
             }
         };
@@ -641,6 +653,9 @@ where
     target_operations: O,
     auxiliary_resources: Option<QemuHotForkWorldAuxiliaryResourceBroker<R::Guard>>,
     retained_installation: Option<RetainedHotForkInstallation<R::Guard>>,
+    retained_target: Option<runtime::TargetRetirement<R>>,
+    preclaimed_target: Option<crate::PreparedSourceSelector>,
+    retained_target_admission: Option<target_construction::TargetMainAdmissionFailure<R>>,
     terminal_checkpoints: Option<Arc<ExactCheckpointStore>>,
     run_state_root: PathBuf,
     shutdown_policy: QemuShutdownPolicy,
@@ -671,6 +686,9 @@ where
             target_operations: NativeTargetOperations,
             auxiliary_resources: None,
             retained_installation: None,
+            retained_target: None,
+            preclaimed_target: None,
+            retained_target_admission: None,
             terminal_checkpoints: None,
             run_state_root: run_state_root.into(),
             shutdown_policy,
@@ -700,6 +718,9 @@ where
             target_operations,
             auxiliary_resources: self.auxiliary_resources,
             retained_installation: self.retained_installation,
+            retained_target: self.retained_target,
+            preclaimed_target: self.preclaimed_target,
+            retained_target_admission: self.retained_target_admission,
             terminal_checkpoints: self.terminal_checkpoints,
             run_state_root: self.run_state_root,
             shutdown_policy: self.shutdown_policy,
@@ -758,6 +779,21 @@ where
 /// Failure while constructing one complete production hot-fork world.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum QemuProductionHotForkWorldLifecycleFactoryError<P> {
+    /// The original Target owner retains its exact first and cleanup obligations.
+    #[error("original Main retains Target construction and cleanup")]
+    RetainedTarget,
+    /// The original counted report borrows Main's unchanged construction cause.
+    #[error("construct original Target: {0}")]
+    TargetConstruction(#[source] crate::lifecycle_cleanup::PreparedSourceFailure),
+    /// Main refused before Target effects; original input remains in the factory.
+    #[error("original factory retains the refused Target admission")]
+    RetainedTargetAdmission,
+    /// Main refused before effects and the unchanged Source was restored.
+    #[error("admit original Target Main owner: {0}")]
+    TargetAdmission(#[source] target_construction::TargetMainAdmissionError),
+    /// The same counted report protects the original Target cleanup cause.
+    #[error("retire original Target: {0}")]
+    TargetCleanup(#[source] crate::ProductionVmConstructionCleanupError),
     /// The source provider could not complete exact checkout.
     #[error("check out production hot-fork source world")]
     SourceProvider(#[source] P),
@@ -919,14 +955,14 @@ impl<S, R, O> QemuHotForkWorldLifecycleFactory
     for QemuProductionHotForkWorldLifecycleFactory<S, R, O>
 where
     S: QemuHotForkSourceWorldProvider,
-    R: QemuAttemptResourceGuardFactory,
+    R: QemuAttemptResourceGuardFactory + Send + 'static,
     R::Guard: QemuAttemptProcessResourceGuard
         + QemuHotForkChildProcessOwner<Authority = LinuxQemuHotForkChildProcessAuthority>
         + Send
         + 'static,
     O: WorldTargetOperations<R>,
 {
-    type Lifecycle = QemuProductionHotForkWorldLifecycle<R::Guard>;
+    type Lifecycle = O::Lifecycle;
     type Error = QemuProductionHotForkWorldLifecycleFactoryError<S::Error>;
 
     fn try_start(
@@ -935,276 +971,40 @@ where
         context: &AttemptExecutionContext,
     ) -> Result<QemuHotForkWorldLifecycleStart<Self::Lifecycle>, AttemptWorkerFailure<Self::Error>>
     {
-        // This factory has one exclusive worker. Refuse before checkout or any
-        // new native effect while its fixed installation slot is occupied.
-        if self.retained_installation.is_some() {
-            return Err(AttemptWorkerFailure::Terminal(
-                Self::Error::RetainedInstallation,
-            ));
-        }
-        #[cfg(test)]
-        self.node_launch_nanoseconds.clear();
-
-        if matches!(
-            input.start(),
-            crate::CrucibleResolvedAttemptStart::AfterAttempt { .. }
-        ) {
-            return Ok(QemuHotForkWorldLifecycleStart::Declined);
-        }
-        let runtime_basis = context
-            .runtime_basis()
-            .ok_or_else(|| AttemptWorkerFailure::Terminal(Self::Error::MissingRuntimeBasis))?;
-        validate_fresh_qemu_scenario_resources(input.scenario(), context.resources()).map_err(
-            |error| AttemptWorkerFailure::Terminal(Self::Error::ScenarioResources(error)),
-        )?;
-        let scenario = input.scenario().scenario_def();
-        let source_key = QemuHotForkSourceWorldKey::for_execution(input, context, runtime_basis)
-            .map_err(|error| AttemptWorkerFailure::Terminal(Self::Error::SourceKey(error)))?;
-        let Some(source_lease) = self
-            .sources
-            .checkout_for_attempt(input, context, &source_key)
-            .map_err(|error| {
-                let class = S::failure_class(&error);
-                let error = Self::Error::SourceProvider(error);
-                match class {
-                    SchedulerOperationalFailureClass::Retryable => {
-                        AttemptWorkerFailure::Retryable(error)
-                    }
-                    SchedulerOperationalFailureClass::Canceled => {
-                        AttemptWorkerFailure::Canceled(error)
-                    }
-                    SchedulerOperationalFailureClass::Terminal => {
-                        AttemptWorkerFailure::Terminal(error)
-                    }
-                }
-            })?
-        else {
+        let Some(selected) = self.select_source_for_attempt(input, context)? else {
             return Ok(QemuHotForkWorldLifecycleStart::Declined);
         };
-        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
-        if let Err(first) = self.sources.parent_park_before_fork(&source_lease) {
-            // No fresh-start fallback, supervisor replacement or source restore
-            // follows a selected refusal. Its pool record keeps the reservation
-            // and any published gate keeps the whole actual source and caller.
-            return Err(AttemptWorkerFailure::Terminal(Self::Error::ParentPark(
-                first,
-            )));
-        }
-        let source_world = source_lease.source_owner();
-        let mut source = match source_world.lock() {
-            Ok(source) => source,
-            Err(_error) => {
-                self.sources.abandon();
-                let _retained_source_lease = Box::leak(Box::new(source_lease));
-                return Err(AttemptWorkerFailure::Retryable(Self::Error::Source(
-                    String::from("retained source-world lock is poisoned"),
-                )));
-            }
-        };
-        if let Some(supervisor) = context.host_operation_supervisor()
-            && let Err(error) = source.attach_borrowed_host_operation_supervisor(supervisor)
-        {
-            drop(source);
-            drop(source_world);
-            self.sources.restore(source_lease);
-            return Err(AttemptWorkerFailure::Retryable(Self::Error::Source(
-                error.to_string(),
-            )));
-        }
-        let source_matches = source.continuation().is_ok_and(|continuation| {
-            continuation.configuration().def.id() == source_key.scenario()
-                && continuation.configuration().id() == source_key.configuration()
-        });
-        if !source_matches {
-            drop(source);
-            drop(source_world);
-            self.sources.restore(source_lease);
-            return Ok(QemuHotForkWorldLifecycleStart::Declined);
-        }
-        let continuation = match source.fork_continuation() {
-            Ok(continuation) => continuation,
-            Err(error) => {
-                drop(source);
-                drop(source_world);
-                self.sources.restore(source_lease);
-                return Err(AttemptWorkerFailure::Retryable(Self::Error::Source(
-                    error.to_string(),
-                )));
-            }
-        };
-        drop(source);
-        let ram_preflight = (|| {
-            let boundaries = continuation
-                .nodes()
-                .iter()
-                .map(|boundary| {
-                    (
-                        boundary.node().clone(),
-                        (boundary.service_state(), boundary.generation()),
-                    )
-                })
-                .collect::<Vec<_>>();
-            #[cfg(test)]
-            let factory = if let Some(mode) = self.native_qualification_ram_mode {
-                crate::qemu_campaign_lifecycle::create_native_qualification_ram_registration_factory(context, mode)
-            } else {
-                crate::qemu_campaign_lifecycle::create_host_ram_registration_factory(context)
-            }.map_err(|error| error.to_string())?;
-            #[cfg(not(test))]
-            let factory =
-                crate::qemu_campaign_lifecycle::create_host_ram_registration_factory(context)
-                    .map_err(|error| error.to_string())?;
-            let world = source_world
-                .lock()
-                .map_err(|_| String::from("source-world ownership lock is poisoned"))?;
-            let mut shapes = Vec::new();
-            for (node, (state, _)) in &boundaries {
-                if *state == ProductionVmHotForkNodeServiceState::PermanentlyFailed {
-                    continue;
-                }
-                let launch = world
-                    .prepared_launch_resources(node)
-                    .map_err(|error| error.to_string())?;
-                shapes.push(
-                    crucible_api::host_operational::ProductionHostRamLaunchShape {
-                        node: node.name.clone(),
-                        declared_ram_bytes: launch.guest_memory_bytes(),
-                        vcpus: launch.virtual_cpus(),
-                    },
-                );
-            }
-            factory
-                .configure_world(&shapes)
-                .map_err(|error| error.to_string())?;
-            Ok::<_, String>(factory)
-        })();
-        let ram_factory = match ram_preflight {
-            Ok(factory) => factory,
-            Err(message) => {
-                drop(source_world);
-                self.sources.restore(source_lease);
-                return Err(AttemptWorkerFailure::Terminal(Self::Error::Assembly(
-                    message,
-                )));
-            }
-        };
-        let process_resources = (|| {
-            let native = ram_factory
-                .native_world_limits()
-                .map_err(|error| error.to_string())?;
-            let remaining = context
-                .process_resources()
-                .map_err(|error| error.to_string())?;
-            AttemptResourceLimits::new(
-                native.cpu_slots,
-                native.resident_bytes,
-                native.writable_bytes,
-                remaining.maximum_execution_quanta(),
-            )
-            .map_err(|error| error.to_string())
-        })();
-        let process_resources = match process_resources {
-            Ok(resources) => resources,
-            Err(message) => {
-                drop(source_world);
-                self.sources.restore(source_lease);
-                return Err(AttemptWorkerFailure::Terminal(Self::Error::Assembly(
-                    message,
-                )));
-            }
-        };
-        #[cfg(test)]
-        let component_construction = match self.target_operations.prepare_component_construction() {
-            Ok(custody) => custody,
-            Err(first) => {
-                drop(source_world);
-                self.sources.restore(source_lease);
-                return Err(AttemptWorkerFailure::Terminal(Self::Error::Lifecycle(
-                    first,
-                )));
-            }
-        };
-        let mut guard = match self.target_operations.begin_target(
-            &mut self.resources,
-            &source_world,
-            process_resources,
-            context.cancellation().clone(),
-        ) {
-            Ok(guard) => guard,
-            Err(failure) => {
-                drop(source_world);
-                self.sources.restore(source_lease);
-                let error = match failure {
-                    TargetBeginFailure::Source(message) => Self::Error::Source(message),
-                    TargetBeginFailure::Resources(error) => Self::Error::ResourceBegin(error),
-                };
-                return Err(AttemptWorkerFailure::Retryable(error));
-            }
-        };
-        if guard.resource_limits() != process_resources
-            || !guard
-                .cancellation()
-                .same_incarnation(context.cancellation())
-        {
-            guard.quarantine();
-            drop(source_world);
-            self.sources.restore(source_lease);
-            return Err(AttemptWorkerFailure::Terminal(
-                Self::Error::ResourceContractMismatch,
-            ));
-        }
-        let bound = self
-            .target_operations
-            .bind_world(&mut guard, ram_factory.as_ref(), input);
-        if let Err(message) = bound {
-            guard.quarantine();
-            drop(source_world);
-            self.sources.restore(source_lease);
-            return Err(AttemptWorkerFailure::Terminal(Self::Error::Assembly(
-                message,
-            )));
-        }
-        let maximum_nodes = input.scenario().world().vm_nodes().len();
-        let resources = match QemuHotForkWorldResourceOwner::new_fork_target(
-            guard,
-            maximum_nodes,
-            Arc::clone(&source_world),
-        ) {
-            Ok(resources) => resources,
-            Err(error) => {
-                drop(source_world);
-                self.sources.restore(source_lease);
-                return Err(AttemptWorkerFailure::Terminal(Self::Error::Resource(error)));
-            }
-        };
-        let checkout_identity = source_lease.identity().clone();
-        let outcome = self.launch_complete_world(
-            input,
-            context,
-            scenario,
-            checkout_identity,
-            source_lease,
-            source_world,
-            continuation,
-            resources,
-            runtime_basis,
-            ram_factory,
-            #[cfg(test)]
-            component_construction,
-        );
-        if outcome.source == CheckedOutSourceDisposition::OwnedByLifecycleOrQuarantine
-            && outcome.result.is_err()
-            && self.retained_installation.is_none()
-        {
-            self.sources.abandon();
-        }
-        outcome.result
+        O::construct_world(self, input, context, selected)
     }
 
     fn try_retire_original(
         &mut self,
         original: &crucible_linux_resource::host_supervision::HostOperationGuard,
     ) -> Result<(), Self::Error> {
+        if let Some(failure) = self.retained_target_admission.take() {
+            match failure.try_restore_source() {
+                Ok((source, _first)) => self.sources.restore(source),
+                Err(failure) => {
+                    self.retained_target_admission = Some(failure);
+                    return Err(Self::Error::RetainedTargetAdmission);
+                }
+            }
+        }
+        if let Some(target) = self.retained_target.as_mut() {
+            match target.poll().map_err(Self::Error::TargetCleanup)? {
+                AttemptExecutionReconciliationStep::Progressed => {
+                    return Err(Self::Error::RetainedTarget);
+                }
+                AttemptExecutionReconciliationStep::Complete => {
+                    let Some(source) = target.take_source() else {
+                        return Err(Self::Error::RetainedTarget);
+                    };
+                    self.retained_target = None;
+                    self.preclaimed_target = None;
+                    self.sources.restore(source);
+                }
+            }
+        }
         let Some(retained) = self.retained_installation.as_mut() else {
             return Ok(());
         };
@@ -1232,26 +1032,26 @@ where
     }
 
     fn recover(&mut self, lifecycle: Self::Lifecycle) -> Result<(), Self::Lifecycle> {
-        match lifecycle.into_source_lease() {
+        match O::into_source_lease(lifecycle) {
             Ok(source) => {
                 self.sources.restore(source);
                 Ok(())
             }
-            Err(lifecycle) => Err(*lifecycle),
+            Err(lifecycle) => Err(lifecycle),
         }
     }
 
-    fn quarantine(&mut self, mut lifecycle: Self::Lifecycle) {
-        lifecycle.quarantine();
+    fn quarantine(&mut self, lifecycle: Self::Lifecycle) {
+        O::abandon_runtime(lifecycle);
         self.sources.abandon();
-        let _retained_for_process_lifetime = Box::leak(Box::new(lifecycle));
     }
 }
 
+#[cfg(test)]
 impl<S, R, O> QemuProductionHotForkWorldLifecycleFactory<S, R, O>
 where
     S: QemuHotForkSourceWorldProvider,
-    R: QemuAttemptResourceGuardFactory,
+    R: QemuAttemptResourceGuardFactory + Send + 'static,
     R::Guard: QemuAttemptProcessResourceGuard
         + QemuHotForkChildProcessOwner<Authority = LinuxQemuHotForkChildProcessAuthority>
         + Send
@@ -1561,7 +1361,6 @@ where
             Ok(complete) => complete,
             Err(incomplete) => {
                 let message = incomplete.to_string();
-                let assembly = incomplete.into_assembly();
                 quarantine_failed_assembly(source_world, resources, assembly, None);
                 return ProductionLifecycleStartOutcome::failed(
                     AttemptWorkerFailure::Terminal(
@@ -2083,3 +1882,199 @@ pub(crate) use tests::assert_native_sibling_resources_private;
 #[cfg(test)]
 #[path = "qemu_hot_fork_world_factory/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+impl<S, R, O> QemuProductionHotForkWorldLifecycleFactory<S, R, O>
+where
+    S: QemuHotForkSourceWorldProvider,
+    R: QemuAttemptResourceGuardFactory + Send + 'static,
+    R::Guard: QemuAttemptProcessResourceGuard
+        + QemuHotForkChildProcessOwner<Authority = LinuxQemuHotForkChildProcessAuthority>
+        + Send
+        + 'static,
+    O: target_operations::ComponentWorldTargetOperations<R>,
+{
+    fn try_start_component_world(
+        &mut self,
+        input: &CrucibleAttemptExecution,
+        context: &AttemptExecutionContext,
+        source_lease: QemuHotForkSourceWorldLease,
+        source_world: Arc<Mutex<ProductionVmHotForkSourceWorld>>,
+        continuation: crate::ProductionVmHotForkWorldContinuation,
+        runtime_basis: crate::AttemptExecutionRuntimeBasis,
+    ) -> ProductionLifecycleStartResult<R::Guard, S::Error> {
+        let scenario = input.scenario().scenario_def();
+        let ram_preflight = (|| {
+            let boundaries = continuation
+                .nodes()
+                .iter()
+                .map(|boundary| {
+                    (
+                        boundary.node().clone(),
+                        (boundary.service_state(), boundary.generation()),
+                    )
+                })
+                .collect::<Vec<_>>();
+            #[cfg(test)]
+            let factory = if let Some(mode) = self.native_qualification_ram_mode {
+                crate::qemu_campaign_lifecycle::create_native_qualification_ram_registration_factory(context, mode)
+            } else {
+                crate::qemu_campaign_lifecycle::create_host_ram_registration_factory(context)
+            }.map_err(|error| error.to_string())?;
+            #[cfg(not(test))]
+            let factory =
+                crate::qemu_campaign_lifecycle::create_host_ram_registration_factory(context)
+                    .map_err(|error| error.to_string())?;
+            let world = source_world
+                .lock()
+                .map_err(|_| String::from("source-world ownership lock is poisoned"))?;
+            let mut shapes = Vec::new();
+            for (node, (state, _)) in &boundaries {
+                if *state == ProductionVmHotForkNodeServiceState::PermanentlyFailed {
+                    continue;
+                }
+                let launch = world
+                    .prepared_launch_resources(node)
+                    .map_err(|error| error.to_string())?;
+                shapes.push(
+                    crucible_api::host_operational::ProductionHostRamLaunchShape {
+                        node: node.name.clone(),
+                        declared_ram_bytes: launch.guest_memory_bytes(),
+                        vcpus: launch.virtual_cpus(),
+                    },
+                );
+            }
+            factory
+                .configure_world(&shapes)
+                .map_err(|error| error.to_string())?;
+            Ok::<_, String>(factory)
+        })();
+        let ram_factory = match ram_preflight {
+            Ok(factory) => factory,
+            Err(message) => {
+                drop(source_world);
+                self.sources.restore(source_lease);
+                return Err(AttemptWorkerFailure::Terminal(
+                    QemuProductionHotForkWorldLifecycleFactoryError::Assembly(message),
+                ));
+            }
+        };
+        let process_resources = (|| {
+            let native = ram_factory
+                .native_world_limits()
+                .map_err(|error| error.to_string())?;
+            let remaining = context
+                .process_resources()
+                .map_err(|error| error.to_string())?;
+            AttemptResourceLimits::new(
+                native.cpu_slots,
+                native.resident_bytes,
+                native.writable_bytes,
+                remaining.maximum_execution_quanta(),
+            )
+            .map_err(|error| error.to_string())
+        })();
+        let process_resources = match process_resources {
+            Ok(resources) => resources,
+            Err(message) => {
+                drop(source_world);
+                self.sources.restore(source_lease);
+                return Err(AttemptWorkerFailure::Terminal(
+                    QemuProductionHotForkWorldLifecycleFactoryError::Assembly(message),
+                ));
+            }
+        };
+        #[cfg(test)]
+        let component_construction = match self.target_operations.prepare_component_construction() {
+            Ok(custody) => custody,
+            Err(first) => {
+                drop(source_world);
+                self.sources.restore(source_lease);
+                return Err(AttemptWorkerFailure::Terminal(
+                    QemuProductionHotForkWorldLifecycleFactoryError::Lifecycle(first),
+                ));
+            }
+        };
+        let mut guard = match self.target_operations.begin_target(
+            &mut self.resources,
+            &source_world,
+            process_resources,
+            context.cancellation().clone(),
+        ) {
+            Ok(guard) => guard,
+            Err(failure) => {
+                drop(source_world);
+                self.sources.restore(source_lease);
+                let error = match failure {
+                    TargetBeginFailure::Source(message) => {
+                        QemuProductionHotForkWorldLifecycleFactoryError::Source(message)
+                    }
+                    TargetBeginFailure::Resources(error) => {
+                        QemuProductionHotForkWorldLifecycleFactoryError::ResourceBegin(error)
+                    }
+                };
+                return Err(AttemptWorkerFailure::Retryable(error));
+            }
+        };
+        if guard.resource_limits() != process_resources
+            || !guard
+                .cancellation()
+                .same_incarnation(context.cancellation())
+        {
+            guard.quarantine();
+            drop(source_world);
+            self.sources.restore(source_lease);
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuProductionHotForkWorldLifecycleFactoryError::ResourceContractMismatch,
+            ));
+        }
+        let bound = self
+            .target_operations
+            .bind_world(&mut guard, ram_factory.as_ref(), input);
+        if let Err(message) = bound {
+            guard.quarantine();
+            drop(source_world);
+            self.sources.restore(source_lease);
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuProductionHotForkWorldLifecycleFactoryError::Assembly(message),
+            ));
+        }
+        let maximum_nodes = input.scenario().world().vm_nodes().len();
+        let resources = match QemuHotForkWorldResourceOwner::new_fork_target(
+            guard,
+            maximum_nodes,
+            Arc::clone(&source_world),
+        ) {
+            Ok(resources) => resources,
+            Err(error) => {
+                drop(source_world);
+                self.sources.restore(source_lease);
+                return Err(AttemptWorkerFailure::Terminal(
+                    QemuProductionHotForkWorldLifecycleFactoryError::Resource(error),
+                ));
+            }
+        };
+        let checkout_identity = source_lease.identity().clone();
+        let outcome = self.launch_complete_world(
+            input,
+            context,
+            scenario,
+            checkout_identity,
+            source_lease,
+            source_world,
+            continuation,
+            resources,
+            runtime_basis,
+            ram_factory,
+            #[cfg(test)]
+            component_construction,
+        );
+        if outcome.source == CheckedOutSourceDisposition::OwnedByLifecycleOrQuarantine
+            && outcome.result.is_err()
+            && self.retained_installation.is_none()
+        {
+            self.sources.abandon();
+        }
+        outcome.result
+    }
+}

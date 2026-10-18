@@ -7,6 +7,7 @@
 use super::admission::MainFlightAdmission;
 use super::inputs::{NativePluginFlightInputs, NativePluginFlightKind};
 use crate::ProductionVmLifecycleConfig;
+use crate::qemu_campaign_lifecycle::NativeObservationRetirementError;
 use crate::{
     AttemptExecutionContext, AttemptExecutionDisposition, AttemptExecutionReconciliationStep,
     AttemptWorkerFailure, CrucibleAttemptExecution, CrucibleExecutionOutcome,
@@ -35,17 +36,23 @@ pub(in crate::packaged_qemu_executor) enum NativeFlightError<E> {
     #[error(transparent)]
     Inner(E),
     #[error(transparent)]
-    Source(#[from] QemuAttemptProductionVmLifecycleError),
+    Retirement(#[from] NativeObservationRetirementError),
     #[error("native observation Source: {first}; cleanup: {cleanup:?}")]
     SourceObservation {
         #[source]
         first: QemuAttemptProductionVmLifecycleError,
-        cleanup: Option<QemuAttemptProductionVmLifecycleError>,
+        cleanup: Option<NativeObservationRetirementError>,
     },
     #[error("native plugin assertions: {first}; cleanup: {cleanup:?}")]
     Observation {
         first: String,
-        cleanup: Option<QemuAttemptProductionVmLifecycleError>,
+        cleanup: Option<NativeObservationRetirementError>,
+    },
+    #[error("worker retirement failed: {first}; observation retirement: {cleanup}")]
+    RetirementBoth {
+        #[source]
+        first: E,
+        cleanup: NativeObservationRetirementError,
     },
     #[error("native plugin assertions completed and actual Source retirement was observed")]
     Complete,
@@ -140,7 +147,7 @@ where
                     }),
                 }
             }
-            (Ok(()), Err(first)) => Err(NativeFlightError::Source(first)),
+            (Ok(()), Err(first)) => Err(NativeFlightError::Retirement(first)),
             (Ok(()), Ok(())) => Ok(()),
         }
     }
@@ -185,18 +192,17 @@ where
         &mut self,
         original: &crucible_linux_resource::host_supervision::HostOperationGuard,
     ) -> Result<(), Self::Error> {
-        let inner = self
-            .inner
-            .try_retire_original(original)
-            .map_err(NativeFlightError::Inner);
-        let source = self
-            .source
-            .retire_native_observation()
-            .map_err(NativeFlightError::Source);
+        let inner = self.inner.try_retire_original(original);
+        let source = self.source.retire_native_observation();
         if self.source.native_observation_is_closed() {
             self.evidence = None;
         }
-        inner.and(source)
+        match (inner, source) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(first), Ok(())) => Err(NativeFlightError::Inner(first)),
+            (Ok(()), Err(first)) => Err(NativeFlightError::Retirement(first)),
+            (Err(first), Err(cleanup)) => Err(NativeFlightError::RetirementBoth { first, cleanup }),
+        }
     }
 
     fn quarantine_pending_execution(&mut self) {

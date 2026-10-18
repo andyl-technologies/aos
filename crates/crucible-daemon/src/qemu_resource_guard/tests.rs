@@ -539,6 +539,140 @@ fn cancellation_signals_process_synchronously_and_unregisters_on_finish() {
     assert_eq!(counters.quarantines.load(Ordering::SeqCst), 0);
 }
 
+// These exercise host composition only. FakeHostFactory has no Main, Source
+// issuer or native Target permit; none of these controls claims native birth.
+#[cfg(target_os = "linux")]
+#[test]
+fn retained_target_composition_keeps_mismatched_host_without_cleanup() {
+    let admitted = resources(2);
+    let counters = Arc::new(HostCounters::default());
+    let mut factory = factory(resources(3), Arc::clone(&counters));
+    let mut host = Some(factory.host.begin_with_root(None).expect("component host"));
+    let original = host.as_ref().expect("retained host") as *const FakeHostOwner;
+
+    let outcome = ComposedQemuAttemptResourceGuard::from_retained_target_host(
+        &mut host,
+        admitted,
+        ExecutionCancellation::default(),
+    );
+
+    assert!(matches!(
+        outcome,
+        Err(QemuVmRealizationError::ExecutorUnavailable { .. })
+    ));
+    assert!(std::ptr::eq(
+        host.as_ref().expect("same retained host"),
+        original
+    ));
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 0);
+    assert_eq!(counters.quarantines.load(Ordering::SeqCst), 0);
+    host.as_mut()
+        .expect("same retained host")
+        .finish()
+        .expect("actual cleanup");
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 1);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn retained_target_hook_refusal_keeps_both_actual_owners_separate() {
+    let admitted = resources(2);
+    let counters = Arc::new(HostCounters::default());
+    let mut factory = factory(admitted, Arc::clone(&counters));
+    let cancellation = ExecutionCancellation::default();
+    let mut first = factory
+        .begin(admitted, cancellation.clone(), None)
+        .expect("first component owner with actual hook");
+    let mut second_host = Some(
+        factory
+            .host
+            .begin_with_root(None)
+            .expect("second component host"),
+    );
+
+    let refused = ComposedQemuAttemptResourceGuard::from_retained_target_host(
+        &mut second_host,
+        admitted,
+        cancellation.clone(),
+    );
+
+    assert!(matches!(
+        refused,
+        Err(QemuVmRealizationError::Executor { .. })
+    ));
+    assert!(second_host.is_some());
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 0);
+    assert_eq!(counters.quarantines.load(Ordering::SeqCst), 0);
+    cancellation.cancel_for_test();
+    assert_eq!(counters.signals.load(Ordering::SeqCst), 1);
+    second_host
+        .as_mut()
+        .expect("same second host")
+        .finish()
+        .expect("second host cleanup");
+    first.finish().expect("first host cleanup");
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 2);
+    assert_eq!(counters.quarantines.load(Ordering::SeqCst), 0);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn retained_target_post_refusal_returns_actual_guard_before_cleanup() {
+    let admitted = resources(2);
+    let counters = Arc::new(HostCounters::default());
+    let mut factory = factory(admitted, Arc::clone(&counters));
+    let mut host = Some(factory.host.begin_with_root(None).expect("component host"));
+    let cancellation = ExecutionCancellation::default();
+    cancellation.cancel_for_test();
+
+    let (mut guard, first_post) = ComposedQemuAttemptResourceGuard::from_retained_target_host(
+        &mut host,
+        admitted,
+        cancellation,
+    )
+    .expect("guard is retained independently of its post refusal");
+
+    assert!(host.is_none());
+    assert!(matches!(
+        first_post,
+        Some(QemuVmRealizationError::Canceled { .. })
+    ));
+    assert_eq!(counters.signals.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 0);
+    assert_eq!(counters.quarantines.load(Ordering::SeqCst), 0);
+    guard.finish().expect("same guard cleanup");
+    guard.finish().expect("idempotent physical cleanup");
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.quarantines.load(Ordering::SeqCst), 0);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn retained_target_healthy_composition_keeps_one_actual_host_and_hook() {
+    let admitted = resources(2);
+    let counters = Arc::new(HostCounters::default());
+    let mut factory = factory(admitted, Arc::clone(&counters));
+    let mut host = Some(factory.host.begin_with_root(None).expect("component host"));
+    let cancellation = ExecutionCancellation::default();
+
+    let (mut guard, first_post) = ComposedQemuAttemptResourceGuard::from_retained_target_host(
+        &mut host,
+        admitted,
+        cancellation.clone(),
+    )
+    .expect("actual component guard");
+
+    assert!(host.is_none());
+    assert!(first_post.is_none());
+    assert_eq!(counters.begins.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 0);
+    guard.finish().expect("same actual guard cleanup");
+    cancellation.cancel_for_test();
+    assert_eq!(counters.signals.load(Ordering::SeqCst), 0);
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.quarantines.load(Ordering::SeqCst), 0);
+}
+
 #[test]
 fn cancellation_that_wins_before_begin_signals_and_rolls_back() {
     let resources = resources(1);
@@ -1399,7 +1533,7 @@ fn erased_launcher_observes_the_actual_generic_guard_target_loan() {
     counters.fork_targets_owned.store(1, Ordering::Release);
 
     assert!(launcher.fork_target_is_owned());
-    assert!(launcher.lend_fork_target_permit().is_err());
+    assert!(launcher.prepare_fork_target().is_err());
     assert_eq!(counters.begins.load(Ordering::SeqCst), 1);
     assert_eq!(counters.finishes.load(Ordering::SeqCst), 0);
     assert_eq!(counters.quarantines.load(Ordering::SeqCst), 0);

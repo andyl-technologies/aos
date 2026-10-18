@@ -531,65 +531,76 @@ fn restore(lane: RestoreLane<'_>) -> ReceiverEvidence {
     });
     assert!(
         replay
-            .context()
+            .with_context(|context| context.runtime_basis().is_none())
             .expect("fresh Service")
-            .runtime_basis()
-            .is_none()
     );
-    let context = replay.context().expect("actual receiver context").clone();
+    let receiver = replay
+        .retain_context_receiver()
+        .expect("actual receiver precedes retained context aliases");
+    let context = replay
+        .with_context(Clone::clone)
+        .expect("actual receiver context");
     accepted_promotion::extend_native_operations(&context);
     let registry = &prepared.host_operational_registry;
     let target = super::lazy_restore::discover_target(registry, &context);
-    if cold {
-        registry
-            .apply_native_qualification_policy(target, 0)
-            .expect("actual cold implementation policy");
-    } else {
-        drop(super::lazy_restore::capture(
-            replay.lifecycle_mut().expect("resident oracle"),
-            &context,
-        ));
-    }
-    let before_quantum = status(registry, target);
-    let lifecycle = replay
-        .lifecycle_mut()
-        .expect("actual native receiver lifecycle");
-    let configuration = lifecycle
-        .resume_state()
-        .expect("actual restored scheduler cut")
-        .into_parts()
-        .0;
-    QemuFreshAttemptLifecycleOwner::drive_quantum(
-        lifecycle,
-        QuantumRequest {
-            configuration,
-            control: Vec::new(),
-        },
-    )
-    .expect("first receiver quantum with authenticated real missing faults");
-    let first_quantum_ns =
-        u64::try_from(started.elapsed().as_nanos()).expect("bounded wall-clock observation");
-    let after = status(registry, target);
-    let missing_installs = after
-        .activity
-        .expect("native receiver counters")
-        .successful_missing_installs
-        .checked_sub(
-            before_quantum
+    let evidence = replay
+        .with_qualification_lifecycle(|lifecycle| {
+            if cold {
+                registry
+                    .apply_native_qualification_policy(target, 0)
+                    .expect("actual cold implementation policy");
+            } else {
+                drop(super::lazy_restore::capture(lifecycle, &context));
+            }
+            let before_quantum = status(registry, target);
+            let configuration = lifecycle
+                .resume_state()
+                .expect("actual restored scheduler cut")
+                .into_parts()
+                .0;
+            QemuFreshAttemptLifecycleOwner::drive_quantum(
+                lifecycle,
+                QuantumRequest {
+                    configuration,
+                    control: Vec::new(),
+                },
+            )
+            .expect("first receiver quantum with authenticated real missing faults");
+            let first_quantum_ns = u64::try_from(started.elapsed().as_nanos())
+                .expect("bounded wall-clock observation");
+            let after = status(registry, target);
+            let missing_installs = after
                 .activity
-                .expect("initial native counters")
-                .successful_missing_installs,
-        )
-        .expect("same original receiver operation namespace");
-    assert_eq!(before_quantum.admitted_resources, after.admitted_resources);
-    assert_eq!(
-        before_quantum.reservation_revision,
-        after.reservation_revision
-    );
-    let observed = boundary(lifecycle);
-    let closure = super::lazy_restore::capture(lifecycle, &context);
-    let ram_record = closure.ram_sources()[0].root().record().encode();
-    drop(closure);
+                .expect("native receiver counters")
+                .successful_missing_installs
+                .checked_sub(
+                    before_quantum
+                        .activity
+                        .expect("initial native counters")
+                        .successful_missing_installs,
+                )
+                .expect("same original receiver operation namespace");
+            assert_eq!(before_quantum.admitted_resources, after.admitted_resources);
+            assert_eq!(
+                before_quantum.reservation_revision,
+                after.reservation_revision
+            );
+            let observed = boundary(lifecycle);
+            let closure = super::lazy_restore::capture(lifecycle, &context);
+            let ram_record = closure.ram_sources()[0].root().record().encode();
+            drop(closure);
+            ReceiverEvidence {
+                boundary: observed,
+                ram_record,
+                missing_installs,
+                first_quantum_ns,
+            }
+        })
+        .expect("same nonextracting native receiver evidence");
+    drop(context);
+    receiver
+        .return_after_alias_destruction()
+        .expect("actual receiver context aliases are destroyed");
     replay
         .finish()
         .expect("actual receiver reap, source joins and last-close before actor discharge");
@@ -605,12 +616,7 @@ fn restore(lane: RestoreLane<'_>) -> ReceiverEvidence {
             )
         )
     ));
-    ReceiverEvidence {
-        boundary: observed,
-        ram_record,
-        missing_installs,
-        first_quantum_ns,
-    }
+    evidence
 }
 
 fn assert_receiver_refusals(
@@ -701,11 +707,14 @@ fn assert_receiver_refusals(
                 receiver_policy(&repository, config),
                 &foreign
             ),
-            Err(crate::imported_checkpoint::ImportedCheckpointError::Store(
-                crate::ExactCheckpointStoreError::InvalidRoot {
-                    reason: "replay-oracle promotion source belongs to another backend",
-                },
-            )),
+            Err(error) if matches!(
+                error.cause(),
+                crate::imported_checkpoint::ImportedCheckpointErrorCause::Store(
+                    crate::ExactCheckpointStoreError::InvalidRoot {
+                        reason: "replay-oracle promotion source belongs to another backend",
+                    },
+                ),
+            ),
         ));
 
         let checkpoint = repository

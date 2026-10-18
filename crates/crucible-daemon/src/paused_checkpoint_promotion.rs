@@ -34,7 +34,7 @@ use crate::{
     ExactCheckpointStoreError, ExecutionCancellation, LocalExecutorError, LocalExecutorSupervisor,
     PausedCheckpointPromotionRecovery, PreparedProductionAttemptReplayOraclePromotion,
     ProductionAttemptCheckpointRestoreError, ProductionBakedGenesisReplayStore,
-    QemuAttemptOperationalBoundary, QemuAttemptProcessResourceGuard, QemuAttemptResourceGuard,
+    QemuAttemptProcessResourceGuard,
     authenticate_production_exact_checkpoint_replay_oracle_promotion,
     decode_crucible_attempt_execution, install_attempt_production_exact_checkpoint,
     prepare_attempt_production_replay_oracle_promotion, resolve_attempt_execution_input,
@@ -119,86 +119,11 @@ impl ResolvedProductionPausedCheckpointPromotionRecovery {
     }
 }
 
-/// Factory for node-specific guarded production replay-oracle sessions.
-///
-/// The factory installs one aggregate attempt guard for the complete root
-/// comparison, then constructs each node's executor and realization store under
-/// that retained guard. The caller verifies every executor node, runs both
-/// realization paths, and structurally finishes the aggregate guard once.
-pub(crate) trait ProductionPausedCheckpointReplayFactory {
-    /// Attempt resource owner retained until comparison cleanup.
-    type Guard: QemuAttemptProcessResourceGuard;
-
-    /// Binds authenticated durable semantic facts before any physical replay.
-    fn configure_execution(
-        &mut self,
-        _basis: crate::qemu_baked_genesis::ProductionCheckpointReplayBasis,
-    ) -> Result<(), QemuVmRealizationError> {
-        Ok(())
-    }
-
-    /// Records one completely authenticated and physically cleaned node comparison.
-    fn target_completed(&mut self, _guard: &mut Self::Guard) -> Result<(), QemuVmRealizationError> {
-        Ok(())
-    }
-
-    /// Installs the single aggregate guard for one complete root comparison.
-    ///
-    /// # Errors
-    ///
-    /// Returns a failure that retains the selected root when no resource owner
-    /// escaped and consumes it when cleanup required quarantine.
-    fn begin_replay(
-        &mut self,
-        selected_checkpoint: SelectedExactCheckpointRoot,
-        cancellation: &ExecutionCancellation,
-        resources: AttemptResourceLimits,
-    ) -> Result<Self::Guard, crate::crucible_qemu_session::QemuAttemptResourceGuardBeginFailure>;
-
-    /// Prepares one node-specific replay executor under the aggregate guard.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuVmRealizationError`] when the baked semantic source or
-    /// either replay leg cannot be admitted under the retained guard.
-    fn begin_target(
-        &mut self,
-        world: &World,
-        configuration: &Configuration,
-        target: ProductionVmReplayExactNodeRestoreAdmission,
-        guard: &mut Self::Guard,
-    ) -> Result<ProductionPausedCheckpointReplaySession, QemuVmRealizationError>;
-
-    /// Reexecutes one savepoint attempt and returns its reached modeled boundary.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuVmRealizationError`] when the attempt cannot be replayed
-    /// under the supplied resource and cancellation authority or its exact
-    /// reached boundary cannot be collected.
-    fn replay_savepoint_capture(
-        &mut self,
-        attempt: &CrucibleAttemptExecution,
-        run_state_root: &Path,
-        cancellation: &ExecutionCancellation,
-        resources: AttemptResourceLimits,
-    ) -> Result<crate::QemuSavepointReplayProof, QemuVmRealizationError>;
-
-    /// Replays an ordinary attempt to a source checkpoint's exact boundary.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuVmRealizationError`] when independent full-world replay
-    /// cannot reproduce the target boundary or cleanly reap its QEMU children.
-    fn replay_checkpoint_boundary(
-        &mut self,
-        attempt: &CrucibleAttemptExecution,
-        run_state_root: &Path,
-        cancellation: &ExecutionCancellation,
-        resources: AttemptResourceLimits,
-        target: &crate::qemu_campaign_driver::QemuSelectedResumeBoundary,
-    ) -> Result<crate::QemuSavepointReplayProof, QemuVmRealizationError>;
-}
+mod replay_protocol;
+pub(crate) use replay_protocol::{
+    ProductionPausedCheckpointReplayFactory, ProductionReplayBeginFailure, ProductionReplayCleanup,
+    ProductionReplayError, ReplayBoundaryRefusal, check_replay_boundary,
+};
 
 /// Newly admitted node-specific replay session before either QEMU path starts.
 ///
@@ -351,7 +276,7 @@ pub(crate) enum PausedCheckpointPromotionPreparationError {
         #[source]
         first: QemuVmRealizationError,
         /// The independent cleanup cause and reporting policy.
-        cleanup: crate::QemuAttemptResourceGuardCleanupFailure,
+        cleanup: ProductionReplayCleanup,
     },
     /// Comparison failed before independent guard cleanup also refused.
     #[error("comparison failed: {comparison}; guard cleanup failed: {cleanup}")]
@@ -360,11 +285,17 @@ pub(crate) enum PausedCheckpointPromotionPreparationError {
         #[source]
         comparison: QemuVmRealizationError,
         /// The independently observed cleanup result.
-        cleanup: crate::QemuAttemptResourceGuardCleanupFailure,
+        cleanup: ProductionReplayCleanup,
     },
-    /// Resource begin retained its original refusal and any rollback history.
+    /// The original Main role retains a replay startup, return or terminal report.
+    #[error("supervised replay failed: {first}; independent return: {cleanup:?}")]
+    SupervisedReplay {
+        #[source]
+        first: ProductionReplayError,
+        cleanup: Option<ProductionReplayCleanup>,
+    },
     #[error(transparent)]
-    ResourceBegin(#[from] crate::crucible_qemu_session::QemuAttemptResourceGuardBeginReport),
+    SupervisedCleanup(ProductionReplayCleanup),
     /// Canonical event evidence could not be authenticated under its original metadata authority.
     #[error("checkpoint event identity failed: {0}")]
     EventIdentity(#[source] crucible::EngineError),
@@ -374,6 +305,28 @@ pub(crate) enum PausedCheckpointPromotionPreparationError {
     /// Independent execution did not reproduce the captured checkpoint boundary.
     #[error("checkpoint does not match an independent full-world replay")]
     SavepointReplayMismatch,
+}
+
+impl From<ProductionReplayError> for PausedCheckpointPromotionPreparationError {
+    fn from(first: ProductionReplayError) -> Self {
+        match first {
+            ProductionReplayError::Realization(first) => Self::Realization(first),
+            ProductionReplayError::Cleanup(first) => first.into(),
+            first => Self::SupervisedReplay {
+                first,
+                cleanup: None,
+            },
+        }
+    }
+}
+
+impl From<ProductionReplayCleanup> for PausedCheckpointPromotionPreparationError {
+    fn from(first: ProductionReplayCleanup) -> Self {
+        match first {
+            ProductionReplayCleanup::Native(first) => Self::ResourceCleanup(first),
+            first => Self::SupervisedCleanup(first),
+        }
+    }
 }
 
 /// Failure to resolve one durable raw pause into guarded comparison input.
@@ -863,19 +816,15 @@ where
             Err(failure) => {
                 let (error, selected_checkpoint) = failure.into_parts();
                 *target.selected_checkpoint = selected_checkpoint;
-                return Err(PausedCheckpointPromotionPreparationError::ResourceBegin(
-                    error,
-                ));
+                return Err(error.into());
             }
         };
-    if guard.resource_limits() != target.resources
-        || !guard.cancellation().same_incarnation(target.cancellation)
-    {
+    if !factory.guard_matches(&guard, target.resources, target.cancellation) {
         let error = QemuVmRealizationError::Executor {
             operation: "admit production replay-oracle aggregate",
             message: String::from("resource guard does not match the requested aggregate basis"),
         };
-        return Err(finish_replay_after_failure(&mut guard, error));
+        return Err(finish_replay_after_failure(factory, &mut guard, error));
     }
 
     let mut matches = BTreeMap::new();
@@ -884,7 +833,7 @@ where
             Ok(next) => next,
             Err(error) => {
                 let error = map_production_target_error(error, target.cancellation);
-                let cleanup = finish_replay_guard(&mut guard);
+                let cleanup = finish_replay_guard(factory, &mut guard);
                 return cleanup.map_or(Err(error), |cleanup| Err(cleanup.into()));
             }
         };
@@ -902,8 +851,11 @@ where
         );
         let (mut realization_store, mut executor) = match session {
             Ok(session) => session.into_parts(),
-            Err(error) => {
-                return Err(finish_replay_after_failure(&mut guard, error));
+            Err(first) => {
+                let cleanup = finish_replay_guard(factory, &mut guard);
+                return Err(
+                    PausedCheckpointPromotionPreparationError::SupervisedReplay { first, cleanup },
+                );
             }
         };
         if executor.node() != &node {
@@ -913,7 +865,7 @@ where
             };
             drop(executor);
             drop(realization_store);
-            return Err(finish_replay_after_failure(&mut guard, error));
+            return Err(finish_replay_after_failure(factory, &mut guard, error));
         }
         let baked = match realization_store
             .baked_genesis(target.source.world(), &installed.configuration().def)
@@ -922,29 +874,58 @@ where
             Err(error) => {
                 drop(executor);
                 drop(realization_store);
-                return Err(finish_replay_after_failure(&mut guard, error));
+                return Err(finish_replay_after_failure(factory, &mut guard, error));
             }
         };
-        let mut session = QemuGuardedReplayOracleSession::new(&mut executor, &mut guard);
-        let comparison = session.check_snapshot_replay_oracle(
-            target.source.world(),
-            target.source,
-            GuardedReplayAdmission {
-                choices: &choices,
-                scheduler: installed.scheduler(),
-                process_generation,
-            },
-            installed.configuration(),
-            &snapshot,
-            &baked,
-        );
-        let cleanup = session.finish();
+        let observed = factory.with_native_guard(&mut guard, |native, original| {
+            let mut session = QemuGuardedReplayOracleSession::new(&mut executor, native, original);
+            let comparison = session.check_snapshot_replay_oracle(
+                target.source.world(),
+                target.source,
+                GuardedReplayAdmission {
+                    choices: &choices,
+                    scheduler: installed.scheduler(),
+                    process_generation,
+                },
+                installed.configuration(),
+                &snapshot,
+                &baked,
+            );
+            let original = session.original_refusal();
+            let cleanup = session.finish();
+            (comparison, cleanup, original)
+        });
         // The executor retains pinned launch files after its node is reaped.
         // Close them before the aggregate guard releases the project quota.
         drop(baked);
         drop(executor);
         drop(realization_store);
-        let matched = match (comparison, cleanup) {
+        let (comparison, cleanup_result, original) = match observed {
+            Ok(observed) => observed,
+            Err(first) => {
+                let cleanup = finish_replay_guard(factory, &mut guard);
+                return Err(
+                    PausedCheckpointPromotionPreparationError::SupervisedReplay {
+                        first: first.into(),
+                        cleanup,
+                    },
+                );
+            }
+        };
+        if let Some(original) = original {
+            let cleanup = finish_replay_guard(factory, &mut guard);
+            return Err(
+                PausedCheckpointPromotionPreparationError::SupervisedReplay {
+                    first: ProductionReplayError::OriginalBoundary {
+                        original,
+                        comparison: comparison.err(),
+                        node_cleanup: cleanup_result.err(),
+                    },
+                    cleanup,
+                },
+            );
+        }
+        let matched = match (comparison, cleanup_result) {
             (Err(comparison), Err(cleanup)) => {
                 return Err(PausedCheckpointPromotionPreparationError::Realization(
                     replay_quarantine_with_cause(comparison, cleanup),
@@ -956,7 +937,7 @@ where
                 ));
             }
             (Err(comparison), Ok(())) => {
-                return Err(match finish_replay_guard(&mut guard) {
+                return Err(match finish_replay_guard(factory, &mut guard) {
                     Some(cleanup) => PausedCheckpointPromotionPreparationError::ComparisonCleanup {
                         comparison,
                         cleanup,
@@ -974,18 +955,19 @@ where
                     ),
                 },
             );
-            return match finish_replay_guard(&mut guard) {
-                Some(cleanup) => Err(PausedCheckpointPromotionPreparationError::ResourceCleanup(
-                    cleanup,
-                )),
+            return match finish_replay_guard(factory, &mut guard) {
+                Some(cleanup) => Err(cleanup.into()),
                 None => Err(error),
             };
         }
-        if let Err(error) = factory.target_completed(&mut guard) {
-            return Err(finish_replay_after_failure(&mut guard, error));
+        if let Err(first) = factory.target_completed(&mut guard) {
+            let cleanup = finish_replay_guard(factory, &mut guard);
+            return Err(
+                PausedCheckpointPromotionPreparationError::SupervisedReplay { first, cleanup },
+            );
         }
     }
-    guard.finish()?;
+    factory.finish_replay(&mut guard)?;
     let mut boundary = || {
         if target.cancellation.is_canceled() {
             Err(LifecycleApiError::AttemptOperational {
@@ -1013,11 +995,12 @@ where
     ))
 }
 
-fn finish_replay_after_failure(
-    guard: &mut impl QemuAttemptProcessResourceGuard,
+fn finish_replay_after_failure<F: ProductionPausedCheckpointReplayFactory>(
+    factory: &mut F,
+    guard: &mut F::Guard,
     first: QemuVmRealizationError,
 ) -> PausedCheckpointPromotionPreparationError {
-    match finish_replay_guard(guard) {
+    match finish_replay_guard(factory, guard) {
         Some(cleanup) => {
             PausedCheckpointPromotionPreparationError::RealizationCleanup { first, cleanup }
         }
@@ -1025,10 +1008,11 @@ fn finish_replay_after_failure(
     }
 }
 
-fn finish_replay_guard(
-    guard: &mut impl QemuAttemptProcessResourceGuard,
-) -> Option<crate::QemuAttemptResourceGuardCleanupFailure> {
-    guard.finish().err()
+fn finish_replay_guard<F: ProductionPausedCheckpointReplayFactory>(
+    factory: &mut F,
+    guard: &mut F::Guard,
+) -> Option<ProductionReplayCleanup> {
+    factory.finish_replay(guard).err()
 }
 
 fn validate_savepoint_replay_boundary(

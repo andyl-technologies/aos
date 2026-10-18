@@ -14,7 +14,8 @@ use std::sync::Arc;
 
 mod fork_target;
 pub use fork_target::{
-    LinuxQemuForkTargetPermit, QemuForkTargetLogicalReservation, QemuForkTargetRamAdmission,
+    LinuxQemuForkTargetPermit, QemuForkTargetConstructionError, QemuForkTargetConstructionLoan,
+    QemuForkTargetLogicalReservation, QemuForkTargetPreparation, QemuForkTargetRamAdmission,
 };
 
 mod configuration;

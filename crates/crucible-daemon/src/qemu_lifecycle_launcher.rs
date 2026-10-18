@@ -17,7 +17,7 @@ use crate::{
 use crucible_api::LifecycleApiError;
 use crucible_qemu::{
     QemuChildProcessContract, QemuLiveNodeIdentity, QemuNode, QemuPreparedRunDirectory,
-    QemuProductionFreshLaunchAdmission,
+    QemuProductionFreshLaunchAdmission, QemuVmRealizationError,
 };
 
 use crate::{
@@ -31,9 +31,14 @@ mod parent_park_drain;
 pub(crate) use parent_park_drain::OriginalParkDrainDisposition;
 
 mod pending_construction;
-#[cfg(all(target_os = "linux", any(test, feature = "private-measurement-domain")))]
-pub(crate) use pending_construction::publish_source_owner;
-pub(crate) use pending_construction::retain_source_owner;
+mod prepared_source;
+pub(crate) use prepared_source::PreparedSourceHandle;
+mod target_construction;
+pub use target_construction::TargetConstructionStorage;
+#[cfg(target_os = "linux")]
+pub(crate) use target_construction::TargetMemberAdmission;
+#[cfg(target_os = "linux")]
+pub use target_construction::TargetPreparationFailure;
 mod fresh_generation;
 mod retained_node;
 use retained_node::RetainedNodeLaunch;
@@ -41,8 +46,7 @@ use retained_node::RetainedNodeLaunch;
 mod native_observation;
 #[cfg(all(target_os = "linux", any(test, feature = "private-measurement-domain")))]
 pub(crate) use native_observation::ObservedNativeNode;
-pub use pending_construction::SourceConstructionCustodyFailure;
-pub(crate) use pending_construction::{PendingSourceConstruction, UnbornSourceConstruction};
+pub(crate) use pending_construction::{PendingSourceConstruction, SourceWorldNotStarted};
 
 struct TerminalCheckpointImport {
     checkpoints: Arc<ExactCheckpointStore>,
@@ -69,10 +73,15 @@ where
     // existing host Arc. The field itself exposes no permit or process contract.
     fork_target_factory: Option<F>,
     cleanup_reservation: Option<crate::WorldLifecycleCleanupReservation>,
+    prepared_source_selector: Option<crate::PreparedSourceSelector>,
+    cleanup_complete: bool,
     construction_custody: Option<Box<crate::ProductionVmConstructionCustody>>,
     retained_node: Option<RetainedNodeLaunch>,
     #[cfg(all(target_os = "linux", any(test, feature = "private-measurement-domain")))]
     pub(crate) native_observation_config: Option<crate::ProductionVmLifecycleConfig>,
+    target_storage: Option<TargetConstructionStorage>,
+    target_return:
+        Option<fn(crate::PreparedSourceSelector) -> crate::ProductionVmConstructionPostBody>,
     owner: QemuAttemptGenerationResourceOwner<G>,
     run_directories: Arc<Mutex<BTreeMap<ProductionVmNodeGeneration, QemuPreparedRunDirectory>>>,
     image_helpers: Arc<Mutex<ImageHelperCleanupDebt>>,
@@ -111,10 +120,14 @@ where
             parent_park_disposition: None,
             fork_target_factory,
             cleanup_reservation: None,
+            prepared_source_selector: None,
+            cleanup_complete: false,
             construction_custody: None,
             retained_node: None,
             #[cfg(all(target_os = "linux", any(test, feature = "private-measurement-domain")))]
             native_observation_config: None,
+            target_storage: None,
+            target_return: None,
             owner,
             run_directories: Arc::new(Mutex::new(BTreeMap::new())),
             image_helpers: Arc::new(Mutex::new(ImageHelperCleanupDebt::default())),
@@ -149,37 +162,125 @@ where
     /// Measures selected Source construction before any containing allocation.
     ///
     /// Includes the actual launcher Box, inline guard/factory, shared directory
-    /// and helper controls, selected generation rows, carrier, temporary Pending
-    /// body, and overlapping prepared Source Loop Box. No Target directory is
-    /// constructed by this Source path; its later genuine producer must price
-    /// its own before-birth peak.
+    /// and helper controls, selected generation rows, and the overlapping
+    /// prepared Source Loop Box. The retained World also pays its shared Source
+    /// allocation and overlapping transfer headers. Main separately pays Pending
+    /// and its carrier. The same World also prices its selected Target rows and
+    /// the overlapping Target launcher, adoption and reconciliation controls.
     ///
     /// # Errors
     /// Refuses an empty/excessive member set or layout/byte arithmetic overflow.
     pub(crate) fn retained_source_launcher_control_bytes<'a>(
         nodes: impl Clone + Iterator<Item = &'a crucible::NodeId>,
+        workers: crucible_qemu::QemuHotForkWorkerGeometry,
     ) -> Result<u64, LifecycleApiError>
     where
         F: crate::QemuAttemptResourceGuardFactory,
+        F::Guard: QemuAttemptProcessResourceGuard,
     {
         let generations = crate::QemuAttemptGenerationStorage::control_bytes(nodes.clone())?;
+        let target_runtime =
+            Self::retained_target_runtime_control_bytes::<F::Guard>(nodes.clone())?;
+        let worker_requests = workers
+            .requested_control_bytes(nodes.clone().count())
+            .map_err(|first| launcher_message(first.to_string()))?;
+        let targets = TargetConstructionStorage::control_bytes(nodes.clone())?;
+        let target_nodes =
+            crate::qemu_hot_fork_reconciliation::TargetNodeConstruction::<F::Guard>::control_bytes(
+                nodes,
+            )?;
         let directories = launcher_arc_bytes::<
             Mutex<BTreeMap<ProductionVmNodeGeneration, QemuPreparedRunDirectory>>,
         >()?;
         let helpers = launcher_arc_bytes::<Mutex<ImageHelperCleanupDebt>>()?;
         let source_loop = u64::try_from(std::mem::size_of::<crate::ProductionVmLifecycleLoop>())
             .map_err(|_| launcher_message("prepared Source lifecycle extent overflows"))?;
+        #[cfg(target_os = "linux")]
+        let shared_source = {
+            let headers = std::mem::size_of::<crate::vm_lifecycle::PreparedSharedSource>()
+                .checked_add(std::mem::size_of::<crate::vm_lifecycle::MainSharedSource>())
+                .and_then(|bytes| u64::try_from(bytes).ok())
+                .ok_or_else(|| launcher_message("shared Source transfer extent overflows"))?;
+            launcher_arc_bytes::<Mutex<crate::vm_lifecycle::ProductionVmHotForkSourceWorld>>()?
+                .checked_add(headers)
+                .ok_or_else(|| launcher_message("shared Source allocation extent overflows"))?
+        };
+        #[cfg(not(target_os = "linux"))]
+        let shared_source = 0;
+
         let retained_source = Self::retained_control_bytes()?
             .checked_add(directories)
             .and_then(|bytes| bytes.checked_add(helpers))
             .and_then(|bytes| bytes.checked_add(source_loop))
+            .and_then(|bytes| bytes.checked_add(shared_source))
             .ok_or_else(|| launcher_message("retained Source launcher extent overflow"))?;
         // Main already pays the preborn Pending and construction carrier.
         // This World pays its actual launcher, shared controls, generation rows
-        // and the separately allocated Source Loop Box overlapping them.
+        // and the Source Loop/shared allocation overlapping them. Each queried
+        // Arc extent includes its actual payload and reference-count header.
         retained_source
             .checked_add(generations)
+            .and_then(|bytes| bytes.checked_add(targets))
+            .and_then(|bytes| bytes.checked_add(target_runtime))
+            .and_then(|bytes| {
+                target_nodes
+                    .checked_mul(2)
+                    .and_then(|rows| bytes.checked_add(rows))
+            })
+            .and_then(|bytes| bytes.checked_add(worker_requests))
             .ok_or_else(|| launcher_message("selected Source control extent overflow"))
+    }
+
+    /// Measures the actual overlapping Target launcher and adoption controls.
+    ///
+    /// The selected Source World currently retains one such construction. This
+    /// request includes the shared directory/helper headers, exact reconciliation
+    /// roster, adoption vector and each actual boxed adoption lease.
+    ///
+    /// # Errors
+    /// Refuses invalid selected geometry or checked extent arithmetic overflow.
+    fn retained_target_runtime_control_bytes<'a, T: QemuAttemptProcessResourceGuard>(
+        nodes: impl Clone + Iterator<Item = &'a crucible::NodeId>,
+    ) -> Result<u64, LifecycleApiError> {
+        use crate::qemu_hot_fork_reconciliation::LinuxQemuHotForkWorldReconciliationSet;
+        use crate::qemu_hot_fork_world_resource::QemuHotForkWorldLifecycleGuard;
+
+        let registry = LinuxQemuHotForkWorldReconciliationSet::<T>::control_bytes(nodes.clone())?;
+        let adoptions =
+            LinuxQemuHotForkWorldReconciliationSet::<T>::adoption_control_bytes(nodes.count())?;
+        let launcher =
+            QemuAttemptProductionVmNodeLauncher::<QemuHotForkWorldLifecycleGuard<T>>::retained_control_bytes()?;
+        let directories = launcher_arc_bytes::<
+            Mutex<BTreeMap<ProductionVmNodeGeneration, QemuPreparedRunDirectory>>,
+        >()?;
+        let helpers = launcher_arc_bytes::<Mutex<ImageHelperCleanupDebt>>()?;
+
+        launcher
+            .checked_add(directories)
+            .and_then(|bytes| bytes.checked_add(helpers))
+            .and_then(|bytes| bytes.checked_add(registry))
+            .and_then(|bytes| bytes.checked_add(adoptions))
+            .ok_or_else(|| launcher_message("Target runtime control extent overflows"))
+    }
+
+    /// Binds the actual Target tail selected by this launcher's same Main role.
+    ///
+    /// This stores only a monomorphized operation and the existing key. It
+    /// creates no World loan, Source Service phase or replacement owner.
+    pub(crate) fn with_target_return<T: crate::lifecycle_cleanup::TargetConstructionPostBody>(
+        mut self,
+    ) -> Self {
+        self.target_return = Some(crate::ProductionVmConstructionPostBody::target::<T>);
+        self
+    }
+
+    /// Moves the same preborn selected Target directory into its real Source.
+    pub(crate) fn with_target_construction_storage(
+        mut self,
+        storage: TargetConstructionStorage,
+    ) -> Self {
+        self.target_storage = Some(storage);
+        self
     }
 
     /// Retains the same admitted World's cleanup loan after construction.
@@ -196,6 +297,8 @@ where
         mut self,
         reservation: crate::WorldLifecycleCleanupReservation,
     ) -> Self {
+        self.prepared_source_selector =
+            Some(reservation.service_preclaim().handle().prepared_selector());
         self.cleanup_reservation = Some(reservation);
         self
     }
@@ -429,6 +532,35 @@ where
     F: Send,
 {
     type Failure = crate::ProductionVmConstructionCleanupError;
+    type PostBody = crate::ProductionVmConstructionPostBody;
+
+    fn take_post_body(&mut self) -> Result<Option<Self::PostBody>, Self::Failure> {
+        if !self.cleanup_complete {
+            return Err(Self::Failure::Retained(
+                "launcher body cleanup is not complete",
+            ));
+        }
+        if let Some(build) = self.target_return {
+            if self._world_cleanup_loan.is_some() {
+                return Err(Self::Failure::Retained(
+                    "Target launcher also retains an unrelated Source World loan",
+                ));
+            }
+            let selector =
+                self.prepared_source_selector
+                    .as_ref()
+                    .ok_or(Self::Failure::Retained(
+                        "Target launcher has no original Main selector",
+                    ))?;
+            let body = build(selector.clone());
+            self.target_return = None;
+            return Ok(Some(body));
+        }
+        Ok(self
+            ._world_cleanup_loan
+            .take()
+            .map(|loan| crate::ProductionVmConstructionPostBody::world(loan, None)))
+    }
 
     fn retry_cleanup(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
         ProductionVmNodeLauncher::finish(self)
@@ -440,6 +572,20 @@ where
     G: QemuAttemptProcessResourceGuard + Send,
     F: Send,
 {
+    #[cfg(target_os = "linux")]
+    fn take_source_world_cleanup_loan(
+        &mut self,
+    ) -> Option<
+        crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldCleanupLoan,
+    > {
+        self._world_cleanup_loan.take()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn prepared_source_selector(&self) -> Option<crate::PreparedSourceSelector> {
+        self.prepared_source_selector.clone()
+    }
+
     fn take_construction_custody(&mut self) -> Option<Box<crate::ProductionVmConstructionCustody>> {
         self.construction_custody.take()
     }
@@ -450,6 +596,8 @@ where
         Box<
             dyn crucible_api::ProductionVmCleanupReservation<
                     Failure = crate::ProductionVmConstructionCleanupError,
+                    PostBody = crate::ProductionVmConstructionPostBody,
+                    ReturnDestination = crate::lifecycle_cleanup::SourceBodyReturn,
                 >,
         >,
     > {
@@ -463,11 +611,77 @@ where
         self.owner.fork_target_is_owned()
     }
 
-    #[cfg(target_os = "linux")]
-    fn lend_fork_target_permit(
+    fn matches_target_construction_storage(&self, storage: &TargetConstructionStorage) -> bool {
+        self.target_storage.is_none() && storage.belongs_to(&self.owner)
+    }
+
+    fn take_target_construction_storage(
         &mut self,
-    ) -> Result<crucible_qemu::LinuxQemuForkTargetPermit, LifecycleApiError> {
-        self.owner.lend_fork_target_permit()
+    ) -> Result<TargetConstructionStorage, LifecycleApiError> {
+        self.target_storage.take().ok_or_else(|| {
+            launcher_message("Source Target construction storage is already borrowed or absent")
+        })
+    }
+
+    fn return_prepared_target_construction_storage(
+        &mut self,
+        storage: TargetConstructionStorage,
+    ) -> Result<(), TargetConstructionStorage> {
+        if self.target_storage.is_some()
+            || !storage.source_return_is_prepared()
+            || !storage.belongs_to(&self.owner)
+        {
+            return Err(storage);
+        }
+        // Vacancy was checked above. This replaces None and moves existing
+        // payloads; it drops no history, loan, alias or physical owner here.
+        self.target_storage = Some(storage);
+        Ok(())
+    }
+
+    fn return_target_construction_storage(
+        &mut self,
+        mut storage: TargetConstructionStorage,
+    ) -> Result<(), TargetConstructionStorage> {
+        if self.target_storage.is_some()
+            || !storage.belongs_to(&self.owner)
+            || !storage.prepare_reuse()
+        {
+            return Err(storage);
+        }
+        self.target_storage = Some(storage);
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn native_world_identity(
+        &self,
+    ) -> Result<
+        crucible_linux_resource::host_services::process_birth::NativeWorldIdentity,
+        QemuVmRealizationError,
+    > {
+        self.owner.native_world_identity()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn prepare_fork_target_for_node(
+        &mut self,
+        node: &crucible::NodeId,
+    ) -> Result<
+        crucible_qemu::QemuForkTargetPreparation,
+        crate::qemu_lifecycle_launcher::TargetPreparationFailure,
+    > {
+        self.owner.prepare_fork_target_for_node(node)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn prepare_fork_target(
+        &mut self,
+    ) -> Result<
+        crucible_qemu::QemuForkTargetPreparation,
+        crate::qemu_lifecycle_launcher::TargetPreparationFailure,
+    > {
+        self.owner.prepare_fork_target()
     }
 
     #[cfg(target_os = "linux")]
@@ -666,6 +880,9 @@ where
     }
 
     fn finish(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
+        if self.cleanup_complete {
+            return Ok(());
+        }
         #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
         if self.parent_park_phase.is_some() {
             return Err((LifecycleApiError::ParentParkHeld).into());
@@ -685,6 +902,7 @@ where
         self.transfer_image_helper_debt();
         self.owner.finish()?;
         self.fork_target_factory = None;
+        self.cleanup_complete = true;
         Ok(())
     }
 }
@@ -1010,6 +1228,42 @@ mod tests {
                 .children
                 .push(child);
         }
+    }
+
+    #[test]
+    fn target_storage_returns_only_to_its_same_source_registry() -> Result<(), LifecycleApiError> {
+        let nodes = [crucible::NodeId {
+            name: String::from("source"),
+        }];
+        let selected = crate::QemuAttemptGenerationStorage::prepare(nodes.iter())?;
+        let own_targets = TargetConstructionStorage::prepare(nodes.iter(), &selected)?;
+        let foreign = crate::QemuAttemptGenerationStorage::prepare(nodes.iter())?;
+        let foreign_targets = TargetConstructionStorage::prepare(nodes.iter(), &foreign)?;
+        let receipts = Arc::new(Mutex::new(HelperGuardReceipts::default()));
+        let guard = HelperGuard {
+            receipts: Arc::clone(&receipts),
+            cancellation: ExecutionCancellation::default(),
+        };
+        let owner = QemuAttemptGenerationResourceOwner::new(guard, selected);
+        let mut launcher = QemuAttemptProductionVmNodeLauncher::new(owner)
+            .with_target_construction_storage(own_targets);
+
+        let targets = launcher.take_target_construction_storage()?;
+        assert!(launcher.matches_target_construction_storage(&targets));
+        assert!(!launcher.matches_target_construction_storage(&foreign_targets));
+        assert!(launcher.take_target_construction_storage().is_err());
+        assert!(
+            launcher
+                .return_target_construction_storage(foreign_targets)
+                .is_err()
+        );
+        assert!(launcher.return_target_construction_storage(targets).is_ok());
+        let targets = launcher.take_target_construction_storage()?;
+        assert!(targets.belongs_to(&launcher.owner));
+        assert!(targets.can_restore_to_source());
+        assert!(launcher.return_target_construction_storage(targets).is_ok());
+        assert!(receipts.lock().unwrap().children.is_empty());
+        Ok(())
     }
 
     #[test]

@@ -572,6 +572,12 @@ mod tests {
 
     impl crucible_api::ProductionVmCleanupOwner for RecordingRejectingLauncher {
         type Failure = crate::ProductionVmConstructionCleanupError;
+        type PostBody = crate::ProductionVmConstructionPostBody;
+
+        fn take_post_body(&mut self) -> Result<Option<Self::PostBody>, Self::Failure> {
+            // This component launcher owns no native World or Service return.
+            Ok(None)
+        }
 
         fn retry_cleanup(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
             ProductionVmNodeLauncher::finish(self)

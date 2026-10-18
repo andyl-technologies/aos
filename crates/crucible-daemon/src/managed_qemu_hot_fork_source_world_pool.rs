@@ -36,11 +36,13 @@ use crate::{
 };
 
 mod errors;
+mod shared_ownership;
+use shared_ownership::{LeaseSource, SharedSourceOwnership};
 
 #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
 mod parent_park;
 #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
-pub(crate) use parent_park::ManagedParentParkError;
+pub(crate) use parent_park::{ManagedParentParkError, ManagedParentParkGate};
 
 /// Exact durable-catalog mutation failure.
 #[derive(Debug, thiserror::Error)]
@@ -71,25 +73,10 @@ pub struct ManagedQemuHotForkSourceWorld {
     key: QemuHotForkSourceWorldKey,
     resources: HotCheckpointResourceProfile,
     source: Option<ProductionVmHotForkSourceWorld>,
-    leased_source: Option<Arc<Mutex<ProductionVmHotForkSourceWorld>>>,
+    leased_source: Option<SharedSourceOwnership>,
     invalidated: bool,
     #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
-    parent_park: Option<parent_park::ManagedParentParkGate>,
-}
-
-impl Drop for ManagedQemuHotForkSourceWorld {
-    fn drop(&mut self) {
-        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
-        if let Some(gate) = self.parent_park.take() {
-            std::mem::forget(gate);
-            if let Some(source) = self.leased_source.take() {
-                std::mem::forget(source);
-            }
-            if let Some(source) = self.source.take() {
-                std::mem::forget(source);
-            }
-        }
-    }
+    parent_park: Option<parent_park::ManagedParentParkSelection>,
 }
 
 impl ManagedQemuHotForkSourceWorld {
@@ -206,16 +193,20 @@ impl ManagedQemuHotForkSourceWorld {
             .as_ref()
             .is_some_and(ProductionVmHotForkSourceWorld::fork_target_is_owned)
             || self.leased_source.as_ref().is_some_and(|source| {
-                source
-                    .try_lock()
-                    .map_or(true, |source| source.fork_target_is_owned())
+                source.owner_ref().is_none_or(|source| {
+                    source
+                        .try_lock()
+                        .map_or(true, |source| source.fork_target_is_owned())
+                })
             })
     }
 
     fn parent_park_owned(&self) -> bool {
         #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
         {
-            self.parent_park.is_some()
+            self.parent_park
+                .as_ref()
+                .is_some_and(parent_park::ManagedParentParkSelection::is_owned)
         }
         #[cfg(not(all(target_os = "linux", feature = "private-measurement-domain")))]
         {
@@ -235,12 +226,21 @@ impl ManagedQemuHotForkSourceWorld {
             return None;
         }
         if let Some(source) = &self.leased_source {
-            return Some(Arc::clone(source));
+            return source.owner_ref().map(Arc::clone);
         }
 
-        let source = Arc::new(Mutex::new(self.source.take()?));
-        self.leased_source = Some(Arc::clone(&source));
-        Some(source)
+        let source = self.source.take()?;
+        let shared = match SharedSourceOwnership::prepare(source) {
+            Ok(shared) => shared,
+            Err(source) => {
+                self.source = Some(source);
+                self.invalidated = true;
+                return None;
+            }
+        };
+        let alias = shared.owner_ref().map(Arc::clone);
+        self.leased_source = Some(shared);
+        alias
     }
 
     fn finish_leases(&mut self) {
@@ -250,25 +250,13 @@ impl ManagedQemuHotForkSourceWorld {
         let Some(source) = self.leased_source.take() else {
             return;
         };
-        let source = match Arc::try_unwrap(source) {
-            Ok(source) => source,
+        match source.into_unique() {
+            Ok(source) => self.restore(source),
             Err(source) => {
                 self.leased_source = Some(source);
-                self.invalidate();
-                return;
+                self.invalidated = true;
             }
-        };
-        let source = match source.into_inner() {
-            Ok(source) => source,
-            Err(poisoned) => {
-                let source = Arc::new(Mutex::new(poisoned.into_inner()));
-                self.leased_source = Some(source);
-                self.invalidate();
-                return;
-            }
-        };
-
-        self.restore(source);
+        }
     }
 
     fn take(&mut self) -> Option<ProductionVmHotForkSourceWorld> {
@@ -290,19 +278,19 @@ impl ManagedQemuHotForkSourceWorld {
             return;
         }
         if self.parent_park_owned() {
-            std::mem::forget(source);
+            self.source = Some(source);
             return;
         }
         if source.restore_retained_service_supervisor().is_err() {
             self.invalidated = true;
-            let _retained_for_process_lifetime = Box::leak(Box::new(source));
+            self.source = Some(source);
             return;
         }
         match source.into_reusable() {
             Ok(source) => self.source = Some(source),
             Err(failure) => {
                 self.invalidated = true;
-                let _retained_for_process_lifetime = Box::leak(Box::new(failure));
+                drop(failure);
             }
         }
     }
@@ -315,17 +303,17 @@ impl ManagedQemuHotForkSourceWorld {
         }
         self.invalidated = true;
         self.source = None;
-        if let Some(source) = self.leased_source.take() {
-            let _retained_for_process_lifetime = Box::leak(Box::new(source));
-        }
+        // Both actual native owners deliver through their original pair on
+        // destruction. Borrowed aliases delay allocation/body closure in Main.
+        drop(self.leased_source.take());
     }
 
     pub(crate) fn into_source(
         mut self,
-    ) -> Result<ProductionVmHotForkSourceWorld, Box<ManagedQemuHotForkSourceWorld>> {
+    ) -> Result<ProductionVmHotForkSourceWorld, ManagedQemuHotForkSourceWorld> {
         match self.source.take() {
             Some(source) => Ok(source),
-            None => Err(Box::new(self)),
+            None => Err(self),
         }
     }
 }
@@ -579,7 +567,7 @@ pub struct QemuHotForkSourceWorldLease {
     managed_lease: Option<u64>,
     template: HotCheckpointPoolKey,
     identity: QemuHotForkSourceWorldCheckoutIdentity,
-    source: Arc<Mutex<ProductionVmHotForkSourceWorld>>,
+    source: LeaseSource,
 }
 
 impl QemuHotForkSourceWorldLease {
@@ -587,17 +575,21 @@ impl QemuHotForkSourceWorldLease {
         template: HotCheckpointPoolKey,
         source: ProductionVmHotForkSourceWorld,
         identity: QemuHotForkSourceWorldCheckoutIdentity,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, ProductionVmHotForkSourceWorld> {
+        Ok(Self {
             managed_lease: None,
             template,
             identity,
-            source: Arc::new(Mutex::new(source)),
-        }
+            source: LeaseSource::Exclusive(SharedSourceOwnership::prepare(source)?),
+        })
     }
 
-    pub(crate) fn source_owner(&self) -> Arc<Mutex<ProductionVmHotForkSourceWorld>> {
-        Arc::clone(&self.source)
+    pub(crate) fn source_owner_ref(&self) -> Option<&Arc<Mutex<ProductionVmHotForkSourceWorld>>> {
+        self.source.owner_ref()
+    }
+
+    pub(crate) fn source_owner(&self) -> Option<Arc<Mutex<ProductionVmHotForkSourceWorld>>> {
+        self.source_owner_ref().map(Arc::clone)
     }
 
     pub(crate) fn identity(&self) -> &QemuHotForkSourceWorldCheckoutIdentity {
@@ -605,31 +597,34 @@ impl QemuHotForkSourceWorldLease {
     }
 
     pub(crate) fn reauthenticates_source(&self) -> bool {
-        self.source.try_lock().is_ok_and(|mut source| {
-            !source.fork_target_is_owned()
-                && self.identity.matches(&source)
-                && source.restore_retained_service_supervisor().is_ok()
-                && source.fork_continuation().is_ok()
+        self.source_owner_ref().is_some_and(|source| {
+            source.try_lock().is_ok_and(|mut source| {
+                !source.fork_target_is_owned()
+                    && self.identity.matches(&source)
+                    && source.restore_retained_service_supervisor().is_ok()
+                    && source.fork_continuation().is_ok()
+            })
         })
     }
 
-    pub(crate) fn into_exclusive_source(
-        mut self,
-    ) -> Result<ProductionVmHotForkSourceWorld, Box<Self>> {
+    pub(crate) fn into_exclusive_source(mut self) -> Result<ProductionVmHotForkSourceWorld, Self> {
         if self.managed_lease.is_some() {
-            return Err(Box::new(self));
+            return Err(self);
         }
-        // Refuse every shared or weak borrower before source validation or a
-        // supervisor attachment can affect the installed complete lifecycle.
-        // The unique mutable Arc loan prevents new borrowers during that cut.
-        let Some(source) = Arc::get_mut(&mut self.source) else {
-            return Err(Box::new(self));
+        let LeaseSource::Exclusive(source) = &mut self.source else {
+            return Err(self);
         };
-        if !source
-            .get_mut()
-            .is_ok_and(|source| source.restore_retained_service_supervisor().is_ok())
-        {
-            return Err(Box::new(self));
+        // Validate identity while the SAME allocation is exclusively borrowed;
+        // neither a weak alias nor poison can pass before supervisor metadata.
+        let valid = source
+            .with_unique(|source| {
+                self.identity.matches(source)
+                    && !source.fork_target_is_owned()
+                    && source.restore_retained_service_supervisor().is_ok()
+            })
+            .unwrap_or(false);
+        if !valid {
+            return Err(self);
         }
         let Self {
             managed_lease,
@@ -637,31 +632,19 @@ impl QemuHotForkSourceWorldLease {
             identity,
             source,
         } = self;
-        let source = match Arc::try_unwrap(source) {
-            Ok(source) => source,
-            Err(source) => {
-                return Err(Box::new(Self {
-                    managed_lease,
-                    template,
-                    identity,
-                    source,
-                }));
-            }
-        };
-        match source.into_inner() {
-            Ok(source) if identity.matches(&source) => Ok(source),
-            Ok(source) => Err(Box::new(Self {
+        match source {
+            LeaseSource::Exclusive(source) => source.into_unique().map_err(|source| Self {
                 managed_lease,
                 template,
                 identity,
-                source: Arc::new(Mutex::new(source)),
-            })),
-            Err(poisoned) => Err(Box::new(Self {
+                source: LeaseSource::Exclusive(source),
+            }),
+            source @ LeaseSource::Borrowed(_) => Err(Self {
                 managed_lease,
                 template,
                 identity,
-                source: Arc::new(Mutex::new(poisoned.into_inner())),
-            })),
+                source,
+            }),
         }
     }
 }
@@ -905,7 +888,7 @@ where
         match self.pool.lock() {
             Ok(mut pool) => pool.restore_lease_for(self.provider, source),
             Err(_error) => {
-                let _retained_for_process_lifetime = Box::leak(Box::new(source.source));
+                drop(source);
             }
         }
     }

@@ -13,14 +13,10 @@ use crucible_linux_resource::host_supervision::HostOperationClass;
 use thiserror::Error;
 
 use super::{
-    GuardedCampaignOwner, QemuAttemptProductionVmLifecycleError,
-    QemuAttemptProductionVmLifecycleFactory, QemuFreshScenarioResourceError,
+    GuardedCampaignOwner, QemuAttemptProductionVmLifecycleError, QemuFreshScenarioResourceError,
     validate_fresh_qemu_scenario_resources,
 };
-use crate::{
-    ComposedQemuAttemptResourceGuardFactory, ExecutionCancellation,
-    MAX_QEMU_ATTEMPT_GENERATION_NODES,
-};
+use crate::{ExecutionCancellation, MAX_QEMU_ATTEMPT_GENERATION_NODES};
 
 /// Refusal to admit a fresh interactive native session on its original owner.
 #[derive(Debug, Error)]
@@ -49,24 +45,92 @@ pub enum InteractiveQemuSessionError {
     /// An active lifecycle projection could not retain its original credit.
     #[error("interactive QEMU lifecycle projection: {0}")]
     ConfigurationCopy(#[source] crate::vm_lifecycle::ProductionVmLifecycleConfigCloneError),
-    /// The original actor refused independent complete Service admission.
-    #[error("interactive QEMU Service admission: {0}")]
-    Admission(#[source] Box<crate::PackagedQemuExecutorError>),
+    /// The same Main retains the actual failed Service or Source construction.
+    #[error("interactive QEMU preparation: {first}")]
+    Prepared {
+        /// Same-role report projecting its actual retained first cause.
+        #[source]
+        first: crate::lifecycle_cleanup::PreparedSourceFailure,
+        /// Independent actual receiver return refusal, if that return refused.
+        receiver_return: Option<crate::lifecycle_cleanup::PreparedSourceFailure>,
+    },
     /// Configured or live owner authority is unavailable.
     #[error("interactive QEMU authority: {0}")]
     Authority(#[source] crucible_api::host_operational::HostOperationalError),
-    /// The original startup operation expired or was canceled.
-    #[error("interactive QEMU supervision: {0}")]
-    Supervision(#[source] crucible_linux_resource::host_supervision::HostSupervisionError),
+    /// The actual startup Original refused while the same Main kept custody.
+    #[error("interactive QEMU supervision: {source}")]
+    PreparedSupervision {
+        /// Actual initiating Original refusal, independent of physical cleanup.
+        #[source]
+        source: crucible_linux_resource::host_supervision::HostSupervisionError,
+        /// Original prepared role and retained native first cause.
+        custody: crate::lifecycle_cleanup::PreparedSourceFailure,
+        /// Independent actual receiver return refusal, if any.
+        receiver_return: Option<crate::lifecycle_cleanup::PreparedSourceFailure>,
+    },
+    /// Native construction refused while its original Main retained the body.
+    #[error("build interactive QEMU lifecycle: {source}")]
+    PreparedLifecycle {
+        /// Actual lifecycle refusal; uses the existing boxed report allocation.
+        #[source]
+        source: Box<QemuAttemptProductionVmLifecycleError>,
+        /// Original prepared role, retained independently of the diagnostic.
+        custody: crate::lifecycle_cleanup::PreparedSourceFailure,
+        /// Independent actual receiver return refusal, if any.
+        receiver_return: Option<crate::lifecycle_cleanup::PreparedSourceFailure>,
+    },
     /// Native construction rejected the admitted source or retained cleanup.
     #[error("build interactive QEMU lifecycle: {0}")]
     Lifecycle(#[source] Box<QemuAttemptProductionVmLifecycleError>),
 }
 
-// The final field retains both model copies and the structural admission loan
-// until the Service has checked its original native cleanup ledger.
+// The protected scope has an exhaustive error vocabulary. Receiver return
+// cannot encounter an unrelated preflight error or discard either raw cause.
+enum InteractivePreparationFailure {
+    Prepared {
+        first: crate::lifecycle_cleanup::PreparedSourceFailure,
+    },
+    PreparedSupervision {
+        source: crucible_linux_resource::host_supervision::HostSupervisionError,
+        custody: crate::lifecycle_cleanup::PreparedSourceFailure,
+    },
+    PreparedLifecycle {
+        source: Box<QemuAttemptProductionVmLifecycleError>,
+        custody: crate::lifecycle_cleanup::PreparedSourceFailure,
+    },
+}
+
+impl InteractivePreparationFailure {
+    fn into_session_error(
+        self,
+        receiver_return: Option<crate::lifecycle_cleanup::PreparedSourceFailure>,
+    ) -> InteractiveQemuSessionError {
+        match self {
+            Self::Prepared { first } => InteractiveQemuSessionError::Prepared {
+                first,
+                receiver_return,
+            },
+            Self::PreparedSupervision { source, custody } => {
+                InteractiveQemuSessionError::PreparedSupervision {
+                    source,
+                    custody,
+                    receiver_return,
+                }
+            }
+            Self::PreparedLifecycle { source, custody } => {
+                InteractiveQemuSessionError::PreparedLifecycle {
+                    source,
+                    custody,
+                    receiver_return,
+                }
+            }
+        }
+    }
+}
+
+// Metadata custody remains with the lifecycle. The actual Service stays in
+// Main; no success-only external owner or Service observer is constructed.
 struct InteractiveSessionCustody {
-    _service: crate::packaged_qemu_executor::RetainedTemplateService,
     _metadata: crucible::owned_decode::DecodeCustody,
 }
 
@@ -203,40 +267,91 @@ impl GuardedCampaignOwner {
             .charge_array::<Box<dyn Send>>(4)
             .map_err(InteractiveQemuSessionError::Decoding)?;
 
-        let service = self
+        let services = self
             .replay_services()
-            .map_err(InteractiveQemuSessionError::Authority)?
-            .start_for_interactive_session(source, cancellation)
-            .map_err(|error| InteractiveQemuSessionError::Admission(Box::new(error)))?;
-        // Projection copies modeled limits only. The genuine fresh Service's
-        // original host cap, allocator, watchdog and full vector remain intact.
-        let context = service.context().clone().with_service_resources(resources);
-        let operation = context
-            .host_operation_supervisor()
-            .ok_or(InteractiveQemuSessionError::Authority(
-                crucible_api::host_operational::HostOperationalError::Unavailable,
-            ))?
-            .begin(HostOperationClass::Preparation)
-            .map_err(InteractiveQemuSessionError::Supervision)?;
-        operation
-            .wait_slice()
-            .map_err(InteractiveQemuSessionError::Supervision)?;
-        let mut factory = QemuAttemptProductionVmLifecycleFactory::new(
-            lifecycle_config,
-            ComposedQemuAttemptResourceGuardFactory::new(self.inner.host.clone()),
-        );
-        let lifecycle = factory
-            .begin_fresh(scenario, source, &context)
+            .map_err(InteractiveQemuSessionError::Authority)?;
+        let mut source_owner = self
+            .prepare_service_source(lifecycle_config)
             .map_err(|error| InteractiveQemuSessionError::Lifecycle(Box::new(error)))?;
-        // Install custody before another fallible boundary can drop the world.
-        let lifecycle = lifecycle.with_retained_resource_owner(InteractiveSessionCustody {
-            _service: service,
-            _metadata: decoding.custody(),
-        });
-        operation
-            .complete()
-            .map_err(InteractiveQemuSessionError::Supervision)?;
-        Ok(lifecycle)
+        source_owner
+            .start("admit interactive Service", |phase| {
+                services.start_for_interactive_session(phase, source, cancellation)
+            })
+            .map_err(|first| InteractiveQemuSessionError::Prepared {
+                first,
+                receiver_return: None,
+            })?;
+        let receiver = source_owner
+            .retain_receiver("retain interactive startup receiver")
+            .map_err(|first| InteractiveQemuSessionError::Prepared {
+                first,
+                receiver_return: None,
+            })?;
+
+        // Every local context/supervisor/Original alias is inside this scope.
+        // Its Result cannot outlive these aliases on either success or failure.
+        let result: Result<_, InteractivePreparationFailure> = (|| {
+            let context = source_owner
+                .with_ready("project interactive context", |service| {
+                    service.context().clone().with_service_resources(resources)
+                })
+                .map_err(|first| InteractivePreparationFailure::Prepared { first })?;
+            let supervisor = context.host_operation_supervisor().ok_or_else(|| {
+                InteractivePreparationFailure::Prepared {
+                    first: source_owner.failure("interactive supervision is absent"),
+                }
+            })?;
+            let operation =
+                supervisor
+                    .begin(HostOperationClass::Preparation)
+                    .map_err(|source| {
+                        let (source, custody) = source_owner
+                            .supervision_failure("enter interactive Preparation", source)
+                            .into_parts();
+                        InteractivePreparationFailure::PreparedSupervision { source, custody }
+                    })?;
+            operation.wait_slice().map_err(|source| {
+                let (source, custody) = source_owner
+                    .supervision_failure("check interactive Preparation", source)
+                    .into_parts();
+                InteractivePreparationFailure::PreparedSupervision { source, custody }
+            })?;
+            let lifecycle = source_owner
+                .factory
+                .begin_fresh(scenario, source, &context)
+                .map_err(|error| InteractivePreparationFailure::PreparedLifecycle {
+                    source: Box::new(error),
+                    custody: source_owner.failure("build interactive World"),
+                })?;
+            let lifecycle = lifecycle.with_retained_resource_owner(InteractiveSessionCustody {
+                _metadata: decoding.custody(),
+            });
+            operation.complete().map_err(|source| {
+                let (source, custody) = source_owner
+                    .supervision_failure("complete interactive Preparation", source)
+                    .into_parts();
+                InteractivePreparationFailure::PreparedSupervision { source, custody }
+            })?;
+            Ok(lifecycle)
+        })();
+        // This cut follows actual scope destruction, independently of ACKs or
+        // World return. A refused counter return keeps its same lease in error.
+        match receiver.return_after_alias_destruction() {
+            Ok(()) => result.map_err(|first| first.into_session_error(None)),
+            Err(receiver) => {
+                let returned = receiver.into_failure("return interactive startup aliases");
+                match result {
+                    Ok(lifecycle) => {
+                        drop(lifecycle);
+                        Err(InteractiveQemuSessionError::Prepared {
+                            first: returned,
+                            receiver_return: None,
+                        })
+                    }
+                    Err(first) => Err(first.into_session_error(Some(returned))),
+                }
+            }
+        }
     }
 }
 

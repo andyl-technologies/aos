@@ -208,7 +208,8 @@ pub use linux_attempt_host::{
     LinuxQemuNativeWorldConstructor, OriginalActorAccountError,
     OriginalNativeAccountFactoryBinding, OriginalNativeAccountRoster,
     OriginalNativeControlRetirement, OriginalNativePhysicalRetirement,
-    QemuForkTargetLogicalReservation, QemuForkTargetRamAdmission,
+    QemuForkTargetConstructionError, QemuForkTargetConstructionLoan,
+    QemuForkTargetLogicalReservation, QemuForkTargetPreparation, QemuForkTargetRamAdmission,
 };
 #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
 #[doc(hidden)]
@@ -314,6 +315,8 @@ pub use node_set::{
     QemuNodeSelectablePendingRequest, QemuNodeSet, QemuNodeTerminalReplacementPlan,
     QemuParkedCampaignMarker,
 };
+#[cfg(target_os = "linux")]
+pub use node_set::{QemuHotForkWorkerFailure, QemuHotForkWorkerGeometry};
 #[cfg(target_os = "linux")]
 pub use node_set::{QemuNodeSetBlockBoundaryCheckpoint, QemuNodeSetPreparedHotForkTemplate};
 pub use production_fault_runtime::{

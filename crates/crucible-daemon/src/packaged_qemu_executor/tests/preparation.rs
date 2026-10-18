@@ -329,7 +329,6 @@ fn unfinished_preparation_retains_all_charges_and_original_failure() {
 #[test]
 fn retained_service_observer_waits_for_node_cleanup_then_discharges_once() {
     use super::super::hot_fork::retained_service::RetainedTemplateServiceFactory;
-    use crate::vm_lifecycle::ProductionHotForkCleanupObserver;
     use crucible_api::host_operational::HostResourceVector;
     use crucible_qemu::ram_control::RamControlRegistrar;
 
@@ -392,8 +391,21 @@ fn retained_service_observer_waits_for_node_cleanup_then_discharges_once() {
     snapshot_config.assignment_limits = None;
     snapshot_config.host_operation_budgets = None;
 
+    let mut unbound =
+        super::super::hot_fork::retained_service::RetainedServiceStart::empty_unbound();
+    assert!(
+        services
+            .start_for_interactive_session(
+                &mut unbound,
+                &preparation_scenario(),
+                crate::ExecutionCancellation::default(),
+            )
+            .is_err()
+    );
+    assert_eq!(all_available(), complete_before);
+
     let interactive = services
-        .start_for_interactive_session(
+        .start_component_replay(
             &preparation_scenario(),
             crate::ExecutionCancellation::default(),
         )
@@ -424,6 +436,13 @@ fn retained_service_observer_waits_for_node_cleanup_then_discharges_once() {
             + config.host.watcher_service_resident_bytes(),
         service_resources.resident_peak_bytes,
     );
+    assert!(
+        interactive
+            .context()
+            .retain_service_receiver("component has no Main selector")
+            .expect("absence of a native Main selector is not an authority grant")
+            .is_none()
+    );
     assert!(!interactive.context().host_ram_retained_template());
     assert!(!interactive.native_context().host_ram_retained_template());
     assert!(matches!(
@@ -447,8 +466,9 @@ fn retained_service_observer_waits_for_node_cleanup_then_discharges_once() {
             file_descriptors: complete_before.file_descriptors - service_resources.file_descriptors,
         }
     );
-    // No native node was created. The actual zero-node ledger permits the
-    // final Service owner to join its watcher before releasing the whole vector.
+    // This operation-only owner exposes no native entrypoint. After known local
+    // aliases close, the shared driver checks its node ledger and joins the
+    // actual watcher before returning the actor's complete Service vector.
     drop(interactive);
     assert_eq!(all_available(), complete_before);
 
@@ -464,32 +484,30 @@ fn retained_service_observer_waits_for_node_cleanup_then_discharges_once() {
         let incomplete_services = RetainedTemplateServiceFactory::new(&prepared, &incomplete);
 
         let error = incomplete_services
-            .start_for_archive_authentication(
+            .start_component_replay(
                 &preparation_scenario(),
                 crate::ExecutionCancellation::default(),
             )
             .err()
             .expect("missing policy refuses at Service admission");
         assert!(matches!(
-            error,
-            PackagedQemuExecutorError::HostOperational(
-                crucible_api::host_operational::HostOperationalError::Unavailable
-            ),
+            error.operational_failure(),
+            Some(crucible_api::host_operational::HostOperationalError::Unavailable),
         ));
         assert_eq!(all_available(), complete_before);
     }
 
     let mut authentication = RetainedTemplateServiceFactory::new(&prepared, &config)
-        .start_for_archive_authentication(
+        .start_component_replay(
             &preparation_scenario(),
             crate::ExecutionCancellation::default(),
         )
         .expect("authentication reserves the original full Service vector");
     let authentication_charge = all_available();
-    assert_finding_binding_preserves_service(&mut authentication);
+    authentication.with_service_mut(assert_finding_binding_preserves_service);
     assert_eq!(all_available(), authentication_charge);
     authentication
-        .release_after_world_cleanup()
+        .cleanup_after_component_borrowers()
         .expect("component has no native borrowers and joins the actual watcher");
     assert_eq!(all_available(), complete_before);
 
@@ -506,13 +524,13 @@ fn retained_service_observer_waits_for_node_cleanup_then_discharges_once() {
             .expect("syntactically valid component ceiling");
         assert!(
             RetainedTemplateServiceFactory::new(&prepared, &insufficient_config)
-                .start(&preparation_scenario(), None)
+                .start_component_template(&preparation_scenario(), None)
                 .is_err()
         );
         assert_eq!(available(), available_before);
     }
-    let service = RetainedTemplateServiceFactory::new(&prepared, &config)
-        .start(&preparation_scenario(), None)
+    let mut service = RetainedTemplateServiceFactory::new(&prepared, &config)
+        .start_component_template(&preparation_scenario(), None)
         .expect("service and future assignment headroom");
     let context = service.context();
     assert!(context.host_ram_retained_template());
@@ -554,7 +572,9 @@ fn retained_service_observer_waits_for_node_cleanup_then_discharges_once() {
         .admit_node(target, node_resources)
         .expect("real unpublished node budget reservation");
 
-    assert!(service.after_world_cleanup().is_err());
+    drop(factory);
+    assert!(service.cleanup_after_component_borrowers().is_err());
+    assert!(service.cleanup_failure().is_some());
     assert!(
         !prepared
             .host_operational_registry
@@ -573,13 +593,14 @@ fn retained_service_observer_waits_for_node_cleanup_then_discharges_once() {
         .retire_unpublished_after_cleanup(target, node_resources)
         .expect("exact unpublished node disposition");
     service
-        .after_world_cleanup()
+        .cleanup_after_component_borrowers()
         .expect("watcher joined before service discharge");
     assert_eq!(available(), available_before);
     service
-        .after_world_cleanup()
+        .cleanup_after_component_borrowers()
         .expect("repeat acknowledgement stays idempotent");
     assert_eq!(available(), available_before);
+    assert!(service.cleanup_failure().is_some());
 
     let outer = crucible_linux_resource::host_supervision::HostOperationSupervisor::new(
         crucible_linux_resource::host_supervision::HostOperationBudgets::default(),
@@ -591,8 +612,8 @@ fn retained_service_observer_waits_for_node_cleanup_then_discharges_once() {
     let original_binding = outer.outer_cap_binding().expect("original cap binding");
     let mut previous_owner = None;
     for _ in 0..2 {
-        let borrowed = constrained
-            .start(&preparation_scenario(), None)
+        let mut borrowed = constrained
+            .start_component_template(&preparation_scenario(), None)
             .expect("fresh independent Service borrows the unchanged outer cap");
         let current_owner = borrowed.context().host_ram_owner_id().expect("fresh owner");
         assert_ne!(previous_owner, Some(current_owner));
@@ -610,14 +631,14 @@ fn retained_service_observer_waits_for_node_cleanup_then_discharges_once() {
             available_before - service_resources.resident_peak_bytes
         );
         borrowed
-            .release_after_world_cleanup()
+            .cleanup_after_component_borrowers()
             .expect("actual idle watcher joins before exact Service release");
         assert_eq!(available(), available_before);
         previous_owner = Some(current_owner);
     }
 
     let uncertain = RetainedTemplateServiceFactory::new(&prepared, &config)
-        .start(&preparation_scenario(), None)
+        .start_component_template(&preparation_scenario(), None)
         .expect("independently charged pre-node owner");
     let uncertain_owner = uncertain.context().host_ram_owner_id().expect("owner");
     assert!(

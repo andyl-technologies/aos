@@ -4,6 +4,7 @@
 //! fence, and exactly two live cells. Registration never grows this storage.
 
 use super::*;
+use std::sync::Weak;
 
 /// Prevalidated, finite storage for the exact selected node set.
 ///
@@ -14,7 +15,99 @@ pub struct QemuAttemptGenerationStorage {
     pub(super) generations: Arc<Mutex<QemuAttemptGenerationState>>,
 }
 
+/// Selects the same existing registry allocation without retaining a guard.
+///
+/// This Weak identity binds storage reuse to its original containing Source;
+/// it neither issues a generation lease nor authenticates native authority.
+#[derive(Clone)]
+pub(crate) struct QemuGenerationStorageSelection {
+    generations: Weak<Mutex<QemuAttemptGenerationState>>,
+}
+
+impl QemuGenerationStorageSelection {
+    /// Compares immutable selected identities without entering any operation.
+    pub(crate) fn matches_nodes<'a>(&self, nodes: impl Iterator<Item = &'a NodeId>) -> bool {
+        let Some(generations) = self.generations.upgrade() else {
+            return false;
+        };
+        let Ok(state) = generations.try_lock() else {
+            return false;
+        };
+        state.nodes.iter().map(|row| &row.node).eq(nodes)
+    }
+
+    /// Compares existing allocations; identity alone grants no resource use.
+    pub(crate) fn same_selection(&self, other: &Self) -> bool {
+        Weak::ptr_eq(&self.generations, &other.generations)
+    }
+
+    pub(super) fn matches(&self, generations: &Arc<Mutex<QemuAttemptGenerationState>>) -> bool {
+        Weak::ptr_eq(&self.generations, &Arc::downgrade(generations))
+    }
+}
+
 impl QemuAttemptGenerationStorage {
+    /// Copies only the exact already-paid registry's nonowning selection.
+    pub(crate) fn selection(&self) -> QemuGenerationStorageSelection {
+        QemuGenerationStorageSelection {
+            generations: Arc::downgrade(&self.generations),
+        }
+    }
+
+    /// Lends only an alias of this existing prepaid registry body.
+    pub(crate) fn lend_existing(&self) -> Self {
+        Self {
+            generations: Arc::clone(&self.generations),
+        }
+    }
+
+    /// Resets local metadata only after its containing native loans returned.
+    ///
+    /// The caller separately proves exact physical return. Unique access proves
+    /// only that no Loop or generation lease can still use these local rows.
+    pub(crate) fn reset_after_target_return(&mut self) -> bool {
+        let Some(state) = self.returned_target_state() else {
+            return false;
+        };
+        for row in &mut state.nodes {
+            row.latest = None;
+        }
+        true
+    }
+
+    /// Checks actual unique, empty metadata before terminal history disposal.
+    ///
+    /// This does not attest native return. Its caller separately requires every
+    /// genuine Target loan's journal and actual Loop/contract alias destruction.
+    pub(crate) fn can_reset_after_target_return(&mut self) -> bool {
+        self.returned_target_state().is_some()
+    }
+
+    fn returned_target_state(&mut self) -> Option<&mut QemuAttemptGenerationState> {
+        let state = Arc::get_mut(&mut self.generations)?.get_mut().ok()?;
+        if state.abandoned
+            || state
+                .nodes
+                .iter()
+                .any(|row| row.active.iter().any(Option::is_some))
+        {
+            return None;
+        }
+        Some(state)
+    }
+
+    /// Checks exact selected identities without issuing a lease or changing rows.
+    pub(crate) fn matches_nodes<'a>(
+        &self,
+        nodes: impl Iterator<Item = &'a NodeId>,
+    ) -> Result<bool, LifecycleApiError> {
+        let selected = self
+            .generations
+            .lock()
+            .map_err(|_| generation_error("selected Source registry is poisoned"))?;
+        Ok(nodes.eq(selected.nodes.iter().map(|row| &row.node)))
+    }
+
     /// Measures the selected registry without allocating or consuming a guard.
     ///
     /// Includes the actual shared body, row payload and copied node-name bytes.

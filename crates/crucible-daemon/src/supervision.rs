@@ -116,14 +116,137 @@ impl AssignmentHostWatchdog {
 /// Cancels a live QEMU child when the whole assignment exceeds its host budget.
 pub(super) struct AssignmentHostWatchdogGuard {
     complete_outer: bool,
+    service_stop_expired: Option<bool>,
     caller: Option<HostOperationSupervisor>,
     stopped: Arc<AtomicBool>,
-    operation_expired: Arc<AtomicBool>,
+    operation_expired: WatchdogExpiration,
     operation: Option<Arc<HostOperationGuard>>,
     cancellation: ExecutionCancellation,
     registry: Option<crate::HostOperationalRegistry>,
     watcher: Option<JoinHandle<()>>,
     pub(super) state: AssignmentHostWatchdog,
+}
+
+enum WatchdogExpiration {
+    Operation(Arc<AtomicBool>),
+    Service(Arc<ServiceWatchdogExpiration>),
+}
+
+impl WatchdogExpiration {
+    fn is_expired(&self) -> bool {
+        match self {
+            Self::Operation(expired) => expired.load(Ordering::Acquire),
+            Self::Service(expiration) => expiration.expired.load(Ordering::Acquire),
+        }
+    }
+
+    fn take_service_failure(&self) -> (Option<ServiceWatchdogFailure>, bool) {
+        match self {
+            Self::Operation(_) => (None, false),
+            Self::Service(expiration) => expiration.take_service_failure(),
+        }
+    }
+}
+
+#[derive(Default)]
+struct ServiceWatchdogExpiration {
+    expired: AtomicBool,
+    service_failure: Mutex<ServiceWatchdogFailure>,
+}
+
+/// Retains the actual first Service-watcher trigger and its cancellation results.
+#[derive(Debug, Default)]
+pub(crate) struct ServiceWatchdogFailure {
+    pub(crate) trigger: Option<ServiceWatchdogTrigger>,
+    pub(crate) cancellation:
+        Option<crucible_linux_resource::host_supervision::HostSupervisionError>,
+    pub(crate) pager_cancellation: Option<crucible_api::host_operational::HostOperationalError>,
+}
+
+/// Identifies the observed Service-watcher stop condition without erasing it.
+#[derive(Debug)]
+pub(crate) enum ServiceWatchdogTrigger {
+    Cancellation,
+    Original(crucible_linux_resource::host_supervision::HostSupervisionError),
+    Caller(crucible_linux_resource::host_supervision::HostSupervisionError),
+}
+
+impl ServiceWatchdogExpiration {
+    fn record_service_trigger(&self, trigger: ServiceWatchdogTrigger) {
+        // This is a diagnostic journal in the existing shared watcher body.
+        // Poison recovery preserves its owned values; it supplies no authority
+        // and does not repair or clear the original synchronization failure.
+        let mut journal = self
+            .service_failure
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        journal.trigger = Some(trigger);
+    }
+
+    fn record_service_cancellation(
+        &self,
+        first: Option<crucible_linux_resource::host_supervision::HostSupervisionError>,
+    ) {
+        let mut journal = self
+            .service_failure
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        journal.cancellation = first;
+    }
+
+    fn record_service_pager_cancellation(
+        &self,
+        first: Option<crucible_api::host_operational::HostOperationalError>,
+    ) {
+        let mut journal = self
+            .service_failure
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        journal.pager_cancellation = first;
+    }
+
+    fn take_service_failure(&self) -> (Option<ServiceWatchdogFailure>, bool) {
+        match self.service_failure.lock() {
+            Ok(mut journal) => (Some(std::mem::take(&mut *journal)), false),
+            Err(poisoned) => (Some(std::mem::take(&mut *poisoned.into_inner())), true),
+        }
+    }
+}
+
+/// Retains raw Service-watchdog outcomes after its actual thread handle is consumed.
+///
+/// A join error carries the original panic payload. It still records a consumed
+/// join, separately from original completion, cancellation and actor discharge.
+pub(crate) struct ServiceWatchdogStop {
+    pub(crate) completion_attempted: bool,
+    pub(crate) completion: Option<crucible_linux_resource::host_supervision::HostSupervisionError>,
+    pub(crate) join_attempted: bool,
+    pub(crate) join_failure: Option<Box<dyn std::any::Any + Send>>,
+    pub(crate) caller: Option<crucible_linux_resource::host_supervision::HostSupervisionError>,
+    pub(crate) cancellation:
+        Option<crucible_linux_resource::host_supervision::HostSupervisionError>,
+    pub(crate) pager_cancellation: Option<crucible_api::host_operational::HostOperationalError>,
+    pub(crate) expired: bool,
+    pub(crate) watcher_failure: Option<ServiceWatchdogFailure>,
+    pub(crate) watcher_history_poisoned: bool,
+}
+
+impl std::fmt::Debug for ServiceWatchdogStop {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ServiceWatchdogStop")
+            .field("completion_attempted", &self.completion_attempted)
+            .field("completion", &self.completion)
+            .field("join_attempted", &self.join_attempted)
+            .field("join_panicked", &self.join_failure.is_some())
+            .field("caller", &self.caller)
+            .field("cancellation", &self.cancellation)
+            .field("pager_cancellation", &self.pager_cancellation)
+            .field("expired", &self.expired)
+            .field("watcher_failure", &self.watcher_failure)
+            .field("watcher_history_poisoned", &self.watcher_history_poisoned)
+            .finish()
+    }
 }
 
 /// Keeps the original watcher charged through linear result publication.
@@ -332,7 +455,7 @@ impl AssignmentHostWatchdogGuard {
         registry: Option<crate::HostOperationalRegistry>,
     ) -> std::io::Result<Self> {
         let stopped = Arc::new(AtomicBool::new(false));
-        let operation_expired = Arc::new(AtomicBool::new(false));
+        let operation_expired = Arc::new(ServiceWatchdogExpiration::default());
         let watcher_stopped = stopped.clone();
         let watcher_expired = operation_expired.clone();
         let watcher_cancellation = cancellation.clone();
@@ -346,20 +469,31 @@ impl AssignmentHostWatchdogGuard {
                 while !watcher_stopped.load(Ordering::Acquire) {
                     // One already charged watcher observes both original caps.
                     // It neither renews nor completes the caller's authority.
-                    if watcher_cancellation.is_canceled()
-                        || watcher_supervisor.wait_for_active_work_change().is_err()
-                        || watcher_caller
-                            .as_ref()
-                            .is_some_and(|caller| caller.wait_for_active_work_change().is_err())
-                    {
+                    let trigger = if watcher_cancellation.is_canceled() {
+                        Some(ServiceWatchdogTrigger::Cancellation)
+                    } else if let Err(first) = watcher_supervisor.wait_for_active_work_change() {
+                        Some(ServiceWatchdogTrigger::Original(first))
+                    } else {
+                        watcher_caller.as_ref().and_then(|caller| {
+                            caller
+                                .wait_for_active_work_change()
+                                .err()
+                                .map(ServiceWatchdogTrigger::Caller)
+                        })
+                    };
+                    if let Some(trigger) = trigger {
                         if !watcher_stopped.load(Ordering::Acquire) {
-                            watcher_expired.store(true, Ordering::Release);
-                            let _ = watcher_supervisor.cancel();
-                            // Containment is published immediately, independently of
-                            // whether the native control channel can acknowledge Cancel.
+                            watcher_expired.record_service_trigger(trigger);
+                            watcher_expired.expired.store(true, Ordering::Release);
+                            watcher_expired
+                                .record_service_cancellation(watcher_supervisor.cancel().err());
+                            // Containment is published independently of the
+                            // pager's acknowledgment and its retained raw error.
                             watcher_cancellation.cancel();
                             if let Some(registry) = &watcher_registry {
-                                let _ = registry.cancel_registered_pagers(&watcher_supervisor);
+                                watcher_expired.record_service_pager_cancellation(
+                                    registry.cancel_registered_pagers(&watcher_supervisor).err(),
+                                );
                             }
                         }
                         break;
@@ -368,9 +502,10 @@ impl AssignmentHostWatchdogGuard {
             })?;
         Ok(Self {
             complete_outer: true,
+            service_stop_expired: None,
             caller,
             stopped,
-            operation_expired,
+            operation_expired: WatchdogExpiration::Service(operation_expired),
             operation: None,
             cancellation,
             registry,
@@ -427,9 +562,10 @@ impl AssignmentHostWatchdogGuard {
             })?;
         Ok(Self {
             complete_outer: true,
+            service_stop_expired: None,
             caller: None,
             stopped,
-            operation_expired,
+            operation_expired: WatchdogExpiration::Operation(operation_expired),
             operation: Some(operation),
             cancellation,
             registry: None,
@@ -438,8 +574,66 @@ impl AssignmentHostWatchdogGuard {
         })
     }
 
+    /// Consumes this Service watcher once and retains its independent raw results.
+    ///
+    /// Joining consumes the actual thread handle even if the thread panicked.
+    /// Original completion and cancellation errors remain observations; neither
+    /// error authorizes replaying a join or completing a replacement Original.
+    pub(crate) fn stop_service_owned(mut self) -> ServiceWatchdogStop {
+        // Record consumption before any effect, including original completion.
+        self.service_stop_expired = Some(true);
+        self.stopped.store(true, Ordering::Release);
+        let completion_attempted = self.complete_outer;
+        let completion = self
+            .complete_outer
+            .then(|| self.state.supervisor.complete().err())
+            .flatten();
+        let join_attempted = self.watcher.is_some();
+        let join_failure = self.watcher.take().and_then(|watcher| watcher.join().err());
+        let caller = self
+            .caller
+            .as_ref()
+            .and_then(|caller| caller.wait_for_active_work_change().err());
+        let expired = caller.is_some()
+            || join_failure.is_some()
+            || self.state.expired()
+            || self.operation_expired.is_expired();
+
+        let mut cancellation = None;
+        let mut pager_cancellation = None;
+        if expired {
+            self.cancellation.cancel();
+            if !self.operation_expired.is_expired()
+                && let Some(registry) = &self.registry
+            {
+                cancellation = self.state.supervisor.cancel().err();
+                pager_cancellation = registry
+                    .cancel_registered_pagers(&self.state.supervisor)
+                    .err();
+            }
+        }
+        let (watcher_failure, watcher_history_poisoned) =
+            self.operation_expired.take_service_failure();
+        self.service_stop_expired = Some(expired);
+        ServiceWatchdogStop {
+            completion_attempted,
+            completion,
+            join_attempted,
+            join_failure,
+            caller,
+            cancellation,
+            pager_cancellation,
+            expired,
+            watcher_failure,
+            watcher_history_poisoned,
+        }
+    }
+
     /// Stops supervision and reports whether the host allowance expired.
     pub(super) fn stop(&mut self) -> bool {
+        if let Some(expired) = self.service_stop_expired {
+            return expired;
+        }
         // A completed candidate cannot win a race against the assignment deadline
         // merely because the watchdog thread has not been scheduled yet.
         let phase_expired = self.operation.as_ref().is_some_and(|operation| {
@@ -468,10 +662,10 @@ impl AssignmentHostWatchdogGuard {
             || phase_expired
             || !joined
             || self.state.expired()
-            || self.operation_expired.load(Ordering::Acquire);
+            || self.operation_expired.is_expired();
         if expired {
             self.cancellation.cancel();
-            if !self.operation_expired.load(Ordering::Acquire)
+            if !self.operation_expired.is_expired()
                 && let Some(registry) = &self.registry
             {
                 let _ = self.state.supervisor.cancel();

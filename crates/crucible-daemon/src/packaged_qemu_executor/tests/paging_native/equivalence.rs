@@ -11,6 +11,7 @@ use super::*;
 use crate::ProductionVmLifecycleConfig;
 use crate::packaged_qemu_executor::RetainedTemplateServiceFactory;
 use crate::packaged_qemu_executor::preparation::PackagedPreparation;
+use crate::qemu_hot_fork_world_factory::QemuHotForkWorldLifecycleOwner;
 use crate::qemu_hot_fork_world_factory::{
     QemuHotForkSourceWorldKey, QemuHotForkWorldLifecycleFactory, QemuHotForkWorldLifecycleStart,
     QemuSingleHotForkSourceWorldProvider,
@@ -582,13 +583,12 @@ impl AttemptExecutionModel for ResumeModel<'_> {
         }
         let mut result = RunEvidence::default();
         let available_before = available_resources(self.prepared);
-        let mut selected = context.take_selected_checkpoint();
         let factory = RetainedTemplateServiceFactory::new(self.prepared, &self.config);
         {
-            let service = Arc::new(
-                factory
-                    .start_for_resume(source, self.checkpoint, context, &mut selected)
-                    .expect("independent source Service under this still-active assignment"),
+            let mut source_factory = fresh_factory(&self.config, "exact-source");
+            let service = crate::packaged_qemu_executor::tests::paging_native::main_service::NativeServiceScope::resume(
+                source_factory.prepare_source_construction().expect("same actual Source Main role"),
+                &factory, source, self.checkpoint, context,
             );
             assert_template_charge(
                 self.prepared,
@@ -599,7 +599,6 @@ impl AttemptExecutionModel for ResumeModel<'_> {
                 1,
             );
             extend_native_operations(service.context());
-            let mut source_factory = fresh_factory(&self.config, "exact-source");
             let started = operational_monotonic_nanoseconds();
             let mut parent = source_factory
                 .begin_resume(
@@ -632,8 +631,7 @@ impl AttemptExecutionModel for ResumeModel<'_> {
             }
             let mut world = parent
                 .prepare_hot_fork_source_world()
-                .expect("complete retained template barriers")
-                .with_cleanup_observer(service.clone());
+                .expect("complete retained template barriers");
             let processes = world
                 .continuation()
                 .unwrap()
@@ -872,9 +870,12 @@ impl AttemptExecutionModel for ResumeModel<'_> {
             exact_reference
                 .shutdown()
                 .expect("actual original source reap before Service discharge");
-            service
-                .release_after_world_cleanup()
-                .expect("watcher join and same full-vector release");
+            drop(exact_reference);
+            let terminal = service
+                .into_retirement()
+                .expect("actual World return, watcher join and same full-vector release");
+            println!("native_equivalence_retirement={terminal}");
+            drop(terminal);
         }
         assert_eq!(available_resources(self.prepared), available_before);
         self.result = Some(result);

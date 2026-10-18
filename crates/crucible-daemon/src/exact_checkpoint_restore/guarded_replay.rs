@@ -22,6 +22,7 @@ use crucible_qemu::{
 
 use crate::QemuAttemptProcessResourceGuard;
 use crate::guest_selectable::{resolve_guest_selectable, selected_guest_reply};
+use crate::paused_checkpoint_promotion::{ReplayBoundaryRefusal, check_replay_boundary};
 use crate::qemu_campaign_lifecycle::{
     GuardedCampaignReplayClosure, GuardedCampaignReplaySelection,
 };
@@ -60,6 +61,8 @@ where
 {
     executor: &'a mut QemuReplayValidationExecutor,
     guard: &'a mut G,
+    original: Option<&'a crucible_linux_resource::host_supervision::HostOperationGuard>,
+    original_refusal: Option<crucible_linux_resource::host_supervision::HostSupervisionError>,
     realization_failed: bool,
     backend_reaped: bool,
     guard_terminal: bool,
@@ -74,10 +77,13 @@ where
     pub(crate) const fn new(
         executor: &'a mut QemuReplayValidationExecutor,
         guard: &'a mut G,
+        original: Option<&'a crucible_linux_resource::host_supervision::HostOperationGuard>,
     ) -> Self {
         Self {
             executor,
             guard,
+            original,
+            original_refusal: None,
             realization_failed: false,
             backend_reaped: false,
             guard_terminal: false,
@@ -138,12 +144,12 @@ where
             snapshot.node_continuation().next_router_inbound_sequence(),
         )?;
 
-        self.guard.check_operational_boundary()?;
+        self.check_operational_boundary()?;
         let result = self
             .executor
             .load_materialized_exact_snapshot_probe_guarded(configuration, snapshot);
         let fat = self.observe_realization(result)?;
-        self.guard.check_operational_boundary()?;
+        self.check_operational_boundary()?;
         let result = self.executor.drain_replay_selectable_requests();
         let fat_pending = self.observe_realization(result)?;
         if fat_pending.len() > 1 {
@@ -153,7 +159,7 @@ where
         }
 
         let genesis = Configuration::genesis(configuration.def.clone());
-        self.guard.check_operational_boundary()?;
+        self.check_operational_boundary()?;
         let process_contract = self.guard.child_process_contract()?;
         let result = self.executor.load_prepared_baked_genesis_guarded(
             process_contract,
@@ -259,6 +265,26 @@ where
         self.observe_realization(comparison)
     }
 
+    pub(crate) fn original_refusal(
+        &self,
+    ) -> Option<crucible_linux_resource::host_supervision::HostSupervisionError> {
+        self.original_refusal
+    }
+
+    fn check_operational_boundary(&mut self) -> Result<(), QemuVmRealizationError> {
+        match check_replay_boundary(self.original, || self.guard.check_operational_boundary()) {
+            Ok(()) => Ok(()),
+            Err(ReplayBoundaryRefusal::Original(first)) => {
+                self.original_refusal.get_or_insert(first);
+                Err(QemuVmRealizationError::ExecutorUnavailable {
+                    operation: "check original checkpoint replay Restore",
+                    message: first.to_string(),
+                })
+            }
+            Err(ReplayBoundaryRefusal::Native(first)) => Err(first),
+        }
+    }
+
     fn observe_realization<T>(
         &mut self,
         result: Result<T, QemuVmRealizationError>,
@@ -269,7 +295,7 @@ where
                 self.guard.retain_failed_launch_child(child);
             }
         }
-        let boundary = self.guard.check_operational_boundary();
+        let boundary = self.check_operational_boundary();
         observed_realization(result, boundary)
     }
 
@@ -365,7 +391,7 @@ impl<G: QemuAttemptProcessResourceGuard> GuardedReplayPhysicalNode
         state: Self::Observation,
         ceiling: Icount,
     ) -> Result<ReplayPhysicalAdvance<Self::Observation>, QemuVmRealizationError> {
-        self.guard.check_operational_boundary()?;
+        self.check_operational_boundary()?;
         // Each call consumes one operational quantum. A longer parked ceiling
         // authorizes no guest work before its observed wake deadline; runnable
         // calls retain the original short ceiling and TX-drain cadence.
@@ -384,7 +410,7 @@ impl<G: QemuAttemptProcessResourceGuard> GuardedReplayPhysicalNode
     fn drain_pending(
         &mut self,
     ) -> Result<Vec<SelectablePlanPendingRequest>, QemuVmRealizationError> {
-        self.guard.check_operational_boundary()?;
+        self.check_operational_boundary()?;
         let result = self.executor.drain_replay_selectable_requests();
         self.observe_realization(result)
     }
@@ -394,7 +420,7 @@ impl<G: QemuAttemptProcessResourceGuard> GuardedReplayPhysicalNode
         pending: &SelectablePlanPendingRequest,
         reply: &SelectionReply,
     ) -> Result<(), QemuVmRealizationError> {
-        self.guard.check_operational_boundary()?;
+        self.check_operational_boundary()?;
         let result = self
             .executor
             .enqueue_replay_selectable_reply(pending, reply);
@@ -407,7 +433,7 @@ impl<G: QemuAttemptProcessResourceGuard> GuardedReplayPhysicalNode
         input: crucible::BackendInput,
         delivery: crucible::SimInstant,
     ) -> Result<Self::Observation, QemuVmRealizationError> {
-        self.guard.check_operational_boundary()?;
+        self.check_operational_boundary()?;
         let result = self
             .executor
             .enqueue_materialized_replay_input(state, input, delivery);
@@ -793,3 +819,6 @@ where
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod boundary_tests;

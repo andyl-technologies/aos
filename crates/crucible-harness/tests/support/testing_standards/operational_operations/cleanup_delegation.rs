@@ -8,7 +8,9 @@ use super::{Companion, Contract};
 
 const OWNER_DECLARATION: &str = r#"pub trait ProductionVmCleanupOwner: Send {
     type Failure: std::error::Error + Send + 'static;
+    type PostBody: Send + 'static;
     fn retry_cleanup(&mut self) -> Result<(), Self::Failure>;
+    fn take_post_body(&mut self) -> Result<Option<Self::PostBody>, Self::Failure>;
 }"#;
 
 const HANDOFF_SIGNATURE: &str =
@@ -17,9 +19,12 @@ const HANDOFF_SIGNATURE: &str =
 const CLEANUP_DECLARATIONS: &[(&str, usize)] = &[
     (OWNER_DECLARATION, 1),
     ("type Failure: std::error::Error + Send + 'static;", 3),
+    ("type PostBody: Send + 'static;", 3),
+    ("type ReturnDestination: Send + 'static;", 1),
     (
         r#"pub trait ProductionVmCleanupHandoff: Send {
     type Failure: std::error::Error + Send + 'static;
+    type PostBody: Send + 'static;
     fn retry(&mut self) -> Result<ProductionVmCleanupStage, LifecycleApiError>;"#,
         1,
     ),
@@ -28,8 +33,32 @@ const CLEANUP_DECLARATIONS: &[(&str, usize)] = &[
         1,
     ),
     ("fn first_failure(&self) -> Option<&Self::Failure>;", 1),
+    ("fn retain_post_body(&mut self) -> bool;", 1),
     (
-        "fn take_first_failure(&mut self) -> Option<Self::Failure>;",
+        "fn retained_post_body(&self) -> Option<&Self::PostBody>;",
+        1,
+    ),
+    ("fn dispose(self: Box<Self>);", 1),
+    (
+        r#"fn into_post_body(self: Box<Self>,) -> Result<
+    Self::PostBody,
+    Box<dyn ProductionVmCleanupHandoff<Failure = Self::Failure, PostBody = Self::PostBody>>,
+>;"#,
+        1,
+    ),
+    (
+        r#"fn prepare_return(self: Box<Self>,) -> Result<
+    Self::ReturnDestination,
+    Box<dyn ProductionVmCleanupReservation<
+        Failure = Self::Failure,
+        PostBody = Self::PostBody,
+        ReturnDestination = Self::ReturnDestination,
+    >,>,
+>;"#,
+        1,
+    ),
+    (
+        "pub enum ProductionVmCleanupStage { BodyRetained, BodyDestroyed, Complete, }",
         1,
     ),
 ];
@@ -53,12 +82,20 @@ const ONE_FORWARDER: &[(&str, usize)] = &[
         "type Failure = crate::ProductionVmConstructionCleanupError;",
         1,
     ),
+    (
+        "type PostBody = crate::ProductionVmConstructionPostBody;",
+        1,
+    ),
 ];
 const FOUR_FORWARDERS: &[(&str, usize)] = &[
     (OWNER_IMPLEMENTATION, 4),
     (FORWARDER_PARAMETERS, 8),
     (
         "type Failure = crate::ProductionVmConstructionCleanupError;",
+        4,
+    ),
+    (
+        "type PostBody = crate::ProductionVmConstructionPostBody;",
         4,
     ),
 ];
@@ -72,7 +109,7 @@ const FORWARDING_COMPANIONS: &[Companion] = &[
         path: "crates/crucible-daemon/src/vm_lifecycle.rs",
         required: &[
             (
-                "pub trait ProductionVmNodeLauncher: ProductionVmCleanupOwner<Failure = crate::ProductionVmConstructionCleanupError> {",
+                "pub trait ProductionVmNodeLauncher: ProductionVmCleanupOwner<Failure = crate::ProductionVmConstructionCleanupError, PostBody = crate::ProductionVmConstructionPostBody,> {",
                 1,
             ),
             (
@@ -166,25 +203,7 @@ pub(super) const CONTRACTS: &[Contract] = &[
     Contract {
         package: "crucible-api",
         target: "src/cleanup_owner",
-        required: &[
-            ("pub trait ProductionVmCleanupOwner: Send {", 1),
-            ("type Failure: std::error::Error + Send + 'static;", 3),
-            ("(&mut self) -> Result<(), Self::Failure>;", 1),
-            ("pub trait ProductionVmCleanupHandoff: Send {", 1),
-            (
-                "(&mut self) -> Result<ProductionVmCleanupStage, LifecycleApiError>;",
-                2,
-            ),
-            ("fn first_failure(&self) -> Option<&Self::Failure>;", 1),
-            (
-                "fn take_first_failure(&mut self) -> Option<Self::Failure>;",
-                1,
-            ),
-            (
-                "pub enum ProductionVmCleanupStage { BodyRetained, BodyDestroyed, Complete, }",
-                1,
-            ),
-        ],
+        required: CLEANUP_DECLARATIONS,
         expressions: &[(HANDOFF_SIGNATURE, 1)],
         identifiers: &[("retry_cleanup", 1)],
         companions: &[Companion {
@@ -279,6 +298,14 @@ mod tests {
                         "fn retry_cleanup(&mut self) -> Result<(), Self::Failure>;",
                         "fn retry_cleanup(&mut self) -> Result<(), Self::Failure> { unreviewed_effect(); }",
                     ),
+                    (
+                        "fn take_post_body(&mut self) -> Result<Option<Self::PostBody>, Self::Failure>;",
+                        "fn take_post_body(&mut self) -> Result<Option<Self::PostBody>, Self::Failure> { unreviewed_effect(); }",
+                    ),
+                    (
+                        "fn retain_post_body(&mut self) -> bool;",
+                        "fn retain_post_body(&mut self) -> bool { unreviewed_effect(); }",
+                    ),
                 ] {
                     let declaration = super::super::source_pattern(declaration);
                     let changed = super::super::replace_one_obligation(&code, &declaration, effect);
@@ -302,6 +329,15 @@ mod tests {
                         "missing/default associated failure passed"
                     );
                 }
+                for declaration in [
+                    "type PostBody: Send + 'static;",
+                    "type ReturnDestination: Send + 'static;",
+                ] {
+                    let changed = code.replacen(declaration, "", 1);
+
+                    assert_ne!(changed, code);
+                    assert!(rejects(&changed), "missing return-custody type passed");
+                }
                 continue;
             }
             let changed = code.replacen(
@@ -311,6 +347,14 @@ mod tests {
             );
             assert_ne!(changed, code);
             assert!(rejects(&changed), "foreign forwarding failure type passed");
+            let changed = code.replacen(
+                "type PostBody = crate::ProductionVmConstructionPostBody;",
+                "type PostBody = OtherPostBody;",
+                1,
+            );
+
+            assert_ne!(changed, code);
+            assert!(rejects(&changed), "foreign forwarding postbody type passed");
             for replacement in [
                 "loop { ProductionVmNodeLauncher::finish(self) }",
                 "{ unreviewed_effect(); ProductionVmNodeLauncher::finish(self) }",

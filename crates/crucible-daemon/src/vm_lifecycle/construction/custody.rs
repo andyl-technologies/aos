@@ -12,6 +12,10 @@ use std::sync::{Mutex, TryLockError};
 use super::*;
 
 mod inputs;
+mod post_body;
+mod return_body;
+#[cfg(target_os = "linux")]
+mod source_preparation;
 pub(in crate::vm_lifecycle) use inputs::with_inputs;
 
 #[cfg(test)]
@@ -23,11 +27,16 @@ pub struct ProductionVmConstructionCustody {
     pub(super) first: Option<LifecycleApiError>,
     pub(super) phase: Mutex<Phase>,
     physically_closed: AtomicBool,
+    post_body: Option<crate::ProductionVmConstructionPostBody>,
+    #[cfg(target_os = "linux")]
+    pub(super) return_destination: Option<crate::lifecycle_cleanup::SourceBodyReturn>,
     #[cfg(target_os = "linux")]
     pub(super) reservation: Option<
         Box<
             dyn crucible_api::ProductionVmCleanupReservation<
                     Failure = crate::ProductionVmConstructionCleanupError,
+                    PostBody = crate::ProductionVmConstructionPostBody,
+                    ReturnDestination = crate::lifecycle_cleanup::SourceBodyReturn,
                 >,
         >,
     >,
@@ -39,6 +48,14 @@ pub struct ProductionVmConstructionCustody {
 pub(super) enum Phase {
     Partial(Partial),
     Complete(ProductionVmLifecycleLoop),
+    #[cfg(target_os = "linux")]
+    Source(ProductionVmHotForkSourceWorld),
+    #[cfg(target_os = "linux")]
+    SharedSource(crate::vm_lifecycle::hot_fork::shared_source::SharedSourceBody),
+    #[cfg(target_os = "linux")]
+    SourceRearmFailure(crate::vm_lifecycle::hot_fork::rearm_return::SourceRearmBody),
+    #[cfg(target_os = "linux")]
+    SourcePreparation(crate::vm_lifecycle::SourceWorldPreparation),
     Empty,
 }
 
@@ -144,6 +161,9 @@ impl ProductionVmConstructionCustody {
             first: None,
             phase: Mutex::new(Phase::Partial(Partial::new())),
             physically_closed: AtomicBool::new(false),
+            post_body: None,
+            #[cfg(target_os = "linux")]
+            return_destination: None,
             #[cfg(target_os = "linux")]
             reservation: None,
             #[cfg(test)]
@@ -252,46 +272,12 @@ impl ProductionVmConstructionCustody {
             return None;
         }
         #[cfg(target_os = "linux")]
-        if self.reservation.is_some() {
+        if self.reservation.is_some() || self.return_destination.is_some() {
             return None;
         }
         match self.phase.get_mut() {
             Ok(phase @ Phase::Empty) => Some(phase),
             _ => None,
-        }
-    }
-
-    /// Moves the complete lifecycle with its original carrier attached.
-    ///
-    /// # Errors
-    /// Returns this same Box if custody is failed, closed, reserved, poisoned
-    /// or does not contain a complete lifecycle.
-    pub(crate) fn into_loop(mut self: Box<Self>) -> Result<ProductionVmLifecycleLoop, Box<Self>> {
-        if self.first.is_some() || self.physically_closed.load(Ordering::Acquire) {
-            return Err(self);
-        }
-        #[cfg(target_os = "linux")]
-        if self.reservation.is_some() {
-            return Err(self);
-        }
-        let lifecycle = match self.phase.get_mut() {
-            Ok(phase) => match std::mem::replace(phase, Phase::Empty) {
-                Phase::Complete(lifecycle) => Some(lifecycle),
-                other => {
-                    *phase = other;
-                    None
-                }
-            },
-            Err(_) => None,
-        };
-        match lifecycle {
-            Some(mut lifecycle) => {
-                // Its successful return keeps this original paid carrier. No
-                // runtime failure will need a new Box to preserve the Loop.
-                lifecycle.construction_custody = Some(self);
-                Ok(lifecycle)
-            }
-            None => Err(self),
         }
     }
 
@@ -307,6 +293,14 @@ impl ProductionVmConstructionCustody {
         match &mut *phase {
             Phase::Partial(partial) => retire_partial(partial)?,
             Phase::Complete(lifecycle) => retire_complete(lifecycle)?,
+            #[cfg(target_os = "linux")]
+            Phase::Source(source) => source.retry_source_retirement_body()?,
+            #[cfg(target_os = "linux")]
+            Phase::SharedSource(source) => source.retry_body()?,
+            #[cfg(target_os = "linux")]
+            Phase::SourceRearmFailure(source) => source.retry_body()?,
+            #[cfg(target_os = "linux")]
+            Phase::SourcePreparation(preparation) => preparation.retry_body()?,
             Phase::Empty => return Ok(()),
         }
         // Keep the actual phase in this carrier. The canonical queue destroys
@@ -350,11 +344,14 @@ pub(super) enum FailureStorage {
                 Box<
                     dyn crucible_api::ProductionVmCleanupReservation<
                             Failure = crate::ProductionVmConstructionCleanupError,
+                            PostBody = crate::ProductionVmConstructionPostBody,
+                            ReturnDestination = crate::lifecycle_cleanup::SourceBodyReturn,
                         >,
                 >,
                 Box<
                     dyn crucible_api::ProductionVmCleanupOwner<
                             Failure = crate::ProductionVmConstructionCleanupError,
+                            PostBody = crate::ProductionVmConstructionPostBody,
                         >,
                 >,
             )>,
@@ -496,6 +493,8 @@ pub enum ProductionVmConstructionCleanupError {
     Poisoned,
     /// Another invocation still borrows the same owning phase.
     Pending,
+    /// The same shared Source allocation still has an actual strong or Weak alias.
+    SharedAliasesPending,
     /// An owning internal phase is incomplete or ambiguous.
     Retained(&'static str),
     /// Actual node reap refused.
@@ -510,6 +509,8 @@ pub enum ProductionVmConstructionCleanupError {
     Guard(crate::QemuAttemptResourceGuardCleanupFailure),
     /// Existing scheduler cleanup retained its typed cause.
     Scheduler(SchedulerError),
+    /// The original counted observer protects a Main-held cleanup cause.
+    Prepared(crate::lifecycle_cleanup::PreparedSourceFailure),
     /// The two independent bodies of a rejected carrier both refused cleanup.
     GuardPair {
         /// The earlier non-host-cleanup report, if it preceded both leaves.
@@ -533,6 +534,9 @@ impl fmt::Display for ProductionVmConstructionCleanupError {
         match self {
             Self::Poisoned => formatter.write_str("construction custody is poisoned"),
             Self::Pending => formatter.write_str("construction cleanup is already borrowed"),
+            Self::SharedAliasesPending => {
+                formatter.write_str("shared Source allocation aliases remain")
+            }
             Self::Retained(message) => formatter.write_str(message),
             Self::Node(source) => write!(formatter, "construction node reap: {source}"),
             Self::Backend(source) => write!(formatter, "construction backend retirement: {source}"),
@@ -542,6 +546,7 @@ impl fmt::Display for ProductionVmConstructionCleanupError {
             }
             Self::Guard(source) => write!(formatter, "guard retirement: {source}"),
             Self::Scheduler(source) => std::fmt::Display::fmt(source, formatter),
+            Self::Prepared(source) => std::fmt::Display::fmt(source, formatter),
             Self::GuardHistory { first, guard } => {
                 write!(formatter, "{first}; guard cleanup: {guard}")
             }
@@ -571,6 +576,7 @@ impl Error for ProductionVmConstructionCleanupError {
             Self::Authority(source) => Some(source),
             Self::Guard(source) => Some(source),
             Self::Scheduler(source) => Some(source),
+            Self::Prepared(source) => Some(source),
             Self::GuardHistory { first, .. } => Some(first),
             Self::GuardPair {
                 first, first_guard, ..
@@ -578,7 +584,7 @@ impl Error for ProductionVmConstructionCleanupError {
                 .as_ref()
                 .map(|first| first as &dyn Error)
                 .or(Some(first_guard)),
-            Self::Poisoned | Self::Pending | Self::Retained(_) => None,
+            Self::Poisoned | Self::Pending | Self::SharedAliasesPending | Self::Retained(_) => None,
         }
     }
 }
@@ -588,12 +594,18 @@ impl Error for ProductionVmConstructionCleanupError {
 /// This finite diagnostic union owns no new cleanup allowance or containing body.
 #[derive(Debug, thiserror::Error)]
 pub enum ProductionVmCleanupEarlierFailure {
+    /// The same original Main report retained before local guard cleanup.
+    #[error(transparent)]
+    Prepared(crate::lifecycle_cleanup::PreparedSourceFailure),
     /// A prior unwind made the phase uncertain.
     #[error("construction custody is poisoned")]
     Poisoned,
     /// Another invocation still borrows the same phase.
     #[error("construction cleanup is already borrowed")]
     Pending,
+    /// The earlier shared allocation still retained an actual alias.
+    #[error("shared Source allocation aliases remain")]
+    SharedAliasesPending,
     /// The earlier owning phase was incomplete.
     #[error("{0}")]
     Retained(&'static str),
@@ -654,12 +666,14 @@ impl ProductionVmConstructionCleanupError {
         let first = match self {
             Self::Poisoned => ProductionVmCleanupEarlierFailure::Poisoned,
             Self::Pending => ProductionVmCleanupEarlierFailure::Pending,
+            Self::SharedAliasesPending => ProductionVmCleanupEarlierFailure::SharedAliasesPending,
             Self::Retained(message) => ProductionVmCleanupEarlierFailure::Retained(message),
             Self::Node(source) => ProductionVmCleanupEarlierFailure::Node(source),
             Self::Backend(source) => ProductionVmCleanupEarlierFailure::Backend(source),
             Self::Leases(source) => ProductionVmCleanupEarlierFailure::Leases(source),
             Self::Authority(source) => ProductionVmCleanupEarlierFailure::Authority(source),
             Self::Scheduler(source) => ProductionVmCleanupEarlierFailure::Scheduler(source),
+            Self::Prepared(source) => ProductionVmCleanupEarlierFailure::Prepared(source),
             Self::Guard(first) => {
                 if !guard.has_raw_cause() {
                     return Self::Guard(first);
@@ -918,59 +932,31 @@ fn finish_retained_node_leases(
     first.map_or(Ok(()), Err)
 }
 
-impl ProductionVmLifecycleLoop {
-    /// Moves the whole lifecycle back into its original empty construction Box.
-    ///
-    /// This is custody publication preparation, never execution authority or
-    /// evidence that a semantic shutdown result proved physical retirement.
-    ///
-    /// # Errors
-    /// Returns the same complete lifecycle if its original carrier is missing,
-    /// occupied, or poisoned. No replacement carrier is allocated.
-    pub fn into_construction_custody(
-        mut self,
-    ) -> Result<Box<ProductionVmConstructionCustody>, Self> {
-        let Some(mut custody) = self.construction_custody.take() else {
-            return Err(self);
-        };
-        let Some(phase) = custody.retirement_slot() else {
-            self.construction_custody = Some(custody);
-            return Err(self);
-        };
-        *phase = Phase::Complete(self);
-        Ok(custody)
-    }
+#[cfg(target_os = "linux")]
+pub(in crate::vm_lifecycle) struct SourceRetirementSlot<'a> {
+    phase: &'a mut Phase,
+}
 
-    /// Moves an already boxed lifecycle into its same empty construction carrier.
-    ///
-    /// Validates the carrier before releasing the lifecycle's Box allocation.
-    /// No callbacks, native cleanup or allocations run during the move.
-    /// This prepares custody publication; it does not prove World return.
-    ///
-    /// # Errors
-    /// Returns the same Box and all its owners if the original carrier is
-    /// missing, occupied, poisoned, closed, or already holds a reservation.
-    pub fn into_construction_custody_from_box(
-        mut self: Box<Self>,
-    ) -> Result<Box<ProductionVmConstructionCustody>, Box<Self>> {
-        let Some(mut custody) = self.construction_custody.take() else {
-            return Err(self);
-        };
-        let Some(phase) = custody.retirement_slot() else {
-            self.construction_custody = Some(custody);
-            return Err(self);
-        };
-        // The exclusive slot remains borrowed through the final move. Nothing
-        // can change its validation or fail after the existing Box is released.
-        *phase = Phase::Complete(*self);
-        Ok(custody)
+#[cfg(target_os = "linux")]
+impl SourceRetirementSlot<'_> {
+    /// Moves the whole existing Source after exclusive carrier validation.
+    pub(in crate::vm_lifecycle) fn install(self, source: ProductionVmHotForkSourceWorld) {
+        *self.phase = Phase::Source(source);
     }
 }
 
-impl crucible_api::ProductionVmCleanupOwner for ProductionVmConstructionCustody {
-    type Failure = crate::ProductionVmConstructionCleanupError;
+#[cfg(target_os = "linux")]
+impl ProductionVmConstructionCustody {
+    pub(in crate::vm_lifecycle) fn source_retirement_slot(
+        &mut self,
+    ) -> Option<SourceRetirementSlot<'_>> {
+        self.retirement_slot()
+            .map(|phase| SourceRetirementSlot { phase })
+    }
 
-    fn retry_cleanup(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
-        ProductionVmConstructionCustody::retry_cleanup(self)
+    pub(in crate::vm_lifecycle) fn retire_complete_body(
+        lifecycle: &mut ProductionVmLifecycleLoop,
+    ) -> Result<(), ProductionVmConstructionCleanupError> {
+        retire_complete(lifecycle)
     }
 }

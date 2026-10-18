@@ -8,7 +8,7 @@ use super::*;
 
 /// Preserves the typed cause of the first source-preparation refusal.
 #[derive(Debug, thiserror::Error)]
-pub(super) enum ProductionVmHotForkSourcePreparationError {
+pub(crate) enum ProductionVmHotForkSourcePreparationError {
     /// A scheduler capture, validation or disk operation refused.
     #[error("{operation}: {source}")]
     Scheduler {
@@ -30,6 +30,18 @@ pub(super) enum ProductionVmHotForkSourcePreparationError {
     /// Metadata preparation could not reserve its actual token capacity.
     #[error("reserve retained source preparation tokens: {0}")]
     Allocation(#[source] std::collections::TryReserveError),
+    /// The actual same Source work boundary refused before an effect.
+    #[error("source work boundary: {0}")]
+    Original(#[source] LifecycleApiError),
+    /// Event evidence at the prepared exact boundary failed authentication.
+    #[error("authenticate exact source event identity: {0}")]
+    EventIdentity(#[source] crucible::EngineError),
+    /// The exact prepared boundary differs from the authenticated request.
+    #[error("prepared exact source differs from its authenticated boundary")]
+    BoundaryMismatch,
+    /// A successful effect was followed by the independently retained post.
+    #[error("source work postcheck refused")]
+    PostRefused,
     /// The same retained input failed an ownership or phase invariant.
     #[error("{0}")]
     State(&'static str),
@@ -37,12 +49,72 @@ pub(super) enum ProductionVmHotForkSourcePreparationError {
 
 use ProductionVmHotForkSourcePreparationError as First;
 
+/// Keeps the actual capture refusal and its independent same-work post.
+///
+/// This diagnostic owns no World, token or cleanup authority. The original
+/// Main Pending retains it while its whole preparer owns every partial field.
+#[derive(Debug, Default)]
+pub struct ProductionVmHotForkSourcePreparationHistory {
+    first: Option<First>,
+    post: Option<LifecycleApiError>,
+}
+
+impl ProductionVmHotForkSourcePreparationHistory {
+    /// Borrows the original typed refusal independently of any later post.
+    pub fn first_error(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self.first.as_ref() {
+            Some(First::Scheduler { source, .. }) => Some(source),
+            Some(First::Backend { source, .. }) => Some(source),
+            Some(First::Allocation(source)) => Some(source),
+            Some(First::Original(source)) => Some(source),
+            Some(First::EventIdentity(source)) => Some(source),
+            Some(First::PostRefused) | None => self
+                .post
+                .as_ref()
+                .map(|post| post as &dyn std::error::Error),
+            Some(first) => Some(first),
+        }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.first.is_none() && self.post.is_none()
+    }
+}
+
+impl std::fmt::Display for ProductionVmHotForkSourcePreparationHistory {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "Source preparation: {:?}; same work post: {:?}",
+            self.first, self.post
+        )
+    }
+}
+
+impl std::error::Error for ProductionVmHotForkSourcePreparationHistory {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.first_error()
+    }
+}
+
+pub(crate) enum SourcePreparationBoundary<'a> {
+    Canonical,
+    Exact {
+        requested: ContentHash,
+        selected: &'a crate::qemu_campaign_driver::QemuSelectedResumeBoundary,
+        production: &'a ProductionVmExactHotForkSourceBoundary,
+    },
+}
+
 pub(crate) struct SourceWorldPreparation {
     pub(super) world: ProductionVmHotForkSourceWorld,
     retained_disk_custody: BTreeMap<NodeId, Arc<ProductionVmHotForkDiskCustody>>,
     pub(super) first: Option<First>,
     current_node: Option<NodeId>,
     current_disk: Option<Arc<ProductionVmHotForkDiskCustody>>,
+    current_binding: Option<crucible_qemu::QmpHotForkBlockSnapshotBinding>,
+    work_post: Option<LifecycleApiError>,
+    checked_work: bool,
     promote: bool,
     attempted: bool,
     complete: bool,
@@ -53,6 +125,7 @@ pub(crate) struct SourceWorldPreparation {
 }
 
 /// Keeps the complete capture metadata with a failed preparation's Loop Box.
+#[derive(Default)]
 pub(super) struct FailedPreparationMetadata {
     pub(super) continuation: Option<ProductionVmHotForkWorldContinuation>,
     pub(super) prepared: Vec<QemuNodeSetPreparedHotForkTemplate>,
@@ -61,11 +134,14 @@ pub(super) struct FailedPreparationMetadata {
     pub(super) node: Option<NodeId>,
     pub(super) current_disk: Option<Arc<ProductionVmHotForkDiskCustody>>,
     pub(super) cleanup_observer: Option<Arc<dyn ProductionHotForkCleanupObserver>>,
+    #[cfg(feature = "private-measurement-domain")]
+    pub(super) managed_parent_park_history:
+        Option<crate::managed_qemu_hot_fork_source_world_pool::ManagedParentParkGate>,
 }
 
 impl SourceWorldPreparation {
     /// Moves a preheld, already paid Loop Box without allocating another body.
-    pub(super) fn new(
+    pub(in crate::vm_lifecycle) fn new(
         lifecycle: Box<ProductionVmLifecycleLoop>,
         retained_disk_custody: BTreeMap<NodeId, Arc<ProductionVmHotForkDiskCustody>>,
         promote: bool,
@@ -77,11 +153,19 @@ impl SourceWorldPreparation {
                 prepared: Vec::new(),
                 disk_custody: BTreeMap::new(),
                 cleanup_observer: None,
+                #[cfg(target_os = "linux")]
+                retirement: None,
+                #[cfg(feature = "private-measurement-domain")]
+                managed_parent_park_history: None,
+                target_backends_lent: false,
             },
             retained_disk_custody,
             first: None,
             current_node: None,
             current_disk: None,
+            current_binding: None,
+            work_post: None,
+            checked_work: false,
             promote,
             attempted: false,
             complete: false,
@@ -112,14 +196,35 @@ impl SourceWorldPreparation {
     /// The raw cause is saved before rollback or diagnostic formatting. A
     /// refused attempt cannot issue another preparation by calling this again.
     pub(crate) fn run(&mut self) -> Result<(), ()> {
+        self.run_once(true)
+    }
+
+    /// Runs the same engine while its whole owner is already installed in Main.
+    pub(crate) fn run_in_main(
+        &mut self,
+        boundary: SourcePreparationBoundary<'_>,
+    ) -> Result<(), ()> {
+        self.checked_work = true;
+        self.run_once(false)?;
+        if let Err(first) = self.validate_requested_boundary(boundary) {
+            self.first = Some(first);
+            self.complete = false;
+            return Err(());
+        }
+        Ok(())
+    }
+
+    fn run_once(&mut self, rollback_here: bool) -> Result<(), ()> {
         if self.attempted {
             return Err(());
         }
         self.attempted = true;
         if let Err(first) = self.prepare() {
             self.first = Some(first);
-            self.retain_current_disk();
-            self.rollback_after_refusal();
+            if rollback_here {
+                self.retain_current_disk();
+                self.rollback_after_refusal();
+            }
             return Err(());
         }
         self.complete = true;
@@ -133,15 +238,17 @@ impl SourceWorldPreparation {
     }
 
     fn prepare(&mut self) -> Result<(), First> {
-        let continuation = self
-            .lifecycle()?
-            .capture_hot_fork_world_continuation()
-            .map_err(|source| First::Scheduler {
-                operation: "capture source world continuation",
-                source,
-            })?;
-        // Save the actual captured continuation before any node mutation.
-        self.world.continuation = Some(continuation);
+        self.work_step(|preparation| {
+            let continuation = preparation
+                .lifecycle()?
+                .capture_hot_fork_world_continuation()
+                .map_err(|source| First::Scheduler {
+                    operation: "capture source world continuation",
+                    source,
+                })?;
+            preparation.world.continuation = Some(continuation);
+            Ok(())
+        })?;
         let retained_nodes = self
             .world
             .continuation
@@ -156,25 +263,24 @@ impl SourceWorldPreparation {
             .collect::<Vec<_>>();
 
         if self.promote {
-            validate_retained_source_ownership(self.lifecycle()?, &retained_nodes).map_err(
-                |source| First::Scheduler {
-                    operation: "validate reconstructed child ownership",
-                    source,
-                },
-            )?;
+            self.validate_ownership(&retained_nodes, "validate reconstructed child ownership")?;
             for node in &retained_nodes {
                 self.current_node = Some(node.clone());
-                if let Err(source) = self
-                    .lifecycle()?
-                    .inner
-                    .backend_mut()
-                    .adopt_hot_fork_child_as_template_source(node)
-                {
+                let adopted = self.work_step(|preparation| {
+                    preparation
+                        .lifecycle()?
+                        .inner
+                        .backend_mut()
+                        .adopt_hot_fork_child_as_template_source(node)
+                        .map(|_| ())
+                        .map_err(|source| First::Backend {
+                            operation: "re-adopt reconstructed child",
+                            source,
+                        })
+                });
+                if let Err(first) = adopted {
                     self.unreconciled_nodes = retained_nodes.clone();
-                    return Err(First::Backend {
-                        operation: "re-adopt reconstructed child",
-                        source,
-                    });
+                    return Err(first);
                 }
             }
             if let Err(first) = self.validate_boundaries("revalidate re-adopted child world") {
@@ -184,12 +290,7 @@ impl SourceWorldPreparation {
             self.current_node = None;
         }
 
-        validate_retained_source_ownership(self.lifecycle()?, &retained_nodes).map_err(
-            |source| First::Scheduler {
-                operation: "validate retained source ownership",
-                source,
-            },
-        )?;
+        self.validate_ownership(&retained_nodes, "validate retained source ownership")?;
         if self
             .retained_disk_custody
             .keys()
@@ -225,84 +326,99 @@ impl SourceWorldPreparation {
             self.force_current_unreconciled = true;
             // A failed reacquisition must not discard its previous file owner.
             let prior = self.retained_disk_custody.get(node).cloned();
-            let disk = match prior {
-                Some(custody) => self
-                    .lifecycle()?
-                    .reacquire_sealed_hot_fork_disk(node, &custody)
-                    .map(|(custody, binding)| Some((Arc::new(custody), binding))),
-                None => self
-                    .lifecycle()?
-                    .prepare_sealed_hot_fork_disk(node)
-                    .map(|disk| disk.map(|(custody, binding)| (Arc::new(custody), binding))),
-            }
-            .map_err(|source| First::Scheduler {
-                operation: "seal retained source disk",
-                source,
-            })?;
-            self.force_current_unreconciled = disk.is_some();
-            let binding_storage = match disk {
-                Some((custody, binding)) => {
-                    // The output owner is inline before map or Box allocation.
-                    self.current_disk = Some(custody);
-                    let custody = self.current_disk.as_ref().cloned().ok_or(First::State(
-                        "returned disk custody disappeared before retention",
-                    ))?;
-                    self.world
-                        .disk_custody
-                        .insert(node.clone(), Arc::clone(&custody));
-                    self.world
-                        .continuation
-                        .as_mut()
-                        .ok_or(First::State("captured source continuation is absent"))?
-                        .disk_bases
-                        .insert(node.clone(), custody.basis().clone());
-                    Some(binding)
+            self.work_step(|preparation| {
+                let disk = match prior {
+                    Some(custody) => preparation
+                        .lifecycle()?
+                        .reacquire_sealed_hot_fork_disk(node, &custody)
+                        .map(|(custody, binding)| Some((Arc::new(custody), binding))),
+                    None => preparation
+                        .lifecycle()?
+                        .prepare_sealed_hot_fork_disk(node)
+                        .map(|disk| disk.map(|(custody, binding)| (Arc::new(custody), binding))),
                 }
-                None => None,
-            };
-            self.retained_disk_custody.remove(node);
-            let token = self
-                .lifecycle()?
-                .inner
-                .backend_mut()
-                .prepare_retained_hot_fork_template(
-                    node,
-                    configuration,
-                    event_log.clone(),
-                    launch_resources,
-                    binding_storage.as_slice(),
-                    MAXIMUM_HOT_FORK_RING_IMAGE_BYTES,
-                )
-                .map_err(|source| First::Backend {
-                    operation: "prepare retained source template",
+                .map_err(|source| First::Scheduler {
+                    operation: "seal retained source disk",
                     source,
                 })?;
-            let generation = token.template_generation();
-            // A returned token remains owned even when graph authentication fails.
-            self.world.prepared.push(token);
+                preparation.force_current_unreconciled = disk.is_some();
+                if let Some((custody, binding)) = disk {
+                    preparation.current_disk = Some(custody);
+                    preparation.current_binding = Some(binding);
+                }
+                Ok(())
+            })?;
             if let Some(custody) = self.current_disk.as_ref().cloned() {
-                custody
-                    .authenticate_source_graph(self.lifecycle()?, node, generation)
-                    .map_err(|source| First::Scheduler {
-                        operation: "authenticate retained source graph",
+                self.world
+                    .disk_custody
+                    .insert(node.clone(), Arc::clone(&custody));
+                self.world
+                    .continuation
+                    .as_mut()
+                    .ok_or(First::State("captured source continuation is absent"))?
+                    .disk_bases
+                    .insert(node.clone(), custody.basis().clone());
+            }
+            self.retained_disk_custody.remove(node);
+            self.work_step(|preparation| {
+                let lifecycle = preparation
+                    .world
+                    .lifecycle
+                    .as_deref_mut()
+                    .ok_or(First::State("same source Loop Box is absent"))?;
+                let token = lifecycle
+                    .inner
+                    .backend_mut()
+                    .prepare_retained_hot_fork_template(
+                        node,
+                        configuration,
+                        event_log.clone(),
+                        launch_resources,
+                        preparation.current_binding.as_slice(),
+                        MAXIMUM_HOT_FORK_RING_IMAGE_BYTES,
+                    )
+                    .map_err(|source| First::Backend {
+                        operation: "prepare retained source template",
                         source,
                     })?;
+                preparation.world.prepared.push(token);
+                Ok(())
+            })?;
+            let token = self
+                .world
+                .prepared
+                .last()
+                .ok_or(First::State("returned source token is absent"))?;
+            let generation = token.template_generation();
+            if let Some(custody) = self.current_disk.as_ref().cloned() {
+                self.work_step(|preparation| {
+                    custody
+                        .authenticate_source_graph(preparation.lifecycle()?, node, generation)
+                        .map_err(|source| First::Scheduler {
+                            operation: "authenticate retained source graph",
+                            source,
+                        })
+                })?;
             }
             self.retain_current_disk();
             self.current_node = None;
             self.current_disk = None;
+            self.current_binding = None;
             self.rollback_requested = false;
             self.force_current_unreconciled = false;
         }
 
         self.rollback_requested = true;
         self.validate_boundaries("revalidate prepared source world")?;
-        self.world
-            .validate_source_ownership()
-            .map_err(|source| First::Scheduler {
-                operation: "validate complete prepared source ownership",
-                source,
-            })?;
+        self.work_step(|preparation| {
+            preparation
+                .world
+                .validate_source_ownership()
+                .map_err(|source| First::Scheduler {
+                    operation: "validate complete prepared source ownership",
+                    source,
+                })
+        })?;
         self.rollback_requested = false;
         Ok(())
     }
@@ -321,19 +437,135 @@ impl SourceWorldPreparation {
     }
 
     fn validate_boundaries(&mut self, operation: &'static str) -> Result<(), First> {
-        let after = self
-            .lifecycle()?
-            .hot_fork_node_boundaries()
-            .map_err(|source| First::Scheduler { operation, source })?;
-        let continuation = self
-            .world
-            .continuation
-            .as_ref()
-            .ok_or(First::State("captured source continuation is absent"))?;
-        if after != continuation.nodes {
-            return Err(First::State("prepared source world changed after capture"));
+        self.work_step(|preparation| {
+            let after = preparation
+                .lifecycle()?
+                .hot_fork_node_boundaries()
+                .map_err(|source| First::Scheduler { operation, source })?;
+            let continuation = preparation
+                .world
+                .continuation
+                .as_ref()
+                .ok_or(First::State("captured source continuation is absent"))?;
+            if after != continuation.nodes {
+                return Err(First::State("prepared source world changed after capture"));
+            }
+            Ok(())
+        })
+    }
+
+    fn validate_ownership(
+        &mut self,
+        nodes: &[NodeId],
+        operation: &'static str,
+    ) -> Result<(), First> {
+        self.work_step(|preparation| {
+            validate_retained_source_ownership(preparation.lifecycle()?, nodes)
+                .map_err(|source| First::Scheduler { operation, source })
+        })
+    }
+
+    fn work_step(
+        &mut self,
+        effect: impl FnOnce(&mut Self) -> Result<(), First>,
+    ) -> Result<(), First> {
+        if !self.checked_work {
+            return effect(self);
         }
-        Ok(())
+        let (result, post) = observe_source_work(
+            self,
+            |preparation| {
+                preparation
+                    .lifecycle()
+                    .map_err(|_| LifecycleApiError::ConstructionCustodyUnavailable)?
+                    .node_launcher
+                    .check_operational_boundary()
+            },
+            effect,
+        );
+        if let Some(post) = post {
+            self.work_post.get_or_insert(post);
+        }
+        result
+    }
+
+    fn validate_requested_boundary(
+        &mut self,
+        boundary: SourcePreparationBoundary<'_>,
+    ) -> Result<(), First> {
+        self.work_step(|preparation| {
+            let SourcePreparationBoundary::Exact {
+                requested,
+                selected,
+                production,
+            } = boundary
+            else {
+                return Ok(());
+            };
+            let continuation = preparation
+                .world
+                .continuation
+                .as_ref()
+                .ok_or(First::BoundaryMismatch)?;
+            let proof_matches = selected
+                .proof()
+                .matches_checkpoint(continuation.configuration(), continuation.scheduler())
+                .map_err(First::EventIdentity)?;
+            if continuation.configuration().id() != requested
+                || selected.configuration() != continuation.configuration()
+                || !proof_matches
+                || !production.matches(continuation)
+            {
+                return Err(First::BoundaryMismatch);
+            }
+            Ok(())
+        })
+    }
+
+    pub(crate) fn take_history(&mut self) -> ProductionVmHotForkSourcePreparationHistory {
+        ProductionVmHotForkSourcePreparationHistory {
+            first: self.first.take(),
+            post: self.work_post.take(),
+        }
+    }
+
+    pub(crate) fn is_complete(&self) -> bool {
+        self.complete
+            && self.first.is_none()
+            && self.work_post.is_none()
+            && self.world.lifecycle.is_some()
+            && self.world.continuation.is_some()
+            && self.retained_disk_custody.is_empty()
+            && self.current_disk.is_none()
+            && self.current_node.is_none()
+            && self.current_binding.is_none()
+    }
+
+    pub(in crate::vm_lifecycle) fn lifecycle_for_return(
+        &mut self,
+    ) -> Result<&mut ProductionVmLifecycleLoop, LifecycleApiError> {
+        if !self.is_complete() {
+            return Err(LifecycleApiError::ConstructionCustodyUnavailable);
+        }
+        self.world
+            .lifecycle
+            .as_deref_mut()
+            .ok_or(LifecycleApiError::ConstructionCustodyUnavailable)
+    }
+
+    pub(in crate::vm_lifecycle) fn retry_body(
+        &mut self,
+    ) -> Result<(), crate::ProductionVmConstructionCleanupError> {
+        self.world.retry_source_retirement_body()
+    }
+
+    pub(in crate::vm_lifecycle) fn take_post_body(
+        &mut self,
+    ) -> Result<
+        Option<crate::ProductionVmConstructionPostBody>,
+        crate::ProductionVmConstructionCleanupError,
+    > {
+        self.world.take_source_retirement_post_body()
     }
 
     fn rollback_after_refusal(&mut self) {
@@ -412,6 +644,8 @@ impl SourceWorldPreparation {
             node: self.current_node.take(),
             current_disk: self.current_disk.take(),
             cleanup_observer: self.world.cleanup_observer.take(),
+            #[cfg(feature = "private-measurement-domain")]
+            managed_parent_park_history: self.world.managed_parent_park_history.take(),
         };
         ProductionVmHotForkSourceWorldPreparationFailure {
             retained_source: None,
@@ -427,3 +661,25 @@ impl SourceWorldPreparation {
         }
     }
 }
+
+fn observe_source_work<S>(
+    state: &mut S,
+    mut check: impl FnMut(&mut S) -> Result<(), LifecycleApiError>,
+    effect: impl FnOnce(&mut S) -> Result<(), First>,
+) -> (Result<(), First>, Option<LifecycleApiError>) {
+    let result = match check(state) {
+        Ok(()) => effect(state),
+        Err(first) => Err(First::Original(first)),
+    };
+    let post = check(state).err();
+    let result = if post.is_some() {
+        result.and(Err(First::PostRefused))
+    } else {
+        result
+    };
+    (result, post)
+}
+
+#[cfg(test)]
+#[path = "preparation/work_tests.rs"]
+mod work_tests;

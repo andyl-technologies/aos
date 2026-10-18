@@ -422,12 +422,6 @@ impl AttemptExecutionModel for ControlModel<'_> {
         let input = decode_crucible_attempt_execution(&self.store, input)
             .expect("authenticated actual resumed scenario");
         let original_available = available(self.prepared);
-        let mut selected = context.take_selected_checkpoint();
-        let service = RetainedTemplateServiceFactory::new(self.prepared, &self.config)
-            .start_for_resume(input.scenario(), self.checkpoint, context, &mut selected)
-            .expect("fresh Service consumes genuine accepted selection once");
-        assert!(selected.is_none());
-        extend_native_operations(service.context());
         let authority = self
             .repository
             .blob_backend()
@@ -457,6 +451,16 @@ impl AttemptExecutionModel for ControlModel<'_> {
             Arc::new(lifecycle_config),
             ComposedQemuAttemptResourceGuardFactory::new(host),
         );
+        let service = super::main_service::NativeServiceScope::resume(
+            factory
+                .prepare_source_construction()
+                .expect("actual configured Source factory retains its genuine Main preclaim"),
+            &RetainedTemplateServiceFactory::new(self.prepared, &self.config),
+            input.scenario(),
+            self.checkpoint,
+            context,
+        );
+        extend_native_operations(service.context());
         let scenario = input.scenario().scenario_def();
         let initial = match input.start() {
             crate::CrucibleResolvedAttemptStart::Branch { parent, .. } => parent,
@@ -576,9 +580,11 @@ impl AttemptExecutionModel for ControlModel<'_> {
             println!("blocked_pager_terminal_cleanup={error:?}");
         }
         drop(lifecycle);
-        service
-            .release_after_world_cleanup()
-            .expect("proof-bound Service discharge");
+        let terminal = service
+            .into_retirement()
+            .expect("actual World return and proof-bound Service discharge");
+        println!("blocked_control_retirement={terminal}");
+        drop(terminal);
         assert_eq!(available(self.prepared), original_available);
         assert!(
             registry

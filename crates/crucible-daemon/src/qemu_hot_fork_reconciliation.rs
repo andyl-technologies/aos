@@ -399,6 +399,7 @@ where
 }
 
 mod launch;
+pub(crate) use launch::TargetNodeConstruction;
 mod linux;
 mod state;
 

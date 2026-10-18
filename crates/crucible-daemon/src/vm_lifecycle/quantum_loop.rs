@@ -571,6 +571,13 @@ impl ProductionVmLifecycleLoop {
 }
 
 impl QuantumLoop for ProductionVmLifecycleLoop {
+    fn retire_owned(self) {
+        #[cfg(target_os = "linux")]
+        self.retire_owned_body();
+        #[cfg(not(target_os = "linux"))]
+        drop(self);
+    }
+
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
         let report = self.runtime_progress.begin();
         if report {

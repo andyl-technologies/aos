@@ -8,6 +8,8 @@ use super::*;
 use crucible_linux_resource::LinuxProjectQuotaController;
 use std::sync::Weak;
 
+pub use original_roster::{QemuForkTargetConstructionError, QemuForkTargetConstructionLoan};
+
 mod logical_reservation;
 pub use logical_reservation::QemuForkTargetLogicalReservation;
 mod ram_admission;
@@ -23,6 +25,45 @@ pub struct LinuxQemuForkTargetPermit {
     reservation: Option<original_roster::ForkTargetReservation>,
     source: Weak<NativeResourceState>,
     quota: LinuxProjectQuotaController,
+}
+
+impl LinuxQemuForkTargetPermit {
+    /// Copies this issued member's unchanged process geometry.
+    ///
+    /// These limits are requests, not another grant. The matching factory
+    /// independently authenticates and consumes this actual move-only permit
+    /// before it creates a Target cgroup or process owner.
+    ///
+    /// # Errors
+    /// Refuses a permit whose actual reservation has already been consumed.
+    pub fn resource_ceiling(&self) -> Result<(u32, u64, u64), QemuVmRealizationError> {
+        self.reservation
+            .as_ref()
+            .map(|reservation| reservation.ceilings)
+            .ok_or_else(|| missing_authority("observe actual Target process geometry"))
+    }
+}
+
+/// Delivers exact cleanup custody even when logical Target landing refuses.
+///
+/// A refused landing exposes no launch permit. The same cleanup loan retains
+/// that unconsumed permit internally until this exact role has returned.
+#[must_use = "retain the actual Target outcome before reporting its refusal"]
+pub enum QemuForkTargetPreparation {
+    /// The genuine Source admitted this Target's unchanged landing.
+    Ready {
+        /// Move-only permit consumed by the same actual host factory.
+        permit: LinuxQemuForkTargetPermit,
+        /// Exact role cleanup access retained before any process birth.
+        cleanup: QemuForkTargetConstructionLoan,
+    },
+    /// The actual occupied role remains retained after landing refusal.
+    Retained {
+        /// Same role and unconsumed permit, never an absence-based cleanup key.
+        cleanup: QemuForkTargetConstructionLoan,
+        /// Actual first admission/readback refusal and independent post.
+        first: crucible_linux_resource::host_services::process_birth::NativePoolRefusal,
+    },
 }
 
 #[derive(Debug)]
@@ -55,9 +96,9 @@ impl LinuxQemuAttemptHostOwner {
     /// # Errors
     /// Refuses terminal or nested targets, unavailable Source control, occupied
     /// target custody, stale original ownership, or insufficient local floors.
-    pub fn lend_fork_target_permit(
+    pub fn prepare_fork_target(
         &mut self,
-    ) -> Result<LinuxQemuForkTargetPermit, QemuVmRealizationError> {
+    ) -> Result<QemuForkTargetPreparation, QemuVmRealizationError> {
         self.check_operational_boundary()?;
         if self.fork_target.is_some() {
             return Err(missing_authority("lend nested QEMU fork target"));
@@ -72,17 +113,24 @@ impl LinuxQemuAttemptHostOwner {
                 source: Box::new(source),
             }
         })?;
-        let reservation = self
+        let (reservation, mut cleanup, landing_refusal) = self
             .original_account
             .as_ref()
             .ok_or_else(|| missing_authority("retain QEMU fork Source account"))?
             .reserve_fork_target(self.process_contract()?)
             .map_err(original_roster::original_error)?;
-        Ok(LinuxQemuForkTargetPermit {
+        let permit = LinuxQemuForkTargetPermit {
             reservation: Some(reservation),
             source: Arc::downgrade(state),
             quota,
-        })
+        };
+        match landing_refusal {
+            Some(first) => {
+                cleanup.retain_failed_permit(permit);
+                Ok(QemuForkTargetPreparation::Retained { cleanup, first })
+            }
+            None => Ok(QemuForkTargetPreparation::Ready { permit, cleanup }),
+        }
     }
 
     /// Creates a fresh target directory beneath this Source's one actual quota.

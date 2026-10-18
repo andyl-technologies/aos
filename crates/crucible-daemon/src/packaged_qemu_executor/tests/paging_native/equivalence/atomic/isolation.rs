@@ -5,7 +5,7 @@
 //! reap; failed reap retains the complete actual source and Service reservation.
 
 use super::*;
-use crate::packaged_qemu_executor::hot_fork::retained_service::RetainedTemplateService;
+use crate::packaged_qemu_executor::tests::paging_native::main_service::NativeServiceScope;
 use crucible_qemu::{QemuTestNativeAliasKind, QemuTestNativeAliasProbeError};
 
 const CASES: [(QemuTestNativeAliasKind, &str); 7] = [
@@ -36,7 +36,7 @@ const CASES: [(QemuTestNativeAliasKind, &str); 7] = [
 pub(super) fn run(
     model: &mut MixedResume<'_>,
     mut world: ProductionVmHotForkSourceWorld,
-    service: Arc<RetainedTemplateService>,
+    service: NativeServiceScope,
     before_source: HostResourceVector,
     source_processes: &[crucible_qemu::QemuProcessIdentity],
 ) {
@@ -107,9 +107,12 @@ pub(super) fn run(
         // Reap proves every native alias terminal. Close the retained host FD
         // and original permit before the Service can discharge its real actor.
         drop(error);
-        service
-            .release_after_world_cleanup()
+        drop(parent);
+        let terminal = service
+            .into_retirement()
             .expect("failed qualification still closes actual source borrowers and watchdog");
+        println!("failed_isolation_source_retirement={terminal}");
+        drop(terminal);
         assert_eq!(available_resources(model.prepared), before_source);
         panic!("actual native isolation qualification failed: {message}");
     }
@@ -133,9 +136,12 @@ pub(super) fn run(
         let _retained_actual_custody = Box::leak(Box::new((parent, service)));
         panic!("isolation probe cannot discharge source cleanup: {error}");
     }
-    service
-        .release_after_world_cleanup()
+    drop(parent);
+    let terminal = service
+        .into_retirement()
         .expect("source FD borrowers and original watcher fully closed");
+    println!("isolation_source_retirement={terminal}");
+    drop(terminal);
     assert_eq!(available_resources(model.prepared), before_source);
 
     assert_eq!(completed.len(), 7);

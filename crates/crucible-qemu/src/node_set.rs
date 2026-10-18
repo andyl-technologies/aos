@@ -45,6 +45,11 @@ mod collection;
 #[path = "node_set/concurrent.rs"]
 mod concurrent;
 #[cfg(target_os = "linux")]
+#[path = "node_set/target_workers.rs"]
+mod target_workers;
+#[cfg(target_os = "linux")]
+pub use target_workers::{QemuHotForkWorkerFailure, QemuHotForkWorkerGeometry};
+#[cfg(target_os = "linux")]
 #[path = "node_set/disk_seal.rs"]
 mod disk_seal;
 #[path = "node_set/fault_channels.rs"]

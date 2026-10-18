@@ -1025,6 +1025,21 @@ pub struct CrucibleExecutionModel<R> {
     last_materialization: Option<CrucibleMaterializationTier>,
 }
 
+impl<R: crate::completed_reproduction::PrepareCompletedReproduction>
+    crate::completed_reproduction::PrepareCompletedReproduction for CrucibleExecutionModel<R>
+{
+    fn prepare_completed_reproduction(
+        &mut self,
+    ) -> Result<
+        crate::lifecycle_cleanup::ServiceMainHandle,
+        crate::QemuAttemptProductionVmLifecycleError,
+    > {
+        crate::completed_reproduction::PrepareCompletedReproduction::prepare_completed_reproduction(
+            &mut self.runner,
+        )
+    }
+}
+
 impl<R> CrucibleExecutionModel<R> {
     /// Creates the strict Crucible adapter over one concrete runner.
     #[must_use]

@@ -148,18 +148,17 @@ fn authenticated_source_basis_retains_exact_genesis_and_thin_fallback() {
 
 #[test]
 fn exact_source_capture_preserves_canceled_start_classification() {
-    let error = ProductionQemuHotForkExactSourceCaptureError::Start(Box::new(
-        AttemptWorkerFailure::Canceled(
+    let error =
+        ProductionQemuHotForkExactSourceCaptureError::Start(AttemptWorkerFailure::Canceled(
             QemuAttemptProductionVmLifecycleError::ScenarioIdentityMismatch,
-        ),
-    ));
+        ));
 
     assert_eq!(
         error.failure_class(false),
         SchedulerOperationalFailureClass::Canceled
     );
     assert_eq!(
-        ProductionQemuHotForkExactSourceCaptureError::BasisMismatch.failure_class(false),
+        exact_source_request_failure_class(&ExactSourceCaptureRequestError::BasisMismatch),
         SchedulerOperationalFailureClass::Terminal
     );
 }

@@ -74,12 +74,18 @@ pub(crate) enum HotForkInstallationRetirementError {
 #[derive(Debug, Default)]
 pub(crate) struct HotForkInstallationHistory {
     construction: Option<LifecycleApiError>,
-    cleanup: Option<crate::ProductionVmConstructionCleanupError>,
+    // Keeps the actual completed Main role and every typed leaf together.
+    // This is not a detached cleanup report or another owning allocation.
+    post_body: Option<crate::ProductionVmConstructionPostBody>,
 }
 
 impl HotForkInstallationHistory {
     pub(crate) fn is_empty(&self) -> bool {
-        self.construction.is_none() && self.cleanup.is_none()
+        self.construction.is_none()
+            && self
+                .post_body
+                .as_ref()
+                .is_none_or(|body| body.first_failure().is_none())
     }
 }
 
@@ -87,8 +93,8 @@ impl std::fmt::Display for HotForkInstallationHistory {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             formatter,
-            "construction: {:?}; cleanup: {:?}",
-            self.construction, self.cleanup
+            "construction: {:?}; completed Main role: {:?}",
+            self.construction, self.post_body
         )
     }
 }
@@ -98,9 +104,9 @@ impl std::error::Error for HotForkInstallationHistory {
         if let Some(first) = &self.construction {
             return Some(first);
         }
-        self.cleanup
+        self.post_body
             .as_ref()
-            .map(|first| first as &dyn std::error::Error)
+            .and_then(|body| body.first_failure())
     }
 }
 
@@ -108,7 +114,12 @@ impl std::error::Error for HotForkInstallationHistory {
 pub(crate) struct RetainedHotForkInstallation<G: QemuAttemptProcessResourceGuard> {
     construction: Option<ProductionVmConstructionFailure>,
     cleanup_handoff: Option<
-        Box<dyn ProductionVmCleanupHandoff<Failure = crate::ProductionVmConstructionCleanupError>>,
+        Box<
+            dyn ProductionVmCleanupHandoff<
+                    Failure = crate::ProductionVmConstructionCleanupError,
+                    PostBody = crate::ProductionVmConstructionPostBody,
+                >,
+        >,
     >,
     source_lease: Option<QemuHotForkSourceWorldLease>,
     source_world: Arc<Mutex<ProductionVmHotForkSourceWorld>>,
@@ -222,6 +233,11 @@ impl<G: QemuAttemptProcessResourceGuard> RetainedHotForkInstallation<G> {
         use HotForkInstallationRetirementError as Error;
 
         check_original(original)?;
+        if self.history.post_body.is_some() {
+            // The role has already moved intact. Retry only final Source
+            // restoration; there is no receipt left to publish, drive or reap.
+            return self.restore_terminal_source(original);
+        }
         if self.cleanup_handoff.is_none()
             && let Some(construction) = self.construction.as_ref()
         {
@@ -270,12 +286,31 @@ impl<G: QemuAttemptProcessResourceGuard> RetainedHotForkInstallation<G> {
         if self.advance_cleanup()? != ProductionVmCleanupStage::Complete {
             return Ok(None);
         }
-        if self.history.cleanup.is_none() {
-            self.history.cleanup = self
-                .cleanup_handoff
-                .as_mut()
-                .and_then(|handoff| handoff.take_first_failure());
+        if self.history.post_body.is_none() {
+            let handoff = self.cleanup_handoff.take().ok_or(Error::Publication)?;
+            match handoff.into_post_body() {
+                Ok(body) => self.history.post_body = Some(body),
+                Err(handoff) => {
+                    // The same receipt still owns the actual role. Neither a
+                    // Complete observation nor an error grants role reuse.
+                    self.cleanup_handoff = Some(handoff);
+                    return Ok(None);
+                }
+            }
         }
+        self.restore_terminal_source(original)
+    }
+
+    /// Retries the terminal metadata handback without reusing a moved receipt.
+    fn restore_terminal_source(
+        &mut self,
+        original: &HostOperationGuard,
+    ) -> Result<
+        Option<(QemuHotForkSourceWorldLease, HotForkInstallationHistory)>,
+        HotForkInstallationRetirementError,
+    > {
+        use HotForkInstallationRetirementError as Error;
+
         if let Some(shell) = self.construction.take() {
             match shell.into_published_error() {
                 Ok(first) => self.history.construction = Some(first),
@@ -306,4 +341,65 @@ fn check_original(original: &HostOperationGuard) -> Result<(), HotForkInstallati
         .wait_slice()
         .map(|_| ())
         .map_err(HotForkInstallationRetirementError::Operation)
+}
+
+#[cfg(test)]
+mod completed_history_tests {
+    use super::*;
+
+    #[test]
+    fn completed_target_history_keeps_the_actual_typed_cleanup_allocation() {
+        // Local report storage only: no Main, Source, receipt or return is
+        // issued by this history-only value.
+        let message = String::from("actual component cleanup allocation");
+        let allocation = message.as_ptr();
+        let first = crate::ProductionVmConstructionCleanupError::Authority(
+            LifecycleApiError::LoopFactory { message },
+        );
+        let mut body = crate::ProductionVmConstructionPostBody::history_only();
+        body.retain_cleanup_first(first);
+        let history = HotForkInstallationHistory {
+            construction: None,
+            post_body: Some(body),
+        };
+
+        assert!(!history.is_empty());
+        let first = std::error::Error::source(&history)
+            .unwrap()
+            .downcast_ref::<crate::ProductionVmConstructionCleanupError>()
+            .unwrap();
+        let crate::ProductionVmConstructionCleanupError::Authority(
+            LifecycleApiError::LoopFactory { message },
+        ) = first
+        else {
+            panic!("the actual typed cleanup report changed");
+        };
+        assert_eq!(message.as_ptr(), allocation);
+    }
+
+    #[test]
+    fn construction_precedence_and_empty_history_observation_remain_separate() {
+        let mut body = crate::ProductionVmConstructionPostBody::history_only();
+        body.retain_cleanup_first(crate::ProductionVmConstructionCleanupError::Retained(
+            "independent component cleanup report",
+        ));
+        let history = HotForkInstallationHistory {
+            construction: Some(LifecycleApiError::CleanupRetained),
+            post_body: Some(body),
+        };
+
+        assert!(!history.is_empty());
+        assert!(
+            std::error::Error::source(&history)
+                .unwrap()
+                .downcast_ref::<LifecycleApiError>()
+                .is_some()
+        );
+        let empty = HotForkInstallationHistory {
+            construction: None,
+            post_body: Some(crate::ProductionVmConstructionPostBody::history_only()),
+        };
+        assert!(empty.is_empty());
+        assert!(empty.post_body.is_some());
+    }
 }

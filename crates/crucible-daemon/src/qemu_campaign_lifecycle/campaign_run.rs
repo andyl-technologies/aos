@@ -12,6 +12,11 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::ProductionVmLifecycleConfig;
+#[cfg(any(test, feature = "test-support"))]
+use crate::completed_reproduction::operation_only_preparation;
+use crate::completed_reproduction::{
+    CompletedReproductionPreparation, prepare_completed_reproduction,
+};
 pub use crate::packaged_qemu_executor::guarded::{
     GuardedCampaignOwner, GuardedFindingMidpointError, GuardedImportedFindingMidpoint,
 };
@@ -1522,6 +1527,7 @@ where
     run_guarded_default_campaign_with_repository(
         request,
         runner,
+        prepare_completed_reproduction,
         execution_evidence,
         repository,
         planner_authority,
@@ -1538,7 +1544,8 @@ fn production_campaign_runner<H>(
     supplemental_oracle: Option<Arc<dyn GuardedCampaignFindingOracle>>,
     verify_determinism_findings: bool,
 ) -> (
-    impl CrucibleExecutionRunner<Error = GuardedDefaultCampaignProductionRunnerError>,
+    impl CrucibleExecutionRunner<Error = GuardedDefaultCampaignProductionRunnerError>
+    + crate::completed_reproduction::PrepareCompletedReproduction,
     QemuAttemptExecutionEvidence,
 )
 where
@@ -1652,6 +1659,7 @@ where
     run_guarded_default_campaign_with_repository(
         request,
         runner,
+        operation_only_preparation,
         execution_evidence,
         repository,
         planner_authority,
@@ -1662,6 +1670,7 @@ where
 fn run_guarded_default_campaign_with_repository<R>(
     request: GuardedDefaultCampaignRunRequest,
     runner: R,
+    prepare_reproduction: CompletedReproductionPreparation<CrucibleExecutionModel<R>>,
     execution_evidence: QemuAttemptExecutionEvidence,
     repository: Arc<CampaignRepository>,
     planner_authority: PlannerAuthorityKey,
@@ -1828,6 +1837,7 @@ where
                 model,
                 request.cancellation.clone(),
                 execution.clone(),
+                prepare_reproduction,
             ),
         ),
         #[cfg(any(test, feature = "test-support"))]

@@ -66,7 +66,10 @@ fn shared_source_leases_allow_bounded_siblings_and_delay_reuse_until_the_last_re
         .expect("second lease checkout")
         .expect("second lease");
 
-    assert!(Arc::ptr_eq(&first.source, &second.source));
+    assert!(Arc::ptr_eq(
+        first.source_owner_ref().unwrap(),
+        second.source_owner_ref().unwrap()
+    ));
     #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
     {
         let pool = shared
@@ -304,7 +307,7 @@ fn source_admission_accounts_for_live_child_lease_reservations() {
     let mut candidate = match candidate.into_source() {
         Ok(candidate) => candidate,
         Err(candidate) => {
-            let _retained_for_process_lifetime = Box::leak(candidate);
+            drop(candidate);
             panic!("rejected candidate did not retain exclusive source ownership");
         }
     };
@@ -382,7 +385,8 @@ fn abandoned_shared_lease_closes_admission_without_revoking_a_healthy_sibling() 
     );
     assert!(
         healthy
-            .source
+            .source_owner_ref()
+            .unwrap()
             .lock()
             .expect("healthy sibling retains source access")
             .fork_continuation()
@@ -564,23 +568,26 @@ fn exclusive_source_refuses_live_and_weak_borrowers_before_the_world_lock() {
     );
     let template = manager_source_key(&key);
     let identity = QemuHotForkSourceWorldCheckoutIdentity::capture(&source).unwrap();
-    let lease = QemuHotForkSourceWorldLease::exclusive(template, source, identity);
-    let concurrent = lease.source_owner();
+    let lease =
+        QemuHotForkSourceWorldLease::exclusive(template, source, identity).unwrap_or_else(|_| {
+            panic!("the unchanged component Source retains its actual sharing owner")
+        });
+    let concurrent = lease.source_owner().expect("same actual Source allocation");
     let held_world = concurrent.lock().expect("existing child's world borrow");
 
     // The fixed handover must refuse before trying to lock or restore this
     // world. A phase facade alone would not exclude this actual child alias.
     let lease = match lease.into_exclusive_source() {
-        Err(retained) => *retained,
+        Err(retained) => retained,
         Ok(_) => panic!("shared source cannot enter an exclusive parent phase"),
     };
-    assert!(Arc::ptr_eq(&lease.source, &concurrent));
+    assert!(Arc::ptr_eq(lease.source_owner_ref().unwrap(), &concurrent));
     drop(held_world);
     drop(concurrent);
 
-    let potential_child = Arc::downgrade(&lease.source);
+    let potential_child = Arc::downgrade(lease.source_owner_ref().unwrap());
     let lease = match lease.into_exclusive_source() {
-        Err(retained) => *retained,
+        Err(retained) => retained,
         Ok(_) => panic!("a surviving weak source borrower can reopen the world"),
     };
     assert!(potential_child.upgrade().is_some());
@@ -765,7 +772,8 @@ fn declared_multi_node_parent_park_refuses_before_pool_publication() {
     let lease_id = lease.managed_lease;
     assert_eq!(
         lease
-            .source
+            .source_owner_ref()
+            .unwrap()
             .lock()
             .expect("source")
             .continuation()
@@ -880,7 +888,7 @@ fn genuine_target_loan_preserves_the_same_pool_lease_until_target_cleanup(
         .checkout(&key)
         .expect("checkout")
         .expect("actual Source lease");
-    let source_owner = Arc::clone(&lease.source);
+    let source_owner = Arc::clone(lease.source_owner_ref().unwrap());
     let (before_usage, sequence, ordinal) = {
         let pool = shared.pool.lock().expect("pool");
         let record = pool
@@ -896,11 +904,17 @@ fn genuine_target_loan_preserves_the_same_pool_lease_until_target_cleanup(
 
     // This call crosses the erased launcher to the actual original G. There
     // is no descriptor, scalar, constructor or alternate fixture issuer.
-    let permit = source_owner
+    let preparation = source_owner
         .lock()
         .expect("actual Source")
-        .lend_fork_target_permit()
+        .prepare_fork_target()
         .expect("genuine same-family target permit");
+    let (permit, mut target_cleanup) = match preparation {
+        crucible_qemu::QemuForkTargetPreparation::Ready { permit, cleanup } => (permit, cleanup),
+        crucible_qemu::QemuForkTargetPreparation::Retained { first, .. } => {
+            panic!("genuine Target landing refused: {first}");
+        }
+    };
     let mut target = target_factory
         .begin_fork_target(permit, target_resources, cancellation)
         .expect("same actual factory Target birth");
@@ -928,6 +942,10 @@ fn genuine_target_loan_preserves_the_same_pool_lease_until_target_cleanup(
     // The actual Target still must close its real physical host before reuse.
     target.finish().expect("actual Target physical cleanup");
     drop(target);
+    target_cleanup
+        .try_finish()
+        .expect("exact Target role return");
+    assert!(target_cleanup.is_physically_returned());
     assert!(
         !source_owner
             .lock()
@@ -995,7 +1013,7 @@ fn unobservable_source_return_retains_the_exact_lease_permit_and_charge() {
             .checkout_lease_for(1, &key)
             .expect("checkout")
             .expect("lease");
-        let source_owner = Arc::clone(&lease.source);
+        let source_owner = Arc::clone(lease.source_owner_ref().unwrap());
         let template = lease.template;
         let record = pool.leased_out.get(&1).expect("lease record");
         let sequence = record.lease;
@@ -1026,7 +1044,10 @@ fn unobservable_source_return_retains_the_exact_lease_permit_and_charge() {
             .as_ref()
             .expect("exact returned receipt");
         assert_eq!(returned.managed_lease, Some(sequence));
-        assert!(Arc::ptr_eq(&returned.source, &source_owner));
+        assert!(Arc::ptr_eq(
+            returned.source_owner_ref().unwrap(),
+            &source_owner
+        ));
         assert!(!record.abandoned);
         assert_eq!(pool.source_lease_usage(), charge);
         assert!(!pool.source_lease_available(&key));
@@ -1044,6 +1065,8 @@ fn unobservable_source_return_retains_the_exact_lease_permit_and_charge() {
                 .unwrap()
                 .leased_source
                 .as_ref()
+                .unwrap()
+                .owner_ref()
                 .unwrap(),
             &source_owner,
         ));
@@ -1164,7 +1187,7 @@ fn unobservable_source_abandonment_retains_the_same_record_and_quarantine_charge
             .checkout_lease_for(1, &key)
             .expect("checkout")
             .expect("lease");
-        let source_owner = Arc::clone(&lease.source);
+        let source_owner = Arc::clone(lease.source_owner_ref().unwrap());
         let template = lease.template;
         let record = pool.leased_out.get(&1).expect("lease record");
         let sequence = record.lease;
@@ -1197,7 +1220,7 @@ fn unobservable_source_abandonment_retains_the_same_record_and_quarantine_charge
         let world = pool.worlds.get(&template).expect("same quarantined world");
         assert!(world.invalidated);
         assert!(Arc::ptr_eq(
-            world.leased_source.as_ref().unwrap(),
+            world.leased_source.as_ref().unwrap().owner_ref().unwrap(),
             &source_owner
         ));
         assert!(!pool.source_available(&key));

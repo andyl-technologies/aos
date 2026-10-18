@@ -29,6 +29,7 @@ mod equivalence;
 mod faults;
 mod host_parallel;
 mod lazy_restore;
+pub(super) mod main_service;
 mod performance;
 mod plugin_flight;
 mod source_failures;

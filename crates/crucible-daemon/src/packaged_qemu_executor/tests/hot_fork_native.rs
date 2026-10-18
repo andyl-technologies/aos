@@ -9,8 +9,8 @@ use super::*;
 use crate::packaged_qemu_executor::hot_fork::retained_service::RetainedTemplateServiceFactory;
 use crate::packaged_qemu_executor::preparation::PackagedPreparation;
 use crate::qemu_hot_fork_world_factory::{
-    QemuHotForkSourceWorldKey, QemuHotForkWorldLifecycleFactory, QemuHotForkWorldLifecycleStart,
-    QemuSingleHotForkSourceWorldProvider,
+    QemuHotForkSourceWorldKey, QemuHotForkWorldLifecycleFactory, QemuHotForkWorldLifecycleOwner,
+    QemuHotForkWorldLifecycleStart, QemuSingleHotForkSourceWorldProvider,
 };
 use crate::{
     AttemptExecutionInput, AttemptExecutionModel, AttemptExecutionProduct,
@@ -261,15 +261,20 @@ impl AttemptExecutionModel for NativeForkModel<'_> {
             .expect("real repository scenario, configuration and execution basis");
         assert_eq!(context.resume_checkpoint(), Some(self.checkpoint));
         let available_with_child = available_resources(self.prepared);
-        let mut selected = context.take_selected_checkpoint();
-        let service = Arc::new(
-            RetainedTemplateServiceFactory::new(self.prepared, &self.config)
-                .start_for_resume(input.scenario(), self.checkpoint, context, &mut selected)
-                .expect("independent Service with the actual selected exact root"),
+        let host = LinuxQemuAttemptHostResourceFactory::open(self.config.host.clone())
+            .expect("actual source cgroup and project quota");
+        let mut resume = QemuAttemptProductionVmLifecycleFactory::new(
+            self.config.lifecycle.clone(),
+            ComposedQemuAttemptResourceGuardFactory::new(host),
         );
-        assert!(
-            selected.is_none(),
-            "source Service consumes the linear root only on success"
+        let service = super::paging_native::main_service::NativeServiceScope::resume(
+            resume
+                .prepare_source_construction()
+                .expect("actual configured Source factory retains its genuine Main preclaim"),
+            &RetainedTemplateServiceFactory::new(self.prepared, &self.config),
+            input.scenario(),
+            self.checkpoint,
+            context,
         );
         allow_nested_operations(service.context());
         let source_charge = self
@@ -282,12 +287,6 @@ impl AttemptExecutionModel for NativeForkModel<'_> {
             source_charge,
         );
 
-        let host = LinuxQemuAttemptHostResourceFactory::open(self.config.host.clone())
-            .expect("actual source cgroup and project quota");
-        let mut resume = QemuAttemptProductionVmLifecycleFactory::new(
-            self.config.lifecycle.clone(),
-            ComposedQemuAttemptResourceGuardFactory::new(host),
-        );
         let scenario = input.scenario().scenario_def();
         let initial_configuration = match input.start() {
             crate::CrucibleResolvedAttemptStart::Branch { parent, .. } => parent,
@@ -340,8 +339,7 @@ impl AttemptExecutionModel for NativeForkModel<'_> {
             .to_string();
         let world = parent
             .prepare_hot_fork_source_world()
-            .expect("native retained source barriers and RAM seal")
-            .with_cleanup_observer(service.clone());
+            .expect("native retained source barriers and RAM seal");
         let parent_status = owner_status(self.prepared, service.context());
         assert!(parent_status.target.retained_template);
 
@@ -564,9 +562,12 @@ impl AttemptExecutionModel for NativeForkModel<'_> {
         parent
             .shutdown()
             .expect("source reap, source joins and final FD closure");
-        service
-            .release_after_world_cleanup()
-            .expect("actual source owner discharge");
+        drop(parent);
+        let terminal = service
+            .into_retirement()
+            .expect("actual source body/World return and owner discharge");
+        println!("native_fork_retirement={terminal}");
+        drop(terminal);
         assert_eq!(available_resources(self.prepared), available_with_child);
         self.evidence = Some(NativeForkEvidence {
             topology,

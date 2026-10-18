@@ -21,6 +21,12 @@ impl Drop for RetainedLauncher {
 
 impl crucible_api::ProductionVmCleanupOwner for RetainedLauncher {
     type Failure = crate::ProductionVmConstructionCleanupError;
+    type PostBody = crate::ProductionVmConstructionPostBody;
+
+    fn take_post_body(&mut self) -> Result<Option<Self::PostBody>, Self::Failure> {
+        // This component launcher owns no native World or Service return.
+        Ok(None)
+    }
 
     fn retry_cleanup(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
         ProductionVmNodeLauncher::finish(self)
@@ -160,12 +166,15 @@ fn returned_lifecycle_moves_into_the_same_empty_carrier() {
         first: None,
         phase: Mutex::new(Phase::Empty),
         physically_closed: AtomicBool::new(false),
+        post_body: None,
+        #[cfg(target_os = "linux")]
+        return_destination: None,
         #[cfg(target_os = "linux")]
         reservation: None,
         component_funding: None,
     });
     let address = std::ptr::from_ref(&*carrier);
-    lifecycle.construction_custody = Some(carrier);
+    lifecycle.construction_custody = LifecycleConstructionCustody::Unissued(Some(carrier));
 
     let carrier = lifecycle
         .into_construction_custody()
@@ -324,17 +333,13 @@ fn rejected_two_body_cleanup_keeps_both_leaves_through_actual_queued_destruction
     assert_eq!(incoming_drops.load(Ordering::SeqCst), 1);
     assert_eq!(existing_drops.load(Ordering::SeqCst), 1);
     let ProductionVmConstructionCleanupError::GuardPair {
-        first:
-            Some(ProductionVmCleanupEarlierFailure::Scheduler(SchedulerError::BoundaryViolation {
-                message,
-            })),
+        first: Some(ProductionVmCleanupEarlierFailure::Poisoned),
         first_guard,
         second_guard,
     } = &history
     else {
         panic!("both independently owned bodies must retain their actual leaves: {history:?}");
     };
-    assert_eq!(message, "retained lifecycle cleanup cell was poisoned");
     incoming_cause.assert_same_leaf(first_guard);
     existing_cause.assert_same_leaf(second_guard);
     drop(history);
@@ -366,6 +371,9 @@ fn empty_retirement_carrier() -> Box<ProductionVmConstructionCustody> {
         first: None,
         phase: Mutex::new(Phase::Empty),
         physically_closed: AtomicBool::new(false),
+        post_body: None,
+        #[cfg(target_os = "linux")]
+        return_destination: None,
         #[cfg(target_os = "linux")]
         reservation: None,
         component_funding: None,
@@ -402,7 +410,7 @@ fn boxed_retirement_refusal_keeps_same_allocation_carrier_and_contained_owner() 
             }
         };
         let carrier_address = carrier.as_deref().map(std::ptr::from_ref);
-        lifecycle.construction_custody = carrier;
+        lifecycle.construction_custody = LifecycleConstructionCustody::Unissued(carrier);
         let lifecycle_address = std::ptr::from_ref(&*lifecycle);
         let owner_address = std::ptr::from_ref(&*lifecycle.retained_hot_fork_disk_owners[0]);
 
@@ -441,7 +449,7 @@ fn boxed_retirement_moves_loop_and_owners_into_the_original_carrier() {
     let carrier = empty_retirement_carrier();
     let carrier_address = std::ptr::from_ref(&*carrier);
     let owner_address = std::ptr::from_ref(&*lifecycle.retained_hot_fork_disk_owners[0]);
-    lifecycle.construction_custody = Some(carrier);
+    lifecycle.construction_custody = LifecycleConstructionCustody::Unissued(Some(carrier));
 
     let carrier = lifecycle
         .into_construction_custody_from_box()
@@ -663,5 +671,105 @@ fn borrowed_preparation_refuses_physically_closed_custody_before_any_new_effect(
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     assert_eq!(drops.load(Ordering::SeqCst), 0);
     drop(custody);
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn retained_fork_input_refusal_keeps_all_original_slots() {
+    let (_, mut world) =
+        crate::vm_lifecycle::production_permanently_failed_loop_for_test().unwrap();
+    let mut continuation = Some(world.capture_hot_fork_world_continuation().unwrap());
+    let configuration = continuation.as_ref().unwrap().configuration().id();
+    let (input, calls, drops) = launcher(None);
+    let launcher_address = std::ptr::from_ref(&*input);
+    let mut input = Some(input);
+    let mut adoptions = Vec::with_capacity(7);
+    let adoption_buffer = adoptions.as_ptr();
+    let adoption_capacity = adoptions.capacity();
+    let mut custody = ProductionVmConstructionCustody::new();
+    custody.partial_mut().unwrap().cleanup_complete = true;
+
+    let failure = custody
+        .install_hot_fork_inputs(&mut input, &mut continuation, &mut adoptions)
+        .unwrap_err();
+
+    assert_eq!(failure, LifecycleApiError::ConstructionCustodyUnavailable);
+    assert!(std::ptr::addr_eq(
+        std::ptr::from_ref(&**input.as_ref().unwrap()),
+        launcher_address,
+    ));
+    assert_eq!(
+        continuation.as_ref().unwrap().configuration().id(),
+        configuration
+    );
+    assert_eq!(adoptions.as_ptr(), adoption_buffer);
+    assert_eq!(adoptions.capacity(), adoption_capacity);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn retained_fork_validation_failure_stays_in_the_original_carrier() {
+    let source = crucible::crash_restart_scenario().unwrap().scenario;
+    let other = ScenarioDef::from_canonical_material(
+        "crucible.test.borrowed-fork-construction",
+        "different-scenario",
+    );
+    let (_, mut world) =
+        crate::vm_lifecycle::production_permanently_failed_loop_for_test().unwrap();
+    let mut continuation = Some(world.capture_hot_fork_world_continuation().unwrap());
+    let configuration = continuation.as_ref().unwrap().configuration().id();
+    let (input, calls, drops) = launcher(None);
+    let launcher_address = std::ptr::from_ref(&*input);
+    let mut input = Some(input);
+    let mut adoptions = Vec::with_capacity(7);
+    let adoption_buffer = adoptions.as_ptr();
+    let adoption_capacity = adoptions.capacity();
+    let mut custody = Box::new(ProductionVmConstructionCustody::new());
+    let carrier_address = std::ptr::from_ref(&*custody);
+    custody
+        .install_hot_fork_inputs(&mut input, &mut continuation, &mut adoptions)
+        .unwrap();
+
+    let first = prepare_retained_hot_fork_construction(
+        &other,
+        &source,
+        &mut custody,
+        PathBuf::from("unused-fork-state"),
+    )
+    .unwrap_err();
+
+    assert!(first.to_string().contains("requested scenario"));
+    assert!(input.is_none());
+    assert!(continuation.is_none());
+    assert_eq!(adoptions.capacity(), 0);
+    assert_eq!(std::ptr::from_ref(&*custody), carrier_address);
+    let partial = custody.partial_mut().unwrap();
+    assert!(std::ptr::addr_eq(
+        std::ptr::from_ref(&**partial.node_launcher.as_ref().unwrap()),
+        launcher_address,
+    ));
+    assert_eq!(
+        partial
+            .hot_fork_continuation
+            .as_ref()
+            .unwrap()
+            .configuration()
+            .id(),
+        configuration
+    );
+    assert_eq!(partial.hot_fork_adoptions.as_ptr(), adoption_buffer);
+    assert_eq!(partial.hot_fork_adoptions.capacity(), adoption_capacity);
+    assert!(partial.restore_checkpoint.is_none());
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
+
+    let failure = custody.into_failure(first.clone());
+    assert!(failure.retry_cleanup().is_err());
+    failure.retry_cleanup().unwrap();
+    assert_eq!(failure.first_error(), Some(&first));
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
+    drop(failure);
     assert_eq!(drops.load(Ordering::SeqCst), 1);
 }

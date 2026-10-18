@@ -14,6 +14,9 @@ use super::linux::LinuxQemuHotForkWorldLaunchSource;
 use super::*;
 use crate::QemuAttemptOperationalBoundary;
 
+mod node;
+pub(crate) use node::TargetNodeConstruction;
+
 #[cfg(feature = "destructive-recovery-faults")]
 const DESTRUCTIVE_RECOVERY_TRIGGER_ENVIRONMENT: &str = "CRUCIBLE_DESTRUCTIVE_RECOVERY_TRIGGER";
 #[cfg(feature = "destructive-recovery-faults")]

@@ -80,31 +80,33 @@ pub(super) fn run(
         config
     };
     let mut owner = factory.begin(1, MEMORY_BYTES, DISK_BYTES)?;
-    let mut node = owner.launch(
+    let (primary, shutdown) = owner.with_launch(
         &config,
         "block-recovery-hot-fork-router",
         "block-recovery-hot-fork-crash",
+        |node| {
+            // Apply recovery only after the guest has opened the device. This makes
+            // the recovery interval causal: the kernel's earlier probe traffic cannot
+            // cross a transition that the host has not started yet.
+            let primary = (|| {
+                let recovery_started_tick = await_recovery_readiness(node)?;
+                node.apply_storage_boundary_mutations(
+                    &[],
+                    &[(recovery_transition(), recovery_started_tick)],
+                )
+                .ok_or("block recovery subflight omitted its live device")??;
+                let recovery_deadline_tick = recovery_started_tick
+                    .checked_add(virtual_nanos_to_ticks(RECOVERY_NANOS)?)
+                    .ok_or("block recovery deadline overflowed virtual time")?;
+
+                let evidence =
+                    exercise_recovery_and_prepare_hot_fork(node, recovery_deadline_tick)?;
+                Ok::<_, Box<dyn Error>>((recovery_started_tick, evidence))
+            })();
+            let shutdown = node.shutdown_child().map_err(|error| error.to_string());
+            Ok((primary, shutdown))
+        },
     )?;
-
-    // Apply recovery only after the guest has opened the device. This makes
-    // the recovery interval causal: the kernel's earlier probe traffic cannot
-    // cross a transition that the host has not started yet.
-    let primary = (|| {
-        let recovery_started_tick = await_recovery_readiness(&mut node)?;
-        node.apply_storage_boundary_mutations(
-            &[],
-            &[(recovery_transition(), recovery_started_tick)],
-        )
-        .ok_or("block recovery subflight omitted its live device")??;
-        let recovery_deadline_tick = recovery_started_tick
-            .checked_add(virtual_nanos_to_ticks(RECOVERY_NANOS)?)
-            .ok_or("block recovery deadline overflowed virtual time")?;
-
-        let evidence = exercise_recovery_and_prepare_hot_fork(&mut node, recovery_deadline_tick)?;
-        Ok::<_, Box<dyn Error>>((recovery_started_tick, evidence))
-    })();
-    let shutdown = node.shutdown_child().map_err(|error| error.to_string());
-    drop(node);
     let trace = match &shutdown {
         Ok(report) if diagnostic_liveness_trace && report.reaped && !report.leaked => {
             Some(owner.liveness_tail().map_err(|error| error.to_string()))

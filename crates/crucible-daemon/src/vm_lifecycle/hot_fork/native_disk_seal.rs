@@ -15,7 +15,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 /// Native seal request and independently authenticated open file custody.
-pub(super) struct ProductionVmHotForkDiskCustody {
+pub(in crate::vm_lifecycle) struct ProductionVmHotForkDiskCustody {
     source_process: QemuProcessIdentity,
     source_generation: ProductionVmNodeGeneration,
     request: QmpHotForkBlockSealRequest,

@@ -41,7 +41,7 @@ use std::error::Error;
 use std::fmt;
 use std::sync::{Arc, Mutex, Weak};
 
-use super::{SynchronousCampaignExecutorError, reconcile_model};
+use super::{SynchronousCampaignExecutorCause, SynchronousCampaignExecutorError, reconcile_model};
 use crucible_campaign::{ExecutorControlService, ExecutorService, ExecutorStatusService};
 
 type CheckpointCaptureSupervisor =
@@ -187,7 +187,8 @@ impl ComponentExecutionState {
                     reason: ExecutorRejection::Unauthorized,
                 },
             )
-            .map_err(SynchronousCampaignExecutorError::Protocol);
+            .map_err(SynchronousCampaignExecutorCause::Protocol)
+            .map_err(SynchronousCampaignExecutorError::from);
         }
         if request.resources() != self.resources {
             return SubmitAttemptResponse::new(
@@ -196,7 +197,8 @@ impl ComponentExecutionState {
                     reason: ExecutorRejection::Incompatible,
                 },
             )
-            .map_err(SynchronousCampaignExecutorError::Protocol);
+            .map_err(SynchronousCampaignExecutorCause::Protocol)
+            .map_err(SynchronousCampaignExecutorError::from);
         }
         if request.execution_scope() != AttemptExecutionScope::Semantic {
             return SubmitAttemptResponse::new(
@@ -205,14 +207,16 @@ impl ComponentExecutionState {
                     reason: ExecutorRejection::Incompatible,
                 },
             )
-            .map_err(SynchronousCampaignExecutorError::Protocol);
+            .map_err(SynchronousCampaignExecutorCause::Protocol)
+            .map_err(SynchronousCampaignExecutorError::from);
         }
         if let Err(reason) = self.admission.validate(request) {
             return SubmitAttemptResponse::new(
                 request,
                 SubmitAttemptDisposition::Rejected { reason },
             )
-            .map_err(SynchronousCampaignExecutorError::Protocol);
+            .map_err(SynchronousCampaignExecutorCause::Protocol)
+            .map_err(SynchronousCampaignExecutorError::from);
         }
         let request_digest = request.request_digest();
         if self
@@ -226,7 +230,8 @@ impl ComponentExecutionState {
                     reason: ExecutorRejection::ConflictingAssignment,
                 },
             )
-            .map_err(SynchronousCampaignExecutorError::Protocol);
+            .map_err(SynchronousCampaignExecutorCause::Protocol)
+            .map_err(SynchronousCampaignExecutorError::from);
         }
         self.assignments
             .entry(request.assignment())
@@ -236,16 +241,17 @@ impl ComponentExecutionState {
         if let Some(observation) = self.completed.get(&key).copied() {
             self.admission
                 .validate_completion(request, observation)
-                .map_err(SynchronousCampaignExecutorError::Completion)?;
+                .map_err(SynchronousCampaignExecutorCause::Completion)?;
             return SubmitAttemptResponse::new(
                 request,
                 SubmitAttemptDisposition::AlreadyCompleted { observation },
             )
-            .map_err(SynchronousCampaignExecutorError::Protocol);
+            .map_err(SynchronousCampaignExecutorCause::Protocol)
+            .map_err(SynchronousCampaignExecutorError::from);
         }
         let input =
             crate::resolve_attempt_execution_input_with_resources(store, key, request.resources())
-                .map_err(SynchronousCampaignExecutorError::Repository)?;
+                .map_err(SynchronousCampaignExecutorCause::Repository)?;
         let context = AttemptExecutionContext::new(
             request.resources(),
             request.retention(),
@@ -257,42 +263,52 @@ impl ComponentExecutionState {
             Ok(product) => product,
             Err(failure) => {
                 reconcile_model(worker.model_mut(), AttemptExecutionDisposition::Failed)?;
-                return Err(SynchronousCampaignExecutorError::Execution(failure));
+                return Err(SynchronousCampaignExecutorError::from(
+                    SynchronousCampaignExecutorCause::Execution(failure),
+                ));
             }
         };
         let result = match product {
             AttemptExecutionProduct::PreparedSemantic(result) => Ok(*result),
             AttemptExecutionProduct::ExactCheckpoint(_) => {
                 reconcile_model(worker.model_mut(), AttemptExecutionDisposition::Failed)?;
-                return Err(SynchronousCampaignExecutorError::UnexpectedCheckpoint);
+                return Err(SynchronousCampaignExecutorError::from(
+                    SynchronousCampaignExecutorCause::UnexpectedCheckpoint,
+                ));
             }
         };
         let result = match result {
             Ok(result) => result,
             Err(error) => {
                 reconcile_model(worker.model_mut(), AttemptExecutionDisposition::Failed)?;
-                return Err(SynchronousCampaignExecutorError::Preparation(Box::new(
-                    AttemptResultPreparationFailure::Result(error),
-                )));
+                return Err(SynchronousCampaignExecutorError::from(
+                    SynchronousCampaignExecutorCause::Preparation(Box::new(
+                        AttemptResultPreparationFailure::Result(error),
+                    )),
+                ));
             }
         };
         if let Err(error) = validate_prepared_semantic_attempt_result(store, key, &result) {
             reconcile_model(worker.model_mut(), AttemptExecutionDisposition::Failed)?;
-            return Err(SynchronousCampaignExecutorError::Preparation(Box::new(
-                error,
-            )));
+            return Err(SynchronousCampaignExecutorError::from(
+                SynchronousCampaignExecutorCause::Preparation(Box::new(error)),
+            ));
         }
         let observation =
             match publish_prepared_semantic_attempt_result(store, exact_retention, &result) {
                 Ok(observation) => observation,
                 Err(error) => {
                     reconcile_model(worker.model_mut(), AttemptExecutionDisposition::Failed)?;
-                    return Err(SynchronousCampaignExecutorError::Publication(error));
+                    return Err(SynchronousCampaignExecutorError::from(
+                        SynchronousCampaignExecutorCause::Publication(error),
+                    ));
                 }
             };
         if let Err(reason) = self.admission.validate_completion(request, observation) {
             reconcile_model(worker.model_mut(), AttemptExecutionDisposition::Failed)?;
-            return Err(SynchronousCampaignExecutorError::Completion(reason));
+            return Err(SynchronousCampaignExecutorError::from(
+                SynchronousCampaignExecutorCause::Completion(reason),
+            ));
         }
         reconcile_model(
             worker.model_mut(),
@@ -303,7 +319,8 @@ impl ComponentExecutionState {
             request,
             SubmitAttemptDisposition::AlreadyCompleted { observation },
         )
-        .map_err(SynchronousCampaignExecutorError::Protocol)
+        .map_err(SynchronousCampaignExecutorCause::Protocol)
+        .map_err(SynchronousCampaignExecutorError::from)
     }
 }
 impl ComponentExecutionState {
@@ -317,18 +334,23 @@ impl ComponentExecutionState {
     where
         M::Error: Error + Send + Sync + 'static,
     {
-        let capture = self
-            .checkpoint_capture
-            .as_ref()
-            .ok_or(SynchronousCampaignExecutorError::CaptureUnavailable)?;
+        let capture =
+            self.checkpoint_capture
+                .as_ref()
+                .ok_or(SynchronousCampaignExecutorError::from(
+                    SynchronousCampaignExecutorCause::CaptureUnavailable,
+                ))?;
         let supervisor = Arc::clone(&capture.supervisor);
         let checkpoints = Arc::clone(&capture.checkpoints);
         let response = {
-            let mut supervisor = lock_capture_supervisor(&supervisor)
-                .map_err(|_| SynchronousCampaignExecutorError::CaptureSupervisorPoisoned)?;
+            let mut supervisor = lock_capture_supervisor(&supervisor).map_err(|_| {
+                SynchronousCampaignExecutorError::from(
+                    SynchronousCampaignExecutorCause::CaptureSupervisorPoisoned,
+                )
+            })?;
             supervisor
                 .submit_attempt(request)
-                .map_err(SynchronousCampaignExecutorError::CaptureSupervisor)?
+                .map_err(SynchronousCampaignExecutorCause::CaptureSupervisor)?
         };
         if !matches!(
             response.disposition(),
@@ -338,11 +360,16 @@ impl ComponentExecutionState {
         }
 
         let mut queued = {
-            let mut capture_supervisor = lock_capture_supervisor(&supervisor)
-                .map_err(|_| SynchronousCampaignExecutorError::CaptureSupervisorPoisoned)?;
+            let mut capture_supervisor = lock_capture_supervisor(&supervisor).map_err(|_| {
+                SynchronousCampaignExecutorError::from(
+                    SynchronousCampaignExecutorCause::CaptureSupervisorPoisoned,
+                )
+            })?;
             capture_supervisor
                 .next_queued()
-                .ok_or(SynchronousCampaignExecutorError::CaptureNotPaused)?
+                .ok_or(SynchronousCampaignExecutorError::from(
+                    SynchronousCampaignExecutorCause::CaptureNotPaused,
+                ))?
         };
         let handoff = SynchronousCheckpointHandoff {
             supervisor: Arc::downgrade(&supervisor),
@@ -358,21 +385,27 @@ impl ComponentExecutionState {
                 let queued = prepared.queued().reconciliation_copy();
                 let cleanup = stop_capture_terminally(&supervisor, &queued);
                 reconcile_model(worker.model_mut(), AttemptExecutionDisposition::Failed)?;
-                cleanup.map_err(SynchronousCampaignExecutorError::CaptureSupervisor)?;
-                return Err(SynchronousCampaignExecutorError::CaptureUnexpectedSemanticResult);
+                cleanup.map_err(SynchronousCampaignExecutorCause::CaptureSupervisor)?;
+                return Err(SynchronousCampaignExecutorError::from(
+                    SynchronousCampaignExecutorCause::CaptureUnexpectedSemanticResult,
+                ));
             }
             Err(AttemptResultPreparationError::Worker { queued, failure }) => {
                 let cleanup = stop_capture_after_worker_failure(&supervisor, &queued, &failure);
                 reconcile_model(worker.model_mut(), AttemptExecutionDisposition::Failed)?;
-                cleanup.map_err(SynchronousCampaignExecutorError::CaptureSupervisor)?;
-                return Err(SynchronousCampaignExecutorError::CaptureExecution(failure));
+                cleanup.map_err(SynchronousCampaignExecutorCause::CaptureSupervisor)?;
+                return Err(SynchronousCampaignExecutorError::from(
+                    SynchronousCampaignExecutorCause::CaptureExecution(failure),
+                ));
             }
             Err(AttemptResultPreparationError::Candidate { pending, source }) => {
                 let (queued, _) = pending.into_parts();
                 let cleanup = stop_capture_terminally(&supervisor, &queued);
                 reconcile_model(worker.model_mut(), AttemptExecutionDisposition::Failed)?;
-                cleanup.map_err(SynchronousCampaignExecutorError::CaptureSupervisor)?;
-                return Err(SynchronousCampaignExecutorError::CaptureCandidate(source));
+                cleanup.map_err(SynchronousCampaignExecutorCause::CaptureSupervisor)?;
+                return Err(SynchronousCampaignExecutorError::from(
+                    SynchronousCampaignExecutorCause::CaptureCandidate(source),
+                ));
             }
             Err(AttemptResultPreparationError::Checkpoint { pending, source }) => {
                 let (queued, checkpoint) = pending.into_parts();
@@ -380,9 +413,11 @@ impl ComponentExecutionState {
                 let cleanup = stop_capture_terminally(&supervisor, &queued);
                 let retirement = retire_checkpoint_source(retirement);
                 reconcile_model(worker.model_mut(), AttemptExecutionDisposition::Failed)?;
-                cleanup.map_err(SynchronousCampaignExecutorError::CaptureSupervisor)?;
+                cleanup.map_err(SynchronousCampaignExecutorCause::CaptureSupervisor)?;
                 retirement?;
-                return Err(SynchronousCampaignExecutorError::CaptureCheckpoint(*source));
+                return Err(SynchronousCampaignExecutorError::from(
+                    SynchronousCampaignExecutorCause::CaptureCheckpoint(*source),
+                ));
             }
         };
 
@@ -398,7 +433,9 @@ impl ComponentExecutionState {
                 );
                 reconcile_model(worker.model_mut(), AttemptExecutionDisposition::Failed)?;
                 cleanup?;
-                return Err(SynchronousCampaignExecutorError::CaptureSupervisorPoisoned);
+                return Err(SynchronousCampaignExecutorError::from(
+                    SynchronousCampaignExecutorCause::CaptureSupervisorPoisoned,
+                ));
             }
         };
         let staged = match staged {
@@ -409,9 +446,11 @@ impl ComponentExecutionState {
                 ..
             }) => {
                 let retirement = retire_checkpoint_source(prepared.native_retirement());
-                exact_inventory
-                    .retain_checkpoint(checkpoint)
-                    .map_err(|_| SynchronousCampaignExecutorError::CaptureNotPaused)?;
+                exact_inventory.retain_checkpoint(checkpoint).map_err(|_| {
+                    SynchronousCampaignExecutorError::from(
+                        SynchronousCampaignExecutorCause::CaptureNotPaused,
+                    )
+                })?;
                 reconcile_model(
                     worker.model_mut(),
                     AttemptExecutionDisposition::ExactCheckpoint(checkpoint),
@@ -426,7 +465,9 @@ impl ComponentExecutionState {
                 );
                 reconcile_model(worker.model_mut(), AttemptExecutionDisposition::Failed)?;
                 cleanup?;
-                return Err(SynchronousCampaignExecutorError::CaptureNotPaused);
+                return Err(SynchronousCampaignExecutorError::from(
+                    SynchronousCampaignExecutorCause::CaptureNotPaused,
+                ));
             }
             Err(error) => {
                 let source = error.source;
@@ -436,7 +477,9 @@ impl ComponentExecutionState {
                 );
                 reconcile_model(worker.model_mut(), AttemptExecutionDisposition::Failed)?;
                 cleanup?;
-                return Err(SynchronousCampaignExecutorError::CaptureSupervisor(source));
+                return Err(SynchronousCampaignExecutorError::from(
+                    SynchronousCampaignExecutorCause::CaptureSupervisor(source),
+                ));
             }
         };
         let published = match publish_staged_checkpoint_result(&checkpoints, *staged) {
@@ -449,7 +492,9 @@ impl ComponentExecutionState {
                 );
                 reconcile_model(worker.model_mut(), AttemptExecutionDisposition::Failed)?;
                 cleanup?;
-                return Err(SynchronousCampaignExecutorError::CaptureCheckpoint(source));
+                return Err(SynchronousCampaignExecutorError::from(
+                    SynchronousCampaignExecutorCause::CaptureCheckpoint(source),
+                ));
             }
         };
         let completion = match lock_capture_supervisor(&supervisor) {
@@ -463,16 +508,20 @@ impl ComponentExecutionState {
                 );
                 reconcile_model(worker.model_mut(), AttemptExecutionDisposition::Failed)?;
                 cleanup?;
-                return Err(SynchronousCampaignExecutorError::CaptureSupervisorPoisoned);
+                return Err(SynchronousCampaignExecutorError::from(
+                    SynchronousCampaignExecutorCause::CaptureSupervisorPoisoned,
+                ));
             }
         };
         match completion {
             Ok(
                 CheckpointCompletionOutcome::Paused | CheckpointCompletionOutcome::AlreadyPaused,
             ) => {
-                exact_inventory
-                    .retain_checkpoint(checkpoint)
-                    .map_err(|_| SynchronousCampaignExecutorError::CaptureNotPaused)?;
+                exact_inventory.retain_checkpoint(checkpoint).map_err(|_| {
+                    SynchronousCampaignExecutorError::from(
+                        SynchronousCampaignExecutorCause::CaptureNotPaused,
+                    )
+                })?;
                 reconcile_model(
                     worker.model_mut(),
                     AttemptExecutionDisposition::ExactCheckpoint(checkpoint),
@@ -481,7 +530,9 @@ impl ComponentExecutionState {
             }
             Ok(CheckpointCompletionOutcome::NotCurrent) => {
                 reconcile_model(worker.model_mut(), AttemptExecutionDisposition::Failed)?;
-                Err(SynchronousCampaignExecutorError::CaptureNotPaused)
+                Err(SynchronousCampaignExecutorError::from(
+                    SynchronousCampaignExecutorCause::CaptureNotPaused,
+                ))
             }
             Err(error) => {
                 let source = error.source;
@@ -491,7 +542,9 @@ impl ComponentExecutionState {
                 );
                 reconcile_model(worker.model_mut(), AttemptExecutionDisposition::Failed)?;
                 cleanup?;
-                Err(SynchronousCampaignExecutorError::CaptureSupervisor(source))
+                Err(SynchronousCampaignExecutorError::from(
+                    SynchronousCampaignExecutorCause::CaptureSupervisor(source),
+                ))
             }
         }
     }
@@ -549,8 +602,11 @@ fn abort_checkpoint_capture<E>(
 ) -> Result<(), SynchronousCampaignExecutorError<E>> {
     let retirement = token.native_retirement();
     let mut supervisor = lock_capture_supervisor_for_cleanup(supervisor);
-    let abort = abort_checkpoint_result(&mut supervisor, token)
-        .map_err(|error| SynchronousCampaignExecutorError::CaptureAbort(Box::new(error)));
+    let abort = abort_checkpoint_result(&mut supervisor, token).map_err(|error| {
+        SynchronousCampaignExecutorError::from(SynchronousCampaignExecutorCause::CaptureAbort(
+            Box::new(error),
+        ))
+    });
     drop(supervisor);
 
     let retirement = retire_checkpoint_source(retirement);
@@ -578,7 +634,8 @@ fn retire_checkpoint_source<E>(
     };
     crate::retire_production_exact_checkpoint_catalog(&retirement)
         .map(|_| ())
-        .map_err(SynchronousCampaignExecutorError::CaptureNativeRetirement)
+        .map_err(SynchronousCampaignExecutorCause::CaptureNativeRetirement)
+        .map_err(SynchronousCampaignExecutorError::from)
 }
 
 impl ComponentExecutionState {
@@ -587,60 +644,85 @@ impl ComponentExecutionState {
         request: &GetAttemptExecutionRequest,
     ) -> Result<GetAttemptExecutionResponse, SynchronousCampaignExecutorError<E>> {
         if request.execution_scope() != AttemptExecutionScope::Semantic {
-            let capture = self
-                .checkpoint_capture
-                .as_ref()
-                .ok_or(SynchronousCampaignExecutorError::CaptureUnavailable)?;
+            let capture =
+                self.checkpoint_capture
+                    .as_ref()
+                    .ok_or(SynchronousCampaignExecutorError::from(
+                        SynchronousCampaignExecutorCause::CaptureUnavailable,
+                    ))?;
             return lock_capture_supervisor(&capture.supervisor)
-                .map_err(|_| SynchronousCampaignExecutorError::CaptureSupervisorPoisoned)?
+                .map_err(|_| {
+                    SynchronousCampaignExecutorError::from(
+                        SynchronousCampaignExecutorCause::CaptureSupervisorPoisoned,
+                    )
+                })?
                 .get_attempt_execution(request)
-                .map_err(SynchronousCampaignExecutorError::CaptureSupervisor);
+                .map_err(SynchronousCampaignExecutorCause::CaptureSupervisor)
+                .map_err(SynchronousCampaignExecutorError::from);
         }
         GetAttemptExecutionResponse::new(request, GetAttemptExecutionDisposition::NotCurrent)
-            .map_err(SynchronousCampaignExecutorError::<E>::Protocol)
+            .map_err(SynchronousCampaignExecutorCause::<E>::Protocol)
+            .map_err(SynchronousCampaignExecutorError::from)
     }
     pub(super) fn checkpoint_attempt_execution<E>(
         &mut self,
         request: &CheckpointAttemptExecutionRequest,
     ) -> Result<CheckpointAttemptExecutionResponse, SynchronousCampaignExecutorError<E>> {
         if request.execution_scope() != AttemptExecutionScope::Semantic {
-            let capture = self
-                .checkpoint_capture
-                .as_ref()
-                .ok_or(SynchronousCampaignExecutorError::CaptureUnavailable)?;
+            let capture =
+                self.checkpoint_capture
+                    .as_ref()
+                    .ok_or(SynchronousCampaignExecutorError::from(
+                        SynchronousCampaignExecutorCause::CaptureUnavailable,
+                    ))?;
             return lock_capture_supervisor(&capture.supervisor)
-                .map_err(|_| SynchronousCampaignExecutorError::CaptureSupervisorPoisoned)?
+                .map_err(|_| {
+                    SynchronousCampaignExecutorError::from(
+                        SynchronousCampaignExecutorCause::CaptureSupervisorPoisoned,
+                    )
+                })?
                 .checkpoint_attempt_execution(request)
-                .map_err(SynchronousCampaignExecutorError::CaptureSupervisor);
+                .map_err(SynchronousCampaignExecutorCause::CaptureSupervisor)
+                .map_err(SynchronousCampaignExecutorError::from);
         }
         CheckpointAttemptExecutionResponse::new(
             request,
             CheckpointAttemptExecutionDisposition::NotCurrent,
         )
-        .map_err(SynchronousCampaignExecutorError::<E>::Protocol)
+        .map_err(SynchronousCampaignExecutorCause::<E>::Protocol)
+        .map_err(SynchronousCampaignExecutorError::from)
     }
     pub(super) fn cancel_attempt_execution<E>(
         &mut self,
         request: &CancelAttemptExecutionRequest,
     ) -> Result<CancelAttemptExecutionResponse, SynchronousCampaignExecutorError<E>> {
         if request.execution_scope() != AttemptExecutionScope::Semantic {
-            let capture = self
-                .checkpoint_capture
-                .as_ref()
-                .ok_or(SynchronousCampaignExecutorError::CaptureUnavailable)?;
+            let capture =
+                self.checkpoint_capture
+                    .as_ref()
+                    .ok_or(SynchronousCampaignExecutorError::from(
+                        SynchronousCampaignExecutorCause::CaptureUnavailable,
+                    ))?;
             return lock_capture_supervisor(&capture.supervisor)
-                .map_err(|_| SynchronousCampaignExecutorError::CaptureSupervisorPoisoned)?
+                .map_err(|_| {
+                    SynchronousCampaignExecutorError::from(
+                        SynchronousCampaignExecutorCause::CaptureSupervisorPoisoned,
+                    )
+                })?
                 .cancel_attempt_execution(request)
-                .map_err(SynchronousCampaignExecutorError::CaptureSupervisor);
+                .map_err(SynchronousCampaignExecutorCause::CaptureSupervisor)
+                .map_err(SynchronousCampaignExecutorError::from);
         }
         CancelAttemptExecutionResponse::new(request, CancelAttemptExecutionDisposition::NotCurrent)
-            .map_err(SynchronousCampaignExecutorError::<E>::Protocol)
+            .map_err(SynchronousCampaignExecutorCause::<E>::Protocol)
+            .map_err(SynchronousCampaignExecutorError::from)
     }
     pub(super) fn resume_attempt_execution<E>(
         &mut self,
         request: &ResumeAttemptExecutionRequest,
     ) -> Result<ResumeAttemptExecutionResponse, SynchronousCampaignExecutorError<E>> {
         ResumeAttemptExecutionResponse::new(request, ResumeAttemptExecutionDisposition::NotCurrent)
-            .map_err(SynchronousCampaignExecutorError::<E>::Protocol)
+            .map_err(SynchronousCampaignExecutorCause::<E>::Protocol)
+            .map_err(SynchronousCampaignExecutorError::from)
     }
 }

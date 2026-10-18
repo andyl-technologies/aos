@@ -72,3 +72,70 @@ fn missing_child_receipts_never_advance_shared_expected_membership() {
         assert!(state.reconciliations.is_empty());
     }
 }
+
+#[test]
+fn partial_construction_transfer_requires_the_exact_unadopted_partition() {
+    let selected = [node("a"), node("b")];
+    let mut registry = ComponentRegistry::new(selected.iter().cloned().collect());
+    let shared_address = Arc::as_ptr(&registry.state);
+    let name_address = registry
+        .state
+        .lock()
+        .unwrap()
+        .expected
+        .first()
+        .unwrap()
+        .name
+        .as_ptr();
+
+    for incorrect in [
+        vec![node("a")],
+        vec![node("a"), node("a"), node("b")],
+        vec![node("b"), node("a")],
+        vec![node("a"), node("foreign")],
+    ] {
+        assert!(
+            registry
+                .take_construction_post_body_children(incorrect.iter())
+                .is_err()
+        );
+        assert_eq!(Arc::as_ptr(&registry.state), shared_address);
+        let state = registry.state.lock().unwrap();
+        assert_eq!(state.expected.first().unwrap().name.as_ptr(), name_address);
+        assert_eq!(state.expected.len(), 2);
+        assert!(state.reconciliations.is_empty());
+    }
+    // A published lifecycle still requires actual receipts for every member.
+    assert!(registry.take_post_body_children().is_err());
+
+    let children = registry
+        .take_construction_post_body_children(selected.iter())
+        .unwrap();
+
+    assert!(children.is_empty());
+    assert_eq!(Arc::as_ptr(&registry.state), shared_address);
+    assert!(registry.state.lock().unwrap().expected.is_empty());
+}
+
+#[test]
+fn partial_construction_transfer_retains_the_same_registry_until_aliases_close() {
+    let selected = [node("a")];
+    let mut registry = ComponentRegistry::new(selected.iter().cloned().collect());
+    let alias = registry.clone();
+
+    assert!(
+        registry
+            .take_construction_post_body_children(selected.iter())
+            .is_err()
+    );
+    assert_eq!(alias.state.lock().unwrap().expected.len(), 1);
+    drop(alias);
+
+    assert!(
+        registry
+            .take_construction_post_body_children(selected.iter())
+            .unwrap()
+            .is_empty()
+    );
+    assert!(registry.state.lock().unwrap().expected.is_empty());
+}

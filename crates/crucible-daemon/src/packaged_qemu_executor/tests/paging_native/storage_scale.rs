@@ -97,8 +97,8 @@ fn production_ram_storage_scales_past_packed_index_limit() {
                 .actor
                 .with_supervisor(|actor| Ok(actor.host_resource_availability()))
                 .expect("original actor complete capacity");
-            let service = RetainedTemplateServiceFactory::new(prepared, config)
-                .start_for_archive_authentication(&source, ExecutionCancellation::default())
+            let mut service = RetainedTemplateServiceFactory::new(prepared, config)
+                .start_component_replay(&source, ExecutionCancellation::default())
                 .expect("actual full-vector Replay Service before storage work");
             let supervisor = service
                 .context()
@@ -308,7 +308,7 @@ fn production_ram_storage_scales_past_packed_index_limit() {
                 .complete()
                 .expect("original full-work operation completed");
             service
-                .release_after_world_cleanup()
+                .cleanup_after_component_borrowers()
                 .expect("actual no-native Service cleanup");
             drop(service);
             assert_eq!(

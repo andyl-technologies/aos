@@ -1621,33 +1621,64 @@ impl HostOperationGuard {
     ///
     /// Returns failure when expiration or sticky cancellation wins completion.
     pub fn complete(&self) -> Result<HostOperationStatus, HostSupervisionError> {
-        #[cfg(feature = "private-measurement-domain")]
-        self.check_original_preparation()?;
-        let mut state = self.supervisor.lock()?;
-        self.supervisor
-            .evaluate_decision(&mut state, self.id)?
-            .require_running(self.id)?;
-        let operation = state
-            .operations
-            .get_mut(&self.id)
-            .ok_or(HostSupervisionError::Unavailable)?;
-        if let Some(cancellation) = &operation.startup_cancellation {
-            cancellation.check()?;
-        }
-        if operation.action_subscribers.is_some() {
-            return Err(HostSupervisionError::BorrowedOperation);
-        }
-        operation.completed = operation.required;
-        operation.state = HostOperationState::Completed;
-        // The descriptor closes before its loan; no completed operation keeps
-        // a revocation alias that can affect later work on the same event.
-        drop(operation.startup_cancellation.take());
-        drop(state);
-        #[cfg(feature = "private-measurement-domain")]
-        if let Some(original) = &self.original_preparation {
-            original.wait_slice()?;
-        }
-        self.supervisor.operation_status(self.id)
+        self.complete_observed().1
+    }
+
+    /// Reports the exact completion effect separately from its independent post.
+    ///
+    /// The boolean becomes true only when this same operation is marked
+    /// completed. It grants no resource return or new work permission; callers
+    /// must separately retain their physical close receipts and reconcile a
+    /// refused post against this same saved operation before returning debt.
+    /// Existing completion checks, class policy and budgets remain unchanged.
+    ///
+    /// # Errors
+    /// The result preserves all ordinary completion and publication failures.
+    /// A repeated completed operation reports false and its ordinary refusal.
+    pub fn complete_observed(&self) -> (bool, Result<HostOperationStatus, HostSupervisionError>) {
+        self.complete_observed_with(|| {})
+    }
+
+    // The production hook is empty and statically dispatched. Component
+    // controls may poison the real local supervisor after its actual effect,
+    // before the genuine postcheck, without replacing a completion result.
+    fn complete_observed_with(
+        &self,
+        after_completed: impl FnOnce(),
+    ) -> (bool, Result<HostOperationStatus, HostSupervisionError>) {
+        let mut completed = false;
+        let result = (|| {
+            #[cfg(feature = "private-measurement-domain")]
+            self.check_original_preparation()?;
+            let mut state = self.supervisor.lock()?;
+            self.supervisor
+                .evaluate_decision(&mut state, self.id)?
+                .require_running(self.id)?;
+            let operation = state
+                .operations
+                .get_mut(&self.id)
+                .ok_or(HostSupervisionError::Unavailable)?;
+            if let Some(cancellation) = &operation.startup_cancellation {
+                cancellation.check()?;
+            }
+            if operation.action_subscribers.is_some() {
+                return Err(HostSupervisionError::BorrowedOperation);
+            }
+            operation.completed = operation.required;
+            operation.state = HostOperationState::Completed;
+            completed = true;
+            // The descriptor closes before its loan; no completed operation keeps
+            // a revocation alias that can affect later work on the same event.
+            drop(operation.startup_cancellation.take());
+            drop(state);
+            after_completed();
+            #[cfg(feature = "private-measurement-domain")]
+            if let Some(original) = &self.original_preparation {
+                original.wait_slice()?;
+            }
+            self.supervisor.operation_status(self.id)
+        })();
+        (completed, result)
     }
 }
 

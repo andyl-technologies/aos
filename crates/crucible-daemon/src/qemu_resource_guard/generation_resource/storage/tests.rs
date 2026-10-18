@@ -51,3 +51,44 @@ fn copied_identity_bytes_and_two_live_cells_are_in_prebirth_geometry()
     assert!(short_bytes >= std::mem::size_of::<GenerationNodeState>() as u64 + 1);
     Ok(())
 }
+
+#[test]
+fn nonowning_selection_matches_only_the_same_actual_registry_allocation() {
+    let nodes = [node("a")];
+    let source = QemuAttemptGenerationStorage::prepare(nodes.iter()).unwrap();
+    let foreign = QemuAttemptGenerationStorage::prepare(nodes.iter()).unwrap();
+    let selection = source.selection();
+    assert!(selection.matches(&source.generations));
+    assert!(!selection.matches(&foreign.generations));
+    assert!(source.matches_nodes(nodes.iter()).unwrap());
+    assert!(!source.matches_nodes([node("other")].iter()).unwrap());
+}
+
+#[test]
+fn target_metadata_reset_requires_no_aliases_active_leases_or_abandonment() {
+    let nodes = [node("a")];
+    let mut storage = QemuAttemptGenerationStorage::prepare(nodes.iter()).unwrap();
+    let alias = storage.lend_existing();
+    assert!(!storage.reset_after_target_return());
+    drop(alias);
+    {
+        let mut state = storage.generations.lock().unwrap();
+        state.nodes[0].latest = Some(8);
+        state.nodes[0].active[0] = Some(8);
+    }
+    assert!(!storage.reset_after_target_return());
+    {
+        let mut state = storage.generations.lock().unwrap();
+        state.nodes[0].active[0] = None;
+        state.abandoned = true;
+    }
+    assert!(!storage.reset_after_target_return());
+    {
+        let mut state = storage.generations.lock().unwrap();
+        state.abandoned = false;
+    }
+    assert!(storage.reset_after_target_return());
+    let state = storage.generations.lock().unwrap();
+    assert_eq!(state.nodes[0].active, [None, None]);
+    assert_eq!(state.nodes[0].latest, None);
+}

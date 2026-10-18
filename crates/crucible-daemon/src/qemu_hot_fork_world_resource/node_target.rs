@@ -151,6 +151,23 @@ where
     }
 
     pub(crate) fn abort_without_child(mut self) -> Result<(), QemuVmRealizationError> {
+        self.abort_without_child_retained()
+    }
+
+    /// Returns only this exact unpublished member, retaining its owner on error.
+    ///
+    /// The preborn Target row keeps this same value through every refusal.
+    /// Calling this again after actual local return performs no second ledger
+    /// mutation. Native Target return remains a separate genuine loan receipt.
+    pub(crate) fn abort_without_child_retained(&mut self) -> Result<(), QemuVmRealizationError> {
+        if self.retirement == WorldMemberRetirement::Returned {
+            return Ok(());
+        }
+        if self.retirement == WorldMemberRetirement::Quarantined {
+            return Err(QemuVmRealizationError::CleanupRetained {
+                operation: "abort quarantined hot-fork World member",
+            });
+        }
         #[cfg(test)]
         if self.component_ram_facts
             && let Some((registration, _, _)) = &self.host_ram

@@ -10,7 +10,7 @@ use std::error::Error;
 use std::io::BufRead;
 
 /// Exposes operations, never a movable backend guard or an admission recipe.
-pub(crate) trait NativeObservationOwner: ProductionVmNodeLauncher {
+pub(crate) trait NativeObservationOwner {
     fn launch_observation(
         &mut self,
         node: &crucible::NodeId,
@@ -37,8 +37,6 @@ pub(crate) trait NativeObservationOwner: ProductionVmNodeLauncher {
         node: &crucible::NodeId,
         generation: u64,
     ) -> Result<String, Box<dyn Error>>;
-
-    fn into_cleanup(self: Box<Self>) -> Box<dyn ProductionVmNodeLauncher>;
 }
 
 impl<G, F> NativeObservationOwner for QemuAttemptProductionVmNodeLauncher<G, F>
@@ -80,73 +78,176 @@ where
     ) -> Result<String, Box<dyn Error>> {
         self.native_observation_liveness_tail(node, generation)
     }
+}
 
-    fn into_cleanup(self: Box<Self>) -> Box<dyn ProductionVmNodeLauncher> {
-        self
+/// Keeps actual whole-role refusal or terminal history at the outer runner.
+pub(crate) enum NativeObservationRetirementError {
+    Pending {
+        retirement: crate::lifecycle_cleanup::PreparedSourceRetirement,
+        refusal: Option<crate::lifecycle_cleanup::PreparedSourceRefusal>,
+    },
+    Terminal(std::sync::Mutex<crate::ProductionVmConstructionPostBody>),
+}
+
+impl std::fmt::Debug for NativeObservationRetirementError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Pending { refusal, .. } => formatter
+                .debug_struct("NativeObservationRetirementPending")
+                .field("refusal", refusal)
+                .finish_non_exhaustive(),
+            Self::Terminal(body) => formatter
+                .debug_tuple("NativeObservationTerminal")
+                .field(body)
+                .finish(),
+        }
     }
 }
+
+impl std::fmt::Display for NativeObservationRetirementError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Pending {
+                retirement,
+                refusal,
+            } => {
+                write!(
+                    formatter,
+                    "same native observation retirement remains pending: {refusal:?}"
+                )?;
+                let mut result = Ok(());
+                retirement.with_history(|phase, first| {
+                    if result.is_ok() {
+                        result = write!(formatter, "; {phase}: {first}");
+                    }
+                });
+                result
+            }
+            Self::Terminal(body) => match body.try_lock() {
+                Ok(body) => write!(
+                    formatter,
+                    "native observation returned with history: {body}"
+                ),
+                Err(std::sync::TryLockError::Poisoned(poison)) => write!(
+                    formatter,
+                    "native observation returned with retained history: {}",
+                    &**poison.get_ref()
+                ),
+                Err(std::sync::TryLockError::WouldBlock) => formatter
+                    .write_str("native observation returned with borrowed terminal history"),
+            },
+        }
+    }
+}
+
+impl Error for NativeObservationRetirementError {}
 
 impl<R> QemuAttemptProductionVmLifecycleFactory<R>
 where
     R: QemuAttemptResourceGuardFactory + Send + 'static,
     R::Guard: QemuAttemptProcessResourceGuard + Send + 'static,
 {
-    /// Projects the same admitted lifecycle under the accepted worker's account.
+    /// Configures the actual retained launcher before Flight observation IO.
     pub(crate) fn begin_native_observation_default(
         &mut self,
         context: &AttemptExecutionContext,
         source: &ScenarioDefForm,
     ) -> Result<(), QemuAttemptProductionVmLifecycleError> {
-        let config = self
-            .config
-            .try_clone_admitted()
-            .map_err(|first| QemuAttemptProductionVmLifecycleError::ModelCopy(Box::new(first)))?;
-        let (config, registration) = config_for_assignment_host_watchdog(config, context)?;
-        let mut launcher = self.prepare_attempt_launcher(context, source, &config, registration)?;
-        launcher.native_observation_config = Some(config);
-        self.retained_install = Some(RetainedSourceInstall::NativeObservation(launcher));
-        Ok(())
+        // Main owns the Pending before even an admitted configuration copy.
+        let prepared = self.selected_prepared_source()?;
+        let result = prepared.with_pending(|pending| {
+            pending.require_pristine_request()?;
+            let inputs = self
+                .config
+                .try_clone_admitted()
+                .map_err(|first| QemuAttemptProductionVmLifecycleError::ModelCopy(Box::new(first)))
+                .and_then(|config| config_for_assignment_host_watchdog(config, context));
+            let (config, registration) = match inputs {
+                Ok(inputs) => inputs,
+                Err(first) => {
+                    pending.record_construction_first(first);
+                    return Err(());
+                }
+            };
+            pending.prepare_native_observation_launcher(
+                context,
+                source,
+                config,
+                registration,
+                self.terminal_checkpoints.clone(),
+            )
+        });
+        complete_prepared_request(&prepared, result)
     }
 
-    /// Borrows only the operation interface stored in this exact factory.
-    pub(crate) fn native_observation(
+    /// Borrows only operations while Main keeps the same actual native owner.
+    pub(crate) fn with_native_observation(
         &mut self,
-    ) -> Result<&mut (dyn NativeObservationOwner + 'static), LifecycleApiError> {
-        match self.retained_install.as_mut() {
-            Some(RetainedSourceInstall::NativeObservation(owner)) => Ok(owner.as_mut()),
-            _ => Err(LifecycleApiError::ConstructionCustodyUnavailable),
+        apply: &mut dyn FnMut(&mut dyn NativeObservationOwner) -> Result<(), Box<dyn Error>>,
+    ) -> Result<(), Box<dyn Error>> {
+        let prepared = self.prepared_source_handle()?;
+        prepared.with_native_observation(apply)
+    }
+
+    /// Observes actual whole-role disposal, never diagnostic or body absence.
+    pub(crate) fn native_observation_is_closed(&self) -> bool {
+        self.prepared_source
+            .as_ref()
+            .is_none_or(|prepared| matches!(prepared.is_released(), Ok(true)))
+    }
+
+    /// Closes only the owned body before the inner Flight returns its evidence.
+    pub(crate) fn retry_native_observation_body(
+        &mut self,
+    ) -> Result<(), QemuAttemptProductionVmLifecycleError> {
+        let Some(prepared) = self.prepared_source.as_ref() else {
+            return Ok(());
+        };
+        match prepared.service_main_handle().retry_prepared_body() {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(prepared
+                .failure("native observation body remains retained")
+                .into()),
+            Err(raw) => Err(prepared
+                .failure_with_refusal("retire native observation body", raw)
+                .into()),
         }
     }
 
-    /// Observes body absence; this query grants no next effect or native role.
-    pub(crate) fn native_observation_is_closed(&self) -> bool {
-        self.retained_install.is_none() && !self.lifecycle_outstanding
-    }
-
-    /// Transfers the same Box and token without allocating another owner.
+    /// Drives the same saved Cleanup and preserves every actual terminal cause.
     pub(crate) fn retire_native_observation(
         &mut self,
-    ) -> Result<(), QemuAttemptProductionVmLifecycleError> {
-        let retained = self.retained_install.take();
-        let Some(RetainedSourceInstall::NativeObservation(mut owner)) = retained else {
-            self.retained_install = retained;
-            return self.retry_retained_source_installation();
+    ) -> Result<(), NativeObservationRetirementError> {
+        let Some(prepared) = self.prepared_source.as_ref() else {
+            return Ok(());
         };
-        let reservation = owner.take_cleanup_reservation();
-        match crate::qemu_lifecycle_launcher::publish_source_owner(
-            reservation,
-            owner.into_cleanup(),
-        ) {
-            Ok(handoff) => {
-                self.retain_cleanup_handoff(handoff);
-                self.retry_retained_source_installation()
+        if matches!(prepared.is_released(), Ok(true)) {
+            return Ok(());
+        }
+        let mut retirement = prepared.clone().into_retirement();
+        match retirement.retry() {
+            Ok(true) => {}
+            result => {
+                return Err(NativeObservationRetirementError::Pending {
+                    retirement,
+                    refusal: result.err(),
+                });
             }
-            Err(owner) => Err(self.park_install_from_checked_vacancy(
-                RetainedSourceInstall::Begin {
-                    owner,
-                    handoff: None,
-                },
+        }
+        match retirement.finish() {
+            Ok(body) if body.first_failure().is_none() => {
+                // Actual terminal payload destruction precedes the role's Free
+                // journal. No diagnostic move is mistaken for that disposal.
+                drop(body);
+                Ok(())
+            }
+            Ok(body) => Err(NativeObservationRetirementError::Terminal(
+                std::sync::Mutex::new(body),
             )),
+            Err(retirement) => Err(NativeObservationRetirementError::Pending {
+                retirement,
+                refusal: None,
+            }),
         }
     }
 }

@@ -97,6 +97,15 @@ pub use fault_implementation::{
 #[cfg(target_os = "linux")]
 mod hot_fork;
 #[cfg(target_os = "linux")]
+pub use hot_fork::ProductionVmHotForkSourcePreparationHistory;
+#[cfg(target_os = "linux")]
+pub(crate) use hot_fork::TargetSourceBackends;
+#[cfg(target_os = "linux")]
+pub(crate) use hot_fork::{
+    HotForkSourcePreparationError, MainSharedSource, PreparedSharedSource,
+    SourcePreparationBoundary, SourceWorldPreparation,
+};
+#[cfg(target_os = "linux")]
 pub use hot_fork::{
     ProductionHotForkCleanupObserver, ProductionVmExactHotForkSourceBoundary,
     ProductionVmHotForkContinuationUnavailable, ProductionVmHotForkIoNodeBoundary,
@@ -113,6 +122,10 @@ pub use hot_fork::{
     prepared_multi_node_hot_fork_source_world_with_powered_off_for_scenario_for_test,
     prepared_multi_node_hot_fork_source_world_with_time_limit_for_scenario_for_test,
     production_permanently_failed_loop_for_test, reset_hot_fork_adoption_count_for_test,
+};
+#[cfg(all(target_os = "linux", test))]
+pub(crate) use hot_fork::{
+    take_unissued_component_source, unissued_component_source, with_unique_component_source,
 };
 
 /// Default final logical tick available to one production lifecycle session.
@@ -1225,7 +1238,7 @@ pub struct ProductionVmLifecycleLoop {
     // A failed replay stays reachable before its diagnostic is rendered.
     retained_debug_construction: std::sync::Mutex<Option<ProductionVmConstructionFailure>>,
     // The same before-effects Box follows success until whole-owner retirement.
-    construction_custody: Option<Box<ProductionVmConstructionCustody>>,
+    construction_custody: LifecycleConstructionCustody,
     debug_runtime_evidence: Vec<ProductionVmDebugRuntimeEvidence>,
     node_launcher: Box<dyn ProductionVmNodeLauncher>,
     _run_directory: ProductionRunDirectory,
@@ -1237,6 +1250,32 @@ pub struct ProductionVmLifecycleLoop {
     retained_resource_owners: Vec<Box<dyn Send>>,
     // Declared last so copied model storage closes before its original credits.
     input_decode_custody: Option<crucible::owned_decode::DecodeCustody>,
+}
+
+// Main pairs the actual carrier and destination so native consuming teardown
+// cannot observe a witness without its original body storage.
+enum LifecycleConstructionCustody {
+    Unissued(Option<Box<ProductionVmConstructionCustody>>),
+    #[cfg(target_os = "linux")]
+    Main {
+        carrier: Box<ProductionVmConstructionCustody>,
+        destination: crate::lifecycle_cleanup::SourceBodyReturn,
+    },
+}
+
+#[cfg(test)]
+impl LifecycleConstructionCustody {
+    fn is_none(&self) -> bool {
+        matches!(self, Self::Unissued(None))
+    }
+
+    fn as_deref(&self) -> Option<&ProductionVmConstructionCustody> {
+        match self {
+            Self::Unissued(carrier) => carrier.as_deref(),
+            #[cfg(target_os = "linux")]
+            Self::Main { carrier, .. } => Some(carrier.as_ref()),
+        }
+    }
 }
 
 /// Exact scheduler/evidence boundary exposed after production checkpoint restore.
@@ -1687,6 +1726,11 @@ impl ProductionVmNodeGeneration {
         Ok(Self { node, generation })
     }
 
+    /// Moves the owned coordinate without copying its node name.
+    pub(crate) fn into_parts(self) -> (NodeId, u64) {
+        (self.node, self.generation)
+    }
+
     /// Returns the exact scheduler node identity.
     #[must_use]
     pub const fn node(&self) -> &NodeId {
@@ -2029,8 +2073,33 @@ impl ProductionVmNodeLaunch {
 /// containment authority from their `Drop` path when lifecycle construction,
 /// unwinding, or caller abandonment prevents an explicit [`Self::finish`].
 pub trait ProductionVmNodeLauncher:
-    ProductionVmCleanupOwner<Failure = crate::ProductionVmConstructionCleanupError>
+    ProductionVmCleanupOwner<
+        Failure = crate::ProductionVmConstructionCleanupError,
+        PostBody = crate::ProductionVmConstructionPostBody,
+    >
 {
+    /// Moves the same existing World return loan into durable Source retirement.
+    ///
+    /// This creates no loan or Original. Source custody must already bar work
+    /// and retain the whole body before effects; absence cannot prove return.
+    #[cfg(target_os = "linux")]
+    fn take_source_world_cleanup_loan(
+        &mut self,
+    ) -> Option<
+        crucible_linux_resource::host_services::process_birth::AuthenticatedNativeWorldCleanupLoan,
+    > {
+        None
+    }
+
+    /// Copies only the original Main selection retained by this actual launcher.
+    ///
+    /// The selector carries no process, Target or cleanup permission. Absence
+    /// cannot prove physical return or authorize an alternate native producer.
+    #[cfg(target_os = "linux")]
+    fn prepared_source_selector(&self) -> Option<crate::PreparedSourceSelector> {
+        None
+    }
+
     /// Moves the exact cleanup reservation without claiming physical return.
     #[cfg(target_os = "linux")]
     fn take_cleanup_reservation(
@@ -2038,8 +2107,10 @@ pub trait ProductionVmNodeLauncher:
     ) -> Option<
         Box<
             dyn ProductionVmCleanupReservation<
-                Failure = crate::ProductionVmConstructionCleanupError,
-            >,
+                    Failure = crate::ProductionVmConstructionCleanupError,
+                    PostBody = crate::ProductionVmConstructionPostBody,
+                    ReturnDestination = crate::lifecycle_cleanup::SourceBodyReturn,
+                >,
         >,
     > {
         None
@@ -2060,17 +2131,97 @@ pub trait ProductionVmNodeLauncher:
         false
     }
 
+    /// Checks that existing Target rows belong to this exact Source registry.
+    ///
+    /// This observation issues no native role or allocation permission. The
+    /// real producer repeats its containing Main and actual permit checks.
+    fn matches_target_construction_storage(
+        &self,
+        _storage: &crate::qemu_lifecycle_launcher::TargetConstructionStorage,
+    ) -> bool {
+        false
+    }
+
+    /// Moves the Source's prepaid selected Target storage into one constructor.
+    ///
+    /// # Errors
+    /// Refuses launchers without the actual Source storage or while it is lent.
+    fn take_target_construction_storage(
+        &mut self,
+    ) -> Result<crate::qemu_lifecycle_launcher::TargetConstructionStorage, LifecycleApiError> {
+        Err(loop_factory_error(
+            "launcher has no prepaid Target construction storage",
+        ))
+    }
+
+    /// Moves rows already prepared for return outside the Source mutex.
+    ///
+    /// # Errors
+    /// Preserves rows when exact registry/vacancy or the completed metadata
+    /// preparation does not match. This operation performs no cleanup or IO.
+    fn return_prepared_target_construction_storage(
+        &mut self,
+        storage: crate::qemu_lifecycle_launcher::TargetConstructionStorage,
+    ) -> Result<(), crate::qemu_lifecycle_launcher::TargetConstructionStorage> {
+        Err(storage)
+    }
+
+    /// Restores only unused or already-returned storage to its original Source.
+    ///
+    /// # Errors
+    /// Returns the same storage if this launcher cannot accept it or its native
+    /// loans still retain physical Target ownership.
+    fn return_target_construction_storage(
+        &mut self,
+        storage: crate::qemu_lifecycle_launcher::TargetConstructionStorage,
+    ) -> Result<(), crate::qemu_lifecycle_launcher::TargetConstructionStorage> {
+        Err(storage)
+    }
+
+    /// Copies actual World coordinates for selected Target routing only.
+    ///
+    /// # Errors
+    /// Refuses a launcher without an actual selected native World.
+    #[cfg(target_os = "linux")]
+    fn native_world_identity(
+        &self,
+    ) -> Result<
+        crucible_linux_resource::host_services::process_birth::NativeWorldIdentity,
+        crucible_qemu::QemuVmRealizationError,
+    > {
+        Err(crucible_qemu::QemuVmRealizationError::ExecutorUnavailable {
+            operation: "observe retained native Source World identity",
+            message: String::from("launcher has no selected native Source World"),
+        })
+    }
+
+    /// Lends only the selected Source member's genuine Target permit.
+    ///
+    /// # Errors
+    /// Refuses a launcher without matching actual per-node Source ownership.
+    #[cfg(target_os = "linux")]
+    fn prepare_fork_target_for_node(
+        &mut self,
+        _node: &NodeId,
+    ) -> Result<
+        crucible_qemu::QemuForkTargetPreparation,
+        crate::qemu_lifecycle_launcher::TargetPreparationFailure,
+    > {
+        Err(loop_factory_error("launcher has no genuine source target issuer").into())
+    }
+
     /// Lends the genuine source owner's single same-family target permit.
     ///
     /// # Errors
     /// Refuses launchers without actual source ownership or a free target slot.
     #[cfg(target_os = "linux")]
-    fn lend_fork_target_permit(
+    fn prepare_fork_target(
         &mut self,
-    ) -> Result<crucible_qemu::LinuxQemuForkTargetPermit, LifecycleApiError> {
-        Err(loop_factory_error(
-            "launcher has no genuine source target issuer",
-        ))
+    ) -> Result<
+        crucible_qemu::QemuForkTargetPreparation,
+        crate::qemu_lifecycle_launcher::TargetPreparationFailure,
+    > {
+        Err(loop_factory_error("launcher has no genuine source target issuer").into())
     }
 
     /// Prepares a target generation beneath the source's retained project quota.
@@ -2248,6 +2399,12 @@ struct PackagedProductionVmNodeLauncher;
 #[cfg(any(test, feature = "test-support"))]
 impl crucible_api::ProductionVmCleanupOwner for PackagedProductionVmNodeLauncher {
     type Failure = crate::ProductionVmConstructionCleanupError;
+    type PostBody = crate::ProductionVmConstructionPostBody;
+
+    fn take_post_body(&mut self) -> Result<Option<Self::PostBody>, Self::Failure> {
+        // This component launcher owns no native World or Service return.
+        Ok(None)
+    }
 
     fn retry_cleanup(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
         ProductionVmNodeLauncher::finish(self)
@@ -2397,6 +2554,10 @@ use construction::build_production_vm_lifecycle_loop_with_restore;
 pub(crate) use construction::{
     ExactRestoreExposure as RetainedConstructionExposure,
     prepare_from_custody as prepare_retained_construction,
+};
+#[cfg(target_os = "linux")]
+pub use construction::{
+    MainSourceLifecycle, MainSourceLifecycleFailure, MainSourceLifecycleRefusal,
 };
 pub use construction::{
     ProductionVmCleanupEarlierFailure, ProductionVmConstructionCleanupError,
@@ -2711,17 +2872,82 @@ impl ProductionVmStoppedLifecycle {
     /// Keeps the entire World in this owner when cleanup is unproven. Dropping
     /// that owner quarantines its scheduler, roots and native custody together.
     pub fn shutdown(&mut self) -> Result<(), SchedulerError> {
+        self.shutdown_before_main_return()?;
+        if let Some(lifecycle) = self.lifecycle.take() {
+            #[cfg(target_os = "linux")]
+            lifecycle.retire_owned_body();
+            #[cfg(not(target_os = "linux"))]
+            drop(lifecycle);
+        }
+        Ok(())
+    }
+
+    /// Performs the same semantic shutdown while retaining its actual body.
+    ///
+    /// Receiving cleanup records an independent failure before adopting its
+    /// actual alias owners into Main. Neither result publishes or drops this
+    /// body, so adoption always precedes its canonical return.
+    pub(crate) fn shutdown_before_main_return(&mut self) -> Result<(), SchedulerError> {
         if let Some(lifecycle) = self.lifecycle.as_mut() {
             lifecycle.abort_stopped_restore()?;
         }
-        self.lifecycle = None;
         Ok(())
+    }
+
+    /// Observes the required private return pair without claiming body closure.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn has_main_return(&self) -> bool {
+        self.lifecycle
+            .as_ref()
+            .is_some_and(ProductionVmLifecycleLoop::has_main_return)
+    }
+
+    /// Corroborates the actual body destination against its input return owner.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn matches_input_return(
+        &self,
+        input: &crate::lifecycle_cleanup::ServiceInputReturn,
+    ) -> bool {
+        self.lifecycle
+            .as_ref()
+            .is_some_and(|lifecycle| match &lifecycle.construction_custody {
+                LifecycleConstructionCustody::Main { destination, .. } => {
+                    destination.matches_input_return(input)
+                }
+                LifecycleConstructionCustody::Unissued(_) => false,
+            })
+    }
+
+    /// Publishes a witnessed body after its actual alias input was adopted.
+    ///
+    /// A false result preserves the same unissued body. No semantic operation,
+    /// destructor or fallible delivery runs after a native body is taken.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn return_to_main(&mut self) -> bool {
+        if !self.has_main_return() {
+            return false;
+        }
+        if let Some(lifecycle) = self.lifecycle.take() {
+            lifecycle.retire_owned_body();
+            return true;
+        }
+        false
+    }
+
+    /// Borrows only the original body slot for a pure same-role custody return.
+    pub(crate) fn retirement_loop_slot(&mut self) -> &mut Option<ProductionVmLifecycleLoop> {
+        &mut self.lifecycle
     }
 }
 
 impl Drop for ProductionVmStoppedLifecycle {
     fn drop(&mut self) {
         if let Some(lifecycle) = self.lifecycle.take() {
+            #[cfg(target_os = "linux")]
+            if lifecycle.has_main_return() {
+                lifecycle.retire_owned_body();
+                return;
+            }
             // Standalone callers must retain the same complete stopped World
             // as the daemon owner when physical retirement is not proven.
             std::mem::forget(lifecycle);
@@ -2831,134 +3057,167 @@ pub fn build_production_vm_lifecycle_loop_from_hot_fork_with_launcher(
         Some(continuation),
         adoptions,
     )?;
-    let prepared = (|| -> Result<Arc<ProductionVmLifecycleConfig>, LifecycleApiError> {
-        let phase = custody.partial_mut()?;
-        let continuation = phase.hot_fork_continuation.as_ref().ok_or_else(|| {
-            loop_factory_error("hot-fork continuation is absent from construction custody")
-        })?;
-        if source.scenario_def() != *scenario
-            || continuation.configuration().def.id() != scenario.id()
-        {
-            return Err(loop_factory_error(
-                "hot-fork continuation does not reconstruct the requested scenario",
-            ));
-        }
-        continuation
-            .validate_complete_internal_state()
-            .map_err(|error| {
-                loop_factory_error(format!("validate hot-fork continuation: {error}"))
-            })?;
-        continuation
-            .validate_world_io(source.world())
-            .map_err(|error| loop_factory_error(format!("validate hot-fork World I/O: {error}")))?;
+    if let Err(first) = prepare_retained_hot_fork_construction(
+        scenario,
+        source,
+        &mut custody,
+        run_state_root.into(),
+    ) {
+        return Err(custody.into_failure(first));
+    }
+    custody.into_loop().map_err(|custody| {
+        custody.into_failure(loop_factory_error(
+            "construction lost its complete lifecycle",
+        ))
+    })
+}
 
-        let source_nodes = source
-            .world()
-            .vm_nodes()
-            .iter()
-            .map(|node| node.id.clone())
-            .collect::<BTreeSet<_>>();
-        let continuation_nodes = continuation
-            .nodes()
-            .iter()
-            .map(|boundary| boundary.node().clone())
-            .collect::<BTreeSet<_>>();
-        if source_nodes != continuation_nodes {
-            return Err(loop_factory_error(
-                "hot-fork continuation node set differs from the scenario World",
-            ));
-        }
-        if phase.hot_fork_adoptions.len() > source_nodes.len() {
-            return Err(loop_factory_error(
-                "hot-fork adopted child count exceeds the scenario World",
-            ));
-        }
-        // Validate identities while every actual child remains in its input slot.
-        let mut adoption_generations = BTreeMap::new();
-        for adoption in &phase.hot_fork_adoptions {
-            let node = adoption.identity().node().clone();
-            if adoption_generations
-                .insert(node.clone(), adoption.identity().generation())
-                .is_some()
-            {
-                return Err(loop_factory_error(format!(
-                    "hot-fork World contains duplicate child `{}`",
-                    node.name,
-                )));
-            }
-        }
-        let HotForkAdoptionInventory {
-            expected_times,
-            node_generations,
-        } = validate_hot_fork_adoption_inventory(continuation, &adoption_generations)?;
-        // The admitted copy can refuse while the original continuation is retained.
-        let config = continuation.prepare_restore_config(run_state_root)?;
-        let continuation = phase.hot_fork_continuation.take().ok_or_else(|| {
-            loop_factory_error("hot-fork continuation disappeared from construction custody")
-        })?;
-        let ProductionVmHotForkRestoreParts {
-            config,
-            checkpoint,
-            immutable_root_images,
-            disk_bases,
-            block_bindings,
-            ninep_bindings,
-            active_host_io,
-        } = continuation.into_restore_parts(node_generations, config);
-        phase.restore_checkpoint = Some(checkpoint);
-        phase.retained_config = Some(Arc::new(config));
-        phase.hot_fork_restore = Some(ProductionVmHotForkRestore {
-            expected_times,
-            adoptions: BTreeMap::new(),
-            immutable_root_images,
-            disk_bases,
-            block_bindings,
-            ninep_bindings,
-            active_host_io,
-        });
-
-        while let Some(adoption) = phase.hot_fork_adoptions.pop() {
-            phase.pending_adoption = Some(adoption);
-            let node = phase
-                .pending_adoption
-                .as_ref()
-                .ok_or_else(|| loop_factory_error("hot-fork pending adoption is absent"))?
-                .identity()
-                .node()
-                .clone();
-            let restore = phase
-                .hot_fork_restore
-                .as_mut()
-                .ok_or_else(|| loop_factory_error("hot-fork restore custody is absent"))?;
-            match restore.adoptions.entry(node) {
-                std::collections::btree_map::Entry::Vacant(entry) => {
-                    if let Some(adoption) = phase.pending_adoption.take() {
-                        entry.insert(adoption);
-                    }
-                }
-                std::collections::btree_map::Entry::Occupied(_) => {
-                    // Both the existing child and the incoming child stay retained.
-                    return Err(loop_factory_error("hot-fork adoption slot is occupied"));
-                }
-            }
-        }
-        phase
-            .retained_config
-            .as_ref()
-            .map(Arc::clone)
-            .ok_or_else(|| loop_factory_error("hot-fork admitted configuration is absent"))
-    })();
-    let config = match prepared {
-        Ok(config) => config,
-        Err(first) => return Err(custody.into_failure(first)),
-    };
-    construction::build_from_custody(
+/// Builds a retained fork while its original owner keeps the actual carrier.
+///
+/// The launcher, continuation and adoptions must already be installed together.
+/// A refused validation or physical operation leaves their partial state in the
+/// same carrier. Export is a separate pure move after successful preparation.
+///
+/// # Errors
+/// Returns the original validation or construction error without consuming the
+/// carrier or allocating a replacement ownership frame.
+#[cfg(target_os = "linux")]
+pub(crate) fn prepare_retained_hot_fork_construction(
+    scenario: &ScenarioDef,
+    source: &ScenarioDefForm,
+    custody: &mut ProductionVmConstructionCustody,
+    run_state_root: PathBuf,
+) -> Result<(), LifecycleApiError> {
+    let config = prepare_hot_fork_restore_inputs(scenario, source, custody, run_state_root)?;
+    construction::prepare_from_custody(
         scenario,
         source,
         &config,
         custody,
         construction::ExactRestoreExposure::Released,
     )
+}
+
+/// Validates and stages the captured continuation without exporting its owners.
+#[cfg(target_os = "linux")]
+fn prepare_hot_fork_restore_inputs(
+    scenario: &ScenarioDef,
+    source: &ScenarioDefForm,
+    custody: &mut ProductionVmConstructionCustody,
+    run_state_root: PathBuf,
+) -> Result<Arc<ProductionVmLifecycleConfig>, LifecycleApiError> {
+    let phase = custody.preparation_phase()?;
+    let continuation = phase.hot_fork_continuation.as_ref().ok_or_else(|| {
+        loop_factory_error("hot-fork continuation is absent from construction custody")
+    })?;
+    if source.scenario_def() != *scenario || continuation.configuration().def.id() != scenario.id()
+    {
+        return Err(loop_factory_error(
+            "hot-fork continuation does not reconstruct the requested scenario",
+        ));
+    }
+    continuation
+        .validate_complete_internal_state()
+        .map_err(|error| loop_factory_error(format!("validate hot-fork continuation: {error}")))?;
+    continuation
+        .validate_world_io(source.world())
+        .map_err(|error| loop_factory_error(format!("validate hot-fork World I/O: {error}")))?;
+
+    let source_nodes = source
+        .world()
+        .vm_nodes()
+        .iter()
+        .map(|node| node.id.clone())
+        .collect::<BTreeSet<_>>();
+    let continuation_nodes = continuation
+        .nodes()
+        .iter()
+        .map(|boundary| boundary.node().clone())
+        .collect::<BTreeSet<_>>();
+    if source_nodes != continuation_nodes {
+        return Err(loop_factory_error(
+            "hot-fork continuation node set differs from the scenario World",
+        ));
+    }
+    if phase.hot_fork_adoptions.len() > source_nodes.len() {
+        return Err(loop_factory_error(
+            "hot-fork adopted child count exceeds the scenario World",
+        ));
+    }
+    // Validate identities while every actual child remains in its input slot.
+    let mut adoption_generations = BTreeMap::new();
+    for adoption in &phase.hot_fork_adoptions {
+        let node = adoption.identity().node().clone();
+        if adoption_generations
+            .insert(node.clone(), adoption.identity().generation())
+            .is_some()
+        {
+            return Err(loop_factory_error(format!(
+                "hot-fork World contains duplicate child `{}`",
+                node.name,
+            )));
+        }
+    }
+    let HotForkAdoptionInventory {
+        expected_times,
+        node_generations,
+    } = validate_hot_fork_adoption_inventory(continuation, &adoption_generations)?;
+    // The admitted copy can refuse while the original continuation is retained.
+    let config = continuation.prepare_restore_config(run_state_root)?;
+    let continuation = phase.hot_fork_continuation.take().ok_or_else(|| {
+        loop_factory_error("hot-fork continuation disappeared from construction custody")
+    })?;
+    let ProductionVmHotForkRestoreParts {
+        config,
+        checkpoint,
+        immutable_root_images,
+        disk_bases,
+        block_bindings,
+        ninep_bindings,
+        active_host_io,
+    } = continuation.into_restore_parts(node_generations, config);
+    phase.restore_checkpoint = Some(checkpoint);
+    phase.retained_config = Some(Arc::new(config));
+    phase.hot_fork_restore = Some(ProductionVmHotForkRestore {
+        expected_times,
+        adoptions: BTreeMap::new(),
+        immutable_root_images,
+        disk_bases,
+        block_bindings,
+        ninep_bindings,
+        active_host_io,
+    });
+
+    while let Some(adoption) = phase.hot_fork_adoptions.pop() {
+        phase.pending_adoption = Some(adoption);
+        let node = phase
+            .pending_adoption
+            .as_ref()
+            .ok_or_else(|| loop_factory_error("hot-fork pending adoption is absent"))?
+            .identity()
+            .node()
+            .clone();
+        let restore = phase
+            .hot_fork_restore
+            .as_mut()
+            .ok_or_else(|| loop_factory_error("hot-fork restore custody is absent"))?;
+        match restore.adoptions.entry(node) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                if let Some(adoption) = phase.pending_adoption.take() {
+                    entry.insert(adoption);
+                }
+            }
+            std::collections::btree_map::Entry::Occupied(_) => {
+                // Both the existing child and the incoming child stay retained.
+                return Err(loop_factory_error("hot-fork adoption slot is occupied"));
+            }
+        }
+    }
+    phase
+        .retained_config
+        .as_ref()
+        .map(Arc::clone)
+        .ok_or_else(|| loop_factory_error("hot-fork admitted configuration is absent"))
 }
 
 fn validate_hot_fork_adoption_inventory(
@@ -3182,4 +3441,10 @@ pub use parent_park_drain::{
     ProductionVmParentParkStageEarlyCause, ProductionVmParentParkStageEnteredCause,
     ProductionVmParentParkStageFailure, ProductionVmParentParkStageOwnerCause,
     ProductionVmParentParkStageReborrowCause,
+};
+
+#[cfg(target_os = "linux")]
+pub use hot_fork::{
+    ProductionVmHotForkSourceRetirement, ProductionVmHotForkSourceRetirementFailure,
+    ProductionVmHotForkSourceRetirementHistory, SourceRetirementRefusal,
 };

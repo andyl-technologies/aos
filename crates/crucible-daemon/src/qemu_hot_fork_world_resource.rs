@@ -275,6 +275,45 @@ where
         Ok(owner)
     }
 
+    /// Moves an actual Target guard using its already validated selected bound.
+    ///
+    /// The caller has retained the same selected storage since Source admission.
+    /// This operation allocates only its prepaid shared body and cannot refuse
+    /// after taking the guard; it performs no native or Source operation.
+    pub(crate) fn from_prepared_target(
+        guard: G,
+        selected: &crate::qemu_lifecycle_launcher::TargetConstructionStorage,
+        source_world: Arc<Mutex<crate::ProductionVmHotForkSourceWorld>>,
+    ) -> Self {
+        let resources = guard.resource_limits();
+        let cancellation = guard.cancellation().clone();
+        Self {
+            state: Arc::new(Mutex::new(QemuHotForkWorldResourceState {
+                guard,
+                source_world: Some(source_world),
+                maximum_nodes: selected.member_count(),
+                issued: BTreeSet::new(),
+                released: BTreeSet::new(),
+                lifecycle_launcher_required: false,
+                lifecycle_launcher_finished: false,
+                auxiliary_lifecycle_active: false,
+                retirement: WorldResourceRetirement::Active,
+                terminal_failure: None,
+            })),
+            resources,
+            cancellation,
+        }
+    }
+
+    /// Aliases only this existing indivisible aggregate allocation.
+    pub(crate) fn share(&self) -> Self {
+        Self {
+            state: Arc::clone(&self.state),
+            resources: self.resources,
+            cancellation: self.cancellation.clone(),
+        }
+    }
+
     /// Reserves one exact child generation before its QEMU fork transaction.
     ///
     /// A caller must either install the returned target into the successful
@@ -541,6 +580,32 @@ where
         result
     }
 
+    /// Returns existing vector capacity after every real Target receipt closes.
+    ///
+    /// A unique registry is only safe access to G. The underlying storage checks
+    /// its own genuine loan journals before clearing returned host metadata.
+    /// Only then can this containing facade retire its remaining aliases.
+    pub(crate) fn recover_target_construction_storage(
+        &mut self,
+        storage: &mut crate::TargetConstructionStorage,
+    ) -> bool {
+        let Some(state) = Arc::get_mut(&mut self.state) else {
+            return false;
+        };
+        let Ok(state) = state.get_mut() else {
+            return false;
+        };
+        if state.issued != state.released
+            || (state.lifecycle_launcher_required && !state.lifecycle_launcher_finished)
+            || state.auxiliary_lifecycle_active
+            || !state.guard.recover_target_construction_storage(storage)
+        {
+            return false;
+        }
+        state.retirement = WorldResourceRetirement::Returned;
+        true
+    }
+
     /// Transfers the complete aggregate guard to fail-closed quarantine.
     pub fn quarantine(&mut self) {
         quarantine_world_state(&self.state);
@@ -682,9 +747,9 @@ where
     }
 
     #[cfg(target_os = "linux")]
-    fn lend_fork_target_permit(
+    fn prepare_fork_target(
         &mut self,
-    ) -> Result<crucible_qemu::LinuxQemuForkTargetPermit, QemuVmRealizationError> {
+    ) -> Result<crucible_qemu::QemuForkTargetPreparation, QemuVmRealizationError> {
         let mut state = self
             .state
             .lock()
@@ -694,7 +759,7 @@ where
         {
             return Err(world_resource_error("target source launcher is terminal"));
         }
-        state.guard.lend_fork_target_permit()
+        state.guard.prepare_fork_target()
     }
 
     #[cfg(target_os = "linux")]

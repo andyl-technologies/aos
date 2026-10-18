@@ -15,16 +15,13 @@ pub(super) fn run(
     let source = input.scenario();
     let available_before = available_resources(model.prepared);
     let factory = RetainedTemplateServiceFactory::new(model.prepared, &model.config);
-    let mut selected = context.take_selected_checkpoint();
-    let service = Arc::new(
-        factory
-            .start_for_resume(source, model.checkpoint, context, &mut selected)
-            .expect("one genuine selected root for the complete lineage"),
-    );
-    assert!(selected.is_none());
-    extend_native_operations(service.context());
     let parent_config = world_config(&model.config, "generation-source", 48_000);
     let mut parent_factory = fresh_factory(&parent_config, "world");
+    let service = crate::packaged_qemu_executor::tests::paging_native::main_service::NativeServiceScope::resume(
+        parent_factory.prepare_source_construction().expect("same actual generation Source Main role"),
+        &factory, source, model.checkpoint, context,
+    );
+    extend_native_operations(service.context());
     let parent = parent_factory
         .begin_resume(
             &model.prepared.checkpoints,
@@ -47,8 +44,7 @@ pub(super) fn run(
         .collect::<Vec<_>>();
     let world = parent
         .prepare_hot_fork_source_world()
-        .expect("sealed original source")
-        .with_cleanup_observer(service.clone());
+        .expect("sealed original source");
     let mut first = ActiveChild::start(
         world_config(&model.config, "generation-one", 48_100),
         input,
@@ -65,33 +61,40 @@ pub(super) fn run(
         .promote_into_descendant_template(None)
         .expect("live generation one promoted without losing parent custody");
 
-    let second_owner = factory
-        .start_comparison_child_for_test(source, context)
-        .expect("independently admitted generation two owner");
+    let prepared_second = ActiveChild::prepare(
+        world_config(&model.config, "generation-two", 48_200),
+        input,
+        context,
+        world,
+    );
+    let mut second_owner = crate::packaged_qemu_executor::tests::paging_native::main_service::NativeServiceScope::comparison(
+        prepared_second.service_main_handle(), &factory, source, context,
+    );
     extend_native_operations(second_owner.context());
     assert_ne!(
         context.host_ram_owner_id(),
         second_owner.context().host_ram_owner_id()
     );
-    let mut second = ActiveChild::start(
-        world_config(&model.config, "generation-two", 48_200),
-        input,
-        second_owner.context(),
-        world,
-    );
+    let mut second = prepared_second.start(input, second_owner.context());
     second.assert_boundary(source, &model.captured.boundary);
     assert_eq!(second.ram(second_owner.context()), root);
     let second_generations = generations(&second);
     assert_successors(&first_generations, &second_generations);
     let second_ready = second.ready;
-    let (world, second_lineage) = second
+    let (world, mut second_lineage) = second
         .lifecycle
         .promote_into_descendant_template(Some(Box::new(first_lineage)))
         .expect("live generation two retains the entire ancestor chain");
 
-    let third_owner = factory
-        .start_comparison_child_for_test(source, context)
-        .expect("independently admitted generation three owner");
+    let prepared_third = ActiveChild::prepare(
+        world_config(&model.config, "generation-three", 48_300),
+        input,
+        context,
+        world,
+    );
+    let mut third_owner = crate::packaged_qemu_executor::tests::paging_native::main_service::NativeServiceScope::comparison(
+        prepared_third.service_main_handle(), &factory, source, context,
+    );
     extend_native_operations(third_owner.context());
     assert_ne!(
         second_owner.context().host_ram_owner_id(),
@@ -102,12 +105,7 @@ pub(super) fn run(
         .retained_template_resources()
         .expect("full authored world vector");
     assert_template_charge(model.prepared, available_before, peak, 3);
-    let mut third = ActiveChild::start(
-        world_config(&model.config, "generation-three", 48_300),
-        input,
-        third_owner.context(),
-        world,
-    );
+    let mut third = prepared_third.start(input, third_owner.context());
     third.assert_boundary(source, &model.captured.boundary);
     assert_eq!(third.ram(third_owner.context()), root);
     let third_generations = generations(&third);
@@ -157,19 +155,26 @@ pub(super) fn run(
     );
     println!("same_root_descendant_anonymous_disk_bytes={preservation_bytes}");
 
+    third_owner.release_context_aliases();
     let recovered = third.stop();
-    third_owner
-        .release_after_world_cleanup()
-        .expect("youngest child physically reaped");
-    second_lineage
-        .retire_source_world(recovered)
-        .expect("every retained ancestor physically reaped and reconciled");
-    second_owner
-        .release_after_world_cleanup()
-        .expect("generation two owner discharged after reap");
-    service
-        .release_after_world_cleanup()
-        .expect("original source watcher joined after lineage retirement");
+    third_owner.assert_released();
+    second_owner.release_context_aliases();
+    second_lineage.begin_retirement(recovered);
+    let ancestors_returned = (0..1024).any(|_| {
+        second_lineage
+            .poll()
+            .expect("original descendant cleanup remains owned and observable")
+    });
+    assert!(
+        ancestors_returned,
+        "every retained ancestor physically reaped and reconciled"
+    );
+    second_owner.assert_released();
+    let terminal = service
+        .into_retirement()
+        .expect("actual original Source World and watcher returned after lineage retirement");
+    println!("generation_source_retirement={terminal}");
+    drop(terminal);
     for lane in [
         "generation-source",
         "generation-one",

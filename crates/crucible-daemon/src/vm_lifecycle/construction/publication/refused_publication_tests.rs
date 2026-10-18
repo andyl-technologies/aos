@@ -24,6 +24,11 @@ struct FileOwner {
 
 impl ProductionVmCleanupOwner for FileOwner {
     type Failure = CleanupFailure;
+    type PostBody = crate::ProductionVmConstructionPostBody;
+
+    fn take_post_body(&mut self) -> Result<Option<Self::PostBody>, Self::Failure> {
+        panic!("refused publication never transfers the retained owner's obligations");
+    }
 
     fn retry_cleanup(&mut self) -> Result<(), Self::Failure> {
         self.cleanup_calls.fetch_add(1, Ordering::SeqCst);
@@ -92,7 +97,12 @@ fn unavailable_canonical_handoff_keeps_same_pair_and_first_cause_twice() {
     let metadata = file.metadata().expect("component file identity");
     let cleanup_calls = Arc::new(AtomicUsize::new(0));
     let destroyed = Arc::new(AtomicBool::new(false));
-    let owner: Box<dyn ProductionVmCleanupOwner<Failure = CleanupFailure>> = Box::new(FileOwner {
+    let owner: Box<
+        dyn ProductionVmCleanupOwner<
+                Failure = CleanupFailure,
+                PostBody = crate::ProductionVmConstructionPostBody,
+            >,
+    > = Box::new(FileOwner {
         _file: file,
         cleanup_calls: Arc::clone(&cleanup_calls),
         destroyed: Arc::clone(&destroyed),

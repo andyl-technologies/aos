@@ -175,6 +175,12 @@ impl ProductionVmNodeLease for RecordingNodeLease {
 
 impl crucible_api::ProductionVmCleanupOwner for FailingFinishLauncher {
     type Failure = crate::ProductionVmConstructionCleanupError;
+    type PostBody = crate::ProductionVmConstructionPostBody;
+
+    fn take_post_body(&mut self) -> Result<Option<Self::PostBody>, Self::Failure> {
+        // This component launcher owns no native World or Service return.
+        Ok(None)
+    }
 
     fn retry_cleanup(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
         ProductionVmNodeLauncher::finish(self)
@@ -257,6 +263,12 @@ struct SelectablePlanRecordingLauncher {
 
 impl crucible_api::ProductionVmCleanupOwner for RecordingFinishLauncher {
     type Failure = crate::ProductionVmConstructionCleanupError;
+    type PostBody = crate::ProductionVmConstructionPostBody;
+
+    fn take_post_body(&mut self) -> Result<Option<Self::PostBody>, Self::Failure> {
+        // This component launcher owns no native World or Service return.
+        Ok(None)
+    }
 
     fn retry_cleanup(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
         ProductionVmNodeLauncher::finish(self)
@@ -304,6 +316,12 @@ impl ProductionVmNodeLauncher for RecordingFinishLauncher {
 
 impl crucible_api::ProductionVmCleanupOwner for PreparationBoundaryLauncher {
     type Failure = crate::ProductionVmConstructionCleanupError;
+    type PostBody = crate::ProductionVmConstructionPostBody;
+
+    fn take_post_body(&mut self) -> Result<Option<Self::PostBody>, Self::Failure> {
+        // This component launcher owns no native World or Service return.
+        Ok(None)
+    }
 
     fn retry_cleanup(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
         ProductionVmNodeLauncher::finish(self)
@@ -371,6 +389,12 @@ impl ProductionVmNodeLauncher for PreparationBoundaryLauncher {
 
 impl crucible_api::ProductionVmCleanupOwner for SelectablePlanRecordingLauncher {
     type Failure = crate::ProductionVmConstructionCleanupError;
+    type PostBody = crate::ProductionVmConstructionPostBody;
+
+    fn take_post_body(&mut self) -> Result<Option<Self::PostBody>, Self::Failure> {
+        // This component launcher owns no native World or Service return.
+        Ok(None)
+    }
 
     fn retry_cleanup(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
         ProductionVmNodeLauncher::finish(self)
@@ -1140,7 +1164,7 @@ pub(in crate::vm_lifecycle) fn production_loop_without_backends(
         debug_gateway_teardown_required: false,
         indeterminate_debug_candidate: None,
         retained_debug_construction: std::sync::Mutex::new(None),
-        construction_custody: None,
+        construction_custody: LifecycleConstructionCustody::Unissued(None),
         debug_runtime_evidence: Vec::new(),
         node_launcher: Box::new(PackagedProductionVmNodeLauncher),
         _run_directory: run_directory,

@@ -40,6 +40,18 @@ fn try_take_selection<T>(
     Ok(try_selection_slot(slot)?.take())
 }
 
+fn try_take_matching_selection<T>(
+    slot: &Mutex<Option<T>>,
+    matches: impl FnOnce(&T) -> bool,
+) -> Result<Option<T>, SelectedCheckpointSlotError> {
+    let mut slot = try_selection_slot(slot)?;
+    if slot.as_ref().is_some_and(matches) {
+        Ok(slot.take())
+    } else {
+        Ok(None)
+    }
+}
+
 fn try_restore_selection<T>(
     slot: &Mutex<Option<T>>,
     selected: T,
@@ -88,6 +100,9 @@ pub struct AttemptExecutionContext {
     checkpoint_handoff: Option<ExecutionCheckpointHandoff>,
     execution_quanta: ExecutionQuantumBudget,
     host_watchdog: Option<AssignmentHostWatchdog>,
+    // A selector is copied without registering borrowers. Each real owned
+    // receiver enrolls explicitly before it can clone Service controls.
+    service_main: Option<crate::lifecycle_cleanup::PreparedSourceSelector>,
     origin: AttemptExecutionOrigin,
     guest_selectable_diagnostics: GuestSelectableBoundaryDiagnosticRecorder,
     selected_checkpoint: Mutex<Option<crate::executor_supervisor::SelectedExactCheckpointRoot>>,
@@ -114,6 +129,7 @@ impl Clone for AttemptExecutionContext {
             checkpoint_handoff: self.checkpoint_handoff.clone(),
             execution_quanta: self.execution_quanta.clone(),
             host_watchdog: self.host_watchdog.clone(),
+            service_main: self.service_main.clone(),
             origin: self.origin,
             guest_selectable_diagnostics: self.guest_selectable_diagnostics.clone(),
             selected_checkpoint: Mutex::new(None),
@@ -204,6 +220,7 @@ impl AttemptExecutionContext {
             checkpoint_handoff: None,
             execution_quanta: ExecutionQuantumBudget::new(resources.maximum_execution_quanta()),
             host_watchdog: None,
+            service_main: None,
             origin: AttemptExecutionOrigin::Initial,
             guest_selectable_diagnostics: GuestSelectableBoundaryDiagnosticRecorder::default(),
             selected_checkpoint: Mutex::new(None),
@@ -282,6 +299,26 @@ impl AttemptExecutionContext {
         SelectedCheckpointSlotError,
     > {
         try_take_selection(&self.selected_checkpoint)
+    }
+
+    /// Takes the same selected root only when it authorizes this checkpoint.
+    ///
+    /// Validation and transfer share the existing slot lock. An absent or
+    /// mismatched root remains in its original slot; no temporary root owner
+    /// needs a fallible restoration after Service admission refuses.
+    ///
+    /// # Errors
+    /// Returns the actual busy or poisoned refusal without changing the slot.
+    pub(crate) fn try_take_selected_checkpoint_for(
+        &self,
+        checkpoint: ExactCheckpointId,
+    ) -> Result<
+        Option<crate::executor_supervisor::SelectedExactCheckpointRoot>,
+        SelectedCheckpointSlotError,
+    > {
+        try_take_matching_selection(&self.selected_checkpoint, |selected| {
+            selected.authorizes(checkpoint)
+        })
     }
 
     /// Restores the same selection only into its genuinely empty original slot.
@@ -470,6 +507,38 @@ impl AttemptExecutionContext {
     #[must_use]
     pub const fn host_daemon_epoch(&self) -> [u8; 32] {
         self.host_daemon_epoch
+    }
+
+    /// Stamps the actual Service publisher's same Main selection.
+    pub(crate) fn stamp_service_main_selector(
+        &mut self,
+        selector: crate::lifecycle_cleanup::PreparedSourceSelector,
+    ) {
+        self.service_main = Some(selector);
+    }
+
+    /// Enrolls a real receiver before producing another Service control alias.
+    ///
+    /// None records absent Service ancestry on an ordinary context. It proves
+    /// neither World return nor control/operation retirement.
+    ///
+    /// # Errors
+    /// Preserves the actual same-role access refusal and its protected owner.
+    pub(crate) fn retain_service_receiver(
+        &self,
+        phase: &'static str,
+    ) -> Result<
+        Option<crate::lifecycle_cleanup::ServiceMainReceiver>,
+        crate::lifecycle_cleanup::PreparedSourceFailure,
+    > {
+        let Some(selector) = &self.service_main else {
+            return Ok(None);
+        };
+        let service = selector.service_main_handle();
+        service
+            .retain_receiver()
+            .map(Some)
+            .map_err(|first| service.failure_with_refusal(phase, first))
     }
 
     pub(super) fn with_host_watchdog(mut self, watchdog: AssignmentHostWatchdog) -> Self {
@@ -830,6 +899,57 @@ mod tests {
         assert_eq!(reason, SelectedCheckpointSlotError::Poisoned);
         assert_eq!(std::ptr::from_ref(owner.as_ref()), pointer);
         assert!(slot.lock().unwrap_err().into_inner().is_none());
+    }
+
+    #[test]
+    fn matching_selection_transfer_preserves_original_owner_until_atomic_acceptance() {
+        let owner = Box::new(7);
+        let pointer = std::ptr::from_ref(owner.as_ref());
+        let slot = Mutex::new(Some(owner));
+
+        // A rejected request neither extracts the owner nor changes its slot.
+        assert!(
+            try_take_matching_selection(&slot, |value| **value == 11)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            std::ptr::from_ref(slot.lock().unwrap().as_deref().unwrap()),
+            pointer
+        );
+
+        let borrowed = slot.lock().unwrap();
+        assert_eq!(
+            try_take_matching_selection(&slot, |_| panic!("busy slot must not validate")),
+            Err(SelectedCheckpointSlotError::Busy)
+        );
+        assert_eq!(std::ptr::from_ref(borrowed.as_deref().unwrap()), pointer);
+        drop(borrowed);
+
+        // The accepted request transfers the same allocation exactly once.
+        let owner = try_take_matching_selection(&slot, |value| **value == 7)
+            .unwrap()
+            .unwrap();
+        assert_eq!(std::ptr::from_ref(owner.as_ref()), pointer);
+        assert!(
+            try_take_matching_selection(&slot, |_| panic!("empty slot must not validate"))
+                .unwrap()
+                .is_none()
+        );
+
+        let slot = Mutex::new(Some(owner));
+        let _ = std::panic::catch_unwind(|| {
+            let _borrow = slot.lock().unwrap();
+            panic!("poison the original matching selection slot");
+        });
+        assert_eq!(
+            try_take_matching_selection(&slot, |_| panic!("poisoned slot must not validate")),
+            Err(SelectedCheckpointSlotError::Poisoned)
+        );
+        assert_eq!(
+            std::ptr::from_ref(slot.lock().unwrap_err().into_inner().as_deref().unwrap()),
+            pointer
+        );
     }
 
     #[test]

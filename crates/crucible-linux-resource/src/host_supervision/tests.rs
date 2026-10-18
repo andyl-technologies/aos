@@ -573,3 +573,30 @@ fn failed_preparation_cannot_become_a_retained_healthy_main() {
     ));
     assert!(guard.complete().is_err());
 }
+
+#[test]
+fn completion_effect_is_reported_before_actual_local_post_poison_refusal() {
+    let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None).unwrap();
+    let cleanup = supervisor
+        .begin_control(HostOperationClass::Cleanup)
+        .unwrap();
+    let operation_id = cleanup.id;
+    let (completed, report) = cleanup.complete_observed_with(|| {
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _held = supervisor.shared.state.lock().unwrap();
+            panic!("poison real local postcheck after the actual completion mark");
+        }));
+        assert!(poisoned.is_err());
+    });
+    assert!(completed);
+    assert_eq!(report, Err(HostSupervisionError::Unavailable));
+    let poisoned = supervisor.shared.state.lock().unwrap_err();
+    assert_eq!(
+        poisoned.get_ref().operations[&operation_id].state,
+        HostOperationState::Completed
+    );
+    drop(poisoned);
+    let (repeated, report) = cleanup.complete_observed();
+    assert!(!repeated);
+    assert_eq!(report, Err(HostSupervisionError::Unavailable));
+}

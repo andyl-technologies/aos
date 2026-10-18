@@ -37,6 +37,9 @@ pub(crate) fn production_lifecycle_failure_class(
     }
 
     match error {
+        QemuAttemptProductionVmLifecycleError::PreparedSource(report) => report
+            .with_first_error(prepared_source_first_class)
+            .unwrap_or(SchedulerOperationalFailureClass::Terminal),
         QemuAttemptProductionVmLifecycleError::ResourceBeginInstallation(report) => {
             if report.was_quarantined() {
                 return SchedulerOperationalFailureClass::Terminal;
@@ -63,6 +66,7 @@ pub(crate) fn production_lifecycle_failure_class(
         | QemuAttemptProductionVmLifecycleError::ResourceContractMismatch
         | QemuAttemptProductionVmLifecycleError::ResourceContractCleanup(_)
         | QemuAttemptProductionVmLifecycleError::Lifecycle(_)
+        | QemuAttemptProductionVmLifecycleError::SourceMainPreparation(_)
         | QemuAttemptProductionVmLifecycleError::SourceInstallRetained { .. }
         | QemuAttemptProductionVmLifecycleError::SourceCleanupHistory(_)
         | QemuAttemptProductionVmLifecycleError::SourceGenerationStorage(_)
@@ -70,6 +74,25 @@ pub(crate) fn production_lifecycle_failure_class(
             SchedulerOperationalFailureClass::Terminal
         }
     }
+}
+
+fn prepared_source_first_class(
+    first: &(dyn std::error::Error + 'static),
+) -> SchedulerOperationalFailureClass {
+    let Some(first) = first.downcast_ref::<QemuAttemptProductionVmLifecycleError>() else {
+        // A native-only fallback is later cleanup history, not an initiating
+        // request whose retry class can authorize another attempt.
+        return SchedulerOperationalFailureClass::Terminal;
+    };
+    if matches!(
+        first,
+        QemuAttemptProductionVmLifecycleError::PreparedSource(_)
+    ) {
+        // Raw Pending history must never contain its own protected report.
+        // Refuse an invalid nested report without recursively locking Main.
+        return SchedulerOperationalFailureClass::Terminal;
+    }
+    production_lifecycle_failure_class(first)
 }
 
 fn resource_installation_failure_class(
@@ -242,5 +265,84 @@ mod tests {
                 AttemptWorkerFailure::Terminal(_)
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod protected_first_tests {
+    use super::*;
+
+    #[test]
+    fn protected_first_projection_preserves_actual_request_retry_and_cancel_classes() {
+        let retry = QemuAttemptProductionVmLifecycleError::ModelCopy(Box::new(
+            std::io::Error::other("actual model copy refusal"),
+        ));
+        assert_eq!(
+            prepared_source_first_class(&retry),
+            SchedulerOperationalFailureClass::Retryable
+        );
+
+        let canceled = QemuAttemptProductionVmLifecycleError::CheckpointRestore(Box::new(
+            ProductionAttemptCheckpointRestoreError::Canceled,
+        ));
+        assert_eq!(
+            prepared_source_first_class(&canceled),
+            SchedulerOperationalFailureClass::Canceled
+        );
+
+        // Actual report constructors transport typed status only. They issue
+        // no World and establish no physical quarantine or return evidence.
+        let failure = crate::crucible_qemu_session::QemuAttemptResourceGuardBeginFailure::before_checkpoint_claim(
+            QemuVmRealizationError::Canceled { operation: "component raw begin" },
+            None,
+        );
+        let (report, _) = failure.into_parts();
+        let canceled = QemuAttemptProductionVmLifecycleError::ResourceBeginInstallation(report);
+        assert_eq!(
+            prepared_source_first_class(&canceled),
+            SchedulerOperationalFailureClass::Canceled
+        );
+
+        let failure = crate::crucible_qemu_session::QemuAttemptResourceGuardBeginFailure::rollback(
+            QemuVmRealizationError::Canceled {
+                operation: "component raw begin",
+            },
+            crate::QemuAttemptResourceGuardCleanupFailure::quarantined(
+                QemuVmRealizationError::Canceled {
+                    operation: "component raw rollback",
+                },
+            ),
+        );
+        let (report, _) = failure.into_parts();
+        let quarantined = QemuAttemptProductionVmLifecycleError::ResourceBeginInstallation(report);
+        assert_eq!(
+            prepared_source_first_class(&quarantined),
+            SchedulerOperationalFailureClass::Terminal
+        );
+    }
+
+    #[test]
+    fn cleanup_or_foreign_projection_cannot_bless_a_new_request() {
+        let cleanup = QemuVmRealizationError::ExecutorUnavailable {
+            operation: "later cleanup only",
+            message: String::from("same native cleanup leaf"),
+        };
+        let QemuVmRealizationError::ExecutorUnavailable { message, .. } = &cleanup else {
+            panic!("unexpected fixture variant");
+        };
+        let pointer = message.as_ptr();
+        assert_eq!(
+            prepared_source_first_class(&cleanup),
+            SchedulerOperationalFailureClass::Terminal
+        );
+        let QemuVmRealizationError::ExecutorUnavailable { message, .. } = &cleanup else {
+            panic!("cleanup cause was replaced");
+        };
+        assert_eq!(message.as_ptr(), pointer);
+        let foreign = std::io::Error::other("unrecognized projection");
+        assert_eq!(
+            prepared_source_first_class(&foreign),
+            SchedulerOperationalFailureClass::Terminal
+        );
     }
 }

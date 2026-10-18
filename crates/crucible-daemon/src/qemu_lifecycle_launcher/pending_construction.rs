@@ -3,12 +3,11 @@
 //! The containing Box and construction carrier are Main-paid and allocated
 //! after exact cell reservation, before logical World admission. Custody
 //! delivery allocates nothing. The same Main cell owns ordinary cleanup.
-//! If cell admission refuses, the fixed factory slot keeps this same Box until
-//! canonical no-birth proof permits a consuming return. Neither path creates a
-//! replacement owner or Original.
+//! Main validates its fixed role before the two existing Boxes are born, then
+//! installs the complete owner before publishing work. Neither reports nor
+//! missing delivery infer native return or create a replacement Original.
 
 use super::*;
-use crate::qemu_campaign_lifecycle::SourceCleanupCause;
 use crate::{QemuAttemptResourceGuard, QemuAttemptResourceGuardFactory};
 use crucible_api::{ProductionVmCleanupOwner, ProductionVmCleanupReservation};
 use crucible_linux_resource::host_services::process_birth::{
@@ -16,18 +15,73 @@ use crucible_linux_resource::host_services::process_birth::{
 };
 use crucible_qemu::QemuVmRealizationError;
 
+mod cleanup;
+mod hot_fork_capture;
+#[cfg(all(target_os = "linux", any(test, feature = "private-measurement-domain")))]
+mod native_observation;
+mod post_body;
+mod prepared;
+mod target_nodes;
+use prepared::SourcePreparationHistory;
+
+/// Proves only that this exact preborn owner has not entered the host World call.
+///
+/// The sole constructor is the actual Pending producer. Entry consumes the
+/// token before the host call, including calls that return no delivered loan.
+pub(crate) struct SourceWorldNotStarted {
+    _private: (),
+}
+
 pub(crate) struct PendingSourceConstruction<F: QemuAttemptResourceGuardFactory> {
     returned_guard: Option<F::Guard>,
+    launcher: Option<Box<dyn std::any::Any + Send>>,
+    launch_input: Option<Box<dyn ProductionVmNodeLauncher>>,
+    checkpoint_input: Option<crate::vm_lifecycle::ProductionVmExactCheckpointSet>,
+    carrier_active: bool,
+    finish_launcher: Option<
+        fn(
+            &mut (dyn std::any::Any + Send),
+        ) -> Result<(), crate::ProductionVmConstructionCleanupError>,
+    >,
+    take_launcher_post_body: Option<
+        fn(
+            &mut (dyn std::any::Any + Send),
+        ) -> Result<
+            Option<crate::ProductionVmConstructionPostBody>,
+            crate::ProductionVmConstructionCleanupError,
+        >,
+    >,
+    post_body: Option<crate::ProductionVmConstructionPostBody>,
+    body_disposed: bool,
+    post_body_taken: bool,
+    service: crate::lifecycle_cleanup::ServiceMainHandle,
+    not_started: Option<SourceWorldNotStarted>,
+    construction_started: bool,
+    admitted_resources: Option<crucible_campaign::AttemptResourceLimits>,
+    selected_checkpoint: Option<crate::executor_supervisor::SelectedExactCheckpointRoot>,
+    transferred: bool,
+    history: SourcePreparationHistory,
     generation_storage: Option<crate::QemuAttemptGenerationStorage>,
+    target_nodes:
+        Option<Vec<crate::qemu_hot_fork_reconciliation::TargetNodeConstruction<F::Guard>>>,
+    target_retained_nodes:
+        Option<Vec<crate::qemu_hot_fork_reconciliation::TargetNodeConstruction<F::Guard>>>,
+    target_retained_nodes_lent: bool,
+    target_node_selection: Option<crate::qemu_resource_guard::QemuGenerationStorageSelection>,
+    // Keeps only the same World-paid immutable roster alive through handback;
+    // no native guard, role or process permission lives in this metadata alias.
+    target_node_storage: Option<crate::QemuAttemptGenerationStorage>,
+    target_nodes_lent: bool,
+    target_storage: Option<TargetConstructionStorage>,
+    worker_geometry: Option<crucible_qemu::QemuHotForkWorkerGeometry>,
     factory: Option<F>,
     world: Option<AuthenticatedNativeWorldCleanupLoan>,
     reservation: Option<crate::WorldLifecycleCleanupReservation>,
     construction_custody: Option<Box<crate::ProductionVmConstructionCustody>>,
     // Remains here on genuine cell-admission refusal; no charge is discarded.
     controls: Option<AuthenticatedNativeWorldControlLease>,
-    first_failure: Option<QemuVmRealizationError>,
     members_closed: bool,
-    physically_closed: bool,
+    body_cleanup_complete: bool,
 }
 
 impl<F: QemuAttemptResourceGuardFactory> PendingSourceConstruction<F> {
@@ -55,418 +109,84 @@ where
     F: QemuAttemptResourceGuardFactory + Send + 'static,
     F::Guard: Send + 'static,
 {
+    /// Performs only the fixed two-Box birth beneath the reserved Main locks.
+    pub(crate) fn new_prepared(
+        (factory, ()): (F, ()),
+        reservation: crate::WorldLifecycleCleanupReservation,
+    ) -> (
+        Box<Self>,
+        Option<crate::packaged_qemu_executor::RetainedServiceStart>,
+    ) {
+        let start = crate::packaged_qemu_executor::RetainedServiceStart::new(
+            reservation.service_preclaim(),
+        );
+        (Self::new_prepaid(factory, reservation), Some(start))
+    }
+
+    /// Moves the same import input into that fixed preborn Service phase.
+    pub(crate) fn new_prepared_with_import(
+        (factory, input): (F, crate::imported_checkpoint::RetainedImportedCheckpoint),
+        reservation: crate::WorldLifecycleCleanupReservation,
+    ) -> (
+        Box<Self>,
+        Option<crate::packaged_qemu_executor::RetainedServiceStart>,
+    ) {
+        let start = crate::packaged_qemu_executor::RetainedServiceStart::new_with_import(
+            reservation.service_preclaim(),
+            input,
+        );
+        (Self::new_prepaid(factory, reservation), Some(start))
+    }
+
     /// Creates the same Main-paid owner before logical World admission.
     ///
-    /// The caller first reserves a genuine Main cell that funds these bodies.
-    /// An uncertain empty-cell observation retains them without admitting a
-    /// World. This allocation constructs no World or cleanup authority.
-    pub(crate) fn new_prepaid(
-        factory: F,
-        reservation: crate::WorldLifecycleCleanupReservation,
-    ) -> Box<Self> {
+    /// The fixed Main producer has already validated its genuine role and
+    /// geometry, and immediately installs this owner before publishing Reserved.
+    /// This constructor enters no Original and performs no physical work.
+    fn new_prepaid(factory: F, reservation: crate::WorldLifecycleCleanupReservation) -> Box<Self> {
+        let service = reservation.service_preclaim().handle();
         Box::new(Self {
             returned_guard: None,
+            launcher: None,
+            launch_input: None,
+            checkpoint_input: None,
+            carrier_active: false,
+            finish_launcher: None,
+            take_launcher_post_body: None,
+            post_body: None,
+            body_disposed: false,
+            post_body_taken: false,
+            service,
+            not_started: Some(SourceWorldNotStarted { _private: () }),
+            construction_started: false,
+            admitted_resources: None,
+            selected_checkpoint: None,
+            transferred: false,
+            history: SourcePreparationHistory::default(),
             generation_storage: None,
+            target_nodes: None,
+            target_retained_nodes: None,
+            target_retained_nodes_lent: false,
+            target_node_selection: None,
+            target_node_storage: None,
+            target_nodes_lent: false,
+            target_storage: None,
+            worker_geometry: None,
             factory: Some(factory),
             world: None,
             reservation: Some(reservation),
             construction_custody: Some(Box::new(crate::ProductionVmConstructionCustody::new())),
             controls: None,
-            first_failure: None,
             members_closed: false,
-            physically_closed: false,
+            body_cleanup_complete: false,
         })
     }
 
-    /// Moves delivered holders into the preborn owner and its original Main cell.
-    ///
-    /// The actual host delivers once, before any selected preparation. This operation
-    /// allocates nothing and enters no Original, including on a negative postcut.
-    fn attach_world(
-        &mut self,
-        world: AuthenticatedNativeWorldCleanupLoan,
-        controls: AuthenticatedNativeWorldControlLease,
-    ) -> Result<(), &'static str> {
-        self.world = Some(world);
-        let returned = match self.reservation.as_ref() {
-            Some(reservation) => reservation.attach_controls(controls),
-            None => Err(controls),
-        };
-        match returned {
-            Ok(()) => Ok(()),
-            Err(controls) => {
-                self.controls = Some(controls);
-                self.record_first(QemuVmRealizationError::CleanupRetained {
-                    operation: "attach exact World controls to its Main preclaim",
-                });
-                Err("attach exact World controls to its Main preclaim")
-            }
-        }
-    }
-
-    /// Borrows the preborn receiver for this single actual admission call.
-    pub(crate) fn before_effects<'a>(
-        &'a mut self,
-        source: &'a crucible::ScenarioDefForm,
-        metadata_failure: &'a mut Option<LifecycleApiError>,
-    ) -> PendingWorldBeforeEffects<'a, F> {
-        PendingWorldBeforeEffects {
-            pending: self,
-            source,
-            metadata_failure,
-        }
-    }
-
-    /// Builds exactly the prepaid selected rows before any native Source effects.
-    pub(crate) fn prepare_generation_storage<'a>(
-        &mut self,
-        nodes: impl Clone + Iterator<Item = &'a crucible::NodeId>,
-    ) -> Result<(), LifecycleApiError> {
-        if self.generation_storage.is_some() {
-            return Err(launcher_message("generation storage was already prepared"));
-        }
-        self.generation_storage = Some(crate::QemuAttemptGenerationStorage::prepare(nodes)?);
-        Ok(())
-    }
-
     pub(crate) fn record_first(&mut self, source: QemuVmRealizationError) {
-        if self.first_failure.is_none() {
-            self.first_failure = Some(source);
+        if self.history.native.is_none() {
+            self.history.native = Some(source);
         }
     }
-
-    /// Moves the same token, factory and World loan into the actual launcher.
-    ///
-    /// The caller retains this Box unchanged if its expected fields are absent.
-    pub(crate) fn into_launcher_parts(
-        mut self: Box<Self>,
-        guard: F::Guard,
-    ) -> Result<
-        (
-            F::Guard,
-            crate::QemuAttemptGenerationStorage,
-            F,
-            crate::WorldLifecycleCleanupReservation,
-            Box<crate::ProductionVmConstructionCustody>,
-            AuthenticatedNativeWorldCleanupLoan,
-        ),
-        Box<Self>,
-    > {
-        self.returned_guard = Some(guard);
-        if self.first_failure.is_some()
-            || self.generation_storage.is_none()
-            || self.factory.is_none()
-            || self
-                .reservation
-                .as_ref()
-                .is_none_or(|reservation| !reservation.is_reserved())
-            || self.controls.is_some()
-            || self.construction_custody.is_none()
-            || self.world.is_none()
-        {
-            return Err(self);
-        }
-        // Validate every required part before moving any of their ownership.
-        let Some(factory) = self.factory.take() else {
-            return Err(self);
-        };
-        let Some(reservation) = self.reservation.take() else {
-            self.factory = Some(factory);
-            return Err(self);
-        };
-        let Some(custody) = self.construction_custody.take() else {
-            self.factory = Some(factory);
-            self.reservation = Some(reservation);
-            return Err(self);
-        };
-        let Some(guard) = self.returned_guard.take() else {
-            self.factory = Some(factory);
-            self.reservation = Some(reservation);
-            self.construction_custody = Some(custody);
-            return Err(self);
-        };
-        let Some(storage) = self.generation_storage.take() else {
-            self.returned_guard = Some(guard);
-            self.factory = Some(factory);
-            self.reservation = Some(reservation);
-            self.construction_custody = Some(custody);
-            return Err(self);
-        };
-        let Some(world) = self.world.take() else {
-            self.returned_guard = Some(guard);
-            self.generation_storage = Some(storage);
-            self.factory = Some(factory);
-            self.reservation = Some(reservation);
-            self.construction_custody = Some(custody);
-            return Err(self);
-        };
-        Ok((guard, storage, factory, reservation, custody, world))
-    }
-
-    /// Identifies the no-cell branch without asserting absence of Source effects.
-    pub(crate) fn has_unreserved_controls(&self) -> bool {
-        self.controls.is_some() && self.reservation.is_none()
-    }
-
-    /// Returns the exact typed begin error after publishing the same owner.
-    ///
-    /// Invariant refusal returns that same error, token and preexisting owner
-    /// together. The inline mutex adds Sync without a failure-time allocation.
-    pub(crate) fn retain_after_begin_error<C: std::error::Error + Send + Sync + 'static>(
-        mut self: Box<Self>,
-        source: C,
-    ) -> Result<
-        (
-            C,
-            Box<
-                dyn crucible_api::ProductionVmCleanupHandoff<
-                        Failure = crate::ProductionVmConstructionCleanupError,
-                    >,
-            >,
-        ),
-        SourceConstructionCustodyFailure<C>,
-    > {
-        let reservation = self
-            .reservation
-            .take()
-            .map(crate::WorldLifecycleCleanupReservation::into_reservation);
-        retain_source_owner(reservation, self, source)
-    }
-}
-
-/// Stack-only borrow of the already Main-paid owner through one admission.
-pub(crate) struct PendingWorldBeforeEffects<'a, F: QemuAttemptResourceGuardFactory> {
-    pending: &'a mut PendingSourceConstruction<F>,
-    source: &'a crucible::ScenarioDefForm,
-    metadata_failure: &'a mut Option<LifecycleApiError>,
-}
-
-impl<F> crucible_qemu::LinuxQemuNativeWorldConstructor for PendingWorldBeforeEffects<'_, F>
-where
-    F: QemuAttemptResourceGuardFactory + Send + 'static,
-    F::Guard: Send + 'static,
-{
-    fn retain_world(
-        &mut self,
-        loan: AuthenticatedNativeWorldCleanupLoan,
-        controls: AuthenticatedNativeWorldControlLease,
-    ) -> Result<(), &'static str> {
-        self.pending.attach_world(loan, controls)
-    }
-
-    fn prepare_world(&mut self) -> Result<(), QemuVmRealizationError> {
-        self.pending
-            .prepare_generation_storage(self.source.world().vm_nodes().iter().map(|node| &node.id))
-            .map_err(|first| {
-                *self.metadata_failure = Some(first);
-                QemuVmRealizationError::CleanupRetained {
-                    operation: "selected generation preparation refused",
-                }
-            })
-    }
-}
-
-/// Retains the no-cell body, then its exact post-destruction World return.
-pub(crate) struct UnbornSourceConstruction<
-    F: QemuAttemptResourceGuardFactory,
-    C = QemuVmRealizationError,
-> {
-    pending: Option<Box<PendingSourceConstruction<F>>>,
-    returning: Option<UnbornWorldReturn<F>>,
-    first: C,
-    cleanup_failure: Option<SourceCleanupCause>,
-    cleanup_post: Option<crucible_linux_resource::host_supervision::HostSupervisionError>,
-    physically_closed: bool,
-}
-
-struct UnbornWorldReturn<F> {
-    factory: F,
-    world: AuthenticatedNativeWorldCleanupLoan,
-    controls: AuthenticatedNativeWorldControlLease,
-    body_destroyed: bool,
-}
-
-impl<F, C> UnbornSourceConstruction<F, C>
-where
-    F: QemuAttemptResourceGuardFactory + Send + 'static,
-    F::Guard: Send + 'static,
-    C: std::error::Error + Send + Sync + 'static,
-{
-    pub(crate) fn new(pending: Box<PendingSourceConstruction<F>>, first: C) -> Self {
-        Self {
-            pending: Some(pending),
-            returning: None,
-            first,
-            cleanup_failure: None,
-            cleanup_post: None,
-            physically_closed: false,
-        }
-    }
-
-    pub(crate) fn cleanup_failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.cleanup_failure
-            .as_ref()
-            .map(SourceCleanupCause::as_error)
-    }
-
-    pub(crate) fn first(&self) -> &C {
-        &self.first
-    }
-
-    /// Moves all actual causes only after the exact World return completed.
-    pub(crate) fn into_causes(
-        self,
-    ) -> Result<
-        (
-            C,
-            Option<SourceCleanupCause>,
-            Option<crucible_linux_resource::host_supervision::HostSupervisionError>,
-        ),
-        Self,
-    > {
-        if !self.physically_closed {
-            return Err(self);
-        }
-        Ok((self.first, self.cleanup_failure, self.cleanup_post))
-    }
-
-    /// Advances only the exact never-born branch under its saved World Cleanup.
-    pub(crate) fn retry(&mut self) -> Result<bool, &'static str> {
-        if self.physically_closed {
-            return Ok(true);
-        }
-        let world = self
-            .pending
-            .as_ref()
-            .and_then(|pending| pending.world.as_ref())
-            .or_else(|| self.returning.as_ref().map(|returning| &returning.world))
-            .ok_or("same World cleanup loan is absent")?;
-        let cleanup = match world.retained_cleanup() {
-            Ok(cleanup) => cleanup,
-            Err(first) => {
-                self.cleanup_failure
-                    .get_or_insert(SourceCleanupCause::Body(first));
-                return Err("same World Cleanup admission remains refused");
-            }
-        };
-        let (result, post) = observe_world_cleanup(&cleanup, || self.retry_under_cleanup(&cleanup));
-        if let Err(first) = post {
-            self.cleanup_post.get_or_insert(first);
-        }
-        // Physical return precedes the post-check. A negative post belongs to
-        // history and must not replay an abort after its World was removed.
-        if self.physically_closed {
-            Ok(true)
-        } else {
-            result
-        }
-    }
-
-    fn retry_under_cleanup(
-        &mut self,
-        cleanup: &crucible_linux_resource::host_supervision::HostOperationGuard,
-    ) -> Result<bool, &'static str> {
-        check_world_cleanup(cleanup, &mut self.cleanup_failure)?;
-        if let Some(pending) = self.pending.as_mut() {
-            // A returned guard, metadata preparation or accepted cell requires
-            // the ordinary retained cleanup path, never a no-birth shortcut.
-            if pending.returned_guard.is_some()
-                || pending.generation_storage.is_some()
-                || pending.reservation.is_some()
-                || pending.first_failure.is_some()
-            {
-                return Err("pending Source requires retained member cleanup");
-            }
-            let (Some(factory), Some(world), Some(controls)) =
-                (&pending.factory, &pending.world, &pending.controls)
-            else {
-                return Err("pending Source retains incomplete return custody");
-            };
-            if let Err(first) = factory.verify_unborn_native_world(world, controls) {
-                self.cleanup_failure
-                    .get_or_insert(SourceCleanupCause::Native(first));
-                return Err("same factory cannot prove the Source never began");
-            }
-            check_world_cleanup(cleanup, &mut self.cleanup_failure)?;
-            let Some(mut pending) = self.pending.take() else {
-                return Err("same pending Source body is absent");
-            };
-            let (factory, world, controls) = match (
-                pending.factory.take(),
-                pending.world.take(),
-                pending.controls.take(),
-            ) {
-                (Some(factory), Some(world), Some(controls)) => (factory, world, controls),
-                (factory, world, controls) => {
-                    pending.factory = factory;
-                    pending.world = world;
-                    pending.controls = controls;
-                    self.pending = Some(pending);
-                    return Err("same pending Source return fields are absent");
-                }
-            };
-            // Retain the return journal before destroying the actual Box and
-            // its preborn empty API carrier. A destructor unwind leaves this
-            // same journal uncertain and cannot certify body destruction.
-            self.returning = Some(UnbornWorldReturn {
-                factory,
-                world,
-                controls,
-                body_destroyed: false,
-            });
-            drop(pending);
-            if let Some(returning) = self.returning.as_mut() {
-                returning.body_destroyed = true;
-            }
-        }
-        check_world_cleanup(cleanup, &mut self.cleanup_failure)?;
-        let Some(returning) = self.returning.as_mut() else {
-            return Err("same unborn World return journal is absent");
-        };
-        if !returning.body_destroyed {
-            return Err("pending Source body destruction remains uncertain");
-        }
-        if let Err(first) = returning.controls.close_after_owner_destruction() {
-            self.cleanup_failure
-                .get_or_insert(SourceCleanupCause::Body(first));
-            return Err("same containing body lease remains retained");
-        }
-        check_world_cleanup(cleanup, &mut self.cleanup_failure)?;
-        if let Err(first) = returning
-            .factory
-            .abort_unborn_native_world(&returning.world)
-        {
-            self.cleanup_failure
-                .get_or_insert(SourceCleanupCause::Native(first));
-            return Err("same unborn World assignment remains retained");
-        }
-        self.physically_closed = true;
-        Ok(true)
-    }
-}
-
-/// Observes the same entered Cleanup after either attempt result.
-fn observe_world_cleanup<T>(
-    cleanup: &crucible_linux_resource::host_supervision::HostOperationGuard,
-    attempt: impl FnOnce() -> T,
-) -> (
-    T,
-    Result<(), crucible_linux_resource::host_supervision::HostSupervisionError>,
-) {
-    let result = attempt();
-    let post = cleanup.wait_slice().map(|_| ());
-    (result, post)
-}
-
-fn check_world_cleanup(
-    cleanup: &crucible_linux_resource::host_supervision::HostOperationGuard,
-    first: &mut Option<SourceCleanupCause>,
-) -> Result<(), &'static str> {
-    if let Err(source) = cleanup.wait_slice() {
-        first.get_or_insert(SourceCleanupCause::Body(source.into()));
-        return Err("same World Cleanup no longer permits return effects");
-    }
-    Ok(())
 }
 
 impl<F> crucible_api::ProductionVmCleanupOwner for PendingSourceConstruction<F>
@@ -475,6 +195,11 @@ where
     F::Guard: Send + 'static,
 {
     type Failure = crate::ProductionVmConstructionCleanupError;
+    type PostBody = crate::ProductionVmConstructionPostBody;
+
+    fn take_post_body(&mut self) -> Result<Option<Self::PostBody>, Self::Failure> {
+        self.take_retained_post_body()
+    }
 
     fn retry_cleanup(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
         ProductionVmNodeLauncher::finish(self)
@@ -491,8 +216,10 @@ where
     ) -> Option<
         Box<
             dyn ProductionVmCleanupReservation<
-                Failure = crate::ProductionVmConstructionCleanupError,
-            >,
+                    Failure = crate::ProductionVmConstructionCleanupError,
+                    PostBody = crate::ProductionVmConstructionPostBody,
+                    ReturnDestination = crate::lifecycle_cleanup::SourceBodyReturn,
+                >,
         >,
     > {
         self.reservation
@@ -539,411 +266,62 @@ where
     }
 
     fn finish(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
-        if self.physically_closed {
+        self.require_external_body_acceptance()?;
+        // The Source World still pays lent row payloads. A destroyed external
+        // Loop does not return those bytes while an exact Target owns them.
+        self.close_target_nodes()?;
+        if self.body_cleanup_complete {
+            return Ok(());
+        }
+        if self.carrier_active {
+            let custody = self.construction_custody.as_ref().ok_or(
+                crate::ProductionVmConstructionCleanupError::Retained(
+                    "same active construction carrier is absent",
+                ),
+            )?;
+            custody.retry_cleanup()?;
+            self.body_cleanup_complete = true;
+            return Ok(());
+        }
+        if let Some(launcher) = self.launch_input.as_mut() {
+            launcher.finish()?;
+            self.body_cleanup_complete = true;
+            return Ok(());
+        }
+        if let Some(launcher) = self.launcher.as_mut() {
+            let finish = self.finish_launcher.ok_or(
+                crate::ProductionVmConstructionCleanupError::Retained(
+                    "same retained launcher cleanup projection is absent",
+                ),
+            )?;
+            finish(launcher.as_mut())?;
+            self.body_cleanup_complete = true;
+            return Ok(());
+        }
+        if self.transferred || self.not_started.is_some() {
+            // This closes only the Pending body. The exact nominal no-entry
+            // proof or external launcher PostBody is still required by Main.
+            self.body_cleanup_complete = true;
             return Ok(());
         }
         if self.controls.is_some() {
-            return Err((launcher_message(
-                "unreserved World body remains retained; consuming never-born return is required",
-            ))
-            .into());
-        }
-        let factory = self
-            .factory
-            .as_mut()
-            .ok_or_else(|| launcher_message("pending Source lost its actual factory"))?;
-        let members = if self.members_closed {
-            Ok(())
-        } else {
-            let world = self
-                .world
-                .as_ref()
-                .ok_or_else(|| launcher_message("same pending World cleanup loan is absent"))?;
-            factory.retry_native_world_construction(world)
-        };
-        match members {
-            Ok(()) => {
-                self.members_closed = true;
-                if let Some(guard) = self.returned_guard.as_mut() {
-                    guard.finish()?;
-                }
-                self.returned_guard = None;
-                self.generation_storage = None;
-                self.physically_closed = true;
-                Ok(())
-            }
-            Err(source) => {
-                self.record_first(source);
-                Err((launcher_message(format!(
-                    "same World construction cleanup remains retained: {}",
-                    self.first_failure
-                        .as_ref()
-                        .map_or("unknown refusal".to_owned(), ToString::to_string),
-                )))
-                .into())
-            }
-        }
-    }
-}
-
-/// Preserves an exceptional failed publication without erasing its native cause.
-///
-/// The same typed begin error and preallocated owner remain reachable. This is
-/// an owning refusal, never an observation that Cleanup or return succeeded.
-#[must_use = "retain the same owner and reservation until custody publication succeeds"]
-pub struct SourceConstructionCustodyFailure<C = QemuVmRealizationError> {
-    source: C,
-    custody: Mutex<
-        Option<(
-            Option<
-                Box<
-                    dyn ProductionVmCleanupReservation<
-                        Failure = crate::ProductionVmConstructionCleanupError,
-                    >,
-                >,
-            >,
-            Box<
-                dyn ProductionVmCleanupOwner<Failure = crate::ProductionVmConstructionCleanupError>,
-            >,
-        )>,
-    >,
-}
-
-impl<C: std::error::Error + Send + Sync + 'static> SourceConstructionCustodyFailure<C> {
-    fn new(
-        source: C,
-        reservation: Option<
-            Box<
-                dyn ProductionVmCleanupReservation<
-                    Failure = crate::ProductionVmConstructionCleanupError,
-                >,
-            >,
-        >,
-        owner: Box<
-            dyn ProductionVmCleanupOwner<Failure = crate::ProductionVmConstructionCleanupError>,
-        >,
-    ) -> Self {
-        Self {
-            source,
-            custody: Mutex::new(Some((reservation, owner))),
-        }
-    }
-
-    /// Moves the original typed cause from an empty published error shell.
-    ///
-    /// This extracts history only. Publication and diagnostic extraction never
-    /// certify physical cleanup; the exact handoff receipt owns that proof.
-    ///
-    /// # Errors
-    /// Returns the same complete error if it still holds an owner/token or its
-    /// publication storage is poisoned. No diagnostic clone or new body is made.
-    pub fn into_published_error(mut self) -> Result<C, Self> {
-        let Ok(owned) = self.custody.get_mut() else {
-            return Err(self);
-        };
-        if owned.is_some() {
-            return Err(self);
-        }
-        Ok(self.source)
-    }
-
-    /// Retries only custody publication through the exact reserved token.
-    ///
-    /// # Errors
-    /// Keeps both fields on absent-token, poisoned, or exact-cell refusal.
-    /// Expiry never manufactures Cleanup authority and is not consulted here.
-    pub fn retry_publication(
-        &mut self,
-    ) -> Result<
-        Option<
-            Box<
-                dyn crucible_api::ProductionVmCleanupHandoff<
-                        Failure = crate::ProductionVmConstructionCleanupError,
-                    >,
-            >,
-        >,
-        &'static str,
-    > {
-        let slot = self
-            .custody
-            .get_mut()
-            .map_err(|_| "Source custody is poisoned")?;
-        let Some((reservation, owner)) = slot.take() else {
-            return Ok(None);
-        };
-        let Some(reservation) = reservation else {
-            *slot = Some((None, owner));
-            return Err("Source custody has no authentic reserved token");
-        };
-        match reservation.retain(owner) {
-            Ok(handoff) => Ok(Some(handoff)),
-            Err((reservation, owner)) => {
-                *slot = Some((Some(reservation), owner));
-                Err("same Source custody publication remains refused")
-            }
-        }
-    }
-}
-
-impl<C: std::error::Error + Send + Sync + 'static> std::fmt::Debug
-    for SourceConstructionCustodyFailure<C>
-{
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("SourceConstructionCustodyFailure")
-            .field("source", &self.source)
-            .finish_non_exhaustive()
-    }
-}
-
-impl<C: std::error::Error + Send + Sync + 'static> std::fmt::Display
-    for SourceConstructionCustodyFailure<C>
-{
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            formatter,
-            "{}; same Source owner and token remain in custody failure",
-            self.source
-        )
-    }
-}
-
-impl<C: std::error::Error + Send + Sync + 'static> std::error::Error
-    for SourceConstructionCustodyFailure<C>
-{
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.source)
-    }
-}
-
-fn missing_pending(message: &'static str) -> QemuVmRealizationError {
-    QemuVmRealizationError::ExecutorUnavailable {
-        operation: "retain actual Source construction",
-        message: String::from(message),
-    }
-}
-
-/// Publishes custody without executing or renewing any operation.
-pub(crate) fn retain_source_owner<C: std::error::Error + Send + Sync + 'static>(
-    reservation: Option<
-        Box<
-            dyn ProductionVmCleanupReservation<
-                Failure = crate::ProductionVmConstructionCleanupError,
-            >,
-        >,
-    >,
-    owner: Box<dyn ProductionVmCleanupOwner<Failure = crate::ProductionVmConstructionCleanupError>>,
-    source: C,
-) -> Result<
-    (
-        C,
-        Box<
-            dyn crucible_api::ProductionVmCleanupHandoff<
-                    Failure = crate::ProductionVmConstructionCleanupError,
-                >,
-        >,
-    ),
-    SourceConstructionCustodyFailure<C>,
-> {
-    let Some(reservation) = reservation else {
-        return Err(SourceConstructionCustodyFailure::new(source, None, owner));
-    };
-    match reservation.retain(owner) {
-        Ok(handoff) => Ok((source, handoff)),
-        Err((reservation, owner)) => Err(SourceConstructionCustodyFailure::new(
-            source,
-            Some(reservation),
-            owner,
-        )),
-    }
-}
-
-#[cfg(test)]
-mod published_error_tests {
-    use super::*;
-
-    fn first() -> QemuVmRealizationError {
-        QemuVmRealizationError::ExecutorUnavailable {
-            operation: "component original Source refusal",
-            message: String::from("typed cause"),
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn unclosed_return_keeps_both_error_allocations_on_extraction_refusal() {
-        type Factory = crate::ComposedQemuAttemptResourceGuardFactory<
-            crate::LinuxQemuAttemptHostResourceFactory,
-        >;
-        // Unissued transport fixture: no Pending Box, World or factory is
-        // constructed, and no physical-closure fact is fabricated.
-        let first = first();
-        let QemuVmRealizationError::ExecutorUnavailable { message, .. } = &first else {
-            panic!("unexpected original variant");
-        };
-        let first_pointer = message.as_ptr();
-        let cleanup_message = String::from("actual body return refusal");
-        let cleanup_pointer = cleanup_message.as_ptr();
-        let holder = UnbornSourceConstruction::<Factory> {
-            pending: None,
-            returning: None,
-            first,
-            cleanup_failure: Some(SourceCleanupCause::Body(
-                crucible_linux_resource::host_services::process_birth::ServiceBirthError::Policy(
-                    cleanup_message,
+            let reservation = self.reservation.as_ref().ok_or(
+                crate::ProductionVmConstructionCleanupError::Retained(
+                    "same World controls have no original Main reservation",
                 ),
-            )),
-            cleanup_post: None,
-            physically_closed: false,
-        };
-
-        let retained = holder.into_causes().unwrap_err();
-        let QemuVmRealizationError::ExecutorUnavailable { message, .. } = retained.first() else {
-            panic!("original cause was replaced");
-        };
-        assert_eq!(message.as_ptr(), first_pointer);
-        let cleanup = retained.cleanup_failure().unwrap()
-            .downcast_ref::<crucible_linux_resource::host_services::process_birth::ServiceBirthError>().unwrap();
-        let crucible_linux_resource::host_services::process_birth::ServiceBirthError::Policy(
-            message,
-        ) = cleanup
-        else {
-            panic!("body cause was replaced");
-        };
-        assert_eq!(message.as_ptr(), cleanup_pointer);
-        assert!(!retained.physically_closed);
-    }
-
-    #[test]
-    fn same_cleanup_post_is_observed_after_an_initiating_refusal() {
-        use crucible_linux_resource::host_supervision::{
-            HostOperationBudgets, HostOperationClass, HostOperationState, HostOperationSupervisor,
-            HostSupervisionError,
-        };
-
-        // Actual entered Cleanup, without a Main/World/native admission claim.
-        let supervisor =
-            HostOperationSupervisor::new(HostOperationBudgets::default(), None).unwrap();
-        let original = supervisor.begin(HostOperationClass::Preparation).unwrap();
-        let cleanup = original.begin_original_cleanup_control().unwrap();
-        let mut primary = None;
-        check_world_cleanup(&cleanup, &mut primary).unwrap();
-        let initiating = first();
-        let QemuVmRealizationError::ExecutorUnavailable { message, .. } = &initiating else {
-            panic!("unexpected initiating variant");
-        };
-        let initiating_pointer = message.as_ptr();
-
-        let (attempt, post) = observe_world_cleanup(&cleanup, || {
-            cleanup.complete().unwrap();
-            Err::<(), _>(initiating)
-        });
-
-        let initiating = attempt.unwrap_err();
-        let QemuVmRealizationError::ExecutorUnavailable { message, .. } = &initiating else {
-            panic!("initiating cause was replaced");
-        };
-        assert_eq!(message.as_ptr(), initiating_pointer);
-        assert_eq!(
-            post,
-            Err(HostSupervisionError::Terminal {
-                state: HostOperationState::Completed,
-            })
-        );
-        assert!(primary.is_none());
-    }
-
-    #[test]
-    fn terminal_saved_cleanup_refuses_effects_and_still_has_independent_post() {
-        use crucible_linux_resource::host_supervision::{
-            HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
-        };
-
-        let supervisor =
-            HostOperationSupervisor::new(HostOperationBudgets::default(), None).unwrap();
-        let original = supervisor.begin(HostOperationClass::Preparation).unwrap();
-        let cleanup = original.begin_original_cleanup_control().unwrap();
-        cleanup.complete().unwrap();
-        let mut first = None;
-        let mut effects = 0;
-
-        let (attempt, post) = observe_world_cleanup(&cleanup, || {
-            check_world_cleanup(&cleanup, &mut first)?;
-            effects += 1;
-            Ok::<(), &'static str>(())
-        });
-
-        assert!(attempt.is_err());
-        assert!(post.is_err());
-        assert_eq!(effects, 0);
-        assert!(matches!(first, Some(SourceCleanupCause::Body(
-            crucible_linux_resource::host_services::process_birth::ServiceBirthError::Supervision(_)
-        ))));
-    }
-
-    #[test]
-    fn published_empty_shell_moves_original_native_error() {
-        // Diagnostic-only shell; no Main/Source/operation is constructed.
-        let shell = SourceConstructionCustodyFailure {
-            source: first(),
-            custody: Mutex::new(None),
-        };
-        let moved = shell.into_published_error().unwrap();
-        assert!(
-            matches!(moved, QemuVmRealizationError::ExecutorUnavailable { operation, message }
-            if operation == "component original Source refusal" && message == "typed cause")
-        );
-    }
-
-    #[test]
-    fn unpublished_body_keeps_same_native_error_and_owner() {
-        let shell = SourceConstructionCustodyFailure {
-            source: first(),
-            custody: Mutex::new(Some((
-                None,
-                Box::new(crate::ProductionVmConstructionCustody::new()),
-            ))),
-        };
-        let mut retained = shell.into_published_error().unwrap_err();
-        assert!(retained.custody.get_mut().unwrap().is_some());
-        assert!(
-            matches!(retained.source, QemuVmRealizationError::ExecutorUnavailable { operation, .. }
-            if operation == "component original Source refusal")
-        );
-    }
-}
-
-/// Publishes normal disposal without constructing a speculative first error.
-pub(crate) fn publish_source_owner(
-    reservation: Option<
-        Box<
-            dyn ProductionVmCleanupReservation<
-                Failure = crate::ProductionVmConstructionCleanupError,
-            >,
-        >,
-    >,
-    owner: Box<dyn ProductionVmCleanupOwner<Failure = crate::ProductionVmConstructionCleanupError>>,
-) -> Result<
-    Box<
-        dyn crucible_api::ProductionVmCleanupHandoff<
-                Failure = crate::ProductionVmConstructionCleanupError,
-            >,
-    >,
-    SourceConstructionCustodyFailure,
-> {
-    let Some(reservation) = reservation else {
-        return Err(SourceConstructionCustodyFailure::new(
-            missing_pending("same Source observation has no authentic reservation"),
-            None,
-            owner,
-        ));
-    };
-    match reservation.retain(owner) {
-        Ok(handoff) => Ok(handoff),
-        Err((reservation, owner)) => Err(SourceConstructionCustodyFailure::new(
-            missing_pending("same Source observation publication remains refused"),
-            Some(reservation),
-            owner,
-        )),
+            )?;
+            let Some(controls) = self.controls.take() else {
+                return Err(crate::ProductionVmConstructionCleanupError::Retained(
+                    "same retained World controls are absent",
+                ));
+            };
+            if let Err(controls) = reservation.attach_controls(controls) {
+                self.controls = Some(controls);
+                return Err(crate::ProductionVmConstructionCleanupError::Retained(
+                    "same World controls remain in Pending custody",
+                ));
+            }
+        }
+        self.finish_under_world_cleanup()
     }
 }

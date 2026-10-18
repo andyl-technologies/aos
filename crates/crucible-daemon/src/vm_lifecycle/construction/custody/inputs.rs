@@ -71,6 +71,51 @@ impl ProductionVmConstructionCustody {
         Ok(())
     }
 
+    /// Moves a complete set of retained fork inputs into this original carrier.
+    ///
+    /// The caller keeps each slot on refusal. Success transfers only existing
+    /// owners; validation and scheduler construction are separate operations.
+    ///
+    /// # Errors
+    /// Refuses a missing launcher or continuation, or a carrier that is closed,
+    /// occupied, poisoned, already failed or attached to a cleanup reservation.
+    pub(crate) fn install_hot_fork_inputs(
+        &mut self,
+        launcher: &mut Option<Box<dyn ProductionVmNodeLauncher>>,
+        continuation: &mut Option<ProductionVmHotForkWorldContinuation>,
+        adoptions: &mut Vec<ProductionVmHotForkNodeAdoption>,
+    ) -> Result<(), LifecycleApiError> {
+        if launcher.is_none() || continuation.is_none() {
+            return Err(LifecycleApiError::ConstructionCustodyUnavailable);
+        }
+        let partial = self.empty_input_slot()?;
+
+        partial.node_launcher = launcher.take();
+        partial.hot_fork_continuation = continuation.take();
+        partial.hot_fork_adoptions = std::mem::take(adoptions);
+        Ok(())
+    }
+
+    /// Retains partial adoptions for the carrier's existing cleanup algorithm.
+    ///
+    /// No launcher or executable lifecycle is published by this operation.
+    /// The original vector allocation moves intact after validating the slot.
+    ///
+    /// # Errors
+    /// Refuses a nonempty input vector when this carrier is no longer pristine.
+    pub(crate) fn install_adoption_cleanup(
+        &mut self,
+        adoptions: &mut Vec<ProductionVmHotForkNodeAdoption>,
+    ) -> Result<(), LifecycleApiError> {
+        if adoptions.is_empty() {
+            return Ok(());
+        }
+        let partial = self.empty_input_slot()?;
+
+        partial.hot_fork_adoptions = std::mem::take(adoptions);
+        Ok(())
+    }
+
     /// Refuses terminal or previously failed custody before preparation effects.
     pub(in crate::vm_lifecycle) fn preparation_phase(
         &mut self,

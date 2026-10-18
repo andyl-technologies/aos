@@ -1319,6 +1319,7 @@ where
     let completed = run_guarded_default_campaign_with_repository(
         request,
         runner,
+        operation_only_preparation,
         execution_evidence,
         repository,
         planner_authority,

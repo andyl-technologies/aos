@@ -448,12 +448,6 @@ impl AttemptExecutionModel for CompletionModel<'_> {
         let input = decode_crucible_attempt_execution(&self.store, input)
             .expect("authenticated accepted resumed execution");
         let before_service = available(self.prepared);
-        let mut selected = context.take_selected_checkpoint();
-        let service = RetainedTemplateServiceFactory::new(self.prepared, &self.config)
-            .start_for_resume(input.scenario(), self.checkpoint, context, &mut selected)
-            .expect("fresh full-vector Service consumes the real selected claim");
-        assert!(selected.is_none());
-        extend_native_operations(service.context());
         let bytes = std::mem::size_of::<CompletionGate>()
             + std::mem::size_of::<CompletionDecorator>()
             + std::mem::size_of::<ObservedBacking>()
@@ -498,6 +492,16 @@ impl AttemptExecutionModel for CompletionModel<'_> {
             lifecycle_config,
             ComposedQemuAttemptResourceGuardFactory::new(host),
         );
+        let service = super::main_service::NativeServiceScope::resume(
+            factory
+                .prepare_source_construction()
+                .expect("actual configured Source factory retains its genuine Main preclaim"),
+            &RetainedTemplateServiceFactory::new(self.prepared, &self.config),
+            input.scenario(),
+            self.checkpoint,
+            context,
+        );
+        extend_native_operations(service.context());
         let scenario = input.scenario().scenario_def();
         let initial = match input.start() {
             crate::CrucibleResolvedAttemptStart::Branch { parent, .. } => parent,
@@ -649,7 +653,7 @@ impl AttemptExecutionModel for CompletionModel<'_> {
         if QemuFreshAttemptLifecycleOwner::shutdown(&mut lifecycle).is_err()
             && let Err(error) = QemuFreshAttemptLifecycleOwner::shutdown(&mut lifecycle)
         {
-            service.retain_after_unknown_cleanup();
+            service.retain_in_main();
             std::mem::forget(lifecycle);
             panic!("source failure cleanup retains its charged world: {error}");
         }
@@ -667,7 +671,7 @@ impl AttemptExecutionModel for CompletionModel<'_> {
             {
                 Ok(cleanup) => cleanup,
                 Err(error) => {
-                    service.retain_after_unknown_cleanup();
+                    service.retain_in_main();
                     std::mem::forget(gate);
                     panic!(
                         "stored inode restoration retains its original expired authority: {error}"
@@ -681,20 +685,22 @@ impl AttemptExecutionModel for CompletionModel<'_> {
                     .map_err(crucible_qemu::ram_source::QemuRamReadBoundaryError::from)
             });
             if let Err(error) = restore {
-                service.retain_after_unknown_cleanup();
+                service.retain_in_main();
                 std::mem::forget(gate);
                 panic!("actual corrupted inode and charged authority retained: {error}");
             }
             if let Err(error) = cleanup.complete() {
-                service.retain_after_unknown_cleanup();
+                service.retain_in_main();
                 std::mem::forget(gate);
                 panic!("stored restoration cannot declare success after its original cap: {error}");
             }
         }
         drop(gate);
-        service
-            .release_after_world_cleanup()
-            .expect("proof-bound full-vector Service discharge");
+        let terminal = service
+            .into_retirement()
+            .expect("actual World return and full-vector Service discharge");
+        println!("source_failure_retirement={terminal}");
+        drop(terminal);
         assert_eq!(available(self.prepared), before_service);
         assert!(
             registry

@@ -973,6 +973,12 @@ struct LoanAwareSourceLauncher {
 #[cfg(target_os = "linux")]
 impl crucible_api::ProductionVmCleanupOwner for LoanAwareSourceLauncher {
     type Failure = crate::ProductionVmConstructionCleanupError;
+    type PostBody = crate::ProductionVmConstructionPostBody;
+
+    fn take_post_body(&mut self) -> Result<Option<Self::PostBody>, Self::Failure> {
+        // This component launcher owns no native World or Service return.
+        Ok(None)
+    }
 
     fn retry_cleanup(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
         ProductionVmNodeLauncher::finish(self)
@@ -1133,7 +1139,7 @@ fn a_process_neutral_source_world_cannot_lend_a_physical_target_permit() {
         .prepare_hot_fork_source_world()
         .unwrap_or_else(|error| panic!("prepared loan fixture: {error}"));
 
-    assert!(source.lend_fork_target_permit().is_err());
+    assert!(source.prepare_fork_target().is_err());
 
     assert!(!source.fork_target_is_owned());
     assert!(source.recover().is_ok());

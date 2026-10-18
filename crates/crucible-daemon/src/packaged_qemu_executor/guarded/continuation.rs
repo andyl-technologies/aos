@@ -6,6 +6,7 @@
 //! Service has its own physical reservation and deadline, rather than copying
 //! the completed source execution's capability.
 
+use super::service_source::GuardedServiceSupervisionFailure;
 use super::*;
 use crate::ProductionVmLifecycleConfig;
 use crate::paused_checkpoint_promotion::{
@@ -19,8 +20,7 @@ use crate::qemu_campaign_lifecycle::GuardedDefaultCampaignRun;
 use crate::{
     AttemptExecutionKey, AttemptExecutionRuntimeBasis, CheckpointPromotionCompletionOutcome,
     CheckpointPromotionRestartWork, ComposedQemuAttemptResourceGuardFactory, ExecutionCancellation,
-    ProductionBakedGenesisReplayCatalogFactory, QemuAttemptProductionVmLifecycleFactory,
-    capture_production_baked_genesis,
+    ProductionBakedGenesisReplayCatalogFactory, capture_production_baked_genesis,
 };
 use crucible_campaign::{AttemptExecutionScope, ExactCheckpointId};
 use crucible_linux_resource::host_supervision::{
@@ -31,7 +31,7 @@ use std::error::Error;
 /// A promoted root and the fresh charged Service authorized to consume it.
 pub(crate) struct GuardedContinuation {
     pub(crate) checkpoint: ExactCheckpointId,
-    pub(crate) service: RetainedTemplateService,
+    pub(crate) source: GuardedServiceSource,
 }
 
 /// Refusal of an unauthenticated or unsuccessful durable continuation phase.
@@ -39,12 +39,37 @@ pub(crate) struct GuardedContinuation {
 pub(crate) enum GuardedContinuationError {
     #[error("guarded continuation refused: {0}")]
     Refused(&'static str),
+    #[error("guarded continuation preparation refused: {0}")]
+    Prepared(#[source] crate::PreparedSourceFailure),
+    #[error("guarded continuation Original refused: {0}")]
+    Supervision(#[source] GuardedServiceSupervisionFailure),
+    #[error(
+        "guarded continuation selected-root producer refused: {first}; retained custody: {custody}"
+    )]
+    Selection {
+        #[source]
+        first: ContinuationRootSelectionError,
+        custody: crate::PreparedSourceFailure,
+    },
+    #[error("guarded continuation cleanup remains retained: {0}")]
+    Retirement(#[source] crate::PreparedSourceRefusal),
     #[error("guarded continuation {phase} failed: {source}")]
     Operation {
         phase: &'static str,
         #[source]
         source: Box<dyn Error + Send>,
     },
+}
+
+/// Preserves the actual actor-route or selected-ledger producer refusal.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ContinuationRootSelectionError {
+    #[error("preparation was canceled")]
+    Canceled,
+    #[error("enter selected-root actor: {0}")]
+    Route(#[source] crucible_api::host_operational::HostOperationalError),
+    #[error("select promoted root: {0}")]
+    Select(#[source] crate::executor_supervisor::LocalExecutorError<crate::AssignmentLedgerError>),
 }
 
 impl GuardedContinuationError {
@@ -228,41 +253,86 @@ impl GuardedCampaignOwner {
             ));
         }
 
-        let mut selected = self
-            .inner
-            .actor
-            .with_supervisor(|actor| {
-                Ok(actor.select_reconciled_paused_checkpoint_root(key, checkpoint))
+        // Select the real ledger root only after the Main owner is durable.
+        // A refused projection cannot create a caller-local claim to discard.
+        check_preparation(&preparation, &cancellation)?;
+        let source = self
+            .prepare_service_source(lifecycle.clone())
+            .map_err(|first| {
+                GuardedContinuationError::operation("prepare continuation Source", first)
+            })?;
+        let service = source.service_handle();
+        match service.with_start(|startup| {
+            startup.retain_reconciled_replay_root(checkpoint, || {
+                self.inner
+                    .actor
+                    .with_supervisor(|actor| {
+                        Ok(actor.select_reconciled_paused_checkpoint_root(key, checkpoint))
+                    })
+                    .map_err(ContinuationRootSelectionError::Route)?
+                    .map_err(ContinuationRootSelectionError::Select)
             })
-            .map_err(|error| {
-                GuardedContinuationError::operation("enter selected-root actor", error)
-            })?
-            .map_err(|error| GuardedContinuationError::operation("select promoted root", error))?;
-        if selected.is_none() {
-            return Err(GuardedContinuationError::Refused(
-                "promoted root has no selected ledger authority",
+        }) {
+            Ok(Ok(Ok(()))) => {}
+            Ok(Ok(Err(first))) => {
+                return Err(GuardedContinuationError::Selection {
+                    first,
+                    custody: source.failure("select promoted root"),
+                });
+            }
+            Ok(Err(_)) => {
+                return Err(GuardedContinuationError::Prepared(
+                    source.failure("retain promoted root before Service"),
+                ));
+            }
+            Err(first) => {
+                return Err(GuardedContinuationError::Prepared(
+                    service.failure_with_refusal("borrow promoted-root Main phase", first),
+                ));
+            }
+        }
+        // The root already lives in Main across this same caller Original cut.
+        // Expiry cannot require restoring a local selection after refusal.
+        if cancellation.is_canceled() {
+            return Err(GuardedContinuationError::Selection {
+                first: ContinuationRootSelectionError::Canceled,
+                custody: source.failure("preparation was canceled"),
+            });
+        }
+        if let Err(first) = preparation.wait_slice() {
+            cancellation.cancel();
+            return Err(GuardedContinuationError::Supervision(
+                source.supervision_failure("original preparation allowance", first),
             ));
         }
-        check_preparation(&preparation, &cancellation)?;
-        let service = services
-            .start_for_replay_basis(
-                &basis,
-                Some(checkpoint),
-                cancellation.clone(),
-                &mut selected,
-            )
-            .map_err(|error| {
-                GuardedContinuationError::operation("admit continuation Service", error)
-            })?;
-        check_preparation(&preparation, &cancellation)?;
+        source
+            .start("admit continuation Service", |start| {
+                services.start_for_replay_basis(
+                    start,
+                    &basis,
+                    Some(checkpoint),
+                    cancellation.clone(),
+                )
+            })
+            .map_err(GuardedContinuationError::Prepared)?;
+        if let Err(first) = preparation.wait_slice() {
+            cancellation.cancel();
+            return Err(GuardedContinuationError::Supervision(
+                source.supervision_failure("check continuation preparation", first),
+            ));
+        }
+        if cancellation.is_canceled() {
+            return Err(GuardedContinuationError::Prepared(
+                source.failure("continuation caller canceled"),
+            ));
+        }
         preparation.complete().map_err(|error| {
             cancellation.cancel();
-            GuardedContinuationError::operation("complete preparation", error)
+            GuardedContinuationError::Supervision(
+                source.supervision_failure("complete continuation preparation", error),
+            )
         })?;
-        Ok(GuardedContinuation {
-            checkpoint,
-            service,
-        })
+        Ok(GuardedContinuation { checkpoint, source })
     }
 
     fn capture_continuation_genesis(
@@ -272,32 +342,64 @@ impl GuardedCampaignOwner {
         cancellation: ExecutionCancellation,
         lifecycle: &Arc<ProductionVmLifecycleConfig>,
     ) -> Result<crate::ProductionBakedGenesisCheckpoint, GuardedContinuationError> {
-        let mut selected = None;
-        let service = services
-            .start_for_replay_basis(basis, None, cancellation, &mut selected)
-            .map_err(|error| GuardedContinuationError::operation("admit genesis Service", error))?;
-        let mut factory = QemuAttemptProductionVmLifecycleFactory::new(
-            lifecycle.clone(),
-            ComposedQemuAttemptResourceGuardFactory::new(self.inner.host.clone()),
-        );
-        let capture =
-            capture_production_baked_genesis(&mut factory, basis.source(), service.context());
-        // The capture routine tears down its native world before returning.
-        // Drop the launch facade too before proving final Service discharge.
-        drop(factory);
-        let baked = match capture {
-            Ok(baked) => baked,
-            Err(error) => {
-                service.retain_after_unknown_cleanup();
+        let mut source = self
+            .prepare_service_source(lifecycle.clone())
+            .map_err(|first| {
+                GuardedContinuationError::operation("prepare genesis Source", first)
+            })?;
+        source
+            .start("admit genesis Service", |start| {
+                services.start_for_replay_basis(start, basis, None, cancellation)
+            })
+            .map_err(GuardedContinuationError::Prepared)?;
+        let service = source.service_handle();
+        let receiver = service.retain_receiver_in_main().map_err(|first| {
+            GuardedContinuationError::Prepared(
+                service.failure_with_refusal("retain genesis projection", first),
+            )
+        })?;
+        let captured = source
+            .with_ready("borrow genesis context", |service| {
+                service.context().clone()
+            })
+            .map(|context| {
+                capture_production_baked_genesis(&mut source.factory, basis.source(), &context)
+            });
+        // The capture's real World/body cleanup precedes this local alias cut.
+        // Main already owns the receiver if acknowledgment itself refuses.
+        receiver.return_after_alias_destruction().map_err(|first| {
+            GuardedContinuationError::Prepared(
+                service.failure_with_refusal("return genesis projection", first),
+            )
+        })?;
+        let baked = match captured {
+            Ok(Ok(baked)) => baked,
+            Ok(Err(first)) => {
+                let _retained = source.failure("capture continuation genesis");
                 return Err(GuardedContinuationError::operation(
                     "capture genesis",
-                    error,
+                    first,
                 ));
             }
+            Err(first) => return Err(GuardedContinuationError::Prepared(first)),
         };
-        service
-            .release_after_world_cleanup()
-            .map_err(|error| GuardedContinuationError::operation("reap genesis Service", error))?;
+        let prepared = source.factory.prepared_source_handle().map_err(|first| {
+            GuardedContinuationError::Prepared(
+                service.failure_with_refusal("select genesis retirement", first),
+            )
+        })?;
+        let mut retirement = prepared.into_retirement();
+        if !retirement
+            .retry()
+            .map_err(GuardedContinuationError::Retirement)?
+        {
+            return Err(GuardedContinuationError::Retirement(
+                crate::PreparedSourceRefusal::Pending,
+            ));
+        }
+        let _terminal = retirement.finish().map_err(|_retained| {
+            GuardedContinuationError::Retirement(crate::PreparedSourceRefusal::Pending)
+        })?;
         Ok(baked)
     }
 }

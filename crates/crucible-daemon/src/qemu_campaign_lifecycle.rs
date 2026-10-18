@@ -13,7 +13,6 @@
 use crate::{
     ProductionFaultEvidenceSnapshot, ProductionVmExactHotForkSourceBoundary,
     ProductionVmLifecycleConfig, ProductionVmLifecycleLoop, ProductionVmNodeReplayLaunchProfile,
-    build_production_vm_exact_resume_lifecycle, build_production_vm_lifecycle_loop_with_launcher,
 };
 use crucible::{
     CheckpointTerminalCause, Configuration, ContentHash, Decision, FingerprintSample, NodeId,
@@ -51,11 +50,10 @@ use crate::{
     CrucibleMaterializationTier, CrucibleResolvedAttemptStart, ExactCheckpointStore,
     ExactCheckpointStoreError, MAX_QEMU_ATTEMPT_GENERATION_NODES,
     MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES, MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES,
-    ProductionAttemptCheckpointRestoreError, QemuAttemptGenerationResourceOwner,
-    QemuAttemptOperationalBoundary, QemuAttemptProcessResourceGuard,
-    QemuAttemptProductionVmNodeLauncher, QemuAttemptResourceGuard, QemuAttemptResourceGuardFactory,
-    QemuAttemptStartReplayProof, QemuAttemptStartVerifier, QemuExactResumeBasis,
-    QemuSavepointReplayProof, QemuSelectedOriginVerifier,
+    ProductionAttemptCheckpointRestoreError, QemuAttemptOperationalBoundary,
+    QemuAttemptProcessResourceGuard, QemuAttemptProductionVmNodeLauncher,
+    QemuAttemptResourceGuardFactory, QemuAttemptStartReplayProof, QemuAttemptStartVerifier,
+    QemuExactResumeBasis, QemuSavepointReplayProof, QemuSelectedOriginVerifier,
     authenticate_attempt_production_resume_boundary, encode_crucible_configuration_artifact,
     encode_crucible_scenario_artifact, install_attempt_production_resume_checkpoint,
 };
@@ -76,30 +74,159 @@ pub use remote_observation_resume::RemoteObservationResumeFactory;
 
 mod source_construction;
 #[cfg(all(target_os = "linux", any(test, feature = "private-measurement-domain")))]
-pub(crate) use source_construction::NativeObservationOwner;
+pub(crate) use source_construction::{NativeObservationOwner, NativeObservationRetirementError};
+pub(crate) use source_construction::{
+    capture_exact_prepared_source, capture_fresh_prepared_source, resume_prepared_source,
+};
 
-pub use source_construction::{SourceGenerationStorageRefusal, SourcePostInstallationRefusal};
+pub use source_construction::{
+    ImportedSourcePreparationFailure, SourceGenerationStorageRefusal, SourceMainPreparationRefusal,
+    SourcePostInstallationRefusal,
+};
 
 mod resume_admission;
-use resume_admission::validate_exact_resume_request;
+pub(crate) use resume_admission::validate_exact_resume_request;
 
 /// Keeps checked configuration separate from later native custody delivery.
-struct PreparedNativeWorld<'a> {
-    registration: &'a Arc<dyn crate::vm_lifecycle::ProductionHostRamRegistrationFactory>,
-    process_resources: crucible_campaign::AttemptResourceLimits,
-    consumer_control_bytes: u64,
+pub(crate) struct PreparedNativeWorld<'a> {
+    pub(crate) registration: &'a Arc<dyn crate::vm_lifecycle::ProductionHostRamRegistrationFactory>,
+    pub(crate) process_resources: crucible_campaign::AttemptResourceLimits,
+    pub(crate) consumer_control_bytes: u64,
 }
 
 /// Keeps actual first causes after the same Source has physically returned.
 ///
 /// These values are moved from the original empty publication shell and its
-/// completed receipt. History is a report, not retained cleanup or permission
-/// to create another lifecycle.
+/// completed receipt. Full terminal history keeps the same role occupied until
+/// its original token and raw leaves are destroyed. It permits no new work.
 #[derive(Debug)]
 pub struct SourceCleanupHistory {
     first: Option<SourceInstallationFirst>,
     cleanup: Option<SourceCleanupCause>,
     cleanup_post: Option<crucible_linux_resource::host_supervision::HostSupervisionError>,
+    terminal_receipt: Option<SourceCleanupHandoff>,
+}
+
+/// Keeps the original receipt allocation through its actual terminal history.
+///
+/// The Box is the original Main-preborn token, not a replacement error box.
+/// The inline mutex permits shared error reporting over its Send-only body;
+/// callbacks borrow raw leaves only within that history lock.
+struct SourceCleanupHandoff {
+    receipt: std::sync::Mutex<Option<SourceCleanupReceipt>>,
+}
+
+type SourceCleanupReceipt = Box<
+    dyn crucible_api::ProductionVmCleanupHandoff<
+            Failure = crate::ProductionVmConstructionCleanupError,
+            PostBody = crate::ProductionVmConstructionPostBody,
+        >,
+>;
+
+impl SourceCleanupHandoff {
+    fn new(receipt: SourceCleanupReceipt) -> Self {
+        Self {
+            receipt: std::sync::Mutex::new(Some(receipt)),
+        }
+    }
+
+    fn receipt_mut(&mut self) -> Option<&mut SourceCleanupReceipt> {
+        match self.receipt.get_mut() {
+            Ok(receipt) => receipt,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+        .as_mut()
+    }
+
+    fn with_receipt<R>(
+        &self,
+        apply: impl FnOnce(
+            &dyn crucible_api::ProductionVmCleanupHandoff<
+                Failure = crate::ProductionVmConstructionCleanupError,
+                PostBody = crate::ProductionVmConstructionPostBody,
+            >,
+        ) -> R,
+    ) -> Option<R> {
+        let receipt = match self.receipt.lock() {
+            Ok(receipt) => receipt,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        receipt.as_ref().map(|receipt| apply(receipt.as_ref()))
+    }
+
+    fn has_failure(&self) -> bool {
+        self.with_receipt(|receipt| {
+            receipt.first_failure().is_some()
+                || receipt
+                    .retained_post_body()
+                    .is_some_and(|body| body.first_failure().is_some())
+        })
+        .is_some_and(|failed| failed)
+    }
+
+    fn with_terminal_history<R>(
+        &self,
+        apply: impl FnOnce(&crate::ProductionVmConstructionPostBody) -> R,
+    ) -> Option<R> {
+        self.with_receipt(|receipt| receipt.retained_post_body().map(apply))
+            .flatten()
+    }
+
+    fn visit_history(
+        &self,
+        apply: &mut impl FnMut(&'static str, &(dyn std::error::Error + 'static)),
+    ) {
+        let _observed = self.with_receipt(|receipt| {
+            if let Some(first) = receipt.first_failure() {
+                apply("Source receipt cleanup", first);
+            }
+            if let Some(body) = receipt.retained_post_body() {
+                body.visit_history(apply);
+            }
+        });
+    }
+}
+
+impl std::fmt::Debug for SourceCleanupHandoff {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.with_receipt(|receipt| {
+            formatter
+                .debug_struct("SourceCleanupHandoff")
+                .field("first_failure", &receipt.first_failure())
+                .field("terminal_history", &receipt.retained_post_body())
+                .finish_non_exhaustive()
+        })
+        .unwrap_or_else(|| formatter.write_str("Source cleanup receipt consumed"))
+    }
+}
+
+impl std::fmt::Display for SourceCleanupHandoff {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.with_receipt(|receipt| {
+            if let Some(first) = receipt.first_failure() {
+                return std::fmt::Display::fmt(first, formatter);
+            }
+            match receipt.retained_post_body() {
+                Some(body) => std::fmt::Display::fmt(body, formatter),
+                None => formatter.write_str("Source terminal history is unavailable"),
+            }
+        })
+        .unwrap_or_else(|| formatter.write_str("Source cleanup receipt consumed"))
+    }
+}
+
+impl std::error::Error for SourceCleanupHandoff {}
+
+impl Drop for SourceCleanupHandoff {
+    fn drop(&mut self) {
+        let receipt = match self.receipt.get_mut() {
+            Ok(receipt) => receipt,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if let Some(receipt) = receipt.take() {
+            receipt.dispose();
+        }
+    }
 }
 
 /// Retains the concrete cleanup refusal without replacing the constructor cause.
@@ -123,10 +250,7 @@ impl SourceCleanupCause {
 #[derive(Debug)]
 enum SourceInstallationFirst {
     Api(LifecycleApiError),
-    ResourceBegin(crate::crucible_qemu_session::QemuAttemptResourceGuardBeginReport),
     Native(QemuVmRealizationError),
-    Storage(SourceGenerationStorageRefusal),
-    Post(SourcePostInstallationRefusal),
 }
 
 impl SourceCleanupHistory {
@@ -135,20 +259,15 @@ impl SourceCleanupHistory {
     /// The primary error source remains the original constructor refusal when
     /// present. This accessor also exposes a later physical cleanup refusal.
     pub fn cleanup_error(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.cleanup.as_ref().map(SourceCleanupCause::as_error)
-    }
-
-    /// Borrows the original resource-begin report, including rollback history.
-    ///
-    /// Later Source cleanup remains independently available through
-    /// [`Self::cleanup_error`]; it does not replace the begin rollback cause.
-    pub fn resource_begin_error(
-        &self,
-    ) -> Option<&crate::crucible_qemu_session::QemuAttemptResourceGuardBeginReport> {
-        match &self.first {
-            Some(SourceInstallationFirst::ResourceBegin(first)) => Some(first),
-            _ => None,
-        }
+        self.cleanup
+            .as_ref()
+            .map(SourceCleanupCause::as_error)
+            .or_else(|| {
+                self.terminal_receipt
+                    .as_ref()
+                    .filter(|held| held.has_failure())
+                    .map(|held| held as &dyn std::error::Error)
+            })
     }
 
     /// Borrows the independent post-check of the same retained World Cleanup.
@@ -158,8 +277,41 @@ impl SourceCleanupHistory {
         self.cleanup_post.as_ref()
     }
 
+    /// Borrows full terminal history within its original receipt's history lock.
+    ///
+    /// The containing role remains occupied until this history and its original
+    /// token are disposed. The callback must not reenter this history. This
+    /// supplies no new operation, native authority or unlocked raw-body borrow.
+    pub fn with_terminal_history<R>(
+        &self,
+        apply: impl FnOnce(&crate::ProductionVmConstructionPostBody) -> R,
+    ) -> Option<R> {
+        self.terminal_receipt.as_ref()?.with_terminal_history(apply)
+    }
+
+    /// Visits every retained raw cause without extracting or formatting it.
+    pub fn visit_history(
+        &self,
+        mut apply: impl FnMut(&'static str, &(dyn std::error::Error + 'static)),
+    ) {
+        match &self.first {
+            Some(SourceInstallationFirst::Api(first)) => apply("Source constructor", first),
+            Some(SourceInstallationFirst::Native(first)) => apply("Source constructor", first),
+            None => {}
+        }
+        if let Some(first) = &self.cleanup {
+            apply("Source cleanup", first.as_error());
+        }
+        if let Some(first) = &self.cleanup_post {
+            apply("Source cleanup postcheck", first);
+        }
+        if let Some(receipt) = &self.terminal_receipt {
+            receipt.visit_history(&mut apply);
+        }
+    }
+
     fn is_empty(&self) -> bool {
-        self.first.is_none() && self.cleanup.is_none() && self.cleanup_post.is_none()
+        self.first.is_none() && self.cleanup_error().is_none() && self.cleanup_post.is_none()
     }
 
     pub(crate) fn from_native(first: QemuVmRealizationError) -> Self {
@@ -167,6 +319,7 @@ impl SourceCleanupHistory {
             first: Some(SourceInstallationFirst::Native(first)),
             cleanup: None,
             cleanup_post: None,
+            terminal_receipt: None,
         }
     }
 }
@@ -175,8 +328,8 @@ impl std::fmt::Display for SourceCleanupHistory {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             formatter,
-            "Source physically returned; first: {:?}; cleanup: {:?}; cleanup post: {:?}",
-            self.first, self.cleanup, self.cleanup_post
+            "Source physically returned; first: {:?}; cleanup: {:?}; cleanup post: {:?}; terminal: {:?}",
+            self.first, self.cleanup, self.cleanup_post, self.terminal_receipt
         )
     }
 }
@@ -185,10 +338,7 @@ impl std::error::Error for SourceCleanupHistory {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match &self.first {
             Some(SourceInstallationFirst::Api(first)) => Some(first),
-            Some(SourceInstallationFirst::ResourceBegin(first)) => Some(first),
             Some(SourceInstallationFirst::Native(first)) => Some(first),
-            Some(SourceInstallationFirst::Storage(first)) => Some(first),
-            Some(SourceInstallationFirst::Post(first)) => Some(first),
             None => self.cleanup_error().or_else(|| {
                 self.cleanup_post_error()
                     .map(|first| first as &dyn std::error::Error)
@@ -200,6 +350,12 @@ impl std::error::Error for SourceCleanupHistory {
 /// Failure to bind an admitted attempt to a fresh production VM lifecycle.
 #[derive(Debug, Error)]
 pub enum QemuAttemptProductionVmLifecycleError {
+    /// The original Main role retains the actual prepared Source and first cause.
+    #[error(transparent)]
+    PreparedSource(#[from] crate::lifecycle_cleanup::PreparedSourceFailure),
+    /// Genuine Main refused before the fixed Source bodies were constructed.
+    #[error(transparent)]
+    SourceMainPreparation(#[from] SourceMainPreparationRefusal),
     /// Actual Source return completed, with its original typed historical causes.
     #[error(transparent)]
     SourceCleanupHistory(#[from] SourceCleanupHistory),
@@ -295,8 +451,9 @@ pub(crate) struct QemuAttemptProductionVmLifecycleFactory<R: QemuAttemptResource
     terminal_checkpoints: Option<Arc<ExactCheckpointStore>>,
     continuations: Vec<OwnedQemuAttemptContinuation>,
     authenticated_network_selections: Vec<SelectionDecision>,
-    retained_install: Option<source_construction::RetainedSourceInstall<R>>,
+    retained_install: Option<source_construction::RetainedSourceInstall>,
     lifecycle_outstanding: bool,
+    prepared_source: Option<crate::qemu_lifecycle_launcher::PreparedSourceHandle<R>>,
     // Retained model copies close before their original metadata credits.
     _decode_custody: Option<crucible::owned_decode::DecodeCustody>,
 }
@@ -1372,6 +1529,21 @@ type QemuFindingCandidateReplayFailure<LifecycleError> = Box<
     >,
 >;
 
+impl<F: crate::completed_reproduction::PrepareCompletedReproduction, D>
+    crate::completed_reproduction::PrepareCompletedReproduction for QemuFreshExecutionRunner<F, D>
+{
+    fn prepare_completed_reproduction(
+        &mut self,
+    ) -> Result<
+        crate::lifecycle_cleanup::ServiceMainHandle,
+        crate::QemuAttemptProductionVmLifecycleError,
+    > {
+        crate::completed_reproduction::PrepareCompletedReproduction::prepare_completed_reproduction(
+            &mut self.lifecycles,
+        )
+    }
+}
+
 impl<F, D> QemuFreshExecutionRunner<F, D> {
     /// Creates a genesis-start runner from its guarded lifecycle factory and modeled driver.
     #[must_use]
@@ -2136,6 +2308,20 @@ pub enum QemuFreshGenesisCheckpointError<E> {
     /// Capture failed after lifecycle construction and teardown succeeded.
     #[error(transparent)]
     Capture(#[from] QemuFreshGenesisCheckpointCaptureFailure),
+    /// Returning the actual lifecycle to its original owner refused.
+    ///
+    /// The factory retains that same lifecycle. Independent capture and
+    /// semantic-shutdown failures remain inline rather than recursively boxed.
+    #[error("return fresh genesis checkpoint lifecycle: {retirement}")]
+    Retirement {
+        /// Earlier capture failure, independent of shutdown and return.
+        capture: Option<QemuFreshGenesisCheckpointCaptureFailure>,
+        /// Earlier semantic shutdown failure, independent of physical return.
+        cleanup: Option<SchedulerError>,
+        /// Actual original-owner return refusal.
+        #[source]
+        retirement: E,
+    },
     /// Teardown failed and therefore retains precedence over an earlier result.
     #[error("tear down fresh genesis checkpoint lifecycle: {cleanup}")]
     Cleanup {
@@ -2161,8 +2347,9 @@ pub enum QemuFreshGenesisCheckpointError<E> {
 ///
 /// Returns [`QemuFreshGenesisCheckpointError`] when guarded lifecycle startup
 /// fails, genesis is not checkpoint ready, capture returns a foreign basis, or
-/// mandatory teardown cannot be attested. Teardown failure takes precedence
-/// and retains any earlier capture diagnostic.
+/// mandatory teardown or return to the original lifecycle owner refuses.
+/// Original-owner return refusal preserves independent capture and teardown
+/// causes. After an accepted return, teardown keeps its existing precedence.
 pub(crate) fn capture_fresh_genesis_checkpoint_candidate<F>(
     factory: &mut F,
     source: &ScenarioDefForm,
@@ -2198,6 +2385,17 @@ where
         Err(error) => Err(QemuFreshGenesisCheckpointCaptureFailure::Capture(error)),
     };
     let cleanup = lifecycle.shutdown();
+    // Semantic shutdown does not destroy the paid Loop or return its original
+    // carrier. Every post-start cut must hand that SAME owner back explicitly,
+    // including a negative shutdown that already made physical progress.
+    let returned = factory.retire_lifecycle(lifecycle);
+    if let Err(retirement) = returned {
+        return Err(QemuFreshGenesisCheckpointError::Retirement {
+            capture: captured.err(),
+            cleanup: cleanup.err(),
+            retirement,
+        });
+    }
 
     match (captured, cleanup) {
         (Ok(capture), Ok(_final_events)) => Ok(capture),
@@ -2258,6 +2456,7 @@ impl<R: QemuAttemptResourceGuardFactory> QemuAttemptProductionVmLifecycleFactory
             authenticated_network_selections: Vec::new(),
             retained_install: None,
             lifecycle_outstanding: false,
+            prepared_source: None,
             _decode_custody: None,
         }
     }
@@ -2284,11 +2483,19 @@ where
         source: &ScenarioDefForm,
         context: &AttemptExecutionContext,
     ) -> Result<ProductionVmLifecycleLoop, QemuAttemptProductionVmLifecycleError> {
-        let config = self
-            .config
-            .try_clone_admitted()
-            .map_err(|source| QemuAttemptProductionVmLifecycleError::ModelCopy(Box::new(source)))?;
-        self.begin_fresh_with_config(scenario, source, context, config)
+        source_construction::validate_fresh_source_request(scenario, source, context)?;
+        let prepared = self.selected_prepared_source()?;
+        let lifecycle = source_construction::fresh_prepared_source(
+            &prepared,
+            &self.config,
+            None,
+            self.terminal_checkpoints.clone(),
+            scenario,
+            source,
+            context,
+        )?;
+        self.lifecycle_outstanding = true;
+        Ok(lifecycle)
     }
 
     /// Builds one resumed lifecycle from an exact promoted paged checkpoint root.
@@ -2311,12 +2518,12 @@ where
         basis: QemuExactResumeBasis<'_>,
         context: &AttemptExecutionContext,
     ) -> Result<ProductionVmLifecycleLoop, QemuAttemptProductionVmLifecycleError> {
-        self.begin_resume_with_builder(
+        self.begin_resume_with_exposure(
             checkpoints,
             checkpoint,
             basis,
             context,
-            build_production_vm_exact_resume_lifecycle,
+            crate::vm_lifecycle::RetainedConstructionExposure::Released,
         )
     }
 
@@ -2328,73 +2535,37 @@ where
         basis: QemuExactResumeBasis<'_>,
         context: &AttemptExecutionContext,
     ) -> Result<crate::ProductionVmStoppedLifecycle, QemuAttemptProductionVmLifecycleError> {
-        self.begin_resume_with_builder(
+        self.begin_resume_with_exposure(
             checkpoints,
             checkpoint,
             basis,
             context,
-            crate::build_production_vm_exact_stopped_lifecycle,
+            crate::vm_lifecycle::RetainedConstructionExposure::AwaitingOwnershipCommit,
         )
+        .map(crate::ProductionVmStoppedLifecycle::from_retained_loop)
     }
 
-    fn begin_resume_with_builder<T>(
+    fn begin_resume_with_exposure(
         &mut self,
         checkpoints: &ExactCheckpointStore,
         checkpoint: ExactCheckpointId,
         basis: QemuExactResumeBasis<'_>,
         context: &AttemptExecutionContext,
-        build: impl FnOnce(
-            &ScenarioDef,
-            &ScenarioDefForm,
-            &ProductionVmLifecycleConfig,
-            crate::DecodedProductionExactCheckpoint,
-            Box<dyn crate::ProductionVmNodeLauncher>,
-        ) -> Result<T, crate::ProductionVmConstructionFailure>,
-    ) -> Result<T, QemuAttemptProductionVmLifecycleError> {
-        validate_exact_resume_request(checkpoint, basis, context)?;
-        let QemuExactResumeBasis {
-            scenario,
-            source,
-            initial,
-            post_selection,
-        } = basis;
-
-        let maximum_nodes = source.world().vm_nodes().len();
-        if maximum_nodes == 0 || maximum_nodes > MAX_QEMU_ATTEMPT_GENERATION_NODES {
-            return Err(QemuAttemptProductionVmLifecycleError::InvalidNodeCount(
-                maximum_nodes,
-            ));
-        }
-
-        let installed = install_attempt_production_resume_checkpoint(
+        exposure: crate::vm_lifecycle::RetainedConstructionExposure,
+    ) -> Result<ProductionVmLifecycleLoop, QemuAttemptProductionVmLifecycleError> {
+        let prepared = self.selected_prepared_source()?;
+        let lifecycle = resume_prepared_source(
+            &prepared,
+            &self.config,
+            self.terminal_checkpoints.clone(),
             checkpoints,
             checkpoint,
-            source,
-            initial,
-            post_selection,
-            context.cancellation(),
-        )
-        .map_err(|error| {
-            QemuAttemptProductionVmLifecycleError::CheckpointRestore(Box::new(error))
-        })?;
-        let config = production_lifecycle_config_for_start(
-            &self.config,
-            source,
-            installed.configuration(),
-            None,
-            &[],
-        )?;
-        let (config, park_drain_registration) =
-            config_for_assignment_host_watchdog(config, context)?;
-        let decoded = installed.into_decoded();
-        self.with_attempt_launcher(
+            basis,
             context,
-            source,
-            maximum_nodes,
-            &config,
-            park_drain_registration,
-            |launcher| build(scenario, source, &config, decoded, launcher),
-        )
+            exposure,
+        )?;
+        self.lifecycle_outstanding = true;
+        Ok(lifecycle)
     }
 
     /// Authenticates one resume boundary without launching a guest process.
@@ -2418,45 +2589,7 @@ where
         QemuAttemptProductionVmLifecycleError,
     > {
         validate_exact_resume_request(checkpoint, basis, context)?;
-        let QemuExactResumeBasis {
-            source,
-            initial,
-            post_selection,
-            ..
-        } = basis;
-
-        let boundary = authenticate_attempt_production_resume_boundary(
-            checkpoints,
-            checkpoint,
-            source,
-            initial,
-            post_selection,
-            context.cancellation(),
-        )
-        .map_err(|error| {
-            QemuAttemptProductionVmLifecycleError::CheckpointRestore(Box::new(error))
-        })?;
-        let scheduler = boundary.scheduler();
-        if scheduler.retained_event_log_base_events() != 0 {
-            return Err(QemuAttemptProductionVmLifecycleError::InvalidResumeBoundary);
-        }
-        let proof = QemuSavepointReplayProof::from_reached_boundary(
-            boundary.configuration(),
-            scheduler.quanta(),
-            scheduler.frontier(),
-            scheduler.retained_event_log_entries(),
-        )
-        .map_err(|_| QemuAttemptProductionVmLifecycleError::InvalidResumeBoundary)?;
-        let selected = crate::qemu_campaign_driver::QemuSelectedResumeBoundary::new(
-            boundary
-                .configuration()
-                .try_clone_admitted()
-                .map_err(|source| {
-                    QemuAttemptProductionVmLifecycleError::ModelCopy(Box::new(source))
-                })?,
-            proof,
-        );
-        Ok((selected, boundary.into_hot_fork_source()))
+        source_construction::authenticate_resume_contents(checkpoints, checkpoint, basis, context)
     }
 
     fn begin_fresh_with_config(
@@ -2466,35 +2599,19 @@ where
         context: &AttemptExecutionContext,
         config: ProductionVmLifecycleConfig,
     ) -> Result<ProductionVmLifecycleLoop, QemuAttemptProductionVmLifecycleError> {
-        if let Some(checkpoint) = context.resume_checkpoint() {
-            return Err(
-                QemuAttemptProductionVmLifecycleError::ResumeCheckpointUnsupported(checkpoint),
-            );
-        }
-        if source.scenario_def() != *scenario {
-            return Err(QemuAttemptProductionVmLifecycleError::ScenarioIdentityMismatch);
-        }
-        let maximum_nodes = source.world().vm_nodes().len();
-        if maximum_nodes == 0 || maximum_nodes > MAX_QEMU_ATTEMPT_GENERATION_NODES {
-            return Err(QemuAttemptProductionVmLifecycleError::InvalidNodeCount(
-                maximum_nodes,
-            ));
-        }
-
-        let (config, park_drain_registration) =
-            config_for_assignment_host_watchdog(config, context)?;
-        self.with_attempt_launcher(
-            context,
+        source_construction::validate_fresh_source_request(scenario, source, context)?;
+        let prepared = self.selected_prepared_source()?;
+        let lifecycle = source_construction::fresh_prepared_source(
+            &prepared,
+            &self.config,
+            Some(config),
+            self.terminal_checkpoints.clone(),
+            scenario,
             source,
-            maximum_nodes,
-            &config,
-            park_drain_registration,
-            |launcher| {
-                build_production_vm_lifecycle_loop_with_launcher(
-                    scenario, source, &config, launcher,
-                )
-            },
-        )
+            context,
+        )?;
+        self.lifecycle_outstanding = true;
+        Ok(lifecycle)
     }
 
     /// Prepares the configured native World request before admission.
@@ -2505,10 +2622,12 @@ where
     /// # Errors
     /// Refuses missing operational authority, inconsistent resource partitions,
     /// native controller failure, or failed qualification before process launch.
-    fn prepare_native_world_guard<'a>(
+    /// Configures the genuine common World request with its actual consumer extent.
+    pub(crate) fn prepare_native_world_with_geometry<'a>(
         context: &AttemptExecutionContext,
         source: &ScenarioDefForm,
         config: &'a ProductionVmLifecycleConfig,
+        consumer_geometry: impl FnOnce() -> Result<u64, LifecycleApiError>,
     ) -> Result<PreparedNativeWorld<'a>, QemuAttemptProductionVmLifecycleError> {
         let original_remaining = context
             .process_resources()
@@ -2552,11 +2671,8 @@ where
                 crucible_api::host_operational::HostRamAdmissionError::contract(error.to_string()),
             )
         })?;
-        let consumer_control_bytes = QemuAttemptProductionVmNodeLauncher::<R::Guard, R>::
-            retained_source_launcher_control_bytes(
-                source.world().vm_nodes().iter().map(|node| &node.id),
-            )
-            .map_err(QemuAttemptProductionVmLifecycleError::Lifecycle)?;
+        let consumer_control_bytes =
+            consumer_geometry().map_err(QemuAttemptProductionVmLifecycleError::Lifecycle)?;
         Ok(PreparedNativeWorld {
             registration,
             process_resources,
@@ -2564,48 +2680,12 @@ where
         })
     }
 
-    fn begin_prepared_native_world_guard(
-        &mut self,
-        context: &AttemptExecutionContext,
-        prepared: PreparedNativeWorld<'_>,
-        before_effects: &mut crate::crucible_qemu_session::NativeWorldBeforeEffects<'_>,
-    ) -> Result<
-        (R::Guard, crucible_campaign::AttemptResourceLimits),
-        crate::crucible_qemu_session::QemuAttemptResourceGuardBeginReport,
-    > {
-        let PreparedNativeWorld {
-            registration,
-            process_resources,
-            consumer_control_bytes,
-        } = prepared;
-        let selected_checkpoint = context.take_selected_checkpoint();
-        let guard = self.resources.begin_world(
-            process_resources,
-            context.cancellation().clone(),
-            selected_checkpoint,
-            consumer_control_bytes,
-            registration.as_ref(),
-            before_effects,
-        );
-        let guard = match guard {
-            Ok(guard) => guard,
-            Err(failure) => {
-                let (error, selected_checkpoint) = failure.into_parts();
-                if let Some(selected_checkpoint) = selected_checkpoint {
-                    context.restore_selected_checkpoint(selected_checkpoint);
-                }
-                return Err(error);
-            }
-        };
-        Ok((guard, process_resources))
-    }
-
     /// Completes publication only after the actual launcher retains the guard.
     ///
     /// # Errors
     /// Preserves the initiating controller, contract, or qualification refusal.
     /// The caller retains and cleans the same launcher on every error.
-    fn complete_native_world_guard_installation(
+    pub(crate) fn complete_native_world_guard_installation(
         context: &AttemptExecutionContext,
         source: &ScenarioDefForm,
         config: &ProductionVmLifecycleConfig,

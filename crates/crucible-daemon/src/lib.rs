@@ -132,6 +132,7 @@ pub mod campaign_server;
 pub mod campaign_store_composition;
 pub mod campaign_store_quota;
 pub mod campaign_transfer;
+mod completed_reproduction;
 pub mod control_responsiveness;
 pub mod crucible_artifact;
 pub mod crucible_execution;
@@ -152,7 +153,11 @@ pub mod executor_worker;
 pub mod host_operational_registry;
 pub mod imported_checkpoint;
 mod lifecycle_cleanup;
-pub use lifecycle_cleanup::WorldLifecycleCleanupReservation;
+pub use lifecycle_cleanup::{
+    PreparedSourceFailure, PreparedSourceRefusal, PreparedSourceRetirement, PreparedSourceSelector,
+    ProductionVmConstructionPostBody, ServiceInputReturn, ServiceMainReceiver, SourceBodyReturn,
+    SourceMainProducer, WorldLifecycleCleanupReservation,
+};
 mod provider_error_custody;
 pub use host_operational_registry::HostOperationalRegistry;
 pub mod finding_production_replay;
@@ -608,11 +613,11 @@ pub use qemu_campaign_driver::{
     QemuFreshModeledDriverError, QemuModeledAttemptLifecycle, QemuSavepointReplayProof,
 };
 pub use qemu_campaign_lifecycle::{
-    InteractiveQemuSessionError, QemuAttemptContinuation, QemuAttemptProductionVmLifecycleError,
-    QemuFreshAttemptDriver, QemuFreshAttemptLifecycle, QemuFreshDriveOutcome,
-    QemuFreshExecutionRunnerError, QemuFreshGenesisCheckpointCandidate,
+    ImportedSourcePreparationFailure, InteractiveQemuSessionError, QemuAttemptContinuation,
+    QemuAttemptProductionVmLifecycleError, QemuFreshAttemptDriver, QemuFreshAttemptLifecycle,
+    QemuFreshDriveOutcome, QemuFreshExecutionRunnerError, QemuFreshGenesisCheckpointCandidate,
     QemuFreshGenesisCheckpointError, QemuFreshStartMaterialization, QemuFreshStartReplayError,
-    SourceCleanupHistory,
+    SourceCleanupHistory, SourceMainPreparationRefusal,
 };
 pub(crate) use qemu_campaign_lifecycle::{
     QemuAttemptProductionVmLifecycleFactory, QemuFreshAttemptLifecycleFactory,
@@ -642,7 +647,8 @@ pub(crate) use qemu_hot_fork_source_capture::ProductionQemuHotForkSourceFactory;
 pub use qemu_hot_fork_source_capture::{
     AuthenticatedCanonicalQemuHotForkSource, AuthenticatedExactQemuHotForkSource,
     AuthenticatedQemuHotForkSourceBasis, AuthenticatedQemuHotForkSourceBasisError,
-    ProductionQemuHotForkExactSourceCaptureError, ProductionQemuHotForkSourceCaptureError,
+    ExactSourceCaptureRequestError, ProductionQemuHotForkExactSourceCaptureError,
+    ProductionQemuHotForkSourceCaptureError,
 };
 #[cfg(target_os = "linux")]
 pub(crate) use qemu_hot_fork_world::QemuHotForkWorldAssembly;
@@ -664,6 +670,7 @@ pub(crate) use qemu_hot_fork_world_resource::{
     QemuHotForkWorldNodeTarget, QemuHotForkWorldResourceOwner,
 };
 pub(crate) use qemu_lifecycle_launcher::QemuAttemptProductionVmNodeLauncher;
+pub use qemu_lifecycle_launcher::{TargetConstructionStorage, TargetPreparationFailure};
 pub use qemu_resource_guard::{
     ComposedQemuAttemptResourceGuard, ComposedQemuAttemptResourceGuardFactory,
     LinuxQemuAttemptHostResourceFactory, LinuxQemuAttemptHostResourceOwner,

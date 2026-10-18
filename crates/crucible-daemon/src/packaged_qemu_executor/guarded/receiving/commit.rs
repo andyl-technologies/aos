@@ -18,12 +18,13 @@ use crate::{
 /// physical retirement. A prepared source claim borrows this owner; bytes from
 /// restart cannot create it or renew its operation.
 pub struct GuardedSourceTransferOperation<'owner> {
-    basis: Option<ImportedCheckpointBasis>,
-    service: Option<RetainedTemplateService>,
-    maintenance: Option<ImportedCheckpointMaintenance<'owner>>,
+    aliases: Option<GuardedMaintenanceAliases<'owner>>,
+    source_owner: Option<GuardedServiceSource>,
+    retirement: Option<crate::PreparedSourceRetirement>,
     source: Option<GuardedCampaignOwner>,
     offered: bool,
     completed: bool,
+    terminal_failure_returned: bool,
 }
 
 /// Once-issued live source offer from the original actor's exact Paused CAS.
@@ -67,33 +68,20 @@ impl GuardedCampaignOwner {
         imported: AuthenticatedImportedCheckpoint<'owner>,
         cancellation: ExecutionCancellation,
     ) -> Result<GuardedSourceTransferOperation<'owner>, ReceivingExecutionPreparationError> {
-        if imported.authentication_owner().host_daemon_epoch()
-            != crate::host_operational_registry::operational_identity(
-                self.inner.config.daemon_epoch.as_bytes(),
-            )
-        {
-            return Err(ReceivingExecutionPreparationError::Unavailable);
-        }
-        self.inner
-            .checkpoints
-            .require_reuse_backend(&imported.repository().blob_backend())
-            .map_err(ReceivingExecutionPreparationError::Store)?;
-        let (service, basis, maintenance) = self
-            .replay_services()
-            .map_err(ReceivingExecutionPreparationError::Retirement)?
-            .start_for_maintenance_import(imported, cancellation)
-            .map_err(|source| ReceivingExecutionPreparationError::Admission(Box::new(source)))?;
+        let (source_owner, aliases) = self.prepare_retained_maintenance(imported, cancellation)?;
         let operation = GuardedSourceTransferOperation {
-            basis: Some(basis),
-            service: Some(service),
-            maintenance: Some(maintenance),
+            aliases: Some(aliases),
+            source_owner: Some(source_owner),
+            retirement: None,
             source: Some(self.clone()),
             offered: false,
             completed: false,
+            terminal_failure_returned: false,
         };
         operation
-            .maintenance
+            .aliases
             .as_ref()
+            .and_then(GuardedMaintenanceAliases::maintenance)
             .ok_or(ReceivingExecutionPreparationError::Unavailable)?
             .check()
             .map_err(ReceivingExecutionPreparationError::Original)?;
@@ -120,15 +108,17 @@ impl<'owner> GuardedSourceTransferOperation<'owner> {
         }
         self.offered = true;
         let basis = self
-            .basis
+            .aliases
             .as_ref()
+            .and_then(GuardedMaintenanceAliases::basis)
             .ok_or(GuardedTransferError::Unavailable)?;
         if expected.checkpoint() != Some(basis.checkpoint) {
             return Err(GuardedTransferError::Binding);
         }
         let maintenance = self
-            .maintenance
+            .aliases
             .as_ref()
+            .and_then(GuardedMaintenanceAliases::maintenance)
             .ok_or(GuardedTransferError::Unavailable)?;
         maintenance.check()?;
         let owner = self
@@ -157,36 +147,42 @@ impl<'owner> GuardedSourceTransferOperation<'owner> {
     /// This does not delete a source fence or restore source resume permission.
     pub fn finish(&mut self) -> Result<(), ReceivingExecutionPreparationError> {
         if self.completed {
-            return Ok(());
+            return if self.terminal_failure_returned {
+                Err(ReceivingExecutionPreparationError::HistoryAlreadyReturned)
+            } else {
+                Ok(())
+            };
         }
-        self.basis = None;
-        if let Some(service) = self.service.as_ref() {
-            service
-                .release_after_world_cleanup()
-                .map_err(ReceivingExecutionPreparationError::Retirement)?;
+        if let Some(aliases) = self.aliases.take() {
+            aliases
+                .return_to_main(None)
+                .map_err(ReceivingExecutionPreparationError::Cleanup)?;
         }
-        self.service = None;
-        self.maintenance
-            .as_ref()
-            .ok_or(ReceivingExecutionPreparationError::Unavailable)?
-            .complete_after_cleanup()
-            .map_err(ReceivingExecutionPreparationError::Original)?;
-        self.maintenance = None;
+        match finish_service_retirement(&mut self.source_owner, &mut self.retirement) {
+            Ok(()) => self.completed = true,
+            Err(ReceivingExecutionPreparationError::Terminal(history)) => {
+                self.completed = true;
+                self.terminal_failure_returned = true;
+                self.source = None;
+                return Err(ReceivingExecutionPreparationError::Terminal(history));
+            }
+            Err(first) => return Err(first),
+        }
         self.source = None;
-        self.completed = true;
         Ok(())
     }
 }
 
 impl Drop for GuardedSourceTransferOperation<'_> {
     fn drop(&mut self) {
-        if !self.completed {
-            std::mem::forget((
-                self.basis.take(),
-                self.service.take(),
-                self.maintenance.take(),
-                self.source.take(),
-            ));
+        // Its original no-World journal, not an absent Loop field, selects the
+        // Main cleanup route after these actual aliases are durably delivered.
+        drop(self.aliases.take());
+        if let Some(source) = &self.source_owner {
+            source
+                .service_handle()
+                .prepared_selector()
+                .request_retirement();
         }
     }
 }
@@ -205,8 +201,9 @@ impl GuardedSourceTransferOffer<'_, '_> {
                 .ok_or(GuardedTransferError::Binding)?;
             let maintenance = self
                 .operation
-                .maintenance
+                .aliases
                 .as_ref()
+                .and_then(GuardedMaintenanceAliases::maintenance)
                 .ok_or(GuardedTransferError::Unavailable)?;
             maintenance.check()?;
             self.release_attempted = true;
@@ -256,8 +253,9 @@ impl ReceivingExecutionPreparation<'_> {
         }
         source
             .operation
-            .maintenance
+            .aliases
             .as_ref()
+            .and_then(GuardedMaintenanceAliases::maintenance)
             .ok_or(GuardedTransferError::Unavailable)?
             .check()?;
         let destination = self
@@ -265,8 +263,9 @@ impl ReceivingExecutionPreparation<'_> {
             .as_ref()
             .ok_or(GuardedTransferError::Unavailable)?;
         let basis = self
-            .basis
+            .aliases
             .as_ref()
+            .and_then(GuardedMaintenanceAliases::basis)
             .ok_or(GuardedTransferError::Unavailable)?;
         let intent = source
             .preparation
@@ -306,8 +305,9 @@ impl ReceivingExecutionPreparation<'_> {
         self.verify_stopped_world()?;
         source
             .operation
-            .maintenance
+            .aliases
             .as_ref()
+            .and_then(GuardedMaintenanceAliases::maintenance)
             .ok_or(GuardedTransferError::Unavailable)?
             .check()?;
         self.ready = Some(GuardedReceivingReady { record });
@@ -334,8 +334,9 @@ impl ReceivingExecutionPreparation<'_> {
             .as_ref()
             .ok_or(GuardedTransferError::Unavailable)?;
         let expected = ready.record;
-        self.maintenance
+        self.aliases
             .as_ref()
+            .and_then(GuardedMaintenanceAliases::maintenance)
             .ok_or(GuardedTransferError::Unavailable)?
             .check()?;
         let receipt = source.release(ready)?;
@@ -348,8 +349,9 @@ impl ReceivingExecutionPreparation<'_> {
         self.verify_stopped_world()?;
         source
             .operation
-            .maintenance
+            .aliases
             .as_ref()
+            .and_then(GuardedMaintenanceAliases::maintenance)
             .ok_or(GuardedTransferError::Unavailable)?
             .check()?;
         self.journal = Some(next);
@@ -372,8 +374,9 @@ impl ReceivingExecutionPreparation<'_> {
 
     fn verify_stopped_world(&mut self) -> Result<(), GuardedTransferError> {
         let maintenance = self
-            .maintenance
+            .aliases
             .as_ref()
+            .and_then(GuardedMaintenanceAliases::maintenance)
             .ok_or(GuardedTransferError::Unavailable)?;
         maintenance.check()?;
         self.lifecycle
@@ -391,8 +394,9 @@ impl ReceivingExecutionPreparation<'_> {
         next: ReceivingTransferRecord,
     ) -> Result<(), GuardedTransferError> {
         let maintenance = self
-            .maintenance
+            .aliases
             .as_ref()
+            .and_then(GuardedMaintenanceAliases::maintenance)
             .ok_or(GuardedTransferError::Unavailable)?;
         self.destination
             .as_ref()

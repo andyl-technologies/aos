@@ -10,7 +10,7 @@
 use super::super::super::hot_fork_native::assert_resource_charge;
 use super::failure_guards::FinishFailingFactory;
 use super::*;
-use crate::packaged_qemu_executor::hot_fork::retained_service::RetainedTemplateService;
+use crate::packaged_qemu_executor::tests::paging_native::main_service::NativeServiceScope;
 use crate::vm_lifecycle::{
     hot_fork_adoption_count_for_test, reset_hot_fork_adoption_count_for_test,
 };
@@ -137,7 +137,7 @@ struct FailureModel<'a> {
     boundary: BoundaryEvidence,
     case: NativeAtomicFailureCase,
     runner: Option<Runner>,
-    service: Option<Arc<RetainedTemplateService>>,
+    service: Option<NativeServiceScope>,
     complete: bool,
     quarantined: bool,
 }
@@ -296,7 +296,7 @@ fn run_accepted_failure(
                 .service
                 .as_ref()
                 .expect("retained Service")
-                .release_after_world_cleanup()
+                .try_body_retirement()
                 .is_err()
         );
         assert_eq!(available(prepared), held);
@@ -331,13 +331,16 @@ impl AttemptExecutionModel for FailureModel<'_> {
             .expect("genuine resumed campaign basis");
         let source = input.scenario();
         let before_source = available(self.prepared);
-        let mut selected = context.take_selected_checkpoint();
-        let service = Arc::new(
-            RetainedTemplateServiceFactory::new(self.prepared, &self.config)
-                .start_for_resume(source, self.checkpoint, context, &mut selected)
-                .expect("independent complete source Service"),
+        let mut source_factory = fresh_factory(&self.config, "source");
+        let service = NativeServiceScope::resume(
+            source_factory
+                .prepare_source_construction()
+                .expect("same actual failed Source Main role"),
+            &RetainedTemplateServiceFactory::new(self.prepared, &self.config),
+            source,
+            self.checkpoint,
+            context,
         );
-        assert!(selected.is_none());
         assert_resource_charge(
             before_source,
             available(self.prepared),
@@ -350,8 +353,11 @@ impl AttemptExecutionModel for FailureModel<'_> {
             service.context().host_ram_owner_id()
         );
         extend_native_operations(service.context());
-        self.service = Some(service.clone());
-        let mut source_factory = fresh_factory(&self.config, "source");
+        self.service = Some(service);
+        let service = self
+            .service
+            .as_ref()
+            .expect("same retained Source context and receiver");
         let mut parent = source_factory
             .begin_resume(
                 &self.prepared.checkpoints,
@@ -389,8 +395,7 @@ impl AttemptExecutionModel for FailureModel<'_> {
         census.print_evidence(self.case.lane());
         let mut world = parent
             .prepare_hot_fork_source_world()
-            .expect("complete source pause barriers")
-            .with_cleanup_observer(service.clone());
+            .expect("complete source pause barriers");
         if self.case == NativeAtomicFailureCase::Preparation {
             let pid = source_pid(&world);
             let mut parent = world
@@ -408,9 +413,15 @@ impl AttemptExecutionModel for FailureModel<'_> {
             parent
                 .shutdown()
                 .expect("reap all source processes after failed preparation");
-            service
-                .release_after_world_cleanup()
-                .expect("real source join and full-vector discharge");
+            drop(parent);
+            let terminal = self
+                .service
+                .take()
+                .expect("same retained source alias")
+                .into_retirement()
+                .expect("actual Source World join and full-vector discharge");
+            println!("failed_preparation_retirement={terminal}");
+            drop(terminal);
             println!(
                 "atomic-world phase=source-preparation-failure failed_source_pid={pid} public_template=false"
             );
@@ -552,7 +563,15 @@ impl AttemptExecutionModel for FailureModel<'_> {
         assert!(factory.recover(child).is_ok());
         assert!(factory.source_provider_mut_for_test().available());
         assert!(cgroup_processes(child_config.host.cgroup_root()).is_empty());
-        close_source(&mut factory, &service);
+        close_source(&mut factory);
+        let terminal = self
+            .service
+            .take()
+            .expect("same retained source alias")
+            .into_retirement()
+            .expect("actual Source World and watcher returned");
+        println!("failed_target_retirement={terminal}");
+        drop(terminal);
         self.complete = true;
         println!("atomic-world phase=target-cleanup-retry-complete source_reusable=true");
         context.cancellation().cancel();
@@ -575,10 +594,15 @@ impl AttemptExecutionModel for FailureModel<'_> {
         if step == AttemptExecutionReconciliationStep::Complete {
             let factory = runner.factory_mut_for_test();
             assert!(factory.source_provider_mut_for_test().available());
-            close_source(
-                factory,
-                self.service.as_ref().expect("retained source Service"),
-            );
+            close_source(factory);
+            let terminal = self
+                .service
+                .take()
+                .expect("same retained source alias")
+                .into_retirement()
+                .expect("actual Source World and watcher returned");
+            println!("reconciled_source_retirement={terminal}");
+            drop(terminal);
             self.complete = true;
         }
         Ok(step)
@@ -623,16 +647,14 @@ fn child_factory(
     )
 }
 
-fn close_source(factory: &mut Factory, service: &RetainedTemplateService) {
+fn close_source(factory: &mut Factory) {
     let world = factory
         .source_provider_mut_for_test()
         .take_available()
         .expect("only reconciled source may be recovered");
     let mut parent = world.recover().expect("exact source lifecycle ownership");
     parent.shutdown().expect("source nodes physically reaped");
-    service
-        .release_after_world_cleanup()
-        .expect("source watcher and all retained loans closed");
+    drop(parent);
 }
 
 fn second_live_node(world: &ProductionVmHotForkSourceWorld) -> crucible::NodeId {

@@ -90,6 +90,7 @@ pub(crate) fn run_admitted_finding_branch(
         model,
         cancellation.clone(),
         owner.clone(),
+        prepare_completed_reproduction,
     )
     .under_caller(caller_supervisor);
     let mut driver = CampaignExecutorDriver::new(

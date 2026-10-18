@@ -22,27 +22,33 @@ pub(crate) enum TargetBeginFailure {
 /// Implementations cannot restore a checkout, publish an assembly, release the
 /// aggregate or change failure classification. The shared orchestrator owns all
 /// of those decisions. No method returns newly manufactured native authority.
-pub(crate) trait WorldTargetOperations<R: QemuAttemptResourceGuardFactory>
+pub(crate) trait WorldTargetOperations<R: QemuAttemptResourceGuardFactory + Send + 'static>
 where
-    R::Guard: QemuAttemptProcessResourceGuard,
+    R::Guard: QemuAttemptProcessResourceGuard + Send + 'static,
 {
-    /// Prepares fixture storage without supplying Main or native authority.
-    #[cfg(test)]
-    fn prepare_component_construction(
-        &self,
-    ) -> Result<Option<Box<crate::ProductionVmConstructionCustody>>, crucible_api::LifecycleApiError>;
+    /// Complete runtime produced by this backend's actual ownership path.
+    type Lifecycle: QemuHotForkWorldLifecycleOwner;
 
-    /// Acquires this backend's target resources without settling the checkout.
-    ///
-    /// # Errors
-    /// Preserves Source refusal and the target factory's typed begin report.
-    fn begin_target(
-        &self,
-        resources: &mut R,
-        source_world: &Arc<Mutex<ProductionVmHotForkSourceWorld>>,
-        limits: AttemptResourceLimits,
-        cancellation: crate::ExecutionCancellation,
-    ) -> Result<R::Guard, TargetBeginFailure>;
+    /// Constructs under the actual backend's containing owner.
+    fn construct_world<S: QemuHotForkSourceWorldProvider>(
+        factory: &mut QemuProductionHotForkWorldLifecycleFactory<S, R, Self>,
+        input: &CrucibleAttemptExecution,
+        context: &AttemptExecutionContext,
+        selected: SelectedTargetSource,
+    ) -> Result<
+        QemuHotForkWorldLifecycleStart<Self::Lifecycle>,
+        AttemptWorkerFailure<QemuProductionHotForkWorldLifecycleFactoryError<S::Error>>,
+    >
+    where
+        Self: Sized;
+
+    /// Recovers only the actual original source checkout after retirement.
+    fn into_source_lease(
+        lifecycle: Self::Lifecycle,
+    ) -> Result<QemuHotForkSourceWorldLease, Self::Lifecycle>;
+
+    /// Abandons a caller while preserving its backend's real cleanup owner.
+    fn abandon_runtime(lifecycle: Self::Lifecycle);
 
     /// Binds each backend controller before any member launch.
     ///
@@ -86,39 +92,35 @@ pub(crate) struct NativeTargetOperations;
 
 impl<R> WorldTargetOperations<R> for NativeTargetOperations
 where
-    R: QemuAttemptResourceGuardFactory,
-    R::Guard: QemuAttemptProcessResourceGuard,
+    R: QemuAttemptResourceGuardFactory + Send + 'static,
+    R::Guard: QemuAttemptProcessResourceGuard
+        + QemuHotForkChildProcessOwner<Authority = LinuxQemuHotForkChildProcessAuthority>
+        + Send
+        + 'static,
 {
-    #[cfg(test)]
-    fn prepare_component_construction(
-        &self,
-    ) -> Result<Option<Box<crate::ProductionVmConstructionCustody>>, crucible_api::LifecycleApiError>
-    {
-        Ok(None)
+    type Lifecycle = super::runtime::PreparedTargetRuntime<R>;
+
+    fn construct_world<S: QemuHotForkSourceWorldProvider>(
+        factory: &mut QemuProductionHotForkWorldLifecycleFactory<S, R, Self>,
+        input: &CrucibleAttemptExecution,
+        context: &AttemptExecutionContext,
+        selected: SelectedTargetSource,
+    ) -> Result<
+        QemuHotForkWorldLifecycleStart<Self::Lifecycle>,
+        AttemptWorkerFailure<QemuProductionHotForkWorldLifecycleFactoryError<S::Error>>,
+    > {
+        factory.start_retained_target(input, context, selected)
     }
 
-    fn begin_target(
-        &self,
-        resources: &mut R,
-        source_world: &Arc<Mutex<ProductionVmHotForkSourceWorld>>,
-        limits: AttemptResourceLimits,
-        cancellation: crate::ExecutionCancellation,
-    ) -> Result<R::Guard, TargetBeginFailure> {
-        let permit = source_world
-            .lock()
-            .map_err(|_| String::from("source-world ownership lock is poisoned"))
-            .and_then(|mut source| {
-                source
-                    .lend_fork_target_permit()
-                    .map_err(|error| error.to_string())
-            })
-            .map_err(TargetBeginFailure::Source)?;
-        resources
-            .begin_fork_target(permit, limits, cancellation)
-            .map_err(|failure| {
-                let (error, _) = failure.into_parts();
-                TargetBeginFailure::Resources(error)
-            })
+    fn into_source_lease(
+        lifecycle: Self::Lifecycle,
+    ) -> Result<QemuHotForkSourceWorldLease, Self::Lifecycle> {
+        lifecycle.into_source_lease()
+    }
+
+    fn abandon_runtime(lifecycle: Self::Lifecycle) {
+        // The operation-only wrapper returns its actual body to Main on Drop.
+        drop(lifecycle);
     }
 
     fn bind_world(
@@ -217,4 +219,24 @@ where
             })?;
         Ok(directory)
     }
+}
+
+/// Supplies component-only begin/custody operations without a native issuer.
+#[cfg(test)]
+pub(crate) trait ComponentWorldTargetOperations<R>: WorldTargetOperations<R>
+where
+    R: QemuAttemptResourceGuardFactory + Send + 'static,
+    R::Guard: QemuAttemptProcessResourceGuard + Send + 'static,
+{
+    fn prepare_component_construction(
+        &self,
+    ) -> Result<Option<Box<crate::ProductionVmConstructionCustody>>, crucible_api::LifecycleApiError>;
+
+    fn begin_target(
+        &self,
+        resources: &mut R,
+        source_world: &Arc<Mutex<ProductionVmHotForkSourceWorld>>,
+        limits: AttemptResourceLimits,
+        cancellation: crate::ExecutionCancellation,
+    ) -> Result<R::Guard, TargetBeginFailure>;
 }

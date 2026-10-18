@@ -15,28 +15,39 @@ use crucible_linux_resource::host_supervision::HostOperationSupervisor;
 pub(super) struct ComponentTargetOperations;
 
 impl WorldTargetOperations<ScriptedWorldGuardFactory> for ComponentTargetOperations {
-    fn prepare_component_construction(
-        &self,
-    ) -> Result<Option<Box<crate::ProductionVmConstructionCustody>>, crucible_api::LifecycleApiError>
-    {
-        crate::ProductionVmConstructionCustody::prepare_component().map(Some)
+    type Lifecycle = QemuProductionHotForkWorldLifecycle<ScriptedWorldGuard>;
+
+    fn construct_world<S: QemuHotForkSourceWorldProvider>(
+        factory: &mut QemuProductionHotForkWorldLifecycleFactory<
+            S,
+            ScriptedWorldGuardFactory,
+            Self,
+        >,
+        input: &CrucibleAttemptExecution,
+        context: &AttemptExecutionContext,
+        selected: SelectedTargetSource,
+    ) -> ProductionLifecycleStartResult<ScriptedWorldGuard, S::Error> {
+        factory.try_start_component_world(
+            input,
+            context,
+            selected.lease,
+            selected.world,
+            selected.continuation,
+            selected.runtime_basis,
+        )
     }
 
-    fn begin_target(
-        &self,
-        resources: &mut ScriptedWorldGuardFactory,
-        _source_world: &Arc<Mutex<ProductionVmHotForkSourceWorld>>,
-        limits: AttemptResourceLimits,
-        cancellation: ExecutionCancellation,
-    ) -> Result<ScriptedWorldGuard, TargetBeginFailure> {
-        // This is the existing component owner, not a native target consumer.
-        // The common transaction still checks its limits and cancellation.
-        resources
-            .begin(limits, cancellation, None)
-            .map_err(|failure| {
-                let (error, _) = failure.into_parts();
-                TargetBeginFailure::Resources(error)
-            })
+    fn into_source_lease(
+        lifecycle: Self::Lifecycle,
+    ) -> Result<QemuHotForkSourceWorldLease, Self::Lifecycle> {
+        lifecycle
+            .into_source_lease()
+            .map_err(|lifecycle| *lifecycle)
+    }
+
+    fn abandon_runtime(mut lifecycle: Self::Lifecycle) {
+        lifecycle.quarantine();
+        let _retained_component = Box::leak(Box::new(lifecycle));
     }
 
     fn bind_world(
@@ -155,4 +166,34 @@ fn default_target_backend_keeps_missing_native_issuer_refusal_before_component_e
             .is_empty()
     );
     assert!(linux_process_identity(source_process).unwrap().is_some());
+}
+
+impl
+    crate::qemu_hot_fork_world_factory::target_operations::ComponentWorldTargetOperations<
+        ScriptedWorldGuardFactory,
+    > for ComponentTargetOperations
+{
+    fn prepare_component_construction(
+        &self,
+    ) -> Result<Option<Box<crate::ProductionVmConstructionCustody>>, crucible_api::LifecycleApiError>
+    {
+        crate::ProductionVmConstructionCustody::prepare_component().map(Some)
+    }
+
+    fn begin_target(
+        &self,
+        resources: &mut ScriptedWorldGuardFactory,
+        _source_world: &Arc<Mutex<ProductionVmHotForkSourceWorld>>,
+        limits: AttemptResourceLimits,
+        cancellation: ExecutionCancellation,
+    ) -> Result<ScriptedWorldGuard, TargetBeginFailure> {
+        // This is the existing component owner, not a native target consumer.
+        // The common transaction still checks its limits and cancellation.
+        resources
+            .begin(limits, cancellation, None)
+            .map_err(|failure| {
+                let (error, _) = failure.into_parts();
+                TargetBeginFailure::Resources(error)
+            })
+    }
 }

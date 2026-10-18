@@ -840,6 +840,22 @@ pub struct AutomaticFindingExecutionRunner<M, R> {
     last_determinism_probe: AutomaticFindingDeterminismProbeDisposition,
 }
 
+impl<M: crate::completed_reproduction::PrepareCompletedReproduction, R>
+    crate::completed_reproduction::PrepareCompletedReproduction
+    for AutomaticFindingExecutionRunner<M, R>
+{
+    fn prepare_completed_reproduction(
+        &mut self,
+    ) -> Result<
+        crate::lifecycle_cleanup::ServiceMainHandle,
+        crate::QemuAttemptProductionVmLifecycleError,
+    > {
+        crate::completed_reproduction::PrepareCompletedReproduction::prepare_completed_reproduction(
+            &mut self.main,
+        )
+    }
+}
+
 impl<M, R> AutomaticFindingExecutionRunner<M, R> {
     /// Wraps one main runner and a separate fresh candidate runner.
     #[must_use]

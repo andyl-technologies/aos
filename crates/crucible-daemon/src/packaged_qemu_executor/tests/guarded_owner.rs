@@ -169,9 +169,13 @@ fn genuine_standalone_main_retirement_retains_busy_custody_and_closes_once(
     assert_eq!(Arc::as_ptr(&owner.inner), original_owner);
     drop(host_alias);
 
-    let permit = source
-        .lend_fork_target_permit()
-        .expect("genuine Source permit");
+    let preparation = source.prepare_fork_target().expect("genuine Source permit");
+    let (permit, mut target_cleanup) = match preparation {
+        crucible_qemu::QemuForkTargetPreparation::Ready { permit, cleanup } => (permit, cleanup),
+        crucible_qemu::QemuForkTargetPreparation::Retained { first, .. } => {
+            panic!("genuine Target landing refused: {first}");
+        }
+    };
     let inner = Arc::get_mut(&mut owner.inner).expect("same exclusive owner");
     let mut target = inner
         .host
@@ -182,6 +186,10 @@ fn genuine_standalone_main_retirement_retains_busy_custody_and_closes_once(
     assert!(source.fork_target_is_owned());
     target.finish().expect("actual Target job cleanup");
     drop(target);
+    target_cleanup
+        .try_finish()
+        .expect("exact Target role return");
+    assert!(target_cleanup.is_physically_returned());
     assert!(owner.try_retire().is_err());
     assert_eq!(Arc::as_ptr(&owner.inner), original_owner);
     source.retire().expect("actual Source cleanup");

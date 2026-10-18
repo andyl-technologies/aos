@@ -6,12 +6,6 @@
 //! RAM and continuation checks, then every source and watcher is reaped.
 
 use super::*;
-use crate::QemuProductionHotForkWorldLifecycle;
-use crate::qemu_resource_guard::{
-    ComposedQemuAttemptResourceGuard, LinuxQemuAttemptHostResourceOwner,
-};
-
-pub(super) type ChildGuard = ComposedQemuAttemptResourceGuard<LinuxQemuAttemptHostResourceOwner>;
 pub(super) type ChildFactory = QemuProductionHotForkWorldLifecycleFactory<
     QemuSingleHotForkSourceWorldProvider,
     ComposedQemuAttemptResourceGuardFactory<LinuxQemuAttemptHostResourceFactory>,
@@ -19,18 +13,55 @@ pub(super) type ChildFactory = QemuProductionHotForkWorldLifecycleFactory<
 
 pub(super) struct ActiveChild {
     pub(super) factory: ChildFactory,
-    pub(super) lifecycle: QemuProductionHotForkWorldLifecycle<ChildGuard>,
+    pub(super) lifecycle: <ChildFactory as QemuHotForkWorldLifecycleFactory>::Lifecycle,
     pub(super) config: PackagedQemuExecutorConfig,
     pub(super) ready: u64,
 }
 
-impl ActiveChild {
+pub(super) type ChildResources =
+    ComposedQemuAttemptResourceGuardFactory<LinuxQemuAttemptHostResourceFactory>;
+
+pub(super) struct PreparedChild {
+    factory: ChildFactory,
+    launch: crate::qemu_hot_fork_world_factory::PreparedTargetLaunch<ChildResources>,
+    config: PackagedQemuExecutorConfig,
+    started: u64,
+}
+
+impl PreparedChild {
+    pub(super) fn service_main_handle(&self) -> crate::lifecycle_cleanup::ServiceMainHandle {
+        self.launch.service_main_handle()
+    }
+
     pub(super) fn start(
-        config: PackagedQemuExecutorConfig,
+        mut self,
+        input: &CrucibleAttemptExecution,
+        context: &AttemptExecutionContext,
+    ) -> ActiveChild {
+        let lifecycle = match self
+            .factory
+            .finish_prepared_target(self.launch, input, context)
+            .expect("same preclaimed native Target launches under its actual Service")
+        {
+            QemuHotForkWorldLifecycleStart::Started(child) => child,
+            QemuHotForkWorldLifecycleStart::Declined => panic!("preclaimed native Target declined"),
+        };
+        ActiveChild {
+            factory: self.factory,
+            lifecycle,
+            config: self.config,
+            ready: operational_monotonic_nanoseconds().saturating_sub(self.started),
+        }
+    }
+}
+
+impl ActiveChild {
+    fn factory(
+        config: &PackagedQemuExecutorConfig,
         input: &CrucibleAttemptExecution,
         context: &AttemptExecutionContext,
         world: ProductionVmHotForkSourceWorld,
-    ) -> Self {
+    ) -> ChildFactory {
         let key = QemuHotForkSourceWorldKey::for_execution(
             input,
             context,
@@ -41,7 +72,7 @@ impl ActiveChild {
         .expect("authenticated semantic source lookup");
         let host = LinuxQemuAttemptHostResourceFactory::open(config.host.clone())
             .expect("independent child process and disk namespaces");
-        let mut factory = QemuProductionHotForkWorldLifecycleFactory::new(
+        let factory = QemuProductionHotForkWorldLifecycleFactory::new(
             QemuSingleHotForkSourceWorldProvider::new(key, world),
             ComposedQemuAttemptResourceGuardFactory::new(host),
             config.lifecycle.run_state_root().to_path_buf(),
@@ -59,6 +90,36 @@ impl ActiveChild {
                 Duration::from_secs(300),
             ),
         );
+        factory
+    }
+
+    pub(super) fn prepare(
+        config: PackagedQemuExecutorConfig,
+        input: &CrucibleAttemptExecution,
+        original: &AttemptExecutionContext,
+        world: ProductionVmHotForkSourceWorld,
+    ) -> PreparedChild {
+        let mut factory = Self::factory(&config, input, original, world);
+        let started = operational_monotonic_nanoseconds();
+        let launch = factory
+            .prepare_independent_target(input, original)
+            .expect("genuine Target Main admission before comparison Service")
+            .expect("authenticated retained source is available");
+        PreparedChild {
+            factory,
+            launch,
+            config,
+            started,
+        }
+    }
+
+    pub(super) fn start(
+        config: PackagedQemuExecutorConfig,
+        input: &CrucibleAttemptExecution,
+        context: &AttemptExecutionContext,
+        world: ProductionVmHotForkSourceWorld,
+    ) -> Self {
+        let mut factory = Self::factory(&config, input, context, world);
         let started = operational_monotonic_nanoseconds();
         let lifecycle = match factory
             .try_start(input, context)
@@ -175,41 +236,18 @@ pub(super) fn run(
     let source = input.scenario();
     let before = available_resources(model.prepared);
     let source_factory = RetainedTemplateServiceFactory::new(model.prepared, &model.config);
-    let causal = Arc::new(
-        source_factory
-            .start_causal_source_for_test(source, context)
-            .expect("independent causal-source Service under the genuine active Execution"),
-    );
-    let mut selected = context.take_selected_checkpoint();
-    let exact = Arc::new(
-        source_factory
-            .start_for_resume(source, model.checkpoint, context, &mut selected)
-            .expect("independent exact source consumes its one real selected-root claim"),
-    );
-    assert!(selected.is_none());
-    let comparison = source_factory
-        .start_comparison_child_for_test(source, context)
-        .expect("independently charged comparison-child Service in the accepted graph");
-    assert!(!comparison.context().host_ram_retained_template());
-    assert_ne!(
-        context.host_ram_owner_id(),
-        comparison.context().host_ram_owner_id()
-    );
-    assert_ne!(
-        causal.context().host_ram_owner_id(),
-        exact.context().host_ram_owner_id()
-    );
-    for owner in [causal.context(), exact.context(), comparison.context()] {
-        extend_native_operations(owner);
-    }
-    let service_peak = model
-        .config
-        .retained_template_resources()
-        .expect("authored complete world vector");
-    assert_template_charge(model.prepared, before, service_peak, 3);
-
     let causal_config = world_config(&model.config, "causal", 47_000);
     let mut causal_factory = fresh_factory(&causal_config, "world");
+    let exact_config = world_config(&model.config, "exact", 47_100);
+    let mut exact_factory = fresh_factory(&exact_config, "world");
+    let causal = crate::packaged_qemu_executor::tests::paging_native::main_service::NativeServiceScope::causal(
+        causal_factory.prepare_source_construction().expect("same actual causal Source Main role"),
+        &source_factory, source, context,
+    );
+    let exact = crate::packaged_qemu_executor::tests::paging_native::main_service::NativeServiceScope::resume(
+        exact_factory.prepare_source_construction().expect("same actual exact Source Main role"),
+        &source_factory, source, model.checkpoint, context,
+    );
     let mut causal_parent = causal_factory
         .begin_fresh(&source.scenario_def(), source, causal.context())
         .expect("genuine fresh causal oracle");
@@ -217,11 +255,8 @@ pub(super) fn run(
     assert_eq!(boundary, model.captured.boundary);
     let causal_world = causal_parent
         .prepare_hot_fork_source_world()
-        .expect("execution-origin retained barriers")
-        .with_cleanup_observer(causal.clone());
+        .expect("execution-origin retained barriers");
 
-    let exact_config = world_config(&model.config, "exact", 47_100);
-    let mut exact_factory = fresh_factory(&exact_config, "world");
     let mut exact_parent = exact_factory
         .begin_resume(
             &model.prepared.checkpoints,
@@ -246,24 +281,45 @@ pub(super) fn run(
     assert_eq!(exact_boundary, boundary);
     let exact_world = exact_parent
         .prepare_hot_fork_source_world()
-        .expect("exact-origin retained barriers")
-        .with_cleanup_observer(exact.clone());
+        .expect("exact-origin retained barriers");
     assert_eq!(
         prepared_world_evidence(&causal_world, topology(source)),
         prepared_world_evidence(&exact_world, topology(source))
     );
 
+    let prepared_second = ActiveChild::prepare(
+        world_config(&model.config, "second-child", 47_300),
+        input,
+        context,
+        exact_world,
+    );
+    let mut comparison = crate::packaged_qemu_executor::tests::paging_native::main_service::NativeServiceScope::comparison(
+        prepared_second.service_main_handle(), &source_factory, source, context,
+    );
+    assert!(!comparison.context().host_ram_retained_template());
+    assert_ne!(
+        context.host_ram_owner_id(),
+        comparison.context().host_ram_owner_id()
+    );
+    assert_ne!(
+        causal.context().host_ram_owner_id(),
+        exact.context().host_ram_owner_id()
+    );
+    for owner in [causal.context(), exact.context(), comparison.context()] {
+        extend_native_operations(owner);
+    }
+    let service_peak = model
+        .config
+        .retained_template_resources()
+        .expect("authored complete world vector");
+    assert_template_charge(model.prepared, before, service_peak, 3);
+
+    let mut second = prepared_second.start(input, comparison.context());
     let mut first = ActiveChild::start(
         world_config(&model.config, "first-child", 47_200),
         input,
         context,
         causal_world,
-    );
-    let mut second = ActiveChild::start(
-        world_config(&model.config, "second-child", 47_300),
-        input,
-        comparison.context(),
-        exact_world,
     );
     first.assert_boundary(source, &boundary);
     second.assert_boundary(source, &boundary);
@@ -321,13 +377,12 @@ pub(super) fn run(
         .stop()
         .recover()
         .expect("causal parent private state recovered");
+    comparison.release_context_aliases();
     let mut exact_parent = second
         .stop()
         .recover()
         .expect("exact parent private state recovered");
-    comparison
-        .release_after_world_cleanup()
-        .expect("actual comparison-child watcher join and Service discharge");
+    comparison.assert_released();
     let pending = drain_exact_pending(&mut causal_parent);
     let unchanged_causal = capture_boundary_evidence(
         &mut causal_parent,
@@ -352,12 +407,18 @@ pub(super) fn run(
     exact_parent
         .shutdown()
         .expect("exact source physically reaped");
-    causal
-        .release_after_world_cleanup()
-        .expect("actual causal-source watcher join and full-vector discharge");
-    exact
-        .release_after_world_cleanup()
-        .expect("actual exact-source watcher join and full-vector discharge");
+    drop(causal_parent);
+    drop(exact_parent);
+    let causal_terminal = causal
+        .into_retirement()
+        .expect("actual causal Source World and watcher returned");
+    let exact_terminal = exact
+        .into_retirement()
+        .expect("actual exact Source World and watcher returned");
+    println!("concurrent_causal_retirement={causal_terminal}");
+    println!("concurrent_exact_retirement={exact_terminal}");
+    drop(causal_terminal);
+    drop(exact_terminal);
     assert_eq!(available_resources(model.prepared), before);
     println!("concurrent_live_children=2");
     println!("concurrent_comparison_owner_graph=one-active-execution,three-independent-services");

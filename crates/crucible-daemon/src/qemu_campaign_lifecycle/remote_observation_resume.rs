@@ -22,10 +22,7 @@ use super::campaign_run::{
     GuardedDefaultCampaignRunRequest, run_guarded_default_campaign,
 };
 use crate::supervision::ProcessDeadline;
-use crate::{
-    ComposedQemuAttemptResourceGuardFactory, CrucibleMeasurementReplayEvidence,
-    ExecutionCancellation,
-};
+use crate::{CrucibleMeasurementReplayEvidence, ExecutionCancellation};
 
 /// Replays, authenticates, captures, and restores one remote observation source.
 #[derive(Clone)]
@@ -243,7 +240,14 @@ impl RemoteObservationResumeFactory {
                 &source_lifecycle,
             )
             .map_err(|error| observation_error(format!("promote source checkpoint: {error}")))?;
-        ensure_preparation_active(context, &execution_cancellation, preparation_deadline)?;
+        if let Err(first) =
+            ensure_preparation_active(context, &execution_cancellation, preparation_deadline)
+        {
+            let _retained = continuation
+                .source
+                .failure("observation preparation canceled after continuation");
+            return Err(first);
+        }
         // Promotion can consume most of the original allowance. Restore must
         // use the remaining cap at launch, rather than a pre-promotion sample.
         let restore_timeout = self
@@ -252,6 +256,9 @@ impl RemoteObservationResumeFactory {
             .min(preparation_deadline.remaining());
         if restore_timeout.is_zero() {
             execution_cancellation.cancel();
+            let _retained = continuation
+                .source
+                .failure("observation preparation elapsed before restore");
             return Err(observation_error(
                 "portable observation preparation deadline elapsed before restore",
             ));
@@ -259,39 +266,95 @@ impl RemoteObservationResumeFactory {
         let resumed_lifecycle = source_lifecycle
             .try_clone_admitted()
             .map_err(|error| {
+                let _retained = continuation
+                    .source
+                    .failure("copy restored observation lifecycle");
                 observation_error(format!("copy admitted restored lifecycle: {error}"))
             })?
             .with_completion_timeout(restore_timeout);
-        let mut restore_factory = super::QemuAttemptProductionVmLifecycleFactory::new(
-            resumed_lifecycle,
-            ComposedQemuAttemptResourceGuardFactory::new(owner.inner.host.clone()),
-        );
-        let restored = restore_factory.begin_resume(
-            &checkpoints,
-            continuation.checkpoint,
-            super::QemuExactResumeBasis::new(
-                &configuration.def,
-                &request.scenario,
-                configuration,
+        let service = continuation.source.service_handle();
+        let receiver = service.retain_receiver_in_main().map_err(|first| {
+            let retained =
+                service.failure_with_refusal("retain observation restore projection", first);
+            observation_error(format!("restore source checkpoint: {retained}"))
+        })?;
+        let restored = (|| {
+            let restore_context = continuation
+                .source
+                .with_ready("borrow observation restore context", |service| {
+                    service.context().clone()
+                })
+                .map_err(ObservationRestoreFailure::Prepared)?;
+            let prepared = continuation
+                .source
+                .factory
+                .prepared_source_handle()
+                .map_err(|first| {
+                    ObservationRestoreFailure::Prepared(
+                        service.failure_with_refusal("select observation restore Source", first),
+                    )
+                })?;
+            super::resume_prepared_source(
+                &prepared,
+                &resumed_lifecycle,
                 None,
-            ),
-            continuation.service.context(),
-        );
-        drop(restore_factory);
+                &checkpoints,
+                continuation.checkpoint,
+                super::QemuExactResumeBasis::new(
+                    &configuration.def,
+                    &request.scenario,
+                    configuration,
+                    None,
+                ),
+                &restore_context,
+                crate::vm_lifecycle::RetainedConstructionExposure::Released,
+            )
+            .map_err(|first| ObservationRestoreFailure::Lifecycle {
+                first,
+                retained: continuation.source.failure("restore observation Source"),
+            })
+        })();
+        receiver.return_after_alias_destruction().map_err(|first| {
+            let retained =
+                service.failure_with_refusal("return observation restore projection", first);
+            observation_error(format!("return restored projection: {retained}"))
+        })?;
         let loop_instance = match restored {
             Ok(loop_instance) => loop_instance,
-            Err(error) => {
-                continuation.service.retain_after_unknown_cleanup();
+            Err(ObservationRestoreFailure::Lifecycle { first, retained }) => {
                 return Err(observation_error(format!(
-                    "restore source checkpoint: {error}"
+                    "restore source checkpoint: {first}; {retained}"
+                )));
+            }
+            Err(ObservationRestoreFailure::Prepared(retained)) => {
+                return Err(observation_error(format!(
+                    "restore source checkpoint: {retained}"
                 )));
             }
         };
-        let loop_instance =
-            loop_instance.with_retained_resource_owner(Arc::new(continuation.service));
-        ensure_preparation_active(context, &execution_cancellation, preparation_deadline)?;
+        // The Loop's own controls are inside the same paid World/body; its
+        // actual body/loan return gates ServiceClosing. No extra Service Arc.
+        if let Err(first) =
+            ensure_preparation_active(context, &execution_cancellation, preparation_deadline)
+        {
+            drop(loop_instance);
+            let _retained = continuation
+                .source
+                .failure("observation preparation canceled after restore");
+            return Err(first);
+        }
         Ok(loop_instance.with_retained_resource_owner(cancellation_registration))
     }
+}
+
+// This local adapter is consumed only after local aliases have returned. The
+// actual owning refusal and any failed receiver acknowledgment remain in Main.
+enum ObservationRestoreFailure {
+    Prepared(crate::PreparedSourceFailure),
+    Lifecycle {
+        first: super::QemuAttemptProductionVmLifecycleError,
+        retained: crate::PreparedSourceFailure,
+    },
 }
 
 fn ensure_preparation_active(

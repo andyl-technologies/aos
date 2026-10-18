@@ -108,19 +108,12 @@ impl GuardedImportedFindingMidpoint {
     > {
         let _decode_scope = self.inner.decoding.enter();
         let cancellation = ExecutionCancellation::default();
-        let authentication = self
-            .inner
-            .owner
-            .replay_services()?
-            .start_for_archive_authentication(self.inner.midpoint.source(), cancellation.clone())?;
-        let operation = authentication
-            .context()
-            .host_operation_supervisor()
-            .ok_or(GuardedFindingMidpointError::Refused(
-                "authentication supervision is absent",
-            ))?
-            .begin(crucible_linux_resource::host_supervision::HostOperationClass::Preparation)?;
-        operation.wait_slice()?;
+        let authentication = self.inner.owner.prepare_authentication_source(
+            self.inner.midpoint.source(),
+            cancellation.clone(),
+            crucible_linux_resource::host_supervision::HostOperationClass::Preparation,
+        )?;
+        authentication.check()?;
         let mut selections =
             crate::DirectoryExactPinMaterializationStore::open(&self.inner.selections)?;
         let head = self
@@ -133,8 +126,8 @@ impl GuardedImportedFindingMidpoint {
             GuardedFindingMidpointError::Refused("semantic ceiling is absent"),
         )?;
         let mut boundary = || {
-            operation
-                .wait_slice()
+            authentication
+                .check()
                 .map_err(|_| RamStoreError::Canceled)?;
             if cancellation.is_canceled() {
                 Err(RamStoreError::Canceled)
@@ -158,7 +151,7 @@ impl GuardedImportedFindingMidpoint {
                     resources,
                     resource_ceiling: resources,
                 },
-                context: authentication.context(),
+                context: authentication.context()?,
             },
             &mut boundary,
         )?;
@@ -171,8 +164,9 @@ impl GuardedImportedFindingMidpoint {
             .inner
             .owner
             .begin_imported_checkpoint(imported, cancellation)?;
-        operation.complete()?;
-        authentication.release_after_world_cleanup()?;
+        authentication.complete()?;
+        // Its actual child lease keeps the parent pending through child
+        // supervisor closure. Exposing that child cannot wait parent finality.
         drop(authentication);
         Ok(replay)
     }
@@ -319,16 +313,13 @@ impl GuardedCampaignOwner {
         let decoding = original.child()?;
         let _decode_scope = decoding.enter();
         let cancellation = ExecutionCancellation::default();
-        let authentication = self
-            .replay_services()?
-            .start_for_archive_authentication(scenario, cancellation.clone())?;
-        let supervisor = authentication.context().host_operation_supervisor().ok_or(
-            GuardedFindingMidpointError::Refused("authentication supervision is absent"),
+        let authentication = self.prepare_authentication_source(
+            scenario,
+            cancellation.clone(),
+            crucible_linux_resource::host_supervision::HostOperationClass::Transfer,
         )?;
-        let operation = supervisor
-            .begin(crucible_linux_resource::host_supervision::HostOperationClass::Transfer)?;
         let mut boundary = || {
-            operation.wait_slice().map(|_| ()).map_err(|source| {
+            authentication.check().map_err(|source| {
                 cancellation.cancel();
                 crucible_cas::content_store::StoreError::Supervision {
                     source: Box::new(source),
@@ -405,7 +396,7 @@ impl GuardedCampaignOwner {
                 archive,
                 finding,
                 &self.inner.checkpoints,
-                authentication.context().cancellation(),
+                authentication.context()?.cancellation(),
                 &mut boundary,
             )?;
         if midpoint.source().id() != scenario.id() {
@@ -418,8 +409,8 @@ impl GuardedCampaignOwner {
             (std::mem::size_of::<GuardedFindingMidpointInner>() + 2 * std::mem::size_of::<usize>())
                 as u64,
         )?;
-        operation.complete()?;
-        authentication.release_after_world_cleanup()?;
+        authentication.complete()?;
+        drop(authentication);
         Ok(GuardedImportedFindingMidpoint {
             inner: Arc::new(GuardedFindingMidpointInner {
                 owner: self.clone(),
@@ -477,6 +468,7 @@ macro_rules! operational_from {
 }
 
 operational_from!(
+    super::service_source::GuardedAuthenticationError,
     PackagedQemuExecutorError,
     crucible_api::host_operational::HostOperationalError,
     crucible_campaign::CampaignRepositoryError,

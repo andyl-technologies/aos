@@ -1,148 +1,45 @@
 //! Fixed factory custody for refused Source installation handoffs.
 
 use super::*;
-use crate::qemu_lifecycle_launcher::SourceConstructionCustodyFailure;
 use crucible_api::{ProductionVmCleanupHandoff, ProductionVmCleanupStage};
 
-pub(in crate::qemu_campaign_lifecycle) enum RetainedSourceInstall<
-    F: QemuAttemptResourceGuardFactory,
-> {
-    #[cfg(all(target_os = "linux", any(test, feature = "private-measurement-domain")))]
-    NativeObservation(Box<dyn super::native_observation::NativeObservationOwner>),
-    Unborn(
-        crate::qemu_lifecycle_launcher::UnbornSourceConstruction<
-            F,
-            crate::crucible_qemu_session::QemuAttemptResourceGuardBeginReport,
-        >,
-    ),
+pub(in crate::qemu_campaign_lifecycle) enum RetainedSourceInstall {
     Api {
         owner: crate::ProductionVmConstructionFailure,
-        handoff: Option<
-            Box<
-                dyn ProductionVmCleanupHandoff<
-                    Failure = crate::ProductionVmConstructionCleanupError,
-                >,
-            >,
-        >,
+        handoff: Option<SourceCleanupHandoff>,
     },
-    Handoff(
-        Box<dyn ProductionVmCleanupHandoff<Failure = crate::ProductionVmConstructionCleanupError>>,
-    ),
-    ResourceBegin {
-        owner: SourceConstructionCustodyFailure<
-            crate::crucible_qemu_session::QemuAttemptResourceGuardBeginReport,
-        >,
-        handoff: Option<
-            Box<
-                dyn ProductionVmCleanupHandoff<
-                    Failure = crate::ProductionVmConstructionCleanupError,
-                >,
-            >,
-        >,
-    },
-    Begin {
-        owner: SourceConstructionCustodyFailure,
-        handoff: Option<
-            Box<
-                dyn ProductionVmCleanupHandoff<
-                    Failure = crate::ProductionVmConstructionCleanupError,
-                >,
-            >,
-        >,
-    },
-    Storage {
-        owner: SourceConstructionCustodyFailure<SourceGenerationStorageRefusal>,
-        handoff: Option<
-            Box<
-                dyn ProductionVmCleanupHandoff<
-                    Failure = crate::ProductionVmConstructionCleanupError,
-                >,
-            >,
-        >,
-    },
-    Post {
-        owner: SourceConstructionCustodyFailure<SourcePostInstallationRefusal>,
-        handoff: Option<
-            Box<
-                dyn ProductionVmCleanupHandoff<
-                    Failure = crate::ProductionVmConstructionCleanupError,
-                >,
-            >,
-        >,
-    },
+    Handoff(SourceCleanupHandoff),
     MissingRetirementCarrier {
         lifecycle: ProductionVmLifecycleLoop,
     },
-    MissingCallback {
-        guard: F::Guard,
-        first_cleanup: Option<crate::QemuAttemptResourceGuardCleanupFailure>,
-    },
 }
 
-impl<F> RetainedSourceInstall<F>
-where
-    F: QemuAttemptResourceGuardFactory + Send + 'static,
-    F::Guard: Send + 'static,
-{
-    /// Returns true only after physical closure without a queue receipt.
-    fn retry_publication(&mut self) -> Result<bool, &'static str> {
+impl RetainedSourceInstall {
+    /// Publishes this same owner without replacing its exact-cell receipt.
+    fn retry_publication(&mut self) -> Result<(), &'static str> {
         let (slot, published) = match self {
-            #[cfg(all(target_os = "linux", any(test, feature = "private-measurement-domain")))]
-            Self::NativeObservation(_) => {
-                return Err("same observation owner requires canonical publication");
-            }
-            Self::Unborn(owner) => return owner.retry(),
             Self::Api { owner, handoff } => (handoff, owner.retry_reserved_publication()?),
-            Self::Begin { owner, handoff } => (handoff, owner.retry_publication()?),
-            Self::ResourceBegin { owner, handoff } => (handoff, owner.retry_publication()?),
-            Self::Storage { owner, handoff } => (handoff, owner.retry_publication()?),
-            Self::Post { owner, handoff } => (handoff, owner.retry_publication()?),
             Self::Handoff(_) => return Err("same Source already retains its cleanup receipt"),
             Self::MissingRetirementCarrier { .. } => {
                 return Err("same lifecycle has no reusable construction carrier");
-            }
-            Self::MissingCallback {
-                guard,
-                first_cleanup,
-            } => {
-                if let Err(first) = guard.finish() {
-                    if first_cleanup.is_none() {
-                        *first_cleanup = Some(first);
-                    }
-                    return Err("same callback-less Source guard retains cleanup");
-                }
-                return Ok(true);
             }
         };
         let Some(receipt) = published else {
             // A publication shell cannot substitute for a lost exact-cell receipt.
             return Err("same Source publication has no retained cleanup receipt");
         };
-        // Keep the first typed construction cause beside its exact receipt;
-        // no returned owner is moved into a diagnostic or discarded here.
-        *slot = Some(receipt);
-        Ok(false)
+        // Preserve the typed construction cause beside its original receipt.
+        *slot = Some(SourceCleanupHandoff::new(receipt));
+        Ok(())
     }
 
-    fn handoff_mut(
-        &mut self,
-    ) -> Option<
-        &mut Box<
-            dyn ProductionVmCleanupHandoff<Failure = crate::ProductionVmConstructionCleanupError>,
-        >,
-    > {
+    fn handoff_mut(&mut self) -> Option<&mut SourceCleanupReceipt> {
         match self {
-            Self::Handoff(receipt) => Some(receipt),
-            Self::Api { handoff, .. }
-            | Self::Begin { handoff, .. }
-            | Self::ResourceBegin { handoff, .. }
-            | Self::Storage { handoff, .. }
-            | Self::Post { handoff, .. } => handoff.as_mut(),
-            #[cfg(all(target_os = "linux", any(test, feature = "private-measurement-domain")))]
-            Self::NativeObservation(_) => None,
-            Self::Unborn(_)
-            | Self::MissingRetirementCarrier { .. }
-            | Self::MissingCallback { .. } => None,
+            Self::Handoff(receipt) => receipt.receipt_mut(),
+            Self::Api { handoff, .. } => {
+                handoff.as_mut().and_then(SourceCleanupHandoff::receipt_mut)
+            }
+            Self::MissingRetirementCarrier { .. } => None,
         }
     }
 
@@ -153,34 +50,29 @@ where
         {
             return Err(self);
         }
+        if let Some(handoff) = self.handoff_mut()
+            && !handoff.retain_post_body()
+        {
+            // Body/control completion alone cannot replace actual native,
+            // Service and report ownership checks for the full terminal move.
+            return Err(self);
+        }
         let history = match self {
-            #[cfg(all(target_os = "linux", any(test, feature = "private-measurement-domain")))]
-            Self::NativeObservation(owner) => return Err(Self::NativeObservation(owner)),
-            Self::Unborn(owner) => match owner.into_causes() {
-                Ok((first, cleanup, cleanup_post)) => SourceCleanupHistory {
-                    first: Some(SourceInstallationFirst::ResourceBegin(first)),
-                    cleanup,
-                    cleanup_post,
-                },
-                Err(owner) => return Err(Self::Unborn(owner)),
-            },
-            Self::Handoff(mut handoff) => SourceCleanupHistory {
+            Self::Handoff(handoff) => SourceCleanupHistory {
                 first: None,
-                cleanup: handoff
-                    .take_first_failure()
-                    .map(SourceCleanupCause::Cleanup),
+                cleanup: None,
                 cleanup_post: None,
+                terminal_receipt: Some(handoff),
             },
             Self::Api {
                 owner,
-                handoff: Some(mut handoff),
+                handoff: Some(handoff),
             } => match owner.into_published_error() {
                 Ok(first) => SourceCleanupHistory {
                     first: Some(SourceInstallationFirst::Api(first)),
-                    cleanup: handoff
-                        .take_first_failure()
-                        .map(SourceCleanupCause::Cleanup),
+                    cleanup: None,
                     cleanup_post: None,
+                    terminal_receipt: Some(handoff),
                 },
                 Err(owner) => {
                     return Err(Self::Api {
@@ -189,97 +81,6 @@ where
                     });
                 }
             },
-            Self::ResourceBegin {
-                owner,
-                handoff: Some(mut handoff),
-            } => match owner.into_published_error() {
-                Ok(first) => SourceCleanupHistory {
-                    first: Some(SourceInstallationFirst::ResourceBegin(first)),
-                    cleanup: handoff
-                        .take_first_failure()
-                        .map(SourceCleanupCause::Cleanup),
-                    cleanup_post: None,
-                },
-                Err(owner) => {
-                    return Err(Self::ResourceBegin {
-                        owner,
-                        handoff: Some(handoff),
-                    });
-                }
-            },
-            Self::Begin {
-                owner,
-                handoff: Some(mut handoff),
-            } => match owner.into_published_error() {
-                Ok(first) => SourceCleanupHistory {
-                    first: Some(SourceInstallationFirst::Native(first)),
-                    cleanup: handoff
-                        .take_first_failure()
-                        .map(SourceCleanupCause::Cleanup),
-                    cleanup_post: None,
-                },
-                Err(owner) => {
-                    return Err(Self::Begin {
-                        owner,
-                        handoff: Some(handoff),
-                    });
-                }
-            },
-            Self::Storage {
-                owner,
-                handoff: Some(mut handoff),
-            } => match owner.into_published_error() {
-                Ok(first) => SourceCleanupHistory {
-                    first: Some(SourceInstallationFirst::Storage(first)),
-                    cleanup: handoff
-                        .take_first_failure()
-                        .map(SourceCleanupCause::Cleanup),
-                    cleanup_post: None,
-                },
-                Err(owner) => {
-                    return Err(Self::Storage {
-                        owner,
-                        handoff: Some(handoff),
-                    });
-                }
-            },
-            Self::Post {
-                owner,
-                handoff: Some(mut handoff),
-            } => match owner.into_published_error() {
-                Ok(first) => SourceCleanupHistory {
-                    first: Some(SourceInstallationFirst::Post(first)),
-                    cleanup: handoff
-                        .take_first_failure()
-                        .map(SourceCleanupCause::Cleanup),
-                    cleanup_post: None,
-                },
-                Err(owner) => {
-                    return Err(Self::Post {
-                        owner,
-                        handoff: Some(handoff),
-                    });
-                }
-            },
-            Self::MissingCallback {
-                guard,
-                first_cleanup,
-            } => {
-                // The caller established actual guard.finish before this cut.
-                drop(guard);
-                return Ok(first_cleanup.map_or(
-                    SourceCleanupHistory {
-                        first: None,
-                        cleanup: None,
-                        cleanup_post: None,
-                    },
-                    |source| SourceCleanupHistory {
-                        first: None,
-                        cleanup: Some(SourceCleanupCause::Cleanup(source.into())),
-                        cleanup_post: None,
-                    },
-                ));
-            }
             retained => return Err(retained),
         };
         Ok(history)
@@ -287,33 +88,13 @@ where
 
     pub(super) fn report(&self) -> QemuAttemptProductionVmLifecycleError {
         let diagnostic = match self {
-            #[cfg(all(target_os = "linux", any(test, feature = "private-measurement-domain")))]
-            Self::NativeObservation(_) => {
-                "same Main-worker observation still retains its Source launcher".to_owned()
-            }
-            Self::Unborn(owner) => match owner.cleanup_failure() {
-                Some(cleanup) => format!("{}; cleanup: {cleanup}", owner.first()),
-                None => owner.first().to_string(),
-            },
             Self::Api { owner, .. } => owner.to_string(),
             Self::Handoff(_) => {
                 String::from("same Source cleanup receipt has not reached Complete")
             }
-            Self::Begin { owner: first, .. } => first.to_string(),
-            Self::ResourceBegin { owner: first, .. } => first.to_string(),
-            Self::Storage { owner: first, .. } => first.to_string(),
-            Self::Post { owner: first, .. } => first.to_string(),
             Self::MissingRetirementCarrier { .. } => {
                 String::from("same returned lifecycle retains missing construction custody")
             }
-            Self::MissingCallback {
-                first_cleanup: Some(first),
-                ..
-            } => first.to_string(),
-            Self::MissingCallback {
-                first_cleanup: None,
-                ..
-            } => String::from("native begin returned a guard without its before-effects owner"),
         };
         QemuAttemptProductionVmLifecycleError::SourceInstallRetained { diagnostic }
     }
@@ -342,21 +123,25 @@ where
     pub(super) fn retain_cleanup_handoff(
         &mut self,
         handoff: Box<
-            dyn ProductionVmCleanupHandoff<Failure = crate::ProductionVmConstructionCleanupError>,
+            dyn ProductionVmCleanupHandoff<
+                    Failure = crate::ProductionVmConstructionCleanupError,
+                    PostBody = crate::ProductionVmConstructionPostBody,
+                >,
         >,
     ) {
         // The exclusive factory borrow spans its checked vacancy and handoff;
         // no callback can install another value in this fixed prepaid slot.
-        self.retained_install = Some(RetainedSourceInstall::Handoff(handoff));
+        self.retained_install = Some(RetainedSourceInstall::Handoff(SourceCleanupHandoff::new(
+            handoff,
+        )));
     }
 
     pub(super) fn park_install_from_checked_vacancy(
         &mut self,
-        owner: RetainedSourceInstall<R>,
+        owner: RetainedSourceInstall,
     ) -> QemuAttemptProductionVmLifecycleError {
-        // with_attempt_launcher holds the sole &mut factory from the vacancy
-        // check through this terminal error cut. Its callback borrows only
-        // local pending state; no intervening method writes retained_install.
+        // The exclusive factory borrow spans the checked vacancy and this
+        // returned-owner handoff; no other method can occupy retained_install.
         self.retained_install = Some(owner);
         self.retained_install.as_ref().map_or(
             QemuAttemptProductionVmLifecycleError::Lifecycle(
@@ -385,8 +170,9 @@ where
                 ));
             }
         };
-        // Every completed receipt/empty shell was destroyed by into_history.
-        // The exact factory is vacant before this historical report escapes.
+        // The original receipt Box now holds the complete terminal history.
+        // Factory custody is vacant; the actual Main role stays pinned until
+        // that token allocation and its terminal history are both disposed.
         if history.is_empty() {
             Ok(())
         } else {
@@ -397,14 +183,6 @@ where
     pub(crate) fn retry_retained_source_installation(
         &mut self,
     ) -> Result<(), QemuAttemptProductionVmLifecycleError> {
-        #[cfg(all(target_os = "linux", any(test, feature = "private-measurement-domain")))]
-        if matches!(
-            self.retained_install,
-            Some(RetainedSourceInstall::NativeObservation(_))
-        ) {
-            return self.retire_native_observation();
-        }
-
         if self.lifecycle_outstanding {
             return Err(
                 QemuAttemptProductionVmLifecycleError::SourceInstallRetained {
@@ -416,14 +194,8 @@ where
         }
         if let Some(owner) = self.retained_install.as_mut() {
             if owner.handoff_mut().is_none() {
-                match owner.retry_publication() {
-                    Ok(false) => {}
-                    Ok(true) => {
-                        // Both no-receipt paths established actual physical
-                        // closure before extracting their original typed cause.
-                        return self.take_completed_install_history();
-                    }
-                    Err(_) => return Err(owner.report()),
+                if owner.retry_publication().is_err() {
+                    return Err(owner.report());
                 }
             }
         }
@@ -547,6 +319,7 @@ mod history_tests {
                 first: Some(SourceInstallationFirst::Native(first)),
                 cleanup: Some(cleanup),
                 cleanup_post: None,
+                terminal_receipt: None,
             };
 
             let original = history
@@ -585,6 +358,7 @@ mod history_tests {
                 ),
             )),
             cleanup_post: None,
+            terminal_receipt: None,
         };
 
         let source = history
@@ -621,6 +395,7 @@ mod history_tests {
             cleanup_post: Some(HostSupervisionError::Terminal {
                 state: HostOperationState::Completed,
             }),
+            terminal_receipt: None,
         };
 
         let original = history
@@ -653,6 +428,7 @@ mod history_tests {
             first: None,
             cleanup: None,
             cleanup_post: history.cleanup_post,
+            terminal_receipt: None,
         };
         assert!(
             post_only
@@ -662,40 +438,5 @@ mod history_tests {
                 .is_some()
         );
         assert!(!post_only.is_empty());
-    }
-
-    #[test]
-    fn source_history_keeps_begin_rollback_separate_from_later_cleanup() {
-        // Diagnostic transport only; no Source/World closure is issued here.
-        let failure = crate::crucible_qemu_session::QemuAttemptResourceGuardBeginFailure::rollback(
-            native("constructor first"),
-            crate::crucible_qemu_session::QemuAttemptResourceGuardCleanupFailure::quarantined(
-                native("begin rollback"),
-            ),
-        );
-        let (report, _) = failure.into_parts();
-        let history = SourceCleanupHistory {
-            first: Some(SourceInstallationFirst::ResourceBegin(report)),
-            cleanup: Some(SourceCleanupCause::Native(native("later actual cleanup"))),
-            cleanup_post: None,
-        };
-
-        let report = history
-            .resource_begin_error()
-            .expect("same typed begin report");
-        assert!(
-            matches!(report.first_error(), QemuVmRealizationError::ExecutorUnavailable { message, .. } if message == "constructor first")
-        );
-        assert!(
-            matches!(report.cleanup_error(), Some(QemuVmRealizationError::ExecutorUnavailable { message, .. }) if message == "begin rollback")
-        );
-        let later = history
-            .cleanup_error()
-            .expect("independent later cleanup")
-            .downcast_ref::<QemuVmRealizationError>()
-            .expect("same typed native cleanup");
-        assert!(
-            matches!(later, QemuVmRealizationError::ExecutorUnavailable { message, .. } if message == "later actual cleanup")
-        );
     }
 }

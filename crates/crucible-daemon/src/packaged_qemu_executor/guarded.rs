@@ -8,7 +8,9 @@
 use super::*;
 
 mod operation_error;
+mod service_source;
 pub(crate) use operation_error::RetainedOperationError;
+pub(crate) use service_source::GuardedServiceSource;
 mod reproduction;
 mod retirement;
 use crate::executor_pool::{CampaignActorPort, PreparedExecutorActor};

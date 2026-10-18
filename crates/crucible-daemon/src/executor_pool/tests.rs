@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 use super::*;
+use crate::crucible_qemu_session::{QemuAttemptOperationalBoundary, QemuAttemptResourceGuard};
 use crate::executor_supervisor::AllowAllAttemptAdmission;
 use crate::executor_worker::publish_prepared_semantic_attempt_result;
 use crate::{
@@ -481,14 +482,41 @@ impl crate::QemuAttemptProcessResourceGuard for UnusedPromotionGuard {
 
 impl ProductionPausedCheckpointReplayFactory for CountingProductionReplayFactory {
     type Guard = UnusedPromotionGuard;
+    type NativeGuard = UnusedPromotionGuard;
+
+    fn guard_matches(
+        &self,
+        guard: &Self::Guard,
+        resources: AttemptResourceLimits,
+        cancellation: &ExecutionCancellation,
+    ) -> bool {
+        guard.resource_limits() == resources && guard.cancellation().same_incarnation(cancellation)
+    }
+
+    fn with_native_guard<T>(
+        &mut self,
+        guard: &mut Self::Guard,
+        apply: impl FnOnce(
+            &mut Self::NativeGuard,
+            Option<&crucible_linux_resource::host_supervision::HostOperationGuard>,
+        ) -> T,
+    ) -> Result<T, crate::lifecycle_cleanup::PreparedSourceFailure> {
+        Ok(apply(guard, None))
+    }
+
+    fn finish_replay(
+        &mut self,
+        guard: &mut Self::Guard,
+    ) -> Result<(), crate::paused_checkpoint_promotion::ProductionReplayCleanup> {
+        guard.finish().map_err(Into::into)
+    }
 
     fn begin_replay(
         &mut self,
         _selected_checkpoint: crate::executor_supervisor::SelectedExactCheckpointRoot,
         cancellation: &ExecutionCancellation,
         resources: AttemptResourceLimits,
-    ) -> Result<Self::Guard, crate::crucible_qemu_session::QemuAttemptResourceGuardBeginFailure>
-    {
+    ) -> Result<Self::Guard, crate::paused_checkpoint_promotion::ProductionReplayBeginFailure> {
         Ok(UnusedPromotionGuard {
             cancellation: cancellation.clone(),
             resources,
@@ -501,13 +529,16 @@ impl ProductionPausedCheckpointReplayFactory for CountingProductionReplayFactory
         _configuration: &Configuration,
         _target: crate::ProductionVmReplayExactNodeRestoreAdmission,
         _guard: &mut Self::Guard,
-    ) -> Result<ProductionPausedCheckpointReplaySession, crucible_qemu::QemuVmRealizationError>
-    {
+    ) -> Result<
+        ProductionPausedCheckpointReplaySession,
+        crate::paused_checkpoint_promotion::ProductionReplayError,
+    > {
         self.calls.fetch_add(1, Ordering::AcqRel);
         Err(crucible_qemu::QemuVmRealizationError::Executor {
             operation: "enter counted production replay target",
             message: String::from("counted test factory stops before QEMU launch"),
-        })
+        }
+        .into())
     }
 
     fn replay_savepoint_capture(
@@ -516,12 +547,16 @@ impl ProductionPausedCheckpointReplayFactory for CountingProductionReplayFactory
         _run_state_root: &std::path::Path,
         _cancellation: &ExecutionCancellation,
         _resources: AttemptResourceLimits,
-    ) -> Result<crate::QemuSavepointReplayProof, crucible_qemu::QemuVmRealizationError> {
+    ) -> Result<
+        crate::QemuSavepointReplayProof,
+        crate::paused_checkpoint_promotion::ProductionReplayError,
+    > {
         self.calls.fetch_add(1, Ordering::AcqRel);
         Err(crucible_qemu::QemuVmRealizationError::Executor {
             operation: "enter counted production attempt replay",
             message: String::from("counted test factory stops before QEMU launch"),
-        })
+        }
+        .into())
     }
 
     fn replay_checkpoint_boundary(
@@ -531,12 +566,16 @@ impl ProductionPausedCheckpointReplayFactory for CountingProductionReplayFactory
         _cancellation: &ExecutionCancellation,
         _resources: AttemptResourceLimits,
         _target: &crate::qemu_campaign_driver::QemuSelectedResumeBoundary,
-    ) -> Result<crate::QemuSavepointReplayProof, crucible_qemu::QemuVmRealizationError> {
+    ) -> Result<
+        crate::QemuSavepointReplayProof,
+        crate::paused_checkpoint_promotion::ProductionReplayError,
+    > {
         self.calls.fetch_add(1, Ordering::AcqRel);
         Err(crucible_qemu::QemuVmRealizationError::Executor {
             operation: "enter counted production checkpoint replay",
             message: String::from("counted test factory stops before QEMU launch"),
-        })
+        }
+        .into())
     }
 }
 

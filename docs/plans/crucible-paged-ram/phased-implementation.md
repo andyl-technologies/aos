@@ -234,6 +234,76 @@ unit tests. Engineering hygiene passes; the same 25 testing-standards findings
 remain. The production Loop override and its original Main destination belong
 to the coordinated Source cutover and are not qualified by these component runs.
 
+The coordinated Source, Service, capture, replay and observation cutover is now
+assembled in the implementation worktree for compilation. Service startup uses
+its original Main cell before effects, and capture retains the complete borrowed
+preparation before template or disk work. Receiving-state retirement publishes
+its actual maintenance inputs before returning the stopped native body. Review
+found an unwind gap between native construction and installation in that grouped
+owner; installation now occurs before the projected context is destroyed.
+Discarding an authenticated, never-launched import destroys its decoded basis
+and Transfer before acknowledging the ordinary alias receiver. Unwind preserves
+unacknowledged debt rather than certifying destruction.
+
+Combined compilation exposed a recursive error layout: an inline Service first
+cause used the complete executor error, which could itself own terminal Service
+history. Startup now stores only its five actual lower admission-error types.
+This preserves the original causes without another heap allocation. Both the
+default and private daemon library configurations now compile. Cleanup history
+retains its complete terminal body in the same preborn receipt Box, whose
+deallocation precedes terminal-role release. A synchronized inline guard keeps
+raw history available without requiring a replacement error allocation. Unused
+publication helpers and their unconstructed begin/callback fallback variants
+are removed; the live installation and first-cause controls remain.
+The independent harness ABI and license-boundary suites pass four and eighteen
+controls, respectively, on this partial integration.
+
+Managed sharing now keeps the original Main carrier and return destination
+outside the existing Source Arc. Borrowed leases retain only that allocation;
+an exclusive lease retains its actual return owner. Strong and Weak aliases
+both prevent extraction, and poison retains the same allocation rather than
+reconstructing an Arc. The Park gate stores the original nonissuing selector
+instead of an allocation alias, with physical return tracked independently from
+raw first and post errors. Its actual paid record survives Source rearm.
+Six obsolete packaged candidate-leak paths now use this canonical destruction
+path. The failed-rearm phase also delegates to the existing saved-Cleanup Source
+retirement engine and transfers original typed causes and rollback diagnostics
+into terminal history before its carrier is destroyed. The combined private
+library compiles; native execution of these paths remains unqualified.
+
+Thirteen native fixture endpoints use the real Source factory and transport
+receiver. The operation-only Service fixture shares the production admission
+and cleanup algorithms without constructing a Main key or native permission;
+its original 32 assertions remain. Four comparison Target starts still need
+their genuine producer and account for the remaining 27 daemon test compilation
+diagnostics. Actual Target construction and simultaneous independently funded
+sibling families remain unfinished. A Cargo test executable does not acquire
+the installed campaign Main's authority. Native qualification must retain the
+existing positive assertions under an authentic deployed issuer; missing
+issuance is not a replacement passing result.
+
+On the integrated Source/API snapshot, the API library passes 124 tests. The
+Linux resource library passes 172 default tests and 247 private tests, with one
+private probe ignored. All five engineering-hygiene checks pass after nineteen
+content-bound responsibility reviews. The declaration contracts now bind the
+actual postbody and return-destination types, retain the original same-owner
+forwarding constraints, and reject added default bodies or foreign return types.
+Testing standards has thirty passes and five failures in the remaining exact
+operational source contracts. No matcher, inventory, capacity or existing
+assertion is relaxed. The earlier green
+workspace and packaged results above describe their historical snapshots, not
+this uncommitted union. Full combined runtime, current packaged application
+compilation and VM performance parity are still outstanding.
+
+The subsequent Target constructor integration replaces the permit-only native
+outcome with an owning Ready/Retained result and exact saved-Cleanup return.
+Its QEMU host crate passes all test-target compilation and 1,147 library tests,
+with four ignored probes. The current daemon library check stops at the one
+remaining old Native permit-adapter call; factory/runtime consumers are not yet
+cut over. The required owning consumer, independent simultaneous families and
+promoted-parent integration are tracked in [Target ownership](target-ownership.md).
+These current results supersede earlier source snapshots for the changed paths.
+
 Checked checkpoint-slot operations use nonblocking access and distinguish busy,
 poisoned and occupied storage. A refused restoration returns the same selected
 root instead of overwriting another root or dropping the incoming owner. These

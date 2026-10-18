@@ -46,6 +46,15 @@ pub enum OriginalActorAccountError {
         /// The same retained preparation's independent postcheck.
         original: Option<HostSupervisionError>,
     },
+    /// Saved Cleanup completion failed before its independent retry observation.
+    #[error("Target Cleanup completion refused: {source}; post: {post:?}")]
+    TargetCleanupBoundary {
+        /// First actual completion or publication refusal of the saved Cleanup.
+        #[source]
+        source: HostSupervisionError,
+        /// Distinct latest observation refusal of that same completed operation.
+        post: Option<HostSupervisionError>,
+    },
     /// The actual workflow parser failed before a separate original postcheck.
     #[error("original workflow decode refused: {source}; original: {original:?}")]
     WorkflowDecode {

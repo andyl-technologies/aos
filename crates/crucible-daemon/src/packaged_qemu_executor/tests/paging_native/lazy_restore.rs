@@ -134,18 +134,22 @@ impl AttemptExecutionModel for RestoreModel<'_> {
             .expect("authenticated actual scenario and resumed execution basis");
         assert_eq!(context.resume_checkpoint(), Some(self.checkpoint));
         let available = available_resident(self.prepared);
-        let mut selected = context.take_selected_checkpoint();
-        let service = RetainedTemplateServiceFactory::new(self.prepared, &self.config)
-            .start_for_resume(input.scenario(), self.checkpoint, context, &mut selected)
-            .expect("fresh Service consumes its own selected checkpoint claim");
-        assert!(selected.is_none());
-        accepted_promotion::extend_native_operations(service.context());
         let host = LinuxQemuAttemptHostResourceFactory::open(self.config.host.clone())
             .expect("actual containment and operator-installed quota");
         let mut factory = QemuAttemptProductionVmLifecycleFactory::new(
             self.config.lifecycle.clone(),
             ComposedQemuAttemptResourceGuardFactory::new(host),
         );
+        let service = super::main_service::NativeServiceScope::resume(
+            factory
+                .prepare_source_construction()
+                .expect("actual configured Source factory retains its genuine Main preclaim"),
+            &RetainedTemplateServiceFactory::new(self.prepared, &self.config),
+            input.scenario(),
+            self.checkpoint,
+            context,
+        );
+        accepted_promotion::extend_native_operations(service.context());
         let scenario = input.scenario().scenario_def();
         let initial = match input.start() {
             crate::CrucibleResolvedAttemptStart::Branch { parent, .. } => parent,
@@ -219,9 +223,12 @@ impl AttemptExecutionModel for RestoreModel<'_> {
 
         QemuFreshAttemptLifecycleOwner::shutdown(&mut lifecycle)
             .expect("actual restored process reap and source worker joins");
-        service
-            .release_after_world_cleanup()
-            .expect("cleanup-bound Service discharge");
+        drop(lifecycle);
+        let terminal = service
+            .into_retirement()
+            .expect("actual World return and cleanup-bound Service discharge");
+        println!("native_restore_retirement={terminal}");
+        drop(terminal);
         assert_eq!(available_resident(self.prepared), available);
         self.evidence = Some(RestoreEvidence {
             boundary: observed_boundary,

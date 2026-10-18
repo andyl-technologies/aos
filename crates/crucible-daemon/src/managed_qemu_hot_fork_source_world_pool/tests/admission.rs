@@ -671,11 +671,12 @@ fn wrong_world_restore_keeps_the_checked_out_source_authority_pending() {
         .expect("check out first source")
         .expect("first source available");
     let identity = QemuHotForkSourceWorldCheckoutIdentity::capture(&second_source).unwrap();
-    pool.restore(QemuHotForkSourceWorldLease::exclusive(
-        manager_source_key(&key),
-        second_source,
-        identity,
-    ));
+    pool.restore(
+        QemuHotForkSourceWorldLease::exclusive(manager_source_key(&key), second_source, identity)
+            .unwrap_or_else(|_| {
+                panic!("unchanged foreign component Source retains its actual sharing owner")
+            }),
+    );
     assert!(matches!(
         pool.checkout(&key),
         Err(ManagedQemuHotForkSourceWorldCheckoutError::PriorCheckoutPending)

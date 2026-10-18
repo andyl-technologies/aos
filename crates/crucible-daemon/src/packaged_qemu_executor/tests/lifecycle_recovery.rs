@@ -327,9 +327,13 @@ fn genuine_main_retirement_closes_its_existing_target_dispatcher(
         .expect("actual authenticated normal Main")
         .check()
         .expect("unchanged actual Main authority");
-    let permit = source
-        .lend_fork_target_permit()
-        .expect("genuine Source permit");
+    let preparation = source.prepare_fork_target().expect("genuine Source permit");
+    let (permit, mut target_cleanup) = match preparation {
+        crucible_qemu::QemuForkTargetPreparation::Ready { permit, cleanup } => (permit, cleanup),
+        crucible_qemu::QemuForkTargetPreparation::Retained { first, .. } => {
+            panic!("genuine Target landing refused: {first}");
+        }
+    };
     let host = executor
         .guarded_state
         .host
@@ -342,6 +346,10 @@ fn genuine_main_retirement_closes_its_existing_target_dispatcher(
     // Target envelope must close before their containing Main can retire.
     target.finish().expect("physical Target host cleanup");
     drop(target);
+    target_cleanup
+        .try_finish()
+        .expect("exact Target role return");
+    assert!(target_cleanup.is_physically_returned());
     source.retire().expect("physical Source cleanup");
     drop(source);
 

@@ -526,7 +526,7 @@ fn lifecycle_without_backends(
         debug_gateway_teardown_required: false,
         indeterminate_debug_candidate: None,
         retained_debug_construction: std::sync::Mutex::new(None),
-        construction_custody: None,
+        construction_custody: crate::vm_lifecycle::LifecycleConstructionCustody::Unissued(None),
         debug_runtime_evidence: Vec::new(),
         node_launcher: Box::new(PackagedProductionVmNodeLauncher),
         _run_directory: run_directory,

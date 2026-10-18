@@ -3,6 +3,8 @@
 // crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts.
 #![allow(clippy::expect_used)]
 
+use crate::QemuAttemptGenerationResourceOwner;
+
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::convert::Infallible;
 use std::error::Error;
@@ -79,6 +81,7 @@ use crate::{
 #[cfg(target_os = "linux")]
 mod host_parallel_native;
 
+mod genesis_retirement;
 mod paired_replay;
 
 #[derive(Debug)]

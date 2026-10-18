@@ -22,6 +22,7 @@ impl ProductionVmConstructionFailure {
             Box<
                 dyn crucible_api::ProductionVmCleanupHandoff<
                         Failure = crate::ProductionVmConstructionCleanupError,
+                        PostBody = crate::ProductionVmConstructionPostBody,
                     >,
             >,
         ),
@@ -57,6 +58,11 @@ impl ProductionVmConstructionFailure {
                     .as_mut()
                     .and_then(|launcher| launcher.take_cleanup_reservation()),
                 Phase::Complete(lifecycle) => lifecycle.node_launcher.take_cleanup_reservation(),
+                #[cfg(target_os = "linux")]
+                Phase::Source(_)
+                | Phase::SourcePreparation(_)
+                | Phase::SharedSource(_)
+                | Phase::SourceRearmFailure(_) => None,
                 Phase::Empty => None,
             };
         }
@@ -131,6 +137,7 @@ impl ProductionVmConstructionFailure {
             Box<
                 dyn crucible_api::ProductionVmCleanupHandoff<
                         Failure = crate::ProductionVmConstructionCleanupError,
+                        PostBody = crate::ProductionVmConstructionPostBody,
                     >,
             >,
         >,
@@ -172,10 +179,51 @@ impl ProductionVmConstructionCustody {
         Box<
             dyn crucible_api::ProductionVmCleanupHandoff<
                     Failure = crate::ProductionVmConstructionCleanupError,
+                    PostBody = crate::ProductionVmConstructionPostBody,
                 >,
         >,
         ProductionVmConstructionFailure,
     > {
+        self.publish_cleanup_mode(false)
+    }
+
+    /// Delivers the same returned body despite a concurrent prepared borrow.
+    ///
+    /// This fixed custody cut does no IO or cleanup and allocates no owner.
+    /// Matching poison remains Main-owned in quarantine after acceptance.
+    ///
+    /// # Errors
+    /// Returns the same owning failure on missing original custody, a foreign
+    /// epoch or occupied destination. A caller must retain that actual value.
+    pub fn publish_returned_for_cleanup(
+        mut self: Box<Self>,
+    ) -> Result<
+        Box<
+            dyn crucible_api::ProductionVmCleanupHandoff<
+                    Failure = crate::ProductionVmConstructionCleanupError,
+                    PostBody = crate::ProductionVmConstructionPostBody,
+                >,
+        >,
+        ProductionVmConstructionFailure,
+    > {
+        self.publish_cleanup_mode(true)
+    }
+
+    fn publish_cleanup_mode(
+        mut self: Box<Self>,
+        returned: bool,
+    ) -> Result<
+        Box<
+            dyn crucible_api::ProductionVmCleanupHandoff<
+                    Failure = crate::ProductionVmConstructionCleanupError,
+                    PostBody = crate::ProductionVmConstructionPostBody,
+                >,
+        >,
+        ProductionVmConstructionFailure,
+    > {
+        if let Some(destination) = self.return_destination.take() {
+            return Ok(destination.deliver(self));
+        }
         if self.reservation.is_none() {
             let phase = match self.phase.get_mut() {
                 Ok(phase) => phase,
@@ -191,13 +239,23 @@ impl ProductionVmConstructionCustody {
                     .as_mut()
                     .and_then(|launcher| launcher.take_cleanup_reservation()),
                 Phase::Complete(lifecycle) => lifecycle.node_launcher.take_cleanup_reservation(),
+                #[cfg(target_os = "linux")]
+                Phase::Source(_)
+                | Phase::SourcePreparation(_)
+                | Phase::SharedSource(_)
+                | Phase::SourceRearmFailure(_) => None,
                 Phase::Empty => None,
             };
         }
         let Some(reservation) = self.reservation.take() else {
             return Err(self.into_failure(LifecycleApiError::ConstructionCustodyUnavailable));
         };
-        match reservation.retain(self) {
+        let publication = if returned {
+            reservation.retain_returned(self)
+        } else {
+            reservation.retain(self)
+        };
+        match publication {
             Ok(handoff) => Ok(handoff),
             Err((reservation, owner)) => Err(ProductionVmConstructionFailure {
                 storage: FailureStorage::Rejected {

@@ -3,10 +3,13 @@
 use super::*;
 
 mod promotion;
+mod source_service;
+
+pub use source_service::RetainedSourceCaptureFailure;
 
 pub(super) mod retained_service;
 
-use retained_service::{RetainedTemplateService, RetainedTemplateServiceFactory};
+use retained_service::RetainedTemplateServiceFactory;
 
 use std::error::Error as _;
 use std::io::Write;
@@ -58,7 +61,6 @@ where
 {
     pool: SharedManagedQemuHotForkSourceWorldPool<D, R>,
     retention: Arc<dyn crate::HotCheckpointFallbackRetentionAdmin>,
-    services: Arc<std::sync::Mutex<Vec<Arc<RetainedTemplateService>>>>,
 }
 
 impl<D, R> PackagedQemuHotForkSourceOwner for ConcretePackagedQemuHotForkSourceOwner<D, R>
@@ -96,13 +98,6 @@ where
                     );
                 }
             })?;
-        let services = self
-            .services
-            .lock()
-            .map_err(|_| crucible_api::host_operational::HostOperationalError::Unavailable)?;
-        for service in services.iter() {
-            service.release_after_world_cleanup()?;
-        }
         Ok(())
     }
 
@@ -134,13 +129,7 @@ where
     R: crate::HotCheckpointFallbackRetentionStore + Send + 'static,
 {
     fn drop(&mut self) {
-        if self.pool.orderly_shutdown().is_ok()
-            && let Ok(services) = self.services.lock()
-        {
-            for service in services.iter() {
-                let _ = service.release_after_world_cleanup();
-            }
-        }
+        let _cleanup = self.pool.orderly_shutdown();
     }
 }
 
@@ -158,7 +147,6 @@ where
     #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
     original_park_caller: Option<crate::private_original_capture::OriginalPackagedParkCaller>,
     service_factory: RetainedTemplateServiceFactory,
-    services: Arc<std::sync::Mutex<Vec<Arc<RetainedTemplateService>>>>,
 }
 
 impl<D, R, G> crate::qemu_hot_fork_world_factory::source_world_provider_sealed::Sealed
@@ -174,10 +162,13 @@ where
 enum PackagedDemandedQemuHotForkSourceProviderError {
     #[error(transparent)]
     Pool(#[from] SharedQemuHotForkSourceWorldProviderError),
-    #[error("restore demanded exact hot-fork source: {diagnostic}")]
+    #[error("retained exact source has no admitted semantic runtime basis")]
+    RuntimeBasisUnavailable,
+    #[error("restore demanded exact hot-fork source: {source}")]
     Capture {
         class: crucible::SchedulerOperationalFailureClass,
-        diagnostic: String,
+        #[source]
+        source: RetainedSourceCaptureFailure<crate::ProductionQemuHotForkExactSourceCaptureError>,
     },
     #[error("shared source-world pool lock is poisoned during exact admission")]
     AdmissionPoisoned,
@@ -243,48 +234,42 @@ where
             return Ok(None);
         };
         if context.runtime_basis().is_none() {
-            return Err(Self::Error::Capture {
-                class: crucible::SchedulerOperationalFailureClass::Terminal,
-                diagnostic: "retained exact source has no admitted semantic runtime basis".into(),
-            });
+            return Err(Self::Error::RuntimeBasisUnavailable);
         }
-        let mut selected_root = context.take_selected_checkpoint();
-        let service = self.service_factory.start_for_resume(
-            input.scenario(),
-            checkpoint,
-            context,
-            &mut selected_root,
-        );
-        if let Some(selected_root) = selected_root {
-            context.restore_selected_checkpoint(selected_root);
-        }
-        let service = service.map_err(|source| Self::Error::Capture {
-            class: crucible::SchedulerOperationalFailureClass::Terminal,
-            diagnostic: source.to_string(),
+        let capture_error = |source: RetainedSourceCaptureFailure<
+            crate::ProductionQemuHotForkExactSourceCaptureError,
+        >| Self::Error::Capture {
+            class: source.first_error().map_or(
+                crucible::SchedulerOperationalFailureClass::Terminal,
+                |first| first.failure_class(context.cancellation().is_canceled()),
+            ),
+            source,
+        };
+        let service = factory.prepare_source_construction().map_err(|first| {
+            capture_error(RetainedSourceCaptureFailure::operation(
+                crate::ProductionQemuHotForkExactSourceCaptureError::Start(
+                    crate::qemu_campaign_lifecycle::classify_production_lifecycle_failure(first),
+                ),
+            ))
         })?;
-        let service = Arc::new(service);
-        let Some(source) = factory
-            .capture_exact(&self.checkpoints, input, service.context())
-            .map_err(|source| {
-                let class = source.failure_class(context.cancellation().is_canceled());
-                let diagnostic = source.to_string();
-                let _retained_for_process_lifetime = Box::leak(Box::new(source));
-                Self::Error::Capture { class, diagnostic }
-            })?
-        else {
+        let source = source_service::capture_with_service(
+            &service,
+            |startup| {
+                self.service_factory.start_for_resume(
+                    startup,
+                    input.scenario(),
+                    checkpoint,
+                    context,
+                )
+            },
+            crate::ProductionQemuHotForkExactSourceCaptureError::Preparation,
+            |context| factory.capture_exact(&self.checkpoints, input, context),
+        )
+        .map_err(capture_error)?;
+        let Some(source) = source else {
+            source_service::retire_unused_source(service).map_err(capture_error)?;
             return Ok(None);
         };
-
-        let source = source.with_cleanup_observer(service.clone());
-        let mut services = self
-            .services
-            .lock()
-            .map_err(|_| Self::Error::AdmissionPoisoned)?;
-        // Retain unresolved physical owners, without accumulating completed
-        // service contexts over repeated hot-to-cold demotions.
-        services.retain(|service| !service.is_released());
-        services.push(service);
-        drop(services);
 
         match self
             .pool
@@ -328,7 +313,8 @@ where
             Self::Error::Pool(_) | Self::Error::AdmissionPoisoned | Self::Error::Retention(_) => {
                 crucible::SchedulerOperationalFailureClass::Retryable
             }
-            Self::Error::Admission(_)
+            Self::Error::RuntimeBasisUnavailable
+            | Self::Error::Admission(_)
             | Self::Error::BindingCleanup { .. }
             | Self::Error::Retirement(_) => crucible::SchedulerOperationalFailureClass::Terminal,
         }
@@ -391,7 +377,7 @@ where
                 .pool
                 .retain_cold_fallback(key.template_key(), HotCheckpointFallback::Exact(checkpoint))
             {
-                let _retained_for_process_lifetime = Box::leak(Box::new(candidate));
+                drop(candidate);
                 return Err(PackagedDemandedQemuHotForkSourceProviderError::Retention(
                     Box::new(source),
                 ));
@@ -400,7 +386,7 @@ where
             return Ok(None);
         }
 
-        let _retained_for_process_lifetime = Box::leak(Box::new(candidate));
+        drop(candidate);
         let error = ManagedQemuHotForkAuthenticatedAdmissionError::Admission {
             cleanup_slot,
             source: error,
@@ -415,7 +401,7 @@ fn retire_managed_demanded_source(
     candidate: crate::ManagedQemuHotForkSourceWorld,
 ) -> Result<(), PackagedDemandedQemuHotForkSourceProviderError> {
     let mut source = candidate.into_source().map_err(|candidate| {
-        let _retained_for_process_lifetime = Box::leak(candidate);
+        drop(candidate);
         PackagedDemandedQemuHotForkSourceProviderError::AdmissionPoisoned
     })?;
     source
@@ -705,26 +691,35 @@ where
 
             let service_factory =
                 RetainedTemplateServiceFactory::new(preparation, &retained_service_config);
-            let services = Arc::new(std::sync::Mutex::new(Vec::with_capacity(
-                source_factories.len(),
-            )));
             for (lineage, fallback, mut source_factory, scenario) in source_factories {
-                let service = Arc::new(service_factory.start(&scenario, None)?);
-                let source = match source_factory.capture(service.context()) {
-                    Ok(source) => source,
-                    Err(source) => {
+                let service = match source_factory.prepare_source_construction() {
+                    Ok(service) => service,
+                    Err(first) => {
                         let source = PackagedQemuExecutorError::HotForkSourceCapture {
                             lineage,
-                            source: Box::new(source),
+                            source: RetainedSourceCaptureFailure::operation(
+                                ProductionQemuHotForkSourceCaptureError::Start(
+                                    crate::qemu_campaign_lifecycle::classify_production_lifecycle_failure(first),
+                                ),
+                            ),
                         };
                         return Err(cleanup_captured_sources(source, &mut pool));
                     }
                 };
-                let source = source.with_cleanup_observer(service.clone());
-                services
-                    .lock()
-                    .map_err(|_| crucible_api::host_operational::HostOperationalError::Unavailable)?
-                    .push(service);
+                let source = match source_service::capture_with_service(
+                    &service,
+                    |startup| service_factory.start(startup, &scenario, None),
+                    ProductionQemuHotForkSourceCaptureError::Preparation,
+                    |context| source_factory.capture(context),
+                ) {
+                    Ok(source) => source,
+                    Err(source) => {
+                        return Err(cleanup_captured_sources(
+                            PackagedQemuExecutorError::HotForkSourceCapture { lineage, source },
+                            &mut pool,
+                        ));
+                    }
+                };
                 if let Err(failure) =
                     pool.admit_authenticated_source(source, hot_fork.initial_signals(), fallback)
                 {
@@ -737,7 +732,6 @@ where
                 Box::new(ConcretePackagedQemuHotForkSourceOwner {
                     pool: pool.clone(),
                     retention: retention_admin,
-                    services: Arc::clone(&services),
                 });
             let mut runners = Vec::with_capacity(worker_count);
             for (slot, finding_replay_broker) in finding_replay_brokers.iter().cloned().enumerate()
@@ -804,7 +798,6 @@ where
                     #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
                     original_park_caller: retained_service_config.original_park_caller.clone(),
                     service_factory: service_factory.clone(),
-                    services: Arc::clone(&services),
                 };
                 let hot_factory = QemuProductionHotForkWorldLifecycleFactory::new(
                     provider,
@@ -876,7 +869,7 @@ where
         &error,
         ManagedQemuHotForkSourceWorldAdmissionError::Rejected(_)
     ) {
-        let _retained_for_process_lifetime = Box::leak(Box::new(candidate));
+        drop(candidate);
         let source = PackagedQemuExecutorError::HotForkSourceAdmission {
             lineage,
             source: Box::new(ManagedQemuHotForkAuthenticatedAdmissionError::Admission {
@@ -920,7 +913,7 @@ where
     let mut source_world = match candidate.into_source() {
         Ok(source_world) => source_world,
         Err(candidate) => {
-            let _retained_for_process_lifetime = Box::leak(candidate);
+            drop(candidate);
             let source = PackagedQemuExecutorError::HotForkSourceAdmission {
                 lineage,
                 source: Box::new(ManagedQemuHotForkAuthenticatedAdmissionError::Admission {
@@ -944,7 +937,7 @@ fn cleanup_policy_declined_candidate(
     match candidate.into_source() {
         Ok(mut source_world) => (source_world.retire().err().map(Box::new), false),
         Err(candidate) => {
-            let _retained_for_process_lifetime = Box::leak(candidate);
+            drop(candidate);
             (None, true)
         }
     }

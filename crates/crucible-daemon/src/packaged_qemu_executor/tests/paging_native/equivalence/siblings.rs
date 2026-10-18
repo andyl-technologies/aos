@@ -35,14 +35,6 @@ pub(super) fn run(
     );
     let available_before = available_resources(model.prepared);
     let services = RetainedTemplateServiceFactory::new(model.prepared, &model.config);
-    let mut selected = context.take_selected_checkpoint();
-    let service = Arc::new(
-        services
-            .start_for_resume(source, model.checkpoint, context, &mut selected)
-            .expect("genuine selected exact source authority"),
-    );
-    assert!(selected.is_none());
-    extend_native_operations(service.context());
     let source_config = world_config(&model.config, "sibling-source", 51_000);
     let basis = AuthenticatedQemuHotForkSourceBasis::authenticate(
         &model.store,
@@ -57,11 +49,15 @@ pub(super) fn run(
         &build,
     )
     .expect("actual launch profile matches the authenticated lineage");
+    let service = crate::packaged_qemu_executor::tests::paging_native::main_service::NativeServiceScope::resume(
+        source_factory.prepare_source_construction().expect("same actual managed Source Main role"),
+        &services, source, model.checkpoint, context,
+    );
+    extend_native_operations(service.context());
     let authenticated = source_factory
         .capture_exact(&model.prepared.checkpoints, input, service.context())
         .expect("actual exact restore and retained barriers")
-        .expect("selected source has the same requested configuration")
-        .with_cleanup_observer(service.clone());
+        .expect("selected source has the same requested configuration");
     let source_pids = cgroup_processes(source_config.host.cgroup_root());
     assert_eq!(source_pids.len(), 1);
     let source_memory = process_memory_evidence(&source_pids);
@@ -137,26 +133,7 @@ pub(super) fn run(
         .expect("full world vector");
     for count in [1_usize, 2, 4, 8, 16] {
         let mut owners = Vec::with_capacity(count - 1);
-        for _ in 1..count {
-            let owner = services
-                .start_comparison_child_for_test(source, context)
-                .expect("fresh Service independently charged to the active accepted Execution");
-            extend_native_operations(owner.context());
-            owners.push(owner);
-        }
-        let distinct_owners = owners
-            .iter()
-            .map(|owner| owner.context().host_ram_owner_id())
-            .chain([
-                context.host_ram_owner_id(),
-                service.context().host_ram_owner_id(),
-            ])
-            .collect::<BTreeSet<_>>();
-        assert_eq!(distinct_owners.len(), count + 1);
-        assert_template_charge(model.prepared, available_before, peak, count as u64);
-        let sample_start = result.ready_samples.len();
-        let mut children = Vec::with_capacity(count);
-        let mut lane_paths = Vec::with_capacity(count);
+        let mut prepared_children = Vec::with_capacity(count);
         for index in 0..count {
             let lane = format!("siblings-{count}-{index}");
             let child_config = world_config(
@@ -164,11 +141,6 @@ pub(super) fn run(
                 &lane,
                 52_000 + u32::try_from(count * 100 + index * 4).expect("bounded project identity"),
             );
-            let child_context = if index == 0 {
-                context
-            } else {
-                owners[index - 1].context()
-            };
             let host = LinuxQemuAttemptHostResourceFactory::open(child_config.host.clone())
                 .expect("fresh actual child cgroup and disk quota");
             let mut factory = QemuProductionHotForkWorldLifecycleFactory::new(
@@ -192,18 +164,60 @@ pub(super) fn run(
                 ),
             );
             let started = operational_monotonic_nanoseconds();
-            let mut child = match factory
-                .try_start(input, child_context)
-                .expect("genuine fresh staged native sibling")
-            {
+            let launch = if index == 0 {
+                None
+            } else {
+                let launch = factory
+                    .prepare_independent_target(input, context)
+                    .expect("real managed Target Main preclaim")
+                    .expect("authenticated shared source available for Target preparation");
+                let owner = crate::packaged_qemu_executor::tests::paging_native::main_service::NativeServiceScope::comparison(
+                    launch.service_main_handle(), &services, source, context,
+                );
+                extend_native_operations(owner.context());
+                owners.push(owner);
+                Some(launch)
+            };
+            let preparation_nanos = operational_monotonic_nanoseconds().saturating_sub(started);
+            prepared_children.push((factory, child_config, launch, preparation_nanos));
+        }
+        let distinct_owners = owners
+            .iter()
+            .map(|owner| owner.context().host_ram_owner_id())
+            .chain([
+                context.host_ram_owner_id(),
+                service.context().host_ram_owner_id(),
+            ])
+            .collect::<BTreeSet<_>>();
+        assert_eq!(distinct_owners.len(), count + 1);
+        assert_template_charge(model.prepared, available_before, peak, count as u64);
+        let sample_start = result.ready_samples.len();
+        let mut children = Vec::with_capacity(count);
+        let mut lane_paths = Vec::with_capacity(count);
+        for (index, (mut factory, child_config, launch, preparation_nanos)) in
+            prepared_children.into_iter().enumerate()
+        {
+            let child_context = if index == 0 {
+                context
+            } else {
+                owners[index - 1].context()
+            };
+            let started = operational_monotonic_nanoseconds();
+            let launched = match launch {
+                Some(launch) => factory.finish_prepared_target(launch, input, child_context),
+                None => factory.try_start(input, child_context),
+            };
+            let mut child = match launched.expect("genuine fresh staged native sibling") {
                 QemuHotForkWorldLifecycleStart::Started(child) => child,
                 QemuHotForkWorldLifecycleStart::Declined => {
                     panic!("authenticated shared source declined")
                 }
             };
-            result
-                .ready_samples
-                .push(operational_monotonic_nanoseconds().saturating_sub(started));
+            result.ready_samples.push(
+                preparation_nanos
+                    .checked_add(operational_monotonic_nanoseconds().saturating_sub(started))
+                    .expect("bounded actual preparation and launch duration"),
+            );
             let pending = drain_exact_pending(&mut child);
             let boundary = capture_boundary_evidence(
                 &mut child,
@@ -311,6 +325,9 @@ pub(super) fn run(
         println!("simultaneous_{count}_child_anonymous_disk_bytes={preservation}");
         println!("simultaneous_{count}_cohort_anonymous_disk_bytes={cohort_preservation}");
         println!("simultaneous_{count}_backing_ceiling_bytes={backing_peak}");
+        for owner in &mut owners {
+            owner.release_context_aliases();
+        }
         for (mut factory, mut child) in children {
             child
                 .shutdown()
@@ -334,9 +351,7 @@ pub(super) fn run(
             assert!(cgroup_processes(cgroup).is_empty());
         }
         for owner in owners {
-            owner
-                .release_after_world_cleanup()
-                .expect("actual child watcher joined and full vector discharged");
+            owner.assert_released();
         }
         assert_eq!(
             cgroup_processes(source_config.host.cgroup_root()),
@@ -353,9 +368,11 @@ pub(super) fn run(
             .len(),
         1
     );
-    service
-        .release_after_world_cleanup()
-        .expect("source watcher joined after source reap");
+    let terminal = service
+        .into_retirement()
+        .expect("actual managed Source World and watcher returned after source reap");
+    println!("sibling_source_retirement={terminal}");
+    drop(terminal);
     model
         .store
         .load_configuration_artifact(basis.source_artifact())

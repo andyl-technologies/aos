@@ -34,10 +34,11 @@ trait MainFlightSource {
         context: &AttemptExecutionContext,
         source: &ScenarioDefForm,
     ) -> Result<(), QemuAttemptProductionVmLifecycleError>;
-    fn observation(
+    fn with_observation(
         &mut self,
-    ) -> Result<&mut (dyn NativeObservationOwner + 'static), crucible_api::LifecycleApiError>;
-    fn retire(&mut self) -> Result<(), QemuAttemptProductionVmLifecycleError>;
+        apply: &mut dyn FnMut(&mut dyn NativeObservationOwner) -> Result<(), Box<dyn Error>>,
+    ) -> Result<(), Box<dyn Error>>;
+    fn finish_body(&mut self) -> Result<(), QemuAttemptProductionVmLifecycleError>;
 }
 
 impl<R> MainFlightSource for QemuAttemptProductionVmLifecycleFactory<R>
@@ -53,14 +54,15 @@ where
         self.begin_native_observation_default(context, source)
     }
 
-    fn observation(
+    fn with_observation(
         &mut self,
-    ) -> Result<&mut (dyn NativeObservationOwner + 'static), crucible_api::LifecycleApiError> {
-        self.native_observation()
+        apply: &mut dyn FnMut(&mut dyn NativeObservationOwner) -> Result<(), Box<dyn Error>>,
+    ) -> Result<(), Box<dyn Error>> {
+        self.with_native_observation(apply)
     }
 
-    fn retire(&mut self) -> Result<(), QemuAttemptProductionVmLifecycleError> {
-        self.retire_native_observation()
+    fn finish_body(&mut self) -> Result<(), QemuAttemptProductionVmLifecycleError> {
+        self.retry_native_observation_body()
     }
 }
 
@@ -144,27 +146,45 @@ pub(crate) struct FlightOwner<'a> {
 }
 
 impl FlightOwner<'_> {
-    pub(crate) fn launch<'a>(
-        &'a mut self,
+    /// Executes an observation without exporting a borrowed Main-owned body.
+    fn observe<T>(
+        factory: &mut dyn MainFlightSource,
+        apply: impl FnOnce(&mut dyn NativeObservationOwner) -> Result<T, Box<dyn Error>>,
+    ) -> Result<T, Box<dyn Error>> {
+        let mut apply = Some(apply);
+        let mut output = None;
+        factory.with_observation(&mut |owner| {
+            let apply = apply.take().ok_or("native observation callback repeated")?;
+            output = Some(apply(owner)?);
+            Ok(())
+        })?;
+        output.ok_or_else(|| "native observation callback was not entered".into())
+    }
+
+    pub(crate) fn with_launch<T>(
+        &mut self,
         profile: &QemuLiveNodeStepGateConfig,
         router: &str,
         crash: &str,
-    ) -> Result<ObservedNativeNode<'a>, Box<dyn Error>> {
-        self.factory
-            .observation()?
-            .launch_observation(self.node, profile, router, crash)?;
-        self.generation = Some(profile.process_generation());
-        Ok(self
-            .factory
-            .observation()?
-            .borrow_observation(self.context)?)
+        inspect: impl FnOnce(&mut ObservedNativeNode<'_>) -> Result<T, Box<dyn Error>>,
+    ) -> Result<T, Box<dyn Error>> {
+        let node = self.node;
+        let context = self.context;
+        // A successful launch may precede an inspection refusal. Keep the real
+        // generation selected even when that callback returns an error.
+        let generation = &mut self.generation;
+        Self::observe(self.factory, |owner| {
+            owner.launch_observation(node, profile, router, crash)?;
+            *generation = Some(profile.process_generation());
+            let mut observed = owner.borrow_observation(context)?;
+            inspect(&mut observed)
+        })
     }
 
     pub(crate) fn liveness_tail(&mut self) -> Result<String, Box<dyn Error>> {
         let generation = self.generation.ok_or("flight has no launched generation")?;
-        self.factory
-            .observation()?
-            .liveness_tail(self.node, generation)
+        let node = self.node;
+        Self::observe(self.factory, |owner| owner.liveness_tail(node, generation))
     }
 
     pub(crate) fn inspect_trace<T>(
@@ -173,19 +193,17 @@ impl FlightOwner<'_> {
         inspect: impl FnOnce(&mut dyn BufRead) -> Result<T, Box<dyn Error>>,
     ) -> Result<T, Box<dyn Error>> {
         let generation = self.generation.ok_or("flight has no launched generation")?;
-        let mut inspect = Some(inspect);
-        let mut result = None;
-        self.factory.observation()?.inspect_trace(
-            self.node,
-            generation,
-            maximum_bytes,
-            &mut |reader| {
+        let node = self.node;
+        Self::observe(self.factory, |owner| {
+            let mut inspect = Some(inspect);
+            let mut result = None;
+            owner.inspect_trace(node, generation, maximum_bytes, &mut |reader| {
                 let inspect = inspect.take().ok_or("trace inspection callback repeated")?;
                 result = Some(inspect(reader)?);
                 Ok(())
-            },
-        )?;
-        result.ok_or_else(|| "trace inspection callback was not entered".into())
+            })?;
+            result.ok_or_else(|| "trace inspection callback was not entered".into())
+        })
     }
 
     pub(crate) fn create_trace_spool(
@@ -199,6 +217,6 @@ impl FlightOwner<'_> {
     }
 
     pub(crate) fn finish(&mut self) -> Result<(), QemuAttemptProductionVmLifecycleError> {
-        self.factory.retire()
+        self.factory.finish_body()
     }
 }

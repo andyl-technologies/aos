@@ -102,7 +102,8 @@ pub use native_plugin_flight::{
 mod exact_pin_materializer;
 mod hot_fork;
 pub(crate) use hot_fork::retained_service::{
-    RetainedTemplateService, RetainedTemplateServiceFactory,
+    RetainedServiceStart, RetainedServiceStartRefusal, RetainedTemplateService,
+    RetainedTemplateServiceFactory, ServiceRetirementInput,
 };
 pub(crate) mod ram_catalog;
 pub use ram_catalog::{PackagedRamCatalogConfig, PackagedRamCatalogConfigError};
@@ -2971,7 +2972,7 @@ pub enum PackagedQemuExecutorError {
         lineage: CampaignLineageId,
         /// Guarded launch or source-world preparation failure.
         #[source]
-        source: Box<ProductionQemuHotForkSourceCaptureError>,
+        source: hot_fork::RetainedSourceCaptureFailure<ProductionQemuHotForkSourceCaptureError>,
     },
     /// A prepared source world failed managed admission and entered quarantine.
     #[error("admit packaged hot-fork source for lineage {lineage}")]

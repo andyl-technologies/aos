@@ -143,6 +143,33 @@ fn poisoned_source_owner_cannot_be_recovered_on_retry() {
     factory.quarantine(lifecycle);
 }
 
+// Moved fixture intermediates must leave the stack before repository execution
+// starts. A separate frame preserves the ordinary libtest stack and every owner.
+#[inline(never)]
+fn publication_worker(
+    source_world: ProductionVmHotForkSourceWorld,
+    store: &CampaignExecutorStore,
+    lineage: &CampaignLineage,
+    run_state_root: PathBuf,
+    observations: ScriptedWorldObservations,
+    fallback_calls: Arc<AtomicUsize>,
+) -> RepositoryAttemptWorker<
+    CrucibleExecutionModel<impl CrucibleExecutionRunner<Error: std::fmt::Debug>>,
+> {
+    let hot_fork = QemuHotForkWorldExecutionRunner::new(
+        factory(source_world, lineage, run_state_root, observations),
+        QemuFreshModeledDriver::new(),
+    );
+    let router = QemuHotFirstExecutionRouter::new(
+        hot_fork,
+        NeverFallbackRunner {
+            calls: fallback_calls,
+        },
+    );
+    let model = CrucibleExecutionModel::new(store.clone(), operational::ComponentRunner(router));
+    RepositoryAttemptWorker::new(store.clone(), model)
+}
+
 #[test]
 fn published_observation_reconciliation_makes_the_exact_source_world_reusable() {
     let _metadata_scope = component_metadata_scope();
@@ -184,23 +211,14 @@ fn published_observation_reconciliation_makes_the_exact_source_world_reusable() 
     let run_state = tempfile::tempdir().expect("run state");
     let observations = ScriptedWorldObservations::new();
     let fallback_calls = Arc::new(AtomicUsize::new(0));
-    let hot_fork = QemuHotForkWorldExecutionRunner::new(
-        factory(
-            source_world,
-            &lineage,
-            run_state.path().to_path_buf(),
-            observations.clone(),
-        ),
-        QemuFreshModeledDriver::new(),
+    let mut worker = publication_worker(
+        source_world,
+        &store,
+        &lineage,
+        run_state.path().to_path_buf(),
+        observations.clone(),
+        Arc::clone(&fallback_calls),
     );
-    let router = QemuHotFirstExecutionRouter::new(
-        hot_fork,
-        NeverFallbackRunner {
-            calls: Arc::clone(&fallback_calls),
-        },
-    );
-    let model = CrucibleExecutionModel::new(store.clone(), operational::ComponentRunner(router));
-    let mut worker = RepositoryAttemptWorker::new(store.clone(), model);
 
     let profile = ExecutorCompatibilityProfile::new(
         "crucible-test",

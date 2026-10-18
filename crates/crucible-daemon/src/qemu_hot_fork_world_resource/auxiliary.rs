@@ -462,9 +462,9 @@ where
     }
 
     #[cfg(target_os = "linux")]
-    fn lend_fork_target_permit(
+    fn prepare_fork_target(
         &mut self,
-    ) -> Result<crucible_qemu::LinuxQemuForkTargetPermit, QemuVmRealizationError> {
+    ) -> Result<crucible_qemu::QemuForkTargetPreparation, QemuVmRealizationError> {
         let mut state = self
             .state
             .lock()
@@ -477,7 +477,7 @@ where
                 "auxiliary source launcher is terminal",
             ));
         }
-        state.guard.lend_fork_target_permit()
+        state.guard.prepare_fork_target()
     }
 
     #[cfg(target_os = "linux")]
@@ -726,12 +726,12 @@ where
     }
 
     #[cfg(target_os = "linux")]
-    fn lend_fork_target_permit(
+    fn prepare_fork_target(
         &mut self,
-    ) -> Result<crucible_qemu::LinuxQemuForkTargetPermit, QemuVmRealizationError> {
+    ) -> Result<crucible_qemu::QemuForkTargetPreparation, QemuVmRealizationError> {
         match self {
-            Self::Fresh(guard) => guard.lend_fork_target_permit(),
-            Self::Retained(guard) => guard.lend_fork_target_permit(),
+            Self::Fresh(guard) => guard.prepare_fork_target(),
+            Self::Retained(guard) => guard.prepare_fork_target(),
         }
     }
 

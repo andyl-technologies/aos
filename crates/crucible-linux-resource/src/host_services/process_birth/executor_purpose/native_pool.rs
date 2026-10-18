@@ -858,6 +858,26 @@ fn structure_bytes(capacity: usize) -> Result<u64, ServiceBirthError> {
 }
 
 impl AuthenticatedNativeWorldControlLease {
+    /// Matches this open containing-body lease to its genuine World loan.
+    ///
+    /// This structural observation enters no operation and attests neither
+    /// physical return nor absence of native effects. Both original holders
+    /// must still follow their independent cleanup and accounting cuts.
+    ///
+    /// # Errors
+    /// Refuses a closed lease or a different actual pool allocation or epoch.
+    pub fn verify_world_loan(
+        &self,
+        loan: &AuthenticatedNativeWorldCleanupLoan,
+    ) -> Result<(), ServiceBirthError> {
+        if self.closed || self.epoch != loan.epoch || !Arc::ptr_eq(&self.held, &loan.held) {
+            return Err(ServiceBirthError::policy(
+                "World body lease is foreign or closed",
+            ));
+        }
+        Ok(())
+    }
+
     /// Authenticates the same open containing-body lease and never-born World.
     ///
     /// This observation releases nothing. The actual owner must still be
@@ -869,11 +889,7 @@ impl AuthenticatedNativeWorldControlLease {
         &self,
         loan: &AuthenticatedNativeWorldCleanupLoan,
     ) -> Result<(), ServiceBirthError> {
-        if self.closed || self.epoch != loan.epoch || !Arc::ptr_eq(&self.held, &loan.held) {
-            return Err(ServiceBirthError::policy(
-                "unborn World body lease is foreign or closed",
-            ));
-        }
+        self.verify_world_loan(loan)?;
         loan.verify_never_born()
     }
 

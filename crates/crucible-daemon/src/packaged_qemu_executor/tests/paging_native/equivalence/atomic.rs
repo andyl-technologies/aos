@@ -315,13 +315,12 @@ impl AttemptExecutionModel for MixedResume<'_> {
             .expect("actual resumed mixed-world basis");
         let source = input.scenario();
         let before = available_resources(self.prepared);
-        let mut selected = context.take_selected_checkpoint();
-        let service = Arc::new(
-            RetainedTemplateServiceFactory::new(self.prepared, &self.config)
-                .start_for_resume(source, self.checkpoint, context, &mut selected)
-                .expect("independent source Service consumes genuine selected claim"),
+        let mut source_factory = fresh_factory(&self.config, "source");
+        let service = crate::packaged_qemu_executor::tests::paging_native::main_service::NativeServiceScope::resume(
+            source_factory.prepare_source_construction().expect("same actual atomic Source Main role"),
+            &RetainedTemplateServiceFactory::new(self.prepared, &self.config),
+            source, self.checkpoint, context,
         );
-        assert!(selected.is_none());
         assert_template_charge(
             self.prepared,
             before,
@@ -331,7 +330,6 @@ impl AttemptExecutionModel for MixedResume<'_> {
             1,
         );
         extend_native_operations(service.context());
-        let mut source_factory = fresh_factory(&self.config, "source");
         let mut parent = source_factory
             .begin_resume(
                 &self.prepared.checkpoints,
@@ -364,8 +362,7 @@ impl AttemptExecutionModel for MixedResume<'_> {
         census.print_evidence(self.case.lane());
         let world = parent
             .prepare_hot_fork_source_world()
-            .expect("complete actual pause boundary")
-            .with_cleanup_observer(service.clone());
+            .expect("complete actual pause boundary");
         let running = assert_mixed_continuation(&world, &self.boundary.configuration);
         let source_processes = world
             .continuation()
@@ -499,9 +496,12 @@ impl AttemptExecutionModel for MixedResume<'_> {
         parent
             .shutdown()
             .expect("mixed source processes physically reaped");
-        service
-            .release_after_world_cleanup()
-            .expect("source workers, registry leases and watchdog terminal");
+        drop(parent);
+        let terminal = service
+            .into_retirement()
+            .expect("actual Source World, registry leases and watchdog returned");
+        println!("atomic_source_retirement={terminal}");
+        drop(terminal);
         assert_eq!(available_resources(self.prepared), before);
         self.completed = true;
         context.cancellation().cancel();
@@ -551,8 +551,8 @@ fn assert_mixed_continuation(
     running
 }
 
-fn inspect_positive_child<G: crate::QemuAttemptProcessResourceGuard>(
-    lifecycle: &mut crate::QemuProductionHotForkWorldLifecycle<G>,
+fn inspect_positive_child<L: crate::qemu_hot_fork_world_factory::QemuHotForkWorldLifecycleOwner>(
+    lifecycle: &mut L,
     config: &PackagedQemuExecutorConfig,
     configuration: &Configuration,
     running_nodes: &[crucible::NodeId],

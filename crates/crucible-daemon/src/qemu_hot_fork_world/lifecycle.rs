@@ -240,38 +240,7 @@ where
     /// Returns a scheduler error when the adopted lifecycle cannot expose its
     /// exact boundary, retained only a suffix, or its event bytes overflow.
     pub fn start_materialization(&self) -> Result<QemuFreshStartMaterialization, SchedulerError> {
-        let (
-            configuration,
-            event_log,
-            base_events,
-            completed_quanta,
-            frontier,
-            quiescence,
-            terminal_verdict,
-        ) = self.lifecycle.resume_state()?.into_parts();
-        if base_events != 0 {
-            return Err(SchedulerError::BoundaryViolation {
-                message: String::from(
-                    "hot-fork start retained only an event-log suffix instead of the complete prefix",
-                ),
-            });
-        }
-        let event_log_bytes = event_log.iter().try_fold(0usize, |total, entry| {
-            total
-                .checked_add(entry.canonical_material_len()?)
-                .ok_or_else(|| SchedulerError::BoundaryViolation {
-                    message: String::from("hot-fork start event-log byte count overflowed"),
-                })
-        })?;
-        Ok(QemuFreshStartMaterialization::from_resume_parts(
-            configuration,
-            event_log,
-            event_log_bytes,
-            completed_quanta,
-            frontier,
-            quiescence,
-            terminal_verdict,
-        ))
+        materialize_hot_fork_start(&self.lifecycle)
     }
 
     /// Advances one bounded post-publication reconciliation operation.
@@ -369,6 +338,44 @@ where
     }
 }
 
+/// Reconstructs exact start evidence without moving the actual retained Loop.
+pub(crate) fn materialize_hot_fork_start(
+    lifecycle: &ProductionVmLifecycleLoop,
+) -> Result<QemuFreshStartMaterialization, SchedulerError> {
+    let (
+        configuration,
+        event_log,
+        base_events,
+        completed_quanta,
+        frontier,
+        quiescence,
+        terminal_verdict,
+    ) = lifecycle.resume_state()?.into_parts();
+    if base_events != 0 {
+        return Err(SchedulerError::BoundaryViolation {
+            message: String::from(
+                "hot-fork start retained only an event-log suffix instead of the complete prefix",
+            ),
+        });
+    }
+    let event_log_bytes = event_log.iter().try_fold(0usize, |total, entry| {
+        total
+            .checked_add(entry.canonical_material_len()?)
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: String::from("hot-fork start event-log byte count overflowed"),
+            })
+    })?;
+    Ok(QemuFreshStartMaterialization::from_resume_parts(
+        configuration,
+        event_log,
+        event_log_bytes,
+        completed_quanta,
+        frontier,
+        quiescence,
+        terminal_verdict,
+    ))
+}
+
 impl<G> QemuProductionHotForkRetainedLineage<G>
 where
     G: QemuAttemptProcessResourceGuard,
@@ -427,7 +434,7 @@ where
 
         drop(self.source_world);
         let mut parent = self.source_lease.into_exclusive_source().map_err(|lease| {
-            let _retained = Box::leak(lease);
+            drop(lease);
             lifecycle_error("recover exclusive parent template after descendant retirement")
         })?;
         match self.ancestor {
@@ -649,6 +656,47 @@ impl<G>
 where
     G: QemuAttemptProcessResourceGuard + Send + 'static,
 {
+    /// Moves the next authenticated child into its original constructor's slot.
+    ///
+    /// Generation validation precedes the owning move. The caller retains this
+    /// slot through fallible process authentication and scheduler adoption.
+    ///
+    /// # Errors
+    /// Refuses occupied slots or a child whose continuation cannot supply its
+    /// exact next generation; every child remains in the same complete world.
+    pub(crate) fn begin_node_adoption(
+        &mut self,
+        child: &mut Option<ProductionWorldChild<G>>,
+        identity: &mut Option<ProductionVmNodeGeneration>,
+    ) -> Result<bool, LifecycleApiError> {
+        if child.is_some() || identity.is_some() {
+            return Err(lifecycle_error("Target adoption slot is already occupied"));
+        }
+        let Some(node) = self.children.keys().next() else {
+            return Ok(false);
+        };
+        let generation = self
+            .continuation
+            .nodes()
+            .iter()
+            .find(|boundary| boundary.node() == node)
+            .filter(|boundary| {
+                boundary.service_state() != ProductionVmHotForkNodeServiceState::PermanentlyFailed
+            })
+            .and_then(|boundary| boundary.generation().checked_add(1))
+            .ok_or_else(|| {
+                lifecycle_error("assembled Target child has no exact next source generation")
+            })?;
+        let selected = ProductionVmNodeGeneration::new(node.clone(), generation)?;
+        let Some((_, selected_child)) = self.children.pop_first() else {
+            return Err(lifecycle_error("assembled Target child disappeared"));
+        };
+
+        *child = Some(selected_child);
+        *identity = Some(selected);
+        Ok(true)
+    }
+
     /// Installs this complete assembly as one production lifecycle transaction.
     // crucible-lint: allow rust-allow -- installation binds every semantic basis and owned runtime resource in one transaction.
     #[allow(clippy::too_many_arguments)]
@@ -793,9 +841,21 @@ where
                     return Err(error.into());
                 }
             };
-            let adoption = match child.into_world_node_adoption(identity, completed.clone()) {
+            // Every fallible authentication borrows the same owning slot.
+            // Refusal puts that exact child back into the retained assembly;
+            // no failure helper consumes or forgets its only owner.
+            let mut child_slot = Some(child);
+            let adoption = match ProductionWorldChild::into_world_node_adoption(
+                &mut child_slot,
+                identity,
+                completed.clone(),
+            ) {
                 Ok(adoption) => adoption,
-                Err(error) => {
+                Err((identity, error)) => {
+                    if let Some(child) = child_slot.take() {
+                        let (node, _) = identity.into_parts();
+                        children.insert(node, child);
+                    }
                     retain_remaining_install_failure(source_world, resources, completed, children);
                     return Err(error.into());
                 }

@@ -621,24 +621,32 @@ where
         &mut self,
         key: &QemuHotForkSourceWorldKey,
     ) -> Result<Option<QemuHotForkSourceWorldLease>, Self::Error> {
-        self.checkout_for(DIRECT_SOURCE_WORLD_PROVIDER_ID, key)
-            .map(|source| {
-                source.map(|(source, identity)| {
-                    QemuHotForkSourceWorldLease::exclusive(
-                        manager_source_key(key),
-                        source,
-                        identity,
-                    )
-                })
-            })
+        let Some((source, identity)) = self.checkout_for(DIRECT_SOURCE_WORLD_PROVIDER_ID, key)?
+        else {
+            return Ok(None);
+        };
+        match QemuHotForkSourceWorldLease::exclusive(manager_source_key(key), source, identity) {
+            Ok(lease) => Ok(Some(lease)),
+            Err(source) => {
+                if let Some(world) = self.worlds.get_mut(&manager_source_key(key)) {
+                    world.source = Some(source);
+                    world.invalidated = true;
+                } else {
+                    drop(source);
+                }
+                Err(ManagedQemuHotForkSourceWorldCheckoutError::SourcePoisoned)
+            }
+        }
     }
 
     fn restore(&mut self, source: QemuHotForkSourceWorldLease) {
         match source.into_exclusive_source() {
             Ok(source) => self.restore_for(DIRECT_SOURCE_WORLD_PROVIDER_ID, source),
             Err(source) => {
-                let _retained_for_process_lifetime = Box::leak(source);
                 self.abandon_for(DIRECT_SOURCE_WORLD_PROVIDER_ID);
+                // An exclusive lease has its actual Main return owner; a
+                // borrowed lease only releases its own allocation alias.
+                drop(source);
             }
         }
     }
@@ -871,7 +879,7 @@ where
             managed_lease: Some(lease),
             template,
             identity,
-            source,
+            source: LeaseSource::Borrowed(source),
         }))
     }
 
@@ -890,7 +898,7 @@ where
             {
                 world.source = Some(source);
             } else {
-                std::mem::forget(source);
+                drop(source);
             }
             return;
         }
@@ -917,7 +925,7 @@ where
             return;
         }
         let Some(record) = self.leased_out.get(&provider) else {
-            let _retained_for_process_lifetime = Box::leak(Box::new(lease.source));
+            drop(lease);
             return;
         };
         let record_lease = record.lease;
@@ -927,18 +935,26 @@ where
         let matching_receipt = Some(record.lease) == lease.managed_lease
             && record.template == lease.template
             && record.identity == lease.identity;
-        let matching_source = record
-            .source
-            .upgrade()
-            .is_some_and(|source| Arc::ptr_eq(&source, &lease.source));
+        let matching_source = record.source.upgrade().is_some_and(|source| {
+            lease
+                .source_owner_ref()
+                .is_some_and(|actual| Arc::ptr_eq(&source, actual))
+        });
         if !matching_receipt || !matching_source {
-            let _retained_for_process_lifetime = Box::leak(Box::new(lease.source));
+            drop(lease);
             self.abandon_lease_for(provider);
             return;
         }
 
         let abandoned = record.abandoned;
-        let source_owner = Arc::clone(&lease.source);
+        let Some(source_owner) = lease.source_owner() else {
+            if let Some(record) = self.leased_out.get_mut(&provider)
+                && record.returned_lease.is_none()
+            {
+                record.returned_lease = Some(lease);
+            }
+            return;
+        };
         let mut source = match source_owner.try_lock() {
             Ok(source) => source,
             Err(_error) => {
@@ -972,7 +988,7 @@ where
             .remove(&provider)
             .is_none_or(|record| record.lease != record_lease)
         {
-            let _retained_for_process_lifetime = Box::leak(Box::new(lease.source));
+            drop(lease);
             if let Some(world) = self.worlds.get_mut(&template) {
                 world.invalidate();
             }
@@ -984,7 +1000,7 @@ where
                 if let Some(world) = self.worlds.get_mut(&template) {
                     world.invalidate();
                 }
-                let _retained_for_process_lifetime = Box::leak(Box::new(lease.source));
+                drop(lease);
                 return;
             }
         };

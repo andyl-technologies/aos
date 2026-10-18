@@ -351,6 +351,22 @@ pub struct QemuObservedFreshAttemptLifecycleFactory<F> {
     evidence: QemuAttemptExecutionEvidence,
 }
 
+impl<F: crate::completed_reproduction::PrepareCompletedReproduction>
+    crate::completed_reproduction::PrepareCompletedReproduction
+    for QemuObservedFreshAttemptLifecycleFactory<F>
+{
+    fn prepare_completed_reproduction(
+        &mut self,
+    ) -> Result<
+        crate::lifecycle_cleanup::ServiceMainHandle,
+        crate::QemuAttemptProductionVmLifecycleError,
+    > {
+        crate::completed_reproduction::PrepareCompletedReproduction::prepare_completed_reproduction(
+            &mut self.inner,
+        )
+    }
+}
+
 impl<F> QemuObservedFreshAttemptLifecycleFactory<F> {
     /// Wraps a fresh factory and returns its read-only evidence handle.
     #[must_use]

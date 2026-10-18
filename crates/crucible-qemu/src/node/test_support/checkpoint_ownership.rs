@@ -391,7 +391,9 @@ fn serve_ram_loop(
         ) {
             Ok(received) if received.bytes == 0 => return Ok(()),
             Ok(received) => received,
-            Err(error) if error == rustix::io::Errno::AGAIN => continue,
+            Err(error) if error == rustix::io::Errno::AGAIN || error == rustix::io::Errno::INTR => {
+                continue;
+            }
             Err(_) if stop.load(Ordering::Acquire) => return Ok(()),
             Err(error) => return Err(error.into()),
         };

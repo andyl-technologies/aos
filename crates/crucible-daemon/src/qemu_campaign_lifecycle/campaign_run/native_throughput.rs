@@ -82,7 +82,13 @@ pub(crate) fn run(
     let runner = QemuFreshExecutionRunner::new(factory, ProbeDriver { probe })
         .with_terminal_exact_retention_source(retention.clone());
     run_guarded_default_campaign_with_repository(
-        request, runner, evidence, repository, planner, retention,
+        request,
+        runner,
+        prepare_completed_reproduction,
+        evidence,
+        repository,
+        planner,
+        retention,
     )
 }
 

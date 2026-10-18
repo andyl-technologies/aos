@@ -103,6 +103,8 @@ impl SessionRetentionUpdateError {
 pub struct SessionLifetimeRetention {
     _capability: Box<dyn Send + Sync>,
     on_destroy: Option<Arc<dyn Fn() -> Result<(), SessionRetentionUpdateError> + Send + Sync>>,
+    // Concrete capability and callback allocations free before their receipts.
+    _custody: Option<crucible::owned_decode::DecodeCustody>,
 }
 
 impl SessionLifetimeRetention {
@@ -112,7 +114,29 @@ impl SessionLifetimeRetention {
         Self {
             _capability: Box::new(capability),
             on_destroy: None,
+            _custody: None,
         }
+    }
+
+    /// Admits the concrete capability allocation under the current request.
+    ///
+    /// The same account remains outside the capability Box, which is destroyed
+    /// and deallocated before its custody returns. Dynamic data already owned
+    /// by the capability and a later destroy callback require their own debits.
+    ///
+    /// # Errors
+    /// Refuses missing current authority, a prior account failure or exhausted
+    /// original metadata before allocating the concrete capability.
+    pub fn try_new_admitted<T: Send + Sync + 'static>(
+        capability: T,
+    ) -> Result<Self, crucible::owned_decode::DecodeAdmissionError> {
+        let custody = crucible::owned_decode::require_current_custody()?;
+        crucible::owned_decode::charge_bytes(std::mem::size_of::<T>() as u64)?;
+        Ok(Self {
+            _capability: Box::new(capability),
+            on_destroy: None,
+            _custody: Some(custody),
+        })
     }
 
     /// Installs cleanup that runs only when the lifecycle registry explicitly
@@ -146,6 +170,14 @@ impl fmt::Debug for SessionLifetimeRetention {
 
 #[path = "lifecycle/debug_dispatch.rs"]
 mod debug_dispatch;
+
+#[cfg(test)]
+#[path = "lifecycle/retention_admission_tests.rs"]
+mod retention_admission_tests;
+
+#[cfg(test)]
+#[path = "lifecycle/retention_transport_tests.rs"]
+mod retention_transport_tests;
 
 /// Operator-visible evidence for the exact live runtime boundary selected by a debugger reposition.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2068,8 +2100,11 @@ where
             configuration,
             checkpoint,
             seed,
-            retention,
-            (crucible::owned_decode::current_budget(), build_loop),
+            (
+                build_loop,
+                retention,
+                crucible::owned_decode::current_budget(),
+            ),
         )
         .await
     }
@@ -2088,17 +2123,20 @@ where
         configuration: Configuration,
         checkpoint: Checkpoint,
         seed: Seed,
-        retention: SessionLifetimeRetention,
         builder: (
-            Option<crucible::owned_decode::DecodeBudget>,
             impl FnOnce() -> Result<L, E>,
+            SessionLifetimeRetention,
+            Option<crucible::owned_decode::DecodeBudget>,
         ),
     ) -> Result<ResumeSessionResponse, LifecycleApiError>
     where
         E: std::error::Error + Send + Sync + 'static,
     {
-        let (decoding, build_loop) = builder;
+        // Keep the ordered tuple intact through the only asynchronous cut:
+        // a cancelled/unpolled request drops builder aliases before retention
+        // and finally their actual decoded-allocation account.
         let mut control_plane = self.control_plane.lock().await;
+        let (build_loop, retention, decoding) = builder;
         let _decode_scope = decoding
             .as_ref()
             .map(crucible::owned_decode::DecodeBudget::enter);
