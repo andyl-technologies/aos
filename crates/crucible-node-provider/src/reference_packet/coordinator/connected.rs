@@ -690,3 +690,27 @@ impl CoordinatorEdition {
         }
     }
 }
+
+
+impl PacketConnectedCoordinatorInstallation {
+    /// Names the returned private view and borrowed validation-call controls.
+    ///
+    /// Both connected and complete installations construct this same defining
+    /// view value before validation. These headers supplement the separate
+    /// installation extent getter; nested typed, JSON and validator work must
+    /// still be admitted independently by the actual decoder caller.
+    pub(in crate::reference_packet) fn borrowed_validation_counter_scratch_data() -> usize {
+        use std::mem::size_of;
+
+        // The view is returned by installation.view() and received by validate.
+        size_of::<CoordinatorView<'static>>()
+            + size_of::<CoordinatorView<'static>>()
+            + size_of::<&CoordinatorView<'static>>()
+            + size_of::<CoordinatorEdition>()
+            + size_of::<&PacketConnectedCoordinatorInstallation>()
+            + size_of::<&PacketControlSelection>()
+            + size_of::<Result<(), ProviderError>>()
+            + size_of::<Result<(), ProviderError>>()
+            + super::continuation::validation_counter_scratch_data()
+    }
+}

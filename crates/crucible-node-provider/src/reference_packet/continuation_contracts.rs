@@ -561,3 +561,37 @@ mod precision_tests;
 #[path = "continuation_contracts/initial15.rs"]
 mod initial15;
 pub use initial15::complete_packet_contract_history_data;
+
+/// Projects the same four fixed rosters reached by complete coordinator validation.
+///
+/// This allocation-free DATA companion does not run a schema factory. The actual
+/// validator calls packet (six), ingress (three), Host definition (two) and Host continuation (one);
+/// its caller separately prices each returned reference and constructor phase.
+pub(crate) fn complete_coordinator_contract_projections_data(
+    maximum: usize,
+) -> Result<
+    [crate::retained_metadata::serialization_storage::OriginalSerializationStorageData; 4],
+    ProviderError,
+> {
+    use crate::retained_metadata::{
+        RetainedProtocolMetadataFacts, serialization_storage::actual_serialization_storage_data,
+    };
+    Ok([
+        actual_serialization_storage_data(
+            &CompletePacketContractValue,
+            RetainedProtocolMetadataFacts::default(),
+            maximum,
+        )?,
+        complete_ingress_contract_storage_data(maximum)?,
+        actual_serialization_storage_data(
+            &CompleteHostDefinitionValue,
+            RetainedProtocolMetadataFacts::default(),
+            maximum,
+        )?,
+        actual_serialization_storage_data(
+            &CompleteHostContinuationValue,
+            RetainedProtocolMetadataFacts::default(),
+            maximum,
+        )?,
+    ])
+}

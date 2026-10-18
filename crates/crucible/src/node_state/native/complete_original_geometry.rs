@@ -287,3 +287,9 @@ impl crate::node_contract::NodeRuntime {
         super::core_decode_credit::scanner_storage() + std::mem::size_of::<[usize; 3]>()
     }
 }
+
+#[path = "complete_original_geometry/expanded_selected.rs"]
+mod expanded_selected;
+
+#[path = "complete_original_geometry/value_equality.rs"]
+mod value_equality;

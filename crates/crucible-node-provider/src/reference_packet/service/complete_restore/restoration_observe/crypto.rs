@@ -223,3 +223,9 @@ pub(super) fn counter_scratch_data() -> usize {
         + size_of::<Result<usize,ProviderError>>()
         + crate::retained_metadata::serialization_storage::original_serialization_counter_scratch_data()
 }
+
+/// Lends the defining closed first-observation proof layout to future counters.
+pub(crate) const fn restoration_observe_proof_layout_data()
+-> (&'static str, &'static str, usize, usize) {
+    (PROOF_SCHEMA, "blake3-256-mac", 32, 32)
+}

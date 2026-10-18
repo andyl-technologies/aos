@@ -59,6 +59,11 @@ impl PacketCompleteArchiveCodeFactory {
                 code_graph: graph,
                 source,
                 native: std::array::from_fn(|_| None),
+                initial15_control: RefCell::new(
+                    initial15_control::Initial15PrebirthControlMembers::new(),
+                ),
+                initial15_control_started: Cell::new(false),
+                initial15_control_failed: Cell::new(false),
                 host_ticket: None,
                 host: None,
                 host_attempted: false,
@@ -130,7 +135,8 @@ impl PacketCompleteArchiveCodeFactory {
             align_of::<RefCell<PacketCompleteRestorationPrebirth>>(),
         )
         .map_err(error)?;
-        let headers = size_of::<PacketCompleteRestorationPrebirth>()
+        let headers = size_of::<initial15_control::Initial15PrebirthControlMembers>()
+            + size_of::<PacketCompleteRestorationPrebirth>()
             + size_of::<Option<CollectingCompleteRestorationSource>>()
             + size_of::<RefCell<PacketCompleteRestorationPrebirth>>()
             + size_of::<Option<Rc<RefCell<PacketCompleteRestorationPrebirth>>>>()

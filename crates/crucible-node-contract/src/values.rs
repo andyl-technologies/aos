@@ -569,3 +569,7 @@ mod retained_identifier_refusal_tests {
 #[cfg(test)]
 #[path = "values/u64_serialize_tests.rs"]
 mod u64_serialize_tests;
+
+#[path = "values/codec_counter.rs"]
+mod codec_counter;
+pub use codec_counter::scalar_deserialization_counter_scratch_bytes_data;

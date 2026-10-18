@@ -454,3 +454,7 @@ mod selected_mapping_tests {
         }
     }
 }
+
+#[path = "archived_mapping/initial15_normalization.rs"]
+mod initial15_normalization;
+pub use initial15_normalization::Initial15MappingNormalizationConstructionData;

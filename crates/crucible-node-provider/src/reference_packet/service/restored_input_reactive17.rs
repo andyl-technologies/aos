@@ -1061,3 +1061,9 @@ pub use observation_geometry::{
     restored_observation17_output_counter_scratch_data,
     restored_observation17_source_typed_counter_scratch_data,
 };
+
+/// Lends the defining closed signed17 proof layout to future field counters.
+pub(crate) const fn restored_input_reactive17_proof_layout_data()
+-> (&'static str, &'static str, usize, usize) {
+    (PROOF_SCHEMA, "blake3-256-mac", 32, 32)
+}

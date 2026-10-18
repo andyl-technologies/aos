@@ -299,6 +299,7 @@ impl PacketCompleteReportStartupHolder {
     pub fn finalize_original_report_startup(
         original: &Rc<RefCell<Self>>,
     ) -> Result<usize, QualificationError> {
+        Self::prepare_initial15_control_banks_data(original).map_err(|_| refused())?;
         let held = original.try_borrow().map_err(|_| refused())?;
         held.authenticate_origin()?;
         if held.attempted.replace(true) || held.in_flight.replace(true) {
@@ -456,6 +457,16 @@ impl PacketCompleteReportStartupHolder {
         let scratch = scratch
             .checked_add(super::super::InstalledCompleteRestoration::counter_scratch_data())
             .ok_or_else(refused)?;
+        let scratch = if matches!(&self.purpose, StartupHolderPurpose::FreshRestoration(_)) {
+            scratch
+                .checked_add(
+                    Self::initial15_control_classification_counter_scratch_data()
+                        .map_err(|_| refused())?,
+                )
+                .ok_or_else(refused)?
+        } else {
+            scratch
+        };
         Ok(OriginalReportStartupPolicy {
             maximum_requested_bytes: maximum,
             declared_observer_scratch_bytes: scratch,
@@ -649,3 +660,6 @@ fn evidence_qualification(error: EvidenceError) -> QualificationError {
 #[cfg(test)]
 #[path = "report_startup_tests.rs"]
 mod tests;
+
+#[path = "report_startup/initial15_control.rs"]
+mod initial15_control;

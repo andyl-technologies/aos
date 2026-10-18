@@ -781,3 +781,6 @@ mod selected_invocation_backend_tests {
         Ok(())
     }
 }
+
+#[path = "archive_journal/storage.rs"]
+mod storage;

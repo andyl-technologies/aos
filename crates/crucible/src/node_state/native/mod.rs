@@ -754,3 +754,8 @@ fn owner_state<'a>(
 
 mod core_decode_credit;
 mod core_future_metadata;
+
+pub use complete_original_source::{
+    CompleteInitial15PrebirthControlInput, CompleteInitial15PrebirthControlAttempt,
+    CompleteInitial15PrebirthControlConstructionData,
+};

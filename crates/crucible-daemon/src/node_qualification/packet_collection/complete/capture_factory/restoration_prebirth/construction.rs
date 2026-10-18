@@ -104,6 +104,14 @@ impl PacketCompleteRestorationPrebirth {
             return Err(RuntimeError::UnsupportedFacet);
         }
         let mut counter = super::super::super::retained::Counter::new(maximum);
+        counter
+            .add(
+                self.initial15_control
+                    .try_borrow()
+                    .map_err(|_| RuntimeError::OwnerBusy)?
+                    .retained_requested_storage_data(counter.remaining())?,
+            )
+            .map_err(storage_error)?;
         counter.rc(original).map_err(storage_error)?;
         if let Some(holder) = &self.report_startup_holder {
             counter.weak(holder).map_err(storage_error)?;
@@ -195,6 +203,7 @@ impl PacketCompleteRestorationPrebirth {
     -> Result<usize, RuntimeError> {
         type Counter = super::super::super::retained::Counter;
         let terms = [
+            Self::initial15_control_counter_scratch_data(),
             CollectingCompleteRestorationSource::original_archived_host_node_construction_counter_scratch_data(),
             CollectingCompleteRestorationSource::original_construction_source_counter_scratch_data(),
             PacketCompleteCaptureFactory::original_ticketed_unobserved_counter_scratch_data(),

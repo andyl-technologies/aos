@@ -70,6 +70,14 @@ impl PacketCompleteRestorationPrebirth {
             Self::charge_restored_actions_data(&self.restored_actions, &mut counter)?;
         }
         counter
+            .add(
+                self.initial15_control
+                    .try_borrow()
+                    .map_err(|_| RuntimeError::OwnerBusy)?
+                    .retained_requested_storage_data(counter.remaining())?,
+            )
+            .map_err(|_| RuntimeError::ResourceLimit)?;
+        counter
             .rc(original)
             .map_err(|_| RuntimeError::ResourceLimit)?;
         if let Some(holder) = &self.report_startup_holder {

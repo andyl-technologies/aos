@@ -540,3 +540,18 @@ impl PacketControl {
 
 #[cfg(test)]
 mod tests;
+
+impl PacketControl {
+    /// Rechecks exact original/Begin/arguments correspondence without decoding.
+    ///
+    /// This is a borrowed DATA comparison, not Source or registration authority.
+    /// # Errors
+    /// Refuses any changed closed body field, extension, coordinate or Id roster.
+    pub(in crate::reference_packet::control) fn authenticate_capture17_borrowed_fields_data(
+        original: &Envelope,
+        begin: &BeginRequest,
+        arguments: &CaptureArguments,
+    ) -> Result<(), ProviderError> {
+        authenticate_fields_data(original, begin, arguments)
+    }
+}

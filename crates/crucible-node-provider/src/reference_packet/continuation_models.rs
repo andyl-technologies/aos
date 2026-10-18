@@ -539,3 +539,21 @@ pub(crate) use settled_reader::prepared::{
     PacketSettledPreparedModel17Data, PreparedControlHistory17, read_settled_prepared_model17_data,
     settled_prepared_model17_counter_scratch_data,
 };
+
+mod future17;
+
+#[path = "continuation_models/decoder_counter.rs"]
+mod decoder_counter;
+pub(in crate::reference_packet) use decoder_counter::{
+    model_decoder_counter_scratch_data, owned_json_decoder_counter_scratch_data,
+};
+
+// The complete Control/model decoder owns this distinct serde partial DAG.
+pub(in crate::reference_packet) mod serde_partials;
+
+
+pub(in crate::reference_packet) use decoder_counter::canonical_value_writer_frame_data;
+
+pub(in crate::reference_packet) use decoder_counter::model_decoder_geometry_data;
+
+pub(in crate::reference_packet) use decoder_counter::model_decoder_diagnostic_name_bytes_data;

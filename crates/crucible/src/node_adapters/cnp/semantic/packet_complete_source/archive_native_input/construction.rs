@@ -89,56 +89,12 @@ impl NativeInputData<'_> {
             .get(reference)
             .ok_or_else(|| refused("cold complete Control body absent"))?;
         let selected = self.selection.storage_data()?;
-        let layouts = packet_control_snapshot_validation_layouts();
-        let maximum = usize::try_from(selected.storage.control_snapshot_bytes.get())
-            .map_err(|_| refused("cold Control selected bound is not representable"))?
-            .min(layouts.maximum_control_bytes);
-        if bytes.len() > maximum {
-            return Err(refused(
-                "cold complete Control exceeds original selected bound",
-            ));
-        }
-        // One conservative pinned node for every possible typed entry/container
-        // covers the actual private map K/V layouts and alignments. The scanner
-        // counts the actual raw syntax, including empty containers, before DOM.
-        let node = NodeRuntime::capture_protocol_tree_storage(
-            1,
-            0,
-            layouts.maximum_tree_key_value_bytes,
-            layouts.maximum_tree_entry_alignment,
-            self.maximum,
-        )
-        .map_err(unknown)?;
-        let one = NodeRuntime::capture_selected_json_decode_storage(
-            bytes,
-            layouts.maximum_typed_slot_bytes,
-            node,
-            self.maximum,
-        )
-        .map_err(unknown)?;
-        let projections = layouts
-            .maximum_simultaneous_control_dom_views
-            .checked_add(layouts.maximum_simultaneous_typed_model_views)
-            .ok_or_else(|| refused("cold model projection count overflow"))?;
-        let encoded = bytes
-            .len()
-            .checked_mul(4)
-            .and_then(|n| n.checked_add(8))
-            .and_then(|n| n.checked_mul(layouts.maximum_simultaneous_control_encoded_banks))
-            .ok_or_else(|| refused("cold model canonical bank extent overflow"))?;
-        let demand = one
-            .checked_mul(projections)
-            .and_then(|n| n.checked_add(encoded))
-            .and_then(|n| n.checked_add(layouts.control_record_bytes))
-            .and_then(|n| n.checked_add(layouts.model_record_bytes))
-            .and_then(|n| {
-                n.checked_add(
-                    layouts
-                        .producer_state_bytes
-                        .max(layouts.reactive_state_bytes),
-                )
-            })
-            .ok_or_else(|| refused("cold model decoder storage overflow"))?;
+        let (demand, maximum) =
+            PacketCompleteSemanticSource::original_control_snapshot_construction_data(
+                bytes,
+                selected.storage.control_snapshot_bytes,
+                self.maximum,
+            )?;
         Ok((bytes, demand, maximum))
     }
 }
@@ -372,3 +328,80 @@ fn sum_data<const N: usize>(values: [usize; N]) -> Result<usize, OperationFailur
             .ok_or_else(|| refused("initial15 native semantic frame overflow"))
     })
 }
+
+impl PacketCompleteSemanticSource {
+    /// Quotes the defining existing Control parser from the actual immutable body.
+    ///
+    /// The caller binds the selected control bound to its genuine code template.
+    /// This pure helper supplies requested layout only, never model provenance,
+    /// a native grant, a fresh Source or startup credit.
+    ///
+    /// # Errors
+    /// Refuses the unchanged original Control bound, malformed syntax, checked
+    /// geometry overflow or the caller's independent requested ceiling.
+    pub(crate) fn original_control_snapshot_construction_data(
+        bytes: &[u8],
+        selected_control_bytes: U64,
+        maximum_requested: usize,
+    ) -> Result<(usize, usize), OperationFailure> {
+        let layouts = packet_control_snapshot_validation_layouts();
+        let maximum = usize::try_from(selected_control_bytes.get())
+            .map_err(|_| refused("cold Control selected bound is not representable"))?
+            .min(layouts.maximum_control_bytes);
+        if bytes.len() > maximum {
+            return Err(refused(
+                "cold complete Control exceeds original selected bound",
+            ));
+        }
+        // One conservative pinned node for every possible typed entry/container
+        // covers the actual private map K/V layouts and alignments. The scanner
+        // counts the actual raw syntax, including empty containers, before DOM.
+        let node = NodeRuntime::capture_protocol_tree_storage(
+            1,
+            0,
+            layouts.maximum_tree_key_value_bytes,
+            layouts.maximum_tree_entry_alignment,
+            maximum_requested,
+        )
+        .map_err(unknown)?;
+        let one = NodeRuntime::capture_selected_json_decode_storage(
+            bytes,
+            layouts.maximum_typed_slot_bytes,
+            node,
+            maximum_requested,
+        )
+        .map_err(unknown)?;
+        let projections = layouts
+            .maximum_simultaneous_control_dom_views
+            .checked_add(layouts.maximum_simultaneous_typed_model_views)
+            .ok_or_else(|| refused("cold model projection count overflow"))?;
+        let encoded = bytes
+            .len()
+            .checked_mul(4)
+            .and_then(|n| n.checked_add(8))
+            .and_then(|n| n.checked_mul(layouts.maximum_simultaneous_control_encoded_banks))
+            .ok_or_else(|| refused("cold model canonical bank extent overflow"))?;
+        let demand = one
+            .checked_mul(projections)
+            .and_then(|n| n.checked_add(encoded))
+            .and_then(|n| n.checked_add(layouts.control_record_bytes))
+            .and_then(|n| n.checked_add(layouts.model_record_bytes))
+            .and_then(|n| {
+                n.checked_add(
+                    layouts
+                        .producer_state_bytes
+                        .max(layouts.reactive_state_bytes),
+                )
+            })
+            .ok_or_else(|| refused("cold model decoder storage overflow"))?;
+        Ok((demand, maximum))
+    }
+
+    /// Names the existing defining Control quotation and layout controls.
+    pub(crate) fn original_control_snapshot_construction_counter_scratch_data() -> usize {
+        NativeInputData::semantic_validation_construction_counter_scratch_data()
+    }
+}
+
+#[path = "construction/complete_control.rs"]
+mod complete_control;

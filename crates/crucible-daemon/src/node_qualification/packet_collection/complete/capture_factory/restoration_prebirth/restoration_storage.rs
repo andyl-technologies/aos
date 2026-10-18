@@ -46,6 +46,9 @@ impl PacketCompleteRestorationPrebirth {
             code_graph,
             source,
             native,
+            initial15_control: _,
+            initial15_control_started: _,
+            initial15_control_failed: _,
             host_ticket,
             host,
             host_attempted: _,
@@ -88,6 +91,14 @@ impl PacketCompleteRestorationPrebirth {
         if restored_results.is_some() {
             Self::charge_restored_actions_data(restored_actions, &mut counter)?;
         }
+        counter
+            .add(
+                self.initial15_control
+                    .try_borrow()
+                    .map_err(|_| RuntimeError::OwnerBusy)?
+                    .retained_requested_storage_data(counter.remaining())?,
+            )
+            .map_err(storage_error)?;
         counter.rc(original).map_err(storage_error)?;
         if let Some(holder) = report_startup_holder {
             counter.weak(holder).map_err(storage_error)?;
@@ -215,6 +226,9 @@ impl PacketCompleteRestorationPrebirth {
             code_graph: _,
             source: _,
             native,
+            initial15_control: _,
+            initial15_control_started: _,
+            initial15_control_failed: _,
             host_ticket,
             host: _,
             host_attempted: _,
@@ -273,7 +287,8 @@ impl PacketCompleteRestorationPrebirth {
 
     pub(in crate::node_qualification::packet_collection::complete) fn restoration_holder_counter_scratch_data()
     -> usize {
-        HostSchedulingSource::retained_restoration_metadata_counter_scratch_data()
+        Self::initial15_control_counter_scratch_data()
+            + HostSchedulingSource::retained_restoration_metadata_counter_scratch_data()
             + PacketCompleteCaptureFactory::original_ticketed_unobserved_counter_scratch_data()
             + size_of::<super::super::super::retained::Counter>()
             + size_of::<std::slice::Iter<'static, Option<CompleteOriginalNativeTicket>>>()

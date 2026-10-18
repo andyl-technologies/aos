@@ -383,3 +383,62 @@ pub(crate) fn original_canonical_ack_controller_scope_with_identity_suffix(
 ) {
     tests::original_canonical_ack_controller_scope_with_identity_suffix(suffix)
 }
+
+
+/// Names concrete native/Host validation views reached by CoordinatorView.
+///
+/// This supplements installation extent controls. Typed field partials, JSON
+/// adapters, canonical/hash work and owned backing remain separately admitted.
+pub(super) fn validation_counter_scratch_data() -> usize {
+    use std::collections::BTreeSet;
+    use std::mem::{size_of, size_of_val};
+
+    // This is the exact function-item iterator used by role comparisons;
+    // obtaining its layout does not require an installed participant or DTO.
+    let roles: &[Id] = &[];
+    let mapped_roles = roles.iter().map(Id::as_str);
+
+    type ExpectedFacets = [&'static str; 2];
+    type FacetPairs = std::iter::Zip<
+        std::slice::Iter<'static, FacetSelection>,
+        std::array::IntoIter<&'static str, 2>,
+    >;
+
+    // validate_native owns the literal roster and a mutable copy for sorting,
+    // then consumes that actual copy while zipping the selected facets.
+    size_of::<ExpectedFacets>()
+        + size_of::<ExpectedFacets>()
+        + size_of::<&mut [&str]>()
+        + size_of::<std::array::IntoIter<&str, 2>>()
+        + size_of::<FacetPairs>()
+        + size_of::<[&SchemaRef; 3]>()
+        + size_of::<std::slice::Iter<'static, &'static SchemaRef>>()
+        + size_of::<[&str; 2]>()
+        + size_of::<std::slice::Iter<'static, &'static str>>()
+        + size_of_val(&mapped_roles)
+        + size_of::<&[Id]>()
+        + size_of::<Vec<&str>>()
+        + size_of::<&NodeDescriptor>()
+        + size_of::<&BindingCompatibility>()
+        + size_of::<&ImplementationIdentity>()
+        + size_of::<&NodeManifest>()
+        + size_of::<&Vec<FacetSelection>>()
+        + size_of::<(&str, Version)>()
+        + size_of::<ContentRef>()
+        + size_of::<SchemaRef>()
+        + size_of::<Result<ContentRef, ProviderError>>()
+        + size_of::<Result<SchemaRef, ProviderError>>()
+        + size_of::<GuaranteeProfile>()
+        + size_of::<Result<GuaranteeProfile, serde_json::Error>>()
+        + size_of::<BTreeSet<Id>>()
+        + size_of::<Vec<Value>>()
+        + size_of::<Vec<&Id>>()
+        + size_of::<Value>()
+        + size_of::<Result<Value, serde_json::Error>>()
+        + size_of::<std::slice::Iter<'static, Value>>()
+        + size_of::<std::slice::Iter<'static, Id>>()
+        + size_of::<Vec<Id>>()
+        + size_of::<Result<Vec<Id>, serde_json::Error>>()
+        + size_of::<Result<Id, serde_json::Error>>()
+        + size_of::<Result<(), ProviderError>>()
+}

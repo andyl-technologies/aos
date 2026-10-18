@@ -449,3 +449,14 @@ pub(crate) use restored_settled_capture_ingress::{
     original_restored_settled_capture_upload_ingress_counter_scratch_data,
     original_restored_settled_capture_upload_ingress_row_data,
 };
+
+pub use crate::reference_packet::control::{
+    PacketRestoredSettledCaptureControlModelFutureData,
+    PacketRestoredSettledCaptureControlFutureInputs,
+    PacketRestoredSettledCaptureControlFutureStorageData,
+    restored_settled_capture_control_future_from_model_data,
+    restored_settled_capture_control_model_future_from_initial15_data,
+    restored_settled_capture_control_model_future_initial15_prequote_data,
+    restored_settled_capture_control_future_prequote_data,
+    restored_settled_capture_control_future_storage_data,
+};

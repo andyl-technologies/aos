@@ -23,6 +23,7 @@ impl NativePendingCapture17RequestHashStorageData<'_> {
 }
 
 /// Retains every completed owning hash phase beside the prospective draft.
+#[derive(serde::Serialize)]
 pub(crate) struct NativePendingCapture17RequestHashAttempt {
     original_identity: Option<[u8; 32]>,
     dom: Option<Value>,
@@ -32,7 +33,10 @@ pub(crate) struct NativePendingCapture17RequestHashAttempt {
 }
 
 impl NativePendingCapture17RequestHashAttempt {
-    pub(super) fn completed_data(&self, original: &Envelope) -> Result<&HashRef, ProviderError> {
+    pub(in crate::reference_packet::control) fn completed_data(
+        &self,
+        original: &Envelope,
+    ) -> Result<&HashRef, ProviderError> {
         if !self.complete || self.original_identity != Some(exact_original_identity_data(original)?)
         {
             return Err(refused());
@@ -74,7 +78,31 @@ impl PacketControl {
         original: &'a Envelope,
         maximum: usize,
     ) -> Result<NativePendingCapture17RequestHashStorageData<'a>, ProviderError> {
-        if original.message != MessageKind::Request || original.method != Method::Begin {
+        Self::quote_capture17_request_hash_for_method_data(original, Method::Begin, maximum)
+    }
+
+    /// Quotes only the distinct final-confirmation Poll identity phase.
+    ///
+    /// This shares the exact normative identity writer with Begin without
+    /// changing the original Begin-only DATA entry or creating native rights.
+    /// # Errors
+    /// Refuses another method/message, arithmetic overflow or a short bound.
+    pub(crate) fn quote_capture17_confirmation_request_hash_data<'a>(
+        original: &'a Envelope,
+        maximum: usize,
+    ) -> Result<NativePendingCapture17RequestHashStorageData<'a>, ProviderError> {
+        Self::quote_capture17_request_hash_for_method_data(original, Method::Poll, maximum)
+    }
+
+    fn quote_capture17_request_hash_for_method_data<'a>(
+        original: &'a Envelope,
+        method: Method,
+        maximum: usize,
+    ) -> Result<NativePendingCapture17RequestHashStorageData<'a>, ProviderError> {
+        if !matches!(method, Method::Begin | Method::Poll)
+            || original.message != MessageKind::Request
+            || original.method != method
+        {
             return Err(refused());
         }
         let serialization = actual_serialization_storage_data(
@@ -122,7 +150,35 @@ impl PacketControl {
         storage: &NativePendingCapture17RequestHashStorageData<'_>,
         destination: &mut Option<NativePendingCapture17RequestHashAttempt>,
     ) -> Result<(), ProviderError> {
-        if destination.is_some() {
+        Self::complete_capture17_request_hash_for_method_into_data(
+            storage,
+            destination,
+            Method::Begin,
+        )
+    }
+
+    /// Retains the distinct Poll hash in the same caller-owned sticky bank.
+    ///
+    /// # Errors
+    /// Refuses a non-Poll original, reused bank or any independently short hash
+    /// phase. Every initialized DOM/canonical/hash child remains in destination.
+    pub(crate) fn complete_capture17_confirmation_request_hash_into_data(
+        storage: &NativePendingCapture17RequestHashStorageData<'_>,
+        destination: &mut Option<NativePendingCapture17RequestHashAttempt>,
+    ) -> Result<(), ProviderError> {
+        Self::complete_capture17_request_hash_for_method_into_data(
+            storage,
+            destination,
+            Method::Poll,
+        )
+    }
+
+    fn complete_capture17_request_hash_for_method_into_data(
+        storage: &NativePendingCapture17RequestHashStorageData<'_>,
+        destination: &mut Option<NativePendingCapture17RequestHashAttempt>,
+        method: Method,
+    ) -> Result<(), ProviderError> {
+        if destination.is_some() || storage.original.method != method {
             return Err(refused());
         }
         *destination = Some(NativePendingCapture17RequestHashAttempt {
@@ -132,8 +188,9 @@ impl PacketControl {
             hash: None,
             complete: false,
         });
-        let actual = Self::quote_pending_capture17_request_hash_data(
+        let actual = Self::quote_capture17_request_hash_for_method_data(
             storage.original,
+            method,
             usize::try_from(storage.row.requested_peak_data()?).map_err(|_| exhausted())?,
         )?;
         if actual.row != storage.row
@@ -170,6 +227,7 @@ impl PacketControl {
             + size_of::<NativePendingCapture17RequestHashAttempt>()
             + size_of::<Option<NativePendingCapture17RequestHashAttempt>>()
             + size_of::<StartupRequestIdentity<'static>>()
+            + size_of::<Method>()
             + field_view_bytes(|value: &'static Envelope| {
                 let Envelope { protocol, message, session_id, incarnation_id, node_id, execution_owner_id, capture_owner_id, request_id, operation_id, sequence, method, body, extensions } = value;
                 (protocol, message, session_id, incarnation_id, node_id, execution_owner_id, capture_owner_id, request_id, operation_id, sequence, method, body, extensions)
@@ -307,6 +365,119 @@ mod tests {
 
         assert_eq!(bytes, b"abc");
         assert_eq!(bytes.capacity(), capacity);
+        Ok(())
+    }
+}
+
+impl crate::retained_metadata::ObserveMetadata for NativePendingCapture17RequestHashAttempt {
+    fn observe_metadata(&self, observer: &mut MetadataObserver<'_>) -> Result<(), ProviderError> {
+        let Self {
+            original_identity,
+            dom,
+            canonical,
+            hash,
+            complete,
+        } = self;
+        observer.observe(original_identity)?;
+        observer.observe(dom)?;
+        observer.observe(canonical)?;
+        observer.observe(hash)?;
+        observer.observe(complete)
+    }
+}
+
+// These exercise the distinct normative Poll DATA owner, without a native grant.
+#[cfg(test)]
+mod confirmation_tests {
+    use super::*;
+
+    #[test]
+    fn distinct_confirmation_hash_keeps_poll_separate_and_binds_full_original()
+    -> Result<(), ProviderError> {
+        let poll = crate::envelope::tests::request();
+        assert!(
+            PacketControl::quote_pending_capture17_request_hash_data(&poll, usize::MAX).is_err()
+        );
+        let storage =
+            PacketControl::quote_capture17_confirmation_request_hash_data(&poll, usize::MAX)?;
+        let exact =
+            usize::try_from(storage.row_data().requested_peak_data()?).map_err(|_| exhausted())?;
+        assert!(
+            PacketControl::quote_capture17_confirmation_request_hash_data(&poll, exact).is_ok()
+        );
+        assert!(
+            PacketControl::quote_capture17_confirmation_request_hash_data(&poll, exact - 1)
+                .is_err()
+        );
+        let mut retained = None;
+        PacketControl::complete_capture17_confirmation_request_hash_into_data(
+            &storage,
+            &mut retained,
+        )?;
+        let actual = retained.as_ref().ok_or_else(refused)?;
+        assert_eq!(
+            actual.completed_data(&poll)?,
+            &poll.request_hash(crate::envelope::RequestOrigin::Controller)?
+        );
+        let mut changed = poll.clone();
+        changed.sequence = U64::new(poll.sequence.get() + 1);
+        assert!(actual.completed_data(&changed).is_err());
+        assert!(
+            PacketControl::complete_capture17_confirmation_request_hash_into_data(
+                &storage,
+                &mut retained
+            )
+            .is_err()
+        );
+        let mut begin = poll.clone();
+        begin.method = Method::Begin;
+        assert!(
+            PacketControl::quote_capture17_confirmation_request_hash_data(&begin, usize::MAX)
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn confirmation_short_hash_axes_keep_distinct_actual_failure_owner() -> Result<(), ProviderError>
+    {
+        let poll = crate::envelope::tests::request();
+        let valid =
+            PacketControl::quote_capture17_confirmation_request_hash_data(&poll, usize::MAX)?;
+        for axis in 0..3 {
+            let mut storage =
+                PacketControl::quote_capture17_confirmation_request_hash_data(&poll, usize::MAX)?;
+            let quantity = match axis {
+                0 => &mut storage.row.retained_requested_bytes,
+                1 => &mut storage.row.maximum_simultaneous_transient_bytes,
+                _ => &mut storage.row.declared_counter_scratch_bytes,
+            };
+            *quantity = U64::new(quantity.get() - 1);
+            let mut retained = None;
+            assert!(
+                PacketControl::complete_capture17_confirmation_request_hash_into_data(
+                    &storage,
+                    &mut retained
+                )
+                .is_err()
+            );
+            let failure = retained.as_ref().ok_or_else(refused)?;
+            assert!(!failure.complete);
+            assert!(failure.original_identity.is_none());
+            assert!(failure.dom.is_none());
+            assert!(failure.canonical.is_empty());
+            assert!(failure.hash.is_none());
+            assert!(
+                PacketControl::complete_capture17_confirmation_request_hash_into_data(
+                    &valid,
+                    &mut retained
+                )
+                .is_err()
+            );
+            let failure = retained.as_ref().ok_or_else(refused)?;
+            let state = serde_json::to_value(failure).map_err(ContractError::from)?;
+            assert_eq!(state["complete"], Value::Bool(false));
+        }
         Ok(())
     }
 }

@@ -2009,3 +2009,23 @@ pub(crate) use restored_input_reactive17::{
 };
 
 mod capture17_ancestry;
+
+mod capture17_producer;
+pub(crate) use capture17_producer::{
+    NativeCapture17ConfirmationAttempt, NativeCapture17ConfirmationInputs,
+    NativeCapture17ConfirmationStorageData, NativeCapture17RegistrationAttempt,
+    NativeCapture17RegistrationInputs, NativeCapture17RegistrationStorageData,
+    NativeCapture17ReplyAttempt, NativeCapture17TerminalStorageData,
+    capture17_producer_counter_scratch_data,
+};
+
+pub use capture17_producer::{
+    PacketRestoredSettledCaptureControlModelFutureData,
+    PacketRestoredSettledCaptureControlFutureInputs,
+    PacketRestoredSettledCaptureControlFutureStorageData,
+    restored_settled_capture_control_future_from_model_data,
+    restored_settled_capture_control_model_future_from_initial15_data,
+    restored_settled_capture_control_model_future_initial15_prequote_data,
+    restored_settled_capture_control_future_prequote_data,
+    restored_settled_capture_control_future_storage_data,
+};

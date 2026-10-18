@@ -141,3 +141,13 @@ fn reference_identity(reference: &ContentRef) -> [u8; 32] {
     hash.update(&reference.length.get().to_le_bytes());
     *hash.finalize().as_bytes()
 }
+
+#[path = "capture_future_decoder_counter.rs"]
+mod decoder_counter;
+
+
+#[path = "capture_future_schema_factories.rs"]
+mod schema_factories;
+
+#[path = "capture_future_validation_error.rs"]
+mod validation_error;

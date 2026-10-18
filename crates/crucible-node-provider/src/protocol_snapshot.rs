@@ -1627,7 +1627,9 @@ impl ProtocolSnapshotReservation {
 }
 
 mod archived_mapping;
-pub use archived_mapping::PreparedArchivedProtocolMapping;
+pub use archived_mapping::{
+    Initial15MappingNormalizationConstructionData, PreparedArchivedProtocolMapping,
+};
 
 pub(crate) use archived_mapping::{
     ArchivedProtocolMappingIdentity, ArchivedProtocolMappingInput, ArchivedProtocolMappingTarget,
@@ -1705,3 +1707,6 @@ pub mod borrowed_json;
 
 /// Quotes additional owned JSON Value reparsing without parsing or authority.
 pub mod raw_value_reparse;
+
+/// Names pinned serde decoder controls without decoding or granting authority.
+pub mod serde_decode_layout;

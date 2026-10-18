@@ -1032,3 +1032,24 @@ mod logical_event_tests {
         Ok(())
     }
 }
+
+/// Names one actual recursive requested-storage serializer activation.
+///
+/// The private Container, its returned result and the byte/layout iterator
+/// controls belong to this serializer. Callers separately name their own typed
+/// Serialize activation and establish the same maximum 64 container profile.
+/// No returned layout grants storage or makes a compiler-stack claim.
+pub(crate) fn original_serialization_frame_counter_scratch_data() -> usize {
+    size_of::<&mut Credit>()
+        + size_of::<Container<'static>>()
+        + size_of::<Result<Container<'static>, Excess>>()
+        + size_of::<Result<(), Excess>>()
+        + size_of::<Result<usize, Excess>>()
+        + size_of::<Option<usize>>()
+        + size_of::<&str>()
+        + size_of::<std::str::Bytes<'static>>()
+        + size_of::<Option<u8>>()
+        + size_of::<u8>()
+        + size_of::<usize>() * 6
+        + original_serialization_tree_node_counter_scratch_data()
+}

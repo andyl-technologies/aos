@@ -183,6 +183,15 @@ impl RestoredSettledNativeImportGeometryData {
         Ok(())
     }
 
+    /// Returns the retained five-role input correspondence as immutable DATA.
+    ///
+    /// This copies the defining constructor's already-validated input binding.
+    /// It grants no currentness, decoding allowance or native phase permission;
+    /// consumers independently authenticate the same actual role bodies.
+    pub(crate) const fn import_correspondence_data(&self) -> [u8; 32] {
+        self.correspondence
+    }
+
     /// Commits the exact input identities, class, decoder demand and finite limits.
     ///
     /// This fixed commitment is DATA only. It cannot replace the original

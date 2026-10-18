@@ -503,6 +503,8 @@ impl OriginalRestorationColdGroup {
     /// Names fixed raw-view/counter work before walking the first sealed graph.
     pub(crate) fn counter_scratch_data() -> usize {
         size_of::<[usize; 8]>()
+            .saturating_add(PacketCompleteSettledJournal::retained_counter_scratch_data())
+            .saturating_add(PacketCompleteSettledJournal::decode_construction_counter_scratch_data())
             .saturating_add(Self::installed_import_counter_scratch_data())
             .saturating_add(size_of::<OriginalRestorationColdOwnerView<'static>>())
             .saturating_add(size_of::<crate::node_admission::OriginalRestorationSigningInputs<'static>>())
@@ -809,97 +811,7 @@ fn journal_storage_data(
     journal: &PacketCompleteSettledJournal,
     maximum: usize,
 ) -> Result<usize, RuntimeError> {
-    use crucible_node_provider::reference_packet::service::confirmation::{
-        PacketNativeAfterConfirmationReceipt, PacketNativeAfterConfirmationRequest,
-    };
-    let PacketCompleteSettledJournal {
-        schema,
-        owner,
-        participants,
-        cut: _,
-        ordinal: _,
-        runtime,
-        backend_implementation,
-        semantic,
-        ancestry,
-        native_snapshot,
-        native_control,
-        native_anchor,
-        native_after_protocol,
-        host_protocol,
-        host_extension_registry,
-        confirmation_request,
-        confirmation,
-    } = journal;
-    let PacketNativeAfterConfirmationReceipt {
-        schema: receipt_schema,
-        capture,
-        native_after_ref,
-        native_after_capacity: _,
-    } = confirmation;
-    let PacketNativeAfterConfirmationRequest {
-        schema: request_schema,
-        capture_request_id,
-        capture_request_hash,
-        capture_operation_id,
-        capture_terminal_hash,
-        capture_terminal_sequence: _,
-        native_snapshot_ref,
-        native_control_ref,
-        native_anchor_ref,
-    } = capture;
-    let mut total = 0usize;
-    for text in [schema, receipt_schema, request_schema] {
-        add(&mut total, text.capacity(), maximum)?;
-    }
-    add(
-        &mut total,
-        participants
-            .capacity()
-            .checked_mul(size_of::<Id>())
-            .ok_or(RuntimeError::ResourceLimit)?,
-        maximum,
-    )?;
-    for id in participants.iter().chain([
-        owner,
-        confirmation_request,
-        capture_request_id,
-        capture_operation_id,
-    ]) {
-        add(&mut total, id.allocated_capacity(), maximum)?;
-    }
-    for reference in [
-        runtime,
-        backend_implementation,
-        semantic,
-        ancestry,
-        native_snapshot,
-        native_control,
-        native_anchor,
-        native_after_protocol,
-        host_protocol,
-        native_after_ref,
-        native_snapshot_ref,
-        native_control_ref,
-        native_anchor_ref,
-    ]
-    .into_iter()
-    .chain(host_extension_registry.iter())
-    {
-        add(
-            &mut total,
-            NodeRuntime::capture_reference_storage(reference)?,
-            maximum,
-        )?;
-    }
-    for hash in [capture_request_hash, capture_terminal_hash] {
-        add(
-            &mut total,
-            NodeRuntime::capture_hash_storage(hash)?,
-            maximum,
-        )?;
-    }
-    Ok(total)
+    journal.retained_requested_storage_data(maximum)
 }
 
 #[path = "retained/installed_import.rs"]

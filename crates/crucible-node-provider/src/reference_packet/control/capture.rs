@@ -516,3 +516,163 @@ pub(crate) use startup::{
 };
 
 pub(in crate::reference_packet::control) use startup::StartupRequestIdentity;
+
+impl PacketControl {
+    // The private Capture17 producer has already spent its complete row and
+    // checked Source/currentness before invoking these defining clone/inserts.
+    pub(in crate::reference_packet::control) fn capture17_reservation_from_fields_data(
+        &self,
+        original: &Envelope,
+        begin: &BeginRequest,
+        arguments: &CaptureArguments,
+    ) -> PacketOriginalCaptureReservation {
+        PacketOriginalCaptureReservation {
+            owner: std::rc::Rc::clone(&self.capture_identity),
+            creator: self.capture_creator,
+            request: original.clone(),
+            arguments: arguments.clone(),
+            begin: begin.clone(),
+        }
+    }
+
+    pub(in crate::reference_packet::control) fn install_capture17_reservation_fields_data(
+        &mut self,
+        reservation: &PacketOriginalCaptureReservation,
+        identity: &HashRef,
+        unknown: &mut Option<Map<String, Value>>,
+    ) -> Result<(), ProviderError> {
+        let id = reservation
+            .request
+            .request_id
+            .0
+            .as_ref()
+            .ok_or(ProviderError::Correlation("Capture17 request absent"))?;
+        let operation = reservation
+            .request
+            .operation_id
+            .0
+            .as_ref()
+            .ok_or(ProviderError::Correlation("Capture17 operation absent"))?;
+        if reservation.creator != std::process::id()
+            || self.capture_creator != reservation.creator
+            || !std::rc::Rc::ptr_eq(&self.capture_identity, &reservation.owner)
+            || self.current_operation.is_some()
+            || self.fenced
+            || self.originals.len() >= ORIGINALS
+            || self.begins.len() >= 64
+            || self.originals.contains_key(id)
+            || self.begins.contains_key(operation)
+            || self.begin_requests.contains_key(operation)
+        {
+            return Err(ProviderError::Correlation(
+                "Capture17 reservation fields changed",
+            ));
+        }
+        let unknown = unknown.take().ok_or(ProviderError::Correlation(
+            "Capture17 unresolved body absent",
+        ))?;
+        self.originals.insert(
+            id.clone(),
+            (
+                identity.clone(),
+                PacketControlReply {
+                    body: unknown,
+                    evidence: Vec::new(),
+                },
+            ),
+        );
+        self.begins
+            .insert(operation.clone(), reservation.begin.clone());
+        self.begin_requests.insert(operation.clone(), id.clone());
+        self.current_operation = Some(operation.clone());
+        Ok(())
+    }
+}
+
+impl PacketOriginalCaptureReservation {
+    /// Borrows complete inert history DATA without making this live owner decodable.
+    pub(crate) fn borrowed_capture17_data(&self) -> impl Serialize + '_ {
+        CaptureRegistration17(self)
+    }
+
+    /// Records the actual same-Control identity edge and complete owned fields.
+    /// # Errors
+    /// Refuses exhausted metadata/alias banks or requested-layout overflow.
+    pub(crate) fn observe_capture17_metadata_data(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver<'_>,
+    ) -> Result<(), ProviderError> {
+        use crate::retained_metadata::aliases::MetadataSharedKind;
+        observer.shared_original(
+            MetadataSharedKind::NativeControlIdentity,
+            self.owner.as_ref(),
+        )?;
+        observer.observe(&self.creator)?;
+        observer.observe(&self.request)?;
+        observer.observe(&self.arguments)?;
+        observer.observe(&self.begin)
+    }
+}
+
+struct CaptureRegistration17<'a>(&'a PacketOriginalCaptureReservation);
+impl Serialize for CaptureRegistration17<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let PacketOriginalCaptureReservation {
+            owner: _,
+            creator,
+            request,
+            arguments,
+            begin,
+        } = self.0;
+        let mut fields = serializer.serialize_struct("NativeCaptureRegistration17", 5)?;
+        fields.serialize_field("capture_identity_role", "current-native-control-identity")?;
+        fields.serialize_field("creator", creator)?;
+        fields.serialize_field("request", request)?;
+        fields.serialize_field("arguments", arguments)?;
+        fields.serialize_field("begin", begin)?;
+        fields.end()
+    }
+}
+
+impl PacketControl {
+    pub(in crate::reference_packet::control) fn authenticate_capture17_registered_cache_data(
+        &self,
+        reservation: &PacketOriginalCaptureReservation,
+        hash: &HashRef,
+    ) -> Result<(), ProviderError> {
+        let request = reservation
+            .request
+            .request_id
+            .0
+            .as_ref()
+            .ok_or(ProviderError::Correlation("Capture17 request absent"))?;
+        let operation = reservation
+            .request
+            .operation_id
+            .0
+            .as_ref()
+            .ok_or(ProviderError::Correlation("Capture17 operation absent"))?;
+        let (actual, cached) = self
+            .originals
+            .get(request)
+            .ok_or(ProviderError::Correlation("Capture17 registration absent"))?;
+        if reservation.creator != std::process::id()
+            || self.capture_creator != reservation.creator
+            || !std::rc::Rc::ptr_eq(&self.capture_identity, &reservation.owner)
+            || actual != hash
+            || self.begins.get(operation) != Some(&reservation.begin)
+            || self.begin_requests.get(operation) != Some(request)
+            || self.current_operation.as_ref() != Some(operation)
+            || cached.body.get("operation_state").and_then(Value::as_str) != Some("unknown")
+            || !cached.evidence.is_empty()
+            || self.terminals.contains_key(operation)
+            || self.fenced
+        {
+            return Err(ProviderError::Correlation(
+                "Capture17 registered cache changed",
+            ));
+        }
+        Ok(())
+    }
+}

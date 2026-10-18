@@ -507,3 +507,6 @@ pub(crate) use host_startup::{
 
 #[path = "birth/settled17.rs"]
 mod settled17;
+
+#[path = "birth/initial15_normalization.rs"]
+mod initial15_normalization;

@@ -13,6 +13,7 @@ mod restoration_storage;
 mod restored_source17;
 
 use super::*;
+use std::cell::Cell;
 use crucible::node_admission::{CompleteArchiveCodeGraph, ConformanceGraph};
 use crucible::node_contract::{
     CollectingCompleteRestorationSource, HostSchedulingContinuationLimits, HostSchedulingOwner,
@@ -31,6 +32,9 @@ pub struct PacketCompleteRestorationPrebirth {
     code_graph: Rc<CompleteArchiveCodeGraph>,
     source: CollectingCompleteRestorationSource,
     native: [Option<CompleteOriginalNativeTicket>; 3],
+    initial15_control: RefCell<initial15_control::Initial15PrebirthControlMembers>,
+    initial15_control_started: Cell<bool>,
+    initial15_control_failed: Cell<bool>,
     host_ticket: Option<CompleteOriginalHostTicket>,
     host: Option<HostSchedulingOwner>,
     host_attempted: bool,
@@ -86,6 +90,11 @@ impl PacketCompleteArchiveCodeFactory {
             code_graph: graph,
             source,
             native: std::array::from_fn(|_| None),
+            initial15_control: RefCell::new(
+                initial15_control::Initial15PrebirthControlMembers::new(),
+            ),
+            initial15_control_started: Cell::new(false),
+            initial15_control_failed: Cell::new(false),
             host_ticket: None,
             host: None,
             host_attempted: false,
@@ -553,6 +562,15 @@ impl PacketCompleteRestorationPrebirth {
             return Err(refused("report storage loan crossed its pre-Child phase"));
         }
         let mut counter = super::super::retained::Counter::new(maximum);
+        counter
+            .add(
+                self.initial15_control
+                    .try_borrow()
+                    .map_err(error)?
+                    .retained_requested_storage_data(counter.remaining())
+                    .map_err(error)?,
+            )
+            .map_err(error)?;
         counter.rc(original).map_err(error)?;
         if let Some(holder) = &self.report_startup_holder {
             counter.weak(holder).map_err(error)?;
@@ -631,3 +649,6 @@ mod fresh_runtime;
 mod runtime_owner;
 
 mod producer_lifecycle;
+
+#[path = "restoration_prebirth/initial15_control.rs"]
+pub(in crate::node_qualification::packet_collection::complete) mod initial15_control;

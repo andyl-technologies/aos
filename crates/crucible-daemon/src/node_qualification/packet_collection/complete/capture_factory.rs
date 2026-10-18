@@ -858,3 +858,5 @@ fn copy_geometry(
         maximum_transient_bytes: row.maximum_transient_bytes,
     })
 }
+
+pub(in crate::node_qualification::packet_collection::complete) use restoration_prebirth::initial15_control::Initial15ControlStep;

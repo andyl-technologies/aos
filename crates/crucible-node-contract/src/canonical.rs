@@ -448,3 +448,48 @@ pub fn canonical_number_counter_scratch_bytes_data() -> usize {
         + size_of::<Result<(), serde_json::Error>>()
         + size_of::<Result<(), ContractError>>()
 }
+
+#[path = "canonical/json_counter.rs"]
+mod json_counter;
+pub use json_counter::canonical_json_counter_scratch_bytes_data;
+
+/// Names the strict JSON parser's fixed borrowed and container controls.
+///
+/// This declaration covers the actual Parser and each possible recursive
+/// container frame under parse_json_with_depth's unchanged maximum of 64.
+/// Container backing, parsed strings, errors and returned JSON trees require
+/// an independently admitted constructor extent; this getter supplies none.
+/// It is a requested-layout declaration, not a physical machine stack bound.
+pub fn json_parse_counter_scratch_bytes_data() -> usize {
+    use std::mem::size_of;
+
+    let container = size_of::<&mut Parser<'static>>()
+        + size_of::<usize>()
+        + size_of::<Vec<Value>>()
+        + size_of::<Map<String, Value>>()
+        + size_of::<String>()
+        + size_of::<Option<Value>>()
+        + size_of::<Option<u8>>();
+    let returned_value = size_of::<Value>() + size_of::<Result<Value, ContractError>>();
+
+    size_of::<Parser<'static>>()
+        + 64 * container
+        + 65 * returned_value
+        // string() delegates one complete quoted token to this exact serde
+        // slice decoder. It never recursively invokes another Parser::string.
+        + size_of::<serde_json::Deserializer<serde_json::de::SliceRead<'static>>>()
+        + size_of::<Result<String, serde_json::Error>>()
+        + size_of::<ryu_js::Buffer>()
+        + size_of::<Number>()
+        + size_of::<Option<Number>>()
+        + size_of::<&str>() * 2
+        + size_of::<&[u8]>()
+        + size_of::<usize>() * 2
+        + size_of::<bool>() * 2
+        + size_of::<f64>()
+        + size_of::<Result<i64, std::num::ParseIntError>>()
+        + size_of::<Result<u64, std::num::ParseIntError>>()
+        + size_of::<Result<f64, std::num::ParseFloatError>>()
+        + size_of::<Result<&str, std::str::Utf8Error>>()
+        + size_of::<ContractError>()
+}

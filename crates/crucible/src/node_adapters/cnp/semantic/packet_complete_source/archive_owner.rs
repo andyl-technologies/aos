@@ -264,23 +264,10 @@ impl<'a> PacketCompleteArchivedOwnerData<'a> {
         if journal_bytes.len() > limits.state.maximum_record_bytes {
             return Err(refused("cold signed journal exceeds record bound"));
         }
-        // This conservative per-input-character bound covers the journal parser's
-        // simultaneous Value/tree/string/vector scratch before typed decoding.
+        // Reuse the defining combined parser/tree/string/vector allowance.
         // Complete protocol plans use the separate borrowed SDK walkers below.
-        let per_character = size_of::<serde_json::Value>()
-            .checked_mul(2)
-            .and_then(|n| n.checked_add(size_of::<String>() * 2))
-            .and_then(|n| {
-                n.checked_add(NodeRuntime::capture_map_node_storage::<
-                    String,
-                    serde_json::Value,
-                >())
-            })
-            .ok_or_else(|| refused("cold journal parser layout overflow"))?;
-        let journal_storage = journal_bytes
-            .len()
-            .checked_mul(per_character)
-            .ok_or_else(|| refused("cold journal parser extent overflow"))?;
+        let journal_storage =
+            PacketCompleteSettledJournal::decode_construction_storage_data(journal_bytes)?;
         checked_sum(
             [
                 additional_retained_bytes,

@@ -251,3 +251,5 @@ pub(crate) fn restoration_observe_repeated_projection_data(
 > {
     projection::wire_projection_data(maximum)
 }
+
+pub(crate) use crypto::restoration_observe_proof_layout_data;
