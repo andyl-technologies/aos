@@ -32,7 +32,7 @@ impl ForkRateClock {
 }
 
 /// Bounds one host process operation without exposing an absolute timestamp.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) struct ProcessDeadline {
     deadline: Instant,
 }
@@ -46,6 +46,11 @@ impl ProcessDeadline {
     /// Returns no deadline if the requested host duration cannot be represented.
     pub(super) fn after(timeout: Duration) -> Option<Self> {
         now().checked_add(timeout).map(|deadline| Self { deadline })
+    }
+
+    /// Offsets the same opaque operational anchor without reading another clock.
+    pub(super) fn checked_add(self, allowance: Duration) -> Option<Self> {
+        self.deadline.checked_add(allowance).map(Self::at)
     }
 
     /// Returns the remaining operational wait allowance.

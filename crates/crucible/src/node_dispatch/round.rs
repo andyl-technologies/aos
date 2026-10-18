@@ -258,6 +258,34 @@ impl DispatchRound {
             .map_err(DispatchError::Runtime)
     }
 
+    /// Requests closure only while the original member remains pending.
+    ///
+    /// A cached, validated native outcome returns `None` without issuing another
+    /// close. A close request alone never creates a ready result; callers still
+    /// poll and publish the complete original round through the usual barrier.
+    ///
+    /// # Errors
+    /// Refuses unknown operations, propagates the retained original native
+    /// failure, or returns an authentic pending member's runtime closure error.
+    pub fn close_pending_quantum(
+        &mut self,
+        runtime: &mut NodeRuntime,
+        operation: &Id,
+    ) -> Result<Option<Submission>, DispatchError> {
+        let member = self
+            .members
+            .get(operation)
+            .ok_or(DispatchError::UnknownOperation)?;
+        match &member.state {
+            MemberState::Ready(_) => Ok(None),
+            MemberState::Failed(reason) => Err(DispatchError::Native {
+                operation: operation.clone(),
+                reason: reason.clone(),
+            }),
+            MemberState::Pending => self.close_quantum(runtime, operation).map(Some),
+        }
+    }
+
     /// Commits a complete validated round in its canonical original order.
     ///
     /// A native acknowledgement failure retains the minted commit for retry.

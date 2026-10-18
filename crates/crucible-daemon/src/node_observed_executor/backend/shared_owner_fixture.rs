@@ -20,6 +20,8 @@ pub(super) enum Topology {
     SharedIsolated,
     Conflicting,
     Disjoint,
+    /// Gives independent model windows unequal operational budgets.
+    DisjointQuantized,
 }
 
 struct ModelEvidence(BTreeMap<String, Vec<u8>>);
@@ -140,6 +142,7 @@ pub(super) fn graph(topology: Topology) -> (AdmittedGraph, NodeScenario) {
         guarantees_ref: ownership.inventory_proof_ref.clone(),
         extensions: Extensions::new(),
     };
+    let quantized = matches!(topology, Topology::DisjointQuantized);
     for (descriptor, binding) in descriptors.iter_mut().zip(&mut bindings) {
         if matches!(topology, Topology::SharedTransfer) {
             let direction = if descriptor.id == id("a") {
@@ -163,6 +166,21 @@ pub(super) fn graph(topology: Topology) -> (AdmittedGraph, NodeScenario) {
         let mut capabilities: CapabilityProfile =
             evidence.decode(&binding.compatibility.capabilities_ref);
         capabilities.facets = vec![facet.clone()];
+        if quantized {
+            let policy = crucible::node_scheduling::ExecutionPolicy::Quantized {
+                schema_version: 1,
+                quantum_ps: U64::new(50),
+                phase_ps: U64::new(0),
+                host_budget_ns: U64::new(if descriptor.id == id("a") {
+                    1_000_000_000_000
+                } else {
+                    2_000_000_000_000
+                }),
+                window_proof_ref: ownership.inventory_proof_ref.clone(),
+            };
+            binding.compatibility.operating_contract.mode = OperatingMode::Quantized;
+            binding.compatibility.operating_contract.policy_ref = evidence.put(&policy);
+        }
         binding.compatibility.capabilities_ref = evidence.put(&capabilities);
         binding.compatibility.operating_contract.facets = vec![facet.clone()];
         binding.compatibility.descriptor_hash = descriptor.identity().unwrap();
@@ -188,7 +206,10 @@ pub(super) fn graph(topology: Topology) -> (AdmittedGraph, NodeScenario) {
     }
     world.ownership_ref = evidence.put(&ownership);
     world.coordinator_contract_ref = evidence.put(&coordinator);
-    let requirements = original.requirements().clone();
+    let mut requirements = original.requirements().clone();
+    if quantized {
+        requirements.accepted_quantized_nodes = vec![id("a"), id("z")];
+    }
     world.scenario_ref = evidence.put(&requirements);
     let admitted = admit_graph(
         AdmissionRequest {

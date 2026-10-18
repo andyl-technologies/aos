@@ -30,6 +30,14 @@ use super::{id, position};
 pub(super) struct Journal {
     /// Records each original native begin exactly once.
     pub begins: Vec<Id>,
+    /// Records each actual controller close request on its original operation.
+    pub closes: Vec<Id>,
+    /// Selects an adverse original close response for controller regressions.
+    pub close_submission: Option<Submission>,
+    /// Unwinds after recording one actual close callback to test sticky custody.
+    pub close_panics: bool,
+    /// Selects an uncertain original begin without fabricating a replacement.
+    pub begin_submission: Option<Submission>,
     /// Records original immutable staging before any semantic consumption.
     pub stages: Vec<Id>,
     /// Records accepted administrative input commitments without consuming bytes.
@@ -38,6 +46,8 @@ pub(super) struct Journal {
     pub acknowledgements: Vec<Id>,
     /// Keeps an original native operation pending while another owner completes.
     pub pending: bool,
+    /// Supplies an original terminal model failure without a replacement run.
+    pub poll_failure: Option<OperationFailure>,
     /// Records actual payload bytes in semantic delivery order.
     pub semantic_inputs: Vec<Vec<u8>>,
     admissions: BTreeMap<Id, OperationAdmission>,
@@ -207,7 +217,10 @@ impl SimulationNode for ModelNode {
     }
 
     fn facets(&self) -> &[FacetKind] {
-        &[FacetKind::ExactExecution]
+        match self.binding.compatibility.operating_contract.mode {
+            crucible_node_contract::OperatingMode::Quantized => &[FacetKind::QuantizedExecution],
+            _ => &[FacetKind::ExactExecution],
+        }
     }
 
     fn status(&mut self) -> Result<NodeStatus, OperationFailure> {
@@ -376,7 +389,9 @@ impl SimulationNode for ModelNode {
                 .replace(admission.token().operation().clone())
                 .is_none()
         );
-        if let OperationRequest::ExactRun { start, .. } = admission.request() {
+        if let OperationRequest::ExactRun { start, .. }
+        | OperationRequest::QuantumBegin { start, .. } = admission.request()
+        {
             assert_eq!(*start, owner.cursor);
         }
         if let Some(staged) = &owner.staged {
@@ -398,7 +413,10 @@ impl SimulationNode for ModelNode {
                 .is_none()
         );
         journal.begins.push(admission.token().operation().clone());
-        Submission::Accepted
+        journal
+            .begin_submission
+            .clone()
+            .unwrap_or(Submission::Accepted)
     }
 
     fn poll_operation(
@@ -407,6 +425,9 @@ impl SimulationNode for ModelNode {
         _: &mut Context<'_>,
     ) -> Poll<Result<OperationOutcome, OperationFailure>> {
         let mut journal = self.journal.borrow_mut();
+        if let Some(failure) = &journal.poll_failure {
+            return Poll::Ready(Err(failure.clone()));
+        }
         if journal.pending {
             return Poll::Pending;
         }
@@ -414,8 +435,44 @@ impl SimulationNode for ModelNode {
             return Poll::Ready(Ok(outcome.clone()));
         }
         let original = journal.admissions.get(operation.operation()).unwrap();
-        let reached = match original.request() {
-            OperationRequest::ExactRun { limit, .. } => *limit,
+        let (reached, progress, output_bound) = match original.request() {
+            OperationRequest::ExactRun { limit, .. } => (
+                *limit,
+                ProgressEvidence::Exact {
+                    reached: *limit,
+                    stop: StopReason::HorizonPark,
+                },
+                NativeOutputBound::AfterInstant(limit.time_ps),
+            ),
+            OperationRequest::QuantumBegin {
+                window,
+                end,
+                input_batch,
+                ..
+            } => {
+                if !journal.closes.contains(operation.operation()) {
+                    return Poll::Pending;
+                }
+                // Completing the window parks at its next BoundaryControl
+                // cut. Output visibility keeps the original Publication end;
+                // completion does not claim every phase of that tick closed.
+                (
+                    Position::new(end.time_ps, U64::new(0), Phase::BoundaryControl),
+                    ProgressEvidence::Quantized {
+                        window: window.clone(),
+                        publication: *end,
+                        physical: PhysicalState::Suspended,
+                        closure: Box::new(QuantumClosureEvidence {
+                            input_batch: input_batch.clone(),
+                            close_receipt: proof(b"model-quantum-close"),
+                            output_inventory: proof(b"model-quantum-output"),
+                            pending_inventory: proof(b"model-quantum-pending"),
+                            clock_evidence: proof(b"model-quantum-clock"),
+                        }),
+                    },
+                    NativeOutputBound::At(*end),
+                )
+            }
             _ => panic!("unsupported model request"),
         };
         let mut publications = Vec::new();
@@ -489,7 +546,7 @@ impl SimulationNode for ModelNode {
                 .iter()
                 .map(|producer| NativeProducerBound {
                     producer: producer.clone(),
-                    bound: NativeOutputBound::AfterInstant(reached.time_ps),
+                    bound: output_bound,
                     proof_ref: proof_ref.clone(),
                 })
                 .collect(),
@@ -502,10 +559,7 @@ impl SimulationNode for ModelNode {
             operation: operation.operation().clone(),
             node: operation.route().node.clone(),
             owners: operation.route().owners.clone(),
-            progress: ProgressEvidence::Exact {
-                reached,
-                stop: StopReason::HorizonPark,
-            },
+            progress,
             retained_outputs: observation
                 .publications
                 .iter()
@@ -542,10 +596,30 @@ impl SimulationNode for ModelNode {
         Ok(CancelStatus::Requested)
     }
 
-    fn close_quantum(&mut self, _: &OperationAdmission) -> Submission {
-        Submission::Refused(Refusal {
-            reason: "exact model".into(),
-        })
+    fn close_quantum(&mut self, original: &OperationAdmission) -> Submission {
+        if !matches!(original.request(), OperationRequest::QuantumBegin { .. }) {
+            return Submission::Refused(Refusal {
+                reason: "exact model".into(),
+            });
+        }
+        let mut journal = self.journal.borrow_mut();
+        assert_eq!(
+            journal
+                .admissions
+                .get(original.token().operation())
+                .unwrap()
+                .request(),
+            original.request()
+        );
+        journal.closes.push(original.token().operation().clone());
+        assert!(
+            !journal.close_panics,
+            "model close unwound after submission"
+        );
+        journal
+            .close_submission
+            .clone()
+            .unwrap_or(Submission::Accepted)
     }
 
     fn acknowledge_publication(
@@ -567,8 +641,10 @@ impl SimulationNode for ModelNode {
     }
 
     fn facet(&mut self, kind: FacetKind) -> Result<NodeFacet<'_>, Refusal> {
-        if kind == FacetKind::ExactExecution {
+        if kind == FacetKind::ExactExecution && self.facets().contains(&kind) {
             Ok(NodeFacet::ExactExecution(self))
+        } else if kind == FacetKind::QuantizedExecution && self.facets().contains(&kind) {
+            Ok(NodeFacet::QuantizedExecution(self))
         } else {
             Err(Refusal {
                 reason: "exact model only".into(),

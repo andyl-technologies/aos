@@ -3,6 +3,10 @@
 #[path = "backend/replay.rs"]
 mod replay;
 
+#[path = "backend/quantum_closure.rs"]
+mod quantum_closure;
+use quantum_closure::{PendingRoundStart, QuantizedClosures};
+
 use std::{
     collections::BTreeSet,
     sync::Arc,
@@ -36,7 +40,6 @@ use crate::{
     executor_node_capabilities::roster_from_admitted_graph,
     node_execution::{ExactOperationNames, ExactOperationRequest, plan_exact_operation},
     node_scenario::{NodeRunConfiguration, NodeScenario, NodeScenarioError},
-    supervision::ProcessDeadline,
 };
 
 use super::factory::{ReplayStep, ReplayStepper};
@@ -118,9 +121,7 @@ impl From<RuntimePollFailure> for NodeObservedError {
 
 struct ActiveRound {
     round: DispatchRound,
-    quantized: Vec<Id>,
-    close_at: ProcessDeadline,
-    closed: bool,
+    closures: QuantizedClosures,
 }
 
 struct CompletedNative {
@@ -146,6 +147,7 @@ pub struct NodeObservedBackend {
     blobs: Arc<dyn ImmutableBlobBackend>,
     request: Option<ObservedAttemptRequest>,
     round: Option<ActiveRound>,
+    starting_round: Option<PendingRoundStart>,
     replay: Option<ReplayStepper>,
     prearmed: bool,
     rounds: u64,
@@ -282,6 +284,7 @@ impl NodeObservedBackend {
             blobs,
             request: None,
             round: None,
+            starting_round: None,
             replay: None,
             prearmed: false,
             rounds: 0,
@@ -339,6 +342,11 @@ impl NodeObservedBackend {
     }
 
     fn begin_round(&mut self) -> Result<bool, NodeObservedError> {
+        if self.starting_round.is_some() {
+            return Err(NodeObservedError::Native(
+                "original partial round start remains retained for containment".into(),
+            ));
+        }
         let runtime = self
             .runtime
             .as_mut()
@@ -349,7 +357,6 @@ impl NodeObservedBackend {
             .ok_or_else(|| NodeObservedError::Native("world is not activated".into()))?;
         let mut grants = Vec::new();
         let mut quantized = Vec::new();
-        let mut maximum_budget = Duration::ZERO;
         let mut dispatched_owners = BTreeSet::new();
         for node in self.graph.node_ids() {
             let binding = self
@@ -465,8 +472,7 @@ impl NodeObservedBackend {
                             )
                             .map_err(native)?,
                     );
-                    quantized.push(operation);
-                    maximum_budget = maximum_budget.max(Duration::from_nanos(host_budget_ns.get()));
+                    quantized.push((operation, Duration::from_nanos(host_budget_ns.get())));
                 }
             }
             if grants.len() > previous_grants {
@@ -488,17 +494,39 @@ impl NodeObservedBackend {
             }
             return Ok(false);
         }
-        let close_at = ProcessDeadline::after(maximum_budget).ok_or_else(|| {
-            NodeObservedError::Native("host budget overflows monotonic clock".into())
+        // Prepare every controller deadline before the first native submission.
+        // This pre-start interval can conservatively close a later-started owner
+        // early; it never changes that owner's native-running budget or receipt.
+        self.starting_round = Some(PendingRoundStart::prepare(quantized)?);
+        let round = match DispatchRound::start(runtime, grants, self.graph.node_ids().count()) {
+            Ok(round) => round,
+            Err(failure) => {
+                let reason = failure.reason.clone();
+                if let Some(starting) = self.starting_round.as_mut() {
+                    starting.retain_failure(failure);
+                }
+                return Err(NodeObservedError::Native(reason));
+            }
+        };
+        let mut starting = self.starting_round.take().ok_or_else(|| {
+            NodeObservedError::Native("original round close schedule disappeared".into())
         })?;
-        let round = DispatchRound::start(runtime, grants, self.graph.node_ids().count())
-            .map_err(|failure| NodeObservedError::Native(failure.reason))?;
+        for token in round.tokens() {
+            starting.closures.mark_started(token.operation());
+        }
         self.round = Some(ActiveRound {
             round,
-            quantized,
-            close_at,
-            closed: false,
+            closures: starting.closures,
         });
+        // Sequential native starts may outlive a precomputed controller deadline.
+        // Retain the actual complete round first, then request the due original
+        // closures immediately. Only real polling can establish settlement.
+        let active = self.round.as_mut().ok_or_else(|| {
+            NodeObservedError::Native("original started round disappeared".into())
+        })?;
+        active
+            .closures
+            .request_due(|operation| active.round.close_pending_quantum(runtime, operation))?;
         Ok(true)
     }
 
@@ -723,20 +751,9 @@ impl ObservedAttemptBackend for NodeObservedBackend {
             .runtime
             .as_mut()
             .ok_or_else(|| NodeObservedError::Native("native runtime disappeared".into()))?;
-        if !round.closed && round.close_at.expired() {
-            for operation in &round.quantized {
-                let closure = round
-                    .round
-                    .close_quantum(runtime, operation)
-                    .map_err(native)?;
-                if !matches!(closure, crucible::node_contract::Submission::Accepted) {
-                    return Err(NodeObservedError::Native(format!(
-                        "original native window closure was not accepted: {closure:?}",
-                    )));
-                }
-            }
-            round.closed = true;
-        }
+        round
+            .closures
+            .request_due(|operation| round.round.close_pending_quantum(runtime, operation))?;
         match round.round.poll(runtime, &mut context) {
             Poll::Pending => Ok(None),
             Poll::Ready(Err(error)) => Err(native(error)),
