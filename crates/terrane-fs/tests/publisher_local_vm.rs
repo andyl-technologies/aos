@@ -4,6 +4,8 @@
 //! local socket authentication and directory custody, not network sandboxing
 //! or completion of publication commands.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use rustix::{
     fs::chown,
     net::{self, AddressFamily, SocketFlags, SocketType},

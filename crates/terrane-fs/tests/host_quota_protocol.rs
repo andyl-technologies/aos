@@ -1,5 +1,7 @@
 //! Exercises the closed quota schema without granting kernel privilege.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use prost::Message;
 use terrane_fs::host_quota::{HostQuotaClient, QuotaObservation, QuotaQuery};
 

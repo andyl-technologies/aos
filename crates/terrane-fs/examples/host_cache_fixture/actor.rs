@@ -10,7 +10,7 @@ use std::{
         unix::fs::{MetadataExt, OpenOptionsExt},
     },
     sync::Arc,
-    task::{Context, Poll, Wake, Waker},
+    task::{Context, Poll, Waker},
 };
 use terrane::{host::cache::CacheState, store::TokioLocalFs};
 use terrane_fs::{
@@ -366,11 +366,6 @@ fn verify_hold(runtime: &tokio::runtime::Runtime, inputs: &Inputs) -> io::Result
     Ok(())
 }
 
-struct NoopWake;
-impl Wake for NoopWake {
-    fn wake(self: Arc<Self>) {}
-}
-
 fn cancel(
     owner: &NativeMetadataOwner,
     runtime: &tokio::runtime::Runtime,
@@ -379,8 +374,7 @@ fn cancel(
     emit("READY actual preparation and owner; wait for stopped-helper control")?;
     require_control("enqueue")?;
     let mut request = Box::pin(owner.recover());
-    let waker = Waker::from(Arc::new(NoopWake));
-    let mut context = Context::from_waker(&waker);
+    let mut context = Context::from_waker(Waker::noop());
     if !matches!(request.as_mut().poll(&mut context), Poll::Pending) {
         return Err(io::Error::other(
             "cancellation did not observe accepted pending command",

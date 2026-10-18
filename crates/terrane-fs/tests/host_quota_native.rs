@@ -3,6 +3,8 @@
 //! These ignored cases require the explicit host-quota-proof guest marker and
 //! an actual ext4 project-quota mount; ordinary package checks never qualify them.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::os::unix::fs::PermissionsExt;

@@ -3,6 +3,7 @@
 //! Actual confinement is installed by the publication example before role
 //! dispatch. These ignored libtest cases never install it inside a test thread.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 #![cfg(feature = "tokio")]
 
 #[test]

@@ -1,5 +1,7 @@
 //! Checks the closed publisher protocol before any native effect.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use prost::Message;
 use terrane_core::identity::{Descriptor, IdentityKind, TERRANE_V1};
 use terrane_fs::publisher_local::{

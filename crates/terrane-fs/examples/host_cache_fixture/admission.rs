@@ -17,8 +17,7 @@ use std::{
         unix::fs::{MetadataExt, OpenOptionsExt},
     },
     path::{Path, PathBuf},
-    sync::Arc,
-    task::{Context, Poll, Wake, Waker},
+    task::{Context, Poll, Waker},
 };
 use terrane::{
     host::cache::CacheState,
@@ -563,7 +562,15 @@ pub(super) fn manifest(value: u8) -> io::Result<Vec<u8>> {
     .map_err(io::Error::other)
 }
 
-fn metadata_pair() -> io::Result<(PackId, Vec<u8>, Vec<u8>, BTreeSet<String>)> {
+// These are ordinary fixture bytes and expected policy hashes, not authority.
+struct MetadataPair {
+    id: PackId,
+    pack: Vec<u8>,
+    index: Vec<u8>,
+    hashes: BTreeSet<String>,
+}
+
+fn metadata_pair() -> io::Result<MetadataPair> {
     let id = random_id()?;
     let mut writer = PackWriter::new(id, PackClass::Meta, false);
     let mut hashes = BTreeSet::new();
@@ -578,12 +585,12 @@ fn metadata_pair() -> io::Result<(PackId, Vec<u8>, Vec<u8>, BTreeSet<String>)> {
         .calculate(IdentityKind::Pack, sealed.bytes())
         .map_err(io::Error::other)?
         .digest()));
-    Ok((
+    Ok(MetadataPair {
         id,
-        sealed.bytes().to_vec(),
-        sealed.index_object().to_vec(),
+        pack: sealed.bytes().to_vec(),
+        index: sealed.index_object().to_vec(),
         hashes,
-    ))
+    })
 }
 
 fn invalid_metadata_body() -> io::Result<(PackId, Vec<u8>, Vec<u8>)> {
@@ -648,7 +655,12 @@ fn metadata(
     runtime: &tokio::runtime::Runtime,
     inputs: &Inputs,
 ) -> io::Result<()> {
-    let (id, pack, index, hashes) = metadata_pair()?;
+    let MetadataPair {
+        id,
+        pack,
+        index,
+        hashes,
+    } = metadata_pair()?;
     let (semantic_id, semantic_pack, semantic_index) = invalid_metadata_body()?;
     let data_id = random_id()?;
     let mut data = PackWriter::new(data_id, PackClass::Data, false);
@@ -719,11 +731,6 @@ fn metadata(
     )
 }
 
-struct NoopWake;
-impl Wake for NoopWake {
-    fn wake(self: Arc<Self>) {}
-}
-
 fn cancelled(
     owner: &NativeMetadataOwner,
     runtime: &tokio::runtime::Runtime,
@@ -737,8 +744,7 @@ fn cancelled(
     let first_hold = hold(encoded.len(), [hex(declared.digest())])?;
     let mut request =
         Box::pin(owner.admit_chunk(declared.clone(), ChunkPosition::Final, encoded.clone()));
-    let waker = Waker::from(Arc::new(NoopWake));
-    let mut context = Context::from_waker(&waker);
+    let mut context = Context::from_waker(Waker::noop());
     if !matches!(request.as_mut().poll(&mut context), Poll::Pending) {
         return Err(invalid(
             "admission cancellation did not observe accepted Pending",
