@@ -263,18 +263,17 @@ fn open_directory_chain(path: &Path) -> io::Result<OwnedFd> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::open_directory_chain;
-    use std::{fs, os::unix::fs::symlink, time::SystemTime};
+    use std::{fs, io::Read, os::unix::fs::symlink};
 
     #[test]
     fn native_host_cache_rejects_symlink_ancestors() {
-        let nonce = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
+        let mut random = [0_u8; 16];
+        fs::File::open("/dev/urandom")
             .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "terrane-native-host-chain-{}-{nonce}",
-            std::process::id()
-        ));
+            .read_exact(&mut random)
+            .unwrap();
+        let suffix: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
+        let root = std::env::temp_dir().join(format!("terrane-native-host-chain-{suffix}"));
         fs::create_dir_all(root.join("real/leaf")).unwrap();
         symlink(root.join("real"), root.join("alias")).unwrap();
 

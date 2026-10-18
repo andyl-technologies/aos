@@ -1026,14 +1026,13 @@ mod snapshot_provenance_tests {
     fn previous_write_cannot_certify_new_generation_or_another_inode() {
         // Real ordinary files test identity only: no native preparation,
         // confinement, quota or bootstrap receipt is fabricated here.
-        let path = std::env::temp_dir().join(format!(
-            "terrane-snapshot-provenance-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let mut random = [0_u8; 16];
+        File::open("/dev/urandom")
+            .unwrap()
+            .read_exact(&mut random)
+            .unwrap();
+        let suffix: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
+        let path = std::env::temp_dir().join(format!("terrane-snapshot-provenance-{suffix}"));
         std::fs::create_dir(&path).unwrap();
         let first = File::create_new(path.join("first")).unwrap();
         let second = File::create_new(path.join("second")).unwrap();
