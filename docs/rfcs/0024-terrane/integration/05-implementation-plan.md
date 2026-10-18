@@ -9019,8 +9019,16 @@ Resumed qualification:
   mandatory. Two native controls add valid mixed recovery and a corrupt
   manifest beside an independently adopted inline inode; a later failure must
   retain that inline inode, its binding and the original funded faulted custody.
-  Full source review and the formatter pair pass. Compilation and actual guest
-  execution are pending; no additional runtime or task acceptance is claimed.
+  Full source review, the formatter pair, immutable image, independent image
+  verification and actual ext4 guest pass on unchanged source. All 47 selected
+  filesystem cases, eight manifest/mixed cases and three process-confinement
+  controls pass. The supervisor confirms original inodes, unchanged bytes and
+  actual inline binding creation on both mixed paths; success reconstructs the
+  exact additional inline residence before genuine Resume. The guest emits a
+  vda write-error diagnostic after `TEST_RESULT:PASS` during shutdown; it is
+  preserved for review, with no clean-shutdown or root-cause claim. Full cold
+  policy recovery, HOST-32, Running publication, NativeReady and BKT-15 remain
+  open; no complete host task is accepted.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
   and all seven strict Clippy/documentation profiles pass. The interface,
   commit-path, status and schema gates pass on unchanged final source, including
