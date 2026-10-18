@@ -1,14 +1,14 @@
 //! Bounded multi-object and multi-placement scheduling with retained retries.
 
 use aos_proto_types::direct_upload::*;
-use futures_util::{StreamExt as _, stream};
+use futures_util::{stream, StreamExt as _};
 
 use super::{
-    DirectCheckpointStore, DirectClientError, DirectGrantAttempt, DirectObservedPart,
-    DirectPartReceipt, DirectPartTransport, DirectUploadControl, DirectUploadObject, helpers,
-    status,
+    helpers, status, DirectCheckpointStore, DirectClientError, DirectGrantAttempt,
+    DirectObservedPart, DirectPartReceipt, DirectPartTransport, DirectUploadControl,
+    DirectUploadObject,
 };
-use crate::direct_upload::{PartSource, ProviderContext, ProviderError, provider::portable_part};
+use crate::direct_upload::{provider::portable_part, PartSource, ProviderContext, ProviderError};
 
 const MAX_ACTIVE_BULK_FILES: usize = 8;
 const MAX_ACTIVE_METADATA_FILES: usize = 32;
@@ -312,7 +312,7 @@ pub async fn upload_direct_batch<
                 }
                 ready.push((job, grant));
             }
-            let results: Vec<_> = stream::iter(ready.into_iter().map(|(job, grant)| {
+            let results = stream::iter(ready.into_iter().map(|(job, grant)| {
                 let owner = &work[job.work_index];
                 async move {
                     let context = ProviderContext {
@@ -325,42 +325,46 @@ pub async fn upload_direct_batch<
                 }
             }))
             .buffer_unordered(MAX_PROVIDER_REQUESTS)
-            .collect()
-            .await;
-            let mut receipts = Vec::with_capacity(results.len());
+            .ready_chunks(MAX_PROVIDER_REQUESTS);
+            futures_util::pin_mut!(results);
             let mut failure = None;
-            for (mut job, grant, result) in results {
-                match result {
-                    Ok(observed) => {
-                        status::check_observed(
-                            &work[job.work_index].object,
-                            &job.placement,
-                            &observed,
-                        )
-                        .await?;
-                        let receipt = DirectPartReceipt {
-                            session: work[job.work_index].status.session.clone(),
-                            placement: job.placement.clone(),
-                            grant_id: grant.grant_id,
-                            grant_revision: grant.grant_revision,
-                            observed,
-                        };
-                        reports.push(report(&receipt));
-                        receipts.push(receipt);
+            while let Some(completed) = results.next().await {
+                let mut receipts = Vec::with_capacity(completed.len());
+                for (mut job, grant, result) in completed {
+                    match result {
+                        Ok(observed) => {
+                            status::check_observed(
+                                &work[job.work_index].object,
+                                &job.placement,
+                                &observed,
+                            )
+                            .await?;
+                            let receipt = DirectPartReceipt {
+                                session: work[job.work_index].status.session.clone(),
+                                placement: job.placement.clone(),
+                                grant_id: grant.grant_id,
+                                grant_revision: grant.grant_revision,
+                                observed,
+                            };
+                            reports.push(report(&receipt));
+                            receipts.push(receipt);
+                        }
+                        Err(ProviderError::Denied | ProviderError::Expired) if retry < 2 => {
+                            job.refresh = true;
+                            pending.push(job);
+                        }
+                        Err(ProviderError::Unavailable) if retry < 2 => pending.push(job),
+                        Err(ProviderError::Unavailable | ProviderError::Expired) => {
+                            failure = Some(DirectClientError::PartUnavailable);
+                        }
+                        Err(ProviderError::Denied) => failure = Some(DirectClientError::Denied),
+                        Err(_) => failure = Some(DirectClientError::Invalid),
                     }
-                    Err(ProviderError::Denied | ProviderError::Expired) if retry < 2 => {
-                        job.refresh = true;
-                        pending.push(job);
-                    }
-                    Err(ProviderError::Unavailable) if retry < 2 => pending.push(job),
-                    Err(ProviderError::Unavailable | ProviderError::Expired) => {
-                        failure = Some(DirectClientError::PartUnavailable);
-                    }
-                    Err(ProviderError::Denied) => failure = Some(DirectClientError::Denied),
-                    Err(_) => failure = Some(DirectClientError::Invalid),
                 }
+                // Retain positive receipts while slower peers remain in flight.
+                // A crash must not discard already acknowledged provider bytes.
+                store.record_receipts(&receipts).await?;
             }
-            store.record_receipts(&receipts).await?;
             if let Some(error) = failure {
                 return Err(error);
             }

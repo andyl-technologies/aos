@@ -682,6 +682,77 @@ async fn multipart_and_multiplacement_streams_are_bounded_parallel_and_exact() {
 }
 
 #[tokio::test]
+async fn completed_parts_are_retained_while_an_earlier_part_is_still_in_flight() {
+    struct GatedProvider {
+        inner: Provider,
+        later_completed: tokio::sync::Notify,
+        release_first: tokio::sync::Notify,
+    }
+
+    #[async_trait]
+    impl DirectPartTransport for GatedProvider {
+        async fn send_part(
+            &self,
+            context: &ProviderContext,
+            source: &PartSource,
+            grant: &DirectPartGrant,
+        ) -> Result<DirectManifestPart, ProviderError> {
+            if grant.part.part_number == 1 {
+                self.release_first.notified().await;
+            }
+            let result = self.inner.send_part(context, source, grant).await;
+            if grant.part.part_number == 2 {
+                self.later_completed.notify_one();
+            }
+            result
+        }
+    }
+
+    let destinations = placements(1);
+    let source = objects(1, &vec![37; 9 * 1024 * 1024], &destinations, 0).await;
+    let control = Control::new(destinations);
+    let store = Store::default();
+    let provider = GatedProvider {
+        inner: Provider::default(),
+        later_completed: tokio::sync::Notify::new(),
+        release_first: tokio::sync::Notify::new(),
+    };
+
+    let observe = async {
+        let retained = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            provider.later_completed.notified().await;
+            loop {
+                let parts: Vec<_> = store
+                    .0
+                    .lock()
+                    .unwrap()
+                    .receipts
+                    .keys()
+                    .map(|key| key.2)
+                    .collect();
+                if parts == [2] {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .is_ok();
+        // Always release the peer, including when checking the old behavior.
+        provider.release_first.notify_one();
+        retained
+    };
+    let (uploaded, retained_before_first_finished) = tokio::join!(
+        upload_direct_batch(&control, &store, &provider, source),
+        observe,
+    );
+
+    assert!(uploaded.is_ok());
+    assert!(retained_before_first_finished);
+    assert_eq!(store.0.lock().unwrap().receipts.len(), 2);
+}
+
+#[tokio::test]
 async fn object_minimum_refuses_empty_before_admission_begin_or_provider_upload() {
     let destinations = placements(1);
     let mut source = objects(1, b"", &destinations, 0).await;
