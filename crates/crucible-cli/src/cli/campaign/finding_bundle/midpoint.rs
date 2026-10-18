@@ -176,9 +176,6 @@ pub(super) fn prepare_finding_bundle_midpoint(
         capture.recipe(),
         lifecycle_objects,
     )?;
-    let model =
-        crucible::ReproductionArtifact::from_compact_binary(capture.model_reproduction())
-            .map_err(|error| backend_error(format!("finding model replay is invalid: {error}")))?;
     let selected_index = match capture.selected_side() {
         FindingProductionReplaySelectedSide::Observed
         | FindingProductionReplaySelectedSide::Expected => 0,
@@ -188,20 +185,11 @@ pub(super) fn prepare_finding_bundle_midpoint(
         .sides()
         .get(selected_index)
         .ok_or_else(|| backend_error("finding capture has no selected replay side"))?;
-    let fault_trace = selected
-        .resolved_effect_trace()
-        .map(|bytes| {
-            crate::decode_resolved_effect_trace_bundle(
-                bytes,
-                model
-                    .scenario_form()
-                    .plan()
-                    .fault_signals()
-                    .resource_limits(),
-            )
-        })
-        .transpose()?;
-    if let Some(trace) = &fault_trace {
+    // The capture authenticated every trace segment and admitted the manifest
+    // under its model's limits when it was decoded; the clone shares its
+    // segment handles rather than copying segments.
+    let fault_trace = selected.resolved_effect_trace();
+    if let Some(trace) = fault_trace {
         lifecycle = lifecycle.with_fault_replay(trace.clone());
     }
     let deployment = crate::cli_verify_serve::load_guarded_campaign_deployment(
@@ -221,7 +209,7 @@ pub(super) fn prepare_finding_bundle_midpoint(
     )
     .map_err(|error| backend_error(format!("finding midpoint resources are invalid: {error}")))?;
 
-    let report = midpoint_report(&bundle, &midpoint, &capture, selected, fault_trace.as_ref())?;
+    let report = midpoint_report(&bundle, &midpoint, &capture, selected, fault_trace)?;
     Ok(PreparedFindingBundleMidpoint {
         midpoint,
         checkpoints,

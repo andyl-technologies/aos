@@ -3,12 +3,7 @@
 use super::capture::validate_execution_side;
 use super::test_support::*;
 use super::*;
-use crucible::model::{
-    FaultReplayMode, FaultResourceLimits, FaultSignalPlan, NormalizedSpatialArtifact,
-    ResolvedEffectTrace, SignalBoundaryBehavior, SignalDomain, SignalId, SignalInterpolation,
-    SignalNode, SignalNodeKind, SignalProgram, SignalResourceLimits, SignalShape,
-    SignalSourceSpecification, SignalUnit, SignalValue, SignalValueType, SpatialArtifactKind,
-};
+use crucible::model::{FaultReplayMode, ResolvedEffectTrace};
 use crucible::{
     ContentAddressedBlobRef, Plan, Properties, ScenarioDefForm, ScenarioSelectableLimits,
     ScenarioSelectables, Seed, World, WorldBlockLatency, WorldIoCoreConfig, WorldIoNode,
@@ -16,53 +11,6 @@ use crucible::{
 };
 use crucible_campaign::FindingKind;
 use crucible_cas::content_store::BlobHandle;
-
-fn finding_with_signal_artifact() -> (FindingReproductionArtifact, MemoryDagStore, ContentHash) {
-    let world = World::from_nodes(vec![vm_node()]).expect("world");
-    let signal = SignalId::parse("portable-signal").expect("signal id");
-    let frame = SignalId::parse("portable-frame").expect("frame id");
-    let shape =
-        SignalShape::new(SignalValueType::I64, SignalUnit::Dimensionless, 0).expect("signal shape");
-    let artifact = NormalizedSpatialArtifact::new(
-        frame.clone(),
-        shape.clone(),
-        SpatialArtifactKind::RegularGrid {
-            origin_mm: [0; 3],
-            cell_size_mm: [1; 3],
-            dimensions: [1; 3],
-            values: vec![SignalValue::I64(7)],
-        },
-    )
-    .expect("signal artifact");
-    let source = SignalNode {
-        id: signal.clone(),
-        domain: SignalDomain::Spatial,
-        output: shape,
-        inputs: Vec::new(),
-        kind: SignalNodeKind::Source(SignalSourceSpecification::RegularGrid {
-            artifact: artifact.content(),
-            coordinate_frame: frame,
-            origin_mm: [0; 3],
-            cell_size_mm: [1; 3],
-            dimensions: [1; 3],
-            interpolation: SignalInterpolation::Nearest,
-            outside: SignalBoundaryBehavior::Error,
-        }),
-    };
-    let program = SignalProgram::new(vec![source], vec![signal], SignalResourceLimits::default())
-        .expect("signal program");
-    let faults = FaultSignalPlan::new(vec![program], Vec::new(), FaultResourceLimits::default())
-        .expect("fault signal plan");
-    let plan = Plan::empty()
-        .with_fault_signals_for_world(&world, faults)
-        .expect("scenario fault plan");
-    let store = MemoryDagStore::new();
-    let identity = store
-        .put(&artifact.encode())
-        .expect("store signal artifact");
-
-    (finding_for_world_and_plan(world, plan), store, identity)
-}
 
 #[test]
 fn snapshot_capture_requires_a_dense_prefix_before_the_recording() {
@@ -143,12 +91,10 @@ fn network_only_finding_accepts_canonical_effect_trace() {
     let scenario = base
         .with_selectables(selectables)
         .expect("selected scenario");
-    let trace = ResolvedEffectTrace::empty(FaultReplayMode::RecomputedCause)
-        .expect("empty network trace")
-        .to_bundle_bytes(usize::MAX)
-        .expect("network trace bundle");
+    let trace =
+        ResolvedEffectTrace::empty(FaultReplayMode::RecomputedCause).expect("empty network trace");
     let mut execution = side("network-fault");
-    execution.resolved_effect_trace = Some(Arc::from(trace));
+    execution.resolved_effect_trace = Some(trace);
     let recipe = FindingProductionReplayRecipe::new(10_000, 64, true).expect("valid recipe");
 
     validate_execution_side(&execution, &scenario, recipe)
@@ -239,17 +185,17 @@ fn canonical_capture_round_trips_and_selects_expected_divergence_side() {
             .expect("manifest envelope");
     let old_schema = crucible_cas::content_envelope::ContentEnvelope::new(
         FINDING_PRODUCTION_REPLAY_CAPTURE_SCHEMA,
-        3,
+        5,
         envelope.children().clone(),
         envelope.body().to_vec(),
     )
-    .expect("version 3 envelope");
+    .expect("version 5 envelope");
     let old_root = crucible_campaign::FindingReplayCaptureEvidenceId::from_manifest_content_id(
         old_schema.content_id(crucible_cas::content_store::ObjectKind::ExactManifest),
     );
     assert!(
         old_root.is_err(),
-        "a version 3 identity is not a capture root"
+        "a version 5 identity is not a capture root"
     );
     assert!(matches!(
         FindingProductionReplayCapture::from_objects(
@@ -258,7 +204,7 @@ fn canonical_capture_round_trips_and_selects_expected_divergence_side() {
             &leaves,
             limits,
         ),
-        Err(FindingProductionReplayCaptureError::UnsupportedSchema { actual: 3 })
+        Err(FindingProductionReplayCaptureError::UnsupportedSchema { actual: 5 })
     ));
 
     let mut missing = leaves.clone();

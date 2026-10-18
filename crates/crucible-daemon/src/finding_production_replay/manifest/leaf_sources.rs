@@ -1,8 +1,9 @@
 //! Blob sources that serve capture leaves without copying them first.
 //!
 //! A backend reads a leaf only when it copies it, so these adapters hold a
-//! shared reference, a segment reference, or a closure frame index and
-//! produce the bytes on open.
+//! shared reference, a segment identity, or a closure frame index and
+//! produce the bytes on open. Side-log and side-trace segments share one
+//! segment store interface, so one adapter serves each direction for both.
 
 use std::collections::BTreeMap;
 use std::io::{self, Cursor, Read};
@@ -13,10 +14,7 @@ use crucible_cas::content_store::{BlobHandle, BlobSource, ContentId, StoreError}
 
 use super::super::FindingProductionReplaySharedContext;
 use crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure;
-use crate::{
-    AttemptLogSegmentRef, AttemptLogSegmentSource, AttemptLogSegmentSources,
-    MAX_ATTEMPT_LOG_SEGMENT_BYTES,
-};
+use crucible::segment_store::{MAX_SEGMENT_BYTES, SegmentSource, SegmentSources};
 
 /// Shared immutable bytes a leaf source reads without copying them first.
 #[derive(Clone)]
@@ -78,25 +76,29 @@ impl Read for SharedBytesReader {
     }
 }
 
-/// One side-log segment read from the side's stores when it is copied.
+/// One side-log or side-trace segment read from its stores when it is copied.
+///
+/// The backend authenticates the copied bytes against `id`, so a store that
+/// holds other bytes under that identity fails the copy.
 pub(super) struct SegmentLeafSource {
-    pub(super) segment: AttemptLogSegmentRef,
-    pub(super) segments: AttemptLogSegmentSources,
+    pub(super) id: ContentId,
+    pub(super) encoded_bytes: u64,
+    pub(super) segments: SegmentSources,
 }
 
 impl BlobSource for SegmentLeafSource {
     fn logical_length(&self) -> u64 {
-        self.segment.encoded_bytes
+        self.encoded_bytes
     }
 
     fn open(&self) -> Result<Box<dyn Read + Send>, StoreError> {
-        let bytes =
-            self.segments
-                .segment(self.segment.id)
-                .map_err(|source| StoreError::StreamIo {
-                    operation: "read-finding-replay-segment",
-                    source,
-                })?;
+        let bytes = self
+            .segments
+            .segment(self.id)
+            .map_err(|source| StoreError::StreamIo {
+                operation: "read-finding-replay-segment",
+                source,
+            })?;
         Ok(Box::new(Cursor::new(bytes)))
     }
 }
@@ -125,12 +127,16 @@ impl BlobSource for ClosureFrameLeafSource {
     }
 }
 
-/// Serves a loaded side log's segments from their published leaf handles.
+/// Serves a loaded side log's or side trace's segments from their published
+/// leaf handles.
+///
+/// Each read is bounded by the per-segment format bound, and the reader
+/// authenticates the bytes against the segment reference that named them.
 pub(super) struct LeafSegmentSource {
     pub(super) handles: BTreeMap<ContentId, BlobHandle>,
 }
 
-impl AttemptLogSegmentSource for LeafSegmentSource {
+impl SegmentSource for LeafSegmentSource {
     fn segment(&self, id: ContentId) -> io::Result<Vec<u8>> {
         let handle = self.handles.get(&id).ok_or_else(|| {
             io::Error::new(
@@ -139,7 +145,7 @@ impl AttemptLogSegmentSource for LeafSegmentSource {
             )
         })?;
         handle
-            .read_all(MAX_ATTEMPT_LOG_SEGMENT_BYTES as u64)
+            .read_all(MAX_SEGMENT_BYTES as u64)
             .map_err(io::Error::other)
     }
 }

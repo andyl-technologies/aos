@@ -1700,9 +1700,9 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
 - [ ] **T-CAM-4.12** Convert finding replay captures, CLI explanation,
   objective and observation-stop verification, remote resume, hot-fork
   materialization, and the campaign trace protocol to segment-by-segment
-  readers. Finding replay captures reference side-log segments as manifest
-  leaves under a per-finding run-length allowance, and CLI midpoint and
-  exact-bundle checks stream them. Campaign replay closures are framed
+  readers. Finding replay captures reference side-log and side-trace
+  segments as manifest leaves under a per-finding run-length allowance, with
+  no whole-trace bound, and CLI midpoint and exact-bundle checks stream them. Campaign replay closures are framed
   version 2 objects: exact checkpoints keep the root and frames as separate
   children loaded lazily, captures keep them as leaves, and the resume request
   carries each frame as its own element. The remaining readers remain open.

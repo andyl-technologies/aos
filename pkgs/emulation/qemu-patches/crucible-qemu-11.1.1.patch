@@ -1,13 +1,16 @@
-From 53b5bdeaa02ecc71771532e01210634f4bdb0366 Mon Sep 17 00:00:00 2001
+From 94720b4f693fdaa064b3bb6744d1089265665407 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Sat, 10 Oct 2026 01:38:50 +0000
-Subject: [PATCH] Unlink poll-ready handlers before aio_prepare returns
+Date: Sat, 17 Oct 2026 02:49:28 +0000
+Subject: [PATCH] Re-deliver coalesced RR control wakes and re-bind cancelled
+ idle targets
 
-aio_prepare() disables poll mode for the GLib event loop. The final poll in poll_set_started() can link a ready handler into aio_prepare()'s stack-local ready list, and the function returned with the handler still linked. The next aio_add_ready_handler() for that handler unlinked it through node_ready.le_prev, storing NULL into whatever frame had reused the slot.
+A host doorbell becomes an RR control request. While the RR thread has not claimed the outstanding request, later doorbells coalesce into it, but the coalesced path returned before notifying the dispatch ceiling or kicking the CPU. The outstanding generation got exactly one kick, so a kick that reached the RR thread before it could claim the request was never repeated, and the host's periodic doorbell could not repair it.
 
-A hot-fork child's replacement monitor iothread enters the GLib loop with poll mode started and a notification pending. The stale store landed on the saved frame pointer of aio_dispatch(), so g_main_dispatch() faulted reading source flags through a null RBP at address 0x2c.
+The idle control-boundary bridge also bound its target request once per idle callback. Cancellation completes a request without delivering a callback, so the control-boundary generation does not advance. A bridge bound to a cancelled target ignored the newer request, parked again on the scheduler clamp, and every later doorbell coalesced behind the unclaimed request: the node stopped publishing while the host waited for it.
 
-Unlink the handlers before returning. Each keeps poll_ready, so its next dispatch still runs io_poll_ready() as before. A new test-nested-aio-poll case checks that aio_prepare() leaves the ready handler unlinked and that the next poll still delivers its readiness.
+A coalesced request now re-delivers the dispatch notification and the CPU kick without advancing the generation. Sim RR defers kicks to its deterministic boundary, so a repeated kick cannot move a guest coordinate. The bridge re-binds a completed target to the newest outstanding request only when no callback was delivered in that bridge; a delivered callback keeps its original exit. Idle arm refuses to wait while an RR request is unclaimed, because in sim RR the request's kick sets no exit_request and has no armed futex word to wake, and the bridge then claims the request first.
+
+test-crucible-control-deferred runs the production arm and bridge over one halted CPU. Each new case fails without its fix: two doorbells before acknowledge kick twice at request generation one; arm refuses a pending request; and a clamped bridge whose target is cancelled claims the next request instead of parking behind it.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -83048,7 +83051,7 @@ index 9e9941fe73e77a7b3bcc3ca1ab7ad4bec58f0151..66e2d8cd64d01e2304aa51675bfe4959
  
  static int net_slirp_init(NetClientState *peer, const char *model,
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index fbf905cd63e4cc109748b379f4209f6ad6547c2c..221c47139326e78e4106ebcb42856ca4266bab62 100644
+index fbf905cd63e4cc109748b379f4209f6ad6547c2c..8fae4be8f3f8ddcf00616b33fab0d2f15cddd0b5 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -11,12 +11,43 @@
@@ -84060,7 +84063,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..221c47139326e78e4106ebcb42856ca4
          return &has_control;
      }
      return NULL;
-@@ -123,9 +1101,2031 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
+@@ -123,9 +1101,2064 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
  void qemu_plugin_update_ns(const void *handle, int64_t new_time)
  {
      if (handle == &has_control) {
@@ -84650,12 +84653,23 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..221c47139326e78e4106ebcb42856ca4
 +    uint64_t request_generation = qatomic_load_acquire(
 +        &qemu_plugin_rr_control_request_generation);
 +
-+    /* Coalesce only while the RR thread has not claimed the prior request. */
++    /*
++     * Coalesce only while the RR thread has not claimed the prior request.
++     * A coalesced wake still re-delivers the outstanding generation's kick:
++     * the original kick may have reached the RR thread before it could claim
++     * the request, and every later host doorbell is then the only retry.
++     * Sim RR defers kicks to its deterministic boundary, so repeating one
++     * cannot move a guest coordinate.
++     */
 +    if (request_generation != acknowledged_generation) {
 +        if (rr_crucible_sim_control_summary_enabled()) {
 +            qemu_plugin_trace_control_delivery("coalesce");
 +        }
 +        qemu_plugin_trace_rr_control_boundary_state("coalesce");
++        rr_crucible_sim_notify_dispatch_ceiling();
++        if (first_cpu) {
++            qemu_cpu_kick(first_cpu);
++        }
 +        return;
 +    }
 +    if (request_generation == UINT64_MAX) {
@@ -85581,6 +85595,14 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..221c47139326e78e4106ebcb42856ca4
 +    qemu_plugin_crucible_active_idle_wake_signal = wake_signal;
 +    if (qemu_plugin_crucible_rr_control_boundary_pending()) {
 +        qemu_plugin_trace_rr_control_boundary_state("idle-arm");
++        /*
++         * In sim RR a kick does not set exit_request, and kick_idle_wait has
++         * nothing to wake before this arm publishes the futex word.  A
++         * request issued before the arm would otherwise sleep until the host
++         * publishes again, while the host waits for this node.  Refuse the
++         * wait so the control-boundary bridge claims the request first.
++         */
++        can_wait = false;
 +    }
 +
 +    /*
@@ -85709,7 +85731,21 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..221c47139326e78e4106ebcb42856ca4
 +    uint64_t rr_request_generation = qatomic_load_acquire(
 +        &qemu_plugin_rr_control_request_generation);
 +
-+    if (!*rr_target_bound && rr_request_generation != rr_complete_generation) {
++    uint64_t boundary_generation = qatomic_load_acquire(
++        &qemu_plugin_control_boundary_generation);
++
++    /*
++     * Bind the first outstanding request.  Re-bind a completed target only
++     * when no callback was delivered: cancellation and deferral complete a
++     * request without advancing the control-boundary generation, so a bridge
++     * still bound to it would ignore the newer request, keep parking at the
++     * scheduler clamp, and let every later doorbell coalesce behind it.  A
++     * delivered callback keeps its original exit below.
++     */
++    if (rr_request_generation != rr_complete_generation &&
++        (!*rr_target_bound ||
++         (rr_complete_generation >= *rr_target_generation &&
++          boundary_generation == observed_generation))) {
 +        *rr_target_generation = rr_request_generation;
 +        *rr_target_bound = true;
 +    }
@@ -166929,17 +166965,20 @@ index 0000000000000000000000000000000000000000..5e134d2f87529bf0a76c60f777f7bfc6
 +    main()
 diff --git a/tests/unit/test-crucible-control-deferred.py b/tests/unit/test-crucible-control-deferred.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..2fc33a615d36d61f76b0c960a8e8bc4ee359fc8d
+index 0000000000000000000000000000000000000000..b5bb6c497e55907ee2d5fc61905bde7f3cfb22ce
 --- /dev/null
 +++ b/tests/unit/test-crucible-control-deferred.py
-@@ -0,0 +1,529 @@
+@@ -0,0 +1,694 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise control ownership across production TX stop and advance settlement.
 +
 +Reuse the network fixture's bounded CPU/device topology and main-loop slices.
 +The real wake-fd reader, token/generation bodies, advance completion, and stop
 +admission execute here. The paused-fork case physically clones a settled
-+dispatcher and services a fresh child-local eventfd before any resume. Thread
++dispatcher and services a fresh child-local eventfd before any resume. The idle
++cases run the production arm and control-boundary bridge over one halted CPU:
++a coalesced wake is re-delivered, arm refuses an unclaimed request, and a
++bridge whose target was cancelled claims the newer request. Thread
 +scheduling and external runtime authority remain fixtures; this does not execute
 +a linked guest or the complete hot-fork reconstruction protocol.
 +"""
@@ -167330,6 +167369,9 @@ index 0000000000000000000000000000000000000000..2fc33a615d36d61f76b0c960a8e8bc4e
 +        test_stale_token_and_admission();
 +        test_nested_control_tx();
 +        test_unplugged_boundary_refuses();
++        test_coalesced_wake_rekicks();
++        test_idle_arm_refuses_pending_request();
++        test_bridge_rebinds_after_cancel();
 +    }
 +    g_free((void *)qemu_plugin_time_advance_barrier);
 +    puts("PASS production control: TX stop overlap, advance settlement, "
@@ -167337,6 +167379,142 @@ index 0000000000000000000000000000000000000000..2fc33a615d36d61f76b0c960a8e8bc4e
 +    return 0;
 +}
 +"""
++
++
++# The idle bridge and arm cases run the production bodies over one halted CPU.
++# They stay out of EXTRA, CHECKS, and production_bodies(), which other
++# harnesses reuse with their own CPU-work and wake-fd fixtures.
++IDLE_EXTRA = r"""
++static int qemu_plugin_wake_fd = -1;
++static int qemu_plugin_crucible_idle_wait_lock;
++static uint32_t *qemu_plugin_crucible_active_idle_wake_signal;
++static void qemu_mutex_lock(int *lock) { }
++static void qemu_mutex_unlock(int *lock) { }
++static bool cpu_work_list_empty(CPUState *target) { return true; }
++static bool cpu_thread_is_idle(CPUState *target) { return true; }
++static bool cpu_has_work(CPUState *target) { return false; }
++static int qemu_poll_ns(GPollFD *fds, unsigned int count, int64_t timeout)
++{ g_assert_not_reached(); }
++static bool qemu_plugin_crucible_idle_cpu_is_current_member(
++    CPUState *target, unsigned int index, unsigned int generation)
++{ return target == first_cpu; }
++"""
++
++# Only the idle bridge cases park; each supplies the wake it observes.
++BRIDGE_WAIT = r"""static void (*bridge_wait_hook)(void);
++static void qemu_cond_wait_bql(void *condition)
++{
++    g_assert_nonnull(bridge_wait_hook);
++    bridge_wait_hook();
++}
++"""
++
++IDLE_CHECKS = r"""
++static void test_coalesced_wake_rekicks(void)
++{
++    unsigned int before;
++
++    reset_control();
++    before = kicks;
++    publish_wake();
++    g_assert_cmpuint(qemu_plugin_rr_control_request_generation, ==, 1);
++    g_assert_cmpuint(kicks, ==, before + 1);
++
++    /* An unclaimed request coalesces, but its wake is delivered again. */
++    publish_wake();
++    g_assert_cmpuint(qemu_plugin_rr_control_request_generation, ==, 1);
++    g_assert_cmpuint(qemu_plugin_rr_control_ack_generation, ==, 0);
++    g_assert_cmpuint(kicks, ==, before + 2);
++
++    qemu_plugin_crucible_rr_control_boundary_cancel();
++    service_events();
++}
++
++static void test_idle_arm_refuses_pending_request(void)
++{
++    uint32_t word = 0;
++
++    reset_control();
++    runstate = RUN_STATE_RUNNING;
++    cpu.halted = true;
++    g_assert_true(qemu_plugin_crucible_idle_arm_wait(NULL, &word, 0));
++    g_assert_true(qemu_plugin_crucible_active_idle_wake_signal == &word);
++    qemu_plugin_crucible_active_idle_wake_signal = NULL;
++
++    /* The request's kick ran before any waiter was armed to receive it. */
++    publish_wake();
++    g_assert_true(qemu_plugin_crucible_rr_control_boundary_pending());
++    g_assert_false(qemu_plugin_crucible_idle_arm_wait(NULL, &word, 0));
++    g_assert_null(qemu_plugin_crucible_active_idle_wake_signal);
++
++    qemu_plugin_crucible_rr_control_boundary_cancel();
++    service_events();
++}
++
++static unsigned int bridge_waits;
++static uint64_t bridge_ack_at_wait[2];
++
++static void bridge_cancel_then_request(void)
++{
++    g_assert_cmpuint(bridge_waits, <, G_N_ELEMENTS(bridge_ack_at_wait));
++    bridge_ack_at_wait[bridge_waits++] = qemu_plugin_rr_control_ack_generation;
++    if (bridge_waits == 1) {
++        /* Reset retires the claimed request without delivering a callback. */
++        qemu_plugin_crucible_rr_control_boundary_cancel();
++        publish_wake();
++    }
++}
++
++static void test_bridge_rebinds_after_cancel(void)
++{
++    QemuPluginCrucibleIdleWaitProduction wait;
++    uint64_t observed, target = 0;
++    bool bound = false;
++
++    reset_control();
++    runstate = RUN_STATE_RUNNING;
++    cpu.halted = true;
++    fixture_dispatch_registered = true;
++    fixture_max_advance_icount = raw_icount;
++    bridge_waits = 0;
++    bridge_wait_hook = bridge_cancel_then_request;
++    wait = (QemuPluginCrucibleIdleWaitProduction) {
++        .cpu = &cpu,
++        .vcpu_index = cpu.cpu_index,
++    };
++    observed = qemu_plugin_control_boundary_generation;
++
++    publish_wake();
++    g_assert_true(qemu_plugin_crucible_idle_wait_for_control_boundary(
++        &wait, observed, &target, &bound));
++    g_assert_cmpuint(bridge_ack_at_wait[0], ==, 1);
++    g_assert_cmpuint(qemu_plugin_rr_control_request_generation, ==, 2);
++
++    /* The clamped bridge claims the newer request, not the cancelled one. */
++    g_assert_true(qemu_plugin_crucible_idle_wait_for_control_boundary(
++        &wait, observed, &target, &bound));
++    g_assert_cmpuint(target, ==, 2);
++    g_assert_cmpuint(bridge_ack_at_wait[1], ==, 2);
++    g_assert_cmpuint(qemu_plugin_control_boundary_generation, ==, observed);
++
++    bridge_wait_hook = NULL;
++    fixture_dispatch_registered = false;
++    fixture_max_advance_icount = UINT64_MAX;
++    qemu_plugin_crucible_rr_control_boundary_cancel();
++    service_events();
++}
++"""
++
++
++def idle_bridge_bodies():
++    api = (ROOT / "plugins/api-system.c").read_text()
++    idle_wait = SUPPORT["complete_type"](
++        api, "typedef struct QemuPluginCrucibleIdleWaitProduction {")
++    bodies = [definition(api, signature) for signature in (
++        "static bool qemu_plugin_crucible_idle_arm_wait(void *opaque,",
++        "static bool qemu_plugin_crucible_idle_wait_for_control_boundary(",
++    )]
++    return "\n\n".join([idle_wait, *bodies])
 +
 +
 +def production_bodies():
@@ -167423,6 +167601,22 @@ index 0000000000000000000000000000000000000000..2fc33a615d36d61f76b0c960a8e8bc4e
 +    helper = definition((ROOT / "accel/tcg/tcg-accel-ops-rr.h").read_text(),
 +                        "static inline bool rr_crucible_sim_control_boundary_needs_rearm(")
 +    prelude = prelude[:start] + helper + "\n" + prelude[end:]
++    # The idle bridge cases need a halted CPU's interrupt predicate and a
++    # scheduler clamp; every other case keeps the unregistered dispatcher.
++    replacements = (
++        ("    bool halted;\n",
++         "    bool halted;\n    int interrupt_request;\n"),
++        ("static bool crucible_sim_shmem_dispatch_registered(void) { return false; }\n",
++         "static bool fixture_dispatch_registered;\n"
++         "static uint64_t fixture_max_advance_icount = UINT64_MAX;\n"
++         "static bool crucible_sim_shmem_dispatch_registered(void)\n"
++         "{ return fixture_dispatch_registered; }\n"
++         "static uint64_t crucible_sim_shmem_max_advance_icount(void)\n"
++         "{ return fixture_max_advance_icount; }\n"),
++    )
++    for original, replacement in replacements:
++        assert prelude.count(original) == 1, original
++        prelude = prelude.replace(original, replacement)
 +    support = SUPPORT["TESTS"].split("int main(void)")[0]
 +    generated = arguments.output_dir / "control-deferred.c"
 +    bodies = production_bodies()
@@ -167446,7 +167640,14 @@ index 0000000000000000000000000000000000000000..2fc33a615d36d61f76b0c960a8e8bc4e
 +"""
 +    dependencies = (SUPPORT["console_none_support"]() + summary_providers +
 +                    SUPPORT["control_summary_support"]())
-+    generated.write_text(prelude + EXTRA + dependencies + bodies + support + CHECKS)
++    wait_stub = "static void qemu_cond_wait_bql(void *condition) { g_assert_not_reached(); }\n"
++    assert EXTRA.count(wait_stub) == 1
++    extra = EXTRA.replace(wait_stub, BRIDGE_WAIT) + IDLE_EXTRA
++    main_anchor = "\nint main(int argc, char **argv)"
++    assert CHECKS.count(main_anchor) == 1
++    checks = CHECKS.replace(main_anchor, IDLE_CHECKS + main_anchor, 1)
++    generated.write_text(prelude + extra + dependencies + bodies + "\n\n" +
++                         idle_bridge_bodies() + support + checks)
 +    binary = arguments.output_dir / "control-deferred"
 +    command = [os.environ.get("CC", "cc"),
 +               *shlex.split(os.environ.get("CFLAGS", "")),

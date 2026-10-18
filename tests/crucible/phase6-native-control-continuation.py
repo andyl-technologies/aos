@@ -78,7 +78,7 @@ static unsigned host_writes, reader_bytes, reader_drains, reader_calls;
 static unsigned rr_parks, idle_parks, callback_return_notifications;
 static bool rr_finished, source_delivered, pump_ready, pump_cleared;
 static bool refuse_first, force_handoff, idle_case, fixture_finished;
-static bool sdk_case, sdk_arm_gap, sdk_unlock_seen;
+static bool sdk_case, sdk_arm_gap, sdk_before_arm, sdk_unlock_seen;
 static bool two_epochs, two_epochs_handoff, epoch_gate_seen, epoch_gate_released;
 static bool epoch_rr_outer_ready;
 static unsigned epoch_callback_returns, epoch_no_request, epoch_settled;
@@ -413,8 +413,16 @@ static void *rr_owner(void *opaque)
         QemuPluginCrucibleIdleCallbackDisposition disposition =
             qemu_plugin_fire_vcpu_idle_cb(&cpu);
         g_assert_cmpint(disposition, ==, QEMU_PLUGIN_CRUCIBLE_IDLE_CALLBACK_RESCAN);
-        g_assert_true(sdk_status == QEMU_PLUGIN_CRUCIBLE_IDLE_WAIT_WOKEN ||
-                      sdk_status == QEMU_PLUGIN_CRUCIBLE_IDLE_WAIT_VALUE_CHANGED);
+        if (sdk_before_arm) {
+            /*
+             * The request was published before the arm, so the arm refuses
+             * the wait and the control-boundary bridge claims the request.
+             */
+            g_assert_cmpint(sdk_status, ==, QEMU_PLUGIN_CRUCIBLE_IDLE_WAIT_QEMU_WORK_PENDING);
+        } else {
+            g_assert_true(sdk_status == QEMU_PLUGIN_CRUCIBLE_IDLE_WAIT_WOKEN ||
+                          sdk_status == QEMU_PLUGIN_CRUCIBLE_IDLE_WAIT_VALUE_CHANGED);
+        }
         g_assert_cmpuint(sdk_pin_calls, ==, 1);
         g_assert_cmpuint(sdk_unpin_calls, ==, 1);
         g_assert_null(qemu_plugin_crucible_active_idle_wake_signal);
@@ -648,6 +656,7 @@ int main(int argc, char **argv)
     two_epochs_handoff = strcmp(argv[1], "two-epochs-before-handoff") == 0;
     sdk_case = two_epochs || strncmp(argv[1], "sdk-reader-", 11) == 0;
     sdk_arm_gap = strcmp(argv[1], "sdk-reader-arm-gap") == 0;
+    sdk_before_arm = strcmp(argv[1], "sdk-reader-before-arm") == 0;
     idle_case = sdk_case || strncmp(argv[1], "idle-reader-", 12) == 0;
     refuse_first = strcmp(argv[1], "pending-settlement") == 0;
     force_handoff = refuse_first || strcmp(argv[1], "reader-after-handoff") == 0;

@@ -1,4 +1,4 @@
-//! Publication and loading of version 5 capture manifests.
+//! Publication and loading of version 6 capture manifests.
 //!
 //! [`FindingProductionReplayCapture::prepare_objects`] derives the manifest
 //! envelope and every leaf without writing anything. Leaf bytes are read from
@@ -8,56 +8,63 @@
 //! [`FindingProductionReplayCapture::from_objects`] decodes a published
 //! manifest, checks that its children are exactly the leaves its body names,
 //! and reads the static leaves under fixed or scenario-derived bounds. Side
-//! logs stay segment references served by the supplied leaf handles, and the
-//! replay closure's frames stay leaf handles read one at a time.
+//! logs and side traces stay segment references served by the supplied leaf
+//! handles, and the replay closure's frames stay leaf handles read one at a
+//! time.
 //!
 //! ```text
 //! child role                     leaf content                         read bound
 //! model-reproduction             compact model reproduction           32 MiB
 //! campaign-replay-closure        guarded replay-closure root          1.3 MiB
 //! campaign-replay-closure-frame  one replay-closure frame             64 MiB, lazy
-//! resolved-effect-trace          one side's resolved-effect trace     64 MiB
 //! guest-asset                    kernel, root image, or initrd bytes  scenario guest-asset bytes
 //! lifecycle-object               signal artifact or World base image  scenario lifecycle bytes
 //! event-log-segment              one attempt-log segment              16 MiB, streamed
+//! resolved-effect-trace-segment  one resolved-effect trace segment    16 MiB, streamed
 //! ```
 //!
 //! Every leaf is a trace object of schema version 1 whose identity derives
-//! from its bytes, and the envelope is an exact manifest of schema version 5.
+//! from its bytes, and the envelope is an exact manifest of schema version 6.
+//! A side trace's manifest lives in the body; its segments are children
+//! exactly as a side log's segments are, so the store that retains the
+//! capture's log segments retains its trace segments the same way.
 
 mod leaf_sources;
 
+use crucible::model::ResolvedEffectTraceManifest;
+use crucible::segment_store::SegmentSources;
 use crucible_campaign::FindingReplayCaptureEvidenceId;
 use crucible_cas::content_envelope::{ContentChild, ContentEnvelope};
 use crucible_cas::content_store::{BlobHandle, ObjectKind, StoreError};
 
 use super::wire::{
     ArchitectureWire, AssetWire, BoundedVecWriter, ByteBuf, CAPTURE_LEAF_SCHEMA_VERSION,
-    CaptureManifestWire, DeploymentWire, EventLogWire, FingerprintWire, GuestAssetsWire, LeafWire,
-    LifecycleObjectWire, ReplayClosureWire, SegmentWire, SideWire, preflight_canonical_cbor,
+    CaptureManifestWire, DeploymentWire, EffectTraceWire, EventLogWire, FingerprintWire,
+    GuestAssetsWire, LeafWire, LifecycleObjectWire, ReplayClosureWire, SegmentWire, SideWire,
+    TraceSegmentWire, preflight_canonical_cbor,
 };
 use super::*;
 use crate::qemu_campaign_lifecycle::{
     MAX_REPLAY_CLOSURE_FRAME_BYTES, MAX_REPLAY_CLOSURE_ROOT_BYTES,
 };
 use crate::{
-    AttemptLogManifest, AttemptLogSegmentRef, AttemptLogSegmentSources,
-    MAX_CRUCIBLE_CAMPAIGN_IMPORT_FILE_BYTES,
+    AttemptLogManifest, AttemptLogSegmentSources, MAX_CRUCIBLE_CAMPAIGN_IMPORT_FILE_BYTES,
 };
 use leaf_sources::{
     ClosureFrameLeafSource, LeafSegmentSource, SegmentLeafSource, SharedBytes, SharedBytesSource,
 };
 
-/// Schema name of the version 5 capture manifest envelope.
+/// Schema name of the version 6 capture manifest envelope.
 pub const FINDING_PRODUCTION_REPLAY_CAPTURE_SCHEMA: &str =
     "crucible.executor.finding-production-replay-capture";
 
 /// Largest encoded capture manifest, children and body together.
 ///
 /// This is the generic content-envelope bound, which is also the ordinary
-/// component-message bound. The body holds at most two side manifests of
-/// 4,095 segment references each plus the scenario-bounded leaf lists, so
-/// the bound does not grow with the replayed run.
+/// component-message bound. The body holds at most two side-log and two
+/// side-trace manifests of 4,095 segment references each plus the
+/// scenario-bounded leaf lists, so the bound does not grow with the replayed
+/// run.
 pub const MAX_FINDING_PRODUCTION_REPLAY_MANIFEST_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Largest model reproduction leaf, the campaign artifact payload ceiling.
@@ -72,14 +79,14 @@ pub enum FindingProductionReplayLeafRole {
     CampaignReplayClosure,
     /// One frame of the guarded campaign replay closure.
     CampaignReplayClosureFrame,
-    /// One side's canonical resolved-effect trace.
-    ResolvedEffectTrace,
     /// One guest kernel, root image, or initrd.
     GuestAsset,
     /// One signal artifact or World I/O base image.
     LifecycleObject,
     /// One attempt-log segment of a side's scheduler log.
     EventLogSegment,
+    /// One segment of a side's resolved-effect trace.
+    ResolvedEffectTraceSegment,
 }
 
 impl FindingProductionReplayLeafRole {
@@ -90,10 +97,10 @@ impl FindingProductionReplayLeafRole {
             Self::ModelReproduction => "model-reproduction",
             Self::CampaignReplayClosure => "campaign-replay-closure",
             Self::CampaignReplayClosureFrame => "campaign-replay-closure-frame",
-            Self::ResolvedEffectTrace => "resolved-effect-trace",
             Self::GuestAsset => "guest-asset",
             Self::LifecycleObject => "lifecycle-object",
             Self::EventLogSegment => "event-log-segment",
+            Self::ResolvedEffectTraceSegment => "resolved-effect-trace-segment",
         }
     }
 
@@ -104,10 +111,10 @@ impl FindingProductionReplayLeafRole {
             Self::ModelReproduction,
             Self::CampaignReplayClosure,
             Self::CampaignReplayClosureFrame,
-            Self::ResolvedEffectTrace,
             Self::GuestAsset,
             Self::LifecycleObject,
             Self::EventLogSegment,
+            Self::ResolvedEffectTraceSegment,
         ]
         .into_iter()
         .find(|candidate| candidate.as_str() == role)
@@ -115,14 +122,17 @@ impl FindingProductionReplayLeafRole {
 
     /// Returns whether the leaf's size grows with the replayed run.
     ///
-    /// Side-log segments and replay-closure frames do: a closure holds one
+    /// Side-log segments, side-trace segments, and replay-closure frames do:
+    /// a trace holds one work item per evaluated boundary, and a closure one
     /// entry per selection decision. Every other leaf is fixed by the
     /// scenario or by a constant format bound.
     #[must_use]
     pub const fn is_run_length(self) -> bool {
         matches!(
             self,
-            Self::EventLogSegment | Self::CampaignReplayClosureFrame
+            Self::EventLogSegment
+                | Self::ResolvedEffectTraceSegment
+                | Self::CampaignReplayClosureFrame
         )
     }
 }
@@ -329,17 +339,19 @@ impl FindingProductionReplayCapture {
     /// Decodes and authenticates a published capture from its objects.
     ///
     /// `leaves` supplies a handle for every child the manifest names; side
-    /// logs keep reading their segments through those handles, one segment at
-    /// a time. Static leaves are read whole under their bounds and `limits`.
-    /// The decoded capture is then authenticated exactly as a freshly
-    /// captured one, which streams every side log once.
+    /// logs and side traces keep reading their segments through those
+    /// handles, one segment at a time. Static leaves are read whole under
+    /// their bounds and `limits`. The decoded capture is then authenticated
+    /// exactly as a freshly captured one, which streams every side log and
+    /// side trace once.
     ///
     /// # Errors
     ///
     /// Returns [`FindingProductionReplayCaptureError`] for a malformed,
-    /// noncanonical, or oversized manifest, children that differ from the
-    /// leaves the body names, a missing, mislabeled, or corrupt leaf, or a
-    /// capture that fails authentication.
+    /// noncanonical, or oversized manifest, a side-trace manifest whose
+    /// totals or chain differ from its segment references, children that
+    /// differ from the leaves the body names, a missing, mislabeled, or
+    /// corrupt leaf, or a capture that fails authentication.
     pub fn from_objects(
         root: FindingReplayCaptureEvidenceId,
         manifest: &[u8],
@@ -438,22 +450,21 @@ impl LeafSet {
         Ok(LeafWire::new(id, length))
     }
 
-    /// Adds one side-log segment, read from `segments` only when copied.
+    /// Adds one side-log or side-trace segment, read from `segments` only
+    /// when copied.
     fn insert_segment(
         &mut self,
-        segment: AttemptLogSegmentRef,
-        segments: &AttemptLogSegmentSources,
+        role: FindingProductionReplayLeafRole,
+        id: ContentId,
+        encoded_bytes: u64,
+        segments: &SegmentSources,
     ) -> Result<(), FindingProductionReplayCaptureError> {
         let source = BlobHandle::new(Arc::new(SegmentLeafSource {
-            segment,
+            id,
+            encoded_bytes,
             segments: segments.clone(),
         }));
-        self.insert(
-            FindingProductionReplayLeafRole::EventLogSegment,
-            segment.id,
-            segment.encoded_bytes,
-            source,
-        )
+        self.insert(role, id, encoded_bytes, source)
     }
 
     fn insert(
@@ -584,19 +595,27 @@ fn side_wire(
 ) -> Result<SideWire, FindingProductionReplayCaptureError> {
     let manifest = side.event_log.manifest();
     for segment in manifest.segments() {
-        leaves.insert_segment(*segment, side.event_log.segments())?;
+        leaves.insert_segment(
+            FindingProductionReplayLeafRole::EventLogSegment,
+            segment.id,
+            segment.encoded_bytes,
+            side.event_log.segments(),
+        )?;
     }
-    let resolved_effect_trace = side
-        .resolved_effect_trace
-        .as_ref()
-        .map(|trace| {
-            leaves.insert_bytes(
-                FindingProductionReplayLeafRole::ResolvedEffectTrace,
-                SharedBytes::Owned(Arc::clone(trace)),
-                None,
-            )
-        })
-        .transpose()?;
+    let resolved_effect_trace = match &side.resolved_effect_trace {
+        Some(trace) => {
+            for segment in trace.manifest().segments() {
+                leaves.insert_segment(
+                    FindingProductionReplayLeafRole::ResolvedEffectTraceSegment,
+                    segment.id,
+                    segment.encoded_bytes,
+                    trace.segments(),
+                )?;
+            }
+            Some(EffectTraceWire::from(trace.manifest()))
+        }
+        None => None,
+    };
 
     Ok(SideWire {
         outcome: side.outcome,
@@ -713,10 +732,14 @@ fn manifest_children(
                 segment.segment()?.id,
             )?;
         }
-        if let Some(trace) = &side.resolved_effect_trace {
+        for segment in side
+            .resolved_effect_trace
+            .iter()
+            .flat_map(|trace| &trace.segments)
+        {
             child(
-                FindingProductionReplayLeafRole::ResolvedEffectTrace,
-                trace.id()?,
+                FindingProductionReplayLeafRole::ResolvedEffectTraceSegment,
+                segment.segment()?.id,
             )?;
         }
     }
@@ -894,15 +917,8 @@ fn read_side(
 
     let resolved_effect_trace = wire
         .resolved_effect_trace
-        .as_ref()
-        .map(|leaf| {
-            reader.read(
-                leaf,
-                super::MAX_FINDING_PRODUCTION_REPLAY_TRACE_BUNDLE_BYTES,
-            )
-        })
-        .transpose()?
-        .map(Arc::from);
+        .map(|trace| read_side_trace(reader, trace))
+        .transpose()?;
     FindingProductionReplayExecutionSide::from_parts(
         wire.outcome,
         wire.completed_quanta,
@@ -916,4 +932,49 @@ fn read_side(
             .collect(),
         resolved_effect_trace,
     )
+}
+
+/// Rebuilds a side trace from its manifest fields and segment leaf handles.
+///
+/// The manifest is rebuilt from the segment references, which proves they
+/// are dense and individually within the segment bound, and its totals and
+/// chain must equal the recorded ones. Every segment must have a handle of
+/// its declared length before any is read; the side constructor then
+/// authenticates each segment's bytes, one at a time.
+fn read_side_trace(
+    reader: &LeafReader<'_>,
+    wire: EffectTraceWire,
+) -> Result<ResolvedEffectTrace, FindingProductionReplayCaptureError> {
+    let invalid = || FindingProductionReplayCaptureError::InvalidManifest {
+        reason: "side resolved-effect trace",
+    };
+    let segments = wire
+        .segments
+        .iter()
+        .map(TraceSegmentWire::segment)
+        .collect::<Result<Vec<_>, _>>()?;
+    let manifest = ResolvedEffectTraceManifest::new(wire.mode, segments).map_err(|_| invalid())?;
+    if manifest.work_items() != wire.work_items
+        || manifest.records() != wire.records
+        || manifest.chain() != wire.chain
+    {
+        return Err(invalid());
+    }
+    // The manifest leaf has a fixed format bound; a manifest that cannot be
+    // encoded within it is refused although its references were accepted.
+    manifest
+        .canonical_bytes()
+        .map_err(|_| FindingProductionReplayCaptureError::LimitExceeded {
+            limit: "finding-production-replay-resolved-effect-trace-manifest-bytes",
+        })?;
+
+    let mut handles = BTreeMap::new();
+    for segment in manifest.segments() {
+        handles.insert(
+            segment.id,
+            reader.handle(segment.id, segment.encoded_bytes)?.clone(),
+        );
+    }
+    let sources = SegmentSources::single(Arc::new(LeafSegmentSource { handles }));
+    Ok(ResolvedEffectTrace::new(manifest, sources))
 }

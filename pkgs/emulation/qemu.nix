@@ -3213,9 +3213,15 @@ in
                    r"&qemu_plugin_rr_control_schedule_token\)\);\s*"
                    r'qemu_plugin_trace_control_delivery\("request"\);\s*'
                    r"qemu_cpu_kick\(first_cpu\);", 1),
+                  # The new request and the coalesced re-delivery each notify.
                   ("request dispatch event notification count",
                    request_boundary,
-                   r"rr_crucible_sim_notify_dispatch_ceiling\(\);", 1),
+                   r"rr_crucible_sim_notify_dispatch_ceiling\(\);", 2),
+                  ("coalesced request re-delivers its wake", request_boundary,
+                   r'qemu_plugin_trace_rr_control_boundary_state\("coalesce"\);\s*'
+                   r"rr_crucible_sim_notify_dispatch_ceiling\(\);\s*"
+                   r"if \(first_cpu\) \{\s*qemu_cpu_kick\(first_cpu\);\s*\}\s*"
+                   r"return;", 1),
                   ("paused RR transfer after device notifier fanout",
                    wake_handler_code,
                    r"bool single_threaded_rr = drained && first_cpu &&\s*"
@@ -4430,9 +4436,19 @@ in
                   ("hot fork restart rejects outstanding control", hot_fork,
                    r"if \(qemu_plugin_crucible_control_boundary_outstanding\(\)\) "
                    r"\{\s*return -EBUSY;\s*\}", 1),
-                  ("fixed request target", plugin,
-                   r"if \(!\*rr_target_bound[^}]+\*rr_target_generation = "
-                   r"rr_request_generation;[^}]+\*rr_target_bound = true;", 1),
+                  # The bridge keeps its bound target through a delivered
+                  # callback and re-binds only after an undelivered completion.
+                  ("request target re-binds only after undelivered completion",
+                   plugin,
+                   r"if \(rr_request_generation != rr_complete_generation &&\s*"
+                   r"\(!\*rr_target_bound \|\|\s*"
+                   r"\(rr_complete_generation >= \*rr_target_generation &&\s*"
+                   r"boundary_generation == observed_generation\)\)\) \{\s*"
+                   r"\*rr_target_generation = rr_request_generation;\s*"
+                   r"\*rr_target_bound = true;", 1),
+                  ("idle arm refuses an unclaimed RR request", plugin,
+                   r'qemu_plugin_trace_rr_control_boundary_state\("idle-arm"\);'
+                   r"[^}]*can_wait = false;\s*\}", 1),
                   ("stale two-argument clamp", rr,
                    r"crucible_sim_shmem_clamp_cpu_budget\(\s*current_icount,"
                    r"\s*\*?cpu_budget\)", 0),

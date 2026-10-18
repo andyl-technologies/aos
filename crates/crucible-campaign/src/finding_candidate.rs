@@ -905,7 +905,7 @@ mod tests {
         let capture_id = |label: &[u8]| {
             FindingReplayCaptureEvidenceId::from_manifest_content_id(ContentId::for_bytes(
                 ObjectKind::ExactManifest,
-                5,
+                6,
                 label,
             ))
         };

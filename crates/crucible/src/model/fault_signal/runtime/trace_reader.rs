@@ -7,9 +7,9 @@
 //! consumes a trace through [`ResolvedEffectTraceReader`], which holds one
 //! decoded segment and a cursor.
 //!
-//! Some carriers have no segment store: a finding production-replay capture,
-//! a saved run artifact, and a lifecycle query response assembled by a
-//! client. They carry a bundle instead (RFC-0020 section 15.8):
+//! Some carriers have no segment store: a saved run artifact and a lifecycle
+//! query response assembled by a client. They carry a bundle instead
+//! (RFC-0020 section 15.8):
 //!
 //! ```text
 //! "crucible.resolved-effect-trace-bundle.v1\0"
@@ -27,6 +27,8 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use super::trace_format::require_mode_item;
+#[cfg(any(debug_assertions, feature = "test-support"))]
+use super::trace_format::{encode_segment, encoded_item_len};
 use super::trace_log::read_segment;
 use super::*;
 use crate::segment_store::{SegmentSink, SegmentSource, SegmentSources, SharedSegmentStore};
@@ -94,6 +96,57 @@ impl ResolvedEffectTrace {
             writer.append(item)?;
         }
         writer.finish(mode)
+    }
+
+    /// Records `items` into a private in-memory store under a small seal target.
+    ///
+    /// Production writers seal before a tail would exceed
+    /// [`SEGMENT_TARGET_BYTES`](crate::segment_store::SEGMENT_TARGET_BYTES).
+    /// Test fixtures pass a much smaller `segment_target_bytes` so a trace of
+    /// many segments needs only a few kilobytes of items. The result is a
+    /// valid trace whose seal points differ from a production recording of the
+    /// same items, so it never stands in for production identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultRuntimeError`] when an item is invalid or invalid for
+    /// `mode`, a segment cannot be encoded or stored, or the items need more
+    /// segments than one manifest may reference.
+    #[cfg(any(debug_assertions, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn from_items_with_segment_target(
+        mode: FaultReplayMode,
+        items: impl IntoIterator<Item = ResolvedReplayWorkItem>,
+        segment_target_bytes: usize,
+    ) -> Result<Self, FaultRuntimeError> {
+        let store = SharedSegmentStore::new();
+        let mut segments = Vec::new();
+        let mut open = Vec::new();
+        let mut open_bytes = 0_usize;
+        let mut first_item = 0_u64;
+
+        for item in items {
+            item.validate()?;
+            require_mode_item(mode, &item)?;
+            let bytes = encoded_item_len(&item)?;
+            // The production seal rule, under the caller's target.
+            if !open.is_empty() && open_bytes.saturating_add(bytes) > segment_target_bytes {
+                segments.push(store_segment(&store, first_item, &open)?);
+                first_item += open.len() as u64;
+                open.clear();
+                open_bytes = 0;
+            }
+            open_bytes = open_bytes.saturating_add(bytes);
+            open.push(item);
+        }
+        if !open.is_empty() {
+            segments.push(store_segment(&store, first_item, &open)?);
+        }
+
+        Ok(Self::new(
+            ResolvedEffectTraceManifest::new(mode, segments)?,
+            store.into(),
+        ))
     }
 
     /// Pairs a manifest with its stores after authenticating every segment.
@@ -687,6 +740,30 @@ fn aligns(
                 }
         }
     })
+}
+
+/// Encodes `items` as one segment starting at `first_item` and stores it.
+#[cfg(any(debug_assertions, feature = "test-support"))]
+fn store_segment(
+    store: &SharedSegmentStore,
+    first_item: u64,
+    items: &[ResolvedReplayWorkItem],
+) -> Result<ResolvedEffectTraceSegmentRef, FaultRuntimeError> {
+    let bytes = encode_segment(first_item, items)?;
+    let segment = ResolvedEffectTraceSegmentRef {
+        id: resolved_effect_trace_segment_id(&bytes),
+        first_item,
+        item_count: items.len() as u64,
+        records: items.iter().map(|item| item.records.len() as u64).sum(),
+        encoded_bytes: bytes.len() as u64,
+    };
+    store
+        .put_segment(segment.id, &bytes)
+        .map_err(|error| FaultRuntimeError::TraceStorage {
+            segment: segment.id.encode(),
+            reason: error.to_string(),
+        })?;
+    Ok(segment)
 }
 
 /// Returns the bundle length for a manifest leaf and its referenced segments.

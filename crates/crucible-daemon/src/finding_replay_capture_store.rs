@@ -1,16 +1,17 @@
 //! Content-addressed immutable storage for portable finding replay captures.
 //!
-//! A capture is one version 4 manifest envelope whose children are its
-//! leaves ([`FindingProductionReplayCapture::prepare_objects`]). Four
-//! role-specific manifests form one finding capture set. Preparation shares
-//! equal leaves across all roles and charges each distinct leaf once against
-//! one of two per-finding allowances:
+//! A capture is one manifest envelope whose children are its leaves
+//! ([`FindingProductionReplayCapture::prepare_objects`]). Four role-specific
+//! manifests form one finding capture set. Preparation shares equal leaves
+//! across all roles and charges each distinct leaf once against one of two
+//! per-finding allowances:
 //!
 //! ```text
-//! static allowance   manifests, model reproductions, replay closures,
-//!                    resolved-effect traces, guest assets, lifecycle objects
+//! static allowance   manifests, model reproductions, replay-closure roots,
+//!                    guest assets, lifecycle objects
 //!                    <= MAX_FINDING_REPLAY_PUBLICATION_STATIC_BYTES
-//! segment allowance  side-log attempt segments (run-length evidence)
+//! segment allowance  side-log attempt segments, side-trace segments, and
+//!                    replay-closure frames (run-length evidence)
 //!                    <= MAX_FINDING_REPLAY_PUBLICATION_SEGMENT_BYTES
 //! ```
 //!

@@ -390,7 +390,7 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
     for (schema, version, owner, kind) in [
         (
             "crucible.executor.finding-production-replay-capture",
-            "5",
+            "6",
             "crucible-daemon::finding_production_replay",
             "exact-manifest",
         ),

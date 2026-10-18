@@ -5,6 +5,13 @@
 
 use super::*;
 use crate::MemorySegmentStore;
+use crucible::model::{
+    FaultCoordinate, FaultReplayMode, FaultResourceLimits, FaultSignalPlan,
+    NormalizedSpatialArtifact, ResolvedReplayWorkItem, SignalBoundaryBehavior, SignalDomain,
+    SignalId, SignalInterpolation, SignalNode, SignalNodeKind, SignalProgram, SignalResourceLimits,
+    SignalShape, SignalSourceSpecification, SignalUnit, SignalValue, SignalValueType,
+    SpatialArtifactKind,
+};
 use crucible::{
     Configuration, EventAttributeValue, EventLevel, EventLogTime, EventPayload, EventSource,
     Icount, NodeTemplate, Plan, Properties, ReadyPoint, ScenarioDefForm, Schedule,
@@ -54,6 +61,56 @@ pub(crate) fn finding_for_world(world: World) -> FindingReproductionArtifact {
 
 pub(crate) fn finding() -> FindingReproductionArtifact {
     finding_for_world(World::from_nodes(vec![vm_node()]).expect("world"))
+}
+
+/// Builds a finding whose fault plan has one signal program over one stored
+/// spatial artifact, so its capture requires a resolved-effect trace.
+pub(crate) fn finding_with_signal_artifact()
+-> (FindingReproductionArtifact, MemoryDagStore, ContentHash) {
+    let world = World::from_nodes(vec![vm_node()]).expect("world");
+    let signal = SignalId::parse("portable-signal").expect("signal id");
+    let frame = SignalId::parse("portable-frame").expect("frame id");
+    let shape =
+        SignalShape::new(SignalValueType::I64, SignalUnit::Dimensionless, 0).expect("signal shape");
+    let artifact = NormalizedSpatialArtifact::new(
+        frame.clone(),
+        shape.clone(),
+        SpatialArtifactKind::RegularGrid {
+            origin_mm: [0; 3],
+            cell_size_mm: [1; 3],
+            dimensions: [1; 3],
+            values: vec![SignalValue::I64(7)],
+        },
+    )
+    .expect("signal artifact");
+    let source = SignalNode {
+        id: signal.clone(),
+        domain: SignalDomain::Spatial,
+        output: shape,
+        inputs: Vec::new(),
+        kind: SignalNodeKind::Source(SignalSourceSpecification::RegularGrid {
+            artifact: artifact.content(),
+            coordinate_frame: frame,
+            origin_mm: [0; 3],
+            cell_size_mm: [1; 3],
+            dimensions: [1; 3],
+            interpolation: SignalInterpolation::Nearest,
+            outside: SignalBoundaryBehavior::Error,
+        }),
+    };
+    let program = SignalProgram::new(vec![source], vec![signal], SignalResourceLimits::default())
+        .expect("signal program");
+    let faults = FaultSignalPlan::new(vec![program], Vec::new(), FaultResourceLimits::default())
+        .expect("fault signal plan");
+    let plan = Plan::empty()
+        .with_fault_signals_for_world(&world, faults)
+        .expect("scenario fault plan");
+    let store = MemoryDagStore::new();
+    let identity = store
+        .put(&artifact.encode())
+        .expect("store signal artifact");
+
+    (finding_for_world_and_plan(world, plan), store, identity)
 }
 
 pub(crate) fn campaign_binding(
@@ -255,5 +312,89 @@ pub(crate) fn timeout_capture(
         ),
     )
     .expect("timeout capture");
+    (capture, limits)
+}
+
+/// Records `count` scheduler-boundary pass items, sealing a new segment
+/// before one would exceed `segment_target_bytes`.
+///
+/// Production traces seal at 8 MiB; a small target gives a trace of many
+/// segments from a few kilobytes of items.
+pub(crate) fn segmented_trace(count: u64, segment_target_bytes: usize) -> ResolvedEffectTrace {
+    // A scheduler-boundary pass item: no opportunity fields, no records.
+    let items = (0..count).map(|index| ResolvedReplayWorkItem {
+        coordinate: FaultCoordinate {
+            virtual_ticks: index,
+            retired_instructions: None,
+        },
+        same_coordinate_sequence: 0,
+        opportunity: None,
+        target: None,
+        operation: None,
+        direction: None,
+        phase: None,
+        network_frame_key: None,
+        network_producer_direction_key: None,
+        derivation_fingerprint: ContentHash::from_bytes(&index.to_be_bytes()),
+        records: Vec::new(),
+    });
+    ResolvedEffectTrace::from_items_with_segment_target(
+        FaultReplayMode::RecomputedCause,
+        items,
+        segment_target_bytes,
+    )
+    .expect("segmented fixture trace")
+}
+
+/// Builds a timeout side carrying `trace` through the validating constructor.
+pub(crate) fn traced_side(
+    trace: ResolvedEffectTrace,
+) -> Result<FindingProductionReplayExecutionSide, FindingProductionReplayCaptureError> {
+    let frontier = VirtualTime { ticks: 7 };
+    let mut store = MemorySegmentStore::default();
+    let manifest = store
+        .sealed_log(vec![side_event(0, "quantum-budget")])
+        .expect("seal fixture log");
+    FindingProductionReplayExecutionSide::from_parts(
+        FindingProductionReplayTerminalOutcome::Timeout,
+        1,
+        frontier,
+        FindingProductionReplayEventLog::new(manifest, store.into()),
+        vec![terminal_fingerprint(frontier)],
+        Some(trace),
+    )
+}
+
+/// Builds one complete timeout capture of a signal-plan finding whose side
+/// carries `trace`.
+pub(crate) fn traced_capture(
+    trace: ResolvedEffectTrace,
+) -> (
+    FindingProductionReplayCapture,
+    FindingProductionReplayCaptureLimits,
+) {
+    let (finding, store, _) = finding_with_signal_artifact();
+    let (reproduction, signature) = campaign_binding(&finding, FindingKind::Timeout);
+    let limits = FindingProductionReplayCaptureLimits::for_finding(&finding);
+    let FindingProductionReplayCaptureOutcome::Complete(lifecycle_objects) =
+        capture_finding_replay_lifecycle_objects(&finding, Some(&store), None)
+            .expect("capture signal objects")
+    else {
+        panic!("complete signal store was reported incomplete");
+    };
+    let capture = FindingProductionReplayCapture::new(
+        &finding,
+        reproduction,
+        signature,
+        &GuardedCampaignReplayClosure::empty(),
+        FindingProductionReplayCaptureInput::new(
+            FindingProductionReplayRecipe::new(10_000, 64, true).expect("recipe"),
+            deployment(),
+            vec![traced_side(trace).expect("traced side")],
+            lifecycle_objects,
+            limits,
+        ),
+    )
+    .expect("traced capture");
     (capture, limits)
 }

@@ -1,8 +1,8 @@
-//! Canonical wire representation of the version 5 capture manifest body.
+//! Canonical wire representation of the version 6 capture manifest body.
 //!
 //! The body holds only bounded descriptors. Every byte string that can be
-//! large is a leaf named by its digest and length, and every side log is its
-//! segment references:
+//! large is a leaf named by its digest and length, and every side log and
+//! side trace is its segment references:
 //!
 //! ```text
 //! CaptureManifestWire { schema_version, reproduction, observed_signature,
@@ -12,12 +12,20 @@
 //! Closure { root: Leaf, frames: [Leaf] }           // replay-closure root and frames
 //! Leaf    { digest: bytes[32], length: u64 }       // trace content ID v1
 //! Segment { digest: bytes[32], first_sequence, entry_count, encoded_bytes }
+//! Trace   { mode, work_items, records, chain, segments: [TraceSegment] }
+//! TraceSegment { digest: bytes[32], first_item, item_count, records,
+//!                encoded_bytes }                   // trace content ID v1
 //! ```
 
 use super::*;
 use crucible_cas::content_store::{ContentId, ObjectKind};
 use serde::de::{Deserializer, Visitor};
 use serde::{Serializer, de};
+
+use crucible::model::{
+    FaultReplayMode, RESOLVED_EFFECT_TRACE_SEGMENT_SCHEMA, ResolvedEffectTraceManifest,
+    ResolvedEffectTraceSegmentRef,
+};
 
 use crate::{ATTEMPT_LOG_SEGMENT_SCHEMA, AttemptLogSegmentRef};
 
@@ -153,7 +161,7 @@ fn read_cbor_argument(bytes: &[u8], position: &mut usize, additional: u8) -> Res
     Ok(u64::from_be_bytes(encoded))
 }
 
-/// Complete bounded body of one version 5 capture manifest.
+/// Complete bounded body of one version 6 capture manifest.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct CaptureManifestWire {
@@ -262,6 +270,75 @@ pub(super) struct EventLogWire {
     pub(super) segments: Vec<SegmentWire>,
 }
 
+/// One resolved-effect trace segment reference of a side trace.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct TraceSegmentWire {
+    digest: ByteBuf,
+    first_item: u64,
+    item_count: u64,
+    records: u64,
+    encoded_bytes: u64,
+}
+
+impl From<&ResolvedEffectTraceSegmentRef> for TraceSegmentWire {
+    fn from(segment: &ResolvedEffectTraceSegmentRef) -> Self {
+        Self {
+            digest: ByteBuf(segment.id.digest().to_vec()),
+            first_item: segment.first_item,
+            item_count: segment.item_count,
+            records: segment.records,
+            encoded_bytes: segment.encoded_bytes,
+        }
+    }
+}
+
+impl TraceSegmentWire {
+    pub(super) fn segment(
+        &self,
+    ) -> Result<ResolvedEffectTraceSegmentRef, FindingProductionReplayCaptureError> {
+        Ok(ResolvedEffectTraceSegmentRef {
+            id: trace_id(&self.digest, RESOLVED_EFFECT_TRACE_SEGMENT_SCHEMA)?,
+            first_item: self.first_item,
+            item_count: self.item_count,
+            records: self.records,
+            encoded_bytes: self.encoded_bytes,
+        })
+    }
+}
+
+/// A side trace's manifest: its replay mode, totals, chain, and ordered
+/// segment references.
+///
+/// The fields are those of the trace's version 4 manifest, so the decoder
+/// rebuilds that manifest from the segment references and requires the
+/// recorded totals and chain to match the ones the references derive.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct EffectTraceWire {
+    pub(super) mode: FaultReplayMode,
+    pub(super) work_items: u64,
+    pub(super) records: u64,
+    pub(super) chain: ContentHash,
+    pub(super) segments: Vec<TraceSegmentWire>,
+}
+
+impl From<&ResolvedEffectTraceManifest> for EffectTraceWire {
+    fn from(manifest: &ResolvedEffectTraceManifest) -> Self {
+        Self {
+            mode: manifest.mode(),
+            work_items: manifest.work_items(),
+            records: manifest.records(),
+            chain: manifest.chain(),
+            segments: manifest
+                .segments()
+                .iter()
+                .map(TraceSegmentWire::from)
+                .collect(),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct SideWire {
@@ -270,7 +347,7 @@ pub(super) struct SideWire {
     pub(super) frontier_ticks: u64,
     pub(super) event_log: EventLogWire,
     pub(super) terminal_fingerprints: Vec<FingerprintWire>,
-    pub(super) resolved_effect_trace: Option<LeafWire>,
+    pub(super) resolved_effect_trace: Option<EffectTraceWire>,
 }
 
 #[derive(Serialize, Deserialize)]

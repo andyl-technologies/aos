@@ -321,19 +321,26 @@ the campaign repository one at a time. A carrier without a repository sends
 a closure bundle, the root followed by its frames, as a sequence of separate
 elements.
 
-A finding production replay capture is a version 5 exact manifest whose
+A finding production replay capture is a version 6 exact manifest whose
 children are trace leaves: the model reproduction, the campaign replay
 closure root and each of its frames, each guest asset and lifecycle object,
-any resolved-effect trace, and, for each execution side, the attempt-log
-segments in manifest order.
+and, for each execution side, the attempt-log segments and any
+resolved-effect trace segments ([§15.10](#1510-resolved-effect-trace)) in
+manifest order. The manifest body carries each side's log manifest and trace
+manifest, so a capture references both streams exactly as it references the
+log, and neither has a whole-stream bound in the capture. Decoding requires
+every segment child of its declared length, rebuilds each side manifest from
+its segment references, and refuses a manifest whose recorded totals or chain
+differ from the ones those references derive.
 A side's recorded segments are referenced as sealed; only the replay prefix
 before a resumed recording and the closing tail are sealed as new segments.
 Selecting the side that explains a divergence streams both side logs to the
 first causal mismatch. The four roles of one finding share equal leaves, and
 each distinct leaf is charged once to one of two per-finding allowances:
-segments and replay-closure frames to the run-length allowance and every
-other leaf, with the manifests, to the static allowance. A role that would exceed either
-allowance is recorded as incomplete, never truncated.
+log segments, trace segments, and replay-closure frames to the run-length
+allowance and every other leaf, with the manifests, to the static allowance.
+A role that would exceed either allowance is recorded as incomplete, never
+truncated.
 
 - **[CMEAS-22]** A reader MUST NOT materialize a complete attempt log. Every
   service response that carries log content MUST carry at most one segment and
@@ -456,8 +463,11 @@ bundle    "crucible.resolved-effect-trace-bundle.v1\0"
 A segment carries no replay mode, so one sealed segment serves recomputed and
 locked replay of the same execution. A bundle is the transport form of
 [§15.8](#158-readers-findings-and-resume) for carriers without a segment
-store: a finding production-replay capture, a saved run artifact, and a
-lifecycle query assembled by a client. It never enters production identity.
+store: a saved run artifact and a lifecycle query assembled by a client. It
+never enters production identity. A finding production replay capture is not
+such a carrier: it names each side's trace by its manifest and publishes the
+trace segments as its own children, so a capture holds no whole-trace buffer
+and admits a trace of any length the attempt could record.
 
 - **[CCOMP-31]** The fault runtime and the campaign network effect log MUST
   retain each resolved-effect trace as sealed trace segments followed by one

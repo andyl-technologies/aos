@@ -8,13 +8,14 @@
 //!
 //! A capture is published as a bounded manifest envelope whose children are
 //! content-addressed leaves. Each side's scheduler log stays a sequence of
-//! attempt-log segments referenced by its manifest, so neither a capture nor
-//! its publication holds a run-length log in memory (RFC-0020 section 15.8):
+//! attempt-log segments, and each side's resolved-effect trace a sequence of
+//! trace segments, referenced by their manifests, so neither a capture nor its
+//! publication holds a run-length stream in memory (RFC-0020 section 15.8):
 //!
 //! ```text
-//! envelope "crucible.executor.finding-production-replay-capture" v5 {
+//! envelope "crucible.executor.finding-production-replay-capture" v6 {
 //!   body: CaptureManifest {
-//!     schema_version: 5, reproduction, observed_signature,
+//!     schema_version: 6, reproduction, observed_signature,
 //!     finding_fingerprint, model_reproduction: leaf, recipe,
 //!     deployment: { runtime, root_image_format,
 //!                   guest_assets: [{ architecture, kernel, root_image,
@@ -23,18 +24,21 @@
 //!     selected_side,
 //!     sides: [{ outcome, completed_quanta, frontier_ticks,
 //!               event_log: { entry_count, chain, segments },
-//!               terminal_fingerprints, resolved_effect_trace: leaf? }],
+//!               terminal_fingerprints,
+//!               resolved_effect_trace: { mode, work_items, records,
+//!                                        chain, segments }? }],
 //!     campaign_replay_closure: { root: leaf, frames: [leaf] },
 //!     lifecycle_objects: [{ identity, leaf }],
 //!   }
-//!   children: one role-tagged child per leaf and per log segment
+//!   children: one role-tagged child per leaf, per log segment, and per
+//!             trace segment
 //! }
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, OnceLock};
 
-use crucible::model::ResolvedEffectTrace;
+use crucible::model::{FaultRuntimeError, ResolvedEffectTrace};
 use crucible::{
     ContentHash, DagStore, FindingReproductionArtifact, FingerprintSample, MemoryDagStore, NodeId,
     ReproductionArtifact, SchedulerEventLogEntry, VirtualTime, VmArchitecture,
@@ -89,6 +93,10 @@ pub(crate) mod test_support;
 // crucible-lint: allow panic-shortcut -- test fixtures require exact setup or failure localization.
 #[allow(clippy::expect_used)]
 mod tests;
+#[cfg(test)]
+// crucible-lint: allow panic-shortcut -- trace fixtures require exact setup or failure localization.
+#[allow(clippy::expect_used)]
+mod trace_tests;
 mod wire;
 
 /// Maximum sides retained for one finding replay.
@@ -104,23 +112,17 @@ pub const MAX_FINDING_PRODUCTION_REPLAY_LIFECYCLE_OBJECTS: usize = 65_536;
 /// Maximum aggregate bytes retained for portable guest boot assets.
 pub const MAX_FINDING_PRODUCTION_REPLAY_GUEST_ASSET_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
-/// Maximum bytes in one side's resolved-effect trace bundle.
-///
-/// A capture carries the trace as one bundle leaf rather than as
-/// segment-referenced children, so the bundle keeps a carrier bound.
-pub const MAX_FINDING_PRODUCTION_REPLAY_TRACE_BUNDLE_BYTES: u64 = 64 * 1024 * 1024;
-
 /// Current production replay capture schema.
-pub const FINDING_PRODUCTION_REPLAY_CAPTURE_SCHEMA_VERSION: u32 = 5;
+pub const FINDING_PRODUCTION_REPLAY_CAPTURE_SCHEMA_VERSION: u32 = 6;
 
 const MAX_RUNTIME_IDENTITY_FIELD_BYTES: usize = 1_024;
 
 /// Bounds applied before a private replay capture can enter a campaign object.
 ///
 /// Every bound here is fixed by the authored scenario. Replay-side event logs
-/// are bounded by the attempt's operational `maximum_event_log_bytes` when
-/// they are recorded and are referenced by segment, so no capture bound grows
-/// with the replayed run.
+/// and resolved-effect traces are bounded by the attempt's operational
+/// `maximum_event_log_bytes` when they are recorded and are referenced by
+/// segment, so no capture bound grows with the replayed run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FindingProductionReplayCaptureLimits {
     /// Maximum number of content-addressed lifecycle objects.
@@ -256,9 +258,10 @@ impl FindingProductionReplayRecipe {
 
 /// One completed side of a private production replay.
 ///
-/// The side's scheduler log is held by reference, as segments, and every
-/// constructor authenticates each segment once, so a held side proves its log
-/// is dense from sequence zero and never passes its terminal frontier.
+/// The side's scheduler log and resolved-effect trace are held by reference,
+/// as segments, and every constructor authenticates each segment once, so a
+/// held side proves its log is dense from sequence zero and never passes its
+/// terminal frontier, and that every trace segment matches its manifest.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FindingProductionReplayExecutionSide {
     outcome: FindingProductionReplayTerminalOutcome,
@@ -266,9 +269,9 @@ pub struct FindingProductionReplayExecutionSide {
     frontier: VirtualTime,
     event_log: FindingProductionReplayEventLog,
     terminal_fingerprints: Vec<FingerprintSample>,
-    /// Transport bundle of the segmented resolved-effect trace (RFC-0020
-    /// section 15.8), published as one capture leaf.
-    resolved_effect_trace: Option<Arc<[u8]>>,
+    /// Segmented resolved-effect trace, held as its manifest and read handles
+    /// to the stores holding its segments (RFC-0020 section 15.8).
+    resolved_effect_trace: Option<ResolvedEffectTrace>,
 }
 
 impl FindingProductionReplayExecutionSide {
@@ -276,12 +279,15 @@ impl FindingProductionReplayExecutionSide {
     ///
     /// The snapshot's sealed segments are referenced rather than copied; only
     /// `event_log_prefix` and the snapshot's open tail are sealed as new
-    /// segments, into the snapshot's own segment store.
+    /// segments, into the snapshot's own segment store. The snapshot's
+    /// resolved-effect trace is referenced through the stores that already
+    /// hold its segments.
     ///
     /// # Errors
     ///
     /// Returns [`FindingProductionReplayCaptureError`] when the combined log
-    /// is invalid or a new segment cannot be stored.
+    /// is invalid, a new segment cannot be stored, or a trace segment is
+    /// missing or fails authentication.
     pub fn from_snapshot(
         outcome: FindingProductionReplayTerminalOutcome,
         event_log_prefix: &[SchedulerEventLogEntry],
@@ -296,7 +302,8 @@ impl FindingProductionReplayExecutionSide {
     /// # Errors
     ///
     /// Returns [`FindingProductionReplayCaptureError`] when the combined log
-    /// is invalid or a new segment cannot be stored.
+    /// is invalid, a new segment cannot be stored, or a trace segment is
+    /// missing or fails authentication.
     pub(crate) fn from_snapshot_with_terminal_entry(
         outcome: FindingProductionReplayTerminalOutcome,
         event_log_prefix: &[SchedulerEventLogEntry],
@@ -324,10 +331,10 @@ impl FindingProductionReplayExecutionSide {
                 FindingProductionReplayIncomplete::MissingTerminalFingerprints,
             ));
         };
-        let resolved_effect_trace = snapshot
-            .resolved_effect_trace()
-            .map(trace_bundle)
-            .transpose()?;
+        let resolved_effect_trace = snapshot.resolved_effect_trace().cloned();
+        if let Some(trace) = &resolved_effect_trace {
+            authenticate_resolved_effect_trace(trace)?;
+        }
 
         Ok(FindingProductionReplayCaptureOutcome::Complete(Self {
             outcome,
@@ -339,16 +346,19 @@ impl FindingProductionReplayExecutionSide {
         }))
     }
 
-    /// Rebuilds a decoded side and authenticates its log.
+    /// Rebuilds a decoded side and authenticates its log and trace.
     fn from_parts(
         outcome: FindingProductionReplayTerminalOutcome,
         completed_quanta: u64,
         frontier: VirtualTime,
         event_log: FindingProductionReplayEventLog,
         terminal_fingerprints: Vec<FingerprintSample>,
-        resolved_effect_trace: Option<Arc<[u8]>>,
+        resolved_effect_trace: Option<ResolvedEffectTrace>,
     ) -> Result<Self, FindingProductionReplayCaptureError> {
         event_log.validate(frontier)?;
+        if let Some(trace) = &resolved_effect_trace {
+            authenticate_resolved_effect_trace(trace)?;
+        }
         Ok(Self {
             outcome,
             completed_quanta,
@@ -389,38 +399,40 @@ impl FindingProductionReplayExecutionSide {
         &self.terminal_fingerprints
     }
 
-    /// Returns the resolved signal-effect trace bundle, when the scenario has one.
+    /// Returns the resolved signal-effect trace, when the scenario has one.
     ///
-    /// [`ResolvedEffectTrace::from_bundle_bytes`] decodes it and authenticates
-    /// every segment.
+    /// The trace was authenticated when the side was built. Readers stream it
+    /// one segment at a time from the same stores.
     #[must_use]
-    pub fn resolved_effect_trace(&self) -> Option<&[u8]> {
-        self.resolved_effect_trace.as_deref()
+    pub const fn resolved_effect_trace(&self) -> Option<&ResolvedEffectTrace> {
+        self.resolved_effect_trace.as_ref()
     }
 }
 
-/// Copies a segmented trace into the bundle a portable capture carries.
+/// Authenticates every segment of a side's trace, one segment at a time.
 ///
-/// The bundle length is known from the manifest, so a trace above
-/// [`MAX_FINDING_PRODUCTION_REPLAY_TRACE_BUNDLE_BYTES`] is refused before any
-/// segment is read.
-fn trace_bundle(
+/// Each segment is read from the trace's stores, checked against its manifest
+/// reference, and dropped before the next is read, so the pass holds at most
+/// one segment however long the trace is.
+fn authenticate_resolved_effect_trace(
     trace: &ResolvedEffectTrace,
-) -> Result<Arc<[u8]>, FindingProductionReplayCaptureError> {
-    let length = trace
-        .bundle_len()
-        .map_err(|_| FindingProductionReplayCaptureError::InvalidResolvedEffectTrace)?;
-    if length > MAX_FINDING_PRODUCTION_REPLAY_TRACE_BUNDLE_BYTES {
-        return Err(FindingProductionReplayCaptureError::LimitExceeded {
-            limit: "finding-production-replay-resolved-effect-trace-bytes",
-        });
-    }
-    let maximum = usize::try_from(MAX_FINDING_PRODUCTION_REPLAY_TRACE_BUNDLE_BYTES)
-        .map_err(|_| FindingProductionReplayCaptureError::InvalidResolvedEffectTrace)?;
+) -> Result<(), FindingProductionReplayCaptureError> {
     trace
-        .to_bundle_bytes(maximum)
-        .map(Arc::from)
-        .map_err(|_| FindingProductionReplayCaptureError::InvalidResolvedEffectTrace)
+        .try_for_each_item(|_| Ok::<(), FaultRuntimeError>(()))
+        .map_err(resolved_effect_trace_error)
+}
+
+/// Classifies a failure to read or authenticate a side's trace segment.
+///
+/// A segment its stores cannot produce is a storage failure; any other
+/// failure is invalid evidence.
+fn resolved_effect_trace_error(error: FaultRuntimeError) -> FindingProductionReplayCaptureError {
+    match error {
+        FaultRuntimeError::TraceStorage { .. } => {
+            FindingProductionReplayCaptureError::ResolvedEffectTraceStore(error)
+        }
+        _ => FindingProductionReplayCaptureError::InvalidResolvedEffectTrace,
+    }
 }
 
 /// Classifies a failure to seal or read a replay-side log.
