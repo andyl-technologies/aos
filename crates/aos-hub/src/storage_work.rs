@@ -4,6 +4,7 @@
 //! typed result. Placement and binding rows remain authoritative in SQL; the
 //! caller rechecks their revisions before committing any derived state.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
@@ -75,6 +76,9 @@ mod oci_projection;
 #[cfg(test)]
 mod outbound_window_tests;
 mod protected_inspection;
+mod read_retry;
+#[cfg(test)]
+mod read_retry_tests;
 #[cfg(test)]
 mod result_acceptance_tests;
 mod telemetry;
@@ -935,10 +939,22 @@ impl RemoteStorageWorkClient {
             1
         };
         let mut attempt = 0;
+        let mut last_read_failure: Option<anyhow::Error> = None;
         let (response, mut observed_attempt, mut outbound) = loop {
             attempt += 1;
-            plan.validate(&self.deployment_id, aos_hub_core::clock::now_unix_secs())
-                .inspect_err(|_| exchange.finish("invalid_plan"))?;
+            let now = aos_hub_core::clock::now_unix_secs();
+            if let Err(error) = plan.validate(&self.deployment_id, now) {
+                exchange.finish("invalid_plan");
+                if error == aos_hub_core::storage_work::StorageWorkError::InvalidTime
+                    && now > plan.expires_at
+                {
+                    if let Some(failure) = last_read_failure.take() {
+                        return Err(anyhow::Error::new(error)
+                            .context(read_retry::ExpiredReadPlan { failure }));
+                    }
+                }
+                return Err(error.into());
+            }
             let mut observed_attempt = execute_observation::AttemptObservation::new(
                 plan,
                 exchange.transport_call_id(),
@@ -996,9 +1012,12 @@ impl RemoteStorageWorkClient {
                         plan_id = %plan.plan_id,
                         operation = plan.operation.kind(),
                         attempt,
+                        timed_out = error.is_timeout(),
+                        connect_failed = error.is_connect(),
                         error = %error,
                         "retrying read-only hybrid storage transport"
                     );
+                    last_read_failure = Some(error.into());
                     tokio::time::sleep(Duration::from_millis(100 * attempt as u64)).await;
                     continue;
                 }
@@ -1029,6 +1048,10 @@ impl RemoteStorageWorkClient {
                     http_status = response.status().as_u16(),
                     "retrying read-only hybrid storage work"
                 );
+                last_read_failure = Some(anyhow::anyhow!(
+                    "storage Worker returned retryable HTTP {}",
+                    response.status()
+                ));
                 tokio::time::sleep(Duration::from_millis(100 * attempt as u64)).await;
                 continue;
             }
@@ -2206,10 +2229,24 @@ impl HybridSurfaceFetch {
         plan: &StorageWorkPlan,
         control: Option<&[u8]>,
     ) -> Result<StorageWorkResult> {
-        let (result, observation) = self
+        let mut current_plan = Cow::Borrowed(plan);
+        let attempt = self
             .work
             .execute_observed_with_control(plan, control)
-            .await?;
+            .await;
+        let (result, observation) = match attempt {
+            Ok(result) => result,
+            Err(error) => {
+                let Some(reissued) = self.reissue_expired_managed_read(plan, &error).await? else {
+                    return Err(error);
+                };
+                current_plan = Cow::Owned(reissued);
+                self.work
+                    .execute_observed_with_control(current_plan.as_ref(), control)
+                    .await?
+            }
+        };
+        let plan = current_plan.as_ref();
         let placement = self
             .db
             .surface_placement(self.placement.id)
