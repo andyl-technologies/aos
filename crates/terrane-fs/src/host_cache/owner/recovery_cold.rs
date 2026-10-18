@@ -40,6 +40,14 @@ impl ColdPolicy {
         })
     }
 
+    /// Borrows original residence candidates without treating them as verified.
+    ///
+    /// Selection can prefer one only after receiving that exact range from
+    /// independently verified recovery output. Missing candidates stay unresolved.
+    pub(super) fn residences(&self) -> &[ResidenceRecord] {
+        &self.state.residences
+    }
+
     /// Adds the genuine new bootstrap hold while preserving every cold record.
     ///
     /// # Errors

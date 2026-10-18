@@ -178,7 +178,11 @@ pub(super) async fn run(
             .custody()
             .lock()
             .map_err(|_| io::Error::other("recovery custody poisoned"))?;
-        ResidenceSelection::new(custody.preparation.config.state.records)
+        let cold = custody
+            .recovery_cold
+            .as_ref()
+            .ok_or_else(|| invalid("manifest recovery lost original cold policy candidates"))?;
+        ResidenceSelection::new(custody.preparation.config.state.records, cold.residences())?
     };
     selected.extend(recovery_inline::residences(&inline_claims))?;
     for body in &verified {

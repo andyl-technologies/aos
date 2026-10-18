@@ -160,15 +160,15 @@ fn check_parts(
     // cover preflight/serialization, Tokio's writer copy, bounded encoded
     // readback and parser/closing scratch. This is checked storage arithmetic,
     // not an allocator/RSS guarantee; no extra clone is assumed free.
-    // Cold recovery additionally retains its original candidate snapshot and
-    // one expected comparison while actual write/readback storage overlaps.
-    add(14, state)?;
+    // Cold recovery additionally retains original and expected snapshots plus
+    // bounded preferred-range selection and its collection growth overlap.
+    add(16, state)?;
     let state_record = size_of::<PinRecord>()
         + size_of::<ReservationRecord>()
         + size_of::<LeaseRecord>()
         + size_of::<ResidenceRecord>();
-    // Eight live typed sets plus collection capacity overlap.
-    add(records.checked_mul(10).ok_or_else(overflow)?, state_record)?;
+    // Cold snapshots and preferred-range map include their capacity overlap.
+    add(records.checked_mul(12).ok_or_else(overflow)?, state_record)?;
     // Incoming hashes, dedup trees, next-state pins and retained job closure.
     // A tree node's links are accounted separately from its String and bytes.
     let hash_slot = size_of::<String>() + 64 + size_of::<usize>() * 6;
