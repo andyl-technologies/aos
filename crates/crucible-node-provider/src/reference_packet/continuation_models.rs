@@ -551,7 +551,6 @@ pub(in crate::reference_packet) use decoder_counter::{
 // The complete Control/model decoder owns this distinct serde partial DAG.
 pub(in crate::reference_packet) mod serde_partials;
 
-
 pub(in crate::reference_packet) use decoder_counter::canonical_value_writer_frame_data;
 
 pub(in crate::reference_packet) use decoder_counter::model_decoder_geometry_data;

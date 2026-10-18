@@ -176,7 +176,6 @@ impl PacketControl {
             envelope,
         })
     }
-
 }
 
 impl NativeCapture17ReplyAttempt {

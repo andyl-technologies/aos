@@ -145,7 +145,6 @@ fn reference_identity(reference: &ContentRef) -> [u8; 32] {
 #[path = "capture_future_decoder_counter.rs"]
 mod decoder_counter;
 
-
 #[path = "capture_future_schema_factories.rs"]
 mod schema_factories;
 

@@ -10,11 +10,9 @@ use crucible::node_state::{
     CompleteInitial15PrebirthControlAttempt as Attempt,
     CompleteInitial15PrebirthControlConstructionData as Construction,
 };
+use crucible_node_provider::protocol_snapshot::restored_settled17::Initial15NativeImportGeometryConstructionData as GeometryConstruction;
 use crucible_node_provider::protocol_snapshot::{
     Initial15MappingNormalizationConstructionData as Normalization, PreparedArchivedProtocolMapping,
-};
-use crucible_node_provider::protocol_snapshot::restored_settled17::{
-    Initial15NativeImportGeometryConstructionData as GeometryConstruction,
 };
 use std::{cell::Cell, mem::size_of};
 

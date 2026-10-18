@@ -4,11 +4,11 @@
 //! Every prospective constructor row is retained before full policy readmission;
 //! no late installed Window or successful parser can pay for earlier birth.
 
+use super::super::super::capture_factory::Initial15ControlStep as Step;
 use super::*;
 use crucible::node_adapters::cnp::PacketCompleteSemanticSource;
 use crucible::node_contract::RuntimeError;
 use crucible::node_state::CompleteInitial15PrebirthControlAttempt as Attempt;
-use super::super::super::capture_factory::Initial15ControlStep as Step;
 use std::mem::size_of;
 
 impl PacketCompleteReportStartupHolder {

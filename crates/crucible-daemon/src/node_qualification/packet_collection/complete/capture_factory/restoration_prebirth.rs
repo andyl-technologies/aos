@@ -13,13 +13,13 @@ mod restoration_storage;
 mod restored_source17;
 
 use super::*;
-use std::cell::Cell;
 use crucible::node_admission::{CompleteArchiveCodeGraph, ConformanceGraph};
 use crucible::node_contract::{
     CollectingCompleteRestorationSource, HostSchedulingContinuationLimits, HostSchedulingOwner,
     HostSchedulingSelection,
 };
 use crucible::node_state::{CompleteOriginalHostTicket, CompleteOriginalNativeTicket};
+use std::cell::Cell;
 
 /// Owns the same verified source and all four once-issued prebirth tickets.
 ///

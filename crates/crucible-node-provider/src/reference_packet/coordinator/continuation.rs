@@ -384,7 +384,6 @@ pub(crate) fn original_canonical_ack_controller_scope_with_identity_suffix(
     tests::original_canonical_ack_controller_scope_with_identity_suffix(suffix)
 }
 
-
 /// Names concrete native/Host validation views reached by CoordinatorView.
 ///
 /// This supplements installation extent controls. Typed field partials, JSON

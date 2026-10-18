@@ -25,8 +25,8 @@ mod prebirth_storage;
 #[path = "complete_original_source/prebirth_control.rs"]
 mod prebirth_control;
 pub use prebirth_control::{
-    CompleteInitial15PrebirthControlInput, CompleteInitial15PrebirthControlAttempt,
-    CompleteInitial15PrebirthControlConstructionData,
+    CompleteInitial15PrebirthControlAttempt, CompleteInitial15PrebirthControlConstructionData,
+    CompleteInitial15PrebirthControlInput,
 };
 
 #[path = "complete_original_source/settled17.rs"]

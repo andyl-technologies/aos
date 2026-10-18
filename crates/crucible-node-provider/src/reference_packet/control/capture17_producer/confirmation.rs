@@ -463,7 +463,6 @@ impl PacketControl {
             capture_terminal,
         })
     }
-
 }
 
 impl NativeCapture17ConfirmationAttempt {

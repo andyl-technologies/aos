@@ -691,7 +691,6 @@ impl CoordinatorEdition {
     }
 }
 
-
 impl PacketConnectedCoordinatorInstallation {
     /// Names the returned private view and borrowed validation-call controls.
     ///

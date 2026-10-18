@@ -282,7 +282,6 @@ impl PacketControl {
             unknown,
         })
     }
-
 }
 
 impl NativeCapture17RegistrationAttempt {
