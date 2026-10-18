@@ -19,12 +19,24 @@ pub(crate) fn prepare_fork() -> Result<(), RamError> {
         .owner
         .clone()
         .ok_or("RAM owner not admitted")?;
-    if owner.has_cold_authority()? && !super::super::fork::has_prepared_cold()? {
-        return Err(RamError::Invariant(
-            "cold fork requires staged fault custody",
-        ));
-    }
-    actor::prepare_fork(&controller)?;
+    prepare_with_admission(&controller, || {
+        // An Apply cannot activate cold RAM after this handoff check.
+        if owner.has_cold_authority()? && !super::super::fork::has_prepared_cold()? {
+            return Err(RamError::Invariant(
+                "cold fork requires staged fault custody",
+            ));
+        }
+        owner.cancel_scheduled_reclaim()?;
+        actor::prepare_fork(&controller)
+    })
+}
+
+// Close policy admission before cancellation or actor quiescence can take effect.
+// A later refusal retains this gate until genuine parent rearm resolves custody.
+fn prepare_with_admission(
+    controller: &LivePagerController,
+    prepare: impl FnOnce() -> Result<(), RamError>,
+) -> Result<(), RamError> {
     let mut state = controller
         .state
         .lock()
@@ -38,7 +50,7 @@ pub(crate) fn prepare_fork() -> Result<(), RamError> {
     }
     state.fork_preparing = true;
     drop(state);
-    owner.cancel_scheduled_reclaim()
+    prepare()
 }
 
 /// Observes the actual same-owner native healthy join before final sealing.
@@ -136,4 +148,68 @@ pub(crate) fn disarm_parent_control() -> Result<std::os::fd::RawFd, RamError> {
     Err(RamError::Invariant(
         "native inherited RAM endpoint close loan is absent",
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn unsettled_policy_refuses_before_external_fork_preparation() {
+        for busy in 0..3 {
+            let controller = super::super::tests::controller();
+            {
+                let mut state = controller.state.lock().unwrap();
+                match busy {
+                    0 => state.fork_preparing = true,
+                    1 => state.policy_applying = true,
+                    _ => state.requested_revision = 1,
+                }
+            }
+            let entered = Cell::new(false);
+
+            let result = prepare_with_admission(&controller, || {
+                entered.set(true);
+                Ok(())
+            });
+
+            assert!(result.is_err());
+            assert!(
+                !entered.get(),
+                "busy controller reached external preparation"
+            );
+        }
+    }
+
+    #[test]
+    fn admission_stays_closed_after_external_preparation_refusal() {
+        let controller = super::super::tests::controller();
+        let first = RamError::from(io::Error::from_raw_os_error(libc::EIO));
+        let entered = Cell::new(false);
+        let reentered = Cell::new(false);
+
+        let result = prepare_with_admission(&controller, || {
+            entered.set(true);
+            let state = controller
+                .state
+                .try_lock()
+                .expect("admission lock released");
+            assert!(state.fork_preparing);
+            drop(state);
+
+            let nested = prepare_with_admission(&controller, || {
+                reentered.set(true);
+                Ok(())
+            });
+            assert!(nested.is_err());
+            Err(first.clone())
+        });
+
+        assert_eq!(result, Err(first));
+        assert!(entered.get());
+        assert!(!reentered.get());
+        assert!(controller.state.lock().unwrap().fork_preparing);
+        assert_eq!(controller.operations.capacity.load(Ordering::Acquire), 0);
+    }
 }

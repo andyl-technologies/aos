@@ -110,6 +110,23 @@ This integration remains unfinished. Cleanup error folding must also retain a
 later independent Main report as well as the guard leaves covered by the
 existing two-body component controls.
 
+## RAM controller fork admission
+
+RAM fork preparation closes the controller's policy admission before checking
+cold handoff readiness, canceling queued placement, or quiescing and joining the
+native control actor. An applying or unapplied policy, retained checkpoint, or
+existing fork refuses before those preparation effects. The State mutex is
+released before cancellation and native calls, so their original operations can
+still observe supervision. A later preparation failure retains the closed gate
+and its original error; it does not claim successful parent rearm.
+
+This ordering repair does not supply the remaining native handoffs. The RAM
+controller still requires genuine parent rearm, child controller construction,
+child endpoint custody, and inherited endpoint close custody. Callback-child
+reconstruction separately requires a fresh child startup Source. Those paths
+remain explicit refusals. Local admission controls issue none of these native
+owners and do not qualify a successful cold fork or promoted parent.
+
 ## Factory and runtime integration
 
 1. Use `retain_fork_target_factory` to retain the real shared factory facade.
