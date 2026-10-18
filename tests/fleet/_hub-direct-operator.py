@@ -107,8 +107,9 @@ def private_guest_command(machine, command, timeout=60):
     except Exception as error:
         category = type(error).__name__
         if category not in {
-                "ClientAgentTimeout", "TimeoutError", "ConnectionResetError",
-                "BrokenPipeError", "EOFError", "AgentProtocolError", "_ProtocolMidstream"}:
+                "AgentTimeout", "ClientAgentTimeout", "TimeoutError",
+                "ConnectionResetError", "BrokenPipeError", "EOFError",
+                "AgentProtocolError", "_ProtocolMidstream"}:
             category = "OtherTransportError"
         elapsed_ms = max(0, int((time.monotonic() - started) * 1000))
         raise RuntimeError(

@@ -2262,10 +2262,22 @@
       "max_busy": max(opened - idle for opened, idle, _ in pool_samples),
   })
 
-  boundary_log = native.succeed(
+  # Keep the complete trace off the agent's single-response transport. The
+  # existing window reader retains every byte through bounded chunks.
+  boundary_path = "/var/lib/hybrid-native-storage-boundary.log"
+  private_guest_command(native,
+      "set -o pipefail\numask 077\n"
       f"journalctl -u aos-hub.service -o cat --no-pager | "
-      f"{GREP} -E 'hybrid storage boundary|registry release index phase completed|registry index run completed'"
+      f"{GREP} -E 'hybrid storage boundary|registry release index phase completed|registry index run completed' "
+      f"> {shlex.quote(boundary_path)}",
+      timeout=120,
   )
+  boundary_after = direct_log_position(native, "${pkgs.python3}/bin/python3", boundary_path)
+  boundary_file, _ = retain_direct_log_window(
+      native, "${pkgs.python3}/bin/python3", {**boundary_after, "byteSize": 0},
+      "proxy-native-storage-boundary.log", after=boundary_after,
+  )
+  boundary_log = boundary_file.read_text()
   boundary_log += "\n" + "\n".join(operator_index_logs)
   assert "inspect_git_object" in boundary_log, boundary_log
   assert "hash_oci_range" in boundary_log, boundary_log
