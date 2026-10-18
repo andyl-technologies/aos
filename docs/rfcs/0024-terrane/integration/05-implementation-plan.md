@@ -9143,7 +9143,9 @@ Resumed qualification:
   cases. Independent review matches every actual passing case to the complete
   source-bound archive inventory and verifies all 3,468 archive inputs and its
   digest. The six original privileged VM cases remain separately inventoried.
-  Required application target compilation for this combined source is running.
+  Required application target compilation for this source also passes in 2,833
+  seconds: 128 unit/integration test artifacts across 29 packages, without test
+  execution. These results apply to the retention candidate, not later changes.
 - Running manifest-publication candidate `f5981a7a53`: the physical command
   owner now retains canonical metadata, original admitted chunk/dictionary
   handles, bounded ordered reads and actual per-source retirement replies in
@@ -9159,10 +9161,24 @@ Resumed qualification:
   native-only builds, eleven focused tests and the formatter pair pass. A
   diagnostic reaching all targets with dead-code checks disabled also passes;
   strict Clippy still fails nineteen existing integration or retention findings.
-  Immutable image/guest qualification is running. Three new controls cover
-  repeated-chunk publication, a dropped waiter and wrong whole-file hashes;
-  they have not yet executed. The image builder and verifier bind the new supervisor helper to
-  immutable source. Its finite guest disk is 512 MiB, accommodating all 32 declared
+  The first actual guest passes all 47 selected filesystem and three process
+  confinement controls, then provisioning fails with EMFILE before any new
+  manifest control. Follow-up `5c2d01343d` changes only the supervisor: dedicated
+  provisioning and quota-helper children receive the same finite 4,096-descriptor
+  allowance as the publisher, preserving capabilities and project limits. Its
+  immutable image, independent source/image verification and actual ext4 guest
+  all pass. All three new manifest controls execute: repeated-chunk publication,
+  a dropped waiter and rejection of wrong whole-file hashes while the original
+  funded anonymous output remains physically retained. The complete existing
+  native component also passes: 47 selected filesystem cases, eight manifest/mixed
+  recovery cases, both Running-retention controls, five inline publication/transfer
+  controls and three process-confinement controls. No post-result guest I/O
+  diagnostic appears. Independent review verifies all 3,475 image inputs, six
+  installed files, the exact selected unit inventory and actual result markers.
+  A separate full ext4 nextest run passes all 117 nonignored cases on this same
+  source; its original six privileged cases remain separately inventoried.
+  Required application target compilation is running for this revision. The
+  finite guest disk is 512 MiB, accommodating all 32 declared
   8 MiB project ceilings without changing any individual quota. Existing sealed
   range sources, dictionary-specific runtime evidence, completed retirement,
   consumer leases and NativeReady remain required; no complete task is accepted.
