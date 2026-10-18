@@ -8,6 +8,7 @@
 use std::path::Path;
 
 use anyhow::{Context as _, Result, bail};
+use aos_oci_types::CONTAINER_RELEASE_SIDECAR_PATH;
 use git2::Repository;
 
 /// Resolves the nearest preceding published version and authenticates its tag.
@@ -67,6 +68,21 @@ fn compose_with_predecessor(directory: &Path, predecessor: &str) -> Result<()> {
             "authored changes conflict with the published catalog; merge the preceding release into the maintainer branch and review the result"
         );
     }
+
+    // A container attachment names one release. A generated predecessor must
+    // not add its attachment to a package-only author's candidate. An explicit
+    // new attachment is installed by the release command after composition.
+    let sidecar = Path::new(CONTAINER_RELEASE_SIDECAR_PATH);
+    match author.tree()?.get_path(sidecar) {
+        Ok(_) => {}
+        Err(error) if error.code() == git2::ErrorCode::NotFound => {
+            if merged.get_path(sidecar, 0).is_some() {
+                merged.remove_path(sidecar)?;
+            }
+        }
+        Err(error) => return Err(error.into()),
+    }
+
     let mut checkout = git2::build::CheckoutBuilder::new();
     checkout.safe();
     repository
@@ -126,6 +142,44 @@ mod tests {
         assert!(merged.get_name("published-package").is_some());
         assert!(merged.get_name("author-package").is_some());
         assert_eq!(repository.head()?.peel_to_commit()?.id(), author);
+        Ok(())
+    }
+
+    #[test]
+    fn package_only_candidate_does_not_inherit_predecessors_container_attachment() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let repository = Repository::init(temporary.path())?;
+        std::fs::write(temporary.path().join("shared"), "base\n")?;
+        let base = commit(&repository, "base")?;
+
+        let sidecar = Path::new(CONTAINER_RELEASE_SIDECAR_PATH);
+        std::fs::create_dir_all(temporary.path().join(sidecar.parent().unwrap()))?;
+        std::fs::write(temporary.path().join(sidecar), "release 1.0.0\n")?;
+        std::fs::write(temporary.path().join("published-package"), "published\n")?;
+        let previous = commit(&repository, "published container release")?;
+
+        repository.reference("refs/heads/maintainer", base, false, "author branch")?;
+        repository.set_head("refs/heads/maintainer")?;
+        repository.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))?;
+        std::fs::write(temporary.path().join("author-package"), "authored\n")?;
+        let author = commit(&repository, "package-only author change")?;
+
+        compose_with_predecessor(temporary.path(), &previous.to_string())?;
+        let mut index = repository.index()?;
+        index.update_all(["*"], None)?;
+        index.add_all(["*"], git2::IndexAddOption::DEFAULT, None)?;
+        let merged = repository.find_tree(index.write_tree()?)?;
+
+        assert!(merged.get_path(sidecar).is_err());
+        assert!(!temporary.path().join(sidecar).exists());
+        assert!(merged.get_name("published-package").is_some());
+        assert!(merged.get_name("author-package").is_some());
+        assert_eq!(repository.head()?.peel_to_commit()?.id(), author);
+        assert!(repository
+            .find_commit(previous)?
+            .tree()?
+            .get_path(sidecar)
+            .is_ok());
         Ok(())
     }
 }
