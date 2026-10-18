@@ -8959,24 +8959,33 @@ Resumed qualification:
   later schema-invalid body. Earlier failures remain archived. This is component
   evidence, not sealed Running publication, live R, NativeReady, BKT-15 or full
   host-task acceptance.
-- Publisher custody candidate `a4ef3ccd71`: source review and formatting pass
-  for compact owned command payloads, original boxed recovery completion on
-  Resume refusal, and retained verified inventory sources. Compilation and
-  native qualification remain pending. The shared registry now exposes
-  `integration.publisher-local-image`, `integration.publisher-local-multuid`
-  and `integration.native-publisher-local`; each fails explicitly while its
-  implementation file is absent. Registration supplies no conformance credit.
+- Publisher custody candidate `dcdfb1b1a3`: the compact owned command payloads,
+  original boxed Resume completion and retained verified inventory sources build.
+  The earlier `8de8b15aba` image passes independent completed-image verification
+  and all nineteen builder cases; its guest passes all three original socket
+  mode/replacement cases under measured UID 841/GID 845, no supplementary groups,
+  empty capabilities and no-new-privileges. The later lifecycle check fails when
+  inventory mistakes a valid retained retirement lease for a binding record.
+  The reviewed fix validates the existing bounded lease schema and typed keys,
+  retaining actual inode and byte observations without granting body, pin or
+  deadline authority. Its all-target native build and actual typed-key rejection
+  test pass; parser and guest requalification remain pending. Unknown and changed
+  records still refuse inventory. The three shared publisher integration checks
+  remain explicit pending failures on trunk until implementation lands. No
+  transport component or full host task is accepted from the partial guest pass.
 - Surface candidate `6cb1fcf235`: shared prerequisite `38a1ee21f6` is integrated
   through a normal merge, preserving the previous frozen candidate and receipts.
-  The full current-trunk gate aggregate and required application test-target
-  compilation are running; its formatter pair passes on unchanged source.
+  The full current-trunk gate aggregate remains running. Required application
+  unit and integration test-target compilation passes on that unchanged source;
+  this is compilation evidence, not execution. Its formatter pair also passes.
   Review finds a SURF-8 gap: configuration accepts an unknown named view policy
   until later startup. The earlier source-bound CLI reproduces that acceptance.
   Follow-up `db293cd9f8` rejects it during whole-configuration loading and checks
   caller-built exposure lists before any credential resolution. Existing
   configuration and runtime regressions cover the late-list case without
-  changing their inventory. Full source review and its formatter pair pass;
-  compilation, execution, remaining gates and strict lint remain pending.
+  changing their inventory. Review of the complete forty-one-file task diff and
+  its formatter pair pass; final-source compilation, execution, remaining gates
+  and strict lint remain pending.
   Results on the older candidate do not establish final task acceptance.
 
 The shared glue dependency now names
