@@ -175,14 +175,34 @@ pub(super) async fn grant(
     request: &DirectGrantPartRequest,
     context: &DirectRequestContext,
 ) -> Result<DirectPartGrant> {
+    let mut phase = "placement";
+    let result = grant_inner(env, authority, admission, request, context, &mut phase).await;
+    if result.is_err() {
+        worker::console_error!("direct_grant_refused phase={}", phase);
+    }
+
+    result
+}
+
+async fn grant_inner(
+    env: &Env,
+    authority: &dyn StageAuthority,
+    admission: &DirectUploadAdmission,
+    request: &DirectGrantPartRequest,
+    context: &DirectRequestContext,
+    phase: &mut &'static str,
+) -> Result<DirectPartGrant> {
     let placement = storage::placement(admission, request.placement.placement_id)?;
+    *phase = "protected_material";
     let protected = authority.protected_material(env, placement).await?;
+    *phase = "part_identity";
     request.part.validate(&admission.intent)?;
     ensure!(
         request.placement == placement.public_ref(&context.deployment_id)?
             && request.part.checksum.algorithm == placement.checksum_algorithm,
         "direct requested placement differs"
     );
+    *phase = "retained_part";
     let mut existing = part_at(
         env,
         admission,
@@ -220,17 +240,21 @@ pub(super) async fn grant(
             observed: None,
         },
     };
+    *phase = "original_expiry";
     ensure!(
         authority.latest_now()? < record.expires_at.get(),
         "direct original grant expired"
     );
+    *phase = "creation_receipt";
     let created = created(env, admission, placement.placement_id).await?;
     let mut registration = record.clone();
     registration.observed = None;
+    *phase = "logical_registration";
     current(authority, context, admission)?;
     storage::call(env, admission, Operation::Register { part: registration }).await?;
     match (&protected, created) {
         (MaterialProfile::Managed { profile }, CreatedStage::Managed { receipt }) => {
+            *phase = "managed_signing";
             let upload_id = receipt
                 .upload_id
                 .ok_or_else(|| anyhow::anyhow!("empty direct stage has no part"))?;
@@ -281,6 +305,7 @@ pub(super) async fn grant(
             })
         }
         (MaterialProfile::External { .. }, CreatedStage::External { result }) => {
+            *phase = "external_preparation";
             let ExternalStageOutcome::Created { upload_id } = result.outcome else {
                 anyhow::bail!("direct external part stage absent");
             };
@@ -305,9 +330,12 @@ pub(super) async fn grant(
             )
             .await?;
             current(authority, context, admission)?;
+            *phase = "external_registration";
             let result = crate::external_object::execute_stage(env, &work).await?;
+            *phase = "external_signing";
             let mut grants =
                 crate::external_object::presign_registered_parts(env, &work, &result).await?;
+            *phase = "final_expiry";
             current(authority, context, admission)?;
             ensure!(
                 authority.latest_now()? < record.expires_at.get(),

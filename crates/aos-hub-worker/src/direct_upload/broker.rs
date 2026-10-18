@@ -28,7 +28,10 @@ pub(crate) use super::effects::{created, AbortPlacementReceipt};
 pub(crate) async fn fetch(mut request: Request, env: &Env) -> worker::Result<Response> {
     match execute(&mut request, env).await {
         Ok(response) => Response::from_json(&response),
-        Err(_) => Response::error("direct upload control unavailable", 409),
+        Err(_) => {
+            worker::console_error!("direct_upload_request_refused");
+            Response::error("direct upload control unavailable", 409)
+        }
     }
 }
 
@@ -379,7 +382,7 @@ async fn execute(request: &mut Request, env: &Env) -> Result<DirectUploadRespons
     response.validate().map_err(|error| {
         // This error type contains a static protocol message, never provider
         // response text, signing credentials, or a delegated URL.
-        worker::console_warn!("direct_upload_reply_invalid reason={}", error);
+        worker::console_error!("direct_upload_reply_invalid reason={}", error);
         error
     })?;
     Ok(response)

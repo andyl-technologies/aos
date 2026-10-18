@@ -322,7 +322,7 @@ pub(crate) async fn presign_registered_parts(
     if result.is_err() {
         // Provider errors may contain bearer URLs or credential material. Only
         // source-defined phase names are safe for the Worker console.
-        worker::console_warn!("direct_part_grant_refused phase={}", phase);
+        worker::console_error!("direct_part_grant_refused phase={}", phase);
     }
 
     result
