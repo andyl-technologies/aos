@@ -393,8 +393,11 @@ pub fn original_native_oracle_expanded_decode_storage_data(
     let (retained, transient, scratch) = extra.requested_storage_data();
     let (nodes, members, text) = extra.expanded_json_extents_data();
     let layouts = original_native_oracle_typed_layouts_data()?;
-    // Every expanded node can be an independent array or element. Eight slots
-    // cover the real four-slot minimum plus cumulative geometric Vec growth.
+    // Every expanded node can be an independent array or element. Four initial
+    // slots bound the pinned minimum for non-byte elements; summed doubling
+    // requests fit eight slots per possible container/element, including a
+    // minimum request for an empty or one-element container. Byte-bank growth
+    // is priced separately below.
     let arrays = nodes
         .checked_mul(8)
         .and_then(|n| n.checked_mul(layouts.maximum_array_element_bytes))
@@ -403,6 +406,13 @@ pub fn original_native_oracle_expanded_decode_storage_data(
         .checked_mul(2)
         .and_then(|n| n.checked_mul(layouts.maximum_tree_node_bytes))
         .ok_or_else(exhausted)?;
+    // Pinned RawVec byte banks request max(2 * old_capacity, required, 8).
+    // Summed growth is bounded by 4 * text + 16 * independent banks, as in
+    // raw_value_reparse::geometry::byte_bank_growth_data. Expanded nodes include
+    // potential text/key owners, so two such envelopes give 8 * text + 32 * nodes:
+    // an owned String (moved or cloned from Value) and a separate decoded Bytes
+    // bank. Bytes::deserialize keeps its encoded String live while decoding.
+    // The companion's initial reset-parser/Value owners are separate rows.
     let strings = text
         .checked_mul(8)
         .and_then(|n| nodes.checked_mul(32).and_then(|banks| n.checked_add(banks)))
