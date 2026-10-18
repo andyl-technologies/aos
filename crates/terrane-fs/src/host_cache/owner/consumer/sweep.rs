@@ -200,7 +200,12 @@ pub(in crate::host_cache::owner) async fn background(
         })?
     };
     if needed {
-        run(executor).await?;
+        let result = run(executor).await;
+        #[cfg(feature = "native-test-fixtures")]
+        if let Err(error) = &result {
+            eprintln!("actual native consumer sweep refused: {error}");
+        }
+        result?;
     }
     Ok(())
 }

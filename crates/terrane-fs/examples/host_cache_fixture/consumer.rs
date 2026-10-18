@@ -215,6 +215,8 @@ pub(super) fn run(
         || published.handle().metadata()?.ino() != original_inode
         || repinned.read_verified().is_ok()
     {
+        eprintln!("periodic consumer snapshot before failure: {after:?}");
+        eprintln!("original producer snapshot: {baseline:?}");
         return Err(invalid(
             "periodic sweep failed original grace deadline or changed producer custody",
         ));
