@@ -5,6 +5,7 @@
 use super::*;
 use crucible_device::block::BlockTransportRequestIds;
 use crucible_engine::{ContentHash, MarkerId};
+use std::sync::Arc;
 
 #[test]
 fn preemption_after_adjacent_sample_uses_the_next_retirement() {
@@ -77,8 +78,12 @@ fn runtime_diagnostics(trace: String) -> RuntimeDeterminismDiagnostics {
                 logical_icount: 8_000_000,
                 raw_icount: 160_000,
             }),
-            idle_state: Err(String::from("test idle state")),
-            timer_witness: Err(String::from("test timer witness")),
+            idle_state: Err(Arc::new(
+                crucible_qemu_host::QemuNodeError::CoverageEventLogRequired,
+            )),
+            timer_witness: Err(Arc::new(
+                crucible_qemu_host::QemuNodeError::CoverageEventLogRequired,
+            )),
             rr_current_vcpu: 0,
             rr_position_in_quantum: 7,
         },
@@ -89,6 +94,58 @@ fn runtime_diagnostics(trace: String) -> RuntimeDeterminismDiagnostics {
         )
         .expect("test runtime trace should validate"),
     }
+}
+
+#[test]
+fn final_boundary_preserves_the_same_calibration_failure_after_baseline_disposal() {
+    let mut diagnostics = runtime_diagnostics(runtime_trace(9_000_000));
+    let source = Arc::new(crucible_qemu_host::QemuNodeError::CoverageEventLogRequired);
+    let lifetime = Arc::downgrade(&source);
+    diagnostics.baseline.calibration = Err(source);
+
+    let failure = final_busy_raw_boundary(&diagnostics.baseline).unwrap_err();
+    let NativeObservationError::Node(source) = &failure else {
+        panic!("the original calibration failure must remain typed");
+    };
+    assert!(std::ptr::eq(Arc::as_ptr(source), lifetime.as_ptr()));
+    let retained = std::error::Error::source(&failure)
+        .unwrap()
+        .downcast_ref::<Arc<crucible_qemu_host::QemuNodeError>>()
+        .unwrap();
+    assert!(Arc::ptr_eq(retained, source));
+    assert!(std::ptr::eq(retained.as_ref(), lifetime.as_ptr()));
+
+    drop(diagnostics);
+
+    assert!(lifetime.upgrade().is_some());
+
+    drop(failure);
+
+    assert!(lifetime.upgrade().is_none());
+}
+
+#[test]
+fn final_boundary_rejects_an_incoherent_logical_coordinate() {
+    let mut diagnostics = runtime_diagnostics(runtime_trace(9_000_000));
+    assert_eq!(
+        final_busy_raw_boundary(&diagnostics.baseline).unwrap(),
+        160_000
+    );
+    diagnostics
+        .baseline
+        .calibration
+        .as_mut()
+        .unwrap()
+        .logical_icount -= 1;
+
+    let failure = final_busy_raw_boundary(&diagnostics.baseline).unwrap_err();
+
+    assert!(matches!(failure, NativeObservationError::Assertion(_)));
+    assert!(
+        failure
+            .to_string()
+            .contains("boundary_logical_picoseconds=7999999 expected=8000000")
+    );
 }
 
 fn boundary(target: u64, rr_current_vcpu: u32, rr_position_in_quantum: u64) -> BoundaryEvidence {

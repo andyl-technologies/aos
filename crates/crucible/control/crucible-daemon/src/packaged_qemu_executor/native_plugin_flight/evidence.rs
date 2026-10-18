@@ -4,6 +4,9 @@
 //! compare them without issuing QMP commands, resource owners or scheduler work.
 
 use super::*;
+use std::sync::Arc;
+
+use crucible_qemu_host::QemuNodeError;
 
 pub(super) struct FlightRun {
     pub(super) boundaries: Vec<BoundaryEvidence>,
@@ -23,9 +26,11 @@ pub(super) struct RuntimeDeterminismDiagnostics {
 
 #[derive(Debug)]
 pub(super) struct RuntimeDeterminismBaseline {
-    pub(super) calibration: Result<QemuLogicalTimeCalibration, String>,
-    pub(super) idle_state: Result<QemuNodeIdleState, String>,
-    pub(super) timer_witness: Result<Option<QemuVirtualTimerFireWitness>, String>,
+    // A calibration refusal may be both the first cause and a retained passive
+    // observation. Sharing that error preserves its identity in both views.
+    pub(super) calibration: Result<QemuLogicalTimeCalibration, Arc<QemuNodeError>>,
+    pub(super) idle_state: Result<QemuNodeIdleState, Arc<QemuNodeError>>,
+    pub(super) timer_witness: Result<Option<QemuVirtualTimerFireWitness>, Arc<QemuNodeError>>,
     pub(super) rr_current_vcpu: u32,
     pub(super) rr_position_in_quantum: u64,
 }
@@ -416,17 +421,18 @@ pub(super) fn describe_runtime_baseline(baseline: &RuntimeDeterminismBaseline) -
 
 pub(super) fn final_busy_raw_boundary(
     baseline: &RuntimeDeterminismBaseline,
-) -> Result<u64, String> {
+) -> Result<u64, NativeObservationError> {
     let calibration = baseline
         .calibration
         .as_ref()
-        .map_err(|error| format!("boundary_calibration_error={error}"))?;
+        .map_err(|error| NativeObservationError::Node(Arc::clone(error)))?;
     if calibration.logical_icount != TARGETS[TARGETS.len() - 1] {
         return Err(format!(
             "boundary_logical_picoseconds={} expected={}",
             calibration.logical_icount,
             TARGETS[TARGETS.len() - 1]
-        ));
+        )
+        .into());
     }
     Ok(calibration.raw_icount)
 }

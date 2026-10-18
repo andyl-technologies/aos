@@ -5,6 +5,7 @@
 //! its independently retained cleanup history are disposed.
 
 use std::borrow::Cow;
+use std::sync::Arc;
 
 /// A native observation refusal with its original operational cause.
 #[derive(Debug, thiserror::Error)]
@@ -26,7 +27,7 @@ pub(crate) enum NativeObservationError {
     Store(#[source] Box<crucible_store::content_store::StoreError>),
     /// The observed QEMU node returned a concrete failure.
     #[error("{0}")]
-    Node(#[source] Box<crucible_qemu_host::QemuNodeError>),
+    Node(#[source] Arc<crucible_qemu_host::QemuNodeError>),
     /// The scheduler-facing backend refused an operation.
     #[error("{0}")]
     Backend(#[source] Box<crucible_engine::BackendError>),
@@ -141,7 +142,7 @@ impl From<crucible_store::content_store::StoreError> for NativeObservationError 
 
 impl From<crucible_qemu_host::QemuNodeError> for NativeObservationError {
     fn from(source: crucible_qemu_host::QemuNodeError) -> Self {
-        Self::Node(Box::new(source))
+        Self::Node(Arc::new(source))
     }
 }
 
@@ -235,13 +236,28 @@ impl From<crucible_qemu_host::QemuLiveBlockIoServicerError> for NativeObservatio
 
 /// A concrete observation refusal and its passive diagnostic context.
 #[derive(Debug, thiserror::Error)]
-#[error("{message}")]
+#[error(
+    "production flight failed during {phase}: source={source}; idle_state={idle_state:?}; calibration={calibration:?}; timer_witness={timer_witness:?}"
+)]
 pub(crate) struct NativeObservationContext {
     /// Actual failure returned by the observed operation.
     #[source]
     pub(crate) source: NativeObservationError,
-    /// Existing passive node projections and phase description.
-    pub(crate) message: String,
+    /// Phase in which the initiating operation failed.
+    pub(crate) phase: String,
+    /// Independently observed idle state or its unchanged query failure.
+    pub(crate) idle_state:
+        Result<crucible_qemu_host::QemuNodeIdleState, Arc<crucible_qemu_host::QemuNodeError>>,
+    /// Existing logical/raw coordinates or their unchanged query failure.
+    pub(crate) calibration: Result<
+        crucible_qemu_host::QemuLogicalTimeCalibration,
+        Arc<crucible_qemu_host::QemuNodeError>,
+    >,
+    /// Existing timer witness or its unchanged query failure.
+    pub(crate) timer_witness: Result<
+        Option<crucible_qemu_host::QemuVirtualTimerFireWitness>,
+        Arc<crucible_qemu_host::QemuNodeError>,
+    >,
 }
 
 /// Keeps the first failure and the separately attempted cleanup outcomes.
@@ -293,11 +309,37 @@ mod tests {
         let dropped = Arc::new(AtomicUsize::new(0));
         let io = std::io::Error::other(RetainedCause(Arc::clone(&dropped)));
         let original = io.get_ref().unwrap() as *const _;
+        let passive_failures: [_; 3] = std::array::from_fn(|_| {
+            Arc::new(crucible_qemu_host::QemuNodeError::CoverageEventLogRequired)
+        });
+        let passive_lifetimes = passive_failures.each_ref().map(Arc::downgrade);
+        let [idle_state, calibration, timer_witness] = passive_failures;
 
         let failure = NativeObservationError::Context(Box::new(NativeObservationContext {
             source: io.into(),
-            message: String::from("passive state at the failed observation"),
+            phase: String::from("passive state at the failed observation"),
+            idle_state: Err(idle_state),
+            calibration: Err(calibration),
+            timer_witness: Err(timer_witness),
         }));
+
+        let NativeObservationError::Context(context) = &failure else {
+            panic!("passive outcomes must remain in the context owner");
+        };
+        for (retained, lifetime) in [
+            context.idle_state.as_ref().unwrap_err(),
+            context.calibration.as_ref().unwrap_err(),
+            context.timer_witness.as_ref().unwrap_err(),
+        ]
+        .into_iter()
+        .zip(&passive_lifetimes)
+        {
+            assert!(std::ptr::eq(Arc::as_ptr(retained), lifetime.as_ptr()));
+            assert!(matches!(
+                retained.as_ref(),
+                crucible_qemu_host::QemuNodeError::CoverageEventLogRequired
+            ));
+        }
 
         let mut source: &(dyn Error + 'static) = &failure;
         let retained = loop {
@@ -313,6 +355,11 @@ mod tests {
         drop(failure);
 
         assert_eq!(dropped.load(Ordering::SeqCst), 1);
+        assert!(
+            passive_lifetimes
+                .iter()
+                .all(|cause| cause.upgrade().is_none())
+        );
     }
 
     #[test]

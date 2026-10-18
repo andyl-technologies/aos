@@ -4,6 +4,7 @@
 //! launcher, native guard or borrowed node leaves this callback.
 
 use crate::NativeObservationError;
+use std::sync::Arc;
 
 use super::*;
 
@@ -124,13 +125,9 @@ pub(super) fn drive(
     // boundary. In particular, localization does not issue a QMP query or add
     // another scheduler step that could perturb the ordering under inspection.
     let runtime_baseline = RuntimeDeterminismBaseline {
-        calibration: node
-            .logical_time_calibration()
-            .map_err(|error| error.to_string()),
-        idle_state: node.idle_state().map_err(|error| error.to_string()),
-        timer_witness: node
-            .virtual_timer_fire_witness()
-            .map_err(|error| error.to_string()),
+        calibration: node.logical_time_calibration().map_err(Arc::new),
+        idle_state: node.idle_state().map_err(Arc::new),
+        timer_witness: node.virtual_timer_fire_witness().map_err(Arc::new),
         rr_current_vcpu: final_busy_sample.rr_current_vcpu,
         rr_position_in_quantum: final_busy_sample.rr_position_in_quantum,
     };

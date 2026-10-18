@@ -24,6 +24,7 @@ use crate::NativeObservationError;
 use crate::qemu_lifecycle_launcher::ObservedNativeNode;
 
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 use crucible_engine::{
@@ -439,7 +440,27 @@ fn run_once(
             ));
         }
     };
-    let raw_boundary = final_busy_raw_boundary(&runtime_baseline)?;
+    let raw_boundary = match final_busy_raw_boundary(&runtime_baseline) {
+        Ok(boundary) => boundary,
+        Err(source) => {
+            let failure = NativeObservationError::Context(Box::new(
+                crate::native_observation_error::NativeObservationContext {
+                    source,
+                    phase: String::from("final busy boundary calibration"),
+                    idle_state: runtime_baseline.idle_state,
+                    calibration: runtime_baseline.calibration,
+                    timer_witness: runtime_baseline.timer_witness,
+                },
+            ));
+            let finish = owner.finish();
+            return Err(failure.with_cleanup(
+                String::from("failed final busy boundary calibration"),
+                None,
+                Some(finish),
+                None,
+            ));
+        }
+    };
     let spool = owner.create_trace_spool()?;
     let trace_result = owner.inspect_trace(PRODUCTION_RUNTIME_TRACE_BYTES, |reader| {
         runtime_trace::summarize(
@@ -520,20 +541,17 @@ fn node_state_failure(
     source: impl Into<NativeObservationError>,
 ) -> NativeObservationError {
     let source = source.into();
-    let idle_state = node.idle_state().map_err(|error| error.to_string());
-    let calibration = node
-        .logical_time_calibration()
-        .map_err(|error| error.to_string());
-    let timer_witness = node
-        .virtual_timer_fire_witness()
-        .map_err(|error| error.to_string());
-    let message = format!(
-        "production flight failed during {phase}: source={source}; \
-         idle_state={idle_state:?}; calibration={calibration:?}; \
-         timer_witness={timer_witness:?}"
-    );
+    let idle_state = node.idle_state().map_err(Arc::new);
+    let calibration = node.logical_time_calibration().map_err(Arc::new);
+    let timer_witness = node.virtual_timer_fire_witness().map_err(Arc::new);
     NativeObservationError::Context(Box::new(
-        crate::native_observation_error::NativeObservationContext { source, message },
+        crate::native_observation_error::NativeObservationContext {
+            source,
+            phase: phase.to_owned(),
+            idle_state,
+            calibration,
+            timer_witness,
+        },
     ))
 }
 
