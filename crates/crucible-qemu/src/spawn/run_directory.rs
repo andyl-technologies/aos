@@ -1,6 +1,5 @@
 //! Pinned authority over one prepared QEMU run directory and its launch artifacts.
 
-use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
 use std::os::fd::{AsFd, OwnedFd};
@@ -14,6 +13,7 @@ use super::materialization::{
     PreparedDeviceStateMaterialization, PreparedExactCheckpointMaterialization,
     PreparedRootOverlayMaterialization,
 };
+use super::rr_trace_window::RrTraceWindow;
 use super::{
     AttemptResourceBinding, QemuChildCredentials, QemuChildProcessContract,
     QemuGuardedExactRamInput, QemuSpawnError, invalid_input, validate_guarded_launch_requirements,
@@ -29,7 +29,6 @@ pub(crate) use console_sentinel::ConsoleSentinelOutput;
 const MAXIMUM_RUNTIME_LIVENESS_TRACE_TAIL_BYTES: u64 = 60 * 1024;
 const MAXIMUM_RUNTIME_LIVENESS_TRACE_TAIL_LINES: usize = 512;
 const MAXIMUM_RR_STREAM_ROW_BYTES: u64 = 512;
-const RETAINED_RR_STREAM_TAIL_ROWS: usize = 32;
 
 /// Pinned authority over one pre-provisioned QEMU run directory.
 ///
@@ -397,15 +396,19 @@ impl QemuPreparedRunDirectory {
         )
     }
 
-    /// Authenticates an RR trace of any admitted length while retaining only its final rows.
+    /// Authenticates an RR trace of any admitted length while retaining a bounded window.
     ///
     /// This single bounded-memory pass verifies every row and hashes the pinned
-    /// file before rechecking its named inode and size after QEMU reap. Reader
-    /// memory is one 512-byte row plus the final 32-row tail, so the trace
+    /// file before rechecking its named inode and size after QEMU reap. The
+    /// retained window starts at the last `phase=ack` boundary row, or at the
+    /// first row when none was acknowledged, and always includes at least the
+    /// final 32 rows. It keeps at most the first 256 window rows and the final
+    /// 256 rows, reporting any elided middle in the header. Reader memory is
+    /// therefore one 512-byte row plus at most 512 retained rows, so the trace
     /// length is limited only by the attempt's aggregate writable-file
     /// admission, which also bounds how much QEMU could have written.
     /// Advisory delivery rows use a separate schema validator and share the
-    /// same tail; they are never receipts.
+    /// same window; they are never receipts.
     ///
     /// # Errors
     ///
@@ -420,8 +423,7 @@ impl QemuPreparedRunDirectory {
         )?;
         let mut reader = BufReader::new(File::from(authenticated.descriptor));
         let mut digest = Sha256::new();
-        let mut tail = VecDeque::with_capacity(RETAINED_RR_STREAM_TAIL_ROWS);
-        let mut row_count = 0usize;
+        let mut window = RrTraceWindow::default();
 
         loop {
             let mut bytes = Vec::new();
@@ -438,7 +440,7 @@ impl QemuPreparedRunDirectory {
             if bytes.last() != Some(&b'\n') || length as u64 > MAXIMUM_RR_STREAM_ROW_BYTES {
                 return Err(QemuSpawnError::DiagnosticTraceMalformed {
                     file: file_name,
-                    line: row_count + 1,
+                    line: window.rows() + 1,
                     reason: "row exceeds 512 bytes or lacks a final newline",
                 });
             }
@@ -455,16 +457,12 @@ impl QemuPreparedRunDirectory {
             {
                 return Err(QemuSpawnError::DiagnosticTraceMalformed {
                     file: file_name,
-                    line: row_count + 1,
+                    line: window.rows() + 1,
                     reason: "row does not match the RR control-boundary trace schema",
                 });
             }
 
-            row_count += 1;
-            if tail.len() == RETAINED_RR_STREAM_TAIL_ROWS {
-                tail.pop_front();
-            }
-            tail.push_back(row.to_owned());
+            window.push(row);
         }
         // Authentication refuses an empty file and every non-empty row either
         // fails or counts, so at least one row was retained here.
@@ -485,15 +483,31 @@ impl QemuPreparedRunDirectory {
             authenticated.credentials,
         )?;
 
-        let retained_rows = tail.len();
+        let row_count = window.rows();
+        let retained = window.finish();
+        let retained_rows = retained.rows.len();
+        let anchor = if retained.acknowledged {
+            "ack"
+        } else {
+            "start"
+        };
+        let elided_after = retained
+            .elided_after_row
+            .map(|row| format!(" elided_after_row={row}"))
+            .unwrap_or_default();
         Ok(format!(
-            "bytes={} sha256={:x} rows={} tail_rows={} omitted_rows={}\n{}",
+            "bytes={} sha256={:x} rows={} tail_rows={} omitted_rows={} window_anchor={} \
+             window_start_row={} elided_rows={}{}\n{}",
             authenticated.bytes,
             digest.finalize(),
             row_count,
             retained_rows,
             row_count - retained_rows,
-            tail.into_iter().collect::<Vec<_>>().join("\n")
+            anchor,
+            retained.start_row,
+            retained.elided_rows,
+            elided_after,
+            retained.rows.join("\n")
         ))
     }
 

@@ -650,7 +650,7 @@ impl ProductionVmNodeLease for QemuLifecycleGenerationLease {
                                     identity.generation(),
                                 );
                             } else {
-                                // crucible-lint: allow direct-diagnostic -- retain only the last 32 parsed control rows per node.
+                                // crucible-lint: allow direct-diagnostic -- retain the bounded window of parsed control rows since the last acknowledgement per node.
                                 eprintln!(
                                     "CRUCIBLE-RR-CLAMP-ROW-V2 node={} {row}",
                                     identity.node().name

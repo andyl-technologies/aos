@@ -118,7 +118,7 @@ where
                             identity.generation(),
                         );
                     } else {
-                        // crucible-lint: allow direct-diagnostic -- the existing authenticated reader bounds this advisory tail to 32 schema-checked rows.
+                        // crucible-lint: allow direct-diagnostic -- the existing authenticated reader bounds this advisory window to 512 schema-checked rows.
                         let _report_result = writeln!(
                             sink,
                             "CRUCIBLE-RR-CLAMP-ROW-V2 node={node:?} owner_pid={pid} row_origin=unproven {row}"

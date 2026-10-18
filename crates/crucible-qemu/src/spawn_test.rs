@@ -214,7 +214,7 @@ fn inspected_control_boundary_trace_accepts_only_the_prepared_inode() -> Result<
 }
 
 #[test]
-fn streamed_control_boundary_trace_hashes_all_rows_and_retains_only_the_tail()
+fn streamed_control_boundary_trace_hashes_all_rows_and_retains_a_bounded_window()
 -> Result<(), Box<dyn Error>> {
     let fixture = TraceRetentionFixture::new()?;
     fixture.prepared.prepare_rr_control_boundary_trace()?;
@@ -226,16 +226,50 @@ fn streamed_control_boundary_trace_hashes_all_rows_and_retains_only_the_tail()
         .prepared
         .summarize_rr_control_boundary_trace_after_reap()?;
     let (header, tail) = summary.split_once('\n').ok_or("missing RR summary tail")?;
+
+    // Without an acknowledgement the window starts at the first row: its
+    // first 256 rows and the final 256 rows bound the retained text.
     let digest = sha2::Sha256::digest(trace.as_bytes());
     assert_eq!(
         header,
         format!(
-            "bytes={} sha256={digest:x} rows=50000 tail_rows=32 omitted_rows=49968",
+            "bytes={} sha256={digest:x} rows=50000 tail_rows=512 omitted_rows=49488 \
+             window_anchor=start window_start_row=1 elided_rows=49488 elided_after_row=256",
             trace.len()
         )
     );
-    assert_eq!(tail.lines().count(), 32);
+    assert_eq!(tail.lines().count(), 512);
     assert!(tail.lines().all(|retained| retained == row.trim_end()));
+    Ok(())
+}
+
+#[test]
+fn streamed_control_boundary_trace_retains_rows_since_the_last_acknowledgement()
+-> Result<(), Box<dyn Error>> {
+    let fixture = TraceRetentionFixture::new()?;
+    fixture.prepared.prepare_rr_control_boundary_trace()?;
+    let request = "crucible_sim_rr_control_boundary phase=request request=7 ack=6 complete=6 token=0x0 state=5\n";
+    let ack =
+        "crucible_sim_rr_control_boundary phase=ack request=7 ack=7 complete=6 token=0x7 state=5\n";
+    let next = "crucible_sim_rr_control_boundary phase=request request=8 ack=7 complete=7 token=0x0 state=6\n";
+    let drain = "crucible_sim_rr_control_boundary phase=wake-drain request=8 ack=7 complete=7 token=0x0 state=6\n";
+    let trace = format!("{}{ack}{next}{}", request.repeat(100), drain.repeat(200));
+    std::fs::write(fixture.trace_path(), &trace)?;
+
+    let summary = fixture
+        .prepared
+        .summarize_rr_control_boundary_trace_after_reap()?;
+    let mut lines = summary.lines();
+    let header = lines.next().ok_or("missing RR summary header")?;
+
+    // The unacknowledged request stays visible far beyond the final 32 rows.
+    assert!(header.ends_with(
+        "rows=302 tail_rows=202 omitted_rows=100 window_anchor=ack \
+         window_start_row=101 elided_rows=0"
+    ));
+    assert_eq!(lines.next(), Some(ack.trim_end()));
+    assert_eq!(lines.next(), Some(next.trim_end()));
+    assert_eq!(lines.filter(|row| *row == drain.trim_end()).count(), 200);
     Ok(())
 }
 
@@ -261,8 +295,9 @@ fn streamed_control_boundary_trace_is_limited_only_by_aggregate_admission()
     let header = summary.lines().next().ok_or("missing RR summary header")?;
     assert!(header.starts_with(&format!("bytes={trace_bytes} sha256=")));
     assert!(header.ends_with(&format!(
-        "rows={rows} tail_rows=32 omitted_rows={}",
-        rows - 32
+        "rows={rows} tail_rows=512 omitted_rows={omitted} window_anchor=start \
+         window_start_row=1 elided_rows={omitted} elided_after_row=256",
+        omitted = rows - 512
     )));
 
     let mut inadmissible = TraceRetentionFixture::new()?;
@@ -338,7 +373,7 @@ fn streamed_control_trace_retains_delivery_only_and_mixed_late_rows() -> Result<
             .prepared
             .summarize_rr_control_boundary_trace_after_reap()?;
         assert_eq!(summary.lines().last(), Some(delivery.trim_end()));
-        assert!(summary.lines().skip(1).count() <= 32);
+        assert_eq!(summary.lines().skip(1).count(), trace.lines().count());
     }
     for trace in [
         delivery.trim_end().to_owned(),

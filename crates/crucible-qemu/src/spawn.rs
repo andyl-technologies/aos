@@ -32,6 +32,7 @@ mod control_delivery_trace;
 mod image_launch;
 mod materialization;
 mod run_directory;
+mod rr_trace_window;
 
 pub(crate) use control_delivery_trace::valid_control_delivery_row;
 pub(crate) use run_directory::valid_rr_control_boundary_row;
