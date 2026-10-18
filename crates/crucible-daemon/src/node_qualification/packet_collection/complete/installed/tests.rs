@@ -232,7 +232,9 @@ fn source_built_packet_original_scene_reaches_inactive_runtime_and_reclaims() {
     // Keep the installed capsule and its real supervisor outside the unwind
     // boundary. Even a startup assertion must reclaim the same native children.
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        eprintln!("native control: test prepare begin");
         installed.prepare().unwrap();
+        eprintln!("native control: test prepare end");
         assert!(installed.attempted);
         assert!(installed.incoming.is_none());
         assert!(!installed.retired);
@@ -241,11 +243,13 @@ fn source_built_packet_original_scene_reaches_inactive_runtime_and_reclaims() {
         )
         .unwrap();
 
+        eprintln!("native control: test inactive actor checked; census maximum begin");
         let actual = PacketCompleteReportStartupHolder::original_inactive_holder_storage_for_test(
             &installed.original,
             usize::MAX,
         )
         .unwrap();
+        eprintln!("native control: test census maximum end; exact begin");
         assert_eq!(
             PacketCompleteReportStartupHolder::original_inactive_holder_storage_for_test(
                 &installed.original,
@@ -254,6 +258,7 @@ fn source_built_packet_original_scene_reaches_inactive_runtime_and_reclaims() {
             .unwrap(),
             actual,
         );
+        eprintln!("native control: test census exact end; one-short begin");
         assert!(
             PacketCompleteReportStartupHolder::original_inactive_holder_storage_for_test(
                 &installed.original,
@@ -261,6 +266,7 @@ fn source_built_packet_original_scene_reaches_inactive_runtime_and_reclaims() {
             )
             .is_err(),
         );
+        eprintln!("native control: test census one-short end; destinations begin");
         for member in 0..3 {
             assert_eq!(
                 PacketCompleteReportStartupHolder::original_inactive_missing_destination_for_test(
@@ -284,6 +290,7 @@ fn source_built_packet_original_scene_reaches_inactive_runtime_and_reclaims() {
                 .is_err()
             );
         }
+        eprintln!("native control: test destinations end; final census begin");
         assert_eq!(
             PacketCompleteReportStartupHolder::original_inactive_holder_storage_for_test(
                 &installed.original,
@@ -292,8 +299,11 @@ fn source_built_packet_original_scene_reaches_inactive_runtime_and_reclaims() {
             .unwrap(),
             actual,
         );
+        eprintln!("native control: test final census end");
     }));
+    eprintln!("native control: test retire begin");
     installed.retire().unwrap();
+    eprintln!("native control: test retire end; reclamation begin");
     let deadline = ProcessDeadline::after(Duration::from_secs(30)).unwrap();
     while !installed.poll_reclamation().unwrap() {
         assert!(
@@ -303,6 +313,7 @@ fn source_built_packet_original_scene_reaches_inactive_runtime_and_reclaims() {
         deadline.pause(Duration::from_millis(1));
     }
     assert!(installed.is_reclaimed());
+    eprintln!("native control: test reclamation end");
     if let Err(panic) = outcome {
         std::panic::resume_unwind(panic);
     }

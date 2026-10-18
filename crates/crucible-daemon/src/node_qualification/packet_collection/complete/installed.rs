@@ -118,20 +118,30 @@ impl InstalledCompleteScene {
     fn prepare_started(&mut self) -> Result<(), QualificationError> {
         // Use the same driver phases, with an explicit ownership boundary
         // after its into-slot stage and before its first startup action.
+        #[cfg(test)]
+        eprintln!("native control: prepare stage begin");
         PacketCompleteReportStartupHolder::stage_original_scene_into(
             &self.original,
             &mut self.incoming,
         )
         .map_err(|_| refused())?;
+        #[cfg(test)]
+        eprintln!("native control: prepare stage end");
         self.authenticate_transferred_inputs()?;
+        #[cfg(test)]
+        eprintln!("native control: prepare launch begin");
         PacketCompleteReportStartupHolder::launch_and_complete_original_scene(&self.original)
             .map_err(|_| refused())?;
+        #[cfg(test)]
+        eprintln!("native control: prepare launch end");
         // The earlier installation edition remains preparation-only. Only the
         // explicitly installed full mechanism enters the separate Core-priced
         // inactive constructor; this does not Arm or activate the runtime.
         if PacketCompleteReportStartupHolder::has_original_runtime_mechanism_data(&self.original)
             .map_err(|_| refused())?
         {
+            #[cfg(test)]
+            eprintln!("native control: prepare runtime begin");
             let prepared =
                 PacketCompleteReportStartupHolder::prepare_original_scene_runtime(&self.original);
             #[cfg(test)]
@@ -139,6 +149,8 @@ impl InstalledCompleteScene {
                 eprintln!("original runtime preparation refused: {error:?}");
             }
             prepared.map_err(|_| refused())?;
+            #[cfg(test)]
+            eprintln!("native control: prepare runtime end");
         }
         Ok(())
     }

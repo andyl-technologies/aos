@@ -189,6 +189,8 @@ impl PacketCompleteReportStartupHolder {
                 let [a, b, c] = outputs
                     .each_ref()
                     .map(|n| n.as_ref().ok_or(RuntimeError::OwnerUnavailable));
+                #[cfg(test)]
+                eprintln!("native control: runtime {phase:?} reserve begin");
                 let member = held.plan.reserve_original_runtime_construction(
                     phase,
                     &held.authority.roster.sources,
@@ -200,6 +202,8 @@ impl PacketCompleteReportStartupHolder {
                 held.runtime_members[i]
                     .set(member)
                     .map_err(|_| RuntimeError::DuplicateOperation)?;
+                #[cfg(test)]
+                eprintln!("native control: runtime {phase:?} reserve end");
             }
             drop(issuing);
             let member = held.runtime_members[i]
@@ -241,6 +245,8 @@ impl PacketCompleteReportStartupHolder {
             };
             let _daemon_diagnostics =
                 super::super::super::super::construction_diagnostics::Scope::enter();
+            #[cfg(test)]
+            eprintln!("native control: runtime {phase:?} construct begin");
             match phase {
                 OriginalRuntimeConstructionPhase::InputOwners => inputs::construct(&held, member)?,
                 OriginalRuntimeConstructionPhase::CollectingGraph => graph::construct(&held)?,
@@ -251,6 +257,8 @@ impl PacketCompleteReportStartupHolder {
                     }
                 },
             }
+            #[cfg(test)]
+            eprintln!("native control: runtime {phase:?} construct end");
             let scene = held.runtime_construction_owner_data()?;
             let outputs = held
                 .host_sdk_outputs
@@ -259,6 +267,8 @@ impl PacketCompleteReportStartupHolder {
             let [a, b, c] = outputs
                 .each_ref()
                 .map(|n| n.as_ref().ok_or(RuntimeError::OwnerUnavailable));
+            #[cfg(test)]
+            eprintln!("native control: runtime {phase:?} recheck begin");
             member.recheck_original_data(
                 &held.plan,
                 &held.authority.roster.sources,
@@ -267,6 +277,8 @@ impl PacketCompleteReportStartupHolder {
                 scene.activation()?,
                 scene.limits()?,
             )?;
+            #[cfg(test)]
+            eprintln!("native control: runtime {phase:?} recheck end");
         }
         held.runtime_owners
             .try_borrow_mut()
