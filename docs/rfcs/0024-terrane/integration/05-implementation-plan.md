@@ -9284,6 +9284,37 @@ Resumed qualification:
   partition. This accepts the tested Running-source component only. Recovered
   sources, completed retirement, consumer leases and NativeReady remain required;
   no full task is accepted.
+- Recovered-manifest reader candidate `f6c2ac7751`: the native owner now resolves
+  residences through the actual independently inspected recovery registry and
+  retains its original sealed descriptor and durable metadata/body pair together
+  with the real acknowledged Running context. A registry entry alone cannot
+  authorize a source: failed or incomplete recovery and absent Resume remain
+  refusals. Preparation checks the current synchronized policy, original
+  bootstrap funding, metadata pins, lease, source incarnation and exact verified
+  chunk range. Immutable byte reads use no command queue, publisher RPC mutex or
+  embedded-state lock, addressing HOST-30 and the verified-backing obligations
+  of HOST-31 to HOST-33 without granting a consumer lease or NativeReady.
+  The initial revision `c58f83ab14` passes three actual held-policy recovered-read
+  controls and eight unchanged-policy refusals without Resume in the ext4 VM,
+  alongside all 47 selected filesystem cases. Review then caught that normal
+  Running writes invalidate the mutable recovery-completion ID. The follow-up
+  obtains original bootstrap custody from the actual retained Running context
+  and adds real durable admissions between recovered reads, preserving the
+  original metadata and backing. Its all-target and native-only builds, eight
+  focused regressions, formatter pair and all-target Clippy diagnostic pass.
+  Strict Clippy retains the same nineteen findings without source lint changes.
+  The first post-admission fixture run stopped because its assertion compared
+  the operation's hold with the owner total. The corrected fixture independently
+  checks both the individual receipt and all three persisted reservations; the
+  failed run is preserved. The corrected ext4 component passes six held-policy
+  recovered-read controls around three real Running admissions, all eight
+  refusals without Resume and all 47 selected filesystem cases. Independent review
+  verifies the actual unit ELF and all 3,479 image inputs. Full filesystem
+  qualification is running; application compilation remains pending.
+  Identities, formats, bucket keys, store traits and dependencies remain
+  unchanged. Recovered-range reuse
+  in another actual assembly, inline recovery sources, consumer leases and
+  completed retirement remain required; no complete task is accepted.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
   and all seven strict Clippy/documentation profiles pass. The interface,
   commit-path, status and schema gates pass on unchanged final source, including
@@ -9297,7 +9328,11 @@ Resumed qualification:
   log, and four separate-process guest controls covering snapshots, late denial
   and actual CLI success/refusal under UID/GID 840 with empty capabilities.
   Final-source feature matrix and the full current-trunk aggregate remain
-  required before formal task acceptance. The superseded `6cb1fcf235` aggregate
+  required before formal task acceptance. The running matrix has reported a
+  failure in the local-deletion unlink/directory/progress-sync fault-prefix
+  regression during its later 1,057-case suite. That case passed in an earlier
+  profile; the complete run and eventual failure diagnostics are retained, and
+  no matrix or aggregate success is claimed. The superseded `6cb1fcf235` aggregate
   was stopped after the policy fix and supplies no aggregate success.
 
 All five T2 task checkboxes remain open. The transport and cache results above
