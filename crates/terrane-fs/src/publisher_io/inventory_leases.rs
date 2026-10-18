@@ -1,19 +1,20 @@
 //! Validates retained retirement metadata without granting a deadline or body.
 
 use super::{NativeInventory, invalid, source};
-use std::{io, os::unix::fs::MetadataExt};
+use std::io;
 use terrane::host::publication::RetirementRecordCandidate;
 use terrane_core::identity::{Descriptor, IdentityKind, TERRANE_V1};
 
-/// Checks a retained record against its real device and registered key shape.
+/// Checks retained metadata against its domain, name and registered key shape.
 ///
 /// # Errors
-/// Rejects malformed metadata, another device, or an unknown typed key.
+/// Rejects malformed metadata or an unknown typed key. The caller separately
+/// checks the retained record inode against the actual filesystem custody.
 pub(super) fn validate(inventory: &NativeInventory, name: &str, bytes: &[u8]) -> io::Result<()> {
     let candidate = RetirementRecordCandidate::parse(inventory.location.domain(), name, bytes)?;
-    if candidate.device() != inventory.root.metadata()?.dev() {
-        return Err(invalid("retirement record belongs to another device"));
-    }
+    // A historical device number can change after a reboot or remount. It
+    // grants no current inode or deadline authority; actual pending-inode use
+    // still goes through the existing conservative lease reconstruction.
     validate_key(candidate.key())
 }
 

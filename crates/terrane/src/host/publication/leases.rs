@@ -97,7 +97,7 @@ impl RetirementRecordCandidate {
         &self.key
     }
 
-    /// Returns the recorded device, which must match actual native custody.
+    /// Returns the untrusted historical device hint, not a current inode match.
     pub fn device(&self) -> u64 {
         self.device
     }

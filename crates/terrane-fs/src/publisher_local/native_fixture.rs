@@ -292,6 +292,62 @@ fn create_layout(
     ledger_owner
 }
 
+fn historical_descriptor() -> Descriptor {
+    let bytes = b"historical retirement without a backing object";
+    let identity = TERRANE_V1.calculate(IdentityKind::Chunk, bytes).unwrap();
+    Descriptor::from_identity(&TERRANE_V1, &identity, bytes).unwrap()
+}
+
+fn seed_historical_lease(root: &Path) -> (PathBuf, String) {
+    let observed = fs::metadata(root).unwrap();
+    let stale_device = observed.dev().checked_add(1).unwrap();
+    let key = historical_descriptor().encode();
+    let mut name = blake3::Hasher::new();
+    name.update(&6u64.to_le_bytes());
+    name.update(b"public");
+    name.update(&key);
+    let path = root
+        .join("state/publication")
+        .join(format!("retirement-{}.toml", name.finalize().to_hex()));
+    // This is an actual private record with deliberately stale embedded hints.
+    // Its real inode inherits the current project and device. The past deadline
+    // and unrelated key must supply neither expiry nor backing-object authority.
+    let bytes = format!(
+        r#"version=1
+domain='public'
+key={key:?}
+device={stale_device}
+inode={inode}
+changed_seconds={seconds}
+changed_nanoseconds={nanoseconds}
+deadline_unix_ms=1
+"#,
+        inode = observed.ino(),
+        seconds = observed.ctime(),
+        nanoseconds = observed.ctime_nsec(),
+    );
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)
+        .unwrap();
+    file.write_all(bytes.as_bytes()).unwrap();
+    chown(
+        &path,
+        Some(Uid::from_raw(PUBLISH)),
+        Some(Gid::from_raw(SERVE)),
+    )
+    .unwrap();
+    file.sync_all().unwrap();
+    File::open(path.parent().unwrap())
+        .unwrap()
+        .sync_all()
+        .unwrap();
+    assert_ne!(file.metadata().unwrap().dev(), stale_device);
+    (path, bytes)
+}
+
 /// Supervises isolated native role processes on an explicitly provisioned VM disk.
 ///
 /// This fixture-only entry requires root and creates no confinement receipt.
@@ -316,6 +372,7 @@ pub fn supervise_native_fixture() {
     let _public_project = create_layout(&scratch.0.join("public"), "public", 61011, &base);
     let _private_project =
         create_layout(&scratch.0.join("private"), "private:fixture", 61012, &base);
+    let historical = seed_historical_lease(&scratch.0.join("public"));
     fs::write(scratch.0.join("source"), PLAINTEXT).unwrap();
     fs::set_permissions(scratch.0.join("source"), fs::Permissions::from_mode(0o444)).unwrap();
 
@@ -329,6 +386,7 @@ pub fn supervise_native_fixture() {
     }
     let mut serve = spawn("serve", SERVE, &scratch.0);
     assert!(serve.0.wait().unwrap().success());
+    assert_eq!(fs::read_to_string(historical.0).unwrap(), historical.1);
 }
 
 /// Lists the exact fresh-process transport fixture selectors.
@@ -777,6 +835,12 @@ fn check_authenticated_client(root: &Path, expected_inode: u64) {
         }
         assert!(page < 63, "bounded inventory did not finish");
     }
+    assert!(
+        !keys
+            .iter()
+            .any(|key| key.descriptor == historical_descriptor().encode()),
+        "historical metadata cannot invent a native backing object"
+    );
     let key = keys
         .into_iter()
         .find(|key| key.kind == BodyKind::Sealed as i32 && key.descriptor == descriptor.encode())
