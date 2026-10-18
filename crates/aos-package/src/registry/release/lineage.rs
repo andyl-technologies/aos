@@ -175,11 +175,13 @@ mod tests {
         assert!(merged.get_name("published-package").is_some());
         assert!(merged.get_name("author-package").is_some());
         assert_eq!(repository.head()?.peel_to_commit()?.id(), author);
-        assert!(repository
-            .find_commit(previous)?
-            .tree()?
-            .get_path(sidecar)
-            .is_ok());
+        assert!(
+            repository
+                .find_commit(previous)?
+                .tree()?
+                .get_path(sidecar)
+                .is_ok()
+        );
         Ok(())
     }
 }
