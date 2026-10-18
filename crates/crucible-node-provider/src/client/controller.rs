@@ -1300,6 +1300,25 @@ impl CnpController {
         self.custody.originals_by_origin(origin)
     }
 
+    /// Borrows actual completed content DATA for independent allocation quotes.
+    ///
+    /// This performs no hash check, DTO decode, source callback or transport.
+    /// It provides no content/native authority. The real witness reader still
+    /// authenticates the selected reference and its unchanged bytes separately.
+    pub fn original_completed_content_data(
+        &self,
+    ) -> impl Iterator<Item = (&ContentRef, &[u8])> {
+        self.custody.content().original_completed_objects_data()
+    }
+
+    /// Names fixed iterator and borrowed-result views before the DATA walk.
+    pub fn original_completed_content_counter_scratch_data() -> usize {
+        super::ClientContent::original_completed_objects_counter_scratch_data()
+            + std::mem::size_of::<&Self>()
+            + std::mem::size_of::<&super::ClientCustody>()
+            + std::mem::size_of::<&super::ClientContent>()
+    }
+
     /// Borrows complete hash-verified bytes for an independent source oracle.
     ///
     /// # Errors

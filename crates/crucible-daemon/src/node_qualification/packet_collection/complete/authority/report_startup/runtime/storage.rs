@@ -36,6 +36,10 @@ pub(super) fn counter_scratch_data() -> Result<usize, RuntimeError> {
         CnpSemanticExactConformanceWorldProvider::original_construction_counter_scratch_data()?,
         InstalledConformancePlan::original_runtime_constructor_data_counter_scratch_data(),
         PacketCompleteNativeOracle::original_shared_construction_counter_scratch_data()?,
+        PacketCompleteNativeOracle::original_initial_journal_counter_scratch_data()?,
+        super::super::preparation::PreparationOwners::original_native_oracle_observation_counter_scratch_data(),
+        3 * PacketCompleteSemanticSource::original_native_oracle_observation_counter_scratch_data(),
+        3 * crucible::node_adapters::cnp::CnpSemanticPreparation::original_native_oracle_preparation_counter_scratch_data(),
         PacketCompleteExecutionScene::original_construction_counter_scratch_data()?,
         PacketCompleteExecutionActor::original_construction_counter_scratch_data()?,
         super::initial_preparation::counter_scratch_data()?];
@@ -98,7 +102,11 @@ impl PacketCompleteReportStartupHolder {
         c.charge(&owners.owners).map_err(storage_error)?;
         if let Some(oracle) = &owners.oracle {
             if c.rc(oracle).map_err(storage_error)? {
-                oracle.charge_dormant_original_construction_data(c)?;
+                if matches!(&self.purpose, StartupHolderPurpose::OriginalScene) {
+                    oracle.charge_original_initial_construction_data(c)?;
+                } else {
+                    oracle.charge_dormant_original_construction_data(c)?;
+                }
             }
         }
         if let Some(scene) = &owners.scene {

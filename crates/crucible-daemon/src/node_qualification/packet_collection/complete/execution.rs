@@ -272,7 +272,16 @@ impl PacketCompleteExecutionScene {
         source
             .authenticate_original_native_owner(scope.native)
             .map_err(native)?;
-        self.oracle.observe(member, scope)?;
+        if !self.runtime_attached.get()
+            && self
+                .authority
+                .original_inactive_oracle_callback_data()
+                .map_err(evidence)?
+        {
+            self.oracle.observe_original_construction(member, scope)?;
+        } else {
+            self.oracle.observe(member, scope)?;
+        }
         self.authority.roster().current_native().map_err(native)?;
         self.current()
     }

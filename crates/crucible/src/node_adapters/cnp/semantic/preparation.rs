@@ -672,3 +672,6 @@ pub(super) fn request_id(prefix: &str, original: &Id) -> Result<Id, OperationFai
     Id::new(format!("cnp-{prefix}-{original}"))
         .map_err(crate::node_adapters::cnp::semantic::refused_display)
 }
+
+#[path = "preparation/oracle_body_storage.rs"]
+mod oracle_body_storage;

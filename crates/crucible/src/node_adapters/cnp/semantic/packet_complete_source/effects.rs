@@ -6,10 +6,17 @@
 
 use std::{os::unix::net::UnixDatagram, path::Path, rc::Rc, thread::ThreadId};
 
+use super::super::initial_lifecycle_diagnostics::OriginalInitialLifecycleDiagnostics;
 use super::{OperationFailure, refused};
 
 #[path = "effects/host_setup17.rs"]
 mod host_setup17;
+
+const ORIGINAL_GROUP_PROCESS_REFUSAL: &str = "effect receiver belongs to another creator process";
+const ORIGINAL_GROUP_THREAD_REFUSAL: &str = "effect receiver belongs to another creator thread";
+const ORIGINAL_GROUP_NONEMPTY_REFUSAL: &str = "original effect receiver still has a datagram";
+const ORIGINAL_GROUP_PEEK_REFUSAL: &str = "original effect receiver peek failed";
+const ORIGINAL_READER_GROUP_REFUSAL: &str = "effect reader has another original group";
 
 /// Retains the original three receiver descriptors behind inspection-only aliases.
 ///
@@ -53,12 +60,10 @@ impl PacketCompleteEffectReceiverGroup {
 
     fn ensure_origin(&self) -> Result<(), OperationFailure> {
         if self.process != std::process::id() {
-            return Err(refused(
-                "effect receiver belongs to another creator process",
-            ));
+            return Err(refused(ORIGINAL_GROUP_PROCESS_REFUSAL));
         }
         if self.thread != std::thread::current().id() {
-            return Err(refused("effect receiver belongs to another creator thread"));
+            return Err(refused(ORIGINAL_GROUP_THREAD_REFUSAL));
         }
         Ok(())
     }
@@ -167,8 +172,8 @@ impl PacketCompleteEffectReceiverGroup {
                     rustix::net::RecvFlags::PEEK | rustix::net::RecvFlags::DONTWAIT,
                 ) {
                     Err(rustix::io::Errno::AGAIN) => {}
-                    Ok(_) => return Err(refused("original effect receiver still has a datagram")),
-                    Err(_) => return Err(refused("original effect receiver peek failed")),
+                    Ok(_) => return Err(refused(ORIGINAL_GROUP_NONEMPTY_REFUSAL)),
+                    Err(_) => return Err(refused(ORIGINAL_GROUP_PEEK_REFUSAL)),
                 }
             }
             Ok(())
@@ -193,7 +198,7 @@ impl PacketCompleteEffectReceiverReader {
     ) -> Result<(), OperationFailure> {
         self.group.ensure_origin()?;
         if !Rc::ptr_eq(&self.group, group) {
-            return Err(refused("effect reader has another original group"));
+            return Err(refused(ORIGINAL_READER_GROUP_REFUSAL));
         }
         Ok(())
     }
@@ -586,5 +591,88 @@ impl PacketCompleteEffectReceiverGroup {
             receivers,
         } = self;
         Ok(receivers.len())
+    }
+}
+
+impl PacketCompleteEffectReceiverGroup {
+    /// Names fixed views used by the original nonconsuming empty-queue check.
+    ///
+    /// The caller separately funds its own error conversion and observation
+    /// scope. This pure layout declaration performs no descriptor operation and
+    /// grants neither a stopped frontier nor any source or consuming authority.
+    pub fn original_empty_queue_counter_scratch_data() -> usize {
+        use std::mem::size_of;
+        size_of::<&Self>()
+            + size_of::<&PacketCompleteEffectReceiverReader>()
+            + size_of::<&Rc<Self>>()
+            + size_of::<std::slice::Iter<'static, UnixDatagram>>()
+            + size_of::<[u8; 1]>()
+            + size_of::<rustix::net::RecvFlags>()
+            + size_of::<Result<usize, rustix::io::Errno>>()
+            + size_of::<Result<(), OperationFailure>>()
+            + size_of::<std::thread::Thread>()
+            + size_of::<ThreadId>()
+            + size_of::<u32>()
+            + OriginalInitialLifecycleDiagnostics::counter_scratch_bytes()
+            + size_of::<usize>() // actual maximum literal cause in the failure quote
+    }
+}
+
+impl PacketCompleteEffectReceiverGroup {
+    /// Quotes the largest actual reason String from the selected empty-queue guard.
+    ///
+    /// Only one unchanged refusal branch returns per call. Both ordinary and
+    /// selected initial diagnostics are priced by their actual defining owner;
+    /// the reason moves into the caller's failure owner without another clone.
+    /// Origin/reader checks and kernel peeks grant no allocation permission.
+    pub fn original_empty_queue_failure_transient_storage_data() -> usize {
+        let cause_bytes = ORIGINAL_GROUP_PROCESS_REFUSAL
+            .len()
+            .max(ORIGINAL_GROUP_THREAD_REFUSAL.len())
+            .max(ORIGINAL_GROUP_NONEMPTY_REFUSAL.len())
+            .max(ORIGINAL_GROUP_PEEK_REFUSAL.len())
+            .max(ORIGINAL_READER_GROUP_REFUSAL.len());
+        OriginalInitialLifecycleDiagnostics::borrowed_refusal_requested_storage_data(cause_bytes)
+    }
+}
+
+#[cfg(test)]
+mod original_empty_queue_failure_controls {
+    use super::*;
+
+    #[test]
+    fn actual_origin_refusal_string_fits_the_defining_transient_row()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let [(a, peer_a), (b, peer_b), (c, peer_c)] = [
+            UnixDatagram::pair()?,
+            UnixDatagram::pair()?,
+            UnixDatagram::pair()?,
+        ];
+        let (mut group, reader) =
+            PacketCompleteEffectReceiverGroup::from_original_receivers([a, b, c]);
+        drop(reader);
+        // This negative primitive test changes the real retained creator field;
+        // no Source, native execution or replacement consuming role is created.
+        Rc::get_mut(&mut group).unwrap().process = std::process::id().wrapping_add(1);
+
+        let failure = group.authenticate_empty().unwrap_err();
+        let transient =
+            PacketCompleteEffectReceiverGroup::original_empty_queue_failure_transient_storage_data(
+            );
+
+        assert_eq!(failure.reason, ORIGINAL_GROUP_PROCESS_REFUSAL);
+        assert!(failure.reason.capacity() <= transient);
+        {
+            let _selected = OriginalInitialLifecycleDiagnostics::begin();
+            let selected = group.authenticate_empty().unwrap_err();
+            assert!(selected.reason.ends_with(ORIGINAL_GROUP_PROCESS_REFUSAL));
+            assert!(selected.reason.len() > failure.reason.len());
+            assert_eq!(selected.reason.capacity(), transient);
+        }
+        let restored = group.authenticate_empty().unwrap_err();
+        assert_eq!(restored.reason, failure.reason);
+        assert_eq!(restored.reason.capacity(), failure.reason.capacity());
+        drop((peer_a, peer_b, peer_c));
+        Ok(())
     }
 }

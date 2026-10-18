@@ -190,6 +190,27 @@ impl ClientContent {
         Ok(())
     }
 
+    /// Borrows completed immutable object DATA without hashing or allocating.
+    ///
+    /// Transfers that have not reached the completed object bank are excluded.
+    /// This view verifies neither content hashes nor native meaning; actual
+    /// consumers retain their original complete verification and source guards.
+    pub(super) fn original_completed_objects_data(
+        &self,
+    ) -> impl Iterator<Item = (&ContentRef, &[u8])> {
+        self.objects.values().map(|(reference, bytes)| (reference, bytes.as_slice()))
+    }
+
+    pub(super) fn original_completed_objects_counter_scratch_data() -> usize {
+        std::mem::size_of::<&Self>()
+            + std::mem::size_of::<std::collections::btree_map::Values<
+                'static, String, (ContentRef, Rc<Vec<u8>>),
+            >>()
+            + std::mem::size_of::<(&(ContentRef, Rc<Vec<u8>>),)>()
+            + std::mem::size_of::<(&ContentRef, &[u8])>()
+            + std::mem::size_of::<Option<(&ContentRef, &[u8])>>()
+    }
+
     /// Enumerates finite verified object references without granting native authority.
     ///
     /// These references describe byte custody, not a complete semantic receipt

@@ -502,3 +502,28 @@ impl PacketCompleteReportStartupHolder {
         Ok(())
     }
 }
+
+impl InstalledPacketCompleteCollectionAuthority {
+    /// Selects the actual original inactive constructor without issuing authority.
+    ///
+    /// # Errors
+    /// Refuses a busy, unavailable or foreign registered construction holder.
+    pub(in crate::node_qualification::packet_collection::complete) fn original_inactive_oracle_callback_data(
+        &self,
+    ) -> Result<bool, RuntimeError> {
+        if !self.original_runtime_callback_active.get() {
+            return Ok(false);
+        }
+        let original = self.runtime_holder_data()?;
+        let held = original.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
+        held.authenticate_native_origin_data()?;
+        Ok(matches!(&held.purpose, StartupHolderPurpose::OriginalScene)
+            && matches!(
+                held.runtime_in_flight.get(),
+                Some(
+                    OriginalRuntimeConstructionPhase::CollectingGraph
+                        | OriginalRuntimeConstructionPhase::InactiveRuntime
+                )
+            ))
+    }
+}

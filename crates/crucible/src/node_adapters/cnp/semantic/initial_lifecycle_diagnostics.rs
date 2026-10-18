@@ -34,10 +34,31 @@ impl OriginalInitialLifecycleDiagnostics {
         UNKNOWN_PREFIX.len() + MAXIMUM_CAUSE_BYTES
     }
 
+    /// Quotes one independent borrowed refusal String in either diagnostic mode.
+    ///
+    /// The ordinary branch copies the actual cause. The selected branch owns
+    /// this module's unchanged prefix and at most its true UTF-8 cause limit.
+    /// This pure layout DATA neither enters a scope nor constructs a String.
+    pub(crate) const fn borrowed_refusal_requested_storage_data(cause_bytes: usize) -> usize {
+        let selected_cause = if cause_bytes < MAXIMUM_CAUSE_BYTES {
+            cause_bytes
+        } else {
+            MAXIMUM_CAUSE_BYTES
+        };
+        let selected = REFUSED_PREFIX.len() + selected_cause;
+        if selected > cause_bytes {
+            selected
+        } else {
+            cause_bytes
+        }
+    }
+
     pub(crate) const fn counter_scratch_bytes() -> usize {
         std::mem::size_of::<Self>()
             + std::mem::size_of::<Cell<bool>>()
             + std::mem::size_of::<String>()
+            + std::mem::size_of::<[usize; 3]>()
+            // Actual cause/selected-cause/result views in the pure quote above.
             + std::mem::size_of::<[usize; 3]>()
     }
 }

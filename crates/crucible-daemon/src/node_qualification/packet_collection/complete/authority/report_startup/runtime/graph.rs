@@ -84,6 +84,20 @@ pub(super) fn quote(
         .try_borrow()
         .map_err(|_| RuntimeError::OwnerBusy)?
         .original_runtime_node_quote_data(&held.authority.roster.sources, max)?;
+    // These mandatory callbacks can enroll proofs before runtime attachment.
+    // Quote from the actual retained Controllers, before moving preparations;
+    // no latest-witness parser or Oracle callback runs inside this DATA walk.
+    let oracle_observations = if matches!(&held.purpose, StartupHolderPurpose::OriginalScene) {
+        held.preparations
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?
+            .original_native_oracle_observation_construction_storage_data(
+                &held.authority.roster.sources,
+                max,
+            )?
+    } else {
+        (0, 0, 0)
+    };
     let host = held.runtime_host_node_construction_data(scene.activation()?, max)?;
     let oracle = PacketCompleteNativeOracle::original_shared_construction_storage_data(
         held.authority.witness_plan(),
@@ -125,6 +139,7 @@ pub(super) fn quote(
         node.0,
         host.0,
         oracle.retained_requested_bytes,
+        oracle_observations.0,
         execution.retained_requested_bytes,
         actor.retained_requested_bytes,
         extra.bytes(),
@@ -183,6 +198,16 @@ pub(super) fn quote(
         )?,
         max,
     )?;
+    if matches!(&held.purpose, StartupHolderPurpose::OriginalScene) {
+        // A refused nonconsuming peek retains its actual reason String beside
+        // the existing Source/constructor diagnostics; fixed S is independent.
+        transient = add(
+            transient,
+            crucible::node_adapters::cnp::PacketCompleteEffectReceiverGroup::original_empty_queue_failure_transient_storage_data(),
+            max,
+        )?;
+    }
+    transient = add(transient, oracle_observations.1, max)?;
     transient = add(transient, node.1, max)?;
     transient = add(transient, host.1, max)?;
     let scratch = [
@@ -190,6 +215,7 @@ pub(super) fn quote(
         node.2,
         host.2,
         oracle.declared_counter_scratch_bytes,
+        oracle_observations.2,
         execution.declared_counter_scratch_bytes,
         actor.declared_counter_scratch_bytes,
     ]

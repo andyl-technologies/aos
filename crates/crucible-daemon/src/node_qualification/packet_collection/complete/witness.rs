@@ -5,6 +5,7 @@
 //! reports cannot supply a journal or replace an independently owned receiver.
 
 mod construction;
+mod initial_construction;
 mod retained;
 pub(crate) use construction::PacketCompleteConstructionStorageData;
 
@@ -365,6 +366,26 @@ impl PacketCompleteNativeOracle {
         member: usize,
         scope: CnpSemanticRealizationScope<'_>,
     ) -> Result<(), QualificationError> {
+        self.observe_data(member, scope, false)
+    }
+
+    // Only the same issued inactive OriginalScene constructor selects this path.
+    // Unsupported datagrams remain in the original descriptor; no effect parser
+    // is invoked against an unfunded, unexpected constructor input.
+    pub(super) fn observe_original_construction(
+        &self,
+        member: usize,
+        scope: CnpSemanticRealizationScope<'_>,
+    ) -> Result<(), QualificationError> {
+        self.observe_data(member, scope, true)
+    }
+
+    fn observe_data(
+        &self,
+        member: usize,
+        scope: CnpSemanticRealizationScope<'_>,
+        initial: bool,
+    ) -> Result<(), QualificationError> {
         self.preflight()?;
         let source = self.roster.sources.get(member).ok_or_else(refused)?;
         if !std::ptr::eq(scope.installation, source.installation()) {
@@ -372,9 +393,26 @@ impl PacketCompleteNativeOracle {
         }
         let result = (|| {
             let mut observed = self.observed.try_borrow_mut().map_err(|_| refused())?;
+            if initial {
+                initial_construction::authenticate_initial_journal_data(
+                    &self.programmes,
+                    &observed,
+                )?;
+                initial_construction::authenticate_initial_queues_data(
+                    &self.receiver_group,
+                    &self.receiver_reader,
+                    &mut observed,
+                )?;
+            }
             let witness = source
                 .latest_original_native_witness(&scope)
                 .map_err(native_failure)?;
+            if initial {
+                initial_construction::authenticate_initial_record_data(
+                    &self.programmes[member],
+                    witness.native_record(),
+                )?;
+            }
             match witness.native_record() {
                 PacketCompleteNativeRecord::Producer(record) => {
                     self.enroll(
@@ -428,7 +466,19 @@ impl PacketCompleteNativeOracle {
                     )?;
                 }
             }
-            effects::drain(self, member, &mut observed)?;
+            if initial {
+                initial_construction::authenticate_initial_queues_data(
+                    &self.receiver_group,
+                    &self.receiver_reader,
+                    &mut observed,
+                )?;
+                initial_construction::authenticate_initial_journal_data(
+                    &self.programmes,
+                    &observed,
+                )?;
+            } else {
+                effects::drain(self, member, &mut observed)?;
+            }
             effects::verify_prefix(self, member, &observed)?;
             source.authenticate_current_native().map_err(native_failure)
         })();
@@ -442,6 +492,26 @@ impl PacketCompleteNativeOracle {
 
     fn enroll(
         &self,
+        observed: &mut Observed,
+        member: usize,
+        reference: &ContentRef,
+        bytes: &[u8],
+        native: Option<(&ContentRef, &[u8])>,
+        body: impl FnOnce() -> NativeBody,
+    ) -> Result<(), QualificationError> {
+        Self::enroll_data(
+            self.maximum_bytes,
+            observed,
+            member,
+            reference,
+            bytes,
+            native,
+            body,
+        )
+    }
+
+    fn enroll_data(
+        maximum_bytes: usize,
         observed: &mut Observed,
         member: usize,
         reference: &ContentRef,
@@ -477,7 +547,7 @@ impl PacketCompleteNativeOracle {
             .checked_add(native_bytes)
             .and_then(|bytes| bytes.checked_mul(3))
             .and_then(|bytes| observed.bytes.checked_add(bytes))
-            .filter(|bytes| *bytes <= self.maximum_bytes)
+            .filter(|bytes| *bytes <= maximum_bytes)
             .ok_or_else(refused)?;
         if observed.seals.len() == MAXIMUM_SEALS {
             return Err(refused());

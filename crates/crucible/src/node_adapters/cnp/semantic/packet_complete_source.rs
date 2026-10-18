@@ -1449,3 +1449,6 @@ impl PacketCompleteSemanticSource {
             + std::mem::size_of::<Result<(), RuntimeError>>()
     }
 }
+
+#[path = "packet_complete_source/oracle_body_storage.rs"]
+mod oracle_body_storage;
