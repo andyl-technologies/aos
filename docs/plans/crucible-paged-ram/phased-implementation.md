@@ -1043,6 +1043,12 @@ general low-residency progress. A guest can touch more pages in one quantum
 than its admitted resident peak. A blocked fault cannot wait for an exact
 boundary that the fault itself prevents the guest from reaching.
 
+The [live-eviction investigation](live-eviction.md) separates stable virtual
+addresses from physical pins. It identifies a candidate synchronous
+write-protect/preserve/discard path using the current bounce-buffer policy,
+without requiring a new lease on every software memory access. Its bounded
+progress floor and actual native lifetime integration remain unqualified;
+the existing full-peak admission stays in force.
 
 Resource suspension requires a complete stop protocol that can progress while
 a vCPU or device thread is blocked in a host fault, including mutex ownership,
