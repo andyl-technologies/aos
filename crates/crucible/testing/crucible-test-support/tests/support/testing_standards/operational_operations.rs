@@ -18,6 +18,8 @@ mod cleanup_delegation;
 mod production_publication;
 #[path = "operational_operations/refused_publication.rs"]
 mod refused_publication;
+#[path = "operational_operations/host_physical_custody.rs"]
+mod host_physical_custody;
 #[path = "operational_operations/worker_custody.rs"]
 mod worker_custody;
 
@@ -684,6 +686,7 @@ fn contracts() -> impl Iterator<Item = &'static Contract> {
         .chain(refused_publication::CONTRACTS)
         .chain(production_publication::CONTRACTS)
         .chain(worker_custody::CONTRACTS)
+        .chain(host_physical_custody::CONTRACTS)
 }
 
 pub(super) fn mask(package: &str, target: &str, code: &str) -> String {
@@ -916,6 +919,16 @@ fn continuation_waits_require_original_posts_and_physical_custody()
                 .replace("(&error)", "(&other_error)")
                 .replace("retry_unsettled()", "retry_unsettled(altered)")
                 .replace("retry_pending()", "retry_pending(altered)")
+                .replace("retry_abandoned_jobs()", "retry_abandoned_jobs(altered)")
+                .replace("(&state, slot)", "(&other_state, slot)")
+                .replace(
+                    "(self.epoch, self.process_generation)",
+                    "(altered_epoch, self.process_generation)",
+                )
+                .replace(
+                    "slice.min(WATCHER_WAIT_POLL_INTERVAL)",
+                    "WATCHER_WAIT_POLL_INTERVAL",
+                )
                 .replace(
                     "retry_reserved_publication()",
                     "retry_reserved_publication(altered)",
