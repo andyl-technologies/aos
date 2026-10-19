@@ -9580,6 +9580,18 @@ Resumed qualification:
   filesystem suite. Producer pin release,
   cached-object ownership, eviction, NativeReady and full task acceptance remain
   pending; this qualifies source-description closure only.
+- Resident-view candidate `a8fb695c3f` adds permanent closure before producer
+  handoff. Started operations retain actual backing, and completion is reported
+  only after those references drop. Reads use a short private slot lock outside
+  native I/O and never lock embedded state. Closing one view changes no durable
+  pin, lease, reservation or quota observation. Its native control checks that
+  independent sources and consumer leases remain readable with policy stalled.
+  Functional parent `53f53095e9` passes both builds, all 34 selected cases,
+  including two concurrency regressions, and all three strict Clippy profiles.
+  The successor only formats the new fixture message; its formatter pair passes
+  and its native component is running. Original failed lint and formatting
+  attempts remain recorded. Producer pin release, cached-object ownership and
+  eviction remain pending; this does not accept a host task.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
   and all seven strict Clippy/documentation profiles pass. The interface,
   commit-path, status and schema gates pass on unchanged final source, including
