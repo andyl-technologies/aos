@@ -9551,6 +9551,27 @@ Resumed qualification:
   portable cases. This qualifies ARCH-8 on the tested source. Required
   application compilation is running before the full filesystem suite; the
   broader host requirements and task acceptance remain open.
+- Source-descriptor candidate `a509523e04` closes the original registered
+  admission and inspection handles only after their real correlated native
+  final-removal acknowledgements. Exact zero-link inode, project, ownership,
+  access-mode and byte checks precede either close. The completed reassembly plan
+  closes only after every original transfer completes; actual acknowledgements,
+  reconstruction metadata, pins and future holds remain retained. Its extended
+  native control keeps the original owner and consumers Running while closing
+  the final independent observers and synchronizing the filesystem. The real
+  helper measures charged usage falling from 991,232 to 704,512 bytes, exactly
+  the observed 286,720 source bytes, with 2,899,870 future-hold bytes unchanged.
+  Fresh resident and consumer reads pass with policy held; repeated cleanup,
+  policy bytes and immutable outputs remain valid. The complete native component
+  passes in 424.796 seconds, including all 51 selected filesystem cases. Review
+  verifies all 3,495 image inputs, four original Cargo ELFs and both installed
+  supervisor helpers. Both direct builds, 32 focused cases, the formatter pair
+  and all three strict Clippy profiles pass on unchanged source, with no lint
+  allowances.
+  Its owning aggregate, application compilation and complete filesystem suite
+  are queued after the preceding application check. Producer pin release,
+  cached-object ownership, eviction, NativeReady and full task acceptance remain
+  pending; this qualifies source-description closure only.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
   and all seven strict Clippy/documentation profiles pass. The interface,
   commit-path, status and schema gates pass on unchanged final source, including
