@@ -11,6 +11,7 @@ mod direct;
 mod publication;
 mod pull;
 mod push;
+mod token_request;
 
 #[cfg(test)]
 mod request_tests;
@@ -657,10 +658,8 @@ impl RegistryClient {
                 request = request.header(AUTHORIZATION, bearer_header(seed)?);
             }
         }
-        let mut response = tokio::select! {
-            () = cancellation.cancelled() => bail!("OCI transfer cancelled"),
-            response = request.send() => response.context("requesting registry bearer token")?,
-        };
+        let mut response =
+            token_request::send(request, cancellation, "requesting registry bearer token").await?;
         // Public registries can challenge every request and still issue tokens
         // anonymously. Consult local credentials only after that exchange fails.
         if same_origin
@@ -678,10 +677,12 @@ impl RegistryClient {
                     .http
                     .get(realm)
                     .header(AUTHORIZATION, bearer_header(&seed)?);
-                response = tokio::select! {
-                    () = cancellation.cancelled() => bail!("OCI transfer cancelled"),
-                    response = request.send() => response.context("requesting authenticated registry bearer token")?,
-                };
+                response = token_request::send(
+                    request,
+                    cancellation,
+                    "requesting authenticated registry bearer token",
+                )
+                .await?;
             }
         }
         ensure!(
@@ -871,6 +872,10 @@ fn is_closed_connection_error(error: &reqwest::Error) -> bool {
     if error.is_connect() || error.is_timeout() || error.is_redirect() || error.is_body() {
         return false;
     }
+    has_closed_connection_cause(error)
+}
+
+fn has_closed_connection_cause(error: &reqwest::Error) -> bool {
     let mut cause: Option<&(dyn std::error::Error + 'static)> = Some(error);
     while let Some(error) = cause {
         if let Some(error) = error.downcast_ref::<std::io::Error>()

@@ -323,6 +323,151 @@ async fn head_status_response_is_not_retried() {
     assert_eq!(server.requests().len(), 1);
 }
 
+#[tokio::test]
+async fn bearer_token_get_recovers_once_with_identical_request() {
+    let server = FaultServer::start(|_| vec![Reply::Reset, token_reply()]).await;
+    let mut client = server.client();
+    Arc::get_mut(&mut client.inner)
+        .expect("unshared client")
+        .seed_token = Some(zeroize::Zeroizing::new("fixture-seed".into()));
+
+    let token = client
+        .authorize(
+            &token_challenge(&server.origin),
+            &["repository:aos:pull".into()],
+            &CancellationToken::new(),
+            false,
+        )
+        .await
+        .expect("recovered token exchange");
+
+    assert_eq!(token.as_str(), "fixture-authorized-token");
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0], requests[1]);
+    assert!(requests[0].starts_with("GET /token?"));
+    assert!(requests[0].contains("authorization: Bearer fixture-seed\r\n"));
+}
+
+#[tokio::test]
+async fn bearer_token_get_stops_after_two_resets() {
+    let server = FaultServer::start(|_| vec![Reply::Reset, Reply::Reset, token_reply()]).await;
+
+    let result = server
+        .client()
+        .authorize(
+            &token_challenge(&server.origin),
+            &["repository:aos:pull".into()],
+            &CancellationToken::new(),
+            false,
+        )
+        .await;
+
+    assert!(result.is_err());
+    assert_eq!(server.requests().len(), 2);
+}
+
+#[tokio::test]
+async fn bearer_token_get_does_not_retry_status_responses() {
+    let server = FaultServer::start(|_| vec![Reply::status(503), token_reply()]).await;
+
+    let result = server
+        .client()
+        .authorize(
+            &token_challenge(&server.origin),
+            &["repository:aos:pull".into()],
+            &CancellationToken::new(),
+            false,
+        )
+        .await;
+
+    assert!(result.is_err());
+    assert_eq!(server.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn bearer_token_get_bounds_resets_during_https_establishment() {
+    let server = FaultServer::start(|_| vec![Reply::Reset, Reply::Reset, Reply::status(200)]).await;
+    let reference = RegistryReference::parse("fixture.invalid/aos:latest").expect("reference");
+    let mut client = RegistryClient::new(&reference, None, None).expect("client");
+    Arc::get_mut(&mut client.inner)
+        .expect("unshared client")
+        .http = reqwest::Client::builder()
+        .proxy(reqwest::Proxy::https(&server.origin).expect("fixture proxy"))
+        .build()
+        .expect("HTTP transport");
+
+    let error = client
+        .authorize(
+            &token_challenge("https://fixture.invalid/"),
+            &["repository:aos:pull".into()],
+            &CancellationToken::new(),
+            false,
+        )
+        .await
+        .expect_err("repeated establishment resets");
+
+    assert!(
+        error
+            .downcast_ref::<reqwest::Error>()
+            .expect("transport error")
+            .is_connect()
+    );
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(
+        requests
+            .iter()
+            .all(|r| r.starts_with("CONNECT fixture.invalid:443 HTTP/1.1\r\n"))
+    );
+}
+
+#[tokio::test]
+async fn bearer_token_get_cancellation_does_not_dispatch_another_request() {
+    let (consumed, observed) = tokio::sync::oneshot::channel();
+    let server = FaultServer::start(|_| vec![Reply::Hold(consumed), token_reply()]).await;
+    let client = server.client();
+    let challenge = token_challenge(&server.origin);
+    let cancellation = CancellationToken::new();
+    let requested_cancellation = cancellation.clone();
+    let request = tokio::spawn(async move {
+        client
+            .authorize(
+                &challenge,
+                &["repository:aos:pull".into()],
+                &requested_cancellation,
+                false,
+            )
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(5), observed)
+        .await
+        .expect("request deadline")
+        .expect("request consumed");
+
+    cancellation.cancel();
+    let error = tokio::time::timeout(Duration::from_secs(5), request)
+        .await
+        .expect("cancellation deadline")
+        .expect("request task")
+        .expect_err("cancelled");
+
+    assert_eq!(error.to_string(), "OCI transfer cancelled");
+    assert_eq!(server.requests().len(), 1);
+}
+
+fn token_challenge(origin: &str) -> String {
+    format!("Bearer realm=\"{origin}token\",service=\"fixture\",scope=\"repository:aos:pull\"")
+}
+
+fn token_reply() -> Reply {
+    Reply::Http {
+        status: 200,
+        headers: "Content-Type: application/json\r\n".into(),
+        body: r#"{"token":"fixture-authorized-token"}"#.into(),
+    }
+}
+
 enum Reply {
     Reset,
     ResetAfter(Box<dyn FnOnce() + Send>),
