@@ -9579,7 +9579,10 @@ Resumed qualification:
   report. Required application compilation subsequently passes in 2,310.039
   seconds. Independent review matches all 128 declared test targets across 29
   packages, including the mixed library target kinds; this proves compilation,
-  not application execution. The complete filesystem suite is running. Producer pin release,
+  not application execution. The complete filesystem suite subsequently passes
+  all 122 nonignored cases in the ext4 guest. Independent review verifies every
+  expected case, the archive digest, all 3,489 source inputs and the unchanged
+  six privileged exclusions. Producer pin release,
   cached-object ownership, eviction, NativeReady and full task acceptance remain
   pending; this qualifies source-description closure only.
 - Resident-view candidate `a8fb695c3f` adds permanent closure before producer
