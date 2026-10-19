@@ -10,7 +10,7 @@
   model = import ./_crucible-model-source.nix {inherit lib;};
   crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
   bakedGenesis = builtins.readFile ../../crates/crucible-daemon/src/qemu_baked_genesis.rs;
-  freshLifecycle = builtins.readFile ../../crates/crucible-daemon/src/qemu_campaign_lifecycle.rs;
+  freshGenesisCapture = builtins.readFile ../../crates/crucible-daemon/src/qemu_campaign_lifecycle/genesis_checkpoint.rs;
   defaultChecks = builtins.readFile ./default.nix;
   rfc = builtins.readFile ../../docs/rfcs/0010-crucible/05-execution-model.md;
   patternsAndSketches = builtins.readFile ../../docs/rfcs/0010-crucible/29-patterns-and-sketches.md;
@@ -100,7 +100,7 @@
         needle = "capture_fresh_genesis_checkpoint_candidate(factory, source, context)?;";
       }
     ]
-    ++ failuresFor "crates/crucible-daemon/src/qemu_campaign_lifecycle.rs" freshLifecycle [
+    ++ failuresFor "crates/crucible-daemon/src/qemu_campaign_lifecycle/genesis_checkpoint.rs" freshGenesisCapture [
       {
         label = "fresh genesis capture lifecycle entry point";
         needle = "pub(crate) fn capture_fresh_genesis_checkpoint_candidate<F>(";
