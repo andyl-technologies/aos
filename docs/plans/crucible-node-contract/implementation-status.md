@@ -11,18 +11,21 @@ specific stage; they are not cumulative coverage of the latest source.
 
 ## Latest checkpoint
 
-`73389519ed` adds pre-admission for early Journal, normalization, geometry
-and Control construction. `ce94b2db8c` reduces selected closed currentness from four passes
-to two while preserving all four Source/Host checks and both roster checks;
-`e75818b353` separately formats fifteen files. Provider tests correct the
-encoded-credit and 20-digit JCS fixtures and cover the full typed U64.
+`23f0513b98` adds the guarded flat literal-state codec. It preserves literal
+keys, full integers and floating-point representations, retains failed prefixes,
+and retires deep constructed trees iteratively. It enables no Source18 or native
+import path. `930ff6028b` selects the initial census from actual actor custody,
+preserves its first error, and uses the existing initial graph precredit walk.
+`b11ba2f059` separately formats the census call.
 
 | Check | Latest recorded scope and result |
 | --- | --- |
-| Unfiltered libraries | 4,954 passes: Core 1,948, Daemon 1,498, Provider 1,496, Contract twelve; existing ignores remain 33/162/15/1 respectively. |
-| After formatting | Six-crate checking passes in 44.51 seconds; targeted formatting passes for 67 files. |
-| Startup/reclamation test pair | Baseline reaches the fifteen-minute limit during inactive-runtime construction; optimized construction finishes, then its recheck refuses after 641.39 seconds. Normal retirement and child reclamation pass. |
-| Outstanding qualification | The latest exact production application gate remains `b339f8c333`; a current refresh, strict lint, ABI and license gates remain pending. |
+| Current checking and formatting | Six-crate all-feature/all-target checking passes in 48.38 seconds; all sixteen changed Rust files pass formatting. |
+| Current application-target compilation | Passes for `b11ba2f059`: 167 newly compiled test artifacts across 48 application packages and 69 integration targets. All 7,804 filtered source files match the commit. This excludes the three Daemon census paths and executes no tests. |
+| Current library runtime | All four unfiltered libraries pass: Core 1,965, Daemon 1,498, Provider 1,496 and Contract twelve, totaling 4,971. All seventeen new codec controls pass. Existing ignores remain 33/162/15/1. |
+| Current test compilation | Standard four-library compilation passes in 3 minutes 4 seconds after cleaning and rebuilding this task's Provider artifacts. Assertions, overflow checks and default stack remain enabled. |
+| Earlier startup/reclamation pair | Baseline reaches the fifteen-minute limit during inactive-runtime construction; optimized construction finishes, then its recheck refuses after 641.39 seconds. Normal retirement and child reclamation pass. |
+| Outstanding qualification | The attached-owner native assertions, full preservation, strict lint, ABI and license gates remain pending. |
 
 One matched pair reaches the same inactive-runtime construction milestone in
 approximately 624 versus 364 seconds (41.6% less time). Only the three currentness
@@ -33,8 +36,9 @@ This is a partial startup-test measurement, not a completed preservation control
 or Linux-boot result. The optimized recheck reports `UnsupportedFacet`; source
 review finds that an inapplicable dormant fallback masks its first census error.
 Two reviewed repairs select the census from actual actor custody and use the initial
-graph precredit walk. They await compilation and the ordinary native control; the
-original error and its actual owning path still require diagnosis.
+graph precredit walk. They pass checking and the unfiltered library suites but await the ordinary
+native control; the original error and its actual owning path still require
+diagnosis.
 
 The earlier diagnostic run timed out after fifteen minutes. Its nine read/hash stack observations
 and 2.957 TB of read accounting are diagnostic evidence, not statistical CPU
@@ -83,6 +87,16 @@ selected provider controls pass against the complete 435-file owned dependency
 set. This checkpoint has no dependency on subsequent Core changes.
 
 ### Application compilation
+
+The current refresh passes for `b11ba2f059`. All 167 test artifacts freshly
+compile across the 48 selected application packages, including 69 integration
+targets, in 10 minutes 49 seconds after prerequisite builds. Independent review
+matches all 7,804 filtered source files and executable modes to the commit,
+checks the installed compiler messages and registered output, and confirms the
+actual package selection. The codec and Core census source are included through
+the non-test Core dependency; the three Daemon census paths are excluded.
+This gate compiles no Core library test target and executes no tests. It gives
+no codec, Daemon census or native runtime verdict.
 
 The production compiler build and installed compiler verification pass. An
 earlier mandatory application-target gate passes for the original-report,
