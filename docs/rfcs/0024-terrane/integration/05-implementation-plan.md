@@ -9574,9 +9574,10 @@ Resumed qualification:
   supervisor helpers. Both direct builds, 32 focused cases, the formatter pair
   and all three strict Clippy profiles pass on unchanged source, with no lint
   allowances.
-  Its owning aggregate is now running after the preceding application's success;
-  application compilation and the complete filesystem suite follow only on
-  success. Producer pin release,
+  Its owning `publisher-sole-writer` aggregate subsequently passes in 479.547
+  seconds; independent source and runtime reinspection matches the original
+  report. Required application compilation is running before the complete
+  filesystem suite. Producer pin release,
   cached-object ownership, eviction, NativeReady and full task acceptance remain
   pending; this qualifies source-description closure only.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
