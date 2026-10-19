@@ -293,9 +293,9 @@ assert !interruptedTransfer
       then 2147483648
       # Two 256 MiB guests also retain separate TCG code buffers and plugin
       # mappings. Their combined resident use exhausted the 1 GiB attempt cap.
-      else if twoNodeHttp
+      else if twoNodeHttp || guestChoice
       then 1610612736
-      else if guestChoice || hotForkFlight || campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite || singleGuestMaterialization
+      else if hotForkFlight || campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite || singleGuestMaterialization
       then 1073741824
       else 536870912
     )}
@@ -419,11 +419,14 @@ assert !interruptedTransfer
       then "crucible-campaign-midpoint-debug"
       else "crucible-packaged-campaign";
     # The Envoy flight can hold two retained five-guest worlds beside one
-    # running five-guest attempt.
+    # running five-guest attempt. Two-guest flights keep their workspace on
+    # disk (below) but still need room for both guests' TCG buffers; at
+    # 2 GiB the guest-choice flight's page-cache pressure slowed each quantum
+    # by orders of magnitude once guest traffic began.
     memory =
       if envoyProduct
       then 12288
-      else if findingForkWrite || hotForkFlight || storageRecovery || packedMaintenance || tierMaintenance || interruptedTransfer || singleGuestMaterialization || twoNodeHttp
+      else if findingForkWrite || hotForkFlight || storageRecovery || packedMaintenance || tierMaintenance || interruptedTransfer || singleGuestMaterialization || twoNodeHttp || guestChoice
       then 3072
       else 2048;
     headlessVcpuCount =
@@ -432,11 +435,13 @@ assert !interruptedTransfer
       else 1;
     # Five 512 MiB RAM and 512 MiB disk snapshots need at least 5 GiB for
     # baked genesis alone. The storage-recovery flight also retains S3 objects
-    # beside staged checkpoints. Leave writable space on the ext4 rootfs.
+    # beside staged checkpoints. Two-guest flights move their checkpoint and
+    # store workspace off the RAM-backed /tmp. Leave writable space on the
+    # ext4 rootfs.
     extraWritableMiB =
       if envoyProduct || storageRecovery || packedMaintenance || tierMaintenance || interruptedTransfer
       then 16384
-      else if twoNodeHttp
+      else if twoNodeHttp || guestChoice
       then 8192
       else 0;
     rootfsDeps =
@@ -451,7 +456,7 @@ assert !interruptedTransfer
       ++ (lib.optional (guestChoice || hotForkFlight || campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite || singleGuest != null) selectedChoiceInitramfs);
     testScript = ''
       set -eu
-      ${lib.optionalString (envoyProduct || storageRecovery || packedMaintenance || tierMaintenance || interruptedTransfer || twoNodeHttp) ''
+      ${lib.optionalString (envoyProduct || storageRecovery || packedMaintenance || tierMaintenance || interruptedTransfer || twoNodeHttp || guestChoice) ''
         # The headless harness mounts /tmp as a RAM-sized tmpfs. Put the
         # checkpoint and store workspace on the already-sized ext4 rootfs.
         ${pkgs.util-linux}/bin/mount -o remount,rw /
@@ -501,7 +506,9 @@ assert !interruptedTransfer
       } /tmp/attempts.img
       setup_step quota-format ${pkgs.e2fsprogs}/sbin/mkfs.ext4 -F -O quota,project -E quotatype=prjquota /tmp/attempts.img
       setup_step quota-mountpoint mkdir /tmp/attempts
-      setup_step quota-mount ${pkgs.util-linux}/bin/mount -o loop,prjquota /tmp/attempts.img /tmp/attempts
+      # Discard returns freed attempt blocks to the backing image, so deleted
+      # checkpoints and run roots stop occupying the host-side workspace.
+      setup_step quota-mount ${pkgs.util-linux}/bin/mount -o loop,prjquota,discard /tmp/attempts.img /tmp/attempts
       setup_step run-directories mkdir -m 700 /tmp/attempts/run /tmp/run-state
       setup_step deployment install -m 600 ${deployment} /tmp/executor.toml
       echo 'campaign-host-setup-complete=true'
