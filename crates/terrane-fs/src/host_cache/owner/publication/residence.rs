@@ -112,7 +112,9 @@ impl NativeResidentChunkSource {
     /// New reads and protected reassembly operations are refused immediately. An
     /// already-started operation retains its actual backing until completion;
     /// a read that observes closure before returning withholds its plaintext.
-    /// A `true` result means this view has dropped all of its backing references.
+    /// A `true` result means this view has dropped its sealed-body and original
+    /// job references. Its immutable identity and configured layout remain
+    /// available for metadata access.
     /// Repeating the call observes completion without reopening the view.
     ///
     /// This releases no durable pin, reservation or lease and claims no quota

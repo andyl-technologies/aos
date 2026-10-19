@@ -128,19 +128,20 @@ mod tests {
         io,
         sync::{Arc, Barrier, mpsc},
         thread,
+        time::Duration,
     };
 
     #[test]
-    fn close_refuses_new_reads_until_started_backing_is_dropped() {
+    fn close_refuses_new_reads_until_started_backing_is_dropped() -> io::Result<()> {
         let source = Arc::new(());
         let observed = Arc::downgrade(&source);
         let view = ReadView::new(source);
-        let read = view.begin().unwrap();
+        let read = view.begin()?;
 
         assert!(!view.close());
-        assert_eq!(
-            view.begin().err().unwrap().kind(),
-            io::ErrorKind::PermissionDenied
+        assert!(
+            view.begin()
+                .is_err_and(|error| error.kind() == io::ErrorKind::PermissionDenied)
         );
         assert!(view.check_open().is_err());
         assert!(observed.upgrade().is_some());
@@ -150,6 +151,7 @@ mod tests {
         assert!(view.close());
         assert!(observed.upgrade().is_none());
         assert!(view.close());
+        Ok(())
     }
 
     #[test]
@@ -161,7 +163,7 @@ mod tests {
 
         impl Drop for SlowDrop {
             fn drop(&mut self) {
-                self.started.send(()).unwrap();
+                assert!(self.started.send(()).is_ok());
                 self.finish.wait();
             }
         }
@@ -174,13 +176,13 @@ mod tests {
         }));
         let closing_view = Arc::clone(&view);
         let closer = thread::spawn(move || closing_view.close());
-        receive.recv().unwrap();
+        assert!(receive.recv_timeout(Duration::from_secs(5)).is_ok());
 
         assert!(!view.close());
         assert!(view.begin().is_err());
         finish.wait();
 
-        assert!(closer.join().unwrap());
+        assert!(matches!(closer.join(), Ok(true)));
         assert!(view.close());
     }
 }
