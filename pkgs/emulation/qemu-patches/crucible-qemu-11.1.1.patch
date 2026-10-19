@@ -1,26 +1,26 @@
-From a41786431da54103482f23ae56d78430972f2467 Mon Sep 17 00:00:00 2001
+From 5881e27347250bd969b6235110aed6f56f72a0cd Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] Integrate Crucible ownership and resident Root closure
+Subject: [PATCH] Integrate Crucible ownership and parent Park Original checks
 
-Integrate the retained Source, checkpoint request, metadata and parent Park
-paths with versioned public transport and factual physical return journals.
-Preserve the current SDK, preexec, export and configured fixture fixes.
+Retain the Source, checkpoint, parent Park and resident Root integration
+with versioned transport, physical custody journals and paid fixed storage.
 
-Acquire resident background closure from the actual entered Main Root before
-its writer. Retain a Source-owned service absence loan and constructor gate,
-freeze empty service and zero-actor thread membership, and run the existing
-participant, kernel-task and descriptor checks. Return writer, native closure
-and Source custody in order while retaining partial debt and independent
-first, post and cleanup errors. The lifetime loan stores stable generations
-and creator identity without retaining an Original pointer. Price its actual
-inline storage and prevent publication settlement while owners remain held.
+Export callback-scoped checks and bounded slice queries for both parent Park
+Originals. Bind each synchronous borrow to the dispatcher-held request,
+invocation, callback and userdata; retire it before dispatch advances.
+Reobserve both live Originals after failures, preserve first errors, refuse
+reentrant or foreign calls and leave failed query outputs unchanged.
 
-Refresh the affected literal extraction fingerprints. All 28 baseline and
-omission-control source products generate with the existing assertions and
-controls preserved. Compilation and runtime qualification remain separate;
-this source integration does not establish receiver ingress activation,
-production resident module enrollment or dirty-iterator positive coverage.
+Add negative controls for absent callback scope and foreign threads and
+processes without manufacturing positive native custody. Unavailable live
+Monitor and cancellation peers fail if reached. Refresh direct and transitive
+literal-source fingerprints through the production preinit extraction chain
+while retaining existing assertions and controls.
+
+The signed atomic commit remains based solely on the pinned QEMU source base.
+Compilation and runtime qualification remain separate; these negative controls
+do not establish positive entered-request or receiver activation coverage.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -64548,7 +64548,7 @@ index 890497b0d22ede109c03bcc24fbc3aa24b09e59c..5dd867c2d765690a2644af92a6520b8b
  
  int monitor_puts(Monitor *mon, const char *str);
 diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
-index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..edce20f5c7890d1851536a06f2e99b1ff8197930 100644
+index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..a7b922a177cb8f54999b44277e4e75b8893b3d58 100644
 --- a/include/plugins/qemu-plugin.h
 +++ b/include/plugins/qemu-plugin.h
 @@ -198,6 +198,326 @@ typedef void (*qemu_plugin_vcpu_discon_cb_t)(unsigned int vcpu_index,
@@ -67315,7 +67315,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..edce20f5c7890d1851536a06f2e99b1f
  
  /**
   * qemu_plugin_u64_set() - set value of a qemu_plugin_u64 for a given vcpu
-@@ -1353,15 +3225,3139 @@ uint64_t qemu_plugin_u64_get(qemu_plugin_u64 entry, unsigned int vcpu_index);
+@@ -1353,15 +3225,3164 @@ uint64_t qemu_plugin_u64_get(qemu_plugin_u64 entry, unsigned int vcpu_index);
   * @val: new value
   */
  QEMU_PLUGIN_API
@@ -68831,6 +68831,31 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..edce20f5c7890d1851536a06f2e99b1f
 +    qemu_plugin_id_t plugin_id,
 +    qemu_plugin_crucible_parent_park_drain_cb_t cb,
 +    void *userdata);
++
++/**
++ * Reobserves both live parent Park Originals during the registered callback.
++ *
++ * The real native dispatcher retains the request, module and cancellation
++ * aliases for this synchronous borrow. Calls outside that scope, from another
++ * process or thread, or for a foreign plugin fail without issuing authority.
++ * Both Originals are checked even after an earlier failure; no deadline is
++ * restarted and retained first failures cannot be cleared by a later check.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_parent_park_drain_original_check_v1(
++    qemu_plugin_id_t plugin_id);
++
++/**
++ * Returns the minimum live poll slice of the same two parent Park Originals.
++ *
++ * The callback-only custody and failure rules of the check function apply.
++ * A zero result writes a positive slice clamped by the live publisher's
++ * progress, private and outer limits and the original absolute ends. A negative
++ * result leaves *remaining_ns unchanged. This observation lends no new clock.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_parent_park_drain_original_query_slice_v1(
++    qemu_plugin_id_t plugin_id, uint64_t *remaining_ns);
 +
 +/*
 + * Process-private checkpoint pager vocabulary. These types describe a borrowed
@@ -157062,10 +157087,10 @@ index 0000000000000000000000000000000000000000..5b7b6ae3e73569c9a116a60dd1681523
 +}
 diff --git a/plugins/crucible-parent-park.inc.h b/plugins/crucible-parent-park.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..fe2814492f7b5a1f07674ef8e3119c22988daa22
+index 0000000000000000000000000000000000000000..56e7923907c8519e4999fb98608e1136ac8b25c8
 --- /dev/null
 +++ b/plugins/crucible-parent-park.inc.h
-@@ -0,0 +1,1179 @@
+@@ -0,0 +1,1296 @@
 +/*
 + * Canonical paired Park reception, invocation and terminal return
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -157530,7 +157555,8 @@ index 0000000000000000000000000000000000000000..fe2814492f7b5a1f07674ef8e3119c22
 +        return status ? status : -EPERM;
 +    }
 +    if (qatomic_load_acquire(&owner->busy) || owner->creating ||
-+        loan->transition_busy) {
++        loan->transition_busy || loan->callback_request ||
++        loan->callback_invocation || loan->callback || loan->callback_userdata) {
 +        return -EBUSY;
 +    }
 +    return loan->issued && loan->held && loan->receive == owner &&
@@ -157834,6 +157860,101 @@ index 0000000000000000000000000000000000000000..fe2814492f7b5a1f07674ef8e3119c22
 +}
 +
 +
++#ifdef CONFIG_LINUX
++/* Only the dispatcher can lend this synchronous scope. Neither invocation
++ * coordinates nor a successful prior check can create the held borrow. */
++static int parent_park_callback_identity(qemu_plugin_id_t id)
++{
++    QemuCrucibleParentParkReceive *owner = &startup_source.parent_park_receive;
++    QemuCrucibleParentParkLoan *loan = &startup_source.parent_park_loan;
++    int status = parent_park_main_identity(true);
++
++    if (status) {
++        return status;
++    }
++    status = parent_park_receive_identity(owner);
++    if (status) {
++        return status;
++    }
++    if (id != startup_source.saved.plugin_id ||
++        id != owner->installer.plugin_id ||
++        !loan->issued || !loan->held || loan->receive != owner ||
++        loan->process != getpid() || !qemu_thread_is_self(&loan->thread) ||
++        !loan->ctx_retained || owner->borrowers != 1 ||
++        !loan->transition_busy || !loan->callback_request ||
++        !loan->callback_invocation ||
++        loan->callback != startup_source.parent_park_callback ||
++        loan->callback_userdata != startup_source.parent_park_userdata) {
++        return -EPERM;
++    }
++    if (qatomic_load_acquire(&owner->busy) || owner->creating) {
++        return -EBUSY;
++    }
++    return 0;
++}
++
++static int parent_park_callback_slice(qemu_plugin_id_t id,
++                                     uint64_t *remaining_ns)
++{
++    QemuCrucibleParentParkReceive *owner = &startup_source.parent_park_receive;
++    QemuCrucibleParentParkLoan *loan = &startup_source.parent_park_loan;
++    uint64_t slices[2] = { 0 };
++    int status = parent_park_callback_identity(id);
++
++    if (status || parent_park_source_overlap(remaining_ns, sizeof(*remaining_ns))) {
++        return status ? status : -EINVAL;
++    }
++    if (qatomic_cmpxchg(&owner->busy, false, true)) {
++        return -EBUSY;
++    }
++
++    /* Reobserve both live Originals even when the first one or an earlier
++     * callback failed. A successful observation cannot erase retained debt. */
++    for (size_t index = 0; index < G_N_ELEMENTS(slices); index++) {
++        int current = parent_park_original_raw_current(owner, index, &slices[index]);
++
++        owner->original_current[index] = current;
++        parent_park_fail(owner, current, false);
++    }
++    status = loan->first_status ? loan->first_status : owner->first_status;
++    if (!status && !owner->validated) {
++        status = -ENOKEY;
++    }
++    if (!status) {
++        uint64_t remaining = MIN(slices[0], slices[1]);
++
++        if (!remaining) {
++            status = parent_park_fail(owner, -EPROTO, false);
++        } else {
++            *remaining_ns = remaining;
++        }
++    }
++    qatomic_store_release(&owner->busy, false);
++    return status;
++}
++#endif
++
++int qemu_plugin_crucible_parent_park_drain_original_check_v1(qemu_plugin_id_t id)
++{
++#ifdef CONFIG_LINUX
++    uint64_t unused;
++
++    return parent_park_callback_slice(id, &unused);
++#else
++    return -ENOTSUP;
++#endif
++}
++
++int qemu_plugin_crucible_parent_park_drain_original_query_slice_v1(
++    qemu_plugin_id_t id, uint64_t *remaining_ns)
++{
++#ifdef CONFIG_LINUX
++    return parent_park_callback_slice(id, remaining_ns);
++#else
++    return -ENOTSUP;
++#endif
++}
++
 +int qemu_crucible_parent_park_invoke_v1(
 +    QemuCrucibleParentParkLoan *loan, QemuCrucibleNativeParkRequest *request,
 +    struct qemu_plugin_crucible_parent_park_drain_status *out)
@@ -157842,6 +157963,8 @@ index 0000000000000000000000000000000000000000..fe2814492f7b5a1f07674ef8e3119c22
 +    struct qemu_plugin_crucible_parent_park_drain_invocation invocation;
 +    QemuCrucibleParentParkReceive *owner = &startup_source.parent_park_receive;
 +    uint64_t unused;
++    qemu_plugin_crucible_parent_park_drain_cb_t callback;
++    void *userdata;
 +    int callback_status;
 +    int status = parent_park_main_identity(true);
 +
@@ -157866,12 +157989,27 @@ index 0000000000000000000000000000000000000000..fe2814492f7b5a1f07674ef8e3119c22
 +    if (!loan->ctx_retained) {
 +        return -ENOKEY;
 +    }
++    if (loan->callback_request || loan->callback_invocation ||
++        loan->callback || loan->callback_userdata) {
++        return -EBUSY;
++    }
++
++    callback = startup_source.parent_park_callback;
++    userdata = startup_source.parent_park_userdata;
++    loan->callback_request = request;
++    loan->callback_invocation = &invocation;
++    loan->callback = callback;
++    loan->callback_userdata = userdata;
 +    loan->transition_busy = true;
 +    SOURCE_CALLBACK_MASKED_INVOKE(
 +        callback_status, &startup_source.parent_park_callback,
-+        startup_source.parent_park_callback, startup_source.parent_park_userdata,
-+        owner->installer.plugin_id, &invocation, out,
-+        startup_source.parent_park_userdata);
++        callback, userdata, owner->installer.plugin_id, &invocation, out, userdata);
++    /* Retire the stack borrow before the dispatcher can advance the request,
++     * including an unchanged-output negative or terminal containment result. */
++    loan->callback_userdata = NULL;
++    loan->callback = NULL;
++    loan->callback_invocation = NULL;
++    loan->callback_request = NULL;
 +    loan->transition_busy = false;
 +
 +    /* Preserve independent observations even on an unchanged-output negative
@@ -157905,6 +158043,10 @@ index 0000000000000000000000000000000000000000..fe2814492f7b5a1f07674ef8e3119c22
 +        owner->terminal_published) {
 +        return status ? status : -EPERM;
 +    }
++    if (loan->transition_busy || loan->callback_request ||
++        loan->callback_invocation || loan->callback || loan->callback_userdata) {
++        return -EBUSY;
++    }
 +    if (owner->terminal_ready) {
 +        goto publish;
 +    }
@@ -157923,7 +158065,7 @@ index 0000000000000000000000000000000000000000..fe2814492f7b5a1f07674ef8e3119c22
 +        parent_park_fail(owner, owner->terminal_operation_status, false);
 +        parent_park_fail(owner, view.post_status, true);
 +    }
-+    if (owner->metadata_users || loan->transition_busy) {
++    if (owner->metadata_users) {
 +        return -EBUSY;
 +    }
 +    if (!owner->final_posts_observed) {
@@ -173122,10 +173264,10 @@ index 0000000000000000000000000000000000000000..c47f8afc6320b511afea8f182c06edcf
 +#include "crucible-parent-park-metadata.inc.h"
 diff --git a/plugins/crucible-startup-source.h b/plugins/crucible-startup-source.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..ccf6445c62e52da26678b76f7ec999b6609c2759
+index 0000000000000000000000000000000000000000..8af1c57a60e643ac7abeab801cc3b71c092dd703
 --- /dev/null
 +++ b/plugins/crucible-startup-source.h
-@@ -0,0 +1,2014 @@
+@@ -0,0 +1,2019 @@
 +/*
 + * Fixed process-private control for the original installer startup source
 + *
@@ -174554,6 +174696,11 @@ index 0000000000000000000000000000000000000000..ccf6445c62e52da26678b76f7ec999b6
 +
 +typedef struct QemuCrucibleParentParkLoan {
 +    QemuCrucibleParentParkReceive *receive;
++    /* Dispatcher-owned synchronous borrow; included in Source's paid floor. */
++    QemuCrucibleNativeParkRequest *callback_request;
++    const struct qemu_plugin_crucible_parent_park_drain_invocation *callback_invocation;
++    qemu_plugin_crucible_parent_park_drain_cb_t callback;
++    void *callback_userdata;
 +    QemuThread thread;
 +    pid_t process;
 +    int first_status;
@@ -185998,7 +186145,7 @@ index f8e17dcf1ce91d8aefb8d82cafd3196a4fd9edf6..f24121d2d3c66f1436ba73c976a7bd76
      return true;
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..3c654cbe92459144bdae8e794a05cad57674c250
+index 0000000000000000000000000000000000000000..3ca5fdf92b4ef2c659ddba0f1e2900579a083734
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,87 @@
@@ -186024,9 +186171,9 @@ index 0000000000000000000000000000000000000000..3c654cbe92459144bdae8e794a05cad5
 +    'include/qemu/crucible-device-workspace.h':
 +        '5710b0cc44f68508cecd4186cca2e10c6aa32eceed1b81f2250ca9faf9028a4b',
 +    'include/plugins/qemu-plugin.h':
-+        '10904bea6fcdfa073696f9b597332e022539533f40873b7847cca742e906878f',
++        'a332f72199fe435a7f5ee80f76ce1a36d9a67b8780f768d0b091af84b5ad1b3a',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'f367e50806ffac7b2920e7f6ce191e49a2f89fd60342f0aef3b799705ba8ea5d',
++        '999f0ffa45b238b9eddfdef920469adc9b03015918150214d468364d8445913a',
 +}
 +
 +PURPOSE_FUNCTIONS = (
@@ -227590,10 +227737,10 @@ index 0000000000000000000000000000000000000000..c4faa376c01509f12f8ce6aaa72bbc69
 +    )]
 diff --git a/tests/unit/crucible-startup-source-fixture.inc.h b/tests/unit/crucible-startup-source-fixture.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..41e8c446a3b144b1e64a93a33f2aaa3ef71952b2
+index 0000000000000000000000000000000000000000..bcb11a64943d6d846e191e985483142073ff359a
 --- /dev/null
 +++ b/tests/unit/crucible-startup-source-fixture.inc.h
-@@ -0,0 +1,713 @@
+@@ -0,0 +1,736 @@
 +/*
 + * Actual-body controls for original installer startup source
 + *
@@ -227857,6 +228004,25 @@ index 0000000000000000000000000000000000000000..41e8c446a3b144b1e64a93a33f2aaa3e
 +    return -ENOTSUP;
 +}
 +
++/* Parent-original tests below hold no received request or callback scope.
++ * The real exports must refuse before either live peer is reached. These
++ * negative-only boundaries cannot observe a Monitor or cancellation identity;
++ * genuine callback qualification remains a separate native QEMU test. */
++static bool fixture_park_connection_watch_unavailable(Monitor *monitor,
++                                                     uint64_t epoch)
++{
++    g_assert_not_reached();
++    return false;
++}
++
++static int fixture_park_cancellation_observe_unavailable(
++    int event_fd, int *metadata_fd, bool *close_uncertain, int *post_status,
++    uint64_t *device, uint64_t *inode, uint64_t *event_id)
++{
++    g_assert_not_reached();
++    return -ENOTSUP;
++}
++
 +#define qemu_in_main_thread fixture_main_thread
 +#define bql_locked fixture_bql_locked
 +#define qemu_descriptor_close_owned fixture_metadata_close_owned
@@ -227869,6 +228035,8 @@ index 0000000000000000000000000000000000000000..41e8c446a3b144b1e64a93a33f2aaa3e
 +#define qemu_crucible_checkpoint_inventory_metadata_current_v1 fixture_inventory_current_unavailable
 +#define qemu_crucible_ram_fingerprint_root_invocation_current_v1 fixture_root_current_unavailable
 +#define qemu_crucible_machine_construction_frame_current_v1 fixture_machine_current_unavailable
++#define monitor_qmp_connection_watch_valid fixture_park_connection_watch_unavailable
++#define qemu_crucible_received_cancellation_observe_v1 fixture_park_cancellation_observe_unavailable
 +#include "crucible-startup-source-body.inc.h"
 +
 +/* This boundary models only the explicitly absent optional role. It cannot
@@ -227890,6 +228058,8 @@ index 0000000000000000000000000000000000000000..41e8c446a3b144b1e64a93a33f2aaa3e
 +    return fixture.workspace_borrow_status;
 +}
 +
++#undef qemu_crucible_received_cancellation_observe_v1
++#undef monitor_qmp_connection_watch_valid
 +#undef qemu_crucible_machine_construction_frame_current_v1
 +#undef qemu_crucible_ram_fingerprint_root_invocation_current_v1
 +#undef qemu_crucible_checkpoint_inventory_metadata_current_v1
@@ -228952,7 +229122,7 @@ index 0000000000000000000000000000000000000000..744c2574bf925b75789a7ddf89525387
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..f47d65e239cd50e336f31fa55697ba7695451bf3
+index 0000000000000000000000000000000000000000..e8c19799b3599a79d329f5de4e4f146b9bea1562
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
 @@ -0,0 +1,100 @@
@@ -228970,7 +229140,7 @@ index 0000000000000000000000000000000000000000..f47d65e239cd50e336f31fa55697ba76
 +    'include/system/crucible-ram-quiescence.h':
 +        '2ad1d50c233a309fae5064acd1db4020b1135cf6203cb12cdf7bd33efd0e4a23',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'f367e50806ffac7b2920e7f6ce191e49a2f89fd60342f0aef3b799705ba8ea5d',
++        '999f0ffa45b238b9eddfdef920469adc9b03015918150214d468364d8445913a',
 +}
 +
 +FUNCTIONS = (
@@ -229058,7 +229228,7 @@ index 0000000000000000000000000000000000000000..f47d65e239cd50e336f31fa55697ba76
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..0cb55d290b07e1809e7eae0a53e49d00576513e7
+index 0000000000000000000000000000000000000000..ae34d5dc9dbb76b4f532ad8fa820a11a67115fed
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
 @@ -0,0 +1,241 @@
@@ -229081,15 +229251,15 @@ index 0000000000000000000000000000000000000000..0cb55d290b07e1809e7eae0a53e49d00
 +    'plugins/crucible-startup-source.c':
 +        'e86eba4344d03882824e02ad04e413a1037961996195cdf14d2af62a4b9265f8',
 +    'plugins/crucible-startup-source.h':
-+        '9b77359da6dabc7f3613cfa11cc8bd16fd4a3975d7f24a26a06b1fb3f86b4bf3',
++        '3cf9759b542d152954b413d8e62f25c2660f4f4685ebc7bb2c22ab762299cf9c',
 +    'include/plugins/qemu-plugin.h':
-+        '10904bea6fcdfa073696f9b597332e022539533f40873b7847cca742e906878f',
++        'a332f72199fe435a7f5ee80f76ce1a36d9a67b8780f768d0b091af84b5ad1b3a',
 +    'system/crucible-hot-fork-coordinator.c':
 +        'c782e9f0e3410ea7fcaea903772a5bdf799225c0e4cb340f39656d5f6657909c',
 +    'include/system/crucible-ram-quiescence.h':
 +        '2ad1d50c233a309fae5064acd1db4020b1135cf6203cb12cdf7bd33efd0e4a23',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'f367e50806ffac7b2920e7f6ce191e49a2f89fd60342f0aef3b799705ba8ea5d',
++        '999f0ffa45b238b9eddfdef920469adc9b03015918150214d468364d8445913a',
 +}
 +
 +FUNCTIONS = (
@@ -229305,7 +229475,7 @@ index 0000000000000000000000000000000000000000..0cb55d290b07e1809e7eae0a53e49d00
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..1a39656fa902a7c6e6e6e7817f903f298f95c20c
+index 0000000000000000000000000000000000000000..24c5bb059dd1c6d374ce993da7836aa9717d9fb5
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -229329,7 +229499,7 @@ index 0000000000000000000000000000000000000000..1a39656fa902a7c6e6e6e7817f903f29
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'f367e50806ffac7b2920e7f6ce191e49a2f89fd60342f0aef3b799705ba8ea5d',
++        '999f0ffa45b238b9eddfdef920469adc9b03015918150214d468364d8445913a',
 +}
 +
 +FUNCTIONS = (
@@ -229423,7 +229593,7 @@ index 0000000000000000000000000000000000000000..1a39656fa902a7c6e6e6e7817f903f29
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..48ca88df1d3e78d530940bb6c10d07879b6e179a
+index 0000000000000000000000000000000000000000..d92feb0854eadd0161975d7a03a97f393c6aa6c9
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
 @@ -0,0 +1,173 @@
@@ -229458,15 +229628,15 @@ index 0000000000000000000000000000000000000000..48ca88df1d3e78d530940bb6c10d0787
 +    'include/qemu/crucible-device-workspace.h':
 +        '5710b0cc44f68508cecd4186cca2e10c6aa32eceed1b81f2250ca9faf9028a4b',
 +    'include/plugins/qemu-plugin.h':
-+        '10904bea6fcdfa073696f9b597332e022539533f40873b7847cca742e906878f',
++        'a332f72199fe435a7f5ee80f76ce1a36d9a67b8780f768d0b091af84b5ad1b3a',
 +    'plugins/crucible-process-purpose.c':
 +        '514f3d0e678d947fb35ad0ab92f808f1f2d06dbcdddefac01d0624c7a6ee9d23',
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'f367e50806ffac7b2920e7f6ce191e49a2f89fd60342f0aef3b799705ba8ea5d',
++        '999f0ffa45b238b9eddfdef920469adc9b03015918150214d468364d8445913a',
 +    'scripts/extract-crucible-preexec-purpose.py':
-+        '6227a40897413f65346ac5a4545a1994a0c99d49429313c83e5b5cfdbee07671',
++        '52a7fc7d78bc37bf27d752645e3d1c37ada6392f9ae0d0bce7ecf799056c6435',
 +    'meson.build':
 +        '7eef2c0d1494dfdeed66f56c77f092382cd63d3fd5ad7c0b7c7ac85ca599e39e',
 +    'tests/unit/test-crucible-preexec-setup.c':
@@ -229602,10 +229772,10 @@ index 0000000000000000000000000000000000000000..48ca88df1d3e78d530940bb6c10d0787
 +        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..3c8bbc1c99c163099c5eb6f7d03a2b39bf931c53
+index 0000000000000000000000000000000000000000..5a4103ea1b8c5187774b57442d0777ed6a358a43
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
-@@ -0,0 +1,835 @@
+@@ -0,0 +1,837 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Extract literal startup integration control cuts, never an issuer fixture."""
 +
@@ -229616,7 +229786,7 @@ index 0000000000000000000000000000000000000000..3c8bbc1c99c163099c5eb6f7d03a2b39
 +
 +SOURCE_HASHES = {
 +    'plugins/crucible-parent-park.inc.h':
-+        '7e935c052fda11e4e00c4ebd8036a4d7cc556723baec38d3d0a461adfb5aab45',
++        '83a1c7bdd365558e1ce8d90affc2eaa91301b7ca01d45b48f2a32440221b1765',
 +    'plugins/crucible-parent-park-metadata.inc.h':
 +        '412c9d196f80afcccb502e12e039d6cfebc424373b62cc3c393aa795219ea46e',
 +    'system/crucible-native-park-request.c':
@@ -229644,9 +229814,9 @@ index 0000000000000000000000000000000000000000..3c8bbc1c99c163099c5eb6f7d03a2b39
 +    'plugins/crucible-setup-mapping.inc.h':
 +        '873455344e7aace6607c1426cc573ad68ea7701770756b6fd51eba0670fc10b4',
 +    'tests/unit/test-crucible-startup-source.c':
-+        '680a34bfcd164939a94ef6e3b14dccc86a4b45c19f5fe54571f9259cb2a628b2',
++        '3a847fcd6555af76ac6f29c8c851cdc25ba8bc19426d8a62920bb281a913c1f3',
 +    'tests/unit/crucible-startup-source-fixture.inc.h':
-+        '7710d08a1f31db2a71818bf51c64697569ff6e44cd1b6a8b817560e9ab6e17ba',
++        'a0f18ffaef4ddf0a8569ce94fe9c7e2252de41934d83d8aa5b03b98b2eddf031',
 +    'include/qemu/crucible-metadata-partition.h':
 +        '62dd96cf5bb1594dd3e42360459b409573cecd5d196f355f72edffa2250ee95a',
 +    'plugins/api-system.c':
@@ -229666,13 +229836,13 @@ index 0000000000000000000000000000000000000000..3c8bbc1c99c163099c5eb6f7d03a2b39
 +    'plugins/crucible-startup-source.c':
 +        'e86eba4344d03882824e02ad04e413a1037961996195cdf14d2af62a4b9265f8',
 +    'plugins/crucible-startup-source.h':
-+        '9b77359da6dabc7f3613cfa11cc8bd16fd4a3975d7f24a26a06b1fb3f86b4bf3',
++        '3cf9759b542d152954b413d8e62f25c2660f4f4685ebc7bb2c22ab762299cf9c',
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'include/qemu/crucible-device-workspace.h':
 +        '5710b0cc44f68508cecd4186cca2e10c6aa32eceed1b81f2250ca9faf9028a4b',
 +    'include/plugins/qemu-plugin.h':
-+        '10904bea6fcdfa073696f9b597332e022539533f40873b7847cca742e906878f',
++        'a332f72199fe435a7f5ee80f76ce1a36d9a67b8780f768d0b091af84b5ad1b3a',
 +    'plugins/crucible-command-consumer.inc.h':
 +        '90e66020ed3cd06206739f0921207a2ba0a35ccdf2144b6c829dd77c5f44fd2f',
 +    'plugins/crucible-callback-owner.inc.h':
@@ -229893,6 +230063,8 @@ index 0000000000000000000000000000000000000000..3c8bbc1c99c163099c5eb6f7d03a2b39
 +    "qemu_plugin_crucible_native_mask_v1",
 +    "qemu_plugin_crucible_register_checkpoint_pager_v1",
 +    "qemu_plugin_crucible_register_parent_park_drain_v1",
++    "qemu_plugin_crucible_parent_park_drain_original_check_v1",
++    "qemu_plugin_crucible_parent_park_drain_original_query_slice_v1",
 +    "qemu_plugin_crucible_startup_control_check_v2",
 +    "qemu_plugin_crucible_startup_control_reserve_v2",
 +    "qemu_plugin_crucible_startup_runtime_check_v3",
@@ -278060,10 +278232,10 @@ index 0000000000000000000000000000000000000000..2d6095e07373bad053241cac032344a2
 +}
 diff --git a/tests/unit/test-crucible-startup-source.c b/tests/unit/test-crucible-startup-source.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..785d21eb6602f04809e364a42347dc27cbc14d92
+index 0000000000000000000000000000000000000000..c0269bf412d498df4fc133edf19a67b5726420bc
 --- /dev/null
 +++ b/tests/unit/test-crucible-startup-source.c
-@@ -0,0 +1,3949 @@
+@@ -0,0 +1,4065 @@
 +/*
 + * Actual Source lifecycle, accounting and registration controls.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -279236,6 +279408,116 @@ index 0000000000000000000000000000000000000000..785d21eb6602f04809e364a42347dc27
 +    g_assert_cmpint(WEXITSTATUS(status), ==, 0);
 +    plugin.id_ht = table;
 +    g_assert_cmpint(fixture_register_park(), ==, 0);
++}
++
++/* These calls never manufacture a received pair, entered native request or
++ * callback scope. They verify refusal by the literal production exports only;
++ * the installing fixture below cannot establish positive parent authority. */
++static void assert_park_original_refused(qemu_plugin_id_t id)
++{
++    QemuCrucibleStartupSourceControl before;
++    uint64_t bounded = UINT64_C(0x8a15725e63b904dc);
++
++    memcpy(&before, &startup_source, sizeof(before));
++
++    g_assert_cmpint(qemu_plugin_crucible_parent_park_drain_original_check_v1(id),
++                   ==, -EPERM);
++    g_assert_cmpint(
++        qemu_plugin_crucible_parent_park_drain_original_query_slice_v1(
++            id, &bounded), ==, -EPERM);
++
++    g_assert_cmpuint(bounded, ==, UINT64_C(0x8a15725e63b904dc));
++    g_assert_cmpmem(&startup_source, sizeof(startup_source),
++                   &before, sizeof(before));
++}
++
++static void scenario_park_original_outside_callback(void)
++{
++    fixture_prepare(0, false);
++    assert_park_original_refused(fixture.ctx.id);
++
++    g_assert_cmpint(fixture_acquire(), ==, 0);
++    g_assert_cmpint(fixture_register_park(), ==, 0);
++    fixture_bql = false;
++
++    /* Even the exact registrar and a foreign plugin ID supply no later scope. */
++    assert_park_original_refused(fixture.ctx.id);
++    assert_park_original_refused(fixture.ctx.id + 1);
++    g_assert_cmpuint(park_callback_calls, ==, 0);
++    g_assert_null(startup_source.parent_park_loan.callback_request);
++    g_assert_null(startup_source.parent_park_loan.callback_invocation);
++    g_assert_false(startup_source.parent_park_loan.held);
++
++    fixture_bql = true;
++    assert_retained();
++}
++
++static void *foreign_park_original(void *opaque)
++{
++    assert_park_original_refused(fixture.ctx.id);
++    assert_park_original_refused(fixture.ctx.id + 1);
++    return NULL;
++}
++
++static void scenario_park_original_foreign_thread(void)
++{
++    QemuCrucibleStartupSourceControl before;
++    QemuThread thread;
++    GHashTable *table;
++
++    fixture_prepare(0, false);
++    g_assert_cmpint(fixture_acquire(), ==, 0);
++    g_assert_cmpint(fixture_register_park(), ==, 0);
++    fixture_bql = false;
++    table = plugin.id_ht;
++    plugin.id_ht = NULL;
++    memcpy(&before, &startup_source, sizeof(before));
++
++    /* The owner retains plugin.lock: a foreign lookup or wait would deadlock. */
++    qemu_thread_create(&thread, "park-original-foreign", foreign_park_original,
++                       NULL, QEMU_THREAD_JOINABLE);
++    qemu_thread_join(&thread);
++
++    g_assert_cmpmem(&startup_source, sizeof(startup_source),
++                   &before, sizeof(before));
++    plugin.id_ht = table;
++    fixture_bql = true;
++    assert_retained();
++}
++
++static void scenario_park_original_foreign_process(void)
++{
++    QemuCrucibleStartupSourceControl before;
++    GHashTable *table;
++    pid_t child;
++    int status;
++
++    fixture_prepare(0, false);
++    g_assert_cmpint(fixture_acquire(), ==, 0);
++    g_assert_cmpint(fixture_register_park(), ==, 0);
++    fixture_bql = false;
++    table = plugin.id_ht;
++    plugin.id_ht = NULL;
++    memcpy(&before, &startup_source, sizeof(before));
++
++    child = fork();
++    g_assert_cmpint(child, >=, 0);
++    if (child == 0) {
++        assert_park_original_refused(fixture.ctx.id);
++        assert_park_original_refused(fixture.ctx.id + 1);
++        g_assert_cmpmem(&startup_source, sizeof(startup_source),
++                       &before, sizeof(before));
++        _exit(0);
++    }
++
++    g_assert_cmpint(waitpid(child, &status, 0), ==, child);
++    g_assert_true(WIFEXITED(status));
++    g_assert_cmpint(WEXITSTATUS(status), ==, 0);
++    g_assert_cmpmem(&startup_source, sizeof(startup_source),
++                   &before, sizeof(before));
++    plugin.id_ht = table;
++    fixture_bql = true;
++    assert_retained();
 +}
 +
 +static void scenario_park_retirement(void)
@@ -281751,6 +282033,9 @@ index 0000000000000000000000000000000000000000..785d21eb6602f04809e364a42347dc27
 +SOURCE_SCENARIO(park_invocation)
 +SOURCE_SCENARIO(park_foreign)
 +SOURCE_SCENARIO(park_process)
++SOURCE_SCENARIO(park_original_outside_callback)
++SOURCE_SCENARIO(park_original_foreign_thread)
++SOURCE_SCENARIO(park_original_foreign_process)
 +SOURCE_SCENARIO(park_retirement)
 +
 +SOURCE_SCENARIO(record_complete)
@@ -281912,6 +282197,9 @@ index 0000000000000000000000000000000000000000..785d21eb6602f04809e364a42347dc27
 +    REGISTER_SCENARIO(park_invocation);
 +    REGISTER_SCENARIO(park_foreign);
 +    REGISTER_SCENARIO(park_process);
++    REGISTER_SCENARIO(park_original_outside_callback);
++    REGISTER_SCENARIO(park_original_foreign_thread);
++    REGISTER_SCENARIO(park_original_foreign_process);
 +    REGISTER_SCENARIO(park_retirement);
 +    REGISTER_SCENARIO(record_complete);
 +    REGISTER_SCENARIO(record_malformed);
