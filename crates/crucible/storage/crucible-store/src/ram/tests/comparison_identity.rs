@@ -26,6 +26,10 @@ fn compare(
 
 #[test]
 fn same_id_comparison_authenticates_one_actual_object() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     let directory = tempfile::tempdir().unwrap();
     let store = store(directory.path(), RamStoreLimits::default());
     let retention = Retention::default();
@@ -74,6 +78,10 @@ fn same_id_comparison_authenticates_one_actual_object() {
 
 #[test]
 fn same_id_comparison_checks_second_reference_geometry_and_height_priority() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     let directory = tempfile::tempdir().unwrap();
     let store = store(directory.path(), RamStoreLimits::default());
     let retention = Retention::default();
@@ -127,6 +135,10 @@ fn same_id_comparison_checks_second_reference_geometry_and_height_priority() {
 
 #[test]
 fn different_id_comparison_authenticates_second_realization_for_equal_digest() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     let directory = tempfile::tempdir().unwrap();
     let store = store(directory.path(), RamStoreLimits::default());
     let retention = Retention::default();
@@ -157,6 +169,10 @@ fn different_id_comparison_authenticates_second_realization_for_equal_digest() {
 
 #[test]
 fn same_id_comparison_still_detects_corrupt_physical_realization() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     let directory = tempfile::tempdir().unwrap();
     let (store, quota) = admitted_store(directory.path(), RamStoreLimits::default());
     let retention = Retention::default();
@@ -206,6 +222,10 @@ fn same_id_comparison_still_detects_corrupt_physical_realization() {
 
 #[test]
 fn same_id_comparison_never_accepts_callback_poisoned_original() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     let directory = tempfile::tempdir().unwrap();
     let store = store(directory.path(), RamStoreLimits::default());
     let retention = Retention::default();

@@ -293,7 +293,12 @@ fn read_attempt<const AUTHENTICATE: bool>(
                 .get::<_, i64>(2)
                 .map_err(|source| database_error("read-canonical-sqlite-metadata", source))?;
             let length = u64::try_from(length).map_err(|_| StoreError::Corrupt { id })?;
-            check()?;
+            {
+                #[cfg(test)]
+                let _metadata =
+                    crate::content_store::sqlite::read_observation::Scope::metadata_row(row);
+                check()?;
+            }
             // The scalar admission consumes the same original response bank
             // before opening a body or reserving any Rust buffer capacity.
             let admit = admit.take().ok_or(StoreError::Unsupported {

@@ -128,6 +128,10 @@ fn assert_clean_read_scope(error: &RamStoreError) {
 
 #[test]
 fn transfer_task_preserves_first_validation_cleanup_and_sticky_same_work_retry() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     let directory = tempfile::tempdir().unwrap();
     let store = store(directory.path(), RamStoreLimits::default());
     let original = fixture_original(&store);
@@ -211,6 +215,10 @@ fn transfer_task_preserves_first_validation_cleanup_and_sticky_same_work_retry()
 
 #[test]
 fn transfer_task_never_exposes_completed_bytes_after_provider_or_incomplete_refusal() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     let directory = tempfile::tempdir().unwrap();
     let store = store(directory.path(), RamStoreLimits::default());
     let original = fixture_original(&store);
@@ -288,6 +296,10 @@ fn transfer_task_never_exposes_completed_bytes_after_provider_or_incomplete_refu
 
 #[test]
 fn failed_provider_cannot_erase_first_validation_or_retry_effects() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     let directory = tempfile::tempdir().unwrap();
     let store = store(directory.path(), RamStoreLimits::default());
     let original = fixture_original(&store);
@@ -356,6 +368,10 @@ fn failed_provider_cannot_erase_first_validation_or_retry_effects() {
 
 #[test]
 fn complete_read_never_overrides_later_provider_cleanup_or_incomplete_success() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     let directory = tempfile::tempdir().unwrap();
     let store = store(directory.path(), RamStoreLimits::default());
     let original = fixture_original(&store);
@@ -487,6 +503,10 @@ fn concrete_error_layout_preserves_both_existing_prepaid_extents() {
 
 #[test]
 fn pending_validation_and_complete_provider_failure_keep_original_retry_custody() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     let directory = tempfile::tempdir().unwrap();
     let (store, quota) = admitted_store(directory.path(), RamStoreLimits::default());
     let namespace = fixture_original(&store);
@@ -556,6 +576,10 @@ fn pending_validation_and_complete_provider_failure_keep_original_retry_custody(
 
 #[test]
 fn every_actual_callback_failure_keeps_category_and_original_sticky_custody() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     let directory = tempfile::tempdir().unwrap();
     let (store, quota) = admitted_store(directory.path(), RamStoreLimits::default());
     let original = fixture_original(&store);
@@ -648,6 +672,10 @@ fn every_actual_callback_failure_keeps_category_and_original_sticky_custody() {
 
 #[test]
 fn entry_and_after_success_original_refusals_remain_sticky_before_retry_effects() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     use crate::owned_decode::{DecodeAdmissionError, DecodeBudget};
 
     struct RevokingProvider<'a> {

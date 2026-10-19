@@ -35,7 +35,11 @@ impl SqliteBlobBackend {
                 super::super::checked_reader::check(original, boundary)?;
                 busy::healthy(&self.quarantined)
             };
-            let _staging = catalog::read_gate_with_boundary(&mut check)?;
+            let _staging = {
+                #[cfg(test)]
+                let _diagnostic = super::read_observation::Scope::diagnostic_admitted();
+                catalog::read_gate_with_boundary(&mut check)?
+            };
             let connection = loop {
                 check()?;
                 match self

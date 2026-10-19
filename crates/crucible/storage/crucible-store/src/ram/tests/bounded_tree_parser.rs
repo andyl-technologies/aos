@@ -54,6 +54,10 @@ fn assert_same_result(
 
 #[test]
 fn fixed_parser_matches_actual_leaf_branch_and_padding_records() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     let directory = tempfile::tempdir().unwrap();
     let store = store(directory.path(), RamStoreLimits::default());
     let retention = Retention::default();
@@ -121,6 +125,10 @@ fn frame(
 
 #[test]
 fn fixed_parser_preserves_legacy_malformed_priority_under_finite_originals() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     let directory = tempfile::tempdir().unwrap();
     let store = store(directory.path(), RamStoreLimits::default());
     let retention = Retention::default();
@@ -296,6 +304,10 @@ fn fixed_parser_preserves_legacy_malformed_priority_under_finite_originals() {
 
 #[test]
 fn shared_continuation_failure_exceeds_the_existing_validation_extent() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     use std::alloc::Layout;
     use std::convert::Infallible;
     use std::sync::atomic::AtomicUsize;

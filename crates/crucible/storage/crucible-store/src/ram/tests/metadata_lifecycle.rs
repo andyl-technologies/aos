@@ -648,6 +648,10 @@ fn transfer_object_clones_share_final_canonical_byte_custody() {
 
 #[test]
 fn receiver_refuses_an_oversized_page_before_assembly_allocation() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     use crucible_qemu_protocol::ram_transfer::{RamTransferControl, RamTransferMessage};
 
     let source_directory = tempfile::tempdir().unwrap();
@@ -704,7 +708,10 @@ fn receiver_refuses_an_oversized_page_before_assembly_allocation() {
             &mut || Ok(()),
         )
         .unwrap_err();
-    assert!(altered);
+    assert!(
+        altered,
+        "receiver refused before the oversized-page injection: {error:?}"
+    );
     assert!(matches!(
         error,
         RamStoreError::Invalid("transfer chunk identity or order")
@@ -714,6 +721,10 @@ fn receiver_refuses_an_oversized_page_before_assembly_allocation() {
 
 #[test]
 fn receiver_multichunk_scratch_reuses_the_original_bank_after_refusal() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     use crucible_qemu_protocol::ram_transfer::{RamTransferControl, RamTransferMessage};
 
     const RECEIVER_METADATA_BYTES: u64 = 64 * 1024 * 1024;

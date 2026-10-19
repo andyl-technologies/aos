@@ -25,6 +25,7 @@ mod comparison_identity;
 mod metadata_lifecycle;
 mod packed_volume;
 mod receiver_batch;
+mod sqlite_process;
 mod transfer_object;
 mod wire_state;
 
@@ -179,6 +180,10 @@ fn fixture_boundary(
 
 #[test]
 fn admitted_root_credit_survives_facades_and_last_shared_metadata_clone() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     let directory = tempfile::tempdir().unwrap();
     let (store, quota) = admitted_store(directory.path(), RamStoreLimits::default());
     let retention = Retention::default();
@@ -213,6 +218,10 @@ fn admitted_root_credit_survives_facades_and_last_shared_metadata_clone() {
 
 #[test]
 fn admitted_root_refuses_missing_authority_and_discovery_retains_its_credit() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     let directory = tempfile::tempdir().unwrap();
     let (store, quota) = admitted_store(directory.path(), RamStoreLimits::default());
     let retention = Retention::default();
@@ -280,6 +289,10 @@ fn patterned(_: &RegionDescriptor, index: u64, bytes: &mut [u8]) -> Result<(), R
 
 #[test]
 fn encoded_backing_bound_covers_four_unique_graphs_with_partial_regions() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     let directory = tempfile::tempdir().unwrap();
     let store = store(directory.path(), RamStoreLimits::default());
     let retention = Retention::default();
@@ -327,6 +340,10 @@ fn encoded_backing_bound_covers_four_unique_graphs_with_partial_regions() {
 
 #[test]
 fn lazy_lookup_proves_partial_pages_and_persistent_updates() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     let directory = tempfile::tempdir().unwrap();
     let store = store(directory.path(), RamStoreLimits::default());
     let retention = Retention::default();
@@ -415,6 +432,10 @@ fn lazy_lookup_proves_partial_pages_and_persistent_updates() {
 
 #[test]
 fn archive_wire_transfer_validates_repeated_and_changed_content() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     let source_directory = tempfile::tempdir().unwrap();
     let destination_directory = tempfile::tempdir().unwrap();
     let source = store(source_directory.path(), RamStoreLimits::default());
@@ -516,6 +537,10 @@ fn archive_wire_transfer_validates_repeated_and_changed_content() {
 
 #[test]
 fn absolute_wire_credits_are_idempotent_and_coordinates_do_not_authorize_other_objects() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     use crucible_qemu_protocol::ram_transfer::{
         RamTransferControl, RamTransferMessage, RamTransferNodeCoordinate,
     };
@@ -601,6 +626,10 @@ fn absolute_wire_credits_are_idempotent_and_coordinates_do_not_authorize_other_o
 
 #[test]
 fn corrupt_or_foreign_wire_chunk_never_publishes_a_destination_root() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     use crucible_qemu_protocol::ram_transfer::{RamTransferControl, RamTransferMessage};
     let source_directory = tempfile::tempdir().unwrap();
     let source = store(source_directory.path(), RamStoreLimits::default());
@@ -656,6 +685,10 @@ fn corrupt_or_foreign_wire_chunk_never_publishes_a_destination_root() {
 
 #[test]
 fn framed_transfer_operates_between_independent_socket_instances() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     use std::os::unix::net::UnixStream;
     use std::time::Duration;
 
@@ -734,6 +767,10 @@ fn framed_transfer_operates_between_independent_socket_instances() {
 
 #[test]
 fn inventory_walk_authenticates_actual_pages_under_borrowed_exclusive_authority() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     use crate::content_store::{MemoryRefBackend, RefStoreAdmin};
     let directory = tempfile::tempdir().unwrap();
     let source = store(directory.path(), RamStoreLimits::default());
@@ -803,6 +840,10 @@ fn inventory_walk_authenticates_actual_pages_under_borrowed_exclusive_authority(
 
 #[test]
 fn canceled_wire_transfer_leaves_root_unpublished_and_retries_from_actual_content() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     let source_directory = tempfile::tempdir().unwrap();
     let destination_directory = tempfile::tempdir().unwrap();
     let source = store(source_directory.path(), RamStoreLimits::default());
@@ -886,6 +927,10 @@ fn canceled_wire_transfer_leaves_root_unpublished_and_retries_from_actual_conten
 
 #[test]
 fn transfer_authenticates_existing_closure_and_copies_only_changed_content() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     let source_directory = tempfile::tempdir().unwrap();
     let destination_directory = tempfile::tempdir().unwrap();
     let source = store(source_directory.path(), RamStoreLimits::default());
@@ -980,6 +1025,10 @@ fn transfer_authenticates_existing_closure_and_copies_only_changed_content() {
 
 #[test]
 fn operation_budget_and_cancellation_do_not_publish_a_root() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     let directory = tempfile::tempdir().unwrap();
     let store = store(
         directory.path(),
@@ -1012,6 +1061,10 @@ fn operation_budget_and_cancellation_do_not_publish_a_root() {
 
 #[test]
 fn exact_scope_includes_immutable_images_but_execution_omits_them() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     let directory = tempfile::tempdir().unwrap();
     let store = store(directory.path(), RamStoreLimits::default());
     let topology = Topology::new(
@@ -1143,6 +1196,10 @@ fn first_page_object(store: &RamStore, root: &LeasedRamRoot) -> ContentId {
 
 #[test]
 fn destination_presence_hint_cannot_hide_missing_or_corrupt_actual_page() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     let source_directory = tempfile::tempdir().unwrap();
     let destination_directory = tempfile::tempdir().unwrap();
     let source = store(source_directory.path(), RamStoreLimits::default());
@@ -1201,6 +1258,10 @@ fn destination_presence_hint_cannot_hide_missing_or_corrupt_actual_page() {
 
 #[test]
 fn fallible_change_stream_cannot_publish_a_truncated_successor() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     let directory = tempfile::tempdir().unwrap();
     let store = store(directory.path(), RamStoreLimits::default());
     let retention = Retention::default();
@@ -1246,6 +1307,10 @@ fn fallible_change_stream_cannot_publish_a_truncated_successor() {
 
 #[test]
 fn logical_page_limit_is_rejected_before_reading_guest_bytes() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     let directory = tempfile::tempdir().unwrap();
     let store = store(
         directory.path(),
@@ -1276,6 +1341,10 @@ fn logical_page_limit_is_rejected_before_reading_guest_bytes() {
 
 #[test]
 fn equal_subtrees_prune_root_difference_traversal() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     let directory = tempfile::tempdir().unwrap();
     let store = store(directory.path(), RamStoreLimits::default());
     let retention = Retention::default();
@@ -1391,6 +1460,10 @@ impl ImmutableBlobBackend for OversizedBackend {
 
 #[test]
 fn oversized_ram_objects_are_rejected_before_opening_the_stream() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     let directory = tempfile::tempdir().unwrap();
     let quota = Arc::new(FixtureRamQuota(
         crate::content_store::test_resources::FixtureResourceBudget::new(128, 256 << 20),
@@ -1439,6 +1512,10 @@ fn oversized_ram_objects_are_rejected_before_opening_the_stream() {
 
 #[test]
 fn leased_root_clones_share_the_origin_metadata_allocation() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     let directory = tempfile::tempdir().unwrap();
     let store = store(directory.path(), RamStoreLimits::default());
     let retention = Retention::default();
@@ -1470,6 +1547,10 @@ fn leased_root_clones_share_the_origin_metadata_allocation() {
 
 #[test]
 fn shared_transfer_metadata_retains_its_origin_until_destination_reader_closes() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     let source_directory = tempfile::tempdir().unwrap();
     let destination_directory = tempfile::tempdir().unwrap();
     let source_store = store(source_directory.path(), RamStoreLimits::default());

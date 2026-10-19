@@ -26,16 +26,28 @@ impl RamRetention for IncompleteRetention {
 
 #[test]
 fn corrupt_catalog_never_persists_or_requests_a_child() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     catalog_fault(SourceFault::Catalog);
 }
 
 #[test]
 fn corrupt_child_discards_unpublished_catalog_without_publishing_root() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     catalog_fault(SourceFault::Page);
 }
 
 #[test]
 fn absent_child_discards_unpublished_catalog_without_claiming_closure() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     catalog_fault(SourceFault::MissingPage);
 }
 

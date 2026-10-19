@@ -114,6 +114,10 @@ fn emit_checkpoint(label: &str, store: &RamStore, root: &LeasedRamRoot) {
 
 #[test]
 fn persistent_ram_and_checkpoint_identities_match_selected_blake3_backend() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     let selected = selected_backend();
     let expected =
         std::env::var("CRUCIBLE_TEST_BLAKE3_BACKEND").unwrap_or_else(|_| selected.clone());

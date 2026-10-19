@@ -6,6 +6,10 @@ use std::collections::BTreeMap;
 
 #[test]
 fn checked_graph_adapters_capture_and_reopen_actual_ram_on_directory_and_sqlite() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     for directory_backend in [true, false] {
         let directory = tempfile::tempdir().unwrap();
         let quota = Arc::new(FixtureRamQuota(

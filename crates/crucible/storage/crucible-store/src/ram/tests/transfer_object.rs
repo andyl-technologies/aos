@@ -5,6 +5,10 @@ use crate::ram::codec::{TreeNode, decode_root_envelope, validate_page_envelope};
 
 #[test]
 fn transfer_root_and_page_encode_the_same_single_authenticated_envelope() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     let directory = tempfile::tempdir().unwrap();
     let store = store(directory.path(), RamStoreLimits::default());
     let original = fixture_original(&store);
@@ -64,6 +68,10 @@ fn transfer_root_and_page_encode_the_same_single_authenticated_envelope() {
 
 #[test]
 fn transfer_selected_root_and_page_reject_corrupt_physical_bytes() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     for coordinate in [
         RamObjectCoordinate::Root,
         RamObjectCoordinate::Catalog {
@@ -131,6 +139,10 @@ fn transfer_selected_root_and_page_reject_corrupt_physical_bytes() {
 
 #[test]
 fn transfer_selected_envelope_never_exposes_bytes_after_original_refusal() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     let directory = tempfile::tempdir().unwrap();
     let store = store(directory.path(), RamStoreLimits::default());
     let parent = fixture_original(&store);
@@ -198,6 +210,10 @@ fn transfer_selected_envelope_never_exposes_bytes_after_original_refusal() {
 
 #[test]
 fn transfer_catalog_reemission_matches_actual_canonical_roles_and_geometry() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     let directory = tempfile::tempdir().unwrap();
     let store = store(directory.path(), RamStoreLimits::default());
     let parent = fixture_original(&store);
@@ -253,6 +269,10 @@ fn transfer_catalog_reemission_matches_actual_canonical_roles_and_geometry() {
 
 #[test]
 fn transfer_catalog_generated_full_identity_rejects_changed_reference_or_child_roles() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     use crate::ram::codec::encode_validated_tree;
 
     let directory = tempfile::tempdir().unwrap();
@@ -316,6 +336,10 @@ fn transfer_catalog_generated_full_identity_rejects_changed_reference_or_child_r
 
 #[test]
 fn transfer_catalog_wrong_actual_role_refuses_before_generated_bytes() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     use crate::content_envelope::{ContentChild, ContentEnvelope};
     use crate::ram::codec::{TreeRef, encode_validated_tree};
 
@@ -394,6 +418,10 @@ fn transfer_catalog_wrong_actual_role_refuses_before_generated_bytes() {
 
 #[test]
 fn transfer_raw_corruption_precedes_an_unobserved_late_eof_refusal() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     for coordinate in [
         RamObjectCoordinate::Root,
         RamObjectCoordinate::Page {
@@ -500,6 +528,10 @@ fn transfer_raw_corruption_precedes_an_unobserved_late_eof_refusal() {
 
 #[test]
 fn transfer_typed_root_decode_waits_for_actual_eof_and_native_cleanup() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     let directory = tempfile::tempdir().unwrap();
     let store = store(directory.path(), RamStoreLimits::default());
     let original = fixture_original(&store);

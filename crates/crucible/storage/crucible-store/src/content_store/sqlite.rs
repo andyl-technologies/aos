@@ -33,6 +33,8 @@ mod bounded_read;
 pub(crate) use bounded_read::SqliteRamReadSession;
 mod checked_reader;
 mod process_heap;
+#[cfg(test)]
+mod read_observation;
 pub(super) use batch::busy::Accepted;
 pub use process_heap::{
     SqliteConnection, SqliteHeapAuthority, SqliteHeapError, SqliteHeapIssuer,

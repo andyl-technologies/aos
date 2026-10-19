@@ -281,7 +281,20 @@ pub(super) const CONTRACTS: &[Contract] = &[
             r#"let first = account.checked(&mut || { polls += 1; Err(RamStoreError::Canceled) }, |_, boundary| boundary(),).unwrap_err();"#,
             r#"drop(account);"#,
             r#"original.verify_live().unwrap();"#,
-            r#"for refused_poll in [2, 9]"#,
+            r#"for refuse_in_native_scope in [false, true]"#,
+            r#"let diagnostic = crate::content_store::SqliteBlobBackend::canonical_read_diagnostic_admitted_for_test();"#,
+            r#"let native_row = crate::content_store::SqliteBlobBackend::canonical_read_metadata_row_open_for_test();"#,
+            r#"let selected = if refuse_in_native_scope { native_row } else { diagnostic };"#,
+            r#"if selected { assert!(refused_poll.get().is_none(), ""); refused_poll.set(Some(polls.get())); charged_at_refusal.set(quota.0.usage().unwrap().1); Err(RamStoreError::Canceled) }"#,
+            r#"let refused_poll = refused_poll.get().expect("");"#,
+            r#"assert!(diagnostic_seen.get());"#,
+            r#"assert_eq!(native_row_seen.get(), refuse_in_native_scope);"#,
+            r#"assert!(!crate::content_store::SqliteBlobBackend::canonical_read_diagnostic_admitted_for_test());"#,
+            r#"assert!(!crate::content_store::SqliteBlobBackend::canonical_read_metadata_row_open_for_test());"#,
+            r#"if !refuse_in_native_scope"#,
+            r#"let RamStoreError::Store(StoreError::SqliteDiagnostic { source: diagnostic }) = source.storage_failure()"#,
+            r#"let StoreError::SqliteScope { source: scope } = diagnostic.failure()"#,
+            r#"scope.work_failure(), Some(StoreError::RamBoundary { .. })"#,
             r#"let response = operation.child().unwrap();"#,
             r#"let mut work = Work::new(store.limits, &operation, &mut boundary).unwrap();"#,
             r#"assert_eq!(polls.get(), refused_poll);"#,
@@ -359,12 +372,74 @@ pub(super) const CONTRACTS: &[Contract] = &[
                 ],
                 counts: &[(r#"pub(super) fn read_canonical("#, 1)],
             },
+            Companion {
+                path: "crates/crucible/storage/crucible-store/src/content_store/sqlite.rs",
+                required: &[r#"#[cfg(test)] mod read_observation;"#],
+                counts: &[(r#"mod read_observation;"#, 1)],
+            },
+            Companion {
+                path: "crates/crucible/storage/crucible-store/src/content_store/sqlite/bounded_read.rs",
+                required: &[
+                    r#"let credit = diagnostic::admit_for_single_record_query(original, &self.connection, busy::single_record::METADATA.len(),)?;
+                    diagnostic::retain_failure(credit, || {
+                        let mut check = || {
+                            super::super::checked_reader::check(original, boundary)?;
+                            busy::healthy(&self.quarantined)
+                        };
+                        let _staging = {
+                            #[cfg(test)]
+                            let _diagnostic = super::read_observation::Scope::diagnostic_admitted();
+                            catalog::read_gate_with_boundary(&mut check)?
+                        };"#,
+                ],
+                counts: &[(
+                    r#"super::read_observation::Scope::diagnostic_admitted()"#,
+                    1,
+                )],
+            },
+            Companion {
+                path: "crates/crucible/storage/crucible-store/src/content_store/sqlite/batch/busy/single_record.rs",
+                required: &[
+                    r#"let Some(row) = rows.next().map_err(|source| database_error("read-canonical-sqlite-metadata", source))? else { return Ok(None); };"#,
+                    r#"let length = u64::try_from(length).map_err(|_| StoreError::Corrupt { id })?;
+                    {
+                        #[cfg(test)]
+                        let _metadata = crate::content_store::sqlite::read_observation::Scope::metadata_row(row);
+                        check()?;
+                    }"#,
+                    r#"cleanup[1] = match rows.next()"#,
+                    r#"drop(rows); result"#,
+                    r#"cleanup[2] = statement.finalize().err();"#,
+                ],
+                counts: &[(
+                    r#"crate::content_store::sqlite::read_observation::Scope::metadata_row(row)"#,
+                    1,
+                )],
+            },
+            Companion {
+                path: "crates/crucible/storage/crucible-store/src/content_store/sqlite/read_observation.rs",
+                required: &[
+                    r#"std::thread_local! { static PHASE: Cell<Option<Phase>> = const { Cell::new(None) }; }"#,
+                    r#"pub(super) fn diagnostic_admitted() -> Self { Self::enter(Phase::DiagnosticAdmitted) }"#,
+                    r#"pub(super) fn metadata_row(_row: &rusqlite::Row<'_>) -> Self { Self::enter(Phase::MetadataRowOpen) }"#,
+                    r#"fn enter(phase: Phase) -> Self { Self { previous: PHASE.replace(Some(phase)), } }"#,
+                    r#"impl Drop for Scope { fn drop(&mut self) { PHASE.set(self.previous); } }"#,
+                    r#"pub(crate) fn canonical_read_diagnostic_admitted_for_test() -> bool { PHASE.get() == Some(Phase::DiagnosticAdmitted) }"#,
+                    r#"pub(crate) fn canonical_read_metadata_row_open_for_test() -> bool { PHASE.get() == Some(Phase::MetadataRowOpen) }"#,
+                ],
+                counts: &[
+                    (r#"previous: PHASE.replace(Some(phase)),"#, 1),
+                    (r#"PHASE.set("#, 1),
+                    (r#"PHASE.get()"#, 2),
+                ],
+            },
         ],
     },
 ];
 
 #[cfg(test)]
 mod tests {
+    use super::super::super::expression_offsets;
     use super::super::{mask_with_companions, pattern, read_companions};
     use super::*;
 
@@ -372,6 +447,21 @@ mod tests {
         let code = super::super::super::super::scrub_comments_and_strings(source);
         let masked = mask_with_companions(contract, &code, companions);
         super::super::super::super::flaky_escape_failures("unreviewed", "unreviewed", &masked)
+    }
+
+    // Uses the same boundary-qualified compact offset as the actual matcher,
+    // retaining source whitespace around the single mutated occurrence.
+    fn replace_occurrence(code: &str, expression: &str, occurrence: usize) -> String {
+        let offsets = code
+            .char_indices()
+            .filter(|(_, character)| !character.is_whitespace())
+            .flat_map(|(offset, character)| std::iter::repeat_n(offset, character.len_utf8()))
+            .collect::<Vec<_>>();
+        let start = offsets[occurrence];
+        let end = offsets[occurrence + expression.len() - 1] + 1;
+        let mut changed = code.to_owned();
+        changed.replace_range(start..end, " changed_original_census() ");
+        changed
     }
 
     #[test]
@@ -395,11 +485,38 @@ mod tests {
             }
             for (expression, count) in contract.expressions {
                 assert_eq!(
-                    compact.matches(&pattern(expression)).count(),
+                    expression_offsets(&code, &pattern(expression)).len(),
                     *count,
-                    "{}: {expression}",
+                    "{}: local expression census: {expression}",
                     contract.target
                 );
+            }
+            assert_eq!(
+                companions.len(),
+                contract.companions.len(),
+                "{}: companion source count",
+                contract.target,
+            );
+            for (binding, helper) in contract.companions.iter().zip(&companions) {
+                let helper = super::super::super::super::scrub_comments_and_strings(helper);
+                let compact = pattern(&helper);
+                for obligation in binding.required {
+                    assert!(
+                        compact.contains(&pattern(obligation)),
+                        "{}: companion {} missing obligation: {obligation}",
+                        contract.target,
+                        binding.path,
+                    );
+                }
+                for (expression, count) in binding.counts {
+                    assert_eq!(
+                        expression_offsets(&helper, &pattern(expression)).len(),
+                        *count,
+                        "{}: companion {} expression census: {expression}",
+                        contract.target,
+                        binding.path,
+                    );
+                }
             }
             let observed = findings(contract, &source, &companions);
             assert!(observed.is_empty(), "{}: {observed:?}", contract.target);
@@ -429,9 +546,65 @@ mod tests {
                     let mut changed = companions.clone();
                     let code = pattern(&changed[index]);
                     let obligation = pattern(obligation);
-                    assert!(code.contains(&obligation));
+                    assert!(
+                        code.contains(&obligation),
+                        "{}: companion {} mutation obligation: {obligation}",
+                        contract.target,
+                        binding.path,
+                    );
                     changed[index] = code.replace(&obligation, "changed_original_helper()");
-                    assert!(!findings(contract, &source, &changed).is_empty());
+                    assert!(
+                        !findings(contract, &source, &changed).is_empty(),
+                        "{}: omitted companion {} obligation was masked: {obligation}",
+                        contract.target,
+                        binding.path,
+                    );
+                }
+                let helper =
+                    super::super::super::super::scrub_comments_and_strings(&companions[index]);
+                for (expression, count) in binding.counts {
+                    let expression_pattern = pattern(expression);
+                    let occurrences = expression_offsets(&helper, &expression_pattern);
+                    assert_eq!(
+                        occurrences.len(),
+                        *count,
+                        "{}: companion {} mutation census: {expression}",
+                        contract.target,
+                        binding.path,
+                    );
+                    for occurrence in occurrences {
+                        let mut changed = companions.clone();
+                        changed[index] =
+                            replace_occurrence(&helper, &expression_pattern, occurrence);
+                        assert_eq!(
+                            mask_with_companions(contract, &code, &changed),
+                            code,
+                            "{}: omitted companion {} count remained satisfied: {expression}",
+                            contract.target,
+                            binding.path,
+                        );
+                        assert!(
+                            !findings(contract, &source, &changed).is_empty(),
+                            "{}: omitted companion {} counted occurrence was masked: {expression}",
+                            contract.target,
+                            binding.path,
+                        );
+                    }
+                    let mut changed = companions.clone();
+                    changed[index] = format!("{}\n{expression}", companions[index]);
+                    assert_eq!(
+                        mask_with_companions(contract, &code, &changed),
+                        code,
+                        "{}: extra companion {} count remained satisfied: {expression}",
+                        contract.target,
+                        binding.path,
+                    );
+                    assert!(
+                        !findings(contract, &source, &changed).is_empty(),
+                        "{}: extra companion {} counted occurrence was masked: {expression}",
+                        contract.target,
+                        binding.path,
+                    );
                 }
             }
         }

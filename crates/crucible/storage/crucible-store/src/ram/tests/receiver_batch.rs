@@ -135,6 +135,10 @@ fn sender(
 
 #[test]
 fn receiver_commits_bounded_groups_and_only_then_the_singleton_root() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     let source_directory = tempfile::tempdir().unwrap();
     let destination_directory = tempfile::tempdir().unwrap();
     let source = store(source_directory.path(), RamStoreLimits::default());
@@ -195,6 +199,10 @@ fn receiver_commits_bounded_groups_and_only_then_the_singleton_root() {
 
 #[test]
 fn receiver_pending_duplicate_is_durable_before_existing_read_and_not_requested_twice() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     let source_directory = tempfile::tempdir().unwrap();
     let destination_directory = tempfile::tempdir().unwrap();
     let source = store(source_directory.path(), RamStoreLimits::default());
@@ -250,6 +258,10 @@ fn receiver_pending_duplicate_is_durable_before_existing_read_and_not_requested_
 
 #[test]
 fn failed_second_group_keeps_durable_prefix_and_exact_storage_cause_without_root_or_ack() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     let source_directory = tempfile::tempdir().unwrap();
     let destination_directory = tempfile::tempdir().unwrap();
     let source = store(source_directory.path(), RamStoreLimits::default());
@@ -319,6 +331,10 @@ fn failed_second_group_keeps_durable_prefix_and_exact_storage_cause_without_root
 
 #[test]
 fn committed_batch_readback_preserves_cancellation_and_durable_prefix_without_root_or_ack() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     let source_directory = tempfile::tempdir().unwrap();
     let destination_directory = tempfile::tempdir().unwrap();
     let source = store(source_directory.path(), RamStoreLimits::default());
@@ -415,6 +431,10 @@ fn committed_batch_readback_preserves_cancellation_and_durable_prefix_without_ro
 
 #[test]
 fn cancellation_disposes_pending_credits_before_peer_cancel() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     let source_directory = tempfile::tempdir().unwrap();
     let destination_directory = tempfile::tempdir().unwrap();
     let source = store(source_directory.path(), RamStoreLimits::default());

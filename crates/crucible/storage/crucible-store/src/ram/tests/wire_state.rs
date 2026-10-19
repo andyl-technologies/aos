@@ -36,6 +36,10 @@ fn want(root: &LeasedRamRoot) -> RamTransferMessage {
 
 #[test]
 fn sender_retry_retains_the_actual_callback_cause_without_polling_or_reading() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     let directory = tempfile::tempdir().unwrap();
     let store = store(directory.path(), RamStoreLimits::default());
     let original = fixture_original(&store);
@@ -100,6 +104,10 @@ fn sender_retry_retains_the_actual_callback_cause_without_polling_or_reading() {
 
 #[test]
 fn sender_unwind_never_reconstructs_operation_slots_or_canonical_path() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     let directory = tempfile::tempdir().unwrap();
     let store = store(directory.path(), RamStoreLimits::default());
     let original = fixture_original(&store);
@@ -136,6 +144,10 @@ fn sender_unwind_never_reconstructs_operation_slots_or_canonical_path() {
 
 #[test]
 fn inline_terminal_frames_match_the_existing_portable_codec() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     for control in [
         RamTransferControl::Cancel,
         RamTransferControl::Canceled,
@@ -166,6 +178,10 @@ fn inline_terminal_frames_match_the_existing_portable_codec() {
 
 #[test]
 fn checked_entry_marker_retains_canceled_and_the_same_failed_operation() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
     let directory = tempfile::tempdir().unwrap();
     let store = store(directory.path(), RamStoreLimits::default());
     let original = fixture_original(&store);
@@ -212,7 +228,11 @@ fn checked_entry_marker_retains_canceled_and_the_same_failed_operation() {
 
 #[test]
 fn canonical_boundary_closes_only_unused_direct_marker_diagnostics() {
-    for refused_poll in [2, 9] {
+    if sqlite_process::isolated() {
+        return;
+    }
+
+    for refuse_in_native_scope in [false, true] {
         let directory = tempfile::tempdir().unwrap();
         let (store, quota) = admitted_store(directory.path(), RamStoreLimits::default());
         let original = fixture_original(&store);
@@ -229,10 +249,31 @@ fn canonical_boundary_closes_only_unused_direct_marker_diagnostics() {
         let operation = original.child().unwrap();
         let response = operation.child().unwrap();
         let polls = std::cell::Cell::new(0);
+        let refused_poll = std::cell::Cell::new(None);
+        let diagnostic_seen = std::cell::Cell::new(false);
+        let native_row_seen = std::cell::Cell::new(false);
         let charged_at_refusal = std::cell::Cell::new(0);
         let mut boundary = || {
             polls.set(polls.get() + 1);
-            if polls.get() == refused_poll {
+            let diagnostic =
+                crate::content_store::SqliteBlobBackend::canonical_read_diagnostic_admitted_for_test();
+            let native_row =
+                crate::content_store::SqliteBlobBackend::canonical_read_metadata_row_open_for_test(
+                );
+            diagnostic_seen.set(diagnostic_seen.get() || diagnostic);
+            native_row_seen.set(native_row_seen.get() || native_row);
+
+            let selected = if refuse_in_native_scope {
+                native_row
+            } else {
+                diagnostic
+            };
+            if selected {
+                assert!(
+                    refused_poll.get().is_none(),
+                    "a refused callback cannot run again"
+                );
+                refused_poll.set(Some(polls.get()));
                 charged_at_refusal.set(quota.0.usage().unwrap().1);
                 Err(RamStoreError::Canceled)
             } else {
@@ -256,9 +297,20 @@ fn canonical_boundary_closes_only_unused_direct_marker_diagnostics() {
             source.first_boundary(),
             Some(RamStoreError::Canceled)
         ));
+        let refused_poll = refused_poll
+            .get()
+            .expect("the selected actual read phase must run");
         assert_eq!(polls.get(), refused_poll);
+        assert!(diagnostic_seen.get());
+        assert_eq!(native_row_seen.get(), refuse_in_native_scope);
+        assert!(
+            !crate::content_store::SqliteBlobBackend::canonical_read_diagnostic_admitted_for_test()
+        );
+        assert!(
+            !crate::content_store::SqliteBlobBackend::canonical_read_metadata_row_open_for_test()
+        );
         assert!(charged_at_refusal.get() >= baseline + 18 * (8 << 20));
-        if refused_poll == 2 {
+        if !refuse_in_native_scope {
             assert!(matches!(
                 source.storage_failure(),
                 RamStoreError::Store(StoreError::RamBoundary { .. })
