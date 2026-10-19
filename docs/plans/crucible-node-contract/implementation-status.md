@@ -20,8 +20,8 @@ fourteen-file successor adds an independently funded immutable first bank and
 movable second-pass state around the existing second-pass engine. These
 components remain disconnected from
 the live Source18 route; they grant no Initial, Recipe or native permission.
-The production application-target gate below qualifies `751d8331cf` and needs
-a refresh after this SDK change.
+The production application-target refresh below passes for `4fbaa7eb15`,
+including these receive components.
 
 `23f0513b98` adds the guarded flat literal-state codec. It preserves literal
 keys, full integers and floating-point representations, retains failed prefixes,
@@ -38,12 +38,12 @@ preserves its first error, and uses the existing initial graph precredit walk.
 | SDK receive controls | All 55 targeted controls pass with ordinary Serde JSON in 0.01 seconds, including seven owning-first and twelve owning-next controls. Both complete suites also execute all 55 controls. |
 | SDK Provider regression | Each complete suite passes 1,551 tests with zero failures and fifteen existing ignores: 11.64 seconds for ordinary Serde JSON and 12.65 seconds with raw values enabled. |
 | Prior runtime checking | The thirteen-file runtime accounting correction passes six-crate all-feature/all-target checking in 1 minute 28 seconds and targeted formatting. |
-| Application-target compilation checkpoint | Passes for `751d8331cf`: 167 rebuilt test artifacts across 48 application packages, including 69 integration targets. All 7,805 captured source files and modes match that commit. This gate executes no tests; the SDK refresh is pending. |
+| Application-target compilation checkpoint | Passes for `4fbaa7eb15`: 167 rebuilt test artifacts across 48 application packages, including 69 integration targets, in 14 minutes 1 second. All 7,840 captured source files and modes match that commit. This gate executes no tests. |
 | Runtime correction library checkpoint | All four unfiltered libraries pass: Core 1,967, Daemon 1,504, Provider 1,496 and Contract twelve, totaling 4,979 with zero failures. Existing ignores remain 33/162/15/1. Ten focused Host attachment controls also pass, including both new accounting controls. |
 | Current test compilation | Standard four-library compilation passes in 4 minutes 2 seconds. Assertions, overflow checks and default stack remain enabled. |
 | Earlier startup/reclamation pair | Baseline reaches the fifteen-minute limit during inactive-runtime construction; optimized construction finishes, then its recheck refuses after 641.39 seconds. Normal retirement and child reclamation pass. |
 | Current startup/reclamation control | Native78 passes in 678.05 seconds, including inactive-runtime recheck, the attached actor, exact/one-byte-short whole-holder census, destination assertions, retirement and child reclamation. Full native preservation remains unqualified. |
-| Outstanding qualification | The SDK application-target refresh, full preservation, strict lint, ABI and license gates remain pending. |
+| Outstanding qualification | Full preservation, strict lint, ABI and license gates remain pending. |
 
 One matched pair reaches the same inactive-runtime construction milestone in
 approximately 624 versus 364 seconds (41.6% less time). Only the three currentness
@@ -218,7 +218,27 @@ set. This checkpoint has no dependency on subsequent Core changes.
 
 ### Application compilation
 
-The current refresh passes for `751d8331cf`. All 167 test artifacts freshly
+The current refresh passes for `4fbaa7eb15`, including all 37 final SDK receive
+files. All 167 test artifacts freshly compile across the 48 selected application
+packages, including 69 integration targets, in 14 minutes 1 second after
+prerequisite builds. Independent review matches all 7,840 captured source files
+and file modes to the commit, checks the normalized modes of 1,323 directories,
+and verifies the registered output, successful compiler completion and installed
+compiler records. The artifacts
+comprise 45 library targets, 53 binary targets and 69 integration targets. Each
+uses opt-level s, no debug information, and enabled assertions and overflow
+checks. Provider is a non-test dependency with no features selected;
+Serde JSON 1.0.150 has alloc/default/raw_value/std through dependency unification.
+This differs from the separate ordinary-Serde component control run.
+
+All three Core debug paths are captured, including the integration-test source;
+the gate compiles no Core or Provider test target. Core is a non-test dependency
+with default and test-support features, without test-double. Session and Daemon
+are excluded from this source and compiler slice. The installed output retains
+compiler metadata rather than test executables. This gate executes no tests and
+gives no native runtime, preservation or Linux-performance verdict.
+
+The earlier refresh passes for `751d8331cf`. All 167 test artifacts freshly
 compile across the 48 selected application packages, including 69 integration
 targets, in 10 minutes 3 seconds after prerequisite builds. Independent review
 matches all 7,805 captured source files and modes to the commit and verifies
