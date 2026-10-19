@@ -95,11 +95,33 @@ def check_transport(image, source):
                 "publisher transport source/profile/ELF mismatch: " + name)
 
     libraries = identity.get("copied_runtime_libraries", {})
-    require(libraries and set(libraries) == {path.name for path in (image / "lib").iterdir()},
+    require(isinstance(libraries, dict)
+            and set(libraries) == {path.name for path in (image / "lib").iterdir()},
             "publisher transport runtime inventory mismatch")
     for name, digest in libraries.items():
         require(pathlib.Path(name).name == name and sha256(image / "lib" / name) == digest,
                 "publisher transport runtime bytes changed")
+
+    # Static Rust linkage may require no copied target libraries. Resolve every
+    # actual DT_NEEDED edge instead of using a nonempty copy list as evidence.
+    # Store dependencies remain immutable AOS inputs; no host fallback is used.
+    sys.dont_write_bytecode = True
+    sys.path.insert(0, str(source / "tests/terrane"))
+    from native_sdk_test_image import runtime_closure
+
+    directories = [pathlib.Path(value) for value in identity["runtime_library_path"].split(":")]
+    require(directories and directories[0] == image / "lib"
+            and all(path.is_absolute() and path.resolve().is_relative_to("/nix/store")
+                    for path in directories), "publisher transport runtime search escaped the store")
+    reached = {}
+    for name in artifacts:
+        copied, stores = runtime_closure(image / "libexec" / name, directories, image)
+        require(set(stores) <= set(directories), "publisher transport has an undeclared runtime search")
+        for library, path in copied.items():
+            require(sha256(path) == libraries.get(library),
+                    "publisher transport resolved another copied runtime library")
+            reached[library] = sha256(path)
+    require(reached == libraries, "publisher transport retained an unreachable runtime library")
 
     evidence = identity.get("tests", {})
     require(set(evidence) == {*TRANSPORT_TARGETS, "fresh-process-fixture"},
