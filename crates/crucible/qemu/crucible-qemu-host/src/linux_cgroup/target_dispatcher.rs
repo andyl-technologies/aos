@@ -6,7 +6,9 @@
 
 use super::*;
 use crate::linux_attempt_host::TargetWatcherOriginal;
-use crucible_host_resources::host_services::process_birth::AuthenticatedTargetDispatcherPurpose;
+use crucible_host_resources::host_services::process_birth::{
+    AuthenticatedTargetDispatcherPurpose, ServiceBirthError,
+};
 use crucible_host_resources::host_supervision::HostOperationGuard;
 use rustix::event::epoll;
 use std::sync::atomic::AtomicBool;
@@ -69,7 +71,62 @@ pub(crate) struct TargetDispatcher {
     cleanup: Option<Arc<HostOperationGuard>>,
     phase: WorkerPhase,
     worker_panic: Mutex<Option<Box<dyn std::any::Any + Send>>>,
+    startup_history: DispatcherStartupHistory,
     path: PathBuf,
+}
+
+/// Keeps actual startup and independent saved-Preparation failures in the payer.
+#[derive(Default)]
+struct DispatcherStartupHistory {
+    first: Option<DispatcherStartupFailure>,
+    post: Option<DispatcherStartupFailure>,
+}
+
+/// Preserves startup authority and allocation failures before diagnostic rendering.
+#[derive(Debug)]
+enum DispatcherStartupFailure {
+    Original(ServiceBirthError),
+    Allocation(std::collections::TryReserveError),
+    Custody(&'static str),
+}
+
+impl std::fmt::Display for DispatcherStartupFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Original(source) => write!(formatter, "{source}"),
+            Self::Allocation(source) => write!(formatter, "{source}"),
+            Self::Custody(message) => formatter.write_str(message),
+        }
+    }
+}
+
+impl DispatcherStartupHistory {
+    fn observe(
+        &mut self,
+        started: Result<(), DispatcherStartupFailure>,
+        post: impl FnOnce() -> Result<(), DispatcherStartupFailure>,
+    ) {
+        // Keep the actual first outcome before the independent observation.
+        self.first = started.err();
+        self.post = post().err();
+    }
+
+    fn has_failure(&self) -> bool {
+        self.first.is_some() || self.post.is_some()
+    }
+}
+
+impl std::fmt::Display for DispatcherStartupHistory {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match (&self.first, &self.post) {
+            (Some(first), Some(post)) => {
+                write!(formatter, "{first}; independent startup post: {post}")
+            }
+            (Some(first), None) => write!(formatter, "{first}"),
+            (None, Some(post)) => write!(formatter, "{post}"),
+            (None, None) => Ok(()),
+        }
+    }
 }
 
 /// Borrows one actual control-return slot under an unforgeable local epoch.
@@ -160,6 +217,7 @@ impl TargetDispatcher {
             cleanup: None,
             phase: WorkerPhase::Reserved,
             worker_panic: Mutex::new(None),
+            startup_history: DispatcherStartupHistory::default(),
             path: PathBuf::from("/"),
         }
     }
@@ -308,53 +366,51 @@ impl TargetDispatcher {
         self.worker = Some(worker);
         // EventData is intentionally thread-local. Only its paid scalar
         // geometry crosses spawn; startup waits for the actual allocation.
-        let started = self.wait_for_worker_startup(&root.path);
-        let post = self
-            .purpose
-            .as_ref()
-            .ok_or_else(|| failure(&root.path, "Target dispatcher payer is absent"))?
-            .startup_wait_slice()
-            .map_err(|source| failure(&root.path, source));
-        self.purpose
-            .as_mut()
-            .ok_or_else(|| failure(&root.path, "Target dispatcher payer is absent"))?
-            .release_startup_observation();
-        started?;
-        post?;
+        let started = self.wait_for_worker_startup();
+        let purpose = self.purpose.as_mut();
+        self.startup_history.observe(started, || {
+            purpose
+                .as_ref()
+                .ok_or(DispatcherStartupFailure::Custody(
+                    "Target dispatcher payer is absent",
+                ))?
+                .startup_wait_slice()
+                .map(|_| ())
+                .map_err(DispatcherStartupFailure::Original)
+        });
+        if let Some(purpose) = purpose {
+            purpose.release_startup_observation();
+        }
+        self.report_retirement_history()?;
         self.phase = WorkerPhase::Running;
         self.failed = false;
         Ok(())
     }
 
     /// Borrows the actual saved Target Preparation until its worker is ready.
-    fn wait_for_worker_startup(&self, path: &Path) -> Result<(), LinuxQemuCgroupError> {
+    fn wait_for_worker_startup(&self) -> Result<(), DispatcherStartupFailure> {
         loop {
             let slice = self
                 .purpose
                 .as_ref()
-                .ok_or_else(|| failure(path, "Target dispatcher payer is absent"))?
+                .ok_or(DispatcherStartupFailure::Custody(
+                    "Target dispatcher payer is absent",
+                ))?
                 .startup_wait_slice()
-                .map_err(|source| failure(path, source))?;
+                .map_err(DispatcherStartupFailure::Original)?;
             let state = self
                 .state
                 .as_ref()
-                .ok_or_else(|| failure(path, "Target dispatcher state is absent"))?;
-            {
-                let startup = state
-                    .startup
-                    .lock()
-                    .map_err(|_| failure(path, "Target worker startup custody is poisoned"))?;
-                match startup.as_ref() {
-                    Some(Ok(())) => return Ok(()),
-                    Some(Err(source)) => return Err(failure(path, source)),
-                    None => {}
-                }
+                .ok_or(DispatcherStartupFailure::Custody(
+                    "Target dispatcher state is absent",
+                ))?;
+            if worker_startup_ready(state)? {
+                return Ok(());
             }
             if state.worker_exited.load(Ordering::Acquire)
                 || self.worker.as_ref().is_none_or(JoinHandle::is_finished)
             {
-                return Err(failure(
-                    path,
+                return Err(DispatcherStartupFailure::Custody(
                     "Target worker exited before startup acknowledgement",
                 ));
             }
@@ -522,7 +578,21 @@ impl TargetDispatcher {
     }
 
     fn report_retirement_history(&mut self) -> Result<(), LinuxQemuCgroupError> {
-        if self.worker_panic().is_some() {
+        let panicked = self.worker_panic().is_some();
+        if self.startup_history.has_failure() {
+            return Err(if panicked {
+                failure(
+                    &self.path,
+                    format_args!(
+                        "{}; Target dispatcher physically joined after worker panic",
+                        self.startup_history,
+                    ),
+                )
+            } else {
+                failure(&self.path, &self.startup_history)
+            });
+        }
+        if panicked {
             return Err(failure(
                 &self.path,
                 "Target dispatcher physically joined after worker panic",
@@ -743,6 +813,18 @@ fn return_job(state: &DispatcherState, index: usize, entry: &mut Option<RunningJ
         let _notice = wake(&control.cancellation_event);
     }
     true
+}
+
+/// Reads the worker's actual once-published allocation outcome.
+fn worker_startup_ready(state: &DispatcherState) -> Result<bool, DispatcherStartupFailure> {
+    let startup = state.startup.lock().map_err(|_| {
+        DispatcherStartupFailure::Custody("Target worker startup custody is poisoned")
+    })?;
+    match startup.as_ref() {
+        Some(Ok(())) => Ok(true),
+        Some(Err(source)) => Err(DispatcherStartupFailure::Allocation(source.clone())),
+        None => Ok(false),
+    }
 }
 
 fn run(state: Arc<DispatcherState>, event_capacity: usize) {
