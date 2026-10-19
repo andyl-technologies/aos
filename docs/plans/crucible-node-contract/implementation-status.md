@@ -25,7 +25,8 @@ preserves its first error, and uses the existing initial graph precredit walk.
 | Current library runtime | All four unfiltered libraries pass: Core 1,965, Daemon 1,498, Provider 1,496 and Contract twelve, totaling 4,971. All seventeen new codec controls pass. Existing ignores remain 33/162/15/1. |
 | Current test compilation | Standard four-library compilation passes in 3 minutes 4 seconds after cleaning and rebuilding this task's Provider artifacts. Assertions, overflow checks and default stack remain enabled. |
 | Earlier startup/reclamation pair | Baseline reaches the fifteen-minute limit during inactive-runtime construction; optimized construction finishes, then its recheck refuses after 641.39 seconds. Normal retirement and child reclamation pass. |
-| Outstanding qualification | The attached-owner native assertions, full preservation, strict lint, ABI and license gates remain pending. |
+| Current startup/reclamation control | Native75 fails at inactive-runtime recheck after 667.18 seconds; Native76 identifies an 18,485,990-byte excess over the originally quoted peak and fails after 684.65 seconds. Both complete normal retirement and child reclamation. Full native preservation remains unqualified. |
+| Outstanding qualification | The refused native resource calculation, complete attached-owner assertions, full preservation, strict lint, ABI and license gates remain pending. |
 
 One matched pair reaches the same inactive-runtime construction milestone in
 approximately 624 versus 364 seconds (41.6% less time). Only the three currentness
@@ -36,9 +37,15 @@ This is a partial startup-test measurement, not a completed preservation control
 or Linux-boot result. The optimized recheck reports `UnsupportedFacet`; source
 review finds that an inapplicable dormant fallback masks its first census error.
 Two reviewed repairs select the census from actual actor custody and use the initial
-graph precredit walk. They pass checking and the unfiltered library suites but await the ordinary
-native control; the original error and its actual owning path still require
-diagnosis.
+graph precredit walk. They pass checking and the unfiltered library suites. The ordinary Native75
+control then exposes the original `ResourceLimit` at inactive-runtime recheck
+after 667.18 seconds. Retirement and child reclamation complete. The diagnostic-only
+Native76 follow-up passes standard four-library test compilation and reaches the
+same refusal after 684.65 seconds. Actual requested storage is 3,499,478,788 bytes
+against the original 3,480,992,798-byte peak, a gap of 18,485,990 bytes (17.63 MiB).
+The unchanged 4 GiB byte policy and 128-descriptor policy are satisfied; actual
+descriptors total 67. Retirement and child reclamation complete. The prospective
+quote requires correction; no resource ceiling or timeout increase is needed.
 
 The earlier diagnostic run timed out after fifteen minutes. Its nine read/hash stack observations
 and 2.957 TB of read accounting are diagnostic evidence, not statistical CPU

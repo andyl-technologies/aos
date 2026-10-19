@@ -328,9 +328,42 @@ impl CompleteOriginalRuntimeConstructionMember {
         let actual = plan
             .0
             .authority
-            .authenticate_original_runtime_construction(&plan.evidence(), &scope, &self.policy)?;
-        let (peak, _) = observe(&scope, self.policy, actual, true)?;
+            .authenticate_original_runtime_construction(&plan.evidence(), &scope, &self.policy)
+            .inspect_err(|error| {
+                if cfg!(feature = "test-support") && matches!(error, RuntimeError::ResourceLimit) {
+                    use std::io::Write;
+
+                    let _ = writeln!(
+                        std::io::stderr().lock(),
+                        "native control: runtime {:?} holder resource recheck refused",
+                        self.phase,
+                    );
+                }
+            })?;
+        let (peak, descriptors) =
+            observe(&scope, self.policy, actual, true).inspect_err(|error| {
+                if cfg!(feature = "test-support") && matches!(error, RuntimeError::ResourceLimit) {
+                    use std::io::Write;
+
+                    let _ = writeln!(
+                        std::io::stderr().lock(),
+                        "native control: runtime {:?} resource observation refused: policy={:?} storage={actual:?}",
+                        self.phase, self.policy,
+                    );
+                }
+            })?;
         if peak > self.requested_peak {
+            if cfg!(feature = "test-support") {
+                use std::io::Write;
+
+                let _ = writeln!(
+                    std::io::stderr().lock(),
+                    "native control: runtime {:?} exceeds original peak: actual={peak} admitted={} descriptors={descriptors} policy={:?} storage={actual:?}",
+                    self.phase,
+                    self.requested_peak,
+                    self.policy,
+                );
+            }
             return Err(RuntimeError::ResourceLimit);
         }
         // No arbitrary callback follows this terminal original-identity fence.
