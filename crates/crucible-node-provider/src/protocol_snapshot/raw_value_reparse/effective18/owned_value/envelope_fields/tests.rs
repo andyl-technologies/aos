@@ -98,7 +98,7 @@ fn exact_error_prefix_is_retained_and_censused_while_short_rows_cannot_visit_it(
     let owner = output.as_ref().unwrap();
     assert_observed_failure(owner);
     assert_eq!(owner.cuts.len(), 1);
-    assert!(owner.cuts[0].attempt.as_ref().unwrap().complete);
+    assert!(owner.cuts[0].attempt.as_ref().unwrap().state.complete);
     assert!(owner.cuts.capacity() >= exact.cuts);
 
     let mut short_retained = exact;
@@ -146,7 +146,7 @@ fn failed_scalar_reason_is_preserved_and_counted_with_the_same_flat_output() {
     assert!(owner.failed);
     assert!(!owner.complete);
     assert_eq!(owner.cuts.len(), 1);
-    assert!(owner.cuts[0].attempt.as_ref().unwrap().complete);
+    assert!(owner.cuts[0].attempt.as_ref().unwrap().state.complete);
     assert_eq!(
         owner.census_data(),
         EnvelopeFieldsCensus18Data::Observed {
@@ -220,8 +220,8 @@ fn deep_flat_body_pass_survives_later_unknown_field_and_refuses_retry() {
     assert_observed_failure(owner);
     assert_eq!(owner.cuts.len(), 1);
     let child = owner.cuts[0].attempt.as_ref().unwrap();
-    assert!(child.complete);
-    if matches!(child.mode, Some(RawMode::Reparse)) {
+    assert!(child.state.complete);
+    if matches!(child.state.mode, Some(RawMode::Reparse)) {
         assert!(child.maximum_intermediate_depth_data() >= 80);
     }
     let retained = owner.retained_requested_storage_data(usize::MAX).unwrap();

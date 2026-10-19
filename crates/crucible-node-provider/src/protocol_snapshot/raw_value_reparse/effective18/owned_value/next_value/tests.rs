@@ -120,7 +120,7 @@ fn deep_child_is_rooted_flat_before_a_late_extra_key_error_and_retry_cannot_clea
     let result = NativeImport18NextValuePassAttemptData::read_into_data(input, &row, &mut output);
     let owner = output.as_ref().unwrap();
     assert_censused(owner);
-    if matches!(prior.mode, Some(RawMode::Reparse)) {
+    if matches!(prior.state.mode, Some(RawMode::Reparse)) {
         assert!(result.is_err());
         assert!(owner.failed && !owner.complete);
         assert_eq!(owner.reparses.len(), 1);
@@ -152,7 +152,7 @@ fn actual_completed_text_child_is_not_fed_back_through_an_extra_owned_pass() {
     let row = quote(input);
     let mut output = None;
     let result = NativeImport18NextValuePassAttemptData::read_into_data(input, &row, &mut output);
-    if !matches!(prior.mode, Some(RawMode::Reparse)) {
+    if !matches!(prior.state.mode, Some(RawMode::Reparse)) {
         assert!(result.is_ok());
         return;
     }
@@ -353,9 +353,9 @@ fn immutable_first_row_still_rejects_an_equal_foreign_raw_bank() {
         .is_err()
     );
     let failed = output.as_ref().unwrap();
-    assert!(failed.failed && !failed.complete);
+    assert!(failed.state.failed && !failed.state.complete);
     assert!(failed.completed_data(&equal, &equal.value).is_err());
-    assert_eq!(failed.reparses.capacity(), 0);
+    assert_eq!(failed.state.reparses.capacity(), 0);
     assert!(failed.retained_requested_storage_data(usize::MAX).unwrap() > 0);
 }
 

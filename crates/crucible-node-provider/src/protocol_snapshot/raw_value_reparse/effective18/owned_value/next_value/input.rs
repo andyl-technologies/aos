@@ -116,10 +116,10 @@ impl<'a> Loans<'a> {
 
     pub(super) fn validate_data(self) -> Result<(), ProviderError> {
         let first = self.first;
-        if !first.started
-            || first.failed
-            || !first.complete
-            || first.mode.is_none()
+        if !first.state.started
+            || first.state.failed
+            || !first.state.complete
+            || first.state.mode.is_none()
             || !std::ptr::eq(first.row.raw_resource_data(), self.raw)
         {
             return Err(invalid());
@@ -370,7 +370,7 @@ impl<'a> NativeImport18NextValueInputData<'a> {
         while raw.next_data()?.is_some() {
             population = add(population, 1)?;
         }
-        for child in &self.selected.loans.first.reparses {
+        for child in &self.selected.loans.first.state.reparses {
             let child = child.attempt.as_ref().ok_or_else(invalid)?;
             if child.failed || !child.complete {
                 return Err(invalid());

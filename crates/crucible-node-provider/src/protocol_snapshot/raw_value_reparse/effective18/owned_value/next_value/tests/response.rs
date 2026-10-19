@@ -137,7 +137,7 @@ fn canonical_body_refusal_precedes_any_second_pass_on_a_real_deep_first_result()
     let value = first
         .completed_cut_data(&raw, EnvelopeField18Data::Body, member, input)
         .unwrap();
-    if matches!(value.boundary_data().mode, Some(RawMode::Reparse)) {
+    if matches!(value.boundary_data().state.mode, Some(RawMode::Reparse)) {
         assert!(result.is_err());
         let cursor = cursor.as_ref().unwrap();
         assert_eq!(cursor.state_data(), (true, false, false));

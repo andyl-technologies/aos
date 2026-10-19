@@ -142,7 +142,7 @@ impl<'bank> NativeImport18NextValuePassAttemptData<'bank> {
         }
         // This is the actual fixed probe result retained by this same completed
         // preceding owner, not a caller Boolean or a second feature assumption.
-        self.mode = input.selected.loans.first.mode;
+        self.mode = input.selected.loans.first.state.mode;
         let mut source = walk::Walk::new_data(input, row.prewalk.population)?;
         while let Some((value, depth)) = source.next_data()? {
             self.maximum_intermediate_depth = self.maximum_intermediate_depth.max(depth);

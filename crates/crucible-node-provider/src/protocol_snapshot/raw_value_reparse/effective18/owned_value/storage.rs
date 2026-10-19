@@ -106,6 +106,7 @@ impl<'bank> NativeImport18OwnedValuePassConstructionData<'bank> {
         let (probe_parser, probe_scratch) = geometry::parser_storage_data(RAW_PROBE.len())?;
         let probe_transient = mul(2, add(probe.value_dom_requested_bytes, probe_parser)?)?;
         let initializer = sum(&[
+            size_of::<state::FirstPassStateData>() * 2,
             size_of::<NativeImport18OwnedValuePassAttemptData<'static>>(),
             size_of::<Option<NativeImport18OwnedValuePassAttemptData<'static>>>(),
             size_of::<Vec<Reparse>>(),
@@ -176,7 +177,7 @@ impl<'bank> NativeImport18OwnedValuePassConstructionData<'bank> {
         // The returned immutable bank loan binds content lifetime; comparing
         // its address establishes membership and supplies no authority.
         let raw_resource = size_of::<&Self>() + size_of::<&RetainedFrame>();
-        raw_resource + walk::counter_scratch_data()
+        raw_resource + state::FirstPassStateData::counter_scratch_data() + walk::counter_scratch_data()
             // Both quote walkers coexist with the fixed initializer output.
             + size_of::<walk::Walk<'static>>() * 2
             + view::counter_scratch_data()

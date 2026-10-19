@@ -37,9 +37,21 @@ pub(crate) use next_value::{
     NativeImport18ResponseValueCutLocationData,
 };
 
+mod owning_first;
+mod state;
+mod state_view;
+
 mod storage;
 mod view;
 mod walk;
+pub(crate) use owning_first::{
+    NativeImport18OwningFirstAttemptData, NativeImport18OwningFirstCensusData,
+    NativeImport18OwningFirstConstructionData,
+};
+pub(crate) use state_view::{
+    NativeImport18FirstFlatArrayData, NativeImport18FirstFlatKindData,
+    NativeImport18FirstFlatObjectData, NativeImport18FirstFlatViewData,
+};
 pub(crate) use storage::NativeImport18OwnedValuePassConstructionData;
 pub(crate) use view::{
     NativeImport18OwnedValuePassArrayData, NativeImport18OwnedValuePassKindData,
@@ -58,14 +70,8 @@ struct Reparse {
 /// The retained construction row immutably borrows the actual raw bank and
 /// selected subtree, so completion cannot observe same-address replacement.
 pub(crate) struct NativeImport18OwnedValuePassAttemptData<'bank> {
-    started: bool,
-    failed: bool,
-    complete: bool,
     row: NativeImport18OwnedValuePassConstructionData<'bank>,
-    mode: Option<RawMode>,
-    reparses: Vec<Reparse>,
-    lookup: BTreeMap<usize, usize>,
-    maximum_intermediate_depth: usize,
+    state: state::FirstPassStateData,
 }
 
 impl<'bank> NativeImport18OwnedValuePassAttemptData<'bank> {
@@ -87,14 +93,8 @@ impl<'bank> NativeImport18OwnedValuePassAttemptData<'bank> {
             return Err(invalid());
         }
         *output = Some(Self {
-            started: true,
-            failed: true,
-            complete: false,
             row: *row,
-            mode: None,
-            reparses: Vec::new(),
-            lookup: BTreeMap::new(),
-            maximum_intermediate_depth: 0,
+            state: state::FirstPassStateData::new_data(),
         });
         let owner = output.as_mut().ok_or_else(invalid)?;
         owner.row.authenticate_data(raw, input)?;
@@ -105,67 +105,10 @@ impl<'bank> NativeImport18OwnedValuePassAttemptData<'bank> {
         if !row.dominates_data(&current) {
             return Err(invalid());
         }
-        owner
-            .reparses
-            .try_reserve_exact(row.reparses)
-            .map_err(|_| exhausted())?;
-        owner.mode = Some(actual_raw_mode_data()?);
-        let mut walk = walk::Walk::new_data(input);
-        while let Some((value, depth)) = walk.next_data()? {
-            owner.maximum_intermediate_depth = owner.maximum_intermediate_depth.max(depth);
-            let Value::Object(fields) = value else {
-                continue;
-            };
-            if !matches!(owner.mode, Some(RawMode::Reparse)) {
-                continue;
-            }
-            let Some((key, payload)) = fields.iter().next() else {
-                continue;
-            };
-            if key != RAW_VALUE_KEY {
-                continue;
-            }
-            let payload = payload.as_str().ok_or_else(invalid)?;
-            let position = owner.reparses.len();
-            if position >= row.reparses {
-                return Err(exhausted());
-            }
-            owner.reparses.push(Reparse {
-                source: value,
-                attempt: None,
-            });
-            if owner
-                .lookup
-                .insert(value as *const Value as usize, position)
-                .is_some()
-            {
-                return Err(invalid());
-            }
-            let child = owner.reparses.get_mut(position).ok_or_else(invalid)?;
-            let child_row =
-                NativeImport18EffectiveTextConstructionData::quote_data(payload, row.maximum)?;
-            NativeImport18EffectiveTextAttemptData::read_into_data(
-                payload,
-                &child_row,
-                &mut child.attempt,
-            )?;
-            let child = child.attempt.as_ref().ok_or_else(invalid)?;
-            owner.maximum_intermediate_depth = owner.maximum_intermediate_depth.max(
-                depth
-                    .checked_sub(1)
-                    .and_then(|parent| parent.checked_add(child.maximum_intermediate_depth_data()))
-                    .ok_or_else(exhausted)?,
-            );
-            // ValueVisitor parses the String before MapDeserializer diagnoses
-            // unconsumed fields. Keep that real child even on this late error.
-            if fields.len() != 1 {
-                return Err(invalid());
-            }
-            walk.skip_children_data();
-        }
+        owner.state.run_data(input, row)?;
         owner.retained_requested_storage_data(row.retained)?;
-        owner.complete = true;
-        owner.failed = false;
+        owner.state.complete = true;
+        owner.state.failed = false;
         Ok(())
     }
 
@@ -179,7 +122,7 @@ impl<'bank> NativeImport18OwnedValuePassAttemptData<'bank> {
         input: &'a Value,
     ) -> Result<NativeImport18OwnedValuePassViewData<'a>, ProviderError> {
         self.row.authenticate_data(raw, input)?;
-        if !self.started || self.failed || !self.complete {
+        if !self.state.started || self.state.failed || !self.state.complete {
             return Err(invalid());
         }
         Ok(view::raw_data(self, input))
@@ -190,7 +133,7 @@ impl<'bank> NativeImport18OwnedValuePassAttemptData<'bank> {
     /// No ordinary Value is materialized at this depth. A later adapter must
     /// independently prove and fund its actual structural construction cut.
     pub(crate) const fn maximum_intermediate_depth_data(&self) -> usize {
-        self.maximum_intermediate_depth
+        self.state.maximum_intermediate_depth
     }
 
     /// Counts actual child capacities and every failed flat/map prefix.
@@ -204,37 +147,11 @@ impl<'bank> NativeImport18OwnedValuePassAttemptData<'bank> {
         &self,
         maximum: usize,
     ) -> Result<usize, ProviderError> {
-        let Self {
-            started: _,
-            failed: _,
-            complete: _,
-            row: _,
-            mode: _,
-            reparses,
-            lookup,
-            maximum_intermediate_depth: _,
-        } = self;
-        let mut retained = storage::sum(&[
+        let Self { row: _, state } = self;
+        let retained = storage::add(
             size_of::<Option<Self>>(),
-            storage::mul(reparses.capacity(), size_of::<Reparse>())?,
-            tree_storage_data(
-                usize::from(!lookup.is_empty()),
-                lookup.len(),
-                size_of::<(usize, usize)>(),
-                align_of::<usize>(),
-            )?,
-        ])?;
-        for Reparse { source: _, attempt } in reparses {
-            if let Some(attempt) = attempt {
-                let child = attempt.retained_requested_storage_data(maximum)?;
-                retained = storage::add(
-                    retained,
-                    child
-                        .checked_sub(size_of::<Option<NativeImport18EffectiveTextAttemptData>>())
-                        .ok_or_else(invalid)?,
-                )?;
-            }
-        }
+            state.retained_backing_data(maximum)?,
+        )?;
         if retained > maximum {
             return Err(exhausted());
         }
@@ -299,7 +216,7 @@ mod tests {
                 expected
             );
         } else {
-            assert!(owner.failed);
+            assert!(owner.state.failed);
             assert!(owner.completed_data(&raw, &raw.value).is_err());
         }
     }
@@ -339,11 +256,11 @@ mod tests {
             &mut attempt,
         );
         let owner = attempt.as_ref().unwrap();
-        if matches!(owner.mode, Some(RawMode::Reparse)) {
+        if matches!(owner.state.mode, Some(RawMode::Reparse)) {
             assert!(result.is_err());
-            assert!(owner.failed);
-            assert_eq!(owner.reparses.len(), 1);
-            let child = owner.reparses[0].attempt.as_ref().unwrap();
+            assert!(owner.state.failed);
+            assert_eq!(owner.state.reparses.len(), 1);
+            let child = owner.state.reparses[0].attempt.as_ref().unwrap();
             assert!(child.completed_data().is_ok());
             assert!(child.maximum_intermediate_depth_data() > 64);
             assert!(owner.completed_data(&raw, &raw.value).is_err());
