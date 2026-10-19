@@ -1292,3 +1292,9 @@ pub(crate) fn borrowed_json_number_data(input: &[u8]) -> Result<Number, Provider
     }
     Ok(number)
 }
+
+mod native_import18_lexical;
+pub(crate) use native_import18_lexical::{
+    NativeImport18JsonLexicalCursorData, NativeImport18JsonLexicalTokenData,
+    NativeImport18JsonStringSpanData, native_import18_json_lexical_counter_scratch_data,
+};

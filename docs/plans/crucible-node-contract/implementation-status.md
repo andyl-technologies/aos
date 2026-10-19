@@ -11,6 +11,14 @@ specific stage; they are not cumulative coverage of the latest source.
 
 ## Latest checkpoint
 
+The SDK receive components now retain immutable input custody through quotation,
+normalization and failed-prefix observation. The twenty-five-file change adds
+flat first/second-pass projections, structural Envelope/ResponseShape cuts and
+private owning raw-frame selections. These components remain disconnected from
+the live Source18 route; they grant no Initial, Recipe or native permission.
+The production application-target gate below qualifies `751d8331cf` and needs
+a refresh after this SDK change.
+
 `23f0513b98` adds the guarded flat literal-state codec. It preserves literal
 keys, full integers and floating-point representations, retains failed prefixes,
 and retires deep constructed trees iteratively. It enables no Source18 or native
@@ -20,13 +28,16 @@ preserves its first error, and uses the existing initial graph precredit walk.
 
 | Check | Latest recorded scope and result |
 | --- | --- |
-| Current checking and formatting | The thirteen-file runtime accounting correction passes six-crate all-feature/all-target checking in 1 minute 28 seconds and targeted formatting. |
-| Current application-target compilation | Passes for `751d8331cf`: 167 rebuilt test artifacts across 48 application packages, including 69 integration targets. All 7,805 captured source files and modes match that commit. This gate executes no tests. |
-| Current library runtime | All four unfiltered libraries pass: Core 1,967, Daemon 1,504, Provider 1,496 and Contract twelve, totaling 4,979 with zero failures. Existing ignores remain 33/162/15/1. Ten focused Host attachment controls also pass, including both new accounting controls. |
+| SDK receive formatting | All twenty-five selected files pass. |
+| SDK receive controls | All 36 targeted controls pass separately with ordinary Serde JSON and with its raw-value feature enabled. Each run takes 0.01 seconds after compilation. |
+| SDK Provider regression | Each complete Provider suite passes 1,532 tests with zero failures and fifteen existing ignores: 12.04 seconds for ordinary Serde JSON and 12.18 seconds with raw values enabled. |
+| Prior runtime checking | The thirteen-file runtime accounting correction passes six-crate all-feature/all-target checking in 1 minute 28 seconds and targeted formatting. |
+| Application-target compilation checkpoint | Passes for `751d8331cf`: 167 rebuilt test artifacts across 48 application packages, including 69 integration targets. All 7,805 captured source files and modes match that commit. This gate executes no tests; the SDK refresh is pending. |
+| Runtime correction library checkpoint | All four unfiltered libraries pass: Core 1,967, Daemon 1,504, Provider 1,496 and Contract twelve, totaling 4,979 with zero failures. Existing ignores remain 33/162/15/1. Ten focused Host attachment controls also pass, including both new accounting controls. |
 | Current test compilation | Standard four-library compilation passes in 4 minutes 2 seconds. Assertions, overflow checks and default stack remain enabled. |
 | Earlier startup/reclamation pair | Baseline reaches the fifteen-minute limit during inactive-runtime construction; optimized construction finishes, then its recheck refuses after 641.39 seconds. Normal retirement and child reclamation pass. |
 | Current startup/reclamation control | Native78 passes in 678.05 seconds, including inactive-runtime recheck, the attached actor, exact/one-byte-short whole-holder census, destination assertions, retirement and child reclamation. Full native preservation remains unqualified. |
-| Outstanding qualification | Full preservation, strict lint, ABI and license gates remain pending. |
+| Outstanding qualification | The SDK application-target refresh, full preservation, strict lint, ABI and license gates remain pending. |
 
 One matched pair reaches the same inactive-runtime construction milestone in
 approximately 624 versus 364 seconds (41.6% less time). Only the three currentness
@@ -107,6 +118,32 @@ and 2.957 TB of read accounting are diagnostic evidence, not statistical CPU
 sampling or a VM performance measurement. SourceDeclaration18 remains unissued:
 the genuine ACK, SDK preflight, complete initial funding/recipe, SourceRoot and
 held-Commit conjunction are still being implemented.
+
+### SDK receive custody
+
+The first-pass rows retain real immutable raw/subtree loans rather than treating
+an address as content identity. The next-pass rows retain those same completed
+owners and selected nodes. A private immutable raw-frame bank takes the actual
+received frame before fallible checks and lends checked root-relative selections;
+it exposes no mutable recovery or shared-pointer escape. Failure preserves the
+original frame, initialized flat children and their current census.
+
+The 36 component controls cover the locked Serde adapter behavior, duplicate
+keys, numeric representations, structural map and sequence cuts, late errors,
+deep intermediate children, foreign owners, slot replacement and exact versus
+one-byte-short resource demand. All pass in both actual feature configurations:
+Serde JSON 1.0.150 with default/std and default/raw_value/std. Dependency manifests
+and the lockfile remain unchanged; arbitrary-precision numbers and alternate map
+representations are not enabled. Both complete Provider suites also pass. Tests
+use the ordinary Cargo shell, default stack, assertions, overflow checks and
+four test threads. All fifteen existing ignored tests remain ignored.
+
+These results qualify the selected components, not a live receive transition.
+The owning first/next states, AssignedPhase/history integration, full structural
+Envelope/ResponseShape validation and actual Initial/Recipe producers remain
+separate prerequisites. No Source18, native import, Capture or preservation
+route is opened by this change. The prior native startup and application-target
+results above predate these SDK source changes.
 
 ## Implemented areas
 

@@ -403,3 +403,14 @@ fn exhausted() -> ProviderError {
 
 #[cfg(test)]
 mod tests;
+
+mod effective18;
+pub(crate) use effective18::{
+    NativeImport18EffectiveTextAttemptData, NativeImport18EffectiveTextConstructionData,
+    NativeImport18EffectiveValueKindData, NativeImport18EffectiveValueViewData,
+};
+
+pub(crate) use effective18::{
+    NativeImport18OwnedValuePassAttemptData, NativeImport18OwnedValuePassConstructionData,
+    NativeImport18OwnedValuePassKindData, NativeImport18OwnedValuePassViewData,
+};
