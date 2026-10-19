@@ -21,12 +21,12 @@ preserves its first error, and uses the existing initial graph precredit walk.
 | Check | Latest recorded scope and result |
 | --- | --- |
 | Current checking and formatting | The thirteen-file runtime accounting correction passes six-crate all-feature/all-target checking in 1 minute 28 seconds and targeted formatting. |
-| Application-target compilation | The latest completed gate is `b11ba2f059`: 167 newly compiled test artifacts across 48 application packages and 69 integration targets. All 7,804 filtered source files match that commit. The current-source refresh remains pending. This gate executes no tests. |
+| Current application-target compilation | Passes for `751d8331cf`: 167 rebuilt test artifacts across 48 application packages, including 69 integration targets. All 7,805 captured source files and modes match that commit. This gate executes no tests. |
 | Current library runtime | All four unfiltered libraries pass: Core 1,967, Daemon 1,504, Provider 1,496 and Contract twelve, totaling 4,979 with zero failures. Existing ignores remain 33/162/15/1. Ten focused Host attachment controls also pass, including both new accounting controls. |
 | Current test compilation | Standard four-library compilation passes in 4 minutes 2 seconds. Assertions, overflow checks and default stack remain enabled. |
 | Earlier startup/reclamation pair | Baseline reaches the fifteen-minute limit during inactive-runtime construction; optimized construction finishes, then its recheck refuses after 641.39 seconds. Normal retirement and child reclamation pass. |
 | Current startup/reclamation control | Native78 passes in 678.05 seconds, including inactive-runtime recheck, the attached actor, exact/one-byte-short whole-holder census, destination assertions, retirement and child reclamation. Full native preservation remains unqualified. |
-| Outstanding qualification | Current-source application compilation, full preservation, strict lint, ABI and license gates remain pending. |
+| Outstanding qualification | Full preservation, strict lint, ABI and license gates remain pending. |
 
 One matched pair reaches the same inactive-runtime construction milestone in
 approximately 624 versus 364 seconds (41.6% less time). Only the three currentness
@@ -70,8 +70,8 @@ The test ELF grows by 24,680 bytes, including the six unselected helper tests.
 Command evidence includes Root's actual execution record; the independent
 provenance review does not establish a historical prelaunch environment snapshot.
 This is one failed-startup control pair, not full preservation, a Linux-boot
-result or an additive overall speedup. The mandatory application-target refresh
-and final ABI/license qualification remain outstanding for this stage.
+result or an additive overall speedup. Final ABI/license qualification remains
+outstanding for this stage.
 
 The subsequent runtime accounting correction separates real new allocations
 from additional conservative ownership reports. The same graph and attached
@@ -99,7 +99,8 @@ assertions preclude treating elapsed time as a matched comparison with failed
 Native77. The current-source unfiltered libraries subsequently pass 4,979 tests
 with zero failures: Core 1,967 in 8.39 seconds, Daemon 1,504 in 354.13 seconds,
 Provider 1,496 in 11.50 seconds and Contract twelve. All 211 existing ignores
-remain unchanged. The mandatory application-target refresh is still pending.
+remain unchanged. The mandatory application-target refresh subsequently passes
+for `751d8331cf`, as detailed below.
 
 The earlier diagnostic run timed out after fifteen minutes. Its nine read/hash stack observations
 and 2.957 TB of read accounting are diagnostic evidence, not statistical CPU
@@ -149,15 +150,24 @@ set. This checkpoint has no dependency on subsequent Core changes.
 
 ### Application compilation
 
-The current refresh passes for `b11ba2f059`. All 167 test artifacts freshly
+The current refresh passes for `751d8331cf`. All 167 test artifacts freshly
 compile across the 48 selected application packages, including 69 integration
-targets, in 10 minutes 49 seconds after prerequisite builds. Independent review
-matches all 7,804 filtered source files and executable modes to the commit,
-checks the installed compiler messages and registered output, and confirms the
-actual package selection. The codec and Core census source are included through
-the non-test Core dependency; the three Daemon census paths are excluded.
-This gate compiles no Core library test target and executes no tests. It gives
-no codec, Daemon census or native runtime verdict.
+targets, in 10 minutes 3 seconds after prerequisite builds. Independent review
+matches all 7,805 captured source files and modes to the commit and verifies
+the installed compiler records and registered output. The artifacts comprise
+45 library targets, 53 binary targets and 69 integration targets. Each uses
+opt-level s, no debug information, and enabled assertions and overflow checks.
+The installed output retains compiler metadata rather than the test executables.
+
+All nine Core paths from the runtime correction are included through the
+non-test Core dependency, compiled with default and test-support features; its
+test-double feature is absent. The four Daemon paths are excluded. This gate
+compiles no Core library test target and executes no tests. It gives no codec,
+Daemon census, native runtime, preservation or Linux-performance verdict.
+
+The prior codec/census refresh for `b11ba2f059` independently passes with 167
+rebuilt test artifacts and 7,804 matching captured files. Its source scope
+predates the subsequent runtime accounting correction.
 
 The production compiler build and installed compiler verification pass. An
 earlier mandatory application-target gate passes for the original-report,
