@@ -1386,7 +1386,7 @@ pub enum StoreError {
         operation: &'static str,
     },
     /// A filesystem operation failed.
-    #[error("store filesystem operation {operation} failed")]
+    #[error("store filesystem operation {operation} failed: {source}")]
     Io {
         /// Operation being attempted.
         operation: &'static str,

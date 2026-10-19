@@ -3,8 +3,25 @@
 use super::*;
 use crate::executor_pool::original_retirement::OriginalPoolRetirementError;
 use crucible_host_resources::host_supervision::{
-    HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
+    HostOperationBudgets, HostOperationClass, HostOperationGuard, HostOperationSupervisor,
 };
+
+fn retire_idle_pool(
+    pool: &mut LocalExecutorWorkerPool<MemoryAssignmentLedger, AllowAllAttemptAdmission>,
+    original: &HostOperationGuard,
+) {
+    loop {
+        match pool.try_retire_original(original) {
+            Ok(()) => return,
+            // Idle workers may briefly own the actor lock during startup.
+            // Keep the same pool, handles and original through that contention.
+            Err(OriginalPoolRetirementError::Occupied { post: None }) => {
+                thread::park_timeout(original.wait_slice().expect("same retirement original"));
+            }
+            Err(first) => panic!("physical idle-pool retirement failed: {first}"),
+        }
+    }
+}
 
 #[test]
 fn original_retirement_joins_actual_idle_workers_before_returning() {
@@ -21,7 +38,7 @@ fn original_retirement_joins_actual_idle_workers_before_returning() {
         .begin(HostOperationClass::Preparation)
         .expect("saved original");
 
-    pool.try_retire_original(&original).expect("physical join");
+    retire_idle_pool(&mut pool, &original);
 
     assert_eq!(
         pool.worker_custody
@@ -49,6 +66,8 @@ fn canceled_original_refuses_before_pool_shutdown_or_handle_removal() {
         .begin(HostOperationClass::Preparation)
         .expect("saved original");
     supervisor.cancel().expect("cancel saved original");
+    let service = pool.service();
+    let actor = service.shared.executor.lock().expect("occupied actor");
 
     assert!(matches!(
         pool.try_retire_original(&original),
@@ -67,6 +86,7 @@ fn canceled_original_refuses_before_pool_shutdown_or_handle_removal() {
 
     // The fixture explicitly joins its idle worker. This ordinary cleanup is
     // not success or restored permission under the canceled original.
+    drop(actor);
     pool.shutdown_and_join().expect("fixture cleanup");
 }
 
@@ -143,8 +163,7 @@ fn retired_pool_drop_does_not_reenter_shutdown_through_a_live_alias_lock() {
     let original = supervisor
         .begin(HostOperationClass::Preparation)
         .expect("saved original");
-    pool.try_retire_original(&original)
-        .expect("actual joined pool");
+    retire_idle_pool(&mut pool, &original);
     let service = pool.service();
     let lock = service
         .shared

@@ -227,7 +227,7 @@ fn production_three_node_clean_rejection_is_atomic_at_every_launch_index() {
             QemuProductionHotForkWorldLifecycleFactoryError::Assembly(message),
         ) = failure
         else {
-            panic!("unexpected clean-rejection disposition at index {failure_index}")
+            panic!("unexpected clean-rejection disposition at index {failure_index}: {failure:?}")
         };
         assert!(
             factory.sources.available(),
@@ -300,16 +300,26 @@ fn production_three_node_ambiguous_launch_is_fail_closed_at_every_index() {
             observations.clone(),
         );
 
-        assert!(matches!(
-            factory.try_start(
+        let failure = factory
+            .try_start(
                 &input,
-                &execution_context(&input, 0xa0 + failure_index as u8)
+                &execution_context(&input, 0xa0 + failure_index as u8),
+            )
+            .err()
+            .expect("ambiguous launch must fail this transaction");
+        assert!(
+            matches!(
+                &failure,
+                AttemptWorkerFailure::Retryable(
+                    QemuProductionHotForkWorldLifecycleFactoryError::Assembly(_)
+                )
             ),
-            Err(AttemptWorkerFailure::Retryable(
-                QemuProductionHotForkWorldLifecycleFactoryError::Assembly(_)
-            ))
-        ));
-        assert!(!factory.sources.available());
+            "unexpected ambiguous-launch disposition at index {failure_index}: {failure:?}"
+        );
+        assert!(
+            !factory.sources.available(),
+            "ambiguous launch restored source at index {failure_index}: {failure:?}"
+        );
         assert_eq!(observations.finishes.load(Ordering::SeqCst), 0);
         assert_eq!(observations.quarantines.load(Ordering::SeqCst), 1);
         for process in source_processes {
