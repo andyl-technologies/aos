@@ -1526,6 +1526,8 @@ fn branch_replay_guest_pending(
     )
 }
 
+#[path = "tests/ancestor_policy.rs"]
+mod ancestor_policy;
 #[path = "tests/ancestor_runner.rs"]
 mod ancestor_runner;
 #[path = "tests/anchor_router.rs"]

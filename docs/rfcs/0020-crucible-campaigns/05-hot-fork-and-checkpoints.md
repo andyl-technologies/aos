@@ -907,10 +907,16 @@ published-boundary root `A` whose configuration is a strict schedule prefix of
 suffix from `A` to `G` with the same start-replay function thin replay uses,
 then applies the attempt's own selection. The child inherits the root's
 lifecycle configuration, which carries no attempt-specific replay inputs, so a
-suffix qualifies only when every decision in it is served by start replay from
-attempt input: no override, no app-random substitution, no model sample, no
-preemption selection, and no pending signal-fault branch. Recorded network
-fault branches qualify; they are crossed at their joined park. The suffix is
+suffix qualifies only when every decision in it is on an allowlist of decisions
+start replay serves from attempt input: deterministic scheduler and ordering
+decisions (delivery order, preemption, and RNG draws no campaign branch
+substitutes), recorded network fault branches crossed at their joined park,
+guest selections answered at the guest's request, and live-world network
+selections before the attempt's edge. A recorded guest selection is recognized
+by a domain the scenario declares only for guest selectables, and the
+attempt's own edge by its resolved guest opportunity. Every other decision,
+including any class added later, refuses the suffix by name, as does a
+signal-fault branch still pending. The suffix is
 bounded to 4096 decisions and 8 selections, and the root's recorded pause mode
 must equal the attempt's own. The same configuration rule applies to the edge
 of a child of an exact published root, which is refused before checkout when
@@ -963,10 +969,12 @@ wire, or shared-memory format.
   create one, and an invalidated root MUST NOT count as retained.
 - **[HFORK-26]** A branch whose parent `G` has no exact source MAY fork from
   the deepest retained published root `A` whose schedule is a strict prefix of
-  `G`, only when every suffix decision is replayed from attempt input by the
-  same start-replay function thin replay uses. The child MUST validate each
-  replayed guest request against its recorded opportunity and branch point and
-  reach the target exactly before the attempt's own selection is applied.
+  `G`, only when every suffix decision is on an explicit allowlist of
+  decisions replayed from attempt input by the same start-replay function thin
+  replay uses; unlisted decisions MUST refuse the root. The child MUST
+  validate each replayed guest request against its recorded opportunity and
+  branch point and reach the target exactly before the attempt's own
+  selection is applied.
   Divergence before `G` is operational, invalidates `A`, and falls back to
   thin. A world reached this way MUST NOT be retained at a guest-choice
   boundary.

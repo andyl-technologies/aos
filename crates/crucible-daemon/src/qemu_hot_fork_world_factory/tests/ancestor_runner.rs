@@ -6,22 +6,18 @@
 
 use crucible::{RngDecision, RngStreamId};
 
-use super::super::ancestor::{
-    MAX_ANCESTOR_SUFFIX_DECISIONS, MAX_ANCESTOR_SUFFIX_SELECTIONS, ancestor_suffix_refusal,
-    configuration_carried_decision,
-};
 use super::*;
 use crate::qemu_hot_fork_source_capture::{QemuPublishedRootOrigin, QemuPublishedRootProvenance};
 use crate::{QemuFreshAttemptLifecycleFactory, QemuFreshExecutionRunner};
 
-fn step(parent: &Configuration, decision: Decision) -> Configuration {
+pub(super) fn step(parent: &Configuration, decision: Decision) -> Configuration {
     match crucible::try_step(parent, decision) {
         Ok(configuration) => configuration,
         Err(error) => panic!("test configuration step should be accepted: {error}"),
     }
 }
 
-fn rng_step(parent: &Configuration, stream: &str, value: u64) -> Configuration {
+pub(super) fn rng_step(parent: &Configuration, stream: &str, value: u64) -> Configuration {
     step(
         parent,
         Decision::RngDraw(RngDecision {
@@ -708,7 +704,10 @@ fn ancestor_origin_outside_the_parent_prefix_is_a_source_recovery_failure() {
     assert!(observations.requests.lock().expect("requests").is_empty());
 }
 
-fn provenance(anchor: &Configuration, pause: Option<bool>) -> QemuPublishedRootProvenance {
+pub(super) fn provenance(
+    anchor: &Configuration,
+    pause: Option<bool>,
+) -> QemuPublishedRootProvenance {
     QemuPublishedRootProvenance::new(
         QemuPublishedRootOrigin::BranchParentAnchor,
         anchor.clone(),
@@ -716,7 +715,7 @@ fn provenance(anchor: &Configuration, pause: Option<bool>) -> QemuPublishedRootP
     )
 }
 
-fn override_decision(name: &str) -> Decision {
+pub(super) fn override_decision(name: &str) -> Decision {
     Decision::Override(crucible::OverrideDecision {
         point: crucible::SchedulingPoint {
             key: format!("ancestor-{name}"),
@@ -725,109 +724,6 @@ fn override_decision(name: &str) -> Decision {
             name: String::from(name),
         },
     })
-}
-
-#[test]
-fn suffix_policy_accepts_replay_only_decisions_and_names_each_refusal() {
-    let case = suffix_case(Edge::Scheduler);
-    let pause =
-        crate::qemu_campaign_lifecycle::replay_pauses_before_live_network_choice(&case.selected);
-    assert_eq!(
-        ancestor_suffix_refusal(
-            &case.input,
-            &case.parent,
-            &case.selected,
-            &provenance(&case.anchor, Some(pause))
-        ),
-        None
-    );
-
-    let refusals = [
-        (
-            provenance(&case.parent, Some(pause)),
-            "ancestor-not-strict-prefix",
-        ),
-        (
-            provenance(&case.anchor, Some(!pause)),
-            "ancestor-pause-mode-mismatch",
-        ),
-        (
-            provenance(&case.anchor, None),
-            "ancestor-pause-mode-mismatch",
-        ),
-    ];
-    for (provenance, expected) in refusals {
-        assert_eq!(
-            ancestor_suffix_refusal(&case.input, &case.parent, &case.selected, &provenance),
-            Some(expected)
-        );
-    }
-
-    // A configuration-served decision anywhere in the range refuses it.
-    let overridden = step(&case.anchor, override_decision("suffix"));
-    let parent = rng_step(&overridden, "ancestor-after-override", 1);
-    assert_eq!(
-        configuration_carried_decision(
-            &case.input,
-            &parent,
-            case.anchor.schedule.len(),
-            parent.schedule.len()
-        ),
-        Some("override-decision")
-    );
-    assert_eq!(
-        configuration_carried_decision(
-            &case.input,
-            &case.selected,
-            case.anchor.schedule.len(),
-            case.parent.schedule.len()
-        ),
-        None
-    );
-}
-
-#[test]
-fn suffix_policy_bounds_decisions_and_selections() {
-    let case = suffix_case(Edge::Scheduler);
-    let pause =
-        crate::qemu_campaign_lifecycle::replay_pauses_before_live_network_choice(&case.selected);
-
-    let mut long = case.anchor.clone();
-    for value in 0..=u64::try_from(MAX_ANCESTOR_SUFFIX_DECISIONS).expect("bound fits") {
-        long = rng_step(&long, "ancestor-long-suffix", value);
-    }
-    assert_eq!(
-        ancestor_suffix_refusal(
-            &case.input,
-            &long,
-            &long,
-            &provenance(&case.anchor, Some(pause))
-        ),
-        Some("ancestor-suffix-too-long")
-    );
-
-    let scenario = case.input.scenario().clone();
-    let mut chosen = case.anchor.clone();
-    for index in 0..=MAX_ANCESTOR_SUFFIX_SELECTIONS {
-        let name = format!("ancestor.selection-{index}");
-        chosen = step(
-            &chosen,
-            Decision::Selection(
-                crate::managed_qemu_hot_fork_source_world_pool::test_support::scheduler_selection_for_test(
-                    &scenario, &name,
-                ),
-            ),
-        );
-    }
-    assert_eq!(
-        ancestor_suffix_refusal(
-            &case.input,
-            &chosen,
-            &chosen,
-            &provenance(&case.anchor, Some(pause))
-        ),
-        Some("ancestor-suffix-too-many-selections")
-    );
 }
 
 /// Provider with no exact roots that records every ancestor lookup.
@@ -897,7 +793,7 @@ fn recording_factory(
 /// offering candidates to the suffix policy, and declines when none leases.
 #[test]
 fn published_root_miss_looks_up_an_eligible_ancestor_of_the_parent() {
-    let case = suffix_case(Edge::Scheduler);
+    let case = suffix_case(Edge::Guest);
     let pause =
         crate::qemu_campaign_lifecycle::replay_pauses_before_live_network_choice(&case.selected);
     let provider = RecordingAncestorProvider {

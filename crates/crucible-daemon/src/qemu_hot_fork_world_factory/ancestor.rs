@@ -3,28 +3,52 @@
 //! A child forked from a published-boundary root inherits the root's
 //! lifecycle configuration, which carries no attempt-specific replay inputs:
 //! no app-random substitutions, no authenticated live-network selections, and
-//! no signal-fault replay plan. Any decision those inputs would have served
-//! therefore cannot be replayed inside such a child. Every other decision is
-//! replayed from attempt input by the same start-replay function thin replay
-//! uses, so a child may start from a root at a strict ancestor `C` of its
-//! parent `P` when the whole recorded range is of that kind:
+//! no signal-fault replay plan. A child may therefore start from a root at a
+//! strict ancestor `C` of its parent `P` only when start replay, the same
+//! function thin replay uses, serves every recorded decision from attempt
+//! input alone:
 //!
 //! ```text
 //! C.len            P.len               selected.len
 //!   |-- suffix ------|-- attempt edge ----|
-//!   bounded, replay-only decisions; the recorded pause mode of the root's
+//!   bounded, allowlisted decisions; the recorded pause mode of the root's
 //!   prefix equals the attempt's own
 //! ```
 //!
+//! The policy is an allowlist. A decision qualifies only when it is one of:
+//!
+//! - a deterministic scheduler or ordering decision: delivery order,
+//!   preemption, or an RNG draw that no campaign branch substitutes;
+//! - a recorded network fault branch, crossed at its joined park;
+//! - a guest selection, answered by start replay at the guest's pending
+//!   request: the attempt's own edge selection when its resolved opportunity
+//!   is a guest source, or a recorded selection whose domain the scenario
+//!   declares for guest selectables and no other declared selectable;
+//! - a live-world network selection before the edge, replayed at its
+//!   reserved choice pause.
+//!
+//! Every other decision refuses the range with a named token, including any
+//! decision class added later, so a new kind of decision costs a thin replay
+//! rather than an unproven hot child. A schedule names a selection's
+//! opportunity only by identifier, so a recorded guest selection is
+//! recognized by its domain. A guest request that narrows its domain is
+//! therefore refused, and so is a domain the scenario also declares for a
+//! non-guest selectable. A built-in scheduler producer whose domain equals a
+//! guest domain is not distinguishable here; start replay still checks every
+//! replayed decision against the recorded schedule, and any mismatch before
+//! the parent is operational.
+//!
 //! The same configuration rule applies to the edge of a child of an exact
 //! published root at `P`, which is otherwise forked unchecked. A suffix
-//! divergence is operational: the child is quarantined, the root abandoned,
-//! and the retry runs thin.
+//! failure before the child reaches `P` is operational: the child is
+//! quarantined, the root abandoned, and the attempt's next execution runs
+//! thin.
 
 use std::io::Write;
 use std::sync::Arc;
 
 use crucible::{Configuration, Decision, SelectionDecision};
+use crucible_campaign::{ChoiceSource, Selection, SelectionOrigin};
 
 use crate::CrucibleAttemptExecution;
 use crate::qemu_hot_fork_source_capture::{QemuPublishedRootOrigin, QemuPublishedRootProvenance};
@@ -54,8 +78,8 @@ pub(crate) enum QemuHotForkStartOrigin {
 
 /// Returns why a child of a published root cannot replay `selected[from..]`.
 ///
-/// The range is refused when any decision in it is served by lifecycle
-/// configuration rather than by start replay from attempt input. `edge` is
+/// The range is refused unless every decision in it is on the module's
+/// allowlist of decisions start replay serves from attempt input. `edge` is
 /// where the attempt's own branch edge begins: a live-network selection there
 /// is installed as an authenticated lifecycle choice, while earlier ones are
 /// replayed at their reserved choice pause.
@@ -82,16 +106,16 @@ pub(crate) fn configuration_carried_decision(
     (from..decisions.len()).find_map(|index| {
         let decision = decisions.get(index)?;
         match decision {
-            Decision::Override(_) => Some("override-decision"),
+            Decision::DeliveryOrder(_) | Decision::Preemption(_) => None,
             Decision::RngDraw(draw) => app_random_campaign_draw(draw, decisions.get(index + 1))
                 .then_some("app-random-draw"),
             Decision::Selection(selection) => {
                 if recorded_network_fault_branch(input, index, decision) {
                     return None;
                 }
-                configuration_carried_selection(selection, index >= edge)
+                unreplayable_selection(input, selection, index, edge)
             }
-            Decision::DeliveryOrder(_) | Decision::Preemption(_) => None,
+            Decision::Override(_) => Some("override-decision"),
         }
     })
 }
@@ -160,10 +184,16 @@ fn recorded_network_fault_branch(
         .any(|branch| branch.parent().schedule.len() == index && branch.decision() == decision)
 }
 
-/// Returns why a recorded selection needs lifecycle configuration to replay.
-fn configuration_carried_selection(
+/// Returns why a recorded selection at `index` is not on the allowlist.
+///
+/// Classes that need lifecycle configuration are named on their own; any
+/// other selection that is neither a guest selection nor a suffix
+/// live-network selection is `unlisted-selection`.
+fn unreplayable_selection(
+    input: &CrucibleAttemptExecution,
     selection: &SelectionDecision,
-    on_edge: bool,
+    index: usize,
+    edge: usize,
 ) -> Option<&'static str> {
     if selection.is_app_random_model_sample() {
         return Some("app-random-selection");
@@ -174,16 +204,50 @@ fn configuration_carried_selection(
     let Ok(decoded) = selection.selection() else {
         return Some("undecodable-selection");
     };
-    if on_edge && crucible::is_live_world_network_selection(&decoded) {
-        return Some("live-network-selection");
-    }
-    if matches!(
-        decoded.origin(),
-        crucible_campaign::SelectionOrigin::ModelSample(_)
-    ) {
+    if matches!(decoded.origin(), SelectionOrigin::ModelSample(_)) {
         return Some("model-sample-selection");
     }
-    None
+    if crucible::is_live_world_network_selection(&decoded) {
+        return (index >= edge).then_some("live-network-selection");
+    }
+    if guest_selection(input, &decoded, index, edge) {
+        return None;
+    }
+    Some("unlisted-selection")
+}
+
+/// Returns whether start replay answers `decoded` at a guest request.
+fn guest_selection(
+    input: &CrucibleAttemptExecution,
+    decoded: &Selection,
+    index: usize,
+    edge: usize,
+) -> bool {
+    // The attempt's own selection arrives resolved with its opportunity.
+    if index == edge
+        && let crate::CrucibleResolvedAttemptStart::Branch { selection, .. } = input.start()
+        && selection.selection() == decoded
+    {
+        return matches!(selection.opportunity().source(), ChoiceSource::Guest { .. });
+    }
+
+    // A recorded selection names only its opportunity and domain, and an
+    // opportunity cannot be traced to its source without its record. The
+    // domain qualifies only when the scenario declares it for guests alone.
+    let mut guest = false;
+    for declaration in input.scenario().selectables().declarations().values() {
+        if declaration
+            .domain()
+            .id()
+            .is_ok_and(|domain| domain == decoded.domain())
+        {
+            if !matches!(declaration.source(), ChoiceSource::Guest { .. }) {
+                return false;
+            }
+            guest = true;
+        }
+    }
+    guest
 }
 
 /// Writes one bounded operational ancestor diagnostic.
