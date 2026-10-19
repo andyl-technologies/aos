@@ -9,6 +9,29 @@ use std::mem::ManuallyDrop;
 #[cfg(test)]
 use std::os::fd::FromRawFd as _;
 
+/// Keeps distinct prequeue transfer, actual return and Native diagnostic facts.
+#[cfg(not(test))]
+#[derive(Debug, Default)]
+pub(crate) struct PrequeueReturnHistory {
+    identity: crate::fingerprint_native::MaterialRef,
+    return_status: Option<i32>,
+    return_first_failure: Option<FingerprintSamplerError>,
+    observation_status: Option<i32>,
+    observation_first_failure: Option<i32>,
+    pipeline: Option<crate::fingerprint_native::PipelineStatus>,
+    job_transfer: Option<PaidJobTransfer>,
+    native_return_consumed: bool,
+}
+
+/// Records an actual move into a retained paid job, including a negative post.
+#[cfg(not(test))]
+#[derive(Debug)]
+struct PaidJobTransfer {
+    material: crate::fingerprint_native::MaterialRef,
+    work: crate::fingerprint_native::WorkRef,
+    submit_status: i32,
+}
+
 /// Owns one prequeue attempt, including outputs that cannot be validated.
 ///
 /// The containing callback retains this value through refusal. Its material
@@ -17,7 +40,9 @@ use std::os::fd::FromRawFd as _;
 pub(crate) struct CaptureAttempt {
     output: QemuFingerprintCaptureV2,
     #[cfg(not(test))]
-    native_material: *mut crate::fingerprint_native::Material,
+    native_material: crate::fingerprint_native::MaterialRef,
+    #[cfg(not(test))]
+    return_history: PrequeueReturnHistory,
     native_status: Option<c_int>,
     attempted: bool,
     material: ManuallyDrop<Option<CapturedFingerprintMaterial>>,
@@ -35,7 +60,9 @@ impl CaptureAttempt {
         Self {
             output: QemuFingerprintCaptureV2::default(),
             #[cfg(not(test))]
-            native_material: std::ptr::null_mut(),
+            native_material: crate::fingerprint_native::MaterialRef::empty(),
+            #[cfg(not(test))]
+            return_history: PrequeueReturnHistory::default(),
             native_status: None,
             attempted: false,
             material: ManuallyDrop::new(None),
@@ -63,7 +90,59 @@ impl CaptureAttempt {
         {
             return Err(self.refuse(FingerprintSamplerError::CaptureRetained));
         }
+        #[cfg(not(test))]
+        {
+            let valid_transfer =
+                self.return_history
+                    .job_transfer
+                    .as_ref()
+                    .is_some_and(|transfer| {
+                        transfer.material == self.return_history.identity
+                            && transfer.work.is_live()
+                            && transfer.submit_status == 0
+                    });
+            if !valid_transfer || self.return_history.native_return_consumed {
+                return Err(self.refuse(FingerprintSamplerError::CaptureRetained));
+            }
+        }
         *self = Self::new();
+        Ok(())
+    }
+
+    /// Records real paid-job custody before propagating a signed submit refusal.
+    ///
+    /// # Errors
+    /// Retains an inconsistent transfer without treating absent local fields as
+    /// proof of either queue acceptance or physical Native return.
+    #[cfg(not(test))]
+    pub(crate) fn moved_to_native_job(
+        &mut self,
+        material: crate::fingerprint_native::MaterialRef,
+        work: crate::fingerprint_native::WorkRef,
+        submit_status: i32,
+    ) -> Result<(), FingerprintSamplerError> {
+        if !self.attempted
+            || self.native_status != Some(0)
+            || self.first_failure.is_some()
+            || self.ready.is_some()
+            || self.material.is_some()
+            || self.has_native_material()
+            || !material.is_live()
+            || material != self.return_history.identity
+            || work.is_empty()
+            || self.return_history.job_transfer.is_some()
+            || self.return_history.native_return_consumed
+        {
+            return Err(self.refuse(FingerprintSamplerError::CaptureRetained));
+        }
+        self.return_history.job_transfer = Some(PaidJobTransfer {
+            material,
+            work,
+            submit_status,
+        });
+        // The job now owns this borrowed descriptor's Material. This records a
+        // custody move, not a Native close or a consumed physical return.
+        self.output.device_fd = -1;
         Ok(())
     }
 
@@ -78,7 +157,7 @@ impl CaptureAttempt {
     fn has_native_material(&self) -> bool {
         #[cfg(not(test))]
         {
-            !self.native_material.is_null()
+            !self.native_material.is_empty()
         }
         #[cfg(test)]
         {
@@ -96,45 +175,115 @@ impl CaptureAttempt {
         id: u64,
         api: crate::fingerprint_native::Api,
     ) -> Result<(), FingerprintSamplerError> {
-        let known_material =
-            self.has_native_material() || self.material.is_some() || self.ready.is_some();
-        if let Some(sample) = self.ready.as_mut() {
-            sample.return_material(id, api)?;
-        }
-        if let Some(material) = self.material.as_mut() {
-            let status = (api.material_return)(id, &mut material.native.owner);
-            if material.native.owner.is_null() {
-                material.native.descriptor = -1;
+        let known_material = self.return_history.identity.is_live();
+        let returned = if let Some(sample) = self.ready.as_mut() {
+            if sample.native_material().is_empty() {
+                None
+            } else {
+                Some(sample.return_material(id, api))
             }
-            if status != 0 {
-                return Err(FingerprintSamplerError::NativeMaterial { status });
+        } else if let Some(material) = self.material.as_mut() {
+            if material.native.owner.is_empty() {
+                None
+            } else {
+                let status = (api.material_return)(id, &mut material.native.owner);
+                if material.native.owner.is_empty() {
+                    material.native.descriptor = -1;
+                }
+                Some(if status == 0 {
+                    Ok(())
+                } else {
+                    Err(FingerprintSamplerError::NativeMaterial { status })
+                })
             }
-            if !material.native.owner.is_null() {
-                return Err(FingerprintSamplerError::CaptureRetained);
-            }
-        }
-        if !self.native_material.is_null() {
+        } else if !self.native_material.is_empty() {
             let status = (api.material_return)(id, &mut self.native_material);
-            if status != 0 {
-                return Err(FingerprintSamplerError::NativeMaterial { status });
-            }
-            if !self.native_material.is_null() {
-                return Err(FingerprintSamplerError::CaptureRetained);
+            Some(if status == 0 {
+                Ok(())
+            } else {
+                Err(FingerprintSamplerError::NativeMaterial { status })
+            })
+        } else {
+            None
+        };
+        let attempted_return = returned.is_some();
+        let mut first = None;
+        if let Some(result) = returned {
+            let status = match &result {
+                Ok(()) => 0,
+                Err(FingerprintSamplerError::NativeMaterial { status }) => *status,
+                Err(_) => -libc::EPROTO,
+            };
+            self.return_history.return_status = Some(status);
+            if let Err(source) = result {
+                self.return_history
+                    .return_first_failure
+                    .get_or_insert(source.clone());
+                first = Some(source);
             }
         }
-        if self.output.device_fd >= 0 && !known_material {
-            return Err(FingerprintSamplerError::CaptureRetained);
+        let outstanding = !self.native_material.is_empty()
+            || self
+                .material
+                .as_ref()
+                .is_some_and(|material| !material.native.owner.is_empty())
+            || self
+                .ready
+                .as_ref()
+                .is_some_and(|sample| !sample.native_material().is_empty());
+        if known_material && attempted_return && !outstanding {
+            // This actual return call consumed the owning output, independently
+            // of its signed post. A prior move into a job is recorded separately.
+            self.return_history.native_return_consumed = true;
+            self.output.device_fd = -1;
         }
-        self.output.device_fd = -1;
-        // SAFETY: all actual native owners have been returned, so these local
-        // read transcripts contain no live FD or Material/worker borrow.
+        if known_material {
+            let mut receipt = crate::fingerprint_native::PipelineStatus::default();
+            let status = (api.pipeline_observe)(id, &self.return_history.identity, &mut receipt);
+            let status = if status == 0
+                && (receipt.schema_version != 1
+                    || receipt.struct_size as usize
+                        != size_of::<crate::fingerprint_native::PipelineStatus>()
+                    || receipt.material_serial != self.return_history.identity.serial)
+            {
+                -libc::EPROTO
+            } else {
+                status
+            };
+            self.return_history.observation_status = Some(status);
+            if status == 0 {
+                self.return_history.pipeline = Some(receipt);
+            } else {
+                self.return_history
+                    .observation_first_failure
+                    .get_or_insert(status);
+                if first.is_none() {
+                    first = Some(FingerprintSamplerError::NativeMaterial { status });
+                }
+            }
+        }
+        if outstanding || self.output.device_fd >= 0 {
+            return Err(first.unwrap_or(FingerprintSamplerError::CaptureRetained));
+        }
+        // SAFETY: these prequeue fields hold no remaining native owner. Custody
+        // either returned through the actual call or moved into the recorded paid
+        // job, whose debt remains independently retained. Failures stay above.
         unsafe {
             ManuallyDrop::drop(&mut self.material);
             ManuallyDrop::drop(&mut self.ready);
         }
         self.material = ManuallyDrop::new(None);
         self.ready = ManuallyDrop::new(None);
-        Ok(())
+        match first {
+            Some(source) => Err(source),
+            None => Ok(()),
+        }
+    }
+
+    /// Borrows diagnostics only while the caller retains the real control owner.
+    #[cfg(not(test))]
+    pub(crate) fn native_return_history(&self) -> &PrequeueReturnHistory {
+        &self.return_history
     }
 
     #[cfg(test)]
@@ -175,6 +324,10 @@ impl PluginFingerprintSampling {
         let status = (self.capture)(&mut attempt.output);
         #[cfg(not(test))]
         let status = (self.capture)(&mut attempt.output, &mut attempt.native_material);
+        #[cfg(not(test))]
+        {
+            attempt.return_history.identity = attempt.native_material;
+        }
         attempt.native_status = Some(status);
         if status != 0 {
             return Err(attempt.refuse(FingerprintSamplerError::Capture { status }));
@@ -190,7 +343,7 @@ impl PluginFingerprintSampling {
             });
         }
         #[cfg(not(test))]
-        if !attempt.native_material.is_null() && attempt.output.device_fd >= 0 {
+        if attempt.native_material.is_live() && attempt.output.device_fd >= 0 {
             *attempt.material = Some(CapturedFingerprintMaterial {
                 native: NativeCapturedMaterial {
                     owner: attempt.native_material,
@@ -199,7 +352,7 @@ impl PluginFingerprintSampling {
                 material_length: attempt.output.device_material_length,
                 progress: MaterialDigestProgress::default(),
             });
-            attempt.native_material = std::ptr::null_mut();
+            attempt.native_material = crate::fingerprint_native::MaterialRef::empty();
         }
         if let Err(failure) = validate_capture_evidence(&attempt.output) {
             return Err(attempt.refuse(failure));

@@ -36,8 +36,8 @@ mod native_material;
 use native_material::NativeCapturedMaterial;
 pub(crate) use capture_attempt::CaptureAttempt;
 
-const QEMU_PLUGIN_CRUCIBLE_CAPTURE_FINGERPRINT_V3_SYMBOL_C: &[u8] =
-    b"qemu_plugin_crucible_capture_fingerprint_v3\0";
+const QEMU_PLUGIN_CRUCIBLE_CAPTURE_FINGERPRINT_V4_SYMBOL_C: &[u8] =
+    b"qemu_plugin_crucible_capture_fingerprint_v4\0";
 
 use crate::{
     PluginNvcpuFingerprintInputs, PluginVcpuIntrospector, PluginVcpuRegisterDigest,
@@ -86,7 +86,7 @@ pub(crate) type QemuCaptureFingerprintMaterialFn =
 #[cfg(not(test))]
 pub(crate) type QemuCaptureFingerprintMaterialFn = extern "C" fn(
     *mut QemuFingerprintCaptureV2,
-    *mut *mut crate::fingerprint_native::Material,
+    *mut crate::fingerprint_native::MaterialRef,
 ) -> c_int;
 
 /// One QEMU-allocated immutable fingerprint preimage.
@@ -330,7 +330,7 @@ fn validate_capture_file(
     material: &CapturedFingerprintMaterial,
     component: &'static str,
 ) -> Result<(), FingerprintSamplerError> {
-    if material.native.owner.is_null() || material.native.descriptor < 0 {
+    if !material.native.owner.is_live() || material.native.descriptor < 0 {
         return Err(FingerprintSamplerError::InvalidCaptureDescriptor { component });
     }
     let descriptor = material.native.descriptor;
@@ -401,7 +401,7 @@ fn sample_metadata(
 
 #[cfg(unix)]
 fn resolve_capture_symbol() -> Option<QemuCaptureFingerprintMaterialFn> {
-    let symbol = resolve_symbol_address(QEMU_PLUGIN_CRUCIBLE_CAPTURE_FINGERPRINT_V3_SYMBOL_C)?;
+    let symbol = resolve_symbol_address(QEMU_PLUGIN_CRUCIBLE_CAPTURE_FINGERPRINT_V4_SYMBOL_C)?;
     // SAFETY: the address resolved the patched fingerprint capture export,
     // whose declaration matches `QemuCaptureFingerprintMaterialFn` exactly.
     Some(unsafe { std::mem::transmute::<*mut c_void, QemuCaptureFingerprintMaterialFn>(symbol) })

@@ -68,7 +68,6 @@ pub extern "C" fn qemu_plugin_crucible_fingerprint_worker_construct_v1(
         handle,
         slot: input.slot,
         quiescence,
-        current_material: std::sync::atomic::AtomicUsize::new(0),
     });
     let control = Arc::new(body);
     let owning_alias = Arc::into_raw(control);
@@ -184,18 +183,8 @@ pub extern "C" fn qemu_plugin_crucible_fingerprint_worker_destroy_v1(
         return -libc::EPERM;
     }
     let api = context.handle.api;
-    {
-        let state = unique.lock();
-        if state.pending.is_some()
-            || state.terminal_history.as_ref().is_some_and(|job| {
-                !job.native_work.is_null()
-                    || !job.worker_work.is_null()
-                    || !job.captured.native_material().is_null()
-            })
-            || unique.in_flight().is_some()
-        {
-            return -libc::EBUSY;
-        }
+    if unique.jobs_have_native_debt() {
+        return -libc::EBUSY;
     }
     let capture = match unique.capture_attempt.try_lock() {
         Ok(capture) => capture,

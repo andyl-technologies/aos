@@ -6,13 +6,14 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 use super::*;
-use crate::fingerprint_native::{Api, Worker, WorkerStatus};
+use crate::fingerprint_native::{Api, MaterialRef, PipelineStatus, WorkRef, Worker, WorkerStatus};
 use crate::startup_source::runtime_purpose::{RuntimePurpose, WorkerClaim};
 use std::ffi::c_void;
 use std::cell::UnsafeCell;
 use std::mem::ManuallyDrop;
 
 mod scope;
+mod pipeline;
 
 mod module;
 
@@ -21,6 +22,43 @@ mod module;
 pub(super) struct NativeFailure {
     operation: &'static str,
     status: i32,
+}
+
+/// Keeps an actual entry malfunction apart from Main's canceled transaction.
+#[derive(Debug)]
+pub(super) struct EntryFailure {
+    status: i32,
+    pub(super) cause: FingerprintWorkerCause,
+}
+
+/// Retains independent effects and signed returns for one paid owning job.
+#[derive(Debug, Default)]
+pub(super) struct JobHistory {
+    // This saved key is diagnostic-only after the owning projection is consumed.
+    // It is never used to return custody or acquire another operation.
+    identity: MaterialRef,
+    material_serial: u64,
+    work_serial: u64,
+    submit_status: Option<i32>,
+    take_status: Option<i32>,
+    take_local_closed: Option<bool>,
+    cooperative_close: bool,
+    take_output: Option<WorkRef>,
+    take_workspace: Option<(usize, usize)>,
+    completion_result: Option<i32>,
+    complete_status: Option<i32>,
+    completion_attempted: bool,
+    byte_loan_issued: bool,
+    bytes_returned: bool,
+    work_return_status: Option<i32>,
+    work_return_output: Option<i32>,
+    work_return_first_failure: Option<i32>,
+    work_result: Option<i32>,
+    material_return_failure: Option<FingerprintSamplerError>,
+    material_return_last_status: Option<i32>,
+    pipeline: Option<PipelineStatus>,
+    observation_status: Option<i32>,
+    observation_first_failure: Option<i32>,
 }
 
 /// Borrows the same actual native worker without adding an owning projection.
@@ -36,7 +74,6 @@ pub(super) struct Context {
     handle: Handle,
     slot: StableFingerprintSlotHandle,
     quiescence: Arc<LiveWorkerQuiescence>,
-    current_material: std::sync::atomic::AtomicUsize,
 }
 
 /// Owns the canonical native field inside the actual prepaid Runtime layout.
@@ -255,7 +292,7 @@ impl SourceWorkerOwner {
         if let Err(source) = validate_status(&journal) {
             return Err(retirement_error.unwrap_or(source));
         }
-        if journal.physical_returned != 1 {
+        if journal.physical_returned != 1 || journal.control_lifetime_uncertain != 0 {
             return Err(retirement_error.unwrap_or_else(|| status_error(-libc::EBUSY)));
         }
         let canonical = self.transferred && self.creation.is_null();
@@ -326,6 +363,7 @@ impl SourceWorkerOwner {
             status.create_status,
             status.mask_restore_status,
             status.attr_destroy_status,
+            status.control_lifetime_status,
         ]
         .into_iter()
         .find(|status| *status != 0);
@@ -336,6 +374,7 @@ impl SourceWorkerOwner {
             || status.initialized != 1
             || status.closing != 0
             || status.entry_returned != 0
+            || status.control_lifetime_uncertain != 0
         {
             return Err(status_error(-libc::ECHILD));
         }
@@ -383,6 +422,7 @@ impl Handle {
             status.create_status,
             status.mask_restore_status,
             status.attr_destroy_status,
+            status.control_lifetime_status,
         ]
         .into_iter()
         .find(|status| *status != 0);
@@ -394,6 +434,7 @@ impl Handle {
             || status.initialized != 1
             || status.closing != 0
             || status.entry_returned != 0
+            || status.control_lifetime_uncertain != 0
         {
             control.refuse_native("readiness", -libc::ECHILD);
             return Err(LiveFingerprintDigestWorker::failed(control));
@@ -409,7 +450,10 @@ impl Handle {
         self.observe()
             .map_err(|_| -libc::ESTALE)
             .and_then(|status| {
-                if status.material_held == 0 && status.bytes_held == 0 {
+                if status.material_held == 0
+                    && status.bytes_held == 0
+                    && status.control_lifetime_uncertain == 0
+                {
                     Ok(())
                 } else {
                     Err(-libc::EBUSY)
@@ -439,345 +483,6 @@ impl FingerprintWorkerControl {
 }
 
 impl LiveFingerprintDigestWorker {
-    /// Queues the actual Source Material and retains any born-negative work loan.
-    ///
-    /// # Errors
-    /// Refuses prior failure, retained work, closed admission or native submission.
-    pub(super) fn submit_native(
-        &self,
-        captured: &mut Option<CapturedFingerprintSample>,
-        capture_request: u32,
-    ) -> Result<(), LiveVcpuTimeCallbackError> {
-        self.native.with_control(false, |control| {
-            self.submit_control(control, captured, capture_request)
-        })
-    }
-
-    fn submit_control(
-        &self,
-        control: &Arc<FingerprintWorkerControl>,
-        captured: &mut Option<CapturedFingerprintSample>,
-        capture_request: u32,
-    ) -> Result<(), LiveVcpuTimeCallbackError> {
-        let mut state = control.lock();
-        if state.closed
-            || state.failure.is_some()
-            || state.pending.is_some()
-            || control
-                .in_flight
-                .try_lock()
-                .map_or(true, |work| work.is_some())
-        {
-            drop(state);
-            return Err(Self::failed(control));
-        }
-        let sample = captured
-            .as_ref()
-            .ok_or_else(|| status_error(-libc::EPROTO))?;
-        // Native publishes the actual loan before a negative post. Keep the
-        // entire Rust job even in that case; a consumed descriptor is not closed.
-        let mut work = std::ptr::null_mut();
-        let status = (self.native.api.submit)(
-            self.native.id,
-            self.native.pointer(),
-            sample.native_material(),
-            &mut work,
-        );
-        if !work.is_null() {
-            let sample = captured.take().ok_or_else(|| status_error(-libc::EPROTO))?;
-            let mut job = LiveFingerprintDigestWork::new(sample, capture_request);
-            job.native_work = work;
-            if let Some(context) = control.native.as_ref() {
-                context
-                    .current_material
-                    .store(job.captured.native_material() as usize, Ordering::Release);
-            }
-            state.pending = Some(job);
-        }
-        drop(state);
-        control.available.notify_all();
-        if status != 0 {
-            control.refuse_native("submit", status);
-            return Err(Self::failed(control));
-        }
-        if work.is_null() {
-            control.refuse_native("submit", -libc::EPROTO);
-            return Err(Self::failed(control));
-        }
-        Ok(())
-    }
-
-    /// Settles the previous native loan on its actual Main thread before reuse.
-    ///
-    /// # Errors
-    /// Retains incomplete work and independent publication, ACK and return failure.
-    pub(in crate::runtime::live_callbacks) fn settle_native_work(
-        &self,
-        wait: bool,
-    ) -> Result<(), LiveVcpuTimeCallbackError> {
-        self.native
-            .with_control(false, |control| self.settle_control(control, wait))
-    }
-
-    fn settle_control(
-        &self,
-        control: &Arc<FingerprintWorkerControl>,
-        wait: bool,
-    ) -> Result<(), LiveVcpuTimeCallbackError> {
-        loop {
-            let mut state = control.lock();
-            if !state.native_completion && !state.closed {
-                let material = control
-                    .native
-                    .as_ref()
-                    .map(|context| context.current_material.load(Ordering::Acquire))
-                    .unwrap_or(0);
-                if material == 0 && state.pending.is_none() {
-                    return Ok(());
-                }
-                if state.failure.is_some() {
-                    drop(state);
-                    return Err(Self::failed(control));
-                }
-                if !wait {
-                    return Err(status_error(-libc::EBUSY));
-                }
-                let mut bounded_ns = 0;
-                let status = (self.native.api.material_current)(
-                    self.native.id,
-                    material as *mut crate::fingerprint_native::Material,
-                    &mut bounded_ns,
-                );
-                if status != 0 || bounded_ns == 0 {
-                    drop(state);
-                    control.refuse_native(
-                        "material wait",
-                        if status != 0 {
-                            status
-                        } else {
-                            -libc::ETIMEDOUT
-                        },
-                    );
-                    return Err(Self::failed(control));
-                }
-                let slice = std::time::Duration::from_nanos(bounded_ns)
-                    .min(std::time::Duration::from_millis(10));
-                let waited = control.capacity.wait_timeout(state, slice);
-                drop(match waited {
-                    Ok((state, _)) => state,
-                    Err(poisoned) => poisoned.into_inner().0,
-                });
-                continue;
-            }
-            // Hashing owns this mutex. Main never waits on it without a live
-            // Original: completion is published only after the byte loan ends.
-            let mut retained = control
-                .in_flight
-                .try_lock()
-                .map_err(|_| status_error(-libc::EBUSY))?;
-            if retained.is_none() && state.closed {
-                *retained = state.pending.take();
-            }
-            let Some(job) = retained.as_mut() else {
-                return Ok(());
-            };
-            if !job.work_returned {
-                let mut result = 0;
-                let status = (self.native.api.work_return)(
-                    self.native.id,
-                    &mut job.native_work,
-                    &mut result,
-                );
-                if job.native_work.is_null() {
-                    job.work_returned = true;
-                }
-                if status != 0 || !job.work_returned {
-                    drop(retained);
-                    drop(state);
-                    control.refuse_native(
-                        "work return",
-                        if status != 0 { status } else { -libc::EPROTO },
-                    );
-                    return Err(Self::failed(control));
-                }
-                if result != 0 && state.failure.is_none() {
-                    state.failure = Some(FingerprintWorkerCause::Native {
-                        operation: "material result",
-                        status: result,
-                    });
-                }
-            }
-            if let Err(source) = job
-                .captured
-                .return_material(self.native.id, self.native.api)
-            {
-                if job.captured.native_material().is_null() {
-                    if let Some(context) = control.native.as_ref() {
-                        context.current_material.store(0, Ordering::Release);
-                    }
-                }
-                drop(retained);
-                drop(state);
-                control
-                    .lock()
-                    .native_cleanup_failure
-                    .get_or_insert(source.clone());
-                control.refuse(FingerprintWorkerCause::Digest(source));
-                return Err(Self::failed(control));
-            }
-            if let Some(context) = control.native.as_ref() {
-                context.current_material.store(0, Ordering::Release);
-            }
-            if job.publication != MaterialPublication::Acknowledged || state.failure.is_some() {
-                if state.failure.is_none() {
-                    state.failure = Some(FingerprintWorkerCause::UnsettledWork);
-                }
-                // Physical Material returned, but terminal health and its exact
-                // transcript remain retained. Acknowledgement alone is not health.
-                if state.terminal_history.is_none() {
-                    state.terminal_history = retained.take();
-                }
-                state.native_completion = false;
-                drop(retained);
-                drop(state);
-                return Err(Self::failed(control));
-            }
-            drop(retained.take());
-            state.native_completion = false;
-            drop(retained);
-            drop(state);
-            control.available.notify_all();
-            control.capacity.notify_all();
-            return Ok(());
-        }
-    }
-
-    fn run_native(control: &FingerprintWorkerControl) -> i32 {
-        let Some(context) = control.native.as_ref() else {
-            return -libc::EPROTO;
-        };
-        let handle = context.handle;
-        let identity = match context.quiescence.register_current(WORKER_FINGERPRINT) {
-            Ok(identity) => identity,
-            Err(source) => {
-                control.refuse(FingerprintWorkerCause::Registration(source));
-                return -libc::ECHILD;
-            }
-        };
-        control.lock().registered = true;
-        control.capacity.notify_all();
-        loop {
-            let idle = context.quiescence.idle(WORKER_FINGERPRINT);
-            let Some(mut in_flight) = control.receive() else {
-                break;
-            };
-            let pending = idle.received();
-            let _operation = pending.enter();
-            let Some(job) = in_flight.as_mut() else {
-                drop(in_flight);
-                control.refuse_native("receive", -libc::EPROTO);
-                break;
-            };
-            let mut borrowed = std::ptr::null_mut();
-            let mut address = std::ptr::null_mut();
-            let mut length = 0;
-            let taken =
-                (handle.api.take)(handle.pointer(), &mut borrowed, &mut address, &mut length);
-            job.worker_work = borrowed;
-            job.workspace_address = address as usize;
-            job.workspace_length = length;
-            let mut result = taken;
-            if taken == 0 && borrowed == job.native_work && !address.is_null() && length == 65_536 {
-                // SAFETY: successful take authenticates this actual born worker
-                // and exclusively lends the complete live Source workspace until
-                // complete consumes the byte loan. No slice escapes this block.
-                let workspace = unsafe { &mut *address.cast::<[u8; 65_536]>() };
-                match job
-                    .captured
-                    .digest_native(workspace, handle.api, handle.pointer(), borrowed)
-                {
-                    Ok(sample) => {
-                        if let Err(source) =
-                            job.publish_native(context.slot.get(), &sample, handle, borrowed)
-                        {
-                            result = -libc::EIO;
-                            drop(in_flight);
-                            control.refuse(source);
-                            in_flight = control.in_flight();
-                        }
-                    }
-                    Err(source) => {
-                        result = -libc::EIO;
-                        let native_status = match &source {
-                            FingerprintSamplerError::NativeMaterial { status } => Some(*status),
-                            _ => None,
-                        };
-                        drop(in_flight);
-                        control.refuse(FingerprintWorkerCause::Digest(source));
-                        if let Some(status) = native_status {
-                            control.record_native_failure("material read", status);
-                        }
-                        in_flight = control.in_flight();
-                    }
-                }
-            } else if result == 0 {
-                result = -libc::EPROTO;
-            }
-            // Byte return is attempted independently of hashing/publication
-            // failure. The exact consumed projection suppresses duplicate effects.
-            let Some(job) = in_flight.as_mut() else {
-                drop(in_flight);
-                control.refuse_native("completion owner", -libc::EPROTO);
-                break;
-            };
-            let completion = if job.worker_work.is_null() {
-                -libc::EPROTO
-            } else {
-                (handle.api.complete)(handle.pointer(), &mut job.worker_work, result)
-            };
-            let bytes_returned = job.worker_work.is_null();
-            if bytes_returned {
-                job.workspace_address = 0;
-                job.workspace_length = 0;
-            }
-            drop(in_flight);
-            let mut state = control.lock();
-            if bytes_returned {
-                state.native_completion = true;
-            }
-            drop(state);
-            control.capacity.notify_all();
-            if taken != 0 || result != 0 || completion != 0 || !bytes_returned {
-                if taken != 0 {
-                    control.refuse_native("take", taken);
-                }
-                if completion != 0 {
-                    control.refuse_native("complete", completion);
-                }
-                if !bytes_returned {
-                    control.refuse_native("byte return", -libc::EBUSY);
-                }
-                break;
-            }
-            let mut state = control.lock();
-            while state.native_completion && !state.closed && state.failure.is_none() {
-                state = match control.available.wait(state) {
-                    Ok(state) => state,
-                    Err(poisoned) => poisoned.into_inner(),
-                };
-            }
-            if state.closed || state.failure.is_some() {
-                break;
-            }
-        }
-        drop(identity);
-        if control.lock().failure.is_some() {
-            -libc::EIO
-        } else {
-            0
-        }
-    }
-
     /// Corroborates the actual Source workspace is free of live byte/material loans.
     ///
     /// # Safety
@@ -1012,7 +717,7 @@ impl LiveFingerprintDigestWorker {
                     }
                     Err(_) => error = Some(status_error(-libc::EBUSY)),
                 }
-                if let Err(source) = self.settle_control(control, false) {
+                if let Err(source) = self.drain_control(control, true) {
                     if error.is_none() {
                         error = Some(source);
                     }
@@ -1083,7 +788,7 @@ impl LiveFingerprintDigestWork {
         slot: &FingerprintSampleSlot,
         sample: &crucible_qemu_shmem::FingerprintSample,
         handle: Handle,
-        work: *mut crate::fingerprint_native::Work,
+        work: &WorkRef,
     ) -> Result<(), FingerprintWorkerCause> {
         if self.publication != MaterialPublication::NotStarted {
             return Err(FingerprintWorkerCause::UnsettledWork);
@@ -1123,8 +828,9 @@ impl LiveFingerprintDigestWork {
     }
 }
 
-// SAFETY: job projections never dereference Native objects in Rust. The queue
-// mutex transfers one job to the born worker; return remains on the real Main.
+// SAFETY: projections never dereference Native objects in Rust. Each fixed slot
+// mutex serializes its worker and Main uses; actual native return authenticates
+// process/thread/incarnation. Saved diagnostic keys grant no owning operation.
 unsafe impl Send for LiveFingerprintDigestWork {}
 
 fn check_worker_identity(
@@ -1151,7 +857,7 @@ fn check_worker_identity(
 }
 
 fn validate_status(status: &WorkerStatus) -> Result<(), LiveVcpuTimeCallbackError> {
-    if status.schema_version != 1 || status.struct_size as usize != size_of::<WorkerStatus>() {
+    if status.schema_version != 2 || status.struct_size as usize != size_of::<WorkerStatus>() {
         Err(status_error(-libc::EPROTO))
     } else {
         Ok(())

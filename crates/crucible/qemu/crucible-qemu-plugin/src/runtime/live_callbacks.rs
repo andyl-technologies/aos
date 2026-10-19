@@ -1934,7 +1934,7 @@ impl LiveVcpuTimeCallbackState {
             });
         }
         #[cfg(not(test))]
-        fingerprint.worker.settle_native_work(true)?;
+        fingerprint.worker.drain_native_completed()?;
         #[cfg(test)]
         {
             let mut attempt = fingerprint
@@ -1968,9 +1968,7 @@ impl LiveVcpuTimeCallbackState {
                         source,
                     },
                 )?;
-            fingerprint
-                .worker
-                .submit(attempt.pending(), capture_request)?;
+            fingerprint.worker.submit_native(attempt, capture_request)?;
             attempt.transferred().map_err(|source| {
                 fingerprint_worker::FingerprintCaptureActionError::Sampler { boundary, source }
             })

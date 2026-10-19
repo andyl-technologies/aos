@@ -6,12 +6,12 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 use super::*;
-use crate::fingerprint_native::{Api, Material, MaterialRead, Work, Worker};
+use crate::fingerprint_native::{Api, MaterialRef, MaterialRead, WorkRef, Worker};
 
 /// Retains only the actual native Material and its borrowed descriptor identity.
 #[derive(Debug)]
 pub(super) struct NativeCapturedMaterial {
-    pub(super) owner: *mut Material,
+    pub(super) owner: MaterialRef,
     pub(super) descriptor: i32,
 }
 
@@ -21,7 +21,7 @@ unsafe impl Send for NativeCapturedMaterial {}
 
 impl CapturedFingerprintSample {
     /// Projects the actual retained Material for Source's genuine work constructor.
-    pub(crate) fn native_material(&self) -> *mut Material {
+    pub(crate) fn native_material(&self) -> MaterialRef {
         self.device.native.owner
     }
 
@@ -34,18 +34,18 @@ impl CapturedFingerprintSample {
         id: u64,
         api: Api,
     ) -> Result<(), FingerprintSamplerError> {
-        if self.device.native.owner.is_null() {
+        if self.device.native.owner.is_empty() {
             return Ok(());
         }
         let status = (api.material_return)(id, &mut self.device.native.owner);
         // A consumed output is not replayed, even if a trailing refusal exists.
-        if self.device.native.owner.is_null() {
+        if self.device.native.owner.is_empty() {
             self.device.native.descriptor = -1;
         }
         if status != 0 {
             return Err(FingerprintSamplerError::NativeMaterial { status });
         }
-        if !self.device.native.owner.is_null() {
+        if !self.device.native.owner.is_empty() {
             return Err(FingerprintSamplerError::NativeMaterial {
                 status: -libc::EPROTO,
             });
@@ -63,7 +63,7 @@ impl CapturedFingerprintSample {
         workspace: &mut [u8; 65_536],
         api: Api,
         worker: *mut Worker,
-        work: *mut Work,
+        work: &WorkRef,
     ) -> Result<FingerprintSample, FingerprintSamplerError> {
         let material_length = self.device.material_length;
         let progress = &mut self.device.progress;

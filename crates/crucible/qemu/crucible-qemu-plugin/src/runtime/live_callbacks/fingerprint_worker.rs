@@ -10,11 +10,15 @@ use std::any::Any;
 use std::cell::UnsafeCell;
 use std::fmt;
 use std::sync::{Condvar, MutexGuard};
+#[cfg(test)]
 use std::thread;
 #[cfg(test)]
 use std::thread::JoinHandle;
 
 use super::*;
+
+mod pipeline_queue;
+mod worker_outcome;
 
 #[cfg(not(test))]
 mod native;
@@ -49,15 +53,17 @@ struct LiveFingerprintDigestWork {
     capture_request: u32,
     publication: MaterialPublication,
     #[cfg(not(test))]
-    native_work: *mut crate::fingerprint_native::Work,
+    native_work: crate::fingerprint_native::WorkRef,
     #[cfg(not(test))]
-    worker_work: *mut crate::fingerprint_native::Work,
+    worker_work: crate::fingerprint_native::WorkRef,
     #[cfg(not(test))]
     workspace_address: usize,
     #[cfg(not(test))]
     workspace_length: usize,
     #[cfg(not(test))]
     work_returned: bool,
+    #[cfg(not(test))]
+    native_history: native::JobHistory,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,15 +82,17 @@ impl LiveFingerprintDigestWork {
             capture_request,
             publication: MaterialPublication::NotStarted,
             #[cfg(not(test))]
-            native_work: std::ptr::null_mut(),
+            native_work: crate::fingerprint_native::WorkRef::empty(),
             #[cfg(not(test))]
-            worker_work: std::ptr::null_mut(),
+            worker_work: crate::fingerprint_native::WorkRef::empty(),
             #[cfg(not(test))]
             workspace_address: 0,
             #[cfg(not(test))]
             workspace_length: 0,
             #[cfg(not(test))]
             work_returned: false,
+            #[cfg(not(test))]
+            native_history: native::JobHistory::default(),
         }
     }
 
@@ -133,10 +141,57 @@ impl fmt::Debug for FingerprintWorkerFailure {
         #[cfg(not(test))]
         debug
             .field("native", &state.native_failure)
+            .field("entry_malfunction", &state.native_entry_failure)
+            .field("submit", &state.native_submit_failure)
             .field("material_cleanup", &state.native_cleanup_failure)
+            .field(
+                "terminal_worker_observation",
+                &state.native_terminal_observation_failure,
+            )
             .field("module_action", &state.module_action_failure)
             .field("scope_return", &state.scope_return_failure)
             .field("sampler_action", &state.sampler_action_failure);
+        drop(state);
+        #[cfg(not(test))]
+        for (index, slot) in self.control.jobs.iter().enumerate() {
+            let job = match slot.try_lock() {
+                Ok(job) => job,
+                Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    debug.field(if index == 0 { "job0" } else { "job1" }, &"borrowed");
+                    continue;
+                }
+            };
+            if let Some(job) = job.as_ref() {
+                debug.field(
+                    if index == 0 {
+                        "job0_capture_request"
+                    } else {
+                        "job1_capture_request"
+                    },
+                    &job.capture_request,
+                );
+                debug.field(
+                    if index == 0 { "job0" } else { "job1" },
+                    &job.native_history,
+                );
+            }
+        }
+        #[cfg(not(test))]
+        match self.control.capture_attempt.try_lock() {
+            Ok(attempt) => {
+                debug.field("prequeue_return", attempt.native_return_history());
+            }
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => {
+                debug.field(
+                    "prequeue_return",
+                    poisoned.into_inner().native_return_history(),
+                );
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {
+                debug.field("prequeue_return", &"borrowed");
+            }
+        }
         debug.finish_non_exhaustive()
     }
 }
@@ -145,6 +200,11 @@ impl fmt::Display for FingerprintWorkerFailure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let state = self.control.lock();
         match state.failure.as_ref() {
+            #[cfg(not(test))]
+            Some(FingerprintWorkerCause::WorkerEntry) => match &state.native_entry_failure {
+                Some(failure) => fmt::Display::fmt(&failure.cause, formatter),
+                None => formatter.write_str("worker entry failed without a retained cause"),
+            },
             Some(failure) => fmt::Display::fmt(failure, formatter),
             None => formatter.write_str("worker ownership remains unsettled"),
         }
@@ -163,6 +223,12 @@ impl Eq for FingerprintWorkerFailure {}
 
 #[derive(Debug, thiserror::Error)]
 enum FingerprintWorkerCause {
+    #[cfg(not(test))]
+    #[error("worker entry failed")]
+    WorkerEntry,
+    #[cfg(not(test))]
+    #[error("fingerprint capture request {capture_request} was canceled before publication")]
+    CaptureCancelled { capture_request: u32 },
     #[cfg(not(test))]
     #[error("the retained worker module action failed")]
     ModuleAction,
@@ -197,6 +263,7 @@ enum FingerprintWorkerCause {
 }
 
 struct FingerprintWorkerState {
+    #[cfg(test)]
     pending: Option<LiveFingerprintDigestWork>,
     closed: bool,
     registered: bool,
@@ -205,17 +272,21 @@ struct FingerprintWorkerState {
     panic_payload: Option<Box<dyn Any + Send>>,
     supervision_failure: Option<crate::StartupSourceError>,
     #[cfg(not(test))]
-    native_completion: bool,
+    pipeline: pipeline_queue::PipelineQueue,
     #[cfg(not(test))]
     native_failure: Option<native::NativeFailure>,
+    #[cfg(not(test))]
+    native_entry_failure: Option<native::EntryFailure>,
+    #[cfg(not(test))]
+    native_submit_failure: Option<i32>,
+    #[cfg(not(test))]
+    native_terminal_observation_failure: Option<i32>,
     #[cfg(not(test))]
     native_cleanup_failure: Option<FingerprintSamplerError>,
     #[cfg(not(test))]
     module_action_failure: Option<LiveVcpuTimeCallbackError>,
     #[cfg(not(test))]
     terminal_failure_issued: bool,
-    #[cfg(not(test))]
-    terminal_history: Option<LiveFingerprintDigestWork>,
     #[cfg(not(test))]
     scope_return_failure: Option<i32>,
     #[cfg(not(test))]
@@ -230,9 +301,12 @@ struct FingerprintWorkerControl {
     capture_attempt: Mutex<crate::fingerprint_sampler::CaptureAttempt>,
     #[cfg(test)]
     workspace: Mutex<Option<DeviceDigestWorkspace>>,
-    // The worker borrows this prepaid slot; unwinding cannot drop the captured
-    // file or read transcript before the joined retirement disposition.
+    #[cfg(test)]
     in_flight: Mutex<Option<LiveFingerprintDigestWork>>,
+    // Each accepted job stays in its paid slot through hashing, publication,
+    // byte completion and Main return. Other slots remain independently usable.
+    #[cfg(not(test))]
+    jobs: [Mutex<Option<LiveFingerprintDigestWork>>; pipeline_queue::WORK_CELLS],
     available: Condvar,
     capacity: Condvar,
     #[cfg(test)]
@@ -254,6 +328,7 @@ impl FingerprintWorkerControl {
             #[cfg(not(test))]
             capture_attempt: Mutex::new(crate::fingerprint_sampler::CaptureAttempt::new()),
             state: Mutex::new(FingerprintWorkerState {
+                #[cfg(test)]
                 pending: None,
                 closed: false,
                 registered: false,
@@ -262,9 +337,15 @@ impl FingerprintWorkerControl {
                 panic_payload: None,
                 supervision_failure: None,
                 #[cfg(not(test))]
-                native_completion: false,
+                pipeline: pipeline_queue::PipelineQueue::new(),
                 #[cfg(not(test))]
                 native_failure: None,
+                #[cfg(not(test))]
+                native_entry_failure: None,
+                #[cfg(not(test))]
+                native_submit_failure: None,
+                #[cfg(not(test))]
+                native_terminal_observation_failure: None,
                 #[cfg(not(test))]
                 native_cleanup_failure: None,
                 #[cfg(not(test))]
@@ -272,15 +353,16 @@ impl FingerprintWorkerControl {
                 #[cfg(not(test))]
                 terminal_failure_issued: false,
                 #[cfg(not(test))]
-                terminal_history: None,
-                #[cfg(not(test))]
                 scope_return_failure: None,
                 #[cfg(not(test))]
                 sampler_action_failure: None,
             }),
             #[cfg(test)]
             workspace: Mutex::new(workspace),
+            #[cfg(test)]
             in_flight: Mutex::new(None),
+            #[cfg(not(test))]
+            jobs: std::array::from_fn(|_| Mutex::new(None)),
             available: Condvar::new(),
             capacity: Condvar::new(),
             #[cfg(test)]
@@ -296,6 +378,7 @@ impl FingerprintWorkerControl {
         }
     }
 
+    #[cfg(test)]
     fn in_flight(&self) -> MutexGuard<'_, Option<LiveFingerprintDigestWork>> {
         match self.in_flight.lock() {
             Ok(work) => work,
@@ -347,6 +430,7 @@ impl FingerprintWorkerControl {
         Ok(())
     }
 
+    #[cfg(test)]
     fn receive(&self) -> Option<MutexGuard<'_, Option<LiveFingerprintDigestWork>>> {
         let mut state = self.lock();
         loop {
@@ -614,19 +698,16 @@ impl LiveFingerprintDigestWorker {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn submit(
         &self,
         captured: &mut Option<CapturedFingerprintSample>,
         capture_request: u32,
     ) -> Result<(), LiveVcpuTimeCallbackError> {
-        #[cfg(not(test))]
-        return self.submit_native(captured, capture_request);
-        #[cfg(test)]
         let control = self
             .control
             .as_ref()
             .ok_or(LiveVcpuTimeCallbackError::FingerprintWorkerUnavailable)?;
-        #[cfg(test)]
         control.enqueue(captured, capture_request).map_err(|()| {
             if control.lock().failure.is_some() {
                 Self::failed(control)
