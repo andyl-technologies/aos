@@ -48,12 +48,13 @@ pub use policy_stall_fixture::NativePolicyStall;
 pub use preparation::NativeCachePreparation;
 pub use publication::{
     NativeInlinePublication, NativeManifestPublication, NativeResidentChunkSource,
+    NativeSourceCleanupReport,
 };
 pub use recovery::CompletedRecovery;
 pub use resume_error::NativeResumeError;
 pub(crate) use retention::{
-    AcceptedRecoveryManifestEffect, PublisherResumeTurn, PublisherRunningTurn,
-    RecoveryManifestBodyFailure, RecoveryManifestBodyRetention, RecoveryManifestEffect,
-    RecoveryManifestEffectFailure, RecoveryRetainedManifest,
+    AcceptedRecoveryManifestEffect, PublisherCleanupTurn, PublisherResumeTurn,
+    PublisherRunningTurn, RecoveryManifestBodyFailure, RecoveryManifestBodyRetention,
+    RecoveryManifestEffect, RecoveryManifestEffectFailure, RecoveryRetainedManifest,
 };
 pub use retention::{NativeIndexRepairReport, NativeMetadataOwner, RetainedManifest};

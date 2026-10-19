@@ -40,7 +40,7 @@ mod executor;
 mod manifest;
 mod recovery_manifest;
 pub(super) use executor::NativeOwnerExecutor;
-pub(crate) use executor::{PublisherResumeTurn, PublisherRunningTurn};
+pub(crate) use executor::{PublisherCleanupTurn, PublisherResumeTurn, PublisherRunningTurn};
 pub(crate) use recovery_manifest::{
     AcceptedRecoveryManifestEffect, RecoveryManifestBackingRetention, RecoveryManifestBodyFailure,
     RecoveryManifestBodyRetention, RecoveryManifestEffect, RecoveryManifestEffectFailure,
@@ -86,6 +86,11 @@ pub(super) enum Command {
     PublishManifest {
         identity: Identity,
         response: oneshot::Sender<io::Result<super::NativeManifestPublication>>,
+    },
+    /// Finishes only a completed publication's actual original pending sources.
+    FinishPublicationSources {
+        resource: Arc<Mutex<super::publication::PublicationJob>>,
+        response: oneshot::Sender<io::Result<super::NativeSourceCleanupReport>>,
     },
     /// Transfers bounded encoded inline content to actual sealed publication.
     PublishInline {
@@ -301,6 +306,11 @@ impl NativeMetadataOwner {
                             let result = runtime.block_on(
                                 super::publication::retain_resident_chunk(&mut executor, identity),
                             );
+                            let _ = response.send(result);
+                        }
+                        Command::FinishPublicationSources { resource, response } => {
+                            let result =
+                                super::publication::retirement::execute(&mut executor, &resource);
                             let _ = response.send(result);
                         }
                         Command::PublishManifest { identity, response } => {

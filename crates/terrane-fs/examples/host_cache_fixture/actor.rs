@@ -59,6 +59,8 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
             | "publish-manifest-dictionary"
             | "publish-manifest-reuse"
             | "publish-manifest-reuse-bad-whole"
+            | "source-cleanup"
+            | "source-cleanup-early"
     ) {
         return Err(io::Error::other("unknown component selector"));
     }
@@ -96,6 +98,16 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
         .enable_all()
         .build()?;
     match mode {
+        "source-cleanup" | "source-cleanup-early" => {
+            super::source_cleanup::run(
+                mode,
+                &owner,
+                &runtime,
+                &inputs,
+                Arc::clone(&confinement),
+                original,
+            )?;
+        }
         "consumer-leases" => {
             super::consumer::run(
                 &owner,

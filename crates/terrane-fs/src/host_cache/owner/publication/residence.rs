@@ -393,6 +393,18 @@ fn registration(
     identity: &Identity,
     row: &ResidenceRecord,
 ) -> io::Result<NativeChunkSpan> {
+    registered_body(owner, job)?;
+    claim_span(owner, &job.claim, identity, row)
+}
+
+/// Borrows the original completed body under its current durable funding.
+///
+/// # Errors
+/// Refuses incomplete physical work, changed snapshot/pins or foreign backing.
+pub(super) fn registered_body<'job>(
+    owner: &Custody,
+    job: &'job PublicationJob,
+) -> io::Result<&'job Arc<PeerPublishedObject<HostDomainLocation>>> {
     check_snapshot(owner)?;
     if !job.started || !job.complete {
         return Err(invalid("resident publication is not complete"));
@@ -431,7 +443,7 @@ fn registration(
     if let Some(manifest) = &job.manifest {
         manifest.retained.check_registration(owner)?;
     }
-    claim_span(owner, &job.claim, identity, row)
+    Ok(body)
 }
 
 /// Checks actual snapshot provenance and the complete synchronized policy state.
@@ -494,7 +506,11 @@ fn check_native(source: &Source) -> io::Result<()> {
     check_native_body(&source.body, source.project, source.publisher_uid)
 }
 
-fn check_native_body(
+/// Checks the original linked immutable inode and its native root/project seal.
+///
+/// # Errors
+/// Refuses changed ownership, access, allocation namespace, project or verity.
+pub(super) fn check_native_body(
     published: &PeerPublishedObject<HostDomainLocation>,
     project: u32,
     publisher_uid: u32,

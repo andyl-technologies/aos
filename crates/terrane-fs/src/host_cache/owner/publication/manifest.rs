@@ -39,6 +39,25 @@ pub struct NativeManifestPublication {
 }
 
 impl NativeManifestPublication {
+    /// Finishes the original standalone source retirements on their physical owner.
+    ///
+    /// Call after the configured publisher retirement grace. The result counts
+    /// only actual original standalone transfers; reused sealed ranges do not
+    /// retire again. Repeated calls check retained native acknowledgements.
+    /// Original reconstruction metadata, pins, source descriptions and holds
+    /// remain retained; removed names do not imply reclaimed physical charge.
+    ///
+    /// # Errors
+    /// Refuses another owner, queue limits, active native grace, stale backing,
+    /// quota failures and uncertain exchanges. Accepted failures require actual
+    /// recovery, retaining funding and resources after waiter cancellation.
+    pub async fn finish_retired_sources(
+        &self,
+        owner: &NativeMetadataOwner,
+    ) -> io::Result<super::NativeSourceCleanupReport> {
+        super::retirement::submit(owner, &self.completion.job).await
+    }
+
     /// Borrows independently verified read-only sealed bytes.
     pub fn handle(&self) -> &File {
         self.completion.body.handle()
@@ -110,17 +129,23 @@ impl NativeMetadataOwner {
 
 /// Retains one unique original source and all accepted retirement resources.
 pub(super) struct SourceTransfer {
-    source: TransferSource,
-    reply: Option<ReceivedPacket>,
-    observation: Option<BodyIncarnationObservation<HostDomainLocation>>,
-    retired: bool,
+    /// Original registered admission retained through native cleanup.
+    pub(super) source: TransferSource,
+    /// Actual inspected source reply retained before verification.
+    pub(super) reply: Option<ReceivedPacket>,
+    /// Original connection-bound inode observation used for retirement.
+    pub(super) observation: Option<Arc<BodyIncarnationObservation<HostDomainLocation>>>,
+    /// Actual acknowledged rename into the pending namespace.
+    pub(super) retired: bool,
+    /// Actual correlated final-removal acknowledgement, never an asserted flag.
+    pub(super) cleanup: Option<crate::publisher_local::client::AcknowledgedSourceRetirement>,
 }
 
 /// Retains verified ordered reads and the actual pin closure that funds them.
 pub(super) struct ManifestInput {
     pub(super) retained: Arc<RetainedManifest>,
     pub(super) plan: NativeReassemblyPlan,
-    transfers: Vec<SourceTransfer>,
+    pub(super) transfers: Vec<SourceTransfer>,
     dependencies: Vec<TransferSource>,
     residents: Vec<Arc<crate::host_cache::NativeResidentChunkSource>>,
 }
@@ -229,6 +254,7 @@ impl ManifestInput {
                     source: actual,
                     reply: None,
                     observation: None,
+                    cleanup: None,
                     retired: false,
                 });
             }
@@ -302,7 +328,7 @@ impl ManifestInput {
             let observation = session
                 .inspect_source_transfer(body, context, turn, index, &mut entry.reply)
                 .map_err(io::Error::other)?;
-            entry.observation = Some(observation);
+            entry.observation = Some(Arc::new(observation));
             session
                 .retire_source_transfer(
                     body,
@@ -385,6 +411,7 @@ pub(in crate::host_cache::owner) async fn run(
         transfer: None,
         transfer_observation: None,
         transfer_retired: false,
+        transfer_cleanup: None,
         token: String::new(),
         hold: 0,
         generation: 0,

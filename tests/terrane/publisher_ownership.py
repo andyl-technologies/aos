@@ -134,7 +134,7 @@ def main():
     transport_identity = check_transport(transport, source)
     cache_identity = check_inputs(cache, source, [
         "host-cache-proof.nix", "host_cache_image.py", "host_cache_vm.py",
-        "manifest_publication_vm.py", "native_sdk_test_image.py",
+        "manifest_publication_vm.py", "source_cleanup_vm.py", "native_sdk_test_image.py",
     ])
     print(json.dumps({
         "requirement": "ARCH-8", "source": str(source),

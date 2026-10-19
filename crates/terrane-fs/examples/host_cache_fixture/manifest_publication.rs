@@ -30,14 +30,21 @@ use terrane_fs::{
     host_quota::synchronized_allocated_bytes,
 };
 
-struct Data {
-    first: Vec<u8>,
-    encoded_first: Vec<u8>,
+/// Supplies honest canonical fixture bytes without native authority.
+pub(super) struct Data {
+    /// Nonfinal plaintext chunk, repeated twice in the manifest.
+    pub(super) first: Vec<u8>,
+    /// Registered encoding of the nonfinal chunk.
+    pub(super) encoded_first: Vec<u8>,
     dictionary: Option<Vec<u8>>,
-    tail: Vec<u8>,
-    plaintext: Vec<u8>,
-    canonical: Vec<u8>,
-    identity: Identity,
+    /// Distinct final plaintext chunk.
+    pub(super) tail: Vec<u8>,
+    /// Complete expected assembled plaintext.
+    pub(super) plaintext: Vec<u8>,
+    /// Canonical manifest bytes retained through an actual metadata admission.
+    pub(super) canonical: Vec<u8>,
+    /// Identity calculated over the canonical manifest.
+    pub(super) identity: Identity,
 }
 
 fn invalid(message: &'static str) -> io::Error {
@@ -55,7 +62,11 @@ fn descriptor(bytes: &[u8], kind: IdentityKind) -> io::Result<Descriptor> {
     Descriptor::from_identity(&TERRANE_V1, &identity, bytes).map_err(io::Error::other)
 }
 
-fn data(bad_whole: bool, dictionary_backed: bool) -> io::Result<Data> {
+/// Constructs bounded canonical bytes for genuine native fixture operations.
+///
+/// # Errors
+/// Refuses invalid generated metadata or failure to find an honest nonfinal cut.
+pub(super) fn data(bad_whole: bool, dictionary_backed: bool) -> io::Result<Data> {
     data_with_tail(bad_whole, dictionary_backed, 99)
 }
 
@@ -327,7 +338,11 @@ pub(super) fn run(
     Ok(())
 }
 
-fn admit_manifest(
+/// Admits the fixture's canonical metadata through the actual physical owner.
+///
+/// # Errors
+/// Refuses invalid metadata construction, native admission or synchronization.
+pub(super) fn admit_manifest(
     owner: &NativeMetadataOwner,
     runtime: &tokio::runtime::Runtime,
     data: &Data,

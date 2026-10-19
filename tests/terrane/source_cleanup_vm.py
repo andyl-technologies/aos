@@ -1,0 +1,123 @@
+"""Observes actual source cleanup and open-inode quota in the isolated guest."""
+
+import hashlib
+import pathlib
+import re
+import signal
+import subprocess
+import time
+import tomllib
+
+
+def files(directory):
+    """Retains actual native names, inodes and bytes without granting authority."""
+    return {str(path): (path.stat().st_dev, path.stat().st_ino,
+                        hashlib.sha256(path.read_bytes()).hexdigest())
+            for path in directory.rglob("*") if path.is_file()}
+
+
+def quota(driver, case):
+    """Queries the real privileged helper through its ordinary authenticated CLI."""
+    result = subprocess.run([
+        str(driver.IMAGE / "bin/aos-terrane-host"), "query", "--config",
+        str(driver.ADMIN / "host.toml"), "--owner", driver.owner(case),
+        "--domain", driver.domain(case),
+    ], check=True, text=True, capture_output=True, timeout=10)
+    match = re.fullmatch(r"project=(\d+) hard_limit_bytes=(\d+) charged_reserved_bytes=(\d+) roots=(\d+)\n",
+                         result.stdout)
+    driver.require(match is not None, "missing actual source cleanup quota response")
+    project, hard, charged, roots = map(int, match.groups())
+    driver.require(project == driver.project(case) and hard == driver.HARD and roots == 8,
+                   "source cleanup quota reply has another native binding")
+    return charged
+
+
+def run(driver, publisher, uuid):
+    """Runs real grace refusal, foreign refusal and stopped-publisher cancellation."""
+    early = "source-cleanup-early"
+    output = driver.actor(early, "source-cleanup-early", uuid)
+    driver.require(output.splitlines() == [
+        "PASS actual early source cleanup refused with original pending inode and funding retained; unavailable requires recovery"
+    ] and files(driver.root(early) / "pending-delete"),
+        "early source cleanup lost the actual native pending source or failure witness")
+
+    case = "source-cleanup"
+    process = driver.controlled_actor(case, "source-cleanup", uuid)
+    stopped = False
+    lines = driver.Lines(process)
+    try:
+        lines.until("READY actual inline and manifest retired sources; retain original native grace")
+        driver.require("PASS actual foreign physical owner refused source cleanup and remained usable"
+                       in lines.bytes.decode().splitlines(), "missing actual foreign cleanup refusal")
+        print(driver.process_status(process, 840), flush=True)
+        snapshot = driver.root(case) / "state/cache/records.toml"
+        before = snapshot.read_bytes()
+        pending = files(driver.root(case) / "pending-delete")
+        sealed = files(driver.root(case) / "sealed")
+        driver.require(len(pending) >= 3 and len(sealed) == 2,
+                       "source cleanup lacks original pending sources and sealed outputs")
+        # The actual publisher configuration fixes a 30-second grace. This
+        # interval starts after both real Retire acknowledgements and never
+        # changes that native deadline or retries an unavailable operation.
+        time.sleep(31)
+        driver.require(process.poll() is None and snapshot.read_bytes() == before
+                       and files(driver.root(case) / "pending-delete") == pending,
+                       "native grace discarded original source names or funding")
+        publisher.send_signal(signal.SIGSTOP)
+        stopped = True
+        deadline = time.monotonic() + 2
+        while True:
+            status = (pathlib.Path("/proc") / str(publisher.pid) / "status").read_text()
+            driver.require(publisher.poll() is None, "publisher exited before cleanup cancellation")
+            if any(line.startswith("State:\tT") or line.startswith("State:\tt") for line in status.splitlines()):
+                break
+            driver.require(time.monotonic() < deadline, "cleanup publisher stop not acknowledged")
+            time.sleep(0.005)
+        process.stdin.write(b"start\n")
+        process.stdin.flush()
+        lines.until("CANCELLED accepted source cleanup waiter; physical owner retained", timeout=2)
+        driver.require(snapshot.read_bytes() == before
+                       and files(driver.root(case) / "pending-delete") == pending,
+                       "stopped publisher supplied cleanup or lost synchronized funding")
+        publisher.send_signal(signal.SIGCONT)
+        stopped = False
+        process.stdin.write(b"complete\n")
+        process.stdin.flush()
+        lines.until("READY actual cleanup accounting retains open source descriptions", timeout=45)
+        measurement = [line for line in lines.bytes.decode().splitlines()
+                       if line.startswith("SOURCE_CLEANUP_MEASUREMENT ")]
+        driver.require(len(measurement) == 1, "missing unique actual cleanup measurement")
+        match = re.fullmatch(
+            r"SOURCE_CLEANUP_MEASUREMENT charged_reserved_bytes=(\d+) future_hold_bytes=(\d+) retained_source_bytes=(\d+) sealed_bytes=(\d+)",
+            measurement[0])
+        driver.require(match is not None, "invalid original cleanup accounting witness")
+        charged, future, retained, sealed_bytes = map(int, match.groups())
+        state = tomllib.loads(snapshot.read_text())
+        actual = quota(driver, case)
+        driver.require(actual == charged and retained > 0 and sealed_bytes > 0
+                       and charged >= retained + sealed_bytes
+                       and future == sum(row["bytes"] for row in state["reservations"])
+                       and snapshot.read_bytes() == before
+                       and files(driver.root(case) / "sealed") == sealed
+                       and not files(driver.root(case) / "pending-delete"),
+                       "cleanup lost original custody or inferred freed open-inode charge")
+        print("PASS independent helper observes actual unlinked source allocation while original descriptions remain open",
+              flush=True)
+        output, _ = process.communicate(b"release\n", timeout=15)
+        print(output.decode(), end="", flush=True)
+        driver.require(process.returncode == 0 and output.decode().splitlines() == [
+            "PASS actual inline and repeated-manifest source cleanup retained pins, live reads, holds and charged unlinked inodes after cancellation; no Ready"
+        ], "source cleanup did not reach real retained completion")
+        driver.run(["sync", "-f", driver.root(case)])
+        after = quota(driver, case)
+        driver.require(after <= charged - retained and snapshot.read_bytes() == before
+                       and files(driver.root(case) / "sealed") == sealed,
+                       "actual source descriptors did not close or immutable output changed")
+        print("PASS independent helper observes actual source reclamation only after original descriptions close",
+              flush=True)
+    finally:
+        if stopped and publisher.poll() is None:
+            publisher.send_signal(signal.SIGCONT)
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)

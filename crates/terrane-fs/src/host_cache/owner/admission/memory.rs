@@ -185,6 +185,7 @@ fn check_parts(
     // never copied from a caller path. Descriptor/job headers are not payloads.
     let physical = size_of::<AdmissionJob>()
         + size_of::<super::super::publication::PublicationJob>()
+        + super::super::publication::retirement_observation_bytes()
         + size_of::<super::super::publication::RecoveredInlineJob>()
         + size_of::<super::super::consumer::ConsumerJob>()
         + size_of::<super::super::consumer::ReadView>()

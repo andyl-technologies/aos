@@ -22,6 +22,8 @@ mod publication;
 mod recovery;
 #[path = "host_cache_fixture/running_retention.rs"]
 mod running_retention;
+#[path = "host_cache_fixture/source_cleanup.rs"]
+mod source_cleanup;
 
 fn main() -> std::process::ExitCode {
     let mode = std::env::args().nth(1).unwrap_or_default();
@@ -71,6 +73,8 @@ fn main() -> std::process::ExitCode {
             "publish-manifest-dictionary",
             "publish-manifest-reuse",
             "publish-manifest-reuse-bad-whole",
+            "source-cleanup",
+            "source-cleanup-early",
         ] {
             println!("host-cache:{selector}");
         }

@@ -44,6 +44,21 @@ pub(in crate::host_cache::owner) struct NativeOwnerExecutor {
 }
 
 impl NativeOwnerExecutor {
+    /// Borrows the actual physical executor for one original source cleanup RPC.
+    ///
+    /// # Errors
+    /// Refuses another worker; the turn checks genuine funding before submission.
+    pub(in crate::host_cache::owner) fn cleanup_turn<'turn>(
+        &'turn mut self,
+        funding: &'turn super::super::publication::retirement::CleanupFunding,
+    ) -> io::Result<PublisherCleanupTurn<'turn>> {
+        self.check_physical_worker()?;
+        Ok(PublisherCleanupTurn {
+            executor: self,
+            funding,
+        })
+    }
+
     /// Retains actual initialized custody on the physical worker, without cloning it.
     pub(super) fn new(custody: Arc<Mutex<Custody>>, consumer_reads: Arc<ReadBudget>) -> Self {
         Self {
@@ -868,6 +883,44 @@ impl PublisherRunningTurn<'_> {
         drop(custody);
         self.funding.check(&self.executor.custody)?;
         Ok(())
+    }
+}
+
+/// Retains exclusive physical dispatch across one original final-removal RPC.
+pub(crate) struct PublisherCleanupTurn<'executor> {
+    executor: &'executor mut NativeOwnerExecutor,
+    funding: &'executor super::super::publication::retirement::CleanupFunding,
+}
+
+impl PublisherCleanupTurn<'_> {
+    /// Checks the actual Running context and the original durably funded source.
+    ///
+    /// # Errors
+    /// Refuses a foreign worker/context, changed original funding or native body.
+    pub(crate) fn source_observation(
+        &mut self,
+        context: &PublisherRunningContext,
+    ) -> io::Result<
+        Arc<
+            crate::publisher_local::client::BodyIncarnationObservation<
+                terrane::host::cache::HostDomainLocation,
+            >,
+        >,
+    > {
+        self.executor.check_physical_worker()?;
+        if !self
+            .executor
+            .running
+            .as_ref()
+            .is_some_and(|actual| std::ptr::eq(actual.as_ref(), context))
+        {
+            return Err(io::Error::other(
+                "cleanup context belongs to another physical executor",
+            ));
+        }
+        self.funding.check(self.executor)?;
+        context.check_current().map_err(io::Error::other)?;
+        Ok(self.funding.observation())
     }
 }
 

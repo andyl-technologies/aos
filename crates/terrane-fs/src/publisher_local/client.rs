@@ -6,6 +6,8 @@
 //! custody; it does not prove cache reconciliation. Resume additionally requires
 //! genuine completed recovery and the concrete physical owner's exclusive turn.
 
+#[cfg(feature = "tokio")]
+mod cleanup;
 mod context;
 #[cfg(feature = "tokio")]
 mod manifest;
@@ -20,6 +22,8 @@ mod running;
 #[cfg(feature = "tokio")]
 mod transfer;
 
+#[cfg(feature = "tokio")]
+pub(crate) use cleanup::AcknowledgedSourceRetirement;
 pub(crate) use recovery::{BodyIncarnationObservation, RecoveryBody};
 
 pub(crate) use context::PublisherRecoveryContext;

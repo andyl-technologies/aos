@@ -27,9 +27,9 @@ pub use metadata::NativeHostMetadataReader;
 pub use owner::NativePolicyStall;
 #[cfg(feature = "tokio")]
 pub(crate) use owner::{
-    AcceptedRecoveryManifestEffect, PublisherResumeTurn, PublisherRunningTurn,
-    RecoveryManifestBodyFailure, RecoveryManifestBodyRetention, RecoveryManifestEffect,
-    RecoveryManifestEffectFailure, RecoveryRetainedManifest,
+    AcceptedRecoveryManifestEffect, PublisherCleanupTurn, PublisherResumeTurn,
+    PublisherRunningTurn, RecoveryManifestBodyFailure, RecoveryManifestBodyRetention,
+    RecoveryManifestEffect, RecoveryManifestEffectFailure, RecoveryRetainedManifest,
 };
 #[cfg(feature = "tokio")]
 pub use owner::{
@@ -37,7 +37,7 @@ pub use owner::{
     NativeChunkAdmissionError, NativeConsumerLease, NativeIndexRepairReport,
     NativeInlinePublication, NativeLeaseAccounting, NativeManifestPublication,
     NativeMetadataAdmissionError, NativeMetadataOwner, NativeResidentChunkSource,
-    NativeResumeError, RetainedManifest,
+    NativeResumeError, NativeSourceCleanupReport, RetainedManifest,
 };
 pub use quota::ProjectQuota;
 pub use reassembly::NativeReassemblyPlan;

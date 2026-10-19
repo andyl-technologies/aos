@@ -11,6 +11,7 @@ mod completion;
 mod io;
 mod manifest;
 pub(super) mod residence;
+pub(super) mod retirement;
 mod state;
 
 pub use manifest::NativeManifestPublication;
@@ -18,6 +19,7 @@ pub(super) use manifest::run as run_manifest;
 pub use residence::NativeResidentChunkSource;
 pub(super) use residence::RecoveredInlineJob;
 pub(super) use residence::retain as retain_resident_chunk;
+pub use retirement::NativeSourceCleanupReport;
 
 use super::{
     admission::{AdmissionJob, NativeChunkAdmissionError, TransferSource},
@@ -52,8 +54,9 @@ pub(super) struct PublicationJob {
     manifest: Option<manifest::ManifestInput>,
     transfer: Option<TransferSource>,
     transfer_observation:
-        Option<crate::publisher_local::client::BodyIncarnationObservation<HostDomainLocation>>,
+        Option<Arc<crate::publisher_local::client::BodyIncarnationObservation<HostDomainLocation>>>,
     transfer_retired: bool,
+    transfer_cleanup: Option<crate::publisher_local::client::AcknowledgedSourceRetirement>,
     token: String,
     hold: u64,
     generation: u64,
@@ -252,7 +255,7 @@ impl Funding {
 /// Retains an actual completed publication independently of its public wrapper.
 struct PublicationCompletion {
     body: Arc<PeerPublishedObject<HostDomainLocation>>,
-    _job: Arc<Mutex<PublicationJob>>,
+    job: Arc<Mutex<PublicationJob>>,
     allocated: u64,
     charged: u64,
     future: u64,
@@ -269,6 +272,25 @@ pub struct NativeInlinePublication {
 }
 
 impl NativeInlinePublication {
+    /// Finishes the original standalone source retirements on their physical owner.
+    ///
+    /// Call after the configured publisher retirement grace. The result counts
+    /// original sources whose final removal was acknowledged; repeated calls
+    /// check retained actual acknowledgements without repeating those RPCs.
+    /// Original pins, source descriptors and holds remain retained. Pending-name
+    /// removal is not a statement that physical allocation has been reclaimed.
+    ///
+    /// # Errors
+    /// Refuses another owner, queue limits, active native grace, stale backing,
+    /// quota failures and uncertain exchanges. Accepted failures require actual
+    /// recovery, retaining funding and resources after waiter cancellation.
+    pub async fn finish_retired_sources(
+        &self,
+        owner: &NativeMetadataOwner,
+    ) -> std_io::Result<NativeSourceCleanupReport> {
+        retirement::submit(owner, &self.completion.job).await
+    }
+
     /// Borrows verified read-only sealed bytes without an embedded-state lock.
     pub fn handle(&self) -> &File {
         self.completion.body.handle()
@@ -453,6 +475,7 @@ fn prepare(
         transfer,
         transfer_observation: None,
         transfer_retired: false,
+        transfer_cleanup: None,
         token: String::new(),
         hold: 0,
         generation: 0,
@@ -568,7 +591,7 @@ async fn execute(
             let observation = session
                 .inspect_source_transfer(&published, context, &mut turn, 0, &mut physical.reply)
                 .map_err(std_io::Error::other)?;
-            physical.transfer_observation = Some(observation);
+            physical.transfer_observation = Some(Arc::new(observation));
             let observation = physical
                 .transfer_observation
                 .as_ref()
@@ -634,7 +657,7 @@ async fn execute(
     physical.plaintext.shrink_to_fit();
     Ok(PublicationCompletion {
         body,
-        _job: Arc::clone(job),
+        job: Arc::clone(job),
         allocated,
         charged,
         future,
@@ -647,10 +670,18 @@ pub(super) fn manifest_source_header_bytes() -> usize {
         + std::mem::size_of::<io::SourceContext>()
         + residence::header_bytes()
         + std::mem::size_of::<manifest::SourceTransfer>()
+        + retirement_observation_bytes()
         + 2 * std::mem::size_of::<crate::host_cache::NativeChunkSource>()
         + 4 * std::mem::size_of::<TransferSource>()
         + std::mem::size_of::<crate::host_cache::NativeManifestSource>()
         + std::mem::size_of::<super::RetainedManifest>()
+}
+
+/// Counts the shared observation payload and both Arc ownership counters.
+pub(super) fn retirement_observation_bytes() -> usize {
+    std::mem::size_of::<
+        crate::publisher_local::client::BodyIncarnationObservation<HostDomainLocation>,
+    >() + 2 * std::mem::size_of::<std::sync::atomic::AtomicUsize>()
 }
 
 fn invalid(message: &'static str) -> std_io::Error {

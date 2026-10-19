@@ -60,6 +60,7 @@ CASES = [
     "publication-manifest-reuse",
     "publication-manifest-reuse-bad-whole",
     "consumer-leases", "lease-foreign",
+    "source-cleanup", "source-cleanup-early", "source-cleanup-foreign",
 ] + [row[0] for row in MANIFEST_CASES]
 
 LABELS = ["layout-root", "chunks", "objects", "sealed", "staging", "quarantine",
@@ -131,7 +132,9 @@ def actor_environment(case, uuid):
                 TERRANE_CACHE_OWNER=owner(case), TERRANE_CACHE_PROJECT=str(project(case)),
                 TERRANE_CACHE_QUOTA_SOCKET=str(RUNTIME / "quota.sock"),
                 TERRANE_CACHE_PUBLISHER_SOCKET=str(PUB_RUNTIME / "publisher.sock"),
-                TERRANE_CACHE_BUDGET=str(BUDGET), TERRANE_CACHE_UUID=uuid)
+                TERRANE_CACHE_BUDGET=str(BUDGET), TERRANE_CACHE_UUID=uuid,
+                TERRANE_CLEANUP_FOREIGN_ROOT=str(root("source-cleanup-foreign")),
+                TERRANE_CLEANUP_FOREIGN_PROJECT=str(project("source-cleanup-foreign")))
 
 
 def actor(case, mode, uuid):
@@ -820,16 +823,19 @@ def verify_image():
             "installed VM supervisor differs from immutable source")
     require(pathlib.Path(__file__).read_bytes() == supervisor_source.read_bytes(),
             "executed VM supervisor differs from source")
-    helper_name = "manifest_publication_vm.py"
-    helper_source = SOURCE / "tests/terrane" / helper_name
-    helper_installed = IMAGE / "share" / helper_name
-    helper_hash = hashlib.sha256(helper_installed.read_bytes()).hexdigest()
-    require(identity["supervisor_helpers"] == {helper_name: {
-                "source_path": "tests/terrane/" + helper_name,
-                "installed_path": "share/" + helper_name, "sha256": helper_hash}}
-            and helper_hash == identity["input_sha256"]["tests/terrane/" + helper_name]
-            and helper_installed.read_bytes() == helper_source.read_bytes(),
-            "installed manifest supervisor helper differs from immutable source")
+    helper_names = ["manifest_publication_vm.py", "source_cleanup_vm.py"]
+    require(set(identity["supervisor_helpers"]) == set(helper_names),
+            "native supervisor helper inventory changed")
+    for helper_name in helper_names:
+        helper_source = SOURCE / "tests/terrane" / helper_name
+        helper_installed = IMAGE / "share" / helper_name
+        helper_hash = hashlib.sha256(helper_installed.read_bytes()).hexdigest()
+        require(identity["supervisor_helpers"][helper_name] == {
+                    "source_path": "tests/terrane/" + helper_name,
+                    "installed_path": "share/" + helper_name, "sha256": helper_hash}
+                and helper_hash == identity["input_sha256"]["tests/terrane/" + helper_name]
+                and helper_installed.read_bytes() == helper_source.read_bytes(),
+                "installed supervisor helper differs from immutable source")
     expected = {"host_cache_fixture": ("terrane-fs", "example", ["native-test-fixtures", "tokio"]),
                 "terrane": ("terrane-cli", "bin", []), "aos-terrane-host": ("aos-terrane", "bin", []),
                 "terrane-fs-unit": ("terrane-fs", "lib", ["native-test-fixtures", "tokio"])}
@@ -1109,6 +1115,7 @@ def main():
         running_retention_cases(helper, uuid)
         runpy.run_path(str(IMAGE / "share/manifest_publication_vm.py"))["run"](sys.modules[__name__], publisher, uuid)
         manifest_recovery_cases(uuid, manifest_candidates, helper)
+        runpy.run_path(str(IMAGE / "share/source_cleanup_vm.py"))["run"](sys.modules[__name__], publisher, uuid)
         print("PASS bounded native cache recovery, encoded admission and inline publication; full Running publication/BKT15 remain unqualified", flush=True)
     finally:
         for child in reversed(children):
