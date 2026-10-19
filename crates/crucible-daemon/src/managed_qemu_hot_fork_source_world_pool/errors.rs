@@ -110,6 +110,15 @@ pub enum ManagedQemuHotForkSourceWorldAdmissionError<E> {
         /// Exact retained-resource dimensions that exceed their ceiling.
         pressure: HotCheckpointPressure,
     },
+    /// An anchor root fits, but one child forked from it would not.
+    ///
+    /// Admitting it would leave a root no branch can use, so the first hot
+    /// retry would fail lease capacity instead of running.
+    #[error("anchor root plus one child reservation exceeds retained-resource ceilings")]
+    AnchorChildCapacity {
+        /// Exact retained-resource dimensions that exceed their ceiling.
+        pressure: HotCheckpointPressure,
+    },
     /// Exact/thin fallback authentication failed.
     #[error("source-world fallback authentication failed")]
     Fallback(#[source] E),

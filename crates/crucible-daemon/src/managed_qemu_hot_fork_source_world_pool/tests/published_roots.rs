@@ -364,3 +364,194 @@ fn published_binding_rejects_provenance_for_another_configuration() {
         .expect("retire canonical source");
     advanced.retire().expect("retire advanced source");
 }
+
+/// Pool limits at `numerator / denominator` of one measured source.
+fn scaled_limits(
+    source: &mut ProductionVmHotForkSourceWorld,
+    maximum_templates: usize,
+    numerator: u64,
+    denominator: u64,
+) -> HotCheckpointLimits {
+    let usage = source
+        .measure_retained_resources()
+        .expect("measure source resources");
+    let scale = |value: u64| value.saturating_mul(numerator) / denominator;
+    let scale_count =
+        |value: u32| u32::try_from(scale(u64::from(value))).expect("scaled count fits");
+    let resources = HotCheckpointResourceProfile::new(
+        scale(usage.template_bytes()),
+        scale(usage.expected_private_dirty_bytes()),
+        scale_count(usage.process_count()),
+        scale_count(usage.virtual_cpu_count()),
+        scale_count(usage.descriptor_count()),
+        scale_count(usage.overlay_count()).max(1),
+    )
+    .expect("pool resource ceiling");
+    HotCheckpointLimits::new(maximum_templates, resources, 4, 1_000_000_000)
+        .expect("managed limits")
+}
+
+fn anchor_root(
+    key: QemuHotForkSourceWorldKey,
+    published: ConfigurationArtifactId,
+    source: ProductionVmHotForkSourceWorld,
+) -> AuthenticatedPublishedRootQemuHotForkSource {
+    let provenance = QemuPublishedRootProvenance::new(
+        QemuPublishedRootOrigin::BranchParentAnchor,
+        source.continuation().configuration().clone(),
+        Some(true),
+    );
+    AuthenticatedPublishedRootQemuHotForkSource::new(key, published, source, provenance)
+}
+
+#[test]
+fn anchor_root_with_room_for_one_child_persists_its_thin_fallback_and_leases() {
+    let mut source = advanced_source("anchor.fits");
+    let key = published_key(&source);
+    let limits = scaled_limits(&mut source, 1, 4, 1);
+    let retention = MemoryHotCheckpointFallbackRetentionStore::new();
+    let mut pool =
+        ManagedQemuHotForkSourceWorldPool::open(limits, ReapingDemotionSink, retention.clone())
+            .expect("managed source-world pool");
+    let published = published_artifact(b"anchor-fits-parent");
+
+    pool.admit_authenticated_anchor_root(
+        anchor_root(key.clone(), published, source),
+        HotCheckpointHotnessSignals::new(),
+    )
+    .expect("admit anchor root");
+
+    let slot = *pool
+        .active
+        .get(&manager_source_key(&key))
+        .expect("active fallback slot");
+    let record = retention
+        .load_fallback(slot)
+        .expect("load thin fallback")
+        .expect("persisted thin fallback");
+    assert_eq!(record.fallback(), HotCheckpointFallback::Thin(published));
+    assert!(pool.source_available(&key));
+
+    // The headroom the anchor was admitted with is exactly one child lease.
+    let lease = pool
+        .checkout_lease_for(1, &key)
+        .expect("child lease fits")
+        .expect("anchor root lease");
+    pool.restore_lease_for(1, lease);
+    pool.orderly_shutdown().expect("retire anchor root");
+}
+
+#[test]
+fn anchor_root_without_child_headroom_is_rejected_where_a_stop_root_fits() {
+    let mut source = advanced_source("anchor.no-headroom");
+    let key = published_key(&source);
+    // One measured world fits; the world plus one child reservation does not.
+    let limits = scaled_limits(&mut source, 1, 3, 2);
+    let retention = MemoryHotCheckpointFallbackRetentionStore::new();
+    let mut pool =
+        ManagedQemuHotForkSourceWorldPool::open(limits, ReapingDemotionSink, retention.clone())
+            .expect("managed source-world pool");
+
+    let failure = pool
+        .admit_authenticated_anchor_root(
+            anchor_root(
+                key.clone(),
+                published_artifact(b"anchor-no-headroom-parent"),
+                source,
+            ),
+            HotCheckpointHotnessSignals::new(),
+        )
+        .expect_err("an anchor no child could fork from is refused");
+    let ManagedQemuHotForkAuthenticatedAdmissionFailure::Admission(failure) = failure else {
+        panic!("binding must succeed for the anchor root")
+    };
+    let (candidate, cleanup_slot, error) = failure.into_parts();
+    assert!(cleanup_slot.is_none());
+    assert!(matches!(
+        error,
+        ManagedQemuHotForkSourceWorldAdmissionError::AnchorChildCapacity { .. }
+    ));
+    // The refusal precedes fallback persistence.
+    assert!(pool.records.is_empty());
+    assert!(!pool.source_available(&key));
+
+    // The same world is still an admissible stop root under the same limits.
+    let source = candidate
+        .into_source()
+        .map_err(|_| "refused anchor kept its source")
+        .expect("refused anchor source");
+    pool.admit_authenticated_published_root(
+        published_root(
+            key.clone(),
+            published_artifact(b"anchor-no-headroom-stop"),
+            source,
+        ),
+        HotCheckpointHotnessSignals::new(),
+    )
+    .expect("a stop root needs no child headroom");
+    assert!(pool.source_available(&key));
+    pool.orderly_shutdown().expect("retire stop root");
+}
+
+#[test]
+fn anchor_sink_names_capacity_refusals_and_reuses_an_equal_root() {
+    let mut first = advanced_source("anchor.sink");
+    let key = published_key(&first);
+    let limits = scaled_limits(&mut first, 2, 4, 1);
+    let pool = SharedManagedQemuHotForkSourceWorldPool::new(
+        ManagedQemuHotForkSourceWorldPool::open(
+            limits,
+            ReapingDemotionSink,
+            MemoryHotCheckpointFallbackRetentionStore::new(),
+        )
+        .expect("managed source-world pool"),
+    );
+    let sink = ManagedQemuPublishedRootSink::new(pool.clone(), HotCheckpointHotnessSignals::new());
+
+    let admitted = sink
+        .admit_anchor(anchor_root(
+            key.clone(),
+            published_artifact(b"anchor-sink-parent"),
+            first,
+        ))
+        .expect("admit anchor root");
+    assert_eq!(admitted, QemuPublishedRootAdmission::Admitted);
+
+    // A second world at the same boundary is retired; the first serves it.
+    let equal = advanced_source("anchor.sink");
+    assert_eq!(published_key(&equal), key);
+    let duplicate = sink
+        .admit_anchor(anchor_root(
+            key,
+            published_artifact(b"anchor-sink-parent"),
+            equal,
+        ))
+        .expect("a duplicate anchor is retired");
+    assert_eq!(duplicate, QemuPublishedRootAdmission::AlreadyRetained);
+    pool.orderly_shutdown().expect("retire anchor root");
+
+    let mut tight = advanced_source("anchor.sink-tight");
+    let tight_key = published_key(&tight);
+    let limits = scaled_limits(&mut tight, 1, 3, 2);
+    let pool = SharedManagedQemuHotForkSourceWorldPool::new(
+        ManagedQemuHotForkSourceWorldPool::open(
+            limits,
+            ReapingDemotionSink,
+            MemoryHotCheckpointFallbackRetentionStore::new(),
+        )
+        .expect("managed source-world pool"),
+    );
+    let sink = ManagedQemuPublishedRootSink::new(pool.clone(), HotCheckpointHotnessSignals::new());
+    let refused = sink
+        .admit_anchor(anchor_root(
+            tight_key,
+            published_artifact(b"anchor-sink-tight-parent"),
+            tight,
+        ))
+        .expect("a refused anchor is retired");
+    assert_eq!(
+        refused,
+        QemuPublishedRootAdmission::Rejected(String::from("anchor-child-capacity"))
+    );
+    pool.orderly_shutdown().expect("nothing retained");
+}

@@ -414,7 +414,10 @@ pub(crate) enum QemuPublishedRootOrigin {
     /// Replay kept the joined network fault park at an attempt's branch parent.
     #[cfg_attr(
         not(test),
-        expect(dead_code, reason = "anchor-root materialization constructs this origin")
+        expect(
+            dead_code,
+            reason = "anchor-root materialization constructs this origin"
+        )
     )]
     BranchParentAnchor,
 }

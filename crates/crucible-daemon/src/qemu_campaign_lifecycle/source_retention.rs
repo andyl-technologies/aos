@@ -80,6 +80,11 @@ pub(crate) enum QemuRetainedSourcePreparation<L> {
 pub(crate) enum QemuPublishedRootAdmission {
     /// The root is retained and reusable by later branches from its boundary.
     Admitted,
+    /// An equal root is already retained; the candidate was retired.
+    ///
+    /// Branches from the boundary reuse the retained root, so for an anchor
+    /// this is as good as admission.
+    AlreadyRetained,
     /// Policy declined the root and it was retired; the reason is diagnostic.
     Rejected(String),
 }
@@ -124,6 +129,38 @@ pub(crate) trait QemuPublishedRootSink: Send + Sync {
         &self,
         root: AuthenticatedPublishedRootQemuHotForkSource,
     ) -> Result<QemuPublishedRootAdmission, QemuPublishedRootRetirementError>;
+
+    /// Admits one anchor root only when the pool could still lease it a child.
+    ///
+    /// An anchor exists only so the attempt that made it can fork from it, so
+    /// the pool must hold the root plus one child reservation. A refusal for
+    /// that reason is reported as `anchor-child-capacity`, and a root equal
+    /// to one already retained as [`QemuPublishedRootAdmission::AlreadyRetained`].
+    /// Sinks without anchor support retire every anchor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuPublishedRootRetirementError`] when a declined root could
+    /// not be retired; its authority then remains quarantined.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "anchor-root materialization is the production caller"
+        )
+    )]
+    fn admit_anchor(
+        &self,
+        root: AuthenticatedPublishedRootQemuHotForkSource,
+    ) -> Result<QemuPublishedRootAdmission, QemuPublishedRootRetirementError> {
+        let (_key, _published, source, _provenance) = root.into_parts();
+        source
+            .retire()
+            .map(|()| {
+                QemuPublishedRootAdmission::Rejected(String::from("anchor-roots-unsupported"))
+            })
+            .map_err(|error| QemuPublishedRootRetirementError::new(error.to_string()))
+    }
 }
 
 /// Eligibility proven before a thin attempt's final boundary is settled.
@@ -457,6 +494,10 @@ pub(super) fn reconcile_published_root(
             }
             Ok(QemuPublishedRootAdmission::Rejected(reason)) => {
                 record_retention_decision("rejected", &reason);
+                Ok(())
+            }
+            Ok(QemuPublishedRootAdmission::AlreadyRetained) => {
+                record_retention_decision("rejected", "an equal root is already retained");
                 Ok(())
             }
             Err(error) => Err(error),
