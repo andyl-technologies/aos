@@ -9576,8 +9576,10 @@ Resumed qualification:
   allowances.
   Its owning `publisher-sole-writer` aggregate subsequently passes in 479.547
   seconds; independent source and runtime reinspection matches the original
-  report. Required application compilation is running before the complete
-  filesystem suite. Producer pin release,
+  report. Required application compilation subsequently passes in 2,310.039
+  seconds. Independent review matches all 128 declared test targets across 29
+  packages, including the mixed library target kinds; this proves compilation,
+  not application execution. The complete filesystem suite is running. Producer pin release,
   cached-object ownership, eviction, NativeReady and full task acceptance remain
   pending; this qualifies source-description closure only.
 - Resident-view candidate `a8fb695c3f` adds permanent closure before producer
@@ -9603,9 +9605,13 @@ Resumed qualification:
   and registry growth. Both builds, all 34 selected cases, all three strict
   Clippy profiles and the formatter pair pass on unchanged source. The native
   control now exercises actual registry exhaustion, slot reuse, foreign-owner
-  refusal and consumer reads after revocation. Native qualification is running;
-  owning-gate, required application and complete filesystem checks follow on
-  success. Producer pin release, cached-object ownership and eviction remain
+  refusal and consumer reads after revocation. Native qualification passes in
+  441.657 seconds, including all 53 selected filesystem cases. Independent review
+  verifies all 3,498 image inputs, four original Cargo ELFs, installed helpers
+  and the exact capacity/revocation controls. Durable protection and independent
+  consumer reads remain intact. The owning publisher gate is running; required
+  application and complete filesystem checks follow on success. Producer pin
+  release, cached-object ownership and eviction remain
   pending; no host task is accepted.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
   and all seven strict Clippy/documentation profiles pass. The interface,
