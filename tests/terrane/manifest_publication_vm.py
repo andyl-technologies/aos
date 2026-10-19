@@ -178,11 +178,23 @@ def check_recovered_reassembly(driver, case, output, original, prior=None):
                    and leases[0]["changed_nanoseconds"] == observed.st_ctime_ns % 1_000_000_000,
                    "new prefix lost actual original-inode retirement registration")
     state = tomllib.loads((root / "state/cache/records.toml").read_text())
-    expected = {"reservations": 7, "leases": 6, "pins": 9} if prior is None else {
+    expected = {"reservations": 7, "leases": 6, "pins": 10} if prior is None else {
         "reservations": len(prior["reservations"]) + 4,
-        "leases": len(prior["leases"]) + 4, "pins": len(prior["pins"]) + 6}
+        "leases": len(prior["leases"]) + 4, "pins": len(prior["pins"]) + 7}
     driver.require(all(len(state[group]) == count for group, count in expected.items()),
                    "recovered reassembly lost exact policy closure")
+    # Every recovered range in this assembly comes from this actual original
+    # sealed inode. Its independent producer pin must survive the copy even
+    # when the old recovery owner releases its own protection later.
+    producers = [row for row in state["pins"]
+                 if row["hash"] == manifest and row["owner"].startswith("publication:")]
+    driver.require(len(producers) == 1, "recovered assembly lacks one actual producer")
+    producer = producers[0]
+    driver.require(sorted(row["hash"] for row in state["pins"]
+                          if row["owner"] == producer["owner"]
+                          and row["expires"] == producer["expires"])
+                   == sorted([manifest, original["body"].name]),
+                   "recovered assembly lost its exact original backing dependency pin")
     new = [row for row in state["residences"] if row["chunk"] == prefix]
     old = [row for row in state["residences"] if row["chunk"] != prefix]
     old_match = old and (all(row["object"] == original["body"].name for row in old)

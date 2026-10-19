@@ -58,6 +58,16 @@ fn run_body(
     recovered_chunks: Vec<ChunkRef>,
 ) -> io::Result<()> {
     let original = load_state(runtime, inputs)?;
+    let mut backing_hashes = BTreeSet::new();
+    for chunk in &recovered_chunks {
+        let hash = hex(&chunk.digest);
+        let residence = original
+            .residences
+            .iter()
+            .find(|row| row.chunk == hash)
+            .ok_or_else(|| invalid("recovered input lacks its original residence"))?;
+        backing_hashes.insert(residence.object.clone());
+    }
     let prefix = super::super::manifest_publication::nonfinal_fixture_chunk()?;
     let profile = ChunkProfile::cdc_1m([0; 32]);
     let prefix_identity = TERRANE_V1
@@ -155,6 +165,7 @@ fn run_body(
         &prefix_identity,
         prefix.len(),
         expected_holds,
+        &backing_hashes,
     )?;
     let stalled = runtime.block_on(owner.stall_policy_for_fixture())?;
     let old_actual = retained.read_verified()?;
@@ -227,6 +238,7 @@ fn check_state(
     prefix: &Identity,
     prefix_bytes: usize,
     expected_holds: u64,
+    backing_hashes: &BTreeSet<String>,
 ) -> io::Result<()> {
     let reservations_preserved = original.reservations.iter().all(|previous| {
         current.reservations.iter().any(|candidate| {
@@ -259,7 +271,7 @@ fn check_state(
         || !residences_preserved
         || current.reservations.len() != original.reservations.len() + 4
         || current.leases.len() != original.leases.len() + 4
-        || current.pins.len() != original.pins.len() + 6
+        || current.pins.len() != original.pins.len() + 6 + backing_hashes.len()
         || current.residences.len() != original.residences.len() + 1
         || current
             .reservations
@@ -276,6 +288,28 @@ fn check_state(
     {
         return Err(invalid(
             "recovered reassembly changed original custody or exact new policy closure",
+        ));
+    }
+    let manifest_hash = hex(manifest.digest());
+    let producers: Vec<_> = current
+        .pins
+        .iter()
+        .filter(|pin| pin.hash == manifest_hash && pin.owner.starts_with("publication:"))
+        .collect();
+    let [producer] = producers.as_slice() else {
+        return Err(invalid("recovered assembly lacks its unique producer pin"));
+    };
+    let protected: BTreeSet<_> = current
+        .pins
+        .iter()
+        .filter(|pin| pin.owner == producer.owner && pin.expires == producer.expires)
+        .map(|pin| pin.hash.clone())
+        .collect();
+    let mut expected = backing_hashes.clone();
+    expected.insert(manifest_hash);
+    if protected != expected {
+        return Err(invalid(
+            "recovered assembly lost exact backing dependency pins",
         ));
     }
     Ok(())
