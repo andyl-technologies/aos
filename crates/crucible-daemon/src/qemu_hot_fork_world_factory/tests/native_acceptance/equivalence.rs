@@ -30,6 +30,8 @@ struct ReplayCheckpoint<'a> {
     raw: ExactCheckpointId,
 }
 
+#[path = "equivalence/anchor.rs"]
+mod anchor;
 #[path = "equivalence/campaign_perf.rs"]
 mod campaign_perf;
 #[path = "equivalence/child.rs"]

@@ -390,6 +390,41 @@ impl CrucibleAttemptExecution {
         self
     }
 
+    /// Decodes a branch start exactly as repository dispatch does, for tests
+    /// whose attempts are not stored in a campaign.
+    ///
+    /// The parent's selections and the branch selection must already be
+    /// published to `store`, so recorded network and signal fault branches are
+    /// rebuilt from their records rather than supplied by the test.
+    #[cfg(test)]
+    pub(crate) fn decoded_branch_for_test(
+        store: &CampaignExecutorStore,
+        lineage: CampaignLineage,
+        scenario: ScenarioDefForm,
+        attempt: Attempt,
+        path: BranchPath,
+        parent: crucible_campaign::ConfigurationArtifact,
+        selection: ResolvedSelection,
+    ) -> Result<Self, CrucibleArtifactError> {
+        let scenario_artifact = crate::encode_crucible_scenario_artifact(&scenario)?;
+        let start = ResolvedAttemptStart::Branch {
+            parent,
+            selection: Box::new(selection),
+        };
+        let (start, signal_fault_replay) =
+            decode_base_crucible_start(store, &scenario, &scenario_artifact, &start, None)?;
+
+        Ok(Self {
+            lineage,
+            scenario,
+            attempt,
+            path,
+            start,
+            signal_fault_replay,
+            replay_continuation_basis: None,
+        })
+    }
+
     /// Returns the exact campaign lineage admitted for this execution.
     #[must_use]
     pub const fn lineage(&self) -> &CampaignLineage {

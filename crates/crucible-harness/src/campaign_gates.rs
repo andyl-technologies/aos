@@ -134,6 +134,10 @@ const HOT_FORK_EQUIVALENCE_SELECTORS: &[ExactSelector] = &[
         source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/native_acceptance/failures.rs",
         name: "qemu_hot_fork_world_factory::tests::native_acceptance::failures::production_source_preparation_failure_exposes_no_template",
     },
+    ExactSelector {
+        source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/native_acceptance/equivalence/anchor.rs",
+        name: "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::anchor::production_anchor_and_ancestor_hot_forks_match_thin_replay",
+    },
 ];
 
 const CAMPAIGN_METADATA_MILLION_SELECTORS: &[ExactSelector] = &[ExactSelector {

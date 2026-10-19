@@ -1,5 +1,7 @@
 //! Representative traffic and host-I/O scenario for native whole-world forks.
 
+#[path = "scenario/network_fault_anchor.rs"]
+mod network_fault_anchor;
 #[path = "scenario/profile_tests.rs"]
 mod profile_tests;
 
@@ -38,6 +40,8 @@ use crucible_campaign::{
     ChoiceClassContext, ChoiceDomain, ChoiceSource, ChoiceValue, ExactRational, IntegerDomain,
     IntegerRepresentation, IntegerValue, SelectableDeclaration,
 };
+
+pub(super) use self::network_fault_anchor::build_network_fault_anchor;
 
 pub(super) const PERMANENT_FAILURE_NANOS: u64 = 30_000_000_000;
 pub(super) const NINEP_FAULT_WINDOW_NANOS: u64 = 5_000_000_000;
@@ -354,6 +358,15 @@ fn equivalence_measurements(
 }
 
 fn equivalence_selectables(world: &World) -> Result<ScenarioSelectables, Box<dyn Error>> {
+    Ok(ScenarioSelectables::new(
+        world,
+        ScenarioSelectableLimits::new(4, 8, 16, 32)?,
+        vec![guest_quanta_declaration()?],
+    )?)
+}
+
+/// Declares the curl guest's `hot-fork.retry-quanta` integer choice.
+fn guest_quanta_declaration() -> Result<SelectableDeclaration, Box<dyn Error>> {
     let retry_domain = ChoiceDomain::Integer(IntegerDomain::new(
         1,
         IntegerRepresentation::Unsigned64,
@@ -364,7 +377,7 @@ fn equivalence_selectables(world: &World) -> Result<ScenarioSelectables, Box<dyn
         ExactRational::new(1, 1)?,
         Vec::new(),
     )?);
-    let declaration = SelectableDeclaration::new(
+    Ok(SelectableDeclaration::new(
         "hot-fork.retry-quanta",
         ChoiceSource::Guest {
             node: String::from("curl"),
@@ -375,11 +388,6 @@ fn equivalence_selectables(world: &World) -> Result<ScenarioSelectables, Box<dyn
         ChoiceClassContext::new(BTreeSet::new())?,
         BTreeSet::new(),
         true,
-    )?;
-    Ok(ScenarioSelectables::new(
-        world,
-        ScenarioSelectableLimits::new(4, 8, 16, 32)?,
-        vec![declaration],
     )?)
 }
 

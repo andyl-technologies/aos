@@ -246,6 +246,8 @@ in
               case "$cmdline" in
                 # The single-VM fixture retains block/9p without any World network links.
                 *" role=hot-fork-single "*) networked_role=0 ;;
+                # Anchor VMs park quietly at a network fault phase marker.
+                *" role=hot-fork-anchor-"*) networked_role=0 ;;
               esac
               ;;
           esac
@@ -428,6 +430,31 @@ in
                     hot-fork-continuation-complete \
                     'The selected continuation completed' \
                     1
+                  while :; do
+                    sleep 3600
+                  done
+                  ;;
+                *" role=hot-fork-anchor-chooser "*)
+                  crucible-guest selectable register-u64 \
+                    1 hot-fork.retry-quanta 1 9 2 3 quanta
+                  crucible-guest setup-complete
+                  # Every VM parks here until the network fault choice is released.
+                  crucible-guest event fault.transport.ready
+                  crucible-guest selectable choose-u64 \
+                    1 hot-fork.retry-quanta anchor/one 1 9 2 > /dev/null
+                  crucible-guest sometimes \
+                    hot-fork-continuation-complete \
+                    'The selected continuation completed' \
+                    1
+                  crucible-guest selectable choose-u64 \
+                    2 hot-fork.retry-quanta anchor/two 1 9 2 > /dev/null
+                  while :; do
+                    sleep 3600
+                  done
+                  ;;
+                *" role=hot-fork-anchor-peer "*)
+                  crucible-guest setup-complete
+                  crucible-guest event fault.transport.ready
                   while :; do
                     sleep 3600
                   done

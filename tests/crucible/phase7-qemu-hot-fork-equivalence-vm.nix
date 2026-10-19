@@ -36,7 +36,10 @@ assert builtins.elem caseProfile ["full" "single-guest"]; let
         "equivalence-exact-template-source equivalence-exact-template-target"
       ]
       ++ singleGuestLaneGroups
-      ++ ["preparation-failure-source"];
+      ++ [
+        "preparation-failure-source"
+        "anchor-thin anchor-root anchor-child"
+      ];
   # Preserve the full profile's shell text as well as its lane order.
   laneArguments = builtins.concatStringsSep " \\\n  " laneGroups;
 
@@ -244,6 +247,14 @@ assert builtins.elem caseProfile ["full" "single-guest"]; let
         done
         run_case qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_single_node_hot_fork_matches_thin_and_exact
         run_case qemu_hot_fork_world_factory::tests::native_acceptance::failures::production_source_preparation_failure_exposes_no_template
+        anchor_case=qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::anchor::production_anchor_and_ancestor_hot_forks_match_thin_replay
+        run_case "$anchor_case"
+        for evidence in \
+          'anchor_hot_fork_equivalence=true' \
+          'ancestor_hot_fork_equivalence=true' \
+          'anchor_roots_retired=1'; do
+          require_case_marker "$anchor_case" "$evidence"
+        done
 
         printf '%s\n' \
           'PASS' \
@@ -255,6 +266,8 @@ assert builtins.elem caseProfile ["full" "single-guest"]; let
           'child_suffix_matches_exact_restore=true' \
           'child_suffix_matches_genesis_replay=true' \
           'concurrent_live_children=2' \
+          'anchor_hot_fork_equivalence=true' \
+          'ancestor_hot_fork_equivalence=true' \
           'application_http_status=200' \
           'inactive_world_reactivation=true' \
           'shared_cause=network,block,node' \
@@ -312,9 +325,9 @@ in
         pkgs.crucible-qemu-plugin
         pkgs.linux
       ];
-      # Retain the full profile's three-case budget for both profiles, including
+      # Retain the full profile's four-case budget for both profiles, including
       # the bounded boot, setup, and evidence-retention margin.
-      timeout = 7200;
+      timeout = 9000;
       memoryMiB = 8192;
       varSizeMiB = 16384;
     }
