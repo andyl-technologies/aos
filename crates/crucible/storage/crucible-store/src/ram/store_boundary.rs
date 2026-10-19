@@ -125,7 +125,12 @@ impl<'a> WorkAccount<'a> {
     /// Seals the first read error before a provider can consume its return value.
     pub(super) fn fail_read(&mut self, error: RamStoreError) -> StoreError {
         if let Some(first) = self.first_read_cause() {
-            return first.error();
+            return match error {
+                // A nested request may already own the complete provider
+                // continuation. Preserve its payload and single-use credit.
+                RamStoreError::Store(error) if first.matches(&error) => error,
+                _ => first.error(),
+            };
         }
         if let RamStoreError::Boundary(source) = error {
             self.state.first_failure = Some(FirstReadCause::Boundary(source.clone()));

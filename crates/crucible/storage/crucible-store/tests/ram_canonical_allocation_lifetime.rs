@@ -11,7 +11,7 @@ use crucible_host_resources::test_support::{
     AllocationIdentity, AllocationRosterOutcome, BeforeFreeMarkerOutcome, TestAllocationObserver,
 };
 use crucible_ram::{RegionClass, RegionDescriptor, Scope, Topology};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 const CAPACITY: usize = 64;
@@ -21,6 +21,9 @@ static COUNT: AtomicUsize = AtomicUsize::new(0);
 static SIZES: [AtomicUsize; CAPACITY] = [const { AtomicUsize::new(0) }; CAPACITY];
 static TARGET: AtomicUsize = AtomicUsize::new(usize::MAX);
 static CLOSED: AtomicBool = AtomicBool::new(false);
+// These fixtures share process-wide allocation probes. Their internal final-
+// alias races remain concurrent, but separate fixtures must not reset the probes.
+static OBSERVATION: Mutex<()> = Mutex::new(());
 
 #[global_allocator]
 static ALLOCATOR: TestAllocationObserver = TestAllocationObserver;
@@ -101,6 +104,10 @@ impl RamRetention for Retention {
 #[test]
 fn canonical_control_frees_before_child_custody_on_drop_unwind_and_concurrent_final_aliases()
 -> Result<(), Box<dyn std::error::Error>> {
+    let _observation = OBSERVATION
+        .lock()
+        .map_err(|_| "allocation observation fixture lock is poisoned")?;
+
     for mode in 0..3 {
         WATCH.store(false, Ordering::SeqCst);
         COUNT.store(0, Ordering::SeqCst);
@@ -228,6 +235,10 @@ fn returned_frame_payload_frees_before_its_own_credit_after_sender_closes()
     use crucible_qemu_protocol::ram_transfer::{
         RamTransferControl, RamTransferLimits, RamTransferMessage, RamTransferNodeCoordinate,
     };
+
+    let _observation = OBSERVATION
+        .lock()
+        .map_err(|_| "allocation observation fixture lock is poisoned")?;
 
     for mode in 0..3 {
         WATCH.store(false, Ordering::SeqCst);

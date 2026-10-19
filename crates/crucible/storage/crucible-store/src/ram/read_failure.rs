@@ -9,7 +9,7 @@ use crate::owned_decode::DecodeScratch;
 
 use super::{RamFailureCause, RamStoreError};
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub(super) enum FirstReadCause {
     Boundary(RamFailureCause<RamStoreError>),
     Validation(RamFailureCause<Infallible>),
@@ -33,6 +33,9 @@ impl FirstReadCause {
 
     pub(super) fn matches(&self, error: &StoreError) -> bool {
         match (self, error) {
+            // An inner read already paid for this complete continuation.
+            // Forward it without consuming the same linear credit again.
+            (_, StoreError::RamReadContinuation { source }) => self == &source.body.first,
             (Self::Boundary(first), StoreError::RamReadBoundary { source }) => first == source,
             (Self::Validation(first), StoreError::RamValidation { source }) => first == source,
             (Self::ValidationWithProvider(first), StoreError::RamReadValidation { source }) => {

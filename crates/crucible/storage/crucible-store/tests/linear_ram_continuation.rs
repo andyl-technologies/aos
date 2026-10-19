@@ -27,6 +27,8 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 static LOAN_CLOSED: AtomicU64 = AtomicU64::new(0);
+// Both fixtures observe the same process-wide allocator and close marker.
+static OBSERVATION: Mutex<()> = Mutex::new(());
 
 #[global_allocator]
 static ALLOCATOR: TestAllocationObserver = TestAllocationObserver;
@@ -132,6 +134,10 @@ impl Drop for UnwindPayload {
 
 #[test]
 fn linear_pair_preserves_causes_and_credit_through_real_free() {
+    let _observation = OBSERVATION
+        .lock()
+        .expect("exclusive allocation observation");
+
     let existing = PreparedRamFailure::<Infallible>::allocation_bytes().unwrap();
     let pair_layout = Layout::new::<Pair>();
     assert!(u64::try_from(pair_layout.size()).unwrap() <= existing);
@@ -403,6 +409,17 @@ impl ImmutableBlobBackend for Provider {
         &self,
         request: &mut BoundedReadRequest<'_, '_>,
     ) -> Result<(), StoreError> {
+        // Initial capture also performs checked publication readback. Inject
+        // the distinct provider failure only after that healthy setup completes.
+        let armed = self
+            .returned
+            .lock()
+            .map_err(|_| StoreError::Unavailable)?
+            .is_some();
+        if !armed {
+            return self.inner.read_bounded_with_boundary(request);
+        }
+
         // This private modeled child inherits the actual nominal default, so
         // its checked metadata failure seals E before this provider consumes it.
         struct Child<'a>(&'a Provider);
@@ -441,19 +458,30 @@ impl ImmutableBlobBackend for Provider {
             }
         }
         let first = Child(self).read_bounded_with_boundary(request);
-        assert!(matches!(first, Err(StoreError::RamValidation { .. })));
-        self.returned
+        let returned = self
+            .returned
             .lock()
             .map_err(|_| StoreError::Unavailable)?
-            .take()
-            .ok_or(StoreError::Unavailable)
-            .and_then(Err)
+            .take();
+        let Some(returned) = returned else {
+            // A nested request already injected the one retained failure.
+            return first;
+        };
+        assert!(
+            matches!(first, Err(StoreError::RamValidation { .. })),
+            "the child must return its actual validation failure: {first:?}"
+        );
+        Err(returned)
     }
 }
 
 #[test]
 fn actual_work_continuation_credit_outlives_production_box_free() {
     use crucible_ram::{Limits, RegionClass, RegionDescriptor, Scope, Topology};
+
+    let _observation = OBSERVATION
+        .lock()
+        .expect("exclusive allocation observation");
 
     let directory = tempfile::tempdir().unwrap();
     let source_quota = Arc::new(SourceQuota(Arc::new(AtomicU64::new(0))));
