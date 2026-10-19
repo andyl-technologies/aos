@@ -30,7 +30,7 @@ pub(super) fn factory(
 
     QemuProductionHotForkWorldLifecycleFactory::new(
         QemuSingleHotForkSourceWorldProvider::new(key, source_world),
-        ScriptedWorldGuardFactory { observations },
+        ScriptedWorldGuardFactory::new(observations),
         run_state_root,
         shutdown_policy,
         QemuAsyncDriverPolicy::fast_test(),

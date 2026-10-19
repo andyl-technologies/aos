@@ -28,15 +28,14 @@ fn short_source_horizon_refuses_budget_before_guest_choice_handoff() {
     let input = execution_input_for_scenario_with_stop(scenario, StopCondition::NextChoice);
     let context = execution_context(&input, 0x72);
     let run_state = tempfile::tempdir().expect("run state");
-    let mut runner = QemuHotForkWorldExecutionRunner::new(
-        factory(
-            source_world,
-            input.lineage(),
-            run_state.path().to_path_buf(),
-            ScriptedWorldObservations::new(),
-        ),
-        QemuFreshModeledDriver::new(),
+    let factory = factory(
+        source_world,
+        input.lineage(),
+        run_state.path().to_path_buf(),
+        ScriptedWorldObservations::new(),
     );
+    factory.bind_component_context(&context);
+    let mut runner = QemuHotForkWorldExecutionRunner::new(factory, QemuFreshModeledDriver::new());
 
     assert!(matches!(
         runner.try_execute(&input, &context),
@@ -75,7 +74,7 @@ fn second_adoption_failure_retains_first_adoption_and_complete_world() {
 
     reset_hot_fork_adoption_count_for_test();
     assert!(matches!(
-        factory.try_start(&input, &context),
+        factory.try_start_component(&input, &context),
         Err(AttemptWorkerFailure::Terminal(
             QemuProductionHotForkWorldLifecycleFactoryError::Lifecycle(_)
         ))
@@ -119,7 +118,10 @@ fn poisoned_source_owner_cannot_be_recovered_on_retry() {
         run_state.path().to_path_buf(),
         observations,
     );
-    let mut lifecycle = match factory.try_start(&input, &context).expect("start world") {
+    let mut lifecycle = match factory
+        .try_start_component(&input, &context)
+        .expect("start world")
+    {
         QemuHotForkWorldLifecycleStart::Started(lifecycle) => lifecycle,
         QemuHotForkWorldLifecycleStart::Declined => panic!("exact source world declined"),
     };
@@ -156,17 +158,19 @@ fn publication_worker(
 ) -> RepositoryAttemptWorker<
     CrucibleExecutionModel<impl CrucibleExecutionRunner<Error: std::fmt::Debug>>,
 > {
-    let hot_fork = QemuHotForkWorldExecutionRunner::new(
-        factory(source_world, lineage, run_state_root, observations),
-        QemuFreshModeledDriver::new(),
-    );
+    let factory = factory(source_world, lineage, run_state_root, observations);
+    let component = factory.component_binding();
+    let hot_fork = QemuHotForkWorldExecutionRunner::new(factory, QemuFreshModeledDriver::new());
     let router = QemuHotFirstExecutionRouter::new(
         hot_fork,
         NeverFallbackRunner {
             calls: fallback_calls,
         },
     );
-    let model = CrucibleExecutionModel::new(store.clone(), operational::ComponentRunner(router));
+    let model = CrucibleExecutionModel::new(
+        store.clone(),
+        operational::ComponentRunner::new(router, component),
+    );
     RepositoryAttemptWorker::new(store.clone(), model)
 }
 
@@ -437,7 +441,7 @@ fn hot_first_router_falls_back_only_after_decline_and_bypasses_hot_fork_for_resu
         RecordingUnavailableSourceWorldProvider {
             checkouts: Arc::clone(&checkouts),
         },
-        ScriptedWorldGuardFactory { observations },
+        ScriptedWorldGuardFactory::new(observations),
         run_state.path(),
         QemuShutdownPolicy::fast_test(),
         QemuAsyncDriverPolicy::fast_test(),

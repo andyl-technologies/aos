@@ -44,7 +44,7 @@ fn scripted_factory_rejects_the_complete_isolation_negative_matrix_before_readin
         );
 
         reset_hot_fork_adoption_count_for_test();
-        let failure = match factory.try_start(&input, &context) {
+        let failure = match factory.try_start_component(&input, &context) {
             Err(failure) => failure,
             Ok(_) => panic!("{} unexpectedly exposed a world", fault.label()),
         };

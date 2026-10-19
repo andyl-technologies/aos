@@ -134,6 +134,8 @@ struct ScriptedWorldGuard {
     retained_child_requests: Arc<Mutex<Vec<crucible_qemu_host::QmpHotForkRequest>>>,
     _liveness: Arc<()>,
     terminal: bool,
+    // Child contracts, directories and callbacks return before the service.
+    _component_service: Arc<operational::ComponentService>,
 }
 
 impl QemuAttemptOperationalBoundary for ScriptedWorldGuard {
@@ -291,6 +293,16 @@ impl QemuHotForkChildProcessOwner for ScriptedWorldGuard {
 
 struct ScriptedWorldGuardFactory {
     observations: ScriptedWorldObservations,
+    component: operational::ComponentBinding,
+}
+
+impl ScriptedWorldGuardFactory {
+    fn new(observations: ScriptedWorldObservations) -> Self {
+        Self {
+            observations,
+            component: operational::ComponentBinding::default(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -332,6 +344,7 @@ impl QemuAttemptResourceGuardFactory for ScriptedWorldGuardFactory {
         _selected_checkpoint: Option<crate::executor_supervisor::SelectedExactCheckpointRoot>,
     ) -> Result<Self::Guard, crate::crucible_qemu_session::QemuAttemptResourceGuardBeginFailure>
     {
+        let component_service = self.component.retain(&cancellation)?;
         let cgroup = tempfile::tempdir().map_err(test_realization_error)?;
         let cgroup_directory: OwnedFd = File::open(cgroup.path())
             .map_err(test_realization_error)?
@@ -381,6 +394,7 @@ impl QemuAttemptResourceGuardFactory for ScriptedWorldGuardFactory {
             retained_child_requests: Arc::clone(&self.observations.retained_child_requests),
             _liveness: liveness,
             terminal: false,
+            _component_service: component_service,
         })
     }
 }
@@ -1231,7 +1245,7 @@ fn source_provider_failure_preserves_its_diagnostic_chain() {
     let run_state = tempfile::tempdir().expect("run state");
     let mut factory = QemuProductionHotForkWorldLifecycleFactory::new(
         FailingSourceWorldProvider,
-        ScriptedWorldGuardFactory { observations },
+        ScriptedWorldGuardFactory::new(observations),
         run_state.path(),
         QemuShutdownPolicy::fast_test(),
         QemuAsyncDriverPolicy::fast_test(),
@@ -1510,7 +1524,7 @@ fn execution_basis(
 fn execution_context(
     input: &CrucibleAttemptExecution,
     execution_byte: u8,
-) -> AttemptExecutionContext {
+) -> operational::ComponentContext {
     operational::service_context(
         AttemptResourceLimits::new(8, 8 << 30, 8 << 30, 64).expect("resources"),
         execution_basis(input, execution_byte),

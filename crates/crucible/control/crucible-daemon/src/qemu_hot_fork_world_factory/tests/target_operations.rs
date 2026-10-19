@@ -194,16 +194,14 @@ fn default_target_backend_keeps_missing_native_issuer_refusal_before_component_e
     let run_state = tempfile::tempdir().expect("run state");
     let mut factory = QemuProductionHotForkWorldLifecycleFactory::new(
         QemuSingleHotForkSourceWorldProvider::new(key, source_world),
-        ScriptedWorldGuardFactory {
-            observations: observations.clone(),
-        },
+        ScriptedWorldGuardFactory::new(observations.clone()),
         run_state.path(),
         QemuShutdownPolicy::fast_test(),
         QemuAsyncDriverPolicy::fast_test(),
     );
 
     let failure = factory
-        .try_start(&input, &execution_context(&input, 0x9f))
+        .try_start_component(&input, &execution_context(&input, 0x9f))
         .err()
         .expect("the default backend requires a genuine native issuer");
 

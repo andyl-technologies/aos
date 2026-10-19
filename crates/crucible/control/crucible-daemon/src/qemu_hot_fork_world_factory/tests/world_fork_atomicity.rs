@@ -217,7 +217,7 @@ fn production_three_node_clean_rejection_is_atomic_at_every_launch_index() {
         );
 
         let failure = factory
-            .try_start(
+            .try_start_component(
                 &input,
                 &execution_context(&input, 0x80 + failure_index as u8),
             )
@@ -268,7 +268,7 @@ fn production_three_node_clean_rejection_is_atomic_at_every_launch_index() {
         );
 
         let mut lifecycle = match factory
-            .try_start(
+            .try_start_component(
                 &input,
                 &execution_context(&input, 0x90 + failure_index as u8),
             )
@@ -301,7 +301,7 @@ fn production_three_node_ambiguous_launch_is_fail_closed_at_every_index() {
         );
 
         let failure = factory
-            .try_start(
+            .try_start_component(
                 &input,
                 &execution_context(&input, 0xa0 + failure_index as u8),
             )
@@ -374,7 +374,7 @@ fn production_three_node_adoption_failure_retains_the_complete_world() {
         );
 
         assert!(matches!(
-            factory.try_start(
+            factory.try_start_component(
                 &input,
                 &execution_context(&input, 0xb0 + failure_index as u8)
             ),
@@ -428,7 +428,7 @@ fn production_aggregate_release_failure_blocks_source_restore() {
     );
 
     let failure = factory
-        .try_start(&input, &execution_context(&input, 0xc0))
+        .try_start_component(&input, &execution_context(&input, 0xc0))
         .err()
         .expect("aggregate release failure must reject restore");
     let AttemptWorkerFailure::Retryable(
@@ -478,7 +478,7 @@ fn production_source_identity_drift_blocks_restore_after_complete_rollback() {
     );
 
     let failure = factory
-        .try_start(&input, &execution_context(&input, 0xc1))
+        .try_start_component(&input, &execution_context(&input, 0xc1))
         .err()
         .expect("source identity drift must reject restore");
     let AttemptWorkerFailure::Retryable(QemuProductionHotForkWorldLifecycleFactoryError::Assembly(

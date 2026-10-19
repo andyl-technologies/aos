@@ -69,7 +69,10 @@ fn two_running_nodes_install_shutdown_reconcile_and_reuse_one_source_world() {
         observations.clone(),
     );
 
-    let mut lifecycle = match factory.try_start(&input, &context).expect("start world") {
+    let mut lifecycle = match factory
+        .try_start_component(&input, &context)
+        .expect("start world")
+    {
         QemuHotForkWorldLifecycleStart::Started(lifecycle) => lifecycle,
         QemuHotForkWorldLifecycleStart::Declined => panic!("exact source world declined"),
     };
@@ -119,7 +122,7 @@ fn two_running_nodes_install_shutdown_reconcile_and_reuse_one_source_world() {
 
     let second_context = execution_context(&input, 0x7a);
     let mut second_lifecycle = match factory
-        .try_start(&input, &second_context)
+        .try_start_component(&input, &second_context)
         .expect("reuse source world")
     {
         QemuHotForkWorldLifecycleStart::Started(lifecycle) => lifecycle,
@@ -231,7 +234,7 @@ fn powered_off_node_forks_with_the_complete_world_and_releases_on_shutdown() {
     );
 
     let mut lifecycle = match factory
-        .try_start(&input, &context)
+        .try_start_component(&input, &context)
         .expect("start child world")
     {
         QemuHotForkWorldLifecycleStart::Started(lifecycle) => lifecycle,
@@ -357,9 +360,7 @@ fn two_factories_keep_independent_live_children_from_one_managed_source() {
     let second_run_state = tempfile::tempdir().expect("second run state");
     let mut first_factory = QemuProductionHotForkWorldLifecycleFactory::new(
         shared.provider().expect("first source provider"),
-        ScriptedWorldGuardFactory {
-            observations: first_observations.clone(),
-        },
+        ScriptedWorldGuardFactory::new(first_observations.clone()),
         first_run_state.path(),
         QemuShutdownPolicy::fast_test(),
         QemuAsyncDriverPolicy::fast_test(),
@@ -367,9 +368,7 @@ fn two_factories_keep_independent_live_children_from_one_managed_source() {
     .with_target_operations(super::super::target_operations::ComponentTargetOperations);
     let mut second_factory = QemuProductionHotForkWorldLifecycleFactory::new(
         shared.provider().expect("second source provider"),
-        ScriptedWorldGuardFactory {
-            observations: second_observations.clone(),
-        },
+        ScriptedWorldGuardFactory::new(second_observations.clone()),
         second_run_state.path(),
         QemuShutdownPolicy::fast_test(),
         QemuAsyncDriverPolicy::fast_test(),
@@ -377,14 +376,14 @@ fn two_factories_keep_independent_live_children_from_one_managed_source() {
     .with_target_operations(super::super::target_operations::ComponentTargetOperations);
 
     let mut first = match first_factory
-        .try_start(&input, &execution_context(&input, 0xd2))
+        .try_start_component(&input, &execution_context(&input, 0xd2))
         .expect("start first child world")
     {
         QemuHotForkWorldLifecycleStart::Started(lifecycle) => lifecycle,
         QemuHotForkWorldLifecycleStart::Declined => panic!("first managed lease declined"),
     };
     let mut second = match second_factory
-        .try_start(&input, &execution_context(&input, 0xd3))
+        .try_start_component(&input, &execution_context(&input, 0xd3))
         .expect("start second child world")
     {
         QemuHotForkWorldLifecycleStart::Started(lifecycle) => lifecycle,
@@ -480,9 +479,7 @@ fn proven_first_child_rejection_restores_the_exact_source_world_for_retry() {
     let run_state = tempfile::tempdir().expect("run state");
     let mut factory = QemuProductionHotForkWorldLifecycleFactory::new(
         provider,
-        ScriptedWorldGuardFactory {
-            observations: observations.clone(),
-        },
+        ScriptedWorldGuardFactory::new(observations.clone()),
         run_state.path(),
         QemuShutdownPolicy::fast_test(),
         QemuAsyncDriverPolicy::fast_test(),
@@ -491,7 +488,7 @@ fn proven_first_child_rejection_restores_the_exact_source_world_for_retry() {
 
     let first_context = execution_context(&input, 0x79);
     assert!(matches!(
-        factory.try_start(&input, &first_context),
+        factory.try_start_component(&input, &first_context),
         Err(AttemptWorkerFailure::Retryable(
             QemuProductionHotForkWorldLifecycleFactoryError::Assembly(_)
         ))
@@ -530,7 +527,7 @@ fn proven_first_child_rejection_restores_the_exact_source_world_for_retry() {
 
     let second_context = execution_context(&input, 0x7a);
     let mut lifecycle = match factory
-        .try_start(&input, &second_context)
+        .try_start_component(&input, &second_context)
         .expect("retry exact source world")
     {
         QemuHotForkWorldLifecycleStart::Started(lifecycle) => lifecycle,
@@ -565,7 +562,7 @@ fn target_directory_rejection_restores_the_source_without_invoking_qemu() {
     );
 
     assert!(matches!(
-        factory.try_start(&input, &execution_context(&input, 0x79)),
+        factory.try_start_component(&input, &execution_context(&input, 0x79)),
         Err(AttemptWorkerFailure::Retryable(
             QemuProductionHotForkWorldLifecycleFactoryError::ComponentSetup {
                 first: TargetSetupFailure::Native(
@@ -619,7 +616,7 @@ fn failed_target_cleanup_after_first_child_rejection_keeps_the_source_unavailabl
     );
 
     let failure = factory
-        .try_start(&input, &execution_context(&input, 0x79))
+        .try_start_component(&input, &execution_context(&input, 0x79))
         .err()
         .expect("preflight and actual cleanup both refuse");
     let AttemptWorkerFailure::Retryable(
@@ -680,7 +677,7 @@ fn indeterminate_child_failure_quarantines_complete_world_during_sibling_launch(
     );
 
     assert!(matches!(
-        factory.try_start(&input, &context),
+        factory.try_start_component(&input, &context),
         Err(AttemptWorkerFailure::Retryable(
             QemuProductionHotForkWorldLifecycleFactoryError::Assembly(_)
         ))
@@ -763,7 +760,7 @@ fn child_resource_alias_rejects_before_fork_and_restores_source_world() {
     );
 
     reset_hot_fork_adoption_count_for_test();
-    let failure = match factory.try_start(&input, &context) {
+    let failure = match factory.try_start_component(&input, &context) {
         Err(failure) => failure,
         Ok(_) => panic!("fault build must reject aliased child resources"),
     };
@@ -848,7 +845,7 @@ fn world_fork_preflight_failure_restores_source_world() {
     );
 
     reset_hot_fork_adoption_count_for_test();
-    let failure = match factory.try_start(&input, &context) {
+    let failure = match factory.try_start_component(&input, &context) {
         Err(failure) => failure,
         Ok(_) => panic!("fault build must reject the second world VM"),
     };
