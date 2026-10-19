@@ -33,7 +33,7 @@ preserves its first error, and uses the existing initial graph precredit walk.
 | Check | Latest recorded scope and result |
 | --- | --- |
 | SDK receive formatting | The twenty-five-file raw custody, thirteen-file owning-first and fourteen-file owning-next cohorts pass. |
-| Combined integration checking | Six-crate all-feature/all-target checking passes in 1 minute 51 seconds after owning-first and the debug-label changes. The owning-next refresh is pending. |
+| Combined integration checking | Six-crate all-feature/all-target checking passes in 1 minute 47 seconds after owning-next. The earlier owning-first/debug-label checkpoint passes in 1 minute 51 seconds. |
 | Neutral debug diagnostics | Four files pass formatting. The existing Core invalid-endpoint/unknown-node control and three Session debug-runtime transaction controls pass. Only backend-neutral diagnostic labels and the matching existing expectation change. |
 | SDK receive controls | All 55 targeted controls pass with ordinary Serde JSON in 0.01 seconds, including seven owning-first and twelve owning-next controls. Both complete suites also execute all 55 controls. |
 | SDK Provider regression | Each complete suite passes 1,551 tests with zero failures and fifteen existing ignores: 11.64 seconds for ordinary Serde JSON and 12.65 seconds with raw values enabled. |
