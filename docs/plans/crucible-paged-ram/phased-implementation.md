@@ -60,6 +60,26 @@ from the real Root, Source and writer lifecycle. These build results do not
 enable native receiver activation or qualify physical resource return. The
 package exit criteria and coordinated release gates below remain required.
 
+Native Park disposition now follows capture completion and physical return of
+the request-owned block, async and RCU census. The same Source loan and writer
+gate remain held; failed capture or physical return retains containment. This
+does not yet place the actual fork and thread-registry transaction inside the
+Park lifetime. Full QEMU compilation and signed source reconstruction pass;
+the registered Source fixture passes 144 controls, without qualifying positive
+Native Park disposition or worker rearm.
+
+The dirty-iterator fixture requires an ownership cutover, not successful stubs
+for missing dependencies. Bare capture completion no longer acknowledges dirty
+pages. Its exhaustive selection, bitmap-work and plane-isolation controls must
+exercise shared private production primitives. Logging initialization, failed
+reads, premature acknowledgement, rearm and Original-post failures, generation
+races, abort, diagnostic retention and independent checkpoint obligations must
+also run through actual launched-QEMU Root/Source/writer ownership. Keep that
+mandatory lifecycle flight outside the QEMU package dependency chain. Neither
+component selection nor the registered Source fixture replaces this native
+qualification; the full package gate remains failing until its stale fixture
+is repaired, and lifecycle qualification remains outstanding until executed.
+
 The private-feature QEMU test targets also compile independently of the
 test-support feature. The complete private-feature QEMU library run now passes
 all 1,143 tests, with four ignored probes, in 32.62 seconds. Capture, Pause,

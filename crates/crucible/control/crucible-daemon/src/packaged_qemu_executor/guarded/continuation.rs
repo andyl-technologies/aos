@@ -53,6 +53,25 @@ pub(crate) enum GuardedContinuationError {
     },
     #[error("guarded continuation cleanup remains retained: {0}")]
     Retirement(#[source] crate::PreparedSourceRefusal),
+    /// Retains the initiating capture cause beside its original Main custody.
+    #[error("guarded continuation genesis capture failed: {first}; retained custody: {custody}")]
+    GenesisCapture {
+        #[source]
+        first: Box<
+            crate::ProductionBakedGenesisCaptureError<crate::QemuAttemptProductionVmLifecycleError>,
+        >,
+        custody: crate::PreparedSourceFailure,
+    },
+    /// Keeps a later receiver-return refusal separate from the capture failure.
+    #[error("{first}; genesis projection return also failed: {returned}")]
+    ProjectionReturn {
+        #[source]
+        first: Box<Self>,
+        returned: Box<Self>,
+    },
+    /// Owns negative history even after physical retirement has completed.
+    #[error("guarded continuation retirement completed with failures: {0}")]
+    Terminal(#[source] Box<crate::ProductionVmConstructionPostBody>),
     #[error("guarded continuation {phase} failed: {source}")]
     Operation {
         phase: &'static str,
@@ -362,27 +381,24 @@ impl GuardedCampaignOwner {
             .with_ready("borrow genesis context", |service| {
                 service.context().clone()
             })
-            .map(|context| {
+            .map_err(GuardedContinuationError::Prepared)
+            .and_then(|context| {
                 capture_production_baked_genesis(&mut source.factory, basis.source(), &context)
+                    .map_err(|first| GuardedContinuationError::GenesisCapture {
+                        first: Box::new(first),
+                        custody: source.failure("capture continuation genesis"),
+                    })
             });
         // The capture's real World/body cleanup precedes this local alias cut.
-        // Main already owns the receiver if acknowledgment itself refuses.
-        receiver.return_after_alias_destruction().map_err(|first| {
-            GuardedContinuationError::Prepared(
-                service.failure_with_refusal("return genesis projection", first),
-            )
+        // Always attempt receiver return; its later refusal cannot replace the
+        // capture's first cause. Main retains the receiver if return refuses.
+        let baked = return_genesis_projection(captured, || {
+            receiver.return_after_alias_destruction().map_err(|first| {
+                GuardedContinuationError::Prepared(
+                    service.failure_with_refusal("return genesis projection", first),
+                )
+            })
         })?;
-        let baked = match captured {
-            Ok(Ok(baked)) => baked,
-            Ok(Err(first)) => {
-                let _retained = source.failure("capture continuation genesis");
-                return Err(GuardedContinuationError::operation(
-                    "capture genesis",
-                    first,
-                ));
-            }
-            Err(first) => return Err(GuardedContinuationError::Prepared(first)),
-        };
         let prepared = source.factory.prepared_source_handle().map_err(|first| {
             GuardedContinuationError::Prepared(
                 service.failure_with_refusal("select genesis retirement", first),
@@ -397,11 +413,38 @@ impl GuardedCampaignOwner {
                 crate::PreparedSourceRefusal::Pending,
             ));
         }
-        let _terminal = retirement.finish().map_err(|_retained| {
+        let terminal = retirement.finish().map_err(|_retained| {
             GuardedContinuationError::Retirement(crate::PreparedSourceRefusal::Pending)
         })?;
+        check_genesis_retirement(terminal)?;
         Ok(baked)
     }
+}
+
+/// Attempts the actual alias return even when capture has already failed.
+fn return_genesis_projection<T>(
+    captured: Result<T, GuardedContinuationError>,
+    return_projection: impl FnOnce() -> Result<(), GuardedContinuationError>,
+) -> Result<T, GuardedContinuationError> {
+    match (captured, return_projection()) {
+        (Ok(baked), Ok(())) => Ok(baked),
+        (Err(first), Ok(())) => Err(first),
+        (Ok(_), Err(returned)) => Err(returned),
+        (Err(first), Err(returned)) => Err(GuardedContinuationError::ProjectionReturn {
+            first: Box::new(first),
+            returned: Box::new(returned),
+        }),
+    }
+}
+
+/// Separates factual retirement from the semantic result retained by its body.
+fn check_genesis_retirement(
+    terminal: crate::ProductionVmConstructionPostBody,
+) -> Result<(), GuardedContinuationError> {
+    if terminal.first_failure().is_some() {
+        return Err(GuardedContinuationError::Terminal(Box::new(terminal)));
+    }
+    Ok(())
 }
 
 fn check_preparation(
@@ -423,6 +466,111 @@ fn check_preparation(
 mod tests {
     use super::*;
     use crucible_host_resources::host_supervision::HostOperationBudgets;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn genesis_projection_return_preserves_both_failures_and_runs_once() {
+        #[derive(Debug, thiserror::Error)]
+        #[error("owned failure {marker}")]
+        struct OwnedFailure {
+            marker: usize,
+            destroyed: Arc<AtomicUsize>,
+        }
+
+        impl Drop for OwnedFailure {
+            fn drop(&mut self) {
+                self.destroyed.fetch_or(self.marker, Ordering::SeqCst);
+            }
+        }
+
+        let returns = std::cell::Cell::new(0);
+        let destroyed = Arc::new(AtomicUsize::new(0));
+        let result = return_genesis_projection::<()>(
+            Err(GuardedContinuationError::operation(
+                "capture",
+                OwnedFailure {
+                    marker: 1,
+                    destroyed: destroyed.clone(),
+                },
+            )),
+            || {
+                returns.set(returns.get() + 1);
+                Err(GuardedContinuationError::operation(
+                    "receiver",
+                    OwnedFailure {
+                        marker: 2,
+                        destroyed: destroyed.clone(),
+                    },
+                ))
+            },
+        );
+
+        assert_eq!(returns.get(), 1);
+        assert_eq!(destroyed.load(Ordering::SeqCst), 0);
+        let error = result.unwrap_err();
+        let initiating = error
+            .source()
+            .and_then(|first| first.downcast_ref::<Box<GuardedContinuationError>>())
+            .unwrap();
+        assert!(matches!(
+            initiating.as_ref(),
+            GuardedContinuationError::Operation {
+                phase: "capture",
+                ..
+            }
+        ));
+        let GuardedContinuationError::ProjectionReturn { first, returned } = &error else {
+            panic!("both capture and receiver failures must remain owned");
+        };
+        let GuardedContinuationError::Operation {
+            source: capture, ..
+        } = first.as_ref()
+        else {
+            panic!("the initiating capture cause must remain typed");
+        };
+        let GuardedContinuationError::Operation {
+            source: receiver, ..
+        } = returned.as_ref()
+        else {
+            panic!("the independent receiver cause must remain typed");
+        };
+        assert_eq!(capture.downcast_ref::<OwnedFailure>().unwrap().marker, 1);
+        assert_eq!(receiver.downcast_ref::<OwnedFailure>().unwrap().marker, 2);
+
+        drop(error);
+        assert_eq!(destroyed.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn genesis_retirement_keeps_typed_terminal_failure_history() {
+        assert!(
+            check_genesis_retirement(crate::ProductionVmConstructionPostBody::history_only())
+                .is_ok()
+        );
+        let mut terminal = crate::ProductionVmConstructionPostBody::history_only();
+        terminal
+            .retain_constructor_first(crucible_control_api::LifecycleApiError::CleanupRetained)
+            .unwrap();
+        terminal
+            .retain_constructor_first(crucible_control_api::LifecycleApiError::ParentParkHeld)
+            .unwrap();
+
+        let error = check_genesis_retirement(terminal).unwrap_err();
+
+        assert!(error.source().is_some());
+        let GuardedContinuationError::Terminal(terminal) = error else {
+            panic!("the terminal body must remain owned on failure");
+        };
+        assert!(matches!(
+            terminal.first_failure(),
+            Some(crate::LifecycleFailureRef::Control(
+                crucible_control_api::LifecycleApiError::CleanupRetained
+            ))
+        ));
+        let mut failures = 0;
+        terminal.visit_history(|_, _| failures += 1);
+        assert_eq!(failures, 2);
+    }
 
     #[test]
     fn terminal_preparation_cap_cancels_native_and_publication_work() {

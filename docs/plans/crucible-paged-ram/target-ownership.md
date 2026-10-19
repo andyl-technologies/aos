@@ -70,6 +70,13 @@ and Target constructors, Service watchdogs, replay classification and Source
 capture use that same view. Selection preserves the previous phase priority and
 each caller's retry and cancellation decisions. Later cleanup cannot replace an
 existing initiating cause.
+
+Guarded continuation genesis capture attempts receiver return even after a
+capture failure, retains both typed causes and keeps the capture first in the
+error chain. Factual retirement also checks its terminal history before exposing
+the captured genesis; a negative terminal body remains owned by the returned
+error.
+
 The protected callback cannot return a borrowed cause beyond its observation,
 and recursive inspection of the same Main remains terminal. Owners, report pins,
 locks and epoch checks are unchanged; the view allocates no replacement report.
