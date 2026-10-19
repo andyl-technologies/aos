@@ -8,7 +8,7 @@
 
 use super::{PublicationJob, invalid, state};
 use crate::{
-    host_cache::{NativeChunkSpan, NativeResidencePlan},
+    host_cache::{NativeChunkSpan, NativeHostLayout, NativeResidencePlan},
     host_quota::NativeProject,
     publisher_local::client::PeerPublishedObject,
 };
@@ -25,6 +25,7 @@ use tokio::sync::oneshot;
 
 mod recovered;
 mod recovered_inline;
+mod view;
 
 pub(in crate::host_cache::owner) use recovered_inline::RecoveredInlineJob;
 pub(super) use recovered_inline::prepare as prepare_recovered_inline;
@@ -37,12 +38,16 @@ use super::super::{
 /// Retains an original pinned sealed range for reads outside embedded state.
 ///
 /// Physical custody keeps the actual durable funding and backing alive after
-/// receipt or owner destruction. This source grants no native handle, new
-/// consumer lease or writable cache authority. Its immutable read operations
-/// never consult the command queue or lock embedded state.
+/// receipt or owner destruction, until this source is explicitly closed. This
+/// source grants no native handle, new consumer lease or writable cache authority.
+/// Its immutable read operations never consult the command queue or lock
+/// embedded state.
 pub struct NativeResidentChunkSource {
     identity: Identity,
-    source: Source,
+    layout: Arc<NativeHostLayout<HostDomainLocation>>,
+    span: NativeChunkSpan,
+    object_digest: [u8; 32],
+    view: view::ReadView<Source>,
 }
 
 impl NativeResidentChunkSource {
@@ -53,7 +58,7 @@ impl NativeResidentChunkSource {
 
     /// Returns the independently derived first occurrence in its sealed object.
     pub fn span(&self) -> NativeChunkSpan {
-        self.source.span
+        self.span
     }
 
     /// Reads bounded verified plaintext without a queue or embedded-store lock.
@@ -65,37 +70,74 @@ impl NativeResidentChunkSource {
     ///
     /// # Errors
     /// Refuses changed native inode, project, root or seal, invalid chunk bytes
-    /// or boundary, native I/O failure, and unavailable bounded allocation.
+    /// or boundary, native I/O failure, unavailable bounded allocation, or a
+    /// view closed before or during the operation.
     pub fn read_verified(&self) -> io::Result<Vec<u8>> {
-        check_native(&self.source)?;
+        let read = self.view.begin()?;
+        let source = &read.source;
+        check_native(source)?;
         let mut plaintext = Vec::new();
         plaintext
-            .try_reserve_exact(self.source.span.length)
+            .try_reserve_exact(source.span.length)
             .map_err(|error| io::Error::new(io::ErrorKind::OutOfMemory, error))?;
-        if plaintext.capacity() > self.source.allocation_limit {
+        if plaintext.capacity() > source.allocation_limit {
             return Err(io::Error::new(
                 io::ErrorKind::OutOfMemory,
                 "resident buffer exceeds operator bound",
             ));
         }
-        plaintext.resize(self.source.span.length, 0);
-        self.source
+        plaintext.resize(source.span.length, 0);
+        source
             .body
             .handle()
-            .read_exact_at(&mut plaintext, self.source.span.offset)?;
+            .read_exact_at(&mut plaintext, source.span.offset)?;
         TERRANE_V1
             .verify(&self.identity, &plaintext)
             .map_err(io::Error::other)?;
-        let profile = self.source.body.layout().layout().chunk_profile();
+        let profile = source.body.layout().layout().chunk_profile();
         if profile.first_boundary(&plaintext) != plaintext.len()
-            || (!self.source.span.final_chunk && !profile.valid_nonfinal_chunk(&plaintext))
+            || (!source.span.final_chunk && !profile.valid_nonfinal_chunk(&plaintext))
         {
             return Err(invalid(
                 "resident plaintext has another object chunk boundary",
             ));
         }
-        check_native(&self.source)?;
+        check_native(source)?;
+        self.view.check_open()?;
         Ok(plaintext)
+    }
+
+    /// Permanently closes this view and reports whether its operations have finished.
+    ///
+    /// New reads and protected reassembly operations are refused immediately. An
+    /// already-started operation retains its actual backing until completion;
+    /// a read that observes closure before returning withholds its plaintext.
+    /// A `true` result means this view has dropped all of its backing references.
+    /// Repeating the call observes completion without reopening the view.
+    ///
+    /// This releases no durable pin, reservation or lease and claims no quota
+    /// reclamation. Independently retained sources and consumer leases remain
+    /// usable under their own protection. The call takes no embedded-store,
+    /// publisher or worker-job mutex.
+    pub fn close(&self) -> bool {
+        self.view.close()
+    }
+
+    fn new(identity: Identity, source: Source) -> io::Result<Self> {
+        let object_digest = source
+            .body
+            .claim()
+            .descriptor()
+            .digest()
+            .try_into()
+            .map_err(|_| invalid("resident object digest differs from the registered profile"))?;
+        Ok(Self {
+            identity,
+            layout: Arc::clone(source.body.layout()),
+            span: source.span,
+            object_digest,
+            view: view::ReadView::new(source),
+        })
     }
 }
 
@@ -189,7 +231,7 @@ pub(in crate::host_cache::owner) async fn retain(
         }
         check_origin(&owner, &source, &identity)?;
     }
-    Ok(NativeResidentChunkSource { identity, source })
+    NativeResidentChunkSource::new(identity, source)
 }
 
 /// Retains an original source while the producer already holds genuine policy custody.
@@ -204,18 +246,18 @@ pub(super) fn retain_registered(
 ) -> io::Result<NativeResidentChunkSource> {
     let source = select_locked(executor, owner, &identity)?;
     check_native(&source)?;
-    Ok(NativeResidentChunkSource { identity, source })
+    NativeResidentChunkSource::new(identity, source)
 }
 
 impl NativeResidentChunkSource {
     /// Borrows the actual retained source's domain binding.
     pub(in crate::host_cache) fn domain(&self) -> &str {
-        self.source.body.claim().domain()
+        self.layout.layout().domain()
     }
 
     /// Borrows the chunk profile checked against the original native root.
     pub(in crate::host_cache) fn profile(&self) -> &terrane_core::chunking::ChunkProfile {
-        self.source.body.layout().layout().chunk_profile()
+        self.layout.layout().chunk_profile()
     }
 
     /// Rechecks original funding under a later serialized producer's exclusion.
@@ -226,15 +268,16 @@ impl NativeResidentChunkSource {
     /// # Errors
     /// Refuses changed original job, pins, metadata, range or snapshot provenance.
     pub(in crate::host_cache::owner) fn check_protected(&self, owner: &Custody) -> io::Result<()> {
+        let read = self.view.begin()?;
         if !owner
             .state
             .residences
             .iter()
-            .any(|row| self.matches_record(row))
+            .any(|row| same_row(row, &read.source.row))
         {
             return Err(invalid("retained source lost original publication custody"));
         }
-        check_origin(owner, &self.source, &self.identity)
+        check_origin(owner, &read.source, &self.identity)
     }
 
     /// Checks original immutable backing under a separately synchronized consumer pin.
@@ -249,25 +292,22 @@ impl NativeResidentChunkSource {
         &self,
         owner: &Custody,
     ) -> io::Result<()> {
+        let read = self.view.begin()?;
+        let source = &read.source;
         check_snapshot(owner)?;
-        if !Arc::ptr_eq(self.source.body.layout(), owner.preparation.layout())
-            || claim_span(
-                owner,
-                self.source.body.claim(),
-                &self.identity,
-                &self.source.row,
-            )? != self.source.span
+        if !Arc::ptr_eq(source.body.layout(), owner.preparation.layout())
+            || claim_span(owner, source.body.claim(), &self.identity, &source.row)? != source.span
         {
             return Err(invalid(
                 "consumer source differs from its original verified backing",
             ));
         }
-        check_native(&self.source)
+        check_native(source)
     }
 
     /// Borrows the containing verified object's digest for durable pin policy.
     pub(in crate::host_cache::owner) fn protected_object_digest(&self) -> &[u8] {
-        self.source.body.claim().descriptor().digest()
+        &self.object_digest
     }
 
     /// Synchronizes the original sealed source outside embedded state.
@@ -275,24 +315,29 @@ impl NativeResidentChunkSource {
     /// # Errors
     /// Refuses changed native backing, synchronization failure or changed layout.
     pub(in crate::host_cache::owner) fn synchronize_pin_backing(&self) -> io::Result<u64> {
+        let read = self.view.begin()?;
         synchronize_body(
-            &self.source.body,
-            self.source.project,
-            self.source.publisher_uid,
+            &read.source.body,
+            read.source.project,
+            read.source.publisher_uid,
         )
     }
 
     /// Recognizes only the original checked residence, without choosing another body.
     pub(super) fn matches_record(&self, row: &ResidenceRecord) -> bool {
-        same_row(row, &self.source.row)
+        self.view
+            .begin()
+            .is_ok_and(|read| same_row(row, &read.source.row))
     }
 }
 
 /// Counts retained native source and generated range-name storage per unique chunk.
 pub(super) fn header_bytes() -> usize {
+    // The source backing has its own Arc in addition to the shared source and
+    // producer ownership slots. Read-view state is inline in the source header.
     std::mem::size_of::<NativeResidentChunkSource>()
         + std::mem::size_of::<Source>()
-        + 4 * std::mem::size_of::<usize>()
+        + 6 * std::mem::size_of::<usize>()
         + 128
 }
 

@@ -111,6 +111,10 @@ def run(driver, publisher, uuid):
         process.stdin.write(b"measure\n")
         process.stdin.flush()
         lines.until("READY actual source reclamation with original Running owner retained", timeout=45)
+        closure = "PASS closed resident view refuses reads while independent sources and consumer leases remain readable under stalled policy; durable protection unchanged"
+        observed = lines.bytes.decode().splitlines()
+        driver.require(observed.count(closure) == 1,
+                       "missing actual producer read-view closure with independent live consumer")
         closed_measurement = [line for line in lines.bytes.decode().splitlines()
                               if line.startswith("SOURCE_CLEANUP_CLOSED ")]
         driver.require(len(closed_measurement) == 1, "missing actual live-owner reclamation measurement")

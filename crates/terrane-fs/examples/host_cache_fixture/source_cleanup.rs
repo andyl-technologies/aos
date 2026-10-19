@@ -222,7 +222,27 @@ pub(super) fn run(
             "source description closure invalidated live immutable reads",
         ));
     }
+    // Close just this genuine producer view while policy is stalled. The
+    // independently synchronized consumer grant and fresh view retain their
+    // own actual backing; closing a view is not a durable pin decrement.
+    if !resident.close()
+        || !resident.close()
+        || resident
+            .read_verified()
+            .err()
+            .is_none_or(|error| error.kind() != io::ErrorKind::PermissionDenied)
+        || fresh.read_verified()? != data.first
+        || lease.read_verified()? != data.first
+    {
+        return Err(invalid(
+            "closed producer view retained read access or revoked independent consumers",
+        ));
+    }
     drop(stall);
+    if fs::read(policy(inputs))? != before {
+        return Err(invalid("closing a read view changed durable protection"));
+    }
+    emit("PASS closed resident view refuses reads while independent sources and consumer leases remain readable under stalled policy; durable protection unchanged")?;
     emit(&format!(
         "SOURCE_CLEANUP_CLOSED charged_reserved_bytes={} future_hold_bytes={}",
         closed.charged_reserved_bytes, closed.future_hold_bytes
