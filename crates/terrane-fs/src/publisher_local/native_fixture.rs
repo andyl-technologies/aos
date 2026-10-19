@@ -868,8 +868,8 @@ fn check_authenticated_client(root: &Path, expected_inode: u64) {
         .unwrap()
     {
         super::client::RecoveryBody::Sealed {
-            object,
-            observation,
+            _object: object,
+            _observation: observation,
         } => {
             assert_eq!(object.handle().metadata().unwrap().ino(), expected_inode);
             observation

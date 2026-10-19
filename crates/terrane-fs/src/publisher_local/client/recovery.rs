@@ -90,9 +90,9 @@ pub(crate) enum RecoveryBody<L: HostReadLocation> {
     /// Contains independently verified inline content and a lifecycle name.
     Sealed {
         /// The actual readonly file, kernel seal, claim and retained root.
-        object: Box<super::PeerPublishedObject<L>>,
+        _object: Box<super::PeerPublishedObject<L>>,
         /// The actual publisher-issued inode observation for this drain epoch.
-        observation: BodyIncarnationObservation<L>,
+        _observation: BodyIncarnationObservation<L>,
     },
     /// Contains no decoded-content, service, manifest or pin proof.
     Encoded {
@@ -226,8 +226,8 @@ impl<L: HostReadLocation> Client<L> {
                 claim,
             )
             .map(|object| RecoveryBody::Sealed {
-                object: Box::new(object),
-                observation,
+                _object: Box::new(object),
+                _observation: observation,
             }),
             None => self
                 .unverified_body(key, received.files)
@@ -245,10 +245,12 @@ impl<L: HostReadLocation> Client<L> {
     ///
     /// Rejects stale or foreign observations, undrained state and failed native
     /// exchanges. Restored sealed data still requires actual canonical adoption.
+    #[cfg(feature = "native-test-fixtures")]
     pub(crate) fn restore(&self, observation: &BodyIncarnationObservation<L>) -> Result<(), Error> {
         self.lifecycle(Operation::Restore, observation)
     }
 
+    #[cfg(feature = "native-test-fixtures")]
     fn lifecycle(
         &self,
         operation: Operation,
