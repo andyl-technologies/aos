@@ -217,3 +217,40 @@ impl PreparedHostSchedulingNode {
         Ok(counter.bytes())
     }
 }
+
+impl PreparedHostSchedulingNode {
+    /// Checks the original dormant node before its source's prospective report quote.
+    ///
+    /// # Errors
+    /// Refuses another Source, plan, live anchor or dormant ownership class.
+    pub(in crate::node_contract::host_scheduling_owner) fn authenticate_original_runtime_attachment_storage_data(
+        &self,
+        source: &Rc<super::super::HostSchedulingSource>,
+        plan: &crate::node_admission::InstalledConformancePlan,
+    ) -> Result<(), RuntimeError> {
+        if !Rc::ptr_eq(&self.source, source)
+            || !self
+                .plan
+                .as_ref()
+                .is_some_and(|original| original.same_original(plan))
+            || self.ready.is_some()
+            || self.retired
+            || self.reclamation.is_some()
+            || self.restoration.is_some()
+            || self.restoration_installed
+            || self.capture_preparation.is_some()
+            || self.capture_preparation17.is_some()
+            || !source.node_created.get()
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        let original = source
+            .node
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        if !std::rc::Weak::ptr_eq(&original, &Rc::downgrade(&self.anchor)) {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        Ok(())
+    }
+}

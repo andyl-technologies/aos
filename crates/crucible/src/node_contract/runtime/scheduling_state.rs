@@ -454,6 +454,23 @@ pub struct OriginalSchedulingSource {
 }
 
 impl OriginalSchedulingSource {
+    /// Separates the new world clone from the repeated Weak-root observation.
+    ///
+    /// # Errors
+    /// Refuses unsupported hash storage, overflow or the supplied data bound.
+    pub(in crate::node_contract) fn construction_metadata_storage_data(
+        world: &HashRef,
+        maximum: usize,
+    ) -> Result<(usize, usize), RuntimeError> {
+        let world = super::super::NodeRuntime::capture_hash_storage(world)?;
+        let weak = super::super::NodeRuntime::capture_shared_allocation_storage::<Original>();
+        world
+            .checked_add(weak)
+            .filter(|bytes| *bytes <= maximum)
+            .ok_or(RuntimeError::ResourceLimit)?;
+        Ok((world, weak))
+    }
+
     pub(in crate::node_contract) fn retained_metadata_bytes_excluding_runtime(
         &self,
     ) -> Result<usize, RuntimeError> {

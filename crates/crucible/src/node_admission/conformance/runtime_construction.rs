@@ -116,6 +116,11 @@ pub struct OriginalRuntimeConstructionStorage {
     pub maximum_simultaneous_transient_bytes: usize,
     /// Bounds only new owners constructed by this exact step.
     pub construction_retained_requested_bytes: usize,
+    /// Bounds additional conservative retained reports beyond actual new owners.
+    ///
+    /// Independent owning observers may repeat the same authenticated backing.
+    /// This demand funds those reports without claiming another allocation.
+    pub construction_retained_observation_growth_bytes: usize,
     /// Bounds additional constructor work while all retained owners coexist.
     pub construction_transient_requested_bytes: usize,
     /// Names this exact constructor's explicit fixed views and counters.
@@ -394,12 +399,14 @@ fn observe(
             &[
                 peak,
                 storage.construction_retained_requested_bytes,
+                storage.construction_retained_observation_growth_bytes,
                 storage.construction_transient_requested_bytes,
                 storage.construction_counter_scratch_bytes,
             ],
             max,
         )?;
     } else if storage.construction_retained_requested_bytes != 0
+        || storage.construction_retained_observation_growth_bytes != 0
         || storage.construction_transient_requested_bytes != 0
         || storage.construction_counter_scratch_bytes != 0
     {

@@ -655,6 +655,97 @@ mod tests {
         );
         assert!(!source.attachment_attempted.get());
     }
+
+    #[test]
+    fn real_original_scheduler_attachment_matches_the_prospective_host_report() {
+        use crate::node_contract::runtime::scheduling_state::OriginalSchedulingState;
+
+        let (selection, mut world) = complete_selection();
+        world.digest.reserve_exact(257);
+        let owner =
+            HostSchedulingOwner::new_complete_original_continuation(selection, world).unwrap();
+        let source = owner.source();
+        let before = source
+            .retained_original_metadata_bytes_excluding_runtime_precredit_data(usize::MAX)
+            .unwrap();
+        let quoted = source
+            .original_unattached_runtime_storage_data(usize::MAX)
+            .unwrap();
+        let component = quoted.existing_source_observation_bytes()
+            + quoted.attached_observation_bytes().unwrap();
+        assert_eq!(
+            source
+                .original_unattached_runtime_storage_data(component)
+                .unwrap(),
+            quoted
+        );
+        assert_eq!(
+            source.original_unattached_runtime_storage_data(component - 1),
+            Err(RuntimeError::ResourceLimit),
+        );
+        assert!(!source.attachment_attempted.get());
+        assert!(source.attached.borrow().is_none());
+
+        // String clones may trim the deliberately spare world capacity, so the
+        // prospective world term is a bound on the observed clone.
+        // These are the real uninitialized Core scheduler and Source handle.
+        // No fake node observer, graph authority, runtime grant or Provider is used.
+        let authority = Rc::new(());
+        let scheduler = OriginalSchedulingState::new(&authority, source.world.clone());
+        source.begin_attachment().unwrap();
+        source.attach(scheduler.source()).unwrap();
+
+        let after = source
+            .retained_original_metadata_bytes_excluding_runtime_precredit_data(usize::MAX)
+            .unwrap();
+        let actual_growth = after - before;
+        assert!(quoted.attached_observation_bytes().unwrap() >= actual_growth);
+        assert!(actual_growth >= quoted.attached_weak_observation_bytes());
+        assert!(
+            quoted.retained_requested_bytes()
+                >= actual_growth - quoted.attached_weak_observation_bytes()
+        );
+        assert_eq!(
+            source
+                .retained_original_metadata_bytes_excluding_runtime_precredit_data(after)
+                .unwrap(),
+            after,
+        );
+        assert_eq!(
+            source.retained_original_metadata_bytes_excluding_runtime_precredit_data(after - 1),
+            Err(RuntimeError::ResourceLimit),
+        );
+        assert_eq!(
+            source.original_unattached_runtime_storage_data(usize::MAX),
+            Err(RuntimeError::ForeignAuthority)
+        );
+    }
+
+    #[test]
+    fn prospective_host_attachment_refuses_spent_or_foreign_originals() {
+        let (selection, world) = complete_selection();
+        let owner =
+            HostSchedulingOwner::new_complete_original_continuation(selection, world).unwrap();
+        let source = owner.source();
+        let before = source
+            .original_unattached_runtime_storage_data(usize::MAX)
+            .unwrap();
+        source.begin_attachment().unwrap();
+        assert_eq!(
+            source.original_unattached_runtime_storage_data(usize::MAX),
+            Err(RuntimeError::ForeignAuthority)
+        );
+        assert!(source.attached.borrow().is_none());
+        assert!(before.retained_requested_bytes() > 0);
+
+        let ordinary = super::super::tests::source_owner();
+        assert_eq!(
+            ordinary
+                .source()
+                .original_unattached_runtime_storage_data(usize::MAX),
+            Err(RuntimeError::ForeignAuthority)
+        );
+    }
 }
 
 impl SelectedPreservation {

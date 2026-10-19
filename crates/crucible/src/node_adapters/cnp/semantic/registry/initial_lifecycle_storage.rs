@@ -218,3 +218,16 @@ impl InstalledCnpConformanceRole {
         Ok(())
     }
 }
+
+impl CnpSemanticRegistry {
+    /// Compares the actual retained registration policy allocation as DATA only.
+    ///
+    /// Equal policy bytes or an equal implementation name provide no identity.
+    /// This comparison installs no role and grants no callback permission.
+    pub fn is_original_registration_policy_data(
+        &self,
+        original: &dyn super::CnpSemanticRegistrationPolicy,
+    ) -> bool {
+        std::ptr::addr_eq(self.policy.as_ref(), original)
+    }
+}

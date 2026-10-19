@@ -17,6 +17,7 @@ mod graph;
 mod inactive;
 mod inputs;
 mod lifecycle;
+mod observation_growth;
 mod storage;
 pub(super) use lifecycle::counter_scratch_data as lifecycle_counter_scratch_data;
 

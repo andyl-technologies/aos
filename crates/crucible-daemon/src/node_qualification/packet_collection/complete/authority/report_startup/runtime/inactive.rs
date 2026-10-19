@@ -7,10 +7,22 @@ use crucible::{
 };
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
+/// Separates the actual initial constructor's allocation and report demand.
+pub(super) struct InactiveConstructionStorageData {
+    /// Prices actual new successful or failure-retained owners.
+    pub(super) retained_requested_bytes: usize,
+    /// Prices additional conservative scalar ownership reports.
+    pub(super) retained_observation_growth_bytes: usize,
+    /// Prices actual constructor transient work while retained owners coexist.
+    pub(super) maximum_simultaneous_transient_bytes: usize,
+    /// Names the constructor's explicit fixed counter and result views.
+    pub(super) declared_counter_scratch_bytes: usize,
+}
+
 pub(super) fn quote(
     held: &PacketCompleteReportStartupHolder,
     maximum: usize,
-) -> Result<(usize, usize, usize), RuntimeError> {
+) -> Result<InactiveConstructionStorageData, RuntimeError> {
     let owners = held
         .runtime_owners
         .try_borrow()
@@ -54,6 +66,7 @@ pub(super) fn quote(
         &scene.inputs.activation,
         maximum,
     )?;
+    let observations = super::observation_growth::quote(held, graph, [a, b, c], host, maximum)?;
     // Both append banks remain retained on partial construction. They require
     // no separate temporary heap; their defining fixed views are priced below.
     let coordinator17 = coordinator17_row_data(held, maximum)?;
@@ -65,23 +78,28 @@ pub(super) fn quote(
         0,
         OriginalCoordinator17ConstructionData::declared_counter_scratch_bytes_data,
     );
-    Ok((
-        add(
-            add(data.retained_requested_bytes, provider.0, maximum)?,
-            coordinator_retained,
+    Ok(InactiveConstructionStorageData {
+        retained_requested_bytes: add(
+            add(
+                add(data.retained_requested_bytes, provider.0, maximum)?,
+                coordinator_retained,
+                maximum,
+            )?,
+            observations.retained_requested_bytes,
             maximum,
         )?,
-        add(
+        retained_observation_growth_bytes: observations.retained_observation_growth_bytes,
+        maximum_simultaneous_transient_bytes: add(
             data.maximum_simultaneous_transient_bytes,
             provider.1,
             maximum,
         )?,
-        add(
+        declared_counter_scratch_bytes: add(
             add(data.declared_counter_scratch_bytes, provider.2, maximum)?,
             coordinator_scratch,
             maximum,
         )?,
-    ))
+    })
 }
 
 pub(super) fn construct(held: &PacketCompleteReportStartupHolder) -> Result<(), RuntimeError> {

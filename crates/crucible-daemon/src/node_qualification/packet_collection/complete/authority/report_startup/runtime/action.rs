@@ -78,17 +78,31 @@ impl PacketCompleteReportStartupHolder {
         Ok(())
     }
 
-    fn runtime_policy_data(&self) -> Result<OriginalRuntimeConstructionPolicy, RuntimeError> {
+    fn runtime_policy_data(
+        &self,
+        phase: OriginalRuntimeConstructionPhase,
+    ) -> Result<OriginalRuntimeConstructionPolicy, RuntimeError> {
         let base = self
             .policy_data()
             .map_err(|_| RuntimeError::ResourceLimit)?;
+        let observation_scratch = if phase == OriginalRuntimeConstructionPhase::InactiveRuntime
+            && matches!(&self.purpose, StartupHolderPurpose::OriginalScene)
+        {
+            observation_growth::counter_scratch_data()?
+        } else {
+            0
+        };
         Ok(OriginalRuntimeConstructionPolicy {
             maximum_requested_bytes: base.maximum_requested_bytes,
             maximum_owned_descriptors: usize::try_from(self.resources.descriptors.get())
                 .map_err(|_| RuntimeError::ResourceLimit)?,
             declared_observer_scratch_bytes: add(
                 base.declared_observer_scratch_bytes,
-                storage::counter_scratch_data()?,
+                add(
+                    storage::counter_scratch_data()?,
+                    observation_scratch,
+                    usize::MAX,
+                )?,
                 usize::MAX,
             )?,
         })
@@ -336,7 +350,7 @@ impl InstalledPacketCompleteCollectionAuthority {
         let original = self.runtime_holder_data()?;
         let held = original.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
         held.authenticate_runtime_scope_data(self, scope)?;
-        held.runtime_policy_data()
+        held.runtime_policy_data(scope.phase())
     }
 
     pub(in crate::node_qualification::packet_collection::complete::authority) fn authenticate_original_runtime_construction_data(
@@ -347,7 +361,7 @@ impl InstalledPacketCompleteCollectionAuthority {
         let original = self.runtime_holder_data()?;
         let held = original.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
         held.authenticate_runtime_scope_data(self, scope)?;
-        if held.runtime_policy_data()? != *policy {
+        if held.runtime_policy_data(scope.phase())? != *policy {
             return Err(RuntimeError::ForeignAuthority);
         }
         let maximum = policy
@@ -358,6 +372,7 @@ impl InstalledPacketCompleteCollectionAuthority {
             PacketCompleteReportStartupHolder::runtime_construction_holder_storage_data(
                 &original, &held, scope, maximum,
             )?;
+        let mut construction_retained_observation_growth_bytes = 0;
         let construction = if scope.is_post_construction() {
             (0, 0, 0)
         } else {
@@ -367,7 +382,16 @@ impl InstalledPacketCompleteCollectionAuthority {
                 }
                 OriginalRuntimeConstructionPhase::CollectingGraph => graph::quote(&held, maximum)?,
                 OriginalRuntimeConstructionPhase::InactiveRuntime => match &held.purpose {
-                    StartupHolderPurpose::OriginalScene => inactive::quote(&held, maximum)?,
+                    StartupHolderPurpose::OriginalScene => {
+                        let quoted = inactive::quote(&held, maximum)?;
+                        construction_retained_observation_growth_bytes =
+                            quoted.retained_observation_growth_bytes;
+                        (
+                            quoted.retained_requested_bytes,
+                            quoted.maximum_simultaneous_transient_bytes,
+                            quoted.declared_counter_scratch_bytes,
+                        )
+                    }
                     StartupHolderPurpose::FreshRestoration(_) => {
                         held.quote_fresh_inactive_data(maximum)?
                     }
@@ -426,6 +450,7 @@ impl InstalledPacketCompleteCollectionAuthority {
             retained_holder_bytes,
             maximum_simultaneous_transient_bytes: transient,
             construction_retained_requested_bytes: construction.0,
+            construction_retained_observation_growth_bytes,
             construction_transient_requested_bytes: construction.1,
             construction_counter_scratch_bytes: construction.2,
             retained_descriptors: held.original_initial_retained_descriptors_data()?,

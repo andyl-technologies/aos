@@ -1494,3 +1494,54 @@ pub use restoration_construction::{
 pub(crate) use restoration_construction::{
     OriginalRestoredCaptureImportedOwnerInputs, OriginalRestoredCaptureSigningInputs,
 };
+
+impl ConformanceGraph {
+    /// Quotes an extra complete graph report beyond its already priced new Rc root.
+    ///
+    /// Before transfer, the standalone observer reports the inline graph and all
+    /// backing. The runtime and wrapper then independently report the same Rc
+    /// graph. Their caller already prices one complete new Rc allocation. This
+    /// row preserves every report and funds the remaining backing plus header.
+    /// The caller separately prices changes in the actual authority's owners.
+    ///
+    /// # Errors
+    /// Refuses a noncollecting or non-four-owner graph, unsupported retained
+    /// ownership, arithmetic overflow or the supplied observation bound.
+    pub fn original_fixed_four_runtime_observation_growth_data(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, crate::node_contract::RuntimeError> {
+        use crate::node_contract::{NodeRuntime, RuntimeError};
+        if !self.graph.collecting
+            || self.graph.node_ids().take(5).count() != 4
+            || self.graph.owners().take(5).count() != 4
+        {
+            return Err(RuntimeError::UnsupportedFacet);
+        }
+        let standalone = self.original_retained_storage_precredit_data(maximum)?;
+        let header = NodeRuntime::capture_protocol_shared_header_storage(
+            1,
+            std::mem::align_of::<Self>(),
+            maximum,
+        )?;
+        standalone
+            .checked_sub(std::mem::size_of::<Self>())
+            .and_then(|bytes| bytes.checked_add(header))
+            .filter(|bytes| *bytes <= maximum)
+            .ok_or(RuntimeError::ResourceLimit)
+    }
+
+    /// Names the actual graph owning-counter and fixed quote-result loans.
+    pub fn original_fixed_four_runtime_observation_counter_scratch_data() -> usize {
+        crate::node_contract::NodeRuntime::original_retained_requested_storage_scratch_bytes()
+            + std::mem::size_of::<&Self>()
+            + std::mem::size_of::<[usize; 3]>()
+            + std::mem::size_of::<Result<usize, crate::node_contract::RuntimeError>>()
+            // These membership iterators run sequentially before the owning
+            // visitor. They introduce no second graph or owning counter.
+            + std::mem::size_of::<std::iter::Take<std::collections::btree_map::Keys<'static, crucible_node_contract::Id, crucible_node_contract::NodeBinding>>>()
+            + std::mem::size_of::<std::iter::Take<std::collections::btree_map::Values<'static, crucible_node_contract::Id, crucible_node_contract::OwnerBinding>>>()
+            + std::mem::size_of::<Option<usize>>()
+            + std::mem::size_of::<bool>()
+    }
+}

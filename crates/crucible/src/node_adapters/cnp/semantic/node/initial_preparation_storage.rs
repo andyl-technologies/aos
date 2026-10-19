@@ -261,3 +261,107 @@ impl CnpSemanticPreparation {
         })
     }
 }
+
+impl CnpSemanticConformanceNode {
+    /// Checks exact initial Source, plan and shared policy backing before report pricing.
+    ///
+    /// This DATA fence invokes no registration, currentness or native callback.
+    /// It creates no authority from matching portable installation records.
+    ///
+    /// # Errors
+    /// Refuses foreign or nondormant originals, a changed plan, or independently
+    /// allocated registration/conformance owners requiring another report class.
+    pub fn authenticate_original_initial_runtime_observation_data(
+        &self,
+        source: &Rc<PacketCompleteSemanticSource>,
+        plan: &InstalledConformancePlan,
+    ) -> Result<(), RuntimeError> {
+        self.0
+            .authenticate_original_initial_node_data(source, None)?;
+        self.0
+            .preparation
+            .authenticate_original_fresh_query_plan_data(plan)?;
+        let native = self
+            .0
+            .preparation
+            .guard
+            .custody
+            .as_ref()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        let registration = native
+            .registration
+            .as_ref()
+            .ok_or(RuntimeError::UnsupportedFacet)?;
+        let authority = native
+            .conformance
+            .as_ref()
+            .ok_or(RuntimeError::UnsupportedFacet)?;
+        if native.acceptance.is_some()
+            || !std::ptr::addr_eq(registration.as_ref(), authority.as_ref())
+        {
+            return Err(RuntimeError::UnsupportedFacet);
+        }
+        Ok(())
+    }
+
+    /// Names the fixed same-node, Source, plan and native-custody quote loans.
+    ///
+    /// # Errors
+    /// Refuses checked fixed-layout overflow.
+    pub fn original_initial_runtime_observation_counter_scratch_data() -> Result<usize, RuntimeError>
+    {
+        CnpSemanticPreparation::original_initial_node_retained_counter_scratch_data()?
+            .checked_add(size_of::<&Self>())
+            .and_then(|bytes| bytes.checked_add(size_of::<&InstalledConformancePlan>()))
+            .and_then(|bytes| {
+                bytes.checked_add(size_of::<&Box<super::super::CnpSemanticProcessCustody>>())
+            })
+            .and_then(|bytes| {
+                bytes.checked_add(size_of::<
+                    &Rc<dyn super::super::CnpSemanticRegistrationPolicy>,
+                >())
+            })
+            .and_then(|bytes| {
+                bytes.checked_add(size_of::<
+                    &Rc<dyn super::super::CnpSemanticConformanceAuthority>,
+                >())
+            })
+            .and_then(|bytes| bytes.checked_add(size_of::<&Rc<PacketCompleteSemanticSource>>()))
+            // The three extracted references above have distinct typed Option
+            // and mapped Result controls. They are inspected sequentially; the
+            // inherited closed Result<()> view serves both authentication calls
+            // and this guard's own return after those calls have completed.
+            .and_then(|bytes| {
+                bytes.checked_add(size_of::<
+                    Option<&Box<super::super::CnpSemanticProcessCustody>>,
+                >())
+            })
+            .and_then(|bytes| {
+                bytes.checked_add(size_of::<
+                    Result<&Box<super::super::CnpSemanticProcessCustody>, RuntimeError>,
+                >())
+            })
+            .and_then(|bytes| {
+                bytes.checked_add(size_of::<
+                    Option<&Rc<dyn super::super::CnpSemanticRegistrationPolicy>>,
+                >())
+            })
+            .and_then(|bytes| {
+                bytes.checked_add(size_of::<
+                    Result<&Rc<dyn super::super::CnpSemanticRegistrationPolicy>, RuntimeError>,
+                >())
+            })
+            .and_then(|bytes| {
+                bytes.checked_add(size_of::<
+                    Option<&Rc<dyn super::super::CnpSemanticConformanceAuthority>>,
+                >())
+            })
+            .and_then(|bytes| {
+                bytes.checked_add(size_of::<
+                    Result<&Rc<dyn super::super::CnpSemanticConformanceAuthority>, RuntimeError>,
+                >())
+            })
+            .and_then(|bytes| bytes.checked_add(size_of::<bool>()))
+            .ok_or(RuntimeError::ResourceLimit)
+    }
+}

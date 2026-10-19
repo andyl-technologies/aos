@@ -20,13 +20,13 @@ preserves its first error, and uses the existing initial graph precredit walk.
 
 | Check | Latest recorded scope and result |
 | --- | --- |
-| Current checking and formatting | Six-crate all-feature/all-target checking passes in 48.38 seconds; all sixteen changed Rust files pass formatting. |
-| Current application-target compilation | Passes for `b11ba2f059`: 167 newly compiled test artifacts across 48 application packages and 69 integration targets. All 7,804 filtered source files match the commit. This excludes the three Daemon census paths and executes no tests. |
-| Current library runtime | All four unfiltered libraries pass: Core 1,965, Daemon 1,498, Provider 1,496 and Contract twelve, totaling 4,971. All seventeen new codec controls pass. Existing ignores remain 33/162/15/1. |
-| Current test compilation | Standard four-library compilation passes in 3 minutes 4 seconds after cleaning and rebuilding this task's Provider artifacts. Assertions, overflow checks and default stack remain enabled. |
+| Current checking and formatting | The thirteen-file runtime accounting correction passes six-crate all-feature/all-target checking in 1 minute 28 seconds and targeted formatting. |
+| Application-target compilation | The latest completed gate is `b11ba2f059`: 167 newly compiled test artifacts across 48 application packages and 69 integration targets. All 7,804 filtered source files match that commit. The current-source refresh remains pending. This gate executes no tests. |
+| Current library runtime | All four unfiltered libraries pass: Core 1,967, Daemon 1,504, Provider 1,496 and Contract twelve, totaling 4,979 with zero failures. Existing ignores remain 33/162/15/1. Ten focused Host attachment controls also pass, including both new accounting controls. |
+| Current test compilation | Standard four-library compilation passes in 4 minutes 2 seconds. Assertions, overflow checks and default stack remain enabled. |
 | Earlier startup/reclamation pair | Baseline reaches the fifteen-minute limit during inactive-runtime construction; optimized construction finishes, then its recheck refuses after 641.39 seconds. Normal retirement and child reclamation pass. |
-| Current startup/reclamation control | Native75 fails at inactive-runtime recheck after 667.18 seconds; Native76 identifies an 18,485,990-byte excess over the originally quoted peak and fails after 684.65 seconds. Both complete normal retirement and child reclamation. Full native preservation remains unqualified. |
-| Outstanding qualification | The refused native resource calculation, complete attached-owner assertions, full preservation, strict lint, ABI and license gates remain pending. |
+| Current startup/reclamation control | Native78 passes in 678.05 seconds, including inactive-runtime recheck, the attached actor, exact/one-byte-short whole-holder census, destination assertions, retirement and child reclamation. Full native preservation remains unqualified. |
+| Outstanding qualification | Current-source application compilation, full preservation, strict lint, ABI and license gates remain pending. |
 
 One matched pair reaches the same inactive-runtime construction milestone in
 approximately 624 versus 364 seconds (41.6% less time). Only the three currentness
@@ -44,8 +44,9 @@ Native76 follow-up passes standard four-library test compilation and reaches the
 same refusal after 684.65 seconds. Actual requested storage is 3,499,478,788 bytes
 against the original 3,480,992,798-byte peak, a gap of 18,485,990 bytes (17.63 MiB).
 The unchanged 4 GiB byte policy and 128-descriptor policy are satisfied; actual
-descriptors total 67. Retirement and child reclamation complete. The prospective
-quote requires correction; no resource ceiling or timeout increase is needed.
+descriptors total 67. Retirement and child reclamation complete. This identifies
+an incomplete prospective quote rather than a need to increase resource ceilings
+or the timeout.
 
 
 A subsequent four-file plan-view optimization keeps both fixed currentness bodies,
@@ -70,7 +71,35 @@ Command evidence includes Root's actual execution record; the independent
 provenance review does not establish a historical prelaunch environment snapshot.
 This is one failed-startup control pair, not full preservation, a Linux-boot
 result or an additive overall speedup. The mandatory application-target refresh
-and final library/ABI/license qualification remain outstanding for this stage.
+and final ABI/license qualification remain outstanding for this stage.
+
+The subsequent runtime accounting correction separates real new allocations
+from additional conservative ownership reports. The same graph and attached
+Host source appear through several independently authenticated observers after
+transfer into the runtime. The prospective quote now derives those report paths
+from the genuine original graph, Source, registry and node owners; it separately
+prices the one new world-hash clone and the added quote controls. Other purposes
+retain their existing path, and post-construction observations cannot request
+new construction credit. The original policy ceilings, once-only members,
+partial-failure custody and final actual-versus-admitted comparison remain in
+force.
+
+Native78 passes the existing complete startup/reclamation control in 678.05
+seconds with the same frozen Provider/Device, standard fifteen-minute limit,
+default stack and no concurrent builds. All three runtime construction phases
+complete their rechecks. The test then authenticates the real attached actor,
+checks maximum/exact/one-byte-short whole-holder storage, verifies missing,
+correct and wrong destinations for all three members, repeats the exact census,
+and completes normal retirement and child reclamation. Its zero-budget actor
+`ResourceLimit` diagnostic is an expected negative assertion. Independent review
+checks the completed log, all 11,427 tracked files and modes, the thirteen
+selected source roles and unchanged protected files. This qualifies startup and
+reclamation, not full state preservation or Linux performance; its extra
+assertions preclude treating elapsed time as a matched comparison with failed
+Native77. The current-source unfiltered libraries subsequently pass 4,979 tests
+with zero failures: Core 1,967 in 8.39 seconds, Daemon 1,504 in 354.13 seconds,
+Provider 1,496 in 11.50 seconds and Contract twelve. All 211 existing ignores
+remain unchanged. The mandatory application-target refresh is still pending.
 
 The earlier diagnostic run timed out after fifteen minutes. Its nine read/hash stack observations
 and 2.957 TB of read accounting are diagnostic evidence, not statistical CPU

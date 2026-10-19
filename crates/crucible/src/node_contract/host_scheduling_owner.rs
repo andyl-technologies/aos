@@ -31,6 +31,9 @@ pub use capture_dependencies::{HostCaptureDependencyLookupData, HostCaptureDepen
 mod construction_storage;
 pub use construction_storage::HostCollectionNodeConstructionStorageData;
 
+mod runtime_attachment_storage;
+pub use runtime_attachment_storage::OriginalHostRuntimeAttachmentStorageData;
+
 mod restored_source17;
 pub use restored_source17::HostRestoredSource17ConstructionData;
 
