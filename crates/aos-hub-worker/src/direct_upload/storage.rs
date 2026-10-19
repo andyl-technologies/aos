@@ -122,7 +122,13 @@ impl DurableObject for HybridDirectUpload {
         }
         match self.handle(&mut request).await {
             Ok(reply) => Response::from_json(&reply),
-            Err(_) => Response::error("direct upload journal refused", 409),
+            Err(error) => {
+                worker::console_error!(
+                    "direct_journal_refused reason={}",
+                    journal::refusal_category(&error)
+                );
+                Response::error("direct upload journal refused", 409)
+            }
         }
     }
 }
@@ -148,11 +154,6 @@ impl HybridDirectUpload {
         );
         let deployment = self.env.var("HUB_DEPLOYMENT_ID")?.to_string();
         message.admission.validate(&deployment)?;
-        let now = u64::try_from(aos_hub_core::clock::now_unix_secs())?;
-        ensure!(
-            now < message.expires_at.get() && message.expires_at.get() <= now.saturating_add(30),
-            "direct journal transport expired"
-        );
         let address = address(&deployment, &message.admission)?;
         ensure!(
             self.env
@@ -163,7 +164,12 @@ impl HybridDirectUpload {
             "direct journal owner differs"
         );
 
-        let _gate = self.gate.lock().await;
+        let (_gate, now) = journal::acquire_turn(
+            &self.gate,
+            || Ok(u64::try_from(aos_hub_core::clock::now_unix_secs())?),
+            message.expires_at,
+        )
+        .await?;
         let storage = self.state.storage();
         // A clock step backwards cannot renew any original transport or grant.
         let floor = read::<WireInteger>(&storage, "clock-floor/v1").await?;

@@ -16,6 +16,40 @@ use aos_hub_core::direct_upload::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
+/// Acquires one journal turn and checks its original transport deadline.
+///
+/// # Errors
+/// Returns an error when the clock is unavailable or the transport has expired.
+pub(crate) async fn acquire_turn<'a>(
+    gate: &'a futures_util::lock::Mutex<()>,
+    clock: impl FnOnce() -> Result<u64>,
+    expires_at: WireInteger,
+) -> Result<(futures_util::lock::MutexGuard<'a, ()>, u64)> {
+    let permit = gate.lock().await;
+    // A queued request must not compare its earlier timestamp with a clock
+    // floor advanced by another turn, or use a deadline that expired in queue.
+    let now = clock()?;
+    ensure!(
+        now < expires_at.get() && expires_at.get() <= now.saturating_add(30),
+        "direct journal transport expired"
+    );
+    Ok((permit, now))
+}
+
+/// Classifies journal refusals without disclosing original or provider values.
+pub(crate) fn refusal_category(error: &anyhow::Error) -> &'static str {
+    match error.root_cause().to_string().as_str() {
+        "direct durable clock regressed" => "clock_regressed",
+        "direct journal transport expired" => "transport_expired",
+        "direct original admission changed" => "admission_changed",
+        "direct original admission absent" => "admission_absent",
+        "direct grant absent" => "grant_absent",
+        "direct reported original part differs" => "report_changed",
+        "direct reports frozen" => "reports_frozen",
+        _ => "other",
+    }
+}
+
 /// Allows inspection of an old script's original without authorizing new effects.
 pub(crate) fn sdk_probe_original_allows(
     original: &DirectHostedSdkProbeOriginal,
@@ -175,6 +209,46 @@ pub(crate) fn grant_expiry(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn refusal_categories_never_include_unrecognized_error_values() {
+        let error = anyhow::anyhow!("direct durable clock regressed").context("journal turn");
+        assert_eq!(refusal_category(&error), "clock_regressed");
+
+        let private_error = anyhow::anyhow!("provider https://example.test/?private=value");
+        assert_eq!(refusal_category(&private_error), "other");
+    }
+
+    #[tokio::test]
+    async fn queued_turn_observes_the_clock_after_acquiring_the_gate() {
+        let gate = futures_util::lock::Mutex::new(());
+        let held = gate.lock().await;
+        let now = std::cell::Cell::new(100);
+        let turn = acquire_turn(&gate, || Ok(now.get()), WireInteger::new(130));
+        futures_util::pin_mut!(turn);
+
+        assert!(futures_util::poll!(turn.as_mut()).is_pending());
+        now.set(101);
+        drop(held);
+        let (_permit, observed) = turn.await.unwrap();
+
+        assert_eq!(observed, 101);
+    }
+
+    #[tokio::test]
+    async fn transport_expiring_while_queued_is_refused() {
+        let gate = futures_util::lock::Mutex::new(());
+        let held = gate.lock().await;
+        let now = std::cell::Cell::new(100);
+        let turn = acquire_turn(&gate, || Ok(now.get()), WireInteger::new(101));
+        futures_util::pin_mut!(turn);
+
+        assert!(futures_util::poll!(turn.as_mut()).is_pending());
+        now.set(102);
+        drop(held);
+
+        assert!(turn.await.is_err());
+    }
 
     #[test]
     fn provider_grants_cover_client_dispatch_without_extending_admission() {
