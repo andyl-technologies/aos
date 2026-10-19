@@ -305,3 +305,150 @@ fn start_replay_refuses_a_network_fault_branch_at_another_frontier() {
         vec!["replay", "park", "join"]
     );
 }
+
+/// Parked lifecycle whose park and branch append publish one entry each.
+fn publishing_parked_lifecycle(at: VirtualTime) -> FakeFreshLifecycle {
+    let mut lifecycle = parked_lifecycle(at);
+    let park = lifecycle.network_park.as_mut().expect("network park");
+    park.published = vec![SchedulerEventLogEntry::execution_budget_exhausted(
+        0,
+        at,
+        "park-peer",
+    )];
+    park.branch_entries = vec![SchedulerEventLogEntry::execution_budget_exhausted(
+        1,
+        at,
+        "branch-selection",
+    )];
+    lifecycle
+}
+
+/// An anchor stop joins the parks at the recorded frontier and returns before
+/// the branch quantum, so every VM stays parked and nothing is released.
+#[test]
+fn start_replay_stops_at_an_anchor_with_parks_joined_and_unreleased() {
+    let at = VirtualTime { ticks: 40 };
+    let (input, target) = network_fault_branch_input(at);
+    let genesis = Configuration::genesis(input.scenario().scenario_def());
+    let branch = input.signal_fault_replay().network_branches()[0].clone();
+    let mut lifecycle = publishing_parked_lifecycle(at);
+
+    let replay = materialize_start_from::<(), ()>(
+        &mut lifecycle,
+        &input,
+        genesis,
+        &target,
+        &fresh_runner_context(),
+        QemuFreshStartMaterialization::genesis().with_anchor_stop(branch.parent().id()),
+    )
+    .expect("start replay stops at its anchor");
+
+    assert!(replay.anchor_reached());
+    assert_eq!(replay.restored_configuration(), Some(branch.parent()));
+    assert_eq!(replay.frontier, branch.at());
+    assert_eq!(replay.completed_quanta, 1);
+    assert_eq!(replay.completed_quanta, lifecycle.completed_quanta);
+    assert_eq!(replay.event_log.len(), 1);
+    assert_eq!(
+        *lifecycle.order.lock().expect("operation order"),
+        vec!["replay", "park", "join"]
+    );
+    let park = lifecycle.network_park.as_ref().expect("network park");
+    assert!(park.released.is_empty());
+    assert_eq!(park.branch_entries.len(), 1);
+    for vm in input.scenario().world().vm_nodes().iter() {
+        assert!(park.parked_marker(&vm.id).is_some());
+    }
+}
+
+/// Crossing the branch from an anchor stop yields exactly the entries, quantum
+/// coordinate, and frontier of one uninterrupted replay to the same target.
+#[test]
+fn resuming_from_an_anchor_stop_matches_an_uninterrupted_replay() {
+    let at = VirtualTime { ticks: 40 };
+    let (input, target) = network_fault_branch_input(at);
+    let genesis = Configuration::genesis(input.scenario().scenario_def());
+    let parent = input.signal_fault_replay().network_branches()[0]
+        .parent()
+        .clone();
+
+    let mut uninterrupted_lifecycle = publishing_parked_lifecycle(at);
+    let uninterrupted = materialize_start_from::<(), ()>(
+        &mut uninterrupted_lifecycle,
+        &input,
+        genesis.clone(),
+        &target,
+        &fresh_runner_context(),
+        QemuFreshStartMaterialization::genesis(),
+    )
+    .expect("uninterrupted replay reaches its target");
+
+    let mut anchored_lifecycle = publishing_parked_lifecycle(at);
+    let anchored = materialize_start_from::<(), ()>(
+        &mut anchored_lifecycle,
+        &input,
+        genesis,
+        &target,
+        &fresh_runner_context(),
+        QemuFreshStartMaterialization::genesis().with_anchor_stop(parent.id()),
+    )
+    .expect("anchored replay stops at its anchor");
+    // A world kept at the anchor carries only its scheduler continuation, so
+    // the resumed replay starts from those parts, as a forked child does.
+    let (log, quanta, frontier, quiescence, verdict) = anchored.into_parts();
+    assert!(verdict.is_none());
+    let resumed = materialize_start_from::<(), ()>(
+        &mut anchored_lifecycle,
+        &input,
+        parent,
+        &target,
+        &fresh_runner_context(),
+        QemuFreshStartMaterialization::from_origin_parts(log, quanta, frontier, quiescence),
+    )
+    .expect("resumed replay crosses the anchored branch");
+
+    assert!(!resumed.anchor_reached());
+    assert_eq!(resumed.restored_configuration(), Some(&target));
+    assert_eq!(
+        resumed.event_log.identity().expect("resumed log identity"),
+        uninterrupted
+            .event_log
+            .identity()
+            .expect("uninterrupted log identity")
+    );
+    assert_eq!(resumed.completed_quanta, uninterrupted.completed_quanta);
+    assert_eq!(resumed.frontier, uninterrupted.frontier);
+    assert_eq!(
+        anchored_lifecycle.completed_quanta,
+        uninterrupted_lifecycle.completed_quanta
+    );
+    let vm_count = input.scenario().world().vm_nodes().iter().count();
+    let mut expected = vec!["replay", "park", "join", "join", "append"];
+    expected.extend(std::iter::repeat_n("release", vm_count));
+    assert_eq!(
+        *anchored_lifecycle.order.lock().expect("operation order"),
+        expected
+    );
+}
+
+/// An anchor that names a configuration replay never parks at is inert.
+#[test]
+fn start_replay_ignores_an_anchor_that_is_not_a_parked_branch_parent() {
+    let at = VirtualTime { ticks: 40 };
+    let (input, target) = network_fault_branch_input(at);
+    let genesis = Configuration::genesis(input.scenario().scenario_def());
+    let mut lifecycle = parked_lifecycle(at);
+
+    let replay = materialize_start_from::<(), ()>(
+        &mut lifecycle,
+        &input,
+        genesis.clone(),
+        &target,
+        &fresh_runner_context(),
+        QemuFreshStartMaterialization::genesis().with_anchor_stop(genesis.id()),
+    )
+    .expect("replay reaches its target past an inert anchor");
+
+    assert!(!replay.anchor_reached());
+    assert_eq!(replay.restored_configuration(), Some(&target));
+}

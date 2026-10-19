@@ -1719,6 +1719,14 @@ pub struct QemuFreshStartMaterialization {
     replayed_discoveries: BTreeMap<ChoiceOpportunityId, ChoiceDiscovery>,
     replayed_discovery_bytes: usize,
     retain_replayed_discoveries: bool,
+    /// Recorded network fault branch parent at which replay stops early.
+    ///
+    /// Replay that reaches this configuration with every VM parked and joined
+    /// returns before appending the branch, leaving the boundary for anchor
+    /// retention. It is cleared once reached.
+    anchor_stop: Option<crucible::ContentHash>,
+    /// Whether this replay stopped at its anchor instead of its target.
+    anchor_reached: bool,
 }
 
 impl QemuFreshStartMaterialization {
@@ -1739,6 +1747,8 @@ impl QemuFreshStartMaterialization {
             replayed_discoveries: BTreeMap::new(),
             replayed_discovery_bytes: 0,
             retain_replayed_discoveries: false,
+            anchor_stop: None,
+            anchor_reached: false,
         }
     }
 
@@ -1749,6 +1759,54 @@ impl QemuFreshStartMaterialization {
     pub(crate) const fn with_attempt_event_count(mut self, event_count: usize) -> Self {
         self.attempt_event_count = event_count;
         self
+    }
+
+    /// Stops replay at `parent`, the parent of a recorded network fault branch.
+    ///
+    /// When replay reaches `parent` with every VM parked and the parks joined
+    /// to the recorded frontier, it returns before appending the branch or
+    /// releasing any VM. The scheduler then holds exactly the boundary every
+    /// descendant's thin replay crosses, which anchor retention may keep.
+    #[must_use]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "anchor-root materialization is the production caller"
+        )
+    )]
+    pub(crate) const fn with_anchor_stop(mut self, parent: crucible::ContentHash) -> Self {
+        self.anchor_stop = Some(parent);
+        self.anchor_reached = false;
+        self
+    }
+
+    /// Returns whether replay stopped at its anchor instead of its target.
+    ///
+    /// The restored configuration then names the anchor, and the frontier is
+    /// the joined park frontier.
+    #[must_use]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "anchor-root materialization is the production caller"
+        )
+    )]
+    pub(crate) const fn anchor_reached(&self) -> bool {
+        self.anchor_reached
+    }
+
+    /// Records that replay stopped at its anchor with parks joined at `frontier`.
+    fn stop_at_anchor(&mut self, frontier: crucible::VirtualTime) {
+        self.anchor_stop = None;
+        self.anchor_reached = true;
+        self.frontier = frontier;
+    }
+
+    /// Returns whether `current` is the anchor this replay must stop at.
+    fn stops_at_anchor(&self, current: &Configuration) -> bool {
+        self.anchor_stop == Some(current.id())
     }
 
     fn retain_replayed_discovery(
@@ -1836,6 +1894,8 @@ impl QemuFreshStartMaterialization {
             replayed_discoveries: BTreeMap::new(),
             replayed_discovery_bytes: 0,
             retain_replayed_discoveries: false,
+            anchor_stop: None,
+            anchor_reached: false,
         }
     }
 
@@ -1857,6 +1917,8 @@ impl QemuFreshStartMaterialization {
             replayed_discoveries: BTreeMap::new(),
             replayed_discovery_bytes: 0,
             retain_replayed_discoveries: false,
+            anchor_stop: None,
+            anchor_reached: false,
         }
     }
 
@@ -1904,6 +1966,8 @@ impl QemuFreshStartMaterialization {
             replayed_discoveries: BTreeMap::new(),
             replayed_discovery_bytes: 0,
             retain_replayed_discoveries: false,
+            anchor_stop: None,
+            anchor_reached: false,
         }
     }
 }
@@ -2463,7 +2527,7 @@ pub(crate) fn materialize_start_from<F, D>(
         cross_replayed_network_fault_boundary(lifecycle, input, target, &mut current, &mut replay)?;
     append_start_replay_events(&mut replay, &initial_network_entries)?;
     publish_replayed_host_outcomes(lifecycle, target, &mut current, &mut replay)?;
-    if current == *target {
+    if current == *target || replay.anchor_reached {
         replay.restored_configuration = Some(current);
         return Ok(replay);
     }
@@ -2619,6 +2683,12 @@ pub(crate) fn materialize_start_from<F, D>(
         replay.terminal_quiescence = outcome.scheduler_quiescence;
         publish_replayed_host_outcomes(lifecycle, target, &mut next, &mut replay)?;
         current = next;
+        // An anchor stop leaves the joined park unbranched; the caller
+        // authenticates and retains that boundary instead of the target.
+        if replay.anchor_reached {
+            replay.restored_configuration = Some(current);
+            return Ok(replay);
+        }
         if current == *target {
             replay.restored_configuration = Some(current);
             if replay.terminal_verdict.is_none() {

@@ -8,6 +8,12 @@
 //! the recorded branch Selection, and release each VM with that selection.
 //! After replay, the driver's first quantum then finds no parks and accepts
 //! the boundary only through the committed release proofs.
+//!
+//! Anchor retention asks replay to stop at one recorded branch parent instead:
+//! after the parks are joined and the frontier is checked, but before the
+//! branch is appended or any VM released. That joined park is the exact
+//! boundary every descendant's replay crosses, so a world kept there serves
+//! later branches without changing any replayed fact.
 
 use super::*;
 use crate::qemu_campaign_driver::{
@@ -40,7 +46,10 @@ pub(super) fn park_replayed_network_fault_markers<F, D>(
 /// Returns the branch quantum's event-log entries, or none when `current` is
 /// not a recorded branch parent or some VM has not yet parked for its phase.
 /// On success `current` names the selected configuration, and the replay's
-/// quantum coordinate and frontier name the committed branch boundary.
+/// quantum coordinate and frontier name the committed branch boundary. When
+/// `current` is the replay's anchor stop, the parks are joined but the branch
+/// is neither appended nor released; `current` stays the parent and the
+/// replay records that it reached its anchor.
 ///
 /// # Errors
 ///
@@ -89,6 +98,15 @@ pub(super) fn cross_replayed_network_fault_boundary<F, D>(
             branch.at().ticks.to_string(),
             frontier.ticks.to_string(),
         ));
+    }
+
+    // An anchor stop keeps the joined, unreleased park: the boundary every
+    // descendant's thin replay crosses next, and the one anchor retention
+    // keeps. Nothing is appended or released, so the branch quantum and the
+    // marker releases still belong to whichever replay crosses it later.
+    if replay.stops_at_anchor(current) {
+        replay.stop_at_anchor(frontier);
+        return Ok(Vec::new());
     }
 
     let (selected, entries) = lifecycle
