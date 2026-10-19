@@ -100,6 +100,57 @@ pub(super) struct PendingFile {
     canonical_stamp: Option<FileStamp>,
 }
 
+impl PendingFile {
+    /// Closes only the original completed, unlinked source and inspection handles.
+    ///
+    /// The caller retains the physical owner's genuine final-removal receipt.
+    /// Neither a missing name nor a zero link count grants that authority.
+    ///
+    /// # Errors
+    /// Refuses incomplete publication, partial handle loss, another inode,
+    /// remaining links, changed custody or bytes, and native inspection failure.
+    pub(super) fn close_finished_source(
+        &mut self,
+        owner: &Custody,
+        expected: (u64, u64, u64),
+        bytes: &[u8],
+        inspected: &mut Vec<File>,
+    ) -> io::Result<()> {
+        if self.writer.is_some()
+            || !self.published
+            || self.closed.is_none()
+            || self.canonical_stamp.is_none()
+        {
+            return Err(io::Error::other("source closure lacks completed admission"));
+        }
+        let (original, observed) = match (&self.readonly, inspected.as_slice()) {
+            (None, []) => return Ok(()),
+            (Some(original), [observed]) => (original, observed),
+            _ => {
+                return Err(io::Error::other(
+                    "source closure has partial descriptor custody",
+                ));
+            }
+        };
+        for file in [original, observed] {
+            let metadata = file.metadata()?;
+            if (metadata.dev(), metadata.ino(), metadata.len()) != expected
+                || fs::fcntl_getfl(file)?.intersects(OFlags::WRONLY | OFlags::RDWR | OFlags::PATH)
+            {
+                return Err(io::Error::other(
+                    "source closure differs from original descriptors",
+                ));
+            }
+            verify_unlinked_bytes(owner, file, bytes)?;
+        }
+        // Every fallible check precedes either close. The original correlated
+        // acknowledgement stays with the job, including after cancellation.
+        drop(self.readonly.take());
+        inspected.clear();
+        Ok(())
+    }
+}
+
 /// Retains or creates only the generated configured shared directory chain.
 ///
 /// # Errors
@@ -353,7 +404,8 @@ fn check(owner: &Custody, file: &File, phase: InodePhase) -> io::Result<()> {
         || project.device != value.dev()
         || project.project_id != config.project_id
         || (directory && (!project.inherit || value.mode() & 0o7777 != 0o2770))
-        || (!directory && (value.mode() & 0o7777 != phase.mode() || value.nlink() != 1))
+        || (!directory
+            && (value.mode() & 0o7777 != phase.mode() || value.nlink() != phase.file_links()))
     {
         return Err(io::Error::other(
             "admission inode differs from actual configured custody",
@@ -362,20 +414,28 @@ fn check(owner: &Custody, file: &File, phase: InodePhase) -> io::Result<()> {
     Ok(())
 }
 
-/// Distinguishes exact writable staging custody from closed shared custody.
+/// Distinguishes staging, canonical and actually unlinked file custody.
 #[derive(Clone, Copy)]
 enum InodePhase {
     Directory,
     Writer,
     Closed,
+    Retired,
 }
 
 impl InodePhase {
+    fn file_links(self) -> u64 {
+        match self {
+            Self::Retired => 0,
+            _ => 1,
+        }
+    }
+
     fn mode(self) -> u32 {
         match self {
             Self::Directory => 0o2770,
             Self::Writer => 0o600,
-            Self::Closed => 0o640,
+            Self::Closed | Self::Retired => 0o640,
         }
     }
 }
@@ -452,10 +512,23 @@ impl FileStamp {
 /// # Errors
 /// Refuses changed bytes or inconsistent inode and project custody.
 pub(super) fn verify_custodied_bytes(owner: &Custody, file: &File, bytes: &[u8]) -> io::Result<()> {
-    check(owner, file, InodePhase::Closed)?;
+    verify_phase_bytes(owner, file, bytes, InodePhase::Closed)
+}
+
+fn verify_unlinked_bytes(owner: &Custody, file: &File, bytes: &[u8]) -> io::Result<()> {
+    verify_phase_bytes(owner, file, bytes, InodePhase::Retired)
+}
+
+fn verify_phase_bytes(
+    owner: &Custody,
+    file: &File,
+    bytes: &[u8],
+    phase: InodePhase,
+) -> io::Result<()> {
+    check(owner, file, phase)?;
     let before = FileStamp::capture(file)?;
     verify_bytes(file, bytes)?;
-    check(owner, file, InodePhase::Closed)?;
+    check(owner, file, phase)?;
     before.check(file)
 }
 

@@ -2,8 +2,9 @@
 //!
 //! Original registered jobs, durable funding and native inode observations
 //! remain retained through every RPC and accounting check. Acknowledgements
-//! come only from real correlated publisher replies. Removing pending names
-//! does not close independently retained source descriptions or reclaim quota.
+//! come only from real correlated publisher replies, before closing the owner's
+//! original source descriptions. Independently retained descriptions may still
+//! retain quota after pending names and the owner's descriptions are gone.
 
 use super::{PublicationJob, invalid, residence, state};
 use crate::{
@@ -15,6 +16,7 @@ use crate::{
         AcknowledgedSourceRetirement, BodyIncarnationObservation, Client, PeerPublishedObject,
         PublisherRunningContext,
     },
+    publisher_local::socket::ReceivedPacket,
 };
 use std::{
     io,
@@ -55,6 +57,39 @@ struct RetiredSource<'job> {
     source: &'job TransferSource,
     observation: &'job Arc<BodyIncarnationObservation<HostDomainLocation>>,
     acknowledgement: Option<&'job AcknowledgedSourceRetirement>,
+}
+
+/// Borrows one genuine original transfer only after its correlated final removal.
+///
+/// Only this module constructs the scope, while holding the actual completed
+/// publication job. It releases descriptors, never pins or serving authority.
+pub(in crate::host_cache::owner) struct AcknowledgedSource<'job> {
+    source: &'job TransferSource,
+    observation: &'job Arc<BodyIncarnationObservation<HostDomainLocation>>,
+    acknowledgement: &'job AcknowledgedSourceRetirement,
+    session: &'job Arc<Client<HostDomainLocation>>,
+    custody: &'job Arc<Mutex<Custody>>,
+}
+
+impl AcknowledgedSource<'_> {
+    /// Checks the same original transfer, physical worker and native response.
+    ///
+    /// # Errors
+    /// Refuses another worker, transfer, observation, session or acknowledgement.
+    pub(in crate::host_cache::owner) fn check(
+        &self,
+        executor: &NativeOwnerExecutor,
+        source: &TransferSource,
+    ) -> io::Result<()> {
+        executor.check_physical_worker()?;
+        if !std::ptr::eq(self.source, source)
+            || !Arc::ptr_eq(self.custody, executor.custody())
+            || self.observation.key() != source.key()
+        {
+            return Err(invalid("source closure differs from acknowledged transfer"));
+        }
+        self.acknowledgement.check(self.session, self.observation)
+    }
 }
 
 impl CleanupFunding {
@@ -165,6 +200,86 @@ impl CleanupFunding {
             job.transfer_cleanup = Some(completed);
         }
         Ok(())
+    }
+
+    fn close_descriptors(&self, executor: &NativeOwnerExecutor) -> io::Result<()> {
+        require_registration(executor, &self.resource)?;
+        let mut guard = self
+            .resource
+            .lock()
+            .map_err(|_| invalid("cleanup publication poisoned"))?;
+        let job = &mut *guard;
+        let owner = executor
+            .custody()
+            .lock()
+            .map_err(|_| invalid("cleanup custody poisoned"))?;
+        let actual = residence::registered_body(&owner, job)?;
+        if !Arc::ptr_eq(actual, &self.body)
+            || !Arc::ptr_eq(&job.custody, &self.custody)
+            || !Arc::ptr_eq(&owner.preparation.publisher_session(), &self.session)
+        {
+            return Err(invalid(
+                "source closure changed original publication custody",
+            ));
+        }
+        let close = |source: &TransferSource,
+                     observation: &Arc<BodyIncarnationObservation<HostDomainLocation>>,
+                     acknowledgement: &AcknowledgedSourceRetirement,
+                     reply: &mut ReceivedPacket| {
+            if !Arc::ptr_eq(observation, &self.observation) {
+                return Err(invalid("source closure changed original observation"));
+            }
+            let acknowledged = AcknowledgedSource {
+                source,
+                observation,
+                acknowledgement,
+                session: &self.session,
+                custody: &self.custody,
+            };
+            source.close_finished_source(executor, &owner, &acknowledged, &mut reply.files)
+        };
+        if let Some(manifest) = &mut job.manifest {
+            let source = manifest
+                .transfers
+                .get_mut(self.index)
+                .ok_or_else(|| invalid("cleanup manifest source absent"))?;
+            if !source.retired {
+                return Err(invalid("source closure lacks original retirement"));
+            }
+            close(
+                &source.source,
+                source
+                    .observation
+                    .as_ref()
+                    .ok_or_else(|| invalid("cleanup observation absent"))?,
+                source
+                    .cleanup
+                    .as_ref()
+                    .ok_or_else(|| invalid("cleanup acknowledgement absent"))?,
+                source
+                    .reply
+                    .as_mut()
+                    .ok_or_else(|| invalid("cleanup inspection reply absent"))?,
+            )
+        } else {
+            if self.index != 0 || !job.transfer_retired {
+                return Err(invalid("inline source closure lacks original retirement"));
+            }
+            close(
+                job.transfer
+                    .as_ref()
+                    .ok_or_else(|| invalid("inline transfer absent"))?,
+                job.transfer_observation
+                    .as_ref()
+                    .ok_or_else(|| invalid("inline observation absent"))?,
+                job.transfer_cleanup
+                    .as_ref()
+                    .ok_or_else(|| invalid("inline cleanup acknowledgement absent"))?,
+                job.reply
+                    .as_mut()
+                    .ok_or_else(|| invalid("inline inspection reply absent"))?,
+            )
+        }
     }
 }
 
@@ -305,22 +420,43 @@ fn complete(
     for index in 0..count {
         let funding = CleanupFunding::capture(executor, resource, index)?;
         funding.check(executor)?;
-        if funding.acknowledged()? {
-            continue;
+        if !funding.acknowledged()? {
+            let session = Arc::clone(&funding.session);
+            let observation = Arc::clone(&funding.observation);
+            let completed = {
+                let mut turn = executor.cleanup_turn(&funding)?;
+                session
+                    .finish_source_retirement(context, &mut turn)
+                    .map_err(io::Error::other)?
+            };
+            // Keep the actual successful native result before subsequent
+            // fallible checks or closure. Cancellation cannot discard it.
+            completed.check(&session, &observation)?;
+            funding.retain_acknowledgement(completed)?;
         }
-        let session = Arc::clone(&funding.session);
-        let observation = Arc::clone(&funding.observation);
-        let completed = {
-            let mut turn = executor.cleanup_turn(&funding)?;
-            session
-                .finish_source_retirement(context, &mut turn)
-                .map_err(io::Error::other)?
-        };
-        // Keep the actual successful native result before subsequent fallible
-        // policy, seal or quota checks. Cancellation cannot discard this scope.
-        completed.check(&session, &observation)?;
-        funding.retain_acknowledgement(completed)?;
         funding.check(executor)?;
+        funding.close_descriptors(executor)?;
+        funding.check(executor)?;
+    }
+    {
+        let mut job = resource
+            .lock()
+            .map_err(|_| invalid("cleanup publication poisoned"))?;
+        let owner = executor
+            .custody()
+            .lock()
+            .map_err(|_| invalid("cleanup custody poisoned"))?;
+        let actual = residence::registered_body(&owner, &job)?;
+        if !Arc::ptr_eq(actual, &body) {
+            return Err(invalid("source closure changed completed sealed backing"));
+        }
+        if let Some(manifest) = &mut job.manifest {
+            // The completed private reassembly plan also owns original chunk
+            // descriptions, including repeated inputs. Drop them only after
+            // every native final-removal acknowledgement and descriptor check.
+            // Reconstruction metadata and durable pins remain independently held.
+            drop(manifest.plan.take());
+        }
     }
     let allocated = residence::synchronize_body(&body, project, publisher_uid)?;
     context.check_current().map_err(io::Error::other)?;
@@ -330,8 +466,8 @@ fn complete(
         .map_err(|_| invalid("cleanup custody poisoned"))?;
     residence::check_snapshot(&owner)?;
     owner.preparation.recheck()?;
-    // Original source descriptions are still retained and charged. This is
-    // fresh kernel accounting, never a subtraction based on removed names.
+    // Independently retained descriptions may still be charged after our own
+    // closes. This is fresh kernel accounting, never a logical subtraction.
     let future = state::check_charge(&owner)?;
     Ok(NativeSourceCleanupReport {
         completed_sources: count,

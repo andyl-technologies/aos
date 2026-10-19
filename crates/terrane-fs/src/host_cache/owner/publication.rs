@@ -277,8 +277,9 @@ impl NativeInlinePublication {
     /// Call after the configured publisher retirement grace. The result counts
     /// original sources whose final removal was acknowledged; repeated calls
     /// check retained actual acknowledgements without repeating those RPCs.
-    /// Original pins, source descriptors and holds remain retained. Pending-name
-    /// removal is not a statement that physical allocation has been reclaimed.
+    /// The owner closes its original source descriptors only after their real
+    /// final-removal acknowledgements. Original pins and holds remain retained;
+    /// independently held descriptors may still retain physical allocation.
     ///
     /// # Errors
     /// Refuses another owner, queue limits, active native grace, stale backing,

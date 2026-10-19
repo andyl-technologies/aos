@@ -32,8 +32,9 @@ use tokio::sync::oneshot;
 /// Owns a completed manifest publication and its original native resources.
 ///
 /// Immutable accessors take no embedded-state locks. The physical owner keeps
-/// the actual metadata pin, source handles and future holds after waiter or
-/// receipt destruction. This grants no consumer lease or Store readiness.
+/// the actual metadata pin and future holds after waiter or receipt destruction.
+/// Source handles remain owned through acknowledged cleanup. This grants no
+/// consumer lease or Store readiness.
 pub struct NativeManifestPublication {
     completion: PublicationCompletion,
 }
@@ -44,8 +45,10 @@ impl NativeManifestPublication {
     /// Call after the configured publisher retirement grace. The result counts
     /// only actual original standalone transfers; reused sealed ranges do not
     /// retire again. Repeated calls check retained native acknowledgements.
-    /// Original reconstruction metadata, pins, source descriptions and holds
-    /// remain retained; removed names do not imply reclaimed physical charge.
+    /// The owner closes its original source descriptions and completed reassembly
+    /// plan only after real final-removal acknowledgements. Reconstruction
+    /// metadata, pins and holds remain retained; independently held descriptions
+    /// may still retain physical charge after pending names are removed.
     ///
     /// # Errors
     /// Refuses another owner, queue limits, active native grace, stale backing,
@@ -144,7 +147,7 @@ pub(super) struct SourceTransfer {
 /// Retains verified ordered reads and the actual pin closure that funds them.
 pub(super) struct ManifestInput {
     pub(super) retained: Arc<RetainedManifest>,
-    pub(super) plan: NativeReassemblyPlan,
+    pub(super) plan: Option<NativeReassemblyPlan>,
     pub(super) transfers: Vec<SourceTransfer>,
     dependencies: Vec<TransferSource>,
     residents: Vec<Arc<crate::host_cache::NativeResidentChunkSource>>,
@@ -263,7 +266,7 @@ impl ManifestInput {
         let plan = NativeReassemblyPlan::new(owner.preparation.layout(), claim.clone(), sources)?;
         Ok(Self {
             retained: Arc::new(retained),
-            plan,
+            plan: Some(plan),
             transfers,
             dependencies,
             residents,

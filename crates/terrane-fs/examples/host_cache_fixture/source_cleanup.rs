@@ -187,11 +187,50 @@ pub(super) fn run(
         known - retained
     ))?;
     emit("READY actual cleanup accounting retains open source descriptions")?;
-    // The independent root controller queries actual quota while all original
-    // unlinked descriptions remain open, then observes reclamation after exit.
+    // Keep independent observers alive for the first real quota query. The
+    // controller then synchronizes the filesystem after these last observations
+    // close, while this actual owner and its consumers remain Running.
+    control("close-sources")?;
+    drop(sources);
+    emit("CLOSED actual original source observations; Running owner retained")?;
+    control("measure")?;
+    let closed_inline = runtime.block_on(inline.finish_retired_sources(owner))?;
+    let closed = runtime.block_on(manifest.finish_retired_sources(owner))?;
+    let ceiling = repeated
+        .charged_reserved_bytes
+        .checked_sub(retained)
+        .ok_or_else(|| invalid("retained source charge exceeds actual project observation"))?;
+    if closed_inline.completed_sources != 1
+        || closed.completed_sources != 2
+        || closed.future_hold_bytes != repeated.future_hold_bytes
+        || closed.charged_reserved_bytes > ceiling
+        || closed.synchronized_sealed_inode_bytes != repeated.synchronized_sealed_inode_bytes
+        || fs::read(policy(inputs))? != before
+    {
+        return Err(invalid(
+            "Running owner retained closed source allocation or changed funding",
+        ));
+    }
+    check_report(runtime, inputs, &closed, known - retained)?;
+    let fresh = runtime.block_on(owner.retain_resident_chunk(resident.identity().clone()))?;
+    let stall = runtime.block_on(owner.stall_policy_for_fixture())?;
+    if resident.read_verified()? != data.first
+        || fresh.read_verified()? != data.first
+        || lease.read_verified()? != data.first
+    {
+        return Err(invalid(
+            "source description closure invalidated live immutable reads",
+        ));
+    }
+    drop(stall);
+    emit(&format!(
+        "SOURCE_CLEANUP_CLOSED charged_reserved_bytes={} future_hold_bytes={}",
+        closed.charged_reserved_bytes, closed.future_hold_bytes
+    ))?;
+    emit("READY actual source reclamation with original Running owner retained")?;
     control("release")?;
     emit(
-        "PASS actual inline and repeated-manifest source cleanup retained pins, live reads, holds and charged unlinked inodes after cancellation; no Ready",
+        "PASS actual inline and repeated-manifest source cleanup retained pins, live reads and holds after cancellation; original source descriptors closed with Running custody retained; no Ready",
     )
 }
 

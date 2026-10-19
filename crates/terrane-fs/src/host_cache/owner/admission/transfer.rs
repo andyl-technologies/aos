@@ -26,6 +26,51 @@ pub(in crate::host_cache::owner) struct TransferSource {
 }
 
 impl TransferSource {
+    /// Closes only this actual acknowledged source's original native descriptors.
+    ///
+    /// # Errors
+    /// Refuses foreign physical custody, a missing original registration,
+    /// incomplete work, another encoded input, or changed native handles/bytes.
+    pub(in crate::host_cache::owner) fn close_finished_source(
+        &self,
+        executor: &NativeOwnerExecutor,
+        owner: &Custody,
+        acknowledged: &super::super::publication::retirement::AcknowledgedSource<'_>,
+        inspected: &mut Vec<File>,
+    ) -> io::Result<()> {
+        acknowledged.check(executor, self)?;
+        if !executor
+            .admission_jobs()
+            .iter()
+            .any(|job| Arc::ptr_eq(job, &self.job))
+        {
+            return Err(invalid("source closure lost original admission registry"));
+        }
+        let mut guard = self
+            .job
+            .lock()
+            .map_err(|_| invalid("source admission poisoned"))?;
+        let job = &mut *guard;
+        if !job.complete || job.files.len() != 1 || !Arc::ptr_eq(&job.custody, executor.custody()) {
+            return Err(invalid("source closure differs from completed admission"));
+        }
+        state::check_registration(owner, job)?;
+        let Input::Chunk {
+            descriptor,
+            encoded,
+            ..
+        } = &job.input
+        else {
+            return Err(invalid("source closure changed input class"));
+        };
+        if descriptor.encode() != self.key.descriptor
+            || encoded.first().map(|codec| u32::from(*codec)) != Some(self.key.codec)
+        {
+            return Err(invalid("source closure changed original encoded input"));
+        }
+        job.files[0].close_finished_source(owner, self.source, encoded, inspected)
+    }
+
     /// Selects the exact completed admission from the actual physical registry.
     ///
     /// # Errors

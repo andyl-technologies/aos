@@ -164,7 +164,11 @@ pub(super) fn prepare_source(scope: &SourceContext, job: &mut PublicationJob) ->
         .ok_or_else(|| invalid("publication writer absent"))?;
     check_source(scope, writer)?;
     if let Some(input) = &mut job.manifest {
-        input.plan.copy_verified(writer)?;
+        input
+            .plan
+            .as_mut()
+            .ok_or_else(|| invalid("publication reassembly sources already closed"))?
+            .copy_verified(writer)?;
     } else {
         writer.write_all(&job.plaintext)?;
     }

@@ -104,14 +104,36 @@ def run(driver, publisher, uuid):
                        "cleanup lost original custody or inferred freed open-inode charge")
         print("PASS independent helper observes actual unlinked source allocation while original descriptions remain open",
               flush=True)
+        process.stdin.write(b"close-sources\n")
+        process.stdin.flush()
+        lines.until("CLOSED actual original source observations; Running owner retained", timeout=15)
+        driver.run(["sync", "-f", driver.root(case)])
+        process.stdin.write(b"measure\n")
+        process.stdin.flush()
+        lines.until("READY actual source reclamation with original Running owner retained", timeout=45)
+        closed_measurement = [line for line in lines.bytes.decode().splitlines()
+                              if line.startswith("SOURCE_CLEANUP_CLOSED ")]
+        driver.require(len(closed_measurement) == 1, "missing actual live-owner reclamation measurement")
+        closed_match = re.fullmatch(r"SOURCE_CLEANUP_CLOSED charged_reserved_bytes=(\d+) future_hold_bytes=(\d+)",
+                                    closed_measurement[0])
+        driver.require(closed_match is not None, "invalid actual live-owner reclamation measurement")
+        closed, closed_future = map(int, closed_match.groups())
+        driver.require(process.poll() is None and quota(driver, case) == closed
+                       and closed <= charged - retained and closed_future == future
+                       and snapshot.read_bytes() == before
+                       and files(driver.root(case) / "sealed") == sealed
+                       and not files(driver.root(case) / "pending-delete"),
+                       "source allocation survived original closure or Running custody changed")
+        print("PASS independent helper observes actual source reclamation while the original Running owner and consumers remain alive",
+              flush=True)
         output, _ = process.communicate(b"release\n", timeout=15)
         print(output.decode(), end="", flush=True)
         driver.require(process.returncode == 0 and output.decode().splitlines() == [
-            "PASS actual inline and repeated-manifest source cleanup retained pins, live reads, holds and charged unlinked inodes after cancellation; no Ready"
+            "PASS actual inline and repeated-manifest source cleanup retained pins, live reads and holds after cancellation; original source descriptors closed with Running custody retained; no Ready"
         ], "source cleanup did not reach real retained completion")
         driver.run(["sync", "-f", driver.root(case)])
         after = quota(driver, case)
-        driver.require(after <= charged - retained and snapshot.read_bytes() == before
+        driver.require(after <= closed and snapshot.read_bytes() == before
                        and files(driver.root(case) / "sealed") == sealed,
                        "actual source descriptors did not close or immutable output changed")
         print("PASS independent helper observes actual source reclamation only after original descriptions close",
