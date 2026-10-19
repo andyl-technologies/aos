@@ -47,8 +47,9 @@ pub use consumer::{NativeConsumerLease, NativeLeaseAccounting};
 pub use policy_stall_fixture::NativePolicyStall;
 pub use preparation::NativeCachePreparation;
 pub use publication::{
-    NativeCacheHandoffReport, NativeInlinePublication, NativeManifestPublication,
-    NativeProducerReadClosure, NativeResidentChunkSource, NativeSourceCleanupReport,
+    NativeCacheHandoffError, NativeCacheHandoffReport, NativeInlinePublication,
+    NativeManifestPublication, NativeProducerReadClosure, NativeResidentChunkSource,
+    NativeSourceCleanupReport,
 };
 pub use recovery::CompletedRecovery;
 pub use resume_error::NativeResumeError;

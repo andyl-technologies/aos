@@ -44,7 +44,8 @@ impl NativeManifestPublication {
     ///
     /// Final standalone-source cleanup must have completed first. Producer views
     /// close; independently pinned consumers and reconstruction metadata remain
-    /// owned. Failed or cancelled operations stay on their physical owner.
+    /// owned. Queue refusals return this receipt for retry. Accepted commands
+    /// consume it; failed or cancelled operations stay on their physical owner.
     ///
     /// # Errors
     /// Refuses stopped/full queues, foreign or incomplete work, active producer
@@ -53,10 +54,9 @@ impl NativeManifestPublication {
     pub async fn into_cache(
         self,
         owner: &NativeMetadataOwner,
-    ) -> io::Result<super::NativeCacheHandoffReport> {
+    ) -> Result<super::NativeCacheHandoffReport, super::NativeCacheHandoffError<Self>> {
         let job = Arc::clone(&self.completion.job);
-        drop(self);
-        super::handoff::submit(owner, &job).await
+        super::handoff::submit(owner, job, self).await
     }
 
     /// Closes this publication's externally issued producer read views.

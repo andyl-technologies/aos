@@ -149,6 +149,9 @@ def run(driver, publisher, uuid):
         process.stdin.write(b"handoff\n")
         process.stdin.flush()
         lines.until("READY actual cache handoff retains independent consumers and reconstruction metadata", timeout=45)
+        retry = "PASS full cache handoff queue returns the original publication for retry without policy mutation"
+        driver.require(lines.bytes.decode().splitlines().count(retry) == 1,
+                       "missing original receipt retry after real bounded queue refusal")
         grace = re.findall(r"^CACHE_HANDOFF_GRACE expires=(\d+) released_future_hold_bytes=(\d+)$",
                            lines.bytes.decode(), re.M)
         driver.require(len(grace) == 1, "missing actual cache handoff deadline")
@@ -159,7 +162,9 @@ def run(driver, publisher, uuid):
         # actor retains both old and fresh consumer leases. No clock advances
         # or policy edits substitute for the durable grace deadline.
         wait = grace_end - time.time() + 3
-        driver.require(wait <= 10, "cache handoff grace exceeds the native fixture bound")
+        # NativeOwnerConfig fixes release grace at 30 seconds. Wait for that
+        # real durable deadline plus the existing three-second sweep allowance.
+        driver.require(wait <= 34, "cache handoff grace exceeds the native fixture bound")
         if wait > 0:
             time.sleep(wait)
         expired = tomllib.loads(snapshot.read_text())

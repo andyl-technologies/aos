@@ -23,6 +23,50 @@ use std::{
 use terrane::host::cache::{HostDomainLocation, LeaseRecord, PinRecord};
 use tokio::sync::oneshot;
 
+/// Distinguishes an unsubmitted handoff from a failure after worker acceptance.
+///
+/// Only a queue refusal returns the original publication for retry. An accepted
+/// command remains physically owned even when its waiter receives an error.
+pub enum NativeCacheHandoffError<P> {
+    /// Returns the original publication because no command was accepted.
+    Unsubmitted {
+        /// Explains why the owner could not accept the command.
+        error: io::Error,
+        /// Retains the original completed publication for retry.
+        publication: P,
+    },
+    /// Reports an accepted command's failure without claiming effects rolled back.
+    Accepted(io::Error),
+}
+
+impl<P> std::fmt::Debug for NativeCacheHandoffError<P> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unsubmitted { error, .. } => formatter
+                .debug_struct("Unsubmitted")
+                .field("error", error)
+                .finish_non_exhaustive(),
+            Self::Accepted(error) => formatter.debug_tuple("Accepted").field(error).finish(),
+        }
+    }
+}
+
+impl<P> std::fmt::Display for NativeCacheHandoffError<P> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unsubmitted { error, .. } | Self::Accepted(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl<P> std::error::Error for NativeCacheHandoffError<P> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Unsubmitted { error, .. } | Self::Accepted(error) => Some(error),
+        }
+    }
+}
+
 /// Reports completed cache ownership separately from measured physical usage.
 ///
 /// This report supplies no raw handle, consumer grant or eviction authority.
@@ -136,30 +180,34 @@ impl CachedPublication {
 ///
 /// # Errors
 /// Refuses stopped/full queues or an unavailable physical worker response.
-pub(super) async fn submit(
+pub(super) async fn submit<P>(
     owner: &NativeMetadataOwner,
-    resource: &Arc<Mutex<PublicationJob>>,
-) -> io::Result<NativeCacheHandoffReport> {
+    resource: Arc<Mutex<PublicationJob>>,
+    publication: P,
+) -> Result<NativeCacheHandoffReport, NativeCacheHandoffError<P>> {
     let (response, receive) = oneshot::channel();
-    owner
-        .commands
-        .as_ref()
-        .ok_or_else(|| invalid("cache handoff owner stopped"))?
-        .try_send(Command::CachePublication {
-            resource: Arc::clone(resource),
-            response,
-        })
-        .map_err(|error| match error {
+    let Some(commands) = owner.commands.as_ref() else {
+        return Err(NativeCacheHandoffError::Unsubmitted {
+            error: io::Error::new(io::ErrorKind::BrokenPipe, "cache handoff owner stopped"),
+            publication,
+        });
+    };
+    if let Err(error) = commands.try_send(Command::CachePublication { resource, response }) {
+        let error = match error {
             mpsc::TrySendError::Full(_) => {
                 io::Error::new(io::ErrorKind::WouldBlock, "cache handoff queue full")
             }
             mpsc::TrySendError::Disconnected(_) => {
                 io::Error::new(io::ErrorKind::BrokenPipe, "cache handoff owner stopped")
             }
-        })?;
+        };
+        return Err(NativeCacheHandoffError::Unsubmitted { error, publication });
+    }
+    drop(publication);
     receive
         .await
-        .map_err(|_| invalid("cache handoff worker terminated"))?
+        .map_err(|_| NativeCacheHandoffError::Accepted(invalid("cache handoff worker terminated")))?
+        .map_err(NativeCacheHandoffError::Accepted)
 }
 
 /// Synchronizes actual cache custody before acknowledging producer-funding release.

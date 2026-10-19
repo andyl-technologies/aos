@@ -33,8 +33,8 @@ pub(crate) use owner::{
 };
 #[cfg(feature = "tokio")]
 pub use owner::{
-    CompletedRecovery, IndexRepairPolicy, NativeCacheHandoffReport, NativeCacheOwnerConfig,
-    NativeCachePreparation, NativeChunkAdmissionError, NativeConsumerLease,
+    CompletedRecovery, IndexRepairPolicy, NativeCacheHandoffError, NativeCacheHandoffReport,
+    NativeCacheOwnerConfig, NativeCachePreparation, NativeChunkAdmissionError, NativeConsumerLease,
     NativeIndexRepairReport, NativeInlinePublication, NativeLeaseAccounting,
     NativeManifestPublication, NativeMetadataAdmissionError, NativeMetadataOwner,
     NativeProducerReadClosure, NativeResidentChunkSource, NativeResumeError,

@@ -1,10 +1,16 @@
 //! Exercises actual producer funding release and fresh cached consumer grants.
 
 use super::{Inputs, control, emit, invalid};
-use std::{collections::BTreeSet, io};
+use std::{
+    collections::BTreeSet,
+    future::Future,
+    io,
+    task::{Context, Poll, Waker},
+};
 use terrane::{host::cache::CacheState, store::TokioLocalFs};
 use terrane_fs::host_cache::{
-    NativeConsumerLease, NativeInlinePublication, NativeManifestPublication, NativeMetadataOwner,
+    NativeCacheHandoffError, NativeConsumerLease, NativeInlinePublication,
+    NativeManifestPublication, NativeMetadataOwner,
 };
 
 /// Consumes actual publications after native cleanup while retaining live consumers.
@@ -21,6 +27,7 @@ pub(super) fn run(
     expected: &[u8],
 ) -> io::Result<()> {
     control("handoff")?;
+    let inline = refuse_full_queue(owner, runtime, inputs, inline)?;
     let before = load(runtime, inputs)?;
     let mut hashes = BTreeSet::new();
     hashes.insert(hex(inline.claim().descriptor().digest()));
@@ -60,8 +67,12 @@ pub(super) fn run(
     let expected_future = future(&before)?
         .checked_sub(released)
         .ok_or_else(|| invalid("handoff released hold exceeds original policy"))?;
-    let inline = runtime.block_on(inline.into_cache(owner))?;
-    let manifest = runtime.block_on(manifest.into_cache(owner))?;
+    let inline = runtime
+        .block_on(inline.into_cache(owner))
+        .map_err(io::Error::other)?;
+    let manifest = runtime
+        .block_on(manifest.into_cache(owner))
+        .map_err(io::Error::other)?;
     let policy_stall = runtime.block_on(owner.stall_policy_for_fixture())?;
     let after = load(runtime, inputs)?;
     if inline.released_source_admissions != 1
@@ -158,6 +169,60 @@ pub(super) fn run(
     emit(
         "PASS actual cache handoff releases producer and closed-source funding, retains reconstruction metadata, and grants fresh consumer reads after durable grace; no Ready",
     )
+}
+
+fn refuse_full_queue(
+    owner: &NativeMetadataOwner,
+    runtime: &tokio::runtime::Runtime,
+    inputs: &Inputs,
+    publication: NativeInlinePublication,
+) -> io::Result<NativeInlinePublication> {
+    let stalled = runtime.block_on(owner.stall_policy_for_fixture())?;
+    let before = std::fs::read(super::policy(inputs))?;
+    let mut queued = Vec::new();
+    for _ in 0..inputs.owner_config()?.queued_commands {
+        let mut sweep = Box::pin(owner.sweep_consumer_leases());
+        if !matches!(
+            sweep.as_mut().poll(&mut Context::from_waker(Waker::noop())),
+            Poll::Pending
+        ) {
+            return Err(invalid("stalled physical owner completed a queued sweep"));
+        }
+        queued.push(sweep);
+    }
+
+    let mut attempt = Box::pin(publication.into_cache(owner));
+    let recovered = match attempt
+        .as_mut()
+        .poll(&mut Context::from_waker(Waker::noop()))
+    {
+        Poll::Ready(Err(NativeCacheHandoffError::Unsubmitted { error, publication }))
+            if error.kind() == io::ErrorKind::WouldBlock =>
+        {
+            publication
+        }
+        _ => {
+            return Err(invalid(
+                "full handoff queue lost the original retry receipt",
+            ));
+        }
+    };
+    drop(attempt);
+    if std::fs::read(super::policy(inputs))? != before {
+        return Err(invalid("unsubmitted cache handoff changed durable policy"));
+    }
+    drop(stalled);
+    for sweep in queued {
+        if runtime.block_on(sweep)? != 0 {
+            return Err(invalid(
+                "queue refusal control unexpectedly expired a lease",
+            ));
+        }
+    }
+    emit(
+        "PASS full cache handoff queue returns the original publication for retry without policy mutation",
+    )?;
+    Ok(recovered)
 }
 
 fn load(runtime: &tokio::runtime::Runtime, inputs: &Inputs) -> io::Result<CacheState> {

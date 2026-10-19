@@ -16,7 +16,7 @@ pub(super) mod residence;
 pub(super) mod retirement;
 mod state;
 
-pub use handoff::NativeCacheHandoffReport;
+pub use handoff::{NativeCacheHandoffError, NativeCacheHandoffReport};
 pub use manifest::NativeManifestPublication;
 pub(super) use manifest::run as run_manifest;
 pub(in crate::host_cache::owner) use producer_reads::execute as close_producer_reads;
@@ -284,8 +284,9 @@ impl NativeInlinePublication {
     ///
     /// Final standalone-source cleanup must have completed first. Producer read
     /// views close, while consumer pins and reconstruction metadata remain owned.
-    /// The receipt is consumed; no producer descriptor is returned. Failed or
-    /// cancelled operations retain physical resources on their original owner.
+    /// A queue refusal returns this receipt for retry. Accepted commands consume
+    /// it and retain physical resources on their original owner after failure or
+    /// waiter cancellation. No producer descriptor is returned.
     ///
     /// # Errors
     /// Refuses a full/stopped queue, foreign or incomplete work, active producer
@@ -294,10 +295,9 @@ impl NativeInlinePublication {
     pub async fn into_cache(
         self,
         owner: &NativeMetadataOwner,
-    ) -> std_io::Result<NativeCacheHandoffReport> {
+    ) -> Result<NativeCacheHandoffReport, NativeCacheHandoffError<Self>> {
         let job = Arc::clone(&self.completion.job);
-        drop(self);
-        handoff::submit(owner, &job).await
+        handoff::submit(owner, job, self).await
     }
 
     /// Closes this publication's externally issued producer read views.

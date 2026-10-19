@@ -206,11 +206,34 @@ fn check_completed_state(
         .ok_or_else(|| invalid("range reuse snapshot absent"))?;
     if state.reservations.len() != 11
         || state.leases.len() != 10
-        || state.pins.len() != 15
+        || state.pins.len() != 16
         || state.residences.len() != if success { 3 } else { 2 }
     {
         return Err(invalid(
             "range reuse lost exact original and new policy closure",
+        ));
+    }
+    // The second producer independently protects the original reused backing,
+    // including when whole-file verification later refuses its output. The
+    // repeated source is one dependency pin, rather than one pin per range.
+    let second_hash = hex(second.identity.digest());
+    let producer_pins: Vec<_> = state
+        .pins
+        .iter()
+        .filter(|pin| pin.hash == second_hash && pin.owner.starts_with("publication:"))
+        .collect();
+    let [producer] = producer_pins.as_slice() else {
+        return Err(invalid("reused assembly lacks one actual producer pin"));
+    };
+    let protected: BTreeSet<_> = state
+        .pins
+        .iter()
+        .filter(|pin| pin.owner == producer.owner && pin.expires == producer.expires)
+        .map(|pin| pin.hash.clone())
+        .collect();
+    if protected != BTreeSet::from([hex(first.identity.digest()), second_hash]) {
+        return Err(invalid(
+            "reused assembly lost its exact backing dependency pins",
         ));
     }
     for (bytes, object, offset) in [
