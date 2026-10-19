@@ -253,8 +253,9 @@ fn run_guest_choice_campaign(hot_fork_flight: bool) -> Result<(), Box<dyn Error>
     assert_eq!(retry_after_restart.domain_kind, "integer");
     println!("\nguest_choice_pending_choice_identity_preserved=true");
 
-    // Re-submit the fast/q7 branch with a terminal stop. The selected guest
-    // parks after its marker, so checkpoint capture cannot race completion.
+    // Re-submit the fast/q7 branch with a terminal stop. After its selection
+    // marker the selected guest emits progress events forever and never
+    // finishes on its own, so checkpoint capture cannot race completion.
     let terminal_submission =
         submit_choice(&fixture, &retry_after_restart, "u64:7", "terminal", 0x65)?;
     let terminal_request = accepted_branch_request(&terminal_submission)?;
