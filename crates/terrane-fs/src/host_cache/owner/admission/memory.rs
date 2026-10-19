@@ -87,8 +87,11 @@ pub(super) fn check(config: &NativeCacheOwnerConfig) -> io::Result<()> {
         .and_then(|bytes| bytes.checked_mul(2))
         .and_then(|bytes| bytes.checked_mul(manifest_record + 2))
         .ok_or_else(overflow)?;
+    let external_reads =
+        super::super::publication::residence::read_storage_bytes(config.state.records)?;
     total
-        .checked_add(source_slots.checked_mul(per_source).ok_or_else(overflow)?)
+        .checked_add(external_reads)
+        .and_then(|bytes| bytes.checked_add(source_slots.checked_mul(per_source)?))
         .and_then(|bytes| bytes.checked_add(claims))
         .ok_or_else(overflow)?;
     source_slots.checked_mul(4).ok_or_else(overflow)?;

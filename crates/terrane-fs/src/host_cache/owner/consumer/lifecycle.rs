@@ -29,7 +29,7 @@ pub(in crate::host_cache::owner) async fn acquire(
     let deadline = Deadline::new(expires)?;
     let running = executor.admission_context()?;
     running.check_current().map_err(io::Error::other)?;
-    let source = Arc::new(publication::retain_resident_chunk(executor, identity).await?);
+    let source = Arc::new(publication::residence::prepare(executor, identity).await?);
     let custody = Arc::clone(executor.custody());
     let (token, hold) = {
         let owner = custody

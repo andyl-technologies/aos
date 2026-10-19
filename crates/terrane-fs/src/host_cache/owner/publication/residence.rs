@@ -25,10 +25,15 @@ use tokio::sync::oneshot;
 
 mod recovered;
 mod recovered_inline;
+mod registry;
 mod view;
 
 pub(in crate::host_cache::owner) use recovered_inline::RecoveredInlineJob;
 pub(super) use recovered_inline::prepare as prepare_recovered_inline;
+pub use registry::NativeProducerReadClosure;
+pub(in crate::host_cache::owner) use registry::{
+    ProducerReadRegistry, storage_bytes as read_storage_bytes,
+};
 
 use super::super::{
     RETAINED_LEASE_DEADLINE,
@@ -47,7 +52,7 @@ pub struct NativeResidentChunkSource {
     layout: Arc<NativeHostLayout<HostDomainLocation>>,
     span: NativeChunkSpan,
     object_digest: [u8; 32],
-    view: view::ReadView<Source>,
+    view: Arc<view::ReadView<Source>>,
 }
 
 impl NativeResidentChunkSource {
@@ -138,7 +143,7 @@ impl NativeResidentChunkSource {
             layout: Arc::clone(source.body.layout()),
             span: source.span,
             object_digest,
-            view: view::ReadView::new(source),
+            view: Arc::new(view::ReadView::new(source)),
         })
     }
 }
@@ -202,6 +207,20 @@ enum Origin {
 /// # Errors
 /// Refuses unverified/stale policy, missing physical resources or invalid bytes.
 pub(in crate::host_cache::owner) async fn retain(
+    executor: &mut NativeOwnerExecutor,
+    identity: Identity,
+) -> io::Result<NativeResidentChunkSource> {
+    let source = prepare(executor, identity).await?;
+    executor.register_producer_read(&source)?;
+    Ok(source)
+}
+
+/// Prepares genuine backing for an independently synchronized consumer grant.
+///
+/// # Errors
+/// Refuses stale physical custody, absent publication/recovery, invalid spans,
+/// changed native backing or unavailable allocation. This grants no lease.
+pub(in crate::host_cache::owner) async fn prepare(
     executor: &mut NativeOwnerExecutor,
     identity: Identity,
 ) -> io::Result<NativeResidentChunkSource> {
@@ -335,12 +354,15 @@ impl NativeResidentChunkSource {
 
 /// Counts retained native source and generated range-name storage per unique chunk.
 pub(super) fn header_bytes() -> usize {
-    // The source backing has its own Arc in addition to the shared source and
-    // producer ownership slots. Read-view state is inline in the source header.
+    // The backing and revocable view each have their own Arc in addition to
+    // the shared source and producer ownership slots.
     std::mem::size_of::<NativeResidentChunkSource>()
+        + std::mem::size_of::<view::ReadView<Source>>()
         + std::mem::size_of::<Source>()
-        + 6 * std::mem::size_of::<usize>()
+        + 8 * std::mem::size_of::<usize>()
         + 128
+        + TERRANE_V1.digest_len()
+        + TERRANE_V1.name().len()
 }
 
 fn select(executor: &NativeOwnerExecutor, identity: &Identity) -> io::Result<Source> {

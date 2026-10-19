@@ -40,6 +40,24 @@ pub struct NativeManifestPublication {
 }
 
 impl NativeManifestPublication {
+    /// Closes this publication's externally issued producer read views.
+    ///
+    /// Later external producer-view acquisition is also refused permanently.
+    /// Internal reassembly sources and separately synchronized consumer leases
+    /// retain their own protection. The operation releases no durable pin,
+    /// lease or reservation and grants no cache ownership or eviction authority.
+    /// Accepted closure continues after waiter cancellation.
+    ///
+    /// # Errors
+    /// Refuses another physical owner, a stopped/full queue, stale publication
+    /// funding, absent Running custody or an unavailable worker response.
+    pub async fn close_resident_reads(
+        &self,
+        owner: &NativeMetadataOwner,
+    ) -> io::Result<super::NativeProducerReadClosure> {
+        super::producer_reads::submit(owner, &self.completion.job).await
+    }
+
     /// Finishes the original standalone source retirements on their physical owner.
     ///
     /// Call after the configured publisher retirement grace. The result counts
@@ -420,6 +438,7 @@ pub(in crate::host_cache::owner) async fn run(
         generation: 0,
         started: false,
         complete: false,
+        producer_reads_closed: false,
         synchronized: None,
         writer: None,
         reader: None,

@@ -67,6 +67,13 @@ impl<T> ReadView<T> {
         Ok(())
     }
 
+    /// Observes finished closure before reusing an external registry slot.
+    pub(super) fn closed_and_quiescent(&self) -> bool {
+        self.state
+            .lock()
+            .is_ok_and(|state| state.source.is_none() && !state.closing && state.active == 0)
+    }
+
     /// Permanently closes admission; repeated callers also observe an in-progress drop.
     pub(super) fn close(&self) -> bool {
         let source = {

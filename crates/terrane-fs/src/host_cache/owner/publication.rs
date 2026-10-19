@@ -10,15 +10,17 @@
 mod completion;
 mod io;
 mod manifest;
+mod producer_reads;
 pub(super) mod residence;
 pub(super) mod retirement;
 mod state;
 
 pub use manifest::NativeManifestPublication;
 pub(super) use manifest::run as run_manifest;
-pub use residence::NativeResidentChunkSource;
+pub(in crate::host_cache::owner) use producer_reads::execute as close_producer_reads;
 pub(super) use residence::RecoveredInlineJob;
 pub(super) use residence::retain as retain_resident_chunk;
+pub use residence::{NativeProducerReadClosure, NativeResidentChunkSource};
 pub use retirement::NativeSourceCleanupReport;
 
 use super::{
@@ -62,6 +64,9 @@ pub(super) struct PublicationJob {
     generation: u64,
     pub(super) started: bool,
     complete: bool,
+    // This deny-only latch prevents issuing new external producer views after
+    // revocation. It grants no replacement pin, cache or retirement authority.
+    producer_reads_closed: bool,
     synchronized: Option<completion::SynchronizedPublication>,
     writer: Option<File>,
     reader: Option<File>,
@@ -272,6 +277,24 @@ pub struct NativeInlinePublication {
 }
 
 impl NativeInlinePublication {
+    /// Closes this publication's externally issued producer read views.
+    ///
+    /// Later external producer-view acquisition is also refused permanently.
+    /// Separately synchronized consumer leases and internal reassembly sources
+    /// remain protected. A cancelled waiter does not cancel accepted closure.
+    /// The result releases no durable protection or physical allocation and
+    /// supplies no cache ownership or eviction authority.
+    ///
+    /// # Errors
+    /// Refuses another physical owner, a stopped/full queue, stale publication
+    /// funding, absent Running custody or an unavailable worker response.
+    pub async fn close_resident_reads(
+        &self,
+        owner: &NativeMetadataOwner,
+    ) -> std_io::Result<NativeProducerReadClosure> {
+        producer_reads::submit(owner, &self.completion.job).await
+    }
+
     /// Finishes the original standalone source retirements on their physical owner.
     ///
     /// Call after the configured publisher retirement grace. The result counts
@@ -482,6 +505,7 @@ fn prepare(
         generation: 0,
         started: false,
         complete: false,
+        producer_reads_closed: false,
         synchronized: None,
         writer: None,
         reader: None,

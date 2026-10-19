@@ -87,6 +87,11 @@ pub(super) enum Command {
         identity: Identity,
         response: oneshot::Sender<io::Result<super::NativeManifestPublication>>,
     },
+    /// Closes only external producer reads belonging to the original publication.
+    ClosePublicationReads {
+        resource: Arc<Mutex<super::publication::PublicationJob>>,
+        response: oneshot::Sender<io::Result<super::NativeProducerReadClosure>>,
+    },
     /// Finishes only a completed publication's actual original pending sources.
     FinishPublicationSources {
         resource: Arc<Mutex<super::publication::PublicationJob>>,
@@ -306,6 +311,11 @@ impl NativeMetadataOwner {
                             let result = runtime.block_on(
                                 super::publication::retain_resident_chunk(&mut executor, identity),
                             );
+                            let _ = response.send(result);
+                        }
+                        Command::ClosePublicationReads { resource, response } => {
+                            let result =
+                                super::publication::close_producer_reads(&mut executor, &resource);
                             let _ = response.send(result);
                         }
                         Command::FinishPublicationSources { resource, response } => {

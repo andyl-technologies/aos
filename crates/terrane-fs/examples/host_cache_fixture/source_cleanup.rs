@@ -245,6 +245,64 @@ pub(super) fn run(
     emit(
         "PASS closed resident view refuses reads while independent sources and consumer leases remain readable under stalled policy; durable protection unchanged",
     )?;
+    let mut views = Vec::new();
+    views
+        .try_reserve_exact(super::config::STATE.records)
+        .map_err(io::Error::other)?;
+    for _ in 1..super::config::STATE.records {
+        views.push(runtime.block_on(owner.retain_resident_chunk(fresh.identity().clone()))?);
+    }
+    if runtime
+        .block_on(owner.retain_resident_chunk(fresh.identity().clone()))
+        .err()
+        .is_none_or(|error| error.kind() != io::ErrorKind::StorageFull)
+    {
+        return Err(invalid("full producer read registry accepted another view"));
+    }
+    drop(
+        views
+            .pop()
+            .ok_or_else(|| invalid("producer view capacity witness absent"))?,
+    );
+    views.push(runtime.block_on(owner.retain_resident_chunk(fresh.identity().clone()))?);
+    if fs::read(policy(inputs))? != before {
+        return Err(invalid(
+            "producer view capacity refusal changed durable protection",
+        ));
+    }
+    emit(
+        "PASS actual producer-view capacity refuses overflow and reclaims closed slots without policy mutation",
+    )?;
+    let revoked = runtime.block_on(manifest.close_resident_reads(owner))?;
+    let repeated_revocation = runtime.block_on(manifest.close_resident_reads(owner))?;
+    if revoked.observed_views != super::config::STATE.records
+        || revoked.active_views != 0
+        || repeated_revocation.observed_views != super::config::STATE.records
+        || repeated_revocation.active_views != 0
+        || fresh
+            .read_verified()
+            .err()
+            .is_none_or(|error| error.kind() != io::ErrorKind::PermissionDenied)
+        || runtime
+            .block_on(owner.retain_resident_chunk(fresh.identity().clone()))
+            .err()
+            .is_none_or(|error| error.kind() != io::ErrorKind::PermissionDenied)
+        || fs::read(policy(inputs))? != before
+    {
+        return Err(invalid(
+            "producer revocation retained external reads or changed durable protection",
+        ));
+    }
+    let stall = runtime.block_on(owner.stall_policy_for_fixture())?;
+    if lease.read_verified()? != data.first {
+        return Err(invalid(
+            "producer revocation invalidated an independent consumer grant",
+        ));
+    }
+    drop(stall);
+    emit(
+        "PASS actual publication revokes original producer views and refuses reacquisition while independent consumer reads remain live; durable protection unchanged",
+    )?;
     emit(&format!(
         "SOURCE_CLEANUP_CLOSED charged_reserved_bytes={} future_hold_bytes={}",
         closed.charged_reserved_bytes, closed.future_hold_bytes
@@ -328,6 +386,9 @@ fn foreign(
     if runtime
         .block_on(publication.finish_retired_sources(&foreign_owner))
         .is_ok()
+        || runtime
+            .block_on(publication.close_resident_reads(&foreign_owner))
+            .is_ok()
         || fs::read(policy(inputs))? != original
         || fs::read(policy(&foreign))? != other
     {

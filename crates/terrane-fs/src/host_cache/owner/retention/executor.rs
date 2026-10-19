@@ -26,6 +26,7 @@ pub(in crate::host_cache::owner) struct NativeOwnerExecutor {
     failed_resume: Option<(ResumeFailureStage, Box<CompletedRecovery>)>,
     admission_jobs: Vec<Arc<Mutex<super::super::admission::AdmissionJob>>>,
     publications: Vec<Arc<Mutex<super::super::publication::PublicationJob>>>,
+    producer_reads: super::super::publication::residence::ProducerReadRegistry,
     inline_sources: Vec<Arc<Mutex<super::super::publication::RecoveredInlineJob>>>,
     consumers: Vec<Arc<Mutex<ConsumerJob>>>,
     consumer_reads: Arc<ReadBudget>,
@@ -68,6 +69,7 @@ impl NativeOwnerExecutor {
             failed_resume: None,
             admission_jobs: Vec::new(),
             publications: Vec::new(),
+            producer_reads: super::super::publication::residence::ProducerReadRegistry::default(),
             inline_sources: Vec::new(),
             consumers: Vec::new(),
             consumer_reads,
@@ -273,6 +275,33 @@ impl NativeOwnerExecutor {
         &self,
     ) -> &[Arc<Mutex<super::super::publication::PublicationJob>>] {
         &self.publications
+    }
+
+    /// Registers one genuinely prepared external producer source under a finite bound.
+    ///
+    /// # Errors
+    /// Refuses another worker, stale custody, a full registry or allocation failure.
+    pub(in crate::host_cache::owner) fn register_producer_read(
+        &mut self,
+        source: &super::super::NativeResidentChunkSource,
+    ) -> io::Result<()> {
+        self.check_physical_worker()?;
+        let custody = Arc::clone(&self.custody);
+        let owner = custody
+            .lock()
+            .map_err(|_| io::Error::other("resident read custody poisoned"))?;
+        source.check_protected(&owner)?;
+        let limit = owner.preparation.config.state.records;
+        drop(owner);
+        self.producer_reads.register(source, limit)
+    }
+
+    /// Closes external views only after the physical command validates their original job.
+    pub(in crate::host_cache::owner) fn close_producer_reads(
+        &mut self,
+        job: &Arc<Mutex<super::super::publication::PublicationJob>>,
+    ) -> super::super::NativeProducerReadClosure {
+        self.producer_reads.close_publication(job)
     }
 
     /// Registers actual recovered source custody before its durable pin effects.

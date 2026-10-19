@@ -115,6 +115,11 @@ def run(driver, publisher, uuid):
         observed = lines.bytes.decode().splitlines()
         driver.require(observed.count(closure) == 1,
                        "missing actual producer read-view closure with independent live consumer")
+        revocation = "PASS actual publication revokes original producer views and refuses reacquisition while independent consumer reads remain live; durable protection unchanged"
+        capacity = "PASS actual producer-view capacity refuses overflow and reclaims closed slots without policy mutation"
+        driver.require(observed.count(capacity) == observed.count(revocation) == 1
+                       and observed.index(closure) < observed.index(capacity) < observed.index(revocation),
+                       "missing original producer revocation or independent live consumer")
         closed_measurement = [line for line in lines.bytes.decode().splitlines()
                               if line.startswith("SOURCE_CLEANUP_CLOSED ")]
         driver.require(len(closed_measurement) == 1, "missing actual live-owner reclamation measurement")
