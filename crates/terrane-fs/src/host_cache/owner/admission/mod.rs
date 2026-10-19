@@ -18,7 +18,7 @@ mod transfer;
 pub(in crate::host_cache::owner) use backing::AdmissionJob;
 pub use backing::{NativeChunkAdmission, NativeMetadataAdmission};
 pub use error::{NativeChunkAdmissionError, NativeMetadataAdmissionError};
-pub(in crate::host_cache::owner) use transfer::TransferSource;
+pub(in crate::host_cache::owner) use transfer::{TransferSource, TransferredFunding};
 
 use super::{
     NativeCacheOwnerConfig, NativeMetadataOwner,

@@ -77,10 +77,13 @@ pub(super) fn begin(
         expires: RETAINED_LEASE_DEADLINE,
     });
     next.pins.push(PinRecord {
-        owner: pin_owner,
+        owner: pin_owner.clone(),
         hash: hex(job.claim.descriptor().digest()),
         expires: RETAINED_LEASE_DEADLINE,
     });
+    if let Some(input) = &job.manifest {
+        input.pin_backings(owner, &mut next, &pin_owner)?;
+    }
     next.encoded_len(owner.preparation.config.state)
         .map_err(io::Error::other)?;
     owner.begin_mutation()?;

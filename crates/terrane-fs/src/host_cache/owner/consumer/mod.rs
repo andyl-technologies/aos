@@ -5,9 +5,9 @@
 //! descriptor or authority token. Read views remain independent of embedded
 //! state; mutation commands retain their actual resources after cancellation.
 
-mod clock;
+pub(in crate::host_cache::owner) mod clock;
 mod lifecycle;
-mod state;
+pub(in crate::host_cache::owner) mod state;
 mod sweep;
 mod view;
 

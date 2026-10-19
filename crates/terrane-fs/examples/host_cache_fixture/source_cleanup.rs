@@ -28,6 +28,8 @@ use terrane_fs::{
 };
 
 const INLINE: &[u8] = b"original retired inline cleanup source";
+#[path = "source_cleanup/handoff.rs"]
+mod handoff;
 
 /// Runs actual cleanup in a separately provisioned finite native domain.
 ///
@@ -311,6 +313,15 @@ pub(super) fn run(
     control("release")?;
     emit(
         "PASS actual inline and repeated-manifest source cleanup retained pins, live reads and holds after cancellation; original source descriptors closed with Running custody retained; no Ready",
+    )?;
+    handoff::run(
+        owner,
+        runtime,
+        inputs,
+        inline,
+        manifest,
+        &lease,
+        &data.first,
     )
 }
 

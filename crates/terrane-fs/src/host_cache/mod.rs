@@ -33,11 +33,12 @@ pub(crate) use owner::{
 };
 #[cfg(feature = "tokio")]
 pub use owner::{
-    CompletedRecovery, IndexRepairPolicy, NativeCacheOwnerConfig, NativeCachePreparation,
-    NativeChunkAdmissionError, NativeConsumerLease, NativeIndexRepairReport,
-    NativeInlinePublication, NativeLeaseAccounting, NativeManifestPublication,
-    NativeMetadataAdmissionError, NativeMetadataOwner, NativeProducerReadClosure,
-    NativeResidentChunkSource, NativeResumeError, NativeSourceCleanupReport, RetainedManifest,
+    CompletedRecovery, IndexRepairPolicy, NativeCacheHandoffReport, NativeCacheOwnerConfig,
+    NativeCachePreparation, NativeChunkAdmissionError, NativeConsumerLease,
+    NativeIndexRepairReport, NativeInlinePublication, NativeLeaseAccounting,
+    NativeManifestPublication, NativeMetadataAdmissionError, NativeMetadataOwner,
+    NativeProducerReadClosure, NativeResidentChunkSource, NativeResumeError,
+    NativeSourceCleanupReport, RetainedManifest,
 };
 pub use quota::ProjectQuota;
 pub use reassembly::NativeReassemblyPlan;

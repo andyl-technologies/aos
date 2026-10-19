@@ -24,18 +24,21 @@ use std::{
 use terrane::host::cache::CacheState;
 
 /// Separates full-owner quota usage from future policy holds after real IO.
-pub(super) struct PolicyObservation {
+pub(in crate::host_cache::owner) struct PolicyObservation {
     /// Fresh kernel charged-and-reserved usage for the complete project.
-    pub(super) charged: u64,
+    pub(in crate::host_cache::owner) charged: u64,
     /// Sum of distinct future policy holds after synchronization.
-    pub(super) future: u64,
+    pub(in crate::host_cache::owner) future: u64,
 }
 
 /// Checks actual writable custody and its complete synchronized policy snapshot.
 ///
 /// # Errors
 /// Refuses another worker, cold/faulted state or changed snapshot provenance.
-pub(super) fn check_ready(executor: &NativeOwnerExecutor, owner: &Custody) -> io::Result<()> {
+pub(in crate::host_cache::owner) fn check_ready(
+    executor: &NativeOwnerExecutor,
+    owner: &Custody,
+) -> io::Result<()> {
     executor.check_physical_worker()?;
     check_snapshot(owner)?;
     if owner.faulted || owner.recovery_required {
@@ -53,7 +56,7 @@ pub(super) fn check_ready(executor: &NativeOwnerExecutor, owner: &Custody) -> io
 ///
 /// # Errors
 /// Refuses a foreign session or changed original bootstrap hold.
-pub(super) fn check_bootstrap(
+pub(in crate::host_cache::owner) fn check_bootstrap(
     owner: &Custody,
     running: &Arc<PublisherRunningContext>,
 ) -> io::Result<()> {
@@ -96,7 +99,7 @@ pub(super) fn fresh_token(owner: &Custody) -> io::Result<String> {
 ///
 /// # Errors
 /// Refuses stale custody, missing funding, overflowing limits or actual capacity.
-pub(super) fn begin(
+pub(in crate::host_cache::owner) fn begin(
     executor: &NativeOwnerExecutor,
     owner: &mut Custody,
     running: &Arc<PublisherRunningContext>,
@@ -123,7 +126,10 @@ pub(super) fn begin(
 ///
 /// # Errors
 /// Refuses failed/foreign state, changed generation, native measurements or quota.
-pub(super) fn finish(owner: &mut Custody, generation: u64) -> io::Result<PolicyObservation> {
+pub(in crate::host_cache::owner) fn finish(
+    owner: &mut Custody,
+    generation: u64,
+) -> io::Result<PolicyObservation> {
     check_snapshot(owner)?;
     if !owner.faulted || owner.generation != generation {
         return Err(invalid(
@@ -195,7 +201,9 @@ pub(super) fn check_job(
 ///
 /// # Errors
 /// Refuses stale layout bindings and native open or synchronization errors.
-pub(super) fn synchronize_policy(executor: &NativeOwnerExecutor) -> io::Result<()> {
+pub(in crate::host_cache::owner) fn synchronize_policy(
+    executor: &NativeOwnerExecutor,
+) -> io::Result<()> {
     let layout = {
         let owner = executor
             .custody()

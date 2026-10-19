@@ -40,6 +40,25 @@ pub struct NativeManifestPublication {
 }
 
 impl NativeManifestPublication {
+    /// Transfers the completed publication into cache ownership and release grace.
+    ///
+    /// Final standalone-source cleanup must have completed first. Producer views
+    /// close; independently pinned consumers and reconstruction metadata remain
+    /// owned. Failed or cancelled operations stay on their physical owner.
+    ///
+    /// # Errors
+    /// Refuses stopped/full queues, foreign or incomplete work, active producer
+    /// reads, missing cleanup acknowledgments, changed backing or failed durable
+    /// policy and quota reconciliation. No producer descriptor is returned.
+    pub async fn into_cache(
+        self,
+        owner: &NativeMetadataOwner,
+    ) -> io::Result<super::NativeCacheHandoffReport> {
+        let job = Arc::clone(&self.completion.job);
+        drop(self);
+        super::handoff::submit(owner, &job).await
+    }
+
     /// Closes this publication's externally issued producer read views.
     ///
     /// Later external producer-view acquisition is also refused permanently.
@@ -172,6 +191,47 @@ pub(super) struct ManifestInput {
 }
 
 impl ManifestInput {
+    /// Derives distinct backing hashes only from original verified resident sources.
+    ///
+    /// # Errors
+    /// Refuses changed original source protection.
+    pub(super) fn backing_hashes(&self, owner: &Custody) -> io::Result<Vec<String>> {
+        let mut hashes = std::collections::BTreeSet::new();
+        for source in &self.residents {
+            source.check_protected(owner)?;
+            hashes.insert(super::state::hex(source.protected_object_digest()));
+        }
+        Ok(hashes.into_iter().collect())
+    }
+
+    /// Pins the actual reused backing objects before the new producer begins copying.
+    ///
+    /// # Errors
+    /// Refuses changed original source protection or exhausted policy storage.
+    pub(super) fn pin_backings(
+        &self,
+        owner: &Custody,
+        next: &mut terrane::host::cache::CacheState,
+        producer: &str,
+    ) -> io::Result<()> {
+        for source in &self.residents {
+            source.check_protected(owner)?;
+            let hash = super::state::hex(source.protected_object_digest());
+            if !next
+                .pins
+                .iter()
+                .any(|pin| pin.owner == producer && pin.hash == hash)
+            {
+                next.pins.push(terrane::host::cache::PinRecord {
+                    owner: producer.to_owned(),
+                    hash,
+                    expires: super::super::RETAINED_LEASE_DEADLINE,
+                });
+            }
+        }
+        Ok(())
+    }
+
     fn prepare(
         executor: &NativeOwnerExecutor,
         owner: &Custody,
@@ -438,6 +498,7 @@ pub(in crate::host_cache::owner) async fn run(
         generation: 0,
         started: false,
         complete: false,
+        cached: None,
         producer_reads_closed: false,
         synchronized: None,
         writer: None,

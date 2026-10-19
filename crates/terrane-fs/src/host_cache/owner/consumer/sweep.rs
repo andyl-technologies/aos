@@ -253,7 +253,20 @@ fn protection_end(
     grace: std::time::Duration,
 ) -> io::Result<u64> {
     let expiry = pin.expires.min(lease.expires);
-    if lease.owner.starts_with("consumer-grace:") && consumer_token(&lease.owner).is_some() {
+    let publication_grace = lease
+        .owner
+        .strip_prefix("publication-grace:")
+        .is_some_and(|token| {
+            token.len() == 32
+                && token
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        });
+    // These labels interpret an already durable deadline. They establish no
+    // native ownership or read authority; original physical custody does that.
+    if publication_grace
+        || (lease.owner.starts_with("consumer-grace:") && consumer_token(&lease.owner).is_some())
+    {
         Ok(expiry)
     } else if expiry == super::super::RETAINED_LEASE_DEADLINE {
         // Producer custody has no automatic expiry. Adding finite grace to the
@@ -318,12 +331,16 @@ mod tests {
 
     #[test]
     fn explicit_grace_has_no_second_grace_and_retained_producers_do_not_expire() -> io::Result<()> {
-        let owner = "consumer-grace:0123456789abcdef0123456789abcdef";
-        let explicit = policy(owner, 40, &[40]);
-        let (expired, _, count) = expired_policy(&explicit, 40, Duration::from_secs(30))?;
-        assert!(expired.pins.is_empty());
-        assert!(expired.leases.is_empty());
-        assert_eq!(count, 1);
+        for owner in [
+            "consumer-grace:0123456789abcdef0123456789abcdef",
+            "publication-grace:0123456789abcdef0123456789abcdef",
+        ] {
+            let explicit = policy(owner, 40, &[40]);
+            let (expired, _, count) = expired_policy(&explicit, 40, Duration::from_secs(30))?;
+            assert!(expired.pins.is_empty());
+            assert!(expired.leases.is_empty());
+            assert_eq!(count, 1);
+        }
 
         let retained = policy(
             "publication:original",

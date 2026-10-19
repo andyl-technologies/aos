@@ -8,6 +8,7 @@
 
 use super::super::consumer::{ConsumerJob, ReadBudget, ReadView};
 use super::Custody;
+mod cache_handoff;
 use crate::{
     host_cache::CompletedRecovery,
     publisher_local::client::{PublisherRunningContext, ResumeFailureStage},

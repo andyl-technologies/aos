@@ -478,6 +478,22 @@ pub(super) fn registered_body<'job>(
     if !job.started || !job.complete {
         return Err(invalid("resident publication is not complete"));
     }
+    if let Some(cached) = &job.cached {
+        let body = job
+            .body
+            .as_ref()
+            .ok_or_else(|| invalid("cached body absent"))?;
+        cached.check(owner, &job.custody, body)?;
+        if body.claim().descriptor() != job.claim.descriptor()
+            || body.claim().domain() != job.claim.domain()
+            || body.claim().canonical_manifest() != job.claim.canonical_manifest()
+        {
+            return Err(invalid(
+                "cached body differs from original publication claim",
+            ));
+        }
+        return Ok(body);
+    }
     let hash = state::hex(job.claim.descriptor().digest());
     let pin_owner = format!("publication:{}", job.token);
     if !owner.state.reservations.iter().any(|hold| {

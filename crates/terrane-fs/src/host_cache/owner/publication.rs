@@ -8,6 +8,7 @@
 //! future copy overlap. Its metadata allowance and durable pin remain retained.
 
 mod completion;
+pub(super) mod handoff;
 mod io;
 mod manifest;
 mod producer_reads;
@@ -15,6 +16,7 @@ pub(super) mod residence;
 pub(super) mod retirement;
 mod state;
 
+pub use handoff::NativeCacheHandoffReport;
 pub use manifest::NativeManifestPublication;
 pub(super) use manifest::run as run_manifest;
 pub(in crate::host_cache::owner) use producer_reads::execute as close_producer_reads;
@@ -64,6 +66,7 @@ pub(super) struct PublicationJob {
     generation: u64,
     pub(super) started: bool,
     complete: bool,
+    cached: Option<handoff::CachedPublication>,
     // This deny-only latch prevents issuing new external producer views after
     // revocation. It grants no replacement pin, cache or retirement authority.
     producer_reads_closed: bool,
@@ -277,6 +280,26 @@ pub struct NativeInlinePublication {
 }
 
 impl NativeInlinePublication {
+    /// Transfers the completed publication into cache ownership and release grace.
+    ///
+    /// Final standalone-source cleanup must have completed first. Producer read
+    /// views close, while consumer pins and reconstruction metadata remain owned.
+    /// The receipt is consumed; no producer descriptor is returned. Failed or
+    /// cancelled operations retain physical resources on their original owner.
+    ///
+    /// # Errors
+    /// Refuses a full/stopped queue, foreign or incomplete work, active producer
+    /// reads, missing native cleanup acknowledgments, changed backing, failed
+    /// snapshot synchronization or unavailable quota reconciliation.
+    pub async fn into_cache(
+        self,
+        owner: &NativeMetadataOwner,
+    ) -> std_io::Result<NativeCacheHandoffReport> {
+        let job = Arc::clone(&self.completion.job);
+        drop(self);
+        handoff::submit(owner, &job).await
+    }
+
     /// Closes this publication's externally issued producer read views.
     ///
     /// Later external producer-view acquisition is also refused permanently.
@@ -505,6 +528,7 @@ fn prepare(
         generation: 0,
         started: false,
         complete: false,
+        cached: None,
         producer_reads_closed: false,
         synchronized: None,
         writer: None,
@@ -691,9 +715,15 @@ async fn execute(
 
 /// Counts retained manifest headers and actual per-source ownership slots.
 pub(super) fn manifest_source_header_bytes() -> usize {
+    // Handoff additionally retains one closed admission scope (token plus
+    // chunk/dictionary hashes) and temporary/stored backing-hash sets per input.
     std::mem::size_of::<manifest::ManifestInput>()
         + std::mem::size_of::<io::SourceContext>()
         + residence::header_bytes()
+        + std::mem::size_of::<super::admission::TransferredFunding>()
+        + 32
+        + 2 * (std::mem::size_of::<String>() + 64)
+        + 2 * (std::mem::size_of::<String>() + 64 + 6 * std::mem::size_of::<usize>())
         + std::mem::size_of::<manifest::SourceTransfer>()
         + retirement_observation_bytes()
         + 2 * std::mem::size_of::<crate::host_cache::NativeChunkSource>()

@@ -25,7 +25,152 @@ pub(in crate::host_cache::owner) struct TransferSource {
     source: (u64, u64, u64),
 }
 
+/// Retains original admission funding only after genuine final removal and closure.
+pub(in crate::host_cache::owner) struct TransferredFunding {
+    job: Arc<Mutex<AdmissionJob>>,
+    token: String,
+    hold: u64,
+    hashes: Vec<String>,
+}
+
+impl TransferredFunding {
+    /// Removes only the original checked operation's exact durable protection.
+    ///
+    /// # Errors
+    /// Refuses changed original registration or a policy copy missing its records.
+    pub(in crate::host_cache::owner) fn remove_from(
+        &self,
+        owner: &Custody,
+        next: &mut terrane::host::cache::CacheState,
+    ) -> io::Result<()> {
+        let job = self
+            .job
+            .lock()
+            .map_err(|_| invalid("transferred admission poisoned"))?;
+        state::check_registration(owner, &job)?;
+        if job.token != self.token || job.hold != self.hold || job.hashes != self.hashes {
+            return Err(invalid("transferred admission funding changed"));
+        }
+        let name = format!("admission:{}", self.token);
+        if next.pins.iter().filter(|row| row.owner == name).count() != self.hashes.len() {
+            return Err(invalid(
+                "transferred admission has unexpected dependency pins",
+            ));
+        }
+        next.pins.retain(|row| row.owner != name);
+        next.leases.retain(|row| row.owner != name);
+        next.reservations.retain(|row| row.id != self.token);
+        Ok(())
+    }
+
+    /// Relinquishes obsolete native and input resources after synchronized funding removal.
+    ///
+    /// # Errors
+    /// Refuses a changed owner, uncertain snapshot, retained funding or live descriptors.
+    pub(in crate::host_cache::owner) fn release(
+        &self,
+        executor: &NativeOwnerExecutor,
+    ) -> io::Result<()> {
+        executor.check_physical_worker()?;
+        {
+            let custody = executor
+                .custody()
+                .lock()
+                .map_err(|_| invalid("transfer custody poisoned"))?;
+            super::super::publication::residence::check_snapshot(&custody)?;
+            let name = format!("admission:{}", self.token);
+            if custody
+                .state
+                .reservations
+                .iter()
+                .any(|row| row.id == self.token)
+                || custody.state.leases.iter().any(|row| row.owner == name)
+                || custody.state.pins.iter().any(|row| row.owner == name)
+            {
+                return Err(invalid("transferred admission funding still present"));
+            }
+        }
+        let mut job = self
+            .job
+            .lock()
+            .map_err(|_| invalid("transferred admission poisoned"))?;
+        if !Arc::ptr_eq(&job.custody, executor.custody())
+            || job.token != self.token
+            || job.hold != self.hold
+            || job.hashes != self.hashes
+            || job.files.len() != 1
+        {
+            return Err(invalid("transferred admission changed original ownership"));
+        }
+        job.files[0].check_transferred_closed()?;
+        let Input::Chunk { encoded, .. } = &mut job.input else {
+            return Err(invalid("transferred admission changed input class"));
+        };
+        *encoded = Arc::new(Vec::new());
+        job.files.clear();
+        job.directory_progress.clear();
+        job.dependencies.clear();
+        Ok(())
+    }
+
+    /// Recognizes the original resource for registry removal after completed release.
+    pub(in crate::host_cache::owner) fn belongs_to(&self, job: &Arc<Mutex<AdmissionJob>>) -> bool {
+        Arc::ptr_eq(&self.job, job)
+    }
+}
+
 impl TransferSource {
+    /// Retains funding only under the actual original final-removal acknowledgment.
+    ///
+    /// # Errors
+    /// Refuses another physical worker, absent registration, changed input or
+    /// incomplete native closure. No caller-selected key creates this scope.
+    pub(in crate::host_cache::owner) fn closed_funding(
+        &self,
+        executor: &NativeOwnerExecutor,
+        owner: &Custody,
+        acknowledged: &super::super::publication::retirement::AcknowledgedSource<'_>,
+    ) -> io::Result<TransferredFunding> {
+        acknowledged.check(executor, self)?;
+        if !executor
+            .admission_jobs()
+            .iter()
+            .any(|job| Arc::ptr_eq(job, &self.job))
+        {
+            return Err(invalid("transferred admission registry absent"));
+        }
+        let job = self
+            .job
+            .lock()
+            .map_err(|_| invalid("transferred admission poisoned"))?;
+        if !job.complete || job.files.len() != 1 || !Arc::ptr_eq(&job.custody, executor.custody()) {
+            return Err(invalid(
+                "transferred admission is not original completed work",
+            ));
+        }
+        state::check_registration(owner, &job)?;
+        job.files[0].check_transferred_closed()?;
+        let Input::Chunk {
+            descriptor,
+            encoded,
+            ..
+        } = &job.input
+        else {
+            return Err(invalid("transferred admission changed input class"));
+        };
+        if descriptor.encode() != self.key.descriptor
+            || encoded.first().map(|codec| u32::from(*codec)) != Some(self.key.codec)
+        {
+            return Err(invalid("transferred admission differs from original input"));
+        }
+        Ok(TransferredFunding {
+            job: Arc::clone(&self.job),
+            token: job.token.clone(),
+            hold: job.hold,
+            hashes: job.hashes.clone(),
+        })
+    }
+
     /// Closes only this actual acknowledged source's original native descriptors.
     ///
     /// # Errors

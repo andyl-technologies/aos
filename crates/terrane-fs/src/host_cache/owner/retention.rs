@@ -87,6 +87,11 @@ pub(super) enum Command {
         identity: Identity,
         response: oneshot::Sender<io::Result<super::NativeManifestPublication>>,
     },
+    /// Transfers the original completed publication into native cache ownership.
+    CachePublication {
+        resource: Arc<Mutex<super::publication::PublicationJob>>,
+        response: oneshot::Sender<io::Result<super::NativeCacheHandoffReport>>,
+    },
     /// Closes only external producer reads belonging to the original publication.
     ClosePublicationReads {
         resource: Arc<Mutex<super::publication::PublicationJob>>,
@@ -311,6 +316,13 @@ impl NativeMetadataOwner {
                             let result = runtime.block_on(
                                 super::publication::retain_resident_chunk(&mut executor, identity),
                             );
+                            let _ = response.send(result);
+                        }
+                        Command::CachePublication { resource, response } => {
+                            let result = runtime.block_on(super::publication::handoff::execute(
+                                &mut executor,
+                                &resource,
+                            ));
                             let _ = response.send(result);
                         }
                         Command::ClosePublicationReads { resource, response } => {

@@ -80,7 +80,7 @@ impl Deadline {
 ///
 /// # Errors
 /// Refuses a native wall clock before the Unix epoch.
-pub(super) fn now_seconds() -> io::Result<u64> {
+pub(in crate::host_cache::owner) fn now_seconds() -> io::Result<u64> {
     TokioClock
         .now()
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -111,7 +111,10 @@ fn invalid(message: &'static str) -> io::Error {
 ///
 /// # Errors
 /// Refuses invalid clocks and deadlines beyond the existing TOML integer range.
-pub(super) fn grace_end(expired_at: Option<u64>, grace: std::time::Duration) -> io::Result<u64> {
+pub(in crate::host_cache::owner) fn grace_end(
+    expired_at: Option<u64>,
+    grace: std::time::Duration,
+) -> io::Result<u64> {
     let start = match expired_at {
         Some(expiry) => u128::from(expiry) * 1_000_000_000,
         None => wall_nanos()?,

@@ -101,6 +101,24 @@ pub(super) struct PendingFile {
 }
 
 impl PendingFile {
+    /// Checks retained completion after actual transfer descriptors have closed.
+    ///
+    /// # Errors
+    /// Refuses incomplete publication or any remaining owned source descriptor.
+    pub(super) fn check_transferred_closed(&self) -> io::Result<()> {
+        if self.writer.is_some()
+            || self.readonly.is_some()
+            || !self.published
+            || self.closed.is_none()
+            || self.canonical_stamp.is_none()
+        {
+            return Err(io::Error::other(
+                "transferred source still has native custody",
+            ));
+        }
+        Ok(())
+    }
+
     /// Closes only the original completed, unlinked source and inspection handles.
     ///
     /// The caller retains the physical owner's genuine final-removal receipt.

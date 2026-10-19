@@ -135,18 +135,58 @@ def run(driver, publisher, uuid):
                        "source allocation survived original closure or Running custody changed")
         print("PASS independent helper observes actual source reclamation while the original Running owner and consumers remain alive",
               flush=True)
-        output, _ = process.communicate(b"release\n", timeout=15)
-        print(output.decode(), end="", flush=True)
-        driver.require(process.returncode == 0 and output.decode().splitlines() == [
-            "PASS actual inline and repeated-manifest source cleanup retained pins, live reads and holds after cancellation; original source descriptors closed with Running custody retained; no Ready"
-        ], "source cleanup did not reach real retained completion")
+        process.stdin.write(b"release\n")
+        process.stdin.flush()
+        completion = "PASS actual inline and repeated-manifest source cleanup retained pins, live reads and holds after cancellation; original source descriptors closed with Running custody retained; no Ready"
+        lines.until(completion, timeout=15)
         driver.run(["sync", "-f", driver.root(case)])
         after = quota(driver, case)
-        driver.require(after <= closed and snapshot.read_bytes() == before
+        driver.require(process.poll() is None and after <= closed and snapshot.read_bytes() == before
                        and files(driver.root(case) / "sealed") == sealed,
                        "actual source descriptors did not close or immutable output changed")
         print("PASS independent helper observes actual source reclamation only after original descriptions close",
               flush=True)
+        process.stdin.write(b"handoff\n")
+        process.stdin.flush()
+        lines.until("READY actual cache handoff retains independent consumers and reconstruction metadata", timeout=45)
+        grace = re.findall(r"^CACHE_HANDOFF_GRACE expires=(\d+) released_future_hold_bytes=(\d+)$",
+                           lines.bytes.decode(), re.M)
+        driver.require(len(grace) == 1, "missing actual cache handoff deadline")
+        grace_end, released_future = map(int, grace[0])
+        driver.require(released_future > 0 and released_future < future,
+                       "cache handoff has no actual released producer/source holds")
+        # The actual worker performs its ordinary periodic sweep while the
+        # actor retains both old and fresh consumer leases. No clock advances
+        # or policy edits substitute for the durable grace deadline.
+        wait = grace_end - time.time() + 3
+        driver.require(wait <= 10, "cache handoff grace exceeds the native fixture bound")
+        if wait > 0:
+            time.sleep(wait)
+        expired = tomllib.loads(snapshot.read_text())
+        driver.require(not any(row["owner"].startswith("publication-grace:")
+                               for name in ["pins", "leases"] for row in expired.get(name, [])),
+                       "periodic native sweep retained expired producer grace")
+        process.stdin.write(b"after-grace\n")
+        process.stdin.flush()
+        lines.until("READY actual cache handoff grace expired with original owner and consumers retained", timeout=30)
+        handoff = re.findall(r"^CACHE_HANDOFF_MEASUREMENT charged_reserved_bytes=(\d+) future_hold_bytes=(\d+)$",
+                            lines.bytes.decode(), re.M)
+        driver.require(len(handoff) == 1, "missing actual cached consumer accounting")
+        cached_charge, cached_future = map(int, handoff[0])
+        final_policy = tomllib.loads(snapshot.read_text())
+        driver.require(process.poll() is None and quota(driver, case) == cached_charge
+                       and cached_future == sum(row["bytes"] for row in final_policy["reservations"])
+                       and files(driver.root(case) / "sealed") == sealed
+                       and not files(driver.root(case) / "pending-delete")
+                       and not any(row["owner"].startswith("publication:")
+                                   for name in ["pins", "leases"] for row in final_policy.get(name, [])),
+                       "cache handoff lost native ownership or misreported policy holds as physical usage")
+        print("PASS independent helper verifies actual cache handoff, expired producer grace and retained live consumers", flush=True)
+        output, _ = process.communicate(b"finish\n", timeout=15)
+        print(output.decode(), end="", flush=True)
+        driver.require(process.returncode == 0 and output.decode().splitlines() == [
+            "PASS actual cache handoff releases producer and closed-source funding, retains reconstruction metadata, and grants fresh consumer reads after durable grace; no Ready"
+        ], "cache handoff did not reach original native completion")
     except BaseException:
         # Lines.until may observe process exit before draining the last pipe
         # bytes. Keep the original native refusal and bounded actual state;

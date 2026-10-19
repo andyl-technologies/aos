@@ -300,6 +300,63 @@ fn require_registration(
     Ok(())
 }
 
+/// Retains only original standalone funding after final acknowledgment and closure.
+///
+/// # Errors
+/// Refuses missing original transfers, acknowledgments or closed inspection slots.
+pub(super) fn closed_funding(
+    executor: &NativeOwnerExecutor,
+    owner: &Custody,
+    job: &PublicationJob,
+) -> io::Result<Vec<super::super::admission::TransferredFunding>> {
+    if !Arc::ptr_eq(&job.custody, executor.custody()) {
+        return Err(invalid("handoff sources belong to another physical owner"));
+    }
+    let count = job
+        .manifest
+        .as_ref()
+        .map_or(usize::from(job.transfer.is_some()), |input| {
+            input.transfers.len()
+        });
+    let mut result = Vec::new();
+    result.try_reserve_exact(count).map_err(io::Error::other)?;
+    let session = owner.preparation.publisher_session();
+    for index in 0..count {
+        let retired = retired_source(job, index)?;
+        let reply = if let Some(input) = &job.manifest {
+            input.transfers[index].reply.as_ref()
+        } else {
+            job.reply.as_ref()
+        }
+        .ok_or_else(|| invalid("handoff source inspection absent"))?;
+        if !reply.files.is_empty() {
+            return Err(invalid("handoff source inspection descriptors remain"));
+        }
+        let acknowledged = AcknowledgedSource {
+            source: retired.source,
+            observation: retired.observation,
+            acknowledgement: retired
+                .acknowledgement
+                .ok_or_else(|| invalid("handoff source final acknowledgment absent"))?,
+            session: &session,
+            custody: &job.custody,
+        };
+        result.push(
+            retired
+                .source
+                .closed_funding(executor, owner, &acknowledged)?,
+        );
+    }
+    if job
+        .manifest
+        .as_ref()
+        .is_some_and(|input| input.plan.is_some())
+    {
+        return Err(invalid("handoff reassembly descriptors remain"));
+    }
+    Ok(result)
+}
+
 fn retired_source(job: &PublicationJob, index: usize) -> io::Result<RetiredSource<'_>> {
     if let Some(manifest) = &job.manifest {
         let source = manifest
