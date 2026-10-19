@@ -6,20 +6,20 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "5ca4c6140478a3e946ce89686325384ab904f5c5580afa80ff2b71b1af56dcd9";
-  subject = "Integrate Crucible ownership and ordered parent Park disposition";
-  body = "Retain the Source, checkpoint, parent Park and resident Root integration\nwith versioned transport, physical custody journals and paid fixed storage.\nPreserve callback-scoped checks and bounded queries for both Park Originals.\n\nFinish the exact Native capture and return request-owned block, async and\nRCU census/storage before invoking plugin DISPOSITION. Keep the real Source\nloan and native writer gate held across that callback. Verify the completed\ncapture identity, sequence and child; reject active capture, physical debt\nand prior run, capture or return failures. Preserve independent cleanup\njournals and suppress healthy plugin disposition after a failed run.\n\nRefresh the affected direct and transitive source fingerprints without\nchanging assertions, test cases, inventories or qualification limits.\n\nThe signed atomic commit remains based solely on the pinned QEMU source base.\nCompilation and runtime qualification remain separate. This ordering change\ndoes not implement a fork/thread transaction or an actor Original producer,\nand it does not establish positive entered native phase-order coverage.";
-  commit = "76eeebb5f2a2f9e4fdf3c732340bdc8de4f1fa83";
-  tree = "f4aa9344b91ccbbe7d3b8d91e16120907c8ff75b";
+  sha256 = "3197c7e44c3bb6a98328a32e078226ea7f284b1b971c99f53934013057391d5c";
+  subject = "Integrate Crucible ownership and literal cleanup controls";
+  body = "Retain Source, checkpoint, parent Park and resident Root integration with\nversioned transport, physical custody journals and paid fixed storage.\nPreserve callback Original checks and ordered Native census disposition.\n\nKeep the canonical registration owner and its sole child pin held while\nNative proves terminal registration custody. Close admissions permanently,\nserialize return on the existing child latch, and release the Source mutex\nbefore Native revoke, current and terminal calls. Revalidate the exact held\nowner before consuming its holder and pin; preserve same-owner continuation\non refusal. Later child cleanup reobserves physical registry facts without\nquerying the consumed owner or resetting native_prepared.\n\nAuthenticate the Source-selected registry and held owner outside Native's\nmutex. Check every canonical group, member and legacy record, distinguish\nprepared-only and failed-before-binding attempts from registered history,\nand retain real module, descriptor, frame and borrower obligations.\n\nCompose the complete unchanged descriptor-terminal and module-release\nclosure into the registered Source fixture, including loader retirement\nbranches and its CFI annotation. Keep unavailable CPU and TCG endpoints\nfatal. Add actual descriptor placement and module-user return controls over\nexplicit modeled retained inputs. Corroborate cleanup account geometry\nwith the same decoded standing record. Preserve every existing assertion\nand bound, and refresh the unchanged literal-source fingerprint inventory.\n\nThe signed atomic commit has only the pinned upstream source base as parent.\nCompilation and runtime qualification remain separate. These component\ncontrols do not qualify initial Source activation, retirement scheduling,\nphysical destructor/free, launched VM lifecycle, an actor Original producer\nor a fork/thread transaction.";
+  commit = "3f8b4b8e36f599259b00092cb0c6067b2ae57b16";
+  tree = "883f7ac866056a01db372342feaf51bb0089c632";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
   capability = "one atomic, reconstructible QEMU 11.1.1 integration artifact provides the versioned Crucible plugin protocol, deterministic execution, exact checkpoint capture and restore, retained hot fork with asynchronous-worker quiescence, device fingerprints, and their build and test plumbing";
 
-  branchRef = "dplecki/native-park-disposition-order";
+  branchRef = "dplecki/cleanup-fixture-linkage";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "9d7da21330139ddad1c2d5b4a1e68ba2eb28a992d0c4825030eb471eb7770c8f";
+  bundleSha256 = "fe77fa79e7ea1bc791eaac4a083e614dbf8cbc6b61ed3438fdd11db627e8d28f";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";

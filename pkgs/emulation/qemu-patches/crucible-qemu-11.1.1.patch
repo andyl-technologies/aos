@@ -1,27 +1,38 @@
-From 76eeebb5f2a2f9e4fdf3c732340bdc8de4f1fa83 Mon Sep 17 00:00:00 2001
+From 3f8b4b8e36f599259b00092cb0c6067b2ae57b16 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] Integrate Crucible ownership and ordered parent Park
- disposition
+Subject: [PATCH] Integrate Crucible ownership and literal cleanup controls
 
-Retain the Source, checkpoint, parent Park and resident Root integration
-with versioned transport, physical custody journals and paid fixed storage.
-Preserve callback-scoped checks and bounded queries for both Park Originals.
+Retain Source, checkpoint, parent Park and resident Root integration with
+versioned transport, physical custody journals and paid fixed storage.
+Preserve callback Original checks and ordered Native census disposition.
 
-Finish the exact Native capture and return request-owned block, async and
-RCU census/storage before invoking plugin DISPOSITION. Keep the real Source
-loan and native writer gate held across that callback. Verify the completed
-capture identity, sequence and child; reject active capture, physical debt
-and prior run, capture or return failures. Preserve independent cleanup
-journals and suppress healthy plugin disposition after a failed run.
+Keep the canonical registration owner and its sole child pin held while
+Native proves terminal registration custody. Close admissions permanently,
+serialize return on the existing child latch, and release the Source mutex
+before Native revoke, current and terminal calls. Revalidate the exact held
+owner before consuming its holder and pin; preserve same-owner continuation
+on refusal. Later child cleanup reobserves physical registry facts without
+querying the consumed owner or resetting native_prepared.
 
-Refresh the affected direct and transitive source fingerprints without
-changing assertions, test cases, inventories or qualification limits.
+Authenticate the Source-selected registry and held owner outside Native's
+mutex. Check every canonical group, member and legacy record, distinguish
+prepared-only and failed-before-binding attempts from registered history,
+and retain real module, descriptor, frame and borrower obligations.
 
-The signed atomic commit remains based solely on the pinned QEMU source base.
-Compilation and runtime qualification remain separate. This ordering change
-does not implement a fork/thread transaction or an actor Original producer,
-and it does not establish positive entered native phase-order coverage.
+Compose the complete unchanged descriptor-terminal and module-release
+closure into the registered Source fixture, including loader retirement
+branches and its CFI annotation. Keep unavailable CPU and TCG endpoints
+fatal. Add actual descriptor placement and module-user return controls over
+explicit modeled retained inputs. Corroborate cleanup account geometry
+with the same decoded standing record. Preserve every existing assertion
+and bound, and refresh the unchanged literal-source fingerprint inventory.
+
+The signed atomic commit has only the pinned upstream source base as parent.
+Compilation and runtime qualification remain separate. These component
+controls do not qualify initial Source activation, retirement scheduling,
+physical destructor/free, launched VM lifecycle, an actor Original producer
+or a fork/thread transaction.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -100240,10 +100251,10 @@ index 0000000000000000000000000000000000000000..f616d42f7206886415f069c9328f0102
 +}
 diff --git a/plugins/crucible-callback-owner.inc.h b/plugins/crucible-callback-owner.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..c23998166c597a01fc03a12c72ac40a8ebc61ba9
+index 0000000000000000000000000000000000000000..5be0b398ed73730aaaccef5270326e2cef25ea7a
 --- /dev/null
 +++ b/plugins/crucible-callback-owner.inc.h
-@@ -0,0 +1,297 @@
+@@ -0,0 +1,327 @@
 +/*
 + * Source-owned completed-child registration custody
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -100503,6 +100514,7 @@ index 0000000000000000000000000000000000000000..c23998166c597a01fc03a12c72ac40a8
 +    QemuCrucibleCommandConsumerRegistry *commands = &startup_source.commands;
 +    QemuCrucibleCallbackPublicationRegistry *callbacks = &startup_source.callbacks;
 +    QemuCrucibleCallbackChildOwner *owner = &callbacks->owner;
++    QemuCrucibleCallbackChildStorage *child = &commands->child;
 +    int status = command_registry_identity(id);
 +
 +    if (status || !holder) {
@@ -100516,25 +100528,54 @@ index 0000000000000000000000000000000000000000..c23998166c597a01fc03a12c72ac40a8
 +    } else {
 +        status = callback_child_owner_identity_locked(owner);
 +    }
-+    if (!status && (*holder != owner || owner->component_users || owner->workspace_users ||
++    if (!status && (*holder != owner || owner->child != child || child->closing ||
++                    owner->component_users || owner->workspace_users ||
 +                    callbacks->publication.held || callbacks->registrar.held ||
-+                    !owner->child->publication_users)) {
++                    startup_source.callback_groups.entered ||
++                    startup_source.callback_groups.borrower.held ||
++                    callbacks->native_preparing || child->publication_users != 1)) {
 +        status = -EBUSY;
 +    }
-+    if (!status && (callbacks->native_prepared || owner->child->registration_retained)) {
-+        /* The current Native subset cannot settle all family/group effects.
-+         * A zero census or returned publication loan never consumes that debt. */
-+        status = -ENOKEY;
++    if (status) {
++        qemu_mutex_unlock(&commands->mutex);
++        return status;
++    }
++
++    /* Close admission permanently, but retain the owner and its sole child
++     * pin while Native proves terminal custody outside the Source mutex. */
++    owner->closing = true;
++    child->callback_closing = true;
++    child->closing = true;
++    qemu_mutex_unlock(&commands->mutex);
++
++    status = callback_child_native_retire(child);
++
++    qemu_mutex_lock(&commands->mutex);
++    if (!status) {
++        status = callback_child_owner_identity_locked(owner);
++    }
++    if (!status && (owner->child != child || *holder != owner ||
++                    (owner->transferred && holder != owner->runtime_holder) ||
++                    !child->closing || child->publication_users != 1 ||
++                    owner->component_users || owner->workspace_users ||
++                    callbacks->publication.held || callbacks->registrar.held ||
++                    startup_source.callback_groups.entered ||
++                    startup_source.callback_groups.borrower.held ||
++                    callbacks->native_preparing)) {
++        status = -EBUSY;
 +    }
 +    if (!status) {
-+        owner->closing = true;
-+        owner->child->publication_users--;
++        child->registration_retained = false;
++        child->publication_users--;
 +        *holder = NULL;
 +        owner->creation_owner = NULL;
 +        owner->holder = NULL;
 +        owner->held = false;
 +        owner->returned = true;
 +    }
++    /* A failed proof retains the exact owner and pin. Only the transient
++     * transition latch opens for a continuation by that same closing owner. */
++    child->closing = false;
 +    qemu_mutex_unlock(&commands->mutex);
 +    return status;
 +#else
@@ -100543,10 +100584,10 @@ index 0000000000000000000000000000000000000000..c23998166c597a01fc03a12c72ac40a8
 +}
 diff --git a/plugins/crucible-callback-publication.inc.h b/plugins/crucible-callback-publication.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..c9cdf329c3b429556ee18df606c3952f68dc1a83
+index 0000000000000000000000000000000000000000..9b3ccd8a8078194e260a9d209ea0e0834146556c
 --- /dev/null
 +++ b/plugins/crucible-callback-publication.inc.h
-@@ -0,0 +1,784 @@
+@@ -0,0 +1,817 @@
 +/*
 + * Retained Source child publication and permanent native holder custody
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -101279,25 +101320,50 @@ index 0000000000000000000000000000000000000000..c9cdf329c3b429556ee18df606c3952f
 +#ifdef CONFIG_LINUX
 +    QemuCrucibleCommandConsumerRegistry *commands = &startup_source.commands;
 +    QemuCrucibleCallbackPublicationRegistry *callbacks = &startup_source.callbacks;
++    QemuCrucibleCallbackChildOwner *owner = &callbacks->owner;
 +    bool prepared;
++    bool owner_held;
 +    int status;
 +
 +    qemu_mutex_lock(&commands->mutex);
 +    status = callback_child_identity_locked(child);
++    prepared = callbacks->native_prepared;
++    owner_held = owner->initialized && owner->held && !owner->returned;
++    if (!status && (!child->closing || callbacks->native_preparing ||
++                    callbacks->publication.held || callbacks->registrar.held ||
++                    startup_source.callback_groups.entered ||
++                    startup_source.callback_groups.borrower.held ||
++                    child->publication_users != (owner_held ? 1 : 0))) {
++        status = -EBUSY;
++    }
++    if (!status && owner_held) {
++        status = callback_child_owner_identity_locked(owner);
++        if (!status && (owner->component_users || owner->workspace_users)) {
++            status = -EBUSY;
++        }
++    } else if (!status && owner->initialized &&
++               (!owner->returned || owner->held || owner->holder ||
++                owner->creation_owner || owner->child != child)) {
++        status = -ESTALE;
++    }
++    if (!status && ((!owner->initialized && prepared) ||
++                    (!owner_held && child->registration_retained) ||
++                    (!prepared && child->registration_retained))) {
++        status = -ENOKEY;
++    }
 +    if (!status) {
 +        child->callback_closing = true;
-+        callbacks->owner.closing = true;
-+        prepared = callbacks->native_prepared;
-+    } else {
-+        prepared = false;
++        if (owner->initialized) {
++            owner->closing = true;
++        }
 +    }
 +    qemu_mutex_unlock(&commands->mutex);
 +    if (status) {
 +        return status;
 +    }
 +    if (prepared) {
-+        /* Permanent holder safety covers a fetched entrant paused before its
-+         * mutex. Revoke closes admission; terminal gates payload refs only. */
++        /* These physical-only observations remain valid after the owner has
++         * returned. native_prepared is a permanent construction fact. */
 +        status = qemu_plugin_crucible_native_registry_revoke_v1(&callbacks->native);
 +        qemu_mutex_lock(&commands->mutex);
 +        callbacks->native_revocation_attempted = true;
@@ -101307,6 +101373,12 @@ index 0000000000000000000000000000000000000000..c9cdf329c3b429556ee18df606c3952f
 +            return status;
 +        }
 +        status = qemu_plugin_crucible_native_registry_retired_current_v1(&callbacks->native);
++        if (!status && owner_held) {
++            /* This reciprocal Source identity requires the canonical owner
++             * still held. Never query that consumed owner on later child return. */
++            status = qemu_plugin_crucible_native_child_registration_terminal_v1(
++                &callbacks->native, owner);
++        }
 +        qemu_mutex_lock(&commands->mutex);
 +        callbacks->native_terminal_status = status;
 +        qemu_mutex_unlock(&commands->mutex);
@@ -101316,14 +101388,16 @@ index 0000000000000000000000000000000000000000..c9cdf329c3b429556ee18df606c3952f
 +    }
 +    qemu_mutex_lock(&commands->mutex);
 +    status = callback_child_identity_locked(child);
-+    if (!status && (callbacks->publication.held || callbacks->registrar.held ||
-+                    child->publication_users)) {
-+        status = -EBUSY;
++    if (!status && owner_held) {
++        status = callback_child_owner_identity_locked(owner);
 +    }
-+    /* V2 lacks the genuine child-aware registration terminal producer.
-+     * A zero V2 census never clears a real registered child pin. */
-+    if (!status && child->registration_retained) {
-+        status = -ENOKEY;
++    if (!status && (!child->closing || callbacks->native_preparing ||
++                    callbacks->publication.held || callbacks->registrar.held ||
++                    startup_source.callback_groups.entered ||
++                    startup_source.callback_groups.borrower.held ||
++                    child->publication_users != (owner_held ? 1 : 0) ||
++                    (!owner_held && child->registration_retained))) {
++        status = -EBUSY;
 +    }
 +    qemu_mutex_unlock(&commands->mutex);
 +    return status;
@@ -147596,10 +147670,10 @@ index 0000000000000000000000000000000000000000..e8d98a0beb68a58aed72e673fb28070c
 +}
 diff --git a/plugins/crucible-native-invocation.c b/plugins/crucible-native-invocation.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..ae379395f87919cd5146cef5a3cba6567919c1f2
+index 0000000000000000000000000000000000000000..1abddb9fce59811e6504a65c550c0ae288a6846b
 --- /dev/null
 +++ b/plugins/crucible-native-invocation.c
-@@ -0,0 +1,1941 @@
+@@ -0,0 +1,2066 @@
 +/*
 + * Native entered-callback lifetime and factual physical-use association.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -148908,47 +148982,172 @@ index 0000000000000000000000000000000000000000..ae379395f87919cd5146cef5a3cba656
 +    return false;
 +}
 +
++#ifndef CONFIG_USER_ONLY
++static bool registration_empty(const QemuCrucibleNativeRegistration *record)
++{
++    return !record->owner && !record->group && !record->child_owner &&
++        !record->ctx && !record->module && !record->publication_serial &&
++        !record->registrar_serial && !record->family && !record->descriptor_retained &&
++        !record->source_authenticated && !record->coordinate && !record->function &&
++        !record->userdata && !record->userdata_coordinate && !record->serial &&
++        !record->references && !record->kind && !record->active;
++}
++
++static int child_terminal_groups_locked(
++    QemuCrucibleNativeInvocationRegistry *registry,
++    QemuCrucibleCallbackChildOwner *owner, bool *association, bool *registered)
++{
++    for (size_t index = 0; index < ARRAY_SIZE(registry->groups); index++) {
++        QemuCrucibleNativeRegistrationGroup *group = registry->groups[index];
++
++        if (!group) {
++            continue;
++        }
++        /* A failed attempt is canonical before module corroboration. It can
++         * precede child_owner/seen, but it cannot belong to another child.
++         * The Source group header's child/members/count/callback associations
++         * are immutable construction facts, including after its holder returns. */
++        if (!group_identity_locked(registry, group) || group_index(group->kind) != index ||
++            group->child_owner != owner || group->owner->child_owner != owner ||
++            group->ctx != registry->ctx || group->module != registry->module) {
++            return -ESTALE;
++        }
++        if (group->borrow || group->module_retained || !group->terminal ||
++            (group->effect_started && !group->effect_finished)) {
++            return -EBUSY;
++        }
++        if (!registry->child_registration_seen &&
++            (group->first_status >= 0 || group->effect_started || group->effect_finished ||
++             group->attempted_mask ||
++             group->installed_mask || group->installed_members)) {
++            return -ESTALE;
++        }
++        bool all_authenticated = true;
++        bool any_authenticated = false;
++
++        for (size_t member = 0; member < group->member_count; member++) {
++            QemuCrucibleNativeRegistration *record = &group->members[member];
++
++            all_authenticated &= record->source_authenticated;
++            any_authenticated |= record->source_authenticated;
++            if (record->owner != registry || record->group != group ||
++                record->child_owner != owner || record->ctx != group->ctx ||
++                record->module != group->module ||
++                record->publication_serial != group->publication_serial ||
++                record->registrar_serial != group->registrar_serial ||
++                (!registry->child_registration_seen && record->source_authenticated)) {
++                return -ESTALE;
++            }
++            if (record->descriptor_retained || record->active || record->references) {
++                return -EBUSY;
++            }
++        }
++        if (any_authenticated &&
++            (!all_authenticated || !group->effect_started || !group->effect_finished ||
++             group->installed_members != group->member_count ||
++             group->attempted_mask != (1U << group->member_count) - 1 ||
++             group->installed_mask != group->attempted_mask)) {
++            return -ESTALE;
++        }
++        *association = true;
++        *registered |= all_authenticated;
++    }
++    return 0;
++}
++#endif
++
 +int qemu_plugin_crucible_native_child_registration_terminal_v1(
 +    QemuCrucibleNativeInvocationRegistry *registry,
 +    QemuCrucibleCallbackChildOwner *owner)
 +{
 +#ifndef CONFIG_USER_ONLY
 +    pid_t process = getpid();
++    bool association = false;
++    bool registered = false;
 +    int status;
-+    size_t i;
 +
-+    if (!registry_process_current(registry, process)) {
-+        return -EPERM;
++    /* Source selects the actual prepared registry and authenticates its still
++     * held owner before Native takes its mutex. Geometry and a zero census
++     * cannot select a substitute prepared-only cleanup owner. */
++    if (!registry ||
++        qemu_crucible_startup_source_native_registry_v1(NULL, false) != registry) {
++        return -ESTALE;
 +    }
-+    /* Identity remains observable after closing. It invokes no fresh clock,
-+     * Original or live-owner action and is never called under Native custody. */
 +    status = qemu_crucible_startup_source_callback_child_owner_identity_v1(owner);
 +    if (status) {
 +        return status;
 +    }
++    if (!registry_process_current(registry, process)) {
++        return -EPERM;
++    }
 +    qemu_mutex_lock(&registry->mutex);
-+    if (!registry_identity_locked(registry, process) || registry->child_owner != owner ||
-+        !registry->child_registration_seen) {
-+        status = -ENOKEY;
++    if (!registry_identity_locked(registry, process) ||
++        (registry->child_registration_seen ? registry->child_owner != owner :
++         registry->child_owner != NULL) ||
++        (!registry->child_registration_seen && registry->binding_attempted)) {
++        status = -ESTALE;
 +    } else if (!registry->revoked || registry->bound || registry->registrar_users ||
-+               registry->source_registrar || group_debt_locked(registry, owner)) {
++               registry->source_registrar || registry->source_registrar_serial) {
 +        status = -EBUSY;
-+    } else {
-+        for (i = 0; !status && i < ARRAY_SIZE(registry->registrations); i++) {
-+            QemuCrucibleNativeRegistration *record = &registry->registrations[i];
++    } else if ((registry->child || registry->child_holder || registry->child_address ||
++                registry->child_extent || registry->child_alignment) &&
++               (!registry->child_registration_seen || !registry->child ||
++                !registry->child_holder || !registry->child_address ||
++                !registry->child_extent || !registry->child_alignment)) {
++        status = -ESTALE;
++    }
++    if (!status) {
++        /* Source payload/holder fields are mutable under its own mutex. The
++         * reciprocal identity above authenticates selection; only Native's
++         * retained associations are read while this mutex is held. */
++        status = child_terminal_groups_locked(registry, owner, &association, &registered);
++    }
++    for (size_t index = 0; !status && index < ARRAY_SIZE(registry->registrations); index++) {
++        QemuCrucibleNativeRegistration *record = &registry->registrations[index];
 +
-+            if (record->child_owner == owner &&
-+                (record->descriptor_retained || record->active || record->references)) {
-+                status = -EBUSY;
-+            }
++        if (registration_empty(record)) {
++            continue;
 +        }
-+        for (i = 0; !status && i < ARRAY_SIZE(registry->frames); i++) {
-+            QemuCrucibleNativeInvocation *frame = &registry->frames[i];
++        if (!registry->child_registration_seen || record->owner != registry ||
++            record->group || record->child_owner != owner || record->ctx != registry->ctx ||
++            record->module != registry->module || !record->serial ||
++            !record->publication_serial || !record->registrar_serial ||
++            !registry->child || !registry->child_holder || !registry->child_address ||
++            !registry->child_extent || !registry->child_alignment) {
++            status = -ESTALE;
++        } else if (record->descriptor_retained || record->active || record->references) {
++            status = -EBUSY;
++        } else {
++            association = true;
++            registered |= record->source_authenticated;
++        }
++    }
++    for (size_t index = 0; !status && index < ARRAY_SIZE(registry->frames); index++) {
++        QemuCrucibleNativeInvocation *frame = &registry->frames[index];
 +
-+            if (frame->child_owner == owner && frame->canonical_owner) {
-+                status = -EBUSY;
-+            }
++        /* No foreign frame or terminal record may disappear from this proof. */
++        if (frame->canonical_owner || frame->owner || frame->child_owner ||
++            frame->registration || frame->ctx || frame->module || frame->runtime ||
++            frame->storage || frame->storage_holder || frame->serial ||
++            frame->live || frame->use_references || frame->suppressed_children) {
++            status = -EBUSY;
 +        }
++    }
++    if (!status && !association && !registry->child_registration_seen && registry->serial) {
++        status = -ESTALE;
++    }
++    if (!status && registry->first_registration_status > 0) {
++        status = -EPROTO;
++    }
++    if (!status && registry->binding_attempted && !registered) {
++        status = -ENOKEY;
++    }
++    if (!status && registry->child_registration_seen && !association &&
++        !registry->first_registration_status) {
++        /* A real registered cohort needs its retained association. An empty
++         * census is sufficient only for an actual Source-prepared registry or
++         * a canonical failed registrar/group attempt with no physical debt. */
++        status = -ENOKEY;
 +    }
 +    qemu_mutex_unlock(&registry->mutex);
 +    return status;
@@ -186146,7 +186345,7 @@ index f8e17dcf1ce91d8aefb8d82cafd3196a4fd9edf6..f24121d2d3c66f1436ba73c976a7bd76
      return true;
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..96c3baa06ac38cc29f0ce2aeb9ccee96198eee65
+index 0000000000000000000000000000000000000000..d728cfb2b37e5dce61538269dc788d21cee6b07e
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,87 @@
@@ -186174,7 +186373,7 @@ index 0000000000000000000000000000000000000000..96c3baa06ac38cc29f0ce2aeb9ccee96
 +    'include/plugins/qemu-plugin.h':
 +        'a332f72199fe435a7f5ee80f76ce1a36d9a67b8780f768d0b091af84b5ad1b3a',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'e74734dddf12407bf747082c861500bae3aa979143097a0de4d371ac6d945530',
++        '5b232cb4d68ba9e5dc700bcb33d1211a6f1d827cace9d0dbe6748c5c908491ab',
 +}
 +
 +PURPOSE_FUNCTIONS = (
@@ -227788,10 +227987,10 @@ index 0000000000000000000000000000000000000000..c4faa376c01509f12f8ce6aaa72bbc69
 +    )]
 diff --git a/tests/unit/crucible-startup-source-fixture.inc.h b/tests/unit/crucible-startup-source-fixture.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..bcb11a64943d6d846e191e985483142073ff359a
+index 0000000000000000000000000000000000000000..2a5eca5ea595a3ed07c06e6670f926d4a38ae5e9
 --- /dev/null
 +++ b/tests/unit/crucible-startup-source-fixture.inc.h
-@@ -0,0 +1,736 @@
+@@ -0,0 +1,785 @@
 +/*
 + * Actual-body controls for original installer startup source
 + *
@@ -227800,6 +227999,10 @@ index 0000000000000000000000000000000000000000..bcb11a64943d6d846e191e9854831420
 +
 +#include "qemu/osdep.h"
 +#include "qemu/atomic.h"
++#include "qemu/bitmap.h"
++#include "qemu/error-report.h"
++#include "qemu/memalign.h"
++#include "qemu/rcu_queue.h"
 +#include "qemu/crucible-descriptor-table.h"
 +#include "qemu/bswap.h"
 +#include "qemu/crucible-fault.h"
@@ -228074,6 +228277,46 @@ index 0000000000000000000000000000000000000000..bcb11a64943d6d846e191e9854831420
 +    return -ENOTSUP;
 +}
 +
++/* The real loader release/retirement closure is compiled below. This unit
++ * has no entered CPU or TCG worker: all such scheduling/flush peers fail if
++ * reached. They neither discard callbacks nor manufacture execution/absence. */
++static void fixture_retirement_async_unavailable(
++    CPUState *cpu, run_on_cpu_func execute, run_on_cpu_data data)
++{
++    g_assert_not_reached();
++}
++
++static bool fixture_retirement_owned_async_unavailable(
++    CPUState *cpu, run_on_cpu_func execute, run_on_cpu_func discard,
++    run_on_cpu_data data)
++{
++    g_assert_not_reached();
++    return false;
++}
++
++static bool fixture_retirement_owned_schedule_unavailable(
++    run_on_cpu_func execute, run_on_cpu_func discard, run_on_cpu_data data)
++{
++    g_assert_not_reached();
++    return false;
++}
++
++static void fixture_retirement_tb_flush_unavailable(void)
++{
++    g_assert_not_reached();
++}
++
++static void fixture_retirement_jmp_cache_unavailable(CPUState *cpu)
++{
++    g_assert_not_reached();
++}
++
++#define async_run_on_cpu fixture_retirement_async_unavailable
++#define async_safe_run_on_cpu_owned fixture_retirement_owned_async_unavailable
++#define qemu_cpu_schedule_owned_work fixture_retirement_owned_schedule_unavailable
++#define tb_flush__exclusive_or_serial fixture_retirement_tb_flush_unavailable
++#define tcg_flush_jmp_cache fixture_retirement_jmp_cache_unavailable
++
 +#define qemu_in_main_thread fixture_main_thread
 +#define bql_locked fixture_bql_locked
 +#define qemu_descriptor_close_owned fixture_metadata_close_owned
@@ -228089,6 +228332,11 @@ index 0000000000000000000000000000000000000000..bcb11a64943d6d846e191e9854831420
 +#define monitor_qmp_connection_watch_valid fixture_park_connection_watch_unavailable
 +#define qemu_crucible_received_cancellation_observe_v1 fixture_park_cancellation_observe_unavailable
 +#include "crucible-startup-source-body.inc.h"
++#undef tcg_flush_jmp_cache
++#undef tb_flush__exclusive_or_serial
++#undef qemu_cpu_schedule_owned_work
++#undef async_safe_run_on_cpu_owned
++#undef async_run_on_cpu
 +
 +/* This boundary models only the explicitly absent optional role. It cannot
 + * construct, lend or validate a positive workspace purpose. Real role/mapping
@@ -229173,7 +229421,7 @@ index 0000000000000000000000000000000000000000..744c2574bf925b75789a7ddf89525387
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..f4a510ca6d9fb39073302ebea36321e5c5564a12
+index 0000000000000000000000000000000000000000..01e1561249fe8a6dd010f0a36382b96e7d93c6f9
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
 @@ -0,0 +1,100 @@
@@ -229191,7 +229439,7 @@ index 0000000000000000000000000000000000000000..f4a510ca6d9fb39073302ebea36321e5
 +    'include/system/crucible-ram-quiescence.h':
 +        '2ad1d50c233a309fae5064acd1db4020b1135cf6203cb12cdf7bd33efd0e4a23',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'e74734dddf12407bf747082c861500bae3aa979143097a0de4d371ac6d945530',
++        '5b232cb4d68ba9e5dc700bcb33d1211a6f1d827cace9d0dbe6748c5c908491ab',
 +}
 +
 +FUNCTIONS = (
@@ -229279,7 +229527,7 @@ index 0000000000000000000000000000000000000000..f4a510ca6d9fb39073302ebea36321e5
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..e1752f74520c0c80a8edb4a390623b4feefd44eb
+index 0000000000000000000000000000000000000000..eebe58e96b369bc27b47fb59d403b59ac7d5b9f9
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
 @@ -0,0 +1,241 @@
@@ -229310,7 +229558,7 @@ index 0000000000000000000000000000000000000000..e1752f74520c0c80a8edb4a390623b4f
 +    'include/system/crucible-ram-quiescence.h':
 +        '2ad1d50c233a309fae5064acd1db4020b1135cf6203cb12cdf7bd33efd0e4a23',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'e74734dddf12407bf747082c861500bae3aa979143097a0de4d371ac6d945530',
++        '5b232cb4d68ba9e5dc700bcb33d1211a6f1d827cace9d0dbe6748c5c908491ab',
 +}
 +
 +FUNCTIONS = (
@@ -229526,7 +229774,7 @@ index 0000000000000000000000000000000000000000..e1752f74520c0c80a8edb4a390623b4f
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..4155713e5ca55898c48aa1087af8bfe187520d05
+index 0000000000000000000000000000000000000000..602b94a66b91da540cfdb679a15720da014e28f3
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -229550,7 +229798,7 @@ index 0000000000000000000000000000000000000000..4155713e5ca55898c48aa1087af8bfe1
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'e74734dddf12407bf747082c861500bae3aa979143097a0de4d371ac6d945530',
++        '5b232cb4d68ba9e5dc700bcb33d1211a6f1d827cace9d0dbe6748c5c908491ab',
 +}
 +
 +FUNCTIONS = (
@@ -229644,7 +229892,7 @@ index 0000000000000000000000000000000000000000..4155713e5ca55898c48aa1087af8bfe1
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..931636a6440b95b6a8cf646213e96b482a8fd323
+index 0000000000000000000000000000000000000000..60b6b36307230278d2e6930da9ceb6df17eccd5d
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
 @@ -0,0 +1,173 @@
@@ -229685,9 +229933,9 @@ index 0000000000000000000000000000000000000000..931636a6440b95b6a8cf646213e96b48
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'e74734dddf12407bf747082c861500bae3aa979143097a0de4d371ac6d945530',
++        '5b232cb4d68ba9e5dc700bcb33d1211a6f1d827cace9d0dbe6748c5c908491ab',
 +    'scripts/extract-crucible-preexec-purpose.py':
-+        'dc8962388b550cf878165327ea445007b80ffb40d84e616a5fcc476723e3c930',
++        'b96b5fad398b7069b44e999da805aa56f0047dd5275b4b5513f62a4bbfa4651c',
 +    'meson.build':
 +        '7eef2c0d1494dfdeed66f56c77f092382cd63d3fd5ad7c0b7c7ac85ca599e39e',
 +    'tests/unit/test-crucible-preexec-setup.c':
@@ -229823,10 +230071,10 @@ index 0000000000000000000000000000000000000000..931636a6440b95b6a8cf646213e96b48
 +        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..38242efc96a4ecc3f8bb45c313c2f10d7355c006
+index 0000000000000000000000000000000000000000..f89b07ef9289dede82fb859c394cc7ed5f58c6fe
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
-@@ -0,0 +1,837 @@
+@@ -0,0 +1,894 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Extract literal startup integration control cuts, never an issuer fixture."""
 +
@@ -229865,9 +230113,9 @@ index 0000000000000000000000000000000000000000..38242efc96a4ecc3f8bb45c313c2f10d
 +    'plugins/crucible-setup-mapping.inc.h':
 +        '873455344e7aace6607c1426cc573ad68ea7701770756b6fd51eba0670fc10b4',
 +    'tests/unit/test-crucible-startup-source.c':
-+        '3a847fcd6555af76ac6f29c8c851cdc25ba8bc19426d8a62920bb281a913c1f3',
++        'b2831bf70638e6c7c406d0f23dbee27257ae456c5efe2c9aef4e4a18c59ee5ff',
 +    'tests/unit/crucible-startup-source-fixture.inc.h':
-+        'a0f18ffaef4ddf0a8569ce94fe9c7e2252de41934d83d8aa5b03b98b2eddf031',
++        '5a709cd4af1b16b0f1990d9fcb17a200b1755d62e9be080309e7f069f78153d7',
 +    'include/qemu/crucible-metadata-partition.h':
 +        '62dd96cf5bb1594dd3e42360459b409573cecd5d196f355f72edffa2250ee95a',
 +    'plugins/api-system.c':
@@ -229897,11 +230145,11 @@ index 0000000000000000000000000000000000000000..38242efc96a4ecc3f8bb45c313c2f10d
 +    'plugins/crucible-command-consumer.inc.h':
 +        '90e66020ed3cd06206739f0921207a2ba0a35ccdf2144b6c829dd77c5f44fd2f',
 +    'plugins/crucible-callback-owner.inc.h':
-+        '2f92445b734c20c28d4668d12d0d08eaa359c57e0f4f8ac549a6b83764c2cf7b',
++        'aa0f266300d71b09615fe1f83c0bc3987bab0b0af7f54d0aeed448098ca56a01',
 +    'plugins/crucible-callback-child.inc.h':
 +        '8b0a0a6530307a7e3ab7e251744449dc33bda85554eade94e20f0cd25227d8ca',
 +    'plugins/crucible-callback-publication.inc.h':
-+        '79faed4ff36b426c3b03d672b60d33383d6b0f7ae636872f3a6481cc3787a24a',
++        '62df974b3cbc7a373f7618a79089ebd76344fccd56eeee86b9529c116c629a07',
 +    'plugins/crucible-ram-control.inc.h':
 +        'e36826d3c6850a279608aeb377832c4f30f4ad34fe34770b8661914722eac5ef',
 +    'plugins/crucible-ram-record.inc.h':
@@ -229911,7 +230159,7 @@ index 0000000000000000000000000000000000000000..38242efc96a4ecc3f8bb45c313c2f10d
 +    'include/qemu/crucible-native-invocation.h':
 +        '31fe108347d4f581fea1a3744f43a9838888d308e3f82f08a645df4533cd3e30',
 +    'plugins/crucible-native-invocation.c':
-+        '82bd7518830f3945b3ff85fff6fdd71a251294e77c036a8eeb5826780dcc8dc0',
++        '4c0e49d61421450c092090b1a53a306cb3782857cdc2aaff3dbf864204a89bba',
 +    'cpu-common.c':
 +        'c8eefc24511efd7ddc63e8c99a5d44b1d3cbc6b390bedf7f24046a4f6d486c4d',
 +    'include/hw/core/cpu.h':
@@ -230058,6 +230306,15 @@ index 0000000000000000000000000000000000000000..38242efc96a4ecc3f8bb45c313c2f10d
 +# Keep this inventory explicit: newly added test calls cannot silently broaden
 +# the fixture into an unpriced runtime, CPU or Root provider.
 +SOURCE_ROOTS = {
++    "plugin_ctx_callback_retain__locked",
++    "plugin_vcpu_init_descriptor_terminal__locked",
++    # Cleanup controls execute the real owner/child join and Native terminal.
++    # Their retained placement inputs model no runtime activation.
++    "callback_native_prepare_owner",
++    "qemu_plugin_crucible_callback_registration_owner_return_v1",
++    "qemu_plugin_crucible_callback_child_storage_return_v1",
++    "qemu_plugin_crucible_native_child_registration_terminal_v1",
++    "qemu_plugin_crucible_callback_group_owner_return_v1",
 +    # Five JSON writer references and the genuine counterparts of the complete
 +    # 21-function QObject utility provider interface. Supplying that interface
 +    # prevents the aggregate negative-provider object from replacing a real
@@ -230301,6 +230558,54 @@ index 0000000000000000000000000000000000000000..38242efc96a4ecc3f8bb45c313c2f10d
 +    return include.sub(expand, source)
 +
 +
++def callback_lifetime_body(sources):
++    """Retain the actual descriptor/module-return dependency closure."""
++    core = sources["plugins/core.c"]
++    loader = sources["plugins/loader.c"]
++    cpus = sources["system/cpus.c"]
++    output = [core[:core.index("*/") + 2]]
++    for opening in (
++        "static void plugin_cpu_update__async(",
++        "static void plugin_cpu_update__locked(",
++        "bool plugin_vcpu_init_descriptor_terminal__locked(",
++        "void plugin_unregister_cb__locked(",
++    ):
++        output.append(function(core, opening))
++
++    output.append(loader[:loader.index("*/") + 2])
++    output.append(body_cut(loader, "struct qemu_plugin_desc {",
++                           "struct qemu_plugin_parse_arg {"))
++    output.append(function(loader, "static void plugin_desc_free("))
++    output.append(body_cut(loader, "enum PluginRetirementPhase {",
++                           "void plugin_ctx_callback_retain__locked("))
++    for opening in (
++        "void plugin_ctx_callback_retain__locked(",
++        "static struct qemu_plugin_reset_data *plugin_retirement_ready__locked(",
++        "static struct qemu_plugin_reset_data *plugin_ctx_callback_release__locked(",
++        "void plugin_ctx_callback_release(",
++        "static struct qemu_plugin_reset_data *plugin_reset_destroy__locked(",
++        "static void plugin_flush_destroy(",
++        "static void plugin_retirement_discard(",
++        "static void plugin_retirement_schedule(struct qemu_plugin_reset_data *data,\n"
++        "                                       CPUState *executing_cpu)\n{",
++    ):
++        if opening.startswith(
++                "static struct qemu_plugin_reset_data *plugin_reset_destroy"):
++            position = loader.index(opening)
++            attribute = "QEMU_DISABLE_CFI\n"
++            if loader[position - len(attribute):position] != attribute:
++                raise ValueError("module retirement CFI attribute changed")
++            output.append(attribute)
++        output.append(function(loader, opening))
++
++    output.append(cpus[:cpus.index("*/") + 2])
++    output.append(function(cpus, "bool qemu_cpu_is_self("))
++    # The fixture declares explicit unavailable CPU/TCG endpoints. Every
++    # production branch above remains literal; reaching a VM peer is fatal,
++    # never a successful scheduler, descriptor absence or retirement proof.
++    return "\n".join(output)
++
++
 +def source_body(sources, controls):
 +    source = expand_fragments(sources, "plugins/crucible-startup-source.c")
 +
@@ -230316,7 +230621,7 @@ index 0000000000000000000000000000000000000000..38242efc96a4ecc3f8bb45c313c2f10d
 +    if "plugins/plugin.h" not in sources:
 +        raise ValueError("unguarded Native plugin header")
 +    native = native.replace(native_include, '#include "plugins/plugin.h"\n', 1)
-+    units = [source, native]
++    units = [source, native, callback_lifetime_body(sources)]
 +    definitions = {}
 +    spans = []
 +    for unit in units:
@@ -278283,10 +278588,10 @@ index 0000000000000000000000000000000000000000..2d6095e07373bad053241cac032344a2
 +}
 diff --git a/tests/unit/test-crucible-startup-source.c b/tests/unit/test-crucible-startup-source.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..c0269bf412d498df4fc133edf19a67b5726420bc
+index 0000000000000000000000000000000000000000..1581e318da4638d75797754363d304046ec04ff9
 --- /dev/null
 +++ b/tests/unit/test-crucible-startup-source.c
-@@ -0,0 +1,4065 @@
+@@ -0,0 +1,4581 @@
 +/*
 + * Actual Source lifecycle, accounting and registration controls.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -281381,6 +281686,498 @@ index 0000000000000000000000000000000000000000..c0269bf412d498df4fc133edf19a67b5
 +    g_assert_cmpint(fixture_reserve_seven(&control), ==, 0);
 +}
 +
++/* Cleanup-only retained storage inputs. The existing fixture's real reserve
++ * charges the three rows; completed placement/holder state is modeled here.
++ * No callback is installed, no Native selection is activated, and no VM,
++ * Source/Main/Root permission or production constructor is qualified. */
++typedef struct FixtureCleanupRuntime {
++    QemuCrucibleCallbackRegistrationGroupOwner *group;
++    QemuCrucibleCommandConsumerStorage *bridge;
++    QemuCrucibleCallbackChildStorage *child;
++    QemuCrucibleCallbackChildOwner *owner;
++    QemuCrucibleStartupRuntimePurpose *runtime;
++} FixtureCleanupRuntime;
++
++static FixtureCleanupRuntime cleanup_runtime;
++static uint8_t cleanup_child_payload[16];
++
++static void fixture_cleanup_prepare(bool native)
++{
++    const struct qemu_plugin_crucible_runtime_request_v4 requests[] = {
++        { .extent_bytes = sizeof(cleanup_runtime),
++          .alignment_bytes = _Alignof(FixtureCleanupRuntime), .birth_count = 1 },
++        { .extent_bytes = sizeof(FixtureRuntimeBridge),
++          .alignment_bytes = _Alignof(FixtureRuntimeBridge), .birth_count = 1,
++          .role = QEMU_CRUCIBLE_RUNTIME_ROLE_COMMAND_BRIDGE },
++        { .extent_bytes = sizeof(cleanup_child_payload),
++          .alignment_bytes = _Alignof(void *), .birth_count = 1,
++          .role = QEMU_CRUCIBLE_RUNTIME_ROLE_CALLBACK_CHILD },
++    };
++    QemuCrucibleStartupRuntimePurpose *runtime = NULL;
++    QemuCrucibleCommandConsumerRequest *claim = NULL;
++    QemuCrucibleCallbackChildRequest *child_claim = NULL;
++    QemuCrucibleCommandConsumerStorage *bridge = &startup_source.commands.storage;
++    QemuCrucibleCallbackChildStorage *child = &startup_source.commands.child;
++    QemuCrucibleCallbackChildOwner *owner = &startup_source.callbacks.owner;
++
++    fixture_runtime5_prepare();
++    /* Model the decoded initial standing record with the retained cleanup
++     * inputs. This is no standing lender, runtime activation or live grant. */
++    startup_source.standing.initial = fixture.plan.purpose.standing;
++    g_assert_cmpuint(startup_source.standing.initial.account_generation, !=, 0);
++    g_assert_cmpuint(startup_source.standing.initial.account_generation, ==,
++                     startup_source.process_purpose_record.account_generation);
++    g_assert_cmpuint(startup_source.standing.initial.process_generation, ==,
++                     startup_source.original.process_generation);
++
++    g_assert_cmpint(qemu_plugin_crucible_startup_runtime_reserve_v5(
++        fixture.ctx.id, requests, G_N_ELEMENTS(requests),
++        &runtime, &claim, &child_claim), ==, 0);
++    cleanup_runtime = (FixtureCleanupRuntime) {
++        .bridge = bridge, .child = child, .owner = owner, .runtime = runtime,
++    };
++    startup_source.fingerprint_completion.enrolled = true;
++    startup_source.fingerprint_completion.runtime = runtime;
++    startup_source.fingerprint_completion.userdata = &cleanup_runtime;
++    claim->payload_claimed = true;
++    child_claim->payload_claimed = true;
++
++    *bridge = (QemuCrucibleCommandConsumerStorage) {
++        .runtime = runtime, .installer = startup_source.saved,
++        .claim = claim, .request = claim->request, .request_index = claim->request_index,
++        .holder = &cleanup_runtime.bridge, .runtime_holder = &cleanup_runtime.bridge,
++        .runtime_base = (uintptr_t)&cleanup_runtime, .runtime_extent = sizeof(cleanup_runtime),
++        .extent = claim->extent, .alignment = claim->alignment,
++        .fixed_native_extent = runtime->fixed_native_extent,
++        .process_generation = startup_source.original.process_generation,
++        .account_generation = startup_source.standing.initial.account_generation,
++        .process = getpid(), .attempted = true, .held = true, .transferred = true,
++        .initialized = true, .initialization_returned = true, .callback_child_held = true,
++    };
++    *child = (QemuCrucibleCallbackChildStorage) {
++        .runtime = runtime, .installer = startup_source.saved,
++        .claim = child_claim, .bridge = bridge, .holder = &cleanup_runtime.child,
++        .runtime_holder = &cleanup_runtime.child,
++        .runtime_base = (uintptr_t)&cleanup_runtime, .runtime_extent = sizeof(cleanup_runtime),
++        .address = cleanup_child_payload, .extent = child_claim->extent,
++        .alignment = child_claim->alignment, .fixed_native_extent = runtime->fixed_native_extent,
++        .process_generation = startup_source.original.process_generation,
++        .account_generation = startup_source.standing.initial.account_generation,
++        .process = getpid(), .publication_users = 1, .attempted = true, .held = true,
++        .bridge_borrow_held = true, .initialized = true, .initialization_returned = true,
++        .transferred = true,
++    };
++    *owner = (QemuCrucibleCallbackChildOwner) {
++        .canonical_owner = owner, .holder = &cleanup_runtime.owner,
++        .runtime_holder = &cleanup_runtime.owner, .child = child, .bridge = bridge,
++        .runtime = runtime, .child_holder = &cleanup_runtime.child,
++        .bridge_holder = &cleanup_runtime.bridge, .installer = startup_source.saved,
++        .runtime_base = (uintptr_t)&cleanup_runtime, .runtime_extent = sizeof(cleanup_runtime),
++        .process_generation = startup_source.original.process_generation,
++        .account_generation = startup_source.standing.initial.account_generation,
++        .process = getpid(), .initialized = true, .held = true, .transferred = true,
++    };
++    if (native) {
++        QemuCrucibleNativeInvocationRegistry *registry =
++            &startup_source.callbacks.native;
++
++        /* This actual constructor initializes the permanent registry once;
++         * neither it nor the modeled cleanup holders publishes selection. */
++        g_assert_cmpint(callback_native_prepare_owner(owner), ==, 0);
++        g_assert_true(startup_source.callbacks.native_prepared);
++        g_assert_true(registry->initialized);
++        g_assert_true(registry->canonical_owner == registry);
++        g_assert_true(registry->ctx == owner->installer.ctx);
++        g_assert_true(registry->module == owner->installer.module);
++        g_assert_nonnull(registry->ctx);
++        g_assert_nonnull(registry->module);
++        g_assert_true(registry->runtime == runtime);
++        g_assert_true(registry->storage == bridge);
++        g_assert_true(registry->storage_holder == &cleanup_runtime.bridge);
++        g_assert_cmpint(registry->process, ==, getpid());
++        g_assert_cmpuint(registry->process_generation, !=, 0);
++        g_assert_cmpuint(registry->process_generation, ==,
++                         startup_source.original.process_generation);
++        g_assert_cmpuint(registry->account_generation, ==,
++                         startup_source.process_purpose_record.account_generation);
++    }
++    g_assert_null(qemu_crucible_startup_source_native_selection_v1());
++}
++
++static void assert_cleanup_owner_retained(uint64_t publication_users)
++{
++    QemuCrucibleCallbackChildOwner *owner = &startup_source.callbacks.owner;
++
++    g_assert_true(cleanup_runtime.owner == owner);
++    g_assert_true(owner->held);
++    g_assert_false(owner->returned);
++    g_assert_true(owner->holder == &cleanup_runtime.owner);
++    g_assert_cmpuint(owner->child->publication_users, ==, publication_users);
++}
++
++static int fixture_cleanup_owner_return(void)
++{
++    return qemu_plugin_crucible_callback_registration_owner_return_v1(
++        fixture.ctx.id, &cleanup_runtime.owner);
++}
++
++static void fixture_cleanup_child_return(void)
++{
++    QemuCrucibleCallbackChildStorage *child = &startup_source.commands.child;
++
++    /* No destructor or free is faked as a successful provider. This control
++     * starts from already-returned physical payload facts and tests only the
++     * remaining nominal join after the registration owner was consumed. */
++    child->destroyed = true;
++    child->physical_returned = true;
++    child->address = NULL;
++    g_assert_cmpint(qemu_plugin_crucible_callback_child_storage_return_v1(
++        fixture.ctx.id, &cleanup_runtime.child), ==, 0);
++    g_assert_null(cleanup_runtime.child);
++    g_assert_false(child->held);
++}
++
++static void scenario_registration_cleanup_prepared(void)
++{
++    fixture_cleanup_prepare(true);
++    g_assert_cmpint(fixture_cleanup_owner_return(), ==, 0);
++    g_assert_null(cleanup_runtime.owner);
++    g_assert_true(startup_source.callbacks.owner.returned);
++    g_assert_cmpuint(startup_source.commands.child.publication_users, ==, 0);
++    g_assert_true(startup_source.callbacks.native_prepared);
++    g_assert_true(startup_source.callbacks.native.revoked);
++    g_assert_false(startup_source.commands.child.closing);
++    g_assert_true(startup_source.commands.child.callback_closing);
++    g_assert_cmpint(fixture_cleanup_owner_return(), ==, -ESTALE);
++    fixture_cleanup_child_return();
++    g_assert_true(startup_source.callbacks.native_prepared);
++}
++
++static void scenario_registration_cleanup_no_native(void)
++{
++    fixture_cleanup_prepare(false);
++    g_assert_cmpint(fixture_cleanup_owner_return(), ==, 0);
++    fixture_cleanup_child_return();
++    g_assert_false(startup_source.callbacks.native_prepared);
++}
++
++static void scenario_registration_cleanup_no_owner(void)
++{
++    fixture_cleanup_prepare(false);
++    startup_source.callbacks.owner = (QemuCrucibleCallbackChildOwner) { 0 };
++    startup_source.commands.child.publication_users = 0;
++    cleanup_runtime.owner = NULL;
++    fixture_cleanup_child_return();
++}
++
++static void scenario_registration_cleanup_source_debt(void)
++{
++    QemuCrucibleCallbackChildOwner *owner = &startup_source.callbacks.owner;
++    bool *busy[] = {
++        &startup_source.callbacks.publication.held,
++        &startup_source.callbacks.registrar.held,
++        &startup_source.callback_groups.borrower.held,
++        &startup_source.callbacks.native_preparing,
++        &startup_source.commands.child.closing,
++    };
++
++    fixture_cleanup_prepare(true);
++    for (size_t index = 0; index < G_N_ELEMENTS(busy); index++) {
++        *busy[index] = true;
++        g_assert_cmpint(fixture_cleanup_owner_return(), ==, -EBUSY);
++        assert_cleanup_owner_retained(1);
++        *busy[index] = false;
++    }
++    owner->component_users = 1;
++    g_assert_cmpint(fixture_cleanup_owner_return(), ==, -EBUSY);
++    owner->component_users = 0;
++    owner->workspace_users = 1;
++    g_assert_cmpint(fixture_cleanup_owner_return(), ==, -EBUSY);
++    owner->workspace_users = 0;
++    startup_source.callback_groups.entered = &startup_source.callback_groups.control;
++    g_assert_cmpint(fixture_cleanup_owner_return(), ==, -EBUSY);
++    startup_source.callback_groups.entered = NULL;
++    startup_source.commands.child.publication_users = 2;
++    g_assert_cmpint(fixture_cleanup_owner_return(), ==, -EBUSY);
++    startup_source.commands.child.publication_users = 1;
++    assert_cleanup_owner_retained(1);
++    g_assert_cmpint(fixture_cleanup_owner_return(), ==, 0);
++}
++
++static QemuCrucibleNativeRegistrationGroup *fixture_cleanup_failed_group(void)
++{
++    QemuCrucibleCallbackRegistrationGroupOwner *group =
++        &startup_source.callback_groups.control;
++    QemuCrucibleNativeInvocationRegistry *registry = &startup_source.callbacks.native;
++    QemuCrucibleCallbackChildOwner *owner = &startup_source.callbacks.owner;
++
++    /* Canonical negative constructor output before module corroboration.
++     * No descriptor/module is installed; actual terminal must still join it. */
++    *group = (QemuCrucibleCallbackRegistrationGroupOwner) {
++        .canonical_owner = group, .holder = &cleanup_runtime.group,
++        .runtime_holder = &cleanup_runtime.group,
++        .runtime_base = (uintptr_t)&cleanup_runtime, .runtime_extent = sizeof(cleanup_runtime),
++        .transferred = true, .native_debt = true,
++        .child_owner = owner,
++        .members = startup_source.callback_groups.control_members,
++        .member_count = 1, .publication_serial = 1,
++        .kind = QEMU_CRUCIBLE_NATIVE_GROUP_CONTROL, .attempted = true, .held = true,
++    };
++    group->native = (QemuCrucibleNativeRegistrationGroup) {
++        .canonical_owner = &group->native, .registry = registry, .owner = group,
++        .child_owner = owner, .ctx = registry->ctx, .module = registry->module,
++        .members = group->members, .member_count = 1, .publication_serial = 1,
++        .registrar_serial = 1, .kind = group->kind, .reserved = true,
++        .first_status = -ESTALE,
++    };
++    group->members[0] = (QemuCrucibleNativeRegistration) {
++        .owner = registry, .group = &group->native, .child_owner = owner,
++        .ctx = registry->ctx, .module = registry->module,
++        .publication_serial = 1, .registrar_serial = 1, .serial = 1,
++    };
++    registry->groups[QEMU_CRUCIBLE_NATIVE_GROUP_CONTROL - 1] = &group->native;
++    registry->serial = 1;
++    cleanup_runtime.group = group;
++    startup_source.commands.child.publication_users++;
++    return &group->native;
++}
++
++static void scenario_registration_cleanup_failed_group(void)
++{
++    QemuCrucibleNativeRegistrationGroup *group;
++    QemuCrucibleCallbackChildOwner foreign_owner = { 0 };
++    QemuCrucibleNativeInvocationRegistry foreign_registry = { 0 };
++
++    fixture_cleanup_prepare(true);
++    group = fixture_cleanup_failed_group();
++    g_assert_cmpint(fixture_cleanup_owner_return(), ==, -EBUSY);
++    assert_cleanup_owner_retained(2);
++    /* Returning the real Source group owner consumes only its separate pin
++     * after Native terminal and receipt observation. The child owner remains. */
++    g_assert_cmpint(qemu_plugin_crucible_callback_group_owner_return_v1(
++        fixture.ctx.id, &cleanup_runtime.group, 1, group->kind), ==, 0);
++    g_assert_null(cleanup_runtime.group);
++    assert_cleanup_owner_retained(1);
++
++    g_assert_cmpint(qemu_plugin_crucible_native_child_registration_terminal_v1(
++        &foreign_registry, &startup_source.callbacks.owner), ==, -ESTALE);
++    g_assert_cmpint(qemu_plugin_crucible_native_child_registration_terminal_v1(
++        &startup_source.callbacks.native, &foreign_owner), ==, -ESTALE);
++    group->child_owner = &foreign_owner;
++    g_assert_cmpint(fixture_cleanup_owner_return(), ==, -ESTALE);
++    assert_cleanup_owner_retained(1);
++    group->child_owner = &startup_source.callbacks.owner;
++    g_assert_false(startup_source.callbacks.native.child_registration_seen);
++    g_assert_null(startup_source.callbacks.native.child_owner);
++    g_assert_cmpint(fixture_cleanup_owner_return(), ==, 0);
++    g_assert_false(startup_source.commands.child.registration_retained);
++}
++
++static void scenario_registration_cleanup_native_debt(void)
++{
++    QemuCrucibleNativeRegistrationGroup *group;
++    QemuCrucibleNativeInvocationRegistry *registry = &startup_source.callbacks.native;
++
++    fixture_cleanup_prepare(true);
++    group = fixture_cleanup_failed_group();
++    g_assert_cmpint(qemu_plugin_crucible_callback_group_owner_return_v1(
++        fixture.ctx.id, &cleanup_runtime.group, 1, group->kind), ==, 0);
++    assert_cleanup_owner_retained(1);
++    group->module_retained = true;
++    g_assert_cmpint(fixture_cleanup_owner_return(), ==, -EBUSY);
++    g_assert_true(startup_source.callbacks.owner.closing);
++    g_assert_true(startup_source.commands.child.callback_closing);
++    g_assert_false(startup_source.commands.child.closing);
++    assert_cleanup_owner_retained(1);
++    group->module_retained = false;
++    group->members[0].descriptor_retained = true;
++    g_assert_cmpint(fixture_cleanup_owner_return(), ==, -EBUSY);
++    group->members[0].descriptor_retained = false;
++    registry->frames[0].canonical_owner = &registry->frames[0];
++    g_assert_cmpint(fixture_cleanup_owner_return(), ==, -EBUSY);
++    registry->frames[0].canonical_owner = NULL;
++    registry->registrations[0].owner = registry;
++    registry->registrations[0].child_owner = (void *)&cleanup_runtime;
++    g_assert_cmpint(fixture_cleanup_owner_return(), ==, -ESTALE);
++    registry->registrations[0] = (QemuCrucibleNativeRegistration) { 0 };
++    assert_cleanup_owner_retained(1);
++    g_assert_cmpint(fixture_cleanup_owner_return(), ==, 0);
++}
++
++static void scenario_registration_cleanup_registered(void)
++{
++    QemuCrucibleNativeInvocationRegistry *registry = &startup_source.callbacks.native;
++    QemuCrucibleCallbackChildOwner *owner = &startup_source.callbacks.owner;
++    QemuCrucibleNativeRegistration *record = &registry->registrations[0];
++
++    fixture_cleanup_prepare(true);
++    /* Retained historical descriptor association is a cleanup input only.
++     * This test installs no callback and never activates Native selection. */
++    registry->child_registration_seen = true;
++    registry->child_owner = owner;
++    registry->child = owner->child;
++    registry->child_holder = owner->child_holder;
++    registry->child_address = owner->child->address;
++    registry->child_extent = owner->child->extent;
++    registry->child_alignment = owner->child->alignment;
++    registry->binding_attempted = true;
++    registry->bound = true;
++    registry->serial = 1;
++    *record = (QemuCrucibleNativeRegistration) {
++        .owner = registry, .child_owner = owner, .ctx = registry->ctx,
++        .module = registry->module, .publication_serial = 1, .registrar_serial = 1,
++        .serial = 1, .source_authenticated = true, .descriptor_retained = true,
++    };
++    owner->child->registration_retained = true;
++    g_assert_cmpint(fixture_cleanup_owner_return(), ==, -EBUSY);
++    assert_cleanup_owner_retained(1);
++    g_assert_true(owner->child->registration_retained);
++    /* The real return joins only after the descriptor's separate physical
++     * withdrawal input is absent; revoke alone never supplies that fact. */
++    record->descriptor_retained = false;
++    g_assert_cmpint(fixture_cleanup_owner_return(), ==, 0);
++    g_assert_false(owner->child->registration_retained);
++    fixture_cleanup_child_return();
++}
++
++static void scenario_registration_cleanup_complete_group(void)
++{
++    QemuCrucibleNativeInvocationRegistry *registry = &startup_source.callbacks.native;
++    QemuCrucibleNativeRegistrationGroup *group;
++    void *withdrawn_descriptor = NULL;
++
++    fixture_cleanup_prepare(true);
++    group = fixture_cleanup_failed_group();
++    /* Completed Native member history is a cleanup input, with its actual
++     * saved descriptor coordinate now absent. No callback/selection is installed. */
++    group->first_status = 0;
++    group->effect_started = true;
++    group->effect_finished = true;
++    group->installed_members = 1;
++    group->attempted_mask = 1;
++    group->installed_mask = 1;
++    group->members[0].coordinate = &withdrawn_descriptor;
++    group->members[0].source_authenticated = true;
++    registry->child_registration_seen = true;
++    registry->child_owner = &startup_source.callbacks.owner;
++    registry->binding_attempted = true;
++    g_assert_cmpint(qemu_plugin_crucible_callback_group_owner_return_v1(
++        fixture.ctx.id, &cleanup_runtime.group, 1, group->kind), ==, 0);
++    g_assert_true(group->terminal);
++    assert_cleanup_owner_retained(1);
++    g_assert_cmpint(fixture_cleanup_owner_return(), ==, 0);
++    g_assert_null(cleanup_runtime.owner);
++    g_assert_null(qemu_crucible_startup_source_native_selection_v1());
++}
++
++static void scenario_registration_cleanup_contradictions(void)
++{
++    QemuCrucibleNativeInvocationRegistry *registry = &startup_source.callbacks.native;
++    QemuCrucibleCallbackChildOwner *owner = &startup_source.callbacks.owner;
++    QemuCrucibleCallbackChildOwner *copied_projection;
++
++    fixture_cleanup_prepare(true);
++    copied_projection = owner;
++    g_assert_cmpint(qemu_plugin_crucible_callback_registration_owner_return_v1(
++        fixture.ctx.id, &copied_projection), ==, -EINVAL);
++    g_assert_true(copied_projection == owner);
++    registry->child_registration_seen = true;
++    g_assert_cmpint(fixture_cleanup_owner_return(), ==, -ESTALE);
++    assert_cleanup_owner_retained(1);
++    registry->child_owner = owner;
++    g_assert_cmpint(fixture_cleanup_owner_return(), ==, -ENOKEY);
++    assert_cleanup_owner_retained(1);
++    registry->child_owner = NULL;
++    registry->child_registration_seen = false;
++    g_assert_cmpint(fixture_cleanup_owner_return(), ==, 0);
++}
++
++static void scenario_registration_descriptor_terminal(void)
++{
++    struct qemu_plugin_cb callback = { 0 };
++
++    fixture_cleanup_prepare(true);
++    g_assert_true(plugin_vcpu_init_descriptor_terminal__locked(
++        &callback, &fixture.ctx));
++    fixture.ctx.callbacks[QEMU_PLUGIN_EV_VCPU_INIT] = &callback;
++    g_assert_false(plugin_vcpu_init_descriptor_terminal__locked(
++        &callback, &fixture.ctx));
++    fixture.ctx.callbacks[QEMU_PLUGIN_EV_VCPU_INIT] = NULL;
++    QLIST_INSERT_HEAD_RCU(&plugin.cb_lists[QEMU_PLUGIN_EV_VCPU_INIT],
++                          &callback, entry);
++    g_assert_false(plugin_vcpu_init_descriptor_terminal__locked(
++        &callback, &fixture.ctx));
++    QLIST_REMOVE_RCU(&callback, entry);
++    g_assert_true(plugin_vcpu_init_descriptor_terminal__locked(
++        &callback, &fixture.ctx));
++    g_assert_null(qemu_crucible_startup_source_native_selection_v1());
++}
++
++static void scenario_registration_module_release(void)
++{
++    QemuCrucibleNativeRegistrationGroup *group;
++
++    fixture_cleanup_prepare(true);
++    group = fixture_cleanup_failed_group();
++    /* The retained module-user input belongs to this modeled cleanup group.
++     * Its real Native terminal calls the literal loader release body. No
++     * deferred CPU retirement is issued or qualified by this counter control. */
++    group->module_retained = true;
++    g_assert_cmpuint(fixture.ctx.callback_users, ==, 0);
++    plugin_ctx_callback_retain__locked(&fixture.ctx);
++    g_assert_cmpuint(fixture.ctx.callback_users, ==, 1);
++    g_assert_null(fixture.ctx.deferred_retirement);
++    g_assert_cmpint(qemu_plugin_crucible_callback_group_owner_return_v1(
++        fixture.ctx.id, &cleanup_runtime.group, 1, group->kind), ==, 0);
++    g_assert_true(group->terminal);
++    g_assert_false(group->module_retained);
++    g_assert_cmpuint(fixture.ctx.callback_users, ==, 0);
++    g_assert_null(fixture.ctx.deferred_retirement);
++    assert_cleanup_owner_retained(1);
++    g_assert_cmpint(fixture_cleanup_owner_return(), ==, 0);
++}
++
++static QemuSemaphore cleanup_return_started;
++static int cleanup_return_status;
++
++static void *fixture_cleanup_return_thread(void *opaque)
++{
++    qemu_sem_post(&cleanup_return_started);
++    cleanup_return_status = fixture_cleanup_owner_return();
++    return NULL;
++}
++
++static void scenario_registration_cleanup_concurrent(void)
++{
++    QemuCrucibleCommandConsumerRegistry *commands = &startup_source.commands;
++    QemuThread thread;
++    bool closing;
++
++    fixture_cleanup_prepare(true);
++    qemu_sem_init(&cleanup_return_started, 0);
++    qemu_mutex_lock(&startup_source.callbacks.native.mutex);
++    qemu_thread_create(&thread, "cleanup-return", fixture_cleanup_return_thread,
++                      NULL, QEMU_THREAD_JOINABLE);
++    qemu_sem_wait(&cleanup_return_started);
++    do {
++        /* Holding Native while taking Source here is intentional adversarial
++         * scheduling: the returning thread must have dropped Source first. */
++        qemu_mutex_lock(&commands->mutex);
++        closing = commands->child.closing;
++        qemu_mutex_unlock(&commands->mutex);
++        if (!closing) {
++            g_usleep(1000);
++        }
++    } while (!closing);
++    g_assert_cmpint(fixture_cleanup_owner_return(), ==, -EBUSY);
++    assert_cleanup_owner_retained(1);
++    qemu_mutex_unlock(&startup_source.callbacks.native.mutex);
++    qemu_thread_join(&thread);
++    qemu_sem_destroy(&cleanup_return_started);
++    g_assert_cmpint(cleanup_return_status, ==, 0);
++    g_assert_null(cleanup_runtime.owner);
++}
++
 +static void scenario_runtime5_healthy(void)
 +{
 +    qemu_plugin_crucible_runtime_purpose_v3 *purpose = NULL;
@@ -282165,6 +282962,18 @@ index 0000000000000000000000000000000000000000..c0269bf412d498df4fc133edf19a67b5
 +SOURCE_SCENARIO(action_codec_distinct_borrower_rows)
 +SOURCE_SCENARIO(action_same_birth_masks_are_monotone)
 +SOURCE_SCENARIO(setup_layout_is_not_a_mapping_owner)
++SOURCE_SCENARIO(registration_cleanup_prepared)
++SOURCE_SCENARIO(registration_cleanup_no_native)
++SOURCE_SCENARIO(registration_cleanup_no_owner)
++SOURCE_SCENARIO(registration_cleanup_source_debt)
++SOURCE_SCENARIO(registration_cleanup_failed_group)
++SOURCE_SCENARIO(registration_cleanup_native_debt)
++SOURCE_SCENARIO(registration_cleanup_registered)
++SOURCE_SCENARIO(registration_cleanup_complete_group)
++SOURCE_SCENARIO(registration_cleanup_contradictions)
++SOURCE_SCENARIO(registration_descriptor_terminal)
++SOURCE_SCENARIO(registration_module_release)
++SOURCE_SCENARIO(registration_cleanup_concurrent)
 +SOURCE_SCENARIO(runtime5_healthy)
 +SOURCE_SCENARIO(runtime5_geometry)
 +SOURCE_SCENARIO(runtime5_post_cancel)
@@ -282320,6 +283129,18 @@ index 0000000000000000000000000000000000000000..c0269bf412d498df4fc133edf19a67b5
 +    REGISTER_SCENARIO(action_codec_distinct_borrower_rows);
 +    REGISTER_SCENARIO(action_same_birth_masks_are_monotone);
 +    REGISTER_SCENARIO(setup_layout_is_not_a_mapping_owner);
++    REGISTER_SCENARIO(registration_cleanup_prepared);
++    REGISTER_SCENARIO(registration_cleanup_no_native);
++    REGISTER_SCENARIO(registration_cleanup_no_owner);
++    REGISTER_SCENARIO(registration_cleanup_source_debt);
++    REGISTER_SCENARIO(registration_cleanup_failed_group);
++    REGISTER_SCENARIO(registration_cleanup_native_debt);
++    REGISTER_SCENARIO(registration_cleanup_registered);
++    REGISTER_SCENARIO(registration_cleanup_complete_group);
++    REGISTER_SCENARIO(registration_cleanup_contradictions);
++    REGISTER_SCENARIO(registration_descriptor_terminal);
++    REGISTER_SCENARIO(registration_module_release);
++    REGISTER_SCENARIO(registration_cleanup_concurrent);
 +    REGISTER_SCENARIO(runtime5_healthy);
 +    REGISTER_SCENARIO(runtime5_geometry);
 +    REGISTER_SCENARIO(runtime5_post_cancel);

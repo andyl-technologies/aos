@@ -164,6 +164,32 @@ This integration remains unfinished. Cleanup error folding must also retain a
 later independent Main report as well as the guard leaves covered by the
 existing two-body component controls.
 
+## Callback registration retirement
+
+Registration-owner return keeps the canonical owner and its sole child pin
+until Native has revoked admission and proved that every group, descriptor,
+module reference and callback frame has returned. Source closes admission and
+serializes return under its mutex, then releases that mutex before Native calls.
+It revalidates the same holder and remaining dependencies before consuming the
+owner once. A refusal retains the owner and pin; only the transient return latch
+reopens, so cleanup can continue without permitting new callbacks.
+
+The terminal check distinguishes pristine preparation, failed registration
+attempts and authenticated registration history. It authenticates the actual
+Source-selected registry before taking Native's mutex and reads only Native
+associations there. Later child retirement rechecks physical registry state
+without querying the consumed registration owner. Native initialization remains
+a permanent construction fact.
+
+Cleanup controls execute those identity and return bodies over explicitly
+modeled retained placement and prior physical-return inputs. They do not qualify
+initial Source activation, destructor/free execution or a launched VM. The
+fingerprint worker still needs actual creation, workspace access, readiness and
+join ownership. Its reservation must cover stack, wrapper and conservative
+libc/TLS/allocator backing before creation; the existing control-object row alone
+does not fund those resources. Unproved allocator residuals retain their debit
+through Source/process retirement instead of becoming reusable after join.
+
 ## RAM controller fork admission
 
 RAM fork preparation closes the controller's policy admission before checking
