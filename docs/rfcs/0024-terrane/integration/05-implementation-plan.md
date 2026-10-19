@@ -9521,7 +9521,31 @@ Resumed qualification:
   actor output, retaining the real grace, deadlines and assertions. Its fresh
   local checks and narrow native component run are underway. These controls are
   not yet qualified; producer pin release, eviction, NativeReady and complete
-  host tasks remain open.
+  host tasks remain open. The diagnostic subsequently reaches actual source
+  removal, unchanged retained bytes and live reads, then fails because the
+  fixture loads policy from the cache root instead of `state/cache`. Independent
+  root observations confirm the authoritative policy remains present, both
+  sealed outputs remain and pending names are gone. Correction `f8c7f4b7f2`
+  uses the actual policy directory without changing the accounting assertions.
+  Combined candidate `1c0b104f98` also removes unused private client methods
+  while retaining every original ownership edge and compiles private recovery
+  helpers with their actual Tokio owner. Both direct builds, all 32 focused
+  cases, formatting and strict fixture/native-only Clippy profiles pass. The
+  separate deployed Tokio profile exposes two further unused private paths;
+  correction `f0ce679062` keeps the stale-observation helper with its isolated
+  fixture and retains sealed response resources explicitly. Both direct builds,
+  all 32 focused cases, formatting and strict Clippy with `-D warnings` pass
+  on that frozen successor in native-only, deployed Tokio and native-fixture
+  profiles, without lint allowances. The actual native cache component on
+  `1c0b104f98` subsequently passes all 51 selected filesystem cases and the new
+  source-cleanup controls. Independent review verifies all 3,495 image inputs,
+  four original Cargo ELFs and both installed supervisor helpers. The helper
+  measures 991,232 charged bytes while 286,720 bytes of retired source allocation
+  remain open, separately from 2,899,870 bytes of future holds, and confirms
+  reclamation only after the actual descriptions close. Cancellation, repeated
+  acknowledgements, immutable bytes, unchanged policy and reads with policy held
+  all pass. The owning aggregate and subsequent application/full-filesystem
+  checks remain pending; neither source advances task acceptance.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
   and all seven strict Clippy/documentation profiles pass. The interface,
   commit-path, status and schema gates pass on unchanged final source, including
