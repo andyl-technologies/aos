@@ -3,6 +3,8 @@
   pkgs,
   lib,
   sourceGateWithInputs,
+  publisherLocalProof,
+  hostCacheProof,
   ...
 }: let
   portableNames = [
@@ -232,4 +234,8 @@ in {
   host-sealed-immutable = combined "host-sealed-immutable";
   host-sealed-adopt = combined "host-sealed-adopt";
   host-sealed-before-serve = combined "host-sealed-before-serve";
+  publisher-sole-writer = import ../publisher-ownership.nix {
+    inherit pkgs publisherLocalProof hostCacheProof;
+    publication = combined "host-publish-sequence";
+  };
 }

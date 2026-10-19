@@ -29,19 +29,32 @@
   multiUid = testing.mkVMTest {
     name = "terrane-publisher-local-multuid";
     memory = 512;
-    rootfsDeps = [image pkgs.coreutils];
+    rootfsDeps = [image pkgs.coreutils pkgs.grep pkgs.util-linux];
     testScript = ''
       set -eu
       mkdir -p /var/lib
       export TERRANE_PUBLISHER_VM=1
       export LD_LIBRARY_PATH="${image}/lib"
-      ${image}/bin/publisher_local_vm --exact publisher_local_multuid_vm --ignored --nocapture
+      result=/var/lib/terrane-publisher-local-multuid.log
+      if ! ${image}/bin/publisher_local_vm --exact publisher_local_multuid_vm --ignored --nocapture > "$result" 2>&1; then
+        cat "$result"
+        exit 1
+      fi
+      cat "$result"
+      grep -F 'test result: ok. 1 passed; 0 failed; 0 ignored;' "$result"
+      for role in publisher serve outsider realize gc worker sandbox; do
+        grep -E "^PUBLISHER_ROLE_IDENTITY role=$role uid=[0-9]+ gid=[0-9]+ groups=none caps=zero nnp=1$" "$result"
+      done
+      for role in serve outsider realize gc worker sandbox; do
+        grep -Fx "PASS sealed namespace mutations refused role=$role" "$result"
+      done
+      rm "$result"
     '';
   };
   native = testing.mkVMTest {
     name = "terrane-publisher-local-native-ext4";
     memory = 1024;
-    rootfsDeps = [image pkgs.bash pkgs.coreutils pkgs.util-linux pkgs.e2fsprogs];
+    rootfsDeps = [image pkgs.bash pkgs.coreutils pkgs.grep pkgs.util-linux pkgs.e2fsprogs];
     testScript = ''
       set -eu
       mkdir -p /var/lib/terrane-publisher-local /mnt/terrane-publisher-local
@@ -57,8 +70,18 @@
       export LD_LIBRARY_PATH="${image}/lib"
       ${pkgs.bash}/bin/bash ${image}/share/native_socket_units.bash \
         ${image} "$TERRANE_PUBLISHER_EXT4_ROOT/socket-unit" ${pkgs.util-linux}/bin/setpriv
-      ${image}/bin/publisher_local_native --exact publisher_local_native_role --ignored --nocapture
-      ${image}/bin/publisher_local_native --exact publisher_local_native_lifecycle_vm --ignored --nocapture
+      result=/var/lib/terrane-publisher-local/result.log
+      for native_case in publisher_local_native_role publisher_local_native_lifecycle_vm; do
+        if ! ${image}/bin/publisher_local_native --exact "$native_case" --ignored --nocapture > "$result" 2>&1; then
+          cat "$result"
+          exit 1
+        fi
+        cat "$result"
+        grep -F "test $native_case ..." "$result"
+        grep -F 'test result: ok. 1 passed; 0 failed; 0 ignored;' "$result"
+      done
+      grep -Fx 'PASS actual publisher backing is read-only and cannot be reopened writable' "$result"
+      rm "$result"
     '';
   };
 in {

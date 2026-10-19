@@ -1042,6 +1042,16 @@ def main():
             require(publisher.poll() is None and time.monotonic() < deadline, "actual configured CLI publisher failed preparation: " + result.stderr)
             time.sleep(0.02)
         print(process_status(publisher, 841), flush=True)
+        for case in CASES:
+            # These are the actual directories opened by the configured CLI,
+            # after every native publisher worker has completed preparation.
+            for name in ["sealed", "staging", "pending-delete", "state/publication"]:
+                path = root(case) / name
+                value = path.lstat()
+                require(path.is_dir() and not path.is_symlink()
+                        and value.st_uid == 841 and value.st_mode & 0o7777 == 0o700,
+                        "actual publisher namespace ownership changed: " + str(path))
+        print("PASS actual configured publisher retains exclusive private namespace ownership", flush=True)
         actor("empty", "empty", uuid)
         # A new physical owner must preserve the first owner's durable hold,
         # synchronize a distinct bootstrap and account both without reusing H.

@@ -12,7 +12,7 @@ use std::{
     fs::{self, File},
     io::{Read, Write},
     os::{
-        fd::AsFd,
+        fd::{AsFd, AsRawFd},
         unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     },
     path::{Path, PathBuf},
@@ -124,6 +124,23 @@ fn backing(mut response: ReceivedPacket, expected_device: u64) -> (u64, Vec<u8>)
     let mut file = response.files.remove(0);
     let metadata = file.metadata().unwrap();
     assert_eq!(metadata.dev(), expected_device);
+    assert_eq!(metadata.uid(), PUBLISH);
+    assert_eq!(metadata.mode() & 0o7777, 0o400);
+    assert_eq!(
+        rustix::fs::fcntl_getfl(&file).unwrap() & rustix::fs::OFlags::ACCMODE,
+        rustix::fs::OFlags::RDONLY
+    );
+    assert_eq!(
+        rustix::io::write(&file, b"forbidden"),
+        Err(rustix::io::Errno::BADF)
+    );
+    match File::options()
+        .write(true)
+        .open(format!("/proc/self/fd/{}", file.as_raw_fd()))
+    {
+        Ok(_) => panic!("a passed read-only backing was reopened writable"),
+        Err(error) => assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied),
+    }
     let binding = verity::measure(&file).unwrap();
     assert_eq!(
         u32::from(binding.algorithm),
@@ -133,6 +150,7 @@ fn backing(mut response: ReceivedPacket, expected_device: u64) -> (u64, Vec<u8>)
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes).unwrap();
     assert_eq!(bytes, PLAINTEXT);
+    println!("\nPASS actual publisher backing is read-only and cannot be reopened writable");
     (metadata.ino(), response.packet.body_incarnation)
 }
 
