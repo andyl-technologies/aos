@@ -437,6 +437,7 @@ impl NativePublisher {
         child_directory(&self.sealed, &name(claim)[..2])
     }
 
+    #[cfg(feature = "tokio")]
     pub(super) fn existing_canonical_identity(
         &self,
         claim: &PublicationClaim,

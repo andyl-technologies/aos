@@ -8,12 +8,14 @@
 
 #[cfg(feature = "tokio")]
 mod cleanup;
+#[cfg(feature = "tokio")]
 mod context;
 #[cfg(feature = "tokio")]
 mod manifest;
 #[cfg(feature = "tokio")]
 mod publication;
 mod receipt;
+#[cfg(feature = "tokio")]
 mod recovery;
 #[cfg(feature = "tokio")]
 pub(crate) mod recovery_manifest;
@@ -24,8 +26,10 @@ mod transfer;
 
 #[cfg(feature = "tokio")]
 pub(crate) use cleanup::AcknowledgedSourceRetirement;
+#[cfg(feature = "tokio")]
 pub(crate) use recovery::{BodyIncarnationObservation, RecoveryBody};
 
+#[cfg(feature = "tokio")]
 pub(crate) use context::PublisherRecoveryContext;
 #[cfg(feature = "tokio")]
 pub use manifest::PeerManifestPublishedObject;
@@ -96,6 +100,7 @@ struct State {
 enum Phase {
     Undrained,
     Recovery,
+    #[cfg(feature = "tokio")]
     Running,
     Uncertain,
 }
@@ -222,6 +227,7 @@ impl<L: HostReadLocation> Client<L> {
     }
 
     /// Borrows this actual client's stable private-generated owner incarnation.
+    #[cfg(feature = "tokio")]
     pub(crate) fn cache_incarnation(&self) -> &[u8; 16] {
         &self.cache_incarnation
     }
