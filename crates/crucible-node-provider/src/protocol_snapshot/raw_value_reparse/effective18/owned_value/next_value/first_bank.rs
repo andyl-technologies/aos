@@ -76,7 +76,9 @@ impl NativeImport18FirstBankData {
         Ok(bytes)
     }
 
-    fn root_input_data(&self) -> Result<NativeImport18NextValueInputData<'_>, ProviderError> {
+    pub(super) fn root_input_data(
+        &self,
+    ) -> Result<NativeImport18NextValueInputData<'_>, ProviderError> {
         let owner = self.owner_data();
         let selected = owner.retained_selection_data()?;
         let raw = selected.retained_frame_data()?;

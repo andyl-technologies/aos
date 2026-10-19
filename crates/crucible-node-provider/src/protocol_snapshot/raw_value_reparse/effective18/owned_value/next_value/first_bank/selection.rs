@@ -53,6 +53,19 @@ impl NativeImport18FirstBankData {
     }
 }
 
+impl NativeImport18FirstBankData {
+    // A short actual source loan, derived by the shared response route, must
+    // still authenticate against this immutable bank before its handle row.
+    pub(in super::super) fn response_row_data(
+        &self,
+        source: SourceView<'_>,
+        maximum: usize,
+    ) -> Result<NativeImport18FirstSelectionConstructionData<'_>, ProviderError> {
+        let selected = locate_data(self, source)?;
+        row_data(self, selected, maximum)
+    }
+}
+
 fn row_data(
     bank: &NativeImport18FirstBankData,
     selected: Selected,

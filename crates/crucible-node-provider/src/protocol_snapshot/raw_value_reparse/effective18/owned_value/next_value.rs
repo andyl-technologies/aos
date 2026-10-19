@@ -30,6 +30,10 @@ mod view;
 mod walk;
 
 pub(crate) use input::NativeImport18NextValueInputData;
+pub(crate) use response_shape::owning::{
+    NativeImport18OwningResponseActionData, NativeImport18OwningResponseAttemptData,
+    NativeImport18OwningResponseCensusData,
+};
 pub(crate) use response_shape::{
     NativeImport18ResponseShapeCutsData, NativeImport18ResponseShapeCutsPreludeData,
     NativeImport18ResponseValueCutData, NativeImport18ResponseValueCutLocationData,

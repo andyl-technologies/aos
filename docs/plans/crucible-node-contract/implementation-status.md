@@ -19,7 +19,8 @@ the same first-pass engine behind borrowed and by-value owning adapters. The
 fourteen-file successor adds an independently funded immutable first bank and
 movable second-pass state around the existing second-pass engine. A subsequent
 ten-file change adds owning structural Envelope fields and a separately admitted
-canonical-body check. These components remain disconnected from
+canonical-body check. The following thirteen-file change adds the movable
+response cursor around the same schema schedule. These components remain disconnected from
 the live Source18 route; they grant no Initial, Recipe or native permission.
 The production application-target refresh below passes for `4fbaa7eb15`, before
 the owning Envelope change. The current source needs another refresh.
@@ -33,11 +34,11 @@ preserves its first error, and uses the existing initial graph precredit walk.
 
 | Check | Latest recorded scope and result |
 | --- | --- |
-| SDK receive formatting | The raw custody, owning-first, owning-next and ten-file owning-Envelope cohorts pass. The subsequent two test-assertion corrections also pass. |
+| SDK receive formatting | The raw custody, owning-first, owning-next, ten-file owning-Envelope and thirteen-file response-cursor cohorts pass. The two Envelope test-assertion corrections also pass. |
 | Combined integration checking | Six-crate all-feature/all-target checking passes in 1 minute 41 seconds after owning-Envelope, and in 1 minute 47 seconds after owning-next. The earlier owning-first/debug-label checkpoint passes in 1 minute 51 seconds. |
 | Neutral debug diagnostics | Four files pass formatting. The existing Core invalid-endpoint/unknown-node control and three Session debug-runtime transaction controls pass. Only backend-neutral diagnostic labels and the matching existing expectation change. |
-| SDK receive controls | All 64 targeted controls pass with ordinary Serde JSON in 0.01 seconds, including the nine new owning-Envelope controls. Both complete suites also execute all 64 controls. |
-| SDK Provider regression | Each complete suite passes 1,560 tests with zero failures and fifteen existing ignores: 11.34 seconds for ordinary Serde JSON and 11.45 seconds with raw values enabled. |
+| SDK receive controls | All 74 targeted controls pass with ordinary Serde JSON in 0.02 seconds, including ten new owning-response controls. Both complete suites also execute all 74 controls. |
+| SDK Provider regression | Each complete suite passes 1,570 tests with zero failures and fifteen existing ignores: 11.91 seconds for ordinary Serde JSON and 11.69 seconds with raw values enabled. |
 | Prior runtime checking | The thirteen-file runtime accounting correction passes six-crate all-feature/all-target checking in 1 minute 28 seconds and targeted formatting. |
 | Application-target compilation checkpoint | Passes for `4fbaa7eb15`: 167 rebuilt test artifacts across 48 application packages, including 69 integration targets, in 14 minutes 1 second. All 7,840 captured source files and modes match that commit. This gate executes no tests. |
 | Runtime correction library checkpoint | All four unfiltered libraries pass: Core 1,967, Daemon 1,504, Provider 1,496 and Contract twelve, totaling 4,979 with zero failures. Existing ignores remain 33/162/15/1. Ten focused Host attachment controls also pass, including both new accounting controls. |
@@ -192,6 +193,25 @@ passes in 1 minute 14 seconds; raw-value test compilation passes in 1 minute
 all-feature/all-target checking passes in 1 minute 41 seconds. Live header/correlation,
 response-cursor integration, typed materialization and Source permissions remain
 separate work.
+
+The response-cursor successor shares one source-free schema schedule between
+borrowed and owning adapters. It consumes the actual canonical-completed
+Envelope, retains pending first-pass transfers, and separately quotes the
+immutable first bank, checked selection and second-pass work. Completed and
+failed prefixes stay under the same owner; every changed return observes the
+current parent and actual error. The existing normalization engines remain
+unchanged. It adds no whole-result normalization or live correlation authority.
+
+Ten additional real-frame controls cover schema/key/output parity, late error
+prefixes, canonical ordering, deep second-pass failure, all eleven exact/short
+action rows, foreign banks, reused outputs and structural Raw/Extensions rules.
+All 74 targeted controls pass after a 1 minute 15 second compile. Both complete
+Provider suites pass 1,570 tests with zero failures and fifteen existing ignores:
+11.91 seconds for ordinary Serde JSON and 11.69 seconds with raw values enabled.
+The raw-value compile takes 1 minute 12 seconds. All thirteen files pass
+formatting. The real live parent still requires header/session/original-request
+matching before canonical work. Shape validation, typed result/receipt
+construction and live history integration remain separate prerequisites.
 
 These results qualify the selected components, not a live receive transition.
 AssignedPhase/history integration, full structural

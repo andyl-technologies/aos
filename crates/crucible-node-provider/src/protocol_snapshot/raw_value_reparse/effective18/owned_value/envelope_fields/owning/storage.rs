@@ -255,3 +255,22 @@ pub(super) fn canonical_quote_data(
         scratch,
     })
 }
+
+// Additional direct controls for the actual scoped body-FIRST transfer. The
+// shared upstream transfer counter is independently included by its caller.
+pub(super) fn transfer_counter_data() -> usize {
+    size_of::<&mut NativeImport18OwningEnvelopeAttemptData>()
+        + size_of::<std::slice::IterMut<'static, OwnedCut>>()
+        + size_of::<&mut std::slice::IterMut<'static, OwnedCut>>()
+        + size_of::<Option<&mut OwnedCut>>()
+        + size_of::<&mut OwnedCut>()
+        + size_of::<&&mut OwnedCut>()
+        + size_of::<&mut Option<NativeImport18OwningFirstAttemptData>>()
+        + size_of::<&mut Option<super::super::super::next_value::NativeImport18FirstBankCustodyData>>(
+        )
+        + size_of::<Stage>()
+        + size_of::<usize>() * 2
+        + size_of::<&usize>()
+        + size_of::<&EnvelopeField18Data>()
+        + size_of::<Result<(), ProviderError>>()
+}

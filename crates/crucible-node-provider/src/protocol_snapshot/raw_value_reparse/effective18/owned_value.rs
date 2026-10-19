@@ -37,9 +37,10 @@ pub(crate) use next_value::{
     NativeImport18NextValuePassConstructionData, NativeImport18NextValuePassKindData,
     NativeImport18NextValuePassObjectData, NativeImport18NextValuePassViewData,
     NativeImport18NextValuePrewalkData, NativeImport18OwningNextAttemptData,
-    NativeImport18OwningNextCensusData, NativeImport18ResponseShapeCutsData,
-    NativeImport18ResponseShapeCutsPreludeData, NativeImport18ResponseValueCutData,
-    NativeImport18ResponseValueCutLocationData,
+    NativeImport18OwningNextCensusData, NativeImport18OwningResponseActionData,
+    NativeImport18OwningResponseAttemptData, NativeImport18OwningResponseCensusData,
+    NativeImport18ResponseShapeCutsData, NativeImport18ResponseShapeCutsPreludeData,
+    NativeImport18ResponseValueCutData, NativeImport18ResponseValueCutLocationData,
 };
 
 mod owning_first;

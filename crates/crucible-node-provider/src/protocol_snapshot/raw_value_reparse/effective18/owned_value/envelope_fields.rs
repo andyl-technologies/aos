@@ -753,7 +753,7 @@ impl<'bank> NativeImport18EnvelopeFieldsAttemptData<'bank> {
 // Only the defining Id/U64 validators allocate returned error backing here.
 // Keep this match exhaustive, count actual String capacity, and refuse an
 // unexpected allocating error rather than formatting, cloning or discarding it.
-fn error_retained_requested_data(
+pub(super) fn error_retained_requested_data(
     result: &Result<(), ProviderError>,
 ) -> Result<usize, ProviderError> {
     use crucible_node_contract::ContractError;

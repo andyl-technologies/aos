@@ -58,6 +58,10 @@ impl<'a> NativeImport18OwnedValuePassViewData<'a> {
         self.value.origin_data()
     }
 
+    pub(super) fn flat_data(self) -> NativeImport18FirstFlatViewData<'a> {
+        self.value
+    }
+
     pub(super) fn boundary_data(self) -> &'a NativeImport18OwnedValuePassAttemptData<'a> {
         self.boundary
     }

@@ -351,6 +351,32 @@ impl NativeImport18OwningEnvelopeAttemptData {
             .ok_or_else(invalid)
     }
 
+    pub(in super::super) fn transfer_counter_data() -> usize {
+        storage::transfer_counter_data()
+    }
+
+    // Only the owning ResponseShape parent can move a body FIRST into its
+    // already rooted transfer slot. The parent then observes both halves.
+    pub(in super::super) fn transfer_body_first_into_data(
+        &mut self,
+        member: usize,
+        output: &mut Option<super::super::next_value::NativeImport18FirstBankCustodyData>,
+    ) -> Result<(), ProviderError> {
+        if self.stage != Stage::CanonicalComplete {
+            return Err(invalid());
+        }
+        let cut = self
+            .data
+            .cuts
+            .iter_mut()
+            .find(|cut| cut.field == EnvelopeField18Data::Body && cut.member == member)
+            .ok_or_else(invalid)?;
+        super::super::next_value::NativeImport18FirstBankCustodyData::take_into_data(
+            &mut cut.first,
+            output,
+        )
+    }
+
     /// Borrows the original immutable raw frame even after a field refusal.
     ///
     /// # Errors
