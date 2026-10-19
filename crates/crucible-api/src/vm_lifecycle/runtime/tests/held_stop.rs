@@ -779,3 +779,32 @@ fn unparked_campaign_marker_declines_retention_without_settling() -> TestResult 
     lifecycle.shutdown()?;
     Ok(())
 }
+
+#[test]
+fn zero_peer_guest_hold_refuses_portable_exact_capture_and_keeps_the_log() -> TestResult {
+    // After boot, an Envoy guest choice stops with no peer RUN in flight. The
+    // stopped boundary looks checkpoint-ready, but the committed guest stop is
+    // still a held host continuation that no exact checkpoint carries, so
+    // capture must refuse before any snapshot or log entry is produced.
+    let mut lifecycle = stopped_lifecycle(0)?;
+    let offset = lifecycle.inner.loop_impl().event_log_offset();
+    let before = lifecycle.resume_state()?.into_parts();
+
+    let refusal = lifecycle
+        .capture_portable_exact_checkpoint_with_boundary(&mut || Ok(()))
+        .err()
+        .ok_or("exact capture accepted a held guest stop")?;
+
+    assert!(
+        refusal
+            .to_string()
+            .contains("cannot retain held or unpublished host RUN outcomes"),
+        "unexpected refusal: {refusal}"
+    );
+    assert_eq!(lifecycle.inner.loop_impl().event_log_offset(), offset);
+    assert_eq!(lifecycle.resume_state()?.into_parts(), before);
+    assert!(lifecycle.inner.held_host_stop_witness().is_some());
+    assert!(lifecycle.inner.has_unsettled_host_continuation());
+    lifecycle.shutdown()?;
+    Ok(())
+}
