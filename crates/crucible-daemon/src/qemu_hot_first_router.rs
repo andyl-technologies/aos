@@ -10,12 +10,12 @@
 //! the router tries hot fork exactly once more:
 //!
 //! ```text
-//! hot ── executed ──────────────────────────────▶ HotFork
-//!  └─ declined ─▶ anchor ── admitted ─▶ hot ──────▶ HotFork
-//!                   │                    └─ declined/failed:
-//!                   │                         budget left ─▶ thin (or the failure)
-//!                   │                         budget spent ─▶ Retryable
-//!                   └─ declined ─────────────────▶ thin
+//! hot --executed-------------------------------> HotFork
+//!  `--declined--> anchor --admitted--> hot -----> HotFork
+//!                   |                   `--declined or failed:
+//!                   |                        budget left  --> thin (or the failure)
+//!                   |                        budget spent --> Retryable
+//!                   `--declined-------------------> thin
 //! ```
 
 use crucible_campaign::AttemptStartMode;
@@ -104,9 +104,9 @@ where
 
         // Anchoring charged its replay to this execution. A second full replay
         // must still fit, or the attempt retries and forks from the kept root.
-        let retry = self.hot_attempt(input, context);
-        if matches!(retry, Ok(Some(_))) {
-            return retry;
+        let from_anchor = self.hot_attempt(input, context);
+        if matches!(from_anchor, Ok(Some(_))) {
+            return from_anchor;
         }
         let after = context.consumed_execution_quanta();
         let anchor_cost = after.saturating_sub(before);
@@ -119,7 +119,7 @@ where
                 QemuHotFirstExecutionRouterError::AnchorRetryUnaffordable,
             ));
         }
-        retry
+        from_anchor
     }
 
     /// Runs one hot-fork attempt; `None` is an explicit decline.
