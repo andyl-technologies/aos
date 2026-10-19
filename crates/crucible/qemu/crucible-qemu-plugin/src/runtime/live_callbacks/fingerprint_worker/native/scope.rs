@@ -9,6 +9,11 @@ use super::*;
 use std::mem::MaybeUninit;
 
 struct InputHeader {
+    /// Invokes the thunk paired with the caller's live synchronous input.
+    ///
+    /// # Safety
+    /// The owner must remain retained by Source, and the payload must point to
+    /// the exact live `ScopedInput<F, R>` paired with this monomorphized thunk.
     invoke: unsafe fn(*mut c_void, *mut c_void) -> i32,
     payload: *mut c_void,
 }
@@ -102,6 +107,12 @@ impl Handle {
     }
 }
 
+/// Runs one caller action while Source retains the canonical control owner.
+///
+/// # Safety
+/// Source must retain its control user through return. `input` must point to the
+/// live `ScopedInput<F, R>` paired with this thunk, and `owner` must identify the
+/// same initialized control retained by that user.
 unsafe fn invoke<F, R>(owner: *mut c_void, input: *mut c_void) -> i32
 where
     F: for<'a> FnOnce(&'a Arc<FingerprintWorkerControl>) -> Result<R, LiveVcpuTimeCallbackError>,
@@ -113,10 +124,9 @@ where
     let Some(action) = input.action.take() else {
         return -libc::EALREADY;
     };
-    // SAFETY: Source's actual control user spans this entire callback. Its one
-    // raw ordinary Arc owner cannot be destroyed while that user is retained.
-    // ManuallyDrop borrows the alias without consuming its strong ownership.
     let control =
+        // SAFETY: Source's control user spans this callback and prevents the
+        // raw Arc owner from being destroyed. ManuallyDrop preserves that owner.
         ManuallyDrop::new(unsafe { Arc::from_raw(owner.cast::<FingerprintWorkerControl>()) });
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| action(&control))) {
         Ok(output) => {
@@ -187,5 +197,7 @@ pub unsafe extern "C" fn qemu_plugin_crucible_fingerprint_worker_module_control_
     // SAFETY: only this module constructs the synchronous private header, and
     // Source supplies it unchanged while its caller stack remains live.
     let input = unsafe { &mut *input.cast::<InputHeader>() };
+    // SAFETY: this private header retains the matching thunk and live payload;
+    // the same Source control user protects owner through the synchronous call.
     unsafe { (input.invoke)(owner, input.payload) }
 }
