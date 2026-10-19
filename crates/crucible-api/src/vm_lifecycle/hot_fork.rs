@@ -1740,8 +1740,8 @@ pub(super) use test_support::record_hot_fork_adoption_for_test;
 #[cfg(any(test, feature = "test-support"))]
 pub use test_support::{
     hot_fork_adoption_count_for_test, prepared_hot_fork_source_world_for_test,
-    prepared_multi_node_hot_fork_source_world_after_selection_for_scenario_for_test,
     prepared_multi_node_hot_fork_source_world_after_selection_for_test,
+    prepared_multi_node_hot_fork_source_world_after_selections_for_scenario_for_test,
     prepared_multi_node_hot_fork_source_world_for_scenario_for_test,
     prepared_multi_node_hot_fork_source_world_for_test,
     prepared_multi_node_hot_fork_source_world_with_powered_off_for_scenario_for_test,

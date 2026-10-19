@@ -283,6 +283,23 @@ where
         }
     }
 
+    fn checkout_ancestor(
+        &mut self,
+        key: &QemuHotForkSourceWorldKey,
+        parent: &crucible::Configuration,
+        eligible: &dyn Fn(
+            &crate::qemu_hot_fork_source_capture::QemuPublishedRootProvenance,
+        ) -> bool,
+    ) -> Result<
+        Option<crate::managed_qemu_hot_fork_source_world_pool::QemuHotForkAncestorCheckout>,
+        Self::Error,
+    > {
+        // Ancestors are always live published roots; nothing is demanded.
+        self.provider
+            .checkout_ancestor(key, parent, eligible)
+            .map_err(Into::into)
+    }
+
     fn restore(&mut self, source: QemuHotForkSourceWorldLease) {
         self.provider.restore(source);
     }

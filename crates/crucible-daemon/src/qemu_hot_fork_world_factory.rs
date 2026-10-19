@@ -30,12 +30,15 @@ use crucible_qemu::{
     QemuPreparedRunDirectory, QemuShutdownPolicy, QemuVmRealizationError,
 };
 
-use crate::managed_qemu_hot_fork_source_world_pool::QemuHotForkSourceWorldLease;
+use crate::managed_qemu_hot_fork_source_world_pool::{
+    QemuHotForkAncestorCheckout, QemuHotForkSourceWorldLease,
+};
 use crate::qemu_campaign_lifecycle::{
     QemuFreshScenarioResourceError, QemuObservedFreshAttemptLifecycle,
     QemuObservedFreshAttemptLifecycleFactory, QemuObservedFreshAttemptLifecycleFactoryError,
     validate_fresh_qemu_scenario_resources,
 };
+use crate::qemu_hot_fork_source_capture::QemuPublishedRootProvenance;
 use crate::qemu_hot_fork_world::QemuHotForkProductionLifecycleContext;
 use crate::supervision::ProcessDeadline;
 use crate::{
@@ -160,6 +163,17 @@ impl QemuHotForkSourceWorldKey {
         self.boundary
     }
 
+    /// Returns whether both keys share lineage, scenario, and executor profile.
+    ///
+    /// Keys with a shared basis differ only in where their source is paused,
+    /// so a world under one may stand in for an ancestor of the other.
+    #[must_use]
+    pub(crate) fn shares_basis_with(&self, other: &Self) -> bool {
+        self.template.lineage() == other.template.lineage()
+            && self.scenario == other.scenario
+            && self.profile == other.profile
+    }
+
     fn for_execution(
         input: &CrucibleAttemptExecution,
         context: &AttemptExecutionContext,
@@ -270,6 +284,29 @@ pub(crate) trait QemuHotForkSourceWorldProvider:
     ) -> Result<Option<QemuHotForkSourceWorldLease>, Self::Error> {
         let _ = (input, context);
         self.checkout(key)
+    }
+
+    /// Leases the deepest eligible published root at a strict ancestor of `parent`.
+    ///
+    /// `key` is the attempt's own published key at `parent`, and `eligible`
+    /// is the caller's suffix policy over each candidate root's provenance.
+    /// Providers without published roots never offer an ancestor.
+    ///
+    /// # Errors
+    ///
+    /// Returns an availability failure without removing a source world.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the hot-fork factory falls back to ancestors")
+    )]
+    fn checkout_ancestor(
+        &mut self,
+        key: &QemuHotForkSourceWorldKey,
+        parent: &crucible::Configuration,
+        eligible: &dyn Fn(&QemuPublishedRootProvenance) -> bool,
+    ) -> Result<Option<QemuHotForkAncestorCheckout>, Self::Error> {
+        let _ = (key, parent, eligible);
+        Ok(None)
     }
 
     /// Classifies a checkout failure for the attempt supervisor.

@@ -203,10 +203,6 @@ impl ManagedQemuHotForkSourceWorld {
 
     /// Returns how a published-boundary root was produced, if this is one.
     #[must_use]
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "ancestor checkout reads root provenance")
-    )]
     pub(crate) const fn published_root_provenance(&self) -> Option<&QemuPublishedRootProvenance> {
         self.provenance.as_ref()
     }
@@ -697,8 +693,10 @@ where
     fork_rate_clock: ForkRateClock,
 }
 
+mod ancestors;
 mod pool;
 mod published_roots;
+pub(crate) use ancestors::QemuHotForkAncestorCheckout;
 pub(crate) use published_roots::ManagedQemuPublishedRootSink;
 
 /// Shared process-wide source pool that mints one checkout session per worker.
@@ -883,6 +881,19 @@ where
             .lock()
             .map_err(|_error| SharedQemuHotForkSourceWorldProviderError::Poisoned)?
             .checkout_lease_for(self.provider, key)
+            .map_err(Into::into)
+    }
+
+    fn checkout_ancestor(
+        &mut self,
+        key: &QemuHotForkSourceWorldKey,
+        parent: &crucible::Configuration,
+        eligible: &dyn Fn(&QemuPublishedRootProvenance) -> bool,
+    ) -> Result<Option<QemuHotForkAncestorCheckout>, Self::Error> {
+        self.pool
+            .lock()
+            .map_err(|_error| SharedQemuHotForkSourceWorldProviderError::Poisoned)?
+            .checkout_ancestor_lease_for(self.provider, key, parent, eligible)
             .map_err(Into::into)
     }
 

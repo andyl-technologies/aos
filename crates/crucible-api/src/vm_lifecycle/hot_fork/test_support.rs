@@ -206,28 +206,30 @@ pub fn prepared_multi_node_hot_fork_source_world_after_selection_for_test(
     let source = crucible::crash_restart_scenario()
         .map_err(|error| test_support_error("construct built-in scenario", error))?
         .scenario;
-    prepared_multi_node_hot_fork_source_world_after_selection_for_scenario_for_test(
+    prepared_multi_node_hot_fork_source_world_after_selections_for_scenario_for_test(
         &source,
         source_nodes,
-        selection,
+        vec![selection],
     )
 }
 
-/// Builds one prepared source world for `source` paused after a selection.
+/// Builds one prepared source world for `source` paused after `selections`.
 ///
 /// This is [`prepared_multi_node_hot_fork_source_world_after_selection_for_test`]
 /// for an exact test scenario, such as one that also declares campaign
-/// selectables.
+/// selectables. The scheduler records each selection in order at its current
+/// boundary, so every prefix of `selections` names an ancestor boundary of
+/// the prepared source.
 ///
 /// # Errors
 ///
 /// Returns [`LifecycleApiError::LoopFactory`] when the scenario has too few VM
-/// nodes, the recorded selection is invalid, or any source-world boundary
-/// cannot be constructed.
-pub fn prepared_multi_node_hot_fork_source_world_after_selection_for_scenario_for_test(
+/// nodes, a recorded selection is invalid, or any source-world boundary cannot
+/// be constructed.
+pub fn prepared_multi_node_hot_fork_source_world_after_selections_for_scenario_for_test(
     source: &ScenarioDefForm,
     source_nodes: Vec<QemuNode>,
-    selection: SelectionDecision,
+    selections: Vec<SelectionDecision>,
 ) -> Result<
     (
         Vec<(NodeId, ProductionVmNodeGeneration)>,
@@ -242,14 +244,16 @@ pub fn prepared_multi_node_hot_fork_source_world_after_selection_for_scenario_fo
         SCRIPTED_SCHEDULER_TIME_LIMIT_TICKS,
     )?;
 
-    let parent = lifecycle.inner.loop_impl().configuration().clone();
-    let selected = crucible::try_step(&parent, Decision::Selection(selection.clone()))
-        .map_err(|error| test_support_error("step scripted selection", error))?;
-    lifecycle
-        .inner
-        .loop_impl_mut()
-        .apply_external_selection(&parent, selection, &selected, || Ok(()))
-        .map_err(|error| test_support_error("record scripted selection", error))?;
+    for selection in selections {
+        let parent = lifecycle.inner.loop_impl().configuration().clone();
+        let selected = crucible::try_step(&parent, Decision::Selection(selection.clone()))
+            .map_err(|error| test_support_error("step scripted selection", error))?;
+        lifecycle
+            .inner
+            .loop_impl_mut()
+            .apply_external_selection(&parent, selection, &selected, || Ok(()))
+            .map_err(|error| test_support_error("record scripted selection", error))?;
+    }
 
     let source_world = lifecycle
         .prepare_hot_fork_source_world()

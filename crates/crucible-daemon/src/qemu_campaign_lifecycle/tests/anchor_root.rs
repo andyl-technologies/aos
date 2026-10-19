@@ -9,14 +9,16 @@
 
 use crucible_api::vm_lifecycle::{
     ProductionVmHotForkSourceWorld,
-    prepared_multi_node_hot_fork_source_world_after_selection_for_scenario_for_test,
+    prepared_multi_node_hot_fork_source_world_after_selections_for_scenario_for_test,
 };
-use crucible_campaign::{ChoiceCoordinate, ChoiceOpportunity, ConfigurationArtifactId};
+use crucible_campaign::ConfigurationArtifactId;
 use crucible_qemu::{QemuTestHotForkOutcome, scripted_hot_fork_source_for_test};
 
 use super::super::test_support::{Order, boundary_violation};
 use super::*;
-use crate::managed_qemu_hot_fork_source_world_pool::test_support::advanced_published_root_source_for_test;
+use crate::managed_qemu_hot_fork_source_world_pool::test_support::{
+    advanced_published_root_source_for_test, scheduler_selection_for_test,
+};
 use crate::qemu_hot_fork_source_capture::{
     AuthenticatedPublishedRootQemuHotForkSource, QemuPublishedRootOrigin,
     QemuPublishedRootProvenance,
@@ -368,45 +370,6 @@ fn network_scenario() -> ScenarioDefForm {
         .expect("attach network selectables")
 }
 
-/// A scheduler selection that advances the world past genesis.
-fn advancing_selection(scenario: &ScenarioDefForm) -> SelectionDecision {
-    let scenario_id =
-        ScenarioDefId::from_hash(CampaignHash::from_bytes(scenario.scenario_def().id().bytes));
-    let domain = ChoiceDomain::Boolean(BooleanDomain::new(1).expect("boolean domain"));
-    let declaration = SelectableDeclaration::new(
-        "anchor.advance",
-        ChoiceSource::Scheduler {
-            producer: String::from("anchor-root"),
-        },
-        domain.clone(),
-        ChoiceValue::Boolean(false),
-        ChoiceClassContext::new(BTreeSet::new()).expect("choice class"),
-        BTreeSet::new(),
-        true,
-    )
-    .expect("selectable declaration");
-    let opportunity = ChoiceOpportunity::new(
-        scenario_id,
-        &declaration,
-        &domain,
-        ChoiceCoordinate {
-            scheduler: CampaignHash::derive("anchor-root-scheduler", b"advance"),
-            producer: CampaignHash::derive("anchor-root-producer", b"advance"),
-        },
-        "anchor.advance",
-        None,
-    )
-    .expect("choice opportunity");
-    let selection = Selection::new(
-        &opportunity,
-        &domain,
-        ChoiceValue::Boolean(false),
-        SelectionOrigin::Default,
-    )
-    .expect("advancing selection");
-    SelectionDecision::new(&selection)
-}
-
 /// Builds a branch attempt whose own selection is the network fault branch
 /// at `parent`, recorded at `at`.
 fn branch_input(
@@ -505,10 +468,10 @@ fn anchor_case() -> AnchorCase {
     let node =
         scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("scripted source");
     let (_nodes, world) =
-        prepared_multi_node_hot_fork_source_world_after_selection_for_scenario_for_test(
+        prepared_multi_node_hot_fork_source_world_after_selections_for_scenario_for_test(
             &scenario,
             vec![node],
-            advancing_selection(&scenario),
+            vec![scheduler_selection_for_test(&scenario, "anchor.advance")],
         )
         .expect("parent world");
     let boundary = WorldBoundary::of(&world);
