@@ -59,9 +59,7 @@ mod control_callback_stage;
 mod control_callback_witness;
 mod control_facts;
 mod park_return;
-pub(super) use park_return::{
-    WriteProgress as ParkReturnWriteProgress, protected_park_return_writer,
-};
+pub(super) use park_return::{WriteProgress as ParkReturnWriteProgress, protected_park_return_writer};
 #[cfg(not(test))]
 mod registration;
 pub(super) use control_callback_witness::ControlCallbackWitness;
@@ -81,6 +79,8 @@ use devices::LiveDeviceCallbackState;
 pub use error::LiveVcpuTimeCallbackError;
 pub use fingerprint_worker::FingerprintWorkerFailure;
 use fingerprint_worker::LiveFingerprintDigestWorker;
+#[cfg(not(test))]
+pub(super) use fingerprint_worker::SourceWorkerOwner;
 use logical_restore::raw_icount_publication_is_superseded;
 #[cfg(test)]
 pub(crate) mod test_support;
@@ -828,6 +828,10 @@ pub(super) struct StableFingerprintSlotHandle {
 // atomic publication API, whose shared reference is safe across threads.
 unsafe impl Send for StableFingerprintSlotHandle {}
 
+// SAFETY: the same retained slot exposes atomic seqlock publication only; native
+// worker/module custody prevents its containing mapping from being returned.
+unsafe impl Sync for StableFingerprintSlotHandle {}
+
 impl StableFingerprintSlotHandle {
     pub(super) fn new(slot: &FingerprintSampleSlot) -> Self {
         Self {
@@ -853,12 +857,14 @@ struct LiveFingerprintCallbackState {
     sampling: PluginFingerprintSampling,
     slot: StableFingerprintSlotHandle,
     worker: LiveFingerprintDigestWorker,
-    // Failed outputs cannot close when a local or inherited child drops. Actual
-    // Native typed destruction separately refuses this field's retained debt.
+    // Fixtures own this local journal. Production keeps its actual capture
+    // journal inside Source's paid worker control through joined destruction.
+    #[cfg(test)]
     capture_attempt: std::mem::ManuallyDrop<Mutex<crate::fingerprint_sampler::CaptureAttempt>>,
 }
 
 impl LiveFingerprintCallbackState {
+    #[cfg(test)]
     fn capture_transfer_guard(
         &self,
     ) -> Result<std::sync::MutexGuard<'_, crate::fingerprint_sampler::CaptureAttempt>, i32> {
@@ -869,13 +875,21 @@ impl LiveFingerprintCallbackState {
         Ok(attempt)
     }
 
+    #[cfg(test)]
     fn capture_guard(
         &self,
     ) -> Result<std::sync::MutexGuard<'_, crate::fingerprint_sampler::CaptureAttempt>, i32> {
         if !self.worker.creator_process_is_current() {
             return Err(-libc::EPERM);
         }
-        self.capture_attempt.try_lock().map_err(|_| -libc::EBUSY)
+        #[cfg(test)]
+        {
+            self.capture_attempt.try_lock().map_err(|_| -libc::EBUSY)
+        }
+        #[cfg(not(test))]
+        {
+            self.worker.capture_guard()
+        }
     }
 }
 
@@ -1674,6 +1688,7 @@ impl LiveVcpuTimeCallbackState {
     /// fingerprint sample and queues its detached preimages to a dedicated
     /// digest worker. `slot` is the per-node [`FingerprintSampleSlot`] retained by
     /// the same setup mapping owner as the node slot and directed rings.
+    #[cfg(test)]
     pub(super) fn attach_fingerprint_in_place(
         &mut self,
         sampling: PluginFingerprintSampling,
@@ -1697,6 +1712,24 @@ impl LiveVcpuTimeCallbackState {
             capture_attempt: std::mem::ManuallyDrop::new(Mutex::new(
                 crate::fingerprint_sampler::CaptureAttempt::new(),
             )),
+        });
+        Ok(())
+    }
+
+    #[cfg(not(test))]
+    pub(super) fn attach_source_fingerprint(
+        &mut self,
+        sampling: PluginFingerprintSampling,
+        slot: StableFingerprintSlotHandle,
+        worker: LiveFingerprintDigestWorker,
+    ) -> Result<(), LiveVcpuTimeCallbackError> {
+        if self.fingerprint.is_some() {
+            return Err(LiveVcpuTimeCallbackError::CallbackStateAlreadyPublished);
+        }
+        self.fingerprint = Some(LiveFingerprintCallbackState {
+            sampling,
+            slot,
+            worker,
         });
         Ok(())
     }
@@ -1725,9 +1758,17 @@ impl LiveVcpuTimeCallbackState {
     /// wrong process, absent owner, pending work, failure or inconsistent custody.
     pub(super) unsafe fn hold_fingerprint_workspace_for_parent_park(&self) -> Result<(), i32> {
         if let Some(fingerprint) = &self.fingerprint {
-            let _capture = fingerprint.capture_transfer_guard()?;
-            // SAFETY: the caller owns complete callback/ring/worker exclusion.
-            unsafe { fingerprint.worker.hold_workspace_for_parent_park() }?;
+            #[cfg(test)]
+            {
+                let _capture = fingerprint.capture_transfer_guard()?;
+                // SAFETY: the caller owns complete callback/ring/worker exclusion.
+                unsafe { fingerprint.worker.hold_workspace_for_parent_park() }?;
+            }
+            #[cfg(not(test))]
+            fingerprint.worker.with_capture_transfer(|| {
+                // SAFETY: the caller retains the complete actual parent barrier.
+                unsafe { fingerprint.worker.hold_workspace_for_parent_park() }
+            })?;
         }
         Ok(())
     }
@@ -1746,9 +1787,17 @@ impl LiveVcpuTimeCallbackState {
     /// wrong process, absent owner, pending work, failure or inconsistent custody.
     pub(super) unsafe fn restore_fingerprint_workspace_for_parent_park(&self) -> Result<(), i32> {
         if let Some(fingerprint) = &self.fingerprint {
-            let _capture = fingerprint.capture_transfer_guard()?;
-            // SAFETY: the caller retains complete exclusion until final release.
-            unsafe { fingerprint.worker.restore_workspace_for_parent_park() }?;
+            #[cfg(test)]
+            {
+                let _capture = fingerprint.capture_transfer_guard()?;
+                // SAFETY: the caller retains complete exclusion until final release.
+                unsafe { fingerprint.worker.restore_workspace_for_parent_park() }?;
+            }
+            #[cfg(not(test))]
+            fingerprint.worker.with_capture_transfer(|| {
+                // SAFETY: the caller retains the complete actual parent barrier.
+                unsafe { fingerprint.worker.restore_workspace_for_parent_park() }
+            })?;
         }
         Ok(())
     }
@@ -1762,13 +1811,25 @@ impl LiveVcpuTimeCallbackState {
         &self,
     ) -> Result<(), crate::DeviceDigestWorkspaceError> {
         if let Some(fingerprint) = self.fingerprint.as_ref() {
-            let _capture = fingerprint.capture_transfer_guard().map_err(|_| {
-                crate::DeviceDigestWorkspaceError::Ownership {
-                    reason: "callback retains or is using a capture attempt",
-                }
-            })?;
-            // SAFETY: the caller retains callback and worker exclusion.
-            unsafe { fingerprint.worker.hold_workspace_for_fork() }?;
+            #[cfg(test)]
+            {
+                let _capture = fingerprint.capture_transfer_guard().map_err(|_| {
+                    crate::DeviceDigestWorkspaceError::Ownership {
+                        reason: "callback retains or is using a capture attempt",
+                    }
+                })?;
+                // SAFETY: the caller retains callback and worker exclusion.
+                unsafe { fingerprint.worker.hold_workspace_for_fork() }?;
+            }
+            #[cfg(not(test))]
+            fingerprint
+                .worker
+                .with_capture_transfer(|| {
+                    // SAFETY: the caller retains the same complete native fork barrier.
+                    unsafe { fingerprint.worker.hold_workspace_for_fork() }
+                        .map_err(|_| -libc::EBUSY)
+                })
+                .map_err(|status| crate::DeviceDigestWorkspaceError::Admission { status })?;
         }
         Ok(())
     }
@@ -1782,13 +1843,25 @@ impl LiveVcpuTimeCallbackState {
         &self,
     ) -> Result<(), crate::DeviceDigestWorkspaceError> {
         if let Some(fingerprint) = self.fingerprint.as_ref() {
-            let _capture = fingerprint.capture_transfer_guard().map_err(|_| {
-                crate::DeviceDigestWorkspaceError::Ownership {
-                    reason: "callback retains or is using a capture attempt",
-                }
-            })?;
-            // SAFETY: the caller retains callback and worker exclusion.
-            unsafe { fingerprint.worker.restore_workspace_after_fork() }?;
+            #[cfg(test)]
+            {
+                let _capture = fingerprint.capture_transfer_guard().map_err(|_| {
+                    crate::DeviceDigestWorkspaceError::Ownership {
+                        reason: "callback retains or is using a capture attempt",
+                    }
+                })?;
+                // SAFETY: the caller retains callback and worker exclusion.
+                unsafe { fingerprint.worker.restore_workspace_after_fork() }?;
+            }
+            #[cfg(not(test))]
+            fingerprint
+                .worker
+                .with_capture_transfer(|| {
+                    // SAFETY: the caller retains the same complete native fork barrier.
+                    unsafe { fingerprint.worker.restore_workspace_after_fork() }
+                        .map_err(|_| -libc::EBUSY)
+                })
+                .map_err(|status| crate::DeviceDigestWorkspaceError::Admission { status })?;
         }
         Ok(())
     }
@@ -1801,7 +1874,14 @@ impl LiveVcpuTimeCallbackState {
     /// Refuses a busy/poisoned capture journal or retained native/material output.
     pub(in crate::runtime) fn capture_material_disposition(&self) -> Result<(), i32> {
         if let Some(fingerprint) = &self.fingerprint {
+            #[cfg(not(test))]
+            if fingerprint.worker.physically_returned()? {
+                return Ok(());
+            }
+            #[cfg(test)]
             drop(fingerprint.capture_transfer_guard()?);
+            #[cfg(not(test))]
+            fingerprint.worker.with_capture_transfer(|| Ok(()))?;
         }
         Ok(())
     }
@@ -1853,25 +1933,48 @@ impl LiveVcpuTimeCallbackState {
                 message: String::from("device projection requested before device I/O quiesced"),
             });
         }
-        let mut attempt = fingerprint
-            .capture_guard()
-            .map_err(|_| LiveVcpuTimeCallbackError::FingerprintWorkerUnavailable)?;
-        fingerprint
-            .sampling
-            .capture(&mut attempt, icount, self.vcpu_count)
-            .map_err(|source| LiveVcpuTimeCallbackError::FingerprintSample {
-                boundary,
-                message: source.to_string(),
-            })?;
-        fingerprint
-            .worker
-            .submit(attempt.pending(), capture_request)?;
-        attempt
-            .transferred()
-            .map_err(|source| LiveVcpuTimeCallbackError::FingerprintSample {
-                boundary,
-                message: source.to_string(),
+        #[cfg(not(test))]
+        fingerprint.worker.settle_native_work(true)?;
+        #[cfg(test)]
+        {
+            let mut attempt = fingerprint
+                .capture_guard()
+                .map_err(|_| LiveVcpuTimeCallbackError::FingerprintWorkerUnavailable)?;
+            fingerprint
+                .sampling
+                .capture(&mut attempt, icount, self.vcpu_count)
+                .map_err(|source| LiveVcpuTimeCallbackError::FingerprintSample {
+                    boundary,
+                    message: source.to_string(),
+                })?;
+            fingerprint
+                .worker
+                .submit(attempt.pending(), capture_request)?;
+            attempt
+                .transferred()
+                .map_err(|source| LiveVcpuTimeCallbackError::FingerprintSample {
+                    boundary,
+                    message: source.to_string(),
+                })
+        }
+        #[cfg(not(test))]
+        fingerprint.worker.with_capture(|attempt| {
+            fingerprint
+                .sampling
+                .capture(attempt, icount, self.vcpu_count)
+                .map_err(
+                    |source| fingerprint_worker::FingerprintCaptureActionError::Sampler {
+                        boundary,
+                        source,
+                    },
+                )?;
+            fingerprint
+                .worker
+                .submit(attempt.pending(), capture_request)?;
+            attempt.transferred().map_err(|source| {
+                fingerprint_worker::FingerprintCaptureActionError::Sampler { boundary, source }
             })
+        })
     }
 
     fn idle_advance_is_pending(&self) -> bool {

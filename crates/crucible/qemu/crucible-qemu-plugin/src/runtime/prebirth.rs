@@ -29,6 +29,9 @@ pub(crate) const CALLBACK_CHILD_ALLOCATION: usize = 4;
 /// Identifies the actual typed Bridge birth in this closed before-birth roster.
 pub(crate) const COMMAND_BRIDGE_ALLOCATION: usize = 5;
 
+/// Identifies the optional actual full shared worker-control allocation.
+pub(crate) const WORKER_CONTROL_ALLOCATION: usize = 11;
+
 /// Retains the configured request span without allocating its own container.
 pub(crate) struct RuntimeAllocationRequests {
     layouts: [Layout; MAX_RUNTIME_ALLOCATIONS],
@@ -102,6 +105,12 @@ pub(super) fn shared_layout<T>() -> Result<Layout, StartupSourceError> {
         .extend(Layout::new::<T>())
         .map(|(layout, _)| layout.pad_to_align())
         .map_err(|_| geometry_error())
+}
+
+/// Reports the configured shared body offset for geometry corroboration only.
+pub(super) const fn shared_data_offset<T>() -> usize {
+    let alignment = align_of::<T>();
+    (size_of::<SharedAllocationHeader>() + alignment - 1) & !(alignment - 1)
 }
 
 fn geometry_error() -> StartupSourceError {

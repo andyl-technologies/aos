@@ -169,8 +169,15 @@ pub(super) extern "C" fn reserve_runtime(
     output: *mut *mut super::runtime_purpose::RuntimePurpose,
     claim: *mut *mut super::runtime_purpose::CommandClaim,
     child_claim: *mut *mut super::runtime_purpose::CallbackChildClaim,
+    worker_claim: *mut *mut super::runtime_purpose::WorkerClaim,
 ) -> i32 {
-    assert!(!requests.is_null() && !output.is_null() && !claim.is_null() && !child_claim.is_null());
+    assert!(
+        !requests.is_null()
+            && !output.is_null()
+            && !claim.is_null()
+            && !child_claim.is_null()
+            && !worker_claim.is_null()
+    );
     assert!(count > 0 && count <= crate::runtime::prebirth::MAX_RUNTIME_ALLOCATIONS);
     // SAFETY: the same adapter supplies the full initialized configured span.
     // These layout facts and the model token confer no native resource credit.
@@ -195,6 +202,9 @@ pub(super) extern "C" fn reserve_runtime(
         output.write(std::ptr::from_ref(&RUNTIME_MODEL_TOKEN).cast_mut().cast());
         claim.write(std::ptr::from_ref(&RUNTIME_MODEL_TOKEN).cast_mut().cast());
         child_claim.write(std::ptr::from_ref(&CONTROL_MODEL_TOKEN).cast_mut().cast());
+        if requests.iter().any(|request| request.role == 3) {
+            worker_claim.write(std::ptr::from_ref(&CONTROL_MODEL_TOKEN).cast_mut().cast());
+        }
     }
     0
 }

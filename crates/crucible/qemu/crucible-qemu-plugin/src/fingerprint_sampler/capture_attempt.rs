@@ -6,6 +6,7 @@
 
 use super::*;
 use std::mem::ManuallyDrop;
+#[cfg(test)]
 use std::os::fd::FromRawFd as _;
 
 /// Owns one prequeue attempt, including outputs that cannot be validated.
@@ -15,6 +16,8 @@ use std::os::fd::FromRawFd as _;
 /// must first refuse outstanding local debt, and inherited copies remain inert.
 pub(crate) struct CaptureAttempt {
     output: QemuFingerprintCaptureV2,
+    #[cfg(not(test))]
+    native_material: *mut crate::fingerprint_native::Material,
     native_status: Option<c_int>,
     attempted: bool,
     material: ManuallyDrop<Option<CapturedFingerprintMaterial>>,
@@ -22,10 +25,17 @@ pub(crate) struct CaptureAttempt {
     first_failure: Option<FingerprintSamplerError>,
 }
 
+// SAFETY: native pointers are opaque process-local identity projections. Source
+// retains every physical owner and authenticates the actual Main/worker thread
+// before effects; Rust never dereferences these pointers or closes their FDs.
+unsafe impl Send for CaptureAttempt {}
+
 impl CaptureAttempt {
     pub(crate) fn new() -> Self {
         Self {
             output: QemuFingerprintCaptureV2::default(),
+            #[cfg(not(test))]
+            native_material: std::ptr::null_mut(),
             native_status: None,
             attempted: false,
             material: ManuallyDrop::new(None),
@@ -49,6 +59,7 @@ impl CaptureAttempt {
             || self.first_failure.is_some()
             || self.ready.is_some()
             || self.material.is_some()
+            || self.has_native_material()
         {
             return Err(self.refuse(FingerprintSamplerError::CaptureRetained));
         }
@@ -58,7 +69,72 @@ impl CaptureAttempt {
 
     /// Reports only a local objection to physical parent destruction/transfer.
     pub(crate) fn has_material_debt(&self) -> bool {
-        self.output.device_fd >= 0 || self.material.is_some() || self.ready.is_some()
+        self.output.device_fd >= 0
+            || self.material.is_some()
+            || self.ready.is_some()
+            || self.has_native_material()
+    }
+
+    fn has_native_material(&self) -> bool {
+        #[cfg(not(test))]
+        {
+            !self.native_material.is_null()
+        }
+        #[cfg(test)]
+        {
+            false
+        }
+    }
+
+    /// Returns actual prequeue Material custody after Source closes admission.
+    ///
+    /// # Errors
+    /// Retains unknown descriptor debt, unconsumed native Material or return failure.
+    #[cfg(not(test))]
+    pub(crate) fn retire_native_material(
+        &mut self,
+        id: u64,
+        api: crate::fingerprint_native::Api,
+    ) -> Result<(), FingerprintSamplerError> {
+        let known_material =
+            self.has_native_material() || self.material.is_some() || self.ready.is_some();
+        if let Some(sample) = self.ready.as_mut() {
+            sample.return_material(id, api)?;
+        }
+        if let Some(material) = self.material.as_mut() {
+            let status = (api.material_return)(id, &mut material.native.owner);
+            if material.native.owner.is_null() {
+                material.native.descriptor = -1;
+            }
+            if status != 0 {
+                return Err(FingerprintSamplerError::NativeMaterial { status });
+            }
+            if !material.native.owner.is_null() {
+                return Err(FingerprintSamplerError::CaptureRetained);
+            }
+        }
+        if !self.native_material.is_null() {
+            let status = (api.material_return)(id, &mut self.native_material);
+            if status != 0 {
+                return Err(FingerprintSamplerError::NativeMaterial { status });
+            }
+            if !self.native_material.is_null() {
+                return Err(FingerprintSamplerError::CaptureRetained);
+            }
+        }
+        if self.output.device_fd >= 0 && !known_material {
+            return Err(FingerprintSamplerError::CaptureRetained);
+        }
+        self.output.device_fd = -1;
+        // SAFETY: all actual native owners have been returned, so these local
+        // read transcripts contain no live FD or Material/worker borrow.
+        unsafe {
+            ManuallyDrop::drop(&mut self.material);
+            ManuallyDrop::drop(&mut self.ready);
+        }
+        self.material = ManuallyDrop::new(None);
+        self.ready = ManuallyDrop::new(None);
+        Ok(())
     }
 
     #[cfg(test)]
@@ -95,11 +171,15 @@ impl PluginFingerprintSampling {
         // Native writes directly into the retained record. Its signed result is
         // saved before validation; a nonconforming negative FD stays raw unknown
         // debt, because the exporter transfers ownership only on success.
+        #[cfg(test)]
         let status = (self.capture)(&mut attempt.output);
+        #[cfg(not(test))]
+        let status = (self.capture)(&mut attempt.output, &mut attempt.native_material);
         attempt.native_status = Some(status);
         if status != 0 {
             return Err(attempt.refuse(FingerprintSamplerError::Capture { status }));
         }
+        #[cfg(test)]
         if attempt.output.device_fd >= 0 {
             // SAFETY: a successful export transfers its one device descriptor.
             let file = unsafe { File::from_raw_fd(attempt.output.device_fd) };
@@ -108,6 +188,18 @@ impl PluginFingerprintSampling {
                 material_length: attempt.output.device_material_length,
                 progress: MaterialDigestProgress::default(),
             });
+        }
+        #[cfg(not(test))]
+        if !attempt.native_material.is_null() && attempt.output.device_fd >= 0 {
+            *attempt.material = Some(CapturedFingerprintMaterial {
+                native: NativeCapturedMaterial {
+                    owner: attempt.native_material,
+                    descriptor: attempt.output.device_fd,
+                },
+                material_length: attempt.output.device_material_length,
+                progress: MaterialDigestProgress::default(),
+            });
+            attempt.native_material = std::ptr::null_mut();
         }
         if let Err(failure) = validate_capture_evidence(&attempt.output) {
             return Err(attempt.refuse(failure));

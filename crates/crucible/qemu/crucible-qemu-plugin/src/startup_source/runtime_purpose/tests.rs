@@ -54,6 +54,7 @@ extern "C" fn reserve(
     output: *mut *mut RuntimePurpose,
     claim: *mut *mut CommandClaim,
     child_claim: *mut *mut CallbackChildClaim,
+    worker_claim: *mut *mut WorkerClaim,
 ) -> i32 {
     CUTS.with_borrow_mut(|cuts| {
         cuts.calls.push("reserve");
@@ -66,6 +67,13 @@ extern "C" fn reserve(
                 output.write(std::ptr::without_provenance_mut(1));
                 claim.write(std::ptr::without_provenance_mut(2));
                 child_claim.write(std::ptr::without_provenance_mut(3));
+                if cuts
+                    .requests
+                    .as_ref()
+                    .is_some_and(|rows| rows.iter().any(|row| row.role == 3))
+                {
+                    worker_claim.write(std::ptr::without_provenance_mut(4));
+                }
             }
         }
         cuts.reserve_status
@@ -432,6 +440,15 @@ fn optional_control_is_an_actual_row_not_an_empty_serialized_placeholder() {
                 requests[crate::runtime::prebirth::CALLBACK_CHILD_ALLOCATION].role,
                 2
             );
+            assert_eq!(
+                requests.iter().filter(|request| request.role == 3).count(),
+                1
+            );
+            assert_eq!(
+                requests[crate::runtime::prebirth::WORKER_CONTROL_ALLOCATION].role,
+                3
+            );
+            assert_ne!(owner.runtime_reservation.worker_claim_address, 0);
             assert!(requests.iter().all(|request| request.reserved == 0));
             assert!(
                 requests

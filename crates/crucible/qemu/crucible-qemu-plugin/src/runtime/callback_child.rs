@@ -219,13 +219,6 @@ impl CallbackChild {
             reason: "callback-child execution activation and CPU use issuer are not issued",
         })
     }
-
-    /// Refuses the separate worker and complete creator/backing birth.
-    pub(super) fn worker_unavailable() -> LiveVcpuTimeCallbackError {
-        source_error(StartupSourceError::Ownership {
-            reason: "fingerprint worker creator and complete backing owner are not issued",
-        })
-    }
 }
 
 fn source_error(source: StartupSourceError) -> LiveVcpuTimeCallbackError {

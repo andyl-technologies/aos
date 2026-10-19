@@ -6,20 +6,20 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "3197c7e44c3bb6a98328a32e078226ea7f284b1b971c99f53934013057391d5c";
-  subject = "Integrate Crucible ownership and literal cleanup controls";
-  body = "Retain Source, checkpoint, parent Park and resident Root integration with\nversioned transport, physical custody journals and paid fixed storage.\nPreserve callback Original checks and ordered Native census disposition.\n\nKeep the canonical registration owner and its sole child pin held while\nNative proves terminal registration custody. Close admissions permanently,\nserialize return on the existing child latch, and release the Source mutex\nbefore Native revoke, current and terminal calls. Revalidate the exact held\nowner before consuming its holder and pin; preserve same-owner continuation\non refusal. Later child cleanup reobserves physical registry facts without\nquerying the consumed owner or resetting native_prepared.\n\nAuthenticate the Source-selected registry and held owner outside Native's\nmutex. Check every canonical group, member and legacy record, distinguish\nprepared-only and failed-before-binding attempts from registered history,\nand retain real module, descriptor, frame and borrower obligations.\n\nCompose the complete unchanged descriptor-terminal and module-release\nclosure into the registered Source fixture, including loader retirement\nbranches and its CFI annotation. Keep unavailable CPU and TCG endpoints\nfatal. Add actual descriptor placement and module-user return controls over\nexplicit modeled retained inputs. Corroborate cleanup account geometry\nwith the same decoded standing record. Preserve every existing assertion\nand bound, and refresh the unchanged literal-source fingerprint inventory.\n\nThe signed atomic commit has only the pinned upstream source base as parent.\nCompilation and runtime qualification remain separate. These component\ncontrols do not qualify initial Source activation, retirement scheduling,\nphysical destructor/free, launched VM lifecycle, an actor Original producer\nor a fork/thread transaction.";
-  commit = "3f8b4b8e36f599259b00092cb0c6067b2ae57b16";
-  tree = "883f7ac866056a01db372342feaf51bb0089c632";
+  sha256 = "fe52faedfdc2ad2f23515be96eb3ed80d9a0604dd8da370aa48616cba3c3971e";
+  subject = "Integrate Crucible native worker and retained material custody";
+  body = "Retain versioned Source, checkpoint, parent Park and resident Root\nintegration with physical custody journals and paid fixed storage. Preserve\ncallback Original checks, ordered Native disposition and canonical\nregistration cleanup joins, including decoded standing identity controls.\n\nAdd Source-owned worker and material custody through the runtime v6 roster,\nmatched installer exports and fixed typed storage. Retain physical birth\nbefore fallible constructor posts, distinguish entry, close, join and\nowning destruction, and preserve negative-return owners and independent\ncleanup status. Keep the bounded pthread stack separate from runtime\ncontrol and historical provider-backing reservations.\n\nCarry borrowed material outputs through capture v3 and retain actual\nidentity until explicit physical return. Adapt the observer and registered\nABI controls without introducing successful worker or lifecycle providers.\nKeep the diagnostic path independent; an unmatched native worker pipeline\nremains unsupported. Preserve existing assertions, limits and failures.\n\nReconstruct the real Source closure with its worker fragment and linked\nPOSIX provider, and refresh every affected direct and transitive source\nfingerprint. Preserve upstream attributes and per-file licenses.\n\nThis single signed integration commit has only the pinned upstream base as\nparent. Provider-backing completeness, activation, VM lifecycle, physical\ncleanup and performance remain unqualified by these artifacts. In\nparticular, instrumentation, module TLS/TSD/destructor behavior, early\nresolution failures and loader namespace changes remain provider-audit\nobligations; a numeric reserve is not proof of that closure.";
+  commit = "86656812f330296a24ee7e4ecf1e3d5a6861536b";
+  tree = "1f737d0492abfc93b1760fe15421ee2f773824c1";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
   capability = "one atomic, reconstructible QEMU 11.1.1 integration artifact provides the versioned Crucible plugin protocol, deterministic execution, exact checkpoint capture and restore, retained hot fork with asynchronous-worker quiescence, device fingerprints, and their build and test plumbing";
 
-  branchRef = "dplecki/cleanup-fixture-linkage";
+  branchRef = "dplecki/native-worker-integration";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "fe77fa79e7ea1bc791eaac4a083e614dbf8cbc6b61ed3438fdd11db627e8d28f";
+  bundleSha256 = "6a3a4e9dc868ec025272ce62702131cf06e637665299372b82378c4df7c5d727";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";

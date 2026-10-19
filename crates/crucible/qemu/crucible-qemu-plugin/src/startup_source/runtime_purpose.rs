@@ -28,6 +28,12 @@ pub(crate) struct CallbackChildClaim {
     _private: [u8; 0],
 }
 
+/// Names the separately issued once-only full worker-control allocation claim.
+#[repr(C)]
+pub(crate) struct WorkerClaim {
+    _private: [u8; 0],
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub(super) struct Request {
@@ -50,6 +56,7 @@ struct StoredAllocationRequest {
 const ROLE_ORDINARY: u32 = 0;
 const ROLE_COMMAND_BRIDGE: u32 = 1;
 const ROLE_CALLBACK_CHILD: u32 = 2;
+const ROLE_WORKER_CONTROL: u32 = 3;
 
 type Reserve = extern "C" fn(
     u64,
@@ -58,6 +65,7 @@ type Reserve = extern "C" fn(
     *mut *mut RuntimePurpose,
     *mut *mut CommandClaim,
     *mut *mut CallbackChildClaim,
+    *mut *mut WorkerClaim,
 ) -> i32;
 type Check = extern "C" fn(u64, *mut RuntimePurpose) -> i32;
 type Interrupt = extern "C" fn(u64, *mut RuntimePurpose, i32) -> i32;
@@ -87,6 +95,7 @@ pub(super) struct RuntimeReservation {
     purpose_address: usize,
     command_claim_address: usize,
     callback_child_claim_address: usize,
+    worker_claim_address: usize,
     check: Option<Check>,
     interrupt: Option<Interrupt>,
     observe_interrupt: Option<ObserveInterrupt>,
@@ -175,6 +184,8 @@ impl InstallerStartupSource {
                     ROLE_COMMAND_BRIDGE
                 } else if index == crate::runtime::prebirth::CALLBACK_CHILD_ALLOCATION {
                     ROLE_CALLBACK_CHILD
+                } else if index == crate::runtime::prebirth::WORKER_CONTROL_ALLOCATION {
+                    ROLE_WORKER_CONTROL
                 } else {
                     ROLE_ORDINARY
                 },
@@ -202,6 +213,7 @@ impl InstallerStartupSource {
         let mut purpose = std::ptr::null_mut();
         let mut claim = std::ptr::null_mut();
         let mut child_claim = std::ptr::null_mut();
+        let mut worker_claim = std::ptr::null_mut();
         let result = reserve(
             self.plugin_id,
             requests.as_ptr(),
@@ -209,9 +221,10 @@ impl InstallerStartupSource {
             &mut purpose,
             &mut claim,
             &mut child_claim,
+            &mut worker_claim,
         );
         if !purpose.is_null() {
-            // V5 publishes the real Source-owned holder and both claims before debit, allocator
+            // V6 publishes the real Source-owned holder and separate claims before debit, allocator
             // and independent post failures. Save it before the signed result.
             self.runtime_reservation.purpose_address = purpose as usize;
         }
@@ -221,8 +234,16 @@ impl InstallerStartupSource {
         if !child_claim.is_null() {
             self.runtime_reservation.callback_child_claim_address = child_claim as usize;
         }
+        if !worker_claim.is_null() {
+            self.runtime_reservation.worker_claim_address = worker_claim as usize;
+        }
         self.accept_status(result)?;
-        if purpose.is_null() || claim.is_null() || child_claim.is_null() {
+        if purpose.is_null()
+            || claim.is_null()
+            || child_claim.is_null()
+            || (layouts.len() > crate::runtime::prebirth::WORKER_CONTROL_ALLOCATION)
+                != !worker_claim.is_null()
+        {
             return Err(StartupSourceError::Ownership {
                 reason: "native runtime reservation returned no retained holder",
             });
@@ -269,6 +290,26 @@ impl InstallerStartupSource {
             self.plugin_id,
             self.runtime_reservation.purpose_address as *mut RuntimePurpose,
             self.runtime_reservation.callback_child_claim_address as *mut CallbackChildClaim,
+        ))
+    }
+
+    /// Borrows the actual once-issued optional worker claim before creation.
+    ///
+    /// # Errors
+    /// Refuses an absent configured worker, expired installer or missing custody.
+    pub(crate) fn fingerprint_worker_material(
+        &self,
+    ) -> Result<(u64, *mut RuntimePurpose, *mut WorkerClaim), StartupSourceError> {
+        self.check_runtime_installation()?;
+        if self.runtime_reservation.worker_claim_address == 0 {
+            return Err(StartupSourceError::Ownership {
+                reason: "fingerprint worker allocation claim is absent",
+            });
+        }
+        Ok((
+            self.plugin_id,
+            self.runtime_reservation.purpose_address as *mut RuntimePurpose,
+            self.runtime_reservation.worker_claim_address as *mut WorkerClaim,
         ))
     }
 
@@ -417,7 +458,7 @@ fn resolve() -> Result<(Reserve, Check, Interrupt, ObserveInterrupt), StartupSou
         }};
     }
     Ok((
-        resolve!(c"qemu_plugin_crucible_startup_runtime_reserve_v5", Reserve),
+        resolve!(c"qemu_plugin_crucible_startup_runtime_reserve_v6", Reserve),
         resolve!(c"qemu_plugin_crucible_startup_runtime_check_v3", Check),
         resolve!(
             c"qemu_plugin_crucible_startup_runtime_interrupt_v2",

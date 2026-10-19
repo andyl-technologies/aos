@@ -173,6 +173,14 @@ pub enum LiveVcpuTimeCallbackError {
         /// Same retained worker control with its initiating typed failure.
         source: super::FingerprintWorkerFailure,
     },
+    /// An owned module failure also encountered an independent Source scope failure.
+    #[error("fingerprint worker failed: {source}; Source control scope refused ({native_status})")]
+    FingerprintWorkerControlScope {
+        /// Actual owning worker failure, preserving its original typed cause.
+        source: super::fingerprint_worker::FingerprintWorkerFailure,
+        /// Independent signed Source failure after the module action returned.
+        native_status: i32,
+    },
     /// A mapped callback ring unexpectedly had no backing entries.
     #[error("mapped callback ring {ring_index} has no backing entries")]
     MappedDirectedRingEmpty {

@@ -25,6 +25,7 @@ The atomic integration patch creates these QEMU source files:
 | `include/qemu/crucible-device-workspace.h` | GPL-2.0-or-later | Explicit SPDX identifier; fixed workspace and original startup wire declarations |
 | `plugins/crucible-device-workspace.c` | GPL-2.0-or-later | Explicit SPDX identifier; bounded wire and sealed descriptor decoding |
 | `plugins/crucible-device-workspace.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier; Source-owned physical workspace mapping custody |
+| `plugins/crucible-fingerprint-worker.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier; Source-owned worker, material and physical byte custody |
 | `plugins/crucible-startup-source.c` | GPL-2.0-or-later | Explicit SPDX identifier; original installer deadline, cancellation, and retained custody |
 | `plugins/crucible-startup-source.h` | GPL-2.0-or-later | Explicit SPDX identifier; private native startup control declarations |
 | `tests/unit/extract-crucible-startup-source-controls.py` | GPL-2.0-or-later | Explicit SPDX identifier; literal production-body control extraction |

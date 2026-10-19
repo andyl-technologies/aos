@@ -60,9 +60,7 @@ use worker_quiescence::{
 
 #[cfg(test)]
 use live_callbacks::clear_live_callback_registration_for_test;
-pub use live_callbacks::{
-    FingerprintWorkerFailure, LiveDeviceCallbackError, LiveVcpuTimeCallbackError,
-};
+pub use live_callbacks::{FingerprintWorkerFailure, LiveDeviceCallbackError, LiveVcpuTimeCallbackError};
 use live_callbacks::{LiveVcpuTimeCallbackCapabilities, LiveVcpuTimeCallbackRegistrar};
 
 #[cfg(unix)]
@@ -381,6 +379,8 @@ pub(crate) struct OwnedCallbackRuntimeState {
     registration_owner: registration_owner::RegistrationOwner,
     registration_groups: registration_groups::RegistrationGroups,
     workspace_mapping: workspace_mapping::WorkspaceMapping,
+    #[cfg(not(test))]
+    fingerprint_worker_owner: live_callbacks::SourceWorkerOwner,
     original_userdata_retained: AtomicBool,
     owner_process: u32,
     workspace_disarmed: bool,
@@ -442,6 +442,8 @@ impl OwnedCallbackRuntimeState {
             registration_owner: registration_owner::RegistrationOwner::new(),
             registration_groups: registration_groups::RegistrationGroups::new(),
             workspace_mapping: workspace_mapping::WorkspaceMapping::new(),
+            #[cfg(not(test))]
+            fingerprint_worker_owner: live_callbacks::SourceWorkerOwner::new(),
             original_userdata_retained: AtomicBool::new(false),
             owner_process: std::process::id(),
             workspace_disarmed: false,
@@ -925,7 +927,7 @@ impl OwnedCallbackRuntimeState {
                 LiveVcpuTimeCallbackError::CallbackRegistrationOwner { source }
             })?;
 
-            if fingerprint.is_some() {
+            if let Some(sampling) = fingerprint {
                 // The whole keeper belongs to Runtime request0. Source's
                 // constructor consumes its actual optional role, then transfer
                 // binds this fixed field to the genuine completed child owner.
@@ -946,9 +948,59 @@ impl OwnedCallbackRuntimeState {
                         source: crate::DeviceDigestWorkspaceError::StartupSource { source },
                     }
                 })?;
-                // Physical current supplies no mutable bytes or worker creator.
-                // Those genuine operating/terminal producers remain required.
-                return Err(callback_child::CallbackChild::worker_unavailable());
+                let material = state
+                    .setup
+                    .fingerprint_worker_material()
+                    .map_err(|source| LiveVcpuTimeCallbackError::CallbackChildStorage { source })?;
+                let child_owner = state.registration_owner.native_projection()?;
+                let workspace = state
+                    .workspace_mapping
+                    .native_projection()
+                    .map_err(|source| LiveVcpuTimeCallbackError::DeviceDigestWorkspace {
+                        source,
+                    })?;
+                let slot = state
+                    .setup
+                    .mapped_region()
+                    .fingerprint_sample(slot_index)
+                    .map_err(|source| LiveVcpuTimeCallbackError::MappedFingerprintSlot {
+                        source,
+                    })?;
+                let slot = live_callbacks::StableFingerprintSlotHandle::new(slot);
+                // SAFETY: this actual worker keeper is part of the prepaid pinned
+                // Runtime. Source authenticates the same child/mapping and owns
+                // all stack/task/control outputs before its independent post.
+                let birth = unsafe {
+                    state.fingerprint_worker_owner.create(
+                        material,
+                        child_owner,
+                        workspace,
+                        slot,
+                        Arc::clone(&state.workers),
+                    )
+                };
+                let birth_post = state.setup.check_runtime_installation();
+                state
+                    .fingerprint_worker_owner
+                    .record_installation_post(birth_post);
+                birth?;
+                birth_post
+                    .map_err(|source| LiveVcpuTimeCallbackError::CallbackChildStorage { source })?;
+                state
+                    .fingerprint_worker_owner
+                    .wait_registered(|| state.setup.original_startup_slice())?;
+                // SAFETY: the genuine family loan lends the completed child only
+                // for this entered preparation. The worker's inputs and control
+                // are owned allocations, and no borrowed span escapes.
+                unsafe {
+                    state.callback_child.prepare_publication(|child| {
+                        child.attach_source_fingerprint(
+                            sampling,
+                            slot,
+                            state.fingerprint_worker_owner.take_worker()?,
+                        )
+                    })
+                }?;
             }
             Ok(PreparedLiveCallbacks {})
         }
@@ -1285,6 +1337,16 @@ impl Drop for RequiredOwnedCallbacksRegistered {
             // this physical subset, so retain its containing Runtime until reap.
             // Temporary span users close first; nominal owner return is still
             // blocked by real component/registrar/Native/material dependencies.
+            #[cfg(not(test))]
+            let fingerprint_return = state.fingerprint_worker_owner.identity_return();
+            #[cfg(not(test))]
+            if fingerprint_return.is_err() && !state.fingerprint_worker_owner.identity_is_returned()
+            {
+                return;
+            }
+            // Negative worker health remains retained independently of exact
+            // consumed identity. It cannot prevent the remaining physical owner
+            // returns once that worker no longer pins the child or workspace.
             if state.callback_child.close_publication().is_err() {
                 return;
             }
@@ -1345,6 +1407,11 @@ impl RequiredOwnedCallbacksRegistered {
                     |source| PluginRuntimeInstallError::FingerprintWorkerReadiness { source },
                 )?;
         }
+        #[cfg(not(test))]
+        state
+            .fingerprint_worker_owner
+            .check_registered()
+            .map_err(|source| PluginRuntimeInstallError::FingerprintWorkerReadiness { source })?;
         state
             .setup
             .check_original_startup()

@@ -108,6 +108,17 @@ impl RegistrationOwner {
         native_status((api.current)(self.id, self.observed))
     }
 
+    /// Returns only the checked nominal owner for Source's worker constructor.
+    ///
+    /// # Errors
+    /// Refuses absent or stale canonical custody; this lends no typed child.
+    pub(super) fn native_projection(
+        &self,
+    ) -> Result<*mut std::ffi::c_void, LiveVcpuTimeCallbackError> {
+        self.current()?;
+        Ok(self.observed.cast())
+    }
+
     pub(super) fn retained(&self) -> bool {
         self.attempted && !self.returned
     }

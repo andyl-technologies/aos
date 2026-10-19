@@ -1,38 +1,37 @@
-From 3f8b4b8e36f599259b00092cb0c6067b2ae57b16 Mon Sep 17 00:00:00 2001
+From 86656812f330296a24ee7e4ecf1e3d5a6861536b Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] Integrate Crucible ownership and literal cleanup controls
+Subject: [PATCH] Integrate Crucible native worker and retained material
+ custody
 
-Retain Source, checkpoint, parent Park and resident Root integration with
-versioned transport, physical custody journals and paid fixed storage.
-Preserve callback Original checks and ordered Native census disposition.
+Retain versioned Source, checkpoint, parent Park and resident Root
+integration with physical custody journals and paid fixed storage. Preserve
+callback Original checks, ordered Native disposition and canonical
+registration cleanup joins, including decoded standing identity controls.
 
-Keep the canonical registration owner and its sole child pin held while
-Native proves terminal registration custody. Close admissions permanently,
-serialize return on the existing child latch, and release the Source mutex
-before Native revoke, current and terminal calls. Revalidate the exact held
-owner before consuming its holder and pin; preserve same-owner continuation
-on refusal. Later child cleanup reobserves physical registry facts without
-querying the consumed owner or resetting native_prepared.
+Add Source-owned worker and material custody through the runtime v6 roster,
+matched installer exports and fixed typed storage. Retain physical birth
+before fallible constructor posts, distinguish entry, close, join and
+owning destruction, and preserve negative-return owners and independent
+cleanup status. Keep the bounded pthread stack separate from runtime
+control and historical provider-backing reservations.
 
-Authenticate the Source-selected registry and held owner outside Native's
-mutex. Check every canonical group, member and legacy record, distinguish
-prepared-only and failed-before-binding attempts from registered history,
-and retain real module, descriptor, frame and borrower obligations.
+Carry borrowed material outputs through capture v3 and retain actual
+identity until explicit physical return. Adapt the observer and registered
+ABI controls without introducing successful worker or lifecycle providers.
+Keep the diagnostic path independent; an unmatched native worker pipeline
+remains unsupported. Preserve existing assertions, limits and failures.
 
-Compose the complete unchanged descriptor-terminal and module-release
-closure into the registered Source fixture, including loader retirement
-branches and its CFI annotation. Keep unavailable CPU and TCG endpoints
-fatal. Add actual descriptor placement and module-user return controls over
-explicit modeled retained inputs. Corroborate cleanup account geometry
-with the same decoded standing record. Preserve every existing assertion
-and bound, and refresh the unchanged literal-source fingerprint inventory.
+Reconstruct the real Source closure with its worker fragment and linked
+POSIX provider, and refresh every affected direct and transitive source
+fingerprint. Preserve upstream attributes and per-file licenses.
 
-The signed atomic commit has only the pinned upstream source base as parent.
-Compilation and runtime qualification remain separate. These component
-controls do not qualify initial Source activation, retirement scheduling,
-physical destructor/free, launched VM lifecycle, an actor Original producer
-or a fork/thread transaction.
+This single signed integration commit has only the pinned upstream base as
+parent. Provider-backing completeness, activation, VM lifecycle, physical
+cleanup and performance remain unqualified by these artifacts. In
+particular, instrumentation, module TLS/TSD/destructor behavior, early
+resolution failures and loader namespace changes remain provider-audit
+obligations; a numeric reserve is not proof of that closure.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -64560,7 +64559,7 @@ index 890497b0d22ede109c03bcc24fbc3aa24b09e59c..5dd867c2d765690a2644af92a6520b8b
  
  int monitor_puts(Monitor *mon, const char *str);
 diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
-index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..a7b922a177cb8f54999b44277e4e75b8893b3d58 100644
+index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..5e295bb0c4361f770108107706e7bc6d760b81f7 100644
 --- a/include/plugins/qemu-plugin.h
 +++ b/include/plugins/qemu-plugin.h
 @@ -198,6 +198,326 @@ typedef void (*qemu_plugin_vcpu_discon_cb_t)(unsigned int vcpu_index,
@@ -67327,7 +67326,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..a7b922a177cb8f54999b44277e4e75b8
  
  /**
   * qemu_plugin_u64_set() - set value of a qemu_plugin_u64 for a given vcpu
-@@ -1353,15 +3225,3164 @@ uint64_t qemu_plugin_u64_get(qemu_plugin_u64 entry, unsigned int vcpu_index);
+@@ -1353,15 +3225,3378 @@ uint64_t qemu_plugin_u64_get(qemu_plugin_u64 entry, unsigned int vcpu_index);
   * @val: new value
   */
  QEMU_PLUGIN_API
@@ -68074,10 +68073,34 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..a7b922a177cb8f54999b44277e4e75b8
 +struct QemuCrucibleCallbackChildRequest;
 +struct QemuCrucibleCallbackChildStorage;
 +
-+/* Only reserve_v5 admits the paired Bridge and callback-child roles before birth.
++/* Only reserve_v6 admits the paired Bridge and callback-child roles before birth.
 + * The request span remains the genuine runtime_request_v4 schema.
 + */
 +#define QEMU_CRUCIBLE_RUNTIME_ROLE_CALLBACK_CHILD 2U
++#define QEMU_CRUCIBLE_RUNTIME_ROLE_WORKER_CONTROL 3U
++
++struct QemuCrucibleFingerprintWorkerClaim;
++struct QemuCrucibleFingerprintWorker;
++struct QemuCrucibleFingerprintWorkerFrame;
++struct QemuCrucibleFingerprintWork;
++struct QemuCrucibleFingerprintMaterial;
++struct QemuCrucibleCallbackChildOwner;
++struct QemuCrucibleDeviceWorkspaceMapping;
++struct QemuCrucibleFingerprintOperation;
++
++/* Exported by the matched installer as
++ * qemu_plugin_crucible_fingerprint_worker_layout_v1. The control geometry is
++ * the complete language-owned allocation, including shared header and padding.
++ * Stack backing is independent. Entry performs no per-work heap allocation.
++ * This descriptor describes a constructor; it does not qualify activation.
++ */
++struct qemu_plugin_crucible_fingerprint_worker_layout_v1 {
++    uint32_t schema_version;
++    uint32_t struct_size;
++    uint64_t control_bytes;
++    uint64_t control_alignment;
++    uint64_t stack_bytes;
++};
 +
 +/* Native Source journal facts only; no address or typed-body reference. Complete
 + * initialization, prefix rollback and destruction are exposed only after the
@@ -68120,12 +68143,201 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..a7b922a177cb8f54999b44277e4e75b8
 + * retain each after negative status. No role or size input creates new credit.
 + */
 +QEMU_PLUGIN_API
-+int qemu_plugin_crucible_startup_runtime_reserve_v5(
++int qemu_plugin_crucible_startup_runtime_reserve_v6(
 +    qemu_plugin_id_t id,
 +    const struct qemu_plugin_crucible_runtime_request_v4 *requests,
 +    size_t count, qemu_plugin_crucible_runtime_purpose_v3 **out,
 +    struct QemuCrucibleCommandConsumerRequest **bridge_claim,
-+    struct QemuCrucibleCallbackChildRequest **child_claim);
++    struct QemuCrucibleCallbackChildRequest **child_claim,
++    struct QemuCrucibleFingerprintWorkerClaim **worker_claim);
++
++/* Resolves layout, construct, entry, close, control and destroy from the retained
++ * installer. Symbol suffixes are _fingerprint_worker_{construct,entry,module_close,
++ * module_control,destroy}_v1, prefixed qemu_plugin_crucible. Source supplies the
++ * entered frame; synchronous_input is never retained. Born outputs survive
++ * negative posts.
++ * construct(id, frame, input) performs one ordinary fallible full allocation,
++ * acknowledging attempt, actual result and complete initialization below.
++ * entry(id, worker, owner) runs solely on the actual born pthread.
++ * module_close(id, worker, owner) runs once outside Source locks after admission closes.
++ * module_control(id, worker, owner, input) runs in a synchronous lifetime scope.
++ * destroy(id, frame, owning_field) performs a genuine uniqueness preflight,
++ * acknowledges destroy_begin immediately before physical owning drop, and calls
++ * destroyed only after every language-owned alias terminates and final drop
++ * returns. Source never manufactures a language-private allocation header.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_fingerprint_worker_create_v1(
++    qemu_plugin_id_t id, qemu_plugin_crucible_runtime_purpose_v3 *runtime,
++    struct QemuCrucibleFingerprintWorkerClaim *claim,
++    struct QemuCrucibleCallbackChildOwner *child,
++    struct QemuCrucibleDeviceWorkspaceMapping *workspace,
++    void *synchronous_input, struct QemuCrucibleFingerprintWorker **out);
++
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_fingerprint_worker_allocation_begin_v1(
++    struct QemuCrucibleFingerprintWorkerFrame *frame);
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_fingerprint_worker_allocation_result_v1(
++    struct QemuCrucibleFingerprintWorkerFrame *frame,
++    void *allocation, void *owning_alias);
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_fingerprint_worker_initialized_v1(
++    struct QemuCrucibleFingerprintWorkerFrame *frame);
++/* Acknowledges the first physical owning drop in the actual entered destructor
++ * frame, after a real uniqueness check excludes both aliases and weak upgrades.
++ * A strong-count sample alone is insufficient. Once begun, physical destruction
++ * never repeats, including negative or uncertain callback return. Native gates
++ * establish custody only; the matched module supplies atomic language-owned
++ * uniqueness (for example, Arc::get_mut), including weak-upgrade exclusion. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_fingerprint_worker_destroy_begin_v1(
++    struct QemuCrucibleFingerprintWorkerFrame *frame);
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_fingerprint_worker_destroyed_v1(
++    struct QemuCrucibleFingerprintWorkerFrame *frame);
++
++/* Invokes only the fixed matched module_control callback outside Source locks.
++ * Actual control users pin the canonical owner until the callback returns, even
++ * on negative status. Input is synchronous and never retained by Source. The
++ * thunk catches unwinding and permits no borrowed body reference, guard or
++ * untracked weak-upgrade capability to escape. Genuine owning failure handles
++ * may return as owned results; final atomic uniqueness refuses while such
++ * aliases remain. These actual owners must be retained until they end.
++ * A returned result and a negative native status are independent: retain both.
++ * These scopes issue no Main/Root, time, progress, or memory grant.
++ * Ordinary use refuses after closing. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_fingerprint_worker_control_use_v1(
++    qemu_plugin_id_t id, struct QemuCrucibleFingerprintWorker *worker,
++    void *synchronous_input);
++/* Requires actual Main and completed native close; keeps the same lifetime-only
++ * callback scope for terminal cleanup before physical destruction begins. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_fingerprint_worker_control_retire_v1(
++    qemu_plugin_id_t id, struct QemuCrucibleFingerprintWorker *worker,
++    void *synchronous_input);
++
++/* Main lends the actual retained material operation and whole workspace.
++ * No worker may borrow Main/Root authority. Operation return is blocked until
++ * the actual worker returns bytes and Main consumes its material loan.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_fingerprint_worker_submit_v1(
++    qemu_plugin_id_t id, struct QemuCrucibleFingerprintWorker *worker,
++    struct QemuCrucibleFingerprintMaterial *material,
++    struct QemuCrucibleFingerprintWork **out);
++/* Waits for a fresh queued byte loan or returns -ESHUTDOWN after close.
++ * Completed prior work waits for Main's actual return and next submission.
++ * Incoming projection/address/length are NULL/NULL/0 after the prior borrow
++ * ends; a condition wake never starts an operation or grants a time slice. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_fingerprint_worker_take_v1(
++    struct QemuCrucibleFingerprintWorker *worker,
++    struct QemuCrucibleFingerprintWork **out, void **bytes, size_t *length);
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_fingerprint_worker_complete_v1(
++    struct QemuCrucibleFingerprintWorker *worker,
++    struct QemuCrucibleFingerprintWork **work, int result);
++/* Checks the SAME admitted material child operation from its actual worker
++ * byte borrower. Output reports a bounded slice; this never enters Main/Root.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_fingerprint_worker_material_current_v1(
++    struct QemuCrucibleFingerprintWorker *worker,
++    struct QemuCrucibleFingerprintWork *work, uint64_t *bounded_ns);
++
++struct qemu_plugin_crucible_fingerprint_material_read_v1 {
++    uint64_t offset;
++    uint64_t bytes_read;
++    int32_t read_status;
++    int32_t post_status;
++    uint32_t attempted;
++    uint32_t eof;
++};
++
++/* Performs the actual retained-material read into its exclusive workspace.
++ * Positive bytes and offset remain observable on a negative post; the actual
++ * read advances material progress. No retry replays consumed bytes. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_fingerprint_worker_material_read_v1(
++    struct QemuCrucibleFingerprintWorker *worker,
++    struct QemuCrucibleFingerprintWork *work, size_t requested,
++    struct qemu_plugin_crucible_fingerprint_material_read_v1 *out);
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_fingerprint_worker_work_return_v1(
++    qemu_plugin_id_t id, struct QemuCrucibleFingerprintWork **work,
++    int *result);
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_fingerprint_worker_close_v1(
++    qemu_plugin_id_t id, struct QemuCrucibleFingerprintWorker *worker);
++/* Nonblocking physical join and matched final-owner destruction. Physical
++ * result is journaled separately from deadline posts. No residual/TLS debit
++ * is refunded. Stack debit returns only after actual successful munmap.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_fingerprint_worker_tryjoin_v1(
++    qemu_plugin_id_t id, struct QemuCrucibleFingerprintWorker *worker);
++
++struct qemu_plugin_crucible_fingerprint_worker_status_v1 {
++    uint32_t schema_version;
++    uint32_t struct_size;
++    int32_t first_status;
++    int32_t post_status;
++    int32_t create_status;
++    int32_t mask_restore_status;
++    int32_t attr_destroy_status;
++    int32_t entry_status;
++    int32_t join_status;
++    int32_t unmap_status;
++    uint64_t residual_bytes;
++    uint64_t births_reserved;
++    uint32_t born;
++    uint32_t initialized;
++    uint32_t closing;
++    uint32_t entry_returned;
++    uint32_t joined;
++    uint32_t destroyed;
++    uint32_t physical_returned;
++    uint32_t material_held;
++    uint32_t bytes_held;
++    uint64_t control_users;
++    uint64_t destruction_calls;
++    /* First nonzero actual control callback/return-consistency status.
++     * Pre-admission refusal records no callback and does not change health. */
++    int32_t control_status;
++    /* Actual return of the most recent destructor preflight/drop callback. */
++    int32_t destructor_status;
++    /* First nonzero native status that made physical destruction uncertain.
++     * Retryable, unchanged-owner preflight refusal does not set this field. */
++    int32_t destruction_first_status;
++    uint32_t destruction_active;
++    uint32_t destruction_returned;
++    uint32_t destruction_begun;
++    uint32_t destruction_uncertain;
++};
++
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_fingerprint_worker_observe_v1(
++    qemu_plugin_id_t id, struct QemuCrucibleFingerprintWorker *worker,
++    struct qemu_plugin_crucible_fingerprint_worker_status_v1 *out);
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_fingerprint_worker_transfer_v1(
++    qemu_plugin_id_t id, struct QemuCrucibleFingerprintWorker **projection,
++    struct QemuCrucibleFingerprintWorker **runtime_field);
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_fingerprint_worker_identity_return_v1(
++    qemu_plugin_id_t id, struct QemuCrucibleFingerprintWorker **holder);
++
++/* Identity-only material retirement after queue/hash/publication/ACK users
++ * have returned. No new Root, clock or semantic result is inferred. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_fingerprint_material_return_v1(
++    qemu_plugin_id_t id, struct QemuCrucibleFingerprintMaterial **holder);
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_fingerprint_material_current_v1(
++    qemu_plugin_id_t id, struct QemuCrucibleFingerprintMaterial *material,
++    uint64_t *bounded_ns);
 +
 +/* Consumes the genuine child claim once from the same already-admitted roster,
 + * retaining the actual initialized Bridge parent without moving its owner or
@@ -70086,8 +70298,9 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..a7b922a177cb8f54999b44277e4e75b8
 +    uint64_t generation, uint64_t owner_token, uint32_t commit);
 +
 +QEMU_PLUGIN_API
-+int qemu_plugin_crucible_capture_fingerprint_v2(
-+    struct qemu_plugin_crucible_fingerprint_v2 *out);
++int qemu_plugin_crucible_capture_fingerprint_v3(
++    struct qemu_plugin_crucible_fingerprint_v2 *out,
++    struct QemuCrucibleFingerprintMaterial **material);
 +
 +typedef int (*qemu_plugin_crucible_ram_restore_prepare_cb_v1)(
 +    const uint8_t *root_record, size_t root_length,
@@ -75983,7 +76196,7 @@ index 758808b705e4b0bbbda1988c377f010ae179d3e1..bece818ef45e7be1e9c7dfcacfd5e3bf
  
  /*
 diff --git a/include/qemu/thread.h b/include/qemu/thread.h
-index 98cc5c41ac58e0cac5c60aa23de849e88ff676be..95a4cf8728546835dd6f8cf09c34ffc636ebf612 100644
+index 98cc5c41ac58e0cac5c60aa23de849e88ff676be..ad33c077d7c45c302d6e6d05112166e298a08594 100644
 --- a/include/qemu/thread.h
 +++ b/include/qemu/thread.h
 @@ -9,6 +9,7 @@ typedef struct QemuCond QemuCond;
@@ -75994,7 +76207,7 @@ index 98cc5c41ac58e0cac5c60aa23de849e88ff676be..95a4cf8728546835dd6f8cf09c34ffc6
  
  /*
   * QemuEvent
-@@ -218,6 +219,362 @@ G_NORETURN void qemu_thread_exit(void *retval);
+@@ -218,6 +219,374 @@ G_NORETURN void qemu_thread_exit(void *retval);
  void qemu_thread_set_name(const char *name);
  const char *qemu_thread_get_name(void);
  
@@ -76008,9 +76221,21 @@ index 98cc5c41ac58e0cac5c60aa23de849e88ff676be..95a4cf8728546835dd6f8cf09c34ffc6
 +
 +/* Joinable thread on an already retained stack mapping. Failure before birth
 + * returns a negative errno. A born thread and its stack remain caller-owned. */
++typedef struct QemuThreadBoundedCreateReceipt {
++    bool birth_attempted;
++    bool born;
++    /* All status fields use zero or negative errno. first_status records the
++     * constructor's primary result; cleanup statuses remain independent. */
++    int first_status;
++    int create_status;
++    int mask_restore_status;
++    int attr_destroy_status;
++} QemuThreadBoundedCreateReceipt;
++
 +int qemu_thread_create_bounded(QemuThread *thread, const char *name,
 +                              void *(*entry)(void *), void *opaque,
-+                              void *stack, size_t stack_bytes);
++                              void *stack, size_t stack_bytes,
++                              QemuThreadBoundedCreateReceipt *receipt);
 +
 +/* Linux nonblocking physical join; output is unchanged while not joined. */
 +int qemu_thread_tryjoin(QemuThread *thread, void **result);
@@ -96917,10 +97142,10 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..eac2943ee0da6cfcf026c2d0d1451d06
 +    qemu_mutex_unlock(&qemu_plugin_crucible_virtual_timer_witness_lock);
 +}
 diff --git a/plugins/api.c b/plugins/api.c
-index eb982f9aad7f564314654723e70a5fd679c5256f..bf2432d05ca6588a734c24e874a6cb7682416874 100644
+index eb982f9aad7f564314654723e70a5fd679c5256f..85c4815c26d5c15c3a40d25747b2f9148526ebd7 100644
 --- a/plugins/api.c
 +++ b/plugins/api.c
-@@ -36,14 +36,34 @@
+@@ -36,14 +36,35 @@
   */
  
  #include "qemu/osdep.h"
@@ -96932,6 +97157,7 @@ index eb982f9aad7f564314654723e70a5fd679c5256f..bf2432d05ca6588a734c24e874a6cb76
 +#include "qemu/crucible-hot-fork-plugin.h"
 +#include "qemu/crucible-fault.h"
 +#include "qemu/crucible-paged-ram.h"
++#include "crucible-startup-source.h"
 +#include "qemu/error-report.h"
  #include "qemu/log.h"
  #include "system/memory.h"
@@ -96955,7 +97181,7 @@ index eb982f9aad7f564314654723e70a5fd679c5256f..bf2432d05ca6588a734c24e874a6cb76
  #include "exec/target_page.h"
  #include "exec/translation-block.h"
  #include "exec/translator.h"
-@@ -75,7 +95,10 @@ void qemu_plugin_register_vcpu_init_cb(qemu_plugin_id_t id,
+@@ -75,7 +96,10 @@ void qemu_plugin_register_vcpu_init_cb(qemu_plugin_id_t id,
                                         qemu_plugin_vcpu_udata_cb_t cb,
                                         void *userdata)
  {
@@ -96967,7 +97193,7 @@ index eb982f9aad7f564314654723e70a5fd679c5256f..bf2432d05ca6588a734c24e874a6cb76
  }
  
  void qemu_plugin_register_vcpu_exit_cb(qemu_plugin_id_t id,
-@@ -200,6 +223,10 @@ void qemu_plugin_register_vcpu_tb_trans_cb(qemu_plugin_id_t id,
+@@ -200,6 +224,10 @@ void qemu_plugin_register_vcpu_tb_trans_cb(qemu_plugin_id_t id,
                                             void *userdata)
  {
      plugin_register_cb_udata(id, QEMU_PLUGIN_EV_VCPU_TB_TRANS, cb, userdata);
@@ -96978,7 +97204,7 @@ index eb982f9aad7f564314654723e70a5fd679c5256f..bf2432d05ca6588a734c24e874a6cb76
  }
  
  void qemu_plugin_register_vcpu_syscall_cb(qemu_plugin_id_t id,
-@@ -528,6 +555,48 @@ bool qemu_plugin_read_memory_vaddr(uint64_t addr, GByteArray *data, size_t len)
+@@ -528,6 +556,48 @@ bool qemu_plugin_read_memory_vaddr(uint64_t addr, GByteArray *data, size_t len)
      return true;
  }
  
@@ -97027,7 +97253,7 @@ index eb982f9aad7f564314654723e70a5fd679c5256f..bf2432d05ca6588a734c24e874a6cb76
  bool qemu_plugin_write_memory_vaddr(uint64_t addr, GByteArray *data)
  {
      g_assert(current_cpu);
-@@ -642,6 +711,778 @@ bool qemu_plugin_translate_vaddr(uint64_t vaddr, uint64_t *hwaddr)
+@@ -642,6 +712,796 @@ bool qemu_plugin_translate_vaddr(uint64_t vaddr, uint64_t *hwaddr)
  #endif
  }
  
@@ -97575,8 +97801,9 @@ index eb982f9aad7f564314654723e70a5fd679c5256f..bf2432d05ca6588a734c24e874a6cb76
 +           qemu_plugin_crucible_vmstop_quiesced();
 +}
 +
-+int qemu_plugin_crucible_capture_fingerprint_v2(
-+    struct qemu_plugin_crucible_fingerprint_v2 *out)
++int qemu_plugin_crucible_capture_fingerprint_v3(
++    struct qemu_plugin_crucible_fingerprint_v2 *out,
++    QemuCrucibleFingerprintMaterial **material)
 +{
 +    QIOChannelFile *device_channel = NULL;
 +    QEMUFile *file = NULL;
@@ -97593,7 +97820,7 @@ index eb982f9aad7f564314654723e70a5fd679c5256f..bf2432d05ca6588a734c24e874a6cb76
 +    int close_status;
 +    int status = 0;
 +
-+    if (!out) {
++    if (!out || !material || *material) {
 +        return -EINVAL;
 +    }
 +    memset(out, 0, sizeof(*out));
@@ -97612,6 +97839,13 @@ index eb982f9aad7f564314654723e70a5fd679c5256f..bf2432d05ca6588a734c24e874a6cb76
 +        !crucible_fingerprint_runstate_admitted() ||
 +        replay_mode != REPLAY_MODE_NONE) {
 +        return -EPERM;
++    }
++    status = qemu_crucible_fingerprint_material_capture_begin_v1(material);
++    if (status) {
++        if (*material) {
++            qemu_crucible_fingerprint_material_capture_end_v1(*material, -1, 0, status);
++        }
++        return status;
 +    }
 +    status = qemu_crucible_ram_root(0, out->ram_digest, &out->ram_bytes);
 +    if (status == 0 && out->ram_bytes == 0) {
@@ -97773,6 +98007,14 @@ index eb982f9aad7f564314654723e70a5fd679c5256f..bf2432d05ca6588a734c24e874a6cb76
 +    if (device_writer_fd >= 0) {
 +        close(device_writer_fd);
 +    }
++    if (*material) {
++        int material_post = qemu_crucible_fingerprint_material_capture_end_v1(
++            *material, out->device_fd, out->device_material_length, status);
++
++        if (!status) {
++            status = material_post;
++        }
++    }
 +    if (status != 0) {
 +        if (local_err) {
 +            error_prepend(&local_err, "%s: ", failure_stage);
@@ -97781,11 +98023,13 @@ index eb982f9aad7f564314654723e70a5fd679c5256f..bf2432d05ca6588a734c24e874a6cb76
 +            error_report("%s failed: %s (%d)", failure_stage,
 +                         strerror(-status), status);
 +        }
-+        if (out->device_fd >= 0) {
++        if (!*material && out->device_fd >= 0) {
 +            close(out->device_fd);
 +        }
-+        memset(out, 0, sizeof(*out));
-+        out->device_fd = -1;
++        if (!*material) {
++            memset(out, 0, sizeof(*out));
++            out->device_fd = -1;
++        }
 +    }
 +    return status;
 +}
@@ -97806,7 +98050,7 @@ index eb982f9aad7f564314654723e70a5fd679c5256f..bf2432d05ca6588a734c24e874a6cb76
  struct qemu_plugin_scoreboard *qemu_plugin_scoreboard_new(size_t element_size)
  {
      return plugin_scoreboard_new(element_size);
-@@ -694,4 +1535,3 @@ uint64_t qemu_plugin_u64_sum(qemu_plugin_u64 entry)
+@@ -694,4 +1554,3 @@ uint64_t qemu_plugin_u64_sum(qemu_plugin_u64 entry)
      }
      return total;
  }
@@ -109381,10 +109625,10 @@ index 0000000000000000000000000000000000000000..c5d72e44f3e70eb0308a023cac30c14a
 +}
 diff --git a/plugins/crucible-device-workspace.inc.h b/plugins/crucible-device-workspace.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..24042c17d8e82badd9b58c7eb076628f979454e2
+index 0000000000000000000000000000000000000000..7dd6f769a21fccf1e6b0905afe2a6b630101a62c
 --- /dev/null
 +++ b/plugins/crucible-device-workspace.inc.h
-@@ -0,0 +1,374 @@
+@@ -0,0 +1,409 @@
 +/*
 + * Source-owned mapping of the distinct prepaid workspace role
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -109595,18 +109839,37 @@ index 0000000000000000000000000000000000000000..24042c17d8e82badd9b58c7eb076628f
 +#ifdef CONFIG_LINUX
 +    QemuCrucibleDeviceWorkspaceMapping *mapping = &startup_source.workspace_mapping;
 +    bool unmap = false;
++    bool commands_locked = qatomic_load_acquire(&startup_source.commands.initialized);
 +    int status = workspace_mapping_identity(mapping);
 +
 +    if (status || id != startup_source.saved.plugin_id || !holder) {
 +        return status ? status : -EPERM;
 +    }
++    if (commands_locked) {
++        qemu_mutex_lock(&startup_source.commands.mutex);
++    }
 +    qemu_mutex_lock(&mapping->mutex);
 +    if (mapping->transition_active) {
 +        status = -EBUSY;
 +    } else if (mapping->transferred) {
-+        /* Actual worker/material and exclusive digest borrowers are not yet
-+         * issued. A transferred Runtime field needs their real terminal join. */
-+        status = -ENOKEY;
++        QemuCrucibleFingerprintWorker *worker = &startup_source.fingerprint_worker;
++
++        /* A worker's real control owner, physical pthread and byte/material
++         * loans all pin this original mapping. Geometry never selects a
++         * worker, and the absence of a producer remains refusal. */
++        if (!worker->attempted || !worker->physical_returned || worker->pins_held ||
++            mapping->worker || startup_source.fingerprint_material.held ||
++            mapping->holder != holder || *holder != mapping ||
++            !mapping->child_owner || !mapping->child_owner->workspace_users) {
++            status = -EBUSY;
++        } else {
++            mapping->transition_active = true;
++            mapping->closing = true;
++            if (mapping->mapped && !mapping->unmap_attempted) {
++                mapping->unmap_attempted = true;
++                unmap = true;
++            }
++        }
 +    } else if (mapping->holder != &mapping->creation_owner ||
 +               mapping->creation_owner != mapping || *holder != mapping) {
 +        status = -ESTALE;
@@ -109623,6 +109886,9 @@ index 0000000000000000000000000000000000000000..24042c17d8e82badd9b58c7eb076628f
 +        }
 +    }
 +    qemu_mutex_unlock(&mapping->mutex);
++    if (commands_locked) {
++        qemu_mutex_unlock(&startup_source.commands.mutex);
++    }
 +    if (status) {
 +        return status;
 +    }
@@ -109643,11 +109909,21 @@ index 0000000000000000000000000000000000000000..24042c17d8e82badd9b58c7eb076628f
 +        status = qemu_crucible_preexec_workspace_identity_return_v1(
 +            &startup_source.workspace_role);
 +    }
++    if (commands_locked) {
++        qemu_mutex_lock(&startup_source.commands.mutex);
++    }
 +    qemu_mutex_lock(&mapping->mutex);
 +    mapping->return_status = status;
 +    if (!status && mapping->physical_returned && !startup_source.workspace_role &&
-+        mapping->holder == &mapping->creation_owner &&
-+        mapping->creation_owner == mapping && *holder == mapping) {
++        *holder == mapping &&
++        ((mapping->holder == &mapping->creation_owner &&
++          mapping->creation_owner == mapping) || mapping->holder == holder)) {
++        if (mapping->transferred) {
++            /* Return runs on the original Source owner after every worker
++             * borrower joins. No child return can race this final field. */
++            mapping->child_owner->workspace_users--;
++            mapping->child_owner = NULL;
++        }
 +        *holder = NULL;
 +        mapping->creation_owner = NULL;
 +        mapping->holder = NULL;
@@ -109655,6 +109931,9 @@ index 0000000000000000000000000000000000000000..24042c17d8e82badd9b58c7eb076628f
 +    }
 +    mapping->transition_active = false;
 +    qemu_mutex_unlock(&mapping->mutex);
++    if (commands_locked) {
++        qemu_mutex_unlock(&startup_source.commands.mutex);
++    }
 +    return status;
 +#else
 +    return -ENOTSUP;
@@ -147491,6 +147770,1603 @@ index 0000000000000000000000000000000000000000..69dba27cb08fa26f74d985c06994aef4
 +}
 +
 +type_init(crucible_fault_register_abi_handlers)
+diff --git a/plugins/crucible-fingerprint-worker.inc.h b/plugins/crucible-fingerprint-worker.inc.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..b625b5cc1ecc1a60c6a135707ed1f038db8efb8b
+--- /dev/null
++++ b/plugins/crucible-fingerprint-worker.inc.h
+@@ -0,0 +1,1591 @@
++/*
++ * Source-owned fingerprint worker construction and physical byte custody
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#ifdef CONFIG_LINUX
++#include <link.h>
++#ifdef __GLIBC__
++#include <gnu/libc-version.h>
++#endif
++
++static int fingerprint_worker_identity(QemuCrucibleFingerprintWorker *worker)
++{
++    if (worker != &startup_source.fingerprint_worker || !worker->attempted ||
++        !worker->pins_held || getpid() != startup_source.owner_process ||
++        !qatomic_load_acquire(&startup_source.module_custody_published) ||
++        worker->installer.ctx != startup_source.saved.ctx ||
++        worker->installer.module != startup_source.saved.module ||
++        worker->installer.install != startup_source.saved.install ||
++        worker->runtime != &startup_source.runtime_purpose ||
++        worker->child != &startup_source.callbacks.owner ||
++        worker->workspace != &startup_source.workspace_mapping ||
++        worker->workspace->worker != worker ||
++        worker->claim != &startup_source.worker_claim || !worker->claim->consumed) {
++        return -EPERM;
++    }
++    return 0;
++}
++
++static int fingerprint_worker_post(QemuCrucibleFingerprintWorker *worker)
++{
++    uint64_t descriptor_limit;
++    int status = qemu_crucible_preexec_contract_check_v3(
++        startup_source.preexec_purpose_owner,
++        &worker->observation,
++        &descriptor_limit);
++
++    if (status && !worker->post_status) {
++        worker->post_status = status;
++    }
++    return status;
++}
++
++static int fingerprint_worker_holder_identity_locked(QemuCrucibleFingerprintWorker *worker)
++{
++    uintptr_t field;
++    int status = fingerprint_worker_identity(worker);
++
++    if (status) {
++        return status;
++    }
++    status = callback_child_owner_identity_locked(worker->child);
++    if (status) {
++        return status;
++    }
++    if (worker->holder == &worker->creation_owner) {
++        return worker->creation_owner == worker ? 0 : -ESTALE;
++    }
++    field = (uintptr_t)worker->holder;
++    if (!worker->holder || worker->creation_owner ||
++        worker->runtime_base != worker->child->runtime_base ||
++        worker->runtime_extent != worker->child->runtime_extent ||
++        !worker->runtime_base || worker->runtime_extent < sizeof(*worker->holder) ||
++        worker->runtime_extent > UINTPTR_MAX - worker->runtime_base ||
++        field < worker->runtime_base || field % _Alignof(QemuCrucibleFingerprintWorker *) ||
++        field - worker->runtime_base > worker->runtime_extent - sizeof(*worker->holder) ||
++        *worker->holder != worker) {
++        return -ESTALE;
++    }
++    return 0;
++}
++
++static bool fingerprint_worker_same_module(void *symbol)
++{
++    Dl_info actual, installer;
++
++    return symbol && dladdr(symbol, &actual) &&
++        dladdr((void *)startup_source.saved.install, &installer) &&
++        actual.dli_fbase == installer.dli_fbase;
++}
++
++static int fingerprint_worker_resolve(QemuCrucibleFingerprintWorker *worker)
++{
++    const struct qemu_plugin_crucible_fingerprint_worker_layout_v1 *layout;
++    gpointer symbol;
++
++#define RESOLVE_WORKER(member, suffix)                                      \
++    do {                                                                  \
++        if (!g_module_symbol(worker->installer.module,                     \
++              "qemu_plugin_crucible_fingerprint_worker_" suffix "_v1",     \
++              &symbol) || !fingerprint_worker_same_module(symbol)) {       \
++            return -ELIBBAD;                                               \
++        }                                                                 \
++        worker->member = (__typeof__(worker->member))symbol;                \
++    } while (0)
++
++    RESOLVE_WORKER(construct, "construct");
++    RESOLVE_WORKER(entry, "entry");
++    RESOLVE_WORKER(close, "module_close");
++    RESOLVE_WORKER(control, "module_control");
++    RESOLVE_WORKER(destroy, "destroy");
++#undef RESOLVE_WORKER
++
++    if (!g_module_symbol(worker->installer.module,
++            "qemu_plugin_crucible_fingerprint_worker_layout_v1", &symbol) ||
++        !fingerprint_worker_same_module(symbol)) {
++        return -ELIBBAD;
++    }
++    layout = symbol;
++    if (layout->schema_version != 1 || layout->struct_size != sizeof(*layout) ||
++        layout->control_bytes != worker->claim->request->extent ||
++        layout->control_alignment != worker->claim->request->alignment ||
++        !layout->stack_bytes || layout->stack_bytes > SIZE_MAX) {
++        return -ESTALE;
++    }
++    worker->layout = *layout;
++    return 0;
++}
++
++typedef struct FingerprintTlsInventory {
++    uint64_t bytes;
++    uint64_t modules;
++    uint64_t max_modid;
++    uint64_t maximum_alignment;
++    int status;
++} FingerprintTlsInventory;
++
++static bool fingerprint_worker_add(uint64_t *total, uint64_t bytes)
++{
++    if (bytes > UINT64_MAX - *total) {
++        return false;
++    }
++    *total += bytes;
++    return true;
++}
++
++static int fingerprint_worker_tls(struct dl_phdr_info *info, size_t bytes,
++                                  void *opaque)
++{
++    FingerprintTlsInventory *inventory = opaque;
++
++    if (bytes < offsetof(struct dl_phdr_info, dlpi_tls_data) +
++                sizeof(info->dlpi_tls_data)) {
++        inventory->status = -ENOTSUP;
++        return 1;
++    }
++    /* A retired highest module id could leave a larger DTV namespace than
++     * the current PT_TLS roster exposes. This cohort retains every module. */
++    if (info->dlpi_subs) {
++        inventory->status = -ENOTSUP;
++        return 1;
++    }
++    inventory->max_modid = MAX(inventory->max_modid, info->dlpi_tls_modid);
++    for (size_t index = 0; index < info->dlpi_phnum; index++) {
++        const ElfW(Phdr) *header = &info->dlpi_phdr[index];
++        uint64_t alignment;
++
++        if (header->p_type != PT_TLS) {
++            continue;
++        }
++        alignment = MAX(header->p_align, 1);
++        if ((alignment & (alignment - 1)) ||
++            !fingerprint_worker_add(&inventory->bytes, header->p_memsz) ||
++            !fingerprint_worker_add(&inventory->bytes, alignment) ||
++            inventory->modules == UINT64_MAX) {
++            inventory->status = -EOVERFLOW;
++            return 1;
++        }
++        inventory->maximum_alignment = MAX(inventory->maximum_alignment, alignment);
++        inventory->modules++;
++    }
++    return 0;
++}
++
++static int fingerprint_worker_policy_read(QemuCrucibleFingerprintWorker *worker,
++                                           const char *path, char *bytes, size_t capacity)
++{
++    ssize_t length;
++    int status = 0;
++
++    if (worker->policy_descriptor >= 0 || worker->policy_close_uncertain) {
++        return -EBUSY;
++    }
++    worker->policy_descriptor = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
++    if (worker->policy_descriptor < 0) {
++        return -errno;
++    }
++    length = read(worker->policy_descriptor, bytes, capacity - 1);
++    if (length < 0) {
++        status = -errno;
++    } else if (!length || length == capacity - 1) {
++        status = -EOVERFLOW;
++    } else {
++        bytes[length] = 0;
++    }
++    if (close(worker->policy_descriptor) < 0) {
++        worker->policy_close_uncertain = true;
++        return status ? status : -errno;
++    }
++    worker->policy_descriptor = -1;
++    return status;
++}
++
++static int fingerprint_worker_allocator_policy(QemuCrucibleFingerprintWorker *worker)
++{
++#ifdef __GLIBC__
++    Dl_info allocator, libc;
++    char policy[128];
++    char *end;
++    uint64_t hugepage;
++    int status;
++
++    if (strcmp(gnu_get_libc_version(), "2.42") ||
++        !dladdr((void *)malloc, &allocator) ||
++        !dladdr((void *)gnu_get_libc_version, &libc) ||
++        allocator.dli_fbase != libc.dli_fbase) {
++        return -ENOTSUP;
++    }
++    for (char **environment = environ; *environment; environment++) {
++        if (g_str_has_prefix(*environment, "MALLOC_") ||
++            g_str_has_prefix(*environment, "GLIBC_TUNABLES=") ||
++            g_str_has_prefix(*environment, "LD_PRELOAD=") ||
++            g_str_has_prefix(*environment, "LD_AUDIT=")) {
++            return -ENOTSUP;
++        }
++    }
++    status = fingerprint_worker_policy_read(worker,
++        "/sys/kernel/mm/transparent_hugepage/enabled", policy, sizeof(policy));
++    if (status == -ENOENT) {
++        /* Kernel without THP support; base-page commitment applies. */
++        return 0;
++    }
++    if (status) {
++        return status;
++    }
++    if (strstr(policy, "[never]") || strstr(policy, "[madvise]")) {
++        return 0;
++    }
++    if (!strstr(policy, "[always]")) {
++        return -ENOTSUP;
++    }
++    /* Default glibc does not request hugetlb. For system-wide THP promotion,
++     * derive physical rounding from the actual kernel PMD size. The Source
++     * stack separately opts out on its own mapping; no global policy changes. */
++    status = fingerprint_worker_policy_read(worker,
++        "/sys/kernel/mm/transparent_hugepage/hpage_pmd_size", policy, sizeof(policy));
++    if (status) {
++        return status;
++    }
++    errno = 0;
++    hugepage = strtoull(policy, &end, 10);
++    if (errno || end == policy || (*end && strcmp(end, "\n")) ||
++        !hugepage || (hugepage & (hugepage - 1))) {
++        return -EPROTO;
++    }
++    worker->backing_page_bytes = MAX(worker->backing_page_bytes, hugepage);
++    return 0;
++#else
++    return -ENOTSUP;
++#endif
++}
++
++/* Audited against glibc-2.42 malloc/{malloc,arena}.c, elf/dl-tunables.list
++ * and elf/dl-tls.c. These are committed-backing allowances, not the 64MiB
++ * PROT_NONE arena address reservation. Default top_pad is 128KiB; a new heap
++ * has a 32KiB minimum (also exceeding this build's heap_info + malloc_state +
++ * chunk headers). mmap-as-morecore has a 1MiB minimum. Two pages cover initial
++ * rounding and secondary brk alignment. Summing all three overbounds each
++ * allocation path, including a failed attempt followed by arena retry.
++ *
++ * The cohort has exactly one control allocation, four QEMU allocations
++ * (arguments, name, registry record and list cell), DTV, tcache, and at most
++ * one dynamic TLS allocation per loaded TLS module. Entry/job APIs allocate
++ * nothing. This reserve is historical: free, entry exit and join never refund
++ * allocator arenas, caches or TLS history. memory.max remains enforcement.
++ * https://sourceware.org/git/?p=glibc.git;a=tree;hb=glibc-2.42
++ */
++static int fingerprint_worker_backing(QemuCrucibleFingerprintWorker *worker)
++{
++    FingerprintTlsInventory inventory = { 0 };
++    uint64_t page, minimum, requests, entries, per_entry, residual;
++    long queried_page = sysconf(_SC_PAGESIZE);
++    long queried_minimum = sysconf(_SC_THREAD_STACK_MIN);
++    int status;
++
++    worker->backing_page_bytes = queried_page > 0 ? queried_page : 0;
++    status = fingerprint_worker_allocator_policy(worker);
++
++    if (status || sizeof(void *) != 8 || queried_page <= 0 || queried_minimum <= 0) {
++        return status ? status : -ENOTSUP;
++    }
++    /* No mallopt or allocator substitution is permitted in this matched
++     * constructor/entry cohort. Reject loader/tunable changes rather than
++     * changing global allocator policy to fit an assumed bound. */
++    dl_iterate_phdr(fingerprint_worker_tls, &inventory);
++    if (inventory.status) {
++        return inventory.status;
++    }
++    page = queried_page;
++    minimum = queried_minimum;
++    if ((page & (page - 1)) ||
++        !fingerprint_worker_add(&minimum, inventory.bytes) ||
++        !fingerprint_worker_add(&minimum, inventory.maximum_alignment) ||
++        worker->layout.stack_bytes < minimum || worker->layout.stack_bytes % page) {
++        return -EINVAL;
++    }
++    /* allocatestack.c places the TCB and static TLS in the user mapping.
++     * The native minimum additionally covers the pinned TCB/static surplus;
++     * dynamic TLS is separately overcounted below to avoid claiming free TLS.
++     * DTV consists of two-pointer entries, max_modid + DTV_SURPLUS(14) + 2.
++     * tcache has 64 small + 12 large bins, each uint16_t and one pointer. */
++    if (inventory.max_modid > UINT64_MAX / (2 * sizeof(void *)) - 16) {
++        return -EOVERFLOW;
++    }
++    /* The complete WORKER_CONTROL request was already debited by the runtime
++     * roster. This additional reserve pays allocator alignment/backing, not
++     * that same language-owned storage a second time. */
++    requests = worker->layout.control_alignment;
++    if (!fingerprint_worker_add(&requests, qemu_thread_bounded_control_bytes(
++            sizeof("crucible-fprint"))) ||
++        !fingerprint_worker_add(&requests,
++            (inventory.max_modid + 16) * 2 * sizeof(void *)) ||
++        !fingerprint_worker_add(&requests, 76 * (sizeof(uint16_t) + sizeof(void *))) ||
++        !fingerprint_worker_add(&requests, inventory.bytes)) {
++        return -EOVERFLOW;
++    }
++    entries = inventory.modules;
++    if (!fingerprint_worker_add(&entries, 7)) {
++        return -EOVERFLOW;
++    }
++    per_entry = 32768 + 131072 + 1048576;
++    if (worker->backing_page_bytes > UINT64_MAX / 3 ||
++        !fingerprint_worker_add(&per_entry, 3 * worker->backing_page_bytes) ||
++        entries > UINT64_MAX / per_entry) {
++        return -EOVERFLOW;
++    }
++    residual = entries * per_entry;
++    if (!fingerprint_worker_add(&residual, requests)) {
++        return -EOVERFLOW;
++    }
++    worker->tls_bytes = inventory.bytes;
++    worker->tls_modules = inventory.modules;
++    worker->tls_max_modid = inventory.max_modid;
++    worker->residual_bytes = residual;
++    return 0;
++}
++
++static int fingerprint_worker_frame(QemuCrucibleFingerprintWorkerFrame *frame,
++                                     bool destroying)
++{
++    QemuCrucibleFingerprintWorker *worker = &startup_source.fingerprint_worker;
++
++    if (frame != &worker->frame || frame->worker != worker || !frame->entered ||
++        frame->destroying != destroying || !qemu_thread_is_self(&frame->thread)) {
++        return -EPERM;
++    }
++    return fingerprint_worker_identity(worker);
++}
++
++int qemu_plugin_crucible_fingerprint_worker_allocation_begin_v1(
++    QemuCrucibleFingerprintWorkerFrame *frame)
++{
++    int status = fingerprint_worker_frame(frame, false);
++
++    if (status) {
++        return status;
++    }
++    if (frame->worker->allocation_attempted) {
++        return -EALREADY;
++    }
++    frame->worker->allocation_attempted = true;
++    return 0;
++}
++
++int qemu_plugin_crucible_fingerprint_worker_allocation_result_v1(
++    QemuCrucibleFingerprintWorkerFrame *frame, void *allocation, void *owning_alias)
++{
++    int status = fingerprint_worker_frame(frame, false);
++    QemuCrucibleFingerprintWorker *worker;
++
++    if (status) {
++        return status;
++    }
++    worker = frame->worker;
++    if (!worker->allocation_attempted || worker->allocation_returned ||
++        (!!allocation != !!owning_alias) ||
++        (allocation && (uintptr_t)allocation % worker->layout.control_alignment)) {
++        return -EINVAL;
++    }
++    /* Save actual owning custody before any independent post can refuse. */
++    worker->allocation = allocation;
++    worker->owning_alias = owning_alias;
++    worker->allocation_returned = true;
++    return 0;
++}
++
++int qemu_plugin_crucible_fingerprint_worker_initialized_v1(
++    QemuCrucibleFingerprintWorkerFrame *frame)
++{
++    int status = fingerprint_worker_frame(frame, false);
++
++    if (status) {
++        return status;
++    }
++    if (!frame->worker->allocation_returned || !frame->worker->owning_alias ||
++        frame->worker->initialized) {
++        return -EINVAL;
++    }
++    frame->worker->initialized = true;
++    return 0;
++}
++
++int qemu_plugin_crucible_fingerprint_worker_destroyed_v1(
++    QemuCrucibleFingerprintWorkerFrame *frame)
++{
++    int status = fingerprint_worker_frame(frame, true);
++
++    if (status) {
++        return status;
++    }
++    qemu_mutex_lock(&startup_source.commands.mutex);
++    if (!frame->worker->destroy_attempted || !frame->worker->destruction_active ||
++        frame->worker->owning_alias || frame->worker->destroyed) {
++        status = -EINVAL;
++    } else {
++        frame->worker->destroyed = true;
++    }
++    qemu_mutex_unlock(&startup_source.commands.mutex);
++    return status;
++}
++
++int qemu_plugin_crucible_fingerprint_worker_destroy_begin_v1(
++    QemuCrucibleFingerprintWorkerFrame *frame)
++{
++    QemuCrucibleFingerprintWorker *worker;
++    int status = fingerprint_worker_frame(frame, true);
++
++    if (status) {
++        return status;
++    }
++    worker = frame->worker;
++    qemu_mutex_lock(&startup_source.commands.mutex);
++    status = fingerprint_worker_holder_identity_locked(worker);
++    if (!status && (worker->destroy_attempted || worker->destroyed)) {
++        status = -EALREADY;
++    }
++    if (!status && (!worker->destruction_active || !worker->transition_active ||
++        worker->destruction_uncertain || !worker->closing || worker->control_users ||
++        (worker->birth.born && !worker->joined) ||
++        (worker->initialized && (!worker->close_attempted || !worker->close_returned)) ||
++        !worker->owning_alias || worker->owning_alias != worker->destruction_alias ||
++        startup_source.fingerprint_material.held || worker->work.material_held ||
++        worker->work.bytes_held)) {
++        status = -EBUSY;
++    }
++    if (!status) {
++        /* Only the entered module, after its real uniqueness/upgrade
++         * exclusion, may begin the once-only physical owning drop. */
++        worker->destroy_attempted = true;
++    }
++    qemu_mutex_unlock(&startup_source.commands.mutex);
++    return status;
++}
++
++static int fingerprint_worker_control_scope(qemu_plugin_id_t id,
++    QemuCrucibleFingerprintWorker *worker, void *synchronous_input, bool terminal)
++{
++    void *owning_alias = NULL;
++    int status;
++
++    if (worker != &startup_source.fingerprint_worker ||
++        !qatomic_load_acquire(&startup_source.module_custody_published) ||
++        !qatomic_load_acquire(&startup_source.commands.initialized) ||
++        getpid() != startup_source.owner_process ||
++        id != startup_source.saved.plugin_id ||
++        (terminal && (!qemu_in_main_thread() || !startup_owner()))) {
++        return -EPERM;
++    }
++    qemu_mutex_lock(&startup_source.commands.mutex);
++    status = fingerprint_worker_holder_identity_locked(worker);
++    if (!status && (worker->transition_active || worker->destroy_attempted ||
++        worker->destruction_active || worker->destruction_uncertain || worker->destroyed)) {
++        status = -EBUSY;
++    }
++    if (!status && ((!terminal && worker->closing) ||
++        (terminal && (!worker->closing || !worker->close_attempted ||
++                      !worker->close_returned)))) {
++        status = -ESHUTDOWN;
++    }
++    if (!status && (!worker->initialized || !worker->construction_returned ||
++        !worker->owning_alias || !worker->control)) {
++        status = -ENOKEY;
++    }
++    if (!status && worker->control_users == UINT64_MAX) {
++        status = -EOVERFLOW;
++    }
++    if (!status) {
++        worker->control_users++;
++        owning_alias = worker->owning_alias;
++    }
++    qemu_mutex_unlock(&startup_source.commands.mutex);
++    if (status) {
++        return status;
++    }
++
++    SOURCE_CALLBACK_MASKED_INVOKE(status, &worker->control, worker->control,
++        synchronous_input, id, worker, owning_alias, synchronous_input);
++    if (status > 0) {
++        status = -EPROTO;
++    }
++    qemu_mutex_lock(&startup_source.commands.mutex);
++    /* Actual callback return ends this physical use even on a negative
++     * result. No result/custody written through input is discarded here. */
++    if (!worker->control_users) {
++        status = status ? status : -EPROTO;
++    } else {
++        worker->control_users--;
++    }
++    if (fingerprint_worker_holder_identity_locked(worker) ||
++        worker->owning_alias != owning_alias || worker->destroy_attempted) {
++        status = status ? status : -EPROTO;
++    }
++    /* A later successful scope can perform physical cleanup, but cannot
++     * erase the first actual callback/protocol failure or restore health. */
++    if (status && !worker->control_status) {
++        worker->control_status = status;
++    }
++    if (status && !worker->first_status) {
++        worker->first_status = status;
++    }
++    qemu_cond_broadcast(&worker->wake);
++    qemu_mutex_unlock(&startup_source.commands.mutex);
++    return status;
++}
++
++int qemu_plugin_crucible_fingerprint_worker_control_use_v1(
++    qemu_plugin_id_t id, QemuCrucibleFingerprintWorker *worker,
++    void *synchronous_input)
++{
++    return fingerprint_worker_control_scope(id, worker, synchronous_input, false);
++}
++
++int qemu_plugin_crucible_fingerprint_worker_control_retire_v1(
++    qemu_plugin_id_t id, QemuCrucibleFingerprintWorker *worker,
++    void *synchronous_input)
++{
++    return fingerprint_worker_control_scope(id, worker, synchronous_input, true);
++}
++
++static void *fingerprint_worker_entry(void *opaque)
++{
++    QemuCrucibleFingerprintWorker *worker = opaque;
++    QemuCrucibleCommandConsumerRegistry *commands = &startup_source.commands;
++    int status = -ECANCELED;
++
++    qemu_mutex_lock(&commands->mutex);
++    while (!worker->entry_released) {
++        qemu_cond_wait(&worker->wake, &commands->mutex);
++    }
++    if (worker->birth.born && qemu_thread_is_self(&worker->thread) &&
++        worker->entry_allowed && !worker->closing && worker->initialized &&
++        worker->owning_alias && !fingerprint_worker_identity(worker)) {
++        worker->entry_entered = true;
++        qemu_mutex_unlock(&commands->mutex);
++        SOURCE_CALLBACK_MASKED_INVOKE(status, worker, worker->entry,
++            worker->owning_alias, worker->installer.plugin_id, worker,
++            worker->owning_alias);
++        qemu_mutex_lock(&commands->mutex);
++    }
++    worker->entry_status = status;
++    worker->entry_returned = true;
++    worker->entry_allowed = false;
++    qemu_cond_broadcast(&worker->wake);
++    qemu_mutex_unlock(&commands->mutex);
++    return NULL;
++}
++
++int qemu_plugin_crucible_fingerprint_worker_create_v1(
++    qemu_plugin_id_t id, QemuCrucibleStartupRuntimePurpose *runtime,
++    QemuCrucibleFingerprintWorkerClaim *claim, QemuCrucibleCallbackChildOwner *child,
++    QemuCrucibleDeviceWorkspaceMapping *workspace, void *synchronous_input,
++    QemuCrucibleFingerprintWorker **out)
++{
++    QemuCrucibleFingerprintWorker *worker = &startup_source.fingerprint_worker;
++    QemuCrucibleCommandConsumerRegistry *commands = &startup_source.commands;
++    int status = command_registry_identity(id);
++
++    if (status || !startup_invocation(id) || !out || *out ||
++        callback_child_output_overlap(out, sizeof(*out), &startup_source,
++                                      sizeof(startup_source))) {
++        return status ? status : -EPERM;
++    }
++    status = startup_runtime_admission(id, runtime);
++    if (status) {
++        return status;
++    }
++    qemu_mutex_lock(&commands->mutex);
++    if (worker->attempted || claim != &startup_source.worker_claim ||
++        !claim->issued || claim->consumed || claim->runtime != runtime ||
++        claim->request_index >= runtime->configured_count ||
++        claim->request != &runtime->configured_requests[claim->request_index] ||
++        child != &startup_source.callbacks.owner ||
++        workspace != &startup_source.workspace_mapping) {
++        status = -EPERM;
++    } else {
++        status = callback_registration_owner_live_locked(child);
++    }
++    if (!status) {
++        qemu_mutex_lock(&workspace->mutex);
++        if (!workspace->held || !workspace->transferred || !workspace->mapped ||
++            !workspace->dontfork || workspace->closing || workspace->worker ||
++            workspace->child_owner != child || workspace->runtime != runtime ||
++            workspace->transition_active || !workspace->holder ||
++            *workspace->holder != workspace || child->component_users == UINT64_MAX ||
++            child->child->physical_users == UINT64_MAX) {
++            status = -EBUSY;
++        } else {
++            claim->consumed = true;
++            *worker = (QemuCrucibleFingerprintWorker) {
++                .claim = claim, .installer = startup_source.saved,
++                .runtime = runtime, .child = child, .workspace = workspace,
++                .observation.descriptor = -1,
++                .policy_descriptor = -1,
++                .attempted = true, .pins_held = true, .transition_active = true,
++            };
++            worker->frame.worker = worker;
++            worker->work.worker = worker;
++            worker->creation_owner = worker;
++            worker->holder = &worker->creation_owner;
++            worker->runtime_base = child->runtime_base;
++            worker->runtime_extent = child->runtime_extent;
++            workspace->worker = worker;
++            child->component_users++;
++            child->child->physical_users++;
++            *out = worker;
++        }
++        qemu_mutex_unlock(&workspace->mutex);
++    }
++    qemu_mutex_unlock(&commands->mutex);
++    if (status) {
++        return status;
++    }
++    qemu_cond_init(&worker->wake);
++    status = fingerprint_worker_resolve(worker);
++    if (!status) {
++        status = fingerprint_worker_backing(worker);
++    }
++    if (!status) {
++        status = crucible_metadata_native_admit(&startup_source.metadata_partition,
++            worker->residual_bytes, &worker->residual_charge);
++    }
++    if (!status) {
++        worker->frame.entered = true;
++        qemu_thread_get_self(&worker->frame.thread);
++        SOURCE_CALLBACK_MASKED_INVOKE(status, &worker->frame, worker->construct,
++            synchronous_input, id, &worker->frame, synchronous_input);
++        worker->frame.entered = false;
++        worker->construction_returned = true;
++        if (!worker->allocation_attempted || !worker->allocation_returned ||
++            (worker->owning_alias && !worker->initialized)) {
++            status = status ? status : -EPROTO;
++        } else if (!worker->owning_alias) {
++            status = status ? status : -ENOMEM;
++        }
++    }
++    if (!status) {
++        status = startup_runtime_admission(id, runtime);
++    }
++    if (!status) {
++        status = crucible_metadata_native_admit(&startup_source.metadata_partition,
++            worker->layout.stack_bytes, &worker->stack_charge);
++    }
++    if (!status) {
++        worker->stack = mmap(NULL, worker->layout.stack_bytes,
++            PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
++        if (worker->stack == MAP_FAILED) {
++            worker->stack = NULL;
++            status = -errno;
++        } else if (madvise(worker->stack, worker->layout.stack_bytes,
++                           MADV_DONTFORK) < 0) {
++            status = -errno;
++        } else if (madvise(worker->stack, worker->layout.stack_bytes,
++                           MADV_NOHUGEPAGE) < 0) {
++            status = -errno;
++        }
++    }
++    if (!status) {
++        status = startup_task_reserve(&worker->task_reserved);
++    }
++    if (!status) {
++        status = qemu_thread_create_bounded(&worker->thread, "crucible-fprint",
++            fingerprint_worker_entry, worker, worker->stack,
++            worker->layout.stack_bytes, &worker->birth);
++        if (!worker->birth.born) {
++            startup_task_physical_return(&worker->task_reserved);
++        }
++    }
++    worker->first_status = status;
++    /* Physical custody and born receipt are already retained before post. */
++    fingerprint_worker_post(worker);
++    qemu_mutex_lock(&commands->mutex);
++    worker->entry_allowed = !worker->first_status && !worker->post_status;
++    worker->entry_released = true;
++    worker->transition_active = false;
++    qemu_cond_broadcast(&worker->wake);
++    qemu_mutex_unlock(&commands->mutex);
++    return worker->first_status ? worker->first_status : worker->post_status;
++}
++
++static int fingerprint_material_identity(QemuCrucibleFingerprintMaterial *material)
++{
++    return material == &startup_source.fingerprint_material && material->held &&
++        material->operation.process == getpid() &&
++        material->installer.module == startup_source.saved.module &&
++        material->installer.ctx == startup_source.saved.ctx &&
++        material->installer.install == startup_source.saved.install &&
++        material->worker == &startup_source.fingerprint_worker &&
++        material->worker->pins_held ? 0 : -EPERM;
++}
++
++static bool fingerprint_material_root_returned(QemuCrucibleFingerprintMaterial *material)
++{
++    return material->root_attached && material->root_returned &&
++        (material->operation.class_index == QEMU_CRUCIBLE_STANDING_INITIALIZATION_CLASS ||
++         material->operation.class_index == QEMU_CRUCIBLE_STANDING_UPDATE_CLASS);
++}
++
++/* Actual Main and worker paths choose their own fixed cursor. Neither takes
++ * a Source lock across I/O or borrows the other actor's invocation authority.
++ * This records an independent observation; current() also applies sticky first. */
++static int fingerprint_material_observe(QemuCrucibleFingerprintMaterial *material,
++    QemuCrucibleFingerprintMaterialObserver *observer, uint64_t *bounded_ns)
++{
++    struct QemuCrucibleFingerprintOperation *operation = &material->operation;
++    QemuCrucibleStandingRecord observed;
++    const QemuCrucibleStandingBudget *admitted, *current;
++    struct pollfd cancellation;
++    uint64_t now, sequence, slice, progress_ns;
++    uint32_t first_class = QEMU_CRUCIBLE_STANDING_CLASS_COUNT;
++    uint32_t last_class = QEMU_CRUCIBLE_STANDING_CLASS_COUNT;
++    int cancellation_fd = -1;
++    int status = fingerprint_material_identity(material);
++
++    if (status) {
++        return status;
++    }
++    if (!((observer == &material->main_observer && qemu_in_main_thread() &&
++           qemu_thread_is_self(&operation->thread)) ||
++          (observer == &material->worker_observer &&
++           qemu_thread_is_self(&material->worker->thread) &&
++           material->worker->entry_entered && !material->worker->entry_returned))) {
++        return -EPERM;
++    }
++    status = qemu_crucible_preexec_standing_identity_v1(
++        startup_source.standing.lender, &observer->observation, &cancellation_fd);
++    if (!status) {
++        status = qemu_crucible_preexec_standing_snapshot_v1(
++            startup_source.standing.lender, observer->snapshot, &sequence);
++    }
++    if (!status) {
++        status = qemu_crucible_standing_record_decode_v3(
++            observer->snapshot, sizeof(observer->snapshot), &observed);
++    }
++    if (!status) {
++        status = standing_subject_current(&observed);
++    }
++    if (!status) {
++        status = standing_action_snapshot_validate(
++            &observer->current.action, &observed.action, sequence);
++    }
++    if (!status) {
++        status = standing_park_snapshot_validate(
++            &observer->current.park, &observed.park, sequence);
++    }
++    if (!status && (sequence < observer->sequence ||
++        observed.outer_revision < observer->current.outer_revision ||
++        observed.roster_revision < observer->current.roster_revision ||
++        (observer->current.state && observed.state != observer->current.state) ||
++        (observed.outer_revision == observer->current.outer_revision &&
++         (observed.outer_allowance_present != observer->current.outer_allowance_present ||
++          observed.outer_allowance_ns != observer->current.outer_allowance_ns)) ||
++        (observed.roster_revision == observer->current.roster_revision &&
++         !standing_roster_equal(&observed, &observer->current)))) {
++        status = -ESTALE;
++    }
++    if (!status) {
++        status = standing_roster_finite(&observed);
++    }
++    if (!status) {
++        /* Load published physical progress before sampling this observer's
++         * clock. A later worker update cannot create a future timestamp in
++         * this observation or underflow its elapsed-progress calculation. */
++        progress_ns = qatomic_load_acquire(&operation->progress_ns);
++        status = standing_clock(&now);
++    }
++    if (!status && (now < observer->last_now_ns || now < progress_ns)) {
++        status = -ESTALE;
++    }
++    if (!status) {
++        observer->last_now_ns = now;
++        observer->current = observed;
++        observer->sequence = sequence;
++        status = standing_limits_current(&observed, now);
++    }
++    if (!status) {
++        status = standing_limits_current(&operation->admitted, now);
++    }
++    if (!status) {
++        cancellation = (struct pollfd) { .fd = cancellation_fd, .events = POLLIN };
++        int polled = poll(&cancellation, 1, 0);
++
++        if (polled < 0) {
++            status = -errno;
++        } else if (polled || cancellation.revents) {
++            status = -ECANCELED;
++        }
++    }
++    if (!status) {
++        if (operation->class_index == UINT32_MAX && material->capture_entered &&
++            !material->root_attached) {
++            /* Before Root selects its actual class, aggregate work pays both
++             * admissible class budgets from the original child birth. */
++            first_class = QEMU_CRUCIBLE_STANDING_INITIALIZATION_CLASS;
++            last_class = QEMU_CRUCIBLE_STANDING_UPDATE_CLASS;
++        } else if (material->root_attached &&
++            (operation->class_index == QEMU_CRUCIBLE_STANDING_INITIALIZATION_CLASS ||
++             operation->class_index == QEMU_CRUCIBLE_STANDING_UPDATE_CLASS)) {
++            first_class = operation->class_index;
++            last_class = operation->class_index;
++        } else {
++            status = -EPROTO;
++        }
++        if (!status && (first_class > last_class ||
++                       last_class >= QEMU_CRUCIBLE_STANDING_CLASS_COUNT)) {
++            status = -EPROTO;
++        }
++    }
++    if (!status) {
++        slice = UINT64_MAX;
++        for (uint32_t class_index = first_class; class_index <= last_class; class_index++) {
++            admitted = &operation->admitted.budgets[class_index];
++            current = &observed.budgets[class_index];
++            slice = MIN(slice, MIN(admitted->poll_ns, current->poll_ns));
++            standing_slice_budget(now - operation->start_ns, admitted->total_present,
++                                  admitted->total_ns, &slice);
++            standing_slice_budget(now - progress_ns, admitted->progress_present,
++                                  admitted->progress_ns, &slice);
++            standing_slice_budget(now - operation->start_ns, current->total_present,
++                                  current->total_ns, &slice);
++            standing_slice_budget(now - progress_ns, current->progress_present,
++                                  current->progress_ns, &slice);
++        }
++        standing_slice_budget(now - operation->admitted.origin_ns,
++                              operation->admitted.outer_allowance_present,
++                              operation->admitted.outer_allowance_ns, &slice);
++        standing_slice_budget(now - observed.origin_ns, observed.outer_allowance_present,
++                              observed.outer_allowance_ns, &slice);
++        if (!slice) {
++            status = -ETIMEDOUT;
++        } else if (bounded_ns) {
++            *bounded_ns = slice;
++        }
++    }
++    if (status) {
++        qatomic_cmpxchg(&material->first_status, 0, status);
++    }
++    return status;
++}
++
++static int fingerprint_material_current(QemuCrucibleFingerprintMaterial *material,
++    QemuCrucibleFingerprintMaterialObserver *observer, uint64_t *bounded_ns)
++{
++    uint64_t slice;
++    int status = fingerprint_material_identity(material);
++    int first;
++
++    if (status) {
++        return status;
++    }
++    status = fingerprint_material_observe(material, observer, &slice);
++    first = qatomic_load_acquire(&material->first_status);
++    if (first || status) {
++        return first ? first : status;
++    }
++    if (bounded_ns) {
++        *bounded_ns = slice;
++    }
++    return 0;
++}
++
++int qemu_crucible_fingerprint_material_capture_begin_v1(
++    QemuCrucibleFingerprintMaterial **out)
++{
++    QemuCrucibleFingerprintMaterial *material = &startup_source.fingerprint_material;
++    QemuCrucibleFingerprintWorker *worker = &startup_source.fingerprint_worker;
++    qemu_plugin_id_t id;
++    uint64_t now;
++    int status;
++
++    if (!out || *out || !qemu_in_main_thread() || !bql_locked() || current_cpu ||
++        !qemu_plugin_crucible_control_boundary_active() ||
++        !qemu_plugin_crucible_exact_boundary_active()) {
++        return -EPERM;
++    }
++    if (!startup_source.worker_claim.issued) {
++        return 0;
++    }
++    if (material->held || fingerprint_worker_identity(worker) || worker->closing ||
++        !worker->entry_allowed || worker->transition_active) {
++        return -EBUSY;
++    }
++    status = qemu_crucible_startup_source_fingerprint_root_creator_v1(&id);
++    if (!status) {
++        status = standing_boundary();
++    }
++    if (!status) {
++        status = standing_clock(&now);
++    }
++    if (!status) {
++        status = standing_limits_current(&startup_source.standing.current, now);
++    }
++    if (status) {
++        return status;
++    }
++    if (startup_source.standing.operation_serial == UINT64_MAX) {
++        return -EOVERFLOW;
++    }
++    startup_source.standing.operation_serial++;
++    *material = (QemuCrucibleFingerprintMaterial) {
++        .operation = {
++            .process = getpid(), .plugin_id = id,
++            .serial = startup_source.standing.operation_serial,
++            .class_index = UINT32_MAX,
++            .start_ns = now, .progress_ns = now, .last_now_ns = now,
++            .admitted = startup_source.standing.current, .held = true,
++        },
++        .main_observer = {
++            .current = startup_source.standing.current,
++            .sequence = startup_source.standing.sequence,
++            .last_now_ns = now, .observation.descriptor = -1,
++        },
++        .worker_observer = {
++            .current = startup_source.standing.current,
++            .sequence = startup_source.standing.sequence,
++            .last_now_ns = now, .observation.descriptor = -1,
++        },
++        .descriptor = -1,
++        .installer = startup_source.saved, .worker = worker,
++        .held = true, .capture_entered = true,
++    };
++    qemu_thread_get_self(&material->operation.thread);
++    *out = material;
++    return fingerprint_material_current(material, &material->main_observer, NULL);
++}
++
++int qemu_crucible_fingerprint_material_capture_end_v1(
++    QemuCrucibleFingerprintMaterial *material, int descriptor,
++    uint64_t bytes, int first_status)
++{
++    struct stat identity;
++    int status = fingerprint_material_identity(material);
++
++    if (status || !material->capture_entered || !qemu_in_main_thread() ||
++        !qemu_thread_is_self(&material->operation.thread)) {
++        return status ? status : -EPERM;
++    }
++    material->descriptor = descriptor;
++    material->device_length = bytes;
++    if (first_status) {
++        qatomic_cmpxchg(&material->first_status, 0, first_status);
++    }
++    if (!first_status && !fingerprint_material_root_returned(material)) {
++        status = -EPROTO;
++    }
++    if (!status && !first_status) {
++        int seals = fcntl(descriptor, F_GET_SEALS);
++
++        if (fstat(descriptor, &identity) < 0) {
++            status = -errno;
++        } else if (!S_ISREG(identity.st_mode) || identity.st_size < 0 ||
++            (uint64_t)identity.st_size != bytes || !bytes ||
++            seals != (F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_WRITE | F_SEAL_SEAL)) {
++            status = -ESTALE;
++        } else {
++            material->device = identity.st_dev;
++            material->inode = identity.st_ino;
++            material->sealed = true;
++        }
++    }
++    material->capture_entered = false;
++    material->post_status = status ? status : fingerprint_material_observe(
++        material, &material->main_observer, NULL);
++    if (material->post_status) {
++        qatomic_cmpxchg(&material->first_status, 0, material->post_status);
++    }
++    first_status = qatomic_load_acquire(&material->first_status);
++    return first_status ? first_status : material->post_status;
++}
++
++int qemu_plugin_crucible_fingerprint_worker_submit_v1(
++    qemu_plugin_id_t id, QemuCrucibleFingerprintWorker *worker,
++    QemuCrucibleFingerprintMaterial *material,
++    QemuCrucibleFingerprintWork **out)
++{
++    QemuCrucibleFingerprintWork *work;
++    int status = fingerprint_worker_identity(worker);
++
++    if (status || id != startup_source.saved.plugin_id || !qemu_in_main_thread() ||
++        !out || *out || callback_child_output_overlap(out, sizeof(*out),
++            &startup_source, sizeof(startup_source))) {
++        return status ? status : -EPERM;
++    }
++    if (material != &startup_source.fingerprint_material || !material->held ||
++        !material->sealed || material->capture_entered || material->submitted ||
++        !fingerprint_material_root_returned(material) ||
++        material->worker != worker || !qemu_thread_is_self(&material->operation.thread)) {
++        return -EPERM;
++    }
++    status = fingerprint_material_current(material, &material->main_observer, NULL);
++    if (status) {
++        return status ? status : -EPERM;
++    }
++    qemu_mutex_lock(&startup_source.commands.mutex);
++    work = &worker->work;
++    if (!worker->birth.born || worker->joined || worker->closing ||
++        !worker->entry_allowed || worker->entry_returned || worker->first_status ||
++        worker->post_status || qatomic_load_acquire(&material->first_status) ||
++        material->post_status ||
++        worker->transition_active || work->material_held) {
++        status = -EBUSY;
++    } else {
++        *work = (QemuCrucibleFingerprintWork) {
++            .worker = worker, .material = material,
++            .operation_serial = material->operation.serial,
++            .material_held = true,
++        };
++        material->submitted = true;
++        *out = work;
++        qemu_cond_broadcast(&worker->wake);
++    }
++    qemu_mutex_unlock(&startup_source.commands.mutex);
++    /* Main retains work even when its own Original expires at the post. */
++    return status ? status : fingerprint_material_current(
++        material, &material->main_observer, NULL);
++}
++
++int qemu_plugin_crucible_fingerprint_worker_take_v1(
++    QemuCrucibleFingerprintWorker *worker, QemuCrucibleFingerprintWork **out,
++    void **bytes, size_t *length)
++{
++    int status = fingerprint_worker_identity(worker);
++    QemuCrucibleFingerprintWork *work;
++
++    if (status || !qemu_thread_is_self(&worker->thread) || !out || !bytes ||
++        !length || *out || *bytes || *length ||
++        callback_child_output_overlap(out, sizeof(*out), bytes, sizeof(*bytes)) ||
++        callback_child_output_overlap(out, sizeof(*out), length, sizeof(*length)) ||
++        callback_child_output_overlap(bytes, sizeof(*bytes), length, sizeof(*length)) ||
++        callback_child_output_overlap(out, sizeof(*out), &startup_source, sizeof(startup_source)) ||
++        callback_child_output_overlap(bytes, sizeof(*bytes), &startup_source, sizeof(startup_source)) ||
++        callback_child_output_overlap(length, sizeof(*length), &startup_source, sizeof(startup_source))) {
++        return status ? status : -EPERM;
++    }
++    qemu_mutex_lock(&startup_source.commands.mutex);
++    work = &worker->work;
++    /* Completed bytes have returned, but Main still owns that material loan.
++     * Wait for its real return and a fresh submit; wakes grant no operation. */
++    while (!worker->closing && (!work->material_held || work->completed)) {
++        qemu_cond_wait(&worker->wake, &startup_source.commands.mutex);
++    }
++    if (!worker->entry_entered || worker->entry_returned || !worker->entry_allowed) {
++        status = -EPERM;
++    } else if (worker->closing) {
++        status = -ESHUTDOWN;
++    } else if (work->bytes_held || work->completed || !work->material ||
++               !work->material->held ||
++               work->material->operation.serial != work->operation_serial) {
++        status = -EBUSY;
++    } else {
++        work->bytes_held = true;
++        *bytes = worker->workspace->address;
++        *length = worker->workspace->request_bytes;
++        *out = work;
++    }
++    qemu_mutex_unlock(&startup_source.commands.mutex);
++    return status;
++}
++
++int qemu_plugin_crucible_fingerprint_worker_complete_v1(
++    QemuCrucibleFingerprintWorker *worker, QemuCrucibleFingerprintWork **projection,
++    int result)
++{
++    int status = fingerprint_worker_identity(worker);
++    QemuCrucibleFingerprintWork *work;
++
++    if (status || !qemu_thread_is_self(&worker->thread) || !projection) {
++        return status ? status : -EPERM;
++    }
++    qemu_mutex_lock(&startup_source.commands.mutex);
++    work = &worker->work;
++    if (*projection != work ||
++        !work->material_held || !work->bytes_held || work->completed) {
++        status = -EPERM;
++    } else if (!result && (!work->material || !work->material->read.eof ||
++        work->material->read_offset != work->material->device_length ||
++        work->material->read.read_status || work->material->read.post_status)) {
++        status = -EPROTO;
++    } else {
++        work->result = result;
++        work->bytes_held = false;
++        work->completed = true;
++        *projection = NULL;
++        qemu_cond_broadcast(&worker->wake);
++    }
++    qemu_mutex_unlock(&startup_source.commands.mutex);
++    return status;
++}
++
++int qemu_plugin_crucible_fingerprint_worker_work_return_v1(
++    qemu_plugin_id_t id, QemuCrucibleFingerprintWork **projection, int *result)
++{
++    QemuCrucibleFingerprintWorker *worker = &startup_source.fingerprint_worker;
++    QemuCrucibleFingerprintWork *work = &worker->work;
++    int status = fingerprint_worker_identity(worker);
++
++    if (status || id != startup_source.saved.plugin_id || !projection || !result ||
++        !qemu_in_main_thread() || !work->material ||
++        !qemu_thread_is_self(&work->material->operation.thread)) {
++        return status ? status : -EPERM;
++    }
++    qemu_mutex_lock(&startup_source.commands.mutex);
++    if (*projection != work ||
++        !work->material_held || work->bytes_held || !work->completed ||
++        work->material->operation.serial != work->operation_serial) {
++        status = -EBUSY;
++    } else {
++        *result = work->result;
++        *projection = NULL;
++        work->material->work_returned = true;
++        work->material = NULL;
++        work->material_held = false;
++        qemu_cond_broadcast(&worker->wake);
++    }
++    qemu_mutex_unlock(&startup_source.commands.mutex);
++    return status;
++}
++
++int qemu_plugin_crucible_fingerprint_worker_close_v1(
++    qemu_plugin_id_t id, QemuCrucibleFingerprintWorker *worker)
++{
++    void *owning_alias = NULL;
++    int status;
++    bool invoke = false;
++
++    if (worker != &startup_source.fingerprint_worker ||
++        !qatomic_load_acquire(&startup_source.module_custody_published) ||
++        !qatomic_load_acquire(&startup_source.commands.initialized) ||
++        id != startup_source.saved.plugin_id || !startup_owner()) {
++        return -EPERM;
++    }
++    qemu_mutex_lock(&startup_source.commands.mutex);
++    status = fingerprint_worker_holder_identity_locked(worker);
++    if (!status && worker->transition_active) {
++        status = -EBUSY;
++    }
++    if (!status) {
++        /* Close admission before draining existing synchronous aliases.
++         * The module close gate then excludes its own weak-upgrade paths. */
++        worker->closing = true;
++        /* A queued, never-taken loan has no byte borrower to drain. Main
++         * still owns its material loan until it observes cancellation. */
++        if (worker->work.material_held && !worker->work.bytes_held &&
++            !worker->work.completed) {
++            worker->work.result = -ECANCELED;
++            worker->work.completed = true;
++        }
++        if (worker->control_users) {
++            status = -EBUSY;
++        } else if (worker->initialized && worker->owning_alias && !worker->close_attempted) {
++            worker->close_attempted = true;
++            worker->transition_active = true;
++            owning_alias = worker->owning_alias;
++            invoke = true;
++        }
++        qemu_cond_broadcast(&worker->wake);
++    }
++    qemu_mutex_unlock(&startup_source.commands.mutex);
++    if (invoke) {
++        SOURCE_CALLBACK_MASKED_INVOKE(status, worker, worker->close,
++            owning_alias, id, worker, owning_alias);
++        qemu_mutex_lock(&startup_source.commands.mutex);
++        worker->close_returned = true;
++        worker->transition_active = false;
++        if (status && !worker->first_status) {
++            worker->first_status = status;
++        }
++        qemu_mutex_unlock(&startup_source.commands.mutex);
++    }
++    return status;
++}
++
++int qemu_plugin_crucible_fingerprint_worker_tryjoin_v1(
++    qemu_plugin_id_t id, QemuCrucibleFingerprintWorker *worker)
++{
++    int status;
++    bool destroy = false;
++
++    if (worker != &startup_source.fingerprint_worker ||
++        !qatomic_load_acquire(&startup_source.module_custody_published) ||
++        !qatomic_load_acquire(&startup_source.commands.initialized) ||
++        id != startup_source.saved.plugin_id || !startup_owner()) {
++        return -EPERM;
++    }
++    qemu_mutex_lock(&startup_source.commands.mutex);
++    status = fingerprint_worker_holder_identity_locked(worker);
++    if (!status && worker->destruction_uncertain) {
++        status = worker->destruction_first_status ? worker->destruction_first_status : -EIO;
++    }
++    if (!status && (!worker->closing || worker->transition_active || worker->control_users ||
++        worker->destruction_active ||
++        startup_source.fingerprint_material.held || worker->policy_close_uncertain ||
++        worker->work.material_held || worker->work.bytes_held ||
++        (worker->initialized && (!worker->close_attempted || !worker->close_returned)))) {
++        status = -EBUSY;
++    }
++    if (!status) {
++        worker->transition_active = true;
++    }
++    qemu_mutex_unlock(&startup_source.commands.mutex);
++    if (status) {
++        return status;
++    }
++    if (worker->birth.born && !worker->joined) {
++        void *physical_result;
++
++        status = qemu_thread_tryjoin(&worker->thread, &physical_result);
++        qemu_mutex_lock(&startup_source.commands.mutex);
++        worker->join_status = status;
++        if (!status) {
++            worker->joined_result = physical_result;
++            worker->joined = true;
++        }
++        qemu_mutex_unlock(&startup_source.commands.mutex);
++        if (!status && worker->task_reserved) {
++            status = startup_task_physical_return(&worker->task_reserved);
++        }
++    }
++    if (!status) {
++        qemu_mutex_lock(&startup_source.commands.mutex);
++        if (worker->owning_alias && !worker->destroy_attempted) {
++            if (!worker->destroy || worker->destruction_calls == UINT64_MAX) {
++                status = worker->destroy ? -EOVERFLOW : -ENOKEY;
++            } else {
++                worker->destruction_calls++;
++                worker->destruction_active = true;
++                worker->destruction_returned = false;
++                worker->destruction_alias = worker->owning_alias;
++                worker->frame.destroying = true;
++                worker->frame.entered = true;
++                qemu_thread_get_self(&worker->frame.thread);
++                destroy = true;
++            }
++        }
++        qemu_mutex_unlock(&startup_source.commands.mutex);
++    }
++    if (destroy) {
++        SOURCE_CALLBACK_MASKED_INVOKE(status, &worker->frame, worker->destroy,
++            worker->destruction_alias, id, &worker->frame, &worker->owning_alias);
++        if (status > 0) {
++            status = -EPROTO;
++        }
++        qemu_mutex_lock(&startup_source.commands.mutex);
++        worker->frame.entered = false;
++        worker->destruction_active = false;
++        worker->destruction_returned = true;
++        worker->destructor_status = status;
++        if (!worker->destroy_attempted) {
++            /* A returned preflight refusal may retry only while the exact
++             * owning alias is unchanged and no physical begin was admitted. */
++            if (worker->owning_alias != worker->destruction_alias || !status) {
++                worker->destruction_uncertain = true;
++                status = status ? status : -EPROTO;
++            }
++        } else if (!worker->destroyed || worker->owning_alias) {
++            /* Once begun, absent final acknowledgement retains uncertainty;
++             * neither an errno nor another tryjoin can repeat physical drop. */
++            worker->destruction_uncertain = true;
++            status = status ? status : -EPROTO;
++        }
++        if (worker->destruction_uncertain && !worker->destruction_first_status) {
++            /* Last callback return and first physical uncertainty are
++             * independent; a no-effect preflight creates no uncertainty. */
++            worker->destruction_first_status = status ? status : -EIO;
++        }
++        if (status && !worker->first_status) {
++            worker->first_status = status;
++        }
++        qemu_mutex_unlock(&startup_source.commands.mutex);
++    }
++    /* An unacknowledged allocation or destruction stays exact negative
++     * custody. Callback status alone never proves physical final return. */
++    if (!status && ((!worker->construction_returned && worker->allocation_attempted) ||
++        (worker->allocation_attempted && !worker->allocation_returned) ||
++        (worker->allocation && (!worker->destroyed || !worker->destruction_returned)))) {
++        status = -EBUSY;
++    }
++    if (!status && worker->stack && !worker->unmap_attempted) {
++        worker->unmap_attempted = true;
++        worker->unmap_status = munmap(worker->stack, worker->layout.stack_bytes) < 0 ?
++            -errno : 0;
++        if (!worker->unmap_status) {
++            worker->stack = NULL;
++            status = crucible_metadata_native_retire(&startup_source.metadata_partition,
++                                                     &worker->stack_charge);
++        }
++    }
++    if (!status && worker->unmap_status) {
++        status = worker->unmap_status;
++    }
++    qemu_mutex_lock(&startup_source.commands.mutex);
++    if (!status && !worker->stack && !worker->owning_alias &&
++        !startup_source.fingerprint_material.held && !worker->control_users &&
++        !worker->destruction_active && !worker->destruction_uncertain) {
++        qemu_mutex_lock(&worker->workspace->mutex);
++        worker->workspace->worker = NULL;
++        worker->child->component_users--;
++        worker->child->child->physical_users--;
++        worker->pins_held = false;
++        worker->physical_returned = true;
++        qemu_mutex_unlock(&worker->workspace->mutex);
++    }
++    worker->transition_active = false;
++    qemu_mutex_unlock(&startup_source.commands.mutex);
++    return status;
++}
++
++int qemu_plugin_crucible_fingerprint_worker_material_current_v1(
++    QemuCrucibleFingerprintWorker *worker, QemuCrucibleFingerprintWork *work,
++    uint64_t *bounded_ns)
++{
++    QemuCrucibleFingerprintMaterial *material;
++    int status = fingerprint_worker_identity(worker);
++
++    if (status || !qemu_thread_is_self(&worker->thread) || !bounded_ns) {
++        return status ? status : -EPERM;
++    }
++    qemu_mutex_lock(&startup_source.commands.mutex);
++    if (work != &worker->work || !work->bytes_held || !work->material_held ||
++        work->completed || !work->material || !worker->entry_entered ||
++        worker->entry_returned || worker->closing ||
++        !work->material->sealed || !fingerprint_material_root_returned(work->material)) {
++        status = -ECANCELED;
++    }
++    material = work == &worker->work ? work->material : NULL;
++    qemu_mutex_unlock(&startup_source.commands.mutex);
++    return status ? status : fingerprint_material_current(
++        material, &material->worker_observer, bounded_ns);
++}
++
++int qemu_plugin_crucible_fingerprint_material_current_v1(
++    qemu_plugin_id_t id, QemuCrucibleFingerprintMaterial *material,
++    uint64_t *bounded_ns)
++{
++    if (fingerprint_material_identity(material) ||
++        id != startup_source.saved.plugin_id || !qemu_in_main_thread() ||
++        !qemu_thread_is_self(&material->operation.thread) || !bounded_ns) {
++        return -EPERM;
++    }
++    return fingerprint_material_current(material, &material->main_observer, bounded_ns);
++}
++
++int qemu_plugin_crucible_fingerprint_worker_material_read_v1(
++    QemuCrucibleFingerprintWorker *worker, QemuCrucibleFingerprintWork *work,
++    size_t requested, struct qemu_plugin_crucible_fingerprint_material_read_v1 *out)
++{
++    QemuCrucibleFingerprintMaterial *material;
++    struct stat identity;
++    uint64_t slice, progress;
++    ssize_t physical_result;
++    int first;
++    int status = qemu_plugin_crucible_fingerprint_worker_material_current_v1(
++        worker, work, &slice);
++
++    if (status) {
++        return status;
++    }
++    if (!out || !requested || requested > worker->workspace->request_bytes ||
++        requested > SSIZE_MAX ||
++        callback_child_output_overlap(out, sizeof(*out), &startup_source,
++                                      sizeof(startup_source)) ||
++        callback_child_output_overlap(out, sizeof(*out), worker->workspace->address,
++                                      worker->workspace->request_bytes)) {
++        return -EINVAL;
++    }
++    material = work->material;
++    first = qatomic_load_acquire(&material->first_status);
++
++    if (first || material->post_status || material->read.read_status ||
++        material->read.post_status) {
++        return first ? first : material->post_status ?
++            material->post_status : material->read.read_status ?
++            material->read.read_status : material->read.post_status;
++    }
++    material->read = (struct qemu_plugin_crucible_fingerprint_material_read_v1) {
++        .offset = material->read_offset,
++    };
++    if (fstat(material->descriptor, &identity) < 0) {
++        status = -errno;
++    } else if (identity.st_dev != material->device || identity.st_ino != material->inode ||
++        identity.st_size < 0 || (uint64_t)identity.st_size != material->device_length ||
++        material->read_offset > INT64_MAX) {
++        status = -ESTALE;
++    }
++    if (!status) {
++        material->read.attempted = true;
++        physical_result = pread(material->descriptor, worker->workspace->address,
++                                requested, material->read_offset);
++        if (physical_result < 0) {
++            status = -errno;
++        } else if (!physical_result) {
++            material->read.eof = true;
++            if (material->read_offset != material->device_length) {
++                status = -EIO;
++            }
++        } else {
++            /* Journal the actual consumed extent before clock/budget posts.
++             * Only a real positive read supplies material progress. */
++            material->read.bytes_read = physical_result;
++            material->read_offset += physical_result;
++            status = standing_clock(&progress);
++            if (!status && progress < qatomic_load_acquire(&material->operation.progress_ns)) {
++                status = -ESTALE;
++            }
++            if (!status) {
++                /* The actual reader is the sole progress writer. Publish
++                 * only after its positive read and monotone clock sample. */
++                qatomic_store_release(&material->operation.progress_ns, progress);
++            }
++        }
++    }
++    material->read.read_status = status;
++    if (status) {
++        qatomic_cmpxchg(&material->first_status, 0, status);
++    }
++    material->read.post_status = fingerprint_material_observe(
++        material, &material->worker_observer, NULL);
++    *out = material->read;
++    first = qatomic_load_acquire(&material->first_status);
++    return first ? first : status ? status : material->read.post_status;
++}
++
++int qemu_plugin_crucible_fingerprint_material_return_v1(
++    qemu_plugin_id_t id, QemuCrucibleFingerprintMaterial **holder)
++{
++    QemuCrucibleFingerprintMaterial *material = &startup_source.fingerprint_material;
++    int status;
++
++    if (!holder || *holder != material || id != startup_source.saved.plugin_id ||
++        !qemu_in_main_thread() || !qemu_thread_is_self(&material->operation.thread)) {
++        return -EPERM;
++    }
++    status = fingerprint_material_identity(material);
++    if (status) {
++        return status;
++    }
++    if (material->capture_entered ||
++        (material->submitted && !material->work_returned) ||
++        material->worker->work.material_held || material->worker->work.bytes_held) {
++        return -EBUSY;
++    }
++    /* Main is synchronous, and real work return follows completion of every
++     * worker observation. An uncertain scratch close still retains this owner. */
++    if (material->main_observer.observation.descriptor >= 0 ||
++        material->main_observer.observation.close_uncertain ||
++        material->worker_observer.observation.descriptor >= 0 ||
++        material->worker_observer.observation.close_uncertain) {
++        return -EIO;
++    }
++    if (material->close_uncertain) {
++        return -EIO;
++    }
++    if (material->descriptor >= 0 && !material->close_attempted) {
++        material->close_attempted = true;
++        if (close(material->descriptor) < 0) {
++            material->close_uncertain = true;
++            return -errno;
++        }
++        material->descriptor = -1;
++    }
++    /* End the actual aggregate child operation only after physical material
++     * users and its retained descriptor have returned. Expiry never blocks it. */
++    material->physical_returned = true;
++    material->held = false;
++    material->operation.held = false;
++    *holder = NULL;
++    return 0;
++}
++
++int qemu_plugin_crucible_fingerprint_worker_transfer_v1(
++    qemu_plugin_id_t id, QemuCrucibleFingerprintWorker **projection,
++    QemuCrucibleFingerprintWorker **runtime_field)
++{
++    QemuCrucibleFingerprintWorker *worker = &startup_source.fingerprint_worker;
++    uintptr_t field = (uintptr_t)runtime_field;
++    int status = fingerprint_worker_identity(worker);
++
++    if (status || id != startup_source.saved.plugin_id || !startup_invocation(id) ||
++        !projection || !runtime_field || projection == runtime_field) {
++        return status ? status : -EPERM;
++    }
++    qemu_mutex_lock(&startup_source.commands.mutex);
++    if (worker->transition_active || worker->closing ||
++        worker->holder != &worker->creation_owner || worker->creation_owner != worker ||
++        *projection != worker || *runtime_field ||
++        !worker->runtime_base || worker->runtime_extent < sizeof(*runtime_field) ||
++        worker->runtime_extent > UINTPTR_MAX - worker->runtime_base ||
++        field < worker->runtime_base || field % _Alignof(QemuCrucibleFingerprintWorker *) ||
++        field - worker->runtime_base > worker->runtime_extent - sizeof(*runtime_field) ||
++        callback_child_output_conflicts_locked(runtime_field, sizeof(*runtime_field)) ||
++        callback_child_output_conflicts_locked(projection, sizeof(*projection)) ||
++        callback_child_output_overlap(projection, sizeof(*projection),
++                                      runtime_field, sizeof(*runtime_field))) {
++        status = -EINVAL;
++    } else {
++        *runtime_field = worker;
++        *projection = NULL;
++        worker->creation_owner = NULL;
++        worker->holder = runtime_field;
++    }
++    qemu_mutex_unlock(&startup_source.commands.mutex);
++    return status ? status : fingerprint_worker_post(worker);
++}
++
++int qemu_plugin_crucible_fingerprint_worker_observe_v1(
++    qemu_plugin_id_t id, QemuCrucibleFingerprintWorker *worker,
++    struct qemu_plugin_crucible_fingerprint_worker_status_v1 *out)
++{
++    if (worker != &startup_source.fingerprint_worker || !worker->attempted ||
++        id != startup_source.saved.plugin_id || !out || !startup_owner() ||
++        callback_child_output_overlap(out, sizeof(*out), &startup_source,
++                                      sizeof(startup_source))) {
++        return -EPERM;
++    }
++    qemu_mutex_lock(&startup_source.commands.mutex);
++    *out = (struct qemu_plugin_crucible_fingerprint_worker_status_v1) {
++        .schema_version = 1, .struct_size = sizeof(*out),
++        .first_status = worker->first_status, .post_status = worker->post_status,
++        .create_status = worker->birth.create_status,
++        .mask_restore_status = worker->birth.mask_restore_status,
++        .attr_destroy_status = worker->birth.attr_destroy_status,
++        .entry_status = worker->entry_status, .join_status = worker->join_status,
++        .unmap_status = worker->unmap_status, .residual_bytes = worker->residual_bytes,
++        .births_reserved = startup_source.task_ledger.births_reserved,
++        .born = worker->birth.born, .initialized = worker->initialized,
++        .closing = worker->closing, .entry_returned = worker->entry_returned,
++        .joined = worker->joined, .destroyed = worker->destroyed,
++        .physical_returned = worker->physical_returned,
++        .material_held = worker->work.material_held,
++        .bytes_held = worker->work.bytes_held,
++        .control_users = worker->control_users,
++        .destruction_calls = worker->destruction_calls,
++        .control_status = worker->control_status,
++        .destructor_status = worker->destructor_status,
++        .destruction_first_status = worker->destruction_first_status,
++        .destruction_active = worker->destruction_active,
++        .destruction_returned = worker->destruction_returned,
++        .destruction_begun = worker->destroy_attempted,
++        .destruction_uncertain = worker->destruction_uncertain,
++    };
++    qemu_mutex_unlock(&startup_source.commands.mutex);
++    return 0;
++}
++
++int qemu_plugin_crucible_fingerprint_worker_identity_return_v1(
++    qemu_plugin_id_t id, QemuCrucibleFingerprintWorker **holder)
++{
++    QemuCrucibleFingerprintWorker *worker = &startup_source.fingerprint_worker;
++
++    if (!holder || *holder != worker || id != startup_source.saved.plugin_id ||
++        !startup_owner() ||
++        (worker->holder != holder && worker->holder != &worker->creation_owner) ||
++        !worker->physical_returned ||
++        worker->pins_held || worker->transition_active) {
++        return -EPERM;
++    }
++    *holder = NULL;
++    worker->holder = NULL;
++    worker->creation_owner = NULL;
++    return 0;
++}
++#endif
 diff --git a/plugins/crucible-idle-wait.c b/plugins/crucible-idle-wait.c
 new file mode 100644
 index 0000000000000000000000000000000000000000..e8d98a0beb68a58aed72e673fb28070cd31472e5
@@ -161768,10 +163644,10 @@ index 0000000000000000000000000000000000000000..85e0007223fe4cedc5bd88b561174bdc
 +}
 diff --git a/plugins/crucible-ram-control.inc.h b/plugins/crucible-ram-control.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..536ef64514ff239bd64cf48f74e742c022e7bdbb
+index 0000000000000000000000000000000000000000..36e65f5458ddbbebe275799b4a944687a6365ed7
 --- /dev/null
 +++ b/plugins/crucible-ram-control.inc.h
-@@ -0,0 +1,2088 @@
+@@ -0,0 +1,2121 @@
 +/*
 + * Partial sole-actor construction and bounded native receipt
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -162375,12 +164251,24 @@ index 0000000000000000000000000000000000000000..536ef64514ff239bd64cf48f74e742c0
 +    }
 +    status = qemu_crucible_ram_control_actor_contract_current(actor);
 +    if (!status) {
++        status = startup_task_reserve(&actor->task_reserved);
++    }
++    if (!status) {
 +        status = qemu_thread_create_bounded(&actor->thread, "crucible-ram",
 +                                            ram_control_entry, actor,
-+                                            actor->stack, actor->stack_bytes);
++                                            actor->stack, actor->stack_bytes,
++                                            &actor->creation_receipt);
++    }
++    if (actor->creation_receipt.born) {
++        qatomic_store_release(&actor->born, true);
++    } else if (actor->task_reserved) {
++        startup_task_physical_return(&actor->task_reserved);
 +    }
 +    if (status) {
-+        return ram_control_failure(actor, status, false);
++        ram_control_failure(actor, status, actor->creation_receipt.born);
++        qatomic_store_release(&actor->creator_published, true);
++        qatomic_store_release(&actor->entry_released, true);
++        return status;
 +    }
 +    qatomic_store_release(&actor->born, true);
 +    status = qemu_crucible_ram_control_actor_contract_current(actor);
@@ -162848,6 +164736,10 @@ index 0000000000000000000000000000000000000000..536ef64514ff239bd64cf48f74e742c0
 +             * registry binding is cleared, never inspected after retirement. */
 +            actor->joined = true;
 +            actor->thread_binding = NULL;
++            status = startup_task_physical_return(&actor->task_reserved);
++            if (status) {
++                return ram_control_failure(actor, status, true);
++            }
 +            break;
 +        }
 +        if (status != -EBUSY) {
@@ -162934,11 +164826,24 @@ index 0000000000000000000000000000000000000000..536ef64514ff239bd64cf48f74e742c0
 +    actor->join_errno = 0;
 +    actor->thread_id = 0;
 +    actor->service_generation = 0;
-+    status = qemu_thread_create_bounded(&actor->thread, "crucible-ram",
-+                                        ram_control_entry, actor,
-+                                        actor->stack, actor->stack_bytes);
++    status = startup_task_reserve(&actor->task_reserved);
 +    if (status) {
 +        return ram_control_failure(actor, status, false);
++    }
++    status = qemu_thread_create_bounded(&actor->thread, "crucible-ram",
++                                        ram_control_entry, actor,
++                                        actor->stack, actor->stack_bytes,
++                                        &actor->creation_receipt);
++    if (actor->creation_receipt.born) {
++        qatomic_store_release(&actor->born, true);
++    } else if (actor->task_reserved) {
++        startup_task_physical_return(&actor->task_reserved);
++    }
++    if (status) {
++        ram_control_failure(actor, status, actor->creation_receipt.born);
++        qatomic_store_release(&actor->creator_published, true);
++        qatomic_store_release(&actor->entry_released, true);
++        return status;
 +    }
 +    qatomic_store_release(&actor->born, true);
 +    /* Current loan is consumed for this incarnation; retained Source checks
@@ -163012,6 +164917,10 @@ index 0000000000000000000000000000000000000000..536ef64514ff239bd64cf48f74e742c0
 +        return status;
 +    }
 +    actor->joined = true;
++    status = startup_task_physical_return(&actor->task_reserved);
++    if (status) {
++        return ram_control_failure(actor, status, true);
++    }
 +    if (!qatomic_load_acquire(&actor->returned)) {
 +        return ram_control_failure(actor, -EPROTO, true);
 +    }
@@ -166084,10 +167993,10 @@ index 0000000000000000000000000000000000000000..f33911c6d93010f8c345aa392c9b7974
 +}
 diff --git a/plugins/crucible-startup-source.c b/plugins/crucible-startup-source.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..c47f8afc6320b511afea8f182c06edcfac837b67
+index 0000000000000000000000000000000000000000..672fd1dee32f8a95cb2cdbe9a089597bbe55b6e8
 --- /dev/null
 +++ b/plugins/crucible-startup-source.c
-@@ -0,0 +1,7374 @@
+@@ -0,0 +1,7466 @@
 +/*
 + * Original installer startup source custody
 + *
@@ -166184,6 +168093,60 @@ index 0000000000000000000000000000000000000000..c47f8afc6320b511afea8f182c06edcf
 +static int cpu_tlb_header_identity(QemuCrucibleCpuTlbSourceOwner *owner);
 +#endif
 +static int cpu_metadata_account_issue(QemuCrucibleObservationConstructionBinding *binding);
++
++/* Only actual Source thread owners hold these embedded reservation cells.
++ * The inherited Main task occupies one issued slot. Concurrent non-Source
++ * births remain subject to the SAME kernel pids.max; their census is never a
++ * grant. An actual EAGAIN is a typed failed birth, without a cap increase. */
++static int startup_task_reserve(bool *owner_slot)
++{
++    QemuCrucibleSourceTaskLedger *ledger = &startup_source.task_ledger;
++    uint64_t limit = startup_source.process_purpose_record.task_limit;
++    int status = 0;
++
++    if ((owner_slot != &startup_source.fingerprint_worker.task_reserved &&
++         owner_slot != &startup_source.ram_control_actor.task_reserved) ||
++        !qatomic_load_acquire(&startup_source.commands.initialized) ||
++        !qatomic_load_acquire(&startup_source.process_purpose_complete) ||
++        getpid() != startup_source.owner_process) {
++        return -ENOKEY;
++    }
++    qemu_mutex_lock(&startup_source.commands.mutex);
++    if (*owner_slot) {
++        status = -EALREADY;
++    } else if (!limit || ledger->live_reserved >= limit - 1 ||
++               ledger->births_reserved == UINT64_MAX) {
++        status = -EAGAIN;
++    } else {
++        ledger->births_reserved++;
++        ledger->live_reserved++;
++        *owner_slot = true;
++    }
++    qemu_mutex_unlock(&startup_source.commands.mutex);
++    return status;
++}
++
++/* Called only after the creator proves no pthread birth, or real tryjoin.
++ * Birth history and every retained allocator/TLS debit remain untouched. */
++static int startup_task_physical_return(bool *owner_slot)
++{
++    QemuCrucibleSourceTaskLedger *ledger = &startup_source.task_ledger;
++    int status = 0;
++
++    if (owner_slot != &startup_source.fingerprint_worker.task_reserved &&
++        owner_slot != &startup_source.ram_control_actor.task_reserved) {
++        return -EPERM;
++    }
++    qemu_mutex_lock(&startup_source.commands.mutex);
++    if (!*owner_slot || !ledger->live_reserved) {
++        status = -EPROTO;
++    } else {
++        ledger->live_reserved--;
++        *owner_slot = false;
++    }
++    qemu_mutex_unlock(&startup_source.commands.mutex);
++    return status;
++}
 +#endif
 +
 +
@@ -167563,7 +169526,8 @@ index 0000000000000000000000000000000000000000..c47f8afc6320b511afea8f182c06edcf
 +    const struct qemu_plugin_crucible_runtime_request_v4 *role_requests,
 +    size_t count, QemuCrucibleStartupRuntimePurpose **out,
 +    QemuCrucibleCommandConsumerRequest **claim_out,
-+    QemuCrucibleCallbackChildRequest **child_out)
++    QemuCrucibleCallbackChildRequest **child_out,
++    QemuCrucibleFingerprintWorkerClaim **worker_out)
 +{
 +#ifdef CONFIG_LINUX
 +    QemuCrucibleStartupRuntimePurpose *purpose = &startup_source.runtime_purpose;
@@ -167572,6 +169536,7 @@ index 0000000000000000000000000000000000000000..c47f8afc6320b511afea8f182c06edcf
 +    size_t storage_bytes;
 +    size_t bridge_index = SIZE_MAX;
 +    size_t child_index = SIZE_MAX;
++    size_t worker_index = SIZE_MAX;
 +    QemuCrucibleCommandConsumerRegistry *registry = &startup_source.commands;
 +    pid_t process;
 +    int status;
@@ -167583,6 +169548,9 @@ index 0000000000000000000000000000000000000000..c47f8afc6320b511afea8f182c06edcf
 +        !claim_out || *claim_out || (void *)claim_out == (void *)out ||
 +        !child_out || *child_out || (void *)child_out == (void *)out ||
 +        (void *)child_out == (void *)claim_out ||
++        !worker_out || *worker_out || (void *)worker_out == (void *)out ||
++        (void *)worker_out == (void *)claim_out ||
++        (void *)worker_out == (void *)child_out ||
 +        count > SIZE_MAX / sizeof(*roster)) {
 +        return -EINVAL;
 +    }
@@ -167599,7 +169567,9 @@ index 0000000000000000000000000000000000000000..c47f8afc6320b511afea8f182c06edcf
 +        const struct qemu_plugin_crucible_runtime_request_v4 *request =
 +            &role_requests[index];
 +
-+        if (request->reserved || request->role > QEMU_CRUCIBLE_RUNTIME_ROLE_CALLBACK_CHILD ||
++        if (request->reserved || request->role > QEMU_CRUCIBLE_RUNTIME_ROLE_WORKER_CONTROL ||
++            (request->role == QEMU_CRUCIBLE_RUNTIME_ROLE_WORKER_CONTROL &&
++             (!index || worker_index != SIZE_MAX)) ||
 +            (request->role == QEMU_CRUCIBLE_RUNTIME_ROLE_CALLBACK_CHILD &&
 +             (!index || child_index != SIZE_MAX)) ||
 +            (request->role == QEMU_CRUCIBLE_RUNTIME_ROLE_COMMAND_BRIDGE &&
@@ -167610,6 +169580,8 @@ index 0000000000000000000000000000000000000000..c47f8afc6320b511afea8f182c06edcf
 +            bridge_index = index;
 +        } else if (request->role == QEMU_CRUCIBLE_RUNTIME_ROLE_CALLBACK_CHILD) {
 +            child_index = index;
++        } else if (request->role == QEMU_CRUCIBLE_RUNTIME_ROLE_WORKER_CONTROL) {
++            worker_index = index;
 +        }
 +
 +        if (!request->extent_bytes || !request->alignment_bytes ||
@@ -167685,6 +169657,14 @@ index 0000000000000000000000000000000000000000..c47f8afc6320b511afea8f182c06edcf
 +        .held = true,
 +    };
 +    *child_out = &registry->child_claim;
++    if (worker_index != SIZE_MAX) {
++        startup_source.worker_claim = (QemuCrucibleFingerprintWorkerClaim) {
++            .runtime = purpose,
++            .request_index = worker_index,
++            .issued = true,
++        };
++        *worker_out = &startup_source.worker_claim;
++    }
 +    qemu_mutex_unlock(&registry->mutex);
 +    purpose->installer = startup_source.control_purpose;
 +    purpose->attempted = true;
@@ -167730,6 +169710,9 @@ index 0000000000000000000000000000000000000000..c47f8afc6320b511afea8f182c06edcf
 +    qemu_mutex_lock(&registry->mutex);
 +    registry->claim.request = &roster[bridge_index];
 +    registry->child_claim.request = &roster[child_index];
++    if (worker_index != SIZE_MAX) {
++        startup_source.worker_claim.request = &roster[worker_index];
++    }
 +    qemu_mutex_unlock(&registry->mutex);
 +    status = startup_process_purpose_live();
 +    if (status) {
@@ -167744,18 +169727,19 @@ index 0000000000000000000000000000000000000000..c47f8afc6320b511afea8f182c06edcf
 +#endif
 +}
 +
-+int qemu_plugin_crucible_startup_runtime_reserve_v5(
++int qemu_plugin_crucible_startup_runtime_reserve_v6(
 +    qemu_plugin_id_t id,
 +    const struct qemu_plugin_crucible_runtime_request_v4 *requests,
 +    size_t count, QemuCrucibleStartupRuntimePurpose **out,
 +    QemuCrucibleCommandConsumerRequest **bridge_claim,
-+    QemuCrucibleCallbackChildRequest **child_claim)
++    QemuCrucibleCallbackChildRequest **child_claim,
++    QemuCrucibleFingerprintWorkerClaim **worker_claim)
 +{
 +    if (!child_claim) {
 +        return -EINVAL;
 +    }
 +    return startup_runtime_reserve_configured(
-+        id, requests, count, out, bridge_claim, child_claim);
++        id, requests, count, out, bridge_claim, child_claim, worker_claim);
 +}
 +
 +static uint64_t startup_runtime_parent_extent(
@@ -169458,6 +171442,10 @@ index 0000000000000000000000000000000000000000..c47f8afc6320b511afea8f182c06edcf
 +    int status;
 +
 +    if (!out || *out || operation->held || purpose->cleanup_execution ||
++        (startup_source.fingerprint_material.held &&
++         (!startup_source.fingerprint_material.capture_entered ||
++          startup_source.fingerprint_material.root_attached ||
++          startup_source.fingerprint_material.operation.class_index != UINT32_MAX)) ||
 +        purpose->cleanup_holder || startup_source.checkpoint_inventory_metadata.held ||
 +        qatomic_load_acquire(&startup_source.resident_service_absence.held) ||
 +        !bql_locked()) {
@@ -169504,6 +171492,13 @@ index 0000000000000000000000000000000000000000..c47f8afc6320b511afea8f182c06edcf
 +        .next_poll_ns = now, .admitted = purpose->current, .held = true,
 +    };
 +    qemu_thread_get_self(&operation->thread);
++    if (startup_source.fingerprint_material.capture_entered) {
++        /* Only this genuine Root entry selects the pending child's class.
++         * Its aggregate birth, serial, admitted budgets and clocks stay intact. */
++        startup_source.fingerprint_material.operation.class_index = operation->class_index;
++        startup_source.fingerprint_material.root_attached = true;
++        startup_source.fingerprint_material.root_serial = operation->serial;
++    }
 +    *out = operation;
 +    status = standing_operation_current(operation);
 +    operation->first_status = status;
@@ -169696,6 +171691,10 @@ index 0000000000000000000000000000000000000000..c47f8afc6320b511afea8f182c06edcf
 +        purpose->post_status = operation->post_status;
 +    }
 +    operation->held = false;
++    if (startup_source.fingerprint_material.capture_entered &&
++        startup_source.fingerprint_material.root_serial == operation->serial) {
++        startup_source.fingerprint_material.root_returned = true;
++    }
 +    *owner = NULL;
 +    return 0;
 +}
@@ -173459,15 +175458,17 @@ index 0000000000000000000000000000000000000000..c47f8afc6320b511afea8f182c06edcf
 +
 +#include "crucible-device-workspace.inc.h"
 +
++#include "crucible-fingerprint-worker.inc.h"
++
 +#include "crucible-parent-park.inc.h"
 +
 +#include "crucible-parent-park-metadata.inc.h"
 diff --git a/plugins/crucible-startup-source.h b/plugins/crucible-startup-source.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..8af1c57a60e643ac7abeab801cc3b71c092dd703
+index 0000000000000000000000000000000000000000..63a5de6055896ee6ad408d5785fac222ad9e4568
 --- /dev/null
 +++ b/plugins/crucible-startup-source.h
-@@ -0,0 +1,2019 @@
+@@ -0,0 +1,2178 @@
 +/*
 + * Fixed process-private control for the original installer startup source
 + *
@@ -173585,6 +175586,112 @@ index 0000000000000000000000000000000000000000..8af1c57a60e643ac7abeab801cc3b71c
 +    bool held;
 +    bool payload_claimed;
 +} QemuCrucibleCallbackChildRequest;
++
++typedef struct QemuCrucibleFingerprintWorkerClaim {
++    QemuCrucibleStartupRuntimePurpose *runtime;
++    const QemuCrucibleProcessPurposeRequest *request;
++    size_t request_index;
++    bool issued;
++    bool consumed;
++} QemuCrucibleFingerprintWorkerClaim;
++
++typedef struct QemuCrucibleFingerprintWorkerFrame {
++    struct QemuCrucibleFingerprintWorker *worker;
++    QemuThread thread;
++    bool entered;
++    bool destroying;
++} QemuCrucibleFingerprintWorkerFrame;
++
++typedef struct QemuCrucibleFingerprintWork {
++    struct QemuCrucibleFingerprintWorker *worker;
++    struct QemuCrucibleFingerprintMaterial *material;
++    uint64_t operation_serial;
++    int result;
++    bool material_held;
++    bool bytes_held;
++    bool completed;
++} QemuCrucibleFingerprintWork;
++
++/* This fixed ledger is process custody, shared by actual Source thread
++ * families. Reservations precede pthread entry; pids.current is never a grant.
++ * History is monotone even when actual live task occupancy returns. */
++typedef struct QemuCrucibleSourceTaskLedger {
++    uint64_t births_reserved;
++    uint64_t live_reserved;
++} QemuCrucibleSourceTaskLedger;
++
++typedef struct QemuCrucibleFingerprintWorker {
++    QemuCrucibleFingerprintWorkerClaim *claim;
++    QemuCrucibleStartupInstallerBinding installer;
++    QemuCrucibleStartupRuntimePurpose *runtime;
++    struct QemuCrucibleCallbackChildOwner *child;
++    struct QemuCrucibleDeviceWorkspaceMapping *workspace;
++    QemuCrucibleFingerprintWorkerFrame frame;
++    QemuCrucibleFingerprintWork work;
++    QemuThread thread;
++    QemuCond wake;
++    QemuThreadBoundedCreateReceipt birth;
++    QemuCrucibleMetadataCharge stack_charge;
++    QemuCrucibleMetadataCharge residual_charge;
++    QemuCrucibleProcessContractObservation observation;
++    struct qemu_plugin_crucible_fingerprint_worker_layout_v1 layout;
++    int (*construct)(qemu_plugin_id_t, QemuCrucibleFingerprintWorkerFrame *, void *);
++    int (*entry)(qemu_plugin_id_t, struct QemuCrucibleFingerprintWorker *, void *);
++    int (*close)(qemu_plugin_id_t, struct QemuCrucibleFingerprintWorker *, void *);
++    int (*control)(qemu_plugin_id_t, struct QemuCrucibleFingerprintWorker *, void *, void *);
++    int (*destroy)(qemu_plugin_id_t, QemuCrucibleFingerprintWorkerFrame *, void **);
++    void *allocation;
++    void *owning_alias;
++    void *destruction_alias;
++    void *stack;
++    void *joined_result;
++    uint64_t tls_bytes;
++    uint64_t tls_modules;
++    uint64_t tls_max_modid;
++    uint64_t residual_bytes;
++    uint64_t backing_page_bytes;
++    uint64_t control_users;
++    uint64_t destruction_calls;
++    int policy_descriptor;
++    bool policy_close_uncertain;
++    int first_status;
++    int post_status;
++    int entry_status;
++    int join_status;
++    int unmap_status;
++    int control_status;
++    int destructor_status;
++    int destruction_first_status;
++    bool attempted;
++    bool pins_held;
++    bool allocation_attempted;
++    bool allocation_returned;
++    bool initialized;
++    bool construction_returned;
++    bool entry_released;
++    bool entry_allowed;
++    bool entry_entered;
++    bool entry_returned;
++    bool closing;
++    bool close_attempted;
++    bool close_returned;
++    bool transition_active;
++    bool task_reserved;
++    bool joined;
++    /* Physical destruction begins only at the entered module acknowledgement. */
++    bool destroy_attempted;
++    bool destroyed;
++    bool destruction_active;
++    bool destruction_returned;
++    bool destruction_uncertain;
++    bool unmap_attempted;
++    bool physical_returned;
++    struct QemuCrucibleFingerprintWorker *creation_owner;
++    struct QemuCrucibleFingerprintWorker **holder;
++    uintptr_t runtime_base;
++    uint64_t runtime_extent;
++} QemuCrucibleFingerprintWorker;
++
 +
 +/* One actual configured command-child birth, retained by Source until the
 + * module's typed placement and destructor join can return its physical body.
@@ -173982,6 +176089,7 @@ index 0000000000000000000000000000000000000000..8af1c57a60e643ac7abeab801cc3b71c
 +/* Fixed Source constructor custody for the separately issued workspace role.
 + * Later digest/worker/park ownership is deliberately a different parent. */
 +struct QemuCrucibleDeviceWorkspaceMapping {
++    QemuCrucibleFingerprintWorker *worker;
 +    QemuCrucibleCallbackChildOwner *child_owner;
 +    uintptr_t runtime_base;
 +    uint64_t runtime_extent;
@@ -174393,6 +176501,8 @@ index 0000000000000000000000000000000000000000..8af1c57a60e643ac7abeab801cc3b71c
 +};
 +
 +typedef struct QemuCrucibleRamControlActor {
++    QemuThreadBoundedCreateReceipt creation_receipt;
++    bool task_reserved;
 +    QemuCrucibleStartupRuntimePurpose *purpose;
 +    QemuCrucibleRamEndpointPurposeOwner *ram_endpoint;
 +    int endpoint_descriptor;
@@ -174669,6 +176779,52 @@ index 0000000000000000000000000000000000000000..8af1c57a60e643ac7abeab801cc3b71c
 +    int post_status;
 +    int return_status;
 +};
++
++/* Each actual observer owns its own I/O scratch and monotone policy cursor.
++ * Main supervision never contends with the worker's physical read posts. */
++typedef struct QemuCrucibleFingerprintMaterialObserver {
++    QemuCrucibleStandingRecord current;
++    QemuCrucibleProcessContractObservation observation;
++    uint8_t snapshot[QEMU_CRUCIBLE_STANDING_PAYLOAD_BYTES];
++    uint64_t sequence;
++    uint64_t last_now_ns;
++} QemuCrucibleFingerprintMaterialObserver;
++
++/* The aggregate Main capture births a separate child operation under the
++ * same standing lender/class and outer cap. Its start/budgets never restart
++ * at queue acceptance. Root may end while this actual material remains held. */
++typedef struct QemuCrucibleFingerprintMaterial {
++    struct QemuCrucibleFingerprintOperation operation;
++    QemuCrucibleFingerprintWorker *worker;
++    QemuCrucibleStartupInstallerBinding installer;
++    QemuCrucibleFingerprintMaterialObserver main_observer;
++    QemuCrucibleFingerprintMaterialObserver worker_observer;
++    uint64_t root_serial;
++    uint64_t device_length;
++    uint64_t read_offset;
++    struct qemu_plugin_crucible_fingerprint_material_read_v1 read;
++    dev_t device;
++    ino_t inode;
++    int descriptor;
++    int first_status;
++    int post_status;
++    bool held;
++    bool capture_entered;
++    bool root_attached;
++    bool root_returned;
++    bool sealed;
++    bool submitted;
++    bool work_returned;
++    bool close_attempted;
++    bool close_uncertain;
++    bool physical_returned;
++} QemuCrucibleFingerprintMaterial;
++
++int qemu_crucible_fingerprint_material_capture_begin_v1(
++    QemuCrucibleFingerprintMaterial **out);
++int qemu_crucible_fingerprint_material_capture_end_v1(
++    QemuCrucibleFingerprintMaterial *material, int descriptor,
++    uint64_t bytes, int first_status);
 +
 +typedef struct QemuCrucibleMachineConstructionFrame
 +    QemuCrucibleMachineConstructionFrame;
@@ -175055,6 +177211,10 @@ index 0000000000000000000000000000000000000000..8af1c57a60e643ac7abeab801cc3b71c
 +    QemuCrucibleCommandConsumerRegistry commands;
 +    QemuCrucibleCallbackPublicationRegistry callbacks;
 +    QemuCrucibleCallbackRegistrationGroups callback_groups;
++    QemuCrucibleFingerprintWorkerClaim worker_claim;
++    QemuCrucibleFingerprintWorker fingerprint_worker;
++    QemuCrucibleFingerprintMaterial fingerprint_material;
++    QemuCrucibleSourceTaskLedger task_ledger;
 +    QemuCrucibleSetupMappingOwner setup_mapping;
 +    QemuCrucibleDeviceWorkspaceMapping workspace_mapping;
 +    QemuCrucibleSetupHandshakeOwner setup_handshake;
@@ -186345,7 +188505,7 @@ index f8e17dcf1ce91d8aefb8d82cafd3196a4fd9edf6..f24121d2d3c66f1436ba73c976a7bd76
      return true;
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..d728cfb2b37e5dce61538269dc788d21cee6b07e
+index 0000000000000000000000000000000000000000..84a5b251390725acab9eb4d4d6c78e8b41a995f5
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,87 @@
@@ -186371,9 +188531,9 @@ index 0000000000000000000000000000000000000000..d728cfb2b37e5dce61538269dc788d21
 +    'include/qemu/crucible-device-workspace.h':
 +        '5710b0cc44f68508cecd4186cca2e10c6aa32eceed1b81f2250ca9faf9028a4b',
 +    'include/plugins/qemu-plugin.h':
-+        'a332f72199fe435a7f5ee80f76ce1a36d9a67b8780f768d0b091af84b5ad1b3a',
++        'b0fee199c0539a189280b93cbe9e2aa390d19bfa510ba0e41c710b9410a77be1',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '5b232cb4d68ba9e5dc700bcb33d1211a6f1d827cace9d0dbe6748c5c908491ab',
++        'ad31201ac429ca717b54014521fbaf094325db2fc0fe98950846c528a7a81efc',
 +}
 +
 +PURPOSE_FUNCTIONS = (
@@ -215908,10 +218068,10 @@ index 0000000000000000000000000000000000000000..74f76ce9c42cee9ebd27167bc4ee13b4
 +    main()
 diff --git a/tests/qtest/crucible-fingerprint-projection.py b/tests/qtest/crucible-fingerprint-projection.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..9d7779ae22ac46267ba7a58368e238145594bd05
+index 0000000000000000000000000000000000000000..e706fae531724410879b192c7a0b529d0d697f7b
 --- /dev/null
 +++ b/tests/qtest/crucible-fingerprint-projection.py
-@@ -0,0 +1,731 @@
+@@ -0,0 +1,733 @@
 +# Copyright (c) 2026 ANDYL Technologies
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Checks live machine fingerprint projections through the control boundary."""
@@ -216267,6 +218427,8 @@ index 0000000000000000000000000000000000000000..9d7779ae22ac46267ba7a58368e23814
 +            raise AssertionError(f"invalid bounded RAM root capture: {line}")
 +        if fields.get("material") != "0":
 +            raise AssertionError(f"failed material transfer: {line}")
++        if fields.get("cleanup") != "0/0/0/0":
++            raise AssertionError(f"retained material cleanup: {line}")
 +        if fields.get("unmatched_ready") != "0":
 +            raise AssertionError(f"unrelated ready marker was rejected: {line}")
 +        if fields.get("unmatched_ready_outside") != "0":
@@ -220229,10 +222391,10 @@ index 0000000000000000000000000000000000000000..edbcd8d9c4806dd34ea2968e517ff4e2
 +}
 diff --git a/tests/tcg/plugins/crucible-fingerprint-observer.c b/tests/tcg/plugins/crucible-fingerprint-observer.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..cd867153f54b6fee0a3946be8c361e495dffc715
+index 0000000000000000000000000000000000000000..aa84fa6838e3d54c7b13a4288b79df2394c010bd
 --- /dev/null
 +++ b/tests/tcg/plugins/crucible-fingerprint-observer.c
-@@ -0,0 +1,331 @@
+@@ -0,0 +1,398 @@
 +/*
 + * Crucible live device fingerprint projection observer
 + *
@@ -220262,6 +222424,7 @@ index 0000000000000000000000000000000000000000..cd867153f54b6fee0a3946be8c361e49
 +static int material_fd = -1;
 +static int wake_fd = -1;
 +static uint64_t sample_count;
++static qemu_plugin_id_t observer_id;
 +static gint unmatched_ready_outside_status = -EINPROGRESS;
 +
 +static void unmatched_ready_outside_exec(unsigned int vcpu_index,
@@ -220363,12 +222526,52 @@ index 0000000000000000000000000000000000000000..cd867153f54b6fee0a3946be8c361e49
 +    return digest_length == 32 ? 0 : -EIO;
 +}
 +
-+static void close_material(
-+    struct qemu_plugin_crucible_fingerprint_v2 *material)
++static int capture_material(
++    struct qemu_plugin_crucible_fingerprint_v2 *material,
++    struct QemuCrucibleFingerprintMaterial **native, bool close_uncertain)
 +{
-+    if (material->device_fd >= 0) {
-+        close(material->device_fd);
++    if (*native || material->device_fd >= 0 || close_uncertain) {
++        return -EBUSY;
 +    }
++    return qemu_plugin_crucible_capture_fingerprint_v3(material, native);
++}
++
++static int hash_material(
++    const struct qemu_plugin_crucible_fingerprint_v2 *material,
++    struct QemuCrucibleFingerprintMaterial *native, uint8_t digest[32])
++{
++    /* This diagnostic observer has no matched worker pipeline. A native
++     * material owner cannot lend its borrowed FD to the old direct reader. */
++    return native ? -ENOTSUP : hash_fd(material->device_fd, digest);
++}
++
++static int close_material(
++    struct qemu_plugin_crucible_fingerprint_v2 *material,
++    struct QemuCrucibleFingerprintMaterial **native, bool *close_uncertain)
++{
++    if (*native) {
++        /* The real control-boundary BH invokes this on Main. Negative return
++         * retains both the actual Source owner and its borrowed FD output. */
++        int status = qemu_plugin_crucible_fingerprint_material_return_v1(
++            observer_id, native);
++
++        if (status) {
++            return status;
++        }
++        material->device_fd = -1;
++        return 0;
++    }
++    if (*close_uncertain) {
++        return -EIO;
++    }
++    if (material->device_fd >= 0) {
++        if (close(material->device_fd) < 0) {
++            *close_uncertain = true;
++            return -errno;
++        }
++        material->device_fd = -1;
++    }
++    return 0;
 +}
 +
 +static void digest_hex(const uint8_t digest[32], char hex[65])
@@ -220399,18 +222602,28 @@ index 0000000000000000000000000000000000000000..cd867153f54b6fee0a3946be8c361e49
 +                             void *userdata)
 +{
 +    static const char unrelated_marker[] = "fingerprint-unrelated";
-+    struct qemu_plugin_crucible_fingerprint_v2 first = {
++    /* Outputs remain in these actual module fields across negative cleanup.
++     * A later callback cannot overwrite an owner or an uncertain FD close. */
++    static struct qemu_plugin_crucible_fingerprint_v2 first = {
 +        .device_fd = -1,
 +    };
-+    struct qemu_plugin_crucible_fingerprint_v2 second = {
++    static struct qemu_plugin_crucible_fingerprint_v2 second = {
 +        .device_fd = -1,
 +    };
-+    struct qemu_plugin_crucible_fingerprint_v2 paused_first = {
++    static struct qemu_plugin_crucible_fingerprint_v2 paused_first = {
 +        .device_fd = -1,
 +    };
-+    struct qemu_plugin_crucible_fingerprint_v2 paused_second = {
++    static struct qemu_plugin_crucible_fingerprint_v2 paused_second = {
 +        .device_fd = -1,
 +    };
++    static struct QemuCrucibleFingerprintMaterial *first_native;
++    static struct QemuCrucibleFingerprintMaterial *second_native;
++    static struct QemuCrucibleFingerprintMaterial *paused_first_native;
++    static struct QemuCrucibleFingerprintMaterial *paused_second_native;
++    static bool first_close_uncertain;
++    static bool second_close_uncertain;
++    static bool paused_first_close_uncertain;
++    static bool paused_second_close_uncertain;
 +    uint8_t first_digest[32] = { 0 };
 +    uint8_t second_digest[32] = { 0 };
 +    char first_hex[65];
@@ -220429,6 +222642,10 @@ index 0000000000000000000000000000000000000000..cd867153f54b6fee0a3946be8c361e49
 +    int stop_status;
 +    int unmatched_ready_status;
 +    int unmatched_ready_outside;
++    int first_cleanup_status;
++    int second_cleanup_status;
++    int paused_first_cleanup_status;
++    int paused_second_cleanup_status;
 +    bool paused_stable = false;
 +
 +    (void)userdata;
@@ -220437,13 +222654,14 @@ index 0000000000000000000000000000000000000000..cd867153f54b6fee0a3946be8c361e49
 +    unmatched_ready_status = qemu_plugin_crucible_fault_ready_marker(
 +        unrelated_marker, sizeof(unrelated_marker) - 1,
 +        icount == 0 ? UINT64_MAX : icount - 1);
-+    first_status = qemu_plugin_crucible_capture_fingerprint_v2(&first);
++    first_status = capture_material(&first, &first_native, first_close_uncertain);
 +    if (first_status == 0) {
-+        first_hash_status = hash_fd(first.device_fd, first_digest);
++        first_hash_status = hash_material(&first, first_native, first_digest);
 +    }
-+    second_status = qemu_plugin_crucible_capture_fingerprint_v2(&second);
++    second_status = capture_material(&second, &second_native,
++                                    second_close_uncertain);
 +    if (second_status == 0) {
-+        second_hash_status = hash_fd(second.device_fd, second_digest);
++        second_hash_status = hash_material(&second, second_native, second_digest);
 +    }
 +
 +    stable = first_status == 0 && second_status == 0 &&
@@ -220467,16 +222685,20 @@ index 0000000000000000000000000000000000000000..cd867153f54b6fee0a3946be8c361e49
 +        uint8_t paused_second_digest[32] = { 0 };
 +
 +        paused_first_status =
-+            qemu_plugin_crucible_capture_fingerprint_v2(&paused_first);
++            capture_material(&paused_first, &paused_first_native,
++                             paused_first_close_uncertain);
 +        if (paused_first_status == 0) {
 +            paused_first_hash_status =
-+                hash_fd(paused_first.device_fd, paused_first_digest);
++                hash_material(&paused_first, paused_first_native,
++                              paused_first_digest);
 +        }
 +        paused_second_status =
-+            qemu_plugin_crucible_capture_fingerprint_v2(&paused_second);
++            capture_material(&paused_second, &paused_second_native,
++                             paused_second_close_uncertain);
 +        if (paused_second_status == 0) {
 +            paused_second_hash_status =
-+                hash_fd(paused_second.device_fd, paused_second_digest);
++                hash_material(&paused_second, paused_second_native,
++                              paused_second_digest);
 +        }
 +        paused_stable = paused_first_status == 0 &&
 +            paused_second_status == 0 && paused_first_hash_status == 0 &&
@@ -220494,6 +222716,15 @@ index 0000000000000000000000000000000000000000..cd867153f54b6fee0a3946be8c361e49
 +                   sizeof(paused_first_digest)) == 0;
 +    }
 +
++    first_cleanup_status = close_material(
++        &first, &first_native, &first_close_uncertain);
++    second_cleanup_status = close_material(
++        &second, &second_native, &second_close_uncertain);
++    paused_first_cleanup_status = close_material(
++        &paused_first, &paused_first_native, &paused_first_close_uncertain);
++    paused_second_cleanup_status = close_material(
++        &paused_second, &paused_second_native, &paused_second_close_uncertain);
++
 +    dprintf(result_fd,
 +            "sample=%" PRIu64 " vcpu=%u icount=%" PRIu64
 +            " capture=%d/%d hash=%d/%d stable=%s digest=%s repeat=%s"
@@ -220501,7 +222732,8 @@ index 0000000000000000000000000000000000000000..cd867153f54b6fee0a3946be8c361e49
 +            " material=%d stop=%d paused=%d/%d paused_hash=%d/%d"
 +            " paused_stable=%s unmatched_ready=%d"
 +            " unmatched_ready_outside=%d ram_schema=%u ram_edition=%u"
-+            " ram_scope=%u ram_bytes=%" PRIu64 " ram_digest=%s\n",
++            " ram_scope=%u ram_bytes=%" PRIu64 " ram_digest=%s"
++            " cleanup=%d/%d/%d/%d\n",
 +            sample_count++, vcpu_index, icount, first_status, second_status,
 +            first_hash_status, second_hash_status, stable ? "true" : "false",
 +            first_hex, second_hex,
@@ -220511,12 +222743,9 @@ index 0000000000000000000000000000000000000000..cd867153f54b6fee0a3946be8c361e49
 +            paused_second_status, paused_first_hash_status,
 +            paused_second_hash_status, paused_stable ? "true" : "false",
 +            unmatched_ready_status, unmatched_ready_outside, first.schema,
-+            first.logical_edition, first.ram_scope, first.ram_bytes, ram_hex);
-+
-+    close_material(&first);
-+    close_material(&second);
-+    close_material(&paused_first);
-+    close_material(&paused_second);
++            first.logical_edition, first.ram_scope, first.ram_bytes, ram_hex,
++            first_cleanup_status, second_cleanup_status,
++            paused_first_cleanup_status, paused_second_cleanup_status);
 +}
 +
 +static bool parse_fd(const char *argument, const char *prefix, int *fd)
@@ -220540,8 +222769,8 @@ index 0000000000000000000000000000000000000000..cd867153f54b6fee0a3946be8c361e49
 +                                           const qemu_info_t *info,
 +                                           int argc, char **argv)
 +{
-+    (void)id;
 +    (void)info;
++    observer_id = id;
 +
 +    for (int i = 0; i < argc; i++) {
 +        if (!parse_fd(argv[i], "result-fd=", &result_fd)) {
@@ -229063,7 +231292,7 @@ index 0000000000000000000000000000000000000000..f517993ed29c5a6611a6d10ad6a2a612
 +#endif /* TESTS_CRUCIBLE_TIMER_STREAM_H */
 diff --git a/tests/unit/extract-crucible-cached-writer.py b/tests/unit/extract-crucible-cached-writer.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..744c2574bf925b75789a7ddf89525387e7f9ee7f
+index 0000000000000000000000000000000000000000..2b84c456991714c9e6b1d5c9ce28f49bf9595305
 --- /dev/null
 +++ b/tests/unit/extract-crucible-cached-writer.py
 @@ -0,0 +1,352 @@
@@ -229084,11 +231313,11 @@ index 0000000000000000000000000000000000000000..744c2574bf925b75789a7ddf89525387
 +
 +SOURCE_HASHES = {
 +    'util/qemu-thread-posix.c':
-+        'ac52a830c15de950ed855ce27a216e2226872e958760a38a0f5504390cd634bf',
++        '1d1f5520a208b0b11e6f7585fb9d0462b045e0a193f73e4d290dc874dd977357',
 +    'util/oslib-posix.c':
 +        '04c5696686ee58dbd402f0ed31845de3dec234c38b7aa97ec98506356adc9789',
 +    'include/qemu/thread.h':
-+        'a3254ccf7b60eb60a6d36b1113bb97036fcf43e2d4c9582c655939c409078ca8',
++        'c66914a027e1c2b5625a5f8faf0a11105d8ed2cda62e16e09597c56760b7f6cb',
 +    'include/qemu/thread-posix.h':
 +        '22edf9398513dc3889c9fdb2f558ebd0321cfcc7ee33e6ad574941c220c22b6c',
 +    'include/system/memory_cached.h':
@@ -229421,7 +231650,7 @@ index 0000000000000000000000000000000000000000..744c2574bf925b75789a7ddf89525387
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..01e1561249fe8a6dd010f0a36382b96e7d93c6f9
+index 0000000000000000000000000000000000000000..5e580c799e2d4291b3240609593d94be01cada48
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
 @@ -0,0 +1,100 @@
@@ -229439,7 +231668,7 @@ index 0000000000000000000000000000000000000000..01e1561249fe8a6dd010f0a36382b96e
 +    'include/system/crucible-ram-quiescence.h':
 +        '2ad1d50c233a309fae5064acd1db4020b1135cf6203cb12cdf7bd33efd0e4a23',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '5b232cb4d68ba9e5dc700bcb33d1211a6f1d827cace9d0dbe6748c5c908491ab',
++        'ad31201ac429ca717b54014521fbaf094325db2fc0fe98950846c528a7a81efc',
 +}
 +
 +FUNCTIONS = (
@@ -229527,7 +231756,7 @@ index 0000000000000000000000000000000000000000..01e1561249fe8a6dd010f0a36382b96e
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..eebe58e96b369bc27b47fb59d403b59ac7d5b9f9
+index 0000000000000000000000000000000000000000..cdeb8d48e9c61ed2485fce563be7dc47b4d340b6
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
 @@ -0,0 +1,241 @@
@@ -229548,17 +231777,17 @@ index 0000000000000000000000000000000000000000..eebe58e96b369bc27b47fb59d403b59a
 +    'plugins/crucible-checkpoint-finalizer.inc.h':
 +        '0f042e3d26cf80570a79bc7224883111ba12b2f32a7c17d41cca2e2b1a498122',
 +    'plugins/crucible-startup-source.c':
-+        'e86eba4344d03882824e02ad04e413a1037961996195cdf14d2af62a4b9265f8',
++        'a99bc8e05a42e38da8e4372a30b1b6d761b85a1eb3c825871489f071392b3000',
 +    'plugins/crucible-startup-source.h':
-+        '3cf9759b542d152954b413d8e62f25c2660f4f4685ebc7bb2c22ab762299cf9c',
++        'ee870fdc0daa15aa466d3da540c6313ec903397cf8427b5a5b686e37e98f03db',
 +    'include/plugins/qemu-plugin.h':
-+        'a332f72199fe435a7f5ee80f76ce1a36d9a67b8780f768d0b091af84b5ad1b3a',
++        'b0fee199c0539a189280b93cbe9e2aa390d19bfa510ba0e41c710b9410a77be1',
 +    'system/crucible-hot-fork-coordinator.c':
 +        'c782e9f0e3410ea7fcaea903772a5bdf799225c0e4cb340f39656d5f6657909c',
 +    'include/system/crucible-ram-quiescence.h':
 +        '2ad1d50c233a309fae5064acd1db4020b1135cf6203cb12cdf7bd33efd0e4a23',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '5b232cb4d68ba9e5dc700bcb33d1211a6f1d827cace9d0dbe6748c5c908491ab',
++        'ad31201ac429ca717b54014521fbaf094325db2fc0fe98950846c528a7a81efc',
 +}
 +
 +FUNCTIONS = (
@@ -229774,7 +232003,7 @@ index 0000000000000000000000000000000000000000..eebe58e96b369bc27b47fb59d403b59a
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..602b94a66b91da540cfdb679a15720da014e28f3
+index 0000000000000000000000000000000000000000..c8dd22d17a4ec330143fd0bfe7cb4b17f7e70ae7
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -229798,7 +232027,7 @@ index 0000000000000000000000000000000000000000..602b94a66b91da540cfdb679a15720da
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '5b232cb4d68ba9e5dc700bcb33d1211a6f1d827cace9d0dbe6748c5c908491ab',
++        'ad31201ac429ca717b54014521fbaf094325db2fc0fe98950846c528a7a81efc',
 +}
 +
 +FUNCTIONS = (
@@ -229892,7 +232121,7 @@ index 0000000000000000000000000000000000000000..602b94a66b91da540cfdb679a15720da
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..60b6b36307230278d2e6930da9ceb6df17eccd5d
+index 0000000000000000000000000000000000000000..1ed9fe553bcb9c3f7aaf646164780e79122154b6
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
 @@ -0,0 +1,173 @@
@@ -229927,21 +232156,21 @@ index 0000000000000000000000000000000000000000..60b6b36307230278d2e6930da9ceb6df
 +    'include/qemu/crucible-device-workspace.h':
 +        '5710b0cc44f68508cecd4186cca2e10c6aa32eceed1b81f2250ca9faf9028a4b',
 +    'include/plugins/qemu-plugin.h':
-+        'a332f72199fe435a7f5ee80f76ce1a36d9a67b8780f768d0b091af84b5ad1b3a',
++        'b0fee199c0539a189280b93cbe9e2aa390d19bfa510ba0e41c710b9410a77be1',
 +    'plugins/crucible-process-purpose.c':
 +        '514f3d0e678d947fb35ad0ab92f808f1f2d06dbcdddefac01d0624c7a6ee9d23',
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '5b232cb4d68ba9e5dc700bcb33d1211a6f1d827cace9d0dbe6748c5c908491ab',
++        'ad31201ac429ca717b54014521fbaf094325db2fc0fe98950846c528a7a81efc',
 +    'scripts/extract-crucible-preexec-purpose.py':
-+        'b96b5fad398b7069b44e999da805aa56f0047dd5275b4b5513f62a4bbfa4651c',
++        '1ca16237c27176e74778104151a1753814f414f6255993e558a8869f15977988',
 +    'meson.build':
 +        '7eef2c0d1494dfdeed66f56c77f092382cd63d3fd5ad7c0b7c7ac85ca599e39e',
 +    'tests/unit/test-crucible-preexec-setup.c':
 +        'd26871f569f6be81b3b6189a373f2937b4b2e705a5f06c93120a6a18e0416a6c',
 +    'tests/unit/meson.build':
-+        '600e1eeb0f33b52e4e5aacc957c4510987b29ad4c5a6ae03b23748ae31d07d1d',
++        'dfbfcabd8da633be3eeb9644833e658d863bb28bfa1b866cde38e5500f03dc71',
 +}
 +
 +PRIVATE_INCLUDES = ('family', 'contract', 'artifact', 'ram', 'workspace')
@@ -230071,10 +232300,10 @@ index 0000000000000000000000000000000000000000..60b6b36307230278d2e6930da9ceb6df
 +        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..f89b07ef9289dede82fb859c394cc7ed5f58c6fe
+index 0000000000000000000000000000000000000000..c9e9e867c1f06db9ef3e21fe19b5a67cdfcb2c72
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
-@@ -0,0 +1,894 @@
+@@ -0,0 +1,898 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Extract literal startup integration control cuts, never an issuer fixture."""
 +
@@ -230101,7 +232330,7 @@ index 0000000000000000000000000000000000000000..f89b07ef9289dede82fb859c394cc7ed
 +    'include/system/block-backend-global-state.h':
 +        '9e2cc2603059202eb7dd1d5b1613510ae54f4faeb6c93878f79753e3bad958a6',
 +    'plugins/crucible-device-workspace.inc.h':
-+        '7895ebd3a7bb4c7c2df10377429de3cb204b9fa41dd1c242b8ce17c0cf1d2c60',
++        'd54d7b26c1e29f681843a932c6e00508808a0b1f27472f81b75b743d3df15f2f',
 +    'system/crucible-preexec-setup.c':
 +        '32708bf048f1fc737e9c6cce2b77fbcbab8b8c5a385cc650c74a7e909fffb7c6',
 +    'system/crucible-preexec-workspace.inc.h':
@@ -230113,7 +232342,7 @@ index 0000000000000000000000000000000000000000..f89b07ef9289dede82fb859c394cc7ed
 +    'plugins/crucible-setup-mapping.inc.h':
 +        '873455344e7aace6607c1426cc573ad68ea7701770756b6fd51eba0670fc10b4',
 +    'tests/unit/test-crucible-startup-source.c':
-+        'b2831bf70638e6c7c406d0f23dbee27257ae456c5efe2c9aef4e4a18c59ee5ff',
++        '2079ec65b6fb889606cb866fa319b8a9082069e996c892d2296d1109425cdc54',
 +    'tests/unit/crucible-startup-source-fixture.inc.h':
 +        '5a709cd4af1b16b0f1990d9fcb17a200b1755d62e9be080309e7f069f78153d7',
 +    'include/qemu/crucible-metadata-partition.h':
@@ -230133,15 +232362,15 @@ index 0000000000000000000000000000000000000000..f89b07ef9289dede82fb859c394cc7ed
 +    'system/crucible-hot-fork-coordinator.c':
 +        'c782e9f0e3410ea7fcaea903772a5bdf799225c0e4cb340f39656d5f6657909c',
 +    'plugins/crucible-startup-source.c':
-+        'e86eba4344d03882824e02ad04e413a1037961996195cdf14d2af62a4b9265f8',
++        'a99bc8e05a42e38da8e4372a30b1b6d761b85a1eb3c825871489f071392b3000',
 +    'plugins/crucible-startup-source.h':
-+        '3cf9759b542d152954b413d8e62f25c2660f4f4685ebc7bb2c22ab762299cf9c',
++        'ee870fdc0daa15aa466d3da540c6313ec903397cf8427b5a5b686e37e98f03db',
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'include/qemu/crucible-device-workspace.h':
 +        '5710b0cc44f68508cecd4186cca2e10c6aa32eceed1b81f2250ca9faf9028a4b',
 +    'include/plugins/qemu-plugin.h':
-+        'a332f72199fe435a7f5ee80f76ce1a36d9a67b8780f768d0b091af84b5ad1b3a',
++        'b0fee199c0539a189280b93cbe9e2aa390d19bfa510ba0e41c710b9410a77be1',
 +    'plugins/crucible-command-consumer.inc.h':
 +        '90e66020ed3cd06206739f0921207a2ba0a35ccdf2144b6c829dd77c5f44fd2f',
 +    'plugins/crucible-callback-owner.inc.h':
@@ -230150,8 +232379,10 @@ index 0000000000000000000000000000000000000000..f89b07ef9289dede82fb859c394cc7ed
 +        '8b0a0a6530307a7e3ab7e251744449dc33bda85554eade94e20f0cd25227d8ca',
 +    'plugins/crucible-callback-publication.inc.h':
 +        '62df974b3cbc7a373f7618a79089ebd76344fccd56eeee86b9529c116c629a07',
++    'plugins/crucible-fingerprint-worker.inc.h':
++        '70afb5f413b35503e3c4d59dd102f07f5576b76b332d3b39908ef0a972e84802',
 +    'plugins/crucible-ram-control.inc.h':
-+        'e36826d3c6850a279608aeb377832c4f30f4ad34fe34770b8661914722eac5ef',
++        'bb2ab8ea2aa3d68ed108db79ce461640e1da055264e15ca9c9c35def28920233',
 +    'plugins/crucible-ram-record.inc.h':
 +        '9a372b3721ff9a4f13d4a17636d7a63ff0a69ec40517ebed945f0315fc9bce25',
 +    'include/qemu/crucible-shared-region-layout.h':
@@ -230209,7 +232440,9 @@ index 0000000000000000000000000000000000000000..f89b07ef9289dede82fb859c394cc7ed
 +    'include/system/crucible-ram-quiescence.h':
 +        '2ad1d50c233a309fae5064acd1db4020b1135cf6203cb12cdf7bd33efd0e4a23',
 +    'include/qemu/thread.h':
-+        'a3254ccf7b60eb60a6d36b1113bb97036fcf43e2d4c9582c655939c409078ca8',
++        'c66914a027e1c2b5625a5f8faf0a11105d8ed2cda62e16e09597c56760b7f6cb',
++    'util/qemu-thread-posix.c':
++        '1d1f5520a208b0b11e6f7585fb9d0462b045e0a193f73e4d290dc874dd977357',
 +    'include/qemu/crucible-process-purpose.h':
 +        '9d1ef70162bb666a8e98c865b71d3a10973f058ddf968ffcf7f2f2408fb9fd7c',
 +    'include/qemu/crucible-paged-ram.h':
@@ -230378,7 +232611,7 @@ index 0000000000000000000000000000000000000000..f89b07ef9289dede82fb859c394cc7ed
 +    "qemu_plugin_crucible_startup_runtime_check_v3",
 +    "qemu_plugin_crucible_startup_runtime_interrupt_observe_v2",
 +    "qemu_plugin_crucible_startup_runtime_interrupt_v2",
-+    "qemu_plugin_crucible_startup_runtime_reserve_v5",
++    "qemu_plugin_crucible_startup_runtime_reserve_v6",
 +    "qemu_plugin_crucible_startup_setup_borrow_v3",
 +    "qemu_plugin_crucible_startup_setup_mapping_current_v1",
 +    "qemu_plugin_crucible_startup_source_acquire_v1",
@@ -231068,7 +233301,7 @@ index 0000000000000000000000000000000000000000..228f5bfb67fb64768c9806c3617cc308
 +if __name__ == "__main__":
 +    main()
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..e3617b89f525e44eb380b5bd2c44a18e4157072a 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..f69d5736bcb0697d31085a4a4055ba0ebab3f34e 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -21,6 +21,8 @@ tests = {
@@ -231129,7 +233362,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..e3617b89f525e44eb380b5bd2c44a18e
    if config_host_data.get('CONFIG_INOTIFY1')
      tests += {'test-util-filemonitor': []}
    endif
-@@ -207,3 +244,1140 @@ foreach test_name, extra: tests
+@@ -207,3 +244,1142 @@ foreach test_name, extra: tests
         priority: slow_tests.get(test_name, 30),
         suite: ['unit'])
  endforeach
@@ -231917,6 +234150,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..e3617b89f525e44eb380b5bd2c44a18e
 +                        '../../block/crucible-shmem.c',
 +                        '../../hw/9pfs/virtio-9p-device.c',
 +                        '../../hw/virtio/virtio-crucible-accelerator.c',
++                        '../../plugins/crucible-fingerprint-worker.inc.h',
 +                        '../../plugins/crucible-ram-control.inc.h',
 +                        '../../plugins/crucible-ram-record.inc.h',
 +                        '../../include/qemu/crucible-shared-region-layout.h',
@@ -231947,6 +234181,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..e3617b89f525e44eb380b5bd2c44a18e
 +                        '../../include/system/crucible-hot-fork-coordinator.h',
 +                        '../../include/system/crucible-ram-quiescence.h',
 +                        '../../include/qemu/thread.h',
++                        '../../util/qemu-thread-posix.c',
 +                        '../../include/qemu/crucible-process-purpose.h',
 +                        '../../include/qemu/crucible-paged-ram.h',
 +                        '../../include/qom/object.h',
@@ -278588,10 +280823,10 @@ index 0000000000000000000000000000000000000000..2d6095e07373bad053241cac032344a2
 +}
 diff --git a/tests/unit/test-crucible-startup-source.c b/tests/unit/test-crucible-startup-source.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..1581e318da4638d75797754363d304046ec04ff9
+index 0000000000000000000000000000000000000000..051c74cb6e6127090231b4ddd64926dc86b4f738
 --- /dev/null
 +++ b/tests/unit/test-crucible-startup-source.c
-@@ -0,0 +1,4581 @@
+@@ -0,0 +1,4599 @@
 +/*
 + * Actual Source lifecycle, accounting and registration controls.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -281716,6 +283951,7 @@ index 0000000000000000000000000000000000000000..1581e318da4638d75797754363d30404
 +    QemuCrucibleStartupRuntimePurpose *runtime = NULL;
 +    QemuCrucibleCommandConsumerRequest *claim = NULL;
 +    QemuCrucibleCallbackChildRequest *child_claim = NULL;
++    QemuCrucibleFingerprintWorkerClaim *worker_claim = NULL;
 +    QemuCrucibleCommandConsumerStorage *bridge = &startup_source.commands.storage;
 +    QemuCrucibleCallbackChildStorage *child = &startup_source.commands.child;
 +    QemuCrucibleCallbackChildOwner *owner = &startup_source.callbacks.owner;
@@ -281730,9 +283966,10 @@ index 0000000000000000000000000000000000000000..1581e318da4638d75797754363d30404
 +    g_assert_cmpuint(startup_source.standing.initial.process_generation, ==,
 +                     startup_source.original.process_generation);
 +
-+    g_assert_cmpint(qemu_plugin_crucible_startup_runtime_reserve_v5(
++    g_assert_cmpint(qemu_plugin_crucible_startup_runtime_reserve_v6(
 +        fixture.ctx.id, requests, G_N_ELEMENTS(requests),
-+        &runtime, &claim, &child_claim), ==, 0);
++        &runtime, &claim, &child_claim, &worker_claim), ==, 0);
++    g_assert_null(worker_claim);
 +    cleanup_runtime = (FixtureCleanupRuntime) {
 +        .bridge = bridge, .child = child, .owner = owner, .runtime = runtime,
 +    };
@@ -282183,15 +284420,18 @@ index 0000000000000000000000000000000000000000..1581e318da4638d75797754363d30404
 +    qemu_plugin_crucible_runtime_purpose_v3 *purpose = NULL;
 +    QemuCrucibleCommandConsumerRequest *claim = NULL;
 +    QemuCrucibleCallbackChildRequest *child_claim = NULL;
++    QemuCrucibleFingerprintWorkerClaim *worker_claim = NULL;
 +    qemu_plugin_crucible_runtime_purpose_v3 *repeated = NULL;
 +    QemuCrucibleCommandConsumerRequest *repeated_claim = NULL;
 +    QemuCrucibleCallbackChildRequest *repeated_child_claim = NULL;
++    QemuCrucibleFingerprintWorkerClaim *repeated_worker_claim = NULL;
 +    uint64_t charge_bytes = fixture_runtime_charge_bytes();
 +
 +    fixture_runtime5_prepare();
-+    g_assert_cmpint(qemu_plugin_crucible_startup_runtime_reserve_v5(
++    g_assert_cmpint(qemu_plugin_crucible_startup_runtime_reserve_v6(
 +        fixture.ctx.id, runtime_requests, G_N_ELEMENTS(runtime_requests),
-+        &purpose, &claim, &child_claim), ==, 0);
++        &purpose, &claim, &child_claim, &worker_claim), ==, 0);
++    g_assert_null(worker_claim);
 +    g_assert_true(purpose == &startup_source.runtime_purpose);
 +    g_assert_true(claim == &startup_source.commands.claim);
 +    g_assert_true(claim->held);
@@ -282208,9 +284448,11 @@ index 0000000000000000000000000000000000000000..1581e318da4638d75797754363d30404
 +    g_assert_cmpint(qemu_plugin_crucible_startup_runtime_check_v3(
 +        fixture.ctx.id, purpose), ==, 0);
 +    g_assert_cmpint(startup_runtime_admission(fixture.ctx.id, purpose), ==, 0);
-+    g_assert_cmpint(qemu_plugin_crucible_startup_runtime_reserve_v5(
++    g_assert_cmpint(qemu_plugin_crucible_startup_runtime_reserve_v6(
 +        fixture.ctx.id, runtime_requests, G_N_ELEMENTS(runtime_requests),
-+        &repeated, &repeated_claim, &repeated_child_claim), ==, -EALREADY);
++        &repeated, &repeated_claim, &repeated_child_claim,
++        &repeated_worker_claim), ==, -EALREADY);
++    g_assert_null(repeated_worker_claim);
 +    g_assert_null(repeated);
 +    g_assert_null(repeated_claim);
 +    g_assert_null(repeated_child_claim);
@@ -282233,13 +284475,16 @@ index 0000000000000000000000000000000000000000..1581e318da4638d75797754363d30404
 +    qemu_plugin_crucible_runtime_purpose_v3 *purpose = NULL;
 +    QemuCrucibleCommandConsumerRequest *claim = NULL;
 +    QemuCrucibleCallbackChildRequest *child_claim = NULL;
++    QemuCrucibleFingerprintWorkerClaim *worker_claim = NULL;
 +
 +    fixture_runtime5_prepare();
 +    memcpy(requests, runtime_requests, sizeof(requests));
 +    requests[2].birth_count = 2;
 +
-+    g_assert_cmpint(qemu_plugin_crucible_startup_runtime_reserve_v5(
-+        fixture.ctx.id, requests, G_N_ELEMENTS(requests), &purpose, &claim, &child_claim), ==, -EINVAL);
++    g_assert_cmpint(qemu_plugin_crucible_startup_runtime_reserve_v6(
++        fixture.ctx.id, requests, G_N_ELEMENTS(requests),
++        &purpose, &claim, &child_claim, &worker_claim), ==, -EINVAL);
++    g_assert_null(worker_claim);
 +    g_assert_null(purpose);
 +    g_assert_null(claim);
 +    g_assert_null(child_claim);
@@ -282254,17 +284499,20 @@ index 0000000000000000000000000000000000000000..1581e318da4638d75797754363d30404
 +    qemu_plugin_crucible_runtime_purpose_v3 *purpose = NULL;
 +    QemuCrucibleCommandConsumerRequest *claim = NULL;
 +    QemuCrucibleCallbackChildRequest *child_claim = NULL;
++    QemuCrucibleFingerprintWorkerClaim *worker_claim = NULL;
 +    qemu_plugin_crucible_runtime_purpose_v3 *repeated = NULL;
 +    QemuCrucibleCommandConsumerRequest *repeated_claim = NULL;
 +    QemuCrucibleCallbackChildRequest *repeated_child_claim = NULL;
++    QemuCrucibleFingerprintWorkerClaim *repeated_worker_claim = NULL;
 +    uint64_t charge_bytes = fixture_runtime_charge_bytes();
 +
 +    fixture_runtime5_prepare();
 +    signal_on_metadata_close = metadata_close_calls + 3;
 +
-+    g_assert_cmpint(qemu_plugin_crucible_startup_runtime_reserve_v5(
++    g_assert_cmpint(qemu_plugin_crucible_startup_runtime_reserve_v6(
 +        fixture.ctx.id, runtime_requests, G_N_ELEMENTS(runtime_requests),
-+        &purpose, &claim, &child_claim), ==, -ECANCELED);
++        &purpose, &claim, &child_claim, &worker_claim), ==, -ECANCELED);
++    g_assert_null(worker_claim);
 +    g_assert_true(purpose == &startup_source.runtime_purpose);
 +    g_assert_true(claim == &startup_source.commands.claim);
 +    g_assert_true(claim->held);
@@ -282277,9 +284525,11 @@ index 0000000000000000000000000000000000000000..1581e318da4638d75797754363d30404
 +    g_assert_nonnull(purpose->configured_requests);
 +    g_assert_false(purpose->configured_published);
 +    g_assert_cmpint(startup_source.metadata_partition.post_status, ==, -ECANCELED);
-+    g_assert_cmpint(qemu_plugin_crucible_startup_runtime_reserve_v5(
++    g_assert_cmpint(qemu_plugin_crucible_startup_runtime_reserve_v6(
 +        fixture.ctx.id, runtime_requests, G_N_ELEMENTS(runtime_requests),
-+        &repeated, &repeated_claim, &repeated_child_claim), ==, -EALREADY);
++        &repeated, &repeated_claim, &repeated_child_claim,
++        &repeated_worker_claim), ==, -EALREADY);
++    g_assert_null(repeated_worker_claim);
 +    g_assert_null(repeated);
 +    g_assert_null(repeated_claim);
 +    g_assert_null(repeated_child_claim);
@@ -282314,6 +284564,7 @@ index 0000000000000000000000000000000000000000..1581e318da4638d75797754363d30404
 +    qemu_plugin_crucible_runtime_purpose_v3 *purpose = NULL;
 +    QemuCrucibleCommandConsumerRequest *claim = NULL;
 +    QemuCrucibleCallbackChildRequest *child_claim = NULL;
++    QemuCrucibleFingerprintWorkerClaim *worker_claim = NULL;
 +    struct qemu_plugin_crucible_runtime_interrupt_status_v2 observed = {
 +        .result = INT_MIN,
 +        .first_status = INT_MIN,
@@ -282323,8 +284574,10 @@ index 0000000000000000000000000000000000000000..1581e318da4638d75797754363d30404
 +    int peer;
 +
 +    fixture_runtime5_prepare();
-+    g_assert_cmpint(qemu_plugin_crucible_startup_runtime_reserve_v5(
-+        fixture.ctx.id, runtime_requests, G_N_ELEMENTS(runtime_requests), &purpose, &claim, &child_claim), ==, 0);
++    g_assert_cmpint(qemu_plugin_crucible_startup_runtime_reserve_v6(
++        fixture.ctx.id, runtime_requests, G_N_ELEMENTS(runtime_requests),
++        &purpose, &claim, &child_claim, &worker_claim), ==, 0);
++    g_assert_null(worker_claim);
 +    g_assert_true(claim == &startup_source.commands.claim);
 +    g_assert_true(claim->held);
 +    g_assert_true(child_claim == &startup_source.commands.child_claim);
@@ -294966,7 +297219,7 @@ index 4773755fd582e82436159cba2e114e047aae7478..74516a1c97422b317868dfb54686c357
          }
          break;
 diff --git a/util/qemu-thread-posix.c b/util/qemu-thread-posix.c
-index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..045f20692ad24fc078ab204f6d8dafdec761a7fc 100644
+index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..98d9edab4eda0749c09c5171006a2157ba2e8ee0 100644
 --- a/util/qemu-thread-posix.c
 +++ b/util/qemu-thread-posix.c
 @@ -22,6 +22,138 @@
@@ -297761,7 +300014,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..045f20692ad24fc078ab204f6d8dafde
      sigfillset(&set);
      /* Blocking the signals can result in undefined behaviour. */
      sigdelset(&set, SIGSEGV);
-@@ -450,18 +3024,135 @@ void qemu_thread_create(QemuThread *thread, const char *name,
+@@ -450,18 +3024,142 @@ void qemu_thread_create(QemuThread *thread, const char *name,
      qemu_thread_args->name = g_strdup(name);
      qemu_thread_args->start_routine = start_routine;
      qemu_thread_args->arg = arg;
@@ -297800,23 +300053,27 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..045f20692ad24fc078ab204f6d8dafde
 +
 +int qemu_thread_create_bounded(QemuThread *thread, const char *name,
 +                              void *(*entry)(void *), void *opaque,
-+                              void *stack, size_t stack_bytes)
++                              void *stack, size_t stack_bytes,
++                              QemuThreadBoundedCreateReceipt *receipt)
 +{
 +    pthread_attr_t attributes;
-+    QemuThreadArgs *arguments;
++    QemuThreadArgs *arguments = NULL;
 +    sigset_t blocked, previous;
 +    size_t name_bytes;
 +    int status;
 +
-+    if (!thread || !name || !entry || !stack || !stack_bytes) {
++    if (!thread || !name || !entry || !stack || !stack_bytes || !receipt) {
 +        return -EINVAL;
 +    }
++    *receipt = (QemuThreadBoundedCreateReceipt) { 0 };
 +    name_bytes = strnlen(name, QEMU_HOT_FORK_THREAD_NAME_MAX + 1) + 1;
 +    if (!qemu_thread_bounded_control_bytes(name_bytes)) {
++        receipt->first_status = -EINVAL;
 +        return -EINVAL;
 +    }
 +    status = pthread_attr_init(&attributes);
 +    if (status) {
++        receipt->first_status = -status;
 +        return -status;
 +    }
 +    /* The retained mapping contains the whole stack; no hidden guard mapping
@@ -297826,19 +300083,18 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..045f20692ad24fc078ab204f6d8dafde
 +        status = pthread_attr_setstack(&attributes, stack, stack_bytes);
 +    }
 +    if (status) {
-+        pthread_attr_destroy(&attributes);
-+        return -status;
++        status = -status;
++        goto finished;
 +    }
 +    arguments = g_try_new0(QemuThreadArgs, 1);
 +    if (!arguments) {
-+        pthread_attr_destroy(&attributes);
-+        return -ENOMEM;
++        status = -ENOMEM;
++        goto finished;
 +    }
 +    arguments->name = g_try_malloc(name_bytes);
 +    if (!arguments->name) {
-+        g_free(arguments);
-+        pthread_attr_destroy(&attributes);
-+        return -ENOMEM;
++        status = -ENOMEM;
++        goto finished;
 +    }
 +    memcpy(arguments->name, name, name_bytes);
 +    arguments->start_routine = entry;
@@ -297851,28 +300107,32 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..045f20692ad24fc078ab204f6d8dafde
 +    sigdelset(&blocked, SIGILL);
 +    status = pthread_sigmask(SIG_SETMASK, &blocked, &previous);
 +    if (status) {
-+        goto refused;
++        status = -status;
++        goto finished;
 +    }
 +    qemu_hot_fork_thread_start_begin();
++    receipt->birth_attempted = true;
 +    status = pthread_create(&thread->thread, &attributes,
 +                            qemu_thread_start, arguments);
++    /* Physical birth precedes every fallible restoration/disposition post. */
++    receipt->create_status = status ? -status : 0;
++    receipt->born = status == 0;
 +    if (status) {
 +        qemu_hot_fork_thread_start_end();
 +    }
-+    pthread_sigmask(SIG_SETMASK, &previous, NULL);
-+    pthread_attr_destroy(&attributes);
-+    if (status) {
++    receipt->mask_restore_status =
++        -pthread_sigmask(SIG_SETMASK, &previous, NULL);
++    status = receipt->create_status;
++
++finished:
++    receipt->first_status = status;
++    receipt->attr_destroy_status = -pthread_attr_destroy(&attributes);
++    if (!receipt->born && arguments) {
 +        g_free(arguments->name);
 +        g_free(arguments);
-+        return -status;
 +    }
-+    return 0;
-+
-+refused:
-+    g_free(arguments->name);
-+    g_free(arguments);
-+    pthread_attr_destroy(&attributes);
-+    return -status;
++    return status ? status : receipt->mask_restore_status ?
++        receipt->mask_restore_status : receipt->attr_destroy_status;
 +}
 +
 +int qemu_thread_tryjoin(QemuThread *thread, void **result)

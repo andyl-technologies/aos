@@ -71,6 +71,8 @@ mod startup_source;
 pub use startup_source::StartupSourceError;
 pub mod device_io;
 pub mod fault_command;
+#[cfg(not(test))]
+mod fingerprint_native;
 mod fingerprint_sampler;
 pub use device_digest_workspace::DeviceDigestWorkspaceError;
 pub mod handshake;

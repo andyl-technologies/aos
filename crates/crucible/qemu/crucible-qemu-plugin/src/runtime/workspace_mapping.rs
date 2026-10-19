@@ -138,6 +138,15 @@ impl WorkspaceMapping {
         native_status(status)
     }
 
+    /// Returns only checked mapping identity for the real Source worker creator.
+    ///
+    /// # Errors
+    /// Refuses absent, stale or untransferred physical custody; no bytes escape.
+    pub(super) fn native_projection(&mut self) -> Result<*mut c_void, DeviceDigestWorkspaceError> {
+        self.current()?;
+        Ok(self.observed.cast())
+    }
+
     /// Returns only exact physical identity after Source's genuine last-use gate.
     ///
     /// # Errors

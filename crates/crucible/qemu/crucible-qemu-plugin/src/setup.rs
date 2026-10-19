@@ -274,6 +274,23 @@ impl PluginSetupCompletion {
         self.original_startup()?.callback_child_material()
     }
 
+    /// Borrows the genuine optional worker claim from the same installing Source.
+    ///
+    /// # Errors
+    /// Refuses missing original installation or an absent configured worker role.
+    pub(crate) fn fingerprint_worker_material(
+        &self,
+    ) -> Result<
+        (
+            u64,
+            *mut crate::startup_source::runtime_purpose::RuntimePurpose,
+            *mut crate::startup_source::runtime_purpose::WorkerClaim,
+        ),
+        crate::StartupSourceError,
+    > {
+        self.original_startup()?.fingerprint_worker_material()
+    }
+
     /// Rechecks retained runtime allocation custody without temporal admission.
     ///
     /// # Errors

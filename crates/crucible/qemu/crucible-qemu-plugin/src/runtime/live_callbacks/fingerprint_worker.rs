@@ -1,25 +1,63 @@
 //! Ordered device digests with retained startup, workspace and retirement custody.
 //!
-//! One admitted control owns the mapping before the worker starts. The worker
-//! borrows it only while hashing; startup reports actual registration, and
-//! healthy retirement joins before recovering and closing the unique mapping.
+//! Source owns the production control allocation, pthread and physical workspace.
+//! Actual byte loans cover each digest; Main returns detached material after
+//! publication/ACK, and physical join precedes matched final Arc destruction.
+//! Explicit fixtures retain their local thread and mapping lifecycle.
 
 use std::any::Any;
+#[cfg(test)]
 use std::cell::UnsafeCell;
 use std::fmt;
 use std::sync::{Condvar, MutexGuard};
-use std::thread::{self, JoinHandle};
+use std::thread;
+#[cfg(test)]
+use std::thread::JoinHandle;
 
 use super::*;
-use crate::device_digest_workspace::{DeviceDigestWorkspace, DeviceDigestWorkspaceError};
+
+#[cfg(not(test))]
+mod native;
+#[cfg(not(test))]
+pub(in crate::runtime) use native::SourceWorkerOwner;
+#[cfg(test)]
+use crate::device_digest_workspace::DeviceDigestWorkspace;
+use crate::device_digest_workspace::DeviceDigestWorkspaceError;
 use crate::fingerprint_sampler::FingerprintSamplerError;
 use crate::ram_error::RamError;
 use crate::runtime::worker_quiescence::{LiveWorkerQuiescence, WORKER_FINGERPRINT};
+
+/// Keeps sampler errors typed until the already-entered control scope records them.
+#[cfg(not(test))]
+pub(super) enum FingerprintCaptureActionError {
+    Sampler {
+        boundary: &'static str,
+        source: FingerprintSamplerError,
+    },
+    Worker(LiveVcpuTimeCallbackError),
+}
+
+#[cfg(not(test))]
+impl From<LiveVcpuTimeCallbackError> for FingerprintCaptureActionError {
+    fn from(source: LiveVcpuTimeCallbackError) -> Self {
+        Self::Worker(source)
+    }
+}
 
 struct LiveFingerprintDigestWork {
     captured: CapturedFingerprintSample,
     capture_request: u32,
     publication: MaterialPublication,
+    #[cfg(not(test))]
+    native_work: *mut crate::fingerprint_native::Work,
+    #[cfg(not(test))]
+    worker_work: *mut crate::fingerprint_native::Work,
+    #[cfg(not(test))]
+    workspace_address: usize,
+    #[cfg(not(test))]
+    workspace_length: usize,
+    #[cfg(not(test))]
+    work_returned: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,9 +75,20 @@ impl LiveFingerprintDigestWork {
             captured,
             capture_request,
             publication: MaterialPublication::NotStarted,
+            #[cfg(not(test))]
+            native_work: std::ptr::null_mut(),
+            #[cfg(not(test))]
+            worker_work: std::ptr::null_mut(),
+            #[cfg(not(test))]
+            workspace_address: 0,
+            #[cfg(not(test))]
+            workspace_length: 0,
+            #[cfg(not(test))]
+            work_returned: false,
         }
     }
 
+    #[cfg(test)]
     fn publish(
         &mut self,
         slot: &FingerprintSampleSlot,
@@ -76,12 +125,19 @@ pub struct FingerprintWorkerFailure {
 impl fmt::Debug for FingerprintWorkerFailure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let state = self.control.lock();
-        formatter
-            .debug_struct("FingerprintWorkerFailure")
+        let mut debug = formatter.debug_struct("FingerprintWorkerFailure");
+        debug
             .field("primary", &state.failure)
             .field("cleanup", &state.cleanup_failure)
-            .field("original", &state.supervision_failure)
-            .finish_non_exhaustive()
+            .field("original", &state.supervision_failure);
+        #[cfg(not(test))]
+        debug
+            .field("native", &state.native_failure)
+            .field("material_cleanup", &state.native_cleanup_failure)
+            .field("module_action", &state.module_action_failure)
+            .field("scope_return", &state.scope_return_failure)
+            .field("sampler_action", &state.sampler_action_failure);
+        debug.finish_non_exhaustive()
     }
 }
 
@@ -107,12 +163,23 @@ impl Eq for FingerprintWorkerFailure {}
 
 #[derive(Debug, thiserror::Error)]
 enum FingerprintWorkerCause {
+    #[cfg(not(test))]
+    #[error("the retained worker module action failed")]
+    ModuleAction,
     #[error("worker registration failed: {0}")]
     Registration(RamError),
+    #[cfg(test)]
     #[error("worker workspace failed: {0}")]
     Workspace(DeviceDigestWorkspaceError),
+    #[cfg(test)]
     #[error("worker creation failed: {0}")]
     Spawn(std::io::Error),
+    #[cfg(not(test))]
+    #[error("Source worker {operation} refused ({status})")]
+    Native {
+        operation: &'static str,
+        status: i32,
+    },
     #[error("device digest failed: {0}")]
     Digest(FingerprintSamplerError),
     #[error("fingerprint publication failed: {0}")]
@@ -137,10 +204,31 @@ struct FingerprintWorkerState {
     cleanup_failure: Option<DeviceDigestWorkspaceError>,
     panic_payload: Option<Box<dyn Any + Send>>,
     supervision_failure: Option<crate::StartupSourceError>,
+    #[cfg(not(test))]
+    native_completion: bool,
+    #[cfg(not(test))]
+    native_failure: Option<native::NativeFailure>,
+    #[cfg(not(test))]
+    native_cleanup_failure: Option<FingerprintSamplerError>,
+    #[cfg(not(test))]
+    module_action_failure: Option<LiveVcpuTimeCallbackError>,
+    #[cfg(not(test))]
+    terminal_failure_issued: bool,
+    #[cfg(not(test))]
+    terminal_history: Option<LiveFingerprintDigestWork>,
+    #[cfg(not(test))]
+    scope_return_failure: Option<i32>,
+    #[cfg(not(test))]
+    sampler_action_failure: Option<(&'static str, FingerprintSamplerError)>,
 }
 
 struct FingerprintWorkerControl {
     state: Mutex<FingerprintWorkerState>,
+    #[cfg(not(test))]
+    native: Option<native::Context>,
+    #[cfg(not(test))]
+    capture_attempt: Mutex<crate::fingerprint_sampler::CaptureAttempt>,
+    #[cfg(test)]
     workspace: Mutex<Option<DeviceDigestWorkspace>>,
     // The worker borrows this prepaid slot; unwinding cannot drop the captured
     // file or read transcript before the joined retirement disposition.
@@ -159,8 +247,12 @@ impl FingerprintWorkerControl {
         }
     }
 
-    fn new(workspace: Option<DeviceDigestWorkspace>) -> Self {
+    fn new(#[cfg(test)] workspace: Option<DeviceDigestWorkspace>) -> Self {
         Self {
+            #[cfg(not(test))]
+            native: None,
+            #[cfg(not(test))]
+            capture_attempt: Mutex::new(crate::fingerprint_sampler::CaptureAttempt::new()),
             state: Mutex::new(FingerprintWorkerState {
                 pending: None,
                 closed: false,
@@ -169,7 +261,24 @@ impl FingerprintWorkerControl {
                 cleanup_failure: None,
                 panic_payload: None,
                 supervision_failure: None,
+                #[cfg(not(test))]
+                native_completion: false,
+                #[cfg(not(test))]
+                native_failure: None,
+                #[cfg(not(test))]
+                native_cleanup_failure: None,
+                #[cfg(not(test))]
+                module_action_failure: None,
+                #[cfg(not(test))]
+                terminal_failure_issued: false,
+                #[cfg(not(test))]
+                terminal_history: None,
+                #[cfg(not(test))]
+                scope_return_failure: None,
+                #[cfg(not(test))]
+                sampler_action_failure: None,
             }),
+            #[cfg(test)]
             workspace: Mutex::new(workspace),
             in_flight: Mutex::new(None),
             available: Condvar::new(),
@@ -179,6 +288,7 @@ impl FingerprintWorkerControl {
         }
     }
 
+    #[cfg(test)]
     fn workspace(&self) -> MutexGuard<'_, Option<DeviceDigestWorkspace>> {
         match self.workspace.lock() {
             Ok(workspace) => workspace,
@@ -205,6 +315,7 @@ impl FingerprintWorkerControl {
 
     // There is exactly one queued capture, independent of the in-flight digest.
     // Both predicates and mutations share this mutex, preventing lost wakeups.
+    #[cfg(test)]
     fn enqueue(
         &self,
         captured: &mut Option<CapturedFingerprintSample>,
@@ -294,18 +405,31 @@ impl FingerprintWorkerControl {
 }
 
 /// Bounded thread and parent-held mapping under one compulsory native purpose.
-pub(super) struct LiveFingerprintDigestWorker {
+pub(in crate::runtime) struct LiveFingerprintDigestWorker {
+    #[cfg(test)]
     control: Option<Arc<FingerprintWorkerControl>>,
+    #[cfg(test)]
     join: Option<JoinHandle<()>>,
+    #[cfg(not(test))]
+    native: native::Handle,
+    #[cfg(not(test))]
+    native_retired: bool,
+    #[cfg(not(test))]
+    native_terminal_status: i32,
+    #[cfg(not(test))]
+    native_close_failure: Option<i32>,
+    #[cfg(not(test))]
+    native_retire_scope_failure: Option<i32>,
     owner_process: u32,
     // Only the fully held/parked parent writes this slot. The early child takes
     // it directly, before runtime reconstruction, without a copied Mutex.
+    #[cfg(test)]
     fork_workspace: UnsafeCell<Option<DeviceDigestWorkspace>>,
 }
 
-// SAFETY: ordinary state is synchronized by its inline mutexes. The only
-// UnsafeCell access occurs under the existing complete native fork barrier;
-// child disarm uses exclusive callback userdata before reconstruction begins.
+// SAFETY: ordinary control state is synchronized by its inline mutexes. Source
+// keeps the production raw Arc owner alive through physical join and final drop;
+// fixture UnsafeCell access requires the complete existing native fork barrier.
 unsafe impl Sync for LiveFingerprintDigestWorker {}
 
 impl LiveFingerprintDigestWorker {
@@ -315,6 +439,7 @@ impl LiveFingerprintDigestWorker {
         super::super::prebirth::shared_layout::<FingerprintWorkerControl>()
     }
 
+    #[cfg(test)]
     pub(super) fn spawn(
         slot: StableFingerprintSlotHandle,
         quiescence: Arc<LiveWorkerQuiescence>,
@@ -386,6 +511,7 @@ impl LiveFingerprintDigestWorker {
         })
     }
 
+    #[cfg(test)]
     fn run(
         slot: StableFingerprintSlotHandle,
         quiescence: &Arc<LiveWorkerQuiescence>,
@@ -455,6 +581,7 @@ impl LiveFingerprintDigestWorker {
     }
 
     /// Waits for actual registration using the caller's retained installing Source.
+    #[cfg(test)]
     pub(super) fn wait_registered(
         &self,
         mut wait_slice: impl FnMut() -> Result<std::time::Duration, crate::StartupSourceError>,
@@ -472,10 +599,13 @@ impl LiveFingerprintDigestWorker {
             }
             let registered = state.registered;
             drop(state);
+            #[cfg(not(test))]
+            self.native.check_readiness(control)?;
             if registered {
                 control.check_original(&mut wait_slice)?;
                 return Ok(());
             }
+            #[cfg(test)]
             if self.join.as_ref().is_none_or(JoinHandle::is_finished) {
                 control.refuse(FingerprintWorkerCause::Panic);
                 return Err(Self::failed(control));
@@ -489,10 +619,14 @@ impl LiveFingerprintDigestWorker {
         captured: &mut Option<CapturedFingerprintSample>,
         capture_request: u32,
     ) -> Result<(), LiveVcpuTimeCallbackError> {
+        #[cfg(not(test))]
+        return self.submit_native(captured, capture_request);
+        #[cfg(test)]
         let control = self
             .control
             .as_ref()
             .ok_or(LiveVcpuTimeCallbackError::FingerprintWorkerUnavailable)?;
+        #[cfg(test)]
         control.enqueue(captured, capture_request).map_err(|()| {
             if control.lock().failure.is_some() {
                 Self::failed(control)
@@ -533,6 +667,7 @@ impl LiveFingerprintDigestWorker {
     ///
     /// Returns a fixed signed refusal for control/workspace contention, poison,
     /// wrong process, absent owner, pending work, failure or inconsistent custody.
+    #[cfg(test)]
     pub(super) unsafe fn hold_workspace_for_parent_park(&self) -> Result<(), i32> {
         if self.owner_process != std::process::id() {
             return Err(-libc::EPERM);
@@ -574,6 +709,7 @@ impl LiveFingerprintDigestWorker {
     ///
     /// Returns a fixed signed refusal for control/workspace contention, poison,
     /// wrong process, absent owner, pending work, failure or inconsistent custody.
+    #[cfg(test)]
     pub(super) unsafe fn restore_workspace_for_parent_park(&self) -> Result<(), i32> {
         if self.owner_process != std::process::id() {
             return Err(-libc::EPERM);
@@ -609,6 +745,7 @@ impl LiveFingerprintDigestWorker {
     /// # Safety
     ///
     /// The caller retains the complete worker/callback barrier with no queued or in-flight work until restoration or child disarm.
+    #[cfg(test)]
     pub(super) unsafe fn hold_workspace_for_fork(&self) -> Result<(), DeviceDigestWorkspaceError> {
         if self.owner_process != std::process::id() {
             return Err(DeviceDigestWorkspaceError::Ownership {
@@ -657,6 +794,7 @@ impl LiveFingerprintDigestWorker {
     /// # Safety
     ///
     /// The caller retains the same parent barrier from the preceding hold; no worker or callback may access the workspace until this returns.
+    #[cfg(test)]
     pub(super) unsafe fn restore_workspace_after_fork(
         &self,
     ) -> Result<(), DeviceDigestWorkspaceError> {
@@ -699,6 +837,7 @@ impl LiveFingerprintDigestWorker {
     }
 
     /// Disarms only the direct inherited owner at authenticated early child entry.
+    #[cfg(test)]
     pub(super) fn disarm_child_workspace(&mut self) -> Result<(), DeviceDigestWorkspaceError> {
         if self.owner_process == std::process::id() {
             return Err(DeviceDigestWorkspaceError::Ownership {
@@ -721,6 +860,7 @@ impl LiveFingerprintDigestWorker {
     }
 
     /// Joins before unique control recovery and fallible workspace close.
+    #[cfg(test)]
     fn retire(&mut self) -> Result<(), FingerprintWorkerFailure> {
         let Some(control) = self.control.as_ref() else {
             return Ok(());
@@ -781,6 +921,7 @@ impl LiveFingerprintDigestWorker {
     }
 }
 
+#[cfg(test)]
 impl Drop for LiveFingerprintDigestWorker {
     fn drop(&mut self) {
         if let Err(failure) = self.retire() {
@@ -791,9 +932,11 @@ impl Drop for LiveFingerprintDigestWorker {
             if let Some(control) = self.control.take() {
                 std::mem::forget(control);
             }
+            #[cfg(test)]
             if let Some(workspace) = self.fork_workspace.get_mut().take() {
                 std::mem::forget(workspace);
             }
+            #[cfg(test)]
             if let Some(join) = self.join.take() {
                 std::mem::forget(join);
             }
@@ -801,6 +944,18 @@ impl Drop for LiveFingerprintDigestWorker {
     }
 }
 
+#[cfg(not(test))]
+impl Drop for LiveFingerprintDigestWorker {
+    fn drop(&mut self) {
+        // A borrowed view has no owning decrement and cannot retire Source's
+        // thread or allocation. Explicit Runtime cleanup owns those effects.
+        // Never inspect a body that Source may already have physically returned.
+        // Native lifetime and final ownership stay entirely with Runtime's
+        // explicit Source worker keeper; this handle owns no body reference.
+    }
+}
+
+#[cfg(test)]
 fn fork_lock_error<T>(error: std::sync::TryLockError<T>) -> DeviceDigestWorkspaceError {
     DeviceDigestWorkspaceError::Ownership {
         reason: match error {

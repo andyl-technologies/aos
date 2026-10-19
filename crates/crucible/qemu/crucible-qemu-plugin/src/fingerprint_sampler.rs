@@ -13,8 +13,11 @@
 //! scheduling, virtual time, or the guest, exactly like the register and cursor
 //! introspection it composes.
 
+#[cfg(test)]
 use std::fs::File;
+#[cfg(test)]
 use std::io::Read;
+#[cfg(test)]
 use std::os::fd::AsRawFd as _;
 use std::os::raw::{c_int, c_void};
 
@@ -26,10 +29,15 @@ use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 
 mod capture_attempt;
+pub(crate) mod read_receipt;
+#[cfg(not(test))]
+mod native_material;
+#[cfg(not(test))]
+use native_material::NativeCapturedMaterial;
 pub(crate) use capture_attempt::CaptureAttempt;
 
-const QEMU_PLUGIN_CRUCIBLE_CAPTURE_FINGERPRINT_V2_SYMBOL_C: &[u8] =
-    b"qemu_plugin_crucible_capture_fingerprint_v2\0";
+const QEMU_PLUGIN_CRUCIBLE_CAPTURE_FINGERPRINT_V3_SYMBOL_C: &[u8] =
+    b"qemu_plugin_crucible_capture_fingerprint_v3\0";
 
 use crate::{
     PluginNvcpuFingerprintInputs, PluginVcpuIntrospector, PluginVcpuRegisterDigest,
@@ -71,13 +79,23 @@ impl Default for QemuFingerprintCaptureV2 {
 }
 
 /// QEMU's aggregate exact-boundary logical-root and device capture export.
+#[cfg(test)]
 pub(crate) type QemuCaptureFingerprintMaterialFn =
     extern "C" fn(*mut QemuFingerprintCaptureV2) -> c_int;
+
+#[cfg(not(test))]
+pub(crate) type QemuCaptureFingerprintMaterialFn = extern "C" fn(
+    *mut QemuFingerprintCaptureV2,
+    *mut *mut crate::fingerprint_native::Material,
+) -> c_int;
 
 /// One QEMU-allocated immutable fingerprint preimage.
 #[derive(Debug)]
 struct CapturedFingerprintMaterial {
+    #[cfg(test)]
     file: File,
+    #[cfg(not(test))]
+    native: NativeCapturedMaterial,
     material_length: u64,
     progress: MaterialDigestProgress,
 }
@@ -89,6 +107,7 @@ struct MaterialDigestProgress {
     consumed: u64,
     failure: Option<FingerprintSamplerError>,
     completed: Option<[u8; FINGERPRINT_DIGEST_BYTES]>,
+    native_failure: Option<(read_receipt::MaterialRead, i32)>,
 }
 
 impl Default for MaterialDigestProgress {
@@ -98,11 +117,13 @@ impl Default for MaterialDigestProgress {
             consumed: 0,
             failure: None,
             completed: None,
+            native_failure: None,
         }
     }
 }
 
 impl CapturedFingerprintMaterial {
+    #[cfg(test)]
     fn digest(
         &mut self,
         component: &'static str,
@@ -121,6 +142,7 @@ impl CapturedFingerprintMaterial {
 // Short reads advance only the actual consumed extent. Interrupted reads do not
 // change it. A later refusal retains this transcript and cannot restart a hash
 // against an already advanced file cursor.
+#[cfg(test)]
 fn digest_device_material(
     reader: &mut impl Read,
     material_length: u64,
@@ -198,6 +220,7 @@ impl CapturedFingerprintSample {
     ///
     /// Returns an error if detached component bytes cannot be read completely.
     /// Failed material must not be published or acknowledge an exact request.
+    #[cfg(test)]
     pub(crate) fn digest(
         &mut self,
         workspace: &mut [u8; 65_536],
@@ -271,6 +294,7 @@ fn validate_capture_evidence(
     Ok(())
 }
 
+#[cfg(test)]
 fn validate_capture_file(
     material: &CapturedFingerprintMaterial,
     component: &'static str,
@@ -295,6 +319,46 @@ fn validate_capture_file(
         || seals != required_seals
         || descriptor_flags < 0
         || descriptor_flags & libc::FD_CLOEXEC == 0
+    {
+        return Err(FingerprintSamplerError::InvalidCaptureDescriptor { component });
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn validate_capture_file(
+    material: &CapturedFingerprintMaterial,
+    component: &'static str,
+) -> Result<(), FingerprintSamplerError> {
+    if material.native.owner.is_null() || material.native.descriptor < 0 {
+        return Err(FingerprintSamplerError::InvalidCaptureDescriptor { component });
+    }
+    let descriptor = material.native.descriptor;
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: the retained native Material owns this borrowed descriptor until
+    // explicit Main return. These identity queries neither close nor retain it.
+    let (status, offset, seals, flags) = unsafe {
+        (
+            libc::fstat(descriptor, stat.as_mut_ptr()),
+            libc::lseek(descriptor, 0, libc::SEEK_CUR),
+            libc::fcntl(descriptor, libc::F_GET_SEALS),
+            libc::fcntl(descriptor, libc::F_GETFD),
+        )
+    };
+    if status != 0 {
+        return Err(FingerprintSamplerError::InvalidCaptureDescriptor { component });
+    }
+    // SAFETY: successful fstat initialized this complete output.
+    let stat = unsafe { stat.assume_init() };
+    let required = libc::F_SEAL_SEAL | libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_WRITE;
+    if stat.st_mode & libc::S_IFMT != libc::S_IFREG
+        || stat.st_size < 0
+        || stat.st_size as u64 != material.material_length
+        || material.material_length == 0
+        || offset != 0
+        || seals != required
+        || flags < 0
+        || flags & libc::FD_CLOEXEC == 0
     {
         return Err(FingerprintSamplerError::InvalidCaptureDescriptor { component });
     }
@@ -337,7 +401,7 @@ fn sample_metadata(
 
 #[cfg(unix)]
 fn resolve_capture_symbol() -> Option<QemuCaptureFingerprintMaterialFn> {
-    let symbol = resolve_symbol_address(QEMU_PLUGIN_CRUCIBLE_CAPTURE_FINGERPRINT_V2_SYMBOL_C)?;
+    let symbol = resolve_symbol_address(QEMU_PLUGIN_CRUCIBLE_CAPTURE_FINGERPRINT_V3_SYMBOL_C)?;
     // SAFETY: the address resolved the patched fingerprint capture export,
     // whose declaration matches `QemuCaptureFingerprintMaterialFn` exactly.
     Some(unsafe { std::mem::transmute::<*mut c_void, QemuCaptureFingerprintMaterialFn>(symbol) })
@@ -403,6 +467,12 @@ pub(crate) enum FingerprintSamplerError {
     /// A previous attempt still owns unaccepted or uncertain capture outputs.
     #[error("a previous fingerprint capture remains untransferred")]
     CaptureRetained,
+    /// Source refused the same detached material or its actual read journal.
+    #[error("fingerprint material operation refused ({status})")]
+    NativeMaterial {
+        /// Exact errno-style native refusal, preserved without a replacement clock.
+        status: i32,
+    },
     /// The assembled sample failed shared-memory slot validation.
     #[error("assembled fingerprint sample is invalid: {0}")]
     Slot(FingerprintSampleError),
