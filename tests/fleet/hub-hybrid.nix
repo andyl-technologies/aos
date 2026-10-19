@@ -837,11 +837,12 @@ in {
     if separateDatabase
     then "hub-hybrid-postgres"
     else "hub-hybrid";
-  # Independent review checkpoints precede two disk-backed large-object workloads.
+  # Include signed closure preparation, indexing, cleanup and runtime parity in
+  # the whole-suite budget. Individual requests retain their own shorter bounds.
   timeout =
     if externalDirect
     then 14400
-    else 2400;
+    else 7200;
   bootTimeout = 600;
 
   machines =
