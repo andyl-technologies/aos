@@ -27,6 +27,7 @@ use crucible_qemu::{QemuNodeSelectablePendingRequest, QemuParkedCampaignMarker};
 
 use super::QemuHotForkCompleteWorldAssembly;
 use crate::qemu_hot_fork_reconciliation::LinuxQemuHotForkWorldReconciliationSet;
+use crate::qemu_hot_fork_world_factory::QemuHotForkStartOrigin;
 use crate::qemu_hot_fork_world_resource::QemuHotForkWorldAuxiliaryResourceBinding;
 use crate::{
     AttemptExecutionContext, AttemptExecutionDisposition, AttemptExecutionReconciliationStep,
@@ -108,6 +109,8 @@ where
     shutdown_complete: bool,
     aggregate_released: bool,
     source_recovery_failed: bool,
+    /// Where the forked source sits relative to the attempt's own start.
+    start_origin: QemuHotForkStartOrigin,
 }
 
 /// Authorities retained while one adopted child serves as a descendant template.
@@ -165,13 +168,21 @@ where
             shutdown_complete,
             aggregate_released,
             source_recovery_failed,
+            start_origin,
         } = self;
-        if shutdown_complete || aggregate_released || source_recovery_failed {
+        // A child that replayed an ancestor suffix has no boundary proof of
+        // its own, so it can never become a template.
+        let refusal = if matches!(start_origin, QemuHotForkStartOrigin::Ancestor { .. }) {
+            Some("hot-fork child promotion requires a start at its own source boundary")
+        } else if shutdown_complete || aggregate_released || source_recovery_failed {
+            Some("hot-fork child promotion requires a live unreconciled lifecycle")
+        } else {
+            None
+        };
+        if let Some(refusal) = refusal {
             resources.quarantine();
             let _retained = Box::leak(Box::new((source_lease, source_world, reconciliations)));
-            return Err(lifecycle_error(
-                "hot-fork child promotion requires a live unreconciled lifecycle",
-            ));
+            return Err(lifecycle_error(refusal));
         }
         let Some(source_lease) = source_lease else {
             resources.quarantine();
@@ -213,6 +224,18 @@ where
     #[must_use]
     pub const fn runtime_basis(&self) -> AttemptExecutionRuntimeBasis {
         self.runtime_basis
+    }
+
+    /// Records where the forked source sits relative to the attempt's start.
+    pub(crate) fn with_start_origin(mut self, origin: QemuHotForkStartOrigin) -> Self {
+        self.start_origin = origin;
+        self
+    }
+
+    /// Returns where the forked source sits relative to the attempt's start.
+    #[must_use]
+    pub(crate) const fn start_origin(&self) -> &QemuHotForkStartOrigin {
+        &self.start_origin
     }
 
     /// Reconstructs the already-materialized start evidence from the lifecycle.
@@ -831,6 +854,7 @@ where
             shutdown_complete: false,
             aggregate_released: false,
             source_recovery_failed: false,
+            start_origin: QemuHotForkStartOrigin::Exact,
         })
     }
 }

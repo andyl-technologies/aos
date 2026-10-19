@@ -455,10 +455,6 @@ impl QemuPublishedRootProvenance {
 
     /// Returns how the root was produced.
     #[must_use]
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "anchor and ancestor diagnostics read the origin")
-    )]
     pub(crate) const fn origin(&self) -> QemuPublishedRootOrigin {
         self.origin
     }
@@ -471,10 +467,6 @@ impl QemuPublishedRootProvenance {
 
     /// Returns the live-network pause mode over the root's whole prefix.
     #[must_use]
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "ancestor eligibility compares the pause mode")
-    )]
     pub(crate) const fn live_network_choice_pause(&self) -> Option<bool> {
         self.live_network_choice_pause
     }

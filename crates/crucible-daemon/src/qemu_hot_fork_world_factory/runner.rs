@@ -1,6 +1,9 @@
 //! Whole-world execution and durable publication reconciliation.
 
+use super::ancestor::record_ancestor_decision;
 use super::*;
+use crate::QemuFreshStartReplayError;
+use crate::qemu_hot_fork_source_capture::QemuPublishedRootOrigin;
 
 /// Whole-world runner result before durable publication reconciliation.
 pub(crate) enum QemuHotForkWorldExecutionAttempt {
@@ -55,6 +58,9 @@ pub enum QemuHotForkWorldExecutionRunnerError<F, D> {
     Start(SchedulerError),
     /// The authenticated branch edge could not be applied at the captured parent.
     StartReplay(String),
+    /// Replay of a recorded suffix from an ancestor root diverged before the
+    /// attempt's own parent; the root is abandoned and a retry runs thin.
+    AncestorSuffixDiverged(String),
     /// Modeled driving or result construction failed.
     Driver(D),
     /// A checkpoint result lacked a sticky supervisor request.
@@ -104,6 +110,12 @@ impl<F: std::fmt::Display, D: std::fmt::Display> std::fmt::Display
             }
             Self::StartReplay(error) => {
                 write!(formatter, "apply production hot-fork branch start: {error}")
+            }
+            Self::AncestorSuffixDiverged(error) => {
+                write!(
+                    formatter,
+                    "replay production hot-fork ancestor suffix: {error}"
+                )
             }
             Self::Driver(error) => write!(formatter, "drive production hot-fork world: {error}"),
             Self::UnsolicitedCheckpoint => {
@@ -161,6 +173,7 @@ where
             Self::PriorReconciliationPending
             | Self::RuntimeBasisMismatch
             | Self::StartReplay(_)
+            | Self::AncestorSuffixDiverged(_)
             | Self::UnsolicitedCheckpoint
             | Self::NoPendingReconciliation
             | Self::SourceRecovery => None,
@@ -223,34 +236,32 @@ where
                 QemuHotForkWorldExecutionRunnerError::RuntimeBasisMismatch,
             ));
         }
+        let origin = lifecycle.start_origin();
+        let Some(start) = HotForkStart::resolve(input, &origin) else {
+            // The factory checked strict ancestry; a contradiction means the
+            // source no longer matches what was leased.
+            self.factory.quarantine(lifecycle);
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuHotForkWorldExecutionRunnerError::SourceRecovery,
+            ));
+        };
         let driven = lifecycle
             .start_materialization()
             .map_err(|error| {
                 AttemptWorkerFailure::Terminal(QemuHotForkWorldExecutionRunnerError::Start(error))
             })
             .and_then(|materialization| {
-                let (source, target) = match input.start() {
-                    crate::CrucibleResolvedAttemptStart::Discover { configuration } => {
-                        (configuration, configuration)
-                    }
-                    crate::CrucibleResolvedAttemptStart::Branch {
-                        parent, selected, ..
-                    } => (parent, selected),
-                    crate::CrucibleResolvedAttemptStart::AfterAttempt { .. } => {
-                        let boundary = input.start().configuration();
-                        (boundary, boundary)
-                    }
-                };
                 let materialization =
                     crate::qemu_campaign_lifecycle::materialize_start_from::<F::Error, D::Error>(
                         &mut lifecycle,
                         input,
-                        source.clone(),
-                        target,
+                        start.source.clone(),
+                        start.target,
                         context,
                         materialization,
                     )
-                    .map_err(map_hot_fork_start_replay_failure)?;
+                    .map_err(|failure| start.map_replay_failure(input, failure))?;
+                start.record_forked(input);
                 if input.attempt().stop().accepts_next_choice() {
                     lifecycle.enable_signal_fault_campaign_promotion();
                 }
@@ -385,6 +396,113 @@ where
             }
         }
     }
+}
+
+/// Source and target of one hot child's start replay.
+struct HotForkStart<'a> {
+    source: &'a Configuration,
+    target: &'a Configuration,
+    /// The ancestor root and the branch parent its suffix replays to.
+    ancestor: Option<(
+        &'a Configuration,
+        &'a Configuration,
+        QemuPublishedRootOrigin,
+    )>,
+}
+
+impl<'a> HotForkStart<'a> {
+    /// Resolves the replay range, or `None` when an ancestor origin is not a
+    /// strict schedule prefix of the attempt's branch parent.
+    fn resolve(
+        input: &'a CrucibleAttemptExecution,
+        origin: &'a QemuHotForkStartOrigin,
+    ) -> Option<Self> {
+        let (source, target) = match input.start() {
+            crate::CrucibleResolvedAttemptStart::Discover { configuration } => {
+                (configuration, configuration)
+            }
+            crate::CrucibleResolvedAttemptStart::Branch {
+                parent, selected, ..
+            } => (parent, selected),
+            crate::CrucibleResolvedAttemptStart::AfterAttempt { .. } => {
+                let boundary = input.start().configuration();
+                (boundary, boundary)
+            }
+        };
+        let QemuHotForkStartOrigin::Ancestor { anchor, root } = origin else {
+            return Some(Self {
+                source,
+                target,
+                ancestor: None,
+            });
+        };
+
+        let crate::CrucibleResolvedAttemptStart::Branch { parent, .. } = input.start() else {
+            return None;
+        };
+        let strict_prefix = anchor.def == parent.def
+            && anchor.schedule.len() < parent.schedule.len()
+            && parent.schedule.starts_with(&anchor.schedule);
+        strict_prefix.then_some(Self {
+            source: anchor,
+            target,
+            ancestor: Some((anchor, parent, *root)),
+        })
+    }
+
+    /// Classifies a start-replay failure, making suffix divergence retryable.
+    ///
+    /// A divergence before the branch parent contradicts only the ancestor
+    /// root, never the attempt: the caller quarantines the child, which
+    /// abandons the root, and the retry replays thin from genesis.
+    fn map_replay_failure<F, D>(
+        &self,
+        input: &CrucibleAttemptExecution,
+        failure: AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>>,
+    ) -> AttemptWorkerFailure<QemuHotForkWorldExecutionRunnerError<F, D>> {
+        let Some((anchor, parent, _root)) = self.ancestor else {
+            return map_hot_fork_start_replay_failure(failure);
+        };
+        let suffix_divergence = matches!(
+            &failure,
+            AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
+                QemuFreshStartReplayError::DivergedAt { index, .. }
+            )) if *index < parent.schedule.len()
+        );
+        if !suffix_divergence {
+            return map_hot_fork_start_replay_failure(failure);
+        }
+
+        record_ancestor_decision(
+            input,
+            Some(anchor),
+            suffix_len(anchor, parent),
+            "diverged",
+            "ancestor-suffix-diverged",
+        );
+        AttemptWorkerFailure::Retryable(
+            QemuHotForkWorldExecutionRunnerError::AncestorSuffixDiverged(start_replay_message(
+                failure.into_error(),
+            )),
+        )
+    }
+
+    /// Records a completed ancestor suffix replay.
+    fn record_forked(&self, input: &CrucibleAttemptExecution) {
+        if let Some((anchor, parent, root)) = self.ancestor {
+            record_ancestor_decision(
+                input,
+                Some(anchor),
+                suffix_len(anchor, parent),
+                "forked",
+                super::ancestor::forked_reason(root),
+            );
+        }
+    }
+}
+
+fn suffix_len(anchor: &Configuration, parent: &Configuration) -> usize {
+    parent.schedule.len().saturating_sub(anchor.schedule.len())
 }
 
 fn map_hot_fork_start_replay_failure<F, D>(

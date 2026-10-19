@@ -1522,6 +1522,8 @@ fn branch_replay_guest_pending(
     )
 }
 
+#[path = "tests/ancestor_runner.rs"]
+mod ancestor_runner;
 #[path = "tests/branch_runner.rs"]
 mod branch_runner;
 #[path = "tests/reconciliation.rs"]

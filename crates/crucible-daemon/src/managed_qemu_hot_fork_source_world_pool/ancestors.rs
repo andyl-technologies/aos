@@ -27,20 +27,12 @@ use crate::QemuHotForkSourceWorldBoundary;
 
 /// One leased ancestor root and the identity it was checked out under.
 #[must_use = "return the source lease after complete child reconciliation or abandon it"]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the hot-fork factory consumes ancestor checkouts")
-)]
 pub(crate) struct QemuHotForkAncestorCheckout {
     lease: QemuHotForkSourceWorldLease,
     key: QemuHotForkSourceWorldKey,
     provenance: QemuPublishedRootProvenance,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the hot-fork factory consumes ancestor checkouts")
-)]
 impl QemuHotForkAncestorCheckout {
     /// Returns the lease, key, and provenance.
     pub(crate) fn into_parts(
