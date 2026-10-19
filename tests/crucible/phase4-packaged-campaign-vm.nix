@@ -145,6 +145,8 @@ assert !interruptedTransfer
   singleGuestMaterialization = singleGuest == "materialization";
   nativeCore = import ./_native-core-diagnostics.nix {inherit pkgs;};
   hostStacks = import ./_host-stack-samples.nix {inherit pkgs;};
+  # Derived from campaign policy; see the helper for the formula.
+  envoyFlightTimeout = import ./_envoy-flight-timeout.nix {inherit lib;};
   envoyDirect = assert builtins.elem twoNodeHttpServer ["nginx" "envoy-direct" "envoy-proxy"];
   assert twoNodeHttpServer == "nginx" || twoNodeHttp;
     twoNodeHttpServer == "envoy-direct";
@@ -925,11 +927,11 @@ assert !interruptedTransfer
             /tmp/campaign-envoy-known-finding-list.log
 
           : > "$finding_log"
-          ${pkgs.coreutils}/bin/timeout -k 5 3600 \
+          ${pkgs.coreutils}/bin/timeout -k 5 ${toString envoyFlightTimeout.knownFinding} \
             ${flight}/bin/campaign-store-process-flight --ignored --exact \
             "$finding_selector" --nocapture > "$finding_log" 2>&1 &
           finding_test=$!
-          ${pkgs.coreutils}/bin/timeout -k 5 3610 \
+          ${pkgs.coreutils}/bin/timeout -k 5 ${toString (envoyFlightTimeout.knownFinding + 10)} \
             ${pkgs.coreutils}/bin/tail --pid="$finding_test" -n +1 -F "$finding_log" \
             | ${pkgs.grep}/bin/grep --line-buffered \
               -E '^(CRUCIBLE-ENVOY-WAIT-V1 |CRUCIBLE-ATTEMPT-WAIT-V1 |CRUCIBLE-ENVOY-BOOT-PROGRESS-V1 )' \
@@ -959,13 +961,13 @@ assert !interruptedTransfer
             # readable while the service runs so the stall sampler sees it.
             export CRUCIBLE_CAMPAIGN_SERVICE_STDERR_DIR=${hostStacks.serviceStderrDir}
           ''}
-          ${pkgs.coreutils}/bin/timeout -k 5 3600 \
+          ${pkgs.coreutils}/bin/timeout -k 5 ${toString envoyFlightTimeout.network} \
             ${flight}/bin/campaign-store-process-flight --ignored --exact \
             "$envoy_selector" --nocapture > "$envoy_log" 2>&1 &
           envoy_test=$!
           ${lib.optionalString hostStackSamples (hostStacks.start "${flight}/bin/crucible")}
           ${lib.optionalString hostStackSamples hostStacks.startQemuStall}
-          ${pkgs.coreutils}/bin/timeout -k 5 3610 \
+          ${pkgs.coreutils}/bin/timeout -k 5 ${toString (envoyFlightTimeout.network + 10)} \
             ${pkgs.coreutils}/bin/tail --pid="$envoy_test" -n +1 -F "$envoy_log" \
             | ${pkgs.grep}/bin/grep --line-buffered -E '^(CRUCIBLE-ENVOY-WAIT-V1 |CRUCIBLE-ATTEMPT-WAIT-V1 )' \
             || true

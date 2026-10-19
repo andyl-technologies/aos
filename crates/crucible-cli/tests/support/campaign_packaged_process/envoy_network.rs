@@ -9,6 +9,8 @@ use crucible_core::NetworkFaultSelectable;
 
 use super::attempt_progress::{AttemptProgressWatch, AttemptWaitLimits};
 
+#[path = "envoy_network/flight_limits.rs"]
+mod flight_limits;
 #[path = "envoy_network/resource_audit.rs"]
 mod resource_audit;
 // Admission reserves the measured five-guest profile for each retained world:

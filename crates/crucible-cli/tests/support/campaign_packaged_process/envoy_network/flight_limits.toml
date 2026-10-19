@@ -1,0 +1,37 @@
+# Policy inputs that bound the packaged five-node Envoy flights.
+#
+# This file is the single source of truth for the VM check's outer timeout.
+# `flight_limits.rs` asserts that it matches the constants the Rust flight
+# uses, and `tests/crucible/_envoy-flight-timeout.nix` derives the timeout
+# from it:
+#
+#   attempt_cap = max(ceil(policy_virtual_time_ps / minimum_virtual_ps_per_host_second),
+#                     stall_window_seconds)
+#   timeout     = setup_floor_seconds + attempt_waits * attempt_cap
+#
+# Each progress-bounded attempt wait fails on its own after a stall window
+# without progress, or after its attempt cap, so the outer timeout only
+# fires when the flight itself stops reporting.
+
+# Absolute campaign-policy virtual-time horizon of every Envoy attempt.
+policy_virtual_time_ps = 30000000000000
+
+# A wait fails after this much host time without observable progress.
+stall_window_seconds = 600
+
+# The slowest sustained guest rate an attempt cap allows for: one virtual
+# millisecond per host second.
+minimum_virtual_ps_per_host_second = 1000000000
+
+# Host time outside the attempt waits: fixture materialization, service
+# restarts, choice queries, finding export, debug handoff, and teardown.
+setup_floor_seconds = 3600
+
+# Discovery, four guest choices, the pending-choice capture, and its exact
+# continuation.
+[flights.network]
+attempt_waits = 7
+
+# Discovery, three guest choices, and the unsafe recovery request.
+[flights.known-finding]
+attempt_waits = 5
