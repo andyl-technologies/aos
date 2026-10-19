@@ -1,26 +1,27 @@
-From 5881e27347250bd969b6235110aed6f56f72a0cd Mon Sep 17 00:00:00 2001
+From 76eeebb5f2a2f9e4fdf3c732340bdc8de4f1fa83 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] Integrate Crucible ownership and parent Park Original checks
+Subject: [PATCH] Integrate Crucible ownership and ordered parent Park
+ disposition
 
 Retain the Source, checkpoint, parent Park and resident Root integration
 with versioned transport, physical custody journals and paid fixed storage.
+Preserve callback-scoped checks and bounded queries for both Park Originals.
 
-Export callback-scoped checks and bounded slice queries for both parent Park
-Originals. Bind each synchronous borrow to the dispatcher-held request,
-invocation, callback and userdata; retire it before dispatch advances.
-Reobserve both live Originals after failures, preserve first errors, refuse
-reentrant or foreign calls and leave failed query outputs unchanged.
+Finish the exact Native capture and return request-owned block, async and
+RCU census/storage before invoking plugin DISPOSITION. Keep the real Source
+loan and native writer gate held across that callback. Verify the completed
+capture identity, sequence and child; reject active capture, physical debt
+and prior run, capture or return failures. Preserve independent cleanup
+journals and suppress healthy plugin disposition after a failed run.
 
-Add negative controls for absent callback scope and foreign threads and
-processes without manufacturing positive native custody. Unavailable live
-Monitor and cancellation peers fail if reached. Refresh direct and transitive
-literal-source fingerprints through the production preinit extraction chain
-while retaining existing assertions and controls.
+Refresh the affected direct and transitive source fingerprints without
+changing assertions, test cases, inventories or qualification limits.
 
 The signed atomic commit remains based solely on the pinned QEMU source base.
-Compilation and runtime qualification remain separate; these negative controls
-do not establish positive entered-request or receiver activation coverage.
+Compilation and runtime qualification remain separate. This ordering change
+does not implement a fork/thread transaction or an actor Original producer,
+and it does not establish positive entered native phase-order coverage.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -186145,7 +186146,7 @@ index f8e17dcf1ce91d8aefb8d82cafd3196a4fd9edf6..f24121d2d3c66f1436ba73c976a7bd76
      return true;
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..3ca5fdf92b4ef2c659ddba0f1e2900579a083734
+index 0000000000000000000000000000000000000000..96c3baa06ac38cc29f0ce2aeb9ccee96198eee65
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,87 @@
@@ -186173,7 +186174,7 @@ index 0000000000000000000000000000000000000000..3ca5fdf92b4ef2c659ddba0f1e290057
 +    'include/plugins/qemu-plugin.h':
 +        'a332f72199fe435a7f5ee80f76ce1a36d9a67b8780f768d0b091af84b5ad1b3a',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '999f0ffa45b238b9eddfdef920469adc9b03015918150214d468364d8445913a',
++        'e74734dddf12407bf747082c861500bae3aa979143097a0de4d371ac6d945530',
 +}
 +
 +PURPOSE_FUNCTIONS = (
@@ -194841,10 +194842,10 @@ index 0000000000000000000000000000000000000000..f3f3be3b0921c276de0668dddffb9af0
 +}
 diff --git a/system/crucible-native-park-request.c b/system/crucible-native-park-request.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..6990f48341414099a77d3e8dd9c7032376c13bfb
+index 0000000000000000000000000000000000000000..e95e29018a955203b57d45538ffc8e0065181bac
 --- /dev/null
 +++ b/system/crucible-native-park-request.c
-@@ -0,0 +1,1412 @@
+@@ -0,0 +1,1462 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +/*
 + * Native Park reception continuation, charged metadata capture, actual writer
@@ -195238,6 +195239,7 @@ index 0000000000000000000000000000000000000000..6990f48341414099a77d3e8dd9c70323
 +        return status;
 +    }
 +    if (bql_locked() || request->busy || request->view.released ||
++        request->capture.active || request->capture.transitioning ||
 +        qatomic_load_acquire(&request->consuming)) {
 +        return -EBUSY;
 +    }
@@ -195735,6 +195737,38 @@ index 0000000000000000000000000000000000000000..6990f48341414099a77d3e8dd9c70323
 +    return status;
 +}
 +
++/* The parent may restart workers only after the real census owners returned.
++ * The same Source loan and writer gate remain held through this disposition. */
++static int native_park_disposition_current(QemuCrucibleNativeParkRequest *request)
++{
++    const QemuCrucibleNativeParkCapture *capture = &request->capture;
++
++    if (capture->request != request || !capture->sequence ||
++        capture->sequence != request->capture_sequence ||
++        capture->child != request->view.metadata_owner) {
++        return -ESTALE;
++    }
++    if (capture->active || capture->ready || capture->transitioning ||
++        request->busy || qatomic_load_acquire(&request->consuming) ||
++        !native_park_storage_quiescent(request)) {
++        return -EBUSY;
++    }
++    if (request->run_status || capture->first_status || capture->post_status ||
++        request->view.physical_status) {
++        int status = request->run_status ? request->run_status :
++            capture->first_status ? capture->first_status :
++            capture->post_status ? capture->post_status :
++            request->view.physical_status;
++
++        return status < 0 ? status : -EPROTO;
++    }
++    if (!request->view.released || request->block.acquired ||
++        request->async.acquired || request->rcu.acquired) {
++        return -EBUSY;
++    }
++    return 0;
++}
++
 +int qemu_crucible_native_park_request_invocation(
 +    QemuCrucibleNativeParkRequest *request,
 +    struct qemu_plugin_crucible_parent_park_drain_invocation *out)
@@ -195745,13 +195779,23 @@ index 0000000000000000000000000000000000000000..6990f48341414099a77d3e8dd9c70323
 +        return status ? status : -EINVAL;
 +    }
 +    if (!request->run_busy || !request->writers.active ||
-+        !request->capture.active ||
 +        native_park_output_overlap(out, sizeof(*out), request, sizeof(*request))) {
 +        return -EPERM;
 +    }
-+    if (request->invocation.action !=
-+        QEMU_PLUGIN_CRUCIBLE_PARENT_PARK_DRAIN_DISPOSITION) {
-+        status = native_park_stop_current(request, request->entered);
++    switch (request->invocation.action) {
++    case QEMU_PLUGIN_CRUCIBLE_PARENT_PARK_DRAIN_ACQUIRE:
++    case QEMU_PLUGIN_CRUCIBLE_PARENT_PARK_DRAIN_CHECK:
++        status = native_park_capture_identity(&request->capture);
++        if (!status) {
++            status = native_park_stop_current(request, request->entered);
++        }
++        break;
++    case QEMU_PLUGIN_CRUCIBLE_PARENT_PARK_DRAIN_DISPOSITION:
++        status = native_park_disposition_current(request);
++        break;
++    default:
++        status = -EINVAL;
++        break;
 +    }
 +    if (!status) {
 +        *out = request->invocation;
@@ -195890,20 +195934,27 @@ index 0000000000000000000000000000000000000000..6990f48341414099a77d3e8dd9c70323
 +        native_park_run_record(request, status);
 +    }
 +
-+    /* Disposal remains identity based after expired policy. Keep the actual
-+     * native exclusion if the plugin cannot prove physical relinquishment. */
-+    if (request->acquire_attempted) {
-+        status = native_park_callback(
-+            request, QEMU_PLUGIN_CRUCIBLE_PARENT_PARK_DRAIN_DISPOSITION);
-+        native_park_run_record(request, status);
-+    } else {
-+        request->plugin_returned = true;
-+    }
-+    qemu_block_backend_hot_fork_barrier_inventory_destroy(&request->block_report);
-+
 +finish:
++    qemu_block_backend_hot_fork_barrier_inventory_destroy(&request->block_report);
 +    if (capture) {
 +        status = qemu_crucible_native_park_capture_finish(capture);
++        native_park_run_record(request, status);
++    }
++    /* Return physical owners even when a semantic post already failed. Keep
++     * each partial return in its census journal; success cannot erase failure. */
++    if (!request->view.released) {
++        status = qemu_crucible_native_park_request_release(request);
++        native_park_run_record(request, status);
++    }
++
++    /* Return this request's block, async and RCU census before restoring
++     * plugin resources. The writer gate still excludes guest producers, and
++     * any capture or physical-return failure retains containment. */
++    if (!request->acquire_attempted) {
++        request->plugin_returned = true;
++    } else if (!request->run_status) {
++        status = native_park_callback(
++            request, QEMU_PLUGIN_CRUCIBLE_PARENT_PARK_DRAIN_DISPOSITION);
 +        native_park_run_record(request, status);
 +    }
 +    request->run_finished = true;
@@ -229122,7 +229173,7 @@ index 0000000000000000000000000000000000000000..744c2574bf925b75789a7ddf89525387
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..e8c19799b3599a79d329f5de4e4f146b9bea1562
+index 0000000000000000000000000000000000000000..f4a510ca6d9fb39073302ebea36321e5c5564a12
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
 @@ -0,0 +1,100 @@
@@ -229140,7 +229191,7 @@ index 0000000000000000000000000000000000000000..e8c19799b3599a79d329f5de4e4f146b
 +    'include/system/crucible-ram-quiescence.h':
 +        '2ad1d50c233a309fae5064acd1db4020b1135cf6203cb12cdf7bd33efd0e4a23',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '999f0ffa45b238b9eddfdef920469adc9b03015918150214d468364d8445913a',
++        'e74734dddf12407bf747082c861500bae3aa979143097a0de4d371ac6d945530',
 +}
 +
 +FUNCTIONS = (
@@ -229228,7 +229279,7 @@ index 0000000000000000000000000000000000000000..e8c19799b3599a79d329f5de4e4f146b
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..ae34d5dc9dbb76b4f532ad8fa820a11a67115fed
+index 0000000000000000000000000000000000000000..e1752f74520c0c80a8edb4a390623b4feefd44eb
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
 @@ -0,0 +1,241 @@
@@ -229259,7 +229310,7 @@ index 0000000000000000000000000000000000000000..ae34d5dc9dbb76b4f532ad8fa820a11a
 +    'include/system/crucible-ram-quiescence.h':
 +        '2ad1d50c233a309fae5064acd1db4020b1135cf6203cb12cdf7bd33efd0e4a23',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '999f0ffa45b238b9eddfdef920469adc9b03015918150214d468364d8445913a',
++        'e74734dddf12407bf747082c861500bae3aa979143097a0de4d371ac6d945530',
 +}
 +
 +FUNCTIONS = (
@@ -229475,7 +229526,7 @@ index 0000000000000000000000000000000000000000..ae34d5dc9dbb76b4f532ad8fa820a11a
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..24c5bb059dd1c6d374ce993da7836aa9717d9fb5
+index 0000000000000000000000000000000000000000..4155713e5ca55898c48aa1087af8bfe187520d05
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -229499,7 +229550,7 @@ index 0000000000000000000000000000000000000000..24c5bb059dd1c6d374ce993da7836aa9
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '999f0ffa45b238b9eddfdef920469adc9b03015918150214d468364d8445913a',
++        'e74734dddf12407bf747082c861500bae3aa979143097a0de4d371ac6d945530',
 +}
 +
 +FUNCTIONS = (
@@ -229593,7 +229644,7 @@ index 0000000000000000000000000000000000000000..24c5bb059dd1c6d374ce993da7836aa9
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..d92feb0854eadd0161975d7a03a97f393c6aa6c9
+index 0000000000000000000000000000000000000000..931636a6440b95b6a8cf646213e96b482a8fd323
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
 @@ -0,0 +1,173 @@
@@ -229634,9 +229685,9 @@ index 0000000000000000000000000000000000000000..d92feb0854eadd0161975d7a03a97f39
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '999f0ffa45b238b9eddfdef920469adc9b03015918150214d468364d8445913a',
++        'e74734dddf12407bf747082c861500bae3aa979143097a0de4d371ac6d945530',
 +    'scripts/extract-crucible-preexec-purpose.py':
-+        '52a7fc7d78bc37bf27d752645e3d1c37ada6392f9ae0d0bce7ecf799056c6435',
++        'dc8962388b550cf878165327ea445007b80ffb40d84e616a5fcc476723e3c930',
 +    'meson.build':
 +        '7eef2c0d1494dfdeed66f56c77f092382cd63d3fd5ad7c0b7c7ac85ca599e39e',
 +    'tests/unit/test-crucible-preexec-setup.c':
@@ -229772,7 +229823,7 @@ index 0000000000000000000000000000000000000000..d92feb0854eadd0161975d7a03a97f39
 +        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..5a4103ea1b8c5187774b57442d0777ed6a358a43
+index 0000000000000000000000000000000000000000..38242efc96a4ecc3f8bb45c313c2f10d7355c006
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
 @@ -0,0 +1,837 @@
@@ -229790,7 +229841,7 @@ index 0000000000000000000000000000000000000000..5a4103ea1b8c5187774b57442d0777ed
 +    'plugins/crucible-parent-park-metadata.inc.h':
 +        '412c9d196f80afcccb502e12e039d6cfebc424373b62cc3c393aa795219ea46e',
 +    'system/crucible-native-park-request.c':
-+        'f90ebc14b630fca91379666faeb5ad685416bf9127b40084cb9766b00e656d4d',
++        '67d5829eae8029804c916199dd926d04ddab8c6f0d5f766dc80f73c4a3656a02',
 +    'include/system/crucible-native-park-request.h':
 +        '6352367b8dd87b43e5fe8bf06f789a3d758e671d231b10d14162ea6520ade6cb',
 +    'include/qemu/crucible-park-census.h':
