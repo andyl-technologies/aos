@@ -1024,6 +1024,8 @@ struct NeverFallbackRunner {
     calls: Arc<AtomicUsize>,
 }
 
+impl crate::QemuAnchorRootMaterializer for NeverFallbackRunner {}
+
 impl CrucibleExecutionRunner for NeverFallbackRunner {
     type Error = &'static str;
 
@@ -1248,6 +1250,8 @@ struct RecordingFallbackRunner {
     calls: Arc<AtomicUsize>,
     reconciliations: Arc<AtomicUsize>,
 }
+
+impl crate::QemuAnchorRootMaterializer for RecordingFallbackRunner {}
 
 impl CrucibleExecutionRunner for RecordingFallbackRunner {
     type Error = Infallible;
@@ -1524,6 +1528,8 @@ fn branch_replay_guest_pending(
 
 #[path = "tests/ancestor_runner.rs"]
 mod ancestor_runner;
+#[path = "tests/anchor_router.rs"]
+mod anchor_router;
 #[path = "tests/branch_runner.rs"]
 mod branch_runner;
 #[path = "tests/reconciliation.rs"]

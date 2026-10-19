@@ -49,10 +49,7 @@ pub(crate) enum QemuAnchorRootOutcome {
 /// Lower-tier runners that may keep an anchor root before thin replay.
 ///
 /// Runners without the capability decline every attempt.
-pub(crate) trait QemuAnchorRootMaterializer {
-    /// Runner-specific failure.
-    type AnchorError;
-
+pub(crate) trait QemuAnchorRootMaterializer: CrucibleExecutionRunner {
     /// Tries to keep a root at the attempt's network fault branch parent.
     ///
     /// # Errors
@@ -60,15 +57,11 @@ pub(crate) trait QemuAnchorRootMaterializer {
     /// Returns a classified failure only when cleanup of an anchoring world
     /// failed, the attempt was canceled, or a refused root could not be
     /// retired. Every other refusal is [`QemuAnchorRootOutcome::Declined`].
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the hot-first router is the production caller")
-    )]
     fn materialize_anchor_root(
         &mut self,
         input: &CrucibleAttemptExecution,
         context: &AttemptExecutionContext,
-    ) -> Result<QemuAnchorRootOutcome, AttemptWorkerFailure<Self::AnchorError>> {
+    ) -> Result<QemuAnchorRootOutcome, AttemptWorkerFailure<Self::Error>> {
         let _ = (input, context);
         Ok(QemuAnchorRootOutcome::Declined("anchor-runner-unsupported"))
     }
@@ -100,8 +93,6 @@ where
     F: QemuFreshAttemptLifecycleFactory,
     D: QemuFreshAttemptDriver,
 {
-    type AnchorError = QemuFreshExecutionRunnerError<F::Error, D::Error>;
-
     fn materialize_anchor_root(
         &mut self,
         input: &CrucibleAttemptExecution,

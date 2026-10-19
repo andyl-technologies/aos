@@ -812,8 +812,7 @@ mod source_retention;
 pub use source_retention::QemuFinalBoundaryDrain;
 
 mod anchor_root;
-#[cfg(test)]
-use anchor_root::{QemuAnchorRootMaterializer, QemuAnchorRootOutcome};
+pub(crate) use anchor_root::{QemuAnchorRootMaterializer, QemuAnchorRootOutcome};
 pub(crate) use source_retention::{
     QemuPublishedRootAdmission, QemuPublishedRootRetirementError, QemuPublishedRootSink,
     QemuRetainedSourcePreparation,
@@ -1773,13 +1772,6 @@ impl QemuFreshStartMaterialization {
     /// releasing any VM. The scheduler then holds exactly the boundary every
     /// descendant's thin replay crosses, which anchor retention may keep.
     #[must_use]
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "anchor-root materialization is the production caller"
-        )
-    )]
     pub(crate) const fn with_anchor_stop(mut self, parent: crucible::ContentHash) -> Self {
         self.anchor_stop = Some(parent);
         self.anchor_reached = false;
@@ -1791,13 +1783,6 @@ impl QemuFreshStartMaterialization {
     /// The restored configuration then names the anchor, and the frontier is
     /// the joined park frontier.
     #[must_use]
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "anchor-root materialization is the production caller"
-        )
-    )]
     pub(crate) const fn anchor_reached(&self) -> bool {
         self.anchor_reached
     }

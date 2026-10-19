@@ -586,10 +586,10 @@ pub use qemu_campaign_lifecycle::{
     build_guarded_interactive_qemu_session,
 };
 pub(crate) use qemu_campaign_lifecycle::{
-    QemuAttemptProductionVmLifecycleFactory, QemuFreshAttemptLifecycleFactory,
-    QemuFreshAttemptLifecycleOwner, QemuFreshExecutionRunner, QemuPublishedRootAdmission,
-    QemuPublishedRootRetirementError, QemuPublishedRootSink, QemuRetainedSourcePreparation,
-    capture_fresh_genesis_checkpoint_candidate,
+    QemuAnchorRootMaterializer, QemuAnchorRootOutcome, QemuAttemptProductionVmLifecycleFactory,
+    QemuFreshAttemptLifecycleFactory, QemuFreshAttemptLifecycleOwner, QemuFreshExecutionRunner,
+    QemuPublishedRootAdmission, QemuPublishedRootRetirementError, QemuPublishedRootSink,
+    QemuRetainedSourcePreparation, capture_fresh_genesis_checkpoint_candidate,
 };
 #[cfg(test)]
 pub(crate) use qemu_campaign_resume::QemuProductionExactResumeExecutionRunnerError;

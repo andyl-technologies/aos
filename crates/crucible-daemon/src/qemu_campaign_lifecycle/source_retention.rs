@@ -142,13 +142,6 @@ pub(crate) trait QemuPublishedRootSink: Send + Sync {
     ///
     /// Returns [`QemuPublishedRootRetirementError`] when a declined root could
     /// not be retired; its authority then remains quarantined.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "anchor-root materialization is the production caller"
-        )
-    )]
     fn admit_anchor(
         &self,
         root: AuthenticatedPublishedRootQemuHotForkSource,

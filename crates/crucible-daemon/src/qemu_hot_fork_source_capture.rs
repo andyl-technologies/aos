@@ -412,13 +412,6 @@ pub(crate) enum QemuPublishedRootOrigin {
     /// A thin attempt kept the world it stopped with at its published child.
     AttemptStop,
     /// Replay kept the joined network fault park at an attempt's branch parent.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "anchor-root materialization constructs this origin"
-        )
-    )]
     BranchParentAnchor,
 }
 

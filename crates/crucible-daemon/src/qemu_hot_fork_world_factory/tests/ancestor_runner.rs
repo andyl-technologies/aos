@@ -33,21 +33,21 @@ fn rng_step(parent: &Configuration, stream: &str, value: u64) -> Configuration {
 
 /// What the attempt's own branch edge selects.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Edge {
+pub(super) enum Edge {
     Scheduler,
     Guest,
 }
 
 /// One branch attempt at `parent`, two quanta past genesis.
-struct SuffixCase {
-    input: CrucibleAttemptExecution,
+pub(super) struct SuffixCase {
+    pub(super) input: CrucibleAttemptExecution,
     /// The ancestor root boundary, one quantum past genesis.
-    anchor: Configuration,
-    parent: Configuration,
-    selected: Configuration,
+    pub(super) anchor: Configuration,
+    pub(super) parent: Configuration,
+    pub(super) selected: Configuration,
 }
 
-fn suffix_case(edge: Edge) -> SuffixCase {
+pub(super) fn suffix_case(edge: Edge) -> SuffixCase {
     let base = match edge {
         Edge::Guest => execution_input_for_scenario(guest_selectable_scenario()),
         Edge::Scheduler => execution_input(),
@@ -170,16 +170,16 @@ fn suffix_case(edge: Edge) -> SuffixCase {
 
 /// Effects shared by every scripted suffix lifecycle of one run.
 #[derive(Clone, Default)]
-struct SuffixObservations {
+pub(super) struct SuffixObservations {
     requests: Arc<Mutex<Vec<Configuration>>>,
     replies: Arc<Mutex<Vec<crucible_protocol::SelectionReply>>>,
-    quarantines: Arc<AtomicUsize>,
-    recoveries: Arc<AtomicUsize>,
+    pub(super) quarantines: Arc<AtomicUsize>,
+    pub(super) recoveries: Arc<AtomicUsize>,
 }
 
 /// The scripted world: each quantum moves to a fixed successor, if any.
 #[derive(Clone)]
-struct SuffixWorld {
+pub(super) struct SuffixWorld {
     genesis: Configuration,
     successors: BTreeMap<ContentHash, Configuration>,
     /// A guest request published once the world reaches this configuration.
@@ -187,7 +187,7 @@ struct SuffixWorld {
 }
 
 impl SuffixWorld {
-    fn for_case(case: &SuffixCase, edge: Edge) -> Self {
+    pub(super) fn for_case(case: &SuffixCase, edge: Edge) -> Self {
         let genesis = Configuration::genesis(case.input.scenario().scenario_def());
         let mut successors = BTreeMap::from([
             (genesis.id(), case.anchor.clone()),
@@ -219,7 +219,7 @@ impl SuffixWorld {
     }
 
     /// Starts a lifecycle after `quanta` quanta, as a retained root would be.
-    fn lifecycle_at(
+    pub(super) fn lifecycle_at(
         &self,
         quanta: u64,
         origin: QemuHotForkStartOrigin,
@@ -249,7 +249,7 @@ impl SuffixWorld {
     }
 }
 
-struct SuffixLifecycle {
+pub(super) struct SuffixLifecycle {
     world: SuffixWorld,
     configuration: Configuration,
     quanta: u64,
