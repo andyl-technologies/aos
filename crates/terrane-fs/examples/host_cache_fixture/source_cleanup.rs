@@ -11,11 +11,11 @@ use std::{
     os::unix::fs::{FileExt, MetadataExt},
     sync::Arc,
     task::{Context, Poll, Waker},
-    time::{SystemTime, UNIX_EPOCH},
+    time::UNIX_EPOCH,
 };
 use terrane::{
     host::cache::CacheState,
-    store::{ChunkPosition, TokioLocalFs},
+    store::{ChunkPosition, Clock, TokioClock, TokioLocalFs},
 };
 use terrane_core::identity::{Descriptor, IdentityKind, TERRANE_V1};
 use terrane_fs::{
@@ -23,6 +23,7 @@ use terrane_fs::{
         NativeCachePreparation, NativeInlinePublication, NativeMetadataOwner,
         NativeSourceCleanupReport,
     },
+    publisher_local::{Error as PublisherError, wire::ResultCode},
     quota_confinement,
 };
 
@@ -79,7 +80,8 @@ pub(super) fn run(
         .calculate(IdentityKind::Chunk, &data.first)
         .map_err(io::Error::other)?;
     let resident = runtime.block_on(owner.retain_resident_chunk(identity.clone()))?;
-    let expires = SystemTime::now()
+    let expires = TokioClock
+        .now()
         .duration_since(UNIX_EPOCH)
         .map_err(io::Error::other)?
         .as_secs()
@@ -201,12 +203,19 @@ fn early(
     source: &File,
 ) -> io::Result<()> {
     let before = fs::read(policy(inputs))?;
-    if runtime
+    let error = runtime
         .block_on(publication.finish_retired_sources(owner))
-        .is_ok()
-        || source.metadata()?.nlink() != 1
-        || fs::read(policy(inputs))? != before
-    {
+        .err()
+        .ok_or_else(|| invalid("active native grace acknowledged source cleanup"))?;
+    if !matches!(
+        error
+            .get_ref()
+            .and_then(|source| source.downcast_ref::<PublisherError>()),
+        Some(PublisherError::Remote(ResultCode::Unavailable))
+    ) {
+        return Err(error);
+    }
+    if source.metadata()?.nlink() != 1 || fs::read(policy(inputs))? != before {
         return Err(invalid(
             "active native grace allowed cleanup or lost funding",
         ));

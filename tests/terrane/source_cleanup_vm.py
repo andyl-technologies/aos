@@ -1,6 +1,7 @@
 """Observes actual source cleanup and open-inode quota in the isolated guest."""
 
 import hashlib
+import json
 import pathlib
 import re
 import signal
@@ -115,6 +116,24 @@ def run(driver, publisher, uuid):
                        "actual source descriptors did not close or immutable output changed")
         print("PASS independent helper observes actual source reclamation only after original descriptions close",
               flush=True)
+    except BaseException:
+        # Lines.until may observe process exit before draining the last pipe
+        # bytes. Keep the original native refusal and bounded actual state;
+        # neither diagnostics nor timeouts turn a failed witness into success.
+        try:
+            print(lines.bytes[lines.printed:].decode(), end="", flush=True)
+            if process.poll() is None:
+                process.kill()
+            remaining, _ = process.communicate(timeout=5)
+            print(remaining.decode(), end="", flush=True)
+            print("SOURCE_CLEANUP_FAILURE_STATE " + json.dumps({
+                "policy": tomllib.loads((driver.root(case) / "state/cache/records.toml").read_text()),
+                "pending": files(driver.root(case) / "pending-delete"),
+                "sealed": files(driver.root(case) / "sealed"),
+            }, sort_keys=True), flush=True)
+        except Exception as diagnostic_error:
+            print("SOURCE_CLEANUP_FAILURE_STATE unavailable: " + str(diagnostic_error), flush=True)
+        raise
     finally:
         if stopped and publisher.poll() is None:
             publisher.send_signal(signal.SIGCONT)

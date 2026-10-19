@@ -311,6 +311,12 @@ impl NativeMetadataOwner {
                         Command::FinishPublicationSources { resource, response } => {
                             let result =
                                 super::publication::retirement::execute(&mut executor, &resource);
+                            // An abandoned waiter must not hide the original
+                            // physical failure from the dedicated VM witness.
+                            #[cfg(feature = "native-test-fixtures")]
+                            if let Err(error) = &result {
+                                eprintln!("actual native source cleanup refused: {error:?}");
+                            }
                             let _ = response.send(result);
                         }
                         Command::PublishManifest { identity, response } => {
