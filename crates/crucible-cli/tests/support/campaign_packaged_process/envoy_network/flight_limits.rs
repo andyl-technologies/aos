@@ -45,8 +45,21 @@ fn vm_timeout_inputs_match_the_envoy_flight_policy() -> Result<(), Box<dyn Error
         flight_limit(&limits, &["policy_virtual_time_ps"])?,
         ENVOY_POLICY_VIRTUAL_TIME_PS
     );
-    assert!(flight_limit(&limits, &["stall_window_seconds"])? > 0);
-    assert!(flight_limit(&limits, &["minimum_virtual_ps_per_host_second"])? > 0);
+    // A zero horizon leaves only the stall window as the attempt cap.
+    let stall_seconds = flight_limit(&limits, &["stall_window_seconds"])?;
+    assert_eq!(
+        AttemptWaitLimits::for_policy_horizon(0).safety_cap(),
+        Duration::from_secs(stall_seconds)
+    );
+    // The VM check recomputes the Envoy attempt cap from the file's rate.
+    let minimum_rate = flight_limit(&limits, &["minimum_virtual_ps_per_host_second"])?;
+    let attempt_cap = ENVOY_POLICY_VIRTUAL_TIME_PS
+        .div_ceil(minimum_rate)
+        .max(stall_seconds);
+    assert_eq!(
+        envoy_attempt_limits().safety_cap(),
+        Duration::from_secs(attempt_cap)
+    );
     assert!(flight_limit(&limits, &["setup_floor_seconds"])? > 0);
     for flight in ["network", "known-finding"] {
         assert!(flight_limit(&limits, &["flights", flight, "attempt_waits"])? > 0);
