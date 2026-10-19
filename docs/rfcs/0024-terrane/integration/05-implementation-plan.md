@@ -9612,10 +9612,21 @@ Resumed qualification:
   441.657 seconds, including all 53 selected filesystem cases. Independent review
   verifies all 3,498 image inputs, four original Cargo ELFs, installed helpers
   and the exact capacity/revocation controls. Durable protection and independent
-  consumer reads remain intact. The owning publisher gate is running; required
-  application and complete filesystem checks follow on success. Producer pin
-  release, cached-object ownership and eviction remain
-  pending; no host task is accepted.
+  consumer reads remain intact. The owning publisher gate subsequently passes
+  in 495.530 seconds; independent reinspection matches its original artifact
+  report. Required application compilation is running before the complete
+  filesystem suite. No host task is accepted.
+- Cache-handoff candidate `d59ca86443` transfers actual completed publication
+  custody through a synchronized funding decrement. Original final-removal
+  acknowledgments and closed descriptors precede source-admission release;
+  reconstruction metadata and independent consumer grants remain owned.
+  Producer promises, including reused backing dependencies, become durable
+  release grace handled by the periodic expiry sweep. Fresh consumers resolve
+  genuine cached backing after producer funding retires. The all-target build
+  passes on committed source; full local and native qualification is running.
+  New native controls exercise actual funding removal, metadata retention,
+  fresh consumer grants, grace expiry and independent quota observations.
+  Eviction, NativeReady and complete host-task acceptance remain pending.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
   and all seven strict Clippy/documentation profiles pass. The interface,
   commit-path, status and schema gates pass on unchanged final source, including
