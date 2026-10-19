@@ -9544,8 +9544,13 @@ Resumed qualification:
   remain open, separately from 2,899,870 bytes of future holds, and confirms
   reclamation only after the actual descriptions close. Cancellation, repeated
   acknowledgements, immutable bytes, unchanged policy and reads with policy held
-  all pass. The owning aggregate and subsequent application/full-filesystem
-  checks remain pending; neither source advances task acceptance.
+  all pass. The owning `publisher-sole-writer` aggregate subsequently passes
+  in 918.216 seconds, including actual role-permission and descriptor-transport
+  guests. Independent reinspection matches its original source/runtime report:
+  3,493 transport inputs, 3,495 cache inputs, five transport ELFs and nineteen
+  portable cases. This qualifies ARCH-8 on the tested source. Required
+  application compilation is running before the full filesystem suite; the
+  broader host requirements and task acceptance remain open.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
   and all seven strict Clippy/documentation profiles pass. The interface,
   commit-path, status and schema gates pass on unchanged final source, including
