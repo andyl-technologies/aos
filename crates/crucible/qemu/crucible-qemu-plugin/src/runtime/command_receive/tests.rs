@@ -331,8 +331,12 @@ fn first_member_constructor_receives_the_exact_writer_before_negative_status() {
         };
     });
     let mut keeper = CommandReceive::new();
+    // Retain the actual supplied value; separate function-item conversions may
+    // resolve to different addresses in optimized code.
+    let supplied_writer = std::hint::black_box(writer as Writer);
+    let supplied_address = supplied_writer as *const () as usize;
 
-    let result = keeper.enroll_using(3, std::ptr::null_mut(), reader, writer, api());
+    let result = keeper.enroll_using(3, std::ptr::null_mut(), reader, supplied_writer, api());
 
     assert!(result.is_err());
     assert_eq!(keeper.member_creation, member());
@@ -341,11 +345,11 @@ fn first_member_constructor_receives_the_exact_writer_before_negative_status() {
     assert!(!keeper.member_transfer_attempted);
     CUTS.with_borrow(|cuts| {
         assert_eq!(cuts.member_creates, 1);
-        assert_eq!(cuts.writer_address, writer as usize);
+        assert_eq!(cuts.writer_address, supplied_address);
     });
     assert!(
         keeper
-            .enroll_using(3, std::ptr::null_mut(), reader, writer, api())
+            .enroll_using(3, std::ptr::null_mut(), reader, supplied_writer, api())
             .is_err()
     );
     CUTS.with_borrow(|cuts| assert_eq!(cuts.member_creates, 1));
