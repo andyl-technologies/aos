@@ -187,7 +187,7 @@ fn console_match_uses_host_side_regex_over_captured_console_bytes() {
 }
 
 #[test]
-fn console_match_spans_chunks_and_fires_when_match_completes_at_point() {
+fn console_match_spans_chunks_and_holds_at_the_boundary_closing_its_batch() {
     let condition = Predicate::console_match(
         node("server"),
         RegexProgram::from_pattern("ready to accept"),
@@ -205,8 +205,29 @@ fn console_match_spans_chunks_and_fires_when_match_completes_at_point() {
             .evaluate_assertion_condition(&condition)
             .expect("console matchers are declared")
     );
+    // The match ended in the batch the boundary at tick 10 closes.
     assert!(
-        !console_evaluator(10, vec![first, second], &condition)
+        console_evaluator(10, vec![first.clone(), second.clone()], &condition)
+            .evaluate_assertion_condition(&condition)
+            .expect("console matchers are declared")
+    );
+
+    // A later batch without a new match leaves the leaf false.
+    let mut prefix = support::with_console_matchers(
+        support::observable_prefix(9, vec![first, second]),
+        [&condition],
+    );
+    prefix
+        .append_entries(vec![
+            crucible::test_support::condition_boundary_entry_for_test(
+                3,
+                time(10),
+                SchedulerEvaluationBoundaryKind::Quantum,
+            ),
+        ])
+        .expect("a later boundary extends the prefix");
+    assert!(
+        !ConditionEvaluationPass::from_log_prefix(prefix, NoNamedLeaves)
             .evaluate_assertion_condition(&condition)
             .expect("console matchers are declared")
     );

@@ -408,7 +408,7 @@ impl AssertionFold {
             .map_err(|_| AssertionFoldFailure::InvalidEntry {
                 sequence: entry.sequence(),
             })?;
-            self.console.observe(&observable_events);
+            self.console.observe(std::iter::once(entry));
             if !folds_named {
                 continue;
             }

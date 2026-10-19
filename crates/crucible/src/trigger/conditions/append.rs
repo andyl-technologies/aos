@@ -142,7 +142,9 @@ impl ConditionEventLogPrefix {
             self.prefix_offsets = std::sync::Arc::default();
         }
         self.last_black_box_observation = previous_black_box_observation;
-        self.console_folds.observe(observable_events.iter());
+        // Console matchers fold boundaries as well as bytes, so they read the
+        // entries themselves rather than the extracted observations.
+        self.console_folds.observe(entries.iter());
         self.point_events.observe(point.at(), &observable_events);
         self.observable_events.extend(observable_events);
         self.black_box_observation_kinds

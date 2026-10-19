@@ -156,7 +156,7 @@
         needle = "fn console_match(&mut self, node: &NodeId, pattern: &str) -> bool;";
       }
       {
-        label = "console match only fires where a match ends";
+        label = "console match fires at the point of the batch where it ended";
         needle = ".map(|fold| fold.last_match_at == Some(at))";
       }
       {
@@ -205,7 +205,7 @@
       }
       {
         label = "split console stream test";
-        needle = "console_match_spans_chunks_and_fires_when_match_completes_at_point";
+        needle = "console_match_spans_chunks_and_holds_at_the_boundary_closing_its_batch";
       }
       {
         label = "invalid regex rejection test";

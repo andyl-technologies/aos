@@ -3,7 +3,26 @@
 //! Each declared `(node, pattern)` keeps one [`ConsoleAutomaton`] state and the
 //! virtual time of the latest batch in which a match ended. Appending console
 //! bytes advances only the matchers for that node, so evaluating
-//! `console_match` never rescans earlier console output.
+//! `console_match` never rescans earlier console output (RFC-0020 CMEAS-18).
+//!
+//! # Batch points
+//!
+//! A batch is the run of log entries closed by a scheduler evaluation
+//! boundary, and its point is that boundary's time. Native console bytes keep
+//! their emission time, which is usually earlier than the boundary of the
+//! quantum that delivers them, so a match is reported at the closing boundary
+//! rather than at the time of the byte that completed it:
+//!
+//! ```text
+//! entry   byte 'o' @100   byte 'k' @100   boundary @200   boundary @300
+//! fold    -               match pending   reported @200   still @200
+//! ```
+//!
+//! Until a boundary closes the batch, a pending match is reported at the time
+//! of the byte that ended it, which is the batch's point when that byte is the
+//! batch's final entry. Boundaries are retained log entries, so a prefix
+//! rebuilt from history folds them in sequence and reaches exactly the state
+//! that batch-by-batch appends reached, however the history is divided.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -24,14 +43,64 @@ struct ConsoleMatchFold {
     automaton: Arc<ConsoleAutomaton>,
     state: ConsoleAutomatonState,
     last_match_at: Option<VirtualTime>,
+    // A match ended after the latest evaluation boundary; the next boundary
+    // moves `last_match_at` to its own time.
+    match_pending: bool,
 }
 
 impl ConsoleMatchFold {
-    fn observe(&mut self, at: VirtualTime, bytes: &[u8]) {
+    fn started(automaton: Arc<ConsoleAutomaton>) -> Self {
+        Self {
+            state: automaton.start(),
+            automaton,
+            last_match_at: None,
+            match_pending: false,
+        }
+    }
+
+    fn observe_bytes(&mut self, at: VirtualTime, bytes: &[u8]) {
         let advance = self.automaton.advance(self.state, bytes);
         self.state = advance.state;
         if advance.matched {
             self.last_match_at = Some(at);
+            self.match_pending = true;
+        }
+    }
+
+    fn close_batch(&mut self, at: VirtualTime) {
+        if self.match_pending {
+            self.last_match_at = Some(at);
+            self.match_pending = false;
+        }
+    }
+}
+
+/// One event-log entry as a console matcher sees it.
+enum ConsoleFoldStep<'entry> {
+    /// Console bytes on `node` at their own event time.
+    Bytes {
+        at: VirtualTime,
+        node: &'entry NodeId,
+        bytes: &'entry [u8],
+    },
+    /// An evaluation boundary closing the current batch at `at`.
+    Boundary { at: VirtualTime },
+}
+
+impl<'entry> ConsoleFoldStep<'entry> {
+    fn of(entry: &'entry SchedulerEventLogEntry) -> Option<Self> {
+        match entry.payload() {
+            SchedulerEventLogPayload::Observable(payload) => {
+                payload.console_bytes().map(|(node, bytes)| Self::Bytes {
+                    at: entry.at(),
+                    node,
+                    bytes,
+                })
+            }
+            SchedulerEventLogPayload::EvaluationBoundary(_) => {
+                Some(Self::Boundary { at: entry.at() })
+            }
+            _ => None,
         }
     }
 }
@@ -43,7 +112,13 @@ impl ConsoleMatchFold {
 /// automaton         content hash of the compiled canonical automaton
 /// state             canonical state index after the folded bytes
 /// last_match_at     virtual time of the latest batch where a match ended
+/// match_pending     present and true only while a match awaits its boundary
 /// ```
+///
+/// `match_pending` is omitted when false, so every state an earlier encoder
+/// could write keeps its exact canonical bytes and decodes unchanged. A state
+/// checkpointed between a match and its closing boundary carries the field;
+/// an older decoder refuses it as an unknown field instead of misreading it.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ConsoleMatchStateWire {
@@ -52,6 +127,8 @@ pub(crate) struct ConsoleMatchStateWire {
     automaton: ContentHash,
     state: u32,
     last_match_at: Option<VirtualTime>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    match_pending: bool,
 }
 
 /// Console matcher folds for every pattern a prefix was declared with.
@@ -91,15 +168,15 @@ impl ConsoleMatchFolds {
         Ok(folds)
     }
 
-    /// Declares one matcher and folds the console bytes already observed.
+    /// Declares one matcher and folds the entries already observed.
     ///
     /// Declaring an existing key is a no-op, so callers may declare every
     /// pattern a scenario mentions without deduplicating first.
-    pub(crate) fn declare<'event>(
+    pub(crate) fn declare<'entry>(
         &mut self,
         node: &NodeId,
         pattern: &str,
-        observed: impl IntoIterator<Item = &'event ObservableEvent>,
+        observed: impl IntoIterator<Item = &'entry SchedulerEventLogEntry>,
     ) -> Result<(), ConsolePatternError> {
         let key = ConsoleMatchKey {
             node: node.clone(),
@@ -109,60 +186,64 @@ impl ConsoleMatchFolds {
             return Ok(());
         }
 
-        let automaton = Arc::new(ConsoleAutomaton::compile(pattern)?);
-        let mut fold = ConsoleMatchFold {
-            state: automaton.start(),
-            automaton,
-            last_match_at: None,
-        };
-        for event in observed {
-            if let Some((event_node, bytes)) = event.console_bytes()
-                && event_node == node
-            {
-                fold.observe(event.at(), bytes);
+        let mut fold = ConsoleMatchFold::started(Arc::new(ConsoleAutomaton::compile(pattern)?));
+        for step in observed.into_iter().filter_map(ConsoleFoldStep::of) {
+            match step {
+                ConsoleFoldStep::Bytes {
+                    at,
+                    node: step_node,
+                    bytes,
+                } if step_node == node => fold.observe_bytes(at, bytes),
+                ConsoleFoldStep::Bytes { .. } => {}
+                ConsoleFoldStep::Boundary { at } => fold.close_batch(at),
             }
         }
         self.folds.insert(key, fold);
         Ok(())
     }
 
-    /// Advances every matcher for the nodes whose console bytes were appended.
-    pub(crate) fn observe<'event>(
+    /// Advances every matcher over appended entries in log order.
+    ///
+    /// Console bytes advance the matchers for their node; an evaluation
+    /// boundary closes the batch of every matcher with a pending match.
+    pub(crate) fn observe<'entry>(
         &mut self,
-        appended: impl IntoIterator<Item = &'event ObservableEvent>,
+        appended: impl IntoIterator<Item = &'entry SchedulerEventLogEntry>,
     ) {
         if self.folds.is_empty() {
             return;
         }
-        for event in appended {
-            let Some((node, bytes)) = event.console_bytes() else {
-                continue;
-            };
-            for (key, fold) in &mut self.folds {
-                if &key.node == node {
-                    fold.observe(event.at(), bytes);
+        for step in appended.into_iter().filter_map(ConsoleFoldStep::of) {
+            match step {
+                ConsoleFoldStep::Bytes { at, node, bytes } => {
+                    for (key, fold) in &mut self.folds {
+                        if &key.node == node {
+                            fold.observe_bytes(at, bytes);
+                        }
+                    }
+                }
+                ConsoleFoldStep::Boundary { at } => {
+                    for fold in self.folds.values_mut() {
+                        fold.close_batch(at);
+                    }
                 }
             }
         }
     }
 
-    /// Rebuilds every declared matcher over another prefix's console bytes.
+    /// Rebuilds every declared matcher over another prefix's entries.
     ///
     /// Used when a prefix is rewound to an earlier point; the compiled
     /// automata are shared rather than recompiled.
-    pub(crate) fn refold<'event>(
+    pub(crate) fn refold<'entry>(
         &self,
-        observed: impl IntoIterator<Item = &'event ObservableEvent>,
+        observed: impl IntoIterator<Item = &'entry SchedulerEventLogEntry>,
     ) -> Self {
         let folds = self
             .folds
             .iter()
             .map(|(key, fold)| {
-                let restarted = ConsoleMatchFold {
-                    automaton: Arc::clone(&fold.automaton),
-                    state: fold.automaton.start(),
-                    last_match_at: None,
-                };
+                let restarted = ConsoleMatchFold::started(Arc::clone(&fold.automaton));
                 (key.clone(), restarted)
             })
             .collect();
@@ -181,6 +262,7 @@ impl ConsoleMatchFolds {
                 automaton: fold.automaton.content_hash(),
                 state: fold.state.index(),
                 last_match_at: fold.last_match_at,
+                match_pending: fold.match_pending,
             })
             .collect()
     }
@@ -190,16 +272,19 @@ impl ConsoleMatchFolds {
     /// The wire must name exactly the declared matchers in canonical order;
     /// each automaton is the one these declarations compiled, verified by
     /// content hash, and each state index must exist in it (RFC-0020
-    /// CMEAS-19). Returns `None` on any mismatch.
+    /// CMEAS-19). A pending match must carry its match time. Returns `None`
+    /// on any mismatch.
     pub(crate) fn restored_from(&self, wire: &[ConsoleMatchStateWire]) -> Option<Self> {
         if wire.len() != self.folds.len() {
             return None;
         }
         let mut folds = BTreeMap::new();
         for ((key, fold), state) in self.folds.iter().zip(wire) {
+            // A pending match always recorded the time of the byte ending it.
             if key.node != state.node
                 || key.pattern != state.pattern
                 || fold.automaton.content_hash() != state.automaton
+                || (state.match_pending && state.last_match_at.is_none())
             {
                 return None;
             }
@@ -207,6 +292,7 @@ impl ConsoleMatchFolds {
                 automaton: Arc::clone(&fold.automaton),
                 state: fold.automaton.restore_state(state.state)?,
                 last_match_at: state.last_match_at,
+                match_pending: state.match_pending,
             };
             folds.insert(key.clone(), restored);
         }
@@ -242,7 +328,8 @@ impl ConsoleMatchFolds {
             .map(|(node, pattern)| UndeclaredConsoleMatcher { node, pattern })
     }
 
-    /// Reports whether a declared matcher saw a match end at `at`.
+    /// Reports whether a declared matcher's latest match belongs to the batch
+    /// whose point is `at`.
     ///
     /// Returns `None` when the pattern was not declared for `node`.
     pub(crate) fn reported(&self, node: &NodeId, pattern: &str, at: VirtualTime) -> Option<bool> {
@@ -328,3 +415,7 @@ fn collect_console_patterns(predicate: &Predicate, patterns: &mut BTreeSet<(Node
         _ => {}
     }
 }
+
+#[cfg(test)]
+#[path = "console_folds_tests.rs"]
+mod tests;

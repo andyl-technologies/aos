@@ -80,13 +80,7 @@ impl ObservableEvent {
     /// Returns the byte view used by console conditions without erasing origin.
     #[must_use]
     pub fn console_bytes(&self) -> Option<(&NodeId, &[u8])> {
-        match &self.payload {
-            ObservableEventPayload::ConsoleOutput { node, bytes } => Some((node, bytes)),
-            ObservableEventPayload::NativeConsoleByte { node, origin } => {
-                Some((node, std::slice::from_ref(&origin.byte)))
-            }
-            _ => None,
-        }
+        self.payload.console_bytes()
     }
 
     /// Builds a TCG-exec basic-block coverage observation.
@@ -600,6 +594,17 @@ pub enum ObservableEventPayload {
 }
 
 impl ObservableEventPayload {
+    /// Returns the node and bytes of a console payload without erasing origin.
+    pub(crate) fn console_bytes(&self) -> Option<(&NodeId, &[u8])> {
+        match self {
+            Self::ConsoleOutput { node, bytes } => Some((node, bytes)),
+            Self::NativeConsoleByte { node, origin } => {
+                Some((node, std::slice::from_ref(&origin.byte)))
+            }
+            _ => None,
+        }
+    }
+
     /// Returns the required black-box surface category for this payload, if any.
     #[must_use]
     pub fn black_box_observation_kind(&self) -> Option<BlackBoxObservationKind> {
@@ -1446,7 +1451,7 @@ impl ConditionEventLogPrefix {
         let prefix_events = self.base_sequence.checked_add(prefix_len)?;
         let mut prefix =
             Self::from_scheduler_event_log_entries_with_base(entries, self.base_sequence).ok()?;
-        prefix.console_folds = self.console_folds.refold(prefix.observable_events.iter());
+        prefix.console_folds = self.console_folds.refold(prefix.scheduler_entries.iter());
         if !self.prefix_offsets.is_empty() {
             prefix = prefix.with_event_log_offset(*self.prefix_offsets.get(&prefix_events)?);
         }
@@ -1507,20 +1512,22 @@ impl ConditionEventLogPrefix {
     }
 
     /// Replaces this prefix's console matchers with `matchers` refolded over
-    /// its console bytes.
+    /// its console bytes and evaluation boundaries.
     ///
     /// The compiled automata are shared, never recompiled. Used where a
     /// prefix is rebuilt from scratch anyway, so the refold adds no pass over
     /// history the rebuild did not already make.
     pub(crate) fn with_console_matchers(mut self, matchers: &ConsoleMatchFolds) -> Self {
-        self.console_folds = matchers.refold(self.observable_events.iter());
+        self.console_folds = matchers.refold(self.scheduler_entries.iter());
         self
     }
 
     /// Declares one console pattern so `console_match` folds it as bytes arrive.
     ///
-    /// Console bytes already in the prefix are folded immediately. Declaring
-    /// the same node and pattern again is a no-op.
+    /// Console bytes and evaluation boundaries already in the prefix are
+    /// folded immediately, so the matcher reaches the state it would have
+    /// reached had it been declared at genesis. Declaring the same node and
+    /// pattern again is a no-op.
     ///
     /// # Errors
     ///
@@ -1532,7 +1539,7 @@ impl ConditionEventLogPrefix {
         pattern: &str,
     ) -> Result<(), crate::ConsolePatternError> {
         self.console_folds
-            .declare(node, pattern, self.observable_events.iter())
+            .declare(node, pattern, self.scheduler_entries.iter())
     }
 }
 

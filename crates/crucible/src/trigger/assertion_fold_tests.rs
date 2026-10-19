@@ -423,6 +423,86 @@ fn checkpoints_carry_console_matchers_and_bind_to_their_patterns() -> TestResult
     Ok(())
 }
 
+/// Builds the `sequence`th entry: one native console byte emitted at `at`.
+fn native_console_entry(sequence: u64, at: u64, byte: u8) -> TestResult<SchedulerEventLogEntry> {
+    let event = ObservableEvent::native_console_byte(
+        VirtualTime { ticks: at },
+        node(),
+        crate::NativeConsoleByteOrigin {
+            device: ContentHash { bytes: [9; 32] },
+            stream: 1,
+            logical_generation: 0,
+            node_sequence: sequence + 1,
+            stream_sequence: sequence + 1,
+            emitted_ps: at,
+            raw_prefix: 0,
+            vcpu: 0,
+            byte,
+        },
+    )?;
+    Ok(SchedulerEventLogEntry::with_payload_for_test(
+        sequence,
+        event.at(),
+        SchedulerEventLogPayload::Observable(event.payload().clone()),
+    ))
+}
+
+/// One quantum whose native bytes complete `ok` before its t=200 frontier,
+/// then a quantum without console output.
+fn native_console_log() -> TestResult<Vec<SchedulerEventLogEntry>> {
+    Ok(vec![
+        native_console_entry(0, 100, b'o')?,
+        native_console_entry(1, 100, b'k')?,
+        boundary_entry(2, 200),
+        boundary_entry(3, 300),
+    ])
+}
+
+#[test]
+fn native_console_matches_hold_at_the_boundary_of_their_quantum() -> TestResult {
+    let properties = console_ready("ok")?;
+    let entries = native_console_log()?;
+    let mut oracle = BlackBoxHostOracle;
+
+    let mut live = HostAssertionEvaluator::new(&properties);
+    live.observe_prefix(&prefix(&entries[..3])?, &mut oracle);
+    let live_report = live.finalize_prefix(&prefix(&entries)?, &mut oracle);
+
+    assert_eq!(live_report.verdict(), &AssertionRunVerdict::Passed);
+    assert_eq!(live.assertion_fold_failure(), None);
+    Ok(())
+}
+
+#[test]
+fn checkpoints_between_a_native_match_and_its_boundary_resume_identically() -> TestResult {
+    let properties = console_ready("ok")?;
+    let entries = native_console_log()?;
+    let mut oracle = BlackBoxHostOracle;
+    let mut evaluator = HostAssertionEvaluator::new(&properties);
+    // Checkpoint after the byte that completes the match, before its boundary.
+    let checkpoint_prefix = prefix(&entries[..2])?;
+    evaluator.observe_prefix(&checkpoint_prefix, &mut oracle);
+
+    let bytes = evaluator.checkpoint().canonical_bytes()?;
+    let checkpoint = HostAssertionEvaluatorCheckpoint::from_canonical_bytes(&bytes)?;
+    let mut restored = HostAssertionEvaluator::new(&properties);
+    checkpoint.restore_into(&mut restored, &checkpoint_prefix)?;
+    assert_eq!(restored.fold, evaluator.fold);
+
+    let quantum = prefix(&entries[..3])?;
+    restored.observe_prefix(&quantum, &mut oracle);
+    evaluator.observe_prefix(&quantum, &mut oracle);
+    assert_eq!(restored.fold, evaluator.fold);
+    let terminal = prefix(&entries)?;
+    let restored_report = restored.finalize_prefix(&terminal, &mut oracle);
+    assert_eq!(restored_report.verdict(), &AssertionRunVerdict::Passed);
+    assert_eq!(
+        restored_report,
+        evaluator.finalize_prefix(&terminal, &mut oracle)
+    );
+    Ok(())
+}
+
 #[test]
 fn unstreamable_console_patterns_fail_the_fold_at_declaration() {
     let refused = Predicate::console_match(node(), RegexProgram::from_pattern("ready$"));
