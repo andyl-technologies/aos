@@ -9456,6 +9456,29 @@ Resumed qualification:
   compilation is running. This qualifies the tested consumer lifecycle
   component; producer handoff, eviction, complete retirement, NativeReady and
   full task acceptance remain pending.
+- Publication-completion candidate `11eecdde2d` settles future copy capacity
+  after actual physical completion. Its private receipt comes only from the
+  original registered native job, after owned source descriptions close and
+  its original immutable inode and filesystem synchronize outside metadata/job
+  locks. The final durable snapshot reduces only that job's future overlap to
+  its configured metadata allowance, retaining its pin, lease, reconstruction
+  sources and original sealed backing. Kernel charged/reserved usage and inode
+  allocation remain independently measured; no hold is reported as freed
+  physical space. Native stopped-copy and failed-whole-hash controls require
+  full overlap, while completed inline, manifest, recovered and repeated
+  assemblies require exact settled holds. The source-bound image and independent
+  verification pass with all 3,491 inputs and six installed files checked.
+  Actual ext4 qualification passes in 142.412 seconds, including all 51 selected
+  unit cases, the new settlement control and every prior consumer/recovery
+  control. The complete filesystem run passes all 122 nonignored cases;
+  independent review verifies the archive, all 3,486 inputs and the same six
+  privileged exclusions. Execution wrappers lost during the session transition
+  leave their partial logs preserved; completed image evidence is retained and
+  unfinished checks resume on unchanged committed source. Standalone Cargo checks
+  are queued behind another worktree's live shared-target build; required
+  application target compilation is running. No new strict-lint or complete task
+  result is claimed. Full producer pin release, eviction, retirement and
+  NativeReady remain pending.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
   and all seven strict Clippy/documentation profiles pass. The interface,
   commit-path, status and schema gates pass on unchanged final source, including
