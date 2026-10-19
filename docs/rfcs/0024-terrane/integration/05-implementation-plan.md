@@ -9549,8 +9549,14 @@ Resumed qualification:
   guests. Independent reinspection matches its original source/runtime report:
   3,493 transport inputs, 3,495 cache inputs, five transport ELFs and nineteen
   portable cases. This qualifies ARCH-8 on the tested source. Required
-  application compilation is running before the full filesystem suite; the
-  broader host requirements and task acceptance remain open.
+  application compilation subsequently passes in 2,502.317 seconds; all 128
+  actual test artifacts exactly match the 29 declared Linux application packages,
+  including their library, binary and integration targets. This is compilation,
+  not application execution. The full filesystem suite also passes all 122
+  nonignored cases in the ext4 guest; independent review verifies the exact
+  cases, all 3,489 archive inputs, actual archive digest and unchanged six
+  privileged exclusions. The broader host requirements and task acceptance
+  remain open.
 - Source-descriptor candidate `a509523e04` closes the original registered
   admission and inspection handles only after their real correlated native
   final-removal acknowledgements. Exact zero-link inode, project, ownership,
@@ -9568,8 +9574,9 @@ Resumed qualification:
   supervisor helpers. Both direct builds, 32 focused cases, the formatter pair
   and all three strict Clippy profiles pass on unchanged source, with no lint
   allowances.
-  Its owning aggregate, application compilation and complete filesystem suite
-  are queued after the preceding application check. Producer pin release,
+  Its owning aggregate is now running after the preceding application's success;
+  application compilation and the complete filesystem suite follow only on
+  success. Producer pin release,
   cached-object ownership, eviction, NativeReady and full task acceptance remain
   pending; this qualifies source-description closure only.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
