@@ -1,4 +1,4 @@
-##! Compile the bounded original PIC receiver source and adverse controls.
+##! Compile original PIC/FD custody source controls and configured native objects.
 {
   lib,
   mkDerivation,
@@ -8,6 +8,7 @@
   stdenv,
   buildPackages,
   gnumake,
+  bash,
   coreutils,
   patch,
   perl,
@@ -22,6 +23,8 @@
   rsync,
 }: let
   fixtures = ./_crucible-pic-source;
+  psFixtures = ./_crucible-q35-ps-source;
+  psPatches = import (psFixtures + "/patches.nix");
   originalPatches = [
     ./crucible-controller-clock-7.2.3.patch
     ./crucible-controller-clock-stage2-7.2.3.patch
@@ -58,7 +61,7 @@ in
     };
     # The existing two-ISA Stage7 check remains a required independent input.
     # This additional package emits a check report, never an installed kernel.
-    buildDeps = [linuxStage7Check gnumake coreutils patch perl python3 bc bison flex elfutils openssl zlib gcc-libs rsync];
+    buildDeps = [linuxStage7Check gnumake bash coreutils patch perl python3 bc bison flex elfutils openssl zlib gcc-libs rsync];
     runtimeDeps = [];
     hardeningDisable = ["all"];
     phases = [
@@ -143,6 +146,78 @@ in
           full kernel linking, physical guest delivery and PIC producer board: unqualified
           ordinary dual-route/coalescing and FirstBegin IRQchip admission: unsupported
           guest delivery, native hardware, Ready and capture: not qualified
+          REPORT
+        '';
+      }
+      {
+        name = "check-fdtable";
+        script = ''
+          # The preceding PIC checkpoint and every legacy control remain intact.
+          # This independent raw tree consumes the complete PS source ancestry.
+          cd ..
+          ${python3}/bin/python3 -I -B ${psFixtures}/check-disk.py "$PWD"
+          mkdir fdtable-kernel
+          tar xf ${linuxSource.src} --strip-components=1 -C fdtable-kernel
+          cd fdtable-kernel
+          for sourceFile in $(find . -type f -name '*.py'); do
+            case "$(head -n 1 "$sourceFile")" in
+              '#!'*python*) sed -i "1s|.*|#!${buildPackages.python3}/bin/python3|" "$sourceFile" ;;
+            esac
+          done
+          ${coreutils}/bin/timeout 180 ${python3}/bin/python3 -I -B \
+            ${psFixtures}/apply-kernel-source.py "$PWD" ${patch}/bin/patch \
+            ${lib.concatMapStringsSep " " (sourcePatch: lib.escapeShellArg "${sourcePatch}") psPatches}
+          export LD_LIBRARY_PATH="${buildPackages.gcc-libs}/lib:${hostLibrary}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+          # Reuse the existing aggregate budget and ordinary resolved config.
+          # Fresh prepare regenerates offsets for this actual patched Task layout.
+          ${python3}/bin/python3 -B ${fixtures}/resources.py initialize "$PWD"
+          cp ${linux.dev}/lib/modules/${linuxSource.version}/build/.config .config
+          native_make() {
+            ${coreutils}/bin/timeout 300 ${gnumake}/bin/make -j1 ARCH=x86_64 \
+              SHELL="${bash}/bin/bash" CONFIG_SHELL="${bash}/bin/bash" \
+              CC="$CC" LD="$LD" AR="$AR" NM="$NM" STRIP="$STRIP" \
+              OBJCOPY="${stdenv.binutils}/bin/objcopy" \
+              OBJDUMP="${stdenv.binutils}/bin/objdump" \
+              READELF="${stdenv.binutils}/bin/readelf" \
+              HOSTCC="${hostCompiler}" \
+              HOSTCXX="env C_INCLUDE_PATH=${hostInclude} LIBRARY_PATH=${hostLibrary} ${buildPackages.cc}/bin/c++" \
+              HOSTLD="${buildPackages.binutils}/bin/ld" \
+              HOSTAR="${buildPackages.binutils}/bin/ar" \
+              HOSTPKG_CONFIG="${buildPackages.pkg-config}/bin/pkg-config" "$@"
+          }
+          native_make olddefconfig
+          native_make prepare
+          native_make modules_prepare
+          grep -qx 'CONFIG_WERROR=y' .config
+          ${python3}/bin/python3 -B ${fixtures}/resources.py check "$PWD"
+
+          # The existing proposal/check executor owns all compiler/model results.
+          # The ordinary FD binary runs on the build-host kernel, not this image.
+          ${python3}/bin/python3 -B ${fixtures}/generate-models.py \
+            "$PWD" "$CC" "$PWD/fdtable-controls" fdtable
+          ${python3}/bin/python3 -B ${fixtures}/check-models.py \
+            "$PWD/fdtable-controls" "$PWD" fdtable
+
+          for nativeObject in fs/file.o mm/crucible_allocator.o mm/slub.o virt/kvm/kvm_main.o; do
+            ${python3}/bin/python3 -B ${fixtures}/resources.py check "$PWD"
+            native_make "$nativeObject"
+            ${python3}/bin/python3 -B ${fixtures}/check-native-inputs.py \
+              "$PWD" "$nativeObject" fdtable
+          done
+          ${python3}/bin/python3 -B ${fixtures}/resources.py check "$PWD"
+          mkdir -p "$out/fdtable-native-inputs"
+          cp fdtable-*.inputs.json "$out/fdtable-native-inputs/"
+          cp fdtable-controls/source-bindings.json "$out/fdtable-source-bindings.json"
+          cp fdtable-controls/report.json "$out/fdtable-source-model-report.json"
+          cat > "$out/fdtable-report" <<'REPORT'
+          source-consuming FD controls: 21 cases completed with modeled kernel peers
+          ordinary FD controls: build-host growth, exhaustion, concurrency and exec passed
+          four configured native source objects: compiled with exact source/dependency records
+          legacy PIC/EOI/queue and Stage7 controls: retained as required predecessors
+          full image/module link and matching source companion: separate kernel build required
+          actual patched-kernel runtime, physical accounting and state preservation: unqualified
+          constructor coverage 0x001/required0x7ff; FD_TABLE/CREATE/RUN/Ready remain unsupported
           REPORT
         '';
       }

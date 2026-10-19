@@ -46,7 +46,7 @@ def parse_record(body, key):
     return shlex.split(value)
 
 
-def verify(root, target, required, catalog):
+def verify(root, target, required, catalog, fdtable=False):
     object_path = Path(target)
     record = root / object_path.parent / ('.' + object_path.name + '.cmd')
     body = record.read_text()
@@ -76,6 +76,12 @@ def verify(root, target, required, catalog):
             (relative.startswith('include/linux/kvm_crucible_') and
              relative.endswith('.h'))
         )
+        if fdtable:
+            native = native or (
+                (relative.startswith('include/linux/crucible_') and relative.endswith('.h')) or
+                (relative.startswith(('fs/crucible_', 'mm/crucible_', 'mm/crucible-')) and
+                 relative.endswith('.inc.c'))
+            )
         if native and relative not in catalog:
             raise ValueError('Unknown native dependency role: ' + relative)
         if relative in catalog:
@@ -100,11 +106,21 @@ def main():
     root = Path(sys.argv[1]).resolve()
     target = sys.argv[2]
     here = Path(__file__).parent
-    inventory = json.loads((here / 'source-inventory.json').read_text())
-    catalog = {row['path']: row['deferred'] for row in inventory['files']}
-    required = json.loads((here / 'native-inputs.json').read_text())[target]
-    report = verify(root, target, required, catalog)
-    (root / ('pic-' + Path(target).name + '.inputs.json')).write_text(
+    fdtable = len(sys.argv) == 4 and sys.argv[3] == 'fdtable'
+    if fdtable:
+        fixtures = here.parent / '_crucible-q35-ps-source'
+        inventory = json.loads((fixtures / 'complete-source-catalog.json').read_text())
+        catalog = {row['path']: row['identity'] for row in inventory['files']}
+        required = json.loads((fixtures / 'fdtable-native-inputs.json').read_text())[target]
+    elif len(sys.argv) == 3:
+        inventory = json.loads((here / 'source-inventory.json').read_text())
+        catalog = {row['path']: row['deferred'] for row in inventory['files']}
+        required = json.loads((here / 'native-inputs.json').read_text())[target]
+    else:
+        raise ValueError('Exact PIC or FD-table native-input mode required')
+    report = verify(root, target, required, catalog, fdtable)
+    prefix = 'fdtable-' if fdtable else 'pic-'
+    (root / (prefix + Path(target).name + '.inputs.json')).write_text(
         json.dumps(report, indent=2) + '\n')
     print('Actual native source/dependency roles verified: ' + target)
 

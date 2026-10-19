@@ -231,3 +231,28 @@ anonymous-file, shared backing, RCU retirement or whole physical resource limits
 Coverage stays 0x001; required 0x7ff is an 11-bit mask. The selected constructor
 still refuses before FD allocation; no native continuation/delegation, capability
 support, RUN or Ready is issued. Historical Source53 is not a production stage.
+
+
+The original FD-table/allocator-retirement stage adds three private kernel roles
+and catalogs two existing upstream roles. All earlier patches and notices remain
+unchanged. Native pointers, tokens and callbacks remain kernel-private.
+
+| Added private role | SPDX notice |
+| --- | --- |
+| `include/linux/crucible_fdtable.h` | `GPL-2.0-only` |
+| `fs/crucible_fdtable.inc.c` | `GPL-2.0-only` |
+| `mm/crucible_allocator_retirement.inc.c` | `GPL-2.0-only` |
+
+Existing `fs/file.c`, `include/linux/fdtable.h` and `mm/slub.c` retain their
+complete original `GPL-2.0` notices. Existing allocator/resource roles retain
+`GPL-2.0-only`. The FD source-control template and ordinary control are
+`GPL-2.0-only` test source; they are not a kernel execution witness. No QEMU file
+or permissive process protocol is changed.
+
+The exact 43-stage/182-role kernel roster and all new test/build source are
+retained by the existing complete source/config/toolchain companion policy.
+Publication still requires the matching same-build source output. Constructor
+coverage remains `0x001` of required `0x7ff`; FD_TABLE, selected CREATE, active
+execution, state preservation, RUN and Ready remain unsupported. Configured
+object compilation, source-consumer tests and ordinary build-host FD tests are
+separate from full Kbuild/link and actual patched-kernel runtime qualification.

@@ -45,8 +45,24 @@ preserves its first error, and uses the existing initial graph precredit walk.
 | Current test compilation | Standard four-library compilation passes in 4 minutes 2 seconds. Assertions, overflow checks and default stack remain enabled. |
 | Earlier startup/reclamation pair | Baseline reaches the fifteen-minute limit during inactive-runtime construction; optimized construction finishes, then its recheck refuses after 641.39 seconds. Normal retirement and child reclamation pass. |
 | Current startup/reclamation control | Native78 passes in 678.05 seconds, including inactive-runtime recheck, the attached actor, exact/one-byte-short whole-holder census, destination assertions, retirement and child reclamation. Full native preservation remains unqualified. |
+| Kernel FD source application | The complete 43-stage chain applies with exact identities, zero fuzz and no offsets. Its final catalog contains 182 source roles totaling 5,151,009 bytes. FD controls and configured-object compilation remain pending. |
 | Real-host KVM preparation | The existing exact stopped-VM test passes: one passed, zero failed, 884 filtered, in 0.04 seconds. Standard test compilation passes in 4 minutes 52 seconds. It creates no vCPU or guest execution and does not qualify the controller profile. |
 | Outstanding qualification | The current-source application-target refresh, full preservation, strict lint, ABI and license gates remain pending. |
+
+The kernel FD checkpoint retains original publication and retirement identity
+across growth, slot clearing, replacement, final files-table release and queued
+RCU callbacks. A publication token now survives a peer clearing the visible slot
+before the installer returns. Source review checks this race and the original
+identity, generation and once-only checks. Twenty-one source cases and four
+ordinary FD groups extend the existing registered PIC source-check facility;
+the existing controls and resource limits remain intact.
+
+The complete source-application derivation passes, and its installed catalog
+matches the exact selected native source chain. This result includes no C
+compilation, patched-kernel execution, image/module linking or matching-source
+release qualification. The registered source check is still running. Constructor
+coverage remains `0x001` of required `0x7ff`; this checkpoint grants no FD-table,
+CREATE, RUN or readiness capability.
 
 One matched pair reaches the same inactive-runtime construction milestone in
 approximately 624 versus 364 seconds (41.6% less time). Only the three currentness

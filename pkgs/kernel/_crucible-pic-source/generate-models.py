@@ -16,6 +16,14 @@ if sys.flags.optimize or not COMPILER:
     raise RuntimeError('Optimized generation or absent source compiler refuses')
 ROOT.mkdir()
 
+if len(sys.argv) == 5 and sys.argv[4] == 'fdtable':
+    from fdtable_models import generate
+
+    generate(SOURCE, COMPILER, ROOT, HERE.parent / '_crucible-q35-ps-source')
+    raise SystemExit(0)
+if len(sys.argv) != 4:
+    raise ValueError('Exact PIC or FD-table source-control mode required')
+
 
 def once(body, old, new):
     if body.count(old) != 1:

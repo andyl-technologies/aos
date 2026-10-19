@@ -1,0 +1,2525 @@
+--- /dev/null
++++ b/fs/crucible_fdtable.inc.c
+@@ -0,0 +1,1024 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Original CREATE/files and real fdtable generations. This is independent of
++ * the Task-local allocator scope: RCU callbacks get no allocation permission.
++ * Registry entries and original record generations are never recycled here.
++ */
++
++#define CRUCIBLE_FDTABLE_SCOPES 8U
++
++struct crucible_fdtable_registry {
++	struct crucible_fdtable_scope *scopes[CRUCIBLE_FDTABLE_SCOPES];
++	raw_spinlock_t lock;
++	u64 generation;
++} __aligned(PAGE_SIZE);
++
++static struct crucible_fdtable_registry crucible_fdtables = {
++	.lock = __RAW_SPIN_LOCK_UNLOCKED(crucible_fdtables.lock),
++};
++
++u64 crucible_fdtable_registry_bytes(void)
++{
++	return sizeof(crucible_fdtables);
++}
++EXPORT_SYMBOL_GPL(crucible_fdtable_registry_bytes);
++
++u64 crucible_fdtable_scratch_bytes(void)
++{
++	/* Source-declared direct windows, summed conservatively across
++	 * sequential paths. This DATA is neither a compiler-frame layout
++	 * nor transitive allocator/implicit-temporary coverage.
++	 */
++	struct controls {
++		struct {
++			const struct crucible_fdtable_token *token_0;
++			struct crucible_fdtable_scope **scope_1;
++			u32 index_2;
++			u32 record_3;
++			struct crucible_fdtable_scope *candidate_4;
++			struct crucible_fdtable_record *returned_value_5;
++		} crucible_fdtable_find;
++		struct {
++			struct fdtable *table_0;
++			struct crucible_fdtable_scope **scope_1;
++			struct crucible_fdtable_record *found_2;
++			u32 index_3;
++			u32 entry_4;
++			struct crucible_fdtable_scope *candidate_5;
++			struct crucible_fdtable_record *record_6;
++			struct crucible_fdtable_record *returned_value_7;
++		} crucible_fdtable_live_table;
++		struct {
++			struct fdtable *table_0;
++			struct crucible_fdtable_scope *scope_1;
++			struct crucible_fdtable_record *record_2;
++		} crucible_fdtable_origin_check;
++		struct {
++			struct crucible_fdtable_scope *scope_0;
++			unsigned long flags_1;
++			u32 index_2;
++			bool admitted_3;
++			bool returned_value_4;
++		} crucible_fdtable_enter;
++		struct {
++			struct crucible_fdtable_scope *scope_0;
++			unsigned long flags_1;
++			u32 index_2;
++		} crucible_fdtable_leave;
++		struct {
++			struct files_struct *files_0;
++			struct crucible_fdtable_scope *scope_1;
++			u32 index_2;
++			struct crucible_fdtable_scope *returned_value_3;
++		} crucible_fdtable_active;
++		struct {
++			struct crucible_fdtable_scope *scope_0;
++			const struct crucible_fdtable_record *record_1;
++			struct crucible_allocator_scope *saved_2;
++			struct crucible_allocator_scope guard_3;
++		} crucible_fdtable_observe;
++		struct {
++			unsigned int slots_0;
++			struct crucible_fdtable_token *token_1;
++			struct crucible_fdtable_scope *scope_2;
++			struct crucible_fdtable_record *record_3;
++			struct crucible_fdtable_quote quote_4;
++			unsigned long flags_5;
++			bool admitted_6;
++			bool returned_value_7;
++		} crucible_fdtable_allocation_begin;
++		struct {
++			const struct crucible_fdtable_token *token_0;
++			struct fdtable *table_1;
++			void *array_2;
++			void *bitmaps_3;
++			struct crucible_fdtable_scope *scope_4;
++			struct crucible_fdtable_record *record_5;
++			unsigned long flags_6;
++		} crucible_fdtable_allocation_part;
++		struct {
++			const struct crucible_fdtable_token *token_0;
++			struct fdtable *result_1;
++			struct crucible_fdtable_scope *scope_2;
++			struct crucible_fdtable_record *record_3;
++			unsigned long flags_4;
++		} crucible_fdtable_allocation_complete;
++		struct {
++			struct fdtable *table_0;
++			struct crucible_fdtable_token *token_1;
++			struct crucible_fdtable_scope *scope_2;
++			struct crucible_fdtable_record *record_3;
++			unsigned long flags_4;
++		} crucible_fdtable_rcu_queue_begin;
++		struct {
++			struct crucible_fdtable_token *token_0;
++			struct crucible_fdtable_scope *scope_1;
++			struct crucible_fdtable_record *record_2;
++			struct crucible_fdtable_record output_3;
++			bool observed_4;
++			unsigned long flags_5;
++		} crucible_fdtable_rcu_queue_complete;
++		struct {
++			struct fdtable *table_0;
++			bool rcu_1;
++			struct crucible_fdtable_token *token_2;
++			struct crucible_fdtable_scope *scope_3;
++			struct crucible_fdtable_record *record_4;
++			unsigned long flags_5;
++		} crucible_fdtable_free_begin;
++		struct {
++			struct crucible_fdtable_token *token_0;
++			struct crucible_fdtable_scope *scope_1;
++			struct crucible_fdtable_record *record_2;
++			struct crucible_fdtable_record output_3;
++			bool observed_4;
++			unsigned long flags_5;
++		} crucible_fdtable_free_complete;
++		struct {
++			struct files_struct *files_0;
++			struct fdtable *table_1;
++			struct crucible_fdtable_scope *scope_2;
++			struct crucible_fdtable_scope *old_scope_3;
++			struct crucible_fdtable_record *record_4;
++			unsigned long flags_5;
++			bool admitted_6;
++			bool returned_value_7;
++		} crucible_fdtable_capture_existing;
++		struct {
++			struct fdtable *table_0;
++			bool returned_1;
++			struct crucible_fdtable_scope *scope_2;
++			struct crucible_fdtable_record *record_3;
++			unsigned long flags_4;
++		} crucible_fdtable_publication;
++		struct {
++			struct files_struct *files_0;
++			struct crucible_fdtable_scope *scope_1;
++			unsigned long flags_2;
++		} crucible_fdtable_slot_begin;
++		struct {
++			struct files_struct *files_0;
++			int result_1;
++			struct crucible_fdtable_scope *scope_2;
++			unsigned long flags_3;
++		} crucible_fdtable_slot_return;
++		struct {
++			struct files_struct *files_0;
++			unsigned int fd_1;
++			struct crucible_fdtable_scope *scope_2;
++			unsigned long flags_3;
++		} crucible_fdtable_slot_release;
++		struct {
++			const struct crucible_fdtable_install_token *token_0;
++			u32 index_1;
++			struct crucible_fdtable_scope *scope_2;
++			struct crucible_fdtable_scope *returned_value_3;
++		} crucible_fdtable_install_origin;
++		struct {
++			struct files_struct *files_0;
++			unsigned int fd_1;
++			struct file *file_2;
++			bool returned_3;
++			struct crucible_fdtable_install_token *token_4;
++			struct crucible_fdtable_scope *scope_5;
++			unsigned long flags_6;
++		} crucible_fdtable_install;
++		struct {
++			struct files_struct *files_0;
++			unsigned long flags_1;
++			struct crucible_fdtable_scope *scope_2;
++		} crucible_fdtable_mutation;
++		struct {
++			struct files_struct *files_0;
++			struct crucible_fdtable_files_token *token_1;
++			struct crucible_fdtable_scope *scope_2;
++			unsigned long flags_3;
++			u32 index_4;
++			u32 entry_5;
++		} crucible_fdtable_files_free_begin;
++		struct {
++			struct crucible_fdtable_files_token *token_0;
++			struct crucible_fdtable_scope *scope_1;
++			struct crucible_fdtable_files_output output_2;
++			unsigned long flags_3;
++			u32 index_4;
++			struct crucible_allocator_scope *saved_5;
++			struct crucible_allocator_scope guard_6;
++			u32 entry_7;
++		} crucible_fdtable_files_free_complete;
++		struct {
++			const struct crucible_fdtable_token *token_0;
++			unsigned int part_1;
++			bool returned_2;
++			struct crucible_fdtable_scope *scope_3;
++			struct crucible_fdtable_record *record_4;
++			unsigned long flags_5;
++		} crucible_fdtable_part_free;
++		struct {
++			struct files_struct *files_0;
++			unsigned int fd_1;
++			struct file *original_2;
++			struct file *replacement_3;
++			struct crucible_fdtable_slot_token *token_4;
++			struct crucible_fdtable_scope *scope_5;
++			struct fdtable *table_6;
++			unsigned long flags_7;
++			u32 index_8;
++		} crucible_fdtable_slot_clear_begin;
++		struct {
++			struct crucible_fdtable_slot_token *token_0;
++			struct crucible_fdtable_scope *scope_1;
++			struct crucible_fdtable_slot_output output_2;
++			unsigned long flags_3;
++			u32 index_4;
++			struct crucible_allocator_scope *saved_5;
++			struct crucible_allocator_scope guard_6;
++		} crucible_fdtable_slot_clear_complete;
++		struct {
++			struct fdtable *fdt_0;
++			const struct crucible_fdtable_token *token_1;
++		} __free_fdtable_native;
++		struct {
++			struct fdtable *fdt_0;
++			struct crucible_fdtable_token token_1;
++		} __free_fdtable;
++		struct {
++			struct rcu_head *rcu_0;
++			struct fdtable *fdt_1;
++			struct crucible_fdtable_token token_2;
++		} free_fdtable_rcu;
++		struct {
++			struct crucible_fdtable_token token_0;
++			void *array_1;
++			void *bitmaps_2;
++		} native_allocation_additions;
++		struct {
++			struct crucible_fdtable_token token_0;
++		} native_rcu_queue_return;
++		struct {
++			struct crucible_fdtable_files_token token_0;
++		} last_files_put;
++		struct {
++			struct crucible_fdtable_install_token tokens_0[2];
++		} native_install_tokens;
++		struct {
++			struct crucible_fdtable_slot_token tokens_0[3];
++		} native_slot_removal;
++		struct {
++			u64 returned_0[2];
++		} counter_returns;
++	};
++
++	return sizeof(struct controls);
++}
++EXPORT_SYMBOL_GPL(crucible_fdtable_scratch_bytes);
++
++static struct crucible_fdtable_record *
++crucible_fdtable_find(const struct crucible_fdtable_token *token,
++	struct crucible_fdtable_scope **scope)
++{
++	u32 index, record;
++
++	lockdep_assert_held(&crucible_fdtables.lock);
++	for (index = 0; index < CRUCIBLE_FDTABLE_SCOPES; index++) {
++		struct crucible_fdtable_scope *candidate = crucible_fdtables.scopes[index];
++
++		if (!candidate)
++			continue;
++		for (record = 0; record < candidate->records_used; record++)
++			if (token->record == &candidate->records[record] &&
++			    token->generation == candidate->records[record].generation) {
++				*scope = candidate;
++				return &candidate->records[record];
++			}
++	}
++	return NULL;
++}
++
++/* Native lifecycle selection is from the retained bank, not a candidate
++ * token. A token mismatch taints its actual owner but cannot erase cleanup.
++ */
++static struct crucible_fdtable_record *
++crucible_fdtable_live_table(struct fdtable *table, struct crucible_fdtable_scope **scope)
++{
++	struct crucible_fdtable_record *found = NULL;
++	u32 index, entry;
++
++	lockdep_assert_held(&crucible_fdtables.lock);
++	for (index = 0; index < CRUCIBLE_FDTABLE_SCOPES; index++) {
++		struct crucible_fdtable_scope *candidate = crucible_fdtables.scopes[index];
++
++		if (!candidate)
++			continue;
++		for (entry = 0; entry < candidate->records_used; entry++) {
++			struct crucible_fdtable_record *record = &candidate->records[entry];
++
++			if (record->table != table || record->free_entered ||
++			    (!record->inherited && (!record->allocation_returned || record->native_result)))
++				continue;
++			if (found) {
++				WRITE_ONCE((*scope)->uncertain, true);
++				WRITE_ONCE(candidate->uncertain, true);
++				return NULL;
++			}
++			found = record;
++			*scope = candidate;
++		}
++	}
++	return found;
++}
++
++static void crucible_fdtable_origin_check(struct fdtable *table,
++	struct crucible_fdtable_scope *scope, struct crucible_fdtable_record *record)
++{
++	if (table->crucible_origin.record != record ||
++	    table->crucible_origin.generation != record->generation) {
++		if (!record->origin_mismatch)
++			record->refused_origin = table->crucible_origin;
++		record->origin_mismatch = true;
++		WRITE_ONCE(scope->uncertain, true);
++	}
++}
++
++/* Only literal original issuer enrollment publishes the scope address. No
++ * candidate token can choose an owner without registry membership first.
++ */
++bool crucible_fdtable_enter(struct crucible_fdtable_scope *scope)
++{
++	unsigned long flags;
++	u32 index;
++	bool admitted = false;
++
++	if (!scope || !scope->owner || !scope->ops || !scope->ops->current ||
++	    !scope->ops->admit_growth || !scope->ops->observe || !scope->ops->observe_files ||
++	    !scope->ops->observe_slot ||
++	    scope->entered ||
++	    scope->task != current || scope->mm != current->mm ||
++	    scope->files != current->files || !scope->ops->current(scope->owner))
++		return false;
++	raw_spin_lock_irqsave(&crucible_fdtables.lock, flags);
++	for (index = 0; index < CRUCIBLE_FDTABLE_SCOPES; index++)
++		if (crucible_fdtables.scopes[index] && crucible_fdtables.scopes[index]->active &&
++		    crucible_fdtables.scopes[index]->files == scope->files) {
++			WRITE_ONCE(crucible_fdtables.scopes[index]->uncertain, true);
++			WRITE_ONCE(scope->uncertain, true);
++			raw_spin_unlock_irqrestore(&crucible_fdtables.lock, flags);
++			return false;
++		}
++	for (index = 0; index < CRUCIBLE_FDTABLE_SCOPES; index++)
++		if (!crucible_fdtables.scopes[index] && crucible_fdtables.generation != U64_MAX) {
++			crucible_fdtables.scopes[index] = scope;
++			scope->entered = true;
++			scope->active = true;
++			scope->generation = ++crucible_fdtables.generation;
++			admitted = true;
++			break;
++		}
++	raw_spin_unlock_irqrestore(&crucible_fdtables.lock, flags);
++	return admitted;
++}
++EXPORT_SYMBOL_GPL(crucible_fdtable_enter);
++
++void crucible_fdtable_leave(struct crucible_fdtable_scope *scope)
++{
++	unsigned long flags;
++	u32 index;
++
++	raw_spin_lock_irqsave(&crucible_fdtables.lock, flags);
++	for (index = 0; index < CRUCIBLE_FDTABLE_SCOPES; index++)
++		if (crucible_fdtables.scopes[index] == scope) {
++			scope->active = false;
++			break;
++		}
++	raw_spin_unlock_irqrestore(&crucible_fdtables.lock, flags);
++}
++EXPORT_SYMBOL_GPL(crucible_fdtable_leave);
++
++static struct crucible_fdtable_scope *crucible_fdtable_active(struct files_struct *files)
++{
++	struct crucible_fdtable_scope *scope;
++	u32 index;
++
++	lockdep_assert_held(&crucible_fdtables.lock);
++	for (index = 0; index < CRUCIBLE_FDTABLE_SCOPES; index++) {
++		scope = crucible_fdtables.scopes[index];
++		if (scope && scope->active && scope->files == files) {
++			if (scope->task != current || scope->mm != current->mm)
++				WRITE_ONCE(scope->uncertain, true);
++			return scope;
++		}
++	}
++	return NULL;
++}
++
++static void crucible_fdtable_observe(struct crucible_fdtable_scope *scope,
++	const struct crucible_fdtable_record *record)
++{
++	struct crucible_allocator_scope *saved = READ_ONCE(current->crucible_allocator_scope);
++	struct crucible_allocator_scope guard = {
++		.original_task = current,
++		.original_owner = scope->owner,
++		.callback_active = true,
++		.cleanup_observer = true,
++	};
++
++	WRITE_ONCE(current->crucible_allocator_scope, &guard);
++	scope->ops->observe(scope->owner, record);
++	WRITE_ONCE(current->crucible_allocator_scope, saved);
++}
++
++static bool crucible_fdtable_allocation_begin(unsigned int slots,
++	struct crucible_fdtable_token *token)
++{
++	struct crucible_fdtable_scope *scope;
++	struct crucible_fdtable_record *record;
++	struct crucible_fdtable_quote quote = {
++		.table_bytes = sizeof(struct fdtable),
++		.array_bytes = (u64)slots * sizeof(struct file *),
++		.bitmap_bytes = max_t(size_t,
++			2 * slots / BITS_PER_BYTE + BITBIT_SIZE(slots), L1_CACHE_BYTES),
++		.counter_bytes = crucible_fdtable_scratch_bytes(),
++		.native_slots = slots,
++	};
++	unsigned long flags;
++	bool admitted = true;
++
++	token->record = NULL;
++	token->generation = 0;
++	raw_spin_lock_irqsave(&crucible_fdtables.lock, flags);
++	scope = crucible_fdtable_active(current->files);
++	if (!scope || scope->task != current || scope->mm != current->mm)
++		goto unlock;
++	if (scope->uncertain || scope->records_used == CRUCIBLE_FDTABLE_RECORDS ||
++	    crucible_fdtables.generation == U64_MAX || !scope->ops->current(scope->owner)) {
++		if (!scope->quote_refused) {
++			scope->first_refused_quote = quote;
++			scope->quote_refused = true;
++		}
++		WRITE_ONCE(scope->uncertain, true);
++		admitted = false;
++		goto unlock;
++	}
++	record = &scope->records[scope->records_used];
++	record->index = scope->records_used++;
++	record->quote = quote;
++	record->generation = ++crucible_fdtables.generation;
++	/* The actual requested tuple is retained before the original source
++	 * sink can refuse its reservation; no native allocator has run yet.
++	 */
++	admitted = scope->ops->admit_growth(scope->owner, &quote);
++	record->admitted = admitted;
++	if (admitted) {
++		record->allocation_entered = true;
++		token->record = record;
++		token->generation = record->generation;
++	} else {
++		WRITE_ONCE(scope->uncertain, true);
++	}
++unlock:
++	raw_spin_unlock_irqrestore(&crucible_fdtables.lock, flags);
++	return admitted;
++}
++
++static void crucible_fdtable_allocation_part(const struct crucible_fdtable_token *token,
++	struct fdtable *table, void *array, void *bitmaps)
++{
++	struct crucible_fdtable_scope *scope = NULL;
++	struct crucible_fdtable_record *record;
++	unsigned long flags;
++
++	if (!token->record)
++		return;
++	raw_spin_lock_irqsave(&crucible_fdtables.lock, flags);
++	record = crucible_fdtable_find(token, &scope);
++	if (record && !record->allocation_returned) {
++		record->table = table;
++		record->array = array;
++		record->bitmaps = bitmaps;
++		record->sequence++;
++	}
++	raw_spin_unlock_irqrestore(&crucible_fdtables.lock, flags);
++}
++
++static void crucible_fdtable_allocation_complete(const struct crucible_fdtable_token *token,
++	struct fdtable *result)
++{
++	struct crucible_fdtable_scope *scope = NULL;
++	struct crucible_fdtable_record *record;
++	unsigned long flags;
++
++	if (!token->record)
++		return;
++	raw_spin_lock_irqsave(&crucible_fdtables.lock, flags);
++	record = crucible_fdtable_find(token, &scope);
++	if (record && !record->allocation_returned) {
++		/* Preserve raw native outcome and every earlier allocated pointer
++		 * before any source-currentness reconciliation. Never dereference
++		 * a partial pointer after the native unwind has freed its object.
++		 */
++		record->native_result = IS_ERR(result) ? PTR_ERR(result) : 0;
++		record->allocation_returned = true;
++		record->sequence++;
++		if (!scope->ops->current(scope->owner))
++			WRITE_ONCE(scope->uncertain, true);
++		if (!IS_ERR(result))
++			result->crucible_origin = *token;
++	}
++	raw_spin_unlock_irqrestore(&crucible_fdtables.lock, flags);
++}
++
++static void crucible_fdtable_rcu_queue_begin(struct fdtable *table,
++	struct crucible_fdtable_token *token)
++{
++	struct crucible_fdtable_scope *scope = NULL;
++	struct crucible_fdtable_record *record;
++	unsigned long flags;
++
++	token->record = NULL;
++	token->generation = 0;
++	raw_spin_lock_irqsave(&crucible_fdtables.lock, flags);
++	record = crucible_fdtable_live_table(table, &scope);
++	if (record && record->table == table && !record->rcu_queue_entered) {
++		crucible_fdtable_origin_check(table, scope, record);
++		token->record = record;
++		token->generation = record->generation;
++		record->rcu_queue_entered = true;
++		record->sequence++;
++	} else {
++		token->record = NULL;
++	}
++	raw_spin_unlock_irqrestore(&crucible_fdtables.lock, flags);
++}
++
++static void crucible_fdtable_rcu_queue_complete(struct crucible_fdtable_token *token)
++{
++	struct crucible_fdtable_scope *scope = NULL;
++	struct crucible_fdtable_record *record;
++	struct crucible_fdtable_record output;
++	bool observed = false;
++	unsigned long flags;
++
++	if (!token->record)
++		return;
++	raw_spin_lock_irqsave(&crucible_fdtables.lock, flags);
++	record = crucible_fdtable_find(token, &scope);
++	if (record && record->rcu_queue_entered && !record->rcu_queue_returned) {
++		record->rcu_queue_returned = true;
++		record->sequence++;
++		output = *record;
++		observed = true;
++	}
++	raw_spin_unlock_irqrestore(&crucible_fdtables.lock, flags);
++	if (observed)
++		crucible_fdtable_observe(scope, &output);
++	token->record = NULL;
++}
++
++static void crucible_fdtable_free_begin(struct fdtable *table, bool rcu,
++	struct crucible_fdtable_token *token)
++{
++	struct crucible_fdtable_scope *scope = NULL;
++	struct crucible_fdtable_record *record;
++	unsigned long flags;
++
++	token->record = NULL;
++	token->generation = 0;
++	raw_spin_lock_irqsave(&crucible_fdtables.lock, flags);
++	record = crucible_fdtable_live_table(table, &scope);
++	if (record && record->table == table && !record->free_entered) {
++		crucible_fdtable_origin_check(table, scope, record);
++		token->record = record;
++		token->generation = record->generation;
++		record->free_entered = true;
++		record->rcu_entered = rcu;
++		record->rcu_actor = current;
++		record->sequence++;
++		if (rcu && !record->rcu_queue_entered)
++			WRITE_ONCE(scope->uncertain, true);
++	} else {
++		token->record = NULL;
++	}
++	raw_spin_unlock_irqrestore(&crucible_fdtables.lock, flags);
++}
++
++static void crucible_fdtable_free_complete(struct crucible_fdtable_token *token)
++{
++	struct crucible_fdtable_scope *scope = NULL;
++	struct crucible_fdtable_record *record;
++	struct crucible_fdtable_record output;
++	bool observed = false;
++	unsigned long flags;
++
++	if (!token->record)
++		return;
++	raw_spin_lock_irqsave(&crucible_fdtables.lock, flags);
++	record = crucible_fdtable_find(token, &scope);
++	if (record && record->free_entered && !record->free_returned) {
++		record->free_returned = true;
++		record->sequence++;
++		output = *record;
++		observed = true;
++	}
++	raw_spin_unlock_irqrestore(&crucible_fdtables.lock, flags);
++	/* No table/files/Task dereference survives the literal native free.
++	 * The retained source scope and module pin are a separate lifetime.
++	 */
++	if (observed)
++		crucible_fdtable_observe(scope, &output);
++	token->record = NULL;
++}
++
++static bool crucible_fdtable_capture_existing(struct files_struct *files,
++	struct fdtable *table)
++{
++	struct crucible_fdtable_scope *scope;
++	struct crucible_fdtable_scope *old_scope = NULL;
++	struct crucible_fdtable_record *record;
++	unsigned long flags;
++	bool admitted = true;
++
++	lockdep_assert_held(&files->file_lock);
++	raw_spin_lock_irqsave(&crucible_fdtables.lock, flags);
++	scope = crucible_fdtable_active(files);
++	if (!scope || scope->task != current)
++		goto unlock;
++	record = crucible_fdtable_live_table(table, &old_scope);
++	if (record) {
++		crucible_fdtable_origin_check(table, old_scope, record);
++		if (old_scope != scope) {
++			WRITE_ONCE(scope->uncertain, true);
++			admitted = false;
++		}
++		if (scope->uncertain)
++			admitted = false;
++		goto unlock;
++	}
++	if (old_scope) {
++		WRITE_ONCE(scope->uncertain, true);
++		admitted = false;
++		goto unlock;
++	}
++	if (scope->uncertain || scope->records_used == CRUCIBLE_FDTABLE_RECORDS ||
++	    crucible_fdtables.generation == U64_MAX || !scope->ops->current(scope->owner)) {
++		WRITE_ONCE(scope->uncertain, true);
++		admitted = false;
++		goto unlock;
++	}
++	record = &scope->records[scope->records_used];
++	record->index = scope->records_used++;
++	record->generation = ++crucible_fdtables.generation;
++	record->table = table;
++	record->array = table->fd;
++	record->bitmaps = table->open_fds;
++	record->original_slots = table->max_fds;
++	record->inherited = true;
++	record->embedded = table == &files->fdtab;
++	/* This is a native lifetime origin, not invented allocator provenance.
++	 * Existing shared backing cannot be refunded from this adoption alone.
++	 */
++	table->crucible_origin.record = record;
++	table->crucible_origin.generation = record->generation;
++unlock:
++	raw_spin_unlock_irqrestore(&crucible_fdtables.lock, flags);
++	return admitted;
++}
++
++static void crucible_fdtable_publication(struct fdtable *table, bool returned)
++{
++	struct crucible_fdtable_scope *scope = NULL;
++	struct crucible_fdtable_record *record;
++	unsigned long flags;
++
++	raw_spin_lock_irqsave(&crucible_fdtables.lock, flags);
++	record = crucible_fdtable_find(&table->crucible_origin, &scope);
++	if (record && record->table == table) {
++		if (returned)
++			record->publication_returned = true;
++		else
++			record->publication_entered = true;
++		record->sequence++;
++	}
++	raw_spin_unlock_irqrestore(&crucible_fdtables.lock, flags);
++}
++
++static void crucible_fdtable_slot_begin(struct files_struct *files)
++{
++	struct crucible_fdtable_scope *scope;
++	unsigned long flags;
++
++	lockdep_assert_held(&files->file_lock);
++	raw_spin_lock_irqsave(&crucible_fdtables.lock, flags);
++	scope = crucible_fdtable_active(files);
++	if (scope && scope->task == current) {
++		if (scope->slot_returned)
++			WRITE_ONCE(scope->uncertain, true);
++		else
++			scope->next_fd_before = files->next_fd;
++	}
++	raw_spin_unlock_irqrestore(&crucible_fdtables.lock, flags);
++}
++
++static void crucible_fdtable_slot_return(struct files_struct *files, int result)
++{
++	struct crucible_fdtable_scope *scope;
++	unsigned long flags;
++
++	lockdep_assert_held(&files->file_lock);
++	raw_spin_lock_irqsave(&crucible_fdtables.lock, flags);
++	scope = crucible_fdtable_active(files);
++	if (scope && scope->task == current && !scope->slot_returned) {
++		scope->slot_result = result;
++		scope->next_fd_after = files->next_fd;
++		scope->slot_returned = true;
++		scope->sequence++;
++		if (!scope->ops->current(scope->owner))
++			WRITE_ONCE(scope->uncertain, true);
++	}
++	raw_spin_unlock_irqrestore(&crucible_fdtables.lock, flags);
++}
++
++static void crucible_fdtable_slot_release(struct files_struct *files, unsigned int fd)
++{
++	struct crucible_fdtable_scope *scope;
++	unsigned long flags;
++
++	lockdep_assert_held(&files->file_lock);
++	raw_spin_lock_irqsave(&crucible_fdtables.lock, flags);
++	scope = crucible_fdtable_active(files);
++	if (scope && scope->task == current) {
++		if (!scope->slot_returned || scope->slot_result != fd || scope->slot_released)
++			WRITE_ONCE(scope->uncertain, true);
++		scope->slot_released = true;
++		scope->sequence++;
++	}
++	raw_spin_unlock_irqrestore(&crucible_fdtables.lock, flags);
++}
++
++/* Registry membership precedes following a returned native install token.
++ * Scope slots and generations are retained, never recycled by this stage.
++ */
++static struct crucible_fdtable_scope *
++crucible_fdtable_install_origin(const struct crucible_fdtable_install_token *token)
++{
++	u32 index;
++
++	lockdep_assert_held(&crucible_fdtables.lock);
++	for (index = 0; index < CRUCIBLE_FDTABLE_SCOPES; index++) {
++		struct crucible_fdtable_scope *scope = crucible_fdtables.scopes[index];
++
++		if (scope && token->original_scope == scope && token->generation == scope->generation)
++			return scope;
++	}
++	return NULL;
++}
++
++static void crucible_fdtable_install(struct files_struct *files, unsigned int fd,
++	struct file *file, bool returned, struct crucible_fdtable_install_token *token)
++{
++	struct crucible_fdtable_scope *scope;
++	unsigned long flags;
++
++	if (!returned) {
++		token->original_scope = NULL;
++		token->generation = 0;
++	}
++	raw_spin_lock_irqsave(&crucible_fdtables.lock, flags);
++	if (returned) {
++		scope = crucible_fdtable_install_origin(token);
++		if (!scope)
++			goto unlock;
++		if (scope->files != files || scope->installed_fd != fd ||
++		    scope->installed_file != file || !scope->install_entered ||
++		    scope->install_generation != token->generation || scope->installed) {
++			WRITE_ONCE(scope->uncertain, true);
++			goto unlock;
++		}
++		/* This is the original native return, not proof of a still-live
++		 * slot. A shared peer may already have cleared or replaced it.
++		 * Do not inspect the File or rewrite that earlier clear receipt.
++		 */
++		scope->installed = true;
++		if (scope->task != current || scope->mm != current->mm || scope->files != current->files)
++			WRITE_ONCE(scope->uncertain, true);
++	} else {
++		scope = crucible_fdtable_active(files);
++		if (!scope || scope->task != current)
++			goto unlock;
++		if (scope->install_entered) {
++			WRITE_ONCE(scope->uncertain, true);
++			goto unlock;
++		}
++		if (!scope->slot_returned || scope->slot_result != fd || scope->slot_released || !file)
++			WRITE_ONCE(scope->uncertain, true);
++		scope->install_entered = true;
++		scope->install_generation = scope->generation;
++		scope->installed_fd = fd;
++		scope->installed_file = file;
++		token->original_scope = scope;
++		token->generation = scope->generation;
++	}
++	scope->sequence++;
++unlock:
++	raw_spin_unlock_irqrestore(&crucible_fdtables.lock, flags);
++	if (returned) {
++		token->original_scope = NULL;
++		token->generation = 0;
++	}
++}
++
++static void crucible_fdtable_mutation(struct files_struct *files)
++{
++	unsigned long flags;
++
++	raw_spin_lock_irqsave(&crucible_fdtables.lock, flags);
++	/* A foreign Task can still finish its ordinary safe native operation.
++	 * It cannot leave the selected constructor's source cut falsely clean.
++	 */
++	{
++		struct crucible_fdtable_scope *scope = crucible_fdtable_active(files);
++
++		if (scope)
++			WRITE_ONCE(scope->uncertain, true);
++	}
++	raw_spin_unlock_irqrestore(&crucible_fdtables.lock, flags);
++}
++
++static void crucible_fdtable_files_free_begin(struct files_struct *files,
++	struct crucible_fdtable_files_token *token)
++{
++	struct crucible_fdtable_scope *scope;
++	unsigned long flags;
++	u32 index;
++
++	token->scopes = 0;
++	raw_spin_lock_irqsave(&crucible_fdtables.lock, flags);
++	for (index = 0; index < CRUCIBLE_FDTABLE_SCOPES; index++) {
++		scope = crucible_fdtables.scopes[index];
++		if (!scope || scope->files != files || scope->files_lifetime.entered)
++			continue;
++		scope->files_lifetime.files = files;
++		scope->files_lifetime.actor = current;
++		scope->files_lifetime.generation = scope->generation;
++		scope->files_lifetime.entered = true;
++		if (scope->installed && !scope->slot_lifetime.entered) {
++			scope->slot_lifetime.original = scope->installed_file;
++			scope->slot_lifetime.descriptor = scope->installed_fd;
++			scope->slot_lifetime.generation = scope->generation;
++			scope->slot_lifetime.actor = current;
++			scope->slot_lifetime.entered = true;
++			scope->slot_lifetime.files_retired = true;
++		}
++		{
++			u32 entry;
++
++			for (entry = 0; entry < scope->records_used; entry++)
++				if (scope->records[entry].embedded) {
++					scope->records[entry].free_entered = true;
++					scope->records[entry].sequence++;
++				}
++		}
++		scope->active = false;
++		token->scopes |= 1U << index;
++	}
++	raw_spin_unlock_irqrestore(&crucible_fdtables.lock, flags);
++}
++
++static void crucible_fdtable_files_free_complete(struct crucible_fdtable_files_token *token)
++{
++	struct crucible_fdtable_scope *scope;
++	struct crucible_fdtable_files_output output;
++	unsigned long flags;
++	u32 index;
++
++	for (index = 0; index < CRUCIBLE_FDTABLE_SCOPES; index++) {
++		struct crucible_allocator_scope *saved;
++		struct crucible_allocator_scope guard = {
++			.original_task = current,
++			.callback_active = true,
++			.cleanup_observer = true,
++		};
++
++		if (!(token->scopes & (1U << index)))
++			continue;
++		raw_spin_lock_irqsave(&crucible_fdtables.lock, flags);
++		scope = crucible_fdtables.scopes[index];
++		if (!scope || !scope->files_lifetime.entered || scope->files_lifetime.returned) {
++			raw_spin_unlock_irqrestore(&crucible_fdtables.lock, flags);
++			continue;
++		}
++		scope->files_lifetime.returned = true;
++		if (scope->slot_lifetime.files_retired)
++			scope->slot_lifetime.returned = true;
++		{
++			u32 entry;
++
++			for (entry = 0; entry < scope->records_used; entry++)
++				if (scope->records[entry].embedded) {
++					scope->records[entry].free_returned = true;
++					scope->records[entry].sequence++;
++				}
++		}
++		scope->files_lifetime.slot = scope->slot_lifetime;
++		output = scope->files_lifetime;
++		raw_spin_unlock_irqrestore(&crucible_fdtables.lock, flags);
++		/* The files address is now historical. The source bank and code
++		 * remain owned independently; no freed files_struct is followed.
++		 */
++		saved = READ_ONCE(current->crucible_allocator_scope);
++		WRITE_ONCE(current->crucible_allocator_scope, &guard);
++		scope->ops->observe_files(scope->owner, &output);
++		WRITE_ONCE(current->crucible_allocator_scope, saved);
++	}
++	token->scopes = 0;
++}
++
++static void crucible_fdtable_part_free(const struct crucible_fdtable_token *token,
++	unsigned int part, bool returned)
++{
++	struct crucible_fdtable_scope *scope = NULL;
++	struct crucible_fdtable_record *record;
++	unsigned long flags;
++
++	if (!token->record || part >= 3)
++		return;
++	raw_spin_lock_irqsave(&crucible_fdtables.lock, flags);
++	record = crucible_fdtable_find(token, &scope);
++	if (record) {
++		if (returned)
++			record->part_free_returned[part] = true;
++		else
++			record->part_free_entered[part] = true;
++		record->sequence++;
++	}
++	raw_spin_unlock_irqrestore(&crucible_fdtables.lock, flags);
++}
++
++static void crucible_fdtable_slot_clear_begin(struct files_struct *files,
++	unsigned int fd, struct file *original, struct file *replacement,
++	struct crucible_fdtable_slot_token *token)
++{
++	struct crucible_fdtable_scope *scope;
++	struct fdtable *table;
++	unsigned long flags;
++	u32 index;
++
++	token->scopes = 0;
++	lockdep_assert_held(&files->file_lock);
++	table = files_fdtable(files);
++	/* Native close/dup2 has observed this non-NULL pointer under file_lock.
++	 * Entry, not returned-history, owns the publication window. The later
++	 * original return must not revive a slot already cleared by a peer.
++	 */
++	if (!original || fd >= table->max_fds || rcu_access_pointer(table->fd[fd]) != original)
++		return;
++	raw_spin_lock_irqsave(&crucible_fdtables.lock, flags);
++	for (index = 0; index < CRUCIBLE_FDTABLE_SCOPES; index++) {
++		scope = crucible_fdtables.scopes[index];
++		if (!scope || scope->files != files || !scope->install_entered ||
++		    scope->install_generation != scope->generation || scope->files_lifetime.entered ||
++		    scope->installed_fd != fd || scope->installed_file != original ||
++		    scope->slot_lifetime.entered)
++			continue;
++		scope->slot_lifetime.original = original;
++		scope->slot_lifetime.replacement = replacement;
++		scope->slot_lifetime.descriptor = fd;
++		scope->slot_lifetime.generation = scope->generation;
++		scope->slot_lifetime.actor = current;
++		scope->slot_lifetime.entered = true;
++		token->scopes |= 1U << index;
++	}
++	raw_spin_unlock_irqrestore(&crucible_fdtables.lock, flags);
++}
++
++static void crucible_fdtable_slot_clear_complete(struct crucible_fdtable_slot_token *token)
++{
++	struct crucible_fdtable_scope *scope;
++	struct crucible_fdtable_slot_output output;
++	unsigned long flags;
++	u32 index;
++
++	for (index = 0; index < CRUCIBLE_FDTABLE_SCOPES; index++) {
++		struct crucible_allocator_scope *saved;
++		struct crucible_allocator_scope guard = {
++			.original_task = current,
++			.callback_active = true,
++			.cleanup_observer = true,
++		};
++
++		if (!(token->scopes & (1U << index)))
++			continue;
++		raw_spin_lock_irqsave(&crucible_fdtables.lock, flags);
++		scope = crucible_fdtables.scopes[index];
++		if (!scope || !scope->slot_lifetime.entered || scope->slot_lifetime.returned) {
++			raw_spin_unlock_irqrestore(&crucible_fdtables.lock, flags);
++			continue;
++		}
++		scope->slot_lifetime.returned = true;
++		output = scope->slot_lifetime;
++		raw_spin_unlock_irqrestore(&crucible_fdtables.lock, flags);
++		saved = READ_ONCE(current->crucible_allocator_scope);
++		WRITE_ONCE(current->crucible_allocator_scope, &guard);
++		scope->ops->observe_slot(scope->owner, &output);
++		WRITE_ONCE(current->crucible_allocator_scope, saved);
++	}
++	token->scopes = 0;
++}
+--- a/fs/file.c
++++ b/fs/file.c
+@@ -23,6 +23,7 @@
+ #include <linux/file_ref.h>
+ #include <net/sock.h>
+ #include <linux/init_task.h>
++#include <linux/crucible_allocator.h>
+ 
+ #include "internal.h"
+ 
+@@ -100,20 +101,50 @@
+ unsigned int sysctl_nr_open_max =
+ 	__const_min(INT_MAX, ~(size_t)0/sizeof(void *)) & -BITS_PER_LONG;
+ 
++static void crucible_fdtable_free_begin(struct fdtable *table, bool rcu,
++	struct crucible_fdtable_token *token);
++static void crucible_fdtable_free_complete(struct crucible_fdtable_token *token);
++
++static void crucible_fdtable_part_free(const struct crucible_fdtable_token *token,
++	unsigned int part, bool returned);
++
++static void __free_fdtable_native(struct fdtable *fdt,
++	const struct crucible_fdtable_token *token)
++{
++	crucible_fdtable_part_free(token, 1, false);
++	kvfree(fdt->fd);
++	crucible_fdtable_part_free(token, 1, true);
++	crucible_fdtable_part_free(token, 2, false);
++	kvfree(fdt->open_fds);
++	crucible_fdtable_part_free(token, 2, true);
++	crucible_fdtable_part_free(token, 0, false);
++	kfree(fdt);
++	crucible_fdtable_part_free(token, 0, true);
++}
++
+ static void __free_fdtable(struct fdtable *fdt)
+ {
+-	kvfree(fdt->fd);
+-	kvfree(fdt->open_fds);
+-	kfree(fdt);
++	struct crucible_fdtable_token token;
++
++	crucible_fdtable_free_begin(fdt, false, &token);
++	__free_fdtable_native(fdt, &token);
++	crucible_fdtable_free_complete(&token);
+ }
+ 
+ static void free_fdtable_rcu(struct rcu_head *rcu)
+ {
+-	__free_fdtable(container_of(rcu, struct fdtable, rcu));
++	struct fdtable *fdt = container_of(rcu, struct fdtable, rcu);
++	struct crucible_fdtable_token token;
++
++	crucible_fdtable_free_begin(fdt, true, &token);
++	__free_fdtable_native(fdt, &token);
++	crucible_fdtable_free_complete(&token);
+ }
+ 
+ #define BITBIT_NR(nr)	BITS_TO_LONGS(BITS_TO_LONGS(nr))
+ #define BITBIT_SIZE(nr)	(BITBIT_NR(nr) * sizeof(long))
++
++#include "crucible_fdtable.inc.c"
+ 
+ #define fdt_words(fdt) ((fdt)->max_fds / BITS_PER_LONG) // words in ->open_fds
+ /*
+@@ -164,6 +195,8 @@
+ 	struct fdtable *fdt;
+ 	unsigned int nr;
+ 	void *data;
++	struct crucible_fdtable_token token;
++	void *array = NULL, *bitmaps = NULL;
+ 
+ 	/*
+ 	 * Figure out how many fds we actually want to support in this fdtable.
+@@ -212,11 +245,18 @@
+ 	if (unlikely(nr > INT_MAX / sizeof(struct file *)))
+ 		return ERR_PTR(-EMFILE);
+ 
++	if (!crucible_fdtable_allocation_begin(nr, &token))
++		return ERR_PTR(-ENOMEM);
++
+ 	fdt = kmalloc_obj(struct fdtable, GFP_KERNEL_ACCOUNT);
++	crucible_fdtable_allocation_part(&token, fdt, NULL, NULL);
+ 	if (!fdt)
+ 		goto out;
++	fdt->crucible_origin = (struct crucible_fdtable_token) { };
+ 	fdt->max_fds = nr;
+ 	data = kvmalloc_objs(struct file *, nr, GFP_KERNEL_ACCOUNT);
++	array = data;
++	crucible_fdtable_allocation_part(&token, fdt, array, NULL);
+ 	if (!data)
+ 		goto out_fdt;
+ 	fdt->fd = data;
+@@ -224,6 +264,8 @@
+ 	data = kvmalloc(max_t(size_t,
+ 				 2 * nr / BITS_PER_BYTE + BITBIT_SIZE(nr), L1_CACHE_BYTES),
+ 				 GFP_KERNEL_ACCOUNT);
++	bitmaps = data;
++	crucible_fdtable_allocation_part(&token, fdt, array, bitmaps);
+ 	if (!data)
+ 		goto out_arr;
+ 	fdt->open_fds = data;
+@@ -232,13 +274,19 @@
+ 	data += nr / BITS_PER_BYTE;
+ 	fdt->full_fds_bits = data;
+ 
++	crucible_fdtable_allocation_complete(&token, fdt);
+ 	return fdt;
+ 
+ out_arr:
++	crucible_fdtable_part_free(&token, 1, false);
+ 	kvfree(fdt->fd);
++	crucible_fdtable_part_free(&token, 1, true);
+ out_fdt:
++	crucible_fdtable_part_free(&token, 0, false);
+ 	kfree(fdt);
++	crucible_fdtable_part_free(&token, 0, true);
+ out:
++	crucible_fdtable_allocation_complete(&token, ERR_PTR(-ENOMEM));
+ 	return ERR_PTR(-ENOMEM);
+ }
+ 
+@@ -254,7 +302,10 @@
+ 	__acquires(files->file_lock)
+ {
+ 	struct fdtable *new_fdt, *cur_fdt;
+-
++	struct crucible_fdtable_token retirement;
++
++	if (!crucible_fdtable_capture_existing(files, files_fdtable(files)))
++		return -ENOMEM;
+ 	spin_unlock(&files->file_lock);
+ 	new_fdt = alloc_fdtable(nr + 1);
+ 
+@@ -270,9 +321,15 @@
+ 	cur_fdt = files_fdtable(files);
+ 	BUG_ON(nr < cur_fdt->max_fds);
+ 	copy_fdtable(new_fdt, cur_fdt);
++	crucible_fdtable_publication(new_fdt, false);
+ 	rcu_assign_pointer(files->fdt, new_fdt);
+-	if (cur_fdt != &files->fdtab)
++	crucible_fdtable_publication(new_fdt, true);
++	if (cur_fdt != &files->fdtab) {
++		crucible_fdtable_rcu_queue_begin(cur_fdt, &retirement);
+ 		call_rcu(&cur_fdt->rcu, free_fdtable_rcu);
++		/* The callback can have freed cur_fdt before call_rcu returns. */
++		crucible_fdtable_rcu_queue_complete(&retirement);
++	}
+ 	/* coupled with smp_rmb() in fd_install() */
+ 	smp_wmb();
+ 	return 0;
+@@ -398,6 +455,7 @@
+ 	init_waitqueue_head(&newf->resize_wait);
+ 	newf->next_fd = 0;
+ 	new_fdt = &newf->fdtab;
++	new_fdt->crucible_origin = (struct crucible_fdtable_token) { };
+ 	new_fdt->max_fds = NR_OPEN_DEFAULT;
+ 	new_fdt->close_on_exec = newf->close_on_exec_init;
+ 	new_fdt->open_fds = newf->open_fds_init;
+@@ -506,12 +564,17 @@
+ void put_files_struct(struct files_struct *files)
+ {
+ 	if (atomic_dec_and_test(&files->count)) {
+-		struct fdtable *fdt = close_files(files);
++		struct crucible_fdtable_files_token token;
++		struct fdtable *fdt;
++
++		crucible_fdtable_files_free_begin(files, &token);
++		fdt = close_files(files);
+ 
+ 		/* free the arrays if they are not embedded */
+ 		if (fdt != &files->fdtab)
+ 			__free_fdtable(fdt);
+ 		kmem_cache_free(files_cachep, files);
++		crucible_fdtable_files_free_complete(&token);
+ 	}
+ }
+ 
+@@ -574,6 +637,7 @@
+ 	struct fdtable *fdt;
+ 
+ 	spin_lock(&files->file_lock);
++	crucible_fdtable_slot_begin(files);
+ repeat:
+ 	fdt = files_fdtable(files);
+ 	fd = start;
+@@ -607,6 +671,7 @@
+ 	VFS_BUG_ON(rcu_access_pointer(fdt->fd[fd]) != NULL);
+ 
+ out:
++	crucible_fdtable_slot_return(files, error);
+ 	spin_unlock(&files->file_lock);
+ 	return error;
+ }
+@@ -635,6 +700,7 @@
+ 	struct files_struct *files = current->files;
+ 	spin_lock(&files->file_lock);
+ 	__put_unused_fd(files, fd);
++	crucible_fdtable_slot_release(files, fd);
+ 	spin_unlock(&files->file_lock);
+ }
+ 
+@@ -660,11 +726,14 @@
+ {
+ 	struct files_struct *files = current->files;
+ 	struct fdtable *fdt;
++	struct crucible_fdtable_install_token token;
+ 
+ 	spin_lock(&files->file_lock);
+ 	fdt = files_fdtable(files);
+ 	VFS_BUG_ON(rcu_access_pointer(fdt->fd[fd]) != NULL);
++	crucible_fdtable_install(files, fd, file, false, &token);
+ 	rcu_assign_pointer(fdt->fd[fd], file);
++	crucible_fdtable_install(files, fd, file, true, &token);
+ 	spin_unlock(&files->file_lock);
+ }
+ 
+@@ -680,6 +749,7 @@
+ {
+ 	struct files_struct *files = current->files;
+ 	struct fdtable *fdt;
++	struct crucible_fdtable_install_token token;
+ 
+ 	if (WARN_ON_ONCE(unlikely(file->f_mode & FMODE_BACKING)))
+ 		return;
+@@ -694,7 +764,9 @@
+ 	smp_rmb();
+ 	fdt = rcu_dereference_sched(files->fdt);
+ 	VFS_BUG_ON(rcu_access_pointer(fdt->fd[fd]) != NULL);
++	crucible_fdtable_install(files, fd, file, false, &token);
+ 	rcu_assign_pointer(fdt->fd[fd], file);
++	crucible_fdtable_install(files, fd, file, true, &token);
+ 	rcu_read_unlock_sched();
+ }
+ 
+@@ -715,8 +787,10 @@
+ {
+ 	struct fdtable *fdt = files_fdtable(files);
+ 	struct file *file;
++	struct crucible_fdtable_slot_token token;
+ 
+ 	lockdep_assert_held(&files->file_lock);
++	crucible_fdtable_mutation(files);
+ 
+ 	if (fd >= fdt->max_fds)
+ 		return NULL;
+@@ -724,8 +798,10 @@
+ 	fd = array_index_nospec(fd, fdt->max_fds);
+ 	file = rcu_dereference_raw(fdt->fd[fd]);
+ 	if (file) {
++		crucible_fdtable_slot_clear_begin(files, fd, file, NULL, &token);
+ 		rcu_assign_pointer(fdt->fd[fd], NULL);
+ 		__put_unused_fd(files, fd);
++		crucible_fdtable_slot_clear_complete(&token);
+ 	}
+ 	return file;
+ }
+@@ -765,6 +841,7 @@
+ 
+ 	/* make sure we're using the correct maximum value */
+ 	spin_lock(&cur_fds->file_lock);
++	crucible_fdtable_mutation(cur_fds);
+ 	fdt = files_fdtable(cur_fds);
+ 	max_fd = min(last_fd(fdt), max_fd);
+ 	if (fd <= max_fd)
+@@ -891,9 +968,11 @@
+ {
+ 	unsigned i;
+ 	struct fdtable *fdt;
++	struct crucible_fdtable_slot_token token;
+ 
+ 	/* exec unshares first */
+ 	spin_lock(&files->file_lock);
++	crucible_fdtable_mutation(files);
+ 	for (i = 0; ; i++) {
+ 		unsigned long set;
+ 		unsigned fd = i * BITS_PER_LONG;
+@@ -911,8 +990,10 @@
+ 			file = fdt->fd[fd];
+ 			if (!file)
+ 				continue;
++			crucible_fdtable_slot_clear_begin(files, fd, file, NULL, &token);
+ 			rcu_assign_pointer(fdt->fd[fd], NULL);
+ 			__put_unused_fd(files, fd);
++			crucible_fdtable_slot_clear_complete(&token);
+ 			spin_unlock(&files->file_lock);
+ 			filp_close(file, files);
+ 			cond_resched();
+@@ -1276,6 +1357,7 @@
+ {
+ 	struct files_struct *files = current->files;
+ 	spin_lock(&files->file_lock);
++	crucible_fdtable_mutation(files);
+ 	__set_close_on_exec(fd, files_fdtable(files), flag);
+ 	spin_unlock(&files->file_lock);
+ }
+@@ -1295,6 +1377,7 @@
+ {
+ 	struct file *tofree;
+ 	struct fdtable *fdt;
++	struct crucible_fdtable_slot_token token;
+ 
+ 	/*
+ 	 * dup2() is expected to close the file installed in the target fd slot
+@@ -1322,13 +1405,16 @@
+ 	 *
+ 	 * POSIX is silent on the issue, we return -EBUSY.
+ 	 */
++	crucible_fdtable_mutation(files);
+ 	fdt = files_fdtable(files);
+ 	fd = array_index_nospec(fd, fdt->max_fds);
+ 	tofree = rcu_dereference_raw(fdt->fd[fd]);
+ 	if (!tofree && fd_is_open(fd, fdt))
+ 		goto Ebusy;
+ 	get_file(file);
++	crucible_fdtable_slot_clear_begin(files, fd, tofree, file, &token);
+ 	rcu_assign_pointer(fdt->fd[fd], file);
++	crucible_fdtable_slot_clear_complete(&token);
+ 	__set_open_fd(fd, fdt, flags & O_CLOEXEC);
+ 	spin_unlock(&files->file_lock);
+ 
+--- a/include/linux/crucible_allocator.h
++++ b/include/linux/crucible_allocator.h
+@@ -118,6 +118,33 @@
+ 	u32 native_slab_objects;
+ 	bool kfence_object;
+ 	bool native_attempted;
++};
++
++/* Immutable native allocation origin plus monotonically retained retirement
++ * observations. Returning an object to SLUB and handing its slab pages back
++ * are separate events; neither is an allocator-wide physical refund proof.
++ */
++struct crucible_slab_retirement {
++	struct crucible_slab_output allocation;
++	struct task_struct *free_actor;
++	struct task_struct *slab_free_actor;
++	u64 generation;
++	u64 sequence;
++	u64 slab_group;
++	u64 object_group;
++	bool object_free_entered;
++	bool object_free_returned;
++	bool slab_free_entered;
++	bool slab_free_returned;
++};
++
++struct crucible_retirement_token {
++	void *original_record;
++	u64 generation;
++};
++
++struct crucible_retirement_group {
++	u64 generation;
+ };
+ 
+ /* Actual vmalloc constructor inputs, captured before metadata allocation.
+@@ -189,6 +216,12 @@
+ 		const struct crucible_slab_request *request, void **lease);
+ 	void (*complete_slab)(void *owner, void *lease,
+ 		const struct crucible_slab_output *output);
++	/* Optional source sink; its original code/owner outlives every origin.
++	 * It observes retirement under an allocation-refusal guard, not Task
++	 * constructor authority, including after original source shutdown.
++	 */
++	void (*observe_slab_retirement)(void *owner, void *lease,
++		const struct crucible_slab_retirement *output);
+ 	void (*refuse_uncovered)(void *owner,
+ 		const struct crucible_uncovered_request *request);
+ 	bool (*reserve_vm_area)(void *owner,
+@@ -217,6 +250,7 @@
+ };
+ 
+ struct crucible_allocator_token {
++	struct crucible_retirement_token retirement;
+ 	struct crucible_allocator_scope *original_scope;
+ 	void *original_lease;
+ 	struct kmem_cache *original_cache;
+@@ -238,6 +272,21 @@
+ void crucible_allocator_slab_complete(struct crucible_allocator_token *token,
+ 	const struct crucible_slab_output *output);
+ 
++/* Full static origin bank and added logical controls are prepaid separately.
++ * No origin is recycled and no native return releases reservation credit.
++ */
++u64 crucible_allocator_retirement_metadata_bytes(void);
++u64 crucible_allocator_retirement_scratch_bytes(void);
++void crucible_allocator_object_free_begin(struct kmem_cache *cache,
++	struct slab *slab, const void *object, struct crucible_retirement_token *token);
++void crucible_allocator_object_free_complete(struct crucible_retirement_token *token);
++void crucible_allocator_objects_free_begin(struct kmem_cache *cache, size_t count,
++	void **objects, struct crucible_retirement_group *group);
++void crucible_allocator_objects_free_complete(struct crucible_retirement_group *group);
++void crucible_allocator_slab_free_begin(struct kmem_cache *cache,
++	struct slab *slab, struct crucible_retirement_group *group);
++void crucible_allocator_slab_free_complete(struct crucible_retirement_group *group);
++
+ /* Metadata bank geometry is source-derived and never physical peak proof. */
+ u64 crucible_allocator_vm_area_metadata_bytes(void);
+ bool crucible_allocator_vm_area_reserve(const struct crucible_vm_area_request *request,
+--- /dev/null
++++ b/include/linux/crucible_fdtable.h
+@@ -0,0 +1,146 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef _LINUX_CRUCIBLE_FDTABLE_H
++#define _LINUX_CRUCIBLE_FDTABLE_H
++
++#include <linux/types.h>
++
++struct files_struct;
++struct fdtable;
++struct file;
++struct task_struct;
++struct mm_struct;
++
++/* Actual retained source records, not a user-selectable work limit. Exhaustion
++ * refuses another selected allocation before its first native effect.
++ */
++#define CRUCIBLE_FDTABLE_RECORDS 4U
++
++struct crucible_fdtable_token {
++	void *record;
++	u64 generation;
++};
++
++/* A native install return binds its retained original even after another
++ * files owner becomes active. This token grants no allocation authority.
++ */
++struct crucible_fdtable_install_token {
++	void *original_scope;
++	u64 generation;
++};
++
++struct crucible_fdtable_quote {
++	u64 table_bytes;
++	u64 array_bytes;
++	u64 bitmap_bytes;
++	u64 counter_bytes;
++	u32 native_slots;
++};
++
++struct crucible_fdtable_record {
++	struct crucible_fdtable_quote quote;
++	struct fdtable *table;
++	void *array;
++	void *bitmaps;
++	struct task_struct *rcu_actor;
++	u64 generation;
++	u64 sequence;
++	s64 native_result;
++	u32 original_slots;
++	u32 index;
++	struct crucible_fdtable_token refused_origin;
++	bool origin_mismatch;
++	bool embedded;
++	bool part_free_entered[3];
++	bool part_free_returned[3];
++	bool inherited;
++	bool allocation_entered;
++	bool admitted;
++	bool allocation_returned;
++	bool publication_entered;
++	bool publication_returned;
++	bool rcu_queue_entered;
++	bool rcu_queue_returned;
++	bool rcu_entered;
++	bool free_entered;
++	bool free_returned;
++};
++
++struct crucible_fdtable_files_token {
++	u32 scopes;
++};
++
++struct crucible_fdtable_slot_token {
++	u32 scopes;
++};
++
++struct crucible_fdtable_slot_output {
++	struct file *original;
++	struct file *replacement;
++	struct task_struct *actor;
++	u64 generation;
++	u32 descriptor;
++	bool entered;
++	bool returned;
++	bool files_retired;
++};
++
++struct crucible_fdtable_files_output {
++	struct files_struct *files;
++	struct task_struct *actor;
++	u64 generation;
++	bool entered;
++	bool returned;
++	struct crucible_fdtable_slot_output slot;
++};
++
++struct crucible_fdtable_scope;
++
++/* Original source callbacks must not allocate or sleep. Their code and owner
++ * must remain retained after scope leave until every recorded callback ends.
++ */
++struct crucible_fdtable_ops {
++	bool (*current)(void *owner);
++	bool (*admit_growth)(void *owner, const struct crucible_fdtable_quote *quote);
++	void (*observe)(void *owner, const struct crucible_fdtable_record *record);
++	void (*observe_files)(void *owner, const struct crucible_fdtable_files_output *output);
++	void (*observe_slot)(void *owner, const struct crucible_fdtable_slot_output *output);
++};
++
++struct crucible_fdtable_scope {
++	void *owner;
++	const struct crucible_fdtable_ops *ops;
++	struct task_struct *task;
++	struct mm_struct *mm;
++	struct files_struct *files;
++	struct crucible_fdtable_record records[CRUCIBLE_FDTABLE_RECORDS];
++	u64 generation;
++	u64 sequence;
++	struct crucible_fdtable_quote first_refused_quote;
++	bool quote_refused;
++	s64 slot_result;
++	u32 records_used;
++	u32 next_fd_before;
++	u32 next_fd_after;
++	u64 install_generation;
++	u32 installed_fd;
++	struct file *installed_file;
++	bool entered;
++	bool active;
++	bool slot_returned;
++	bool slot_released;
++	bool install_entered;
++	bool installed;
++	bool uncertain;
++	struct crucible_fdtable_files_output files_lifetime;
++	struct crucible_fdtable_slot_output slot_lifetime;
++};
++
++/* The complete static registry and extra direct logical windows are priced
++ * before enrollment. These are not physical allocator-completeness claims.
++ */
++u64 crucible_fdtable_registry_bytes(void);
++u64 crucible_fdtable_scratch_bytes(void);
++bool crucible_fdtable_enter(struct crucible_fdtable_scope *scope);
++void crucible_fdtable_leave(struct crucible_fdtable_scope *scope);
++
++#endif
+--- a/include/linux/fdtable.h
++++ b/include/linux/fdtable.h
+@@ -14,6 +14,7 @@
+ #include <linux/types.h>
+ #include <linux/init.h>
+ #include <linux/fs.h>
++#include <linux/crucible_fdtable.h>
+ 
+ #include <linux/atomic.h>
+ 
+@@ -24,6 +25,7 @@
+ #define NR_OPEN_DEFAULT BITS_PER_LONG
+ 
+ struct fdtable {
++	struct crucible_fdtable_token crucible_origin;
+ 	unsigned int max_fds;
+ 	struct file __rcu **fd;      /* current fd array */
+ 	unsigned long *close_on_exec;
+--- a/mm/crucible_allocator.c
++++ b/mm/crucible_allocator.c
+@@ -77,6 +77,11 @@
+ }
+ EXPORT_SYMBOL_GPL(crucible_allocator_leave);
+ 
++static bool crucible_retirement_reserve(struct crucible_allocator_scope *scope,
++	const struct crucible_slab_request *request, struct crucible_retirement_token *token);
++static void crucible_retirement_bind(struct crucible_retirement_token *token,
++	void *lease, const struct crucible_slab_output *output);
++
+ bool crucible_allocator_slab_reserve(const struct crucible_slab_request *request,
+ 	struct crucible_allocator_token *token)
+ {
+@@ -84,6 +89,8 @@
+ 	void *lease = NULL;
+ 	bool reserved;
+ 
++	token->retirement.original_record = NULL;
++	token->retirement.generation = 0;
+ 	token->original_scope = NULL;
+ 	token->original_lease = NULL;
+ 	token->original_cache = NULL;
+@@ -100,6 +107,9 @@
+ 	    !request->slab_objects || !request->minimum_objects ||
+ 	    !request->slab_backing_bound ||
+ 	    !crucible_allocator_current(scope))
++		goto refuse;
++
++	if (!crucible_retirement_reserve(scope, request, &token->retirement))
+ 		goto refuse;
+ 
+ 	WRITE_ONCE(scope->callback_active, true);
+@@ -132,6 +142,7 @@
+ 	 * records the actual native pointer (including NULL) before currentness
+ 	 * reconciliation, so changed phase cannot erase an allocation result. */
+ 	token->original_scope = NULL;
++	crucible_retirement_bind(&token->retirement, token->original_lease, output);
+ 	WRITE_ONCE(scope->callback_active, true);
+ 	scope->original_ops->complete_slab(scope->original_owner,
+ 		token->original_lease, output);
+@@ -689,3 +700,5 @@
+ 	crucible_vm_area_observe(record, &output, true);
+ }
+ EXPORT_SYMBOL_GPL(crucible_allocator_vm_area_cleanup_complete);
++
++#include "crucible_allocator_retirement.inc.c"
+--- /dev/null
++++ b/mm/crucible_allocator_retirement.inc.c
+@@ -0,0 +1,428 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Source-born object origins outlive the allocating Task and RCU callbacks.
++ * Object return and slab page handback are distinct native observations.
++ * Neither recycles a reservation or certifies shared backing reclamation.
++ */
++
++#define CRUCIBLE_RETIREMENT_RECORDS 256U
++
++enum crucible_retirement_phase {
++	CRUCIBLE_RETIREMENT_RESERVED = 1,
++	CRUCIBLE_RETIREMENT_BOUND,
++	CRUCIBLE_RETIREMENT_FAILED,
++	CRUCIBLE_RETIREMENT_CLOSING,
++	CRUCIBLE_RETIREMENT_RETURNED,
++};
++
++struct crucible_retirement_origin {
++	void *owner;
++	const struct crucible_allocator_ops *ops;
++	void *lease;
++	u64 generation;
++	u32 phase;
++	struct crucible_slab_request request;
++	struct crucible_slab_retirement output;
++};
++
++struct crucible_retirement_bank {
++	struct crucible_retirement_origin records[CRUCIBLE_RETIREMENT_RECORDS];
++	raw_spinlock_t lock;
++	u32 used;
++	u64 generation;
++	u64 group_generation;
++} __aligned(PAGE_SIZE);
++
++static struct crucible_retirement_bank crucible_retirements = {
++	.lock = __RAW_SPIN_LOCK_UNLOCKED(crucible_retirements.lock),
++};
++
++u64 crucible_allocator_retirement_metadata_bytes(void)
++{
++	return sizeof(crucible_retirements);
++}
++EXPORT_SYMBOL_GPL(crucible_allocator_retirement_metadata_bytes);
++
++/* These are additional typed logical windows, not compiler stack residency.
++ * The producer owns the returned output separately from the observer's loan.
++ */
++u64 crucible_allocator_retirement_scratch_bytes(void)
++{
++	/* Source-declared direct windows, summed conservatively across
++	 * sequential paths. This DATA is neither a compiler-frame layout
++	 * nor transitive allocator/implicit-temporary coverage.
++	 */
++	struct controls {
++		struct {
++			const struct crucible_retirement_token *token_0;
++			u32 index_1;
++			struct crucible_retirement_origin *returned_value_2;
++		} crucible_retirement_find;
++		struct {
++			struct crucible_allocator_scope *scope_0;
++			const struct crucible_slab_request *request_1;
++			struct crucible_retirement_token *token_2;
++			struct crucible_retirement_origin *origin_3;
++			unsigned long flags_4;
++			bool returned_value_5;
++		} crucible_retirement_reserve;
++		struct {
++			struct crucible_retirement_token *token_0;
++			void *lease_1;
++			const struct crucible_slab_output *output_2;
++			struct crucible_retirement_origin *origin_3;
++			unsigned long flags_4;
++		} crucible_retirement_bind;
++		struct {
++			struct crucible_retirement_origin *origin_0;
++			const struct crucible_slab_retirement *output_1;
++			struct crucible_allocator_scope *saved_2;
++			struct crucible_allocator_scope guard_3;
++		} crucible_retirement_observe;
++		struct {
++			struct kmem_cache *cache_0;
++			struct slab *slab_1;
++			const void *object_2;
++			struct crucible_retirement_token *token_3;
++			struct crucible_retirement_origin *origin_4;
++			struct crucible_slab_retirement output_5;
++			unsigned long flags_6;
++			u32 index_7;
++			struct crucible_retirement_origin *candidate_8;
++		} crucible_allocator_object_free_begin;
++		struct {
++			struct crucible_retirement_token *token_0;
++			struct crucible_retirement_origin *origin_1;
++			struct crucible_slab_retirement output_2;
++			unsigned long flags_3;
++		} crucible_allocator_object_free_complete;
++		struct {
++			struct kmem_cache *cache_0;
++			struct slab *slab_1;
++			struct crucible_retirement_group *group_2;
++			struct crucible_retirement_origin *origin_3;
++			unsigned long flags_4;
++			u32 index_5;
++		} crucible_allocator_slab_free_begin;
++		struct {
++			struct crucible_retirement_group *group_0;
++			struct crucible_retirement_origin *origin_1;
++			struct crucible_slab_retirement output_2;
++			unsigned long flags_3;
++			u32 index_4;
++		} crucible_allocator_slab_free_complete;
++		struct {
++			struct kmem_cache *cache_0;
++			size_t count_1;
++			void **objects_2;
++			struct crucible_retirement_group *group_3;
++			struct crucible_retirement_origin *origin_4;
++			unsigned long flags_5;
++			u32 index_6;
++			size_t object_7;
++		} crucible_allocator_objects_free_begin;
++		struct {
++			struct crucible_retirement_group *group_0;
++			struct crucible_retirement_origin *origin_1;
++			struct crucible_slab_retirement output_2;
++			unsigned long flags_3;
++			u32 index_4;
++		} crucible_allocator_objects_free_complete;
++		struct {
++			struct kmem_cache *s_0;
++			struct slab *slab_1;
++			void *object_2;
++			unsigned long addr_3;
++			struct crucible_retirement_token retirement_4;
++		} slab_free;
++		struct {
++			struct kmem_cache *s_0;
++			size_t size_1;
++			void **p_2;
++			struct crucible_retirement_group retirement_3;
++		} kmem_cache_free_bulk;
++		struct {
++			struct crucible_retirement_group retirement_0;
++		} native_page_handback;
++		struct {
++			u64 returned_0[2];
++		} counter_returns;
++	};
++
++	return sizeof(struct controls);
++}
++EXPORT_SYMBOL_GPL(crucible_allocator_retirement_scratch_bytes);
++
++static struct crucible_retirement_origin *
++crucible_retirement_find(const struct crucible_retirement_token *token)
++{
++	u32 index;
++
++	lockdep_assert_held(&crucible_retirements.lock);
++	for (index = 0; index < crucible_retirements.used; index++)
++		if (token->original_record == &crucible_retirements.records[index] &&
++		    token->generation == crucible_retirements.records[index].generation)
++			return &crucible_retirements.records[index];
++	return NULL;
++}
++
++/* Reservation is before the literal slab producer. A refused origin is kept;
++ * there is no allocation or registry renewal hidden in a completion callback.
++ */
++static bool crucible_retirement_reserve(struct crucible_allocator_scope *scope,
++	const struct crucible_slab_request *request, struct crucible_retirement_token *token)
++{
++	struct crucible_retirement_origin *origin;
++	unsigned long flags;
++
++	token->original_record = NULL;
++	token->generation = 0;
++	if (!scope->original_ops->observe_slab_retirement)
++		return true;
++
++	raw_spin_lock_irqsave(&crucible_retirements.lock, flags);
++	if (crucible_retirements.used == CRUCIBLE_RETIREMENT_RECORDS ||
++	    crucible_retirements.generation == U64_MAX) {
++		raw_spin_unlock_irqrestore(&crucible_retirements.lock, flags);
++		return false;
++	}
++	origin = &crucible_retirements.records[crucible_retirements.used++];
++	origin->request = *request;
++	origin->owner = scope->original_owner;
++	origin->ops = scope->original_ops;
++	origin->generation = ++crucible_retirements.generation;
++	origin->phase = CRUCIBLE_RETIREMENT_RESERVED;
++	origin->output.generation = origin->generation;
++	token->original_record = origin;
++	token->generation = origin->generation;
++	raw_spin_unlock_irqrestore(&crucible_retirements.lock, flags);
++	return true;
++}
++
++static void crucible_retirement_bind(struct crucible_retirement_token *token,
++	void *lease, const struct crucible_slab_output *output)
++{
++	struct crucible_retirement_origin *origin;
++	unsigned long flags;
++
++	if (!token->original_record)
++		return;
++	raw_spin_lock_irqsave(&crucible_retirements.lock, flags);
++	origin = crucible_retirement_find(token);
++	if (origin && origin->phase == CRUCIBLE_RETIREMENT_RESERVED) {
++		origin->lease = lease;
++		origin->output.allocation = *output;
++		origin->phase = output->native_object && !output->kfence_object &&
++			output->native_slab && output->native_cache ?
++			CRUCIBLE_RETIREMENT_BOUND : CRUCIBLE_RETIREMENT_FAILED;
++	}
++	raw_spin_unlock_irqrestore(&crucible_retirements.lock, flags);
++	token->original_record = NULL;
++}
++
++static void crucible_retirement_observe(struct crucible_retirement_origin *origin,
++	const struct crucible_slab_retirement *output)
++{
++	struct crucible_allocator_scope *saved = READ_ONCE(current->crucible_allocator_scope);
++	struct crucible_allocator_scope guard = {
++		.original_task = current,
++		.original_owner = origin->owner,
++		.original_ops = origin->ops,
++		.callback_active = true,
++		.cleanup_observer = true,
++	};
++
++	/* This callback may run after the original Task/mm/source has closed.
++	 * It gets an allocation-refusal guard, never constructor authority.
++	 */
++	WRITE_ONCE(current->crucible_allocator_scope, &guard);
++	origin->ops->observe_slab_retirement(origin->owner, origin->lease, output);
++	WRITE_ONCE(current->crucible_allocator_scope, saved);
++}
++
++void crucible_allocator_object_free_begin(struct kmem_cache *cache,
++	struct slab *slab, const void *object, struct crucible_retirement_token *token)
++{
++	struct crucible_retirement_origin *origin = NULL;
++	struct crucible_slab_retirement output;
++	unsigned long flags;
++	u32 index;
++
++	token->original_record = NULL;
++	token->generation = 0;
++	if (!READ_ONCE(crucible_retirements.used))
++		return;
++	raw_spin_lock_irqsave(&crucible_retirements.lock, flags);
++	for (index = 0; index < crucible_retirements.used; index++) {
++		struct crucible_retirement_origin *candidate = &crucible_retirements.records[index];
++
++		if (candidate->phase != CRUCIBLE_RETIREMENT_BOUND ||
++		    candidate->output.allocation.native_object != object ||
++		    candidate->output.allocation.native_slab != slab ||
++		    candidate->output.allocation.native_cache != cache)
++			continue;
++		origin = candidate;
++		break;
++	}
++	if (origin) {
++		/* Close pointer lookup before the native path can reuse the object. */
++		origin->phase = CRUCIBLE_RETIREMENT_CLOSING;
++		origin->output.free_actor = current;
++		origin->output.object_free_entered = true;
++		origin->output.sequence++;
++		token->original_record = origin;
++		token->generation = origin->generation;
++		output = origin->output;
++	}
++	raw_spin_unlock_irqrestore(&crucible_retirements.lock, flags);
++	if (origin)
++		crucible_retirement_observe(origin, &output);
++}
++EXPORT_SYMBOL_GPL(crucible_allocator_object_free_begin);
++
++void crucible_allocator_object_free_complete(struct crucible_retirement_token *token)
++{
++	struct crucible_retirement_origin *origin;
++	struct crucible_slab_retirement output;
++	unsigned long flags;
++
++	if (!token->original_record)
++		return;
++	raw_spin_lock_irqsave(&crucible_retirements.lock, flags);
++	origin = crucible_retirement_find(token);
++	if (origin && origin->phase == CRUCIBLE_RETIREMENT_CLOSING) {
++		origin->phase = CRUCIBLE_RETIREMENT_RETURNED;
++		origin->output.object_free_returned = true;
++		origin->output.sequence++;
++		output = origin->output;
++	} else {
++		origin = NULL;
++	}
++	raw_spin_unlock_irqrestore(&crucible_retirements.lock, flags);
++	token->original_record = NULL;
++	if (origin)
++		crucible_retirement_observe(origin, &output);
++}
++EXPORT_SYMBOL_GPL(crucible_allocator_object_free_complete);
++
++void crucible_allocator_slab_free_begin(struct kmem_cache *cache,
++	struct slab *slab, struct crucible_retirement_group *group)
++{
++	struct crucible_retirement_origin *origin;
++	unsigned long flags;
++	u32 index;
++
++	group->generation = 0;
++	if (!READ_ONCE(crucible_retirements.used))
++		return;
++	raw_spin_lock_irqsave(&crucible_retirements.lock, flags);
++	if (crucible_retirements.group_generation == U64_MAX)
++		goto unlock;
++	for (index = 0; index < crucible_retirements.used; index++) {
++		origin = &crucible_retirements.records[index];
++		if (origin->output.allocation.native_slab != slab ||
++		    origin->output.allocation.native_cache != cache ||
++		    !origin->output.object_free_entered || origin->output.slab_free_entered)
++			continue;
++		if (!group->generation)
++			group->generation = ++crucible_retirements.group_generation;
++		origin->output.slab_free_entered = true;
++		origin->output.slab_group = group->generation;
++		origin->output.slab_free_actor = current;
++		origin->output.sequence++;
++	}
++unlock:
++	raw_spin_unlock_irqrestore(&crucible_retirements.lock, flags);
++}
++EXPORT_SYMBOL_GPL(crucible_allocator_slab_free_begin);
++
++void crucible_allocator_slab_free_complete(struct crucible_retirement_group *group)
++{
++	struct crucible_retirement_origin *origin;
++	struct crucible_slab_retirement output;
++	unsigned long flags;
++	u32 index;
++
++	if (!group->generation)
++		return;
++	for (index = 0; index < READ_ONCE(crucible_retirements.used); index++) {
++		raw_spin_lock_irqsave(&crucible_retirements.lock, flags);
++		origin = &crucible_retirements.records[index];
++		if (!origin->output.slab_free_entered || origin->output.slab_free_returned ||
++		    origin->output.slab_group != group->generation) {
++			raw_spin_unlock_irqrestore(&crucible_retirements.lock, flags);
++			continue;
++		}
++		origin->output.slab_free_returned = true;
++		origin->output.sequence++;
++		output = origin->output;
++		raw_spin_unlock_irqrestore(&crucible_retirements.lock, flags);
++		crucible_retirement_observe(origin, &output);
++	}
++	group->generation = 0;
++}
++EXPORT_SYMBOL_GPL(crucible_allocator_slab_free_complete);
++
++void crucible_allocator_objects_free_begin(struct kmem_cache *cache, size_t count,
++	void **objects, struct crucible_retirement_group *group)
++{
++	struct crucible_retirement_origin *origin;
++	unsigned long flags;
++	u32 index;
++	size_t object;
++
++	group->generation = 0;
++	if (!count || !READ_ONCE(crucible_retirements.used))
++		return;
++	raw_spin_lock_irqsave(&crucible_retirements.lock, flags);
++	if (crucible_retirements.group_generation == U64_MAX)
++		goto unlock;
++	for (index = 0; index < crucible_retirements.used; index++) {
++		origin = &crucible_retirements.records[index];
++		if (origin->phase != CRUCIBLE_RETIREMENT_BOUND ||
++		    (cache && origin->output.allocation.native_cache != cache))
++			continue;
++		for (object = 0; object < count; object++) {
++			if (origin->output.allocation.native_object != objects[object])
++				continue;
++			if (!group->generation)
++				group->generation = ++crucible_retirements.group_generation;
++			origin->phase = CRUCIBLE_RETIREMENT_CLOSING;
++			origin->output.object_group = group->generation;
++			origin->output.object_free_entered = true;
++			origin->output.free_actor = current;
++			origin->output.sequence++;
++			break;
++		}
++	}
++unlock:
++	raw_spin_unlock_irqrestore(&crucible_retirements.lock, flags);
++}
++EXPORT_SYMBOL_GPL(crucible_allocator_objects_free_begin);
++
++void crucible_allocator_objects_free_complete(struct crucible_retirement_group *group)
++{
++	struct crucible_retirement_origin *origin;
++	struct crucible_slab_retirement output;
++	unsigned long flags;
++	u32 index;
++
++	if (!group->generation)
++		return;
++	for (index = 0; index < READ_ONCE(crucible_retirements.used); index++) {
++		raw_spin_lock_irqsave(&crucible_retirements.lock, flags);
++		origin = &crucible_retirements.records[index];
++		if (origin->phase != CRUCIBLE_RETIREMENT_CLOSING ||
++		    origin->output.object_group != group->generation) {
++			raw_spin_unlock_irqrestore(&crucible_retirements.lock, flags);
++			continue;
++		}
++		origin->phase = CRUCIBLE_RETIREMENT_RETURNED;
++		origin->output.object_free_returned = true;
++		origin->output.sequence++;
++		output = origin->output;
++		raw_spin_unlock_irqrestore(&crucible_retirements.lock, flags);
++		crucible_retirement_observe(origin, &output);
++	}
++	group->generation = 0;
++}
++EXPORT_SYMBOL_GPL(crucible_allocator_objects_free_complete);
+--- a/mm/slub.c
++++ b/mm/slub.c
+@@ -3432,6 +3432,10 @@
+ 	struct page *page = slab_page(slab);
+ 	int order = compound_order(page);
+ 	int pages = 1 << order;
++	struct crucible_retirement_group retirement;
++
++	if (allow_spin)
++		crucible_allocator_slab_free_begin(s, slab, &retirement);
+ 
+ 	__slab_clear_pfmemalloc(slab);
+ 	page->mapping = NULL;
+@@ -3442,6 +3446,8 @@
+ 		free_frozen_pages(page, order);
+ 	else
+ 		free_frozen_pages_nolock(page, order);
++	if (allow_spin)
++		crucible_allocator_slab_free_complete(&retirement);
+ }
+ 
+ static void free_new_slab_nolock(struct kmem_cache *s, struct slab *slab)
+@@ -6420,20 +6426,35 @@
+ }
+ 
+ static __fastpath_inline
++void slab_free_native(struct kmem_cache *s, struct slab *slab, void *object,
++	       unsigned long addr)
++{
++	memcg_slab_free_hook(s, slab, &object, 1);
++	alloc_tagging_slab_free_hook(s, slab, &object, 1);
++
++	if (unlikely(!slab_free_hook(s, object, slab_want_init_on_free(s), false)))
++		return;
++
++	if (likely(can_free_to_pcs(slab)) && likely(free_to_pcs(s, object, true)))
++		return;
++
++	__slab_free(s, slab, object, object, 1, addr);
++	stat(s, FREE_SLOWPATH);
++}
++
++/* Keep every native free branch, including delayed quarantine and per-CPU
++ * retention. The observer closes only this exact object origin before reuse;
++ * its returned callback does not claim the slab backing was reclaimed.
++ */
++static __fastpath_inline
+ void slab_free(struct kmem_cache *s, struct slab *slab, void *object,
+ 	       unsigned long addr)
+ {
+-	memcg_slab_free_hook(s, slab, &object, 1);
+-	alloc_tagging_slab_free_hook(s, slab, &object, 1);
+-
+-	if (unlikely(!slab_free_hook(s, object, slab_want_init_on_free(s), false)))
+-		return;
+-
+-	if (likely(can_free_to_pcs(slab)) && likely(free_to_pcs(s, object, true)))
+-		return;
+-
+-	__slab_free(s, slab, object, object, 1, addr);
+-	stat(s, FREE_SLOWPATH);
++	struct crucible_retirement_token retirement;
++
++	crucible_allocator_object_free_begin(s, slab, object, &retirement);
++	slab_free_native(s, slab, object, addr);
++	crucible_allocator_object_free_complete(&retirement);
+ }
+ 
+ #ifdef CONFIG_MEMCG
+@@ -7176,7 +7197,7 @@
+ }
+ 
+ /* Note that interrupts must be enabled when calling this function. */
+-void kmem_cache_free_bulk(struct kmem_cache *s, size_t size, void **p)
++static void kmem_cache_free_bulk_native(struct kmem_cache *s, size_t size, void **p)
+ {
+ 	if (!size)
+ 		return;
+@@ -7200,6 +7221,17 @@
+ 		slab_free_bulk(df.s, df.slab, df.freelist, df.tail, &p[size],
+ 			       df.cnt, _RET_IP_);
+ 	} while (likely(size));
++}
++/* Bind the original array before native detached-freelist processing can
++ * replace its entries or return any object through a per-CPU sheaf.
++ */
++void kmem_cache_free_bulk(struct kmem_cache *s, size_t size, void **p)
++{
++	struct crucible_retirement_group retirement;
++
++	crucible_allocator_objects_free_begin(s, size, p, &retirement);
++	kmem_cache_free_bulk_native(s, size, p);
++	crucible_allocator_objects_free_complete(&retirement);
+ }
+ EXPORT_SYMBOL(kmem_cache_free_bulk);
+ 
+--- a/virt/kvm/crucible-original-kernel-resource.inc.c
++++ b/virt/kvm/crucible-original-kernel-resource.inc.c
+@@ -5,6 +5,7 @@
+ #include <linux/overflow.h>
+ #include <linux/fdtable.h>
+ #include <linux/crucible_allocator.h>
++#include <linux/crucible_fdtable.h>
+ 
+ #define CRUCIBLE_RESOURCE_CONTEXTS 8U
+ #define CRUCIBLE_RESOURCE_ALLOCATION_ROWS 4096U
+@@ -41,6 +42,7 @@
+ 	u32 state;
+ 	struct crucible_slab_request slab_request;
+ 	struct crucible_slab_output slab_output;
++	struct crucible_slab_retirement slab_retirement;
+ 	struct crucible_uncovered_request uncovered_request;
+ 	struct crucible_vm_area_request vm_area_request;
+ 	struct vm_struct *original_vm_area;
+@@ -104,6 +106,11 @@
+ 	u64 prepare_delivered_prefix;
+ 	s64 query_delivery_result;
+ 	u64 query_delivered_prefix;
++	struct crucible_fdtable_scope fdtable_scope;
++	struct crucible_fdtable_record fdtable_retirements[CRUCIBLE_FDTABLE_RECORDS];
++	u64 fdtable_requested_bytes;
++	struct crucible_fdtable_files_output fdtable_files_lifetime;
++	struct crucible_fdtable_slot_output fdtable_slot_lifetime;
+ 	struct crucible_allocator_scope create_scope;
+ 	struct task_struct *create_actor;
+ 	struct files_struct *create_files;
+@@ -188,6 +195,67 @@
+ 		!input->prepare_delivered_prefix && !input->reserved[0] && !input->reserved[1];
+ }
+ 
++/* These are actual new direct caller/sink controls, independent of the
++ * allocator and fdtable producer rosters. Static callback table bytes are
++ * resident metadata; no numeric quote supplies a missing family permit.
++ */
++static u64 crucible_resource_retirement_control_bytes(void)
++{
++	/* Source-declared direct windows, summed conservatively across
++	 * sequential paths. This DATA is neither a compiler-frame layout
++	 * nor transitive allocator/implicit-temporary coverage.
++	 */
++	struct controls {
++		struct {
++			void *owner_0;
++			const struct crucible_fdtable_quote *quote_1;
++			struct kvm_crucible_kernel_resource_context *context_2;
++			unsigned long flags_3;
++			u64 bytes_4;
++			u64 reserved_5;
++			u64 requested_6;
++			bool admitted_7;
++			bool returned_value_8;
++		} crucible_resource_fdtable_growth;
++		struct {
++			void *owner_0;
++			const struct crucible_fdtable_record *output_1;
++			struct kvm_crucible_kernel_resource_context *context_2;
++			struct crucible_fdtable_record *retained_3;
++			unsigned long flags_4;
++		} crucible_resource_fdtable_retirement;
++		struct {
++			void *owner_0;
++			const struct crucible_fdtable_files_output *output_1;
++			struct kvm_crucible_kernel_resource_context *context_2;
++			unsigned long flags_3;
++		} crucible_resource_fdtable_files_retirement;
++		struct {
++			void *owner_0;
++			const struct crucible_fdtable_slot_output *output_1;
++			struct kvm_crucible_kernel_resource_context *context_2;
++			unsigned long flags_3;
++		} crucible_resource_fdtable_slot_retirement;
++		struct {
++			void *owner_0;
++			void *lease_1;
++			const struct crucible_slab_retirement *output_2;
++			struct kvm_crucible_kernel_resource_context *context_3;
++			struct kvm_crucible_resource_allocation *row_4;
++			unsigned long flags_5;
++			u32 index_6;
++		} crucible_resource_slab_retirement;
++		struct {
++			struct crucible_fdtable_scope *view_0[2];
++		} source_entry_and_leave;
++		struct {
++			u64 returned_0;
++		} counter_return;
++	};
++
++	return sizeof(struct controls);
++}
++
+ static int crucible_resource_quote(
+ 	const struct kvm_crucible_kernel_resource_policy *input,
+ 	struct kvm_crucible_kernel_resource_policy *output)
+@@ -195,10 +263,21 @@
+ 	u64 metadata;
+ 	u64 origin_metadata = crucible_allocator_vm_area_metadata_bytes();
+ 	struct crucible_percpu_pool_shape pool_shape;
+-	u64 vm_request, resident;
++	u64 vm_request, resident, transient;
+ 
+ 	if (check_add_overflow(origin_metadata,
+ 	    crucible_allocator_percpu_pool_metadata_bytes(), &origin_metadata))
++		return -EOVERFLOW;
++	if (check_add_overflow(origin_metadata,
++	    crucible_allocator_retirement_metadata_bytes(), &origin_metadata))
++		return -EOVERFLOW;
++	if (check_add_overflow(origin_metadata,
++	    crucible_fdtable_registry_bytes(), &origin_metadata))
++		return -EOVERFLOW;
++	if (check_add_overflow(origin_metadata, (u64)sizeof(struct crucible_fdtable_ops),
++	    &origin_metadata) || check_add_overflow(origin_metadata,
++	    (u64)sizeof(((struct crucible_allocator_ops *)0)->observe_slab_retirement),
++	    &origin_metadata))
+ 		return -EOVERFLOW;
+ 	if (check_add_overflow((u64)sizeof(struct kvm_crucible_kernel_resource_context),
+ 	    origin_metadata, &metadata))
+@@ -233,7 +312,16 @@
+ 	output->quoted_resident = resident;
+ 	output->quoted_peak = resident;
+ 	output->quoted_reserved = resident;
+-	output->quoted_transient = vm_request;
++	if (check_add_overflow(vm_request,
++	    crucible_allocator_retirement_scratch_bytes(), &transient))
++		return -EOVERFLOW;
++	if (check_add_overflow(transient,
++	    crucible_fdtable_scratch_bytes(), &transient))
++		return -EOVERFLOW;
++	if (check_add_overflow(transient,
++	    crucible_resource_retirement_control_bytes(), &transient))
++		return -EOVERFLOW;
++	output->quoted_transient = transient;
+ 	output->quoted_output = 2 * sizeof(*output);
+ 	output->quoted_metadata = metadata;
+ 	/* The fixed source-born metadata bank is covered. VM root request size
+@@ -241,7 +329,7 @@
+ 	output->coverage = CRUCIBLE_RESOURCE_METADATA;
+ 	output->flags = KVM_CRUCIBLE_KERNEL_RESOURCE_METADATA_KNOWN;
+ 	if (input->resident_ceiling < resident || input->peak_ceiling < resident ||
+-	    input->reserved_ceiling < resident || input->transient_ceiling < vm_request ||
++	    input->reserved_ceiling < resident || input->transient_ceiling < transient ||
+ 	    input->output_ceiling < output->quoted_output || input->metadata_ceiling < metadata)
+ 		return -E2BIG;
+ 	return 0;
+@@ -275,12 +363,116 @@
+ 			context->create_actor == current &&
+ 			context->create_files == current->files &&
+ 			context->create_generation == context->generation &&
++			!READ_ONCE(context->fdtable_scope.uncertain) &&
+ 			ktime_get_ns() <= context->input.constructor_deadline_ns;
+ 
+ 	return READ_ONCE(context->prepared) && !READ_ONCE(context->closed) && active &&
+ 		context->original_task == current && context->original_mm == current->mm &&
+ 		context->original_file && context->original_file->f_op == &kvm_chardev_ops;
+ }
++
++/* Growth requests are retained logical reservations from the actual native
++ * fd capacity, never a policy maximum. Allocator source hooks independently
++ * reserve their own slab/page/mapping demands before those effects. These
++ * overlapping checks do not make the still-missing physical families complete.
++ */
++static bool crucible_resource_fdtable_growth(void *owner,
++	const struct crucible_fdtable_quote *quote)
++{
++	struct kvm_crucible_kernel_resource_context *context = owner;
++	unsigned long flags;
++	u64 bytes, reserved, requested;
++	bool admitted = false;
++
++	raw_spin_lock_irqsave(&context->allocator_lock, flags);
++	if (!crucible_resource_allocator_current(context) || READ_ONCE(context->uncertain) ||
++	    check_add_overflow(quote->table_bytes, quote->array_bytes, &bytes) ||
++	    check_add_overflow(bytes, quote->bitmap_bytes, &bytes) ||
++	    check_add_overflow(bytes, quote->counter_bytes, &bytes) ||
++	    check_add_overflow(context->reserved_bytes, bytes, &reserved) ||
++	    reserved > context->input.reserved_ceiling ||
++	    reserved > context->input.peak_ceiling || bytes > context->input.transient_ceiling ||
++	    check_add_overflow(context->fdtable_requested_bytes, bytes, &requested)) {
++		WRITE_ONCE(context->uncertain, true);
++		goto unlock;
++	}
++	context->reserved_bytes = reserved;
++	context->fdtable_requested_bytes = requested;
++	admitted = true;
++unlock:
++	raw_spin_unlock_irqrestore(&context->allocator_lock, flags);
++	return admitted;
++}
++
++static void crucible_resource_fdtable_retirement(void *owner,
++	const struct crucible_fdtable_record *output)
++{
++	struct kvm_crucible_kernel_resource_context *context = owner;
++	struct crucible_fdtable_record *retained;
++	unsigned long flags;
++
++	raw_spin_lock_irqsave(&context->allocator_lock, flags);
++	if (output->index >= CRUCIBLE_FDTABLE_RECORDS) {
++		WRITE_ONCE(context->uncertain, true);
++		goto unlock;
++	}
++	retained = &context->fdtable_retirements[output->index];
++	if ((retained->generation && retained->generation != output->generation) ||
++	    !output->generation) {
++		WRITE_ONCE(context->uncertain, true);
++		goto unlock;
++	}
++	if (output->sequence > retained->sequence)
++		*retained = *output;
++	/* Inherited backing, SLUB quarantine and vmalloc workers remain charged.
++	 * This actual RCU/native free return is never a physical-credit refund.
++	 */
++unlock:
++	raw_spin_unlock_irqrestore(&context->allocator_lock, flags);
++}
++
++static void crucible_resource_fdtable_files_retirement(void *owner,
++	const struct crucible_fdtable_files_output *output)
++{
++	struct kvm_crucible_kernel_resource_context *context = owner;
++	unsigned long flags;
++
++	raw_spin_lock_irqsave(&context->allocator_lock, flags);
++	if (output->generation == context->fdtable_scope.generation &&
++	    output->files == context->create_files && output->entered && output->returned) {
++		context->fdtable_files_lifetime = *output;
++		if (output->slot.files_retired && output->slot.returned)
++			context->fdtable_slot_lifetime = output->slot;
++	} else {
++		WRITE_ONCE(context->uncertain, true);
++	}
++	raw_spin_unlock_irqrestore(&context->allocator_lock, flags);
++}
++
++static void crucible_resource_fdtable_slot_retirement(void *owner,
++	const struct crucible_fdtable_slot_output *output)
++{
++	struct kvm_crucible_kernel_resource_context *context = owner;
++	unsigned long flags;
++
++	raw_spin_lock_irqsave(&context->allocator_lock, flags);
++	if (output->generation == context->fdtable_scope.generation &&
++	    output->original == context->fdtable_scope.installed_file &&
++	    output->descriptor == context->fdtable_scope.installed_fd &&
++	    output->entered && output->returned)
++		context->fdtable_slot_lifetime = *output;
++	else
++		WRITE_ONCE(context->uncertain, true);
++	raw_spin_unlock_irqrestore(&context->allocator_lock, flags);
++}
++
++static const struct crucible_fdtable_ops crucible_resource_fdtable_ops = {
++	.current = crucible_resource_allocator_current,
++	.admit_growth = crucible_resource_fdtable_growth,
++	.observe = crucible_resource_fdtable_retirement,
++	.observe_files = crucible_resource_fdtable_files_retirement,
++	.observe_slot = crucible_resource_fdtable_slot_retirement,
++};
+ 
+ static bool crucible_resource_allocator_reserve(void *owner,
+ 	const struct crucible_slab_request *request, void **lease)
+@@ -371,6 +563,46 @@
+ 	 * Preserve the original charge and bank until that gap is resolved. */
+ 	if (output->native_attempted)
+ 		WRITE_ONCE(context->uncertain, true);
++unlock:
++	raw_spin_unlock_irqrestore(&context->allocator_lock, flags);
++}
++
++/* The global source-origin bank authenticates this lease before dispatch.
++ * Module/Task/mm/context custody is already retained by the original attempt;
++ * currentness loss must not erase an independently owned native free return.
++ */
++static void crucible_resource_slab_retirement(void *owner, void *lease,
++	const struct crucible_slab_retirement *output)
++{
++	struct kvm_crucible_kernel_resource_context *context = owner;
++	struct kvm_crucible_resource_allocation *row = NULL;
++	unsigned long flags;
++	u32 index;
++
++	raw_spin_lock_irqsave(&context->allocator_lock, flags);
++	for (index = 0; index < context->allocations_used; index++)
++		if (lease == &context->allocations[index]) {
++			row = &context->allocations[index];
++			break;
++		}
++	if (!row || row->family != CRUCIBLE_ALLOCATOR_SLAB || !row->native_known ||
++	    output->allocation.native_object != row->slab_output.native_object ||
++	    output->allocation.native_slab != row->slab_output.native_slab ||
++	    output->allocation.native_cache != row->slab_output.native_cache ||
++	    (row->slab_retirement.generation &&
++	     row->slab_retirement.generation != output->generation)) {
++		WRITE_ONCE(context->uncertain, true);
++		goto unlock;
++	}
++	/* Snapshots are cumulative. A nested physical handback can precede
++	 * its enclosing object's returned-free callback; retain the newest.
++	 */
++	if (output->sequence > row->slab_retirement.sequence)
++		row->slab_retirement = *output;
++	row->retirement_attempted |= output->object_free_entered;
++	/* Existing uncertainty is never cleared, and no physical refund or
++	 * family bit follows a native return from a shared allocator path.
++	 */
+ unlock:
+ 	raw_spin_unlock_irqrestore(&context->allocator_lock, flags);
+ }
+@@ -657,6 +889,7 @@
+ 	.refuse_uncovered = crucible_resource_allocator_refuse_uncovered,
+ 	.reserve_slab = crucible_resource_allocator_reserve,
+ 	.complete_slab = crucible_resource_allocator_complete,
++	.observe_slab_retirement = crucible_resource_slab_retirement,
+ 	.reserve_vm_area = crucible_resource_vm_area_reserve,
+ 	.complete_vm_area = crucible_resource_vm_area_complete,
+ 	.observe_vm_area_cleanup = crucible_resource_vm_area_observe,
+@@ -899,6 +1132,11 @@
+ 	 */
+ 	atomic_inc(&context->create_files->count);
+ 	context->create_files_reference = true;
++	context->fdtable_scope.owner = context;
++	context->fdtable_scope.ops = &crucible_resource_fdtable_ops;
++	context->fdtable_scope.task = current;
++	context->fdtable_scope.mm = current->mm;
++	context->fdtable_scope.files = current->files;
+ 	context->create_scope.original_task = current;
+ 	context->create_scope.original_owner = context;
+ 	context->create_scope.original_ops = &crucible_resource_allocator_ops;
+@@ -908,6 +1146,10 @@
+ 	WRITE_ONCE(context->create_scope_active, true);
+ 	mutex_unlock(&crucible_resource_lock);
+ 
++	if (!crucible_fdtable_enter(&context->fdtable_scope)) {
++		WRITE_ONCE(context->uncertain, true);
++		return -EIO;
++	}
+ 	context->create_scope_entered = crucible_allocator_enter(&context->create_scope);
+ 	if (!context->create_scope_entered) {
+ 		WRITE_ONCE(context->uncertain, true);
+@@ -974,10 +1216,12 @@
+ 
+ 	known = context->create_scope_entered &&
+ 		crucible_allocator_leave(&context->create_scope);
++	crucible_fdtable_leave(&context->fdtable_scope);
+ 	WRITE_ONCE(context->create_scope_active, false);
+ 	context->create_scope_left = context->create_scope_entered;
+ 	context->create_scope_known = known;
+-	if (!known || context->original_task != current ||
++	if (!known || READ_ONCE(context->fdtable_scope.uncertain) ||
++	    context->original_task != current ||
+ 	    context->original_mm != current->mm || files != current->files ||
+ 	    context->create_generation != context->generation ||
+ 	    ktime_get_ns() > context->input.constructor_deadline_ns || context->closed)

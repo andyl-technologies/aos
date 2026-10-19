@@ -46,12 +46,28 @@ def main():
     root = Path(sys.argv[1]).resolve()
     budget = Path(sys.argv[2]).resolve()
     rows = json.loads((root / 'model-proposal.json').read_text())
-    if len(rows) != 12:
-        raise ValueError('Closed twelve-control roster changed')
+    fdtable = len(sys.argv) == 4 and sys.argv[3] == 'fdtable'
+    if fdtable:
+        if ([row['name'] for row in rows] != ['fdtable-source', 'ordinary-fdtable'] or
+                [row.get('case_count') for row in rows] != [21, 4]):
+            raise ValueError('Closed FD-table control roster changed')
+    elif len(sys.argv) == 3:
+        if len(rows) != 12:
+            raise ValueError('Closed twelve-control roster changed')
+    else:
+        raise ValueError('Exact PIC or FD-table check mode required')
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     report = {'source_models': [], 'completed': False, 'failure': None,
               'hardware_qualification': False,
               'PIC_EOI_dual_route_FirstBegin_board_Ready_capture': 'Unsupported'}
+    if fdtable:
+        report['fdtable_scope'] = {
+            'expected_source_cases': 21, 'expected_ordinary_groups': 4,
+            'source_peers': 'Modeled kernel/RCU/allocator/refcount scheduling',
+            'ordinary_kernel': 'Build-host only; not the selected patched kernel',
+            'Kbuild_full_kernel_native_profile_qualification': False,
+            'coverage': '0x001/required0x7ff; FD_TABLE/CREATE/RUN/Ready unsupported',
+        }
 
     try:
         for original in rows:

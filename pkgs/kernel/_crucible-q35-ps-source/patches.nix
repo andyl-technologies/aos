@@ -24,4 +24,5 @@
   ./0051-original-free-caused-region-resize.patch
   ./0052-original-percpu-physical-backing.patch
   ./0054-original-create-scope.patch
+  ./0055-original-fdtable-retirement.patch
 ]

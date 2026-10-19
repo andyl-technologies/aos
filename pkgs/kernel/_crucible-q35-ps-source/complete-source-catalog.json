@@ -869,10 +869,31 @@
       }
     },
     {
+      "path": "fs/crucible_fdtable.inc.c",
+      "identity": {
+        "sha256": "9ac4555cc30e4f29a92c6ab9ecae43dec3b015cd62c85b05803b93df39892736",
+        "bytes": 33132
+      }
+    },
+    {
+      "path": "fs/file.c",
+      "identity": {
+        "sha256": "c4818b2bd7e83f510b21fb98e2264968a864db8de228a184cf0d895a1c5a2d62",
+        "bytes": 43917
+      }
+    },
+    {
       "path": "include/linux/crucible_allocator.h",
       "identity": {
-        "sha256": "b2356484ac3e36ee472c4a81d022876a9915083f1e91514d9a67170ec6564fa5",
-        "bytes": 9479
+        "sha256": "22ac40233b2bcc1e60d7e121db6399109440a3ba5cc67b43016d8ae540bfd952",
+        "bytes": 11495
+      }
+    },
+    {
+      "path": "include/linux/crucible_fdtable.h",
+      "identity": {
+        "sha256": "c645adcb7f53d0b070618ad97198c8fb292a8026610fa8307223b39d863a7aeb",
+        "bytes": 3703
       }
     },
     {
@@ -880,6 +901,13 @@
       "identity": {
         "sha256": "479d72925f8377bcca4240e7c119a346b4165576795a839b912aba09028f6ba1",
         "bytes": 2901
+      }
+    },
+    {
+      "path": "include/linux/fdtable.h",
+      "identity": {
+        "sha256": "2fd94436f3b4771baf89b3bde44d6c97d4bcb7f04fb5819549950aacea32c19d",
+        "bytes": 3239
       }
     },
     {
@@ -1081,8 +1109,15 @@
     {
       "path": "mm/crucible_allocator.c",
       "identity": {
-        "sha256": "864b53379d140d9bae5ae11611598077d2ec4247006fe300005394decd72ce52",
-        "bytes": 25359
+        "sha256": "93a6260ddcc32d9b3bee7a7a5c374f32e482c974386fbb853efb381e8c2cf0fa",
+        "bytes": 25955
+      }
+    },
+    {
+      "path": "mm/crucible_allocator_retirement.inc.c",
+      "identity": {
+        "sha256": "58c580f4ac8762d28837aa68ada43e7e92bb4529ec7d4ababf54e312a45f3b05",
+        "bytes": 14478
       }
     },
     {
@@ -1109,8 +1144,8 @@
     {
       "path": "mm/slub.c",
       "identity": {
-        "sha256": "04f2408f4f115e38a2482eac4188918e90cdbe0b7ee56059c28a0118bee95bc8",
-        "bytes": 256134
+        "sha256": "f21e6bd0d592cbd637ef6de128460cc29a3e2e7a5ceafa7dca248c9a030a8630",
+        "bytes": 257352
       }
     },
     {
@@ -1172,8 +1207,8 @@
     {
       "path": "virt/kvm/crucible-original-kernel-resource.inc.c",
       "identity": {
-        "sha256": "973053a44aef569487d2c88889fd4b872b4c8175dfa66907149d1796a4e177bc",
-        "bytes": 46156
+        "sha256": "80eec538da722945885b039a86fd002d955af451af97435dad27267da0ed96be",
+        "bytes": 55685
       }
     },
     {
