@@ -9588,10 +9588,25 @@ Resumed qualification:
   independent sources and consumer leases remain readable with policy stalled.
   Functional parent `53f53095e9` passes both builds, all 34 selected cases,
   including two concurrency regressions, and all three strict Clippy profiles.
-  The successor only formats the new fixture message; its formatter pair passes
-  and its native component is running. Original failed lint and formatting
-  attempts remain recorded. Producer pin release, cached-object ownership and
-  eviction remain pending; this does not accept a host task.
+  The successor only formats the new fixture message; its formatter pair and
+  native component pass. All 53 selected filesystem cases execute in the ext4
+  guest with none ignored. Independent review verifies all 3,496 image inputs,
+  four original Cargo ELFs, installed helpers and the actual closure control.
+  Independent consumer and fresh-source reads remain live with policy stalled;
+  durable protection remains unchanged. Original failed lint and formatting
+  attempts remain recorded. This does not accept a host task.
+- Producer-custody candidate `39ad6d2ea4` bounds externally issued resident views
+  in a weak registry on the original physical worker. Current publication and
+  synchronized funding checks precede revocation; later external producer reads
+  are refused. Consumer grants use separately prepared genuine sources. The
+  storage envelope includes external and consumer headers, active preparation
+  and registry growth. Both builds, all 34 selected cases, all three strict
+  Clippy profiles and the formatter pair pass on unchanged source. The native
+  control now exercises actual registry exhaustion, slot reuse, foreign-owner
+  refusal and consumer reads after revocation. Native qualification is running;
+  owning-gate, required application and complete filesystem checks follow on
+  success. Producer pin release, cached-object ownership and eviction remain
+  pending; no host task is accepted.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
   and all seven strict Clippy/documentation profiles pass. The interface,
   commit-path, status and schema gates pass on unchanged final source, including
