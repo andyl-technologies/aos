@@ -10,7 +10,7 @@ pkgs.mkDerivation {
   pname = "terrane-gate-publisher-sole-writer";
   version = "0.1.0";
   src = null;
-  buildDeps = [pkgs.coreutils pkgs.python3];
+  buildDeps = [pkgs.coreutils pkgs.python3 pkgs.binutils];
   phases = [
     {
       name = "qualify";
