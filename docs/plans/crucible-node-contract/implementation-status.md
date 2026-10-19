@@ -15,7 +15,9 @@ The SDK receive components now retain immutable input custody through quotation,
 normalization and failed-prefix observation. The twenty-five-file change adds
 flat first/second-pass projections, structural Envelope/ResponseShape cuts and
 private owning raw-frame selections. The subsequent thirteen-file change moves
-the same first-pass engine behind borrowed and by-value owning adapters. These
+the same first-pass engine behind borrowed and by-value owning adapters. The
+fourteen-file successor adds an independently funded immutable first bank and
+movable second-pass state around the existing second-pass engine. These
 components remain disconnected from
 the live Source18 route; they grant no Initial, Recipe or native permission.
 The production application-target gate below qualifies `751d8331cf` and needs
@@ -30,11 +32,11 @@ preserves its first error, and uses the existing initial graph precredit walk.
 
 | Check | Latest recorded scope and result |
 | --- | --- |
-| SDK receive formatting | Both the twenty-five-file raw custody cohort and thirteen-file owning-first cohort pass. |
-| Combined integration checking | Six-crate all-feature/all-target checking passes in 1 minute 51 seconds after the SDK and debug-label changes. |
+| SDK receive formatting | The twenty-five-file raw custody, thirteen-file owning-first and fourteen-file owning-next cohorts pass. |
+| Combined integration checking | Six-crate all-feature/all-target checking passes in 1 minute 51 seconds after owning-first and the debug-label changes. The owning-next refresh is pending. |
 | Neutral debug diagnostics | Four files pass formatting. The existing Core invalid-endpoint/unknown-node control and three Session debug-runtime transaction controls pass. Only backend-neutral diagnostic labels and the matching existing expectation change. |
-| SDK receive controls | All 43 targeted controls pass with ordinary Serde JSON in 0.01 seconds, including seven new owning-first controls. Both complete suites also execute all 43 controls. |
-| SDK Provider regression | Each complete suite passes 1,539 tests with zero failures and fifteen existing ignores: 11.14 seconds for ordinary Serde JSON and 11.56 seconds with raw values enabled. |
+| SDK receive controls | All 55 targeted controls pass with ordinary Serde JSON in 0.01 seconds, including seven owning-first and twelve owning-next controls. Both complete suites also execute all 55 controls. |
+| SDK Provider regression | Each complete suite passes 1,551 tests with zero failures and fifteen existing ignores: 11.64 seconds for ordinary Serde JSON and 12.65 seconds with raw values enabled. |
 | Prior runtime checking | The thirteen-file runtime accounting correction passes six-crate all-feature/all-target checking in 1 minute 28 seconds and targeted formatting. |
 | Application-target compilation checkpoint | Passes for `751d8331cf`: 167 rebuilt test artifacts across 48 application packages, including 69 integration targets. All 7,805 captured source files and modes match that commit. This gate executes no tests; the SDK refresh is pending. |
 | Runtime correction library checkpoint | All four unfiltered libraries pass: Core 1,967, Daemon 1,504, Provider 1,496 and Contract twelve, totaling 4,979 with zero failures. Existing ignores remain 33/162/15/1. Ten focused Host attachment controls also pass, including both new accounting controls. |
@@ -154,8 +156,21 @@ suite then passes 1,539 tests with zero failures and fifteen existing ignores:
 All thirteen selected files pass formatting. The component quotes actual demand;
 it does not execute or replace the parent scheduler's separate admission.
 
+The owning-next successor moves the actual completed first owner into a private
+immutable bank after a separately quoted allocation. Checked root-relative
+selections retain that bank beside source-free second-pass state. Both borrowed
+and owning adapters call the same second-pass engine; completed text is not fed
+back through an extra pass. Failures retain the original input and partial flat
+children. The actual prewalk precedes logical-spine allocation, and the complete
+row precedes execution. Twelve additional controls exercise real framed input,
+transfer/freeze, child selections after parent drop, foreign owners, reuse,
+exact/short rows and deep late failures. All 55 targeted controls pass with
+ordinary Serde JSON, and both full suites pass 1,551 tests with fifteen existing
+ignores. All fourteen selected files pass formatting. Requested storage remains
+a source-level accounting claim rather than measured physical stack usage.
+
 These results qualify the selected components, not a live receive transition.
-The owning next state, AssignedPhase/history integration, full structural
+AssignedPhase/history integration, full structural
 Envelope/ResponseShape validation and actual Initial/Recipe producers remain
 separate prerequisites. No Source18, native import, Capture or preservation
 route is opened by this change. The prior native startup and application-target

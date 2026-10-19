@@ -28,11 +28,15 @@ pub(crate) use immutable_raw::{
 
 mod next_value;
 pub(crate) use next_value::{
+    NativeImport18FirstBankCensusData, NativeImport18FirstBankConstructionData,
+    NativeImport18FirstBankCustodyData, NativeImport18FirstBankData, NativeImport18FirstChildData,
+    NativeImport18FirstSelectionConstructionData, NativeImport18FirstSelectionData,
     NativeImport18NextValueCensusData, NativeImport18NextValueInputData,
     NativeImport18NextValuePassArrayData, NativeImport18NextValuePassAttemptData,
     NativeImport18NextValuePassConstructionData, NativeImport18NextValuePassKindData,
     NativeImport18NextValuePassObjectData, NativeImport18NextValuePassViewData,
-    NativeImport18NextValuePrewalkData, NativeImport18ResponseShapeCutsData,
+    NativeImport18NextValuePrewalkData, NativeImport18OwningNextAttemptData,
+    NativeImport18OwningNextCensusData, NativeImport18ResponseShapeCutsData,
     NativeImport18ResponseShapeCutsPreludeData, NativeImport18ResponseValueCutData,
     NativeImport18ResponseValueCutLocationData,
 };

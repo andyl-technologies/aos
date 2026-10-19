@@ -122,9 +122,9 @@ fn deep_child_is_rooted_flat_before_a_late_extra_key_error_and_retry_cannot_clea
     assert_censused(owner);
     if matches!(prior.state.mode, Some(RawMode::Reparse)) {
         assert!(result.is_err());
-        assert!(owner.failed && !owner.complete);
-        assert_eq!(owner.reparses.len(), 1);
-        let child = owner.reparses[0].attempt.as_ref().unwrap();
+        assert!(owner.state.failed && !owner.state.complete);
+        assert_eq!(owner.state.reparses.len(), 1);
+        let child = owner.state.reparses[0].attempt.as_ref().unwrap();
         assert!(child.complete && !child.failed);
         assert!(child.maximum_intermediate_depth_data() >= 80);
     } else {
@@ -159,7 +159,7 @@ fn actual_completed_text_child_is_not_fed_back_through_an_extra_owned_pass() {
 
     assert!(result.is_err());
     let owner = output.as_ref().unwrap();
-    let child = owner.reparses[0].attempt.as_ref().unwrap();
+    let child = owner.state.reparses[0].attempt.as_ref().unwrap();
     assert!(child.complete && !child.failed);
     let NativeImport18EffectiveValueKindData::Object(mut fields) =
         child.completed_data().unwrap().kind_data().unwrap()
@@ -225,16 +225,16 @@ fn equal_foreign_owner_or_selected_sibling_cannot_spend_the_actual_row() {
         .is_err()
     );
     let foreign_owner = foreign_output.as_ref().unwrap();
-    assert!(foreign_owner.failed && !foreign_owner.complete);
-    assert_eq!(foreign_owner.reparses.capacity(), 0);
+    assert!(foreign_owner.state.failed && !foreign_owner.state.complete);
+    assert_eq!(foreign_owner.state.reparses.capacity(), 0);
     assert_censused(foreign_owner);
     let mut output = None;
     assert!(
         NativeImport18NextValuePassAttemptData::read_into_data(second, &row, &mut output).is_err()
     );
     let owner = output.as_ref().unwrap();
-    assert!(owner.failed && !owner.complete);
-    assert_eq!(owner.reparses.capacity(), 0);
+    assert!(owner.state.failed && !owner.state.complete);
+    assert_eq!(owner.state.reparses.capacity(), 0);
     assert_censused(owner);
 }
 
@@ -251,8 +251,8 @@ fn one_short_actual_spine_population_refuses_before_constructor_allocation() {
         Err(ProviderError::ResourceExhausted(_))
     ));
     let owner = output.as_ref().unwrap();
-    assert!(owner.failed && !owner.complete);
-    assert_eq!(owner.reparses.capacity(), 0);
+    assert!(owner.state.failed && !owner.state.complete);
+    assert_eq!(owner.state.reparses.capacity(), 0);
     assert_censused(owner);
 }
 
@@ -285,8 +285,8 @@ fn no_cut_exact_row_constructs_and_one_short_refuses_with_the_actual_root_census
     );
     let refused = refused.as_ref().unwrap();
     assert_censused(refused);
-    assert!(refused.failed && !refused.complete);
-    assert_eq!(refused.reparses.capacity(), 0);
+    assert!(refused.state.failed && !refused.state.complete);
+    assert_eq!(refused.state.reparses.capacity(), 0);
     assert_eq!(
         refused.census_data(),
         NativeImport18NextValueCensusData::Observed {
@@ -374,7 +374,13 @@ fn a_failed_second_attempt_keeps_its_real_first_bank_and_actual_census() {
     );
     let failed = output.as_ref().unwrap();
     assert!(std::ptr::eq(failed.row.prewalk.raw, &raw));
-    assert!(std::ptr::eq(failed.row.prewalk.first, &prior));
+    assert!(
+        failed
+            .row
+            .prewalk
+            .first
+            .same_data(input::FirstSource::Borrowed(&prior))
+    );
     assert!(matches!(
         prior
             .completed_data(&raw, &raw.value)

@@ -5,7 +5,7 @@ use super::*;
 /// Borrows one exact next-pass node without owning or renormalizing its tree.
 #[derive(Clone, Copy)]
 pub(crate) struct NativeImport18NextValuePassViewData<'a> {
-    pub(super) owner: &'a NativeImport18NextValuePassAttemptData<'a>,
+    pub(super) owner: &'a engine::NextPassStateData,
     pub(super) source: SourceView<'a>,
 }
 
@@ -27,18 +27,18 @@ pub(crate) enum NativeImport18NextValuePassKindData<'a> {
 
 /// Iterates children without owning a recursive array or adding a pass.
 pub(crate) struct NativeImport18NextValuePassArrayData<'a> {
-    owner: &'a NativeImport18NextValuePassAttemptData<'a>,
+    owner: &'a engine::NextPassStateData,
     source: SourceArray<'a>,
 }
 
 /// Iterates children without owning a recursive map or adding a pass.
 pub(crate) struct NativeImport18NextValuePassObjectData<'a> {
-    owner: &'a NativeImport18NextValuePassAttemptData<'a>,
+    owner: &'a engine::NextPassStateData,
     source: SourceObject<'a>,
 }
 
 pub(super) fn prior_data<'a>(
-    owner: &'a NativeImport18NextValuePassAttemptData<'a>,
+    owner: &'a engine::NextPassStateData,
     source: SourceView<'a>,
 ) -> NativeImport18NextValuePassViewData<'a> {
     NativeImport18NextValuePassViewData { owner, source }
@@ -122,7 +122,7 @@ pub(super) fn counter_scratch_data() -> usize {
         + size_of::<Result<SourceKind<'static>, ProviderError>>()
         + size_of::<(input::Physical<'static>, usize)>()
         + size_of::<Result<(input::Physical<'static>, usize), ProviderError>>()
-        + size_of::<&NativeImport18NextValuePassAttemptData<'static>>() * 3
+        + size_of::<&engine::NextPassStateData>() * 3
         + size_of::<Option<SourceView<'static>>>()
         + size_of::<Option<(&str, SourceView<'static>)>>()
         + size_of::<usize>() * 2

@@ -18,6 +18,7 @@ pub(super) enum NodeIdentity {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum BoundaryIdentity {
     First(usize),
+    OwningFirst(usize),
     Next(usize),
 }
 
@@ -92,9 +93,53 @@ impl<'a> Physical<'a> {
 }
 
 #[derive(Clone, Copy)]
+pub(super) enum FirstSource<'a> {
+    Borrowed(&'a NativeImport18OwnedValuePassAttemptData<'a>),
+    Owning(&'a NativeImport18OwningFirstAttemptData),
+}
+
+impl<'a> FirstSource<'a> {
+    pub(super) fn state_data(self) -> &'a super::super::state::FirstPassStateData {
+        match self {
+            Self::Borrowed(owner) => &owner.state,
+            Self::Owning(owner) => owner.state_data(),
+        }
+    }
+
+    pub(super) fn identity_data(self) -> BoundaryIdentity {
+        match self {
+            Self::Borrowed(owner) => BoundaryIdentity::First(owner as *const _ as usize),
+            Self::Owning(owner) => BoundaryIdentity::OwningFirst(owner as *const _ as usize),
+        }
+    }
+
+    pub(super) fn same_data(self, other: Self) -> bool {
+        self.identity_data() == other.identity_data()
+    }
+
+    fn validate_data(self, raw: &RetainedFrame) -> Result<(), ProviderError> {
+        let state = self.state_data();
+        if !state.started || state.failed || !state.complete || state.mode.is_none() {
+            return Err(invalid());
+        }
+        let original = match self {
+            Self::Borrowed(owner) => owner.row.raw_resource_data(),
+            Self::Owning(owner) => {
+                owner.completed_data()?;
+                owner.retained_selection_data()?.retained_frame_data()?
+            }
+        };
+        if !std::ptr::eq(original, raw) {
+            return Err(invalid());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy)]
 pub(super) struct Loans<'a> {
     pub(super) raw: &'a RetainedFrame,
-    pub(super) first: &'a NativeImport18OwnedValuePassAttemptData<'a>,
+    pub(super) first: FirstSource<'a>,
     // This cohort constructs only the empty slice. A future actual consumer
     // must validate the real chain before exposing a later input constructor.
     pub(super) later: &'a [&'a NativeImport18NextValuePassAttemptData<'a>],
@@ -102,37 +147,24 @@ pub(super) struct Loans<'a> {
 
 impl<'a> Loans<'a> {
     pub(super) fn prior_data(self) -> BoundaryIdentity {
-        self.later.last().map_or(
-            BoundaryIdentity::First(
-                self.first as *const NativeImport18OwnedValuePassAttemptData<'a> as usize,
-            ),
-            |owner| {
+        self.later
+            .last()
+            .map_or(self.first.identity_data(), |owner| {
                 BoundaryIdentity::Next(
                     *owner as *const NativeImport18NextValuePassAttemptData<'a> as usize,
                 )
-            },
-        )
+            })
     }
 
     pub(super) fn validate_data(self) -> Result<(), ProviderError> {
-        let first = self.first;
-        if !first.state.started
-            || first.state.failed
-            || !first.state.complete
-            || first.state.mode.is_none()
-            || !std::ptr::eq(first.row.raw_resource_data(), self.raw)
-        {
-            return Err(invalid());
-        }
-        let mut prior = BoundaryIdentity::First(
-            first as *const NativeImport18OwnedValuePassAttemptData<'a> as usize,
-        );
+        self.first.validate_data(self.raw)?;
+        let mut prior = self.first.identity_data();
         for owner in self.later {
-            if owner.failed
-                || !owner.complete
+            if owner.state.failed
+                || !owner.state.complete
                 || owner.row.prewalk.prior != prior
                 || !std::ptr::eq(owner.row.prewalk.raw, self.raw)
-                || !std::ptr::eq(owner.row.prewalk.first, first)
+                || !owner.row.prewalk.first.same_data(self.first)
             {
                 return Err(invalid());
             }
@@ -157,7 +189,9 @@ impl<'a> SourceView<'a> {
         let mut created = self.created;
         if created == 0 {
             if let Physical::Raw(value) = physical {
-                match super::super::view::raw_data(self.loans.first, value).origin_data()? {
+                match super::super::state_view::raw_data(self.loans.first.state_data(), value)
+                    .origin_data()?
+                {
                     FirstPassNodeOriginData::Raw(value) => physical = Physical::Raw(value),
                     FirstPassNodeOriginData::Text(value) => {
                         physical = Physical::Text(value);
@@ -169,7 +203,8 @@ impl<'a> SourceView<'a> {
         for (index, owner) in self.loans.later.iter().enumerate() {
             let stage = add(index, 2)?;
             if created < stage {
-                (physical, created) = resolve_boundary_data(owner, physical, created, stage)?;
+                (physical, created) =
+                    resolve_boundary_data(&owner.state, physical, created, stage)?;
             }
         }
         Ok((physical, created))
@@ -186,7 +221,7 @@ impl<'a> SourceView<'a> {
 }
 
 pub(super) fn resolve_boundary_data<'a>(
-    owner: &'a NativeImport18NextValuePassAttemptData<'a>,
+    owner: &'a engine::NextPassStateData,
     physical: Physical<'a>,
     created: usize,
     stage: usize,
@@ -337,7 +372,7 @@ impl<'a> NativeImport18NextValueInputData<'a> {
     ) -> Result<Self, ProviderError> {
         let loans = Loans {
             raw,
-            first: prior,
+            first: FirstSource::Borrowed(prior),
             later: &[],
         };
         loans.validate_data()?;
@@ -370,7 +405,7 @@ impl<'a> NativeImport18NextValueInputData<'a> {
         while raw.next_data()?.is_some() {
             population = add(population, 1)?;
         }
-        for child in &self.selected.loans.first.state.reparses {
+        for child in &self.selected.loans.first.state_data().reparses {
             let child = child.attempt.as_ref().ok_or_else(invalid)?;
             if child.failed || !child.complete {
                 return Err(invalid());
@@ -378,7 +413,7 @@ impl<'a> NativeImport18NextValueInputData<'a> {
             population = add(population, child.nodes.len())?;
         }
         for owner in self.selected.loans.later {
-            for child in &owner.reparses {
+            for child in &owner.state.reparses {
                 let child = child.attempt.as_ref().ok_or_else(invalid)?;
                 if child.failed || !child.complete {
                     return Err(invalid());
@@ -391,7 +426,10 @@ impl<'a> NativeImport18NextValueInputData<'a> {
 }
 
 pub(super) fn counter_scratch_data() -> usize {
-    size_of::<Physical<'static>>() * 3
+    size_of::<FirstSource<'static>>() * 3
+        + size_of::<&NativeImport18OwningFirstAttemptData>() * 3
+        + size_of::<Result<&RetainedFrame, ProviderError>>()
+        + size_of::<Physical<'static>>() * 3
         + size_of::<NodeIdentity>() * 3
         + size_of::<Result<NodeIdentity, ProviderError>>()
         + size_of::<BoundaryIdentity>() * 2

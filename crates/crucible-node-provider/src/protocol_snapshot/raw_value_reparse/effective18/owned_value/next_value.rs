@@ -14,7 +14,16 @@ use input::{
     SourceObject, SourceView,
 };
 
+mod engine;
+mod first_bank;
 mod input;
+pub(crate) use first_bank::{
+    NativeImport18FirstBankCensusData, NativeImport18FirstBankConstructionData,
+    NativeImport18FirstBankCustodyData, NativeImport18FirstBankData, NativeImport18FirstChildData,
+    NativeImport18FirstSelectionConstructionData, NativeImport18FirstSelectionData,
+};
+mod owning;
+pub(crate) use owning::{NativeImport18OwningNextAttemptData, NativeImport18OwningNextCensusData};
 mod response_shape;
 mod storage;
 mod view;
@@ -64,12 +73,7 @@ pub(crate) enum NativeImport18NextValueCensusData {
 /// in this owner are compared only, never dereferenced, serialized or granted.
 pub(crate) struct NativeImport18NextValuePassAttemptData<'bank> {
     row: NativeImport18NextValuePassConstructionData<'bank>,
-    failed: bool,
-    complete: bool,
-    mode: Option<RawMode>,
-    reparses: Vec<Reparse>,
-    lookup: BTreeMap<OwnedValueNodeIdentityData, usize>,
-    maximum_intermediate_depth: usize,
+    state: engine::NextPassStateData,
     census: NativeImport18NextValueCensusData,
 }
 
@@ -93,12 +97,7 @@ impl<'bank> NativeImport18NextValuePassAttemptData<'bank> {
         }
         *output = Some(Self {
             row: *row,
-            failed: true,
-            complete: false,
-            mode: None,
-            reparses: Vec::new(),
-            lookup: BTreeMap::new(),
-            maximum_intermediate_depth: 0,
+            state: engine::NextPassStateData::new_data(),
             census: NativeImport18NextValueCensusData::Pending,
         });
         let owner = output.as_mut().ok_or_else(invalid)?;
@@ -115,8 +114,8 @@ impl<'bank> NativeImport18NextValuePassAttemptData<'bank> {
         if census? > row.retained {
             return Err(exhausted());
         }
-        owner.failed = false;
-        owner.complete = true;
+        owner.state.failed = false;
+        owner.state.complete = true;
         Ok(())
     }
 
@@ -134,66 +133,7 @@ impl<'bank> NativeImport18NextValuePassAttemptData<'bank> {
         if !row.dominates_data(&current) {
             return Err(exhausted());
         }
-        self.reparses
-            .try_reserve_exact(row.reparses)
-            .map_err(|_| exhausted())?;
-        if self.reparses.capacity() > row.reparses {
-            return Err(exhausted());
-        }
-        // This is the actual fixed probe result retained by this same completed
-        // preceding owner, not a caller Boolean or a second feature assumption.
-        self.mode = input.selected.loans.first.state.mode;
-        let mut source = walk::Walk::new_data(input, row.prewalk.population)?;
-        while let Some((value, depth)) = source.next_data()? {
-            self.maximum_intermediate_depth = self.maximum_intermediate_depth.max(depth);
-            let SourceKind::Object(mut fields) = value.kind_data()? else {
-                continue;
-            };
-            if !matches!(self.mode, Some(RawMode::Reparse)) {
-                continue;
-            }
-            let Some((key, payload)) = fields.next() else {
-                continue;
-            };
-            if key != RAW_VALUE_KEY {
-                continue;
-            }
-            let SourceKind::String(payload) = payload.kind_data()? else {
-                return Err(invalid());
-            };
-            let position = self.reparses.len();
-            if position >= row.reparses {
-                return Err(exhausted());
-            }
-            let identity = value.identity_data()?;
-            self.reparses.push(Reparse {
-                source: identity,
-                attempt: None,
-            });
-            if self.lookup.insert(identity, position).is_some() {
-                return Err(invalid());
-            }
-            let child = self.reparses.get_mut(position).ok_or_else(invalid)?;
-            let child_row =
-                NativeImport18EffectiveTextConstructionData::quote_data(payload, row.maximum)?;
-            NativeImport18EffectiveTextAttemptData::read_into_data(
-                payload,
-                &child_row,
-                &mut child.attempt,
-            )?;
-            let child = child.attempt.as_ref().ok_or_else(invalid)?;
-            self.maximum_intermediate_depth = self.maximum_intermediate_depth.max(add(
-                depth.checked_sub(1).ok_or_else(invalid)?,
-                child.maximum_intermediate_depth_data(),
-            )?);
-            // Locked MapDeserializer diagnoses remaining fields only after the
-            // Raw String parser returns. Keep that actual child even on refusal.
-            if fields.next().is_some() {
-                return Err(invalid());
-            }
-            source.skip_children_data();
-        }
-        Ok(())
+        self.state.run_data(input, row)
     }
 
     /// Borrows the exact one-next-pass result without performing another pass.
@@ -205,15 +145,15 @@ impl<'bank> NativeImport18NextValuePassAttemptData<'bank> {
         input: NativeImport18NextValueInputData<'a>,
     ) -> Result<NativeImport18NextValuePassViewData<'a>, ProviderError> {
         self.row.prewalk.authenticate_data(input)?;
-        if self.failed || !self.complete {
+        if self.state.failed || !self.state.complete {
             return Err(invalid());
         }
-        Ok(view::prior_data(self, input.selected))
+        Ok(view::prior_data(&self.state, input.selected))
     }
 
     /// Returns actual prior and newly created flat-child intermediate depth.
     pub(crate) const fn maximum_intermediate_depth_data(&self) -> usize {
-        self.maximum_intermediate_depth
+        self.state.maximum_intermediate_depth
     }
 
     /// Returns the same owner's post-attempt actual retained observation.
@@ -229,37 +169,10 @@ impl<'bank> NativeImport18NextValuePassAttemptData<'bank> {
         &self,
         maximum: usize,
     ) -> Result<usize, ProviderError> {
-        let Self {
-            row: _,
-            failed: _,
-            complete: _,
-            mode: _,
-            reparses,
-            lookup,
-            maximum_intermediate_depth: _,
-            census: _,
-        } = self;
-        let mut retained = sum(&[
+        let retained = add(
             size_of::<Option<Self>>(),
-            mul(reparses.capacity(), size_of::<Reparse>())?,
-            tree_storage_data(
-                usize::from(!lookup.is_empty()),
-                lookup.len(),
-                size_of::<(OwnedValueNodeIdentityData, usize)>(),
-                align_of::<OwnedValueNodeIdentityData>(),
-            )?,
-        ])?;
-        for Reparse { source: _, attempt } in reparses {
-            if let Some(attempt) = attempt {
-                retained = add(
-                    retained,
-                    attempt
-                        .retained_requested_storage_data(maximum)?
-                        .checked_sub(size_of::<Option<NativeImport18EffectiveTextAttemptData>>())
-                        .ok_or_else(invalid)?,
-                )?;
-            }
-        }
+            self.state.retained_backing_data(maximum)?,
+        )?;
         if retained > maximum {
             return Err(exhausted());
         }

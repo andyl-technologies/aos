@@ -10,7 +10,7 @@ use super::*;
 #[derive(Clone, Copy)]
 pub(crate) struct NativeImport18NextValuePrewalkData<'bank> {
     pub(super) raw: &'bank RetainedFrame,
-    pub(super) first: &'bank NativeImport18OwnedValuePassAttemptData<'bank>,
+    pub(super) first: input::FirstSource<'bank>,
     pub(super) prior: BoundaryIdentity,
     selected: OwnedValueNodeIdentityData,
     // Keep the actual source and every preceding bank immutable, not just its key.
@@ -69,7 +69,7 @@ impl<'bank> NativeImport18NextValuePrewalkData<'bank> {
         input: NativeImport18NextValueInputData<'_>,
     ) -> Result<(), ProviderError> {
         if !std::ptr::eq(self.raw, input.selected.loans.raw)
-            || !std::ptr::eq(self.first, input.selected.loans.first)
+            || !self.first.same_data(input.selected.loans.first)
             || self.prior != input.selected.loans.prior_data()
             || self.selected != input.key_data()?
         {
@@ -165,6 +165,7 @@ impl<'bank> NativeImport18NextValuePassConstructionData<'bank> {
             trees,
         ])?;
         let initializer = sum(&[
+            size_of::<engine::NextPassStateData>() * 2,
             size_of::<NativeImport18NextValuePassAttemptData<'static>>(),
             size_of::<Option<NativeImport18NextValuePassAttemptData<'static>>>(),
             size_of::<Vec<Reparse>>(),
@@ -197,7 +198,7 @@ impl<'bank> NativeImport18NextValuePassConstructionData<'bank> {
 
     pub(super) fn dominates_data(&self, current: &Self) -> bool {
         std::ptr::eq(self.prewalk.raw, current.prewalk.raw)
-            && std::ptr::eq(self.prewalk.first, current.prewalk.first)
+            && self.prewalk.first.same_data(current.prewalk.first)
             && self.prewalk.prior == current.prewalk.prior
             && self.prewalk.selected == current.prewalk.selected
             && self.prewalk.population >= current.prewalk.population
@@ -280,12 +281,18 @@ impl<'bank> NativeImport18NextValuePassConstructionData<'bank> {
             + size_of::<NativeImport18OwnedValuePassKindData<'static>>()
             + size_of::<Result<NativeImport18OwnedValuePassKindData<'static>, ProviderError>>()
             + size_of::<[usize; 2]>() * 2
-            + size_of::<[usize; 4]>() * 2
+            // Actual retained and grown state-initializer sum operands.
+            + size_of::<[usize; 4]>()
+            + size_of::<[usize; 5]>()
+            // Actual prewalk workspace and full quote-total sum operands.
+            + size_of::<[usize; 3]>() * 2
             + size_of::<&[usize]>() * 4
             + size_of::<ProviderError>()
             + size_of::<usize>() * 20
             + size_of::<bool>() * 3;
-        source_recheck
+        engine::NextPassStateData::counter_scratch_data()
+            + size_of::<input::FirstSource<'static>>() * 4
+            + source_recheck
             + rows
             + outputs
             + trees

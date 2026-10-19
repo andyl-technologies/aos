@@ -195,6 +195,10 @@ impl NativeImport18OwningFirstAttemptData {
         Ok(state_view::raw_data(&self.state, input))
     }
 
+    pub(super) fn state_data(&self) -> &state::FirstPassStateData {
+        &self.state
+    }
+
     /// Borrows the retained original input even after a first-pass refusal.
     ///
     /// # Errors
