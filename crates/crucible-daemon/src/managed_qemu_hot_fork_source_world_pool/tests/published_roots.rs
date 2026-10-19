@@ -5,7 +5,10 @@ use crucible_cas::content_store::{ContentId, ObjectKind};
 
 use super::super::test_support::advanced_published_root_source_for_test;
 use super::*;
-use crate::qemu_hot_fork_source_capture::AuthenticatedPublishedRootQemuHotForkSource;
+use crate::qemu_hot_fork_source_capture::{
+    AuthenticatedPublishedRootQemuHotForkSource, QemuPublishedRootOrigin,
+    QemuPublishedRootProvenance,
+};
 use crate::{QemuPublishedRootAdmission, QemuPublishedRootSink};
 
 fn published_artifact(name: &[u8]) -> ConfigurationArtifactId {
@@ -26,6 +29,25 @@ fn prepared_source() -> ProductionVmHotForkSourceWorld {
 
 fn advanced_source(name: &str) -> ProductionVmHotForkSourceWorld {
     advanced_published_root_source_for_test(name)
+}
+
+/// Stop-root provenance naming the source's own boundary configuration.
+fn provenance(source: &ProductionVmHotForkSourceWorld) -> QemuPublishedRootProvenance {
+    QemuPublishedRootProvenance::new(
+        QemuPublishedRootOrigin::AttemptStop,
+        source.continuation().configuration().clone(),
+        Some(true),
+    )
+}
+
+/// Seals `source` as a published root with provenance at its own boundary.
+fn published_root(
+    key: QemuHotForkSourceWorldKey,
+    published: ConfigurationArtifactId,
+    source: ProductionVmHotForkSourceWorld,
+) -> AuthenticatedPublishedRootQemuHotForkSource {
+    let provenance = provenance(&source);
+    AuthenticatedPublishedRootQemuHotForkSource::new(key, published, source, provenance)
 }
 
 fn published_key(source: &ProductionVmHotForkSourceWorld) -> QemuHotForkSourceWorldKey {
@@ -59,9 +81,11 @@ fn published_binding_requires_an_advanced_nonterminal_boundary() {
     let genesis = prepared_source();
     let key = published_key(&genesis);
 
-    let failure = ManagedQemuHotForkSourceWorld::bind_published_root(key, genesis)
-        .err()
-        .expect("a genesis schedule is not a published boundary");
+    let genesis_provenance = provenance(&genesis);
+    let failure =
+        ManagedQemuHotForkSourceWorld::bind_published_root(key, genesis, genesis_provenance)
+            .err()
+            .expect("a genesis schedule is not a published boundary");
     let (genesis, error) = failure.into_parts();
     assert!(matches!(
         error,
@@ -76,9 +100,14 @@ fn published_binding_requires_an_advanced_nonterminal_boundary() {
         advanced.continuation().configuration().id(),
         compatibility_profile(),
     );
-    let failure = ManagedQemuHotForkSourceWorld::bind_published_root(canonical.clone(), advanced)
-        .err()
-        .expect("a canonical-genesis key cannot bind a published root");
+    let advanced_provenance = provenance(&advanced);
+    let failure = ManagedQemuHotForkSourceWorld::bind_published_root(
+        canonical.clone(),
+        advanced,
+        advanced_provenance,
+    )
+    .err()
+    .expect("a canonical-genesis key cannot bind a published root");
     let (advanced, error) = failure.into_parts();
     assert!(matches!(
         error,
@@ -117,7 +146,7 @@ fn published_root_persists_its_thin_fallback_before_it_becomes_reusable() {
     assert!(pool.has_free_template_slot());
 
     pool.admit_authenticated_published_root(
-        AuthenticatedPublishedRootQemuHotForkSource::new(key.clone(), published, source),
+        published_root(key.clone(), published, source),
         HotCheckpointHotnessSignals::new(),
     )
     .expect("admit published root");
@@ -165,7 +194,7 @@ fn published_root_never_evicts_a_retained_source_with_equal_signals() {
         ManagedQemuHotForkSourceWorldPool::open(limits, ReapingDemotionSink, retention.clone())
             .expect("managed source-world pool");
     pool.admit_authenticated_published_root(
-        AuthenticatedPublishedRootQemuHotForkSource::new(
+        published_root(
             retained_key.clone(),
             published_artifact(b"published-retained-child"),
             retained,
@@ -178,7 +207,7 @@ fn published_root_never_evicts_a_retained_source_with_equal_signals() {
     let candidate_key = published_key(&candidate);
     let failure = pool
         .admit_authenticated_published_root(
-            AuthenticatedPublishedRootQemuHotForkSource::new(
+            published_root(
                 candidate_key.clone(),
                 published_artifact(b"published-candidate-child"),
                 candidate,
@@ -226,7 +255,7 @@ fn published_root_sink_admits_and_retires_rejected_roots() {
     assert!(sink.may_admit());
 
     let admitted = sink
-        .admit(AuthenticatedPublishedRootQemuHotForkSource::new(
+        .admit(published_root(
             first_key,
             published_artifact(b"published-sink-first-child"),
             first,
@@ -238,7 +267,7 @@ fn published_root_sink_admits_and_retires_rejected_roots() {
     let second = advanced_source("published.sink-second");
     let second_key = published_key(&second);
     let rejected = sink
-        .admit(AuthenticatedPublishedRootQemuHotForkSource::new(
+        .admit(published_root(
             second_key,
             published_artifact(b"published-sink-second-child"),
             second,
@@ -250,4 +279,88 @@ fn published_root_sink_admits_and_retires_rejected_roots() {
     assert!(reason.contains("insufficient") || reason.contains("rejected"));
 
     pool.orderly_shutdown().expect("retire admitted root");
+}
+
+#[test]
+fn published_root_keeps_its_provenance_beside_the_admitted_source() {
+    let mut source = advanced_source("published.provenance");
+    let key = published_key(&source);
+    let boundary = source.continuation().configuration().clone();
+    let limits = single_template_limits(&mut source);
+    let mut pool = ManagedQemuHotForkSourceWorldPool::open(
+        limits,
+        ReapingDemotionSink,
+        MemoryHotCheckpointFallbackRetentionStore::new(),
+    )
+    .expect("managed source-world pool");
+    let anchor = QemuPublishedRootProvenance::new(
+        QemuPublishedRootOrigin::BranchParentAnchor,
+        boundary.clone(),
+        Some(true),
+    );
+
+    pool.admit_authenticated_published_root(
+        AuthenticatedPublishedRootQemuHotForkSource::new(
+            key.clone(),
+            published_artifact(b"published-provenance-child"),
+            source,
+            anchor,
+        ),
+        HotCheckpointHotnessSignals::new(),
+    )
+    .expect("admit anchor root");
+
+    let world = pool
+        .worlds
+        .get(&manager_source_key(&key))
+        .expect("retained anchor root");
+    let provenance = world
+        .published_root_provenance()
+        .expect("published root provenance");
+    assert_eq!(
+        provenance.origin(),
+        QemuPublishedRootOrigin::BranchParentAnchor
+    );
+    assert_eq!(provenance.configuration(), &boundary);
+    assert_eq!(provenance.live_network_choice_pause(), Some(true));
+    pool.orderly_shutdown().expect("retire anchor root");
+}
+
+#[test]
+fn published_binding_rejects_provenance_for_another_configuration() {
+    let advanced = advanced_source("published.provenance-source");
+    let other = advanced_source("published.provenance-other");
+    let key = published_key(&advanced);
+    let mismatched = provenance(&other);
+    other.retire().expect("retire unrelated source");
+
+    let failure = ManagedQemuHotForkSourceWorld::bind_published_root(key, advanced, mismatched)
+        .err()
+        .expect("provenance must name the source's own boundary");
+    let (advanced, error) = failure.into_parts();
+    assert!(matches!(
+        error,
+        ManagedQemuHotForkSourceWorldBindingError::NonPublishedBoundary { ref detail }
+            if detail.contains("provenance_matches=false")
+    ));
+
+    // Canonical and exact sources carry no published-root provenance.
+    let genesis = prepared_source();
+    let canonical = QemuHotForkSourceWorldKey::new(
+        lineage_id(0x51),
+        genesis.continuation().configuration().def.id(),
+        genesis.continuation().configuration().id(),
+        compatibility_profile(),
+    );
+    let genesis = ManagedQemuHotForkSourceWorld::bind(canonical, genesis)
+        .map_err(|failure| failure.to_string())
+        .expect("bind canonical genesis");
+    assert!(genesis.published_root_provenance().is_none());
+    genesis
+        .into_source()
+        .map_err(|_| "canonical source is bound")
+        .expect("canonical source")
+        .retire()
+        .expect("retire canonical source");
+    advanced.retire().expect("retire advanced source");
 }

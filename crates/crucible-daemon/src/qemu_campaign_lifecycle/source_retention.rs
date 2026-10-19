@@ -43,7 +43,10 @@ use super::{
     QemuFreshExecutionRunnerError, QemuSavepointReplayProof, map_fresh_driver_failure,
 };
 use crate::AttemptExecutionDisposition;
-use crate::qemu_hot_fork_source_capture::AuthenticatedPublishedRootQemuHotForkSource;
+use crate::qemu_hot_fork_source_capture::{
+    AuthenticatedPublishedRootQemuHotForkSource, QemuPublishedRootOrigin,
+    QemuPublishedRootProvenance,
+};
 
 /// Outcome of settling a stopped world's final boundary without teardown.
 #[derive(Debug, PartialEq, Eq)]
@@ -413,8 +416,13 @@ where
             plan.profile,
         );
         record_retention_decision("retained", "awaiting durable observation disposition");
+        let provenance = QemuPublishedRootProvenance::new(
+            QemuPublishedRootOrigin::AttemptStop,
+            plan.boundary,
+            attempt_stop_live_network_choice_pause(input),
+        );
         let root = Box::new(AuthenticatedPublishedRootQemuHotForkSource::new(
-            key, published, *world,
+            key, published, *world, provenance,
         ));
         QemuPublishedRootAttempt::Finished(Ok((
             product,
@@ -456,7 +464,7 @@ pub(super) fn reconcile_published_root(
     }
 
     record_retention_decision("retired", "attempt disposition is not an observation");
-    let (_key, _published, source) = (*root).into_parts();
+    let (_key, _published, source, _provenance) = (*root).into_parts();
     source
         .retire()
         .map_err(|error| QemuPublishedRootRetirementError::new(error.to_string()))
@@ -489,6 +497,22 @@ where
     Err(AttemptWorkerFailure::Terminal(
         QemuFreshExecutionRunnerError::Cleanup(cleanup),
     ))
+}
+
+/// Returns the live-network pause mode over a stop root's whole prefix.
+///
+/// Start replay to a non-genesis start pauses before live-network choices
+/// exactly when that start carries a campaign branch; the modeled driver then
+/// pauses only for a next-choice stop. A prefix that crossed both segments
+/// under different modes has no single mode, so it returns `None`.
+fn attempt_stop_live_network_choice_pause(input: &CrucibleAttemptExecution) -> Option<bool> {
+    let driven = input.attempt().stop().accepts_next_choice();
+    let start = input.start().configuration();
+    if start.schedule.is_empty() {
+        return Some(driven);
+    }
+    let replayed = super::replay_pauses_before_live_network_choice(start);
+    (replayed == driven).then_some(driven)
 }
 
 /// Returns why the sealed observation cannot name the retained boundary.

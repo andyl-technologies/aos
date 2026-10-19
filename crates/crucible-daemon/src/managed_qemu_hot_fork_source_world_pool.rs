@@ -20,6 +20,7 @@ use thiserror::Error;
 
 use crate::qemu_hot_fork_source_capture::{
     AuthenticatedCanonicalQemuHotForkSource, AuthenticatedExactQemuHotForkSource,
+    QemuPublishedRootProvenance,
 };
 use crate::qemu_hot_fork_world_factory::{
     QemuHotForkSourceWorldCheckoutIdentity, QemuHotForkSourceWorldProvider,
@@ -70,6 +71,8 @@ pub struct ManagedQemuHotForkSourceWorld {
     source: Option<ProductionVmHotForkSourceWorld>,
     leased_source: Option<Arc<Mutex<ProductionVmHotForkSourceWorld>>>,
     invalidated: bool,
+    /// Operational provenance, present exactly for published-boundary roots.
+    provenance: Option<QemuPublishedRootProvenance>,
 }
 
 impl ManagedQemuHotForkSourceWorld {
@@ -83,32 +86,40 @@ impl ManagedQemuHotForkSourceWorld {
         key: QemuHotForkSourceWorldKey,
         source: ProductionVmHotForkSourceWorld,
     ) -> Result<Self, ManagedQemuHotForkSourceWorldBindingFailure> {
-        Self::bind_at_boundary(key, source, BindingBoundary::CanonicalGenesis)
+        Self::bind_at_boundary(key, source, BindingBoundary::CanonicalGenesis, None)
     }
 
     fn bind_authenticated_exact(
         key: QemuHotForkSourceWorldKey,
         source: ProductionVmHotForkSourceWorld,
     ) -> Result<Self, ManagedQemuHotForkSourceWorldBindingFailure> {
-        Self::bind_at_boundary(key, source, BindingBoundary::ExactCheckpoint)
+        Self::bind_at_boundary(key, source, BindingBoundary::ExactCheckpoint, None)
     }
 
     /// Binds a thin attempt's retained world to its published child boundary.
     ///
     /// The key must name that boundary, and the source must have advanced past
     /// genesis without reaching a terminal verdict, so it can never shadow the
-    /// canonical genesis source or stand in for a finished run.
+    /// canonical genesis source or stand in for a finished run. Its provenance
+    /// must name exactly the configuration the source is paused at.
     fn bind_published_root(
         key: QemuHotForkSourceWorldKey,
         source: ProductionVmHotForkSourceWorld,
+        provenance: QemuPublishedRootProvenance,
     ) -> Result<Self, ManagedQemuHotForkSourceWorldBindingFailure> {
-        Self::bind_at_boundary(key, source, BindingBoundary::PublishedRoot)
+        Self::bind_at_boundary(
+            key,
+            source,
+            BindingBoundary::PublishedRoot,
+            Some(provenance),
+        )
     }
 
     fn bind_at_boundary(
         key: QemuHotForkSourceWorldKey,
         mut source: ProductionVmHotForkSourceWorld,
         boundary: BindingBoundary,
+        provenance: Option<QemuPublishedRootProvenance>,
     ) -> Result<Self, ManagedQemuHotForkSourceWorldBindingFailure> {
         let actual_scenario = source.continuation().configuration().def.id();
         let actual_configuration = source.continuation().configuration().id();
@@ -131,7 +142,7 @@ impl ManagedQemuHotForkSourceWorld {
             }
             BindingBoundary::ExactCheckpoint => None,
             BindingBoundary::PublishedRoot => {
-                published_root_boundary_error(&key, &source).map(|detail| {
+                published_root_boundary_error(&key, &source, provenance.as_ref()).map(|detail| {
                     ManagedQemuHotForkSourceWorldBindingError::NonPublishedBoundary { detail }
                 })
             }
@@ -174,6 +185,7 @@ impl ManagedQemuHotForkSourceWorld {
             source: Some(source),
             leased_source: None,
             invalidated: false,
+            provenance,
         })
     }
 
@@ -187,6 +199,16 @@ impl ManagedQemuHotForkSourceWorld {
     #[must_use]
     pub const fn available(&self) -> bool {
         self.source.is_some() && !self.invalidated
+    }
+
+    /// Returns how a published-boundary root was produced, if this is one.
+    #[must_use]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "ancestor checkout reads root provenance")
+    )]
+    pub(crate) const fn published_root_provenance(&self) -> Option<&QemuPublishedRootProvenance> {
+        self.provenance.as_ref()
     }
 
     fn lease_available(&self) -> bool {
@@ -462,16 +484,22 @@ fn canonical_genesis_reuse_boundary_error(
 fn published_root_boundary_error(
     key: &QemuHotForkSourceWorldKey,
     source: &ProductionVmHotForkSourceWorld,
+    provenance: Option<&QemuPublishedRootProvenance>,
 ) -> Option<String> {
     let continuation = source.continuation();
     let boundary_matches =
         key.boundary() == crate::QemuHotForkSourceWorldBoundary::PublishedBoundary;
+    // Ancestor lookup trusts the provenance configuration without locking the
+    // source, so it must be the exact configuration the source is paused at.
+    let provenance_matches = provenance
+        .is_some_and(|provenance| provenance.configuration() == continuation.configuration());
     if !boundary_matches
+        || !provenance_matches
         || continuation.configuration().schedule.is_empty()
         || continuation.terminal_verdict().is_some()
     {
         return Some(format!(
-            "key_boundary={:?} schedule_len={} terminal={}",
+            "key_boundary={:?} provenance_matches={provenance_matches} schedule_len={} terminal={}",
             key.boundary(),
             continuation.configuration().schedule.len(),
             continuation.terminal_verdict().is_some(),

@@ -6,7 +6,9 @@
 //! initial hotness signals, which never outrank an already retained source,
 //! so admitting a root never evicts genesis or another root. The root's
 //! [`HotCheckpointFallback::Thin`] record for the published child artifact is
-//! persisted before the source becomes reusable.
+//! persisted before the source becomes reusable. Each root keeps its
+//! operational provenance: how it was produced, its exact boundary
+//! configuration, and the live-network pause mode over its prefix.
 
 use super::*;
 use crate::qemu_hot_fork_source_capture::AuthenticatedPublishedRootQemuHotForkSource;
@@ -40,8 +42,8 @@ where
         HotCheckpointAdmissionCommit,
         ManagedQemuHotForkAuthenticatedAdmissionFailure<D::Error>,
     > {
-        let (key, published, source) = authenticated.into_parts();
-        let world = ManagedQemuHotForkSourceWorld::bind_published_root(key, source)
+        let (key, published, source, provenance) = authenticated.into_parts();
+        let world = ManagedQemuHotForkSourceWorld::bind_published_root(key, source, provenance)
             .map_err(ManagedQemuHotForkAuthenticatedAdmissionFailure::Binding)?;
 
         self.admit_source(world, signals, HotCheckpointFallback::Thin(published))

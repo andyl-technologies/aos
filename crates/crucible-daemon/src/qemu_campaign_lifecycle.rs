@@ -2487,9 +2487,7 @@ pub(crate) fn materialize_start_from<F, D>(
         ));
     }
 
-    lifecycle.set_live_network_choice_pause(target.schedule.decision_history().iter().any(|decision| {
-        matches!(decision, Decision::Selection(selection) if selection.is_campaign_branch())
-    }));
+    lifecycle.set_live_network_choice_pause(replay_pauses_before_live_network_choice(target));
     // The parent ran the audited Envoy boot prefix with concurrent RUNs; replay
     // must group them the same way to retain the parent's event log.
     let mut parallel_boot = crate::qemu_campaign_driver::envoy_choice_free_boot_replay_eligible(
@@ -2706,6 +2704,17 @@ pub(crate) fn materialize_start_from<F, D>(
             current.schedule.len(),
         ))?;
     }
+}
+
+/// Returns whether start replay to `target` pauses before live-network choices.
+///
+/// Replay pauses exactly when the target carries a campaign branch, so the
+/// branch's reserved live-network choice can be matched before it settles.
+/// The mode groups RUNs, so every replay of one prefix must use the same mode.
+pub(crate) fn replay_pauses_before_live_network_choice(target: &Configuration) -> bool {
+    target.schedule.decision_history().iter().any(
+        |decision| matches!(decision, Decision::Selection(selection) if selection.is_campaign_branch()),
+    )
 }
 
 fn apply_replayed_live_network_selection<F, D>(

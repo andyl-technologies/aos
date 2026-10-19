@@ -11,7 +11,10 @@ use crucible_campaign::{ChoiceCoordinate, ChoiceOpportunity};
 use super::super::test_support::{Order, RetentionFactory, Script, entry, retention_trace};
 use super::*;
 use crate::managed_qemu_hot_fork_source_world_pool::test_support::advanced_published_root_source_for_test;
-use crate::qemu_hot_fork_source_capture::AuthenticatedPublishedRootQemuHotForkSource;
+use crate::qemu_hot_fork_source_capture::{
+    AuthenticatedPublishedRootQemuHotForkSource, QemuPublishedRootOrigin,
+    QemuPublishedRootProvenance,
+};
 use crate::{
     AttemptExecutionKey, AttemptExecutionRuntimeBasis, QemuFinalBoundaryDrain,
     QemuHotForkSourceWorldBoundary, QemuHotForkSourceWorldKey, QemuPublishedRootAdmission,
@@ -80,12 +83,26 @@ impl QemuFreshAttemptDriver for RetentionDriver {
 #[derive(Default)]
 struct RecordingRootSink {
     full: bool,
-    admitted: Mutex<Vec<QemuHotForkSourceWorldKey>>,
+    admitted: Mutex<Vec<(QemuHotForkSourceWorldKey, QemuPublishedRootProvenance)>>,
 }
 
 impl RecordingRootSink {
     fn admitted(&self) -> Vec<QemuHotForkSourceWorldKey> {
-        self.admitted.lock().expect("admitted roots").clone()
+        self.admitted
+            .lock()
+            .expect("admitted roots")
+            .iter()
+            .map(|(key, _provenance)| key.clone())
+            .collect()
+    }
+
+    fn provenances(&self) -> Vec<QemuPublishedRootProvenance> {
+        self.admitted
+            .lock()
+            .expect("admitted roots")
+            .iter()
+            .map(|(_key, provenance)| provenance.clone())
+            .collect()
     }
 }
 
@@ -98,8 +115,11 @@ impl QemuPublishedRootSink for RecordingRootSink {
         &self,
         root: AuthenticatedPublishedRootQemuHotForkSource,
     ) -> Result<QemuPublishedRootAdmission, QemuPublishedRootRetirementError> {
-        let (key, _published, source) = root.into_parts();
-        self.admitted.lock().expect("admitted roots").push(key);
+        let (key, _published, source, provenance) = root.into_parts();
+        self.admitted
+            .lock()
+            .expect("admitted roots")
+            .push((key, provenance));
         source
             .retire()
             .map_err(|error| QemuPublishedRootRetirementError::new(error.to_string()))?;
@@ -620,6 +640,11 @@ fn retained_root_reaches_the_pool_only_after_an_observation_disposition() {
         QemuHotForkSourceWorldBoundary::PublishedBoundary
     );
     assert_eq!(admitted[0].configuration(), boundary.0.id());
+    // A discovery stop's whole prefix ran under the driver's next-choice pause.
+    let provenance = &sink.provenances()[0];
+    assert_eq!(provenance.origin(), QemuPublishedRootOrigin::AttemptStop);
+    assert_eq!(provenance.configuration(), &boundary.0);
+    assert_eq!(provenance.live_network_choice_pause(), Some(true));
     assert!(fixture.runner.pending_retention.is_none());
 }
 
