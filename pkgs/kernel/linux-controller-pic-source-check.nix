@@ -195,7 +195,7 @@ in
           # The existing proposal/check executor owns all compiler/model results.
           # The ordinary FD binary runs on the build-host kernel, not this image.
           ${python3}/bin/python3 -B ${fixtures}/generate-models.py \
-            "$PWD" "$CC" "$PWD/fdtable-controls" fdtable
+            "$PWD" "$CC" "$PWD/fdtable-controls" fdtable "${psFixtures}"
           ${python3}/bin/python3 -B ${fixtures}/check-models.py \
             "$PWD/fdtable-controls" "$PWD" fdtable
 
@@ -203,7 +203,7 @@ in
             ${python3}/bin/python3 -B ${fixtures}/resources.py check "$PWD"
             native_make "$nativeObject"
             ${python3}/bin/python3 -B ${fixtures}/check-native-inputs.py \
-              "$PWD" "$nativeObject" fdtable
+              "$PWD" "$nativeObject" fdtable "${psFixtures}"
           done
           ${python3}/bin/python3 -B ${fixtures}/resources.py check "$PWD"
           mkdir -p "$out/fdtable-native-inputs"

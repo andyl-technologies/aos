@@ -45,7 +45,7 @@ preserves its first error, and uses the existing initial graph precredit walk.
 | Current test compilation | Standard four-library compilation passes in 4 minutes 2 seconds. Assertions, overflow checks and default stack remain enabled. |
 | Earlier startup/reclamation pair | Baseline reaches the fifteen-minute limit during inactive-runtime construction; optimized construction finishes, then its recheck refuses after 641.39 seconds. Normal retirement and child reclamation pass. |
 | Current startup/reclamation control | Native78 passes in 678.05 seconds, including inactive-runtime recheck, the attached actor, exact/one-byte-short whole-holder census, destination assertions, retirement and child reclamation. Full native preservation remains unqualified. |
-| Kernel FD source application | The complete 43-stage chain applies with exact identities, zero fuzz and no offsets. Its final catalog contains 182 source roles totaling 5,151,009 bytes. FD controls and configured-object compilation remain pending. |
+| Kernel FD source application | The complete 43-stage chain applies with exact identities, zero fuzz and no offsets. Its final catalog contains 182 source roles totaling 5,151,009 bytes. The first registered check stops at FD fixture discovery after its legacy controls pass; explicit fixture inputs are corrected, and FD execution remains pending. |
 | Real-host KVM preparation | The existing exact stopped-VM test passes: one passed, zero failed, 884 filtered, in 0.04 seconds. Standard test compilation passes in 4 minutes 52 seconds. It creates no vCPU or guest execution and does not qualify the controller profile. |
 | Outstanding qualification | The current-source application-target refresh, full preservation, strict lint, ABI and license gates remain pending. |
 
@@ -60,8 +60,11 @@ the existing controls and resource limits remain intact.
 The complete source-application derivation passes, and its installed catalog
 matches the exact selected native source chain. This result includes no C
 compilation, patched-kernel execution, image/module linking or matching-source
-release qualification. The registered source check is still running. Constructor
-coverage remains `0x001` of required `0x7ff`; this checkpoint grants no FD-table,
+release qualification. The first registered check passes its eight original
+configured-object checks and PIC/EOI/deferred-queue controls, then stops before
+FD compilation because two separate Nix-store inputs were treated as siblings.
+Both FD consumers now receive the exact fixture input explicitly. The refreshed
+registered check remains pending. Constructor coverage remains `0x001` of required `0x7ff`; this checkpoint grants no FD-table,
 CREATE, RUN or readiness capability.
 
 One matched pair reaches the same inactive-runtime construction milestone in

@@ -103,12 +103,18 @@ def verify(root, target, required, catalog, fdtable=False):
 def main():
     if sys.flags.optimize:
         raise RuntimeError('Optimized native dependency checking refuses')
+    fdtable = len(sys.argv) == 5 and sys.argv[3] == 'fdtable'
+    if len(sys.argv) != 3 and not fdtable:
+        raise ValueError('Exact PIC or FD-table native-input arguments required')
+    fixtures = None
+    if fdtable:
+        fixtures = Path(sys.argv[4])
+        if not fixtures.is_absolute() or not fixtures.is_dir():
+            raise ValueError('An explicit absolute PS fixtures directory is required')
     root = Path(sys.argv[1]).resolve()
     target = sys.argv[2]
     here = Path(__file__).parent
-    fdtable = len(sys.argv) == 4 and sys.argv[3] == 'fdtable'
     if fdtable:
-        fixtures = here.parent / '_crucible-q35-ps-source'
         inventory = json.loads((fixtures / 'complete-source-catalog.json').read_text())
         catalog = {row['path']: row['identity'] for row in inventory['files']}
         required = json.loads((fixtures / 'fdtable-native-inputs.json').read_text())[target]

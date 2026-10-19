@@ -8,6 +8,14 @@ import json
 import re
 
 
+FD_FIXTURES = None
+if len(sys.argv) == 6 and sys.argv[4] == 'fdtable':
+    FD_FIXTURES = Path(sys.argv[5])
+    if not FD_FIXTURES.is_absolute() or not FD_FIXTURES.is_dir():
+        raise ValueError('An explicit absolute PS fixtures directory is required')
+elif len(sys.argv) != 4:
+    raise ValueError('Exact PIC or FD-table source-control arguments required')
+
 HERE = Path(__file__).parent
 SOURCE = Path(sys.argv[1]).resolve()
 COMPILER = shlex.split(sys.argv[2])
@@ -16,13 +24,11 @@ if sys.flags.optimize or not COMPILER:
     raise RuntimeError('Optimized generation or absent source compiler refuses')
 ROOT.mkdir()
 
-if len(sys.argv) == 5 and sys.argv[4] == 'fdtable':
+if FD_FIXTURES is not None:
     from fdtable_models import generate
 
-    generate(SOURCE, COMPILER, ROOT, HERE.parent / '_crucible-q35-ps-source')
+    generate(SOURCE, COMPILER, ROOT, FD_FIXTURES)
     raise SystemExit(0)
-if len(sys.argv) != 4:
-    raise ValueError('Exact PIC or FD-table source-control mode required')
 
 
 def once(body, old, new):
