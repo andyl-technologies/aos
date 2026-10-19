@@ -42,6 +42,9 @@ The original checks lacked `/dev/kvm` in their execution namespace. A later
 host-side check and standard-KVM diagnostic succeeded, as recorded in the
 [availability update](kvm-feasibility.md#1-current-implementation-and-local-evidence).
 Operational access remains separate from native controller qualification.
+The existing real stopped-VM preparation test subsequently passes on the actual
+host in 0.04 seconds, with zero failures. It creates no vCPU and executes no
+guest instructions; the availability update records its exact scope.
 Unit tests cover arithmetic, schema and refusal behavior. They do not count
 as hardware clock, stopping or architectural continuation tests.
 
@@ -143,10 +146,10 @@ owner retention, lost acknowledgment, stale generations, changed coordinates
 and overflow. This proves source compatibility and these arithmetic/policy
 properties; it does not prove native concurrency, stop latency or guest behavior.
 
-Coverage remains partial. Zero ARM counter/timer paths currently have source
-implementation. Neither architecture has qualified kernel timer/IRQ closure,
-paravirtual clock closure or device/output custody. No live native guest test has
-run on this machine because `/dev/kvm` is absent. The next work includes ARM EL2
+Stage two supplies no ARM counter/timer implementation. Neither architecture
+has qualified complete kernel timer/IRQ closure, paravirtual clock closure or
+device/output custody. These source checks execute no live native guest;
+host-side KVM availability is recorded above. The next work includes ARM EL2
 counter/timer traps, automatic execution-ceiling stopping, QEMU device and worker
 closure, retained output receipts and architectural capture/restoration.
 
@@ -279,8 +282,9 @@ The receipt and transition tests model native syscall, clock and VM plumbing;
 they do not execute a guest or KVM ioctl. The registered source-built
 `linux-controller-run-return-stage6-check` passes both ISA object checks,
 the original custody oracles and all seventeen compiled mutation controls.
-The current machine has no `/dev/kvm`; neither ISA has native hardware or complete
-profile qualification. The upcoming atomic QEMU window must bind these original
+These checks ran without `/dev/kvm` in their execution namespace. Neither ISA
+has complete native profile qualification from them. The upcoming atomic QEMU
+window must bind these original
 receipts to its fixed owner roster, admitted input cut and retained prefix ledger
 before normal ceiling interruption can become source-owned reconciliation.
 
@@ -316,8 +320,8 @@ clock/owner admission; the earlier 23 controls remain enabled. The complete
 source variant is separate from the host kernel and is not installed or booted
 by these checks.
 
-No `/dev/kvm` is available on this machine. Native hardware, in-kernel MMIO data
-flow, other device/DMA/input/output writers, IRQ/timer closure and architectural
+These checks do not use the host's available KVM device. Native in-kernel MMIO
+data flow, other device/DMA/input/output writers, IRQ/timer closure and architectural
 preservation remain unqualified. ARM's mapped diagnostic trace address is not
 trusted provenance. Neither these source checks nor this capability issues
 common Ready or exact continuation authority.
@@ -348,8 +352,9 @@ unconfigured paths. Their complete-profile, device, input and output flags
 remain false. They do not grant Ready, backend capture or quantum execution
 permission. The common installed runtime must still bind original grants and
 payload custody to qualified whole-device/interrupt/DMA timing and state roots.
-This machine has no `/dev/kvm`; compiled two-ISA emulators, extracted production
-functions and adversarial models are source/component evidence. On this x86
+Compiled two-ISA emulators, extracted production functions and adversarial models
+are source/component evidence. Host-side KVM availability does not qualify them.
+On this x86
 host, the AArch64 emulator exercises its KVM stub. Native kernel architecture
 objects are checked separately for both ISAs; hardware execution is unqualified.
 

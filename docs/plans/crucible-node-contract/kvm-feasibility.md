@@ -38,6 +38,17 @@ capability values for private selectors `0xa025` through `0xa02b`. It created
 no VM or vCPU and performed no guest execution or VM-specific capability query.
 These results provide no installed private-controller support.
 
+On 2026-10-19, the existing
+`kvm_profile::prepare::tests::hardware_preparation_requires_a_real_fresh_stopped_vm`
+test passes on the actual host: one passed, zero failed, 884 filtered, in
+0.04 seconds. Its standard library-test build passes in 4 minutes 52 seconds,
+with assertions and overflow checks enabled. The test probes the real API and
+creates one fresh stopped VM, checking API version 12 and a positive vCPU limit.
+It creates no vCPU, RAM mapping or device and enters no `KVM_RUN`. Independent
+review verifies the compiler-emitted executable, source inputs and completed
+test log. This is operational preparation evidence, not controller-capability,
+guest execution, clock-containment or preservation qualification.
+
 The audit uses the public Linux v6.18 sources and QEMU source revision
 `f9587d4045c67cd0d8d8bdcd5d0bb5b6b395b63c`. These are reference implementations,
 not a claim that the installed kernel or packaged patched QEMU has identical

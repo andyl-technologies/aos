@@ -43,6 +43,7 @@ preserves its first error, and uses the existing initial graph precredit walk.
 | Current test compilation | Standard four-library compilation passes in 4 minutes 2 seconds. Assertions, overflow checks and default stack remain enabled. |
 | Earlier startup/reclamation pair | Baseline reaches the fifteen-minute limit during inactive-runtime construction; optimized construction finishes, then its recheck refuses after 641.39 seconds. Normal retirement and child reclamation pass. |
 | Current startup/reclamation control | Native78 passes in 678.05 seconds, including inactive-runtime recheck, the attached actor, exact/one-byte-short whole-holder census, destination assertions, retirement and child reclamation. Full native preservation remains unqualified. |
+| Real-host KVM preparation | The existing exact stopped-VM test passes: one passed, zero failed, 884 filtered, in 0.04 seconds. Standard test compilation passes in 4 minutes 52 seconds. It creates no vCPU or guest execution and does not qualify the controller profile. |
 | Outstanding qualification | Full preservation, strict lint, ABI and license gates remain pending. |
 
 One matched pair reaches the same inactive-runtime construction milestone in
