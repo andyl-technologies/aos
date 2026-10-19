@@ -324,7 +324,7 @@ fn check_report(
     let state = runtime
         .block_on(CacheState::load(
             &TokioLocalFs,
-            &inputs.root,
+            &inputs.root.join("state/cache"),
             super::config::STATE,
         ))
         .map_err(io::Error::other)?
