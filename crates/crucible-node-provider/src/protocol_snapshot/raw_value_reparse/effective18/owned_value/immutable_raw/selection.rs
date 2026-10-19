@@ -272,6 +272,60 @@ impl NativeImport18RawSelectionData {
             .node_data(self.node.ok_or_else(invalid)?)
     }
 
+    /// Quotes an actual descendant needed by the owning Envelope field visitor.
+    ///
+    /// Admit member_counter_scratch_data before the fixed membership prewalk,
+    /// then the returned actual row before constructing a new owning handle.
+    ///
+    /// # Errors
+    /// Refuses failed input, foreign membership, raw depth, observation or bound.
+    pub(in crate::protocol_snapshot::raw_value_reparse::effective18::owned_value) fn member_row_data(
+        &self,
+        target: &Value,
+        maximum: usize,
+    ) -> Result<NativeImport18RawSelectionConstructionData<'_>, ProviderError> {
+        let source = self.value_data()?;
+        let mut member = false;
+        {
+            let mut walk = walk::Walk::new_data(source);
+            while let Some((value, _)) = walk.next_data()? {
+                member |= std::ptr::eq(value, target);
+            }
+        }
+        if !member {
+            return Err(invalid());
+        }
+        let bank = self.bank.as_ref().ok_or_else(invalid)?;
+        let ordinal = {
+            let mut walk = walk::Walk::new_data(&bank.frame_data().value);
+            let mut ordinal = 0;
+            loop {
+                let (value, _) = walk.next_data()?.ok_or_else(invalid)?;
+                if std::ptr::eq(value, target) {
+                    break ordinal;
+                }
+                ordinal = add(ordinal, 1)?;
+            }
+        };
+        bank.selection_row_data(ordinal, maximum)
+    }
+
+    pub(in crate::protocol_snapshot::raw_value_reparse::effective18::owned_value) fn member_counter_scratch_data()
+    -> usize {
+        size_of::<&Self>()
+            + size_of::<&Value>() * 3
+            + size_of::<bool>()
+            + size_of::<usize>()
+            + size_of::<Option<(&Value, usize)>>()
+            + size_of::<Result<NativeImport18RawSelectionConstructionData<'static>, ProviderError>>(
+            )
+            + size_of::<&NativeImport18ImmutableRawBankData>()
+            + size_of::<Result<&Value, ProviderError>>()
+            + size_of::<Result<Option<(&Value, usize)>, ProviderError>>()
+            + walk::counter_scratch_data()
+            + NativeImport18RawSelectionConstructionData::counter_scratch_data()
+    }
+
     /// Borrows the exact owning raw frame, including its original byte content.
     ///
     /// # Errors

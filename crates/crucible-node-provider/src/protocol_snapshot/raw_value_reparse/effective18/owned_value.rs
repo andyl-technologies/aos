@@ -15,7 +15,8 @@ use crate::transport::RetainedFrame;
 mod envelope_fields;
 pub(crate) use envelope_fields::{
     EnvelopeField18Data, EnvelopeFieldsCensus18Data, NativeImport18EnvelopeFieldsAttemptData,
-    NativeImport18EnvelopeFieldsConstructionData,
+    NativeImport18EnvelopeFieldsConstructionData, NativeImport18OwningEnvelopeAttemptData,
+    NativeImport18OwningEnvelopeCensusData,
 };
 
 mod immutable_raw;

@@ -8,7 +8,7 @@
 use super::*;
 use crate::bodies::{EffectCertainty, OperationState};
 
-mod canonical;
+pub(in super::super) mod canonical;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Status {

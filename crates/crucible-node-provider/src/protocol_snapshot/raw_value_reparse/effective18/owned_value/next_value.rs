@@ -24,7 +24,7 @@ pub(crate) use first_bank::{
 };
 mod owning;
 pub(crate) use owning::{NativeImport18OwningNextAttemptData, NativeImport18OwningNextCensusData};
-mod response_shape;
+pub(super) mod response_shape;
 mod storage;
 mod view;
 mod walk;

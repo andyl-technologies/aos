@@ -392,6 +392,26 @@ impl<'a> NativeImport18NextValueInputData<'a> {
         })
     }
 
+    pub(in super::super) fn owning_root_data(
+        first: &'a NativeImport18OwningFirstAttemptData,
+    ) -> Result<Self, ProviderError> {
+        let selection = first.retained_selection_data()?;
+        let raw = selection.retained_frame_data()?;
+        let loans = Loans {
+            raw,
+            first: FirstSource::Owning(first),
+            later: &[],
+        };
+        loans.validate_data()?;
+        Ok(Self {
+            selected: SourceView {
+                loans,
+                origin: Physical::Raw(selection.value_data()?),
+                created: 0,
+            },
+        })
+    }
+
     pub(super) fn key_data(self) -> Result<NodeIdentity, ProviderError> {
         self.selected.identity_data()
     }
@@ -429,6 +449,8 @@ pub(super) fn counter_scratch_data() -> usize {
     size_of::<FirstSource<'static>>() * 3
         + size_of::<&NativeImport18OwningFirstAttemptData>() * 3
         + size_of::<Result<&RetainedFrame, ProviderError>>()
+        + size_of::<&NativeImport18RawSelectionData>()
+        + size_of::<Result<&NativeImport18RawSelectionData, ProviderError>>()
         + size_of::<Physical<'static>>() * 3
         + size_of::<NodeIdentity>() * 3
         + size_of::<Result<NodeIdentity, ProviderError>>()

@@ -140,7 +140,7 @@ pub(super) fn body_extent_data(
     Ok(bytes)
 }
 
-pub(super) fn transient_data() -> Result<usize, ProviderError> {
+pub(in super::super::super) fn transient_data() -> Result<usize, ProviderError> {
     sum(&[
         size_of::<Value>() * 2,
         size_of::<Number>(),
@@ -184,4 +184,34 @@ pub(super) fn counter_scratch_data() -> usize {
         + size_of::<Result<usize, ProviderError>>() * 3
         + size_of::<usize>() * 8
         + canonical::canonical_number_counter_scratch_bytes_data()
+}
+
+pub(in super::super::super) fn owned_body_extent_data(
+    envelope: &NativeImport18OwningEnvelopeAttemptData,
+) -> Result<usize, ProviderError> {
+    let body = envelope.body_data()?;
+    let mut bytes = add(2, body.len().saturating_sub(1))?;
+    for (member, (key, _)) in body.iter().enumerate() {
+        bytes = add(bytes, add(string_extent_data(key)?, 1)?)?;
+        let first = envelope.cut_first_data(EnvelopeField18Data::Body, member)?;
+        let input = NativeImport18NextValueInputData::owning_root_data(first)?;
+        bytes = add(bytes, node_extent_data(input.selected)?)?;
+    }
+    if bytes > 16_777_216 {
+        return Err(invalid());
+    }
+    Ok(bytes)
+}
+
+pub(in super::super::super) fn owned_counter_scratch_data() -> usize {
+    counter_scratch_data()
+        // This actual reader owns Loans/Physical/FirstSource and its resolution
+        // controls; FIRST's separate projection roster cannot supply them.
+        + super::super::input::counter_scratch_data()
+        + size_of::<&NativeImport18OwningEnvelopeAttemptData>() * 2
+        + size_of::<&NativeImport18OwningFirstAttemptData>()
+        + size_of::<Result<&NativeImport18OwningFirstAttemptData, ProviderError>>()
+        + size_of::<Result<&serde_json::Map<String, Value>, ProviderError>>()
+        + size_of::<(usize, (&String, &Value))>()
+        + size_of::<Option<(usize, (&String, &Value))>>()
 }

@@ -17,11 +17,12 @@ flat first/second-pass projections, structural Envelope/ResponseShape cuts and
 private owning raw-frame selections. The subsequent thirteen-file change moves
 the same first-pass engine behind borrowed and by-value owning adapters. The
 fourteen-file successor adds an independently funded immutable first bank and
-movable second-pass state around the existing second-pass engine. These
-components remain disconnected from
+movable second-pass state around the existing second-pass engine. A subsequent
+ten-file change adds owning structural Envelope fields and a separately admitted
+canonical-body check. These components remain disconnected from
 the live Source18 route; they grant no Initial, Recipe or native permission.
-The production application-target refresh below passes for `4fbaa7eb15`,
-including these receive components.
+The production application-target refresh below passes for `4fbaa7eb15`, before
+the owning Envelope change. The current source needs another refresh.
 
 `23f0513b98` adds the guarded flat literal-state codec. It preserves literal
 keys, full integers and floating-point representations, retains failed prefixes,
@@ -32,11 +33,11 @@ preserves its first error, and uses the existing initial graph precredit walk.
 
 | Check | Latest recorded scope and result |
 | --- | --- |
-| SDK receive formatting | The twenty-five-file raw custody, thirteen-file owning-first and fourteen-file owning-next cohorts pass. |
-| Combined integration checking | Six-crate all-feature/all-target checking passes in 1 minute 47 seconds after owning-next. The earlier owning-first/debug-label checkpoint passes in 1 minute 51 seconds. |
+| SDK receive formatting | The raw custody, owning-first, owning-next and ten-file owning-Envelope cohorts pass. The subsequent two test-assertion corrections also pass. |
+| Combined integration checking | Six-crate all-feature/all-target checking passes in 1 minute 41 seconds after owning-Envelope, and in 1 minute 47 seconds after owning-next. The earlier owning-first/debug-label checkpoint passes in 1 minute 51 seconds. |
 | Neutral debug diagnostics | Four files pass formatting. The existing Core invalid-endpoint/unknown-node control and three Session debug-runtime transaction controls pass. Only backend-neutral diagnostic labels and the matching existing expectation change. |
-| SDK receive controls | All 55 targeted controls pass with ordinary Serde JSON in 0.01 seconds, including seven owning-first and twelve owning-next controls. Both complete suites also execute all 55 controls. |
-| SDK Provider regression | Each complete suite passes 1,551 tests with zero failures and fifteen existing ignores: 11.64 seconds for ordinary Serde JSON and 12.65 seconds with raw values enabled. |
+| SDK receive controls | All 64 targeted controls pass with ordinary Serde JSON in 0.01 seconds, including the nine new owning-Envelope controls. Both complete suites also execute all 64 controls. |
+| SDK Provider regression | Each complete suite passes 1,560 tests with zero failures and fifteen existing ignores: 11.34 seconds for ordinary Serde JSON and 11.45 seconds with raw values enabled. |
 | Prior runtime checking | The thirteen-file runtime accounting correction passes six-crate all-feature/all-target checking in 1 minute 28 seconds and targeted formatting. |
 | Application-target compilation checkpoint | Passes for `4fbaa7eb15`: 167 rebuilt test artifacts across 48 application packages, including 69 integration targets, in 14 minutes 1 second. All 7,840 captured source files and modes match that commit. This gate executes no tests. |
 | Runtime correction library checkpoint | All four unfiltered libraries pass: Core 1,967, Daemon 1,504, Provider 1,496 and Contract twelve, totaling 4,979 with zero failures. Existing ignores remain 33/162/15/1. Ten focused Host attachment controls also pass, including both new accounting controls. |
@@ -44,7 +45,7 @@ preserves its first error, and uses the existing initial graph precredit walk.
 | Earlier startup/reclamation pair | Baseline reaches the fifteen-minute limit during inactive-runtime construction; optimized construction finishes, then its recheck refuses after 641.39 seconds. Normal retirement and child reclamation pass. |
 | Current startup/reclamation control | Native78 passes in 678.05 seconds, including inactive-runtime recheck, the attached actor, exact/one-byte-short whole-holder census, destination assertions, retirement and child reclamation. Full native preservation remains unqualified. |
 | Real-host KVM preparation | The existing exact stopped-VM test passes: one passed, zero failed, 884 filtered, in 0.04 seconds. Standard test compilation passes in 4 minutes 52 seconds. It creates no vCPU or guest execution and does not qualify the controller profile. |
-| Outstanding qualification | Full preservation, strict lint, ABI and license gates remain pending. |
+| Outstanding qualification | The current-source application-target refresh, full preservation, strict lint, ABI and license gates remain pending. |
 
 One matched pair reaches the same inactive-runtime construction milestone in
 approximately 624 versus 364 seconds (41.6% less time). Only the three currentness
@@ -170,6 +171,28 @@ ordinary Serde JSON, and both full suites pass 1,551 tests with fifteen existing
 ignores. All fourteen selected files pass formatting. Requested storage remains
 a source-level accounting claim rather than measured physical stack usage.
 
+The owning-Envelope successor shares the existing field visitor with the
+borrowed adapter. It owns typed header partials, member keys and each actual
+flat first-pass result beside the original immutable frame. Body and Extensions
+remain structural maps, without an extra root normalization. Canonical body
+checking has a separate quote and admission stage; failure retains all completed
+fields and the original input. A deep Extensions value does not acquire an
+unrelated whole-Envelope canonical restriction.
+
+Nine new controls compare actual framed map/sequence input with the locked
+Serde decoder and cover field order, nullable IDs, structural Raw keys, deep
+body/Extensions behavior, exact/one-short demand, foreign selections and reused
+outputs. All 64 targeted receive controls pass. Both unfiltered Provider suites
+pass 1,560 tests with zero failures and fifteen existing ignores, in 11.34 seconds
+for ordinary Serde JSON and 11.45 seconds with raw values enabled. The first
+compile found two test assertions requiring an unavailable enum Debug trait;
+equivalent variant assertions fix only those tests. The corrected targeted build
+passes in 1 minute 14 seconds; raw-value test compilation passes in 1 minute
+12 seconds. All ten selected files pass formatting, and six-crate
+all-feature/all-target checking passes in 1 minute 41 seconds. Live header/correlation,
+response-cursor integration, typed materialization and Source permissions remain
+separate work.
+
 These results qualify the selected components, not a live receive transition.
 AssignedPhase/history integration, full structural
 Envelope/ResponseShape validation and actual Initial/Recipe producers remain
@@ -219,8 +242,9 @@ set. This checkpoint has no dependency on subsequent Core changes.
 
 ### Application compilation
 
-The current refresh passes for `4fbaa7eb15`, including all 37 final SDK receive
-files. All 167 test artifacts freshly compile across the 48 selected application
+The latest recorded refresh passes for `4fbaa7eb15`, including all 37 SDK receive
+files selected then. It predates the owning-Envelope successor. All 167 test
+artifacts freshly compile across the 48 selected application
 packages, including 69 integration targets, in 14 minutes 1 second after
 prerequisite builds. Independent review matches all 7,840 captured source files
 and file modes to the commit, checks the normalized modes of 1,323 directories,

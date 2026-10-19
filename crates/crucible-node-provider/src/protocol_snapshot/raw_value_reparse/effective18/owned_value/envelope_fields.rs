@@ -128,6 +128,128 @@ impl<'a> Fields<'a> {
     }
 }
 
+mod owning;
+pub(crate) use owning::{
+    NativeImport18OwningEnvelopeAttemptData, NativeImport18OwningEnvelopeCensusData,
+};
+
+// Both actual adapters execute this single declaration/map schedule. A sink
+// roots each field pass before its nullable decoder or next member can run.
+trait FieldSink<'raw> {
+    fn read_cut_data(
+        &mut self,
+        field: EnvelopeField18Data,
+        member: usize,
+        key: Option<&'raw str>,
+        input: &'raw Value,
+    ) -> Result<(), ProviderError>;
+    fn nullable_data(
+        &mut self,
+        field: EnvelopeField18Data,
+        input: &'raw Value,
+    ) -> Result<(), ProviderError>;
+    fn direct_data(
+        &mut self,
+        field: EnvelopeField18Data,
+        input: &'raw Value,
+    ) -> Result<(), ProviderError>;
+}
+
+fn visit_fields_data<'raw>(
+    root: &'raw Value,
+    sink: &mut impl FieldSink<'raw>,
+) -> Result<(), ProviderError> {
+    let mut present = [false; 13];
+    let mut fields = Fields::new(root)?;
+    while let Some(field) = fields.next() {
+        let (field, input) = field?;
+        let index = FIELDS
+            .iter()
+            .position(|candidate| *candidate == field)
+            .ok_or_else(invalid)?;
+        if present[index] {
+            return Err(invalid());
+        }
+        present[index] = true;
+        if field.nullable() {
+            sink.read_cut_data(field, 0, None, input)?;
+            sink.nullable_data(field, input)?;
+        } else if field.structural() {
+            for (member, (key, input)) in input.as_object().ok_or_else(invalid)?.iter().enumerate()
+            {
+                sink.read_cut_data(field, member, Some(key), input)?;
+            }
+        } else {
+            sink.direct_data(field, input)?;
+        }
+    }
+    if present.iter().any(|present| !present) {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
+struct BorrowedFields<'owner, 'raw> {
+    owner: &'owner mut NativeImport18EnvelopeFieldsAttemptData<'raw>,
+    raw: &'raw RetainedFrame,
+}
+
+impl<'raw> FieldSink<'raw> for BorrowedFields<'_, 'raw> {
+    fn read_cut_data(
+        &mut self,
+        field: EnvelopeField18Data,
+        member: usize,
+        _key: Option<&'raw str>,
+        input: &'raw Value,
+    ) -> Result<(), ProviderError> {
+        self.owner.read_cut(self.raw, field, member, input)
+    }
+
+    fn nullable_data(
+        &mut self,
+        _field: EnvelopeField18Data,
+        input: &'raw Value,
+    ) -> Result<(), ProviderError> {
+        let child = self
+            .owner
+            .cuts
+            .last()
+            .and_then(|cut| cut.attempt.as_ref())
+            .ok_or_else(invalid)?;
+        match child.completed_data(self.raw, input)?.kind_data()? {
+            NativeImport18OwnedValuePassKindData::Null => {}
+            NativeImport18OwnedValuePassKindData::String(value) => {
+                Id::new(value)?;
+            }
+            _ => return Err(invalid()),
+        }
+        Ok(())
+    }
+
+    fn direct_data(
+        &mut self,
+        field: EnvelopeField18Data,
+        input: &'raw Value,
+    ) -> Result<(), ProviderError> {
+        match field {
+            EnvelopeField18Data::Protocol => {
+                input.as_str().ok_or_else(invalid)?;
+            }
+            EnvelopeField18Data::Message => {
+                message_data(input)?;
+            }
+            EnvelopeField18Data::Sequence => {
+                input.as_str().ok_or_else(invalid)?.parse::<U64>()?;
+            }
+            EnvelopeField18Data::Method => {
+                method_data(input)?;
+            }
+            _ => return Err(invalid()),
+        }
+        Ok(())
+    }
+}
+
 struct Cut<'bank> {
     field: EnvelopeField18Data,
     member: usize,
@@ -405,7 +527,8 @@ impl<'bank> NativeImport18EnvelopeFieldsConstructionData<'bank> {
             + size_of::<&RetainedFrame>() * 3
             + size_of::<&Value>() * 3;
 
-        quote
+        schedule_counter_scratch_data()
+            + quote
             + construction
             + loans
             + scalars
@@ -520,63 +643,7 @@ impl<'bank> NativeImport18EnvelopeFieldsAttemptData<'bank> {
             .try_reserve_exact(row.cuts)
             .map_err(|_| exhausted())?;
 
-        let mut present = [false; 13];
-        let mut fields = Fields::new(&raw.value)?;
-        while let Some(field) = fields.next() {
-            let (field, input) = field?;
-            let index = FIELDS
-                .iter()
-                .position(|candidate| *candidate == field)
-                .ok_or_else(invalid)?;
-            if present[index] {
-                return Err(invalid());
-            }
-            present[index] = true;
-
-            if field.nullable() {
-                self.read_cut(raw, field, 0, input)?;
-                let child = self
-                    .cuts
-                    .last()
-                    .and_then(|cut| cut.attempt.as_ref())
-                    .ok_or_else(invalid)?;
-                match child.completed_data(raw, input)?.kind_data()? {
-                    NativeImport18OwnedValuePassKindData::Null => {}
-                    NativeImport18OwnedValuePassKindData::String(value) => {
-                        Id::new(value)?;
-                    }
-                    _ => return Err(invalid()),
-                }
-            } else if field.structural() {
-                for (member, input) in input.as_object().ok_or_else(invalid)?.values().enumerate() {
-                    self.read_cut(raw, field, member, input)?;
-                }
-            } else {
-                // These direct scalar adapters construct no user child tree.
-                // Diagnostic text is static except the defining Id/U64 reason
-                // Strings separately quoted above; error byte text is not a
-                // compatibility claim of this DATA adapter.
-                match field {
-                    EnvelopeField18Data::Protocol => {
-                        input.as_str().ok_or_else(invalid)?;
-                    }
-                    EnvelopeField18Data::Message => {
-                        message_data(input)?;
-                    }
-                    EnvelopeField18Data::Sequence => {
-                        input.as_str().ok_or_else(invalid)?.parse::<U64>()?;
-                    }
-                    EnvelopeField18Data::Method => {
-                        method_data(input)?;
-                    }
-                    _ => return Err(invalid()),
-                }
-            }
-        }
-        if present.iter().any(|present| !present) {
-            return Err(invalid());
-        }
-        Ok(())
+        visit_fields_data(&raw.value, &mut BorrowedFields { owner: self, raw })
     }
 
     /// Returns the same owner's actual post-attempt census without allocation.
@@ -766,3 +833,14 @@ fn method_data(input: &Value) -> Result<Method, ProviderError> {
 #[allow(clippy::unwrap_used)]
 #[path = "envelope_fields/tests.rs"]
 mod tests;
+
+fn schedule_counter_scratch_data() -> usize {
+    size_of::<BorrowedFields<'static, 'static>>()
+        + size_of::<&mut BorrowedFields<'static, 'static>>()
+        + size_of::<&Value>()
+        + size_of::<Option<&str>>()
+        + size_of::<(&String, &Value)>()
+        + size_of::<(usize, (&String, &Value))>()
+        + size_of::<Option<(usize, (&String, &Value))>>()
+        + size_of::<std::iter::Enumerate<serde_json::map::Iter<'static>>>()
+}
