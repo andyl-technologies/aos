@@ -1540,7 +1540,15 @@ fn drive_modeled_attempt_inner(
             ));
         }
         context.charge_execution_quantum().map_err(|error| {
-            quantum_budget_report::report_quantum_budget_exhaustion(&event_log, completed_quanta);
+            let charges = quantum_budget_report::QuantumBudgetCharges {
+                consumed: context.consumed_execution_quanta(),
+                maximum: context.resources().maximum_execution_quanta(),
+            };
+            quantum_budget_report::report_quantum_budget_exhaustion(
+                &event_log,
+                completed_quanta,
+                charges,
+            );
             AttemptWorkerFailure::Terminal(QemuFreshModeledDriverError::ResourceRefusal(error))
         })?;
         let quantum_start_completed_quanta = completed_quanta;
