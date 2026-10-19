@@ -9479,7 +9479,8 @@ Resumed qualification:
   builds, all 21 focused cases and the formatter pair subsequently pass. Strict
   Clippy retains exactly the nineteen earlier findings; the separate all-target
   diagnostic passes without weakening source lint policy. Required application
-  target compilation is running. Full producer pin release, eviction, retirement and
+  target compilation also passes, producing 128 test artifacts across 29 packages
+  without claiming application test execution. Full producer pin release, eviction, retirement and
   NativeReady remain pending.
 - Publisher ownership candidate `b4dba755cf` implements the ARCH-8
   `publisher-sole-writer` gate by composing real publication ordering, native
@@ -9490,9 +9491,37 @@ Resumed qualification:
   reopening. The owning check independently binds complete image inputs and
   original Cargo ELF bytes; it does not claim the broader PROTO-57 gate or full
   host readiness. Both direct builds, all 32 focused cases and the formatter pair
-  pass. Strict Clippy retains the same nineteen findings. Native gate qualification
-  is queued behind the preceding application build; no native success or task
-  acceptance is claimed.
+  pass. Strict Clippy retains the same nineteen findings. The actual native
+  prerequisites subsequently pass: publication ordering, seven role identities,
+  six non-publisher mutation controls, authenticated transport and read-only
+  native handoffs. The aggregate fails at its independent verifier's incorrect
+  requirement that the copied-library list be nonempty. This image legitimately
+  resolves all dynamic dependencies directly from immutable AOS store inputs.
+  Correction `af4e1dd17a` checks exact copied-library inventory, including an empty
+  list, and resolves every actual transitive ELF dependency with AOS binutils.
+  It passes against the original bound images as a diagnostic. The failed
+  aggregate remains recorded; its queued application build does not start.
+- Source-finalization candidate `feef59ea75` combines that verifier correction
+  with actual Running completion of original standalone-source retirement.
+  Only the original registered publication, native inode observation, current
+  durable funding and physical executor can submit final removal. Correlated
+  acknowledgements remain with the actual source job, including after a waiter
+  disappears. Repeated calls use those acknowledgements; unavailable exchanges
+  require real recovery. Fresh charge is measured independently of removed
+  names, retaining original source descriptions, pins and holds. The native
+  controls cover early grace, foreign ownership, cancellation, repeated manifest
+  sources and live reads with policy held; a separate privileged helper observes
+  charge before and after actual unlinked descriptors close. Both frozen direct
+  build profiles, all 32 focused cases and the formatter pair pass. Native
+  qualification fails after the cancelled waiter, before final accounting;
+  application compilation and the full filesystem run do not start. Strict
+  Clippy retains nineteen earlier findings, and its separate diagnostic catches
+  a direct wall-clock call in the fixture. Correction `30dcca6427` uses the
+  existing clock adapter and exposes actual physical-owner refusals and final
+  actor output, retaining the real grace, deadlines and assertions. Its fresh
+  local checks and narrow native component run are underway. These controls are
+  not yet qualified; producer pin release, eviction, NativeReady and complete
+  host tasks remain open.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
   and all seven strict Clippy/documentation profiles pass. The interface,
   commit-path, status and schema gates pass on unchanged final source, including
@@ -9521,8 +9550,13 @@ Resumed qualification:
   original fault case is included, with no retry or skipped expiry assertion.
   The formatter pair and all seven strict Clippy/documentation profiles also
   pass on this revision. Both owning collector gates and the four surface gates
-  subsequently pass on unchanged source. Required application compilation is
-  running before SDK, feature-matrix and full current-trunk requalification.
+  subsequently pass on unchanged source. Required application compilation passes
+  with all 118 targets exactly matching the 29 declared Linux application
+  packages; this is compilation, not application test execution. The configured
+  SDK image, eleven actual SDK cases and four separate-process native controls
+  also pass. Independent review verifies all 3,338 crate inputs, final installed
+  image and every selected case log. The feature matrix is running before full
+  current-trunk requalification.
   The original failure remains retained; no matrix or aggregate success is
   claimed. The superseded `6cb1fcf235` aggregate was stopped after the policy
   fix and supplies no aggregate success.
