@@ -9474,11 +9474,24 @@ Resumed qualification:
   independent review verifies the archive, all 3,486 inputs and the same six
   privileged exclusions. Execution wrappers lost during the session transition
   leave their partial logs preserved; completed image evidence is retained and
-  unfinished checks resume on unchanged committed source. Standalone Cargo checks
-  are queued behind another worktree's live shared-target build; required
-  application target compilation is running. No new strict-lint or complete task
-  result is claimed. Full producer pin release, eviction, retirement and
+  unfinished checks resume on unchanged committed source. Both standalone Cargo
+  builds, all 21 focused cases and the formatter pair subsequently pass. Strict
+  Clippy retains exactly the nineteen earlier findings; the separate all-target
+  diagnostic passes without weakening source lint policy. Required application
+  target compilation is running. Full producer pin release, eviction, retirement and
   NativeReady remain pending.
+- Publisher ownership candidate `b4dba755cf` implements the ARCH-8
+  `publisher-sole-writer` gate by composing real publication ordering, native
+  descriptor handoff, distinct-identity directory controls and the production
+  publisher's confinement. The extended VM fixture requires seven measured
+  capability-free identities and exact permission refusals for six non-publisher
+  actors. Actual returned backing descriptors must reject writes and writable
+  reopening. The owning check independently binds complete image inputs and
+  original Cargo ELF bytes; it does not claim the broader PROTO-57 gate or full
+  host readiness. Both direct builds, all 32 focused cases and the formatter pair
+  pass. Strict Clippy retains the same nineteen findings. Native gate qualification
+  is queued behind the preceding application build; no native success or task
+  acceptance is claimed.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
   and all seven strict Clippy/documentation profiles pass. The interface,
   commit-path, status and schema gates pass on unchanged final source, including
@@ -9506,11 +9519,21 @@ Resumed qualification:
   continuity controls pass in 320.771 seconds on the failed profile; the
   original fault case is included, with no retry or skipped expiry assertion.
   The formatter pair and all seven strict Clippy/documentation profiles also
-  pass on this revision. Its owning collector gates are running before surface,
-  application, SDK, feature-matrix and full current-trunk requalification.
+  pass on this revision. Both owning collector gates and the four surface gates
+  subsequently pass on unchanged source. Required application compilation is
+  running before SDK, feature-matrix and full current-trunk requalification.
   The original failure remains retained; no matrix or aggregate success is
   claimed. The superseded `6cb1fcf235` aggregate was stopped after the policy
   fix and supplies no aggregate success.
+- Packaging candidate `c2ddbe5db3` incorporates the current accepted trunk into
+  the preserved module branch. Review covers all five changed files against
+  PKG-8 and PKG-10: declarative feature organization, role unit rendering and one
+  structured TOML configuration. These requirements do not require implementing
+  every role runtime in this task; broader deployment remains separately
+  unqualified. The owning module gate and formatter pair pass on unchanged
+  source; the complete current-trunk aggregate is queued before a task merge.
+  There are no Rust, dependency,
+  specification or frozen-interface changes relative to the accepted trunk.
 
 All five T2 task checkboxes remain open. The transport and cache results above
 accept components only. Complete manifest reuse and retirement, full host
