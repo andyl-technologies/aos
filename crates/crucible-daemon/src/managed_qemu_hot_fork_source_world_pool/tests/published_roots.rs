@@ -613,3 +613,43 @@ fn anchor_at_an_invalidated_root_is_refused_not_counted_as_retained() {
     // The abandoned root's authority stays in quarantine, not in the pool.
     assert!(pool.orderly_shutdown().is_err());
 }
+
+fn attempt_key(index: u32) -> crate::AttemptExecutionKey {
+    let attempt = crucible_campaign::AttemptId::parse(&format!(
+        "crucible.campaign.attempt@campaign-fact.9.{index:08x}{}",
+        "00".repeat(28)
+    ))
+    .expect("attempt id");
+    crate::AttemptExecutionKey::new(lineage_id(0x61), attempt)
+}
+
+/// Each attempt anchors once; a bounded memory forgets only the oldest
+/// claims, so at worst one long-past attempt could anchor once more.
+#[test]
+fn anchor_claims_are_once_per_attempt_and_bounded() {
+    let mut source = advanced_source("anchor.claims");
+    let limits = scaled_limits(&mut source, 1, 4, 1);
+    source.retire().expect("retire sizing source");
+    let pool = SharedManagedQemuHotForkSourceWorldPool::new(
+        ManagedQemuHotForkSourceWorldPool::open(
+            limits,
+            ReapingDemotionSink,
+            MemoryHotCheckpointFallbackRetentionStore::new(),
+        )
+        .expect("managed source-world pool"),
+    );
+    let sink = ManagedQemuPublishedRootSink::new(pool.clone(), HotCheckpointHotnessSignals::new());
+
+    assert!(sink.claim_anchor(attempt_key(0)));
+    assert!(!sink.claim_anchor(attempt_key(0)));
+    assert!(sink.claim_anchor(attempt_key(1)));
+
+    // 4096 claims are remembered; the next one forgets attempt 0 first.
+    for index in 2..=4096 {
+        assert!(sink.claim_anchor(attempt_key(index)));
+    }
+    assert!(!sink.claim_anchor(attempt_key(1)));
+    assert!(sink.claim_anchor(attempt_key(0)));
+    assert!(!sink.claim_anchor(attempt_key(4096)));
+    pool.orderly_shutdown().expect("nothing retained");
+}

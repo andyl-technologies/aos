@@ -51,7 +51,7 @@ use crate::qemu_hot_fork_source_capture::{
     AuthenticatedPublishedRootQemuHotForkSource, QemuPublishedRootOrigin,
     QemuPublishedRootProvenance,
 };
-use crate::{AttemptExecutionDisposition, QemuHotForkSourceWorldKey};
+use crate::{AttemptExecutionDisposition, AttemptExecutionKey, QemuHotForkSourceWorldKey};
 
 /// Outcome of settling a stopped world's final boundary without teardown.
 #[derive(Debug, PartialEq, Eq)]
@@ -144,6 +144,15 @@ pub(crate) trait QemuPublishedRootSink: Send + Sync {
     /// serve it nor accept a new root. Sinks that cannot read the pool answer
     /// [`QemuPublishedRootState::Unusable`], which declines.
     fn root_state(&self, key: &QemuHotForkSourceWorldKey) -> QemuPublishedRootState;
+
+    /// Claims `attempt`'s only anchored execution, returning whether it was free.
+    ///
+    /// An admitted anchor ends its execution as retryable so the attempt runs
+    /// again with a full budget from the kept root. The claim keeps that
+    /// from repeating: an attempt that already anchored once runs thin when
+    /// hot fork still declines. Claims span the sink's executions, not one
+    /// runner, because a requeued attempt may land on any worker.
+    fn claim_anchor(&self, attempt: AttemptExecutionKey) -> bool;
 
     /// Admits one authenticated root, retiring it when policy rejects it.
     ///

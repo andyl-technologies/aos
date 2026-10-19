@@ -7,18 +7,27 @@ use super::*;
 use crate::qemu_hot_first_router::QemuHotFirstExecutionRouterError;
 use crate::{QemuAnchorRootMaterializer, QemuAnchorRootOutcome};
 
-/// Hot factory that declines or starts at a scripted root, call by call.
+/// One scripted hot-fork start.
+#[derive(Clone, Copy)]
+enum Start {
+    Decline,
+    /// Start from a root this many quanta in.
+    At(u64),
+    Fail(fn(&'static str) -> AttemptWorkerFailure<&'static str>),
+}
+
+/// Hot factory that declines, starts, or fails as scripted, call by call.
 struct ScriptedStartFactory {
     world: SuffixWorld,
-    /// Root quanta for each successive start; `None` declines.
-    starts: VecDeque<Option<u64>>,
+    /// Each successive start; an exhausted script declines.
+    starts: VecDeque<Start>,
     calls: Arc<AtomicUsize>,
     observations: SuffixObservations,
 }
 
 impl QemuHotForkWorldLifecycleFactory for ScriptedStartFactory {
     type Lifecycle = SuffixLifecycle;
-    type Error = Infallible;
+    type Error = &'static str;
 
     fn try_start(
         &mut self,
@@ -27,15 +36,18 @@ impl QemuHotForkWorldLifecycleFactory for ScriptedStartFactory {
     ) -> Result<QemuHotForkWorldLifecycleStart<Self::Lifecycle>, AttemptWorkerFailure<Self::Error>>
     {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        Ok(match self.starts.pop_front().flatten() {
-            Some(quanta) => QemuHotForkWorldLifecycleStart::Started(self.world.lifecycle_at(
-                quanta,
-                QemuHotForkStartOrigin::Exact,
-                context.runtime_basis(),
-                &self.observations,
+        match self.starts.pop_front().unwrap_or(Start::Decline) {
+            Start::Decline => Ok(QemuHotForkWorldLifecycleStart::Declined),
+            Start::At(quanta) => Ok(QemuHotForkWorldLifecycleStart::Started(
+                self.world.lifecycle_at(
+                    quanta,
+                    QemuHotForkStartOrigin::Exact,
+                    context.runtime_basis(),
+                    &self.observations,
+                ),
             )),
-            None => QemuHotForkWorldLifecycleStart::Declined,
-        })
+            Start::Fail(failure) => Err(failure("scripted hot start failure")),
+        }
     }
 
     fn recover(&mut self, _lifecycle: Self::Lifecycle) -> Result<(), Self::Lifecycle> {
@@ -48,9 +60,10 @@ impl QemuHotForkWorldLifecycleFactory for ScriptedStartFactory {
     }
 }
 
-/// Lower tier with a scripted anchor answer and a thin replay that only counts.
+/// Lower tier with scripted anchor answers and a thin replay that only counts.
 struct AnchoringFallback {
-    anchor: QemuAnchorRootOutcome,
+    /// Each successive anchor answer; an exhausted script declines.
+    anchors: VecDeque<QemuAnchorRootOutcome>,
     /// Quanta the anchoring replay charges to the execution.
     anchor_quanta: u64,
     anchor_calls: Arc<AtomicUsize>,
@@ -82,7 +95,10 @@ impl QemuAnchorRootMaterializer for AnchoringFallback {
                 .charge_execution_quantum()
                 .map_err(|_error| AttemptWorkerFailure::Terminal("anchor budget"))?;
         }
-        Ok(self.anchor)
+        Ok(self
+            .anchors
+            .pop_front()
+            .unwrap_or(QemuAnchorRootOutcome::Declined("anchor-script-exhausted")))
     }
 }
 
@@ -97,8 +113,8 @@ type ScriptedRouter =
     QemuHotFirstExecutionRouter<ScriptedStartFactory, QemuFreshModeledDriver, AnchoringFallback>;
 
 fn router(
-    starts: &[Option<u64>],
-    anchor: QemuAnchorRootOutcome,
+    starts: &[Start],
+    anchors: &[QemuAnchorRootOutcome],
     anchor_quanta: u64,
 ) -> (ScriptedRouter, RouteCounts, CrucibleAttemptExecution) {
     let case = suffix_case(Edge::Scheduler);
@@ -117,7 +133,7 @@ fn router(
         QemuFreshModeledDriver::new(),
     );
     let fallback = AnchoringFallback {
-        anchor,
+        anchors: anchors.iter().copied().collect(),
         anchor_quanta,
         anchor_calls: Arc::clone(&counts.anchors),
         thin_calls: Arc::clone(&counts.thin),
@@ -137,15 +153,29 @@ fn loads(counts: &RouteCounts) -> [usize; 3] {
     ]
 }
 
-/// After an admitted anchor the attempt itself runs hot from the new root.
+/// The anchored execution ends retryable; the requeued one runs hot from
+/// the kept root.
 #[test]
-fn router_keeps_an_anchor_then_runs_the_attempt_hot() {
-    // The retry starts from a root at the attempt's parent, two quanta in.
-    let (mut router, counts, input) = router(&[None, Some(2)], QemuAnchorRootOutcome::Admitted, 0);
+fn router_keeps_an_anchor_then_runs_the_attempt_hot_when_requeued() {
+    // The requeued start is from a root at the attempt's parent, two quanta in.
+    let (mut router, counts, input) = router(
+        &[Start::Decline, Start::At(2)],
+        &[QemuAnchorRootOutcome::Admitted],
+        0,
+    );
+
+    let anchored = router
+        .execute(&input, &execution_context(&input, 0xa1))
+        .expect_err("an anchored execution ends retryable");
+    assert!(matches!(
+        anchored,
+        AttemptWorkerFailure::Retryable(QemuHotFirstExecutionRouterError::AnchorRootAdmitted)
+    ));
+    assert_eq!(loads(&counts), [1, 1, 0]);
 
     let outcome = router
         .execute(&input, &execution_context(&input, 0xa1))
-        .expect("anchored hot execution");
+        .expect("requeued hot execution");
 
     assert_eq!(
         outcome.materialization(),
@@ -162,8 +192,11 @@ fn router_replays_thin_when_anchoring_declines() {
         "anchor-parent-not-network-branch",
         "anchor-root-invalidated",
     ] {
-        let (mut router, counts, input) =
-            router(&[None], QemuAnchorRootOutcome::Declined(reason), 0);
+        let (mut router, counts, input) = router(
+            &[Start::Decline],
+            &[QemuAnchorRootOutcome::Declined(reason)],
+            0,
+        );
 
         let failure = router
             .execute(&input, &execution_context(&input, 0xa2))
@@ -182,45 +215,100 @@ fn router_replays_thin_when_anchoring_declines() {
     }
 }
 
-/// A hot retry that declines after anchoring falls back to thin replay
-/// while the execution can still afford the anchored prefix again.
+/// An anchored execution never continues, however little of its budget the
+/// anchoring replay spent, so it cannot turn a thin pass into a refusal.
+/// When hot fork still declines on the requeued execution, the spent anchor
+/// claim (or an invalidated root) sends the attempt to thin replay.
 #[test]
-fn router_replays_thin_after_an_anchor_when_budget_remains() {
-    let (mut router, counts, input) = router(&[None, None], QemuAnchorRootOutcome::Admitted, 8);
+fn router_never_continues_an_anchored_execution() {
+    for (anchor_quanta, requeued) in [
+        (8, "anchor-already-attempted"),
+        (40, "anchor-root-invalidated"),
+    ] {
+        let (mut router, counts, input) = router(
+            &[Start::Decline, Start::Decline],
+            &[
+                QemuAnchorRootOutcome::Admitted,
+                QemuAnchorRootOutcome::Declined(requeued),
+            ],
+            anchor_quanta,
+        );
 
-    let failure = router
-        .execute(&input, &execution_context(&input, 0xa3))
-        .expect_err("the counting thin tier fails");
+        let anchored = router
+            .execute(&input, &execution_context(&input, 0xa3))
+            .expect_err("an anchored execution ends retryable");
+        assert!(
+            matches!(
+                anchored,
+                AttemptWorkerFailure::Retryable(
+                    QemuHotFirstExecutionRouterError::AnchorRootAdmitted
+                )
+            ),
+            "{requeued}"
+        );
+        assert_eq!(loads(&counts), [1, 1, 0], "{requeued}");
 
-    assert!(matches!(
-        failure,
-        AttemptWorkerFailure::Terminal(QemuHotFirstExecutionRouterError::Fallback(_))
-    ));
-    assert_eq!(loads(&counts), [2, 1, 1]);
+        let failure = router
+            .execute(&input, &execution_context(&input, 0xa3))
+            .expect_err("the counting thin tier fails");
+        assert!(
+            matches!(
+                failure,
+                AttemptWorkerFailure::Terminal(QemuHotFirstExecutionRouterError::Fallback(
+                    "thin replay ran"
+                ))
+            ),
+            "{requeued}"
+        );
+        assert_eq!(loads(&counts), [2, 2, 1], "{requeued}");
+    }
 }
 
-/// When anchoring spent too much of the budget for a second replay, the
-/// attempt retries instead, and the retry finds the kept root.
+/// Terminal, canceled, and retryable hot failures on the execution after an
+/// admitted anchor propagate unchanged, without anchoring or thin replay.
 #[test]
-fn router_retries_instead_of_replaying_an_anchored_prefix_twice() {
-    // The fixture context allows 64 quanta; anchoring spends 40 of them.
-    let (mut router, counts, input) = router(&[None, None], QemuAnchorRootOutcome::Admitted, 40);
+fn router_propagates_hot_failures_after_an_anchor_unchanged() {
+    let failures: [(&str, Start); 3] = [
+        ("terminal", Start::Fail(AttemptWorkerFailure::Terminal)),
+        ("canceled", Start::Fail(AttemptWorkerFailure::Canceled)),
+        ("retryable", Start::Fail(AttemptWorkerFailure::Retryable)),
+    ];
 
-    let failure = router
-        .execute(&input, &execution_context(&input, 0xa4))
-        .expect_err("an unaffordable second replay is refused");
+    for (kind, start) in failures {
+        let (mut router, counts, input) = router(
+            &[Start::Decline, start],
+            &[QemuAnchorRootOutcome::Admitted],
+            40,
+        );
+        let _anchored = router
+            .execute(&input, &execution_context(&input, 0xa4))
+            .expect_err("an anchored execution ends retryable");
 
-    assert!(matches!(
-        failure,
-        AttemptWorkerFailure::Retryable(QemuHotFirstExecutionRouterError::AnchorRetryUnaffordable)
-    ));
-    assert_eq!(loads(&counts), [2, 1, 0]);
+        let failure = router
+            .execute(&input, &execution_context(&input, 0xa4))
+            .expect_err("the hot failure propagates");
+
+        let classified = match failure {
+            AttemptWorkerFailure::Terminal(QemuHotFirstExecutionRouterError::HotFork(_)) => {
+                "terminal"
+            }
+            AttemptWorkerFailure::Canceled(QemuHotFirstExecutionRouterError::HotFork(_)) => {
+                "canceled"
+            }
+            AttemptWorkerFailure::Retryable(QemuHotFirstExecutionRouterError::HotFork(_)) => {
+                "retryable"
+            }
+            other => panic!("{kind}: unexpected routed failure {other:?}"),
+        };
+        assert_eq!(classified, kind);
+        assert_eq!(loads(&counts), [2, 1, 0], "{kind}");
+    }
 }
 
 /// Resumes and captures bypass hot fork, and with it anchoring.
 #[test]
 fn router_never_anchors_a_resumed_attempt() {
-    let (mut router, counts, input) = router(&[], QemuAnchorRootOutcome::Admitted, 0);
+    let (mut router, counts, input) = router(&[], &[QemuAnchorRootOutcome::Admitted], 0);
     let checkpoint = crucible_campaign::ExactCheckpointId::parse(&format!(
         "crucible.executor.exact-checkpoint-root@exact-manifest.5.{}",
         "a5".repeat(32)

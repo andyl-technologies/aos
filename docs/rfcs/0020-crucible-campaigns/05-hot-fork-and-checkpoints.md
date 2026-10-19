@@ -891,8 +891,13 @@ may stop its replay there, check that every VM is parked with quiet network
 queues and an exact-ready boundary, prove by a non-destructive drain that no
 entries remain, and keep the world as a published-boundary root at `A`. The
 root's thin fallback names `A`'s stored artifact. It is admitted only when the
-pool can also hold one child, and the attempt itself then runs as that root's
-hot child; any refusal leaves the attempt to thin replay. Such a root is an
+pool can also hold one child. An admitted anchor ends its execution as
+retryable, because the anchoring replay already spent part of that execution's
+budget; the requeued execution forks the attempt from the root with a full
+budget, spending no more than thin replay would. Each attempt anchors at most
+once, so a requeued execution that still cannot fork replays thin. A root
+coordinate held by an invalidated root refuses the anchor before any replay,
+and any other refusal also leaves the attempt to thin replay. Such a root is an
 anchor: it is created for the branch in hand rather than after a disposition,
 and it records how it was produced and the replay pause mode of its prefix.
 
@@ -953,7 +958,9 @@ wire, or shared-memory format.
   output, campaign network queues empty, and a replay proof matching the
   prepared continuation. Its thin fallback names `A`'s stored artifact and is
   persisted before reuse. Creating it MUST NOT change any campaign fact, and
-  any failure leaves the attempt to thin replay.
+  any failure leaves the attempt to thin replay. The execution that creates
+  it MUST NOT go on to run the attempt; at most one execution per attempt may
+  create one, and an invalidated root MUST NOT count as retained.
 - **[HFORK-26]** A branch whose parent `G` has no exact source MAY fork from
   the deepest retained published root `A` whose schedule is a strict prefix of
   `G`, only when every suffix decision is replayed from attempt input by the

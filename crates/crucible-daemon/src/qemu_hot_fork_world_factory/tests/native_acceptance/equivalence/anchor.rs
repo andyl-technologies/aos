@@ -11,7 +11,8 @@
 //!
 //! N and C each run once by thin replay and once through the production
 //! hot-first router over a managed pool that starts empty. N finds no root,
-//! so the router keeps an anchor root at A and runs N as its hot child. C has
+//! so the router keeps an anchor root at A and ends that execution
+//! retryable; N's requeued execution runs as the anchor's hot child. C has
 //! no root at G and runs as a child of the anchor, replaying the suffix from
 //! A to G inside the child. Each pair must prepare equal semantic results:
 //! the same child configuration, discoveries, measurements, properties,
@@ -342,7 +343,8 @@ fn production_anchor_and_ancestor_hot_forks_match_thin_replay() {
         NetworkFaultPhase::First
     );
 
-    // N: the router finds no root, keeps one at the park, and forks N from it.
+    // N: the router finds no root and keeps one at the park, ending that
+    // execution retryable; the requeued execution forks N from the root.
     let (thin_network, tier) = realize(
         &mut thin,
         &network_branch,
@@ -350,6 +352,16 @@ fn production_anchor_and_ancestor_hot_forks_match_thin_replay() {
         "network-thin",
     );
     assert_eq!(tier, CrucibleMaterializationTier::ThinReplay);
+    let anchored = routed
+        .execute(
+            &network_branch,
+            &native_execution_context(&network_branch, 0xa2),
+        )
+        .expect_err("the anchored execution ends retryable");
+    assert!(
+        matches!(anchored, AttemptWorkerFailure::Retryable(_)),
+        "network-anchor: {anchored:?}"
+    );
     let (routed_network, tier) = realize(
         &mut routed,
         &network_branch,

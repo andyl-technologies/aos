@@ -115,6 +115,10 @@ impl QemuPublishedRootSink for RecordingRootSink {
         QemuPublishedRootState::Absent
     }
 
+    fn claim_anchor(&self, _attempt: AttemptExecutionKey) -> bool {
+        true
+    }
+
     fn admit(
         &self,
         root: AuthenticatedPublishedRootQemuHotForkSource,

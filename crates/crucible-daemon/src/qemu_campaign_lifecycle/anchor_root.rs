@@ -72,6 +72,8 @@ struct QemuAnchorPlan {
     sink: Arc<dyn QemuPublishedRootSink>,
     /// The pool coordinate a root at `anchor` occupies.
     key: crate::QemuHotForkSourceWorldKey,
+    /// The attempt across executions, for its one anchor claim.
+    attempt: crate::AttemptExecutionKey,
     /// The branch parent `A`, where replay stops.
     anchor: Configuration,
     /// The stored artifact that published `A`, the root's thin fallback.
@@ -108,7 +110,10 @@ where
         };
         // The pool is asked before any replay. An invalidated root keeps its
         // coordinate, so replaying would only end in a refused admission; a
-        // live root already serves the attempt.
+        // live root already serves the attempt. Every path to an admitted
+        // outcome spends the attempt's one anchor claim, so an attempt that
+        // still declines hot after anchoring runs thin instead of anchoring
+        // again.
         match plan.sink.root_state(&plan.key) {
             QemuPublishedRootState::Unusable => {
                 return Ok(declined(
@@ -118,6 +123,13 @@ where
                 ));
             }
             QemuPublishedRootState::Live => {
+                if !plan.sink.claim_anchor(plan.attempt) {
+                    return Ok(declined(
+                        input,
+                        Some(&plan.anchor),
+                        "anchor-already-attempted",
+                    ));
+                }
                 record_anchor_decision(
                     input,
                     Some(&plan.anchor),
@@ -130,6 +142,13 @@ where
         }
         if !plan.sink.may_admit() {
             return Ok(declined(input, Some(&plan.anchor), "anchor-pool-full"));
+        }
+        if !plan.sink.claim_anchor(plan.attempt) {
+            return Ok(declined(
+                input,
+                Some(&plan.anchor),
+                "anchor-already-attempted",
+            ));
         }
 
         self.lifecycles.configure_attempt_continuations(&[]);
@@ -311,6 +330,7 @@ fn anchor_plan(
             parent.id(),
             crucible_campaign::ExecutorCompatibilityProfile::from_lineage(input.lineage()),
         ),
+        attempt: basis.key(),
         anchor: parent.clone(),
         published,
         selected: selected.clone(),

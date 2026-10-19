@@ -298,6 +298,7 @@ impl QemuFreshAttemptLifecycleFactory for AnchorFactory {
 struct RecordingAnchorSink {
     may_admit: bool,
     state: QemuPublishedRootState,
+    claimed: Mutex<Vec<AttemptExecutionKey>>,
     outcome: QemuPublishedRootAdmission,
     admitted: Mutex<
         Vec<(
@@ -313,6 +314,7 @@ impl RecordingAnchorSink {
         Arc::new(Self {
             may_admit: true,
             state: QemuPublishedRootState::Absent,
+            claimed: Mutex::new(Vec::new()),
             outcome,
             admitted: Mutex::new(Vec::new()),
         })
@@ -326,6 +328,15 @@ impl QemuPublishedRootSink for RecordingAnchorSink {
 
     fn root_state(&self, _key: &QemuHotForkSourceWorldKey) -> QemuPublishedRootState {
         self.state
+    }
+
+    fn claim_anchor(&self, attempt: AttemptExecutionKey) -> bool {
+        let mut claimed = self.claimed.lock().expect("anchor claims");
+        if claimed.contains(&attempt) {
+            return false;
+        }
+        claimed.push(attempt);
+        true
     }
 
     fn admit(
@@ -660,6 +671,7 @@ fn anchor_preconditions_refuse_before_any_lifecycle_effect() {
             Arc::new(RecordingAnchorSink {
                 may_admit,
                 state: QemuPublishedRootState::Absent,
+                claimed: Mutex::new(Vec::new()),
                 outcome: QemuPublishedRootAdmission::Admitted,
                 admitted: Mutex::new(Vec::new()),
             })
@@ -706,6 +718,7 @@ fn anchor_reads_the_root_coordinate_before_any_replay() {
         let sink = Arc::new(RecordingAnchorSink {
             may_admit: false,
             state,
+            claimed: Mutex::new(Vec::new()),
             outcome: QemuPublishedRootAdmission::Admitted,
             admitted: Mutex::new(Vec::new()),
         });
@@ -724,6 +737,45 @@ fn anchor_reads_the_root_coordinate_before_any_replay() {
         assert!(effects(&order).is_empty(), "{state:?} started a lifecycle");
         assert!(sink.admitted.lock().expect("admitted anchors").is_empty());
     }
+}
+
+/// An attempt anchors once: after an anchored replay or a retained root,
+/// its next execution declines before any lifecycle effect.
+#[test]
+fn anchor_claim_is_spent_once_per_attempt() {
+    let mut case = anchor_case();
+    let sink = RecordingAnchorSink::answering(QemuPublishedRootAdmission::Admitted);
+    let order = Order::default();
+    let world = case.world.take().expect("parent world");
+    let mut runner = anchor_runner(
+        &order,
+        anchor_lifecycle(&order, &case.boundary),
+        AnchorPreparation::Prepare(Box::new(world)),
+        Some(Arc::clone(&sink)),
+    );
+    let first = runner
+        .materialize_anchor_root(&case.input, &anchor_context(&case.input))
+        .expect("anchoring succeeds");
+    assert_eq!(first, QemuAnchorRootOutcome::Admitted);
+
+    // The requeued execution may land on another runner over the same sink.
+    let order = Order::default();
+    let mut runner = anchor_runner(
+        &order,
+        anchor_lifecycle(&order, &case.boundary),
+        AnchorPreparation::Recover,
+        Some(Arc::clone(&sink)),
+    );
+    let requeued = runner
+        .materialize_anchor_root(&case.input, &anchor_context(&case.input))
+        .expect("a spent claim is a decline");
+
+    assert_eq!(
+        requeued,
+        QemuAnchorRootOutcome::Declined("anchor-already-attempted")
+    );
+    assert!(effects(&order).is_empty());
+    assert_eq!(sink.admitted.lock().expect("admitted anchors").len(), 1);
 }
 
 /// One change to an otherwise admissible anchoring lifecycle.

@@ -16,15 +16,25 @@
 //! a template slot. Only a live equal root counts as already retained; a
 //! coordinate held by an invalidated root refuses the anchor.
 
+use std::collections::{BTreeSet, VecDeque};
+
 use super::*;
 use crate::qemu_hot_fork_source_capture::AuthenticatedPublishedRootQemuHotForkSource;
 use crate::{
-    QemuPublishedRootAdmission, QemuPublishedRootRetirementError, QemuPublishedRootSink,
-    QemuPublishedRootState,
+    AttemptExecutionKey, QemuPublishedRootAdmission, QemuPublishedRootRetirementError,
+    QemuPublishedRootSink, QemuPublishedRootState,
 };
 
 /// Longest diagnostic recorded for one rejected root.
 const MAX_REJECTION_DIAGNOSTIC_CHARS: usize = 512;
+
+/// Most anchor claims a sink remembers before forgetting the oldest.
+///
+/// A claim matters only between an anchored execution and the requeued
+/// execution that follows it. Forgetting a claim can at worst let one old
+/// attempt anchor once more; it can never loop, because each further
+/// anchored execution needs a fresh claim.
+const MAX_REMEMBERED_ANCHOR_CLAIMS: usize = 4096;
 
 impl<D, R> ManagedQemuHotForkSourceWorldPool<D, R>
 where
@@ -237,6 +247,7 @@ where
 {
     pool: SharedManagedQemuHotForkSourceWorldPool<D, R>,
     signals: HotCheckpointHotnessSignals,
+    claims: Mutex<AnchorClaims>,
 }
 
 impl<D, R> ManagedQemuPublishedRootSink<D, R>
@@ -249,7 +260,40 @@ where
         pool: SharedManagedQemuHotForkSourceWorldPool<D, R>,
         signals: HotCheckpointHotnessSignals,
     ) -> Self {
-        Self { pool, signals }
+        Self {
+            pool,
+            signals,
+            claims: Mutex::new(AnchorClaims::new()),
+        }
+    }
+}
+
+/// Bounded, oldest-first memory of attempts that already anchored once.
+struct AnchorClaims {
+    order: VecDeque<AttemptExecutionKey>,
+    claimed: BTreeSet<AttemptExecutionKey>,
+}
+
+impl AnchorClaims {
+    const fn new() -> Self {
+        Self {
+            order: VecDeque::new(),
+            claimed: BTreeSet::new(),
+        }
+    }
+
+    /// Records `attempt`, returning whether it was not already claimed.
+    fn claim(&mut self, attempt: AttemptExecutionKey) -> bool {
+        if !self.claimed.insert(attempt) {
+            return false;
+        }
+        self.order.push_back(attempt);
+        if self.order.len() > MAX_REMEMBERED_ANCHOR_CLAIMS
+            && let Some(oldest) = self.order.pop_front()
+        {
+            self.claimed.remove(&oldest);
+        }
+        true
     }
 }
 
@@ -265,6 +309,13 @@ where
 
     fn root_state(&self, key: &QemuHotForkSourceWorldKey) -> QemuPublishedRootState {
         self.pool.published_root_state(key)
+    }
+
+    fn claim_anchor(&self, attempt: AttemptExecutionKey) -> bool {
+        // A poisoned claim set cannot prove the attempt is unclaimed.
+        self.claims
+            .lock()
+            .is_ok_and(|mut claims| claims.claim(attempt))
     }
 
     fn admit(

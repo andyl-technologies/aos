@@ -6,17 +6,31 @@
 //! reconciliation ownership until completion.
 //!
 //! Between a hot decline and thin replay, the lower tier may keep an anchor
-//! root at the attempt's network fault branch parent. Once one is admitted
-//! the router tries hot fork exactly once more:
+//! root at the attempt's network fault branch parent. Once one is admitted,
+//! the execution ends as retryable without running anything else:
 //!
 //! ```text
-//! hot --executed-------------------------------> HotFork
-//!  `--declined--> anchor --admitted--> hot -----> HotFork
-//!                   |                   `--declined or failed:
-//!                   |                        budget left  --> thin (or the failure)
-//!                   |                        budget spent --> Retryable
+//! hot --executed or failed---------------------> HotFork (or the failure)
+//!  `--declined--> anchor --admitted-------------> Retryable
 //!                   `--declined-------------------> thin
 //! ```
+//!
+//! # Anchored executions
+//!
+//! Anchoring replays the attempt's prefix to its parent and charges those
+//! quanta to the current execution. Running the attempt after that, hot or
+//! thin, in the same execution could exhaust a budget the attempt would have
+//! passed with thin replay alone and turn it into a terminal resource
+//! refusal. The router therefore never continues an anchored execution. The
+//! requeued execution starts with a full budget and finds the kept root, so
+//! its hot child spends only the attempt's own quanta, never more than thin
+//! replay of the whole attempt would.
+//!
+//! The requeued execution routes like any other, and every hot failure
+//! there, terminal, canceled, or retryable, propagates unchanged. Each attempt
+//! anchors at most once: the anchor tier claims the attempt before it replays
+//! or reports a retained root, so when hot fork declines again (the root was
+//! invalidated or could not be leased) the attempt replays thin.
 
 use crucible_campaign::AttemptStartMode;
 
@@ -81,9 +95,15 @@ where
     D: QemuFreshAttemptDriver,
     R: QemuAnchorRootMaterializer,
 {
-    /// Runs the attempt hot, keeping an anchor root first when that helps.
+    /// Runs the attempt hot, or keeps an anchor root for its next execution.
     ///
     /// Returns `None` when the attempt should replay thin.
+    ///
+    /// # Errors
+    ///
+    /// Returns every hot or anchoring failure unchanged, and
+    /// [`QemuHotFirstExecutionRouterError::AnchorRootAdmitted`] as retryable
+    /// once an anchor root is kept.
     fn try_hot_fork(
         &mut self,
         input: &CrucibleAttemptExecution,
@@ -93,33 +113,18 @@ where
             return Ok(Some(outcome));
         }
 
-        let before = context.consumed_execution_quanta();
         let anchored = self
             .fallback
             .materialize_anchor_root(input, context)
             .map_err(|failure| failure.map(QemuHotFirstExecutionRouterError::Fallback))?;
-        if let QemuAnchorRootOutcome::Declined(_) = anchored {
-            return Ok(None);
+        match anchored {
+            QemuAnchorRootOutcome::Declined(_) => Ok(None),
+            // The anchoring replay already spent part of this budget; the
+            // attempt runs again from the kept root with a full one.
+            QemuAnchorRootOutcome::Admitted => Err(AttemptWorkerFailure::Retryable(
+                QemuHotFirstExecutionRouterError::AnchorRootAdmitted,
+            )),
         }
-
-        // Anchoring charged its replay to this execution. A second full replay
-        // must still fit, or the attempt retries and forks from the kept root.
-        let from_anchor = self.hot_attempt(input, context);
-        if matches!(from_anchor, Ok(Some(_))) {
-            return from_anchor;
-        }
-        let after = context.consumed_execution_quanta();
-        let anchor_cost = after.saturating_sub(before);
-        let remaining = context
-            .resources()
-            .maximum_execution_quanta()
-            .saturating_sub(after);
-        if remaining <= anchor_cost {
-            return Err(AttemptWorkerFailure::Retryable(
-                QemuHotFirstExecutionRouterError::AnchorRetryUnaffordable,
-            ));
-        }
-        from_anchor
     }
 
     /// Runs one hot-fork attempt; `None` is an explicit decline.
@@ -151,10 +156,10 @@ pub(crate) enum QemuHotFirstExecutionRouterError<H, R> {
     /// Exact-origin fallback execution failed.
     #[error("fallback QEMU execution failed")]
     Fallback(#[source] R),
-    /// An anchor root was kept, but the hot retry did not run and too little
-    /// of the execution budget remains to replay the anchored prefix again.
-    #[error("hot-first QEMU router kept an anchor root but cannot afford thin replay")]
-    AnchorRetryUnaffordable,
+    /// An anchor root was kept; the attempt runs again from it with a full
+    /// execution budget.
+    #[error("hot-first QEMU router kept an anchor root; the attempt runs again from it")]
+    AnchorRootAdmitted,
     /// Reconciliation arrived before any successful routed execution.
     #[error("hot-first QEMU router has no pending reconciliation")]
     NoPendingReconciliation,
