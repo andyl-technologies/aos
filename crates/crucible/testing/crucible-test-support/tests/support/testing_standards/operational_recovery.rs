@@ -17,6 +17,66 @@ struct Contract {
     expressions: &'static [(&'static str, usize)],
 }
 
+// The startup transcript is part of the same dispatcher custody contract.
+// These obligations retain typed work and independent Preparation outcomes;
+// rendering or physical closure cannot replace either saved result.
+const DISPATCHER_STARTUP_REQUIRED: &[&str] = &[
+    r#"struct DispatcherStartupHistory {
+    first: Option<DispatcherStartupFailure>,
+    post: Option<DispatcherStartupFailure>,
+}"#,
+    r#"enum DispatcherStartupFailure {
+    Original(ServiceBirthError),
+    Allocation(std::collections::TryReserveError),
+    Custody(&'static str),
+}"#,
+    r#"self.first = started.err(); self.post = post().err();"#,
+    r#"let started = self.wait_for_worker_startup();
+        let purpose = self.purpose.as_mut();
+        self.startup_history.observe(started, || {
+            purpose
+                .as_ref()
+                .ok_or(DispatcherStartupFailure::Custody(
+                    "Target dispatcher payer is absent",
+                ))?
+                .startup_wait_slice()
+                .map(|_| ())
+                .map_err(DispatcherStartupFailure::Original)
+        });
+        if let Some(purpose) = purpose {
+            purpose.release_startup_observation();
+        }
+        self.report_retirement_history()?;
+        self.phase = WorkerPhase::Running;"#,
+    r#".startup_wait_slice().map_err(DispatcherStartupFailure::Original)?;"#,
+    r#"if worker_startup_ready(state)? { return Ok(()); }"#,
+    r#"Some(Err(source)) => Err(DispatcherStartupFailure::Allocation(source.clone())),"#,
+    r#"(Some(first), Some(post)) => {
+        write!(formatter, "{first}; independent startup post: {post}")
+    }"#,
+    r#"if self.startup_history.has_failure() {
+            return Err(if panicked {
+                failure(
+                    &self.path,
+                    format_args!(
+                        "{}; Target dispatcher physically joined after worker panic",
+                        self.startup_history,
+                    ),
+                )
+            } else {
+                failure(&self.path, &self.startup_history)
+            });
+        }"#,
+    r#".checked_add(u64::try_from(std::mem::size_of::<Self>()).ok()?)?"#,
+];
+
+fn dispatcher_startup_is_bound(code: &str) -> bool {
+    let compact = compact_code(code);
+    DISPATCHER_STARTUP_REQUIRED
+        .iter()
+        .all(|requirement| compact.contains(&source_pattern(requirement)))
+}
+
 const CONTRACTS: &[Contract] = &[
     Contract {
         package: "crucible-store",
@@ -499,6 +559,118 @@ const CONTRACTS: &[Contract] = &[
     );
     drop(dispatcher);
     assert_descriptor_closed(descriptor, &expected);"#,
+            r#"fn failed_worker_startup_keeps_independent_original_post_after_physical_close()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crucible_host_resources::host_supervision::{
+        HostOperationBudgets, HostOperationClass, HostOperationState, HostOperationSupervisor,
+        HostSupervisionError,
+    };
+
+    let directory = tempfile::tempdir()?;
+    let state = mechanism_state(directory.path(), 1)?;
+    let descriptor = state._namespace.as_raw_fd();
+    let expected = fs::metadata(format!("/proc/self/fd/{descriptor}"))?;
+    let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)?;
+    let original = supervisor.begin(HostOperationClass::Preparation)?;
+    let initial = original.status()?;
+    let (published, ready) = std::sync::mpsc::sync_channel(0);
+    let worker_state = Arc::clone(&state);
+    let worker = thread::spawn(move || {
+        // The actual worker records a genuine Vec capacity refusal, not a
+        // fabricated Main/Target admission or a selected error response.
+        run(worker_state, usize::MAX);
+        published.send(()).unwrap();
+    });
+    ready.recv_timeout(original.wait_slice()?)?;
+    let mut dispatcher = TargetDispatcher {
+        purpose: None,
+        capacity: 1,
+        state: Some(state),
+        worker: Some(worker),
+        failed: true,
+        cleanup: None,
+        phase: WorkerPhase::Reserved,
+        worker_panic: Mutex::new(None),
+        startup_history: DispatcherStartupHistory::default(),
+        path: directory.path().to_owned(),
+    };
+
+    original.wait_slice()?;
+    let started = worker_startup_ready(dispatcher.state.as_ref().unwrap()).map(|_| ());
+    dispatcher.startup_history.observe(started, || {
+        supervisor.cancel().unwrap();
+        original
+            .wait_slice()
+            .map(|_| ())
+            .map_err(ServiceBirthError::from)
+            .map_err(DispatcherStartupFailure::Original)
+    });
+    assert!(matches!(
+        dispatcher.startup_history.first,
+        Some(DispatcherStartupFailure::Allocation(_))
+    ));
+    assert!(matches!(
+        dispatcher.startup_history.post,
+        Some(DispatcherStartupFailure::Original(
+            ServiceBirthError::Supervision(HostSupervisionError::Terminal {
+                state: HostOperationState::Canceled
+            })
+        ))
+    ));
+    let terminal = original.status()?;
+    assert_eq!(terminal.operation_id, initial.operation_id);
+    assert_eq!(terminal.class, initial.class);
+    assert_eq!(
+        terminal.started_policy_revision,
+        initial.started_policy_revision
+    );
+    assert_eq!(terminal.completed_work_units, initial.completed_work_units);
+    assert_eq!(terminal.state, HostOperationState::Canceled);
+    let first_report = dispatcher
+        .report_retirement_history()
+        .unwrap_err()
+        .to_string();
+    let first = dispatcher
+        .startup_history
+        .first
+        .as_ref()
+        .unwrap()
+        .to_string();
+    let post = dispatcher
+        .startup_history
+        .post
+        .as_ref()
+        .unwrap()
+        .to_string();
+    assert!(first_report.contains(&format!("{first}; independent startup post: {post}")));
+
+    // Historical failure does not prevent closing these actual component
+    // resources. No authenticated Main purpose exists or is invented here.
+    dispatcher.worker.take().unwrap().join().unwrap();
+    drop(dispatcher.state.take());
+    assert_descriptor_closed(descriptor, &expected);
+    assert!(dispatcher.worker.is_none());
+    assert!(dispatcher.state.is_none());
+    assert!(!dispatcher.is_physically_retired());
+    let final_report = dispatcher
+        .report_retirement_history()
+        .unwrap_err()
+        .to_string();
+    assert_eq!(final_report, first_report);
+    assert!(matches!(
+        dispatcher.startup_history.first,
+        Some(DispatcherStartupFailure::Allocation(_))
+    ));
+    assert!(matches!(
+        dispatcher.startup_history.post,
+        Some(DispatcherStartupFailure::Original(
+            ServiceBirthError::Supervision(HostSupervisionError::Terminal {
+                state: HostOperationState::Canceled
+            })
+        ))
+    ));
+    Ok(())
+}"#,
         ],
         identifiers: &[
             (
@@ -669,6 +841,19 @@ fn recovery_names_require_custody_and_reject_additional_attempts()
 fn dispatcher_recovery_requires_each_actual_custody_observation()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = super::super::super::workspace_root();
+    let implementation = std::fs::read_to_string(
+        root.join("crates/crucible/qemu/crucible-qemu-host/src/linux_cgroup/target_dispatcher.rs"),
+    )?;
+    let implementation = super::super::scrub_comments_and_strings(&implementation);
+    assert!(dispatcher_startup_is_bound(&implementation));
+    for requirement in DISPATCHER_STARTUP_REQUIRED {
+        let changed = remove_obligation(&implementation, &source_pattern(requirement));
+        assert!(
+            !dispatcher_startup_is_bound(&changed),
+            "removed startup custody obligation was admitted: {requirement}"
+        );
+    }
+
     let source = std::fs::read_to_string(root.join(
         "crates/crucible/qemu/crucible-qemu-host/src/linux_cgroup/target_dispatcher/tests.rs",
     ))?;
