@@ -19,9 +19,9 @@ use std::{
 /// Retains a generated directory name and any descriptor acquired after its effect.
 pub(super) struct DirectoryProgress {
     /// Exact fixed class selecting the retained layout root.
-    pub(super) label: &'static str,
+    pub(super) _label: &'static str,
     /// Generated relative components known before attempting mkdir.
-    pub(super) parts: Vec<String>,
+    pub(super) _parts: Vec<String>,
     /// Actual inode retained immediately after successful open.
     pub(super) retained: Option<File>,
     /// Records actual successful mkdir, never an inferred existence claim.
@@ -119,8 +119,8 @@ pub(super) fn parent(
     let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
     let mut directory = File::from(fs::openat(root, ".", flags, Mode::empty())?);
     progress.push(DirectoryProgress {
-        label,
-        parts: Vec::new(),
+        _label: label,
+        _parts: Vec::new(),
         retained: Some(directory.try_clone()?),
         created: false,
     });
@@ -130,8 +130,8 @@ pub(super) fn parent(
     for part in parts {
         path.push((*part).to_owned());
         progress.push(DirectoryProgress {
-            label,
-            parts: path.clone(),
+            _label: label,
+            _parts: path.clone(),
             retained: None,
             created: false,
         });

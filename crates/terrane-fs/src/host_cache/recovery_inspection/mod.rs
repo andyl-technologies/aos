@@ -120,9 +120,4 @@ impl NativeRecoveryInspector {
         }
         Ok(())
     }
-
-    /// Borrows the real prepared session for registered readonly recovery commands.
-    pub(crate) fn session(&self) -> &Arc<Client<HostDomainLocation>> {
-        &self.session
-    }
 }

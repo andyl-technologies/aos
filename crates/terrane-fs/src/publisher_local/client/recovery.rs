@@ -74,24 +74,14 @@ impl<L: HostReadLocation> BodyIncarnationObservation<L> {
 /// Retains an encoded inode candidate without hash, service or pin authority.
 pub(crate) struct UnverifiedBody<L: HostReadLocation> {
     file: File,
-    key: BodyKey,
-    layout: Arc<NativeHostLayout<L>>,
+    _key: BodyKey,
+    _layout: Arc<NativeHostLayout<L>>,
 }
 
 impl<L: HostReadLocation> UnverifiedBody<L> {
     /// Borrows the readonly candidate for actual owner-side byte verification.
     pub(crate) fn handle(&self) -> &File {
         &self.file
-    }
-
-    /// Borrows the unverified registered key name.
-    pub(crate) fn key(&self) -> &BodyKey {
-        &self.key
-    }
-
-    /// Borrows the retained root guard without creating serving authority.
-    pub(crate) fn layout(&self) -> &Arc<NativeHostLayout<L>> {
-        &self.layout
     }
 }
 
@@ -249,16 +239,6 @@ impl<L: HostReadLocation> Client<L> {
         result
     }
 
-    /// Retires only the actual inode observed during this client's current drain.
-    ///
-    /// # Errors
-    ///
-    /// Rejects another client/root/drain observation, stale native inode tokens,
-    /// undrained state and registered publisher or transport failures.
-    pub(crate) fn retire(&self, observation: &BodyIncarnationObservation<L>) -> Result<(), Error> {
-        self.lifecycle(Operation::Retire, observation)
-    }
-
     /// Restores the exact observed pending inode without granting serving proof.
     ///
     /// # Errors
@@ -267,19 +247,6 @@ impl<L: HostReadLocation> Client<L> {
     /// exchanges. Restored sealed data still requires actual canonical adoption.
     pub(crate) fn restore(&self, observation: &BodyIncarnationObservation<L>) -> Result<(), Error> {
         self.lifecycle(Operation::Restore, observation)
-    }
-
-    /// Finishes only the observed retirement after actual native lease checks.
-    ///
-    /// # Errors
-    ///
-    /// Rejects stale/foreign observations, undrained state, an unexpired lease
-    /// and failed native exchanges. No client timeout proves physical cleanup.
-    pub(crate) fn finish_retirement(
-        &self,
-        observation: &BodyIncarnationObservation<L>,
-    ) -> Result<(), Error> {
-        self.lifecycle(Operation::FinishRetirement, observation)
     }
 
     fn lifecycle(
@@ -406,8 +373,8 @@ impl<L: HostReadLocation> Client<L> {
         self.layout.recheck()?;
         Ok(UnverifiedBody {
             file,
-            key,
-            layout: self.layout.clone(),
+            _key: key,
+            _layout: self.layout.clone(),
         })
     }
 }

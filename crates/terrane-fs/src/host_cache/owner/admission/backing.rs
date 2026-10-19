@@ -96,7 +96,7 @@ impl AdmissionJob {
 /// actual source registry. It is not a raw-file or consumer-lease constructor.
 pub struct NativeChunkAdmission {
     /// Actual worker-registered physical resources retained independently of the waiter.
-    pub(super) job: Arc<Mutex<AdmissionJob>>,
+    pub(super) _job: Arc<Mutex<AdmissionJob>>,
     /// Verified canonical chunk declaration.
     pub(super) descriptor: Descriptor,
     /// Scoped synchronized member allocation, excluding directory and state charges.
@@ -142,7 +142,7 @@ impl NativeChunkAdmission {
 /// handle. Later publication must independently retain its exact manifest range.
 pub struct NativeMetadataAdmission {
     /// Actual worker-registered physical resources retained independently of the waiter.
-    pub(super) job: Arc<Mutex<AdmissionJob>>,
+    pub(super) _job: Arc<Mutex<AdmissionJob>>,
     /// Verified canonical pack identifier selecting both members.
     pub(super) id: PackId,
     /// Scoped synchronized member allocation, excluding directory and state charges.

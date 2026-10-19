@@ -209,14 +209,6 @@ impl<'executor> LiveManifestRecoveryContext<'executor> {
             .map_err(io::Error::other)
     }
 
-    /// Checks genuine active phase and its durable bootstrap custody.
-    ///
-    /// # Errors
-    /// Refuses failed operations or changed owner, reservation and generation.
-    pub(super) fn check_owner(&self, owner: &Custody) -> io::Result<()> {
-        self.check_owner_phase(owner, RecoveryPhase::Active)
-    }
-
     /// Checks only the accepted producer's current in-flight phase.
     ///
     /// # Errors
@@ -318,11 +310,6 @@ impl<'phase, 'executor> RecoveryRetainedManifest<'phase, 'executor> {
         RecoveryManifestEffect::begin(self)
     }
 
-    /// Borrows the exact original live recovery turn for an atomic RPC check.
-    pub(crate) fn live_context(&self) -> &LiveManifestRecoveryContext<'_> {
-        &*self.live
-    }
-
     /// Borrows independently verified canonical manifest claim bytes.
     pub(crate) fn claim(&self) -> &PublicationClaim {
         self.retained.claim()
@@ -351,16 +338,6 @@ impl<'phase, 'executor> RecoveryRetainedManifest<'phase, 'executor> {
     /// Borrows the retained original root, domain and chunk profile authority.
     pub(crate) fn layout(&self) -> &Arc<NativeHostLayout<HostDomainLocation>> {
         self.retained.layout()
-    }
-
-    /// Returns the exact verified metadata-pack identifier under existing keys.
-    pub(crate) fn pack_id(&self) -> terrane::pack::PackId {
-        self.retained.pack_id()
-    }
-
-    /// Borrows the independently verified full metadata-pack identity.
-    pub(crate) fn pack_identity(&self) -> &Identity {
-        self.retained.pack_identity()
     }
 
     /// Rechecks real durable pins/source and the original active recovery phase.

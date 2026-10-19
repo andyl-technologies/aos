@@ -7,14 +7,12 @@
 
 use std::sync::Arc;
 
-use terrane::host::{cache::HostDomainLocation, publication::PublicationClaim};
+use terrane::host::cache::HostDomainLocation;
 
-use super::{
-    Client, Error, PeerPublishedObject, Phase, RequestPayload, State, invalidate, receipt,
-};
+use super::{Client, Error, Phase, State, invalidate};
 use crate::{
-    host_cache::{CompletedRecovery, PublisherResumeTurn, PublisherRunningTurn},
-    publisher_local::wire::{BodyKey, BodyKind, Claim, Operation},
+    host_cache::{CompletedRecovery, PublisherResumeTurn},
+    publisher_local::wire::Operation,
 };
 
 /// Retains acknowledged running custody without exposing a construction bypass.
@@ -84,71 +82,6 @@ impl ResumeFailure {
 }
 
 impl Client<HostDomainLocation> {
-    /// Inspects and adopts sealed inline content under the actual running turn.
-    ///
-    /// Registered sealed InspectBody performs native adoption: it synchronizes
-    /// and records the binding, and rejection may quarantine content or forget
-    /// a conflicting binding. Neither a read-only returned descriptor nor the
-    /// exclusive turn makes this operation read-only or proves allocation custody.
-    ///
-    /// An actual inline-publication turn supplies synchronized funding for its
-    /// own claim; another claim is refused. The cache exposes no separate running
-    /// inspection command yet. Such a command must retain genuine future holds
-    /// across accepted physical work and reconcile effects, durable state and
-    /// fresh quota before acknowledgment, including failure or cancellation.
-    ///
-    /// # Errors
-    /// Rejects foreign or stale owner/session/epoch/root custody, non-inline
-    /// claims, unavailable canonical content, transport uncertainty and any
-    /// descriptor, seal or plaintext mismatch. Failed exchanges or verification
-    /// invalidate the client phase and require genuine recovery.
-    pub(crate) fn inspect_and_adopt_inline_running(
-        &self,
-        claim: PublicationClaim,
-        context: &PublisherRunningContext,
-        turn: &mut PublisherRunningTurn<'_>,
-    ) -> Result<PeerPublishedObject<HostDomainLocation>, Error> {
-        // This can consult embedded native custody, so it must run before the
-        // client mutex. The turn retains exclusive dispatch after it returns.
-        let claim = self.inline_claim(claim)?;
-        turn.check_claim(context, &claim)?;
-        let descriptor = claim.descriptor().encode();
-        let payload = RequestPayload {
-            claim: Some(Claim {
-                descriptor: descriptor.clone(),
-                chunk_profile: self.config.chunk_profile_name.clone(),
-                plaintext_size: claim.plaintext_size(),
-                ..Default::default()
-            }),
-            body: Some(BodyKey {
-                kind: BodyKind::Sealed as i32,
-                descriptor,
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-
-        let mut state = self.lock()?;
-        self.require_running_context(&state, context)?;
-        let received = match self.exchange_payload(&mut state, Operation::InspectBody, payload) {
-            Ok(received) => received,
-            Err(error) => {
-                invalidate(&mut state);
-                return Err(error);
-            }
-        };
-        let result = receipt::published(
-            received,
-            Arc::clone(&self.layout),
-            self.config.identities.publish_uid,
-            claim,
-        );
-        if result.is_err() {
-            invalidate(&mut state);
-        }
-        result
-    }
-
     /// Checks running identity atomically with the caller's actual RPC lock.
     ///
     /// The concrete physical turn separately proves executor ownership before

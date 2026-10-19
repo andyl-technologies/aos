@@ -79,13 +79,6 @@ impl NativeRecoveryCandidate {
     ) -> Option<&BodyIncarnationObservation<HostDomainLocation>> {
         self.pending.as_ref()
     }
-
-    /// Borrows the genuine canonical name token without granting lifecycle permission.
-    pub(in crate::host_cache) fn canonical_observation(
-        &self,
-    ) -> Option<&BodyIncarnationObservation<HostDomainLocation>> {
-        self.canonical.as_ref()
-    }
 }
 
 /// Reports bounded inspection evidence, never readiness or completed recovery.

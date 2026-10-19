@@ -116,22 +116,6 @@ impl Client<HostDomainLocation> {
         self.recovery_manifest_exchange(Operation::Adopt, retained, expected)
     }
 
-    /// Inspects and adopts pinned manifest content under its original barrier.
-    ///
-    /// Sealed InspectBody performs the same effectful native adoption as Adopt.
-    /// Its same-response observation grants no permission for new retirement.
-    ///
-    /// # Errors
-    /// Preserves typed source/body custody on changed candidate, original phase,
-    /// transport, verification, correlation, durability or quota failures.
-    pub(crate) fn inspect_manifest_recovery(
-        &self,
-        retained: RecoveryRetainedManifest<'_, '_>,
-        expected: &NativeRecoveryCandidate,
-    ) -> Result<RecoveryManifestBody, RecoveryManifestError> {
-        self.recovery_manifest_exchange(Operation::InspectBody, retained, expected)
-    }
-
     fn recovery_manifest_exchange(
         &self,
         operation: Operation,
