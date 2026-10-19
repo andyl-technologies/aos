@@ -9614,18 +9614,31 @@ Resumed qualification:
   and the exact capacity/revocation controls. Durable protection and independent
   consumer reads remain intact. The owning publisher gate subsequently passes
   in 495.530 seconds; independent reinspection matches its original artifact
-  report. Required application compilation is running before the complete
-  filesystem suite. No host task is accepted.
+  report. Required application compilation passes in 2,721.018 seconds; all
+  128 actual test artifacts exactly match the 29 declared application packages.
+  The complete filesystem suite also passes all 124 nonignored cases in the
+  ext4 guest. Independent review verifies every expected case, the archive
+  digest, all 3,492 source inputs and the unchanged six privileged exclusions.
+  No host task is accepted.
 - Cache-handoff candidate `d59ca86443` transfers actual completed publication
   custody through a synchronized funding decrement. Original final-removal
   acknowledgments and closed descriptors precede source-admission release;
   reconstruction metadata and independent consumer grants remain owned.
   Producer promises, including reused backing dependencies, become durable
   release grace handled by the periodic expiry sweep. Fresh consumers resolve
-  genuine cached backing after producer funding retires. The all-target build
-  passes on committed source; full local and native qualification is running.
-  New native controls exercise actual funding removal, metadata retention,
-  fresh consumer grants, grace expiry and independent quota observations.
+  genuine cached backing after producer funding retires. Both builds, all 34
+  selected cases, all three strict Clippy profiles and formatting pass.
+  Native qualification stops at an old range-reuse pin-count assertion, before
+  reaching handoff. Successor `4036350ffc` preserves the original publication
+  receipt on queue refusal and adds a real queue-full/retry control. It requires
+  the exact reused backing dependency pin and waits for the configured
+  30-second release grace. Its local checks all pass. Native execution passes
+  both ordinary and bad-whole-hash reuse controls, then stops at the analogous
+  recovered-source pin-count assertion. The failed runs remain recorded;
+  neither supplies native handoff qualification. Follow-up `68aab2b064` requires
+  exact recovered dependency protection in both actor and independent supervisor;
+  it preserves all original inode, funding, residence and refusal checks.
+  Local and native qualification are running on this committed source.
   Eviction, NativeReady and complete host-task acceptance remain pending.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
   and all seven strict Clippy/documentation profiles pass. The interface,
