@@ -195,10 +195,18 @@
         exit 0
       fi
 
+      # Private fixture responses belong only on the framed agent transport.
+      private_output=0
+      case "$cmd" in
+        "# Private fixture input: command contents and output are not logged."*)
+          private_output=1
+          ;;
+      esac
+
       mirror_and_capture() {
         pipe="$1"
         output="$2"
-        if [ -c /dev/console ]; then
+        if [ "$private_output" -eq 0 ] && [ -c /dev/console ]; then
           tee "$output" < "$pipe" > /dev/console
         else
           cat < "$pipe" > "$output"

@@ -105,6 +105,12 @@ def private_guest_command(machine, command, timeout=60):
             (prefix + command).encode(), timeout=timeout,
         )
     except Exception as error:
+        # Protocol errors can contain response bytes. Preserve a bounded copy
+        # privately so a broken transport can be diagnosed without disclosure.
+        directory = Path(tempfile.mkdtemp(prefix="private-command-transport-failure-", dir="."))
+        descriptor = os.open(directory / "error", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(str(error).encode("utf-8", errors="replace")[:4096])
         category = type(error).__name__
         if category not in {
                 "AgentTimeout", "ClientAgentTimeout", "TimeoutError",
@@ -114,7 +120,8 @@ def private_guest_command(machine, command, timeout=60):
         elapsed_ms = max(0, int((time.monotonic() - started) * 1000))
         raise RuntimeError(
             "private operator fixture command failed in transport "
-            f"(category={category}, elapsed_ms={elapsed_ms})"
+            f"(category={category}, elapsed_ms={elapsed_ms}); "
+            f"private diagnostics: {directory.name}"
         ) from None
     if status != 0:
         # Preserve bounded diagnostics for the operator, never in the driver

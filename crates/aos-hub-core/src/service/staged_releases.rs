@@ -992,7 +992,18 @@ fn invalid(error: impl std::fmt::Display) -> RpcError {
     RpcError::invalid(error.to_string())
 }
 
-fn precondition(error: impl std::fmt::Display) -> RpcError {
+fn precondition(error: impl Into<anyhow::Error>) -> RpcError {
+    let error = error.into();
+    #[cfg(not(target_arch = "wasm32"))]
+    if error.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<sqlx::Error>(),
+            Some(sqlx::Error::PoolTimedOut)
+        )
+    }) {
+        return RpcError::Unavailable("database connection is temporarily unavailable".into());
+    }
+
     RpcError::FailedPrecondition(format!("{error:#}"))
 }
 
@@ -1000,6 +1011,29 @@ fn precondition(error: impl std::fmt::Display) -> RpcError {
 mod pointer_hash_tests {
     use super::*;
     use crate::fetch::SurfaceObjectEvidence;
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn pool_acquisition_timeout_is_temporary_without_exposing_query_text() {
+        let error = anyhow::Error::new(sqlx::Error::PoolTimedOut)
+            .context("querying private placement metadata");
+
+        let refusal = precondition(error);
+
+        assert_eq!(refusal.code(), "unavailable");
+        assert_eq!(
+            refusal.message(),
+            "database connection is temporarily unavailable"
+        );
+    }
+
+    #[test]
+    fn changed_stage_remains_a_failed_precondition() {
+        let refusal = precondition(anyhow::anyhow!("staged release identity changed"));
+
+        assert_eq!(refusal.code(), "failed_precondition");
+        assert_eq!(refusal.message(), "staged release identity changed");
+    }
 
     struct HashOnlyFetch {
         evidence: Option<SurfaceObjectEvidence>,

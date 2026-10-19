@@ -39,6 +39,10 @@ use aos_proto_types::{CONNECT_PROTOCOL_VERSION, CONNECT_PROTOCOL_VERSION_HEADER,
 use crate::client::validate_base_url;
 
 mod direct_upload;
+mod staged_finalization;
+
+#[cfg(test)]
+mod finalization_tests;
 
 pub use direct_upload::DirectHubControl;
 #[cfg(unix)]
@@ -2317,13 +2321,9 @@ impl HubClient {
         Resp: DeserializeOwned,
     {
         let url = format!("{}{full_method}", self.base);
-        let mut request = self.connect_json_request(&url, req);
+        let request = self.connect_json_request(&url, req);
         if full_method == "aos.hub.v1.PublishService/FinalizeStagedRelease" {
-            // Finalization checks and installs the complete retained metadata
-            // inventory; its work grows with the release, unlike a unary read.
-            request = request.timeout(std::time::Duration::from_secs(
-                STAGED_FINALIZATION_TIMEOUT_SECS,
-            ));
+            return staged_finalization::call(request, &url).await;
         }
         let response = request
             .send()

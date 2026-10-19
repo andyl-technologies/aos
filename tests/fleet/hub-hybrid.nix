@@ -16,6 +16,10 @@
   readRevisionFixture ? null,
   nativeBodyObservationTools ? null,
 }: let
+  fleetBodyTimeout =
+    if externalDirect
+    then 14400
+    else 7200;
   databaseHost =
     if separateDatabase
     then "database"
@@ -839,10 +843,7 @@ in {
     else "hub-hybrid";
   # Include signed closure preparation, indexing, cleanup and runtime parity in
   # the whole-suite budget. Individual requests retain their own shorter bounds.
-  timeout =
-    if externalDirect
-    then 14400
-    else 7200;
+  timeout = fleetBodyTimeout;
   bootTimeout = 600;
 
   machines =
@@ -1032,11 +1033,7 @@ in {
         else "native"
       }
       GARAGE = "${garage}/bin/garage -c /var/lib/hybrid-s3/garage.toml"
-      FLEET_CUTOFF_MONOTONIC = time.monotonic() + ${toString (
-        if externalDirect
-        then 14400
-        else 2400
-      )}
+      FLEET_CUTOFF_MONOTONIC = time.monotonic() + ${toString fleetBodyTimeout}
 
       for machine in (client, native, worker, s3${lib.optionalString separateDatabase ", database"}):
           machine.wait_for_unit("multi-user.target", timeout=240)
@@ -1068,6 +1065,8 @@ in {
               ${pkgs.util-linux}/bin/findmnt -rn -t 9p -o OPTIONS \\
                 /run/aos-host-store | ${pkgs.grep}/bin/grep -qw ro
           """), timeout=180)
+
+      check_direct_guest_file_transport(client, "${pkgs.python3}/bin/python3")
 
       s3.succeed(textwrap.dedent("""
           set -eu

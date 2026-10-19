@@ -222,6 +222,36 @@ def read_direct_guest_file(machine, python, path, maximum_bytes):
     return bytes(body)
 
 
+def check_direct_guest_file_transport(machine, python):
+    """Check multi-frame private capture before the expensive provider workload."""
+    path = "/var/lib/hybrid-client/private-transport-probe.bin"
+    unit = b"private-agent-transport-probe-" * 128
+    body = unit * ((3 * 1024 * 1024 // len(unit)) + 1)
+    body = body[:3 * 1024 * 1024]
+    direct_guest_python(machine, python, """
+        import os
+        from pathlib import Path
+
+        path = Path(selected['path'])
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        body = base64.b64decode(selected['unit'], validate=True)
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, 'wb') as output:
+            output.write((body * ((selected['size'] // len(body)) + 1))[:selected['size']])
+    """, {"path": path, "unit": base64.b64encode(unit).decode(), "size": len(body)})
+
+    captured = read_direct_guest_file(machine, python, path, len(body))
+    if captured != body:
+        raise RuntimeError("private multi-frame transport probe changed")
+    if base64.b64encode(body[:384]) in Path(machine.serial_log_path).read_bytes():
+        raise RuntimeError("private guest output was mirrored to the serial console")
+
+    direct_guest_python(machine, python, """
+        from pathlib import Path
+        Path(selected['path']).unlink()
+    """, {"path": path})
+
+
 def capture_direct_artifacts(worker, tools):
     """Dump the exact realized source/distribution and hash actual installed files."""
     return json.loads(direct_guest_python(worker, tools["python"], """
