@@ -33,16 +33,22 @@ use terrane::host::cache::HostDomainLocation;
 /// Retains exact failed native response resources outside embedded custody.
 pub(super) enum ManifestFailureResources {
     /// Keeps metadata custody when no verified response body was returned.
-    Metadata(RecoveryManifestBackingRetention),
+    Metadata {
+        _retained: RecoveryManifestBackingRetention,
+    },
     /// Keeps the actual registered body/pins and its original response token.
     Body {
-        retained: RecoveryManifestBodyRetention,
-        observation: BodyIncarnationObservation<HostDomainLocation>,
+        _retained: RecoveryManifestBodyRetention,
+        _observation: BodyIncarnationObservation<HostDomainLocation>,
     },
     /// Keeps a failed independent inspection's original candidate and body.
-    Inspection(Box<Option<(NativeRecoveryCandidate, RecoveryManifestBody)>>),
+    Inspection {
+        _resources: Box<Option<(NativeRecoveryCandidate, RecoveryManifestBody)>>,
+    },
     /// Keeps an unresolved report if ownership extraction was refused.
-    Inventory(Box<NativeRecoveryInspection>),
+    Inventory {
+        _report: Box<NativeRecoveryInspection>,
+    },
 }
 
 /// Transfers actual bootstrap observations and the original barrier into this phase.
@@ -112,7 +118,8 @@ pub(super) async fn run(
         Ok(candidates) => candidates,
         Err(report) => {
             executor.reserve_manifest_reconciliation()?;
-            executor.retain_manifest_failure(ManifestFailureResources::Inventory(report));
+            executor
+                .retain_manifest_failure(ManifestFailureResources::Inventory { _report: report });
             return Err(unresolved(
                 "unresolved inventory cannot transfer candidates",
             ));
@@ -138,7 +145,9 @@ pub(super) async fn run(
                         return Err(unresolved("missing retained metadata failure"));
                     };
                     let (error, retained) = failure.into_parts();
-                    live.retain_failure(ManifestFailureResources::Metadata(retained));
+                    live.retain_failure(ManifestFailureResources::Metadata {
+                        _retained: retained,
+                    });
                     return Err(error);
                 }
                 Err(RecoveryManifestError::Body(failure)) => {
@@ -147,8 +156,8 @@ pub(super) async fn run(
                     };
                     let (error, retained) = failure.into_parts();
                     live.retain_failure(ManifestFailureResources::Body {
-                        retained,
-                        observation,
+                        _retained: retained,
+                        _observation: observation,
                     });
                     return Err(error);
                 }
@@ -160,7 +169,9 @@ pub(super) async fn run(
                 Err(failure) => {
                     let (error, candidate, body) = failure.into_parts();
                     *inspection_failure = Some((candidate, body));
-                    live.retain_failure(ManifestFailureResources::Inspection(inspection_failure));
+                    live.retain_failure(ManifestFailureResources::Inspection {
+                        _resources: inspection_failure,
+                    });
                     return Err(error);
                 }
             }

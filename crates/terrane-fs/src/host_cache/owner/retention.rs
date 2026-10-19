@@ -542,11 +542,6 @@ impl Drop for NativeMetadataOwner {
 }
 
 impl RetainedManifest {
-    /// Retains the actual producer's session without acquiring its state mutex.
-    pub(crate) fn publisher_session(&self) -> Arc<Client<HostDomainLocation>> {
-        Arc::clone(&self.session)
-    }
-
     /// Checks native session object identity; it does not mint retention authority.
     pub(crate) fn matches_client(&self, client: &Client<HostDomainLocation>) -> bool {
         std::ptr::eq(self.session.as_ref(), client)

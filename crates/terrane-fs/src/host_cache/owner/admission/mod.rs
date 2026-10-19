@@ -260,7 +260,7 @@ pub(in crate::host_cache::owner) async fn chunk(
     };
     failure.settled = true;
     Ok(NativeChunkAdmission {
-        job,
+        _job: job,
         descriptor,
         allocated: outcome.0,
         charged: outcome.1,
@@ -302,7 +302,7 @@ pub(in crate::host_cache::owner) async fn metadata(
     };
     failure.settled = true;
     Ok(NativeMetadataAdmission {
-        job,
+        _job: job,
         id: expected_id,
         allocated: outcome.0,
         charged: outcome.1,

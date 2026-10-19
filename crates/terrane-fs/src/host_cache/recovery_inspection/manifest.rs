@@ -109,13 +109,6 @@ impl VerifiedRecoveryManifest {
             .check_recovery_manifest_body(&self.body, original)
             .map_err(invalid)
     }
-
-    /// Transfers the original candidate and opaque body pair without releasing owner pins.
-    pub(in crate::host_cache) fn into_parts(
-        self,
-    ) -> (NativeRecoveryCandidate, RecoveryManifestBody) {
-        (self.candidate, self.body)
-    }
 }
 
 /// Preserves an unresolved candidate and genuine body pair after inspection fails.
