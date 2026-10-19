@@ -4,6 +4,8 @@
 //! creator, registered holder, Source/plan and sticky phase without reborrowing
 //! SDK, native, controller or preparation banks during their mutable dispatch.
 
+mod plan_view;
+
 use super::*;
 use crucible::node_admission::{
     OriginalHostInitialLifecycleMemberScope, OriginalHostInitialLifecyclePolicy,
@@ -598,7 +600,12 @@ impl InstalledPacketCompleteCollectionAuthority {
             .and_then(|bytes| bytes.checked_add(std::mem::size_of::<OperationFailure>()))
             .and_then(|bytes| bytes.checked_add(std::mem::size_of::<EvidenceError>()))
             .ok_or(RuntimeError::ResourceLimit)?;
-        [files, kernel, hash, diagnostic]
+
+        // The same admitted callback row also encloses the private, fixed plan
+        // interval. Its actual return, self, evidence and selector-borrow views
+        // are additional controls, not credit borrowed from a file buffer.
+        let plan_view = plan_view::counter_scratch_data();
+        [files, kernel, hash, diagnostic, plan_view]
             .into_iter()
             .try_fold(0usize, |sum, bytes| {
                 sum.checked_add(bytes).ok_or(RuntimeError::ResourceLimit)

@@ -47,6 +47,31 @@ The unchanged 4 GiB byte policy and 128-descriptor policy are satisfied; actual
 descriptors total 67. Retirement and child reclamation complete. The prospective
 quote requires correction; no resource ceiling or timeout increase is needed.
 
+
+A subsequent four-file plan-view optimization keeps both fixed currentness bodies,
+all eight Source/Host parent checks, both selectors and the full entry/terminal
+file reads, while removing the two interior full-file read series. Its separately
+quoted controls add 1,138 bytes to callback transient demand. The ordinary path
+stays unchanged. Source review records one concurrency limit: file drift at a
+removed interior read is detected at the terminal read; an intervening plan
+mismatch remains the primary error. Terminal drift still revokes the same owner.
+
+Six new real-fixture controls pass in 6.51 seconds, and six-crate all-feature,
+all-target checking passes in 1 minute 18 seconds. All five changed Rust files,
+including the diagnostic file, pass formatting. Native77 runs the same existing
+startup/reclamation test in 571.27 seconds versus Native76's 684.65 seconds:
+16.56% less time (1.20x). Both reach the same inactive-runtime recheck refusal,
+with the identical 18,485,990-byte gap and 67 descriptors, and complete normal
+retirement and child reclamation. The added 1,138-byte control row appears on
+both sides of the peak comparison. Frozen Provider/Device inputs and actual
+compiler profiles/features match; only the four plan-view Rust files differ.
+The test ELF grows by 24,680 bytes, including the six unselected helper tests.
+Command evidence includes Root's actual execution record; the independent
+provenance review does not establish a historical prelaunch environment snapshot.
+This is one failed-startup control pair, not full preservation, a Linux-boot
+result or an additive overall speedup. The mandatory application-target refresh
+and final library/ABI/license qualification remain outstanding for this stage.
+
 The earlier diagnostic run timed out after fifteen minutes. Its nine read/hash stack observations
 and 2.957 TB of read accounting are diagnostic evidence, not statistical CPU
 sampling or a VM performance measurement. SourceDeclaration18 remains unissued:

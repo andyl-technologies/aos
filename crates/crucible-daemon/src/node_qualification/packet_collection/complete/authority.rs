@@ -455,6 +455,10 @@ impl InstalledPacketCompleteCollectionAuthority {
         &self,
         plan: ConformancePlanEvidence<'_>,
     ) -> Result<(), EvidenceError> {
+        if self.original_initial_callback_active.get() {
+            return self.authenticate_original_plan_view_interval_data(plan);
+        }
+
         self.current_for_original_initial_callback()
             .map_err(evidence_error)?;
         let original = self.plan_evidence();
