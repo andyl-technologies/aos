@@ -589,7 +589,8 @@ pub(crate) use qemu_campaign_lifecycle::{
     QemuAnchorRootMaterializer, QemuAnchorRootOutcome, QemuAttemptProductionVmLifecycleFactory,
     QemuFreshAttemptLifecycleFactory, QemuFreshAttemptLifecycleOwner, QemuFreshExecutionRunner,
     QemuPublishedRootAdmission, QemuPublishedRootRetirementError, QemuPublishedRootSink,
-    QemuRetainedSourcePreparation, capture_fresh_genesis_checkpoint_candidate,
+    QemuPublishedRootState, QemuRetainedSourcePreparation,
+    capture_fresh_genesis_checkpoint_candidate,
 };
 #[cfg(test)]
 pub(crate) use qemu_campaign_resume::QemuProductionExactResumeExecutionRunnerError;

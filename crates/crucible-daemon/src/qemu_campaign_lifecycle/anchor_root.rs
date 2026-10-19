@@ -70,8 +70,8 @@ pub(crate) trait QemuAnchorRootMaterializer: CrucibleExecutionRunner {
 /// Eligibility proven before any anchoring lifecycle exists.
 struct QemuAnchorPlan {
     sink: Arc<dyn QemuPublishedRootSink>,
-    lineage: crucible_campaign::CampaignLineageId,
-    profile: crucible_campaign::ExecutorCompatibilityProfile,
+    /// The pool coordinate a root at `anchor` occupies.
+    key: crate::QemuHotForkSourceWorldKey,
     /// The branch parent `A`, where replay stops.
     anchor: Configuration,
     /// The stored artifact that published `A`, the root's thin fallback.
@@ -106,6 +106,31 @@ where
             Ok(plan) => plan,
             Err(reason) => return Ok(declined(input, None, reason)),
         };
+        // The pool is asked before any replay. An invalidated root keeps its
+        // coordinate, so replaying would only end in a refused admission; a
+        // live root already serves the attempt.
+        match plan.sink.root_state(&plan.key) {
+            QemuPublishedRootState::Unusable => {
+                return Ok(declined(
+                    input,
+                    Some(&plan.anchor),
+                    "anchor-root-invalidated",
+                ));
+            }
+            QemuPublishedRootState::Live => {
+                record_anchor_decision(
+                    input,
+                    Some(&plan.anchor),
+                    "admitted",
+                    "anchor-root-retained",
+                );
+                return Ok(QemuAnchorRootOutcome::Admitted);
+            }
+            QemuPublishedRootState::Absent => {}
+        }
+        if !plan.sink.may_admit() {
+            return Ok(declined(input, Some(&plan.anchor), "anchor-pool-full"));
+        }
 
         self.lifecycles.configure_attempt_continuations(&[]);
         self.lifecycles.configure_authenticated_start(input.start());
@@ -277,14 +302,15 @@ fn anchor_plan(
     if basis.key().lineage() != lineage {
         return Err("anchor-runtime-basis-lineage-mismatch");
     }
-    if !sink.may_admit() {
-        return Err("anchor-pool-full");
-    }
 
     Ok(QemuAnchorPlan {
         sink,
-        lineage,
-        profile: crucible_campaign::ExecutorCompatibilityProfile::from_lineage(input.lineage()),
+        key: crate::QemuHotForkSourceWorldKey::new_published(
+            lineage,
+            parent.def.id(),
+            parent.id(),
+            crucible_campaign::ExecutorCompatibilityProfile::from_lineage(input.lineage()),
+        ),
         anchor: parent.clone(),
         published,
         selected: selected.clone(),
@@ -391,20 +417,18 @@ fn admit_anchor<FE, DE>(
     world: crucible_api::vm_lifecycle::ProductionVmHotForkSourceWorld,
     input: &CrucibleAttemptExecution,
 ) -> Result<QemuAnchorRootOutcome, AttemptWorkerFailure<QemuFreshExecutionRunnerError<FE, DE>>> {
-    let key = crate::QemuHotForkSourceWorldKey::new_published(
-        plan.lineage,
-        plan.anchor.def.id(),
-        plan.anchor.id(),
-        plan.profile,
-    );
     // The whole prefix to the anchor ran under the attempt's own replay mode.
     let provenance = QemuPublishedRootProvenance::new(
         QemuPublishedRootOrigin::BranchParentAnchor,
         plan.anchor.clone(),
         Some(replay_pauses_before_live_network_choice(&plan.selected)),
     );
-    let root =
-        AuthenticatedPublishedRootQemuHotForkSource::new(key, plan.published, world, provenance);
+    let root = AuthenticatedPublishedRootQemuHotForkSource::new(
+        plan.key,
+        plan.published,
+        world,
+        provenance,
+    );
 
     let admission = plan.sink.admit_anchor(root).map_err(|error| {
         AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::PublishedRootRetention(

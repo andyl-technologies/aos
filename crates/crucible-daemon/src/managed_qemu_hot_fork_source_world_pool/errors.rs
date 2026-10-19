@@ -101,6 +101,12 @@ pub enum ManagedQemuHotForkSourceWorldAdmissionError<E> {
     /// The no-parallelism policy already retains this source coordinate.
     #[error("source-world coordinate already has a retained source")]
     DuplicateSource,
+    /// The coordinate is held by a source that can serve no child.
+    ///
+    /// An invalidated source keeps its coordinate until orderly shutdown, so
+    /// this is not an equal retained source: nothing can fork from it.
+    #[error("source-world coordinate is held by an unusable source")]
+    UnusableSource,
     /// Shared resource/hotness policy rejected the candidate.
     #[error("source-world candidate was rejected by hot-checkpoint policy")]
     Rejected(#[source] HotCheckpointAdmissionRejection),

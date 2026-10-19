@@ -815,7 +815,7 @@ mod anchor_root;
 pub(crate) use anchor_root::{QemuAnchorRootMaterializer, QemuAnchorRootOutcome};
 pub(crate) use source_retention::{
     QemuPublishedRootAdmission, QemuPublishedRootRetirementError, QemuPublishedRootSink,
-    QemuRetainedSourcePreparation,
+    QemuPublishedRootState, QemuRetainedSourcePreparation,
 };
 
 mod evidence;

@@ -154,25 +154,32 @@ fn router_keeps_an_anchor_then_runs_the_attempt_hot() {
     assert_eq!(loads(&counts), [2, 1, 0]);
 }
 
+/// Every decline replays thin, including an anchor key whose root was
+/// invalidated: that is never a kept root, so it can never requeue.
 #[test]
 fn router_replays_thin_when_anchoring_declines() {
-    let (mut router, counts, input) = router(
-        &[None],
-        QemuAnchorRootOutcome::Declined("anchor-parent-not-network-branch"),
-        0,
-    );
+    for reason in [
+        "anchor-parent-not-network-branch",
+        "anchor-root-invalidated",
+    ] {
+        let (mut router, counts, input) =
+            router(&[None], QemuAnchorRootOutcome::Declined(reason), 0);
 
-    let failure = router
-        .execute(&input, &execution_context(&input, 0xa2))
-        .expect_err("the counting thin tier fails");
+        let failure = router
+            .execute(&input, &execution_context(&input, 0xa2))
+            .expect_err("the counting thin tier fails");
 
-    assert!(matches!(
-        failure,
-        AttemptWorkerFailure::Terminal(QemuHotFirstExecutionRouterError::Fallback(
-            "thin replay ran"
-        ))
-    ));
-    assert_eq!(loads(&counts), [1, 1, 1]);
+        assert!(
+            matches!(
+                failure,
+                AttemptWorkerFailure::Terminal(QemuHotFirstExecutionRouterError::Fallback(
+                    "thin replay ran"
+                ))
+            ),
+            "{reason}"
+        );
+        assert_eq!(loads(&counts), [1, 1, 1], "{reason}");
+    }
 }
 
 /// A hot retry that declines after anchoring falls back to thin replay

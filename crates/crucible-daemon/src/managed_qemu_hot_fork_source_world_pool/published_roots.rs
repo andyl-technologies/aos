@@ -13,11 +13,15 @@
 //! Anchor roots, kept at a branch parent's network fault park so the branch
 //! itself can fork, are admitted only while the pool could also lease one
 //! child of them: a root its own attempt could not fork from would only hold
-//! a template slot.
+//! a template slot. Only a live equal root counts as already retained; a
+//! coordinate held by an invalidated root refuses the anchor.
 
 use super::*;
 use crate::qemu_hot_fork_source_capture::AuthenticatedPublishedRootQemuHotForkSource;
-use crate::{QemuPublishedRootAdmission, QemuPublishedRootRetirementError, QemuPublishedRootSink};
+use crate::{
+    QemuPublishedRootAdmission, QemuPublishedRootRetirementError, QemuPublishedRootSink,
+    QemuPublishedRootState,
+};
 
 /// Longest diagnostic recorded for one rejected root.
 const MAX_REJECTION_DIAGNOSTIC_CHARS: usize = 512;
@@ -78,11 +82,17 @@ where
         let (key, published, source, provenance) = authenticated.into_parts();
         let world = ManagedQemuHotForkSourceWorld::bind_published_root(key, source, provenance)
             .map_err(ManagedQemuHotForkAuthenticatedAdmissionFailure::Binding)?;
-        // An equal root already serves the boundary, whatever capacity remains.
-        let refusal = if self.worlds.contains_key(&manager_source_key(&world.key)) {
-            Some(ManagedQemuHotForkSourceWorldAdmissionError::DuplicateSource)
-        } else {
-            self.anchor_child_refusal(world.resources)
+        // An equal live root already serves the boundary, whatever capacity
+        // remains. An unusable one serves nothing, and admission cannot
+        // replace it, so the anchor is refused rather than counted as kept.
+        let refusal = match self.published_root_state(&world.key) {
+            QemuPublishedRootState::Live => {
+                Some(ManagedQemuHotForkSourceWorldAdmissionError::DuplicateSource)
+            }
+            QemuPublishedRootState::Unusable => {
+                Some(ManagedQemuHotForkSourceWorldAdmissionError::UnusableSource)
+            }
+            QemuPublishedRootState::Absent => self.anchor_child_refusal(world.resources),
         };
         if let Some(error) = refusal {
             return Err(ManagedQemuHotForkAuthenticatedAdmissionFailure::Admission(
@@ -92,6 +102,24 @@ where
 
         self.admit_source(world, signals, HotCheckpointFallback::Thin(published))
             .map_err(ManagedQemuHotForkAuthenticatedAdmissionFailure::Admission)
+    }
+
+    /// Reports what occupies `key`'s coordinate.
+    ///
+    /// Only a source with exactly `key` that can still begin a lease is
+    /// live; an invalidated source, or one bound under another complete key,
+    /// occupies the coordinate without serving it.
+    pub(crate) fn published_root_state(
+        &self,
+        key: &QemuHotForkSourceWorldKey,
+    ) -> QemuPublishedRootState {
+        match self.worlds.get(&manager_source_key(key)) {
+            None => QemuPublishedRootState::Absent,
+            Some(world) if world.key() == key && world.lease_available() => {
+                QemuPublishedRootState::Live
+            }
+            Some(_) => QemuPublishedRootState::Unusable,
+        }
     }
 
     /// Returns why a root with `resources` and one child of it cannot both fit.
@@ -177,6 +205,20 @@ where
             .map_err(SharedManagedQemuHotForkAdmissionFailure::Admission)
     }
 
+    /// Reports what occupies `key`'s coordinate in the shared pool.
+    ///
+    /// A poisoned pool serves nothing, so its coordinates are unusable.
+    pub(crate) fn published_root_state(
+        &self,
+        key: &QemuHotForkSourceWorldKey,
+    ) -> QemuPublishedRootState {
+        self.pool
+            .lock()
+            .map_or(QemuPublishedRootState::Unusable, |pool| {
+                pool.published_root_state(key)
+            })
+    }
+
     /// Reports whether the shared pool has room for one more source.
     ///
     /// A poisoned pool admits nothing.
@@ -221,6 +263,10 @@ where
         self.pool.has_free_template_slot()
     }
 
+    fn root_state(&self, key: &QemuHotForkSourceWorldKey) -> QemuPublishedRootState {
+        self.pool.published_root_state(key)
+    }
+
     fn admit(
         &self,
         root: AuthenticatedPublishedRootQemuHotForkSource,
@@ -251,8 +297,9 @@ enum RootKind {
 
 /// Maps one admission result to the sink outcome, retiring a refused root.
 ///
-/// Anchors report capacity and duplicate refusals with stable outcomes the
-/// anchor diagnostic names; stop roots keep their diagnostic chain.
+/// Anchors report capacity, duplicate, and unusable-coordinate refusals with
+/// stable outcomes the anchor diagnostic names; stop roots keep their
+/// diagnostic chain.
 fn settle_root_admission<E: std::error::Error + 'static>(
     admitted: Result<HotCheckpointAdmissionCommit, SharedManagedQemuHotForkAdmissionFailure<E>>,
     kind: RootKind,
@@ -286,6 +333,11 @@ fn settle_root_admission<E: std::error::Error + 'static>(
                     ManagedQemuHotForkSourceWorldAdmissionError::AnchorChildCapacity { .. } => {
                         Some(QemuPublishedRootAdmission::Rejected(String::from(
                             "anchor-child-capacity",
+                        )))
+                    }
+                    ManagedQemuHotForkSourceWorldAdmissionError::UnusableSource => {
+                        Some(QemuPublishedRootAdmission::Rejected(String::from(
+                            "anchor-root-invalidated",
                         )))
                     }
                     _ => None,

@@ -26,7 +26,7 @@ use crate::qemu_hot_fork_source_capture::{
 use crate::{
     AttemptExecutionKey, AttemptExecutionRuntimeBasis, QemuFinalBoundaryDrain,
     QemuHotForkSourceWorldBoundary, QemuHotForkSourceWorldKey, QemuPublishedRootAdmission,
-    QemuPublishedRootRetirementError, QemuPublishedRootSink,
+    QemuPublishedRootRetirementError, QemuPublishedRootSink, QemuPublishedRootState,
 };
 
 /// Scheduler coordinates of the world the fixture replays to.
@@ -297,6 +297,7 @@ impl QemuFreshAttemptLifecycleFactory for AnchorFactory {
 /// Anchor sink recording admitted roots and answering with a scripted outcome.
 struct RecordingAnchorSink {
     may_admit: bool,
+    state: QemuPublishedRootState,
     outcome: QemuPublishedRootAdmission,
     admitted: Mutex<
         Vec<(
@@ -311,6 +312,7 @@ impl RecordingAnchorSink {
     fn answering(outcome: QemuPublishedRootAdmission) -> Arc<Self> {
         Arc::new(Self {
             may_admit: true,
+            state: QemuPublishedRootState::Absent,
             outcome,
             admitted: Mutex::new(Vec::new()),
         })
@@ -320,6 +322,10 @@ impl RecordingAnchorSink {
 impl QemuPublishedRootSink for RecordingAnchorSink {
     fn may_admit(&self) -> bool {
         self.may_admit
+    }
+
+    fn root_state(&self, _key: &QemuHotForkSourceWorldKey) -> QemuPublishedRootState {
+        self.state
     }
 
     fn admit(
@@ -653,6 +659,7 @@ fn anchor_preconditions_refuse_before_any_lifecycle_effect() {
         let sink = (expected != "anchor-retention-disabled").then(|| {
             Arc::new(RecordingAnchorSink {
                 may_admit,
+                state: QemuPublishedRootState::Absent,
                 outcome: QemuPublishedRootAdmission::Admitted,
                 admitted: Mutex::new(Vec::new()),
             })
@@ -674,6 +681,48 @@ fn anchor_preconditions_refuse_before_any_lifecycle_effect() {
             "{expected}"
         );
         assert!(effects(&order).is_empty(), "{expected} started a lifecycle");
+    }
+}
+
+/// The pool is read before replay: an invalidated coordinate declines and a
+/// live root already serves the attempt, neither starting a lifecycle.
+#[test]
+fn anchor_reads_the_root_coordinate_before_any_replay() {
+    let case = anchor_case();
+    let cases = [
+        (
+            QemuPublishedRootState::Unusable,
+            QemuAnchorRootOutcome::Declined("anchor-root-invalidated"),
+        ),
+        (
+            QemuPublishedRootState::Live,
+            QemuAnchorRootOutcome::Admitted,
+        ),
+    ];
+
+    for (state, expected) in cases {
+        let order = Order::default();
+        // Even a full pool reports a live root as serving the attempt.
+        let sink = Arc::new(RecordingAnchorSink {
+            may_admit: false,
+            state,
+            outcome: QemuPublishedRootAdmission::Admitted,
+            admitted: Mutex::new(Vec::new()),
+        });
+        let mut runner = anchor_runner(
+            &order,
+            anchor_lifecycle(&order, &case.boundary),
+            AnchorPreparation::Recover,
+            Some(Arc::clone(&sink)),
+        );
+
+        let outcome = runner
+            .materialize_anchor_root(&case.input, &anchor_context(&case.input))
+            .expect("the root coordinate answers without failure");
+
+        assert_eq!(outcome, expected, "{state:?}");
+        assert!(effects(&order).is_empty(), "{state:?} started a lifecycle");
+        assert!(sink.admitted.lock().expect("admitted anchors").is_empty());
     }
 }
 

@@ -18,7 +18,7 @@ use crate::qemu_hot_fork_source_capture::{
 use crate::{
     AttemptExecutionKey, AttemptExecutionRuntimeBasis, QemuFinalBoundaryDrain,
     QemuHotForkSourceWorldBoundary, QemuHotForkSourceWorldKey, QemuPublishedRootAdmission,
-    QemuPublishedRootRetirementError, QemuPublishedRootSink,
+    QemuPublishedRootRetirementError, QemuPublishedRootSink, QemuPublishedRootState,
 };
 
 /// Final entries and effect trace one seal received.
@@ -109,6 +109,10 @@ impl RecordingRootSink {
 impl QemuPublishedRootSink for RecordingRootSink {
     fn may_admit(&self) -> bool {
         !self.full
+    }
+
+    fn root_state(&self, _key: &QemuHotForkSourceWorldKey) -> QemuPublishedRootState {
+        QemuPublishedRootState::Absent
     }
 
     fn admit(

@@ -47,11 +47,11 @@ use super::{
     QemuFreshAttemptLifecycleFactory, QemuFreshAttemptLifecycleOwner, QemuFreshExecutionRunner,
     QemuFreshExecutionRunnerError, QemuSavepointReplayProof, map_fresh_driver_failure,
 };
-use crate::AttemptExecutionDisposition;
 use crate::qemu_hot_fork_source_capture::{
     AuthenticatedPublishedRootQemuHotForkSource, QemuPublishedRootOrigin,
     QemuPublishedRootProvenance,
 };
+use crate::{AttemptExecutionDisposition, QemuHotForkSourceWorldKey};
 
 /// Outcome of settling a stopped world's final boundary without teardown.
 #[derive(Debug, PartialEq, Eq)]
@@ -94,6 +94,22 @@ pub(crate) enum QemuPublishedRootAdmission {
     Rejected(String),
 }
 
+/// What the pool holds at one published-boundary root coordinate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum QemuPublishedRootState {
+    /// No source occupies the coordinate.
+    Absent,
+    /// A source with exactly this key can lease another child.
+    Live,
+    /// The coordinate is occupied by a source that can serve no child.
+    ///
+    /// An invalidated source stays in place, holding its template slot, until
+    /// orderly shutdown, so a new root at the same coordinate cannot be
+    /// admitted either. A coordinate held under a different complete key is
+    /// unusable for the same reason.
+    Unusable,
+}
+
 /// A rejected or unadmittable root could not be retired completely.
 ///
 /// The source's authority was transferred to process-lifetime quarantine.
@@ -121,6 +137,14 @@ pub(crate) trait QemuPublishedRootSink: Send + Sync {
     /// admission rechecks every limit.
     fn may_admit(&self) -> bool;
 
+    /// Reports what the pool holds at `key`'s coordinate.
+    ///
+    /// Anchoring asks before any replay: only a [`QemuPublishedRootState::Live`]
+    /// root can serve the attempt, and an unusable coordinate can neither
+    /// serve it nor accept a new root. Sinks that cannot read the pool answer
+    /// [`QemuPublishedRootState::Unusable`], which declines.
+    fn root_state(&self, key: &QemuHotForkSourceWorldKey) -> QemuPublishedRootState;
+
     /// Admits one authenticated root, retiring it when policy rejects it.
     ///
     /// The thin fallback for the root's published child artifact is persisted
@@ -141,6 +165,8 @@ pub(crate) trait QemuPublishedRootSink: Send + Sync {
     /// the pool must hold the root plus one child reservation. A refusal for
     /// that reason is reported as `anchor-child-capacity`, and a root equal
     /// to one already retained as [`QemuPublishedRootAdmission::AlreadyRetained`].
+    /// A coordinate held by an unusable source is refused as
+    /// `anchor-root-invalidated`: it is not retained in any useful sense.
     /// Sinks without anchor support retire every anchor.
     ///
     /// # Errors

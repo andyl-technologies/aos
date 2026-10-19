@@ -9,7 +9,7 @@ use crate::qemu_hot_fork_source_capture::{
     AuthenticatedPublishedRootQemuHotForkSource, QemuPublishedRootOrigin,
     QemuPublishedRootProvenance,
 };
-use crate::{QemuPublishedRootAdmission, QemuPublishedRootSink};
+use crate::{QemuPublishedRootAdmission, QemuPublishedRootSink, QemuPublishedRootState};
 
 fn published_artifact(name: &[u8]) -> ConfigurationArtifactId {
     ConfigurationArtifactId::parse(&format!(
@@ -554,4 +554,62 @@ fn anchor_sink_names_capacity_refusals_and_reuses_an_equal_root() {
         QemuPublishedRootAdmission::Rejected(String::from("anchor-child-capacity"))
     );
     pool.orderly_shutdown().expect("nothing retained");
+}
+
+/// An invalidated root keeps its coordinate but is never counted as kept:
+/// the coordinate reads unusable, and a racing anchor there is refused.
+#[test]
+fn anchor_at_an_invalidated_root_is_refused_not_counted_as_retained() {
+    let mut first = advanced_source("anchor.invalidated");
+    let key = published_key(&first);
+    let limits = scaled_limits(&mut first, 2, 4, 1);
+    let pool = SharedManagedQemuHotForkSourceWorldPool::new(
+        ManagedQemuHotForkSourceWorldPool::open(
+            limits,
+            ReapingDemotionSink,
+            MemoryHotCheckpointFallbackRetentionStore::new(),
+        )
+        .expect("managed source-world pool"),
+    );
+    let sink = ManagedQemuPublishedRootSink::new(pool.clone(), HotCheckpointHotnessSignals::new());
+    assert_eq!(sink.root_state(&key), QemuPublishedRootState::Absent);
+    let admitted = sink
+        .admit_anchor(anchor_root(
+            key.clone(),
+            published_artifact(b"anchor-invalidated-parent"),
+            first,
+        ))
+        .expect("admit anchor root");
+    assert_eq!(admitted, QemuPublishedRootAdmission::Admitted);
+    assert_eq!(sink.root_state(&key), QemuPublishedRootState::Live);
+
+    // A child fails and is abandoned; the root it was leased from is spent.
+    let mut inner = pool.pool.lock().expect("shared pool");
+    let lease = inner
+        .checkout_lease_for(1, &key)
+        .expect("child lease fits")
+        .expect("anchor root lease");
+    inner.abandon_lease_for(1);
+    drop(lease);
+    drop(inner);
+    assert_eq!(sink.root_state(&key), QemuPublishedRootState::Unusable);
+
+    // An anchor that raced the invalidation is retired with a named refusal.
+    let equal = advanced_source("anchor.invalidated");
+    assert_eq!(published_key(&equal), key);
+    let refused = sink
+        .admit_anchor(anchor_root(
+            key.clone(),
+            published_artifact(b"anchor-invalidated-parent"),
+            equal,
+        ))
+        .expect("a refused anchor is retired");
+    assert_eq!(
+        refused,
+        QemuPublishedRootAdmission::Rejected(String::from("anchor-root-invalidated"))
+    );
+    assert_eq!(sink.root_state(&key), QemuPublishedRootState::Unusable);
+
+    // The abandoned root's authority stays in quarantine, not in the pool.
+    assert!(pool.orderly_shutdown().is_err());
 }
