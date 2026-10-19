@@ -9453,8 +9453,9 @@ Resumed qualification:
   records and the native inode. The full filesystem run passes all 122
   nonignored cases; independent review verifies all 3,485 source inputs, the
   archive and the same six privileged exclusions. Required application target
-  compilation is running. This qualifies the tested consumer lifecycle
-  component; producer handoff, eviction, complete retirement, NativeReady and
+  compilation also passes, producing 128 test artifacts across 29 packages;
+  this supplies no application test execution claim. This qualifies the tested
+  consumer lifecycle component; producer handoff, eviction, complete retirement, NativeReady and
   full task acceptance remain pending.
 - Publication-completion candidate `11eecdde2d` settles future copy capacity
   after actual physical completion. Its private receipt comes only from the
@@ -9530,8 +9531,8 @@ Resumed qualification:
   PKG-8 and PKG-10: declarative feature organization, role unit rendering and one
   structured TOML configuration. These requirements do not require implementing
   every role runtime in this task; broader deployment remains separately
-  unqualified. The owning module gate and formatter pair pass on unchanged
-  source; the complete current-trunk aggregate is queued before a task merge.
+  unqualified. All 88 owning module checks and the formatter pair pass on
+  unchanged source; the complete current-trunk aggregate is running before a task merge.
   There are no Rust, dependency,
   specification or frozen-interface changes relative to the accepted trunk.
 
