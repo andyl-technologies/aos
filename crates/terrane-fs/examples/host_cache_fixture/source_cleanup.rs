@@ -242,7 +242,9 @@ pub(super) fn run(
     if fs::read(policy(inputs))? != before {
         return Err(invalid("closing a read view changed durable protection"));
     }
-    emit("PASS closed resident view refuses reads while independent sources and consumer leases remain readable under stalled policy; durable protection unchanged")?;
+    emit(
+        "PASS closed resident view refuses reads while independent sources and consumer leases remain readable under stalled policy; durable protection unchanged",
+    )?;
     emit(&format!(
         "SOURCE_CLEANUP_CLOSED charged_reserved_bytes={} future_hold_bytes={}",
         closed.charged_reserved_bytes, closed.future_hold_bytes
