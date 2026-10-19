@@ -12,6 +12,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 import subprocess
 import sys
@@ -301,6 +302,38 @@ class ContinuityFences(unittest.TestCase):
             with self.assertRaises(ValueError, msg=name):
                 sparse.assert_direct_changed_source_refusal(outcome, {"error": "refused"}, [{**counter, name: 1}], source)
 
+    def current_client_summary(self):
+        producer = path.parents[2] / "crates/aos-net/src/direct_upload/metrics.rs"
+        formatter = re.search(r'"(caps=\{\} [^"\\\n]+)"', producer.read_text())
+        self.assertIsNotNone(formatter)
+        return "Direct upload client: " + formatter.group(1).replace("{}", "0")
+
+    def test_changed_source_parser_accepts_actual_current_cli_formatter(self):
+        counters = sparse._client_writes_zero(self.current_client_summary())
+
+        self.assertEqual(counters["provider_attempts"], 0)
+        self.assertEqual(counters["max_active_bulk_files"], 0)
+        self.assertEqual(counters["max_active_metadata_requests"], 0)
+
+    def test_changed_source_parser_preserves_unavailable_fanout_peaks(self):
+        summary = self.current_client_summary()
+        peaks = ("max_active_bulk_files", "max_bulk_part_requests_per_file",
+            "max_active_metadata_files", "max_active_metadata_requests")
+        for name in peaks:
+            summary = summary.replace(name + "=0", name + "=unavailable")
+
+        counters = sparse._client_writes_zero(summary)
+
+        self.assertTrue(all(counters[name] is None for name in peaks))
+        self.assertEqual(counters["provider_attempts"], 0)
+
+    def test_changed_source_parser_refuses_partial_or_active_fanout(self):
+        summary = self.current_client_summary()
+        for value in ("1", "unavailable", "01", str(2 ** 64)):
+            with self.assertRaises(ValueError, msg=value):
+                sparse._client_writes_zero(summary.replace("max_active_bulk_files=0",
+                    "max_active_bulk_files=" + value))
+
     def test_guest_libraries_compile_without_inspect_or_loader_source(self):
         namespace = {"__name__": "controlled_generated_fleet"}
         exec(compile(path.read_text(), "<generated-fleet>", "exec"), namespace)
@@ -308,7 +341,8 @@ class ContinuityFences(unittest.TestCase):
         self.assertIn("def _read_checkpoint", namespace["_guest_definitions"]())
         guest = {}
         exec(namespace["_guest_definitions"](), guest)
-        summary = "Direct upload client: " + " ".join(name + "=0" for name in guest["CLIENT_COUNTERS"])
+        summary = "Direct upload client: " + " ".join(name + "=0"
+            for name in (*guest["CLIENT_COUNTERS"], *guest["CLIENT_FANOUT_COUNTERS"]))
         guest["_client_writes_zero"](summary)
         with self.assertRaises(ValueError):
             guest["_client_writes_zero"](summary.replace("abort=0", "abort=1"))

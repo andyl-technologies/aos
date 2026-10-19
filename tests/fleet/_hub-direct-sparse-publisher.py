@@ -26,6 +26,8 @@ MAX_ENVIRONMENT_BYTES = 65_536
 CLIENT_COUNTERS = ('caps', 'begin', 'status', 'grant', 'report', 'complete', 'abort',
     'identity', 'manifest_begin', 'manifest_append', 'manifest_seal', 'commit', 'metadata_read',
     'provider_attempts', 'provider_successes', 'acknowledged_bytes', 'max_provider_active')
+CLIENT_FANOUT_COUNTERS = ('max_active_bulk_files', 'max_bulk_part_requests_per_file',
+    'max_active_metadata_files', 'max_active_metadata_requests')
 CLIENT_EFFECT_COUNTERS = ('begin', 'grant', 'report', 'complete', 'abort', 'manifest_begin',
     'manifest_append', 'manifest_seal', 'commit', 'provider_attempts', 'provider_successes',
     'acknowledged_bytes', 'max_provider_active')
@@ -247,7 +249,7 @@ def _client_writes_zero(text):
     if len(lines) != 1:
         raise ValueError('changed source lacks one complete actual counter report')
     fields = lines[0].split()
-    if len(fields) != len(CLIENT_COUNTERS):
+    if len(fields) != len(CLIENT_COUNTERS) + len(CLIENT_FANOUT_COUNTERS):
         raise ValueError('changed source counter schema changed')
     values = {}
     for name, field in zip(CLIENT_COUNTERS, fields):
@@ -255,8 +257,26 @@ def _client_writes_zero(text):
         if match is None or match.group(1) != name:
             raise ValueError('changed source counter name or numeric value changed')
         values[name] = int(match.group(2))
+
+    for name, field in zip(CLIENT_FANOUT_COUNTERS, fields[len(CLIENT_COUNTERS):]):
+        match = re.fullmatch(r'([a-z_]+)=(0|[1-9][0-9]*|unavailable)', field)
+        if match is None or match.group(1) != name:
+            raise ValueError('changed source fanout counter schema changed')
+        value = match.group(2)
+        if value != 'unavailable' and (len(value) > 20 or int(value) > 2 ** 64 - 1):
+            raise ValueError('changed source fanout counter exceeds its bound')
+        values[name] = None if value == 'unavailable' else int(value)
+
+    known = [values[name] is not None for name in CLIENT_FANOUT_COUNTERS]
+    if any(known) and not all(known):
+        raise ValueError('changed source fanout counters are partial')
+
+    # Missing supplemental peaks remain unknown. The original concrete effect
+    # counters still have to prove zero provider/control mutations.
     if any(values[name] != 0 for name in CLIENT_EFFECT_COUNTERS):
         raise ValueError('changed source invocation may have attempted an effect')
+    if any(values[name] not in (None, 0) for name in CLIENT_FANOUT_COUNTERS):
+        raise ValueError('changed source invocation dispatched concurrent work')
     return values
 
 
@@ -685,6 +705,14 @@ def probe_direct_changed_source(client, tools, process, signed, source, token):
                         outcome = {'exitCode': reply.returncode, 'timedOut': False}
                     except subprocess.TimeoutExpired:
                         outcome = {'exitCode': None, 'timedOut': True}
+                    for stream in (stdout, stderr):
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                directory_descriptor = os.open(output_root, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(directory_descriptor)
+                finally:
+                    os.close(directory_descriptor)
                 if outcome['exitCode'] in (None, 0) or outcome['timedOut']:
                     raise ValueError('changed source lacks actual non-success counter evidence; source remains retained')
                 if (output_root / 'stderr').stat().st_size > 1048576:
