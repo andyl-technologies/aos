@@ -2433,7 +2433,10 @@ use continuation::*;
 
 mod start_replay;
 use start_replay::*;
-pub(crate) use start_replay::{materialize_start_from, replay_pauses_before_live_network_choice};
+pub(crate) use start_replay::{
+    StartReplayCursor, materialize_start_from, materialize_start_from_tracked,
+    replay_pauses_before_live_network_choice,
+};
 
 fn map_checkpoint_capture_failure<F, D>(
     error: SchedulerError,

@@ -3,6 +3,7 @@
 use super::ancestor::record_ancestor_decision;
 use super::*;
 use crate::QemuFreshStartReplayError;
+use crate::qemu_campaign_lifecycle::StartReplayCursor;
 use crate::qemu_hot_fork_source_capture::QemuPublishedRootOrigin;
 
 /// Whole-world runner result before durable publication reconciliation.
@@ -58,8 +59,9 @@ pub enum QemuHotForkWorldExecutionRunnerError<F, D> {
     Start(SchedulerError),
     /// The authenticated branch edge could not be applied at the captured parent.
     StartReplay(String),
-    /// Replay of a recorded suffix from an ancestor root diverged before the
-    /// attempt's own parent; the root is abandoned and a retry runs thin.
+    /// Replay from an ancestor root failed before the attempt's own edge
+    /// began to apply; the root is abandoned and the next execution runs
+    /// thin.
     AncestorSuffixDiverged(String),
     /// Modeled driving or result construction failed.
     Driver(D),
@@ -251,16 +253,21 @@ where
                 AttemptWorkerFailure::Terminal(QemuHotForkWorldExecutionRunnerError::Start(error))
             })
             .and_then(|materialization| {
+                let mut cursor = StartReplayCursor::default();
                 let materialization =
-                    crate::qemu_campaign_lifecycle::materialize_start_from::<F::Error, D::Error>(
+                    crate::qemu_campaign_lifecycle::materialize_start_from_tracked::<
+                        F::Error,
+                        D::Error,
+                    >(
                         &mut lifecycle,
                         input,
                         start.source.clone(),
                         start.target,
                         context,
                         materialization,
+                        &mut cursor,
                     )
-                    .map_err(|failure| start.map_replay_failure(input, failure))?;
+                    .map_err(|failure| start.map_replay_failure(input, failure, cursor))?;
                 start.record_forked(input);
                 if input.attempt().stop().accepts_next_choice() {
                     lifecycle.enable_signal_fault_campaign_promotion();
@@ -450,35 +457,48 @@ impl<'a> HotForkStart<'a> {
         })
     }
 
-    /// Classifies a start-replay failure, making suffix divergence retryable.
+    /// Classifies a start-replay failure from where replay stood.
     ///
-    /// A divergence before the branch parent contradicts only the ancestor
-    /// root, never the attempt: the caller quarantines the child, which
-    /// abandons the root, and the retry replays thin from genesis.
+    /// For an ancestor child, every failure before replay began applying the
+    /// attempt's own edge at the branch parent contradicts only the root:
+    /// a suffix divergence, a scheduler or terminal failure inside the
+    /// suffix, a network fault crossing inside it, or a guest request at
+    /// the parent that differs from the recorded one. Those are retryable;
+    /// the caller quarantines the child, which invalidates the root, and the
+    /// attempt's next execution replays thin from genesis. Cancellation and
+    /// a failure applying the edge itself keep their class, as for an exact
+    /// root.
     fn map_replay_failure<F, D>(
         &self,
         input: &CrucibleAttemptExecution,
         failure: AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>>,
+        cursor: StartReplayCursor,
     ) -> AttemptWorkerFailure<QemuHotForkWorldExecutionRunnerError<F, D>> {
         let Some((anchor, parent, _root)) = self.ancestor else {
             return map_hot_fork_start_replay_failure(failure);
         };
-        let suffix_divergence = matches!(
-            &failure,
-            AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
-                QemuFreshStartReplayError::DivergedAt { index, .. }
-            )) if *index < parent.schedule.len()
-        );
-        if !suffix_divergence {
+        if !cursor.failed_before(&failure, parent.schedule.len()) {
             return map_hot_fork_start_replay_failure(failure);
         }
 
+        let reason = if matches!(
+            &failure,
+            AttemptWorkerFailure::Retryable(QemuFreshExecutionRunnerError::StartReplay(
+                QemuFreshStartReplayError::DivergedAt { .. }
+            )) | AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
+                QemuFreshStartReplayError::DivergedAt { .. }
+            ))
+        ) {
+            "ancestor-suffix-diverged"
+        } else {
+            "ancestor-suffix-failed"
+        };
         record_ancestor_decision(
             input,
             Some(anchor),
             suffix_len(anchor, parent),
             "diverged",
-            "ancestor-suffix-diverged",
+            reason,
         );
         AttemptWorkerFailure::Retryable(
             QemuHotForkWorldExecutionRunnerError::AncestorSuffixDiverged(start_replay_message(

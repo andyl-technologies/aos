@@ -39,10 +39,10 @@
 //! the parent is operational.
 //!
 //! The same configuration rule applies to the edge of a child of an exact
-//! published root at `P`, which is otherwise forked unchecked. A suffix
-//! failure before the child reaches `P` is operational: the child is
-//! quarantined, the root abandoned, and the attempt's next execution runs
-//! thin.
+//! published root at `P`, which is otherwise forked unchecked. Any failure
+//! before the child begins applying the attempt's edge at `P` is
+//! operational: the child is quarantined, the root abandoned, and the
+//! attempt's next execution runs thin.
 
 use std::io::Write;
 use std::sync::Arc;

@@ -233,6 +233,7 @@ fn fresh_replay_applies_campaign_selection_at_exact_guest_request() {
     let execution_context =
         fresh_runner_context().with_guest_selectable_boundary_diagnostics(diagnostics);
     let mut materialization = QemuFreshStartMaterialization::genesis();
+    let mut cursor = StartReplayCursor::default();
     apply_replayed_guest_selectables::<(), ()>(
         &mut lifecycle,
         &execution_context,
@@ -247,8 +248,11 @@ fn fresh_replay_applies_campaign_selection_at_exact_guest_request() {
         },
         &mut current,
         &mut materialization,
+        &mut cursor,
     )
     .expect("exact guest branch replay");
+    // The reply was the last recorded decision applied, at the parent.
+    assert_eq!(cursor.position(), (target.schedule.len() - 1, true));
 
     assert_eq!(current, target);
     let replies = replies.lock().expect("fresh lifecycle replies");
@@ -299,6 +303,7 @@ fn fresh_replay_applies_campaign_selection_at_exact_guest_request() {
     };
     let mut drift_current = parent.clone();
     let mut drift_materialization = QemuFreshStartMaterialization::genesis();
+    let mut drift_cursor = StartReplayCursor::default();
 
     let failure = apply_replayed_guest_selectables::<std::io::Error, std::io::Error>(
         &mut drift_lifecycle,
@@ -314,8 +319,13 @@ fn fresh_replay_applies_campaign_selection_at_exact_guest_request() {
         },
         &mut drift_current,
         &mut drift_materialization,
+        &mut drift_cursor,
     )
     .expect_err("drifted runtime opportunity must fail replay");
+    // The request mismatched at the parent before its reply began to apply,
+    // so a child of an ancestor root counts it as root drift there.
+    assert_eq!(drift_cursor.position(), (parent.schedule.len(), false));
+    assert!(drift_cursor.failed_before(&failure, parent.schedule.len()));
 
     let AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
         QemuFreshStartReplayError::GuestSelectable(GuestSelectableError::ReplayMismatch(mismatch)),

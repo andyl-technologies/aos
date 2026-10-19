@@ -1534,6 +1534,8 @@ fn branch_replay_guest_pending(
     )
 }
 
+#[path = "tests/ancestor_failures.rs"]
+mod ancestor_failures;
 #[path = "tests/ancestor_policy.rs"]
 mod ancestor_policy;
 #[path = "tests/ancestor_runner.rs"]

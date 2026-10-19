@@ -177,9 +177,15 @@ pub(super) struct SuffixObservations {
 #[derive(Clone)]
 pub(super) struct SuffixWorld {
     genesis: Configuration,
-    successors: BTreeMap<ContentHash, Configuration>,
+    pub(super) successors: BTreeMap<ContentHash, Configuration>,
     /// A guest request published once the world reaches this configuration.
-    guest: Option<(Configuration, QemuNodeSelectablePendingRequest)>,
+    pub(super) guest: Option<(Configuration, QemuNodeSelectablePendingRequest)>,
+    /// Where an attempt's driven quantum fails like the scheduler would.
+    pub(super) drive_failure_at: Option<Configuration>,
+    /// Where the world reports a terminal verdict.
+    pub(super) terminal_at: Option<Configuration>,
+    /// Whether applying a guest reply fails.
+    pub(super) reply_failure: bool,
 }
 
 impl SuffixWorld {
@@ -211,6 +217,9 @@ impl SuffixWorld {
             genesis,
             successors,
             guest,
+            drive_failure_at: None,
+            terminal_at: None,
+            reply_failure: false,
         }
     }
 
@@ -283,6 +292,11 @@ impl QemuFreshAttemptLifecycleOwner for SuffixLifecycle {
                 .lock()
                 .expect("suffix requests")
                 .push(request.configuration.clone());
+            if self.world.drive_failure_at.as_ref() == Some(&self.configuration) {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: String::from("scripted suffix quantum failure"),
+                });
+            }
         }
         let at = crucible::VirtualTime {
             ticks: self.quanta + 1,
@@ -319,7 +333,11 @@ impl QemuFreshAttemptLifecycleOwner for SuffixLifecycle {
     }
 
     fn terminal_verdict_for_stop(&mut self) -> Option<crucible::QuantumTerminalVerdict> {
-        None
+        (self.world.terminal_at.as_ref() == Some(&self.configuration)).then(|| {
+            crucible::QuantumTerminalVerdict::Failed(vec![String::from(
+                "scripted suffix terminal verdict",
+            )])
+        })
     }
 
     fn prepare_terminal_checkpoint(
@@ -364,6 +382,11 @@ impl QemuFreshAttemptLifecycleOwner for SuffixLifecycle {
         reply: &crucible_protocol::SelectionReply,
     ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
         assert_eq!(parent, &self.configuration);
+        if self.world.reply_failure {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("scripted guest reply failure"),
+            });
+        }
         self.configuration = selected.clone();
         self.observations
             .replies
@@ -461,7 +484,7 @@ impl QemuHotForkWorldLifecycleOwner for SuffixLifecycle {
 }
 
 /// Hot factory whose single child starts at the ancestor root.
-struct AncestorFactory {
+pub(super) struct AncestorFactory {
     world: SuffixWorld,
     root_quanta: u64,
     origin: QemuHotForkStartOrigin,
@@ -522,20 +545,20 @@ impl QemuFreshAttemptLifecycleFactory for ThinFactory {
     }
 }
 
-fn ancestor_origin(anchor: &Configuration) -> QemuHotForkStartOrigin {
+pub(super) fn ancestor_origin(anchor: &Configuration) -> QemuHotForkStartOrigin {
     QemuHotForkStartOrigin::Ancestor {
         anchor: Arc::new(anchor.clone()),
         root: QemuPublishedRootOrigin::BranchParentAnchor,
     }
 }
 
-type AncestorRunner = QemuHotForkWorldExecutionRunner<
+pub(super) type AncestorRunner = QemuHotForkWorldExecutionRunner<
     QemuObservedFreshAttemptLifecycleFactory<AncestorFactory>,
     QemuFreshModeledDriver,
 >;
 
 /// Builds an observed hot runner whose child starts after `root_quanta`.
-fn ancestor_runner(
+pub(super) fn ancestor_runner(
     world: SuffixWorld,
     root_quanta: u64,
     origin: QemuHotForkStartOrigin,

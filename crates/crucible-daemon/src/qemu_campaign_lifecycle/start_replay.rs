@@ -6,8 +6,71 @@
 //! schedule implies along the way: guest selectable requests, reserved
 //! live-network choices, and network fault parks. It compares each produced
 //! decision with the target schedule and never chooses anything itself.
+//!
+//! A [`StartReplayCursor`] records how far replay verified the target and
+//! whether it was applying a recorded decision when it stopped. A hot child
+//! forked from an ancestor root uses it to tell a failure of the root's
+//! suffix, which is operational, from a failure applying the attempt's own
+//! edge, which belongs to the attempt.
 
 use super::*;
+
+/// Where one start replay stood, for classifying a failure by its position.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct StartReplayCursor {
+    /// Schedule length of the deepest configuration verified against the
+    /// target.
+    reached: usize,
+    /// Whether replay was applying the recorded decision at `reached` (a
+    /// guest reply, a network fault branch append, or a live-network
+    /// selection) rather than driving or validating toward it.
+    applying: bool,
+}
+
+impl StartReplayCursor {
+    /// Records that replay verified the target up to `reached` decisions.
+    pub(super) fn at(&mut self, reached: usize) {
+        self.reached = reached;
+        self.applying = false;
+    }
+
+    /// Records that replay is applying the recorded decision at `index`.
+    pub(super) fn applying_at(&mut self, index: usize) {
+        self.reached = index;
+        self.applying = true;
+    }
+
+    /// Returns the deepest verified schedule length and whether replay was
+    /// applying the recorded decision there.
+    #[cfg(test)]
+    pub(crate) const fn position(self) -> (usize, bool) {
+        (self.reached, self.applying)
+    }
+
+    /// Reports whether a failure at this cursor arose before replay began
+    /// applying the recorded decision at `edge`.
+    ///
+    /// A divergence names its own decision index, which takes precedence
+    /// over the cursor; cancellation never counts.
+    pub(crate) fn failed_before<F, D>(
+        self,
+        failure: &AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>>,
+        edge: usize,
+    ) -> bool {
+        let error = match failure {
+            AttemptWorkerFailure::Canceled(_) => return false,
+            AttemptWorkerFailure::Retryable(error) | AttemptWorkerFailure::Terminal(error) => error,
+        };
+        if let QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::DivergedAt {
+            index,
+            ..
+        }) = error
+        {
+            return *index < edge;
+        }
+        self.reached < edge || (self.reached == edge && !self.applying)
+    }
+}
 
 pub(super) fn materialize_fresh_start<F, D>(
     lifecycle: &mut dyn QemuFreshAttemptLifecycleOwner,
@@ -34,12 +97,38 @@ pub(super) fn materialize_fresh_start<F, D>(
 pub(crate) fn materialize_start_from<F, D>(
     lifecycle: &mut dyn QemuFreshAttemptLifecycleOwner,
     input: &CrucibleAttemptExecution,
+    current: Configuration,
+    target: &Configuration,
+    context: &AttemptExecutionContext,
+    replay: QemuFreshStartMaterialization,
+) -> Result<QemuFreshStartMaterialization, AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>>>
+{
+    materialize_start_from_tracked(
+        lifecycle,
+        input,
+        current,
+        target,
+        context,
+        replay,
+        &mut StartReplayCursor::default(),
+    )
+}
+
+/// Runs [`materialize_start_from`], keeping `cursor` at replay's position.
+///
+/// On failure, `cursor` names the deepest verified schedule length and
+/// whether a recorded decision was being applied there.
+pub(crate) fn materialize_start_from_tracked<F, D>(
+    lifecycle: &mut dyn QemuFreshAttemptLifecycleOwner,
+    input: &CrucibleAttemptExecution,
     mut current: Configuration,
     target: &Configuration,
     context: &AttemptExecutionContext,
     mut replay: QemuFreshStartMaterialization,
+    cursor: &mut StartReplayCursor,
 ) -> Result<QemuFreshStartMaterialization, AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>>>
 {
+    cursor.at(current.schedule.len());
     let authoritative_quanta = lifecycle.completed_quanta();
     if replay.completed_quanta != authoritative_quanta {
         return Err(AttemptWorkerFailure::Terminal(
@@ -113,11 +202,14 @@ pub(crate) fn materialize_start_from<F, D>(
         },
         &mut current,
         &mut replay,
+        cursor,
     )?;
     append_start_replay_events(&mut replay, &initial_selection_entries)?;
     // A restored parent can already hold every VM at a network fault park.
+    cursor.applying_at(current.schedule.len());
     let initial_network_entries =
         cross_replayed_network_fault_boundary(lifecycle, input, target, &mut current, &mut replay)?;
+    cursor.at(current.schedule.len());
     append_start_replay_events(&mut replay, &initial_network_entries)?;
     publish_replayed_host_outcomes(lifecycle, target, &mut current, &mut replay)?;
     if current == *target || replay.anchor_reached {
@@ -137,6 +229,7 @@ pub(crate) fn materialize_start_from<F, D>(
             ));
         }
         let prior_len = current.schedule.len();
+        cursor.at(prior_len);
         let prior_progress = StartReplayProgress::observe(&replay, prior_len);
         context.charge_execution_quantum().map_err(|error| {
             AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
@@ -230,12 +323,14 @@ pub(crate) fn materialize_start_from<F, D>(
                 }),
             ));
         }
+        cursor.at(next_len);
         let terminal = lifecycle.terminal_verdict_for_stop();
         let live_network_entries = if terminal.is_none() {
-            apply_replayed_live_network_selection(lifecycle, target, &mut next)?
+            apply_replayed_live_network_selection(lifecycle, target, &mut next, cursor)?
         } else {
             Vec::new()
         };
+        cursor.at(next.schedule.len());
         let selection_entries = if terminal.is_none() {
             apply_replayed_guest_selectables(
                 lifecycle,
@@ -251,15 +346,18 @@ pub(crate) fn materialize_start_from<F, D>(
                 },
                 &mut next,
                 &mut replay,
+                cursor,
             )?
         } else {
             Vec::new()
         };
         let network_fault_entries = if terminal.is_none() {
+            cursor.applying_at(next.schedule.len());
             cross_replayed_network_fault_boundary(lifecycle, input, target, &mut next, &mut replay)?
         } else {
             Vec::new()
         };
+        cursor.at(next.schedule.len());
 
         let appended = append_start_replay_events(&mut replay, &outcome.event_log_entries)
             .and_then(|()| append_start_replay_events(&mut replay, &live_network_entries))
@@ -276,6 +374,7 @@ pub(crate) fn materialize_start_from<F, D>(
         replay.terminal_quiescence = outcome.scheduler_quiescence;
         publish_replayed_host_outcomes(lifecycle, target, &mut next, &mut replay)?;
         current = next;
+        cursor.at(current.schedule.len());
         // An anchor stop leaves the joined park unbranched; the caller
         // authenticates and retains that boundary instead of the target.
         if replay.anchor_reached {
@@ -316,12 +415,14 @@ pub(super) fn apply_replayed_live_network_selection<F, D>(
     lifecycle: &mut dyn QemuFreshAttemptLifecycleOwner,
     target: &Configuration,
     current: &mut Configuration,
+    cursor: &mut StartReplayCursor,
 ) -> Result<Vec<SchedulerEventLogEntry>, AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>>>
 {
     let Some(choice) = lifecycle.live_network_preselection() else {
         return Ok(Vec::new());
     };
     let index = current.schedule.len();
+    cursor.applying_at(index);
     let Some(Decision::Selection(selection)) = target
         .schedule
         .decision_history()

@@ -66,8 +66,11 @@ pub(super) fn apply_replayed_guest_selectables<F, D>(
     replay_context: GuestSelectableReplayContext<'_>,
     current: &mut Configuration,
     materialization: &mut QemuFreshStartMaterialization,
+    cursor: &mut StartReplayCursor,
 ) -> Result<Vec<SchedulerEventLogEntry>, AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>>>
 {
+    // Requests are validated at `current` before any reply applies.
+    cursor.at(current.schedule.len());
     let pending = lifecycle
         .drain_pending_selectable_requests()
         .map_err(map_start_replay_scheduler_failure)?;
@@ -212,7 +215,9 @@ pub(super) fn apply_replayed_guest_selectables<F, D>(
         )?;
     }
     let mut selection_entries = Vec::new();
+    // Every request matched its recorded decision; replies now apply them.
     for (pending, reply, decision, parent) in replies {
+        cursor.applying_at(parent.schedule.len());
         let selected = crucible::try_step(&parent, Decision::Selection(decision.clone())).map_err(
             |error| {
                 AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(

@@ -920,9 +920,13 @@ signal-fault branch still pending. The suffix is
 bounded to 4096 decisions and 8 selections, and the root's recorded pause mode
 must equal the attempt's own. The same configuration rule applies to the edge
 of a child of an exact published root, which is refused before checkout when
-its selection is carried in configuration. A divergence inside the suffix is
-operational: the child is quarantined, the root is invalidated, and the
-attempt is retried, which then runs thin. A world reached this way is never
+its selection is carried in configuration. Any failure before the child
+begins applying the attempt's own edge at `G` is operational: a suffix
+divergence, a scheduler or terminal failure inside the suffix, a failed
+network fault crossing inside it, or a guest request at `G` that differs from
+the recorded one. The child is quarantined, the root is invalidated, and the
+attempt's next execution runs thin. Cancellation, and a failure applying the
+edge itself, keep their class. A world reached this way is never
 retained at the guest-choice boundary it passed.
 
 Both paths write one bounded operational row per decision:
@@ -975,6 +979,6 @@ wire, or shared-memory format.
   validate each replayed guest request against its recorded opportunity and
   branch point and reach the target exactly before the attempt's own
   selection is applied.
-  Divergence before `G` is operational, invalidates `A`, and falls back to
-  thin. A world reached this way MUST NOT be retained at a guest-choice
+  Any failure other than cancellation before the attempt's own edge begins
+  to apply at `G` is operational, invalidates `A`, and falls back to thin. A world reached this way MUST NOT be retained at a guest-choice
   boundary.

@@ -127,6 +127,14 @@ fn start_replay_parks_network_phase_markers_only_when_declared() {
 /// Builds a discovery input whose start is the selected child of one
 /// recorded network fault branch taken after one replay quantum.
 fn network_fault_branch_input(at: VirtualTime) -> (CrucibleAttemptExecution, Configuration) {
+    network_fault_branch_input_with_tail(at, 0)
+}
+
+/// Builds the same input with `tail` further replay quanta past the branch.
+fn network_fault_branch_input_with_tail(
+    at: VirtualTime,
+    tail: usize,
+) -> (CrucibleAttemptExecution, Configuration) {
     let template = network_fault_input();
     let scenario = template.scenario().clone();
     let parent = replay_step(&Configuration::genesis(scenario.scenario_def()));
@@ -149,7 +157,9 @@ fn network_fault_branch_input(at: VirtualTime) -> (CrucibleAttemptExecution, Con
                 .expect("branch selection"),
         )
         .expect("network fault branch");
-    let target = branch.selected().clone();
+    let target = (0..tail).fold(branch.selected().clone(), |configuration, _| {
+        replay_step(&configuration)
+    });
     let replay = crucible::SignalFaultCampaignReplayPlan::empty(target.clone())
         .with_network_branches(vec![branch])
         .expect("network replay plan");
@@ -509,4 +519,107 @@ fn start_replay_refuses_a_source_the_lifecycle_does_not_stand_at() {
         );
         assert_eq!(lifecycle.completed_quanta, 0, "{label}");
     }
+}
+
+/// The shape of a child forked from an anchor root kept at a network fault
+/// park: its suffix opens by crossing that recorded branch, runs on to the
+/// parent, and the cursor ends past the edge. A failure after the crossing
+/// but before the parent is a suffix failure.
+#[test]
+fn ancestor_suffix_crosses_a_network_fault_branch_inside_the_suffix() {
+    let at = VirtualTime { ticks: 40 };
+    // Root C at the park, the branch, two suffix quanta to the parent P, and
+    // one edge quantum.
+    let (input, target) = network_fault_branch_input_with_tail(at, 3);
+    let genesis = Configuration::genesis(input.scenario().scenario_def());
+    let root = input.signal_fault_replay().network_branches()[0]
+        .parent()
+        .clone();
+    let edge = target.schedule.len() - 1;
+    let anchored = |lifecycle: &mut FakeFreshLifecycle| {
+        let anchored = materialize_start_from::<(), ()>(
+            lifecycle,
+            &input,
+            genesis.clone(),
+            &target,
+            &fresh_runner_context(),
+            QemuFreshStartMaterialization::genesis().with_anchor_stop(root.id()),
+        )
+        .expect("replay stops at the root's park");
+        let (log, quanta, frontier, quiescence, _verdict) = anchored.into_parts();
+        QemuFreshStartMaterialization::from_resume_parts(
+            root.clone(),
+            log,
+            quanta,
+            frontier,
+            quiescence.unwrap_or_default(),
+            None,
+        )
+    };
+
+    let mut lifecycle = publishing_parked_lifecycle(at);
+    let start = anchored(&mut lifecycle);
+    let mut cursor = StartReplayCursor::default();
+    let replay = materialize_start_from_tracked::<(), ()>(
+        &mut lifecycle,
+        &input,
+        root.clone(),
+        &target,
+        &fresh_runner_context(),
+        start,
+        &mut cursor,
+    )
+    .expect("the suffix crosses the recorded branch and reaches the target");
+    assert_eq!(replay.restored_configuration(), Some(&target));
+    assert_eq!(cursor.position(), (target.schedule.len(), false));
+
+    // The world turns terminal one quantum past the crossing, inside the
+    // suffix: that contradicts the root, not the attempt.
+    let mut lifecycle = publishing_parked_lifecycle(at);
+    let start = anchored(&mut lifecycle);
+    lifecycle.terminal_after_replay = true;
+    let mut cursor = StartReplayCursor::default();
+    let failure = materialize_start_from_tracked::<(), ()>(
+        &mut lifecycle,
+        &input,
+        root.clone(),
+        &target,
+        &fresh_runner_context(),
+        start,
+        &mut cursor,
+    )
+    .expect_err("a terminal suffix stops replay");
+    assert!(matches!(
+        failure,
+        AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
+            QemuFreshStartReplayError::Terminated
+        ))
+    ));
+    assert_eq!(cursor.position(), (root.schedule.len() + 2, false));
+    assert!(cursor.failed_before(&failure, edge));
+}
+
+/// A crossing that fails at the branch is the attempt's own edge when the
+/// branch is its edge, and root drift when the branch lies in a suffix.
+#[test]
+fn network_fault_crossing_failure_belongs_to_the_edge_only_at_the_edge() {
+    let (input, target) = network_fault_branch_input(VirtualTime { ticks: 40 });
+    let genesis = Configuration::genesis(input.scenario().scenario_def());
+    let branch_index = target.schedule.len() - 1;
+    let mut lifecycle = parked_lifecycle(VirtualTime { ticks: 41 });
+    let mut cursor = StartReplayCursor::default();
+
+    let failure = materialize_start_from_tracked::<(), ()>(
+        &mut lifecycle,
+        &input,
+        genesis,
+        &target,
+        &fresh_runner_context(),
+        QemuFreshStartMaterialization::genesis(),
+        &mut cursor,
+    )
+    .expect_err("a mismatched park frontier must not cross the branch");
+
+    assert!(!cursor.failed_before(&failure, branch_index));
+    assert!(cursor.failed_before(&failure, branch_index + 1));
 }
