@@ -15,7 +15,7 @@ impl GdbAttachInfo {
         operator_listen: GdbListen,
     ) -> Result<Self, BackendError> {
         let backend_endpoint = backend_endpoint.into();
-        validate_gdb_endpoint("qemu_gdbstub", &backend_endpoint)?;
+        validate_gdb_endpoint("backend_gdbstub", &backend_endpoint)?;
         Ok(Self {
             node,
             backend_endpoint,

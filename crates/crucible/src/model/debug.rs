@@ -68,7 +68,7 @@ impl DebugAttachRequest {
         Ok(Self {
             configuration,
             node,
-            backend_gdbstub: DebugGdbEndpoint::new("qemu_gdbstub", backend_gdbstub)?,
+            backend_gdbstub: DebugGdbEndpoint::new("backend_gdbstub", backend_gdbstub)?,
             gdb_listen: DebugGdbEndpoint::new("gdb_listen", gdb_listen)?,
         })
     }

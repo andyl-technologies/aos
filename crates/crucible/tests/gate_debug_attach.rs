@@ -88,7 +88,7 @@ fn debug_attach_rejects_invalid_endpoint_and_unknown_node() -> Result<(), Box<dy
     assert!(matches!(
         DebugAttachRequest::new(root.clone(), node_id("guest-a"), "", "127.0.0.1:9000"),
         Err(EngineError::DebugGdbEndpointInvalid {
-            field: "qemu_gdbstub",
+            field: "backend_gdbstub",
             ..
         })
     ));

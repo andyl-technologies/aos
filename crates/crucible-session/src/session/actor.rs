@@ -228,7 +228,7 @@ impl fmt::Display for DebugRuntimeRepositionEvidenceMismatch {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
-            "expected node={:?} previous={:?} configuration={:?} checkpoint={:?} previous_qemu_gdbstub={:?}, actual node={:?} previous={:?} configuration={:?} checkpoint={:?} qemu_gdbstub={:?} gateway_generation={}",
+            "expected node={:?} previous={:?} configuration={:?} checkpoint={:?} previous_backend_gdbstub={:?}, actual node={:?} previous={:?} configuration={:?} checkpoint={:?} backend_gdbstub={:?} gateway_generation={}",
             self.expected_node,
             self.expected_previous_configuration,
             self.expected_configuration,
