@@ -1994,6 +1994,14 @@ pub enum QemuFreshStartReplayError {
     /// The scenario stopped before reaching the requested configuration.
     #[error("fresh start replay reached a terminal verdict before the requested configuration")]
     Terminated,
+    /// The lifecycle does not stand at the configuration replay starts from.
+    #[error("fresh start replay starts at {expected}, but the lifecycle stands at {observed}")]
+    SourceMismatch {
+        /// The configuration replay was asked to start from.
+        expected: String,
+        /// The configuration the lifecycle's materialization stands at.
+        observed: String,
+    },
     /// One selected origin attempt failed modeled replay validation.
     #[error("selected continuation origin replay failed")]
     Origin(#[source] Box<crate::QemuFreshModeledDriverError>),

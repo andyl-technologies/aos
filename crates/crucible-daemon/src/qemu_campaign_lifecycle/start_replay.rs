@@ -51,6 +51,25 @@ pub(crate) fn materialize_start_from<F, D>(
             ),
         ));
     }
+    // Replay begins at `current`, so the lifecycle must stand exactly there:
+    // a restored materialization names its boundary, and an unrestored one
+    // is a fresh lifecycle at genesis. Anything else fails closed.
+    let standing = match &replay.restored_configuration {
+        Some(restored) => restored == &current,
+        None => current == Configuration::genesis(current.def.clone()),
+    };
+    if !standing {
+        let observed = replay.restored_configuration.as_ref().map_or_else(
+            || String::from("genesis"),
+            |restored| restored.id().to_hex(),
+        );
+        return Err(AttemptWorkerFailure::Terminal(
+            QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::SourceMismatch {
+                expected: current.id().to_hex(),
+                observed,
+            }),
+        ));
+    }
     if current == *target {
         if publish_replayed_host_outcomes(lifecycle, target, &mut current, &mut replay)? {
             replay.restored_configuration = Some(current);

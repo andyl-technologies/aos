@@ -491,11 +491,12 @@ pub(crate) trait QemuHotForkWorldLifecycleOwner:
 
     /// Returns where the forked source sits relative to the attempt's start.
     ///
-    /// Lifecycles forked from the attempt's own start boundary use the default.
+    /// The runner replays a suffix only for an ancestor origin and checks the
+    /// lifecycle stands at that origin first, so every owner, including each
+    /// wrapper, must report the origin of the lifecycle it holds. There is
+    /// deliberately no default.
     #[must_use]
-    fn start_origin(&self) -> QemuHotForkStartOrigin {
-        QemuHotForkStartOrigin::Exact
-    }
+    fn start_origin(&self) -> QemuHotForkStartOrigin;
 }
 
 impl<G> QemuHotForkWorldLifecycleOwner for QemuProductionHotForkWorldLifecycle<G>

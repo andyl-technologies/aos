@@ -688,6 +688,10 @@ impl QemuHotForkWorldLifecycleOwner for BranchReplayLifecycle {
     ) -> Result<AttemptExecutionReconciliationStep, crucible_api::LifecycleApiError> {
         Ok(AttemptExecutionReconciliationStep::Complete)
     }
+
+    fn start_origin(&self) -> QemuHotForkStartOrigin {
+        QemuHotForkStartOrigin::Exact
+    }
 }
 
 struct BranchReplayLifecycleFactory {
@@ -930,6 +934,10 @@ impl QemuHotForkWorldLifecycleOwner for InheritedBoundaryLifecycle {
         _disposition: AttemptExecutionDisposition,
     ) -> Result<AttemptExecutionReconciliationStep, crucible_api::LifecycleApiError> {
         Ok(AttemptExecutionReconciliationStep::Complete)
+    }
+
+    fn start_origin(&self) -> QemuHotForkStartOrigin {
+        QemuHotForkStartOrigin::Exact
     }
 }
 

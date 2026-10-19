@@ -394,16 +394,24 @@ fn resuming_from_an_anchor_stop_matches_an_uninterrupted_replay() {
     )
     .expect("anchored replay stops at its anchor");
     // A world kept at the anchor carries only its scheduler continuation, so
-    // the resumed replay starts from those parts, as a forked child does.
+    // the resumed replay starts from those parts at the anchor, as a forked
+    // child does.
     let (log, quanta, frontier, quiescence, verdict) = anchored.into_parts();
     assert!(verdict.is_none());
     let resumed = materialize_start_from::<(), ()>(
         &mut anchored_lifecycle,
         &input,
-        parent,
+        parent.clone(),
         &target,
         &fresh_runner_context(),
-        QemuFreshStartMaterialization::from_origin_parts(log, quanta, frontier, quiescence),
+        QemuFreshStartMaterialization::from_resume_parts(
+            parent,
+            log,
+            quanta,
+            frontier,
+            quiescence.unwrap_or_default(),
+            None,
+        ),
     )
     .expect("resumed replay crosses the anchored branch");
 
@@ -451,4 +459,54 @@ fn start_replay_ignores_an_anchor_that_is_not_a_parked_branch_parent() {
 
     assert!(!replay.anchor_reached());
     assert_eq!(replay.restored_configuration(), Some(&target));
+}
+
+/// Replay starts only where the lifecycle stands: a restored boundary other
+/// than the requested source, or a fresh lifecycle asked to start past
+/// genesis, fails closed before any quantum runs.
+#[test]
+fn start_replay_refuses_a_source_the_lifecycle_does_not_stand_at() {
+    let at = VirtualTime { ticks: 40 };
+    let (input, target) = network_fault_branch_input(at);
+    let genesis = Configuration::genesis(input.scenario().scenario_def());
+    let parent = input.signal_fault_replay().network_branches()[0]
+        .parent()
+        .clone();
+    let restored_at_genesis = QemuFreshStartMaterialization::from_resume_parts(
+        genesis,
+        RetainedAttemptLog::new(DEFAULT_MAXIMUM_EVENT_LOG_BYTES),
+        0,
+        VirtualTime::default(),
+        SchedulerQuiescence::default(),
+        None,
+    );
+    let cases = [
+        (restored_at_genesis, parent.clone(), "genesis-restored"),
+        (QemuFreshStartMaterialization::genesis(), parent, "fresh"),
+    ];
+
+    for (materialization, source, label) in cases {
+        let mut lifecycle = publishing_parked_lifecycle(at);
+
+        let error = materialize_start_from::<(), ()>(
+            &mut lifecycle,
+            &input,
+            source,
+            &target,
+            &fresh_runner_context(),
+            materialization,
+        )
+        .expect_err("a lifecycle elsewhere must not replay");
+
+        assert!(
+            matches!(
+                error,
+                AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
+                    QemuFreshStartReplayError::SourceMismatch { .. }
+                ))
+            ),
+            "{label}: {error:?}"
+        );
+        assert_eq!(lifecycle.completed_quanta, 0, "{label}");
+    }
 }
