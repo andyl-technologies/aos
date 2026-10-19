@@ -388,11 +388,12 @@ fn network_scenario() -> ScenarioDefForm {
 }
 
 /// Builds a branch attempt whose own selection is the network fault branch
-/// at `parent`, recorded at `at`.
+/// at `parent`, recorded at `at`, with `edge_tail` appended to its edge.
 fn branch_input(
     scenario: &ScenarioDefForm,
     parent: &Configuration,
     at: VirtualTime,
+    edge_tail: Vec<Decision>,
 ) -> (CrucibleAttemptExecution, ConfigurationArtifactId) {
     let template =
         modeled_fresh_runner_input_for_scenario(scenario.clone(), StopCondition::Terminal);
@@ -414,7 +415,12 @@ fn branch_input(
     let branch = selectable
         .resolve_branch(&selection)
         .expect("network fault branch");
-    let selected = branch.selected().clone();
+    let selected =
+        edge_tail
+            .into_iter()
+            .fold(branch.selected().clone(), |configuration, decision| {
+                crucible::try_step(&configuration, decision).expect("edge tail step")
+            });
     let replay = crucible::SignalFaultCampaignReplayPlan::empty(selected.clone())
         .with_network_branches(vec![branch])
         .expect("network replay plan");
@@ -481,6 +487,10 @@ fn branch_input(
 }
 
 fn anchor_case() -> AnchorCase {
+    anchor_case_with_edge_tail(Vec::new())
+}
+
+fn anchor_case_with_edge_tail(edge_tail: Vec<Decision>) -> AnchorCase {
     let scenario = network_scenario();
     let node =
         scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("scripted source");
@@ -492,8 +502,12 @@ fn anchor_case() -> AnchorCase {
         )
         .expect("parent world");
     let boundary = WorldBoundary::of(&world);
-    let (input, parent_artifact) =
-        branch_input(&scenario, &boundary.configuration, boundary.frontier);
+    let (input, parent_artifact) = branch_input(
+        &scenario,
+        &boundary.configuration,
+        boundary.frontier,
+        edge_tail,
+    );
     AnchorCase {
         input,
         world: Some(world),
@@ -694,6 +708,34 @@ fn anchor_preconditions_refuse_before_any_lifecycle_effect() {
         );
         assert!(effects(&order).is_empty(), "{expected} started a lifecycle");
     }
+}
+
+/// The attempt would run as a child of the root, so an edge the hot factory
+/// would refuse for such a child is refused before any lifecycle exists.
+#[test]
+fn anchor_refuses_an_edge_a_root_child_cannot_replay() {
+    let scenario = network_scenario();
+    let unlisted = Decision::Selection(scheduler_selection_for_test(&scenario, "anchor.edge-tail"));
+    let case = anchor_case_with_edge_tail(vec![unlisted]);
+    let order = Order::default();
+    let sink = RecordingAnchorSink::answering(QemuPublishedRootAdmission::Admitted);
+    let mut runner = anchor_runner(
+        &order,
+        anchor_lifecycle(&order, &case.boundary),
+        AnchorPreparation::Recover,
+        Some(Arc::clone(&sink)),
+    );
+
+    let outcome = runner
+        .materialize_anchor_root(&case.input, &anchor_context(&case.input))
+        .expect("an unreplayable edge is a decline");
+
+    assert_eq!(
+        outcome,
+        QemuAnchorRootOutcome::Declined("anchor-edge-not-replayable")
+    );
+    assert!(effects(&order).is_empty());
+    assert!(sink.claimed.lock().expect("anchor claims").is_empty());
 }
 
 /// The pool is read before replay: an invalidated coordinate declines and a

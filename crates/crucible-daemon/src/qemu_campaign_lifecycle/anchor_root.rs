@@ -298,17 +298,17 @@ fn anchor_plan(
     if unsupported_fresh_replay_decision(selected, input.signal_fault_replay()).is_some() {
         return Err("anchor-unsupported-replay-decision");
     }
-    // A signal-fault branch still pending at the parent keeps the boundary
-    // from being exact-ready, and its config cannot be rebound to a root.
-    let anchor_len = parent.schedule.len();
-    if input.signal_fault_replay().branches().iter().any(|branch| {
-        branch
-            .parent()
-            .len()
-            .saturating_add(branch.decisions().len())
-            > anchor_len
-    }) {
-        return Err("anchor-pending-config-branch");
+    // The attempt will run as a child of the root, so its edge must pass the
+    // very predicate the hot factory applies to children of published roots.
+    // That also refuses a signal-fault branch still pending at the parent,
+    // which would keep the boundary from being exact-ready.
+    let edge = parent.schedule.len();
+    if crate::qemu_hot_fork_world_factory::configuration_carried_decision(
+        input, selected, edge, edge,
+    )
+    .is_some()
+    {
+        return Err("anchor-edge-not-replayable");
     }
 
     let lineage = input

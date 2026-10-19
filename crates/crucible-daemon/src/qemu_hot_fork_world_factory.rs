@@ -1798,7 +1798,7 @@ where
 mod ancestor;
 mod runner;
 
-pub(crate) use ancestor::QemuHotForkStartOrigin;
+pub(crate) use ancestor::{QemuHotForkStartOrigin, configuration_carried_decision};
 pub(crate) use runner::{
     AttemptWorkerFailureExt, QemuHotForkWorldExecutionAttempt, QemuHotForkWorldExecutionRunner,
     QemuHotForkWorldExecutionRunnerError,
