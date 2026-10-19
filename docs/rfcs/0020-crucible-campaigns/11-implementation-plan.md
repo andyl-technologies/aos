@@ -2247,10 +2247,24 @@ T-CAM-6.7 deep template promotion has started with thin-path root retention
 depth-0 root admitted after its durable observation, so a later branch from
 that boundary forks instead of replaying from genesis. The packaged executor
 disables root retention with a diagnostic when `maximum_templates` plus the
-worker count exceeds the host project-ID count. The Envoy flight requires the
-follow-up disruption to run thin and the completion attempt to fork from its
-retained root. Promotion of hot children at their own boundaries and the
-deep-promotion stress remain open.
+worker count exceeds the host project-ID count.
+
+Guest-choice boundaries are never retained, so a branch from one would replay
+from genesis. Two further reuse paths close that gap (§05.12). A branch whose
+own selection is a network fault branch at its parent stops its thin replay at
+the parent's joined park and keeps that world as an anchor root, admitted only
+with room for one child; the branch then runs as the anchor's hot child. A
+branch whose parent has no root forks from the deepest published root on its
+path and replays the bounded, replay-only suffix inside the child; a suffix
+divergence invalidates the root and the retried attempt runs thin. Native
+acceptance compares an anchored network branch and an ancestor child with thin
+replay on a two-VM network fault world. The Envoy flight requires the first
+disruption, the follow-up disruption, and the completion attempt to run hot:
+both disruptions from anchor roots at their parks, and the completion from the
+follow-up anchor through ancestor suffix replay. Promotion of hot children at
+their own boundaries, the deep-promotion stress over anchor and stop roots with
+ancestor checkouts, a depth bound for chains, and eviction of roots that are
+never reused remain open.
 
 The supported profile is deterministic TCG with one round-robin vCPU per node,
 the aggregate fingerprint plugin protocol, raw read-only roots, branch-private

@@ -4,12 +4,17 @@
 //! multi-node source worlds. Canonical factories admit scenario genesis,
 //! production-restored tokens admit later exact-checkpoint frontiers, and
 //! thin attempts admit the worlds they stopped with at a published child
-//! boundary as depth-0 roots with a thin fallback. The pool
-//! exact-matches scenario and executor compatibility, distinguishes retained
-//! frontiers even when their modeled configurations are equal, persists an
-//! exact/thin fallback before admission, charges conservatively measured QEMU
-//! process resources, and retains cold fallback records for campaign GC after
-//! orderly source reap.
+//! boundary as depth-0 roots with a thin fallback. Branch attempts also admit
+//! anchor roots kept at their parent's network fault park, only when the pool
+//! can still hold one child. The pool exact-matches scenario and executor
+//! compatibility, distinguishes retained frontiers even when their modeled
+//! configurations are equal, persists an exact/thin fallback before admission,
+//! charges conservatively measured QEMU process resources, and retains cold
+//! fallback records for campaign GC after orderly source reap.
+//!
+//! Published-boundary roots record their provenance, so a branch whose parent
+//! has no root can lease the deepest root below it on the same path and replay
+//! the remaining suffix in the child (see `ancestors`).
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};

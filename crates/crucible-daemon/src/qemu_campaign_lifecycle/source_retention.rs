@@ -22,6 +22,11 @@
 //! retirement. Admission waits for the durable observation disposition
 //! because the root's thin fallback names the stored child configuration
 //! artifact, and fallback authentication reads that artifact.
+//!
+//! The same sink also admits anchor roots, which the fresh runner keeps at a
+//! branch parent's network fault park before the branch runs (see
+//! `anchor_root`). Their parent artifact is already stored, so they are
+//! admitted at once, and only when the pool can still hold one child.
 
 use std::io::Write;
 use std::sync::Arc;

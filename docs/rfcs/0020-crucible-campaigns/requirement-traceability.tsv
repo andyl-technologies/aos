@@ -207,6 +207,8 @@ HFORK-21	T-CAM-6.4,T-CAM-7.1	gate:hot-fork-isolation
 HFORK-22	T-CAM-6.4,T-CAM-7.1	gate:hot-fork-isolation
 HFORK-23	T-CAM-7.6	gate:hot-fork-equivalence
 HFORK-24	T-CAM-7.5	gate:hot-fork-scaling,gate:control-responsiveness
+HFORK-25	T-CAM-6.7	gate:hot-fork-equivalence,gate:hot-fork-scaling
+HFORK-26	T-CAM-6.7,T-CAM-7.6	gate:hot-fork-equivalence
 CSTORE-1	T-CAM-5.1,T-CAM-5.9	gate:campaign-store-equivalence,gate:campaign-cold-continuity
 CSTORE-2	T-CAM-5.2	gate:content-address
 CSTORE-3	T-CAM-5.1	gate:campaign-store-equivalence

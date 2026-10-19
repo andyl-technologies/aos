@@ -14,7 +14,7 @@ mod flight_limits;
 #[path = "envoy_network/resource_audit.rs"]
 mod resource_audit;
 // Admission reserves the measured five-guest profile for each retained world:
-// a thin root at the follow-up boundary and the hot child forked from it.
+// an anchor root at a network fault park and the hot child forked from it.
 const ENVOY_HOT_FORK_BYTE_CEILING: u64 = 9 * 1024 * 1024 * 1024;
 // This is a cap on completed scheduler quanta across the packaged campaign,
 // independent of the exact logical ticks or retired instructions in each RUN.
@@ -250,6 +250,9 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
         configuration: json_string(&discovery["observation"], "child")?,
     };
 
+    // No root exists at the first park, so the router keeps an anchor root
+    // there and forks the disruption from it.
+    let first_park = progress.configuration.clone();
     let disruption = choose(
         &fixture,
         &mut service,
@@ -258,6 +261,16 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
         &fault,
         "next-choice",
         0x73,
+    )?;
+    let disruption_id = json_string(&disruption["attempt"], "id")?;
+    let materialization = guest_choice::capture_materialization_events(&service)?;
+    guest_choice::assert_materialization_tier(&materialization, &disruption_id, "HotFork")?;
+    require_hot_fork_root_row(
+        &service,
+        ANCHOR_DIAGNOSTIC_PREFIX,
+        &disruption_id,
+        &first_park,
+        "decision=admitted reason=anchor-admitted",
     )?;
     let pending_recovery = guest_choice::wait_for_choice(
         &fixture,
@@ -304,13 +317,16 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
     require_measured_backup_route(&response)?;
     println!("envoy_five_node_failover_response={response}");
 
-    // The fallback proof is complete. Restore hot-fork retention so the
-    // follow-up recovery forks from the follow-up disruption's parked world
-    // instead of replaying the whole flight from genesis.
+    // The fallback proof is complete. Restore hot-fork retention so both
+    // follow-up attempts fork from a root at the follow-up park instead of
+    // replaying the whole flight from genesis.
     service.stop()?;
     let hot_fork_deployment = product_hot_fork_deployment(&fixture)?;
     service = start_packaged_network_service(&fixture, &authority, Some(&hot_fork_deployment))?;
 
+    // The restarted pool holds no published root, so the follow-up
+    // disruption keeps an anchor root at its own park and runs hot from it.
+    let followup_park = progress.configuration.clone();
     let followup_disruption = choose(
         &fixture,
         &mut service,
@@ -320,15 +336,23 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
         "next-choice",
         0x75,
     )?;
-    // The follow-up disruption is a fresh thin attempt. Its stopped world at
-    // the published next-choice boundary is retained as the root the
-    // completion attempt forks from.
+    let followup_disruption_id = json_string(&followup_disruption["attempt"], "id")?;
     let materialization = guest_choice::capture_materialization_events(&service)?;
     guest_choice::assert_materialization_tier(
         &materialization,
-        json_string(&followup_disruption["attempt"], "id")?,
-        "ThinReplay",
+        &followup_disruption_id,
+        "HotFork",
     )?;
+    require_hot_fork_root_row(
+        &service,
+        ANCHOR_DIAGNOSTIC_PREFIX,
+        &followup_disruption_id,
+        &followup_park,
+        "decision=admitted reason=anchor-admitted",
+    )?;
+
+    // A guest-choice boundary is never retained, so the completion forks
+    // from the follow-up anchor and replays the suffix to its parent.
     let completion = choose(
         &fixture,
         &mut service,
@@ -346,12 +370,17 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
     )?;
     require_semantic_marker(&completion, "fault.followup.primary-probed", "router-a")?;
     require_semantic_marker(&completion, "campaign.complete", "traffic-west")?;
+    let completion_id = json_string(&completion["attempt"], "id")?;
     let materialization = guest_choice::capture_materialization_events(&service)?;
-    guest_choice::assert_materialization_tier(
-        &materialization,
-        json_string(&completion["attempt"], "id")?,
-        "HotFork",
+    guest_choice::assert_materialization_tier(&materialization, &completion_id, "HotFork")?;
+    require_hot_fork_root_row(
+        &service,
+        ANCESTOR_DIAGNOSTIC_PREFIX,
+        &completion_id,
+        &followup_park,
+        "decision=forked reason=ancestor-anchor-root",
     )?;
+    println!("envoy_five_node_anchor_and_ancestor_hot_forks_authenticated=true");
     println!("envoy_five_node_completion={completion}");
 
     prove_pending_recovery_exact_replay(&fixture, &mut service, &disruption, &requeried_recovery)?;
@@ -362,6 +391,33 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
     service.stop()?;
     println!("envoy_five_node_graceful_completion_authenticated=true");
     Ok(())
+}
+
+const ANCHOR_DIAGNOSTIC_PREFIX: &str = "CRUCIBLE-HOT-FORK-ANCHOR-V1 ";
+const ANCESTOR_DIAGNOSTIC_PREFIX: &str = "CRUCIBLE-HOT-FORK-ANCESTOR-V1 ";
+
+/// Requires one hot-fork root diagnostic for `attempt` at `anchor`.
+///
+/// Both row kinds open with `attempt=<id> anchor=<configuration>` and close
+/// with `decision=<decision> reason=<token>`; ancestor rows also carry a
+/// suffix length between them, which the flight does not pin.
+fn require_hot_fork_root_row(
+    service: &CampaignServiceChild,
+    prefix: &str,
+    attempt: &str,
+    anchor: &str,
+    outcome: &str,
+) -> Result<(), Box<dyn Error>> {
+    let rows = service.stderr_lines_with_prefix(prefix, 257, 512)?;
+    let head = format!("{prefix}attempt={attempt} anchor={anchor} ");
+    let tail = format!(" {outcome}");
+    if rows
+        .iter()
+        .any(|row| row.starts_with(&head) && row.ends_with(&tail))
+    {
+        return Ok(());
+    }
+    Err(format!("packaged QEMU did not report {head}... {outcome}; rows={rows:?}").into())
 }
 
 fn retain_and_complete_product_campaign(

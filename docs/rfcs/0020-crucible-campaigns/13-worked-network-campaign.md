@@ -331,6 +331,12 @@ Forking a multi-router world is atomic: all child VMs and the fabric are
 published, or the partial child is discarded. A child cannot see a sibling's
 control messages, observation writes, or disk updates.
 
+When no retained world exists at a fault boundary, the first environment
+branch from it still avoids a second replay. Its thin replay stops at the
+boundary, where every router is parked and joined, and that world is kept as
+an anchor root; the branch itself then runs as the anchor's first child
+(§05.12).
+
 ### 4. Apply one recorded joint selection
 
 The child fabric applies its environment selection at the fault boundary. The
@@ -374,6 +380,13 @@ Branches admitted to the beam continue to `fault.followup.ready`. Each survivor
 now becomes a potential template with its own continuation for second-fault
 choices. The campaign graph can be wide at the first disruption and deep for a
 small set of good or suspicious recoveries.
+
+A recovery choice made by a guest after a second fault is not itself a
+retainable boundary: the guest's stop is held until the reply arrives. A
+branch from it forks from the anchor root at `fault.followup.ready` instead,
+and the child replays the short recorded suffix from that park to the guest's
+request before applying the recovery selection. If the suffix diverges, the
+root is discarded and the attempt is retried by thin replay.
 
 One possible fragment is:
 
