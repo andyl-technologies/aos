@@ -212,6 +212,55 @@ the requirement IDs each decision affects.
   - **Affects:** T-DRV-2, T1 exit gates, T-DOM-1, T-NIX-1, T-SBX-4,
     CI-3, SBX-12; spec DRV-12 to DRV-17, DRV-19 to DRV-24 and D-100.
 
+- **[AD-12] Confine native Terrane quota writers before startup**
+  - **Status:** Decided
+  - **Decision:** The native `serve`, `publish` and `gc` entry points install
+    a fixed source-built seccomp policy before opening mutable cache resources
+    or starting worker runtimes. The policy denies project/inheritance setter
+    ioctls, including compat command values, and `file_setattr`; it compares
+    the kernel-interpreted low 32 bits of ioctl commands. Unsupported syscall
+    ABIs, including x32, fail closed. It also excludes io_uring entry points
+    and inherited rings. Installation sets no-new-privileges, synchronizes all
+    threads and requires actual kernel success; a positive TSYNC failure is
+    a startup failure. Required GET and fs-verity operations remain available.
+    Supported native ABIs are explicitly implemented and tested; other ABIs
+    cannot obtain a native confinement receipt. Dedicated service identities,
+    non-dumpable role processes and closed descriptor handoffs protect the
+    boundary from unconfined peers. Host provisioning uses its separate,
+    explicitly bounded privileged service and does not install this policy.
+  - **Rationale:** Inspection of the pinned Linux 7.2.3 source confirms that
+    initial-user-namespace inode owners can move project charges without
+    CAP_SYS_ADMIN. The new `file_setattr` syscall and compat ioctl translation
+    bypass an ioctl-only or full-width argument filter. The reviewed ext4
+    implementation has no io_uring setter handler; excluding rings keeps that
+    assumption explicit. A configuration assertion or authenticated quota
+    query is insufficient evidence of immutable charge ownership.
+  - **Alternatives considered:** Give roles more capabilities (rejected:
+    does not prevent owner setters); use advisory exclusion alone (rejected:
+    direct native calls bypass it); route every inode creation through a new
+    privileged service (larger ownership design, unnecessary for this fix).
+  - **Affects:** T-HOST-1, T-HOST-2, T-PKG-3, spec HOST-23 and D-126.
+
+- **[AD-13] Complete surface feature coverage with each real surface**
+  - **Status:** Decided
+  - **Decision:** T-SURF-1 owns the SDK feature and common compiled registry.
+    The implementation plan assigns the remaining CRATE-28 components to
+    their existing surface tasks. Each owner supplies its real feature,
+    registry entry and expanded feature-matrix checks. Global CRATE-28
+    conformance remains incomplete until every registered surface is covered.
+    T2 component acceptance does not make that full-specification claim.
+  - **Rationale:** The plan attributed the entire every-surface requirement
+    to T2 while scheduling those implementations in T4, T5 and existing
+    branch worklines. That ownership claim was inconsistent with its ordering.
+    The specification's requirement is correct and remains unchanged.
+  - **Alternatives considered:** Start later surface work during T2
+    (rejected: violates milestone order); add empty features or placeholder
+    surfaces (rejected: supplies no implementation or conformance evidence);
+    narrow the specification's requirement (rejected: full surface feature
+    coverage remains required).
+  - **Affects:** T-SURF-1 and the completing surface tasks listed in the
+    implementation plan; CRATE-28, CRATE-29 and D-118 remain unchanged.
+
 ## Open
 
 - **[AD-9] Whether `aos-cache` gains a `terrane://` backend or is replaced**

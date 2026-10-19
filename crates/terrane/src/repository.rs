@@ -28,6 +28,7 @@ mod overlay;
 mod path;
 mod prepared;
 pub(crate) mod read;
+pub(crate) mod schema;
 mod validator;
 
 #[cfg(unix)]

@@ -32,12 +32,19 @@
     runtimeDeps ? [],
     nukeRefsKeep ? [],
     extraBuildDeps ? [],
+    preserveArtifactBytes ? false,
   }: name: script:
     pkgs.mkDerivation {
       pname = "terrane-gate-${name}";
       version = "0.1.0";
       src = pkgs.terrane.src;
       inherit runtimeDeps nukeRefsKeep;
+      # Proof images bind the retained ELF bytes to actual Cargo artifacts.
+      # Later stripping, RPATH rewriting or reference scrubbing would invalidate
+      # their recorded hashes. Ordinary checks keep the normal fixup policy.
+      dontStrip = preserveArtifactBytes;
+      dontPatchELF = preserveArtifactBytes;
+      dontNukeRefs = preserveArtifactBytes;
       buildDeps = [pkgs.rust pkgs.rust.dev pkgs.python3 pkgs.util-linux] ++ extraBuildDeps;
       phases = [
         {
@@ -60,6 +67,74 @@
         }
       ];
     };
+
+  # Keep the native proof selectable while its implementation is isolated on
+  # the current task branch. Presence alone never qualifies the owning gate.
+  quotaConfinementProof =
+    if builtins.pathExists ./quota-confinement-proof.nix
+    then import ./quota-confinement-proof.nix {inherit pkgs lib sourceGateWithInputs;}
+    else {
+      image = pendingGate {
+        name = "native-quota-confinement-image";
+        requirements = "HOST-23 native confinement proof image";
+      };
+      native = pendingGate {
+        name = "native-quota-confinement";
+        requirements = "HOST-23 native confinement proof";
+      };
+    };
+
+  configuredSdkProof =
+    if builtins.pathExists ./configured-sdk-proof.nix
+    then import ./configured-sdk-proof.nix {inherit pkgs lib sourceGateWithInputs;}
+    else
+      builtins.listToAttrs (map (name: {
+        inherit name;
+        value = pendingGate {
+          name = "configured-sdk-${name}";
+          requirements = "SURF-32 configured SDK startup proof";
+        };
+      }) ["image" "unit" "native"]);
+
+  hostCacheProof =
+    if builtins.pathExists ./host-cache-proof.nix
+    then import ./host-cache-proof.nix {inherit pkgs lib sourceGateWithInputs;}
+    else
+      builtins.listToAttrs (map (name: {
+        inherit name;
+        value = pendingGate {
+          name = "native-host-cache-${name}";
+          requirements = "HOST-23/HOST-31 native host owner proof";
+        };
+      }) ["image" "native"]);
+
+  # Transport components qualify actual peer and native command behavior,
+  # independently of complete cache recovery or host-tier readiness.
+  publisherLocalProof =
+    if builtins.pathExists ./publisher-local-proof.nix
+    then import ./publisher-local-proof.nix {inherit pkgs lib sourceGateWithInputs;}
+    else
+      builtins.listToAttrs (map (name: {
+        inherit name;
+        value = pendingGate {
+          name = "publisher-local-${name}";
+          requirements = "PROTO-56 to PROTO-59 native publisher transport component";
+        };
+      }) ["image" "multiUid" "native"]);
+
+  # Enrollment must consume the genuine fresh creator receipt in one process.
+  # These component checks cannot stand in for complete host-tier readiness.
+  initialEnrollmentProof =
+    if builtins.pathExists ./initial-enrollment-proof.nix
+    then import ./initial-enrollment-proof.nix {inherit pkgs lib sourceGateWithInputs;}
+    else
+      builtins.listToAttrs (map (name: {
+        inherit name;
+        value = pendingGate {
+          name = "initial-enrollment-${name}";
+          requirements = "HOST-23/DOM-12 fresh native enrollment component";
+        };
+      }) ["image" "native"]);
 
   algebraFormatVectors = import ./algebra-models.nix {inherit sourceGate;};
 
@@ -224,7 +299,7 @@
           }
           // lib.optionalAttrs (builtins.elem file ["algebra.nix" "properties.nix" "cdc.nix" "gc.nix" "index.nix" "surfaces.nix" "shared-dir.nix" "host-cache.nix" "host-publish.nix"]) {inherit nativeSdkGate;}
           // lib.optionalAttrs (file == "gc.nix") {inherit localTwoPhaseGc;}
-          // lib.optionalAttrs (file == "host-publish.nix") {inherit sourceGateWithInputs;}
+          // lib.optionalAttrs (builtins.elem file ["host-publish.nix" "surfaces.nix"]) {inherit sourceGateWithInputs;}
         );
         duplicates = builtins.filter (name: builtins.hasAttr name accumulated) (builtins.attrNames added);
       in
@@ -298,6 +373,18 @@ in {
   integration.collection-reference-generator = import ./collection-reference.nix {inherit pkgs;};
   integration.collection-format-vectors = import ./collection-vectors.nix {inherit sourceGate;};
   integration.foundation-reference-generator = import ./foundation-reference.nix {inherit sourceGate;};
+  integration.native-quota-confinement-image = quotaConfinementProof.image;
+  integration.native-quota-confinement = quotaConfinementProof.native;
+  integration.configured-sdk-image = configuredSdkProof.image;
+  integration.configured-sdk-unit = configuredSdkProof.unit;
+  integration.native-configured-sdk = configuredSdkProof.native;
+  integration.host-cache-image = hostCacheProof.image;
+  integration.native-host-cache = hostCacheProof.native;
+  integration.publisher-local-image = publisherLocalProof.image;
+  integration.publisher-local-multuid = publisherLocalProof.multiUid;
+  integration.native-publisher-local = publisherLocalProof.native;
+  integration.initial-enrollment-image = initialEnrollmentProof.image;
+  integration.native-initial-enrollment = initialEnrollmentProof.native;
   integration.foundation-format-vectors = import ./foundation-vectors.nix {inherit sourceGate;};
   integration.retirement-reference-generator = import ./retirement-reference.nix {inherit sourceGate;};
   integration.retirement-reference-models = import ./retirement-models.nix {inherit sourceGate;};

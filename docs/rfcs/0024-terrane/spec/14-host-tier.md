@@ -242,6 +242,17 @@ admits.
   Project assignments MUST preserve an inode's charge owner across required
   link and rename operations, including publication, quarantine and recovery;
   changing its owner is not a recovery mechanism.
+  Ordinary allocation-capable roles and their descendants MUST be prevented
+  by the kernel from changing project assignments or inheritance. Inode
+  ownership, absent administrative capabilities, advisory locks and periodic
+  rechecks alone MUST NOT be treated as that prevention. A native role using
+  process confinement MUST establish it before mutable cache operations,
+  cover every thread and descendant, and deny equivalent setter entry points
+  and unsupported syscall ABIs. It MUST fail startup closed when the required
+  confinement cannot be established. The trusted host MUST isolate writable
+  role identities from unconfined actors and descriptor or process-control
+  access that could bypass this boundary. Privileged provisioning remains a
+  separate host administrative operation, outside these ordinary roles.
   Where kernel queries require privilege, unprivileged roles MUST verify
   actual enforcement and usage through PROTO-60. Unknown coverage, ownership,
   domain binding or enforcement MUST fail admission closed. A reservation
