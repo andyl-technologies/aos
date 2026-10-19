@@ -21,9 +21,15 @@
 //! The anchor's thin fallback names `A`'s stored configuration artifact,
 //! which already exists because an accepted observation published `A`, so
 //! admission happens at once rather than after a later disposition. Anchoring
-//! never produces a semantic result: the attempt itself then runs as a hot
-//! child of the root, or by thin replay when anything here declines. Every
-//! decline leaves the attempt exactly where it was before.
+//! never produces a semantic result. Once a root is kept, the router ends
+//! the execution and the attempt's next execution runs as a hot child of the
+//! root; when anything here declines, the attempt replays thin.
+//!
+//! A decline leaves no root and no product, but it is not free: the
+//! anchoring replay has already charged its quanta to the current execution
+//! and spent wall time. Every check that needs no lifecycle, including the
+//! pool's state at the root coordinate and the attempt's one anchor claim,
+//! therefore runs before replay starts.
 
 use std::io::Write;
 
@@ -54,9 +60,19 @@ pub(crate) trait QemuAnchorRootMaterializer: CrucibleExecutionRunner {
     ///
     /// # Errors
     ///
-    /// Returns a classified failure only when cleanup of an anchoring world
-    /// failed, the attempt was canceled, or a refused root could not be
-    /// retired. Every other refusal is [`QemuAnchorRootOutcome::Declined`].
+    /// Returns a classified failure when:
+    ///
+    /// - the anchoring lifecycle cannot be started, with the lifecycle
+    ///   factory's own class, which may be retryable;
+    /// - the attempt is canceled during the anchoring replay;
+    /// - the final drain of the replayed world fails, or shutting down an
+    ///   anchoring world that is not kept fails (terminal cleanup failures);
+    /// - a prepared world that does not match the replay, or a root the pool
+    ///   refused, cannot be retired, or the pool cannot settle the admission
+    ///   (terminal retention failures).
+    ///
+    /// Every other refusal, including any authoritative replay failure that
+    /// thin replay will reproduce, is [`QemuAnchorRootOutcome::Declined`].
     fn materialize_anchor_root(
         &mut self,
         input: &CrucibleAttemptExecution,
