@@ -76,7 +76,7 @@ pub(crate) enum QemuRetainedSourcePreparation<L> {
 }
 
 /// Pool policy decision for one published root.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum QemuPublishedRootAdmission {
     /// The root is retained and reusable by later branches from its boundary.
     Admitted,

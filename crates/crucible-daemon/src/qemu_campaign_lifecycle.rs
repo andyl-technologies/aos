@@ -86,7 +86,8 @@ use attempt_config::config_for_attempt_trace_storage;
 
 mod network_fault_replay;
 use network_fault_replay::{
-    cross_replayed_network_fault_boundary, park_replayed_network_fault_markers,
+    cross_replayed_network_fault_boundary, every_vm_parked_for,
+    park_replayed_network_fault_markers, recorded_branch_at,
 };
 
 mod start_replay_log;
@@ -809,6 +810,10 @@ impl QemuFreshAttemptLifecycleOwner for ProductionVmLifecycleLoop {
 
 mod source_retention;
 pub use source_retention::QemuFinalBoundaryDrain;
+
+mod anchor_root;
+#[cfg(test)]
+use anchor_root::{QemuAnchorRootMaterializer, QemuAnchorRootOutcome};
 pub(crate) use source_retention::{
     QemuPublishedRootAdmission, QemuPublishedRootRetirementError, QemuPublishedRootSink,
     QemuRetainedSourcePreparation,

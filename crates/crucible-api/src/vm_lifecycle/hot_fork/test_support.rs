@@ -206,8 +206,37 @@ pub fn prepared_multi_node_hot_fork_source_world_after_selection_for_test(
     let source = crucible::crash_restart_scenario()
         .map_err(|error| test_support_error("construct built-in scenario", error))?
         .scenario;
-    let (retained, mut lifecycle) = scripted_source_lifecycle(
+    prepared_multi_node_hot_fork_source_world_after_selection_for_scenario_for_test(
         &source,
+        source_nodes,
+        selection,
+    )
+}
+
+/// Builds one prepared source world for `source` paused after a selection.
+///
+/// This is [`prepared_multi_node_hot_fork_source_world_after_selection_for_test`]
+/// for an exact test scenario, such as one that also declares campaign
+/// selectables.
+///
+/// # Errors
+///
+/// Returns [`LifecycleApiError::LoopFactory`] when the scenario has too few VM
+/// nodes, the recorded selection is invalid, or any source-world boundary
+/// cannot be constructed.
+pub fn prepared_multi_node_hot_fork_source_world_after_selection_for_scenario_for_test(
+    source: &ScenarioDefForm,
+    source_nodes: Vec<QemuNode>,
+    selection: SelectionDecision,
+) -> Result<
+    (
+        Vec<(NodeId, ProductionVmNodeGeneration)>,
+        ProductionVmHotForkSourceWorld,
+    ),
+    LifecycleApiError,
+> {
+    let (retained, mut lifecycle) = scripted_source_lifecycle(
+        source,
         source_nodes,
         &BTreeSet::new(),
         SCRIPTED_SCHEDULER_TIME_LIMIT_TICKS,

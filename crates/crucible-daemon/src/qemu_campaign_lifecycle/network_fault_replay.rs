@@ -132,7 +132,7 @@ pub(super) fn cross_replayed_network_fault_boundary<F, D>(
 /// An after-attempt start replays its base through the base attempt's plan,
 /// so both plans are consulted; branch parents are exact configurations, so
 /// at most one recorded branch can match.
-fn recorded_branch_at<'a>(
+pub(super) fn recorded_branch_at<'a>(
     input: &'a CrucibleAttemptExecution,
     current: &Configuration,
 ) -> Option<&'a NetworkFaultCampaignBranch> {
@@ -150,7 +150,7 @@ fn recorded_branch_at<'a>(
 }
 
 /// Returns whether every VM holds an exact physical park at `branch`'s marker.
-fn every_vm_parked_for<F, D>(
+pub(super) fn every_vm_parked_for<F, D>(
     lifecycle: &mut dyn QemuFreshAttemptLifecycleOwner,
     input: &CrucibleAttemptExecution,
     branch: &NetworkFaultCampaignBranch,

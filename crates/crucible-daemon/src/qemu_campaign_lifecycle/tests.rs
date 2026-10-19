@@ -3737,6 +3737,9 @@ fn test_checkpoint_product() -> AttemptExecutionProduct {
 #[path = "tests/released_publication.rs"]
 mod released_publication;
 
+#[path = "tests/anchor_root.rs"]
+mod anchor_root;
+
 #[path = "tests/network_fault_replay.rs"]
 mod network_fault_replay;
 
