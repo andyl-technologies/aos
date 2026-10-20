@@ -117,6 +117,7 @@ async fn execute(request: &mut Request, env: &Env) -> Result<DirectUploadRespons
             response.errors = reply.errors.clone();
             let outcomes = bounded(
                 reply.admissions.iter().map(|admission| async {
+                    let diagnostics = super::qualification_failure::Diagnostics::for_begin();
                     let result = async {
                         begin_with_signal(
                             env,
@@ -124,7 +125,7 @@ async fn execute(request: &mut Request, env: &Env) -> Result<DirectUploadRespons
                             admission,
                             &context,
                             Some(request.inner().signal()),
-                            None,
+                            Some(&diagnostics),
                         )
                         .await?;
                         let state = reply
@@ -139,6 +140,13 @@ async fn execute(request: &mut Request, env: &Env) -> Result<DirectUploadRespons
                         retained_created_state(env, admission, state).await
                     }
                     .await;
+                    if result.is_err() {
+                        // Fixed phases preserve diagnostics without provider error payloads.
+                        let refusal = super::qualification_failure::refused(Some(&diagnostics));
+                        if let Ok(message) = serde_json::to_string(&refusal) {
+                            worker::console_error!("direct_upload_begin_refused {}", message);
+                        }
+                    }
                     (&admission.intent.client_operation_id, result)
                 }),
                 maximum,
