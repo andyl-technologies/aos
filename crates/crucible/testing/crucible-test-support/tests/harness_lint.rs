@@ -23,6 +23,8 @@ mod confinement;
 mod error_logging;
 #[path = "support/harness_lint/lex.rs"]
 mod lex;
+#[path = "support/harness_lint/package_targets.rs"]
+mod package_targets;
 #[path = "support/harness_lint/reference_integrity.rs"]
 mod reference_integrity;
 #[path = "support/harness_lint/scan.rs"]
@@ -38,6 +40,7 @@ use common::*;
 use confinement::*;
 use error_logging::*;
 use lex::*;
+use package_targets::manifest_has_library_target;
 use reference_integrity::*;
 use scan::*;
 use source_sections::*;
@@ -208,7 +211,7 @@ fn production_sources_follow_error_and_logging_conventions() -> Result<(), Box<d
     for spec in crate_spec_index() {
         let package_dir = workspace::package_directory(&root, spec.package)?;
         let manifest = fs::read_to_string(package_dir.join("Cargo.toml"))?;
-        let is_library = spec.package != BINARY_BOUNDARY_PACKAGE;
+        let is_library = manifest_has_library_target(&package_dir, &manifest)?;
         let mut has_typed_error =
             !is_library || manifest_declares_dependency(&manifest, "thiserror");
 
