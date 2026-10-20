@@ -54,7 +54,13 @@ PROFILE = {
 }
 
 
-PACKAGE_PATHS = {'terrane-format': 'terrane/sdk/terrane-format', 'terrane-sdk': 'terrane/sdk/terrane-sdk', 'terrane-linux': 'terrane/linux/terrane-linux', 'terrane-cli': 'terrane/cli/terrane-cli', 'aos-terrane-integration': 'terrane/integration/aos-terrane-integration'}
+PACKAGE_PATHS = {
+    "terrane-format": "terrane/sdk/terrane-format",
+    "terrane-sdk": "terrane/sdk/terrane-sdk",
+    "terrane-linux": "terrane/linux/terrane-linux",
+    "terrane-cli": "terrane/cli/terrane-cli",
+    "aos-terrane-integration": "terrane/integration/aos-terrane-integration",
+}
 
 
 def sha256(path):

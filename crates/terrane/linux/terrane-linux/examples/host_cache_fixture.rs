@@ -14,6 +14,8 @@ mod admission_cache;
 mod config;
 #[path = "host_cache_fixture/consumer.rs"]
 mod consumer;
+#[path = "host_cache_fixture/dictionary_custody.rs"]
+mod dictionary_custody;
 #[path = "host_cache_fixture/manifest_publication.rs"]
 mod manifest_publication;
 #[path = "host_cache_fixture/network.rs"]
@@ -43,6 +45,7 @@ fn main() -> std::process::ExitCode {
             "admit-metadata",
             "admit-cancel",
             "cache-admission-handoff",
+            "dictionary-custody",
             "seed-manifest",
             "seed-bad-manifest",
             "seed-unsealed-manifest",

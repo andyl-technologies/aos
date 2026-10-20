@@ -39,6 +39,7 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
             | "admit-metadata"
             | "admit-cancel"
             | "cache-admission-handoff"
+            | "dictionary-custody"
             | "recover-manifest"
             | "refuse-manifest"
             | "refuse-unsealed-manifest"
@@ -99,6 +100,9 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
         .enable_all()
         .build()?;
     match mode {
+        "dictionary-custody" => {
+            super::dictionary_custody::run(&owner, &runtime, &inputs, original)?;
+        }
         "cache-admission-handoff" => {
             super::admission_cache::run(&owner, &runtime, &inputs, original)?;
         }

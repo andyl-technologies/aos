@@ -87,7 +87,13 @@ UNIT_TESTS = (
 )
 
 
-PACKAGE_PATHS = {'terrane-format': 'terrane/sdk/terrane-format', 'terrane-sdk': 'terrane/sdk/terrane-sdk', 'terrane-linux': 'terrane/linux/terrane-linux', 'terrane-cli': 'terrane/cli/terrane-cli', 'aos-terrane-integration': 'terrane/integration/aos-terrane-integration'}
+PACKAGE_PATHS = {
+    "terrane-format": "terrane/sdk/terrane-format",
+    "terrane-sdk": "terrane/sdk/terrane-sdk",
+    "terrane-linux": "terrane/linux/terrane-linux",
+    "terrane-cli": "terrane/cli/terrane-cli",
+    "aos-terrane-integration": "terrane/integration/aos-terrane-integration",
+}
 
 
 def unit_inventory(output):
@@ -301,7 +307,7 @@ def main():
                             text=True, capture_output=True).stdout.splitlines()
     expected = ["host-cache:" + name for name in [
         "prepare", "empty", "refuse", "late-refuse", "cancel", "edquot", "hold", "start-refuse",
-        "admit-chunk", "admit-metadata", "admit-cancel", "cache-admission-handoff",
+        "admit-chunk", "admit-metadata", "admit-cancel", "cache-admission-handoff", "dictionary-custody",
         "seed-manifest", "seed-bad-manifest", "seed-unsealed-manifest",
         "seed-unsealed-writable-manifest", "seed-truncated-manifest", "seed-writable-manifest",
         "recover-manifest", "refuse-manifest", "refuse-unsealed-manifest",

@@ -51,7 +51,7 @@ INLINE_BYTES = b"independent inline cold candidate"
 CASES = [
     "empty", "pin", "lease", "reservation", "residence", "unknown",
     "state-file", "state-directory", "cancel", "edquot", "exclusive",
-    "admission-chunk", "admission-metadata", "admission-cancel", "admission-cache",
+    "admission-chunk", "admission-metadata", "admission-cancel", "admission-cache", "dictionary-custody",
     "publication-inline", "publication-cancel", "publication-transfer",
     "publication-transfer-cancel", "publication-transfer-conflict",
     "retention-running", "retention-running-cancel",
@@ -1097,6 +1097,7 @@ def main():
         actor("edquot", "edquot", uuid)
         admission_cases(helper, uuid)
         runpy.run_path(str(IMAGE / "share/admission_cache_vm.py"))["run"](sys.modules[__name__], uuid)
+        runpy.run_path(str(IMAGE / "share/admission_cache_vm.py"))["run_dictionary_custody"](sys.modules[__name__], uuid)
         publication_cases(publisher, uuid)
         runpy.run_path(str(IMAGE / "share/manifest_publication_vm.py"))["run_consumer_leases"](sys.modules[__name__], helper, uuid)
         inline_transfer_cases(publisher, uuid)
