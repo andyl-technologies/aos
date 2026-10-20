@@ -33,15 +33,7 @@ pub fn parse_json_with_depth(
     maximum_bytes: usize,
     maximum_depth: usize,
 ) -> Result<Value, ContractError> {
-    if maximum_depth == 0 || maximum_depth > 64 {
-        return Err(invalid(
-            "json_depth",
-            "require a nesting limit between 1 and 64",
-        ));
-    }
-    if bytes.len() > maximum_bytes {
-        return Err(invalid("json", "frame exceeds admitted byte limit"));
-    }
+    strict_parser::check_limits(bytes, maximum_bytes, maximum_depth)?;
     let mut parser = Parser {
         bytes,
         cursor: 0,
@@ -69,208 +61,9 @@ pub fn decode<T: DeserializeOwned + Validate>(
     Ok(value)
 }
 
-// CNP numbers use Rust's correctly rounded decimal-to-binary conversion.
-// Enabling serde_json's float_roundtrip feature would change legacy consumers
-// through Cargo feature unification, so this parser owns numeric tokenization.
-struct Parser<'a> {
-    bytes: &'a [u8],
-    cursor: usize,
-    maximum_depth: usize,
-}
-
-impl Parser<'_> {
-    fn error(&self, reason: &str) -> ContractError {
-        invalid("json", format!("{reason} at byte {}", self.cursor))
-    }
-
-    fn whitespace(&mut self) {
-        while self
-            .bytes
-            .get(self.cursor)
-            .is_some_and(|byte| b" \n\r\t".contains(byte))
-        {
-            self.cursor += 1;
-        }
-    }
-
-    fn take(&mut self, byte: u8) -> bool {
-        if self.bytes.get(self.cursor) == Some(&byte) {
-            self.cursor += 1;
-            true
-        } else {
-            false
-        }
-    }
-
-    fn value(&mut self, depth: usize) -> Result<Value, ContractError> {
-        self.whitespace();
-        match self.bytes.get(self.cursor).copied() {
-            Some(b'"') => self.string().map(Value::String),
-            Some(b'[') => self.array(depth),
-            Some(b'{') => self.object(depth),
-            Some(b't') => self.literal(b"true", Value::Bool(true)),
-            Some(b'f') => self.literal(b"false", Value::Bool(false)),
-            Some(b'n') => self.literal(b"null", Value::Null),
-            Some(b'-' | b'0'..=b'9') => self.number(),
-            _ => Err(self.error("expected JSON value")),
-        }
-    }
-
-    fn literal(&mut self, literal: &[u8], value: Value) -> Result<Value, ContractError> {
-        if !self.bytes[self.cursor..].starts_with(literal) {
-            return Err(self.error("invalid JSON literal"));
-        }
-        self.cursor += literal.len();
-        Ok(value)
-    }
-
-    fn string(&mut self) -> Result<String, ContractError> {
-        let start = self.cursor;
-        if !self.take(b'"') {
-            return Err(self.error("expected JSON string"));
-        }
-        while let Some(byte) = self.bytes.get(self.cursor).copied() {
-            self.cursor += 1;
-            match byte {
-                b'"' => return Ok(serde_json::from_slice(&self.bytes[start..self.cursor])?),
-                b'\\' => {
-                    // Skip the escaped byte when finding the closing quote;
-                    // serde validates escapes, UTF-8, and surrogate pairing.
-                    if self.cursor == self.bytes.len() {
-                        break;
-                    }
-                    self.cursor += 1;
-                }
-                _ => {}
-            }
-        }
-        Err(self.error("unterminated JSON string"))
-    }
-
-    fn array(&mut self, depth: usize) -> Result<Value, ContractError> {
-        if depth >= self.maximum_depth {
-            return Err(self.error("JSON nesting limit exceeded"));
-        }
-        self.cursor += 1;
-        self.whitespace();
-        let mut values = Vec::new();
-        if self.take(b']') {
-            return Ok(Value::Array(values));
-        }
-        loop {
-            if values.len() == MAX_ARRAY_ELEMENTS {
-                return Err(self.error("array exceeds 65536 elements"));
-            }
-            values.push(self.value(depth + 1)?);
-            self.whitespace();
-            if self.take(b']') {
-                return Ok(Value::Array(values));
-            }
-            if !self.take(b',') {
-                return Err(self.error("expected array comma or close"));
-            }
-        }
-    }
-
-    fn object(&mut self, depth: usize) -> Result<Value, ContractError> {
-        if depth >= self.maximum_depth {
-            return Err(self.error("JSON nesting limit exceeded"));
-        }
-        self.cursor += 1;
-        self.whitespace();
-        let mut values = Map::new();
-        if self.take(b'}') {
-            return Ok(Value::Object(values));
-        }
-        loop {
-            self.whitespace();
-            let key = self.string()?;
-            if values.contains_key(&key) {
-                return Err(self.error("duplicate object key"));
-            }
-            self.whitespace();
-            if !self.take(b':') {
-                return Err(self.error("expected object colon"));
-            }
-            values.insert(key, self.value(depth + 1)?);
-            self.whitespace();
-            if self.take(b'}') {
-                return Ok(Value::Object(values));
-            }
-            if !self.take(b',') {
-                return Err(self.error("expected object comma or close"));
-            }
-        }
-    }
-
-    fn digits(&mut self) -> bool {
-        let start = self.cursor;
-        while self.bytes.get(self.cursor).is_some_and(u8::is_ascii_digit) {
-            self.cursor += 1;
-        }
-        self.cursor != start
-    }
-
-    fn number(&mut self) -> Result<Value, ContractError> {
-        let start = self.cursor;
-        let negative = self.take(b'-');
-        match self.bytes.get(self.cursor).copied() {
-            Some(b'0') => {
-                self.cursor += 1;
-            }
-            Some(b'1'..=b'9') => {
-                self.digits();
-            }
-            _ => return Err(self.error("invalid integer part")),
-        }
-        let mut fractional = false;
-        if self.take(b'.') {
-            fractional = true;
-            if !self.digits() {
-                return Err(self.error("missing fractional digits"));
-            }
-        }
-        if self.take(b'e') || self.take(b'E') {
-            fractional = true;
-            if !self.take(b'+') {
-                self.take(b'-');
-            }
-            if !self.digits() {
-                return Err(self.error("missing exponent digits"));
-            }
-        }
-        let token = std::str::from_utf8(&self.bytes[start..self.cursor])
-            .map_err(|_| self.error("invalid number encoding"))?;
-        if !fractional {
-            if negative {
-                if let Ok(value) = token.parse::<i64>() {
-                    return Ok(Value::Number(value.into()));
-                }
-            } else if let Ok(value) = token.parse::<u64>() {
-                return Ok(Value::Number(value.into()));
-            }
-        }
-        let float = token
-            .parse::<f64>()
-            .map_err(|_| self.error("invalid finite number"))?;
-        // JSON Schema integer fields accept integral decimal/exponent tokens.
-        // Normalize their correctly rounded value locally; enabling a global
-        // serde feature would change legacy formats outside the CNP boundary.
-        if float.is_finite() {
-            let mut buffer = ryu_js::Buffer::new();
-            let integral = buffer.format(float);
-            if let Ok(value) = integral.parse::<u64>() {
-                return Ok(Value::Number(value.into()));
-            }
-            if let Ok(value) = integral.parse::<i64>() {
-                return Ok(Value::Number(value.into()));
-            }
-        }
-        Number::from_f64(float)
-            .map(Value::Number)
-            .ok_or_else(|| self.error("nonfinite number"))
-    }
-}
+#[path = "canonical/strict_parser.rs"]
+mod strict_parser;
+use strict_parser::Parser;
 
 /// Encodes RFC 8785 JSON without changing Unicode string values.
 ///
@@ -472,7 +265,8 @@ pub fn json_parse_counter_scratch_bytes_data() -> usize {
         + size_of::<Option<u8>>();
     let returned_value = size_of::<Value>() + size_of::<Result<Value, ContractError>>();
 
-    size_of::<Parser<'static>>()
+    strict_parser::TRANSITION_COUNTER_SCRATCH_BYTES
+        + size_of::<Parser<'static>>()
         + 64 * container
         + 65 * returned_value
         // string() delegates one complete quoted token to this exact serde
