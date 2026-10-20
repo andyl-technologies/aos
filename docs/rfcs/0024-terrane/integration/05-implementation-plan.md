@@ -9667,9 +9667,22 @@ Resumed qualification:
   pending objects before duplicate inline or manifest publication. Its added
   native control requires the same original inode, one charge for both genuine
   publication receipts, another real producer-grace window and final descriptor
-  closure before physical charge release. Qualification is running; no success
-  is claimed. Shared-chunk extraction, standalone and pack cache ownership,
-  admission integration, complete recovery and NativeReady remain pending.
+  closure before physical charge release. Both builds, all 36 selected cases,
+  three strict filesystem profiles and formatting pass. Native execution still
+  fails before the new consumer grant: `O_PATH` cannot traverse the publisher's
+  private `0700` sealed directory. A separate strict Core all-target check also
+  fails on SDK-only helper gating and intentional cache-test panic assertions.
+  Both failures remain recorded; no native eviction success is claimed.
+  Candidate `ffd370be6f` verifies the actual restored canonical inode inside
+  publisher custody after the synchronized rename and before its authenticated
+  acknowledgment. The cache correlates that response with its original verified
+  descriptor and checks that the inode is linked, preserving private directory
+  permissions and the existing wire format. It incorporates the previously
+  reviewed SDK helper gating and scopes intentional panic assertions to the
+  three cache test modules. Native and local qualification are running on this
+  frozen revision, including strict Core native and SDK profiles. Shared-chunk
+  extraction, standalone and pack cache ownership, admission integration,
+  complete recovery and NativeReady remain pending.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
   and all seven strict Clippy/documentation profiles pass. The interface,
   commit-path, status and schema gates pass on unchanged final source, including
