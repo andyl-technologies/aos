@@ -101,11 +101,17 @@ const RAW_INNER: FieldBound = FieldBound::record(&[
 const RAW: FieldBound =
     FieldBound::record(&[RAW_INNER, FieldBound::of::<std::marker::PhantomData<u8>>()]);
 const STRING_ERROR: FieldBound = FieldBound::record(&[FieldBound::of::<String>()]);
+// These signature-matched function pointer samples are layout-only: no
+// callback value is created, converted or called. The selected compiler maps
+// every FnPtr to the same instruction-address-space scalar without inspecting
+// its safety qualifier (rustc_ty_utils/src/layout.rs). Keeping safe signatures
+// therefore preserves the actual callback size/alignment, including targets
+// whose instruction pointers differ from data pointers, within this safe crate.
 const CUSTOM: FieldBound = FieldBound::record(&[
     FieldBound::of::<io::ErrorKind>(),
     FieldBound::of::<NonNull<DynError>>(),
-    FieldBound::of::<unsafe fn(*mut DynError)>(),
-    FieldBound::of::<unsafe fn(*mut ())>(), // same thin callback layout as *mut Custom
+    FieldBound::of::<fn(*mut DynError)>(),
+    FieldBound::of::<fn(*mut ())>(), // same thin callback layout as *mut Custom
 ]);
 const ERROR_CODE: FieldBound = FieldBound::tagged(FieldBound::of::<Box<str>>());
 // This is a const initializer, not an ordinary call to a const fn. The
@@ -449,8 +455,8 @@ const TAGGED_ERROR_CONTROLS: usize = sum(&[
     size_of::<io::Result<Infallible>>() * 2, // residual initializer / FromResidual input
     size_of::<io::ErrorKind>(),
     size_of::<NonNull<DynError>>(),
-    size_of::<unsafe fn(*mut DynError)>(),
-    size_of::<unsafe fn(*mut ())>(),
+    size_of::<fn(*mut DynError)>(),
+    size_of::<fn(*mut ())>(),
     THIN * 4, // CustomOwner/from_raw/into_raw and Repr NonNull views
     THIN * 3, // *mut Custom / u8 / tagged () local
     WORD * 3, // addr/tag arithmetic
@@ -483,8 +489,8 @@ const RELEASE_CONTROLS: usize = sum(&[
     THIN,                       // &mut Custom
     FAT,                        // actual *mut dyn Error callback argument
     THIN,                       // actual *mut Custom callback argument
-    size_of::<unsafe fn(*mut DynError)>(),
-    size_of::<unsafe fn(*mut ())>(),
+    size_of::<fn(*mut DynError)>(),
+    size_of::<fn(*mut ())>(),
     THIN * 4, // decode_repr pointer/bits/tag/custom views (zero-capture closure is ZST)
     WORD * 2, // decode_repr bits / tag operations
     // Box::from_raw[_in] -> Unique::new_unchecked and the two callbacks.
