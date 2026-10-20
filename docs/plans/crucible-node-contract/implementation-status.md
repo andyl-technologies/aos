@@ -20,12 +20,15 @@ retires deep values iteratively. First Coordinator decoding, later validation,
 encoding, private File creation and native startup remain disconnected. This
 checkpoint grants no Initial, Recipe, readiness or restoration permission.
 
-The current four-library regression passes 5,212 tests with zero failures and
+The Source18 functional checkpoint passes 5,212 tests with zero failures and
 211 existing ignores. It includes all 159 controls added since `a488bf1a4b`;
 no existing control was removed or newly ignored. The complete Provider suite
 also passes separately with ordinary Serde JSON and with raw values enabled.
-The current application-target refresh, full preservation and strict gates
-remain outstanding.
+The formatted checkpoint also passes six-crate all-feature/all-target checking
+in 1 minute 57 seconds. The mandatory application-target build compiles 167 fresh
+test targets across 48 packages, including 69 integration targets, in 11 minutes
+41 seconds after its prerequisites. Its captured source matches `33303283c4`.
+Full preservation and strict gates remain outstanding.
 
 Daemon preparation now allocates its large restored-load destination only when
 the actual restoration path enters. Its original owner retains the allocation,
@@ -35,6 +38,17 @@ aborting fixture passes in 261.38 seconds. The four selected compiler frames
 total 1,685,488 bytes versus 2,245,712 before the change, a reduction of 560,224
 bytes. These selected frame extents do not establish maximum stack use or an
 overall performance improvement.
+
+Native79 passes the existing complete startup/reclamation control in 655.45
+seconds at the formatted checkpoint. The current-source Device, optimized
+Provider and daemon test executable are frozen with their actual compiler
+records. All three runtime rechecks, attached actor, maximum/exact/one-byte-short
+whole-holder census, destination assertions, final census, retirement and child
+reclamation complete. The default stack, single test thread and fifteen-minute
+limit remain in effect. The refreshed helpers match the historical effective
+profile fields; their bytes and source have changed. This single successful
+control supplies no matched performance comparison or full state-preservation
+qualification.
 
 The SDK receive components now retain immutable input custody through quotation,
 normalization and failed-prefix observation. The twenty-five-file change adds
@@ -47,8 +61,8 @@ ten-file change adds owning structural Envelope fields and a separately admitted
 canonical-body check. The following thirteen-file change adds the movable
 response cursor around the same schema schedule. These components remain disconnected from
 the live Source18 route; they grant no Initial, Recipe or native permission.
-The production application-target refresh below passes for `4fbaa7eb15`, before
-the owning Envelope change. The current source needs another refresh.
+The current production application-target build passes for `33303283c4`,
+including these receive components. It compiles tests without executing them.
 
 `23f0513b98` adds the guarded flat literal-state codec. It preserves literal
 keys, full integers and floating-point representations, retains failed prefixes,
@@ -59,7 +73,7 @@ preserves its first error, and uses the existing initial graph precredit walk.
 
 | Check | Latest recorded scope and result |
 | --- | --- |
-| Current Source18 libraries | Core 2,013/33 ignored, Daemon 1,511/162, Provider 1,676/15 and Contract twelve/one: 5,212 passed, zero failures, 211 existing ignores, no filtering. Core takes 8.68 seconds, Daemon 364.06 seconds and Provider 11.91 seconds. |
+| Source18 functional libraries (`060f025eef`) | Core 2,013/33 ignored, Daemon 1,511/162, Provider 1,676/15 and Contract twelve/one: 5,212 passed, zero failures, 211 existing ignores, no filtering. Core takes 8.68 seconds, Daemon 364.06 seconds and Provider 11.91 seconds. |
 | Current Provider configurations | Each separate complete suite passes 1,676 tests with zero failures and fifteen existing ignores: ordinary Serde JSON in 12.05 seconds and raw values in 11.60 seconds. All twenty new materializer controls pass in both. |
 | Current stack regression | The exact previous-overflow fixture passes on the default stack in 261.38 seconds. All five new allocation/custody controls also pass in the complete Daemon suite. |
 | SDK receive formatting | The raw custody, owning-first, owning-next, ten-file owning-Envelope and thirteen-file response-cursor cohorts pass. The two Envelope test-assertion corrections also pass. |
@@ -68,16 +82,16 @@ preserves its first error, and uses the existing initial graph precredit walk.
 | SDK receive controls | All 74 targeted controls pass with ordinary Serde JSON in 0.02 seconds, including ten new owning-response controls. Both complete suites also execute all 74 controls. |
 | Prior SDK Provider regression | Each complete suite passes 1,570 tests with zero failures and fifteen existing ignores: 11.91 seconds for ordinary Serde JSON and 11.69 seconds with raw values enabled. |
 | Prior runtime checking | The thirteen-file runtime accounting correction passes six-crate all-feature/all-target checking in 1 minute 28 seconds and targeted formatting. |
-| Application-target compilation checkpoint | Passes for `4fbaa7eb15`: 167 rebuilt test artifacts across 48 application packages, including 69 integration targets, in 14 minutes 1 second. All 7,840 captured source files and modes match that commit. This gate executes no tests. |
+| Current application-target compilation | Passes for `33303283c4`: 167 fresh test artifacts across 48 application packages, including 69 integration targets, in 11 minutes 41 seconds after prerequisites. All 7,990 captured source files and modes match that commit. This gate executes no tests. |
 | Runtime correction library checkpoint | All four unfiltered libraries pass: Core 1,967, Daemon 1,504, Provider 1,496 and Contract twelve, totaling 4,979 with zero failures. Existing ignores remain 33/162/15/1. Ten focused Host attachment controls also pass, including both new accounting controls. |
 | Prior runtime test compilation | Standard four-library compilation passes in 4 minutes 2 seconds. Assertions, overflow checks and default stack remain enabled. |
 | Earlier startup/reclamation pair | Baseline reaches the fifteen-minute limit during inactive-runtime construction; optimized construction finishes, then its recheck refuses after 641.39 seconds. Normal retirement and child reclamation pass. |
-| Prior startup/reclamation control | Native78 passes in 678.05 seconds, including inactive-runtime recheck, the attached actor, exact/one-byte-short whole-holder census, destination assertions, retirement and child reclamation. Full native preservation remains unqualified. |
+| Current startup/reclamation control | Native79 passes in 655.45 seconds with refreshed current-source helpers and the standard default-stack, fifteen-minute control. All three runtime rechecks, attached actor, exact/one-byte-short whole-holder census, destination assertions, retirement and child reclamation complete. Full native preservation remains unqualified. |
 | Kernel FD source application | The complete 43-stage chain applies with exact identities, zero fuzz and no offsets. Its final catalog contains 182 source roles totaling 5,151,009 bytes. The first registered check stops at FD fixture discovery after its legacy controls pass; explicit fixture inputs are corrected, and FD execution remains pending. |
 | QEMU FW_CFG insertion lineage | Source and signed-artifact review and package evaluation pass. The registered license ledger passes with 296 created files and matching entries. The configured test inventory passes with 1,576 tests and executes none. Compilation, native controls, regeneration and full license-boundary qualification remain pending. |
 | gem5 SystemCounter observation | Source review and package evaluation pass for the bounded cached-state producer and registered counter controls. Compilation and native execution remain pending. Listener, callback backing, full-system timer ownership, capture and fresh restore remain unqualified. |
 | Real-host KVM preparation | The existing exact stopped-VM test passes: one passed, zero failed, 884 filtered, in 0.04 seconds. Standard test compilation passes in 4 minutes 52 seconds. It creates no vCPU or guest execution and does not qualify the controller profile. |
-| Outstanding qualification | The current-source application-target refresh, full preservation, strict lint, ABI and license gates remain pending. |
+| Outstanding qualification | Full preservation, strict lint, ABI and license gates remain pending. |
 
 The kernel FD checkpoint retains original publication and retirement identity
 across growth, slot clearing, replacement, final files-table release and queued
