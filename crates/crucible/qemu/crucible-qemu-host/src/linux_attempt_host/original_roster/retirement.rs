@@ -120,6 +120,76 @@ mod tests {
     };
 
     #[test]
+    fn contended_cleanup_retains_the_same_binding_and_paired_credit()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)?;
+        let original = Arc::new(supervisor.begin(HostOperationClass::Preparation)?);
+        let (credit, resident, metadata) = OriginalNativeAccountCredit::mechanism_credit(original)?;
+        let (mut roster, binding) =
+            OriginalNativeAccountRoster::publish([Some(credit), None, None, None], 1)?;
+        let held = binding
+            .roster
+            .upgrade()
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        let state = held
+            .lock()
+            .map_err(|_| OriginalActorAccountError::Unavailable)?;
+        let credit = state.slots[0]
+            .credit
+            .as_ref()
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        let address = std::ptr::from_ref(credit);
+
+        // This is the actual binding's mutex, held in this same thread. A
+        // blocking entry cannot reach the original-bound retirement checks.
+        let error = roster
+            .retry_unsettled()
+            .expect_err("contended cleanup must refuse");
+        let QemuVmRealizationError::ModelCopy { source } = error else {
+            panic!("preserve the original typed roster refusal");
+        };
+        assert!(matches!(
+            source.downcast_ref::<OriginalActorAccountError>(),
+            Some(OriginalActorAccountError::Unavailable)
+        ));
+        assert!(Arc::ptr_eq(
+            roster
+                .held
+                .as_ref()
+                .ok_or(OriginalActorAccountError::Unavailable)?,
+            &held
+        ));
+        assert_eq!(
+            std::ptr::from_ref(
+                state.slots[0]
+                    .credit
+                    .as_ref()
+                    .ok_or(OriginalActorAccountError::Unavailable)?
+            ),
+            address
+        );
+        assert!(OriginalNativeAccountCredit::reserve_mechanism_pair(&resident, &metadata).is_err());
+        drop(source);
+        drop(state);
+
+        roster.retry_unsettled()?;
+        roster.verify_quiescent()?;
+        assert!(
+            roster.try_close().is_err(),
+            "the real binding still blocks release"
+        );
+        drop(held);
+        drop(binding);
+        roster.try_close()?;
+        assert!(roster.is_physically_returned());
+        drop(OriginalNativeAccountCredit::reserve_mechanism_pair(
+            &resident, &metadata,
+        )?);
+        roster.try_close()?;
+        Ok(())
+    }
+
+    #[test]
     fn quiescence_observation_preserves_real_roster_credit_and_factory_binding()
     -> Result<(), Box<dyn std::error::Error>> {
         let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)?;

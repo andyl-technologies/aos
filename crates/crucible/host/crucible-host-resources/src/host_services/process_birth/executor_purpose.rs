@@ -194,6 +194,29 @@ impl AuthenticatedNativeSlotPurpose {
             .map_err(ServiceBirthError::from)
     }
 
+    // This once-only worker admission occurs before any Source or worker body.
+    // Its original is the actual initial Main Preparation, not a new operation.
+    fn check_worker_admission(&self) -> Result<(), ServiceBirthError> {
+        self.original.try_verify_unlent_preparation()?;
+        if !self.owner.is_live() {
+            return Err(ServiceBirthError::policy("normal executor main expired"));
+        }
+        self.family.check()?;
+        if let Some(partition) = self
+            .host_descriptors
+            .try_lock()
+            .map_err(|_| {
+                ServiceBirthError::policy("normal descriptor custody is busy or uncertain")
+            })?
+            .as_ref()
+        {
+            partition.check()?;
+        }
+        self.original
+            .try_verify_unlent_preparation()
+            .map_err(ServiceBirthError::from)
+    }
+
     /// Enters and retains this same Main's one outer Cleanup on first demand.
     ///
     /// Construction failure and service retirement call this only when actual
@@ -440,6 +463,17 @@ impl AuthenticatedNativeSlotPurpose {
 }
 
 impl AuthenticatedNativeSubdivision {
+    // Permanent workers belong to the containing Main pool, not a node loan.
+    // Refuse a node here instead of entering its independently locked ledger.
+    fn check_worker_admission(&self) -> Result<(), ServiceBirthError> {
+        if self.node.is_some() {
+            return Err(ServiceBirthError::policy(
+                "permanent worker admission requires the containing Main pool root",
+            ));
+        }
+        self.owner.check_worker_admission()
+    }
+
     /// Returns the retained local table ceiling beneath the same aggregate grant.
     ///
     /// This number describes an already-issued subdivision; it is not a

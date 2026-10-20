@@ -7,25 +7,15 @@
 
 use super::*;
 use crate::fingerprint_native::{WorkerFrame, WorkerLayout};
-
-const CONTROL_OFFSET: usize =
-    crate::runtime::prebirth::shared_data_offset::<FingerprintWorkerControl>();
-const CONTROL_ALIGNMENT: usize = if align_of::<FingerprintWorkerControl>() > align_of::<usize>() {
-    align_of::<FingerprintWorkerControl>()
-} else {
-    align_of::<usize>()
-};
-const CONTROL_BYTES: usize =
-    (CONTROL_OFFSET + size_of::<FingerprintWorkerControl>() + CONTROL_ALIGNMENT - 1)
-        & !(CONTROL_ALIGNMENT - 1);
+use crate::runtime::native_worker::shared::{self, ControlGeometry};
 
 /// Describes the matched module's actual full Arc geometry and fixed stack.
 #[unsafe(no_mangle)]
 pub static qemu_plugin_crucible_fingerprint_worker_layout_v1: WorkerLayout = WorkerLayout {
     schema_version: 1,
     struct_size: size_of::<WorkerLayout>() as u32,
-    control_bytes: CONTROL_BYTES as u64,
-    control_alignment: CONTROL_ALIGNMENT as u64,
+    control_bytes: ControlGeometry::<FingerprintWorkerControl>::BYTES as u64,
+    control_alignment: ControlGeometry::<FingerprintWorkerControl>::ALIGNMENT as u64,
     stack_bytes: 2 * 1024 * 1024,
 };
 
@@ -69,20 +59,10 @@ pub extern "C" fn qemu_plugin_crucible_fingerprint_worker_construct_v1(
         slot: input.slot,
         quiescence,
     });
-    let control = Arc::new(body);
-    let owning_alias = Arc::into_raw(control);
-    // SAFETY: this output belongs to the already retained Runtime worker slot;
-    // save the actual control before any allocation/result/post can refuse.
-    unsafe {
-        *input.control_address = owning_alias as usize;
-    }
-    // SAFETY: the pinned toolchain's shared geometry supplies the full base for
-    // Source corroboration only. Neither Source nor Rust constructs, mutates or
-    // frees a private Arc header; final ownership uses ordinary Arc::from_raw.
-    let allocation = unsafe { owning_alias.cast::<u8>().sub(CONTROL_OFFSET) }
-        .cast_mut()
-        .cast();
-    let status = (api.allocation_result)(frame, allocation, owning_alias.cast_mut().cast());
+    // SAFETY: allocation_begin admitted this birth, and the output is the
+    // actual retained Runtime slot supplied by its synchronous constructor.
+    let control = unsafe { shared::publish(body, input.control_address) };
+    let status = (api.allocation_result)(frame, control.allocation, control.owner);
     if status != 0 {
         input.first_status = status;
         return status;
@@ -165,50 +145,32 @@ pub extern "C" fn qemu_plugin_crucible_fingerprint_worker_destroy_v1(
     if frame.is_null() || owner.is_null() {
         return -libc::EINVAL;
     }
-    // SAFETY: Source lends its exact owning field while excluding worker/users.
-    let raw = unsafe { *owner }.cast::<FingerprintWorkerControl>();
-    if raw.is_null() {
-        return -libc::EINVAL;
-    }
-    // SAFETY: this exact pointer was produced by Arc::into_raw and remains its
-    // one native owning alias. ManuallyDrop preserves it on every pre-drop refusal.
-    let mut control = ManuallyDrop::new(unsafe { Arc::from_raw(raw) });
-    let Some(unique) = Arc::get_mut(&mut control) else {
-        return -libc::EBUSY;
-    };
-    let Some(context) = unique.native.as_ref() else {
-        return -libc::EPROTO;
-    };
-    if context.handle.id != id {
-        return -libc::EPERM;
-    }
-    let api = context.handle.api;
-    if unique.jobs_have_native_debt() {
-        return -libc::EBUSY;
-    }
-    let capture = match unique.capture_attempt.try_lock() {
-        Ok(capture) => capture,
-        Err(_) => return -libc::EBUSY,
-    };
-    if capture.has_material_debt() {
-        return -libc::EBUSY;
-    }
-    drop(capture);
-    let begun = (api.destroy_begin)(frame);
-    if begun != 0 {
-        return begun;
-    }
-    // SAFETY: physical destruction consumes this exact owning alias once; clear
-    // Source's field before drop so an unwinding destructor cannot be replayed.
+    // SAFETY: Source lends its exact owning field only after physical join and
+    // excludes users. Role-specific debt checks precede the same destroy frame.
     unsafe {
-        *owner = std::ptr::null_mut();
+        shared::destroy::<FingerprintWorkerControl, _>(
+            owner,
+            |unique| {
+                let context = unique.native.as_ref().ok_or(-libc::EPROTO)?;
+                if context.handle.id != id {
+                    return Err(-libc::EPERM);
+                }
+                let api = context.handle.api;
+                if unique.jobs_have_native_debt() {
+                    return Err(-libc::EBUSY);
+                }
+                let capture = unique
+                    .capture_attempt
+                    .try_lock()
+                    .map_err(|_| -libc::EBUSY)?;
+                if capture.has_material_debt() {
+                    return Err(-libc::EBUSY);
+                }
+                drop(capture);
+                Ok(api)
+            },
+            |api| (api.destroy_begin)(frame),
+            |api| (api.destroyed)(frame),
+        )
     }
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        drop(ManuallyDrop::into_inner(control))
-    }));
-    if let Err(payload) = result {
-        std::mem::forget(payload);
-        return -libc::EFAULT;
-    }
-    (api.destroyed)(frame)
 }

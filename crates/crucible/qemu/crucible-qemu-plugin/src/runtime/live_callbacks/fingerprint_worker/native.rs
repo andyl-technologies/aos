@@ -7,10 +7,9 @@
 
 use super::*;
 use crate::fingerprint_native::{Api, MaterialRef, PipelineStatus, WorkRef, Worker, WorkerStatus};
+use crate::runtime::native_worker::owner::OwnerField;
 use crate::startup_source::runtime_purpose::{RuntimePurpose, WorkerClaim};
 use std::ffi::c_void;
-use std::cell::UnsafeCell;
-use std::mem::ManuallyDrop;
 
 mod scope;
 mod pipeline;
@@ -78,13 +77,10 @@ pub(super) struct Context {
 
 /// Owns the canonical native field inside the actual prepaid Runtime layout.
 pub(in crate::runtime) struct SourceWorkerOwner {
-    holder: UnsafeCell<*mut Worker>,
-    creation: *mut Worker,
-    observed: *mut Worker,
+    field: OwnerField<Worker>,
     id: u64,
     api: Option<Api>,
     attempted: bool,
-    transferred: bool,
     returned: bool,
     terminal_status: i32,
     installation_post_failure: Option<crate::StartupSourceError>,
@@ -110,13 +106,10 @@ impl SourceWorkerOwner {
     /// Creates the inert inline keeper before Source worker admission.
     pub(in crate::runtime) const fn new() -> Self {
         Self {
-            holder: UnsafeCell::new(std::ptr::null_mut()),
-            creation: std::ptr::null_mut(),
-            observed: std::ptr::null_mut(),
+            field: OwnerField::new(),
             id: 0,
             api: None,
             attempted: false,
-            transferred: false,
             returned: false,
             terminal_status: 0,
             installation_post_failure: None,
@@ -169,7 +162,7 @@ impl SourceWorkerOwner {
             .ok_or_else(|| status_error(-libc::EPROTO))?;
         let mut input = ConstructorInput {
             handle,
-            projection: &self.creation,
+            projection: self.field.creation_projection_address(),
             slot,
             quiescence: Some(quiescence),
             control_address: &mut self.control_address,
@@ -182,23 +175,24 @@ impl SourceWorkerOwner {
             child,
             workspace,
             std::ptr::from_mut(&mut input).cast(),
-            &mut self.creation,
+            self.field.creation_address(),
         );
         self.creation_status = Some(status);
-        self.observed = self.creation;
-        worker.native.worker = self.observed as usize;
+        let born = self.field.record_birth();
+        worker.native.worker = born as usize;
         if input.first_status != 0 {
             return Err(status_error(input.first_status));
         }
         native_status(status)?;
-        if self.observed.is_null() || self.control_address == 0 {
+        if self.field.projection().is_null() || self.control_address == 0 {
             return Err(status_error(-libc::EPROTO));
         }
-        self.transferred = true;
-        let status = (api.transfer)(id, &mut self.creation, self.holder.get());
+        let status = self
+            .field
+            .transfer(|creation, canonical| (api.transfer)(id, creation, canonical));
         self.transfer_status = Some(status);
         native_status(status)?;
-        if !self.creation.is_null() {
+        if !self.field.creation_consumed() {
             return Err(status_error(-libc::EPROTO));
         }
         Ok(())
@@ -250,14 +244,18 @@ impl SourceWorkerOwner {
             return native_status(self.terminal_status);
         }
         let api = self.api.ok_or_else(|| status_error(-libc::ENOSYS))?;
-        if self.unattached.is_none() && !self.observed.is_null() {
+        if self.unattached.is_none() && !self.field.projection().is_null() {
             let mut journal = WorkerStatus::default();
-            native_status((api.observe)(self.id, self.observed, &mut journal))?;
+            native_status((api.observe)(
+                self.id,
+                self.field.projection(),
+                &mut journal,
+            ))?;
             validate_status(&journal)?;
             self.unattached = Some(LiveFingerprintDigestWorker {
                 native: Handle {
                     id: self.id,
-                    worker: self.observed as usize,
+                    worker: self.field.projection() as usize,
                     api,
                 },
                 native_retired: journal.physical_returned == 1,
@@ -276,13 +274,13 @@ impl SourceWorkerOwner {
             }
             result.err()
         });
-        if self.observed.is_null() {
+        if self.field.projection().is_null() {
             // No output means no native birth; preserve the first refusal and
             // do not manufacture a successful return of an attempted purpose.
             return Err(status_error(-libc::ESTALE));
         }
         let mut journal = WorkerStatus::default();
-        let observation = (api.observe)(self.id, self.observed, &mut journal);
+        let observation = (api.observe)(self.id, self.field.projection(), &mut journal);
         if observation != 0 {
             self.return_observation_status.get_or_insert(observation);
         }
@@ -295,12 +293,7 @@ impl SourceWorkerOwner {
         if journal.physical_returned != 1 || journal.control_lifetime_uncertain != 0 {
             return Err(retirement_error.unwrap_or_else(|| status_error(-libc::EBUSY)));
         }
-        let canonical = self.transferred && self.creation.is_null();
-        let field = if canonical {
-            self.holder.get()
-        } else {
-            &mut self.creation
-        };
+        let field = self.field.return_address();
         let status = (api.identity_return)(self.id, field);
         if status != 0 {
             self.return_status.get_or_insert(status);
@@ -315,7 +308,7 @@ impl SourceWorkerOwner {
             return Err(retirement_error.unwrap_or_else(|| status_error(-libc::EPROTO)));
         }
         self.returned = true;
-        self.observed = std::ptr::null_mut();
+        self.field.returned();
         if let Some(source) = retirement_error {
             return Err(source);
         }
@@ -353,7 +346,7 @@ impl SourceWorkerOwner {
         let api = self.api.ok_or_else(|| status_error(-libc::ENOSYS))?;
         let status = Handle {
             id: self.id,
-            worker: self.observed as usize,
+            worker: self.field.projection() as usize,
             api,
         }
         .observe()?;
@@ -380,7 +373,7 @@ impl SourceWorkerOwner {
         }
         let handle = Handle {
             id: self.id,
-            worker: self.observed as usize,
+            worker: self.field.projection() as usize,
             api,
         };
         handle.with_control(false, |control| {

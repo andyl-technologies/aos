@@ -4,7 +4,7 @@
 #![allow(clippy::expect_used)]
 
 use std::os::unix::net::UnixStream;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -19,6 +19,8 @@ use super::*;
 #[derive(Debug, Default)]
 struct HostCounters {
     begins: AtomicUsize,
+    worker_control_calls: AtomicUsize,
+    worker_control_bytes: AtomicU64,
     fork_targets_owned: AtomicUsize,
     checks: AtomicUsize,
     signals: AtomicUsize,
@@ -136,6 +138,25 @@ impl QemuAttemptSelectedHostResourceFactory for RetrySelectedHostFactory {
 }
 
 impl QemuAttemptSelectedHostResourceFactory for FakeHostFactory {
+    fn reserve_main_worker_controls(
+        &self,
+        bytes: u64,
+    ) -> Result<
+        Option<
+            crucible_host_resources::host_services::process_birth::AuthenticatedNativePoolPurpose,
+        >,
+        QemuVmRealizationError,
+    > {
+        // This component has no native Main payer; record only actual delegation.
+        self.counters
+            .worker_control_calls
+            .fetch_add(1, Ordering::SeqCst);
+        self.counters
+            .worker_control_bytes
+            .store(bytes, Ordering::SeqCst);
+        Ok(None)
+    }
+
     fn begin_selected(
         &mut self,
         resources: AttemptResourceLimits,
@@ -334,6 +355,51 @@ fn composed_guard_retains_hot_fork_process_authority_without_splitting_host_reso
     }
 
     require_complete_owner::<ComposedQemuAttemptResourceGuard<FakeHostOwner>>();
+}
+
+#[test]
+fn contended_worker_control_admission_preserves_same_shared_host_before_birth() {
+    let resources = resources(2);
+    let counters = Arc::new(HostCounters::default());
+    let shared = SharedQemuAttemptHostResourceFactory::new(FakeHostFactory {
+        installed: resources,
+        counters: Arc::clone(&counters),
+        signal_error: false,
+        signal_panics: false,
+        finish_error: false,
+    });
+    let held = shared.host.lock().expect("hold actual shared host");
+    let host_pointer = std::ptr::from_ref(&*held);
+
+    let error = shared
+        .reserve_main_worker_controls(112)
+        .expect_err("busy before-birth admission must refuse");
+    assert!(matches!(
+        error,
+        QemuVmRealizationError::ExecutorUnavailable {
+            operation: "reserve permanent Main worker bodies",
+            ..
+        }
+    ));
+    assert_eq!(counters.worker_control_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(counters.begins.load(Ordering::SeqCst), 0);
+    assert_eq!(shared.strong_count(), 1);
+    drop(held);
+
+    assert!(
+        shared
+            .reserve_main_worker_controls(112)
+            .expect("same component host becomes available")
+            .is_none()
+    );
+    assert_eq!(counters.worker_control_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.worker_control_bytes.load(Ordering::SeqCst), 112);
+    assert_eq!(counters.begins.load(Ordering::SeqCst), 0);
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 0);
+    assert_eq!(counters.quarantines.load(Ordering::SeqCst), 0);
+    let held = shared.host.lock().expect("same original host retained");
+    assert_eq!(std::ptr::from_ref(&*held), host_pointer);
+    assert!(Arc::ptr_eq(&held.counters, &counters));
 }
 
 #[test]

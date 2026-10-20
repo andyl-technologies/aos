@@ -31,6 +31,8 @@ mod device_workspace;
 mod hot_fork;
 pub(crate) mod live_callbacks;
 mod live_whitebox;
+#[cfg(not(test))]
+mod native_worker;
 mod parent_park;
 pub(crate) mod prebirth;
 mod teardown_latch;

@@ -10,13 +10,19 @@ use super::{Companion, Contract};
 mod fork_target;
 #[path = "host_physical_custody/normal_world.rs"]
 mod normal_world;
+#[path = "host_physical_custody/roster_retirement.rs"]
+mod roster_retirement;
 #[path = "host_physical_custody/target_dispatcher.rs"]
 mod target_dispatcher;
+
+// Reuse the exact lower World facts for same-owner daemon forwarders.
+pub(super) const NORMAL_WORLD: &Contract = &normal_world::CONTRACT;
 
 pub(super) const CONTRACTS: &[Contract] = &[
     normal_world::CONTRACT,
     fork_target::CONTRACT,
     target_dispatcher::CONTRACT,
+    roster_retirement::CONTRACT,
 ];
 
 #[test]

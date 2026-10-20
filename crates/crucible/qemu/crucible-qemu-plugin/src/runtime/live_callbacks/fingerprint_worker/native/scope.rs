@@ -6,23 +6,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 use super::*;
-use std::mem::MaybeUninit;
-
-struct InputHeader {
-    /// Invokes the thunk paired with the caller's live synchronous input.
-    ///
-    /// # Safety
-    /// The owner must remain retained by Source, and the payload must point to
-    /// the exact live `ScopedInput<F, R>` paired with this monomorphized thunk.
-    invoke: unsafe fn(*mut c_void, *mut c_void) -> i32,
-    payload: *mut c_void,
-}
-
-struct ScopedInput<F, R> {
-    action: Option<F>,
-    output: MaybeUninit<Result<R, LiveVcpuTimeCallbackError>>,
-    completed: bool,
-}
+use crate::runtime::native_worker::scope as native_scope;
 
 impl Handle {
     /// Enters only an actual Source-owned ordinary or terminal lifetime scope.
@@ -43,35 +27,23 @@ impl Handle {
         ) -> Result<R, LiveVcpuTimeCallbackError>,
         R: Copy + 'static,
     {
-        let mut input = ScopedInput {
-            action: Some(action),
-            output: MaybeUninit::uninit(),
-            completed: false,
-        };
-        let mut header = InputHeader {
-            invoke: invoke::<F, R>,
-            payload: std::ptr::from_mut(&mut input).cast(),
-        };
         let use_control = if terminal {
             self.api.control_retire
         } else {
             self.api.control_use
         };
-        let status = use_control(
-            self.id,
-            self.pointer(),
-            std::ptr::from_mut(&mut header).cast(),
-        );
-        if !input.completed {
+        let outcome =
+            native_scope::with_control(action, retain_module_error, retain_module_panic, |input| {
+                use_control(self.id, self.pointer(), input)
+            });
+        let status = outcome.status;
+        let Some(output) = outcome.output else {
             return Err(status_error(if status != 0 {
                 status
             } else {
                 -libc::EPROTO
             }));
-        }
-        // SAFETY: only the matched synchronous thunk sets completed, strictly
-        // after writing the complete owned R; no body-derived borrow can escape.
-        let output = unsafe { input.output.assume_init() };
+        };
         match (output, status) {
             (Ok(output), 0) => Ok(output),
             (Ok(_), status) => Err(status_error(status)),
@@ -107,46 +79,18 @@ impl Handle {
     }
 }
 
-/// Runs one caller action while Source retains the canonical control owner.
-///
-/// # Safety
-/// Source must retain its control user through return. `input` must point to the
-/// live `ScopedInput<F, R>` paired with this thunk, and `owner` must identify the
-/// same initialized control retained by that user.
-unsafe fn invoke<F, R>(owner: *mut c_void, input: *mut c_void) -> i32
-where
-    F: for<'a> FnOnce(&'a Arc<FingerprintWorkerControl>) -> Result<R, LiveVcpuTimeCallbackError>,
-    R: Copy + 'static,
-{
-    // SAFETY: the private header pairs this exact monomorphized thunk with its
-    // live caller-owned stack input. Source never retains either pointer.
-    let input = unsafe { &mut *input.cast::<ScopedInput<F, R>>() };
-    let Some(action) = input.action.take() else {
-        return -libc::EALREADY;
-    };
-    let control =
-        // SAFETY: Source's control user spans this callback and prevents the
-        // raw Arc owner from being destroyed. ManuallyDrop preserves that owner.
-        ManuallyDrop::new(unsafe { Arc::from_raw(owner.cast::<FingerprintWorkerControl>()) });
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| action(&control))) {
-        Ok(output) => {
-            let output = output.map_err(|error| retain_module_error(&control, error));
-            input.output.write(output);
-            input.completed = true;
-            0
-        }
-        Err(payload) => {
-            let mut state = control.lock();
-            if state.failure.is_none() {
-                state.failure = Some(FingerprintWorkerCause::Panic);
-            }
-            state.panic_payload = Some(payload);
-            drop(state);
-            control.available.notify_all();
-            control.capacity.notify_all();
-            -libc::EFAULT
-        }
+fn retain_module_panic(
+    control: &Arc<FingerprintWorkerControl>,
+    payload: Box<dyn std::any::Any + Send>,
+) {
+    let mut state = control.lock();
+    if state.failure.is_none() {
+        state.failure = Some(FingerprintWorkerCause::Panic);
     }
+    state.panic_payload = Some(payload);
+    drop(state);
+    control.available.notify_all();
+    control.capacity.notify_all();
 }
 
 fn retain_module_error(
@@ -194,10 +138,7 @@ pub unsafe extern "C" fn qemu_plugin_crucible_fingerprint_worker_module_control_
     {
         return -libc::EPERM;
     }
-    // SAFETY: only this module constructs the synchronous private header, and
-    // Source supplies it unchanged while its caller stack remains live.
-    let input = unsafe { &mut *input.cast::<InputHeader>() };
-    // SAFETY: this private header retains the matching thunk and live payload;
-    // the same Source control user protects owner through the synchronous call.
-    unsafe { (input.invoke)(owner, input.payload) }
+    // SAFETY: Source supplies this module's unchanged live synchronous input;
+    // the validated native control user protects owner through thunk return.
+    unsafe { native_scope::dispatch(owner, input) }
 }

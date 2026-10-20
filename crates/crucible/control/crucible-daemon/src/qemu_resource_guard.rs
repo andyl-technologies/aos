@@ -594,9 +594,9 @@ pub(crate) trait QemuAttemptSelectedHostResourceFactory:
 /// A production Linux allocator owns one cgroup and project-quota namespace
 /// for its complete lifetime, while the fixed executor pool gives each worker
 /// an independently owned execution model. This facade lets those workers
-/// share the one allocator without duplicating namespace authority. The mutex
-/// is held only while one attempt owner is allocated; guest execution and
-/// cleanup remain outside it in the returned owner.
+/// share the one allocator without duplicating namespace authority. Allocation
+/// and exact pending-construction cleanup share the mutex; cleanup entry refuses
+/// contention. Returned attempt owners execute guests outside this facade.
 pub struct SharedQemuAttemptHostResourceFactory<H> {
     host: Arc<Mutex<H>>,
     cleanup: Option<crate::lifecycle_cleanup::LifecycleCleanupHandle>,
@@ -625,7 +625,8 @@ impl<H> SharedQemuAttemptHostResourceFactory<H> {
     /// Reserves real permanent worker bodies under the same authenticated pool.
     ///
     /// # Errors
-    /// Refuses poisoned custody or the actual Main bank admission failure.
+    /// Refuses busy or poisoned custody, or the actual Main bank admission.
+    /// This before-birth admission never waits for another host constructor.
     pub(crate) fn reserve_main_worker_controls(
         &self,
         bytes: u64,
@@ -639,10 +640,10 @@ impl<H> SharedQemuAttemptHostResourceFactory<H> {
         H: QemuAttemptSelectedHostResourceFactory,
     {
         self.host
-            .lock()
+            .try_lock()
             .map_err(|_| QemuVmRealizationError::ExecutorUnavailable {
                 operation: "reserve permanent Main worker bodies",
-                message: String::from("host custody is poisoned"),
+                message: String::from("host custody is busy or poisoned"),
             })?
             .reserve_main_worker_controls(bytes)
     }

@@ -152,7 +152,7 @@ pub(super) const CONTRACT: Contract = Contract {
         .as_ref()
         .ok_or_else(|| original_error(OriginalActorAccountError::Unavailable))?;
     let mut state = held
-        .lock()
+        .try_lock()
         .map_err(|_| original_error(OriginalActorAccountError::Unavailable))?;
     for slot in &mut state.slots {
         fork_target::retry_unsettled_target(slot)?;

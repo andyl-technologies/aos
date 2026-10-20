@@ -19,6 +19,7 @@ mod node;
 mod refusal;
 mod window;
 mod world_return;
+mod worker_admission;
 use ledger::{NodeSlot, PoolLedger, WorldSlot};
 
 pub use world_return::NativePoolReturnError;
@@ -514,16 +515,14 @@ impl AuthenticatedNativePoolPurpose {
     /// existing original bank and issues no Source, CPU or process authority.
     ///
     /// # Errors
-    /// Refuses stale Main, zero/repeated assignment, exhausted concurrent pool
-    /// geometry or uncertain ledger. Post refusal retains the attempted debit.
-    pub fn reserve_worker_controls(&self, bytes: u64) -> Result<Self, ServiceBirthError> {
-        self.held.root.check()?;
-        self.held
-            .ledger
-            .lock()
-            .map_err(|_| ServiceBirthError::policy("Main worker control ledger is uncertain"))?
-            .reserve_worker_controls(bytes)?;
-        self.held.root.check()?;
+    /// Refuses stale Main, occupied admission locks, zero/repeated assignment,
+    /// or exhausted concurrent pool geometry. The actual initial Preparation
+    /// remains unchanged. Initiating and postcheck refusals stay independent;
+    /// a post refusal retains the attempted permanent debit.
+    pub fn reserve_worker_controls(&self, bytes: u64) -> Result<Self, NativePoolRefusal> {
+        worker_admission::admit_worker_controls(&self.held.ledger, bytes, || {
+            self.held.root.check_worker_admission()
+        })?;
         Ok(self.clone())
     }
 

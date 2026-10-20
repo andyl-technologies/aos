@@ -1,0 +1,46 @@
+//! Binds Source cleanup continuations to the same carrier and native last use.
+//!
+//! These source contracts preserve physical custody and raw error histories.
+//! They issue no Source, Park or rearm authority and do not qualify the missing
+//! native rearm producer. Genuine entered-native validation remains required.
+
+use super::{Companion, Contract};
+
+#[path = "hot_fork_retirement/owners.rs"]
+mod owners;
+#[path = "hot_fork_retirement/park.rs"]
+mod park;
+#[path = "hot_fork_retirement/shared.rs"]
+mod shared;
+#[path = "hot_fork_retirement/source.rs"]
+mod source;
+
+pub(super) const CONTRACTS: &[Contract] = &[
+    owners::PREPARATION,
+    owners::REARM,
+    shared::CONTRACT,
+    source::CONTRACT,
+    park::CONTRACT,
+];
+
+/// Changes only a reviewed expression's actual owner or argument in mutants.
+#[cfg(test)]
+pub(super) fn altered_expression(expression: &str) -> String {
+    if !CONTRACTS.iter().any(|contract| {
+        contract.expressions.iter().any(|(actual, _)| *actual == expression)
+    }) {
+        return expression.to_owned();
+    }
+    expression
+        .replace("self.world", "foreign.world")
+        .replace("retry_source_retirement_body()", "retry_source_retirement_body(foreign_source)")
+        .replace("self.parent_park", "foreign.parent_park")
+        .replace("(&self, source:", "(&self, foreign_source:")
+        .replace("retry_retirement(source)", "retry_retirement(foreign_source)")
+        .replace("self.handoff", "foreign.handoff")
+        .replace("(&mut self)", "(&mut foreign)")
+}
+
+#[cfg(test)]
+#[path = "hot_fork_retirement/tests.rs"]
+mod tests;

@@ -22,6 +22,7 @@ pub use action_loan::{
 mod bootstrap;
 mod deadline;
 mod prepared_start;
+mod worker_admission;
 mod quiescence;
 pub use prepared_start::PreparedHostOperationSupervisor;
 mod source_publication;

@@ -1193,8 +1193,10 @@ impl OriginalNativeAccountRoster {
             .held
             .as_ref()
             .ok_or_else(|| original_error(OriginalActorAccountError::Unavailable))?;
+        // Contention must not wait beyond the caller's saved Cleanup.
+        // Refusal leaves the same roster and every physical owner untouched.
         let mut state = held
-            .lock()
+            .try_lock()
             .map_err(|_| original_error(OriginalActorAccountError::Unavailable))?;
         for slot in &mut state.slots {
             fork_target::retry_unsettled_target(slot)?;
