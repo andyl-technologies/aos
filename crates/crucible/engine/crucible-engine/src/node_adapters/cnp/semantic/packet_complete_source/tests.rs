@@ -46,7 +46,16 @@ fn content(value: &impl serde::Serialize) -> ContentRef {
 }
 
 pub(super) fn coordinator() -> PacketNative5CoordinatorInstallation {
-    let mut installed = fixture::five();
+    complete_coordinator(fixture::five())
+}
+
+pub(super) fn coordinator_with_ack() -> PacketNative5CoordinatorInstallation {
+    complete_coordinator(fixture::five_with_ack(true))
+}
+
+fn complete_coordinator(
+    mut installed: PacketNative5CoordinatorInstallation,
+) -> PacketNative5CoordinatorInstallation {
     for (index, selected) in installed.participants.iter_mut().enumerate() {
         let capabilities = CapabilityProfile {
             schema_version: 1,

@@ -10,9 +10,11 @@ publish = false
 workspace = true
 
 [dependencies]
+aos-linux-project-quota = { path = "../../../shared/aos-linux-project-quota", default-features = false }
 libc = { workspace = true }
-rustix = { workspace = true }
+rustix = { workspace = true, features = ["param", "process", "time"] }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+sha2 = { workspace = true }
 tempfile = { workspace = true }

@@ -141,6 +141,10 @@ fn complete_guarantees(value: &Value) -> GuaranteeProfile {
 }
 
 pub(super) fn five() -> PacketNative5CoordinatorInstallation {
+    five_with_ack(false)
+}
+
+pub(super) fn five_with_ack(ack: bool) -> PacketNative5CoordinatorInstallation {
     let four = four();
     let mut result = PacketNative5CoordinatorInstallation {
         schema: contracts::PACKET_NATIVE5_COORDINATOR_SCHEMA.into(),
@@ -194,6 +198,20 @@ pub(super) fn five() -> PacketNative5CoordinatorInstallation {
             .extensions_supported
             .push(id(contracts::PACKET_COMPLETE_LINEAGE_FEATURE));
         peer.provider.extensions_supported.sort();
+        if ack {
+            use crucible_node_transport::reference_packet::service::{
+                PacketNative5AckEmitterSelection, PacketNative5ConfirmationSelection,
+            };
+            let declaration = contracts::complete_packet_ack_emitter_declaration(
+                &peer.provider,
+                Some(&PacketNative5ConfirmationSelection::AfterProtocolPoll5),
+                Some(&PacketNative5AckEmitterSelection::CanonicalSdkBlob5),
+            )
+            .unwrap();
+            peer.provider = declaration.provider;
+            peer.realization.bindings[0].compatibility.implementation =
+                peer.provider.implementation.clone();
+        }
         peer.realization.provider_manifest = content(&peer.provider);
         let hash = peer.realization.bindings[0].identity().unwrap();
         peer.realization.owner_bindings[0].node_bindings[0].binding_hash = hash;

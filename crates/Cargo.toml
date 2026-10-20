@@ -64,6 +64,7 @@ members = [
     "crucible/control/crucible-session",
     "crucible/control/crucible-control-api",
     "crucible/control/crucible-daemon",
+    "crucible/control/crucible-source-birth-worker",
     "crucible/control/crucible-cli",
     "crucible/testing/crucible-test-support",
     "shared/aos-artifact-evidence",

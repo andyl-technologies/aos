@@ -432,6 +432,12 @@
       safeWrapperContract = [];
     }
     {
+      package = "crucible-source-birth-worker";
+      root = "src/main.rs";
+      unsafeBoundary = false;
+      safeWrapperContract = [];
+    }
+    {
       package = "crucible-cli";
       root = "src/main.rs";
       unsafeBoundary = false;

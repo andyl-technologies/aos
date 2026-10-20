@@ -31,7 +31,7 @@ mod write;
 
 pub use error::{StreamError, StreamFormatReason, StreamLimitReason};
 pub use read::{DecodedValue, ReadFailure, read_value};
-pub use write::write_value;
+pub use write::{LiteralWriteWorkspace, write_value, write_value_in};
 
 #[cfg(test)]
 #[path = "literal_value/tests.rs"]

@@ -79,6 +79,10 @@
       expected = "debug-gateway";
     }
     {
+      package = "crucible-source-birth-worker";
+      expected = "source-birth-worker";
+    }
+    {
       package = "crucible-cli";
       expected = "cli-binary";
     }
@@ -230,6 +234,31 @@
             else "${spec.package}: node transport must explicitly declare its fifteen process tools and disable implicit binaries"
           )
         ]
+      else if spec.expected == "source-birth-worker"
+      then let
+        bins = binTargets manifest;
+        actual =
+          map (bin: {
+            name = bin.name or null;
+            path = bin.path or null;
+          })
+          bins;
+        required = [
+          {
+            name = spec.package;
+            path = "src/main.rs";
+          }
+        ];
+      in
+        lib.optionals (
+          actual
+          != required
+          || (manifest.package.autobins or null) != false
+          || declaresOrImpliesLibTarget manifest layout
+          || !layout.hasMainRs
+          || layout.hasSrcBinDir
+          || builtins.any (bin: (bin."required-features" or []) != []) bins
+        ) ["${spec.package}: worker must expose only its explicit, ungated src/main.rs binary and disable implicit binaries"]
       else if spec.expected == "cli-binary"
       then let
         bins = binTargets manifest;
@@ -535,8 +564,34 @@
       "artifact-type regression failed to reject a library src/main.rs implicit binary"
     ];
 
+  workerRegressionFailures = let
+    package = "crucible-source-birth-worker";
+    spec = {
+      inherit package;
+      expected = "source-birth-worker";
+    };
+    manifest = readManifest package;
+    layout = packageLayout package;
+    first = builtins.head (binTargets manifest);
+    candidates = [
+      (manifest // {package = builtins.removeAttrs manifest.package ["autobins"];})
+      (manifest // {bin = [(first // {"required-features" = ["hidden"];})];})
+      (manifest // {bin = [(first // {path = "src/other.rs";})];})
+      (manifest // {bin = [(first // {name = "unreviewed-worker";})];})
+      (manifest // {bin = [];})
+      (manifest // {bin = [first first];})
+      (manifest // {lib = {};})
+    ];
+  in
+    lib.optionals (
+      !(builtins.all (candidate: checkArtifact spec candidate layout != []) candidates)
+      || checkArtifact spec manifest (layout // {hasSrcBinDir = true;}) == []
+      || checkArtifact spec manifest (layout // {hasMainRs = false;}) == []
+    ) ["worker artifact regression failed to reject an implicit, hidden, rebound, duplicate or library output"];
+
   failures =
     packageSetFailures
+    ++ workerRegressionFailures
     ++ regressionFailures
     ++ realFailures
     ++ processToolRegressionFailures {

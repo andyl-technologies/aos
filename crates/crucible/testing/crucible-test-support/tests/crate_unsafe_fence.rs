@@ -178,6 +178,12 @@ const FENCE_SPECS: &[FenceSpec] = &[
         safe_wrapper_contract: &[],
     },
     FenceSpec {
+        package: "crucible-source-birth-worker",
+        root: "src/main.rs",
+        unsafe_boundary: false,
+        safe_wrapper_contract: &[],
+    },
+    FenceSpec {
         package: "crucible-cli",
         root: "src/main.rs",
         unsafe_boundary: false,

@@ -3,11 +3,23 @@
   lib,
   mkDerivation,
   linux-headers,
+  libseccomp,
 }:
 mkDerivation {
   platformSupport = {
-    build = [{abi = ["gnu"]; os = ["linux"];}];
-    host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+    build = [
+      {
+        abi = ["gnu"];
+        os = ["linux"];
+      }
+    ];
+    host = [
+      {
+        abi = ["gnu"];
+        cpu = ["x86_64" "aarch64"];
+        os = ["linux"];
+      }
+    ];
     target = [];
     role = "public-package";
   };
@@ -66,7 +78,7 @@ mkDerivation {
   src = null;
 
   buildDeps = [linux-headers];
-  runtimeDeps = [];
+  runtimeDeps = [libseccomp];
   propagatedDeps = [];
 
   phases = [
@@ -74,12 +86,18 @@ mkDerivation {
       name = "build";
       script = ''
         mkdir -p $out/bin
+        cp ${./aos-landlock.c} aos-landlock.c
+        cp ${./aos-landlock-worker.h} aos-landlock-worker.h
         $CC -O2 -Wall -Wextra -Werror \
-          -I${linux-headers}/include \
-          -o $out/bin/aos-landlock ${./aos-landlock.c}
+          -I${linux-headers}/include -I${libseccomp}/include \
+          -o $out/bin/aos-landlock aos-landlock.c \
+          -L${libseccomp}/lib -Wl,-rpath,${libseccomp}/lib -lseccomp
       '';
     }
   ];
+
+  # Compatibility DATA for the compiled closed mode, never host admission.
+  passthru.pureWorkerProfileId = "pure-worker-v1";
 
   passthru.evidenceSources = [
     (builtins.path {
@@ -89,6 +107,10 @@ mkDerivation {
     (builtins.path {
       path = ./aos-landlock.c;
       name = "aos-landlock.c";
+    })
+    (builtins.path {
+      path = ./aos-landlock-worker.h;
+      name = "aos-landlock-worker.h";
     })
   ];
 

@@ -127,6 +127,7 @@
     "crucible-session"
     "crucible-control-api"
     "crucible-daemon"
+    "crucible-source-birth-worker"
     "crucible-cli"
     "crucible-qemu-host"
     "crucible-qemu-plugin"
@@ -261,10 +262,21 @@
     }
     ++ assertFeatureSet "crucible-device" {
       default = [];
-    };
+    }
+    ++ assertFeatureSet "crucible-source-birth-worker" {};
+
+  workerDependencies = (readManifest "crucible-source-birth-worker").dependencies or {};
+  workerEngine = workerDependencies.crucible-engine or {};
+  workerDependencyFailures = lib.optionals (
+    builtins.attrNames workerDependencies
+    != ["crucible-engine"]
+    || (workerEngine."default-features" or null) != false
+    || (workerEngine.features or []) != []
+  ) ["source-birth worker must depend only on Engine without default or test features"];
 
   failures =
     featureFailures
+    ++ workerDependencyFailures
     ++ productionTestDoubleFailures
     ++ productionTestDoubleRegressionFailures
     ++ unconsumedFeatureFailures

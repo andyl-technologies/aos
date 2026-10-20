@@ -50,6 +50,7 @@ and production VM lifecycle composition belongs to the daemon.
     crucible-control-api    native versioned control messages and codecs
     crucible-control-client client transport and lifecycle operations
     crucible-control-server session service and server stream orchestration
+    crucible-source-birth-worker  private bounded pure-derivation process
     crucible-daemon    long-lived host process hosting sessions over the API
     crucible-cli       the `crucible` binary; thin client over crucible-control-client
     crucible-store-s3  bounded AWS SDK adapter for campaign object storage
@@ -97,6 +98,7 @@ One-line responsibilities:
 | L4 | `crucible-control-client` | Client transport and lifecycle operations over the versioned API; no production QEMU dependency. |
 | L4 | `crucible-control-server` | Session service and server-side stream orchestration; native launch belongs to daemon composition. |
 | L4 | `crucible-daemon` | The long-lived host process that hosts sessions and serves the API over a transport. |
+| L4 | `crucible-source-birth-worker` | Private safe process entry point over the Engine pure derivation facade and codecs; no Source or native authority. |
 | L4 | `crucible-cli` | The `crucible` binary: a thin client over `crucible-control-client`; scenario authoring, run, reproduce, query. |
 | L4 | `crucible-store-s3` | The bounded AWS SDK implementation of campaign object-store capabilities. |
 
@@ -113,6 +115,7 @@ graph TD
   client --> api
   server --> session[crucible-session]
   session --> engine[crucible-engine]
+  worker[crucible-source-birth-worker] --> engine
   api --> engine
   host --> engine
   engine --> campaign
@@ -190,6 +193,7 @@ discipline of [`28-engineering-standards.md`](28-engineering-standards.md).
 | `crucible-control-client` | **SAFE** | Client transport and lifecycle request dispatch. |
 | `crucible-control-server` | **SAFE** | Session service and server stream orchestration. |
 | `crucible-daemon` | **SAFE** | Host process; transport via safe libraries. |
+| `crucible-source-birth-worker` | **SAFE** | Binary-only bounded input/output process over the Engine facade; no native APIs. |
 | `crucible-cli` | **SAFE** | Thin client. |
 | `crucible-store-s3` | **SAFE** | Bounded SDK adapter over owned buffers and async operations. |
 
@@ -201,7 +205,7 @@ classified in the AOS workspace. The engine and control plane remain safe.
 - **[CRATE-4]** Every SAFE crate (`crucible-determinism`,
   `crucible-device`, `crucible-qemu-debug-gateway`, `crucible-engine`, `crucible-store`,
   `crucible-campaign`, `crucible-session`, `crucible-control-api`, `crucible-control-client`,
-  `crucible-control-server`, `crucible-daemon`,
+  `crucible-control-server`, `crucible-daemon`, `crucible-source-birth-worker`,
   `crucible-cli`, `crucible-store-s3`) MUST carry
   `#![forbid(unsafe_code)]` at its crate root. A CI lint asserts the attribute is
   present. *Gate:* `gate:harness-lint`. *Spec:* §2.
@@ -556,6 +560,7 @@ members = [
   "crucible/control/crucible-control-client",
   "crucible/control/crucible-control-server",
   "crucible/control/crucible-daemon",
+  "crucible/control/crucible-source-birth-worker",
   "crucible/control/crucible-cli",
   "crucible/storage/crucible-store-s3",
   # test-only harness (not a layer; spans crates)
@@ -573,7 +578,9 @@ edition = "2021"
 
 `crucible-qemu-plugin` builds a `cdylib`; most crates build `lib`s.
 `crucible-cli` builds the `crucible` binary, and `crucible-store` builds the
-supporting `crucible-fleet-store` binary:
+supporting `crucible-fleet-store` binary. The private
+`crucible-source-birth-worker` package has no library target and declares only
+its `src/main.rs` binary with implicit binaries disabled:
 
 ```toml
 # crates/crucible/qemu/crucible-qemu-plugin/Cargo.toml
@@ -583,6 +590,14 @@ crate-type = ["cdylib"]
 # crates/crucible/control/crucible-cli/Cargo.toml
 [[bin]]
 name = "crucible"
+path = "src/main.rs"
+
+# crates/crucible/control/crucible-source-birth-worker/Cargo.toml
+[package]
+autobins = false
+
+[[bin]]
+name = "crucible-source-birth-worker"
 path = "src/main.rs"
 
 # crates/crucible/storage/crucible-store/Cargo.toml

@@ -1,4 +1,6 @@
 //! Retains independent inert coordinator fixtures for actual model construction controls.
+
+#![cfg(test)]
 #![allow(clippy::unwrap_used)]
 use super::*;
 use crate::bodies::RealizeRequest;

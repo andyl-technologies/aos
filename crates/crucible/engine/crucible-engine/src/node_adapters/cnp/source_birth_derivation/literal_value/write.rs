@@ -28,6 +28,104 @@ pub fn write_value(
     output.write_all(&wire_integer(statistics.depth)?.to_be_bytes())?;
 
     let mut walker = Walker::<false>::new(value, statistics.values).map_err(traversal_error)?;
+    emit(&mut walker, output)?;
+    Ok(statistics)
+}
+
+/// Owns a pre-reserved borrowed-iterator bank for a synchronous export.
+///
+/// Construction takes no source loan. The caller admits the requested backing
+/// and fixed header before construction, checks actual capacity, then moves this
+/// owner into its export call. No frame bank grows while source loans are live.
+pub struct LiteralWriteWorkspace<'a> {
+    frames: Vec<super::walk::Frame<'a>>,
+    slots: usize,
+}
+
+impl<'a> LiteralWriteWorkspace<'a> {
+    /// Reports the requested frame backing and fixed workspace header.
+    ///
+    /// This restriction is operational workspace, never a semantic depth cap or
+    /// a claim about the actual input population.
+    ///
+    /// # Errors
+    /// Refuses unrepresentable requested storage.
+    pub fn requested_bytes(slots: usize) -> Result<[usize; 2], StreamError> {
+        Ok([
+            slots
+                .checked_mul(std::mem::size_of::<super::walk::Frame<'a>>())
+                .ok_or(StreamError::Limit(StreamLimitReason::SizeOverflow))?,
+            std::mem::size_of::<Self>(),
+        ])
+    }
+
+    /// Allocates an empty bank after independent parent admission.
+    ///
+    /// # Errors
+    /// Refuses allocation failure or capacity exceeding the admitted request.
+    pub fn new(slots: usize) -> Result<Self, StreamError> {
+        let mut frames = Vec::new();
+        frames.try_reserve_exact(slots)?;
+        if frames.capacity() > slots {
+            return Err(StreamError::Limit(
+                StreamLimitReason::TraversalWorkspaceOrValues,
+            ));
+        }
+        Ok(Self { frames, slots })
+    }
+
+    /// Reports the actual allocated backing and fixed workspace header.
+    pub fn retained_bytes(&self) -> [usize; 2] {
+        [
+            self.frames.capacity() * std::mem::size_of::<super::walk::Frame<'a>>(),
+            std::mem::size_of::<Self>(),
+        ]
+    }
+}
+
+/// Writes one literal using only the caller's pre-reserved frame bank.
+///
+/// All temporary source iterators are cleared on success and failure. The same
+/// allocation is reused for measure and emission and for subsequent fields.
+///
+/// # Errors
+/// Refuses the original wire/numeric/work limits, exhausted operational frame
+/// slots, or the actual sink error. The workspace never grows.
+pub fn write_value_in<'a>(
+    value: &'a Value,
+    output: &mut impl Write,
+    limits: StreamLimits,
+    workspace: &mut LiteralWriteWorkspace<'a>,
+) -> Result<StreamStatistics, StreamError> {
+    debug_assert!(workspace.frames.is_empty());
+    debug_assert!(workspace.frames.capacity() <= workspace.slots);
+    let mut walker = Walker::<false>::from_bank(
+        value,
+        limits.maximum_values,
+        std::mem::take(&mut workspace.frames),
+    );
+    let statistics = measure_walk(&mut walker, limits);
+    workspace.frames = walker.into_bank();
+    let statistics = statistics?;
+    output.write_all(MAGIC)?;
+    output.write_all(&wire_integer(statistics.wire_bytes - HEADER_BYTES)?.to_be_bytes())?;
+    output.write_all(&wire_integer(statistics.values)?.to_be_bytes())?;
+    output.write_all(&wire_integer(statistics.depth)?.to_be_bytes())?;
+    let mut walker = Walker::<false>::from_bank(
+        value,
+        limits.maximum_values,
+        std::mem::take(&mut workspace.frames),
+    );
+    let result = emit(&mut walker, output);
+    workspace.frames = walker.into_bank();
+    result?;
+    Ok(statistics)
+}
+
+fn emit<const GROW: bool>(
+    walker: &mut Walker<'_, GROW>,
+    output: &mut impl Write,
+) -> Result<(), StreamError> {
     while let Some(token) = walker.next().map_err(traversal_error)? {
         match token {
             Token::Null => output.write_all(&[0])?,
@@ -44,7 +142,7 @@ pub fn write_value(
             Token::ObjectEnd => output.write_all(&[11])?,
         }
     }
-    Ok(statistics)
+    Ok(())
 }
 
 fn write_number(output: &mut impl Write, tag: u8, value: u64) -> Result<(), StreamError> {
@@ -62,6 +160,13 @@ fn write_text(output: &mut impl Write, tag: u8, value: &str) -> Result<(), Strea
 
 fn measure(value: &Value, limits: StreamLimits) -> Result<StreamStatistics, StreamError> {
     let mut walker = Walker::<true>::streaming(value, limits.maximum_values);
+    measure_walk(&mut walker, limits)
+}
+
+fn measure_walk<const GROW: bool>(
+    walker: &mut Walker<'_, GROW>,
+    limits: StreamLimits,
+) -> Result<StreamStatistics, StreamError> {
     let mut statistics = StreamStatistics {
         wire_bytes: HEADER_BYTES,
         values: 0,

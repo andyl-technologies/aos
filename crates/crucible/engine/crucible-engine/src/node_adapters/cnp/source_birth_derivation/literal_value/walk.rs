@@ -55,6 +55,21 @@ impl<'a, const GROW: bool> Walker<'a, GROW> {
         })
     }
 
+    pub(super) fn from_bank(value: &'a Value, population: usize, frames: Vec<Frame<'a>>) -> Self {
+        Self {
+            frames,
+            pending: Some(value),
+            current: None,
+            population,
+            visited: 0,
+        }
+    }
+
+    pub(super) fn into_bank(mut self) -> Vec<Frame<'a>> {
+        self.frames.clear();
+        self.frames
+    }
+
     /// Borrows the actual value visited by the immediately preceding token.
     pub(crate) fn current_value(&self) -> Option<&'a Value> {
         self.current

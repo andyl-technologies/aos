@@ -103,6 +103,11 @@
       inVm = false;
     }
     {
+      package = "crucible-source-birth-worker";
+      layer = 4;
+      inVm = false;
+    }
+    {
       package = "crucible-cli";
       layer = 4;
       inVm = false;

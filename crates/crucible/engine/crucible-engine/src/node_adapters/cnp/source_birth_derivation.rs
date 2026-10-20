@@ -8,3 +8,12 @@ pub mod literal_value;
 
 /// Pure serializers shared by ordinary Source construction and worker data.
 pub mod views;
+
+/// Runs the contained child's pure SourceBirth data derivation.
+pub mod derive;
+
+/// Verifies the worker result envelope as ordinary data.
+pub mod result_wire;
+
+/// Streams the closed secret-free worker request and executes its contained child path.
+pub mod request_wire;

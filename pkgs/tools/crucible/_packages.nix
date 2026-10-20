@@ -20,6 +20,7 @@
   "crucible-control-client"
   "crucible-control-server"
   "crucible-daemon"
+  "crucible-source-birth-worker"
   "crucible-cli"
   "crucible-test-support"
 ]

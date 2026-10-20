@@ -354,3 +354,6 @@ fn actual_view_binding_refusals_keep_original_operand_precedence() {
         Err(RuntimeError::OwnerUnavailable)
     ));
 }
+
+#[path = "tests/derivation.rs"]
+mod derivation;

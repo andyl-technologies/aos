@@ -4,6 +4,8 @@
 //! supervision or allocator, and infers no VM or scenario performance from the
 //! scalar measurement. The caller builds its ordinary optimized test target.
 
+#![cfg(test)]
+
 // crucible-lint: allow panic-shortcut -- This optional benchmark fails on any wire or writer mismatch.
 use super::U64;
 use serde::{Serialize, Serializer};

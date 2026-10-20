@@ -16,6 +16,9 @@ use std::{
 use crucible_node_format::{ContentRef, HashRef, U64, canonical};
 use serde::{Deserialize, Serialize};
 
+#[path = "crucible-reference-manifest/pure_worker.rs"]
+mod pure_worker;
+
 type Failure = Box<dyn std::error::Error>;
 
 const MAXIMUM_METADATA_BYTES: usize = 1024 * 1024;
@@ -96,7 +99,11 @@ fn main() {
 
 fn run() -> Result<(), Failure> {
     let mut arguments = std::env::args_os().skip(1);
-    let input = PathBuf::from(arguments.next().ok_or("expected bounded input document")?);
+    let first = arguments.next().ok_or("expected bounded input document")?;
+    if first == "--pure-worker" && arguments.len() == 2 {
+        return pure_worker::run(arguments);
+    }
+    let input = PathBuf::from(first);
     let output = PathBuf::from(
         arguments
             .next()

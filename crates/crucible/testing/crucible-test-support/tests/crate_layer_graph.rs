@@ -124,6 +124,11 @@ const RUNTIME_SPECS: &[LayerSpec] = &[
         in_vm: false,
     },
     LayerSpec {
+        package: "crucible-source-birth-worker",
+        layer: 4,
+        in_vm: false,
+    },
+    LayerSpec {
         package: "crucible-cli",
         layer: 4,
         in_vm: false,

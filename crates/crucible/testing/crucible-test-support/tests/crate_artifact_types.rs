@@ -7,6 +7,7 @@
 //! emitter binary, `crucible-store` builds the fleet-store binary, and every
 //! provider reference/conformance tool is explicitly declared alongside its
 //! safe library. Daemon declares its singleton collector beside its library.
+//! The source-birth worker exposes only its explicit safe process binary.
 //! Other Crucible packages remain library crates.
 
 #![forbid(unsafe_code)]
@@ -30,6 +31,7 @@ enum ExpectedArtifact {
     GuestEmitter,
     NodeProviderTools,
     DaemonCollectorTool,
+    SourceBirthWorker,
     Library,
 }
 
@@ -121,6 +123,10 @@ const ARTIFACT_SPECS: &[ArtifactSpec] = &[
         expected: ExpectedArtifact::DebugGatewayBinary,
     },
     ArtifactSpec {
+        package: "crucible-source-birth-worker",
+        expected: ExpectedArtifact::SourceBirthWorker,
+    },
+    ArtifactSpec {
         package: "crucible-cli",
         expected: ExpectedArtifact::CliBinary,
     },
@@ -151,6 +157,67 @@ fn crucible_packages_expose_declared_artifact_types() -> Result<(), Box<dyn Erro
         "Crucible crate artifact-type lint failed:\n{}",
         failures.join("\n")
     );
+
+    Ok(())
+}
+
+#[test]
+fn source_birth_worker_rejects_implicit_and_extra_artifacts() -> Result<(), Box<dyn Error>> {
+    let package = "crucible-source-birth-worker";
+    let crates = workspace_crates_dir()?;
+    let directory = workspace::package_directory(&crates, package)?;
+    let manifest: Value = fs::read_to_string(directory.join("Cargo.toml"))?.parse()?;
+    let layout = PackageLayout::from_package_dir(&directory);
+    let spec = ArtifactSpec {
+        package,
+        expected: ExpectedArtifact::SourceBirthWorker,
+    };
+    assert!(artifact_type_failures(&spec, &manifest, &layout).is_empty());
+
+    let mut implicit = manifest.clone();
+    implicit["package"]
+        .as_table_mut()
+        .ok_or("missing package table")?
+        .remove("autobins");
+    let mut hidden = manifest.clone();
+    hidden["bin"][0]
+        .as_table_mut()
+        .ok_or("missing binary table")?
+        .insert(
+            "required-features".into(),
+            Value::Array(vec![Value::String("hidden".into())]),
+        );
+    let mut rebound = manifest.clone();
+    rebound["bin"][0]["path"] = Value::String("src/other.rs".into());
+    let mut renamed = manifest.clone();
+    renamed["bin"][0]["name"] = Value::String("unreviewed-worker".into());
+    let mut missing = manifest.clone();
+    missing["bin"] = Value::Array(Vec::new());
+    let mut duplicate = manifest.clone();
+    duplicate["bin"]
+        .as_array_mut()
+        .ok_or("missing binaries")?
+        .push(manifest["bin"][0].clone());
+    let mut library = manifest.clone();
+    library
+        .as_table_mut()
+        .ok_or("missing manifest table")?
+        .insert("lib".into(), Value::Table(Default::default()));
+    for candidate in [
+        implicit, hidden, rebound, renamed, missing, duplicate, library,
+    ] {
+        assert!(!artifact_type_failures(&spec, &candidate, &layout).is_empty());
+    }
+    let extra = PackageLayout {
+        has_src_bin_dir: true,
+        ..layout
+    };
+    assert!(!artifact_type_failures(&spec, &manifest, &extra).is_empty());
+    let absent = PackageLayout {
+        has_main_rs: false,
+        ..layout
+    };
+    assert!(!artifact_type_failures(&spec, &manifest, &absent).is_empty());
 
     Ok(())
 }
@@ -878,6 +945,41 @@ fn artifact_type_failures(
                     "{}: daemon must explicitly declare only its singleton collector without feature gating and disable implicit binaries",
                     spec.package
                 ));
+            }
+        }
+        ExpectedArtifact::SourceBirthWorker => {
+            let bins = bin_targets(manifest);
+            let required = vec![(
+                Some(spec.package.to_owned()),
+                Some("src/main.rs".to_owned()),
+            )];
+            let actual = bins
+                .into_iter()
+                .map(|bin| (bin.name, bin.path))
+                .collect::<Vec<_>>();
+            let feature_guarded =
+                manifest
+                    .get("bin")
+                    .and_then(Value::as_array)
+                    .is_some_and(|bins| {
+                        bins.iter().any(|bin| {
+                            bin.get("required-features")
+                                .and_then(Value::as_array)
+                                .is_some_and(|features| !features.is_empty())
+                        })
+                    });
+            if actual != required
+                || manifest
+                    .get("package")
+                    .and_then(|package| package.get("autobins"))
+                    .and_then(Value::as_bool)
+                    != Some(false)
+                || declares_or_implies_lib_target(manifest, layout)
+                || !layout.has_main_rs
+                || layout.has_src_bin_dir
+                || feature_guarded
+            {
+                failures.push(format!("{}: worker must expose only its explicit, ungated src/main.rs binary and disable implicit binaries", spec.package));
             }
         }
         ExpectedArtifact::Library => {

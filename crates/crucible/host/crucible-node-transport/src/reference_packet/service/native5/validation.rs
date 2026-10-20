@@ -271,7 +271,7 @@ fn validate(
     credit: Credit<'_>,
 ) -> Result<(), ProviderError> {
     credit.check_data(input, 1024 * 1024)?;
-    input.storage.validate(&input.limits)?;
+    input.storage.validate(input.limits)?;
     input.capture_profile.validate()?;
     let owned = matches!(
         input.capture_profile,
@@ -341,7 +341,7 @@ fn validate(
     }
     crate::reference_packet::coordinator::PacketNative5CoordinatorInstallation::decode(
         input.initial_coordinator.bytes.as_slice(),
-        &input.selection,
+        input.selection,
     )?;
     let configuration = match &input.program {
         PacketConnectedSourceProgram::Producer { program }

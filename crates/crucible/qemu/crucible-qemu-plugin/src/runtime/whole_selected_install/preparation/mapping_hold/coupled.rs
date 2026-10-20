@@ -5,6 +5,7 @@
 //! Rust callback, same RR-local engine and Linux six-HOLD. It is not an
 //! installed emulator/plugin qualification or a source readiness issuer.
 
+#![cfg(test)]
 #![expect(
     clippy::unwrap_used,
     reason = "These controls panic on failed invariants."

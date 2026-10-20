@@ -50,6 +50,11 @@ in
         || pathString == "${repoRootString}/pkgs/emulation/_gem5/native-owner-model.py"
         || pathString == "${repoRootString}/pkgs/emulation/qemu-patches"
         || lib.hasPrefix "${repoRootString}/pkgs/emulation/qemu-patches" pathString
+        || pathString == "${repoRootString}/pkgs/security"
+        || pathString == "${repoRootString}/pkgs/security/aos-landlock.nix"
+        || pathString == "${repoRootString}/pkgs/security/aos-landlock.c"
+        || pathString == "${repoRootString}/pkgs/security/aos-landlock-worker.h"
+        || pathString == "${repoRootString}/pkgs/security/aos-landlock-worker-probe.c"
         || pathString == "${repoRootString}/pkgs/kernel"
         || pathString == "${repoRootString}/pkgs/kernel/linux-crucible.nix"
         || pathString == "${repoRootString}/pkgs/kernel/linux.nix"

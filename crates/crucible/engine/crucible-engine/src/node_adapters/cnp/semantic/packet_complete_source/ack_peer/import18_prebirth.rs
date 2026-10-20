@@ -6,6 +6,7 @@
 //! native startup, association, allocation or SDK witness.
 
 use super::*;
+use crate::node_adapters::cnp::source_birth_derivation::derive::output::ReservedWriter;
 use crate::node_contract::{NodeRuntime, RuntimeError};
 use crucible_node_format::{ContentRef, canonical};
 use crucible_node_transport::reference_packet::{
@@ -16,7 +17,9 @@ use crucible_node_transport::reference_packet::{
     },
 };
 use serde_json::Value;
-use std::{io::Write, mem::size_of, os::unix::ffi::OsStrExt, thread::ThreadId};
+#[cfg(test)]
+use std::io::Write;
+use std::{mem::size_of, os::unix::ffi::OsStrExt, thread::ThreadId};
 
 #[path = "import18_prebirth/storage.rs"]
 mod storage;
@@ -942,27 +945,6 @@ fn hash_value(hash: &mut blake3::Hasher, value: &Value, depth: usize) -> Result<
         }
     }
     Ok(())
-}
-
-struct ReservedWriter<'a> {
-    bank: &'a mut Vec<u8>,
-    maximum: usize,
-}
-
-impl Write for ReservedWriter<'_> {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        let end = self
-            .bank
-            .len()
-            .checked_add(bytes.len())
-            .filter(|end| *end <= self.maximum && *end <= self.bank.capacity())
-            .ok_or(std::io::ErrorKind::WriteZero)?;
-        self.bank.extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
 }
 
 #[cfg(test)]

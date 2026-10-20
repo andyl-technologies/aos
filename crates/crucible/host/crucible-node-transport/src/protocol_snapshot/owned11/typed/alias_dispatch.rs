@@ -1,5 +1,7 @@
 //! Exercises explicit17 alias dispatch with captured DATA backing identities.
 
+#![cfg(test)]
+
 use super::*;
 use crate::client::compact_cursor::{ContentGroupEdge, ContentGroupKind};
 use crate::protocol_snapshot::owned11::aliases::{

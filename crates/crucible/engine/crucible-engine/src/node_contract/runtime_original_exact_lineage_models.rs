@@ -3,6 +3,7 @@
 //! The core dispatch and terminal custody are actual; native peers and codecs are modeled.
 //! No source installation, native class, Ready or connected-world claim is inferred.
 
+#![cfg(test)]
 // crucible-lint: allow panic-shortcut -- These association models panic on invalid synthetic fixture setup and violated ledger invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 

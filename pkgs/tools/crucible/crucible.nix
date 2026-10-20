@@ -25,6 +25,7 @@
   crucible-reference-lineage-implementation,
   crucible-reference-lineage-reader-typed-implementation,
   crucible-reference-progress-implementation,
+  crucible-source-birth-worker,
   bash,
   coreutils,
   grep,
@@ -94,7 +95,10 @@
   cargoWorkspaceMembers = import ./_workspace.nix {inherit lib;};
   packages = import ./_packages.nix;
   gplSidePackages = ["crucible-qemu-plugin" "crucible-qemu-debug-gateway"];
-  controllerPackages = builtins.filter (package: !(builtins.elem package gplSidePackages)) packages;
+  # The private worker has a separate measured installation. Its Engine-only
+  # binary is not another executable installed by the controller build.
+  privateWorkerPackages = ["crucible-source-birth-worker"];
+  controllerPackages = builtins.filter (package: !(builtins.elem package (gplSidePackages ++ privateWorkerPackages))) packages;
   workspaceCargoFlags = builtins.concatStringsSep " " (map (package: "-p ${package}") controllerPackages);
   packageFlags = builtins.concatStringsSep " " (map (package: "-p ${package}") controllerPackages);
   docPackages = builtins.filter (package: package != "crucible-cli") controllerPackages;
@@ -151,6 +155,7 @@
   # This distinct source package proves an original native prefix before response
   # loss; its candidate remains Unknown and cannot establish class acceptance.
   referenceProgressMechanismInputs = lib.optionals (!stdenv.isCross) [crucible-reference-progress-implementation];
+  sourceBirthWorkerInputs = lib.optionals (!stdenv.isCross) [crucible-source-birth-worker];
   # These fixed source-owned bundles remain separate from the SE profile.
   # Root bytes support the native mechanism API; the older model is fixture-only.
   armRootMechanismInputs = [gem5-arm-root-model-profile];
@@ -183,6 +188,9 @@
       CRUCIBLE_REFERENCE_LINEAGE_IMPLEMENTATION_MANIFEST = "${crucible-reference-lineage-implementation}/share/crucible/reference-lineage/implementation.json";
       CRUCIBLE_REFERENCE_LINEAGE_READER_TYPED_IMPLEMENTATION_MANIFEST = "${crucible-reference-lineage-reader-typed-implementation}/share/crucible/reference-lineage-reader-typed/implementation.json";
       CRUCIBLE_REFERENCE_PROGRESS_IMPLEMENTATION_MANIFEST = "${crucible-reference-progress-implementation}/share/crucible/reference-progress/implementation.json";
+      # Installation metadata is DATA. Parent verification and kernel admission
+      # must establish the actual opened program before a Source job begins.
+      CRUCIBLE_SOURCE_BIRTH_WORKER_MANIFEST = "${crucible-source-birth-worker}/share/crucible/source-birth-worker/installation.json";
     };
   controllerArtifactContract = {
     family = "crucible-apache-host-release-and-test";
@@ -192,6 +200,7 @@
       ++ referenceLineageMechanismInputs
       ++ referenceTypedLineageInputs
       ++ referenceProgressMechanismInputs
+      ++ sourceBirthWorkerInputs
       ++ armRootMechanismInputs
       ++ x86RootConstructorInputs
       ++ armModelFixtureInputs
@@ -216,11 +225,12 @@
       ++ referenceLineageMechanismInputs
       ++ referenceTypedLineageInputs
       ++ referenceProgressMechanismInputs
+      ++ sourceBirthWorkerInputs
       ++ armRootMechanismInputs
       ++ x86RootConstructorInputs
       ++ armModelFixtureInputs
       ++ lib.optionals stdenv.isCross [buildPackages.crucible-controller];
-    runtimeDeps = [openssl sqlite gem5-closed-profile] ++ referenceQualificationInputs ++ referenceLineageMechanismInputs ++ referenceTypedLineageInputs ++ referenceProgressMechanismInputs ++ armRootMechanismInputs ++ x86RootConstructorInputs;
+    runtimeDeps = [openssl sqlite gem5-closed-profile] ++ referenceQualificationInputs ++ referenceLineageMechanismInputs ++ referenceTypedLineageInputs ++ referenceProgressMechanismInputs ++ sourceBirthWorkerInputs ++ armRootMechanismInputs ++ x86RootConstructorInputs;
   };
   debugGatewayArtifactContract = {
     family = "crucible-gpl-debug-gateway-release-and-test";
@@ -335,10 +345,11 @@
       ++ referenceLineageMechanismInputs
       ++ referenceTypedLineageInputs
       ++ referenceProgressMechanismInputs
+      ++ sourceBirthWorkerInputs
       ++ armRootMechanismInputs
       ++ x86RootConstructorInputs
       ++ armModelFixtureInputs;
-    runtimeDeps = [openssl sqlite gem5-closed-profile] ++ referenceQualificationInputs ++ referenceLineageMechanismInputs ++ referenceTypedLineageInputs ++ referenceProgressMechanismInputs ++ armRootMechanismInputs ++ x86RootConstructorInputs;
+    runtimeDeps = [openssl sqlite gem5-closed-profile] ++ referenceQualificationInputs ++ referenceLineageMechanismInputs ++ referenceTypedLineageInputs ++ referenceProgressMechanismInputs ++ sourceBirthWorkerInputs ++ armRootMechanismInputs ++ x86RootConstructorInputs;
     # The controller is the Apache side of a process boundary. Fail the build
     # if any QEMU-side implementation, guest kernel, or fixture enters either
     # its direct references or its runtime closure.
@@ -652,6 +663,10 @@
     inherit lib version src cargoDepsHash;
     qemuPackage = qemu-crucible;
     controllerPackage = controller;
+    sourceBirthWorkerPackage =
+      if stdenv.isCross
+      then null
+      else crucible-source-birth-worker;
     pluginPackage = crucible-qemu-plugin;
     debugGatewayPackage = debugGateway;
     gdbPackage = gdb;

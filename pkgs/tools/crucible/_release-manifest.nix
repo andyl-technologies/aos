@@ -5,6 +5,7 @@
   src,
   cargoDepsHash,
   controllerPackage ? null,
+  sourceBirthWorkerPackage ? null,
   pluginPackage ? null,
   debugGatewayPackage ? null,
   gdbPackage ? null,
@@ -122,6 +123,13 @@
         path = componentPath controllerPackage;
         license = "Apache-2.0";
         boundary = "separate-process-controller";
+      };
+      sourceBirthWorker = {
+        package = "crucible-source-birth-worker";
+        path = componentPath sourceBirthWorkerPackage;
+        license = "Apache-2.0";
+        boundary = "separate-process-pure-derivation-worker";
+        installationManifest = "share/crucible/source-birth-worker/installation.json";
       };
       qemu = {
         package = "qemu-crucible";

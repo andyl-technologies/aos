@@ -5,6 +5,7 @@
 //! and unwind preserve original owners; this path accepts no arbitrary Command.
 
 use super::*;
+use crate::supervision::ProcessDeadline;
 use crucible_engine::node_adapters::cnp::{
     CnpSemanticLaunchGuard, CnpSemanticLaunchReservation, CnpSemanticProcessSlot,
     PacketCompleteAckPeerBootMaterial, PacketCompleteNativeRestoredSuffixStartupWire,
@@ -20,7 +21,7 @@ use std::{
     },
     path::PathBuf,
     process::{Command, Stdio},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 const STARTUP_ARGUMENT: &str = "--original-native-startup14";
@@ -545,8 +546,7 @@ impl PacketCompleteReportStartupHolder {
                     }
                 }
                 let inputs = inputs.as_mut().ok_or(RuntimeError::OwnerUnavailable)?;
-                let deadline = Instant::now()
-                    .checked_add(inputs.write_watchdog)
+                let deadline = ProcessDeadline::after(inputs.write_watchdog)
                     .ok_or(RuntimeError::ResourceLimit)?;
                 let mut writer = NativeDeadlineWriter {
                     stream: inputs
@@ -686,16 +686,15 @@ fn closed_command_requested_storage_data(
 
 pub(super) struct NativeDeadlineWriter<'a> {
     stream: &'a mut UnixStream,
-    deadline: Instant,
+    deadline: ProcessDeadline,
 }
 
 impl Write for NativeDeadlineWriter<'_> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        let remaining = self
-            .deadline
-            .checked_duration_since(Instant::now())
-            .filter(|duration| !duration.is_zero())
-            .ok_or_else(|| io::Error::from(io::ErrorKind::TimedOut))?;
+        let remaining = self.deadline.remaining();
+        if remaining.is_zero() {
+            return Err(io::Error::from(io::ErrorKind::TimedOut));
+        }
         self.stream.set_write_timeout(Some(remaining))?;
         self.stream.write(bytes)
     }
@@ -891,6 +890,7 @@ mod reservation_retirement_tests {
     use super::*;
     use crucible_engine::node_adapters::cnp::CnpSemanticProcessCustody;
     use crucible_node_format::{U64, canonical};
+    use std::{io::Read, os::fd::AsRawFd};
 
     struct Slot {
         dropped: Rc<Cell<usize>>,
@@ -952,5 +952,49 @@ mod reservation_retirement_tests {
         held.retire_original_scene_native_guards().unwrap();
         assert_eq!(dropped.get(), 3);
         assert_eq!(retained.get(), 0);
+    }
+
+    #[test]
+    fn native_writer_expiry_rejects_before_touching_the_original_socket() {
+        let (mut stream, mut receiver) = UnixStream::pair().unwrap();
+        receiver.set_nonblocking(true).unwrap();
+        let original_descriptor = stream.as_raw_fd();
+        let original_deadline = ProcessDeadline::after(Duration::ZERO).unwrap();
+        let mut writer = NativeDeadlineWriter {
+            stream: &mut stream,
+            deadline: original_deadline,
+        };
+
+        let error = writer.write(b"expired").unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(writer.deadline == original_deadline);
+        assert_eq!(writer.stream.as_raw_fd(), original_descriptor);
+        let mut received = [0; 1];
+        assert_eq!(
+            receiver.read(&mut received).unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+    }
+
+    #[test]
+    fn native_writer_reuses_the_same_cut_across_separate_writes() {
+        let (mut stream, mut receiver) = UnixStream::pair().unwrap();
+        let original_descriptor = stream.as_raw_fd();
+        let original_deadline = ProcessDeadline::after(MAXIMUM_WRITE_WATCHDOG).unwrap();
+        let mut writer = NativeDeadlineWriter {
+            stream: &mut stream,
+            deadline: original_deadline,
+        };
+
+        writer.write_all(b"first").unwrap();
+        assert!(writer.deadline == original_deadline);
+        writer.write_all(b"second").unwrap();
+
+        assert!(writer.deadline == original_deadline);
+        assert_eq!(writer.stream.as_raw_fd(), original_descriptor);
+        let mut received = [0; 11];
+        receiver.read_exact(&mut received).unwrap();
+        assert_eq!(&received, b"firstsecond");
     }
 }

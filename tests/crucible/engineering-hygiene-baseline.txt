@@ -708,7 +708,7 @@ qemu-token|crucible-cli|crates/crucible/control/crucible-cli/src/cli/node.rs|qem
 qemu-token|crucible-qemu-protocol|crates/crucible/protocol/crucible-qemu-protocol/src/node_control/initialization_command_tests.rs|Qmp
 qemu-token|crucible-qemu-protocol|crates/crucible/protocol/crucible-qemu-protocol/src/node_control/initialization_cut.rs|Qmp
 qemu-token|crucible-qemu-protocol|crates/crucible/protocol/crucible-qemu-protocol/src/node_control/initialization_cut_tests.rs|Qmp
-shape-review|crates/crucible/testing/crucible-test-support/tests/crate_artifact_types.rs|sha256:ab6f578a742811aa73fe3d65ae53c670af2393e2ce0491e283e8e2dc1b1f3008|tests|1024|Exact per-package artifact inventories, actual Transport tool and Daemon collector shape controls, and refusal of implicit, missing, renamed, duplicate or native outputs.|threshold-not-reached
+shape-review|crates/crucible/testing/crucible-test-support/tests/crate_artifact_types.rs|sha256:d942513cb60aebb3c8143c063f84e50725ca1e1c4820e9de45f36442acbda045|tests|1126|Exact per-package artifact inventories, actual Transport tool, Daemon collector and private worker shape controls, and refusal of implicit, missing, renamed, duplicate or native outputs.|threshold-not-reached
 qemu-token|crucible-qemu-protocol|crates/crucible/protocol/crucible-qemu-protocol/src/whole_control/staged/source_ready.rs|Qemu
 qemu-token|crucible-qemu-protocol|crates/crucible/protocol/crucible-qemu-protocol/src/whole_control/staged/source_ready_tests.rs|Qemu
 qemu-token|crucible-campaign|crates/crucible/engine/crucible-campaign/src/execution/tests/backend_identity.rs|qemu

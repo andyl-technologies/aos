@@ -104,6 +104,15 @@ pub struct LinuxProjectQuotaReservation {
 }
 
 impl LinuxProjectQuotaReservation {
+    /// Reports the requested backing of its retained diagnostic path only.
+    ///
+    /// This reads the original PathBuf capacity without I/O or permission
+    /// changes. It excludes the reservation header, kernel quota state and
+    /// allocator metadata; it is neither admission nor a new storage grant.
+    pub fn retained_path_storage_data(&self) -> usize {
+        self.path.capacity()
+    }
+
     /// Installs one hard project quota on a fresh pinned directory.
     ///
     /// `filesystem` and `directory` must refer to the same ext4 filesystem.

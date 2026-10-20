@@ -124,6 +124,13 @@
       section6 = true;
     }
     {
+      package = "crucible-source-birth-worker";
+      root = "src/main.rs";
+      specFiles = [];
+      nodeSpecFiles = ["01" "02" "05" "06" "08" "09"];
+      section6 = false;
+    }
+    {
       package = "crucible-cli";
       root = "src/main.rs";
       specFiles = ["23"];
