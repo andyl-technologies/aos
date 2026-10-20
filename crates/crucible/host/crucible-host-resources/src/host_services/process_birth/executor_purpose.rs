@@ -33,6 +33,7 @@ pub use native_pool::{
 };
 
 mod host_descriptors;
+mod world_admission;
 mod target_dispatcher;
 pub use target_dispatcher::AuthenticatedTargetDispatcherPurpose;
 

@@ -120,12 +120,58 @@ impl PoolLedger {
         Ok(())
     }
 
+    /// Publishes a Source's positive body charge and consumes its entry proof.
+    pub(super) fn assign_source(
+        &mut self,
+        identity: NativeWorldIdentity,
+        requests: &[NativeNodeReservation],
+        consumer_control_bytes: u64,
+        original: &Arc<HostOperationGuard>,
+        entered: impl FnOnce(),
+    ) -> Result<(u64, u64, u64), ServiceBirthError> {
+        if consumer_control_bytes == 0 {
+            return Err(ServiceBirthError::policy(
+                "Source World body controls are absent",
+            ));
+        }
+        self.publish_assignment(
+            identity,
+            requests,
+            consumer_control_bytes,
+            original,
+            true,
+            entered,
+        )
+    }
+
+    // Zero-body accounting remains useful to the inert ledger controls. This
+    // path issues no authenticated holder and is not a production Source seam.
+    #[cfg(test)]
     pub(super) fn assign(
         &mut self,
         identity: NativeWorldIdentity,
         requests: &[NativeNodeReservation],
         consumer_control_bytes: u64,
         original: &Arc<HostOperationGuard>,
+    ) -> Result<(u64, u64, u64), ServiceBirthError> {
+        self.publish_assignment(
+            identity,
+            requests,
+            consumer_control_bytes,
+            original,
+            false,
+            || {},
+        )
+    }
+
+    fn publish_assignment(
+        &mut self,
+        identity: NativeWorldIdentity,
+        requests: &[NativeNodeReservation],
+        consumer_control_bytes: u64,
+        original: &Arc<HostOperationGuard>,
+        consumer_issued: bool,
+        entered: impl FnOnce(),
     ) -> Result<(u64, u64, u64), ServiceBirthError> {
         if identity.owner == [0; 32]
             || identity.selection == [0; 32]
@@ -171,7 +217,9 @@ impl PoolLedger {
             })
             .ok_or_else(|| ServiceBirthError::policy("native table aggregate overflows"))?;
 
-        // All dimensions, cells and epochs are checked before publication.
+        // The caller's nominal no-assignment proof is consumed only after all
+        // checks, immediately before the first irreversible debit/row mutation.
+        entered();
         self.used = used;
         self.next_world = epoch;
         let mut assignment = self.next_assignment;
@@ -180,7 +228,7 @@ impl PoolLedger {
             identity,
             epoch,
             consumer_control_bytes,
-            consumer_issued: false,
+            consumer_issued,
             node_constructor_entered: false,
             consumer_closed: consumer_control_bytes == 0,
             _original: Arc::clone(original),
@@ -266,16 +314,14 @@ impl PoolLedger {
         epoch: u64,
         node: [u8; 32],
     ) -> Result<(usize, u64), ServiceBirthError> {
-        if !self
+        let world = self
             .worlds
-            .iter()
+            .iter_mut()
             .flatten()
-            .any(|world| world.epoch == epoch && world.window.is_some())
-        {
-            return Err(ServiceBirthError::policy(
-                "native World descriptor custody is absent",
-            ));
-        }
+            .find(|world| world.epoch == epoch && world.window.is_some())
+            .ok_or_else(|| {
+                ServiceBirthError::policy("native World descriptor custody is absent")
+            })?;
         let (index, slot) = self
             .nodes
             .iter_mut()
@@ -288,15 +334,10 @@ impl PoolLedger {
                     .map(|slot| (index, slot))
             })
             .ok_or_else(|| ServiceBirthError::policy("native node is absent or already issued"))?;
+
+        // Every fallible lookup precedes either monotonic publication.
         slot.issued = true;
         let assignment_epoch = slot.assignment_epoch;
-        let world = self
-            .worlds
-            .iter_mut()
-            .flatten()
-            .find(|world| world.epoch == epoch)
-            .ok_or_else(|| ServiceBirthError::policy("native World birth custody is absent"))?;
-        // This is monotonic, including refused constructors and returned nodes.
         world.node_constructor_entered = true;
         Ok((index, assignment_epoch))
     }
@@ -546,6 +587,7 @@ impl PoolLedger {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(super) fn take_consumer(&mut self, epoch: u64) -> Result<(), ServiceBirthError> {
         let world = self
             .worlds

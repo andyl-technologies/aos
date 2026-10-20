@@ -35,6 +35,10 @@ use crate::{
     QemuAttemptResourceGuard, QemuAttemptResourceGuardFactory, QemuExecutionQuantumCounter,
 };
 
+mod shared_host;
+mod world_admission;
+pub(crate) use world_admission::{SourceWorldAdmission, SourceWorldAdmissionHistory};
+
 /// Maximum distinct scheduler nodes retained by one attempt generation owner.
 pub const MAX_QEMU_ATTEMPT_GENERATION_NODES: usize = 65_536;
 
@@ -556,8 +560,19 @@ pub(crate) trait QemuAttemptSelectedHostResourceFactory:
         Ok(None)
     }
 
+    fn world_preparation_origin(
+        &self,
+    ) -> Result<crucible_qemu_host::LinuxQemuNativeWorldPreparationOrigin, QemuVmRealizationError>
+    {
+        Err(QemuVmRealizationError::ExecutorUnavailable {
+            operation: "borrow actual Source World Preparation origin",
+            message: String::from("factory has no authentic normal pool"),
+        })
+    }
+
     fn begin_world(
         &mut self,
+        admission: &mut SourceWorldAdmission,
         resources: AttemptResourceLimits,
         selected_checkpoint: Option<SelectedExactCheckpointRoot>,
         _consumer_control_bytes: u64,
@@ -567,7 +582,7 @@ pub(crate) trait QemuAttemptSelectedHostResourceFactory:
         (Self::Owner, Option<SelectedExactCheckpointRoot>),
         QemuAttemptResourceGuardBeginFailure,
     > {
-        let _ = resources;
+        let _ = (resources, admission);
         Err(
             QemuAttemptResourceGuardBeginFailure::before_checkpoint_claim(
                 QemuVmRealizationError::ExecutorUnavailable {
@@ -598,28 +613,42 @@ pub(crate) trait QemuAttemptSelectedHostResourceFactory:
 /// and exact pending-construction cleanup share the mutex; cleanup entry refuses
 /// contention. Returned attempt owners execute guests outside this facade.
 pub struct SharedQemuAttemptHostResourceFactory<H> {
-    host: Arc<Mutex<H>>,
+    host: Arc<shared_host::SharedHostBody<H>>,
     cleanup: Option<crate::lifecycle_cleanup::LifecycleCleanupHandle>,
 }
 
 impl<H> SharedQemuAttemptHostResourceFactory<H> {
-    /// Wraps one already-open exclusive allocator for fixed-worker sharing.
+    /// Wraps an ordinary exclusive allocator for fixed-worker sharing.
+    ///
+    /// This constructor publishes no Source World origin. Genuine Source callers
+    /// use checked prepublication capture before sharing the allocator.
     #[must_use]
     pub fn new(host: H) -> Self {
         Self {
-            host: Arc::new(Mutex::new(host)),
+            host: Arc::new(shared_host::SharedHostBody::ordinary(host)),
             cleanup: None,
         }
     }
 
-    pub(crate) fn with_lifecycle_cleanup(
+    /// Publishes an actual immutable Source origin before sharing this allocator.
+    ///
+    /// The caller must price the complete shared body before this allocation.
+    /// No World Preparation is entered while snapshotting the genuine pool.
+    ///
+    /// # Errors
+    /// Returns the genuine origin refusal before publication or worker birth.
+    pub(crate) fn try_with_world_origin(
         host: H,
-        cleanup: crate::lifecycle_cleanup::LifecycleCleanupHandle,
-    ) -> Self {
-        Self {
-            host: Arc::new(Mutex::new(host)),
-            cleanup: Some(cleanup),
-        }
+        cleanup: Option<crate::lifecycle_cleanup::LifecycleCleanupHandle>,
+    ) -> Result<Self, QemuVmRealizationError>
+    where
+        H: QemuAttemptSelectedHostResourceFactory,
+    {
+        let origin = host.world_preparation_origin()?;
+        Ok(Self {
+            host: Arc::new(shared_host::SharedHostBody::with_origin(host, origin)),
+            cleanup,
+        })
     }
 
     /// Reserves real permanent worker bodies under the same authenticated pool.
@@ -694,6 +723,7 @@ impl SharedQemuAttemptHostResourceFactory<LinuxQemuAttemptHostResourceFactory> {
                 operation: "borrow actual Main factory for terminal retirement",
                 message: String::from("actual factory borrowers remain"),
             })?
+            .host
             .get_mut()
             .map_err(|_| QemuVmRealizationError::ExecutorUnavailable {
                 operation: "borrow actual Main factory for terminal retirement",
@@ -844,8 +874,16 @@ impl<H> QemuAttemptSelectedHostResourceFactory for SharedQemuAttemptHostResource
 where
     H: QemuAttemptSelectedHostResourceFactory,
 {
+    fn world_preparation_origin(
+        &self,
+    ) -> Result<crucible_qemu_host::LinuxQemuNativeWorldPreparationOrigin, QemuVmRealizationError>
+    {
+        self.host.world_origin().cloned()
+    }
+
     fn begin_world(
         &mut self,
+        admission: &mut SourceWorldAdmission,
         resources: AttemptResourceLimits,
         selected_checkpoint: Option<SelectedExactCheckpointRoot>,
         consumer_control_bytes: u64,
@@ -855,21 +893,29 @@ where
         (Self::Owner, Option<SelectedExactCheckpointRoot>),
         QemuAttemptResourceGuardBeginFailure,
     > {
-        let mut host = match self.host.lock() {
+        if !admission.matches(before_effects) {
+            return Err(
+                QemuAttemptResourceGuardBeginFailure::before_checkpoint_claim(
+                    QemuVmRealizationError::CleanupRetained {
+                        operation: "match the same Source World admission receiver",
+                    },
+                    selected_checkpoint,
+                ),
+            );
+        }
+        let mut host = match admission.lock_host(&self.host) {
             Ok(host) => host,
-            Err(_) => {
+            Err(first) => {
                 return Err(
                     QemuAttemptResourceGuardBeginFailure::before_checkpoint_claim(
-                        QemuVmRealizationError::ExecutorUnavailable {
-                            operation: "install shared native node World",
-                            message: String::from("host-resource allocator lock is poisoned"),
-                        },
+                        first,
                         selected_checkpoint,
                     ),
                 );
             }
         };
         host.begin_world(
+            admission,
             resources,
             selected_checkpoint,
             consumer_control_bytes,
@@ -921,12 +967,12 @@ impl LinuxQemuAttemptHostResourceFactory {
     pub(crate) fn normal_pool_control_bytes(
         capacity: usize,
     ) -> Result<u64, QemuVmRealizationError> {
-        let (shared, _) = std::alloc::Layout::new::<(usize, usize)>()
-            .extend(std::alloc::Layout::new::<Mutex<Self>>())
-            .map_err(|_| QemuVmRealizationError::ExecutorUnavailable {
+        let shared = shared_host::shared_body_extent::<Self>().ok_or_else(|| {
+            QemuVmRealizationError::ExecutorUnavailable {
                 operation: "price normal factory shared body",
                 message: String::from("actual shared body layout overflows"),
-            })?;
+            }
+        })?;
         let pool =
             LinuxQemuAttemptHostFactory::normal_pool_control_extent(capacity).ok_or_else(|| {
                 QemuVmRealizationError::ExecutorUnavailable {
@@ -934,7 +980,7 @@ impl LinuxQemuAttemptHostResourceFactory {
                     message: String::from("actual fixed-array layout overflows"),
                 }
             })?;
-        u64::try_from(shared.pad_to_align().size())
+        u64::try_from(shared)
             .ok()
             .and_then(|bytes| bytes.checked_add(pool))
             .ok_or_else(|| QemuVmRealizationError::ExecutorUnavailable {
@@ -1167,6 +1213,13 @@ impl QemuAttemptHostResourceFactory for LinuxQemuAttemptHostResourceFactory {
 }
 
 impl QemuAttemptSelectedHostResourceFactory for LinuxQemuAttemptHostResourceFactory {
+    fn world_preparation_origin(
+        &self,
+    ) -> Result<crucible_qemu_host::LinuxQemuNativeWorldPreparationOrigin, QemuVmRealizationError>
+    {
+        self.host.native_world_preparation_origin()
+    }
+
     fn reserve_main_worker_controls(
         &self,
         bytes: u64,
@@ -1181,6 +1234,7 @@ impl QemuAttemptSelectedHostResourceFactory for LinuxQemuAttemptHostResourceFact
 
     fn begin_world(
         &mut self,
+        admission: &mut SourceWorldAdmission,
         resources: AttemptResourceLimits,
         selected_checkpoint: Option<SelectedExactCheckpointRoot>,
         consumer_control_bytes: u64,
@@ -1193,6 +1247,16 @@ impl QemuAttemptSelectedHostResourceFactory for LinuxQemuAttemptHostResourceFact
         use crucible_host_resources::host_services::process_birth::{
             NativeNodeReservation, NativeWorldIdentity, ServiceBirthError,
         };
+        if !admission.matches(before_effects) {
+            return Err(
+                QemuAttemptResourceGuardBeginFailure::before_checkpoint_claim(
+                    QemuVmRealizationError::CleanupRetained {
+                        operation: "match the same Source World admission receiver",
+                    },
+                    selected_checkpoint,
+                ),
+            );
+        }
         let identity = match registration.native_world_identity() {
             Ok(identity) => NativeWorldIdentity {
                 owner: identity.owner,
@@ -1248,6 +1312,7 @@ impl QemuAttemptSelectedHostResourceFactory for LinuxQemuAttemptHostResourceFact
             }
         };
         let hosts = self.host.begin_native_world(
+            &mut admission.preparation,
             identity,
             controls,
             checkpoint,
@@ -1795,6 +1860,27 @@ impl<H> QemuAttemptResourceGuardFactory for ComposedQemuAttemptResourceGuardFact
 where
     H: QemuAttemptSelectedHostResourceFactory,
 {
+    fn prepare_world_admission(
+        &self,
+        selection: crate::PreparedSourceSelector,
+        registration: &dyn crate::vm_lifecycle::ProductionHostRamRegistrationFactory,
+    ) -> Result<SourceWorldAdmission, QemuVmRealizationError> {
+        let identity = registration.native_world_identity().map_err(|source| {
+            QemuVmRealizationError::ExecutorUnavailable {
+                operation: "borrow selected World Preparation identity",
+                message: source.to_string(),
+            }
+        })?;
+        let origin = self.host.world_preparation_origin()?;
+        let preparation = origin.prepare(
+            crucible_host_resources::host_services::process_birth::NativeWorldIdentity {
+                owner: identity.owner,
+                selection: identity.selection,
+            },
+        )?;
+        Ok(SourceWorldAdmission::new(preparation, selection))
+    }
+
     fn verify_unborn_native_world(
         &self,
         loan: &crucible_host_resources::host_services::process_birth::AuthenticatedNativeWorldCleanupLoan,
@@ -1827,6 +1913,7 @@ where
 
     fn begin_world(
         &mut self,
+        admission: &mut SourceWorldAdmission,
         resources: AttemptResourceLimits,
         cancellation: ExecutionCancellation,
         selected_checkpoint: Option<SelectedExactCheckpointRoot>,
@@ -1835,6 +1922,7 @@ where
         before_effects: &mut NativeWorldBeforeEffects<'_>,
     ) -> Result<Self::Guard, QemuAttemptResourceGuardBeginFailure> {
         let (host, selected_checkpoint) = self.host.begin_world(
+            admission,
             resources,
             selected_checkpoint,
             consumer_control_bytes,

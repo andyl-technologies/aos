@@ -30,6 +30,53 @@ const REGISTRATION_WAIT: &str = r#"loop {
     std::thread::sleep(slice.min(std::time::Duration::from_millis(10)));
 }"#;
 
+#[path = "native_registration/required_workers.rs"]
+mod required_workers;
+
+pub(super) const REQUIRED_WORKER_CONTRACTS: &[Contract] = &[required_workers::CONTRACT];
+
+const ORIGINAL_SETUP: Companion = Companion {
+    path: "crates/crucible/qemu/crucible-qemu-plugin/src/setup.rs",
+    required: &[
+        (
+            r#"pub(crate) fn original_startup_slice(&self,) -> Result<std::time::Duration, crate::StartupSourceError> {
+self.original_startup()?.wait_slice() }"#,
+            1,
+        ),
+        (
+            r#"fn original_startup(
+    &self,
+) -> Result<&crate::startup_source::InstallerStartupSource, crate::StartupSourceError> {
+    self.startup_source.as_ref().ok_or(crate::StartupSourceError::Ownership {
+        reason: "initial installer Source is absent",
+    })
+}"#,
+            1,
+        ),
+    ],
+};
+const ORIGINAL_SLICE: Companion = Companion {
+    path: "crates/crucible/qemu/crucible-qemu-plugin/src/startup_source.rs",
+    required: &[
+        (
+            r#"pub(crate) fn wait_slice(&self) -> Result<Duration, StartupSourceError> {
+    let api = self.live_api()?;
+    let mut bounded_ns = 0;
+    self.accept_status((api.query_slice)(self.plugin_id, &mut bounded_ns))?;
+    if bounded_ns == 0 {
+        self.invalid_slice.store(true, Ordering::Release);
+        return Err(StartupSourceError::Ownership {
+            reason: "native returned an empty successful observation slice",
+        });
+    }
+    Ok(Duration::from_nanos(bounded_ns))
+}"#,
+            1,
+        ),
+        (r#"Ok(Duration::from_nanos(bounded_ns))"#, 1),
+    ],
+};
+
 pub(super) const CONTRACTS: &[Contract] = &[Contract {
     package: "crucible-qemu-plugin",
     target: "src/runtime/live_callbacks/fingerprint_worker/native",
@@ -98,47 +145,8 @@ state.fingerprint_worker_owner.wait_registered(|| state.setup.original_startup_s
                 ),
             ],
         },
-        Companion {
-            path: "crates/crucible/qemu/crucible-qemu-plugin/src/setup.rs",
-            required: &[
-                (
-                    r#"pub(crate) fn original_startup_slice(&self,) -> Result<std::time::Duration, crate::StartupSourceError> {
-self.original_startup()?.wait_slice() }"#,
-                    1,
-                ),
-                (
-                    r#"fn original_startup(
-    &self,
-) -> Result<&crate::startup_source::InstallerStartupSource, crate::StartupSourceError> {
-    self.startup_source.as_ref().ok_or(crate::StartupSourceError::Ownership {
-        reason: "initial installer Source is absent",
-    })
-}"#,
-                    1,
-                ),
-            ],
-        },
-        Companion {
-            path: "crates/crucible/qemu/crucible-qemu-plugin/src/startup_source.rs",
-            required: &[
-                (
-                    r#"pub(crate) fn wait_slice(&self) -> Result<Duration, StartupSourceError> {
-    let api = self.live_api()?;
-    let mut bounded_ns = 0;
-    self.accept_status((api.query_slice)(self.plugin_id, &mut bounded_ns))?;
-    if bounded_ns == 0 {
-        self.invalid_slice.store(true, Ordering::Release);
-        return Err(StartupSourceError::Ownership {
-            reason: "native returned an empty successful observation slice",
-        });
-    }
-    Ok(Duration::from_nanos(bounded_ns))
-}"#,
-                    1,
-                ),
-                (r#"Ok(Duration::from_nanos(bounded_ns))"#, 1),
-            ],
-        },
+        ORIGINAL_SETUP,
+        ORIGINAL_SLICE,
         Companion {
             path: "crates/crucible/qemu/crucible-qemu-plugin/src/runtime/live_callbacks/fingerprint_worker.rs",
             required: &[(

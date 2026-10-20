@@ -10,8 +10,7 @@ use crucible_host_resources::host_services::HostServiceAllocator;
 use std::sync::Arc;
 
 use crucible_host_resources::host_services::process_birth::{
-    AuthenticatedNativeNodeClaim, AuthenticatedNativeSubdivision, NativePoolRefusal,
-    ServiceBirthError,
+    AuthenticatedNativeSubdivision, NativePoolRefusal, ServiceBirthError,
 };
 use crucible_host_resources::host_services::{HostServiceError, HostServiceLeasePair};
 use crucible_host_resources::host_supervision::{
@@ -135,18 +134,32 @@ pub(in crate::linux_attempt_host) struct RetainedNativeCredit {
 }
 
 impl OriginalNativeAccountCredit {
-    pub(super) fn from_normal_node(
-        node: AuthenticatedNativeNodeClaim,
+    /// Saves credit only after every check while its source purpose stays held.
+    ///
+    /// # Errors
+    /// Refuses an occupied destination, absent purpose, wrong Preparation or
+    /// insufficient CPU/metadata geometry without consuming either slot.
+    pub(super) fn move_from_normal_subdivision(
+        source: &mut Option<AuthenticatedNativeSubdivision>,
+        destination: &mut Option<Self>,
         preparation: &Arc<HostOperationGuard>,
         controls: u64,
-    ) -> Result<Self, OriginalActorAccountError> {
-        let purpose = node.into_subdivision(preparation)?;
+    ) -> Result<(), OriginalActorAccountError> {
+        if destination.is_some() {
+            return Err(OriginalActorAccountError::Unavailable);
+        }
+        let purpose = source
+            .as_ref()
+            .ok_or(OriginalActorAccountError::Unavailable)?;
         purpose.verify_native_preparation(preparation)?;
         let bounds = purpose.bounds();
         if bounds.cpu_slots == 0 || controls > bounds.metadata_bytes {
             return Err(OriginalActorAccountError::Unavailable);
         }
-        Ok(Self {
+        let purpose = source
+            .take()
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        *destination = Some(Self {
             original: Some(RetainedNativeCredit {
                 _pair: None,
                 normal: Some(purpose),
@@ -161,13 +174,15 @@ impl OriginalNativeAccountCredit {
             normal_controls_bytes: controls,
             #[cfg(feature = "private-measurement-domain")]
             actor_family: None,
-        })
+        });
+        Ok(())
     }
 
     /// Releases the same pair after its enclosing native control was freed.
     ///
-    /// This private cut is called only by exclusive whole-roster retirement.
-    /// A refused original retains the pair in that external retirement owner.
+    /// This private cut runs before any roster allocation, or after exclusive
+    /// whole-roster control free. In either case a permanently prepaid external
+    /// owner retains the same pair on refusal; no live roster controls remain.
     ///
     /// # Errors
     /// Preserves the same preparation's original refusal before pair release.

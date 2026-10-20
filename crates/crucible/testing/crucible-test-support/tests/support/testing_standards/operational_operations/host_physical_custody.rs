@@ -6,6 +6,8 @@
 
 use super::{Companion, Contract};
 
+#[path = "host_physical_custody/node_construction.rs"]
+mod node_construction;
 #[path = "host_physical_custody/fork_target.rs"]
 mod fork_target;
 #[path = "host_physical_custody/normal_world.rs"]
@@ -14,6 +16,12 @@ mod normal_world;
 mod roster_retirement;
 #[path = "host_physical_custody/target_dispatcher.rs"]
 mod target_dispatcher;
+
+pub(super) use node_construction::{
+    NODE_OWNER, NODE_BIRTH, NODE_ISSUE, NODE_CONVERSION, NODE_SUBDIVISION, NODE_LEDGER,
+    NODE_RETURN_HISTORY, NODE_CREDIT_BIRTH, NODE_PUBLISHER, NODE_LAYOUT, NODE_ROSTER_RETURN,
+    NODE_CREDIT_RETURN,
+};
 
 // Reuse the exact lower World facts for same-owner daemon forwarders.
 pub(super) const NORMAL_WORLD: &Contract = &normal_world::CONTRACT;
@@ -24,6 +32,7 @@ pub(super) const CONTRACTS: &[Contract] = &[
     fork_target::CONTRACT,
     target_dispatcher::CONTRACT,
     roster_retirement::CONTRACT,
+    node_construction::CONTRACT,
 ];
 
 #[test]
@@ -32,7 +41,10 @@ fn host_continuations_reject_foreign_owners_and_premature_return()
     let root = crate::workspace_root();
     let mutations: &[&[(&str, &str)]] = &[
         &[
-            (".filter(|node| node.world == world)", ".filter(|_| true)"),
+            (
+                "entry.as_ref().is_some_and(|node| node.world == world)",
+                "true",
+            ),
             ("loan.retained_cleanup()", "pool.begin_preparation()"),
             ("original_roster::after_cleanup(result, &cleanup)", "result"),
         ],
@@ -81,4 +93,15 @@ fn host_continuations_reject_foreign_owners_and_premature_return()
         }
     }
     Ok(())
+}
+
+// The generic mutation assertion remains unchanged; this supplies only its new
+// concrete no-argument call's foreign-argument recipe.
+#[cfg(test)]
+pub(super) fn altered_expression(expression: &str) -> String {
+    if expression == "node.retry_cleanup()" {
+        "node.retry_cleanup(foreign_owner)".to_owned()
+    } else {
+        expression.to_owned()
+    }
 }

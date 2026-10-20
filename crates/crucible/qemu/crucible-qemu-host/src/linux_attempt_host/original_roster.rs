@@ -1080,25 +1080,34 @@ impl std::fmt::Debug for NativeAccountAttempt {
 }
 
 impl OriginalNativeAccountRoster {
-    /// Consumes one genuine node subdivision into its width-one normal roster.
+    /// Publishes a width-one normal roster from its same prepaid credit slot.
     ///
-    /// The moved node claim retains its disjoint original Main reservation;
-    /// roster storage is assigned before Arc birth. Node count and private
-    /// worker width are independent, and this method never repeats a root claim.
+    /// All geometry and genuine normal-purpose checks precede credit movement.
+    /// Allocation and returned holder construction are infallible after that cut.
     ///
     /// # Errors
-    /// Retains refused birth custody; rejects foreign/inactive Preparation or
-    /// insufficient node metadata before allocating the actual roster.
-    pub(super) fn publish_normal_node(
-        node: crucible_host_resources::host_services::process_birth::AuthenticatedNativeNodeClaim,
-        preparation: &Arc<HostOperationGuard>,
+    /// Refuses absent credit, wrong control geometry or lack of a genuine normal
+    /// subdivision before moving the original credit from its source slot.
+    pub(super) fn publish_normal_credit(
+        credit: &mut Option<OriginalNativeAccountCredit>,
     ) -> Result<(Self, OriginalNativeAccountFactoryBinding), OriginalActorAccountError> {
-        let credit = OriginalNativeAccountCredit::from_normal_node(
-            node,
-            preparation,
-            Self::shared_allocation_extent()?,
-        )?;
-        Self::publish([Some(credit), None, None, None], 1)
+        let controls = Self::shared_allocation_extent()?;
+        let retained = credit
+            .as_ref()
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        if retained.normal_controls_bytes != controls
+            || retained
+                .original
+                .as_ref()
+                .and_then(|original| original.normal.as_ref())
+                .is_none()
+        {
+            return Err(OriginalActorAccountError::Unavailable);
+        }
+        let credit = credit
+            .take()
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        Ok(Self::publish_allocated([Some(credit), None, None, None], 1))
     }
 
     pub(super) fn matches_binding(&self, binding: &OriginalNativeAccountFactoryBinding) -> bool {
@@ -1117,6 +1126,13 @@ impl OriginalNativeAccountRoster {
         {
             return Err(OriginalActorAccountError::Unavailable);
         }
+        Ok(Self::publish_allocated(credits, width))
+    }
+
+    fn publish_allocated(
+        credits: [Option<OriginalNativeAccountCredit>; MAX_NATIVE_WORKERS],
+        width: usize,
+    ) -> (Self, OriginalNativeAccountFactoryBinding) {
         let roster = Arc::new(Mutex::new(NativeRoster {
             slots: credits.map(|credit| NativeSlot {
                 issuer_controls_bytes: credit.as_ref().map_or(0, |held| held.normal_controls_bytes),
@@ -1146,17 +1162,20 @@ impl OriginalNativeAccountRoster {
         let binding = OriginalNativeAccountFactoryBinding {
             roster: Arc::downgrade(&roster),
         };
-        Ok((
+        (
             Self {
                 held: Some(roster),
                 retiring_credits: std::array::from_fn(|_| None),
             },
             binding,
-        ))
+        )
     }
 
-    // The normal pool's fixed node array already pays the external facade.
-    fn shared_allocation_extent() -> Result<u64, OriginalActorAccountError> {
+    /// Prices shared roster storage while the fixed pool pays its external facade.
+    ///
+    /// # Errors
+    /// Refuses an overflowing actual allocation layout or unrepresentable extent.
+    pub(super) fn shared_allocation_extent() -> Result<u64, OriginalActorAccountError> {
         Self::allocation_extent()?
             .checked_sub(std::mem::size_of::<Self>() as u64)
             .ok_or(OriginalActorAccountError::Unavailable)
@@ -1962,3 +1981,6 @@ impl NativeAccountAttempt {
             .map_err(Into::into)
     }
 }
+
+#[cfg(test)]
+mod normal_credit_tests;

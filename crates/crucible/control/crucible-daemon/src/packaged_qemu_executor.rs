@@ -1830,9 +1830,10 @@ fn open_normal_linux_host(
         host
     };
     Ok(match cleanup {
-        Some(cleanup) => {
-            SharedQemuAttemptHostResourceFactory::with_lifecycle_cleanup(concrete_host, cleanup)
-        }
+        Some(cleanup) => SharedQemuAttemptHostResourceFactory::try_with_world_origin(
+            concrete_host,
+            Some(cleanup),
+        )?,
         None => SharedQemuAttemptHostResourceFactory::new(concrete_host),
     })
 }

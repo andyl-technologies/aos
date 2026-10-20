@@ -8,44 +8,49 @@ pub(super) const CONTRACT: Contract = Contract {
     required: &[
         (
             r#"pub fn retry_native_world_construction(
-    &mut self,
-    loan: &AuthenticatedNativeWorldCleanupLoan,
-) -> Result<(), QemuVmRealizationError> {
-    let pool = self
-        .normal_pool
-        .as_mut()
-        .ok_or_else(|| missing_authority("retain pending native World"))?;
-    let world = pool
-        .worlds
-        .iter()
-        .position(|world| {
-            world
-                .as_ref()
-                .is_some_and(|world| world.matches_cleanup_loan(loan))
-        })
-        .ok_or_else(|| missing_authority("match pending native World"))?;
-    let cleanup = loan
-        .retained_cleanup()
-        .map_err(|source| original_roster::original_error(source.into()))?;
-    let result = (|| {
-        for node in pool
-            .nodes
-            .iter_mut()
-            .flatten()
-            .filter(|node| node.world == world)
-        {
-            cleanup
-                .wait_slice()
-                .map_err(|source| original_roster::original_error(source.into()))?;
-            node.roster.retry_unsettled()?;
-            node.roster
-                .verify_quiescent()
-                .map_err(original_roster::original_error)?;
-        }
-        Ok(())
-    })();
-    original_roster::after_cleanup(result, &cleanup)
-}"#,
+        &mut self,
+        loan: &AuthenticatedNativeWorldCleanupLoan,
+    ) -> Result<(), QemuVmRealizationError> {
+        let pool = self
+            .normal_pool
+            .as_mut()
+            .ok_or_else(|| missing_authority("retain pending native World"))?;
+        let world = pool
+            .worlds
+            .iter()
+            .position(|world| {
+                world
+                    .as_ref()
+                    .is_some_and(|world| world.matches_cleanup_loan(loan))
+            })
+            .ok_or_else(|| missing_authority("match pending native World"))?;
+        let cleanup = loan
+            .retained_cleanup()
+            .map_err(|source| original_roster::original_error(source.into()))?;
+        let result = (|| {
+            for entry in pool
+                .nodes
+                .iter_mut()
+                .filter(|entry| entry.as_ref().is_some_and(|node| node.world == world))
+            {
+                let node = entry
+                    .as_mut()
+                    .ok_or_else(|| missing_authority("retain pending native node"))?;
+                cleanup
+                    .wait_slice()
+                    .map_err(|source| original_roster::original_error(source.into()))?;
+                let result = node.retry_cleanup();
+                // Exact native return is already recorded inside the same
+                // construction owner, independently of a late post refusal.
+                if node.can_remove() {
+                    *entry = None;
+                }
+                result?;
+            }
+            Ok(())
+        })();
+        original_roster::after_cleanup(result, &cleanup)
+    }"#,
             1,
         ),
         (r#"loan.retained_cleanup()"#, 1),
@@ -53,10 +58,10 @@ pub(super) const CONTRACT: Contract = Contract {
         (r#"begin_original_cleanup_control("#, 0),
         (r#"Instant::now("#, 0),
     ],
-    expressions: &[(r#"node.roster.retry_unsettled()"#, 1)],
+    expressions: &[(r#"node.retry_cleanup()"#, 1)],
     identifiers: &[
         (r#"retry_native_world_construction"#, 1),
-        (r#"retry_unsettled"#, 1),
+        (r#"retry_cleanup"#, 1),
     ],
     companions: &[
         Companion {
@@ -274,5 +279,17 @@ pub(super) const CONTRACT: Contract = Contract {
             path: "crates/crucible/qemu/crucible-qemu-host/src/linux_attempt_host/original_roster/fork_target.rs",
             required: super::super::TARGET_CLEANUP_REQUIRED,
         },
+        super::node_construction::NODE_OWNER,
+        super::node_construction::NODE_BIRTH,
+        super::node_construction::NODE_ISSUE,
+        super::node_construction::NODE_CONVERSION,
+        super::node_construction::NODE_SUBDIVISION,
+        super::node_construction::NODE_LEDGER,
+        super::node_construction::NODE_RETURN_HISTORY,
+        super::node_construction::NODE_CREDIT_BIRTH,
+        super::node_construction::NODE_PUBLISHER,
+        super::node_construction::NODE_LAYOUT,
+        super::node_construction::NODE_ROSTER_RETURN,
+        super::node_construction::NODE_CREDIT_RETURN,
     ],
 };

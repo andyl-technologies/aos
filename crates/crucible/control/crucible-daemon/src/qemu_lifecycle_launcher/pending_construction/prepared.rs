@@ -1,8 +1,8 @@
 //! Drives one Main-owned Source preparation and its all-or-restore transfers.
 //!
 //! The native guard and paid launcher stay in the original Pending allocation
-//! through every fallible publication cut. The no-entry proof is consumed
-//! before host World entry; a transferred shell cannot certify World return.
+//! through every fallible publication cut. The nominal proof is consumed at
+//! checked logical assignment birth; a transferred shell cannot certify return.
 
 use super::*;
 
@@ -61,6 +61,7 @@ impl CanonicalContextError {
 #[derive(Debug, Default)]
 pub(super) struct SourcePreparationHistory {
     pub(super) first: Option<SourcePreparationFirst>,
+    pub(super) admission: crate::qemu_resource_guard::SourceWorldAdmissionHistory,
     pub(super) native: Option<QemuVmRealizationError>,
     pub(super) cleanup_first:
         Option<crucible_host_resources::host_services::process_birth::ServiceBirthError>,
@@ -77,6 +78,9 @@ impl SourcePreparationHistory {
         use crate::LifecycleFailureRef as Failure;
         use crate::vm_lifecycle::ProductionVmHotForkSourcePreparationError as First;
 
+        if let Some(first) = self.admission.first_failure() {
+            return Some(first);
+        }
         if let Some(first) = &self.first {
             return Some(first.failure_ref());
         }
@@ -106,6 +110,8 @@ impl SourcePreparationHistory {
 
     fn history(&self) -> crate::LifecycleHistoryRef<'_> {
         crate::LifecycleHistoryRef::SourcePreparation {
+            admission_first: self.admission.first_failure(),
+            admission_post: self.admission.post(),
             first: self.first.as_ref().map(SourcePreparationFirst::failure_ref),
             native: self.native.as_ref(),
             cleanup_first: self.cleanup_first.as_ref(),
@@ -314,8 +320,27 @@ where
             process_resources,
             consumer_control_bytes,
         } = prepared;
+        let selection = self.service.prepared_selector();
+        let admission =
+            match factory.prepare_world_admission(selection.clone(), registration.as_ref()) {
+                Ok(admission) => admission,
+                Err(first) => {
+                    self.record_construction_first(
+                        crate::QemuAttemptProductionVmLifecycleError::ResourceInstallation(first),
+                    );
+                    self.restore_canonical_selection(context);
+                    return Err(());
+                }
+            };
+        self.world_admission = Some(admission);
+        let Some(admission) = self.world_admission.as_mut() else {
+            self.record_unavailable();
+            return Err(());
+        };
         let mut metadata_failure = None;
         let mut receiver = PendingWorldBeforeEffects {
+            selection,
+            not_started: &mut self.not_started,
             generation_storage: &mut self.generation_storage,
             target_nodes: &mut self.target_nodes,
             target_retained_nodes: &mut self.target_retained_nodes,
@@ -330,10 +355,8 @@ where
             metadata_failure: &mut metadata_failure,
         };
         let selected_checkpoint = self.selected_checkpoint.take();
-        // Consuming the producer proof precedes the actual call, even when
-        // that call returns no delivered loan or fails before claiming World.
-        drop(self.not_started.take());
         let result = factory.begin_world(
+            admission,
             process_resources,
             context.cancellation().clone(),
             selected_checkpoint,
@@ -342,6 +365,7 @@ where
             &mut receiver,
         );
         drop(receiver);
+        self.history.admission = admission.take_history();
         match result {
             Ok(guard) => {
                 self.returned_guard = Some(guard);
@@ -880,6 +904,8 @@ where
 
 /// Borrows only delivery/preparation fields, never a second native factory.
 struct PendingWorldBeforeEffects<'a, G: QemuAttemptResourceGuard> {
+    selection: crate::PreparedSourceSelector,
+    not_started: &'a mut Option<SourceWorldNotStarted>,
     generation_storage: &'a mut Option<crate::QemuAttemptGenerationStorage>,
     target_nodes:
         &'a mut Option<Vec<crate::qemu_hot_fork_reconciliation::TargetNodeConstruction<G>>>,
@@ -897,9 +923,21 @@ struct PendingWorldBeforeEffects<'a, G: QemuAttemptResourceGuard> {
     metadata_failure: &'a mut Option<LifecycleApiError>,
 }
 
+impl<G: QemuAttemptResourceGuard> crate::crucible_qemu_session::SourceWorldConstructor
+    for PendingWorldBeforeEffects<'_, G>
+{
+    fn source_selection(&self) -> &crate::PreparedSourceSelector {
+        &self.selection
+    }
+}
+
 impl<G: QemuAttemptResourceGuard> crucible_qemu_host::LinuxQemuNativeWorldConstructor
     for PendingWorldBeforeEffects<'_, G>
 {
+    fn entered_world(&mut self) {
+        drop(self.not_started.take());
+    }
+
     fn retain_world(
         &mut self,
         loan: AuthenticatedNativeWorldCleanupLoan,

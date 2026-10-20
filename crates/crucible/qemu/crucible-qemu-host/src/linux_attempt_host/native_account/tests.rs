@@ -86,3 +86,5 @@ fn copied_cpu_ceiling_without_original_custody_cannot_authorize_a_subset() {
     credit.original = retained;
     credit.require_vcpu_ceiling(1).unwrap();
 }
+
+mod node_custody;

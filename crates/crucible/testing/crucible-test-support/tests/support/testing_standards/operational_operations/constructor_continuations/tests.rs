@@ -363,8 +363,8 @@ fn constructor_continuations_reject_foreign_native_loans_and_missing_postcuts()
         (
             4,
             r#"pending_construction/prepared.rs"#,
-            r#"drop(self.not_started.take()); let result = factory.begin_world("#,
-            r#"let result = factory.begin_world("#,
+            r#"fn entered_world(&mut self) { drop(self.not_started.take()); }"#,
+            r#"fn entered_world(&mut self) {}"#,
         ),
         (
             4,

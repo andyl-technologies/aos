@@ -436,8 +436,8 @@ fn canonical_cell_and_source_receipt_obligations_reject_foreign_or_early_closure
         ),
         (
             "pending_construction/prepared.rs",
-            r#"drop(self.not_started.take());"#,
-            r#""#,
+            r#"fn entered_world(&mut self) { drop(self.not_started.take()); }"#,
+            r#"fn entered_world(&mut self) {}"#,
         ),
         (
             "pending_construction/prepared.rs",

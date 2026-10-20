@@ -50,6 +50,10 @@ pub enum LifecycleHistoryRef<'a> {
     Failure(LifecycleFailureRef<'a>),
     /// A prepared Source retains its independent construction and cleanup causes.
     SourcePreparation {
+        /// The original shared-admission first refusal, before constructor entry.
+        admission_first: Option<LifecycleFailureRef<'a>>,
+        /// The independent postcheck of the same World Preparation at acquisition.
+        admission_post: Option<&'a crucible_host_resources::host_supervision::HostSupervisionError>,
         /// The initiating constructor cause, before supplemental capture history.
         first: Option<LifecycleFailureRef<'a>>,
         /// The original native cleanup refusal.

@@ -16,49 +16,57 @@ impl AuthenticatedNativeNodeClaim {
             .ok_or_else(|| ServiceBirthError::policy("native node pool is absent"))
     }
 
-    /// Moves this exact node into its real normal family issuer.
+    /// Moves the exact retained node into a prepaid subdivision destination.
     ///
-    /// The genuine roster retains the consumed holder through exclusive control
-    /// free. No scalar vector or decoded identity can construct this issuer.
+    /// All prefix/bounds checks run while the node remains in its source slot.
+    /// The destination owns the real subdivision before the independent post.
+    /// Both slots belong to the same containing constructor; neither is credit
+    /// without its genuine, already-issued native holder.
     ///
     /// # Errors
-    /// Retains a born issuer on independent post-refusal; rejects foreign or
-    /// inactive Preparation, absent node custody or stale assignment.
-    pub fn into_subdivision(
-        self,
+    /// Refuses absent source, occupied destination, wrong/inactive Preparation,
+    /// stale bounds or independent post without discarding either actual owner.
+    pub fn move_to_subdivision(
+        source: &mut Option<Self>,
+        destination: &mut Option<AuthenticatedNativeSubdivision>,
         original: &Arc<HostOperationGuard>,
-    ) -> Result<AuthenticatedNativeSubdivision, NativePoolRefusal> {
-        let mut born = None;
-        let held = self.held.as_ref().cloned();
+    ) -> Result<(), NativePoolRefusal> {
+        let held = source.as_ref().and_then(|node| node.held.as_ref().cloned());
         let result = (|| {
+            if destination.is_some() {
+                return Err(ServiceBirthError::policy(
+                    "native subdivision destination is occupied",
+                ));
+            }
             let held = held
                 .as_ref()
                 .ok_or_else(|| ServiceBirthError::policy("native node custody is absent"))?;
+            let node = source
+                .as_ref()
+                .ok_or_else(|| ServiceBirthError::policy("native node source is absent"))?;
             held.root.verify_native_preparation(original)?;
-            let bounds = self.bounds()?;
-            born = Some(AuthenticatedNativeSubdivision {
+            let bounds = node.bounds()?;
+            let node = source
+                .take()
+                .ok_or_else(|| ServiceBirthError::policy("native node source is absent"))?;
+            *destination = Some(AuthenticatedNativeSubdivision {
                 owner: Arc::clone(&held.root.owner),
                 bounds,
                 local_file_descriptors: bounds.file_descriptors / 2,
-                node: Some(self),
+                node: Some(node),
             });
             Ok(())
         })();
         let after = postcut(held.as_ref(), original);
         match (result, after) {
-            (Ok(()), None) => born.ok_or_else(|| NativePoolRefusal {
-                world_assignment_refused: false,
-                cause: ServiceBirthError::policy("native node issuer is absent"),
-                after: None,
-                _retained: None,
-            }),
+            (Ok(()), None) => Ok(()),
             (result, after) => Err(NativePoolRefusal {
                 world_assignment_refused: false,
                 cause: result.err().unwrap_or_else(|| {
                     ServiceBirthError::policy("native node issuer postcut refused")
                 }),
                 after,
-                _retained: born.map(RetainedClaim::subdivision),
+                _retained: None,
             }),
         }
     }
@@ -138,8 +146,30 @@ impl AuthenticatedNativeNodeClaim {
             .verify_cleanup(self.world_epoch, cleanup)
     }
 
-    pub(in super::super) fn is_physically_returned(&self) -> bool {
+    /// Observes the recorded irreversible return of this exact node assignment.
+    ///
+    /// This factual observation issues no replacement member or readiness grant.
+    #[must_use]
+    pub fn is_physically_returned(&self) -> bool {
         self.held.is_none()
+    }
+
+    /// Returns a retained raw node before any subdivision was published.
+    ///
+    /// The actual holder resolves its same World's once-entered Cleanup. Native
+    /// landing/descriptor predicates still refuse every issued unclosed alias;
+    /// the caller supplies no assertion of control free or replacement clock.
+    ///
+    /// # Errors
+    /// Retains the node on uncertain/live custody or saved Cleanup refusal.
+    /// A late independent post may fail after actual return; observe that fact
+    /// with [`Self::is_physically_returned`] before another retirement attempt.
+    pub fn retire_before_subdivision(&mut self) -> Result<(), NativePoolReturnError> {
+        if self.is_physically_returned() {
+            return Ok(());
+        }
+        let cleanup = self.retained_world_cleanup()?;
+        self.retire_after_control_free(&cleanup)
     }
 
     pub(in super::super) fn retire_after_control_free(
@@ -308,3 +338,6 @@ impl Drop for AuthenticatedNativeNodeClaim {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

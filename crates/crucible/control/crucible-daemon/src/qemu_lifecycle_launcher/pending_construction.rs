@@ -25,10 +25,12 @@ pub use prepared::CanonicalContextError;
 mod target_nodes;
 use prepared::SourcePreparationHistory;
 
-/// Proves only that this exact preborn owner has not entered the host World call.
+/// Proves that this exact preborn owner has published no logical World assignment.
 ///
-/// The sole constructor is the actual Pending producer. Entry consumes the
-/// token before the host call, including calls that return no delivered loan.
+/// The sole constructor is the actual Pending producer. The native producer's
+/// infallible publication seam consumes it after every ledger validation, just
+/// before the first assignment mutation. Refused lookup, wait or preassignment
+/// work retains this same proof; it grants no replay or replacement operation.
 pub(crate) struct SourceWorldNotStarted {
     _private: (),
 }
@@ -57,6 +59,7 @@ pub(crate) struct PendingSourceConstruction<F: QemuAttemptResourceGuardFactory> 
     post_body_taken: bool,
     service: crate::lifecycle_cleanup::ServiceMainHandle,
     not_started: Option<SourceWorldNotStarted>,
+    world_admission: Option<crate::qemu_resource_guard::SourceWorldAdmission>,
     construction_started: bool,
     admitted_resources: Option<crucible_campaign::AttemptResourceLimits>,
     selected_checkpoint: Option<crate::executor_supervisor::SelectedExactCheckpointRoot>,
@@ -88,8 +91,18 @@ pub(crate) struct PendingSourceConstruction<F: QemuAttemptResourceGuardFactory> 
 impl<F: QemuAttemptResourceGuardFactory> PendingSourceConstruction<F> {
     /// Prices the actual Main-preborn Pending body and construction carrier.
     pub(crate) fn control_bytes() -> Result<u64, LifecycleApiError> {
+        // Several preassignment Worlds may now wait outside the native pool.
+        // Pay their guard blocks here before issuance; keep the pool's existing
+        // standing peak intact rather than refunding capacity during cutover.
+        let preparation =
+            crucible_qemu_host::LinuxQemuNativeWorldPreparation::shared_control_extent()
+                .and_then(|bytes| usize::try_from(bytes).ok())
+                .ok_or_else(|| launcher_message("World Preparation control extent overflow"))?;
         let bytes = std::mem::size_of::<Self>()
-            .checked_add(std::mem::size_of::<crate::ProductionVmConstructionCustody>())
+            .checked_add(preparation)
+            .and_then(|bytes| {
+                bytes.checked_add(std::mem::size_of::<crate::ProductionVmConstructionCustody>())
+            })
             // One original reservation/admission report can outlive this call.
             // These alternatives share a phase; price its actual payload before
             // any failure rather than allocate a replacement ownership carrier.
@@ -159,6 +172,7 @@ where
             post_body_taken: false,
             service,
             not_started: Some(SourceWorldNotStarted { _private: () }),
+            world_admission: None,
             construction_started: false,
             admitted_resources: None,
             selected_checkpoint: None,

@@ -637,8 +637,15 @@ pub trait QemuAttemptProcessResourceGuard: QemuAttemptResourceGuard {
 /// The production caller installs its prepaid pending construction owner here.
 /// Custody refusal retains both exact holders; checked preparation is a separate
 /// positive-admission phase.
-pub(crate) type NativeWorldBeforeEffects<'a> =
-    dyn crucible_qemu_host::LinuxQemuNativeWorldConstructor + 'a;
+pub(crate) trait SourceWorldConstructor:
+    crucible_qemu_host::LinuxQemuNativeWorldConstructor
+{
+    /// Borrows the same Main role that owns this receiver's nominal entry proof.
+    fn source_selection(&self) -> &crate::PreparedSourceSelector;
+}
+
+/// Borrows the actual Main-owned Source constructor for this one admission.
+pub(crate) type NativeWorldBeforeEffects<'a> = dyn SourceWorldConstructor + 'a;
 
 /// Factory for one pre-launch attempt resource guard.
 pub(crate) trait QemuAttemptResourceGuardFactory {
@@ -701,12 +708,28 @@ pub(crate) trait QemuAttemptResourceGuardFactory {
         None
     }
 
+    /// Enters a genuine World Preparation while retaining its exact Main role.
+    ///
+    /// # Errors
+    /// Refuses missing actual pool custody before consuming any no-entry proof.
+    fn prepare_world_admission(
+        &self,
+        _selection: crate::PreparedSourceSelector,
+        _registration: &dyn crate::vm_lifecycle::ProductionHostRamRegistrationFactory,
+    ) -> Result<crate::qemu_resource_guard::SourceWorldAdmission, QemuVmRealizationError> {
+        Err(QemuVmRealizationError::ExecutorUnavailable {
+            operation: "prepare actual Source World admission",
+            message: String::from("factory has no real World Preparation origin"),
+        })
+    }
+
     /// Installs the selected World's genuine disjoint node owners together.
     ///
     /// # Errors
     /// Preserves selected checkpoint custody and all partial member effects.
     fn begin_world(
         &mut self,
+        _admission: &mut crate::qemu_resource_guard::SourceWorldAdmission,
         resources: AttemptResourceLimits,
         cancellation: ExecutionCancellation,
         selected_checkpoint: Option<SelectedExactCheckpointRoot>,

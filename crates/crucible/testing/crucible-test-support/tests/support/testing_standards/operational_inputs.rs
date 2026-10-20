@@ -189,12 +189,33 @@ const CONTRACTS: &[Contract] = &[
             Companion {
                 path: "crates/crucible/qemu/crucible-qemu-plugin/src/runtime.rs",
                 required: &[
-                    "callbacks_registered.check_original_startup()",
+                    r#"state.setup.check_original_startup()
+.map_err(|source| PluginRuntimeInstallError::StartupSource { source })?;
+let result = state.required_workers.handoff(stream);
+let post = state.setup.check_original_startup();
+state.required_workers.record_handoff_post(&post);
+result.map_err(|source| PluginRuntimeInstallError::RequiredWorkers { source })?;
+post.map_err(|source| PluginRuntimeInstallError::StartupSource { source })"#,
+                    r#"let mut stream = Some(control_stream);
+if let Err(error) = callbacks_registered.handoff_run_control(&mut stream) {
+fatal_policy.terminate(error); } let workers = callbacks_registered.worker_quiescence();
+if let Err(source) = workers.wait_initial_ready(|| callbacks_registered.original_startup_slice())
+.and_then(|()| callbacks_registered.complete_original_startup_registration())"#,
                     ".wait_initial_ready(||callbacks_registered.original_startup_slice())",
                     ".and_then(|()|callbacks_registered.complete_original_startup_registration())",
                     ".setup.original_startup_slice().map_err(crate::startup_source::InstallerStartupSource::retained_ram_error)",
                 ],
-                counts: &[],
+                counts: &[
+                    ("callbacks_registered.handoff_run_control(&mut stream)", 1),
+                    (
+                        "workers.wait_initial_ready(||callbacks_registered.original_startup_slice())",
+                        1,
+                    ),
+                    (
+                        "workers.wait_initial_ready(||callbacks_registered.original_startup_slice()).and_then(|()|callbacks_registered.complete_original_startup_registration())",
+                        1,
+                    ),
+                ],
             },
             Companion {
                 path: "crates/crucible/qemu/crucible-qemu-plugin/src/setup.rs",

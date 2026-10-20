@@ -531,3 +531,7 @@ fn absent_row_requires_a_published_epoch_and_survives_exact_cell_reuse() {
     assert!(!ledger.observe_world_returned(next).unwrap());
     assert!(ledger.observe_world_returned(next + 1).is_err());
 }
+
+mod source_admission;
+
+mod node_custody;

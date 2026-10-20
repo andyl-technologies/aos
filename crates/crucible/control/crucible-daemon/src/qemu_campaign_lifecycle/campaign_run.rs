@@ -1478,7 +1478,7 @@ pub fn run_guarded_default_campaign(
 
 pub(super) fn run_guarded_default_campaign_with_host<H>(
     request: GuardedDefaultCampaignRunRequest,
-    host: H,
+    host: SharedQemuAttemptHostResourceFactory<H>,
 ) -> Result<GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError>
 where
     H: QemuAttemptHostResourceFactory + QemuAttemptSelectedHostResourceFactory + Send + 'static,
@@ -1537,7 +1537,7 @@ where
 
 fn production_campaign_runner<H>(
     lifecycle: impl Into<Arc<ProductionVmLifecycleConfig>>,
-    host: H,
+    host: SharedQemuAttemptHostResourceFactory<H>,
     store: CampaignExecutorStore,
     checkpoints: Arc<ExactCheckpointStore>,
     exact_retention: Arc<CampaignRunFindingExactRetentionSource>,
@@ -1553,7 +1553,6 @@ where
     H::Owner: Send + 'static,
 {
     let lifecycle = lifecycle.into();
-    let host = SharedQemuAttemptHostResourceFactory::new(host);
     let production = QemuAttemptProductionVmLifecycleFactory::new(
         lifecycle.clone(),
         ComposedQemuAttemptResourceGuardFactory::new(host.clone()),

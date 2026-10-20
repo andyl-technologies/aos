@@ -403,6 +403,45 @@ fn contended_worker_control_admission_preserves_same_shared_host_before_birth() 
 }
 
 #[test]
+fn contended_world_origin_lookup_keeps_the_same_unentered_component_host() {
+    let resources = resources(2);
+    let counters = Arc::new(HostCounters::default());
+    let shared = SharedQemuAttemptHostResourceFactory::new(FakeHostFactory {
+        installed: resources,
+        counters: Arc::clone(&counters),
+        signal_error: false,
+        signal_panics: false,
+        finish_error: false,
+    });
+    let held = shared
+        .host
+        .lock()
+        .expect("hold the actual shared component host");
+    let allocation = std::ptr::from_ref(&*held);
+
+    let refusal = shared.world_preparation_origin();
+
+    assert!(matches!(
+        refusal,
+        Err(QemuVmRealizationError::ExecutorUnavailable {
+            operation: "borrow actual Source World Preparation origin",
+            ..
+        })
+    ));
+    assert_eq!(counters.begins.load(Ordering::SeqCst), 0);
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 0);
+    assert_eq!(counters.quarantines.load(Ordering::SeqCst), 0);
+    assert_eq!(std::ptr::from_ref(&*held), allocation);
+    drop(held);
+    // This component has no real native pool. Availability must not turn its
+    // rejecting default into a successful Main or World Preparation provider.
+    assert!(shared.world_preparation_origin().is_err());
+    assert_eq!(counters.begins.load(Ordering::SeqCst), 0);
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 0);
+    assert_eq!(counters.quarantines.load(Ordering::SeqCst), 0);
+}
+
+#[test]
 fn fixed_workers_share_one_host_allocator_without_sharing_attempt_owners() {
     let resources = resources(2);
     let counters = Arc::new(HostCounters::default());

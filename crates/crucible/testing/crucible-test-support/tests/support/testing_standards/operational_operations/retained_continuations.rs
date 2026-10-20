@@ -49,7 +49,7 @@ const IMPORT_ACK: &str = r#"pub fn retry_parent_return(&mut self) -> bool {
 
 // Share the existing physical/Original proofs instead of copying their bodies.
 const WORLD: &Contract = super::host_physical_custody::NORMAL_WORLD;
-const _: () = assert!(WORLD.companions.len() == 4);
+const _: () = assert!(WORLD.companions.len() == 16);
 pub(super) const WORLD_COMPANIONS: &[Companion] = &[
     Companion {
         path: "crates/crucible/qemu/crucible-qemu-host/src/linux_attempt_host/normal_pool.rs",
@@ -90,6 +90,23 @@ pub(super) const WORLD_COMPANIONS: &[Companion] = &[
             ),
         ],
     },
+    super::host_physical_custody::NODE_OWNER,
+    super::host_physical_custody::NODE_BIRTH,
+    super::host_physical_custody::NODE_ISSUE,
+    super::host_physical_custody::NODE_CONVERSION,
+    super::host_physical_custody::NODE_SUBDIVISION,
+    super::host_physical_custody::NODE_LEDGER,
+    super::host_physical_custody::NODE_RETURN_HISTORY,
+    super::host_physical_custody::NODE_CREDIT_BIRTH,
+    super::host_physical_custody::NODE_PUBLISHER,
+    super::host_physical_custody::NODE_LAYOUT,
+    super::host_physical_custody::NODE_ROSTER_RETURN,
+    super::host_physical_custody::NODE_CREDIT_RETURN,
+    super::source_world_admission::ORIGIN_BODY,
+    super::source_world_admission::ORIGIN_PUBLICATION,
+    super::source_world_admission::ORIGIN_RUNNERS,
+    super::source_world_admission::ORIGIN_FINDING,
+    super::source_world_admission::ORIGIN_OWNER,
 ];
 
 pub(super) const IMPORTED_RETURN: &Contract = &CONTRACTS[2];
@@ -108,7 +125,7 @@ pub(super) const CONTRACTS: &[Contract] = &[
         target: "src/qemu_resource_guard",
         required: &[
             (
-                "pub struct SharedQemuAttemptHostResourceFactory<H> { host: Arc<Mutex<H>>,",
+                "pub struct SharedQemuAttemptHostResourceFactory<H> { host: Arc<shared_host::SharedHostBody<H>>,",
                 1,
             ),
             (

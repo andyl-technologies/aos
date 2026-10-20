@@ -31,7 +31,10 @@ mod normal_pool;
 #[cfg(feature = "private-measurement-domain")]
 mod original_actor;
 mod original_host;
-pub use normal_pool::{LinuxQemuNativeNodeHost, LinuxQemuNativeWorldConstructor};
+pub use normal_pool::{
+    LinuxQemuNativeNodeHost, LinuxQemuNativeWorldConstructor, LinuxQemuNativeWorldPreparation,
+    LinuxQemuNativeWorldPreparationOrigin,
+};
 mod original_node;
 mod original_roster;
 pub use native_account::OriginalActorAccountError;

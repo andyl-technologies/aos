@@ -1,8 +1,8 @@
 //! Retains genuine normal World/node rosters in the pinned host factory.
 //!
 //! One Main pool funds every simultaneous World, template and replay. Fixed
-//! registry arrays are paid before construction. Each node owns a separate
-//! width-one roster; the scheduler worker count never selects its credit.
+//! registry arrays are paid before construction. Published nodes own separate
+//! width-one rosters; the scheduler worker count never selects their credit.
 //! Retired members return only after physical vector and final Weak/control
 //! closure. A failed or abandoned factory keeps the same containing owners.
 // SPDX-License-Identifier: Apache-2.0
@@ -16,11 +16,23 @@ use crucible_host_resources::host_services::process_birth::{
 use crucible_host_resources::host_supervision::HostOperationGuard;
 use crucible_host_resources::ram_policy::HostResourceVector;
 
+mod node_construction;
+use node_construction::NormalNode;
+
+mod world_preparation;
+pub use world_preparation::{LinuxQemuNativeWorldPreparation, LinuxQemuNativeWorldPreparationOrigin};
+
 /// Receives genuine World custody separately from checked preparation.
 ///
 /// The receiver is paid before admission. A negative admission postcut can
 /// transfer existing holders, but cannot invoke preparation or create an owner.
 pub trait LinuxQemuNativeWorldConstructor {
+    /// Consumes the caller's no-assignment proof at checked logical World birth.
+    ///
+    /// All ledger validation has succeeded and publication follows infallibly.
+    /// This move enters no new operation and cannot refuse or allocate.
+    fn entered_world(&mut self);
+
     /// Retains both exact holders without allocation or Original admission.
     ///
     /// # Errors
@@ -63,12 +75,6 @@ pub(super) struct NormalNativePool {
     purpose: Option<AuthenticatedNativePoolPurpose>,
     worlds: Vec<Option<AuthenticatedNativeWorldClaim>>,
     nodes: Vec<Option<NormalNode>>,
-}
-
-struct NormalNode {
-    world: usize,
-    roster: OriginalNativeAccountRoster,
-    binding: Option<OriginalNativeAccountFactoryBinding>,
 }
 
 pub(super) struct NormalNodeBirth {
@@ -146,14 +152,14 @@ impl NormalNativePool {
         })
     }
 
-    pub(super) fn begin_preparation(
+    fn preparation_origin(
         &self,
-    ) -> Result<Arc<HostOperationGuard>, OriginalActorAccountError> {
+    ) -> Result<LinuxQemuNativeWorldPreparationOrigin, OriginalActorAccountError> {
         let purpose = self
             .purpose
             .as_ref()
             .ok_or(OriginalActorAccountError::Unavailable)?;
-        Ok(Arc::new(purpose.begin_native_preparation()?))
+        Ok(LinuxQemuNativeWorldPreparationOrigin::from_purpose(purpose))
     }
 
     fn claim_world(
@@ -161,6 +167,7 @@ impl NormalNativePool {
         identity: NativeWorldIdentity,
         consumer_control_bytes: u64,
         original: &Arc<HostOperationGuard>,
+        entered: impl FnOnce(),
         populate: impl FnOnce(
             &mut dyn FnMut(NativeNodeReservation) -> Result<(), ServiceBirthError>,
         ) -> Result<(), ServiceBirthError>,
@@ -175,7 +182,13 @@ impl NormalNativePool {
         let purpose = self.purpose.as_ref().ok_or(WorldClaimFailure::NoHolder(
             OriginalActorAccountError::Unavailable,
         ))?;
-        match purpose.claim_world_from(identity, consumer_control_bytes, original, populate) {
+        match purpose.claim_world_from(
+            identity,
+            consumer_control_bytes,
+            original,
+            entered,
+            populate,
+        ) {
             Ok(world) => {
                 self.worlds[index] = Some(world);
                 Ok(index)
@@ -197,6 +210,14 @@ impl NormalNativePool {
         world: usize,
         original: &Arc<HostOperationGuard>,
     ) -> Result<Option<NormalNodeBirth>, OriginalActorAccountError> {
+        if self
+            .nodes
+            .iter()
+            .flatten()
+            .any(|node| node.world == world && node.is_constructing())
+        {
+            return Err(OriginalActorAccountError::Unavailable);
+        }
         let claim = self
             .worlds
             .get(world)
@@ -205,20 +226,20 @@ impl NormalNativePool {
         let Some(request) = claim.next_node()? else {
             return Ok(None);
         };
+        let controls = OriginalNativeAccountRoster::shared_allocation_extent()?;
         let index = self
             .nodes
             .iter()
             .position(Option::is_none)
             .ok_or(OriginalActorAccountError::Unavailable)?;
-        let node = claim.take_node(request.node)?;
-        let (roster, binding) = OriginalNativeAccountRoster::publish_normal_node(node, original)?;
-        // Both original holders persist outside their funded controls before
-        // cgroup/storage creation or its independent post-observation.
-        self.nodes[index] = Some(NormalNode {
-            world,
-            roster,
-            binding: Some(binding),
-        });
+
+        // The permanently prepaid array owns every raw/conversion holder
+        // before issuance, postchecks, roster publication or physical setup.
+        self.nodes[index] = Some(NormalNode::constructing(world));
+        let node = self.nodes[index]
+            .as_mut()
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        node.prepare(claim, request.node, original, controls)?;
         Ok(Some(NormalNodeBirth {
             index,
             key: request.node,
@@ -233,7 +254,7 @@ impl NormalNativePool {
         self.nodes
             .get(index)
             .and_then(Option::as_ref)
-            .and_then(|node| node.binding.as_ref())
+            .and_then(NormalNode::binding)
             .ok_or(OriginalActorAccountError::Unavailable)
     }
 
@@ -244,13 +265,13 @@ impl NormalNativePool {
         self.nodes
             .iter()
             .flatten()
-            .filter_map(|node| node.binding.as_ref())
+            .filter_map(NormalNode::binding)
             .find(|binding| target.belongs_to_factory(binding))
     }
 
     pub(super) fn verify_quiescent(&self) -> Result<(), OriginalActorAccountError> {
         for node in self.nodes.iter().flatten() {
-            node.roster.verify_quiescent()?;
+            node.verify_quiescent()?;
         }
         Ok(())
     }
@@ -260,14 +281,14 @@ impl NormalNativePool {
             let Some(node) = entry.as_mut() else {
                 continue;
             };
-            if node.roster.verify_quiescent().is_err() {
+            if node.verify_quiescent().is_err() {
                 continue;
             }
-            // No Source/Target is live. Remove this factory's real Weak alias
-            // before exclusive close; any other alias still prevents Arc free.
-            drop(node.binding.take());
-            let closed = node.roster.try_close();
-            let returned = node.roster.is_physically_returned();
+            // Constructing closes its actual retained funding. A Published
+            // row removes its real Weak alias before exclusive roster close;
+            // any other alias still prevents Arc free.
+            let closed = node.try_close();
+            let returned = node.can_remove();
             if returned {
                 *entry = None;
             }
@@ -533,7 +554,7 @@ impl LinuxQemuAttemptHostFactory {
     /// Retries only the exact pending World under its same saved Cleanup.
     ///
     /// This loan is acquired before physical birth. Per-node partial owners
-    /// remain in their canonical rosters and retain their own original Cleanup.
+    /// remain in canonical construction/roster cells under their same Cleanup.
     /// No sibling World or global factory retirement is attempted here.
     ///
     /// # Errors
@@ -559,23 +580,45 @@ impl LinuxQemuAttemptHostFactory {
             .retained_cleanup()
             .map_err(|source| original_roster::original_error(source.into()))?;
         let result = (|| {
-            for node in pool
+            for entry in pool
                 .nodes
                 .iter_mut()
-                .flatten()
-                .filter(|node| node.world == world)
+                .filter(|entry| entry.as_ref().is_some_and(|node| node.world == world))
             {
+                let node = entry
+                    .as_mut()
+                    .ok_or_else(|| missing_authority("retain pending native node"))?;
                 cleanup
                     .wait_slice()
                     .map_err(|source| original_roster::original_error(source.into()))?;
-                node.roster.retry_unsettled()?;
-                node.roster
-                    .verify_quiescent()
-                    .map_err(original_roster::original_error)?;
+                let result = node.retry_cleanup();
+                // Exact native return is already recorded inside the same
+                // construction owner, independently of a late post refusal.
+                if node.can_remove() {
+                    *entry = None;
+                }
+                result?;
             }
             Ok(())
         })();
         original_roster::after_cleanup(result, &cleanup)
+    }
+
+    /// Borrows the bound pool origin without entering an operation or World.
+    ///
+    /// # Errors
+    /// Refuses poisoned or absent actual factory/pool custody.
+    pub fn native_world_preparation_origin(
+        &self,
+    ) -> Result<LinuxQemuNativeWorldPreparationOrigin, QemuVmRealizationError> {
+        if self.poisoned || self.process.is_poisoned() {
+            return Err(missing_authority("borrow normal World Preparation origin"));
+        }
+        self.normal_pool
+            .as_ref()
+            .ok_or_else(|| missing_authority("retain normal World Preparation pool"))?
+            .preparation_origin()
+            .map_err(original_roster::original_error)
     }
 
     /// Creates the genuine separate host owners of a selected normal World.
@@ -588,6 +631,7 @@ impl LinuxQemuAttemptHostFactory {
     /// rejects an unavailable pool or any incomplete physical setup.
     pub fn begin_native_world(
         &mut self,
+        preparation: &mut LinuxQemuNativeWorldPreparation,
         identity: NativeWorldIdentity,
         consumer_control_bytes: u64,
         exact_checkpoint_root: Option<crucible_engine::ContentHash>,
@@ -599,6 +643,12 @@ impl LinuxQemuAttemptHostFactory {
         if self.poisoned || self.process.is_poisoned() {
             return Err(missing_authority("begin normal node World"));
         }
+        let purpose = self
+            .normal_pool
+            .as_ref()
+            .and_then(|pool| pool.purpose.as_ref())
+            .ok_or_else(|| missing_authority("retain normal World Preparation pool"))?;
+        let original = preparation.begin_attempt(purpose, identity)?;
         // Taking the pool permits disjoint pinned process/storage mutation. A
         // panic leaves this factory poisoned and the pool's actual Drop retains
         // all originals. There is no temporary ordinary fallback.
@@ -612,35 +662,33 @@ impl LinuxQemuAttemptHostFactory {
             pool.sweep_retired()
                 .map_err(original_roster::original_error)?;
             if pool.worlds.iter().all(Option::is_some) {
-                // No callback, operation or new assignment has run. Retained
-                // bodies still consume real capacity without poisoning Main.
+                // No new assignment callback has run. Retained bodies still
+                // consume real capacity without poisoning the containing Main.
                 proven_unassigned = true;
                 return Err(missing_authority("normal World capacity is occupied"));
             }
-            let original = pool
-                .begin_preparation()
-                .map_err(original_roster::original_error)?;
-            let (world, mut admission_failure) =
-                match pool.claim_world(identity, consumer_control_bytes, &original, populate) {
-                    Ok(world) => (world, None),
-                    Err(WorldClaimFailure::NoHolder(source)) => {
-                        proven_unassigned = matches!(
-                            &source,
-                            OriginalActorAccountError::NativePool(refusal)
-                                if refusal.world_assignment_was_refused()
-                        );
-                        return Err(original_roster::original_error(source));
-                    }
-                    Err(WorldClaimFailure::Retained { first, index }) => (index, Some(first)),
-                };
+            let (world, mut admission_failure) = match pool.claim_world(
+                identity,
+                consumer_control_bytes,
+                &original,
+                || preparation.commit_world(|| before_effects.entered_world()),
+                populate,
+            ) {
+                Ok(world) => (world, None),
+                Err(WorldClaimFailure::NoHolder(source)) => {
+                    proven_unassigned = matches!(
+                        &source,
+                        OriginalActorAccountError::NativePool(refusal)
+                            if refusal.world_assignment_was_refused()
+                    );
+                    return Err(original_roster::original_error(source));
+                }
+                Err(WorldClaimFailure::Retained { first, index }) => (index, Some(first)),
+            };
             let claim = pool.worlds[world]
-                .as_ref()
+                .as_mut()
                 .ok_or_else(|| missing_authority("retain logical World before effects"))?;
-            let custody = claim.cleanup_loan().and_then(|loan| {
-                claim
-                    .take_consumer_controls()
-                    .map(|controls| (loan, controls))
-            });
+            let custody = claim.take_initial_custody();
             let (loan, controls) = match custody {
                 Ok(custody) => custody,
                 Err(delivery) => {

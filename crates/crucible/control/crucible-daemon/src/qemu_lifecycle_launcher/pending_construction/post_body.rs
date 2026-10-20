@@ -38,6 +38,10 @@ where
             self.checkpoint_input = None;
             self.generation_storage = None;
             self.returned_guard = None;
+            // World/Target postbody return retains the original native guard
+            // itself. This extra caller alias must close before actual World
+            // return; Main continues funding its allocation through role Free.
+            self.world_admission = None;
             self.finish_launcher = None;
             self.take_launcher_post_body = None;
             self.body_disposed = true;

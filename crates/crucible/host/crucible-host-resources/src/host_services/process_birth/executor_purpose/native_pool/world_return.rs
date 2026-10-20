@@ -1,7 +1,9 @@
 //! Returns exact World accounting under its once-entered saved Cleanup.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
+#[cfg(test)]
+use std::sync::MutexGuard;
 
 use super::{
     AuthenticatedNativeWorldClaim, AuthenticatedNativeWorldCleanupLoan, HostOperationGuard,
@@ -187,6 +189,7 @@ fn observe_returned(
 }
 
 /// Keeps the same World open until its existing pool alias has been retained.
+#[cfg(test)]
 pub(super) fn borrow_unreturned_world(
     ledger: &Mutex<ledger::PoolLedger>,
     epoch: u64,

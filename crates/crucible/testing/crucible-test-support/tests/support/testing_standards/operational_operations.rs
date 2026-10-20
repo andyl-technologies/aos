@@ -34,6 +34,8 @@ mod refused_publication;
 mod retained_continuations;
 #[path = "operational_operations/service_continuations.rs"]
 mod service_continuations;
+#[path = "operational_operations/source_world_admission.rs"]
+mod source_world_admission;
 #[path = "operational_operations/worker_custody.rs"]
 mod worker_custody;
 
@@ -704,6 +706,7 @@ fn contracts() -> impl Iterator<Item = &'static Contract> {
         .chain(host_physical_custody::CONTRACTS)
         .chain(hot_fork_retirement::CONTRACTS)
         .chain(native_registration::CONTRACTS)
+        .chain(native_registration::REQUIRED_WORKER_CONTRACTS)
         .chain(retained_continuations::CONTRACTS)
         .chain(constructor_continuations::CONTRACTS)
         .chain(service_continuations::CONTRACTS)
