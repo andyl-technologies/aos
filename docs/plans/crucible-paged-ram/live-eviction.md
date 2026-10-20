@@ -107,6 +107,75 @@ preservation/discard/fill/wake. Establish the real access-domain completion
 mechanism and measure physical high-water use, including pins, COW, backing
 I/O, page tables and reclaim lag.
 
+## Access units and completion
+
+The next candidate is to reserve residency for complete, bounded memory
+operations, including their already resident operands. Protecting only the page
+that most recently faulted is insufficient: another actor can evict an earlier
+operand before the blocked operation retries. Page delivery and waiter wakeup
+are not operation completion receipts. The
+[Linux userfaultfd contract](https://raw.githubusercontent.com/torvalds/linux/v6.17/Documentation/admin-guide/mm/userfaultfd.rst)
+describes atomic page population and waking fault waiters; it does not report
+that the resumed instruction or syscall has returned. This interface observation
+does not qualify the running kernel or supply a progress bound.
+
+The patched QEMU source exposes several different access lifetimes:
+
+| Access path | Existing structure | Required residency lifetime |
+| --- | --- | --- |
+| Scalar TCG helper | `MMULookupLocals.page[2]` handles the helper's split access through 16 bytes. | All actual host pages through the helper's memory and dirty-publication work. The two-entry lookup is a local bound, not a universal instruction bound. |
+| Atomic helper | Alignment checks and the existing serialized fallback preserve the guest operation. | The complete atomic unit, including widened host accesses and exceptional cleanup; independent page loans cannot split guest atomicity. |
+| String, vector and probing helpers | REP repeats individual accesses; `probe_access*` can return raw host pointers retained by other helpers. | A proved bounded iteration, element or helper unit, covering every retained pointer. Returning from a probe alone is insufficient. |
+| Physical RAM copy | `flatview_*_continue_step` can copy a caller-sized contiguous span. | Bound each managed-RAM copy by actual host-page spans and retain all operands until that copy returns. |
+| Device mapping | Managed RAM already uses bounce mappings and disables direct memory-region caches. | Complete the RAM-to-bounce or bounce-to-RAM copy before returning guest residency. Retain and pay the bounce independently through asynchronous completion. |
+| Kernel access and service actors | A syscall, capture or pager operation may borrow RAM while another actor waits. | Actual completion of the borrowed access, with independently resident service storage and no recursive dependency on the fault being resolved. |
+
+An operation loan would enumerate its complete footprint, reserve all needed
+credits before acquiring any page, exclude those pages from eviction, supply
+missing contents and handle write protection, then execute the existing memory
+operation. Its real return or explicit exceptional cleanup would release the
+loan. Reserving only part of an operation's footprint can deadlock two actors
+that each retain credits needed by the other. Eviction must not protect or
+reclaim a loaned page and wait for that same blocked operation to finish.
+
+Exception handling needs an explicit join. TCG exits use `siglongjmp` through
+`cpu_loop_exit` and `cpu_exec_longjmp_cleanup`; lexical C cleanup alone does not
+establish that a borrowed access cannot resume. Ordinary plugin callbacks also
+do not cover this lifetime: instruction callbacks precede execution, and memory
+callbacks describe successful accesses. Their documented timing does not prove
+completion of exceptional or partially completed operations. See the
+[QEMU plugin callback contract](https://www.qemu.org/docs/master/devel/tcg-plugins.html).
+
+A proposed reservation has the form:
+
+```text
+progress_bytes = host_page_bytes * sum(concurrent_units[class] * pages_per_unit[class])
+               + service_bytes + bounce_bytes + transition_bytes
+```
+
+Each term must come from actual admitted actors, access paths and retained
+lifetimes. Include page walks, nested helpers, device/Aio work and asynchronous
+borrowers; a vCPU count alone is insufficient. A lower concurrency limit needs
+its own dependency and fairness argument. A resident target of zero can coexist
+with explicitly reserved transient progress capacity, but cannot eliminate it.
+The formula is a design obligation, not a measured physical high-water result.
+
+Forcing managed accesses through slow TCG helpers could provide the first
+bounded experiment. It has no performance qualification. Longer leases tied to
+software-TLB validity could preserve inline resident hits, but require actual
+invalidation and quiescence before release. Their full TLB coverage must be
+bounded and paid, and they do not cover escaped helper or device pointers.
+Keep the existing resident baseline while evaluating both approaches.
+
+The next experiment should join one real scalar access family and one
+page-bounded physical-copy path to actual residency loans. Exercise cross-page
+operands, REP source/destination traffic and concurrent actors, including
+operands that were resident before pressure began. Record actual helper returns,
+guest architectural progress and exact resulting bytes independently of fault
+and wake counts. Then cover atomic fallback, exceptional exits and raw-pointer
+helpers before generalizing the envelope. Until this closure and authenticated
+streaming initialization are implemented, retain full-RAM admission.
+
 ## Integration order
 
 First implement and test the transaction under the existing full entitlement.
