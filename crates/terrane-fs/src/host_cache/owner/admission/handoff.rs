@@ -67,17 +67,27 @@ impl CachedAdmission {
             ));
         }
         state::check_registration(owner, job)?;
-        let dependencies = match &job.input {
-            Input::Chunk { descriptor, .. } => {
-                let hash = state::hex(descriptor.digest());
-                job.hashes
-                    .iter()
-                    .filter(|actual| *actual != &hash)
-                    .cloned()
-                    .collect()
-            }
-            Input::Metadata { .. } => Vec::new(),
-        };
+        // A dictionary can have the same plaintext identity as its dependent
+        // chunk while using another actual encoding/inode. Hash subtraction
+        // would lose that dependency; the original retained jobs establish it.
+        if matches!(job.input, Input::Metadata { .. }) && !job.dependencies.is_empty() {
+            return Err(invalid(
+                "metadata admission unexpectedly retains a dictionary",
+            ));
+        }
+        let mut dependencies = Vec::new();
+        dependencies
+            .try_reserve_exact(job.dependencies.len())
+            .map_err(io::Error::other)?;
+        for resource in &job.dependencies {
+            let dependency = super::backing::lock(resource)?;
+            let Input::Chunk { descriptor, .. } = &dependency.input else {
+                return Err(invalid("cache dictionary changed its actual input class"));
+            };
+            dependencies.push(state::hex(descriptor.digest()));
+        }
+        dependencies.sort();
+        dependencies.dedup();
         Ok(Self {
             custody: Arc::clone(executor.custody()),
             running,

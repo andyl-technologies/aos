@@ -284,6 +284,23 @@ impl TransferSource {
             }
             state::check_registration(owner, &job)?;
             native::check_current(owner, &job.files[0], encoded)?;
+            for dependent in executor.admission_jobs() {
+                if Arc::ptr_eq(dependent, candidate) {
+                    continue;
+                }
+                let dependent = super::backing::lock(dependent)?;
+                if dependent.complete
+                    && dependent
+                        .dependencies
+                        .iter()
+                        .any(|dictionary| Arc::ptr_eq(dictionary, candidate))
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        "standalone dictionary remains required by an actual admitted body",
+                    ));
+                }
+            }
             let file = job.files[0]
                 .readonly
                 .as_ref()
