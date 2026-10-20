@@ -19,12 +19,11 @@ impl QemuLiveHostIoRuntime {
                 return Ok(());
             };
             let deadline = HostSupervisionDeadline::start(timeout);
-            let snapshot = self
-                .wait_node_snapshot(|| deadline.remaining())?
-                .ok_or_else(|| terminal_error("original coherent publication is unavailable"))?;
-            let pending = custody
-                .terminal_regrant_pending(&self.region, snapshot)
-                .map_err(|source| terminal_error(source.to_string()))?;
+            let (pending, snapshot) = self.terminal_regrant_pending_within(
+                &custody,
+                &deadline,
+                "original coherent publication is unavailable",
+            )?;
             if !pending {
                 return Ok(());
             }
@@ -52,9 +51,11 @@ impl QemuLiveHostIoRuntime {
             // the native prefix and retires covered issued receipts. Existing
             // pending pairs were refused above, rather than rewritten here.
             self.fence_terminal_console_completion(&snapshot, &deadline)?;
-            let after = self
-                .wait_node_snapshot(|| deadline.remaining())?
-                .ok_or_else(|| terminal_error("completed terminal publication is unavailable"))?;
+            let (still_pending, after) = self.terminal_regrant_pending_within(
+                &custody,
+                &deadline,
+                "completed terminal publication is unavailable",
+            )?;
             completed
                 .validate_terminal_coordinate(
                     self.region.backing_identity(),
@@ -63,10 +64,7 @@ impl QemuLiveHostIoRuntime {
                     after,
                 )
                 .map_err(|source| terminal_error(source.to_string()))?;
-            if custody
-                .terminal_regrant_pending(&self.region, after)
-                .map_err(|source| terminal_error(source.to_string()))?
-            {
+            if still_pending {
                 return Err(terminal_error(
                     "original grant remained issued after Acceptance",
                 ));
@@ -77,6 +75,39 @@ impl QemuLiveHostIoRuntime {
         {
             let _ = (completed, at, timeout);
             Ok(())
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl QemuLiveHostIoRuntime {
+    /// Joins grant custody with one coherent slot snapshot under `deadline`.
+    ///
+    /// The join compares a fresh slot read with `snapshot`, so a plugin
+    /// republication between the two reads refuses it as unavailable. The
+    /// join is read-only, so it retries with a new snapshot under the same
+    /// deadline. Every other refusal stays fatal.
+    fn terminal_regrant_pending_within(
+        &mut self,
+        custody: &crate::native_console_owner::ConsoleLaunchCustody,
+        deadline: &HostSupervisionDeadline,
+        unavailable: &'static str,
+    ) -> Result<(bool, crucible_shmem::NodeSlotSnapshot), QemuAsyncDriverRuntimeError> {
+        loop {
+            let snapshot = self
+                .wait_node_snapshot(|| deadline.remaining())?
+                .ok_or_else(|| terminal_error(unavailable))?;
+            match custody.terminal_regrant_pending(&self.region, snapshot) {
+                Ok(pending) => return Ok((pending, snapshot)),
+                Err(crate::native_console_owner::ConsoleOwnerError::Unavailable) => {
+                    let Some(remaining) = deadline.remaining().filter(|left| !left.is_zero())
+                    else {
+                        return Err(terminal_error(unavailable));
+                    };
+                    self.wait_for_clamp_ack_poll(remaining);
+                }
+                Err(source) => return Err(terminal_error(source.to_string())),
+            }
         }
     }
 }

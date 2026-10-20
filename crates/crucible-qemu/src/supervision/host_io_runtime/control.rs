@@ -56,6 +56,14 @@ impl PrimingConsoleDevices<'_> {
     }
 }
 
+/// Reports a console request that stayed deferred through its caller's budget.
+fn console_request_unavailable() -> QemuAsyncDriverRuntimeError {
+    QemuAsyncDriverRuntimeError::new(
+        "retain console request",
+        crate::native_console_owner::ConsoleOwnerError::PublicationUnavailable.to_string(),
+    )
+}
+
 impl QemuLiveHostIoRuntime {
     #[cfg(target_os = "linux")]
     pub(crate) fn retain_console_launch(
@@ -115,7 +123,7 @@ impl QemuLiveHostIoRuntime {
         self.poll_interval.min(remaining).min(cap)
     }
 
-    fn wait_for_clamp_ack_poll(&mut self, remaining: Duration) {
+    pub(super) fn wait_for_clamp_ack_poll(&mut self, remaining: Duration) {
         self.wait_for_poll_interval_capped(remaining, self.clamp_ack_poll_interval(remaining));
     }
 
@@ -134,23 +142,52 @@ impl QemuLiveHostIoRuntime {
     /// Once published, the request's command frontier and fingerprint
     /// generation are immutable. A later command publication intentionally
     /// leaves that request unacknowledged so it cannot capture a mixed epoch.
+    ///
+    /// This single attempt refuses a deferred console publication at once. It
+    /// serves cleanup paths that hold no deadline; callers with a budget use
+    /// [`Self::signal_wake_within`].
     pub(super) fn signal_wake(
         &mut self,
         fingerprint_capture_request: Option<u32>,
     ) -> Result<PendingControlBoundary, QemuAsyncDriverRuntimeError> {
         self.try_signal_wake(fingerprint_capture_request)?
-            .ok_or_else(|| {
-                QemuAsyncDriverRuntimeError::new(
-                    "retain console request",
-                    crate::native_console_owner::ConsoleOwnerError::PublicationUnavailable
-                        .to_string(),
-                )
-            })
+            .ok_or_else(console_request_unavailable)
     }
 
-    // Only the completed-clamp pump defers native-writer acquisition under its
-    // existing deadline. Other callers retain their immediate failure behavior.
-    fn try_signal_wake(
+    /// Publishes a control request, waiting out deferred console publication.
+    ///
+    /// Console custody defers a request while the native stopped-output
+    /// publisher holds the shared claim, which it keeps for one callback, or
+    /// while QEMU republishes the slot under the paired read. Both refusals
+    /// precede any paired-field or request change, so retrying publishes the
+    /// same request once. Retries share the caller's original deadline and
+    /// never renew it. The first attempt runs even when that deadline has
+    /// already expired, as [`Self::signal_wake`] does.
+    pub(super) fn signal_wake_within(
+        &mut self,
+        fingerprint_capture_request: Option<u32>,
+        deadline: &HostSupervisionDeadline,
+    ) -> Result<PendingControlBoundary, QemuAsyncDriverRuntimeError> {
+        loop {
+            if let Some(request) = self.try_signal_wake(fingerprint_capture_request)? {
+                return Ok(request);
+            }
+            #[cfg(test)]
+            self.observe_native_publication_unavailable_for_test(deadline);
+
+            let Some(remaining) = deadline.remaining().filter(|left| !left.is_zero()) else {
+                return Err(console_request_unavailable());
+            };
+            self.wait_for_clamp_ack_poll(remaining);
+        }
+    }
+
+    /// Publishes a control request, or returns `None` while console custody defers it.
+    ///
+    /// A deferral changes no field, request, or wake counter. Periodic re-wakes
+    /// skip a deferred attempt and try again at their next period; one-shot
+    /// requests wait it out with [`Self::signal_wake_within`].
+    pub(super) fn try_signal_wake(
         &mut self,
         fingerprint_capture_request: Option<u32>,
     ) -> Result<Option<PendingControlBoundary>, QemuAsyncDriverRuntimeError> {

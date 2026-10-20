@@ -461,7 +461,12 @@ impl QemuLiveHostIoRuntime {
                     && !self.native_console_run_report_pending()
                 {
                     // Ordinary profiles retain the tokenized checkpoint wake.
-                    let _request = self.signal_wake(None)?;
+                    // A deferred console publication leaves the wake pending
+                    // for the next poll under the same advance deadline.
+                    if self.try_signal_wake(None)?.is_none() {
+                        self.wait_for_poll_interval_capped(remaining, MINIMUM_PUBLICATION_POLL);
+                        continue;
+                    }
                 } else {
                     // Native RUN already published its full AUTH and advance.
                     // Its first report, not an Observation of the old pause,
@@ -573,7 +578,9 @@ impl QemuLiveHostIoRuntime {
                     }
                     if self.device_wake_publish_generation.is_none() && unchanged_polls % 16 == 15 {
                         if checkpoint_idle_unreleased && !self.native_console_run_report_pending() {
-                            let _request = self.signal_wake(None)?;
+                            // A deferred console publication skips this
+                            // re-wake; the next period tries again.
+                            let _request = self.try_signal_wake(None)?;
                         } else {
                             self.write_wake_doorbell()?;
                         }
@@ -909,9 +916,9 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
                 "checkpoint device probe timeout is zero",
             ));
         }
-        let request = self.signal_wake(None)?;
-        let attempts = bounded_poll_attempts(timeout, self.poll_interval);
         let deadline = HostSupervisionDeadline::start(timeout);
+        let request = self.signal_wake_within(None, &deadline)?;
+        let attempts = bounded_poll_attempts(timeout, self.poll_interval);
         let mut last_observed = None;
         for attempt in 0..attempts {
             if !deadline.has_time_remaining() {
@@ -980,9 +987,11 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
             .map_err(map_slot_error)?
             .request_capture_v1();
         let fingerprint_acknowledgement = fingerprint_request.wrapping_add(1);
-        let request = self.signal_wake(Some(fingerprint_request))?;
-        let attempts = bounded_poll_attempts(timeout, self.poll_interval);
+        // The capture request is already armed, so publish its control
+        // request under the same budget that bounds the acknowledgement.
         let deadline = HostSupervisionDeadline::start(timeout);
+        let request = self.signal_wake_within(Some(fingerprint_request), &deadline)?;
+        let attempts = bounded_poll_attempts(timeout, self.poll_interval);
         let mut last_observed = None;
         for attempt in 0..attempts {
             if !deadline.has_time_remaining() {
@@ -1180,10 +1189,15 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
             // the same tokenized two-pass handoff as a reached boundary.
             let wake = if tokenized_checkpoint_control_wake {
                 // The paired token makes a vCPU resume callback yield without
-                // interpreting this control edge as guest authorization.
-                self.signal_wake(None).map(|request| {
-                    checkpoint_request = Some(request);
-                })
+                // interpreting this control edge as guest authorization. A
+                // deferred console publication waits out the rest of the
+                // original pause budget; it never starts a new one.
+                let publication_budget =
+                    HostSupervisionDeadline::start(deadline.remaining().unwrap_or_default());
+                self.signal_wake_within(None, &publication_budget)
+                    .map(|request| {
+                        checkpoint_request = Some(request);
+                    })
             } else {
                 self.write_wake_doorbell()
             };
@@ -1297,9 +1311,12 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
                 // consumed the coalesced callback token just before the pause
                 // request. Re-publish its acknowledged token periodically so
                 // coalescing cannot lose the required handoff.
+                // A deferred console publication keeps the previous request
+                // and tries again at the next period.
                 if tokenized_checkpoint_control_wake && attempt % 16 == 15 {
-                    match self.signal_wake(None) {
-                        Ok(request) => checkpoint_request = Some(request),
+                    match self.try_signal_wake(None) {
+                        Ok(Some(request)) => checkpoint_request = Some(request),
+                        Ok(None) => {}
                         Err(source) => return self.fail_checkpoint_pause(source),
                     }
                 }

@@ -367,3 +367,91 @@ fn original_clamp_never_commits_when_native_release_follows_deadline_expiry()
         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock));
     case.fixture.finish()
 }
+
+#[test]
+fn fingerprint_request_waits_out_a_held_native_claim_under_its_original_deadline()
+-> Result<(), FixtureError> {
+    let mut case = accepted_console_stop_fixture()?;
+    let native = mapped(&case.fixture)?;
+    let owned = case.boundary.calibration();
+    let token_before = case.region.node_slot(0)?.control_boundary_token();
+    let mut notifications = case.notifications.try_clone()?;
+    let (claimed_tx, claimed_rx) = mpsc::sync_channel(1);
+    let (window_tx, window_rx) = mpsc::sync_channel(1);
+    let (released_tx, released_rx) = mpsc::sync_channel(1);
+
+    // The hook runs only after a genuine deferred acquisition, inside the
+    // fingerprint request's own deadline. It neither supplies a request nor
+    // renews the budget; it only orders the modeled release.
+    case.runtime
+        .on_native_publication_unavailable_for_test(move |_deadline| {
+            window_tx
+                .send(())
+                .unwrap_or_else(|error| panic!("deferred request window: {error}"));
+            released_rx
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap_or_else(|error| panic!("modeled release rendezvous: {error}"));
+        });
+    let provider = std::thread::spawn(move || -> Result<(), FixtureError> {
+        let slot = native.node_slot(0)?;
+        let writer = modeled_writer(slot, 2)?;
+        claimed_tx
+            .send(())
+            .map_err(|error| FixtureError::Peer(error.to_string()))?;
+        window_rx
+            .recv_timeout(Duration::from_secs(1))
+            .map_err(|error| FixtureError::Peer(error.to_string()))?;
+
+        // The deferred attempt published nothing while the claim was held.
+        assert_eq!(writer.observed_claim(), 2);
+        assert_eq!(slot.control_boundary_token(), token_before);
+        drop(writer);
+        released_tx
+            .send(())
+            .map_err(|error| FixtureError::Peer(error.to_string()))?;
+
+        // The retried request rings the doorbell exactly once, after release.
+        let mut wake = [0; 8];
+        notifications.read_exact(&mut wake)?;
+        assert_eq!(u64::from_ne_bytes(wake), 1);
+        let observation = native.native_console_segment(0)?.clamp.snapshot()?;
+        assert_eq!(
+            observation.kind,
+            crucible_protocol::native_console::NativeConsoleControlKind::Observation
+        );
+        assert_ne!(observation.capture, 0);
+        slot.publish_control_boundary(owned.logical_icount, owned.raw_icount)?;
+        slot.acknowledge_control_boundary();
+        native
+            .fingerprint_sample(0)?
+            .publish(&crucible_shmem::FingerprintSample::default())
+            .map_err(|error| FixtureError::Peer(error.to_string()))?;
+        assert!(
+            native
+                .fingerprint_sample(0)?
+                .acknowledge_capture_v1(observation.capture)
+        );
+        Ok(())
+    });
+
+    let result = match claimed_rx.recv_timeout(Duration::from_secs(1)) {
+        Ok(()) => case
+            .runtime
+            .publish_current_execution_fingerprint(Duration::from_secs(1)),
+        Err(error) => Err(crate::QemuAsyncDriverRuntimeError::new(
+            "modeled writer acquisition",
+            error.to_string(),
+        )),
+    };
+    let peer = provider.join().map_err(|_| FixtureError::PeerPanicked)?;
+    // A refused original call is the RED evidence; the provider's bounded
+    // missing-window error must not replace it.
+    if let Err(error) = result {
+        case.fixture.finish()?;
+        return Err(error.into());
+    }
+    peer?;
+
+    assert!(case.region.node_slot(0)?.try_snapshot().is_some());
+    case.fixture.finish()
+}

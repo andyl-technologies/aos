@@ -192,7 +192,7 @@ impl QemuLiveHostIoRuntime {
         }
         let deadline = HostSupervisionDeadline::start(timeout);
         loop {
-            let request = self.signal_wake(None)?;
+            let request = self.signal_wake_within(None, &deadline)?;
             self.drain_fault_events_for_pump(
                 maximum_event_records,
                 &deadline,
@@ -258,7 +258,7 @@ impl QemuLiveHostIoRuntime {
         let deadline = HostSupervisionDeadline::start(timeout);
         let mut payload_buffer = Vec::new();
         loop {
-            let request = self.signal_wake(None)?;
+            let request = self.signal_wake_within(None, &deadline)?;
             self.drain_fault_events_for_pump(
                 maximum_event_records,
                 &deadline,
