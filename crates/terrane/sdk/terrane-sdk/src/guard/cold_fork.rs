@@ -87,7 +87,7 @@ impl<S, C> Guard<S, C> {
     /// # Errors
     /// Rejects absent context, changed full profile, strict mapping failures and
     /// unavailable configured selection without fetching a TreeNode.
-    #[cfg(all(test, feature = "tokio", unix))]
+    #[cfg(all(test, feature = "tokio", feature = "surface-sdk", unix))]
     pub(crate) fn compare_cold_fork_view_inputs(
         &self,
         retained: Option<&terrane_format::gc::publication::evidence::ConsumedViewInterpretation>,

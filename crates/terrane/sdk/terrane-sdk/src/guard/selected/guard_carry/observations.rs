@@ -89,6 +89,7 @@ pub(super) fn acknowledge(root: &Path, after: [usize; 3]) {
 ///
 /// # Panics
 /// Panics if observational synchronization is poisoned.
+#[cfg(feature = "surface-sdk")]
 pub(crate) fn take(root: &Path) -> Vec<CarryObservation> {
     lock_observations().remove(root).unwrap_or_default()
 }
