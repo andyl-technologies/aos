@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Binds eight actual controls to the installed ELF and complete source archive."""
+"""Binds thirteen actual controls to the installed ELF and complete source archive."""
 
 import hashlib
 import json
@@ -45,6 +45,7 @@ if (digest(invoked_check)["sha256"] != digest(check)["sha256"] or
         digest(source / "patches/native-original-scope-and-diagnostic-atomic-owners.patch")["sha256"] != record["patchSha256"] or
         digest(source / "patches/native-system-counter-source-state.patch")["sha256"] != record["counterStatePatchSha256"] or
         digest(controls / "system-counter-observation-check.py")["sha256"] != record["counterObservationCheckSha256"] or
+        digest(source / "patches/native-system-counter-callable-owner.patch")["sha256"] != record["counterCallablePatchSha256"] or
         digest(check)["sha256"] != record["checkSha256"] or
         digest(guest)["sha256"] != record["guestSourceSha256"] or
         digest(check_recipe)["sha256"] != record["diagnosticCheckRecipeSha256"] or
@@ -53,7 +54,9 @@ if (digest(invoked_check)["sha256"] != digest(check)["sha256"] or
     raise ValueError("Installed ELF source controls and recipes differ")
 
 modes = ("owned", "unknown-bus", "changed-clock", "foreign-helper", "unarmed",
-         "counter-owned", "counter-pending", "counter-invalid-table")
+         "counter-owned", "counter-pending", "counter-invalid-table",
+         "counter-copy-original", "counter-copy-foreign", "counter-owner-foreign",
+         "counter-callable-foreign", "counter-callable-empty")
 results = []
 for mode in modes:
     log = Path(f"native-scope-{mode}.log")
@@ -73,6 +76,15 @@ for mode in modes:
     if len(counter_records) != int(mode.startswith("counter-")):
         raise ValueError("Actual counter producer evidence is absent or duplicated")
     if counter_records:
+        fields = counter_records[0]["counter"]["objects"][0]["modeled_fields"]
+        type_matches = mode not in ("counter-callable-foreign", "counter-callable-empty")
+        owner_matches = mode not in (
+            "counter-copy-foreign", "counter-owner-foreign",
+            "counter-callable-foreign", "counter-callable-empty"
+        )
+        if (fields["counter.frequency_callback_type_matches"] != str(int(type_matches)) or
+                fields["counter.frequency_callback_owner_matches"] != str(int(owner_matches))):
+            raise ValueError("Actual native counter callable differs from its attack control")
         counter = counter_records[0]
         if counter["mode"] != mode or any(counter[field] for field in (
                 "source_cut_qualified", "listener_closure_qualified",
@@ -85,7 +97,7 @@ for mode in modes:
         raise ValueError("Native control result is absent, duplicated or mismatched")
     value = records[0]
     expected_walk = mode in ("owned", "foreign-helper", "unarmed",
-                             "counter-owned", "counter-pending")
+                             "counter-owned", "counter-pending", "counter-copy-original")
     if bool(value["ownership"][0]) != expected_walk:
         raise ValueError("Actual diagnostic ownership differs from the selected control")
     if any(value[field] for field in (

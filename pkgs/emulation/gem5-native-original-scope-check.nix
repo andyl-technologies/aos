@@ -101,7 +101,7 @@ in
             counter-observation.log > "$out/share/gem5/checks/counter-observation.json"
 
           ${python3-3_12}/bin/python3 ${diagnosticGuest} diagnostic-fixed-loop.elf
-          for mode in owned unknown-bus changed-clock foreign-helper unarmed counter-owned counter-pending counter-invalid-table; do
+          for mode in owned unknown-bus changed-clock foreign-helper unarmed counter-owned counter-pending counter-invalid-table counter-copy-original counter-copy-foreign counter-owner-foreign counter-callable-foreign counter-callable-empty; do
             status=0
             ${foundation}/bin/gem5 --listener-mode=off --outdir="native-scope-$mode" \
               ${nativeCheck} diagnostic-fixed-loop.elf "$mode" \
@@ -130,7 +130,7 @@ in
     ];
 
     meta = {
-      description = "Runs eight source-bound native diagnostic graph controls including real stopped counter callbacks without granting source issuance, restore adoption or node readiness";
+      description = "Runs thirteen source-bound native diagnostic graph controls including actual counter callable copies without granting source issuance, restore adoption or node readiness";
       license = "MIT";
     };
   }

@@ -270,3 +270,26 @@ The native graph visitor rejects every listener and bounds the frequency table
 and its native capacity. Complete allocator/backing-resource custody, nested
 timer/listener/pin ownership, source issuance, early restore adoption, full-system
 CPU/device qualification and common readiness remain separate and refused.
+
+
+## Named system-counter callable ownership
+
+`native-system-counter-callable-owner.patch` modifies existing Arm
+`src/dev/arm/generic_timer.{cc,hh}` and `src/dev/arm/GenericTimer.py`, existing
+BSD-compatible `src/sim/eventq.hh`, and BSD-3-Clause
+`src/sim/crucible_native_scope.{cc,hh}`. Every original notice remains intact;
+no native source file is added. The matching native source output retains the
+complete patched files and actual patch; source enrichment retains this license
+inventory, the recipes and all modified MIT host controls.
+
+The original EventFunctionWrapper dispatch, names, flags and scheduling methods
+are unchanged. A read-only target accessor and private named frequency action
+allow the partial visitor to compare the actual callable type and owner before
+registering its event member. The existing mandatory native diagnostic check
+adds real same-owner/foreign-wrapper/foreign-owner/unrelated/empty copy controls.
+Its native helper uses the original process/thread guard, only before the walk,
+and refuses queued members. These diagnostic transitions grant no execution,
+capture or restore authority. Counter listeners remain refused, and complete
+callback/Event-base/queue/backing lifetime, late mutation, source issuance,
+early restored adoption, full-system qualification and common Ready remain
+separate, unsupported or false. No frame permission field or reset changes.

@@ -5,6 +5,7 @@
   lruBirthPatch = ./gem5-patches/native-lru-constructor-provenance.patch;
   walkerStatePatch = ./gem5-patches/native-arm-walker-source-state.patch;
   counterStatePatch = ./gem5-patches/native-system-counter-source-state.patch;
+  counterCallablePatch = ./gem5-patches/native-system-counter-callable-owner.patch;
   nativeCheck = ./_gem5/native-original-scope-check.py;
   diagnosticGuest = ./_gem5/native-diagnostic-guest.py;
   record = builtins.toFile "gem5-native-original-scope-source.json" (builtins.toJSON {
@@ -15,7 +16,10 @@
     walkerStatePatchSha256 = builtins.hashFile "sha256" walkerStatePatch;
     counterStatePatchSha256 = builtins.hashFile "sha256" counterStatePatch;
     counterObservationCheckSha256 = builtins.hashFile "sha256" ./_gem5/system-counter-observation-check.py;
-    diagnosticProfileVersion = 4;
+    counterCallablePatchSha256 = builtins.hashFile "sha256" counterCallablePatch;
+    diagnosticProfileVersion = 5;
+    counterFrequencyCallable = "source-private-named-actual-owner-v1";
+    completeCallbackClosureQualified = false;
     maximumCounterFrequencyEntries = 1004;
     maximumCounterFrequencyCapacityEntries = 2008;
     supportedCounterListeners = 0;
@@ -42,7 +46,7 @@
   });
 in
   gem5-closed-block-foundation.overrideAttrs (previous: {
-    nativePatchFiles = previous.nativePatchFiles ++ [nativePatch lruBirthPatch tableGeometryPatch walkerStatePatch counterStatePatch];
+    nativePatchFiles = previous.nativePatchFiles ++ [nativePatch lruBirthPatch tableGeometryPatch walkerStatePatch counterStatePatch counterCallablePatch];
     pname = "gem5-native-original-scope-foundation";
     phases =
       map (phase:
@@ -58,6 +62,7 @@ in
                 patch --fuzz=0 -p1 < ${tableGeometryPatch}
                 patch --fuzz=0 -p1 < ${walkerStatePatch}
                 patch --fuzz=0 -p1 < ${counterStatePatch}
+                patch --fuzz=0 -p1 < ${counterCallablePatch}
               '';
           }
         else phase)
@@ -75,6 +80,7 @@ in
             cp ${tableGeometryPatch} "$out/share/gem5/native-original-scope-source/table-geometry.patch"
             cp ${walkerStatePatch} "$out/share/gem5/native-original-scope-source/walker-state.patch"
             cp ${counterStatePatch} "$out/share/gem5/native-original-scope-source/counter-state.patch"
+            cp ${counterCallablePatch} "$out/share/gem5/native-original-scope-source/counter-callable.patch"
             cp ${nativeCheck} "$out/share/gem5/native-original-scope-source/native-check.py"
             cp ${diagnosticGuest} "$out/share/gem5/native-original-scope-source/guest-source.py"
             cp ${./gem5-native-original-scope-foundation.nix} "$out/share/gem5/native-original-scope-source/recipe.nix"

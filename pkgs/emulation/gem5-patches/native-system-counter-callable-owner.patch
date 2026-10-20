@@ -1,0 +1,216 @@
+--- a/src/sim/eventq.hh
++++ b/src/sim/eventq.hh
+@@ -1197,6 +1197,17 @@
+     */
+     void process() { callback(); }
+ 
++    /** Reads the actual callable type without invoking or copying its body.
++     *
++     * The returned pointer is private observation data. A matching target does
++     * not authenticate Event base fields, backing storage or later mutation.
++     */
++    template <class Callable>
++    const Callable *crucibleTarget() const noexcept
++    {
++        return callback.target<Callable>();
++    }
++
+     /**
+      * @ingroup api_eventq
+      */
+--- a/src/dev/arm/generic_timer.hh
++++ b/src/dev/arm/generic_timer.hh
+@@ -120,6 +120,13 @@
+     /** Reads cached counter state without updating time or notifying listeners. */
+     std::map<std::string, std::string> crucibleModeledFields() const override;
+ 
++    /** Applies one closed diagnostic copy/replacement before the source walk.
++     *
++     * This control never dispatches a callback or grants native authority.
++     * Queued members, foreign processes and post-walk calls are refused.
++     */
++    bool crucibleDiagnosticFrequencyMutation(unsigned mode, SystemCounter *other);
++
+     /// Validates a System Counter reference
+     /// @param sys_cnt System counter reference to validate
+     static void validateCounterRef(SystemCounter *sys_cnt);
+@@ -165,6 +172,23 @@
+   private:
+     // Disable copying
+     SystemCounter(const SystemCounter &c);
++
++    /** Retains the actual native callback action and immutable owner. */
++    class FrequencyCallback final
++    {
++      public:
++        explicit FrequencyCallback(SystemCounter &counter) : owner(&counter) {}
++
++        void operator()() const { owner->freqUpdateCallback(); }
++
++        bool belongsTo(const SystemCounter *counter) const
++        {
++            return owner == counter;
++        }
++
++      private:
++        SystemCounter *const owner;
++    };
+ 
+     /// Frequency update event handling
+     EventFunctionWrapper _freqUpdateEvent;
+--- a/src/dev/arm/generic_timer.cc
++++ b/src/dev/arm/generic_timer.cc
+@@ -76,7 +76,7 @@
+       _freqTable(p.freqs),
+       _activeFreqEntry(0),
+       _updateTick(0),
+-      _freqUpdateEvent([this]{ freqUpdateCallback(); }, name()),
++      _freqUpdateEvent(FrequencyCallback(*this), name()),
+       _nextFreqEntry(0)
+ {
+     fatal_if(_freqTable.empty(), "SystemCounter::SystemCounter: Base "
+@@ -112,8 +112,14 @@
+             return false;
+     }
+ 
+-    // Register the exact constructor-bound member even when not scheduled.
+-    // The existing walk checks its queued identity and unchanged native tick.
++    // A copied wrapper can keep this member address but target another
++    // counter. Check the actual source-private callable and immutable owner.
++    const auto *target = _freqUpdateEvent.crucibleTarget<FrequencyCallback>();
++    if (!target || !target->belongsTo(this))
++        return false;
++
++    // This one observation does not close later wrapper/Event-base mutations,
++    // std::function backing or the complete native queue/resource lifetime.
+     return walk.callback(this, &_freqUpdateEvent, 1);
+ }
+ 
+@@ -134,6 +140,10 @@
+     writer.set("counter.period", _period);
+     writer.set("counter.update_tick", _updateTick);
+     writer.set("counter.next_frequency_entry", _nextFreqEntry);
++    const auto *target = _freqUpdateEvent.crucibleTarget<FrequencyCallback>();
++    writer.set("counter.frequency_callback_type_matches", target != nullptr);
++    writer.set("counter.frequency_callback_owner_matches",
++               target && target->belongsTo(this));
+     writer.set("counter.frequency_table_entries", _freqTable.size());
+     writer.set("counter.frequency_table_capacity_entries", _freqTable.capacity());
+     for (size_t index = 0; index < _freqTable.size(); ++index)
+@@ -151,6 +161,54 @@
+     writer.string("coverage.unsupported",
+         "counter-listener-targets-callback-payloads-native-backing-and-inherited-simobject");
+     return std::move(writer.fields);
++}
++
++bool
++SystemCounter::crucibleDiagnosticFrequencyMutation(unsigned mode,
++                                                   SystemCounter *other)
++{
++    auto *scope = crucible::OriginalNodeScope::selected();
++    if (!scope || !scope->diagnosticCallbackMutationAllowed())
++        return false;
++
++    // The real public wrapper copy API is exercised only on unqueued actual
++    // members. Corrupting a live event's links would not be an observation.
++    if (typeid(*this) != typeid(SystemCounter) || !other ||
++        typeid(*other) != typeid(SystemCounter) ||
++        _freqUpdateEvent.scheduled() || other->_freqUpdateEvent.scheduled())
++        return false;
++
++    switch (mode) {
++      case 0: {
++        if (other != this)
++            return false;
++        EventFunctionWrapper copy(_freqUpdateEvent);
++        _freqUpdateEvent = copy;
++        return true;
++      }
++      case 1:
++        if (other == this)
++            return false;
++        _freqUpdateEvent = other->_freqUpdateEvent;
++        return true;
++      case 2:
++        if (other == this)
++            return false;
++        _freqUpdateEvent = EventFunctionWrapper(FrequencyCallback(*other), name());
++        return true;
++      case 3:
++        if (other != this)
++            return false;
++        _freqUpdateEvent = EventFunctionWrapper([] {}, name());
++        return true;
++      case 4:
++        if (other != this)
++            return false;
++        _freqUpdateEvent = EventFunctionWrapper(std::function<void()>{}, name());
++        return true;
++      default:
++        return false;
++    }
+ }
+ 
+ void
+--- a/src/dev/arm/GenericTimer.py
++++ b/src/dev/arm/GenericTimer.py
+@@ -67,7 +67,10 @@
+     cxx_header = "dev/arm/generic_timer.hh"
+     cxx_class = "gem5::SystemCounter"
+     # The source-owned native witness schedules the real frequency callback.
+-    cxx_exports = [PyBindMethod("freqUpdateSchedule")]
++    cxx_exports = [
++        PyBindMethod("freqUpdateSchedule"),
++        PyBindMethod("crucibleDiagnosticFrequencyMutation"),
++    ]
+ 
+     # Maximum of 1004 frequency entries, including end marker
+     freqs = VectorParam.UInt32(
+--- a/src/sim/crucible_native_scope.hh
++++ b/src/sim/crucible_native_scope.hh
+@@ -114,6 +114,13 @@
+      * source issuance and early restore adoption remain separate gates.
+      */
+     bool inspectOriginalOwnership(EventQueue &queue);
++
++    /** Authenticates a source-only diagnostic callback edit before inspection.
++     *
++     * This reuses the original raw process/thread guard and cannot authorize
++     * runtime, restart, a second walk or a callback edit after inspection.
++     */
++    bool diagnosticCallbackMutationAllowed();
+     static OriginalNodeScope *selected();
+     static std::size_t storageBytes();
+ 
+--- a/src/sim/crucible_native_scope.cc
++++ b/src/sim/crucible_native_scope.cc
+@@ -33,10 +33,10 @@
+ 
+ ProcessLifetimeScope lifetime;
+ 
+-// The matching check verifies profile-v4 table and no-listener counter bounds.
+-// Fixed owner banks precede object births. Counter vector backing is bounded
+-// native state; complete process resources and capture authority stay separate.
+-const Digest diagnosticProfileDigest = {0x39, 0xd5, 0xeb, 0x03, 0x0d, 0xc1, 0x38, 0x92, 0x84, 0xd0, 0x5c, 0x7c, 0xb5, 0x1e, 0xce, 0x23, 0x40, 0x1d, 0xe9, 0xbb, 0x6b, 0x3f, 0xa3, 0x06, 0x25, 0xf9, 0x61, 0x8e, 0x59, 0x79, 0x81, 0xfd};
++// Profile v5 binds the exact named counter callable and owner observation.
++// The original banks and no-listener bound are unchanged. Event-base, backing,
++// later mutation, source issuance and complete restore authority stay separate.
++const Digest diagnosticProfileDigest = {0xed, 0x39, 0x82, 0x9e, 0x5a, 0xef, 0xbb, 0xfc, 0x38, 0x8e, 0xba, 0xee, 0x2d, 0xac, 0xe0, 0x23, 0xaa, 0x2d, 0xba, 0x6b, 0x9c, 0x43, 0xe7, 0x5f, 0xea, 0x1a, 0xa7, 0x5e, 0x4b, 0x48, 0x7e, 0x41};
+ 
+ bool
+ nonzero(const Digest &bytes)
+@@ -91,6 +91,14 @@
+     // seal the original account. The authentic source provider owns those
+     // distinct graph/resource/account/image transitions.
+     return walk(queue);
++}
++
++bool
++OriginalNodeScope::diagnosticCallbackMutationAllowed()
++{
++    // current() rejects a foreign inherited process before callback storage,
++    // std::function allocation or any source account state can be touched.
++    return current() && phase == State::Constructing && !runtimeAuthorized;
+ }
+ 
+ OriginalNodeScope *

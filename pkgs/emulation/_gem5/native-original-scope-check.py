@@ -30,7 +30,9 @@ from m5.objects import (
 
 if len(sys.argv) != 3 or sys.argv[2] not in (
     "owned", "unknown-bus", "changed-clock", "foreign-helper", "unarmed",
-    "counter-owned", "counter-pending", "counter-invalid-table"
+    "counter-owned", "counter-pending", "counter-invalid-table",
+    "counter-copy-original", "counter-copy-foreign", "counter-owner-foreign",
+    "counter-callable-foreign", "counter-callable-empty"
 ):
     raise ValueError("expected diagnostic fixed-loop ELF and native control mode")
 
@@ -39,15 +41,16 @@ mode = sys.argv[2]
 source_stat = Path("/proc/self/stat").read_text()
 generation = int(source_stat.rsplit(") ", 1)[1].split()[19])
 profile = native_event.crucibleDiagnosticOriginalProfile()
-# Profile v4 adds the bounded concrete counter with no listener dependencies.
+# Profile v5 checks the actual named counter callable and immutable owner.
 # Ordinary heap/control-block closure and execution authority remain separate.
 selected_profile_bytes = (
-    b'crucible.gem5.diagnostic.arm-atomic-loop.counter-empty-listeners.v4\x00'
+    b'crucible.gem5.diagnostic.arm-atomic-loop.counter-named-callback-owner.v5\x00'
     b'objects=256;edges=4096;callbacks=256;ports=256;tables=16;'
     b'table-entries=1280;lru-constructor-births=1472;'
     b'arm-tlb-entries=64,64,1280,32,32;clock-period-ps=1000;'
     b'counter-frequency-entries=1004;counter-capacity-entries=2008;'
-    b'counter-listeners=0;runtime=refused'
+    b'counter-listeners=0;counter-frequency-callback=named-owner-v1;'
+    b'callback-mutation=diagnostic-before-walk-only;runtime=refused'
 )
 assert bytes(profile) == hashlib.sha256(selected_profile_bytes).digest()
 scope = hashlib.sha256(b"diagnostic-original-scope-v1").digest()
@@ -95,8 +98,22 @@ system.block = CrucibleClosedScriptBlock()
 if mode.startswith("counter-"):
     frequencies = [1000000000, 0 if mode == "counter-invalid-table" else 500000000]
     system.counter = SystemCounter(freqs=frequencies)
+if mode in ("counter-copy-foreign", "counter-owner-foreign"):
+    system.counter_peer = SystemCounter(freqs=[1000000000, 500000000])
 root = Root(full_system=False, system=system)
 m5.instantiate()
+mutations = {
+    "counter-copy-original": 0, "counter-copy-foreign": 1,
+    "counter-owner-foreign": 2, "counter-callable-foreign": 3,
+    "counter-callable-empty": 4,
+}
+if mode in mutations:
+    other = (system.counter_peer if mode in ("counter-copy-foreign", "counter-owner-foreign")
+             else system.counter)
+    assert not system.counter.crucibleDiagnosticFrequencyMutation(99, other.getCCObject())
+    # This intentional native mutation precedes the inspected cut. It is not
+    # described as NoEffects, capture authority or unchanged Event-base state.
+    assert system.counter.crucibleDiagnosticFrequencyMutation(mutations[mode], other.getCCObject())
 if mode == "counter-pending":
     # This is the actual native hardware frequency-change path. Its tick-zero
     # event remains queued under the exclusive zero boundary below.
@@ -115,6 +132,13 @@ def counter_inventory():
     assert fields["counter.update_tick"] == "0"
     assert fields["counter.frequency"] == "1000000000"
     assert fields["counter.period"] == "1000"
+    type_matches = mode not in ("counter-callable-foreign", "counter-callable-empty")
+    owner_matches = mode not in (
+        "counter-copy-foreign", "counter-owner-foreign",
+        "counter-callable-foreign", "counter-callable-empty"
+    )
+    assert fields["counter.frequency_callback_type_matches"] == str(int(type_matches))
+    assert fields["counter.frequency_callback_owner_matches"] == str(int(owner_matches))
     assert fields["counter.listener_count"] == "0"
     assert fields["counter.frequency_table_entries"] == "3"
     assert int(fields["counter.frequency_table_capacity_entries"]) <= 2008
@@ -138,6 +162,10 @@ boundary = m5.simulateUntilBoundary(0, 1)
 assert boundary.processedEvents == 0
 before = m5.crucibleEventPosition()
 counter_before = counter_inventory() if mode.startswith("counter-") else None
+if mode == "counter-pending":
+    # The diagnostic helper must refuse a queued member without copying links.
+    assert not system.counter.crucibleDiagnosticFrequencyMutation(0, system.counter.getCCObject())
+    assert counter_before == counter_inventory()
 inspection = native_event.crucibleInspectDiagnosticOriginalOwnership()
 after = m5.crucibleEventPosition()
 # Retain the actual native refusal code and graph counts before an assertion
@@ -151,9 +179,13 @@ print(json.dumps({
 }, sort_keys=True, separators=(",", ":")), flush=True)
 assert before == after
 assert inspection[0] == (mode in (
-    "owned", "foreign-helper", "unarmed", "counter-owned", "counter-pending"
+    "owned", "foreign-helper", "unarmed", "counter-owned", "counter-pending",
+    "counter-copy-original"
 ))
 if counter_before is not None:
+    # Neither a completed nor a refused source walk permits another callback
+    # mutation through this diagnostic entry point.
+    assert not system.counter.crucibleDiagnosticFrequencyMutation(0, system.counter.getCCObject())
     assert counter_before == counter_inventory()
     assert m5.crucibleEventPosition() == after
     # Both the original event member and raw cached state survive observation.
@@ -169,12 +201,15 @@ if counter_before is not None:
         "restore_qualified": False,
     }, sort_keys=True, separators=(",", ":")), flush=True)
 
-if mode == "foreign-helper":
+if mode in ("foreign-helper", "counter-copy-original"):
     child = os.fork()
     if child == 0:
         # Invoke the actual public C++ helper directly, bypassing private
         # walk() so its intrinsic guard is the cause of this refusal.
-        native_event.crucibleDiagnosticDirectQueueOwnership()
+        if mode == "foreign-helper":
+            native_event.crucibleDiagnosticDirectQueueOwnership()
+        else:
+            system.counter.crucibleDiagnosticFrequencyMutation(0, system.counter.getCCObject())
         os._exit(124)
 
     deadline = time.monotonic() + 5
