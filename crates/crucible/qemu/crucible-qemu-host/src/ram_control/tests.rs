@@ -248,22 +248,89 @@ fn supervised_pager_controller_applies_new_setup_budget_during_stalled_reply() {
 
 #[test]
 fn supervised_pager_controller_outer_cap_is_independent_of_unlimited_quantum() {
+    use crucible_host_resources::host_supervision::{HostOperationState, HostSupervisionError};
+
     let (host, mut worker) = UnixStream::pair().unwrap();
+    let (ready, wait_ready) = std::sync::mpsc::sync_channel(1);
     let (release, wait_release) = std::sync::mpsc::channel();
     let pager = thread::spawn(move || {
-        read_ram_control(&mut worker).unwrap().unwrap();
+        ready.send(()).unwrap();
+        let request = read_ram_control(&mut worker);
+        // Keep the endpoint alive until the controller has actually refused.
+        // An original cap may expire before Hello, or between its frame writes.
         wait_release.recv().unwrap();
+        request
     });
-    let supervisor = HostOperationSupervisor::new(
-        HostOperationBudgets::default(),
-        Some(Duration::from_millis(50)),
-    )
-    .unwrap();
+    wait_ready.recv().unwrap();
+    let budgets = HostOperationBudgets::default();
+    assert!(
+        budgets.classes[HostOperationClass::Quantum as usize]
+            .total_timeout
+            .is_none()
+    );
+    assert!(
+        budgets.classes[HostOperationClass::Quantum as usize]
+            .progress_timeout
+            .is_none()
+    );
+    let supervisor =
+        HostOperationSupervisor::new(budgets, Some(Duration::from_millis(50))).unwrap();
+    let original = supervisor.outer_cap_binding().unwrap();
     let started = supervision::TransportDeadline::after(Duration::from_secs(1)).unwrap();
-    assert!(RamControlClient::connect_supervised(host, [4; 32], target(), supervisor).is_err());
-    assert!(started.remaining().is_ok());
+
+    let result = RamControlClient::connect_supervised(host, [4; 32], target(), supervisor.clone());
+    let bounded = started.remaining();
+    let terminal = supervisor.outer_cap_binding().unwrap();
     release.send(()).unwrap();
-    pager.join().unwrap();
+    let request = pager.join().unwrap();
+
+    assert!(
+        result.is_err(),
+        "controller unexpectedly completed: {result:?}"
+    );
+    assert!(
+        bounded.is_ok(),
+        "controller exceeded the original one-second bound: {bounded:?}"
+    );
+    let RamControlError::Io(failure) = result.unwrap_err() else {
+        panic!("outer expiry must preserve a typed supervision I/O cause");
+    };
+    assert_eq!(failure.kind(), std::io::ErrorKind::TimedOut);
+    let original_failure = failure
+        .get_ref()
+        .and_then(|source| source.downcast_ref::<HostSupervisionError>());
+    assert!(
+        matches!(
+            original_failure,
+            Some(HostSupervisionError::DeadlineExpired {
+                class: HostOperationClass::Setup,
+                ..
+            }) | Some(HostSupervisionError::Terminal {
+                state: HostOperationState::Expired
+            })
+        ),
+        "unexpected original refusal: {failure:?}"
+    );
+    assert_eq!(terminal.cap_id, original.cap_id);
+    assert_eq!(
+        terminal.original_monotonic_ns,
+        original.original_monotonic_ns
+    );
+    assert_eq!(terminal.revision, original.revision);
+    assert_eq!(terminal.allowance, Some(Duration::from_millis(50)));
+    assert_eq!(terminal.state, HostOperationState::Expired);
+
+    match request {
+        Ok(Some(frame)) => assert!(matches!(
+            frame.message,
+            RamControlMessage::Request(RamControlRequest::Hello)
+        )),
+        // These closures are valid only beside the proven unchanged cap expiry
+        // above. The peer never manufactures an admitted request or a reply.
+        Ok(None) => {}
+        Err(RamControlError::Io(first)) if first.kind() == std::io::ErrorKind::UnexpectedEof => {}
+        unexpected => panic!("unexpected peer frame outcome: {unexpected:?}"),
+    }
 }
 
 #[test]

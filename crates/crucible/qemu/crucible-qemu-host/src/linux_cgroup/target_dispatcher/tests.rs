@@ -694,7 +694,7 @@ fn failed_worker_startup_keeps_independent_original_post_after_physical_close()
     let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)?;
     let original = supervisor.begin(HostOperationClass::Preparation)?;
     let initial = original.status()?;
-    let (published, ready) = std::sync::mpsc::sync_channel(0);
+    let (published, ready) = std::sync::mpsc::sync_channel(1);
     let worker_state = Arc::clone(&state);
     let worker = thread::spawn(move || {
         // The actual worker records a genuine Vec capacity refusal, not a
@@ -702,7 +702,15 @@ fn failed_worker_startup_keeps_independent_original_post_after_physical_close()
         run(worker_state, usize::MAX);
         published.send(()).unwrap();
     });
-    ready.recv_timeout(original.wait_slice()?)?;
+    // A polling slice is not the Preparation's complete allowance. Observe
+    // this same worker once per slice, retaining its unchanged Original.
+    loop {
+        match ready.recv_timeout(original.wait_slice()?) {
+            Ok(()) => break,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(first) => return Err(first.into()),
+        }
+    }
     let mut dispatcher = TargetDispatcher {
         purpose: None,
         capacity: 1,

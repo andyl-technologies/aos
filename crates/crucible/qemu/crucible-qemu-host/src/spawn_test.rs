@@ -991,13 +991,19 @@ fn guarded_probe_bounds_a_flooding_output_stream() -> Result<(), Box<dyn Error>>
     )?;
     let error = fixture.run(1024, Duration::from_secs(2))?;
 
-    assert!(matches!(
-        error.source,
-        QemuSpawnError::GuardedQemuProbeOutputLimit {
-            maximum_bytes: 1024
-        }
-    ));
-    assert!(error.child.is_none());
+    assert!(
+        matches!(
+            &error.source,
+            QemuSpawnError::GuardedQemuProbeOutputLimit {
+                maximum_bytes: 1024
+            }
+        ),
+        "guarded flooding probe returned a different error: {error:?}"
+    );
+    assert!(
+        error.child.is_none(),
+        "flooding helper was not reaped: {error:?}"
+    );
     Ok(())
 }
 
