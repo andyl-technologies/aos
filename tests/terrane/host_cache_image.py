@@ -29,6 +29,8 @@ UNIT_PREFIXES = ("host_cache::owner::", "host_cache::recovery_inspection::",
 UNIT_PROFILE = {"opt_level": "s", "debuginfo": 0, "debug_assertions": True,
                 "overflow_checks": True, "test": True}
 UNIT_TESTS = (
+    'host_cache::owner::publication::eviction::activity::tests::verified_read_order_keeps_first_promotion_separate_from_later_hits',
+    'host_cache::owner::publication::eviction::activity::tests::concurrent_verified_reads_share_one_order_without_losing_first_hits',
     'host_cache::owner::publication::residence::view::tests::close_refuses_new_reads_until_started_backing_is_dropped',
     'host_cache::owner::publication::residence::view::tests::concurrent_close_does_not_report_quiescence_during_backing_destruction',
     'host_cache::owner::consumer::sweep::tests::delayed_sweep_uses_original_expiry_and_never_restarts_grace',

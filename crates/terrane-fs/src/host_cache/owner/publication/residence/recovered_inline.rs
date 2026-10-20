@@ -330,6 +330,7 @@ pub(super) fn select(
         }
         let span = claim_span(owner, job.body.claim(), identity, row)?;
         let source = Source {
+            activity: executor.body_read_activity(owner, &job.body)?,
             origin: Origin::RecoveredInline(Arc::clone(resource)),
             body: Arc::clone(&job.body),
             span,

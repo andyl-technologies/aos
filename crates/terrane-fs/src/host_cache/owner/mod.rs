@@ -47,15 +47,16 @@ pub use consumer::{NativeConsumerLease, NativeLeaseAccounting};
 pub use policy_stall_fixture::NativePolicyStall;
 pub use preparation::NativeCachePreparation;
 pub use publication::{
-    NativeCacheHandoffError, NativeCacheHandoffReport, NativeInlinePublication,
-    NativeManifestPublication, NativeProducerReadClosure, NativeResidentChunkSource,
-    NativeSourceCleanupReport,
+    NativeCacheEvictionReport, NativeCacheHandoffError, NativeCacheHandoffReport,
+    NativeInlinePublication, NativeManifestPublication, NativeProducerReadClosure,
+    NativeResidentChunkSource, NativeSourceCleanupReport,
 };
 pub use recovery::CompletedRecovery;
 pub use resume_error::NativeResumeError;
 pub(crate) use retention::{
-    AcceptedRecoveryManifestEffect, PublisherCleanupTurn, PublisherResumeTurn,
-    PublisherRunningTurn, RecoveryManifestBodyFailure, RecoveryManifestBodyRetention,
-    RecoveryManifestEffect, RecoveryManifestEffectFailure, RecoveryRetainedManifest,
+    AcceptedRecoveryManifestEffect, PublisherCacheRetirementTurn, PublisherCleanupTurn,
+    PublisherResumeTurn, PublisherRunningTurn, RecoveryManifestBodyFailure,
+    RecoveryManifestBodyRetention, RecoveryManifestEffect, RecoveryManifestEffectFailure,
+    RecoveryRetainedManifest,
 };
 pub use retention::{NativeIndexRepairReport, NativeMetadataOwner, RetainedManifest};

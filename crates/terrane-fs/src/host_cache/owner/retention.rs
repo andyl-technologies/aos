@@ -36,11 +36,14 @@ use terrane::{
 use terrane_core::identity::{Identity, IdentityKind};
 use tokio::sync::oneshot;
 
+mod cache_metadata;
 mod executor;
 mod manifest;
 mod recovery_manifest;
 pub(super) use executor::NativeOwnerExecutor;
-pub(crate) use executor::{PublisherCleanupTurn, PublisherResumeTurn, PublisherRunningTurn};
+pub(crate) use executor::{
+    PublisherCacheRetirementTurn, PublisherCleanupTurn, PublisherResumeTurn, PublisherRunningTurn,
+};
 pub(crate) use recovery_manifest::{
     AcceptedRecoveryManifestEffect, RecoveryManifestBackingRetention, RecoveryManifestBodyFailure,
     RecoveryManifestBodyRetention, RecoveryManifestEffect, RecoveryManifestEffectFailure,
@@ -53,8 +56,9 @@ pub(crate) use recovery_manifest::{
 /// actual recovery and acknowledged publisher Resume. Funded inline and manifest
 /// publication, coordinated standalone transfer and bounded retained-range reads
 /// use the same physical queue. Durable consumer leases use bounded immutable
-/// read views, renewal, release grace and periodic expiry. Eviction and full
-/// tier serving readiness remain separate unsupported commands.
+/// read views, renewal, release grace and periodic expiry. Cache maintenance
+/// coordinates original cached-body retirement and restoration; full tier
+/// serving readiness remains separate.
 /// Cold records remain untrusted candidates until recovery reconciles
 /// them. Dropping an awaiting request does not cancel physical execution.
 pub struct NativeMetadataOwner {
@@ -69,6 +73,11 @@ pub struct NativeMetadataOwner {
 
 /// Transfers complete command ownership to the retained physical executor.
 pub(super) enum Command {
+    /// Selects and retires original cached allocations using measured project pressure.
+    EvictCache {
+        incoming: u64,
+        response: oneshot::Sender<io::Result<super::NativeCacheEvictionReport>>,
+    },
     /// Transfers an owned consumer lifecycle operation to the physical worker.
     Consumer(super::consumer::ConsumerCommand),
     /// Holds actual embedded policy only in explicitly enabled native fixtures.
@@ -258,6 +267,7 @@ impl NativeMetadataOwner {
             preparation.config.queued_commands,
         ));
         let worker_reads = Arc::clone(&consumer_reads);
+        let queue_capacity = preparation.config.queued_commands;
         let (commands, receive) = mpsc::sync_channel(preparation.config.queued_commands);
         let (ready, startup) = mpsc::sync_channel(1);
         let worker = std::thread::Builder::new()
@@ -284,18 +294,66 @@ impl NativeMetadataOwner {
                 if ready.send(Ok(())).is_err() {
                     return;
                 }
+                let mut maintenance: Option<(super::publication::eviction::DueRetirements, usize)> =
+                    None;
                 loop {
-                    let command = match receive.recv_timeout(std::time::Duration::from_secs(1)) {
-                        Ok(command) => command,
-                        Err(mpsc::RecvTimeoutError::Timeout) => {
-                            let _ =
-                                runtime.block_on(super::consumer::sweep_background(&mut executor));
+                    if maintenance.is_none()
+                        && let Ok(due) = super::publication::eviction::due_retirements(&executor)
+                        && !due.is_empty()
+                    {
+                        maintenance = Some((due, queue_capacity));
+                    }
+                    let command = if let Some((_, remaining)) = maintenance.as_mut() {
+                        // Every command accepted before this due cut is among
+                        // the first queue_capacity FIFO messages. Process that
+                        // bounded batch before deleting: an early pin/read must
+                        // get its real restoration turn even under queue delay.
+                        if *remaining == 0 {
+                            if let Some((due, _)) = maintenance.take() {
+                                let _ = runtime.block_on(super::publication::eviction::finish_due(
+                                    &mut executor,
+                                    due,
+                                ));
+                            }
                             continue;
                         }
-                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                        match receive.try_recv() {
+                            Ok(command) => {
+                                *remaining -= 1;
+                                command
+                            }
+                            Err(mpsc::TryRecvError::Empty) => {
+                                if let Some((due, _)) = maintenance.take() {
+                                    let _ =
+                                        runtime.block_on(super::publication::eviction::finish_due(
+                                            &mut executor,
+                                            due,
+                                        ));
+                                }
+                                continue;
+                            }
+                            Err(mpsc::TryRecvError::Disconnected) => break,
+                        }
+                    } else {
+                        match receive.recv_timeout(std::time::Duration::from_secs(1)) {
+                            Ok(command) => command,
+                            Err(mpsc::RecvTimeoutError::Timeout) => {
+                                let _ = runtime
+                                    .block_on(super::consumer::sweep_background(&mut executor));
+                                continue;
+                            }
+                            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                        }
                     };
                     let _ = runtime.block_on(super::consumer::sweep_background(&mut executor));
                     match command {
+                        Command::EvictCache { incoming, response } => {
+                            let result = runtime.block_on(super::publication::eviction::run(
+                                &mut executor,
+                                incoming,
+                            ));
+                            let _ = response.send(result);
+                        }
                         Command::Consumer(command) => {
                             runtime.block_on(super::consumer::execute(&mut executor, command));
                         }

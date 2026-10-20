@@ -183,11 +183,21 @@ fn check_parts(
         hash_slot,
     )?;
 
+    // Each complete publication can reference every current residence. Native
+    // eviction temporarily holds source, reference and shared-chunk hash sets;
+    // the current census overlaps retained pending-transition custody.
+    add(
+        jobs.checked_mul(records).ok_or_else(overflow)?,
+        3 * hash_slot,
+    )?;
+
     // Fixed layout depth: two members, three directory-progress entries and
     // their cloned chains. Names are generated (32hex pack/token, 64hex hash),
     // never copied from a caller path. Descriptor/job headers are not payloads.
     let physical = size_of::<AdmissionJob>()
         + size_of::<super::super::publication::PublicationJob>()
+        + super::super::publication::eviction::activity_storage_bytes()
+        + super::super::publication::eviction::entry_storage_bytes()
         + super::super::publication::retirement_observation_bytes()
         + size_of::<super::super::publication::RecoveredInlineJob>()
         + size_of::<super::super::consumer::ConsumerJob>()

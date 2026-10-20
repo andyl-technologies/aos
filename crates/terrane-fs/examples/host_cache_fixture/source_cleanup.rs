@@ -28,6 +28,8 @@ use terrane_fs::{
 };
 
 const INLINE: &[u8] = b"original retired inline cleanup source";
+#[path = "source_cleanup/eviction.rs"]
+mod eviction;
 #[path = "source_cleanup/handoff.rs"]
 mod handoff;
 

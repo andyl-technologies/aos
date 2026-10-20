@@ -471,6 +471,7 @@ pub(in crate::host_cache::owner) async fn run(
     };
     let residences = crate::host_cache::NativeResidencePlan::new(&layout, retained.claim(), limit)?;
     for identity in residences.identities()? {
+        super::eviction::restore_for(executor, &identity).await?;
         super::residence::prepare_recovered_inline(executor, &identity).await?;
     }
     let custody = Arc::clone(executor.custody());

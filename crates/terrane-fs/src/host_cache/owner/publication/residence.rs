@@ -109,6 +109,7 @@ impl NativeResidentChunkSource {
         }
         check_native(source)?;
         self.view.check_open()?;
+        source.activity.record()?;
         Ok(plaintext)
     }
 
@@ -188,6 +189,7 @@ impl NativeMetadataOwner {
 struct Source {
     origin: Origin,
     body: Arc<PeerPublishedObject<HostDomainLocation>>,
+    activity: Arc<super::eviction::ReadActivity>,
     span: NativeChunkSpan,
     row: ResidenceRecord,
     generation: u64,
@@ -210,6 +212,7 @@ pub(in crate::host_cache::owner) async fn retain(
     executor: &mut NativeOwnerExecutor,
     identity: Identity,
 ) -> io::Result<NativeResidentChunkSource> {
+    super::eviction::restore_for(executor, &identity).await?;
     let source = prepare(executor, identity).await?;
     executor.register_producer_read(&source)?;
     Ok(source)
@@ -413,6 +416,7 @@ fn select_locked(
                 .ok_or_else(|| invalid("resident body absent"))?,
         );
         return Ok(Source {
+            activity: executor.body_read_activity(owner, &body)?,
             origin: Origin::Publication(Arc::clone(resource)),
             body,
             span,

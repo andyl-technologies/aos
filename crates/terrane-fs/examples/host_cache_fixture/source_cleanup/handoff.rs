@@ -168,7 +168,8 @@ pub(super) fn run(
     control("finish")?;
     emit(
         "PASS actual cache handoff releases producer and closed-source funding, retains reconstruction metadata, and grants fresh consumer reads after durable grace; no Ready",
-    )
+    )?;
+    super::eviction::run(owner, runtime, inputs, consumer, &fresh, expected)
 }
 
 fn refuse_full_queue(

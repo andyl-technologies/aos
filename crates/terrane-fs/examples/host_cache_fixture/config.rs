@@ -121,6 +121,7 @@ impl Inputs {
             state: STATE,
             inventory_entries: 128,
             queued_commands: 4,
+            retirement_interval: Duration::from_secs(30),
             metadata_sync_hold_bytes: HOLD,
             index_repair: None,
         })

@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import pathlib
 import re
 import signal
@@ -187,11 +188,10 @@ def run(driver, publisher, uuid):
                                    for name in ["pins", "leases"] for row in final_policy.get(name, [])),
                        "cache handoff lost native ownership or misreported policy holds as physical usage")
         print("PASS independent helper verifies actual cache handoff, expired producer grace and retained live consumers", flush=True)
-        output, _ = process.communicate(b"finish\n", timeout=15)
-        print(output.decode(), end="", flush=True)
-        driver.require(process.returncode == 0 and output.decode().splitlines() == [
-            "PASS actual cache handoff releases producer and closed-source funding, retains reconstruction metadata, and grants fresh consumer reads after durable grace; no Ready"
-        ], "cache handoff did not reach original native completion")
+        process.stdin.write(b"finish\n")
+        process.stdin.flush()
+        lines.until("PASS actual cache handoff releases producer and closed-source funding, retains reconstruction metadata, and grants fresh consumer reads after durable grace; no Ready", timeout=15)
+        run_eviction(driver, case, process, lines, snapshot)
     except BaseException:
         # Lines.until may observe process exit before draining the last pipe
         # bytes. Keep the original native refusal and bounded actual state;
@@ -216,3 +216,136 @@ def run(driver, publisher, uuid):
         if process.poll() is None:
             process.kill()
             process.wait(timeout=5)
+
+
+def run_eviction(driver, case, process, lines, snapshot):
+    """Observes actual original-body retirement while its real owner stays alive."""
+    def control(command):
+        process.stdin.write((command + "\n").encode())
+        process.stdin.flush()
+
+    def pending_measurement(phase):
+        values = re.findall(r"^CACHE_EVICTION_PENDING phase=" + phase
+                            + r" charged_reserved_bytes=(\d+) future_hold_bytes=(\d+)$",
+                            lines.bytes.decode(), re.M)
+        driver.require(len(values) == 1, "missing unique actual pending cache measurement")
+        charge, future = map(int, values[0])
+        state = tomllib.loads(snapshot.read_text())
+        driver.require(quota(driver, case) == charge
+                       and future == sum(row["bytes"] for row in state["reservations"]),
+                       "pending cache report differs from real helper or durable holds")
+
+    def retirement_wait(original):
+        leases = [tomllib.loads(path.read_text()) for path in
+                  (driver.root(case) / "state/publication").glob("retirement-*.toml")]
+        deadlines = [lease["deadline_unix_ms"] for lease in leases
+                     if lease["device"] == original.st_dev and lease["inode"] == original.st_ino
+                     and lease["domain"] == driver.domain(case)]
+        driver.require(len(deadlines) == 1, "inline retirement lacks its original native deadline")
+        wait = deadlines[0] / 1000 - time.time() + 3
+        driver.require(wait <= 34, "inline native retirement exceeds configured publisher bound")
+        if wait > 0:
+            time.sleep(wait)
+
+    control("evict")
+    lines.until("READY native eviction controls retain extended independent consumers", timeout=15)
+    targets = re.findall(r"^CACHE_EVICTION_TARGET hash=([0-9a-f]{64})$", lines.bytes.decode(), re.M)
+    driver.require(len(targets) == 1, "missing actual inline eviction identity")
+    digest = targets[0]
+    root = driver.root(case)
+    canonical = root / "sealed" / digest[:2] / digest
+    pending = root / "pending-delete" / digest
+    all_sealed = files(root / "sealed")
+    metadata = files(root / "objects")
+    original_policy = snapshot.read_bytes()
+    with canonical.open("rb") as observer:
+        original = canonical.stat()
+        allocated = original.st_blocks * 512
+        original_bytes = observer.read()
+        driver.require(allocated > 0 and original_bytes,
+                       "eviction observer lacks actual original allocation")
+        control("retire")
+        lines.until("READY actual cached inline pending retirement with charge retained", timeout=15)
+        renamed = pending.stat()
+        driver.require(not canonical.exists()
+                       and (renamed.st_dev, renamed.st_ino) == (original.st_dev, original.st_ino)
+                       and renamed.st_nlink == 1 and pending.read_bytes() == original_bytes
+                       and snapshot.read_bytes() == original_policy,
+                       "cache retirement lost original inode or changed durable funding")
+        pending_measurement("initial")
+
+        control("repin")
+        lines.until("READY inline pin accepted before deadline while original physical owner is stalled", timeout=15)
+        retirement_wait(original)
+        driver.require(not canonical.exists() and pending.stat().st_ino == original.st_ino
+                       and snapshot.read_bytes() == original_policy,
+                       "queued inline pin was acknowledged or lost original pending custody while stalled")
+        control("release-stall")
+        lines.until("READY actual inline consumer pin restores canonical backing and reads with policy held", timeout=15)
+        restored = canonical.stat()
+        driver.require(not pending.exists()
+                       and (restored.st_dev, restored.st_ino) == (original.st_dev, original.st_ino)
+                       and files(root / "sealed") == all_sealed,
+                       "new pin did not restore the exact original canonical body")
+        control("release-pin")
+        lines.until("READY released inline pin prevents eviction through its durable grace", timeout=15)
+        grace = re.findall(r"^CACHE_EVICTION_PIN_GRACE expires=(\d+)$", lines.bytes.decode(), re.M)
+        driver.require(len(grace) == 1 and canonical.exists() and not pending.exists(),
+                       "released inline pin lost its actual canonical grace protection")
+        expiry = int(grace[0])
+        state = tomllib.loads(snapshot.read_text())
+        driver.require(any(row["hash"] == digest and row["expires"] == expiry
+                           and row["owner"].startswith("consumer-grace:") for row in state["pins"]),
+                       "inline release did not persist its original grace pin")
+        wait = expiry - time.time() + 3
+        driver.require(wait <= 34, "inline release grace exceeds configured native bound")
+        if wait > 0:
+            time.sleep(wait)
+        state = tomllib.loads(snapshot.read_text())
+        driver.require(not any(row["hash"] == digest for row in state["pins"]),
+                       "periodic sweep retained expired inline grace protection")
+
+        control("retire-after-grace")
+        lines.until("READY actual cached inline pending final removal after release grace", timeout=15)
+        pending_measurement("final")
+        driver.require(not canonical.exists() and pending.stat().st_ino == original.st_ino,
+                       "post-grace retirement did not retain its original pending inode")
+        retirement_wait(original)
+        driver.require(not canonical.exists() and not pending.exists()
+                       and not any(row["chunk"] == digest for row in tomllib.loads(snapshot.read_text())["residences"]),
+                       "idle owner failed actual final namespace and residence removal")
+        control("after-delete")
+        lines.until("READY actual cached inline final removal reconciled with original owner retained", timeout=15)
+        driver.run(["sync", "-f", root])
+        held = quota(driver, case)
+        stable_policy = snapshot.read_bytes()
+        observer.seek(0)
+        retained = os.fstat(observer.fileno())
+        driver.require(process.poll() is None and original_bytes == observer.read()
+                       and retained.st_nlink == 0
+                       and (retained.st_dev, retained.st_ino) == (original.st_dev, original.st_ino),
+                       "final cache retirement lost its independent open-inode observer")
+
+    # Only this final independent observer closes here. The physical owner and
+    # both unrelated consumer grants remain live throughout the real query.
+    driver.run(["sync", "-f", root])
+    after = quota(driver, case)
+    driver.require(after <= held - allocated and snapshot.read_bytes() == stable_policy,
+                   "cached body charge survived original physical closure or policy changed")
+    remaining = dict(all_sealed)
+    remaining.pop(str(canonical))
+    driver.require(files(root / "sealed") == remaining and files(root / "objects") == metadata,
+                   "inline retirement changed unrelated backing or reconstruction metadata")
+    print("PASS independent helper observes actual cached-body charge release only after the last original descriptor closes", flush=True)
+    control("measure-after-observer")
+    lines.until("READY independent consumers survive actual final cache retirement and descriptor closure", timeout=15)
+    values = re.findall(r"^CACHE_EVICTION_FINAL charged_reserved_bytes=(\d+) future_hold_bytes=(\d+)$", lines.bytes.decode(), re.M)
+    driver.require(len(values) == 1, "missing final native cache measurement")
+    charge, future = map(int, values[0])
+    driver.require(charge == quota(driver, case) and future == sum(row["bytes"] for row in tomllib.loads(snapshot.read_text())["reservations"]),
+                   "final native cache accounting differs from real project usage")
+    output, _ = process.communicate(b"done\n", timeout=15)
+    print(output.decode(), end="", flush=True)
+    driver.require(process.returncode == 0 and output.decode().splitlines() == [
+        "PASS actual S3 FIFO inline retirement restores for a new pin, preserves release grace, and finally removes original backing before measured quota release; independent consumers remain live; no Ready"
+    ], "native cache eviction did not complete with original live custody")

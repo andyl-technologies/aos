@@ -165,6 +165,82 @@ fn host_cache_eviction_counts_reservations_and_large_incoming_allocations() {
 }
 
 #[test]
+fn host_cache_external_quota_deficit_does_not_require_fictitious_reservations() {
+    let mut cache = cache();
+    insert(&mut cache, "resident", 30);
+
+    // Measured project overhead can require reclamation even while the cached
+    // body inventory alone lies below its low watermark.
+    assert!(cache.eviction_candidates(Duration::ZERO).is_empty());
+    assert_eq!(
+        cache.eviction_candidates_to_reclaim(25, Duration::ZERO),
+        ["resident"]
+    );
+    assert_eq!(cache.charged_bytes(), 30);
+    assert!(
+        cache
+            .eviction_candidates_to_reclaim(25, Duration::ZERO)
+            .is_empty()
+    );
+    cache.finish_retirement("resident").unwrap();
+    assert_eq!(cache.charged_bytes(), 0);
+}
+
+#[test]
+fn host_cache_external_deficit_preserves_pins_grace_and_main_second_chance() {
+    let mut cache = cache();
+    insert(&mut cache, "pinned", 20);
+    insert(&mut cache, "grace", 20);
+    insert(&mut cache, "cold", 20);
+    insert(&mut cache, "hot", 20);
+    cache.pin("pinned").unwrap();
+    cache.pin("grace").unwrap();
+    cache.release("grace", Duration::ZERO).unwrap();
+    cache.touch("hot");
+
+    assert_eq!(
+        cache.eviction_candidates_to_reclaim(u64::MAX, Duration::from_secs(4)),
+        ["cold", "hot"]
+    );
+    assert_eq!(cache.charged_bytes(), 80);
+    assert_eq!(
+        cache.eviction_candidates_to_reclaim(1, Duration::from_secs(5)),
+        ["grace"]
+    );
+    assert_eq!(cache.charged_bytes(), 80);
+    assert!(cache.finish_retirement("pinned").is_err());
+}
+
+#[test]
+fn host_cache_protected_queue_cannot_starve_the_other_eligible_queue() {
+    let mut probation_pinned = cache();
+    insert(&mut probation_pinned, "probation", 60);
+    insert(&mut probation_pinned, "main", 30);
+    probation_pinned.pin("probation").unwrap();
+    probation_pinned.touch("main");
+
+    assert_eq!(
+        probation_pinned.eviction_candidates(Duration::ZERO),
+        ["main"]
+    );
+    assert_eq!(probation_pinned.charged_bytes(), 90);
+    assert!(probation_pinned.finish_retirement("probation").is_err());
+
+    let mut main_pinned = cache();
+    insert(&mut main_pinned, "main", 82);
+    insert(&mut main_pinned, "probation", 8);
+    main_pinned.touch("main");
+    main_pinned.pin("main").unwrap();
+
+    assert_eq!(
+        main_pinned.eviction_candidates(Duration::ZERO),
+        ["probation"]
+    );
+    assert_eq!(main_pinned.charged_bytes(), 90);
+    assert!(main_pinned.finish_retirement("main").is_err());
+}
+
+#[test]
 fn host_cache_reassembly_never_keeps_multi_chunk_and_still_seals_inline() {
     use super::ReassemblyMode;
     use crate::host::publication::{PublicationClaim, PublicationRecipe};

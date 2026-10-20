@@ -7,6 +7,8 @@
 //! genuine completed recovery and the concrete physical owner's exclusive turn.
 
 #[cfg(feature = "tokio")]
+mod cache_lifecycle;
+#[cfg(feature = "tokio")]
 mod cleanup;
 #[cfg(feature = "tokio")]
 mod context;
@@ -24,6 +26,8 @@ mod running;
 #[cfg(feature = "tokio")]
 mod transfer;
 
+#[cfg(feature = "tokio")]
+pub(crate) use cache_lifecycle::{CacheBodyCompletion, PendingCacheBody};
 #[cfg(feature = "tokio")]
 pub(crate) use cleanup::AcknowledgedSourceRetirement;
 #[cfg(feature = "tokio")]

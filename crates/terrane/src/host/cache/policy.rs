@@ -243,8 +243,22 @@ impl CachePolicy {
             .config
             .low_watermark
             .min(self.config.capacity.saturating_sub(incoming));
+        self.select_victims(self.charged_bytes(), target, now)
+    }
+
+    /// Plans bounded retirement for an externally measured reclamation deficit.
+    ///
+    /// Native owners derive this deficit from complete kernel quota usage and
+    /// distinct future holds. Metadata, temporary files and open unlinked inodes
+    /// can make that usage larger than this reconstructible body inventory.
+    /// Selection keeps every allocation charged until actual retirement; its
+    /// sum is a plan and never evidence that kernel usage has fallen.
+    pub fn eviction_candidates_to_reclaim(&mut self, bytes: u64, now: Duration) -> Vec<String> {
+        self.select_victims(bytes, 0, now)
+    }
+
+    fn select_victims(&mut self, mut projected: u64, target: u64, now: Duration) -> Vec<String> {
         let mut victims = Vec::new();
-        let mut projected = self.charged_bytes();
         for _ in 0..self.config.scan_limit {
             if projected <= target {
                 break;
@@ -255,8 +269,21 @@ impl CachePolicy {
                 .filter(|entry| !entry.main && !entry.retiring)
                 .map(|entry| entry.bytes)
                 .sum();
-            let probationary = !self.probation.is_empty()
-                && (probation_size > self.config.probation_bytes || self.main.is_empty());
+            let reclaimable = |key: &String| {
+                self.entries.get(key).is_some_and(|entry| {
+                    !entry.retiring && entry.pins == 0 && now >= entry.protected_until
+                })
+            };
+            let probation_ready = self.probation.iter().any(reclaimable);
+            let main_ready = self.main.iter().any(reclaimable);
+            if !probation_ready && !main_ready {
+                break;
+            }
+            // Protected content stays charged, but a queue consisting solely
+            // of protected entries must not consume every visit while the
+            // other queue still contains an eligible allocation.
+            let probationary =
+                probation_ready && (probation_size > self.config.probation_bytes || !main_ready);
             let queue = if probationary {
                 &mut self.probation
             } else {

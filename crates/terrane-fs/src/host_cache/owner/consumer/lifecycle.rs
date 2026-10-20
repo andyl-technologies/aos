@@ -27,6 +27,7 @@ pub(in crate::host_cache::owner) async fn acquire(
     expires: u64,
 ) -> io::Result<NativeConsumerLease> {
     let deadline = Deadline::new(expires)?;
+    publication::eviction::restore_for(executor, &identity).await?;
     let running = executor.admission_context()?;
     running.check_current().map_err(io::Error::other)?;
     let source = Arc::new(publication::residence::prepare(executor, identity).await?);

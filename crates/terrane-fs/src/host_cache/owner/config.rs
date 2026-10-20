@@ -1,7 +1,7 @@
 //! Validates trusted native-owner settings before opening mutable resources.
 
 use crate::publisher_local::client::ClientConfig;
-use std::{io, os::unix::ffi::OsStrExt, path::PathBuf};
+use std::{io, os::unix::ffi::OsStrExt, path::PathBuf, time::Duration};
 use terrane::host::cache::{
     CachePolicy, HostDomainLocation, HostReadLimits, PolicyConfig, StateLimits,
 };
@@ -77,6 +77,13 @@ pub struct NativeCacheOwnerConfig {
     pub tier_charge_budget_bytes: u64,
     /// Finite eviction and future-capacity policy.
     pub policy: PolicyConfig,
+    /// Cache-side completion delay matching the trusted publisher configuration.
+    ///
+    /// The publisher independently enforces its durable retirement deadline.
+    /// A premature completion refusal requires recovery; this delay never
+    /// supplies final-removal authority. The interval is nonzero and at most
+    /// 300 seconds, separate from pin-release grace.
+    pub retirement_interval: Duration,
     /// Operator allocation budget for encoded reads.
     pub reads: HostReadLimits,
     /// Maximum durable policy snapshot size and record count.
@@ -176,6 +183,7 @@ impl NativeCacheOwnerConfig {
                 "native owner requires finite nonzero resource budgets",
             ));
         }
+        crate::publisher_io::NativeRetirementPolicy::new(self.retirement_interval)?;
         CachePolicy::new(self.policy)
             .map_err(|_| invalid("inconsistent native eviction policy"))?;
         if let Some(repair) = self.index_repair {
@@ -277,6 +285,7 @@ mod tests {
             },
             inventory_entries: 128,
             queued_commands: 4,
+            retirement_interval: Duration::from_secs(30),
             metadata_sync_hold_bytes: 16384,
             index_repair: None,
         }
@@ -308,6 +317,12 @@ mod tests {
         let mut config = configuration();
         config.queued_commands = 1025;
         assert!(config.validate().is_err());
+
+        for interval in [Duration::ZERO, Duration::from_secs(301)] {
+            let mut config = configuration();
+            config.retirement_interval = interval;
+            assert!(config.validate().is_err());
+        }
 
         let mut config = configuration();
         config.metadata_sync_hold_bytes = config.state.bytes as u64;

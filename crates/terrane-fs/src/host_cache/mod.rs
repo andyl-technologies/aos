@@ -27,18 +27,19 @@ pub use metadata::NativeHostMetadataReader;
 pub use owner::NativePolicyStall;
 #[cfg(feature = "tokio")]
 pub(crate) use owner::{
-    AcceptedRecoveryManifestEffect, PublisherCleanupTurn, PublisherResumeTurn,
-    PublisherRunningTurn, RecoveryManifestBodyFailure, RecoveryManifestBodyRetention,
-    RecoveryManifestEffect, RecoveryManifestEffectFailure, RecoveryRetainedManifest,
+    AcceptedRecoveryManifestEffect, PublisherCacheRetirementTurn, PublisherCleanupTurn,
+    PublisherResumeTurn, PublisherRunningTurn, RecoveryManifestBodyFailure,
+    RecoveryManifestBodyRetention, RecoveryManifestEffect, RecoveryManifestEffectFailure,
+    RecoveryRetainedManifest,
 };
 #[cfg(feature = "tokio")]
 pub use owner::{
-    CompletedRecovery, IndexRepairPolicy, NativeCacheHandoffError, NativeCacheHandoffReport,
-    NativeCacheOwnerConfig, NativeCachePreparation, NativeChunkAdmissionError, NativeConsumerLease,
-    NativeIndexRepairReport, NativeInlinePublication, NativeLeaseAccounting,
-    NativeManifestPublication, NativeMetadataAdmissionError, NativeMetadataOwner,
-    NativeProducerReadClosure, NativeResidentChunkSource, NativeResumeError,
-    NativeSourceCleanupReport, RetainedManifest,
+    CompletedRecovery, IndexRepairPolicy, NativeCacheEvictionReport, NativeCacheHandoffError,
+    NativeCacheHandoffReport, NativeCacheOwnerConfig, NativeCachePreparation,
+    NativeChunkAdmissionError, NativeConsumerLease, NativeIndexRepairReport,
+    NativeInlinePublication, NativeLeaseAccounting, NativeManifestPublication,
+    NativeMetadataAdmissionError, NativeMetadataOwner, NativeProducerReadClosure,
+    NativeResidentChunkSource, NativeResumeError, NativeSourceCleanupReport, RetainedManifest,
 };
 pub use quota::ProjectQuota;
 pub use reassembly::NativeReassemblyPlan;
@@ -189,6 +190,44 @@ impl<L: HostReadLocation> NativeHostLayout<L> {
         })?;
         let metadata = fstat(descriptor)?;
         Ok((metadata.st_dev, metadata.st_ino))
+    }
+
+    /// Opens a raw readonly canonical candidate under the retained sealed root.
+    ///
+    /// This grants no verification, pin, publication or serving authority. A
+    /// lifecycle caller must compare it with the original verified native inode.
+    ///
+    /// # Errors
+    /// Refuses replaced roots, invalid digest width, symlinks and native open errors.
+    #[cfg(feature = "tokio")]
+    pub(crate) fn open_sealed_canonical(
+        &self,
+        descriptor: &terrane_core::identity::Descriptor,
+    ) -> io::Result<File> {
+        self.recheck()?;
+        let sealed = self
+            .directories
+            .get("sealed")
+            .ok_or_else(|| io::Error::other("retained sealed directory absent"))?;
+        let hash: String = descriptor
+            .digest()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let prefix = hash
+            .get(..2)
+            .ok_or_else(|| io::Error::other("canonical digest is too short"))?;
+        let path = format!("{prefix}/{hash}");
+        use rustix::fs::{Mode, OFlags, ResolveFlags, openat2};
+        let file = File::from(openat2(
+            sealed,
+            path.as_str(),
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::empty(),
+            ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS,
+        )?);
+        self.recheck()?;
+        Ok(file)
     }
 
     /// Rechecks every retained directory against its current canonical name.

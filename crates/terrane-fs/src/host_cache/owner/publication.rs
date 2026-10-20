@@ -8,6 +8,7 @@
 //! future copy overlap. Its metadata allowance and durable pin remain retained.
 
 mod completion;
+pub(in crate::host_cache::owner) mod eviction;
 pub(super) mod handoff;
 mod io;
 mod manifest;
@@ -16,6 +17,7 @@ pub(super) mod residence;
 pub(super) mod retirement;
 mod state;
 
+pub use eviction::NativeCacheEvictionReport;
 pub use handoff::{NativeCacheHandoffError, NativeCacheHandoffReport};
 pub use manifest::NativeManifestPublication;
 pub(super) use manifest::run as run_manifest;

@@ -101,6 +101,18 @@ struct Grace {
 }
 
 impl CachedPublication {
+    /// Borrows actual reconstruction custody through dependent sealed retirement.
+    pub(super) fn reconstruction(&self) -> Option<&Arc<RetainedManifest>> {
+        self.metadata.as_ref()
+    }
+
+    /// Names only this actual retained manifest's reconstruction pin purpose.
+    pub(super) fn reconstruction_pin_owner(&self) -> Option<String> {
+        self.metadata
+            .as_ref()
+            .map(|metadata| format!("metadata:{}", super::state::hex(metadata.retention_id())))
+    }
+
     /// Checks retained native ownership against current synchronized policy.
     ///
     /// # Errors

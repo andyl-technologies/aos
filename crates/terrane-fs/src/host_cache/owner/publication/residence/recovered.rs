@@ -36,6 +36,7 @@ pub(super) fn select(
         let body = verified.body().retained().body_arc();
         let span = claim_span(owner, verified.claim(), identity, &row)?;
         let source = Source {
+            activity: executor.body_read_activity(owner, &body)?,
             origin: Origin::Recovery(RecoveredSource {
                 verified: Arc::clone(verified),
                 running,
