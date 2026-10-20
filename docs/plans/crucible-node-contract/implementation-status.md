@@ -12,62 +12,59 @@ specific stage; they are not cumulative coverage of the latest source.
 
 ## Shared native startup accounting checkpoint
 
-These results qualify functional commit `ae7d1d670e`. The separate formatting
-commit `dc16e3f531` reflows nine cursor call sites; the AOS formatter check passes
-for all 133 surviving owned Rust files.
+Commit `d96b7ff900` extends the shared decoding and layout work in
+`ae7d1d670e` and its separate cursor formatting in `dc16e3f531`. Native ownership,
+currentness and admission remain upper-owned; portable numeric facts confer no
+authority, and the selected Fresh15 child route remains pending.
 
-Host native startup decoding and invocation geometry now use shared portable
-DATA definitions available to the worker. The selected Fresh15 child route
-remains pending. Genuine upper suppliers provide sizes for
-private native, issuer, Prepare, report and fresh-publication owners. Native
-objects and admission remain upper-owned; numeric layout facts confer no
-authority. Existing fallible queries retain their original evaluation positions.
-New adapter and result headers are charged at their defining construction sites.
+Shared portable DATA now covers projected-feed decoding, acknowledgement and
+report-query accounting, initial/private bootstrap shapes, schema generation,
+metadata population and Admit normalization. The actual host observers retain
+original field walks, capacity observations, seals and guards. Shared bodies and
+source expansions preserve fallible-query positions, error order and independent
+owner sums. Saved original algorithms remain independent test oracles.
 
-The ordered field cursor has one implementation and the existing private callers
-use its fallible `next_value` method. Invocation purposes retain their complete
-inline restoration payload through an optional record. Canonical wire spelling,
-public debug spelling, copy behavior and ordered decoding remain covered by
-controls. Generic decoder accounting preserves its distinct raw-input and final
-owner bounds. Saved original algorithms remain independent test oracles.
+The ordered field cursor keeps one fallible `next_value` implementation. Invocation
+purposes retain their complete inline restoration payload through an optional
+record. Wire/debug spelling, copy behavior and ordered decoding remain covered.
+Generic decoder accounting keeps distinct raw-input and final-owner bounds;
+genuine upper suppliers provide private native, issuer, Prepare, report and
+fresh-publication layouts. New adapter and result headers are charged at their
+defining construction sites.
 
-The thirteen-crate all-feature/all-target check and six registered architecture
-gates pass. The full default Engine suite passes 2,025 tests with 33 existing
-ignores; Daemon passes 1,823 with 163 existing ignores; Transport passes 1,703 with
-15 existing ignores; DATA passes 54 with no
-ignores. All have zero failures and no filtering. The Engine run uses the actual
-rebuilt packet-provider executable. An initial run without its required test
-environment failed five setup cases before the corrected run passed.
+The thirteen-crate all-feature/all-target check passes for the captured source
+before the later test-only expected-composition correction. All six registered
+architecture gates pass. Corrected full default Transport passes 1,721 tests with
+15 existing ignores; Engine passes 2,025 with 33 existing ignores using the actual
+rebuilt provider. Both have zero failures and no filtering. Default DATA and
+worker controls pass 59 library, one unit and three stdio tests.
 
-The full raw-JSON Engine, Transport and DATA suites separately pass the same
-2,025, 1,703 and 54 tests, with zero failures, no filtering and the same existing
-ignored populations. Their compiler artifacts select `serde_json/raw_value`;
-the default Engine/Transport/DATA runs select default/std JSON.
+The full Daemon suite passes 1,823 tests with 163 existing ignores and no
+filtering. Its JSON dependency enables `raw_value`; default Engine and Transport
+runs select default/std JSON.
 
-Default and raw-JSON worker variants each pass 54 DATA, one worker unit and three
-stdio tests. Both unchanged pre-extraction stdio executables pass their three
-controls against each new worker variant. The ordinary worker package also
-passes its strict Clippy step, nine manifest-emitter tests, one unit test and
-three stdio tests. Independent artifact inspection verifies all 134 owned source
-states and complete source/vendor archive joins. Its combined launcher/worker
-runtime graph remains four store paths, 477 tree entries and 290 ELF records.
-These are artifact checks, not installed admission or native execution.
+Full raw-JSON Engine, Transport and DATA suites separately pass 2,025, 1,721
+and 59 tests, with zero failures, no filtering and the same existing ignores.
+Raw-JSON worker controls pass 59 DATA, one unit and three stdio tests. Both
+unchanged pre-extraction stdio executables pass all three controls against each
+new worker variant.
+
+The ordinary worker package passes strict all-target Clippy, nine emitter tests,
+one unit test and three stdio controls. Independent inspection verifies captured
+source, vendor and installation-record joins. The measured launcher/worker
+runtime graph remains four store paths, 477 entries and 290 ELF records. This is
+artifact verification, not installed admission or native execution.
 
 The application test-target gate passes compilation only: 180 fresh executable
-records across 58 full Cargo package IDs and manifests, including 71 integration
-targets across 15 packages. Final target compilation takes 9 minutes 16 seconds;
-prerequisites are separate. The independently audited capture contains 10,794
-files, 1,988 directories and 82 manifests. Its difference from the preceding
-capture is exactly the 134 owned roles: 95 modified files, 38 additions and one
-deletion. Manifests, lockfile, vendor inputs and protected files are unchanged.
-The gate executes no tests and produces no Crucible unit-test executable;
-Crucible CLI, Daemon, worker and QEMU host/plugin remain compiler-excluded.
+records across 58 full package IDs, including 71 integration targets. Final target
+compilation takes 10 minutes 14 seconds after separate prerequisites. Its audited
+capture differs from this checkpoint only by the later test-only
+expected-composition correction; production inputs match. It executes no targets
+and emits no Crucible unit-test executable; Crucible CLI, Daemon, worker and QEMU
+host/plugin remain compiler-excluded.
 
-The selected funded Fresh15 route still refuses readiness. Its new request
-edition and actual Source construction remain outstanding. Projected feed,
-acknowledgement, report-query and remaining literal-shape producers are separate
-follow-up work.
-It establishes no VM performance or complete RFC-0025 qualification.
+Request2, actual selected Source construction, Ready, complete RFC-0025
+qualification and VM performance measurements remain outstanding.
 
 ## Portable DATA and contained-worker checkpoint
 
