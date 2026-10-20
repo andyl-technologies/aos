@@ -315,23 +315,36 @@ impl ModeledPublisher {
     /// Runs one node read while a slot publication is open.
     ///
     /// After a completed RUN, QEMU settles the host's clamp advance. A read
-    /// that lands inside that write must wait for it instead of failing.
+    /// that lands inside that write must wait for it instead of failing. The
+    /// reader reports from inside the wait loop, so the write closes only
+    /// after the read has found it busy.
     fn read_during_clamp_settlement<T: Send>(
         &self,
         node: &mut QemuNode,
+        operation: &'static str,
         read: impl FnOnce(&mut QemuNode) -> Result<T, QemuNodeError> + Send,
     ) -> Result<T, Box<dyn Error>> {
         let slot = self.producer.node_slot(0)?;
         let open = slot.snapshot().publish_gen + 1;
         self.write_sequence(open)?;
+        let (busy, observed) = mpsc::channel();
 
         std::thread::scope(|scope| -> Result<T, Box<dyn Error>> {
-            let reader = scope.spawn(move || read(node));
-            std::thread::sleep(Duration::from_millis(50));
-            assert!(
-                !reader.is_finished(),
-                "a read during an open publication must wait for it"
-            );
+            let reader = scope.spawn(move || {
+                crate::node::boundary_observation::BUSY_OBSERVATION_FOR_TEST.set(Some(busy));
+                read(node)
+            });
+            // A read that does not wait never reports, and returns an error.
+            let reported = observed.recv_timeout(Duration::from_secs(5));
+            if reported.is_err() {
+                let result = reader.join().map_err(|_| "node reader panicked")?;
+                return Err(format!(
+                    "{operation} did not wait for the open publication: {:?}",
+                    result.err()
+                )
+                .into());
+            }
+            assert_eq!(reported?, operation);
 
             // Close the write, then settle the clamp at tick 100 as QEMU does.
             self.write_sequence(open + 1)?;
@@ -359,15 +372,26 @@ fn node_reads_after_a_completed_run_wait_for_the_clamp_settlement() -> Result<()
 
     // The guarded-replay sampler reads the instruction count right after its
     // advance; each other coherent single-slot read shares the same path.
-    let current = publisher.read_during_clamp_settlement(&mut node, QemuNode::current_icount)?;
+    let current = publisher.read_during_clamp_settlement(
+        &mut node,
+        "current_icount",
+        QemuNode::current_icount,
+    )?;
     assert_eq!(current, Icount { retired: 100 });
-    let idle = publisher.read_during_clamp_settlement(&mut node, QemuNode::idle_state)?;
+    let idle =
+        publisher.read_during_clamp_settlement(&mut node, "idle_state", QemuNode::idle_state)?;
     assert_eq!(idle.current_icount, Icount { retired: 100 });
-    let calibration =
-        publisher.read_during_clamp_settlement(&mut node, QemuNode::logical_time_calibration)?;
+    let calibration = publisher.read_during_clamp_settlement(
+        &mut node,
+        "logical-time calibration",
+        QemuNode::logical_time_calibration,
+    )?;
     assert_eq!(calibration.logical_icount, 100);
-    let witness =
-        publisher.read_during_clamp_settlement(&mut node, QemuNode::virtual_timer_fire_witness)?;
+    let witness = publisher.read_during_clamp_settlement(
+        &mut node,
+        "virtual-timer fire witness",
+        QemuNode::virtual_timer_fire_witness,
+    )?;
     assert_eq!(witness, None);
 
     node.shutdown_child()?;
