@@ -64,6 +64,137 @@ pub(super) struct Templates {
     members: [Member; 3],
 }
 
+/// Stores references to each real member field, with no whole-Member reference.
+struct MemberObservation<'a> {
+    stage: &'a Stage,
+    registration_row: &'a Option<registration_plan::Quote>,
+    registration: &'a registration_plan::Attempt,
+    template_row: &'a Option<OriginalNativeSourceTemplate18ConstructionData>,
+    declaration_row: &'a Option<(usize, usize)>,
+    bank_row: &'a Option<OriginalImport18CaptureBankConstructionData>,
+    birth_row: &'a Option<NativeImport18BirthConstructionQuote>,
+    output: &'a OriginalNativeSourceTemplate18Attempt,
+}
+
+impl<'a> MemberObservation<'a> {
+    fn from_member_data(member: &'a Member) -> Self {
+        let Member {
+            stage,
+            registration_row,
+            registration,
+            template_row,
+            declaration_row,
+            bank_row,
+            birth_row,
+            output,
+        } = member;
+        Self {
+            stage,
+            registration_row,
+            registration,
+            template_row,
+            declaration_row,
+            bank_row,
+            birth_row,
+            output,
+        }
+    }
+}
+
+/// Observes all three actual members and keeps every inline flag explicit.
+///
+/// This ordinary shared view is not a selected mutable-state split API.
+pub(super) struct TemplatesObservation<'a> {
+    started: &'a bool,
+    complete: &'a bool,
+    failed: &'a bool,
+    members: [MemberObservation<'a>; 3],
+}
+
+impl MemberObservation<'_> {
+    fn charge_retained_data(&self, counter: &mut Counter) -> Result<(), RuntimeError> {
+        let Self {
+            stage: _,
+            registration_row: _,
+            registration,
+            template_row: _,
+            declaration_row: _,
+            bank_row: _,
+            birth_row: _,
+            output,
+        } = *self;
+        registration.charge_retained_data(counter)?;
+        counter
+            .add(output.retained_requested_storage_data(counter.remaining())?)
+            .map_err(|_| RuntimeError::ResourceLimit)?;
+        Ok(())
+    }
+}
+
+impl TemplatesObservation<'_> {
+    pub(super) fn charge_retained_data(&self, counter: &mut Counter) -> Result<(), RuntimeError> {
+        let Self {
+            started: _,
+            complete: _,
+            failed: _,
+            members,
+        } = self;
+        // The owner is exactly this fixed three-slot array, not a policy limit.
+        let [first, second, third] = members;
+        first.charge_retained_data(counter)?;
+        second.charge_retained_data(counter)?;
+        third.charge_retained_data(counter)
+    }
+}
+
+// New literal/helper windows only. Child observers keep their defining rows;
+// no actual Source, registration backing or future mutable attempt is invented.
+const fn member_field_references_data() -> usize {
+    size_of::<&Stage>()
+        + size_of::<&Option<registration_plan::Quote>>()
+        + size_of::<&registration_plan::Attempt>()
+        + size_of::<&Option<OriginalNativeSourceTemplate18ConstructionData>>()
+        + size_of::<&Option<(usize, usize)>>()
+        + size_of::<&Option<OriginalImport18CaptureBankConstructionData>>()
+        + size_of::<&Option<NativeImport18BirthConstructionQuote>>()
+        + size_of::<&OriginalNativeSourceTemplate18Attempt>()
+}
+
+const MEMBER_PROJECTION_CONTROLS: usize = size_of::<&Member>() // from_member_data input
+    + member_field_references_data() // exhaustive reference bindings
+    + member_field_references_data() // actual field operands
+    + size_of::<MemberObservation<'static>>() // literal initializer
+    + size_of::<MemberObservation<'static>>(); // helper return
+
+const TEMPLATE_PROJECTION_CONTROLS: usize = size_of::<&Templates>() // observation_data receiver
+    + size_of::<&bool>() * 3 // actual flag bindings
+    + size_of::<&[Member; 3]>() // members field binding
+    + size_of::<&Member>() * 3 // fixed-three destructure bindings
+    + MEMBER_PROJECTION_CONTROLS * 3 // three actual member constructions
+    + size_of::<MemberObservation<'static>>() * 3 // array owned element inputs
+    + size_of::<[MemberObservation<'static>; 3]>() // array initializer
+    + size_of::<[MemberObservation<'static>; 3]>() // struct owned field operand
+    + size_of::<&bool>() * 3 // flag field operands
+    + size_of::<TemplatesObservation<'static>>() // literal initializer
+    + size_of::<TemplatesObservation<'static>>() // observation_data return
+    + size_of::<TemplatesObservation<'static>>() // ordinary wrapper temporary
+    + size_of::<&TemplatesObservation<'static>>() // new charge receiver
+    + size_of::<&mut Counter>() // new charge helper input
+    + size_of::<&[MemberObservation<'static>; 3]>() // members view binding
+    + size_of::<&MemberObservation<'static>>() * 3 // fixed-three shared bindings
+    + MEMBER_CHARGE_CONTROLS * 3 // actual first/second/third method entries
+    + super::host_setup17::runtime_try_controls_data::<(), ()>() * 2 // first/second ?
+    + size_of::<Result<(), RuntimeError>>() // view forwarding return
+    + size_of::<Result<(), RuntimeError>>(); // ordinary wrapper forwarding return
+
+const MEMBER_CHARGE_CONTROLS: usize = size_of::<&MemberObservation<'static>>() // actual helper receiver
+    + size_of::<&mut Counter>() // actual helper counter argument
+    + size_of::<&registration_plan::Attempt>() // copied actual registration reference
+    + size_of::<&OriginalNativeSourceTemplate18Attempt>() // copied actual output reference
+    + size_of::<()>() // member Ok constructor owned unit operand
+    + size_of::<Result<(), RuntimeError>>() // member Ok initializer
+    + size_of::<Result<(), RuntimeError>>(); // extra member-helper return
+
 impl Templates {
     pub(super) fn empty() -> Self {
         Self {
@@ -74,8 +205,38 @@ impl Templates {
         }
     }
 
+    /// Projects every actual flag/member for the ordinary shared census.
+    pub(super) fn observation_data(&self) -> TemplatesObservation<'_> {
+        let Self {
+            started,
+            complete,
+            failed,
+            members,
+        } = self;
+        let [first, second, third] = members;
+        TemplatesObservation {
+            started,
+            complete,
+            failed,
+            members: [
+                MemberObservation::from_member_data(first),
+                MemberObservation::from_member_data(second),
+                MemberObservation::from_member_data(third),
+            ],
+        }
+    }
+
     /// Counts every partial actual output, including failed declaration/banks.
     pub(super) fn charge_retained_data(&self, counter: &mut Counter) -> Result<(), RuntimeError> {
+        self.observation_data().charge_retained_data(counter)
+    }
+
+    #[cfg(test)]
+    /// Counts every partial actual output, including failed declaration/banks.
+    pub(super) fn charge_unprojected_retained_data(
+        &self,
+        counter: &mut Counter,
+    ) -> Result<(), RuntimeError> {
         // The enclosing Option<Prepared> already prices all inline rows/flags.
         for member in &self.members {
             member.registration.charge_retained_data(counter)?;
@@ -91,12 +252,11 @@ impl Templates {
     }
 
     pub(super) fn retained_counter_scratch_data() -> usize {
-        OriginalNativeSourceTemplate18Attempt::retained_counter_scratch_data()
+        TEMPLATE_PROJECTION_CONTROLS
+            + OriginalNativeSourceTemplate18Attempt::retained_counter_scratch_data()
             + registration_plan::Attempt::counter_scratch_data()
             + size_of::<&Self>()
             + size_of::<&mut Counter>()
-            + size_of::<std::slice::Iter<'static, Member>>()
-            + size_of::<&Member>()
             + size_of::<usize>()
             + size_of::<Result<usize, RuntimeError>>()
             + size_of::<Result<(), QualificationError>>()
@@ -415,4 +575,78 @@ pub(super) fn assert_actual_code_custody_data(owner: &PreparedCompleteRestoratio
             .all(|member| member.output.partial_data().is_none())
     );
     assert!(owner.authenticate_import18_template_scope_data().is_err());
+}
+
+/// Exercises real registration allocations and sticky failure without a Source.
+#[cfg(test)]
+pub(super) fn assert_projection_members_data(launches: &[PacketNative5SourceLaunch; 3]) {
+    let mut templates = Templates::empty();
+    templates.started = true;
+    templates.failed = true;
+    for (index, launch) in launches.iter().enumerate() {
+        let member = &mut templates.members[index];
+        member.stage = Stage::RegistrationPlan;
+        member.registration.begin_data().unwrap();
+        let row = registration_plan::Quote::for_launch_data(launch, index).unwrap();
+        member.registration_row = Some(row);
+        member
+            .registration
+            .retain_into_data(launch, index, &row, row.requested_storage_data())
+            .unwrap();
+        // Re-entry poisons the actual completed registration and keeps its banks.
+        assert!(member.registration.begin_data().is_err());
+        assert!(member.output.partial_data().is_none());
+    }
+
+    let observation = templates.observation_data();
+    assert!(std::ptr::eq(observation.started, &templates.started));
+    assert!(std::ptr::eq(observation.complete, &templates.complete));
+    assert!(std::ptr::eq(observation.failed, &templates.failed));
+    for (view, member) in observation.members.iter().zip(&templates.members) {
+        assert!(std::ptr::eq(view.stage, &member.stage));
+        assert!(std::ptr::eq(
+            view.registration_row,
+            &member.registration_row
+        ));
+        assert!(std::ptr::eq(view.registration, &member.registration));
+        assert!(std::ptr::eq(view.template_row, &member.template_row));
+        assert!(std::ptr::eq(view.declaration_row, &member.declaration_row));
+        assert!(std::ptr::eq(view.bank_row, &member.bank_row));
+        assert!(std::ptr::eq(view.birth_row, &member.birth_row));
+        assert!(std::ptr::eq(view.output, &member.output));
+    }
+
+    let mut expected = Counter::new(usize::MAX);
+    templates
+        .charge_unprojected_retained_data(&mut expected)
+        .unwrap();
+    let demand = expected.bytes();
+    assert!(demand > 0);
+    let mut first = Counter::new(usize::MAX);
+    templates.members[0]
+        .registration
+        .charge_retained_data(&mut first)
+        .unwrap();
+    let prefix = first.bytes();
+    assert!(prefix > 0 && prefix < demand);
+    for maximum in [0, prefix - 1, prefix, demand - 1, demand] {
+        let mut original = Counter::new(maximum);
+        let before = templates.charge_unprojected_retained_data(&mut original);
+        let mut projected = Counter::new(maximum);
+        let after = templates.charge_retained_data(&mut projected);
+        assert_eq!(before.is_ok(), after.is_ok());
+        assert_eq!(original.bytes(), projected.bytes());
+    }
+
+    let mut after_refusal = Counter::new(demand);
+    observation
+        .charge_retained_data(&mut after_refusal)
+        .unwrap();
+    assert_eq!(after_refusal.bytes(), demand);
+    assert!(templates.started && templates.failed && !templates.complete);
+    for member in &templates.members {
+        assert!(matches!(member.stage, Stage::RegistrationPlan));
+        assert!(member.registration_row.is_some());
+        assert!(member.output.partial_data().is_none());
+    }
 }
