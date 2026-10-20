@@ -40,6 +40,34 @@ def execute(argv, root, name, phase, deadline, row):
             command['stderr_identity'] = identity(stderr)
 
 
+def emit_failure(row):
+    """Expose bounded excerpts of the failing row before its build tree retires."""
+    for phase in ['compiler', 'model']:
+        command = row.get(phase)
+        if command is None:
+            continue
+        print('Last retained source control command: ' + json.dumps({
+            'name': row['name'], 'phase': phase, 'argv': command['argv'],
+            'returncode': command['returncode'], 'timed_out': command['timed_out'],
+            'deadline_seconds': command['deadline_seconds'],
+        }, sort_keys=True), file=sys.stderr, flush=True)
+        for channel in ['stdout', 'stderr']:
+            path = Path(command[channel])
+            print(channel + ': ' + json.dumps(command[channel + '_identity'],
+                  sort_keys=True), file=sys.stderr, flush=True)
+            # At most 16 KiB per stream, including both ends of long diagnostics.
+            with path.open('rb') as stream:
+                head = stream.read(8192)
+                size = command[channel + '_identity']['bytes']
+                stream.seek(max(len(head), size - 8192))
+                tail = stream.read(8192)
+            sys.stderr.buffer.write(head)
+            if size > 16384:
+                sys.stderr.buffer.write(b'\n[diagnostic middle omitted]\n')
+            sys.stderr.buffer.write(tail + b'\n')
+            sys.stderr.buffer.flush()
+
+
 def main():
     if sys.flags.optimize:
         raise RuntimeError('Optimized evidence execution refuses')
@@ -101,6 +129,12 @@ def main():
         report['completed'] = True
     except BaseException as error:
         report['failure'] = type(error).__name__ + ': ' + str(error)
+        if report['source_models']:
+            try:
+                emit_failure(report['source_models'][-1])
+            except (OSError, KeyError):
+                # Logging is best-effort; preserve the original check failure.
+                pass
         raise
     finally:
         (root / 'report.json').write_text(json.dumps(report, indent=2) + '\n')

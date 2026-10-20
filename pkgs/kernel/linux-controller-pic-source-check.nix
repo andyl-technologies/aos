@@ -37,31 +37,33 @@
   hostInclude = "${buildPackages.elfutils}/include:${buildPackages.openssl}/include:${buildPackages.zlib}/include";
   hostLibrary = "${buildPackages.elfutils}/lib:${buildPackages.openssl}/lib:${buildPackages.zlib}/lib";
   hostCompiler = "env C_INCLUDE_PATH=${hostInclude} LIBRARY_PATH=${hostLibrary} ${buildPackages.cc}/bin/cc";
-in
-  mkDerivation {
-    pname = "linux-controller-pic-source-check";
+  platformSupport = {
+    build = [
+      {
+        abi = ["gnu"];
+        cpu = ["x86_64"];
+        os = ["linux"];
+      }
+    ];
+    host = [
+      {
+        abi = ["gnu"];
+        cpu = ["x86_64"];
+        os = ["linux"];
+      }
+    ];
+    target = [];
+    role = "public-package";
+  };
+  sourceCheckBuildDeps = [linuxStage7Check gnumake bash coreutils patch perl python3 bc bison flex elfutils openssl zlib gcc-libs rsync];
+
+  # A successful ordinary dependency retains the full legacy checkpoint.
+  # PS-only FD changes cannot alter these inputs; shared fixture changes do.
+  legacyCheck = mkDerivation {
+    pname = "linux-controller-pic-legacy-source-check";
     version = linuxSource.version;
-    platformSupport = {
-      build = [
-        {
-          abi = ["gnu"];
-          cpu = ["x86_64"];
-          os = ["linux"];
-        }
-      ];
-      host = [
-        {
-          abi = ["gnu"];
-          cpu = ["x86_64"];
-          os = ["linux"];
-        }
-      ];
-      target = [];
-      role = "public-package";
-    };
-    # The existing two-ISA Stage7 check remains a required independent input.
-    # This additional package emits a check report, never an installed kernel.
-    buildDeps = [linuxStage7Check gnumake bash coreutils patch perl python3 bc bison flex elfutils openssl zlib gcc-libs rsync];
+    inherit platformSupport;
+    buildDeps = sourceCheckBuildDeps;
     runtimeDeps = [];
     hardeningDisable = ["all"];
     phases = [
@@ -149,12 +151,34 @@ in
           REPORT
         '';
       }
+    ];
+  };
+in
+  mkDerivation {
+    pname = "linux-controller-pic-source-check";
+    version = linuxSource.version;
+    inherit platformSupport;
+    # The existing two-ISA Stage7 check remains a required independent input.
+    # This additional package emits a check report, never an installed kernel.
+    buildDeps = [legacyCheck] ++ sourceCheckBuildDeps;
+    runtimeDeps = [];
+    hardeningDisable = ["all"];
+    phases = [
       {
         name = "check-fdtable";
         script = ''
+          # Successful legacy evidence is a required ordinary dependency.
+          mkdir -p "$out"
+          cp ${legacyCheck}/source-model-report.json "$out/source-model-report.json"
+          cp ${legacyCheck}/original-eoi-model-report.json "$out/original-eoi-model-report.json"
+          cp ${legacyCheck}/deferred-pit-model-report.json "$out/deferred-pit-model-report.json"
+          cp ${legacyCheck}/report "$out/report"
+
+          # Restore the shell environment formerly carried from the legacy phase.
+          export LD_LIBRARY_PATH="${buildPackages.gcc-libs}/lib:${hostLibrary}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
           # The preceding PIC checkpoint and every legacy control remain intact.
           # This independent raw tree consumes the complete PS source ancestry.
-          cd ..
           ${python3}/bin/python3 -I -B ${psFixtures}/check-disk.py "$PWD"
           mkdir fdtable-kernel
           tar xf ${linuxSource.src} --strip-components=1 -C fdtable-kernel
