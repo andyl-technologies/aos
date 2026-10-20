@@ -1622,7 +1622,11 @@ fn run_aos_package_json_with_env(
         .with_context(|| format!("parsing apm {action} JSON from stdout"))
 }
 
-fn configure_fixture_registry_signer(home: &Path, registry_name: &str, key_path: &Path) -> Result<()> {
+fn configure_fixture_registry_signer(
+    home: &Path,
+    registry_name: &str,
+    key_path: &Path,
+) -> Result<()> {
     let registry_dir = registry_dir(home, registry_name);
     let config_dir = home.join(".config/apm/registries.d");
     fs::create_dir_all(&config_dir)?;

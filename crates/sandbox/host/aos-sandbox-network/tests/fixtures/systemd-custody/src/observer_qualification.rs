@@ -998,35 +998,33 @@ impl AuthorityFixture {
             [49; 16],
         )?;
         let lease_bytes = encode_ownership_lease(&lease);
-        validate_authorization_artifacts(
-            &BrokerAuthorizationArtifactsV1 {
-                broker_plan_signature: signed(
-                    &plan_bytes,
-                    PortableMediaType::BrokerAuthorizationPlan,
-                    self.plan_scope,
-                    self.plan_signer.clone(),
-                    SignaturePurpose::BrokerAuthorization,
-                    &self.plan_descriptor,
-                    &self.plan_key,
-                    issued_wall_seconds,
-                    expires_wall_seconds,
-                )?,
-                broker_plan: plan_bytes,
-                ownership_lease_signature: signed(
-                    &lease_bytes,
-                    PortableMediaType::OwnershipLease,
-                    self.lease_scope,
-                    self.lease_signer.clone(),
-                    SignaturePurpose::OwnershipLease,
-                    &self.lease_descriptor,
-                    &self.lease_key,
-                    issued_wall_seconds,
-                    expires_wall_seconds,
-                )?,
-                ownership_lease: lease_bytes,
-                ..Default::default()
-            },
-        )
+        validate_authorization_artifacts(&BrokerAuthorizationArtifactsV1 {
+            broker_plan_signature: signed(
+                &plan_bytes,
+                PortableMediaType::BrokerAuthorizationPlan,
+                self.plan_scope,
+                self.plan_signer.clone(),
+                SignaturePurpose::BrokerAuthorization,
+                &self.plan_descriptor,
+                &self.plan_key,
+                issued_wall_seconds,
+                expires_wall_seconds,
+            )?,
+            broker_plan: plan_bytes,
+            ownership_lease_signature: signed(
+                &lease_bytes,
+                PortableMediaType::OwnershipLease,
+                self.lease_scope,
+                self.lease_signer.clone(),
+                SignaturePurpose::OwnershipLease,
+                &self.lease_descriptor,
+                &self.lease_key,
+                issued_wall_seconds,
+                expires_wall_seconds,
+            )?,
+            ownership_lease: lease_bytes,
+            ..Default::default()
+        })
         .context("validate qualification authorization artifacts")
     }
 }
