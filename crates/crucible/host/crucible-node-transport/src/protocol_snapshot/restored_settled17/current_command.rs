@@ -6,7 +6,7 @@ use crate::reference_packet::service::restored_input_reactive17::PacketRestoredI
 use crate::retained_metadata::MetadataObserver;
 use crate::{
     ProviderError,
-    protocol_snapshot::owned11::typed::{Fields, HistoricalType, Ledger, invalid, plain_string},
+    protocol_snapshot::owned11::typed::{Fields, Ledger, invalid, plain_string},
 };
 use crucible_node_format::{ContentRef, Id};
 

@@ -11,7 +11,6 @@
 
 use super::*;
 use crate::connection::{ReceivedBody, ReceivedFrame};
-use crate::retained_metadata::ObserveMetadata;
 use std::mem::size_of;
 
 #[path = "input_upload/prospective.rs"]

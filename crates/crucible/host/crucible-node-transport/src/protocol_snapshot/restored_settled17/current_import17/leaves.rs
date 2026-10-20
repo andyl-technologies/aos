@@ -2,7 +2,6 @@
 
 use super::containers::ImportKey17;
 use super::*;
-use crate::retained_metadata::ObserveMetadata;
 use crucible_node_format::*;
 
 macro_rules! import_plain17 {

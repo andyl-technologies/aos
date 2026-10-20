@@ -3,8 +3,8 @@
 use super::super::settled::StageHistory;
 use super::*;
 use crate::protocol_snapshot::compact_bytes::BorrowedCompactBytes;
+use serde::Serializer;
 use serde::ser::SerializeStruct;
-use serde::{Serialize, Serializer};
 
 impl StageHistory for NativeRestorationUploadAttempt {
     fn write_history<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {

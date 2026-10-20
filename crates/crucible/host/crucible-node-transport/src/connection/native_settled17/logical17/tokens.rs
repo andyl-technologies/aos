@@ -2,7 +2,7 @@
 
 use super::{BorrowedAuthority17Lineage, bytes::*};
 use crate::ProviderError;
-use crate::protocol_snapshot::owned11::typed::{Fields, invalid, plain_string};
+use crate::protocol_snapshot::owned11::typed::{invalid, plain_string};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum BorrowedAdmission17Kind {
