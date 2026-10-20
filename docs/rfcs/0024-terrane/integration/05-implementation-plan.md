@@ -9037,9 +9037,32 @@ own repair funding, completes fresh inventory and reads after actual Resume;
 disabled, bounded and mismatching-index controls preserve original bytes and
 funded faulted custody without adoption. The complete ext4 filesystem suite
 also passes all 126 nonignored cases, with the original six privileged ignores
-unchanged and all 5,093 crate inputs verified. Owning publisher gates and fresh
-required application compilation continue. This is recovery work in progress;
-no task checkbox advances.
+unchanged and all 5,093 crate inputs verified. Both owning publisher gates,
+`publisher-sole-writer` and `host-publish-sequence`, pass at this source. The
+former independently binds 5,097 transport and 5,102 cache inputs, five actual
+transport executables and 19 portable cases to the same immutable source;
+native backing custody passes separately. Required application test-target
+compilation also passes: exactly 183 artifacts from 59 packages, independently
+matched to Cargo metadata, in 1,212.369 seconds. These are component results;
+the complete task and current-trunk aggregate remain unaccepted.
+
+Pending-inode recovery continuation `678a360ac0` connects the existing actual
+publisher retirement deadline checks to a funded physical recovery turn.
+Supported removals require an otherwise empty shared namespace, no cold pins,
+leases or residences, the exact synchronized bootstrap and original Drain.
+Every old allocation hold survives. The publisher still authenticates the
+original pending inode and durably reconstructs an unknown deadline before
+checking expiry. A failed or uncertain exchange retains faulted cache custody;
+fresh exhaustive inventory and native accounting remain necessary before any
+completed recovery or Resume. Encoded and manifest pending cases remain
+unresolved. Two additional native domains retain original inodes across owner
+restarts: one tests actual expiry, and the other loses only its deadline after
+the original interval and must refuse immediate deletion. All 56 prior
+selectors and 67 selected native unit cases are retained; three selectors and
+one source-bound helper are added. Local strict all-target Clippy and formatting
+pass. Source-guarded isolated profiles, native VM and mandatory application
+qualification are running; the new runtime controls are not yet credited.
+No task checkbox advances.
 
 All five T2 task checkboxes remain open. Encoded eviction, shared-chunk
 re-extraction, complete recovery/readiness and the stopped
