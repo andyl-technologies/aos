@@ -58,14 +58,13 @@ use aos_sandbox_network::{
 };
 use aos_sandbox_protocol::semantics::network::CanonicalNetworkSemanticsV1;
 use aos_sandbox_protocol::semantics::network::preparation_content::{
-    NETWORK_PREPARATION_DESCRIPTOR_ROLES_V2, NetworkPreparationContentReferenceV2,
-    NetworkPreparationContentV2, canonical_network_preparation_specification_v2,
+    NetworkPreparationContentReferenceV2, NetworkPreparationContentV2,
+    canonical_network_preparation_specification_v2,
 };
 use aos_sandbox_protocol::session::{
-    AuthorizationArtifactBytes, ValidatedUntrustedAuthorizationArtifacts,
-    encode_authorized_request_envelope,
+    ValidatedUntrustedAuthorizationArtifacts, validate_authorization_artifacts,
 };
-use aos_sandbox_protocol::{PeerCredentials, PeerPolicy, decode_request_envelope};
+use aos_sandbox_protocol::{PeerCredentials, PeerPolicy};
 use buffa::Message as _;
 use ed25519_dalek::SigningKey;
 use sha2::{Digest as _, Sha256};
@@ -999,10 +998,8 @@ impl AuthorityFixture {
             [49; 16],
         )?;
         let lease_bytes = encode_ownership_lease(&lease);
-        validated_artifacts(
-            request,
-            &candidate,
-            BrokerAuthorizationArtifactsV1 {
+        validate_authorization_artifacts(
+            &BrokerAuthorizationArtifactsV1 {
                 broker_plan_signature: signed(
                     &plan_bytes,
                     PortableMediaType::BrokerAuthorizationPlan,
@@ -1030,6 +1027,7 @@ impl AuthorityFixture {
                 ..Default::default()
             },
         )
+        .context("validate qualification authorization artifacts")
     }
 }
 
@@ -1078,35 +1076,6 @@ fn signed(
         policy.clone(),
     )?;
     Ok(encode_signature(&sign_statement(statement, key)?))
-}
-
-fn validated_artifacts(
-    request: &[u8],
-    semantics: &CanonicalNetworkSemanticsV1,
-    artifacts: BrokerAuthorizationArtifactsV1,
-) -> Result<ValidatedUntrustedAuthorizationArtifacts> {
-    let descriptor_roles = if semantics.preparation_content_reference_v2().is_some() {
-        NETWORK_PREPARATION_DESCRIPTOR_ROLES_V2.as_slice()
-    } else {
-        &[]
-    };
-    let envelope = encode_authorized_request_envelope(
-        ProtocolId::NetworkBroker,
-        semantics.broker_method_v2(),
-        request,
-        descriptor_roles,
-        AuthorizationArtifactBytes {
-            broker_plan: &artifacts.broker_plan,
-            broker_plan_signature: &artifacts.broker_plan_signature,
-            ownership_lease: &artifacts.ownership_lease,
-            ownership_lease_signature: &artifacts.ownership_lease_signature,
-        },
-    )?;
-    decode_request_envelope(&envelope, ProtocolId::NetworkBroker, descriptor_roles.len())
-        .context("decode qualification request envelope")?
-        .authorization()
-        .cloned()
-        .context("validated authorization artifacts are absent")
 }
 
 #[cfg(test)]

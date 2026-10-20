@@ -1154,7 +1154,16 @@ pub(crate) fn runtime_stop_residual_for_observation_v4(
     Ok(Some(residual))
 }
 
-fn validate_authorization_artifacts(
+/// Validates the structure and canonical encodings of an untrusted quartet.
+///
+/// This DATA check does not negotiate a method or authenticate a session. The
+/// receiving authority must independently verify signatures, signer trust,
+/// assignment bindings, current clocks, and durable fences before admission.
+///
+/// # Errors
+/// Rejects unknown fields, empty or oversized artifacts, and noncanonical
+/// object or signature encodings.
+pub fn validate_authorization_artifacts(
     artifacts: &BrokerAuthorizationArtifactsV1,
 ) -> Result<ValidatedUntrustedAuthorizationArtifacts, ProtocolValidationError> {
     validate_authorization_artifacts_engine(artifacts, None)
