@@ -9238,9 +9238,35 @@ selectors and 64 project assignments remain. The extended real guest control
 observes a newer unread Zstd allocation retiring before a genuinely consumed
 older dictionary, with two additional native grace windows and original
 descriptor/quota observations. Only the overall guest allowance grows from
-690 to 780 seconds. Hermetic preparation and application qualification are
-underway; this implementation and its native runtime remain unmerged and
-unqualified, and no complete HOST requirement or task is accepted.
+690 to 780 seconds. Hermetic preparation passes: three Linux lint profiles,
+SDK all-target lint and both private documentation builds in 172.028 seconds;
+image and archive preparation in 265.496 and 148.819 seconds. Independent
+review verifies all 5,115 image inputs, four Cargo executables, 73 selectors,
+eight helpers and all 5,103 archive inputs. The archive preserves all 126
+previous nonignored cases and adds the three activity cases, retaining the
+six original privileged ignores. Required application-target compilation
+passes in 1,130.342 seconds with all 183 artifacts from 59 packages. Both
+controllers actually terminate successfully. Native qualification remains
+pending; no complete HOST requirement or task is accepted.
+
+Automatic admission-pressure continuation `8c33b55956` verifies a chunk or
+complete metadata pair before requesting one bounded physical eviction attempt
+and reserving its unchanged payload and snapshot-overlap hold. The original
+registered dictionary remains protected throughout the attempt. Pending
+retirement stays charged; an incoming capacity refusal creates no reservation
+or files. The existing worker's due-cut and queued-command ordering remain
+unchanged. A new phase on the same Running encoded-cache owner retains nineteen
+actual raw allocations and three independent consumer grants, refuses corrupt
+input without effects, requests eviction through valid admission alone and
+retries only after original last-descriptor closure. All previous controls,
+73 selectors, eight helpers, 64 project assignments and their hard limits
+remain; only the overall guest allowance grows from 780 to 870 seconds for
+the two additional real grace windows. Formatting, graph and unsafe checks
+pass on the committed source. Three Linux lint profiles, SDK all-target lint
+and both private documentation builds pass in 168.428 seconds; image/archive
+and application qualification continue. Native execution follows actual
+collection and review of the read-promotion predecessor. This component does
+not qualify lower-tier fallback, full HOST-19, NativeReady or a complete task.
 
 The older shared-directory aggregate at `86fb63e127` actually terminates with
 failure after 18,940.237 seconds. Nextest reports 2,149 run, 2,141 passed,
