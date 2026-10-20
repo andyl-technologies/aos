@@ -1,5 +1,9 @@
 ##! Native source snapshots remain replayable after generation pruning and actual GC.
-{pkgs, systems, ...}: {
+{
+  pkgs,
+  systems,
+  ...
+}: {
   name = "config-generation-gc-roots";
   timeout = 1500;
   machines.target = {

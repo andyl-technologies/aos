@@ -119,13 +119,11 @@ in
   # generated Nix, even though recording its leaves requires a traversal.
   assert builtins.isString (builtins.head treeAdditions.packages).drvPath;
   assert treeAdditions.configuration == [];
-
   assert identities.principal.effects.host-user-root.input.allocation == "existing";
   assert operatorPrincipal.lifetime == "persistent";
   assert operatorGroup.input.requested_id == 1000;
   assert operatorPrincipal.input.requested_id == 1000;
   assert operatorPrincipal.input.primary_group == operatorGroup.outputs.name;
-
   # Account updates must preserve identities owned by independently selected packages.
   assert builtins.all (effect: !(builtins.elem effect.input.path ["/etc/passwd" "/etc/group" "/etc/shadow"])) fileEffects;
   assert runtime.config.aos.kernel.sysctl."net.core.wmem_max" == "9000000"; true

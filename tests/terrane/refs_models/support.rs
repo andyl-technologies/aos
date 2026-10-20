@@ -187,7 +187,7 @@ pub(crate) fn hex(value: &str) -> Vec<u8> {
 pub(crate) fn reference() -> BTreeMap<String, BTreeMap<String, String>> {
     let document = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/terrane/refs-reference.md"
+        "/../../../../tests/terrane/refs-reference.md"
     ));
     let heading = "## Modern commit and ref record field witnesses";
     assert_eq!(document.lines().filter(|line| *line == heading).count(), 1);

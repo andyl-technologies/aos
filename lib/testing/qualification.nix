@@ -13,10 +13,16 @@
     name = "${name}-scenario-inputs";
     destination = "/inputs.json";
     text = builtins.toJSON {
-      registry = {
-        schema_version = "aos.release.qualification-scenarios/v1";
-        inherit platform scenarios;
-      } // (if caseScenarios == {} then {} else {case_scenarios = caseScenarios;});
+      registry =
+        {
+          schema_version = "aos.release.qualification-scenarios/v1";
+          inherit platform scenarios;
+        }
+        // (
+          if caseScenarios == {}
+          then {}
+          else {case_scenarios = caseScenarios;}
+        );
       fixtures = builtins.mapAttrs (_: fixture: builtins.toString fixture) scenarioFixtures;
     };
   };
@@ -27,18 +33,20 @@
     buildDeps = [pkgs.python3];
     dontStrip = true;
     dontNukeRefs = true;
-    phases = [{
-      name = "bind-fixtures";
-      script = ''
-        PYTHONDONTWRITEBYTECODE=1 ${pkgs.python3}/bin/python3 \
-          ${./qualification-fixture-commitments-self-test.py} \
-          ${./qualification-fixture-commitments.py}
-        mkdir -p "$out"
-        PYTHONDONTWRITEBYTECODE=1 ${pkgs.python3}/bin/python3 \
-          ${./qualification-fixture-commitments.py} \
-          ${registryInputs}/inputs.json "$out/scenarios.json"
-      '';
-    }];
+    phases = [
+      {
+        name = "bind-fixtures";
+        script = ''
+          PYTHONDONTWRITEBYTECODE=1 ${pkgs.python3}/bin/python3 \
+            ${./qualification-fixture-commitments-self-test.py} \
+            ${./qualification-fixture-commitments.py}
+          mkdir -p "$out"
+          PYTHONDONTWRITEBYTECODE=1 ${pkgs.python3}/bin/python3 \
+            ${./qualification-fixture-commitments.py} \
+            ${registryInputs}/inputs.json "$out/scenarios.json"
+        '';
+      }
+    ];
   };
   quote = value: "'" + builtins.replaceStrings ["'"] ["'\\''"] value + "'";
   registryPath = "${registry}/scenarios.json";

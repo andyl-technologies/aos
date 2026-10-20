@@ -58,63 +58,68 @@ let
       "net.bridge.bridge-nf-call-ip6tables" = "1";
     };
   };
-in
-{
-  k3s-worker = common // {
-    role = "worker";
-    description = "Lightweight Kubernetes agent";
-    command = "agent";
-    stateDirectories = agentStateDirectories;
-    hostPaths = agentHostPaths;
-    ingressEndpoints = [
-      {
-        transport = "tcp";
-        port = 10250;
-      }
-      {
-        transport = "udp";
-        port = 8472;
-      }
-    ];
-    acceptForwardedTraffic = true;
-  };
+in {
+  k3s-worker =
+    common
+    // {
+      role = "worker";
+      description = "Lightweight Kubernetes agent";
+      command = "agent";
+      stateDirectories = agentStateDirectories;
+      hostPaths = agentHostPaths;
+      ingressEndpoints = [
+        {
+          transport = "tcp";
+          port = 10250;
+        }
+        {
+          transport = "udp";
+          port = 8472;
+        }
+      ];
+      acceptForwardedTraffic = true;
+    };
 
-  k3s-control-plane = common // {
-    role = "control-plane";
-    description = "Lightweight Kubernetes control plane without an agent";
-    # Agentless servers reach webhooks and aggregated APIs through worker tunnels.
-    command = "server --disable-agent --egress-selector-mode=cluster";
-    stateDirectories = [ "rancher/k3s" ];
-    hostPaths = serverHostPaths;
-    ingressEndpoints = [
-      {
-        transport = "tcp";
-        port = 6443;
-      }
-    ];
-    acceptForwardedTraffic = false;
-  };
+  k3s-control-plane =
+    common
+    // {
+      role = "control-plane";
+      description = "Lightweight Kubernetes control plane without an agent";
+      # Agentless servers reach webhooks and aggregated APIs through worker tunnels.
+      command = "server --disable-agent --egress-selector-mode=cluster";
+      stateDirectories = ["rancher/k3s"];
+      hostPaths = serverHostPaths;
+      ingressEndpoints = [
+        {
+          transport = "tcp";
+          port = 6443;
+        }
+      ];
+      acceptForwardedTraffic = false;
+    };
 
-  k3s-combined = common // {
-    role = "combined";
-    description = "Lightweight Kubernetes combined server and agent";
-    command = "server";
-    stateDirectories = agentStateDirectories;
-    hostPaths = agentHostPaths;
-    ingressEndpoints = [
-      {
-        transport = "tcp";
-        port = 6443;
-      }
-      {
-        transport = "tcp";
-        port = 10250;
-      }
-      {
-        transport = "udp";
-        port = 8472;
-      }
-    ];
-    acceptForwardedTraffic = true;
-  };
+  k3s-combined =
+    common
+    // {
+      role = "combined";
+      description = "Lightweight Kubernetes combined server and agent";
+      command = "server";
+      stateDirectories = agentStateDirectories;
+      hostPaths = agentHostPaths;
+      ingressEndpoints = [
+        {
+          transport = "tcp";
+          port = 6443;
+        }
+        {
+          transport = "tcp";
+          port = 10250;
+        }
+        {
+          transport = "udp";
+          port = 8472;
+        }
+      ];
+      acceptForwardedTraffic = true;
+    };
 }

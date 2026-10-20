@@ -6,11 +6,11 @@
 
 extern crate alloc;
 
-#[path = "../../../tests/terrane/prefix_models/boundaries.rs"]
+#[path = "../../../../../tests/terrane/prefix_models/boundaries.rs"]
 mod boundaries;
-#[path = "../../../tests/terrane/prefix_models/content.rs"]
+#[path = "../../../../../tests/terrane/prefix_models/content.rs"]
 mod content;
-#[path = "../../../tests/terrane/prefix_models/support.rs"]
+#[path = "../../../../../tests/terrane/prefix_models/support.rs"]
 mod support;
 
 #[test]

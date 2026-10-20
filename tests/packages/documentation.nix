@@ -1,5 +1,9 @@
 ##! Checks declaration-derived package documentation and public library imports.
-{lib, pkgs, ...}: let
+{
+  lib,
+  pkgs,
+  ...
+}: let
   nativeChecks = (import ../effects/packages.nix).checks;
   serviceChecks = import ../effects/service-management.nix;
   documentedPackages = {
@@ -11,7 +15,8 @@
     document = package.documentation;
     encoded = builtins.toJSON document;
   in
-    document.schema == "aos.module.documentation"
+    document.schema
+    == "aos.module.documentation"
     && document.scope == ["package" name]
     && document.options != []
     && builtins.any (entry: entry.name == name) document.packages
@@ -49,24 +54,26 @@
     builtins.map
     (entry: entry.relative)
     (builtins.filter (entry: importsPrivateLibrary entry.source) packageSources);
-
 in
   assert builtins.all (value: value) (builtins.attrValues nativeChecks);
   assert builtins.all (value: value) (builtins.attrValues serviceChecks);
   assert builtins.all (name: validDocumentation name documentedPackages.${name})
-    (builtins.attrNames documentedPackages);
-  if privateLibraryImports != []
-  then throw "package definitions import private library paths: ${builtins.concatStringsSep ", " privateLibraryImports}"
-  else pkgs.mkDerivation {
-    pname = "package-documentation-policy-check";
-    version = "0";
-    src = null;
-    outputChecks = {};
-    phases = [{
-      name = "check";
-      script = ''
-        mkdir -p "$out"
-        printf 'PASS\n' > "$out/result"
-      '';
-    }];
-  }
+  (builtins.attrNames documentedPackages);
+    if privateLibraryImports != []
+    then throw "package definitions import private library paths: ${builtins.concatStringsSep ", " privateLibraryImports}"
+    else
+      pkgs.mkDerivation {
+        pname = "package-documentation-policy-check";
+        version = "0";
+        src = null;
+        outputChecks = {};
+        phases = [
+          {
+            name = "check";
+            script = ''
+              mkdir -p "$out"
+              printf 'PASS\n' > "$out/result"
+            '';
+          }
+        ];
+      }

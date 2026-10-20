@@ -39,75 +39,102 @@
 in
   mkRustBootstrap {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
-      target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
       role = "public-package";
     };
-  qualification.packageProbe = lib.qualification.commandProbe {
-    "primary" = {
-      "artifacts" = [];
-      "expected" = "The compiler produces a runnable binary that prints the fixed result 42.";
-      "files" = {
-        "answer.rs" = "fn main() {\n    let mut values = [23, 19];\n    values.sort();\n    println!(\"{}\", values.iter().sum::<i32>());\n}\n";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The compiler produces a runnable binary that prints the fixed result 42.";
+        "files" = {
+          "answer.rs" = "fn main() {\n    let mut values = [23, 19];\n    values.sort();\n    println!(\"{}\", values.iter().sum::<i32>());\n}\n";
+        };
+        "input" = "A Rust program that sorts integers and prints their sum.";
+        "operation" = "Compile the program with rustc, then execute the generated binary.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/rustc"
+              "answer.rs"
+              "-o"
+              "answer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/answer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "42\n";
+            };
+          }
+        ];
       };
-      "input" = "A Rust program that sorts integers and prints their sum.";
-      "operation" = "Compile the program with rustc, then execute the generated binary.";
-      "steps" = [
-        {
-          "argv" = [
-            "@out@/bin/rustc"
-            "answer.rs"
-            "-o"
-            "answer"
-          ];
-          "exit_code" = 0;
-          "stderr" = {
-            "exact" = "";
-          };
-          "stdout" = {
-            "exact" = "";
-          };
-        }
-        {
-          "argv" = [
-            "@work@/primary/answer"
-          ];
-          "exit_code" = 0;
-          "stderr" = {
-            "exact" = "";
-          };
-          "stdout" = {
-            "exact" = "42\n";
-          };
-        }
-      ];
-    };
-    "badInput" = {
-      "artifacts" = [];
-      "expected" = "rustc rejects the syntax error with its compilation-failure status.";
-      "files" = {
-        "invalid.rs" = "fn main() { let answer = 19 + ; println!(\"{}\", answer); }\n";
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "rustc rejects the syntax error with its compilation-failure status.";
+        "files" = {
+          "invalid.rs" = "fn main() { let answer = 19 + ; println!(\"{}\", answer); }\n";
+        };
+        "input" = "A Rust function with a missing expression after an addition operator.";
+        "operation" = "Compile the malformed source with rustc.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/rustc"
+              "invalid.rs"
+              "-o"
+              "invalid"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
       };
-      "input" = "A Rust function with a missing expression after an addition operator.";
-      "operation" = "Compile the malformed source with rustc.";
-      "steps" = [
-        {
-          "argv" = [
-            "@out@/bin/rustc"
-            "invalid.rs"
-            "-o"
-            "invalid"
-          ];
-          "exit_code" = 1;
-          "observes_rejection" = true;
-          "stdout" = {
-            "exact" = "";
-          };
-        }
-      ];
     };
-  };
 
     version = "1.84.1";
     srcHash = "sha256-Xi+11JYopUn3Zxssz5hVqzef1EKDGnwq8W4M3MMbs3U=";

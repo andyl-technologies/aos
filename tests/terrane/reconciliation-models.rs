@@ -389,7 +389,7 @@ fn limit_wires() -> Vec<(String, Vec<u8>, CborError)> {
 fn reference() -> BTreeMap<String, Vec<u8>> {
     let document = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/terrane/reconciliation-reference.md"
+        "/../../../../tests/terrane/reconciliation-reference.md"
     ));
     assert_eq!(document.lines().filter(|line| *line == HEADING).count(), 1);
     let section = document

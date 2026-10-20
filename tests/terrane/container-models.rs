@@ -25,7 +25,7 @@ use terrane_format::{
 
 const REFERENCE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../tests/terrane/container-reference.md"
+    "/../../../../tests/terrane/container-reference.md"
 ));
 const PLAINTEXT: &[u8] = b"inert\n";
 const DICTIONARY: &[u8] = b"terrane inert dictionary\n";

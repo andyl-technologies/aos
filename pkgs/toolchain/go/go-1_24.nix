@@ -20,9 +20,36 @@ in
     import ./_go-darwin.nix {
       inherit mkDerivation version src stdenv;
       platformSupport = {
-        build = [{abi = ["gnu"]; os = ["linux"];}];
-        host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
-        target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+        build = [
+          {
+            abi = ["gnu"];
+            os = ["linux"];
+          }
+        ];
+        host = [
+          {
+            abi = ["gnu"];
+            cpu = ["x86_64" "aarch64"];
+            os = ["linux"];
+          }
+          {
+            abi = ["darwin"];
+            cpu = ["x86_64" "aarch64"];
+            os = ["darwin"];
+          }
+        ];
+        target = [
+          {
+            abi = ["gnu"];
+            cpu = ["x86_64" "aarch64"];
+            os = ["linux"];
+          }
+          {
+            abi = ["darwin"];
+            cpu = ["x86_64" "aarch64"];
+            os = ["darwin"];
+          }
+        ];
         role = "public-package";
       };
       pname = "go-1_24";
@@ -34,9 +61,36 @@ in
     import ./_go-linux-cross.nix {
       inherit mkDerivation version src stdenv;
       platformSupport = {
-        build = [{abi = ["gnu"]; os = ["linux"];}];
-        host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
-        target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+        build = [
+          {
+            abi = ["gnu"];
+            os = ["linux"];
+          }
+        ];
+        host = [
+          {
+            abi = ["gnu"];
+            cpu = ["x86_64" "aarch64"];
+            os = ["linux"];
+          }
+          {
+            abi = ["darwin"];
+            cpu = ["x86_64" "aarch64"];
+            os = ["darwin"];
+          }
+        ];
+        target = [
+          {
+            abi = ["gnu"];
+            cpu = ["x86_64" "aarch64"];
+            os = ["linux"];
+          }
+          {
+            abi = ["darwin"];
+            cpu = ["x86_64" "aarch64"];
+            os = ["darwin"];
+          }
+        ];
         role = "public-package";
       };
       pname = "go-1_24";
@@ -46,9 +100,36 @@ in
   else
     mkDerivation {
       platformSupport = {
-        build = [{abi = ["gnu"]; os = ["linux"];}];
-        host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
-        target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+        build = [
+          {
+            abi = ["gnu"];
+            os = ["linux"];
+          }
+        ];
+        host = [
+          {
+            abi = ["gnu"];
+            cpu = ["x86_64" "aarch64"];
+            os = ["linux"];
+          }
+          {
+            abi = ["darwin"];
+            cpu = ["x86_64" "aarch64"];
+            os = ["darwin"];
+          }
+        ];
+        target = [
+          {
+            abi = ["gnu"];
+            cpu = ["x86_64" "aarch64"];
+            os = ["linux"];
+          }
+          {
+            abi = ["darwin"];
+            cpu = ["x86_64" "aarch64"];
+            os = ["darwin"];
+          }
+        ];
         role = "public-package";
       };
       pname = "go-1_24";

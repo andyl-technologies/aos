@@ -161,7 +161,7 @@ pub(super) fn raw(value: &Value) -> [u8; 32] {
 /// # Panics
 /// Panics for absent, duplicate, malformed or interrupted fixture sections.
 pub(super) fn reference(name: &str) -> Vec<u8> {
-    let source = include_str!("../../../../tests/terrane/control-reference.md");
+    let source = include_str!("../../../../../../tests/terrane/control-reference.md");
     let marker = format!("### {name}\n");
     assert_eq!(source.matches(&marker).count(), 1, "{name}");
     let body = source
