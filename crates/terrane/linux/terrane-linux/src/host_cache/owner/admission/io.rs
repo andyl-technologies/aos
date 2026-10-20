@@ -101,6 +101,56 @@ pub(super) struct PendingFile {
 }
 
 impl PendingFile {
+    /// Refreshes only rename-induced ctime after acknowledged original restoration.
+    ///
+    /// # Errors
+    /// Refuses another acknowledgment, replaced canonical inode, changed payload,
+    /// project, ownership, permissions, length or non-ctime metadata.
+    pub(super) fn restore_after_cache(
+        &mut self,
+        owner: &Custody,
+        expected: (u64, u64, u64),
+        bytes: &[u8],
+        receipt: &std::sync::Arc<crate::publisher_local::client::EncodedCacheReceipt>,
+        completion: &crate::publisher_local::client::EncodedCacheCompletion,
+    ) -> io::Result<()> {
+        completion.check_restored(receipt)?;
+        if !self.published || self.writer.is_some() || self.closed.is_none() {
+            return Err(io::Error::other(
+                "encoded restoration lacks completed admission",
+            ));
+        }
+        self.parent.recheck(owner)?;
+        let reader = self
+            .readonly
+            .as_ref()
+            .ok_or_else(|| io::Error::other("restored original descriptor absent"))?;
+        let metadata = reader.metadata()?;
+        if (metadata.dev(), metadata.ino(), metadata.len()) != expected {
+            return Err(io::Error::other(
+                "encoded restoration changed original inode",
+            ));
+        }
+        let named = open_regular_at(&self.parent.file, &self.canonical)?;
+        same_inode(reader, &named)?;
+        verify_custodied_bytes(owner, reader, bytes)?;
+        let current = FileStamp::capture(reader)?;
+        let original = self
+            .canonical_stamp
+            .as_ref()
+            .ok_or_else(|| io::Error::other("original encoded canonical stamp absent"))?;
+        if !original.same_content_metadata(&current) {
+            return Err(io::Error::other(
+                "encoded restoration changed non-ctime metadata",
+            ));
+        }
+        current.check(&named)?;
+        self.parent.recheck(owner)?;
+        current.check(reader)?;
+        self.canonical_stamp = Some(current);
+        Ok(())
+    }
+
     /// Retains the original completed canonical stamp without reading payload bytes.
     ///
     /// # Errors
@@ -567,7 +617,11 @@ pub(super) fn verify_custodied_bytes(owner: &Custody, file: &File, bytes: &[u8])
     verify_phase_bytes(owner, file, bytes, InodePhase::Closed)
 }
 
-fn verify_unlinked_bytes(owner: &Custody, file: &File, bytes: &[u8]) -> io::Result<()> {
+/// Checks original encoded bytes after acknowledged final unlinking.
+///
+/// # Errors
+/// Refuses remaining links, changed bytes, ownership, project or metadata.
+pub(super) fn verify_unlinked_bytes(owner: &Custody, file: &File, bytes: &[u8]) -> io::Result<()> {
     verify_phase_bytes(owner, file, bytes, InodePhase::Retired)
 }
 

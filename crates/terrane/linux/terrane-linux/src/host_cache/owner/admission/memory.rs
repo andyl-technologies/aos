@@ -199,6 +199,15 @@ fn check_parts(
         5 * hash_slot,
     )?;
 
+    // The encoded census and pending unit retain their own direct-content sets.
+    // Include the pack identity beside every bounded metadata entry; a chunk's
+    // dictionary stays in its separately retained original admission.
+    add(
+        jobs.checked_mul(records.checked_add(1).ok_or_else(overflow)?)
+            .ok_or_else(overflow)?,
+        2 * hash_slot,
+    )?;
+
     // Fixed layout depth: two members, three directory-progress entries and
     // their cloned chains. Names are generated (32hex pack/token, 64hex hash),
     // never copied from a caller path. Descriptor/job headers are not payloads.
@@ -206,6 +215,7 @@ fn check_parts(
         + size_of::<super::super::publication::PublicationJob>()
         + super::super::publication::eviction::activity_storage_bytes()
         + super::super::publication::eviction::entry_storage_bytes()
+        + super::eviction::storage_bytes()
         + super::super::publication::retirement_observation_bytes()
         + size_of::<super::super::publication::RecoveredInlineJob>()
         + size_of::<super::super::consumer::ConsumerJob>()
@@ -234,7 +244,7 @@ fn check_parts(
     add(jobs, command)?;
 
     // Preserve checked descriptor-count arithmetic independently of byte sums.
-    jobs.checked_mul(24).ok_or_else(overflow)?;
+    jobs.checked_mul(36).ok_or_else(overflow)?;
     Ok(total)
 }
 

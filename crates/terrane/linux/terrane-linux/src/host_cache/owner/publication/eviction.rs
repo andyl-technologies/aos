@@ -19,7 +19,8 @@ use std::{collections::BTreeMap, sync::Mutex};
 
 pub use lifecycle::NativeCacheEvictionReport;
 pub(in crate::host_cache::owner) use lifecycle::{
-    DueRetirements, due_retirements, finish_due, restore_for, restore_publication, run,
+    DueRetirements, Schedule, due_retirements, encoded_finished, encoded_restored, finish_due,
+    reconcile, restore_for, restore_publication, run,
 };
 
 /// Retains bounded reconstructible cache bookkeeping on the physical executor.
@@ -29,6 +30,9 @@ pub(in crate::host_cache::owner) struct Runtime {
     pub(in crate::host_cache::owner) activities: Mutex<Registry>,
     queue: Option<Queue>,
     pending: BTreeMap<String, Pending>,
+    /// Retains original encoded units separately from sealed publication receipts.
+    pub(in crate::host_cache::owner) encoded:
+        crate::host_cache::owner::admission::eviction::Runtime,
 }
 
 /// Bounds one actual body's activity, shared clock and tree-node bookkeeping.

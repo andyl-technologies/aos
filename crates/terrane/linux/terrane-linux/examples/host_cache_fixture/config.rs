@@ -110,7 +110,13 @@ impl Inputs {
                 } else {
                     6 * 1024 * 1024
                 },
-                low_watermark: 4 * 1024 * 1024,
+                // A one-unit pressure request must expose actual mixed FIFO
+                // order rather than selecting every unprotected allocation.
+                low_watermark: if self.domain == "tenant:encoded-eviction" {
+                    6 * 1024 * 1024
+                } else {
+                    4 * 1024 * 1024
+                },
                 probation_bytes: 65536,
                 release_grace: Duration::from_secs(30),
                 scan_limit: 64,

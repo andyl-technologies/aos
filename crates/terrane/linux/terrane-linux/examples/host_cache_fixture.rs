@@ -16,6 +16,8 @@ mod config;
 mod consumer;
 #[path = "host_cache_fixture/dictionary_custody.rs"]
 mod dictionary_custody;
+#[path = "host_cache_fixture/encoded_eviction.rs"]
+mod encoded_eviction;
 #[path = "host_cache_fixture/manifest_publication.rs"]
 mod manifest_publication;
 #[path = "host_cache_fixture/network.rs"]
@@ -105,6 +107,7 @@ fn main() -> std::process::ExitCode {
             "refuse-conflicting-binding",
             "seed-bound-unsealed",
             "refuse-bound-unsealed",
+            "encoded-eviction",
         ] {
             println!("host-cache:{selector}");
         }

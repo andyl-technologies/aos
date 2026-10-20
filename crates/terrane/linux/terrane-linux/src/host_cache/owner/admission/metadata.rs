@@ -55,6 +55,7 @@ pub(super) async fn run(
             .len()
             .checked_add(index.len())
             .ok_or_else(|| io::Error::other("metadata payload overlap overflow"))?;
+        super::refuse_completed(executor, &owner, resource, &job.input)?;
         let prepared = state::begin(executor, &mut owner, &mut job, payload, &hashes)?;
         (expected_id, pack, index, prepared)
     };

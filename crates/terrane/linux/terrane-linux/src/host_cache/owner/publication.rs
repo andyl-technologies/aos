@@ -52,6 +52,8 @@ use tokio::sync::oneshot;
 
 /// Retains actual physical resources independently of an external response waiter.
 pub(super) struct PublicationJob {
+    /// Original physical admission order; zero only before executor registration.
+    pub(super) order: u64,
     custody: Arc<Mutex<Custody>>,
     encoded: Vec<u8>,
     plaintext: Vec<u8>,
@@ -516,6 +518,7 @@ fn prepare(
         Err(error) => return Err(error),
     };
     Ok(PublicationJob {
+        order: 0,
         custody: Arc::clone(custody),
         encoded,
         plaintext,

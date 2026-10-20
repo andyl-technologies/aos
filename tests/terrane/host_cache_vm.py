@@ -73,6 +73,8 @@ CASES = [
 
 LABELS = ["layout-root", "chunks", "objects", "sealed", "staging", "quarantine",
           "pending-delete", "state"]
+# Append new cases so every previously qualified project assignment stays fixed.
+CASES += ["encoded-eviction"]
 BUDGET = HARD * len(CASES)
 PROVISION_CAPS = "-all,+sys_admin,+dac_read_search,+fowner,+chown,+fsetid"
 QUERY_CAPS = "-all,+sys_admin,+dac_read_search"
@@ -917,6 +919,7 @@ def verify_image():
         "host_cache_index_recovery_vm.py",
         "host_cache_pending_recovery_vm.py",
         "host_cache_pending_packs_vm.py",
+        "encoded_eviction_vm.py",
     ]
     require(set(identity["supervisor_helpers"]) == set(helper_names),
             "native supervisor helper inventory changed")
@@ -1204,6 +1207,7 @@ def main():
         admission_cases(helper, uuid)
         runpy.run_path(str(IMAGE / "share/admission_cache_vm.py"))["run"](sys.modules[__name__], uuid)
         runpy.run_path(str(IMAGE / "share/admission_cache_vm.py"))["run_dictionary_custody"](sys.modules[__name__], uuid)
+        runpy.run_path(str(IMAGE / "share/encoded_eviction_vm.py"))["run"](sys.modules[__name__], uuid)
         publication_cases(publisher, uuid)
         runpy.run_path(str(IMAGE / "share/manifest_publication_vm.py"))["run_consumer_leases"](sys.modules[__name__], helper, uuid)
         inline_transfer_cases(publisher, uuid)

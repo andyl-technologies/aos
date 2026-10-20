@@ -33,9 +33,10 @@
   native = testing.mkVMTest {
     name = "terrane-native-host-cache-component-ext4";
     memory = 1024;
-    # The encoded-admission control adds two genuine 30-second grace windows.
-    # Existing per-control deadlines and assertions stay fixed.
-    timeout = 390;
+    # Encoded FIFO adds seven genuine 30-second producer, consumer and native
+    # retirement windows. Extend only the whole-guest allowance for this added
+    # work; every original control and actual production deadline stays fixed.
+    timeout = 690;
     rootfsDeps = [image pkgs.coreutils pkgs.util-linux pkgs.e2fsprogs pkgs.python3];
     testScript = ''
       set -eu

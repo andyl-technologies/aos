@@ -489,6 +489,7 @@ pub(in crate::host_cache::owner) async fn run(
     };
     let claim = input.retained.claim().clone();
     let job = executor.register_publication(PublicationJob {
+        order: 0,
         custody,
         encoded: Vec::new(),
         plaintext: Vec::new(),

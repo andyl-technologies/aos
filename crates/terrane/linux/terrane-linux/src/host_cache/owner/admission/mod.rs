@@ -9,6 +9,7 @@ mod backing;
 mod cache_error;
 pub(super) mod chunk;
 mod error;
+pub(in crate::host_cache::owner) mod eviction;
 pub(super) mod handoff;
 mod io;
 mod memory;
@@ -232,6 +233,51 @@ fn submission_error(error: mpsc::TrySendError<Command>) -> (std_io::Error, Comma
     }
 }
 
+// Original completed admissions are checked after incoming verification but
+// before funding or writes. A restored duplicate must not allocate another body
+// or poison the Running owner with a new, unnecessary reservation.
+fn refuse_completed(
+    executor: &NativeOwnerExecutor,
+    owner: &super::retention::Custody,
+    resource: &Arc<Mutex<AdmissionJob>>,
+    input: &Input,
+) -> std_io::Result<()> {
+    for registered in executor.admission_jobs() {
+        if Arc::ptr_eq(registered, resource) {
+            continue;
+        }
+        let job = backing::lock(registered)?;
+        let same_key = match (&job.input, input) {
+            (
+                Input::Chunk {
+                    descriptor: first, ..
+                },
+                Input::Chunk {
+                    descriptor: second, ..
+                },
+            ) => first.digest() == second.digest(),
+            (
+                Input::Metadata {
+                    expected_id: first, ..
+                },
+                Input::Metadata {
+                    expected_id: second,
+                    ..
+                },
+            ) => first == second,
+            _ => false,
+        };
+        if job.complete && same_key {
+            reconcile::verify(owner, &job)?;
+            return Err(std_io::Error::new(
+                std_io::ErrorKind::AlreadyExists,
+                "actual completed native admission already owns the canonical allocation",
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Executes one bounded chunk command under the genuine exclusive running owner.
 ///
 /// # Errors
@@ -244,6 +290,13 @@ pub(in crate::host_cache::owner) async fn chunk(
 ) -> std_io::Result<NativeChunkAdmission> {
     let context = executor.admission_context()?;
     context.check_current().map_err(std_io::Error::other)?;
+    let codec = terrane_format::codec::parse_envelope(&encoded)
+        .map_err(std_io::Error::other)?
+        .codec;
+    eviction::restore_for(executor, &state::hex(descriptor.digest()))?;
+    if let terrane_format::codec::Codec::ZstdDictionary(dictionary) = codec {
+        eviction::restore_for(executor, &state::hex(&dictionary))?;
+    }
     let custody = Arc::clone(executor.custody());
     let job = executor.register_admission(Input::Chunk {
         descriptor: descriptor.clone(),
@@ -286,6 +339,7 @@ pub(in crate::host_cache::owner) async fn metadata(
 ) -> std_io::Result<NativeMetadataAdmission> {
     let context = executor.admission_context()?;
     context.check_current().map_err(std_io::Error::other)?;
+    eviction::restore_pack(executor, expected_id)?;
     let custody = Arc::clone(executor.custody());
     let job = executor.register_admission(Input::Metadata {
         expected_id,

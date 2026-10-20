@@ -12,6 +12,7 @@ use super::{
 };
 use crate::{
     host_cache::owner::{
+        admission::eviction as encoded,
         consumer::{clock, state as policy},
         recovery,
         retention::{Command, NativeMetadataOwner, NativeOwnerExecutor},
@@ -70,14 +71,19 @@ pub struct NativeCacheEvictionReport {
     pub target_met: bool,
 }
 
+/// Schedules a bounded local check of the publisher's authoritative deadline.
 #[derive(Clone, Copy)]
-struct Schedule {
+pub(in crate::host_cache::owner) struct Schedule {
     wall: u64,
     monotonic: Duration,
 }
 
 impl Schedule {
-    fn after(interval: Duration) -> io::Result<Self> {
+    /// Captures a finite local schedule without replacing the publisher deadline.
+    ///
+    /// # Errors
+    /// Refuses unavailable clocks and overflowing wall or monotonic schedules.
+    pub(in crate::host_cache::owner) fn after(interval: Duration) -> io::Result<Self> {
         Ok(Self {
             wall: clock::grace_end(None, interval)?,
             monotonic: TokioClock
@@ -88,7 +94,11 @@ impl Schedule {
         })
     }
 
-    fn due(self) -> io::Result<bool> {
+    /// Reports that a local scheduling cut is due for publisher verification.
+    ///
+    /// # Errors
+    /// Refuses an unavailable actual wall clock.
+    pub(in crate::host_cache::owner) fn due(self) -> io::Result<bool> {
         Ok(clock::now_seconds()? >= self.wall || TokioClock.monotonic() >= self.monotonic)
     }
 }
@@ -102,12 +112,15 @@ pub(super) struct Pending {
 }
 
 /// Captures only original retirement receipts already due before queue draining.
-pub(in crate::host_cache::owner) struct DueRetirements(Vec<(String, Arc<PendingCacheBody>)>);
+pub(in crate::host_cache::owner) struct DueRetirements(
+    Vec<(String, Arc<PendingCacheBody>)>,
+    encoded::DueRetirements,
+);
 
 impl DueRetirements {
     /// Reports whether any original retirement was due at the captured clock cut.
     pub(in crate::host_cache::owner) fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.0.is_empty() && self.1.is_empty()
     }
 }
 
@@ -121,6 +134,7 @@ pub(in crate::host_cache::owner) async fn run(
     incoming: u64,
 ) -> io::Result<NativeCacheEvictionReport> {
     let units = graph::capture(executor)?;
+    let encoded_units = encoded::capture(executor)?;
     let (config, owner) = {
         let custody = executor
             .custody()
@@ -151,7 +165,7 @@ pub(in crate::host_cache::owner) async fn run(
             .queue
             .as_mut()
             .ok_or_else(|| invalid("native FIFO absent"))?
-            .refresh(&units, &activities)?;
+            .refresh(&units, &encoded_units, &activities)?;
     }
     policy::synchronize_policy(executor)?;
     let before = observe(executor)?;
@@ -179,14 +193,22 @@ pub(in crate::host_cache::owner) async fn run(
         .map(|unit| (unit.key.clone(), unit))
         .collect();
     let mut retired = 0;
+    let mut encoded_units: BTreeMap<_, _> = encoded_units
+        .into_iter()
+        .map(|unit| (unit.key().to_owned(), unit))
+        .collect();
     for key in candidates {
-        if executor.cache.pending.contains_key(&key) {
+        if executor.cache.pending.contains_key(&key) || encoded::contains_key(executor, &key) {
             continue;
         }
-        let unit = units
-            .remove(&key)
-            .ok_or_else(|| invalid("FIFO candidate lost actual native unit"))?;
-        retire(executor, Arc::new(unit)).await?;
+        if let Some(unit) = units.remove(&key) {
+            retire(executor, Arc::new(unit)).await?;
+        } else {
+            let unit = encoded_units
+                .remove(&key)
+                .ok_or_else(|| invalid("FIFO candidate lost actual native unit"))?;
+            encoded::retire(executor, unit)?;
+        }
         retired += 1;
     }
     let after = observe(executor)?;
@@ -252,6 +274,7 @@ pub(in crate::host_cache::owner) async fn restore_for(
         ));
     }
     let hash = state::hex(identity.digest());
+    encoded::restore_for(executor, &hash)?;
     let keys: Vec<_> = executor
         .cache
         .pending
@@ -346,7 +369,7 @@ pub(in crate::host_cache::owner) fn due_retirements(
             due.push((key.clone(), Arc::clone(&pending.receipt)));
         }
     }
-    Ok(DueRetirements(due))
+    Ok(DueRetirements(due, encoded::due_retirements(executor)?))
 }
 
 /// Finishes captured due receipts after the bounded preexisting queue batch drains.
@@ -373,7 +396,7 @@ pub(in crate::host_cache::owner) async fn finish_due(
             completed += 1;
         }
     }
-    Ok(completed)
+    Ok(completed + encoded::finish_due(executor, due.1).await?)
 }
 
 fn retained_pending(
@@ -555,7 +578,13 @@ async fn finish_policy(
     Ok(())
 }
 
-fn reconcile(executor: &NativeOwnerExecutor) -> io::Result<policy::PolicyObservation> {
+/// Reconciles synchronized policy and actual project charge after a physical turn.
+///
+/// # Errors
+/// Refuses failed synchronization, stale custody and invalid native quota evidence.
+pub(in crate::host_cache::owner) fn reconcile(
+    executor: &NativeOwnerExecutor,
+) -> io::Result<policy::PolicyObservation> {
     policy::synchronize_policy(executor)?;
     let mut owner = executor
         .custody()
@@ -563,6 +592,49 @@ fn reconcile(executor: &NativeOwnerExecutor) -> io::Result<policy::PolicyObserva
         .map_err(|_| invalid("cache reconciliation poisoned"))?;
     let generation = owner.generation;
     policy::finish(&mut owner, generation)
+}
+
+/// Marks restored FIFO membership only after the original canonical unit returns.
+///
+/// # Errors
+/// Refuses an absent original native FIFO.
+pub(in crate::host_cache::owner) fn encoded_restored(
+    executor: &mut NativeOwnerExecutor,
+    key: &str,
+) -> io::Result<()> {
+    executor
+        .cache
+        .queue
+        .as_mut()
+        .ok_or_else(|| invalid("restored encoded FIFO absent"))?
+        .restored(key);
+    Ok(())
+}
+
+/// Removes encoded activity and FIFO membership after actual acknowledged closure.
+///
+/// # Errors
+/// Refuses poisoned activity storage, absent FIFO or changed retirement membership.
+pub(in crate::host_cache::owner) fn encoded_finished(
+    executor: &mut NativeOwnerExecutor,
+    key: &str,
+    inodes: &[(u64, u64)],
+) -> io::Result<()> {
+    let mut activities = executor
+        .cache
+        .activities
+        .lock()
+        .map_err(|_| invalid("removed encoded activity poisoned"))?;
+    for inode in inodes {
+        activities.remove(*inode);
+    }
+    drop(activities);
+    executor
+        .cache
+        .queue
+        .as_mut()
+        .ok_or_else(|| invalid("removed encoded FIFO absent"))?
+        .removed(key)
 }
 
 fn observe(executor: &NativeOwnerExecutor) -> io::Result<policy::PolicyObservation> {

@@ -1,6 +1,7 @@
 //! Applies actual read order and durable protection to reconstructible S3-FIFO.
 
 use super::{super::invalid, activity::Registry, graph::Unit};
+use crate::host_cache::owner::admission::eviction::EncodedAllocation;
 use std::{collections::BTreeMap, io, time::Duration};
 use terrane_sdk::host::cache::{CacheEntry, CachePolicy, PolicyConfig};
 
@@ -38,22 +39,44 @@ impl Queue {
     ///
     /// # Errors
     /// Refuses changed immutable allocation, exhausted policy storage or read clock.
-    pub(super) fn refresh(&mut self, units: &[Unit], activities: &Registry) -> io::Result<()> {
-        for unit in units {
-            if !self.entries.contains_key(&unit.key) {
+    pub(super) fn refresh(
+        &mut self,
+        units: &[Unit],
+        encoded: &[EncodedAllocation],
+        activities: &Registry,
+    ) -> io::Result<()> {
+        let mut allocations = units
+            .iter()
+            .map(|unit| {
+                (
+                    unit.order,
+                    unit.key.as_str(),
+                    unit.allocated,
+                    unit.protected || !unit.shared_chunks.is_empty(),
+                )
+            })
+            .chain(
+                encoded
+                    .iter()
+                    .map(|unit| (unit.order(), unit.key(), unit.allocated(), unit.protected())),
+            )
+            .collect::<Vec<_>>();
+        allocations.sort_unstable_by_key(|(order, _, _, _)| *order);
+        for (_, key, allocated, protected) in allocations {
+            if !self.entries.contains_key(key) {
                 self.policy
-                    .reserve(unit.key.clone(), self.owner.clone(), unit.allocated)
+                    .reserve(key.to_owned(), self.owner.clone(), allocated)
                     .map_err(io::Error::other)?;
                 self.policy
                     .admit(
-                        &unit.key,
-                        CacheEntry::new(unit.key.clone(), unit.allocated, self.owner.clone()),
+                        key,
+                        CacheEntry::new(key.to_owned(), allocated, self.owner.clone()),
                     )
                     .map_err(io::Error::other)?;
                 self.entries.insert(
-                    unit.key.clone(),
+                    key.to_owned(),
                     Entry {
-                        allocated: unit.allocated,
+                        allocated,
                         pinned: false,
                         promoted: false,
                         latest: 0,
@@ -62,19 +85,18 @@ impl Queue {
             }
             let entry = self
                 .entries
-                .get_mut(&unit.key)
+                .get_mut(key)
                 .ok_or_else(|| invalid("native FIFO entry absent"))?;
-            if entry.allocated != unit.allocated {
+            if entry.allocated != allocated {
                 return Err(invalid("native FIFO immutable allocation changed"));
             }
             // Shared residence must be transferred before physical retirement.
             // Its extraction is a separate prerequisite, never a guessed delete.
-            let protected = unit.protected || !unit.shared_chunks.is_empty();
             if protected && !entry.pinned {
-                self.policy.pin(&unit.key).map_err(io::Error::other)?;
+                self.policy.pin(key).map_err(io::Error::other)?;
             } else if !protected && entry.pinned {
                 self.policy
-                    .release(&unit.key, Duration::ZERO)
+                    .release(key, Duration::ZERO)
                     .map_err(io::Error::other)?;
             }
             entry.pinned = protected;

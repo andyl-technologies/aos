@@ -13,6 +13,8 @@ mod cleanup;
 #[cfg(feature = "tokio")]
 mod context;
 #[cfg(feature = "tokio")]
+mod encoded_cache;
+#[cfg(feature = "tokio")]
 mod manifest;
 #[cfg(feature = "tokio")]
 mod publication;
@@ -30,6 +32,8 @@ mod transfer;
 pub(crate) use cache_lifecycle::{CacheBodyCompletion, PendingCacheBody};
 #[cfg(feature = "tokio")]
 pub(crate) use cleanup::AcknowledgedSourceRetirement;
+#[cfg(feature = "tokio")]
+pub(crate) use encoded_cache::{EncodedCacheCompletion, EncodedCacheReceipt};
 #[cfg(feature = "tokio")]
 pub(crate) use recovery::{BodyIncarnationObservation, RecoveryBody};
 

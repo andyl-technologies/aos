@@ -93,6 +93,7 @@ pub(super) async fn run(
                 "chunk already resides in a sealed backing",
             ));
         }
+        super::refuse_completed(executor, &owner, resource, &job.input)?;
         let prepared = state::begin(executor, &mut owner, &mut job, encoded.len(), &hashes)?;
         drop(plaintext);
         drop(dictionary);

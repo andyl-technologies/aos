@@ -12,6 +12,7 @@ mod cache_activity;
 mod cache_eviction;
 pub(crate) use cache_eviction::PublisherCacheRetirementTurn;
 mod cache_handoff;
+mod encoded_eviction;
 use crate::{
     host_cache::CompletedRecovery,
     publisher_local::client::{PublisherRunningContext, ResumeFailureStage},
@@ -30,6 +31,7 @@ pub(in crate::host_cache::owner) struct NativeOwnerExecutor {
     failed_resume: Option<(ResumeFailureStage, Box<CompletedRecovery>)>,
     admission_jobs: Vec<Arc<Mutex<super::super::admission::AdmissionJob>>>,
     publications: Vec<Arc<Mutex<super::super::publication::PublicationJob>>>,
+    allocation_order: u64,
     producer_reads: super::super::publication::residence::ProducerReadRegistry,
     pub(in crate::host_cache::owner) cache: super::super::publication::eviction::Runtime,
     inline_sources: Vec<Arc<Mutex<super::super::publication::RecoveredInlineJob>>>,
@@ -74,6 +76,7 @@ impl NativeOwnerExecutor {
             failed_resume: None,
             admission_jobs: Vec::new(),
             publications: Vec::new(),
+            allocation_order: 0,
             producer_reads: super::super::publication::residence::ProducerReadRegistry::default(),
             cache: super::super::publication::eviction::Runtime::default(),
             inline_sources: Vec::new(),
@@ -188,9 +191,12 @@ impl NativeOwnerExecutor {
         self.admission_jobs
             .try_reserve(1)
             .map_err(io::Error::other)?;
+        drop(owner);
+        let order = self.next_allocation_order()?;
         let job = Arc::new(Mutex::new(super::super::admission::AdmissionJob::new(
             input,
             Arc::clone(&self.custody),
+            order,
         )?));
         self.admission_jobs.push(Arc::clone(&job));
         Ok(job)
@@ -228,7 +234,7 @@ impl NativeOwnerExecutor {
     /// Refuses a foreign thread, exhausted joint registry or allocation failure.
     pub(in crate::host_cache::owner) fn register_publication(
         &mut self,
-        job: super::super::publication::PublicationJob,
+        mut job: super::super::publication::PublicationJob,
     ) -> io::Result<Arc<Mutex<super::super::publication::PublicationJob>>> {
         self.check_physical_worker()?;
         let limit = self
@@ -253,9 +259,22 @@ impl NativeOwnerExecutor {
             ));
         }
         self.publications.try_reserve(1).map_err(io::Error::other)?;
+        job.order = self.next_allocation_order()?;
         let job = Arc::new(Mutex::new(job));
         self.publications.push(Arc::clone(&job));
         Ok(job)
+    }
+
+    // One serial counter preserves FIFO order across encoded and sealed jobs.
+    // Rejected attempts may consume a number, but cannot reorder accepted ones.
+    fn next_allocation_order(&mut self) -> io::Result<u64> {
+        self.allocation_order = self.allocation_order.checked_add(1).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::StorageFull,
+                "native admission order exhausted",
+            )
+        })?;
+        Ok(self.allocation_order)
     }
 
     /// Releases only conclusively effect-free inline input after rejection.
@@ -519,11 +538,12 @@ impl NativeOwnerExecutor {
     /// Refuses another physical thread, a failed Resume, stale/faulted Running
     /// custody, invalid sources or failed durability and quota reconciliation.
     pub(in crate::host_cache::owner) async fn retain_metadata(
-        &self,
+        &mut self,
         identity: terrane_format::identity::Identity,
     ) -> io::Result<super::RetainedManifest> {
         self.check_physical_worker()?;
         if self.running.is_some() {
+            super::super::admission::eviction::restore_identity(self, &identity)?;
             super::manifest::retain_running(self, identity).await
         } else {
             self.check_recovery_phase()?;

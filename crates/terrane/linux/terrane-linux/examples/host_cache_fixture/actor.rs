@@ -40,6 +40,7 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
             | "admit-cancel"
             | "cache-admission-handoff"
             | "dictionary-custody"
+            | "encoded-eviction"
             | "recover-manifest"
             | "recover-index-recovery"
             | "refuse-index-disabled"
@@ -121,6 +122,9 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
         | "recover-pending-pack"
         | "refuse-pending-pack-foreign" => {
             super::recovery::pending::run(mode, &owner, &runtime, &inputs)?;
+        }
+        "encoded-eviction" => {
+            super::encoded_eviction::run(&owner, &runtime, &inputs, original)?;
         }
         "dictionary-custody" => {
             super::dictionary_custody::run(&owner, &runtime, &inputs, original)?;

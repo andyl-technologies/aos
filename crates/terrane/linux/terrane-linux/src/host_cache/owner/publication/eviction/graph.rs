@@ -25,6 +25,8 @@ use terrane_sdk::host::cache::HostDomainLocation;
 /// This inventory grants no retirement authority. Producer-funded jobs remain
 /// protected; physical transitions require the separate actual cache permit.
 pub(super) struct Unit {
+    /// Earliest actual admission among original aliases of this allocation.
+    pub(super) order: u64,
     /// Process-local allocation identity, never a durable object or namespace key.
     pub(super) key: String,
     /// Original verified readonly body, including its native root custody.
@@ -79,6 +81,7 @@ pub(super) fn capture(executor: &NativeOwnerExecutor) -> io::Result<Vec<Unit>> {
                 let index = units.len();
                 by_inode.insert(inode, index);
                 units.push(Unit {
+                    order: job.order,
                     key: format!("{}:{}", inode.0, inode.1),
                     body: Arc::clone(body),
                     members: Vec::new(),
@@ -98,6 +101,7 @@ pub(super) fn capture(executor: &NativeOwnerExecutor) -> io::Result<Vec<Unit>> {
                 index
             };
             let unit = &mut units[index];
+            unit.order = unit.order.min(job.order);
             if unit.body.claim().descriptor() != body.claim().descriptor()
                 || unit.body.incarnation() != body.incarnation()
             {

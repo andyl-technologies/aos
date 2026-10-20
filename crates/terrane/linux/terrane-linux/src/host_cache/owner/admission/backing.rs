@@ -13,6 +13,8 @@ use terrane_sdk::pack::PackId;
 
 /// Retains every physical resource even if a reply or an external receipt drops.
 pub(in crate::host_cache::owner) struct AdmissionJob {
+    /// Serial original admission order, assigned only by the physical executor.
+    pub(super) order: u64,
     /// Actual owner, confinement, provisioning, helper and root custody.
     ///
     /// Custody contains no admission-job registry, so this lifetime edge cannot
@@ -43,6 +45,35 @@ pub(in crate::host_cache::owner) struct AdmissionJob {
 }
 
 impl AdmissionJob {
+    /// Checks acknowledged removal before relinquishing the original registry slot.
+    ///
+    /// # Errors
+    /// Refuses another acknowledgment or key, remaining native resources,
+    /// dependency promises or an incomplete final closure.
+    pub(in crate::host_cache::owner) fn check_cache_removed(
+        &self,
+        session: &Arc<
+            crate::publisher_local::client::Client<terrane_sdk::host::cache::HostDomainLocation>,
+        >,
+        receipt: &Arc<crate::publisher_local::client::EncodedCacheReceipt>,
+        completion: &crate::publisher_local::client::EncodedCacheCompletion,
+    ) -> io::Result<()> {
+        completion.check_removed(receipt)?;
+        receipt.check_original(session, &super::eviction::key_for_input(&self.input)?)?;
+        if self.complete
+            || self.cached.is_some()
+            || !self.files.is_empty()
+            || !self.directory_progress.is_empty()
+            || !self.dependencies.is_empty()
+            || !self.started.load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err(io::Error::other(
+                "removed encoded admission retains physical resources",
+            ));
+        }
+        Ok(())
+    }
+
     /// Recognizes only definitively effect-free rejected input custody.
     ///
     /// The physical owner calls this after a producer returns an error. A
@@ -65,6 +96,7 @@ impl AdmissionJob {
     pub(in crate::host_cache::owner) fn new(
         input: Input,
         custody: Arc<Mutex<super::super::retention::Custody>>,
+        order: u64,
     ) -> io::Result<Self> {
         let mut files = Vec::new();
         files.try_reserve_exact(2).map_err(io::Error::other)?;
@@ -77,6 +109,7 @@ impl AdmissionJob {
             .try_reserve_exact(1)
             .map_err(io::Error::other)?;
         Ok(Self {
+            order,
             custody,
             input,
             token: String::new(),
