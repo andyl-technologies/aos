@@ -9679,10 +9679,28 @@ Resumed qualification:
   descriptor and checks that the inode is linked, preserving private directory
   permissions and the existing wire format. It incorporates the previously
   reviewed SDK helper gating and scopes intentional panic assertions to the
-  three cache test modules. Native and local qualification are running on this
-  frozen revision, including strict Core native and SDK profiles. Shared-chunk
-  extraction, standalone and pack cache ownership, admission integration,
-  complete recovery and NativeReady remain pending.
+  three cache test modules. Both builds and all 36 selected cases pass.
+  Native qualification passes in 627.568 seconds, including all 55 selected
+  filesystem cases. Independent review verifies all 3,512 image inputs, four
+  original Cargo ELFs, installed helpers and the ordered retirement controls.
+  An already queued pin restores the original inode after policy stalls across
+  its retirement deadline. A duplicate publication also restores that inode;
+  both genuine publication receipts share one final native retirement. The
+  independent observer verifies charge release only after the last original
+  descriptor closes. Final measured project usage is 696,320 bytes, with future
+  holds unchanged at 1,573,265 bytes and unrelated consumers still readable.
+  Strict Core checks pass in 174.714 seconds for the `std` library and native
+  and SDK all-target profiles. The owning publisher gate, required application
+  compilation and the complete filesystem suite remain pending.
+  The older hermetic policy check finishes with 12 passes and one fixture
+  failure: an expiry of `u64::MAX` exceeds TOML's signed-integer encoding range,
+  so the generous-bound positive control cannot reach its byte-size assertion.
+  All three new external-quota and queue-starvation regressions pass; the whole
+  policy check remains failed. Test-only successor `5313ee703a` uses a valid
+  expiry while preserving exact-size success, full-snapshot refusal and the
+  generous positive control. Its complete 13-case policy run is underway.
+  Shared-chunk extraction, standalone and pack cache ownership, admission
+  integration, complete recovery and NativeReady remain pending.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
   and all seven strict Clippy/documentation profiles pass. The interface,
   commit-path, status and schema gates pass on unchanged final source, including
@@ -9727,7 +9745,14 @@ Resumed qualification:
   structured TOML configuration. These requirements do not require implementing
   every role runtime in this task; broader deployment remains separately
   unqualified. All 88 owning module checks and the formatter pair pass on
-  unchanged source; the complete current-trunk aggregate is running before a task merge.
+  unchanged source. The complete current-trunk aggregate fails after
+  19,199.763 seconds. Its package suite executes all 1,933 cases: 1,931 pass,
+  one fails and one times out, with none skipped. The checked-mutation
+  directory-sync case fails its five-second rendezvous; the signed-overlay
+  ancestry collection/reopen case reaches its 180-second process limit.
+  Original logs and bounded diagnostics are retained. These failures require
+  diagnosis and a passing full aggregate before a task merge; module evaluation
+  success does not qualify the failed aggregate.
   There are no Rust, dependency,
   specification or frozen-interface changes relative to the accepted trunk.
 
