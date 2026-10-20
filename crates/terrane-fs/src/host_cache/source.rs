@@ -11,10 +11,10 @@ use rustix::fs::{Mode, OFlags, open, openat};
 use std::sync::Arc;
 use std::{
     fs::{File, Metadata},
-    io::{self, Read, Seek, SeekFrom},
+    io,
     os::{
         fd::{AsFd, AsRawFd},
-        unix::fs::MetadataExt,
+        unix::fs::{FileExt, MetadataExt},
     },
 };
 use terrane::host::cache::{
@@ -145,10 +145,10 @@ impl NativeChunkSource {
                 Err(error) => return Err(error),
             }
         }
-        let (mut file, codec) =
+        let (file, codec) =
             file.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "chunk source absent"))?;
         let profile = layout.layout.chunk_profile().clone();
-        let encoded = read_bounded(&mut file, &profile, allocation_limit)?;
+        let encoded = read_bounded(&file, &profile, allocation_limit)?;
         if encoded.first() != Some(&codec) {
             return Err(invalid("source codec differs from canonical filename"));
         }
@@ -274,13 +274,29 @@ impl NativeChunkSource {
             && &self.profile == profile
     }
 
+    /// Reads verified plaintext while preserving existing mutable call sites.
+    ///
+    /// # Errors
+    /// Refuses changed, oversized or invalid source and dictionary bytes.
     pub(super) fn read_verified(&mut self) -> io::Result<Vec<u8>> {
-        match &mut self.backing {
+        self.read_verified_at()
+    }
+
+    /// Verifies retained bytes without changing any shared open-file cursor.
+    ///
+    /// The source and one-hop dictionary use positioned reads. Concurrent
+    /// consumers retain independent bounded buffers without a source mutex.
+    ///
+    /// # Errors
+    /// Refuses changed native metadata, invalid identities or boundaries,
+    /// decompression failures and allocation beyond the configured bound.
+    pub(in crate::host_cache) fn read_verified_at(&self) -> io::Result<Vec<u8>> {
+        match &self.backing {
             Backing::Encoded { file, dictionary } => {
                 let encoded = read_bounded(file, &self.profile, self.allocation_limit)?;
                 let dictionary = dictionary
-                    .as_mut()
-                    .map(|source| source.read_verified())
+                    .as_ref()
+                    .map(|source| source.read_verified_at())
                     .transpose()?;
                 let verified = terrane::codec::decode_verified(
                     &encoded,
@@ -311,7 +327,7 @@ impl NativeChunkSource {
 }
 
 fn read_bounded(
-    file: &mut File,
+    file: &File,
     profile: &ChunkProfile,
     allocation_limit: usize,
 ) -> io::Result<Vec<u8>> {
@@ -327,7 +343,6 @@ fn read_bounded(
             "encoded source exceeds owner allocation policy",
         ));
     }
-    file.seek(SeekFrom::Start(0))?;
     let length = usize::try_from(before.len()).map_err(invalid)?;
     let mut encoded = Vec::new();
     encoded
@@ -340,11 +355,11 @@ fn read_bounded(
         ));
     }
     encoded.resize(length, 0);
-    file.read_exact(&mut encoded)?;
+    file.read_exact_at(&mut encoded, 0)?;
     // Probe growth on the stack; an adversarial file must not grow a heap
     // allocation beyond the original checked window merely to detect overflow.
     let mut extra = [0];
-    if file.read(&mut extra)? != 0 {
+    if file.read_at(&mut extra, before.len())? != 0 {
         return Err(invalid("source grew beyond its checked allocation"));
     }
     let after = file.metadata()?;
@@ -409,6 +424,7 @@ fn invalid(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> io::Er
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use std::io::{Read, Seek, SeekFrom};
 
     struct Fixture(std::path::PathBuf);
 
@@ -444,15 +460,39 @@ mod tests {
         let profile = ChunkProfile::cdc_1m([0; 32]);
         file.seek(SeekFrom::Start(3)).unwrap();
 
-        let error = read_bounded(&mut file, &profile, bytes.len() - 1).unwrap_err();
+        let error = read_bounded(&file, &profile, bytes.len() - 1).unwrap_err();
 
         assert_eq!(error.kind(), io::ErrorKind::OutOfMemory);
         assert_eq!(file.stream_position().unwrap(), 3);
 
-        let actual = read_bounded(&mut file, &profile, bytes.len()).unwrap();
+        let actual = read_bounded(&file, &profile, bytes.len()).unwrap();
 
         assert_eq!(actual, bytes);
         assert!(actual.capacity() <= bytes.len());
+        assert_eq!(file.stream_position().unwrap(), 3);
+
+        // Duplicated descriptors share one open-file cursor. Successful reads
+        // must leave it alone even when every reader starts simultaneously.
+        let barrier = std::sync::Barrier::new(4);
+        std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..4)
+                .map(|_| {
+                    let shared = file.try_clone().unwrap();
+                    let barrier = &barrier;
+                    let profile = &profile;
+                    scope.spawn(move || {
+                        barrier.wait();
+                        for _ in 0..32 {
+                            assert_eq!(read_bounded(&shared, profile, bytes.len()).unwrap(), bytes);
+                        }
+                    })
+                })
+                .collect();
+            for worker in workers {
+                worker.join().unwrap();
+            }
+        });
+        assert_eq!(file.stream_position().unwrap(), 3);
     }
 
     #[test]
