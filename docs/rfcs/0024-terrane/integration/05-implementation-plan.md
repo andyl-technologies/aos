@@ -9069,8 +9069,10 @@ original inode is removed. Independent observation checks original bytes and
 policy holds through deadline loss and physical owner restarts. The complete
 filesystem suite passes all 126 nonignored cases with the original six
 privileged ignores and 5,095 verified crate inputs. Both owning publisher gates
-also pass. Mandatory application compilation continues; complete task acceptance
-remains pending.
+also pass. Mandatory application test-target compilation passes with exactly
+183 artifacts from 59 packages, independently matched to Cargo metadata, in
+2,190.109 seconds. All owned component controllers actually terminate with
+success; complete task and aggregate acceptance remain pending.
 
 Encoded pending-chunk continuation `ec17f3299b` additionally recognizes actual
 pending chunk custody only after an authenticated canonical `NotFound`, no
@@ -9082,10 +9084,38 @@ grants no decoding or serving authority. Independent kernel measurement
 distinguishes sealed and encoded inodes. All 59 prior selectors are retained;
 five are added across six new domains. Their combined finite project budget is
 432 MiB within the existing disk-backed 512 MiB image. Local strict Clippy and
-formatting pass. Source-guarded profiles, image/archive preparation and mandatory
-application compilation are running. Its native phase remains unstarted until
+formatting pass. All three isolated strict profiles and private documentation
+pass in 97.366 seconds. The source-bound image and complete test archive build
+successfully, and required application compilation passes with exactly 183
+artifacts from 59 packages in 1,018.717 seconds. No native execution occurred at
+this source. Its unstarted native phase is superseded by the stronger pack
+continuation below, which retains every encoded control and operating interval.
+
+Pack/index recovery continuation `0160e3fa2f` retains genuine pending units
+without issuing the canonical inspection that previously invalidated Drain.
+Synchronized bootstrap funding now precedes inspection that can move a split
+pair's remaining canonical member; these units are excluded from index repair,
+and changed shared names are rescanned. Pre-bootstrap backing discovery avoids
+pending lifecycle effects. Both surviving-member directions retain explicit
+peer-absence checks and cannot establish a missing pack or index. Encoded
+native custody rejects foreign project ownership before namespace effects.
+No identity, encoding, bucket key, wire field or Store-trait change is made.
+
+Source `3e2b5a5e1c` adds actual native controls for both-pending expiry and
+deadline loss, both split directions, either surviving member, and foreign
+project refusal before rename or lease creation. Root administration seeds
+candidate files without manufacturing policy or retirement leases. Independent
+observation retains original descriptors and checks bytes, actual project
+ownership, both member deadlines and exact remaining names. Original chunk
+controls execute during real pack intervals; no clock or predicate is relaxed.
+All 64 previous selectors remain, with four added; the image binds seven
+helpers and 61 domains with a finite 488 MiB project budget within the unchanged
+512 MiB disk image. Local all-target compilation, strict Clippy and formatting
+pass. All three isolated strict profiles and private documentation also pass
+in 107.337 seconds. Source-bound image/archive preparation and mandatory
+application compilation continue. Native execution remains unstarted until
 the combined Surface/module aggregate actually terminates; this preparation
-does not delay that aggregate further. No new native or task result is claimed.
+does not extend its serialization barrier. No new native or task pass is claimed.
 
 The older shared-directory aggregate at `86fb63e127` actually terminates with
 failure after 18,940.237 seconds. Nextest reports 2,149 run, 2,141 passed,
