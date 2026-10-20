@@ -206,7 +206,7 @@ async fn external_capability_minimum_refuses_empty_before_any_retained_sql_plan(
             }
         }),
     );
-    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures");
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tests/fixtures");
     let tls = crate::native_tls::NativeTlsListener::new(
         listener,
         &fixture.join("hub-hybrid-fleet-server.crt"),

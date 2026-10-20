@@ -89,7 +89,7 @@ pub(super) async fn validate_credential(db: Arc<Database>, binding_id: i64, root
             .arg(&root)
             .arg(std::env::var("AOS_OCI_DIST").unwrap())
             .arg(std::env::var("AOS_OCI_WORKERD").unwrap())
-            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures"))
+            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tests/fixtures"))
             .stdin(Stdio::piped())
             .stdout(log.try_clone().unwrap())
             .stderr(log)
@@ -111,7 +111,7 @@ pub(super) async fn validate_credential(db: Arc<Database>, binding_id: i64, root
         serde_json::from_slice(&std::fs::read(root.join("ready.json")).unwrap()).unwrap();
     let ca = std::fs::read(
         Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/hub-hybrid-fleet-s3-ca.crt"),
+            .join("../../../tests/fixtures/hub-hybrid-fleet-s3-ca.crt"),
     )
     .unwrap();
     let http = reqwest::Client::builder()

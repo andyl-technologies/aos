@@ -426,7 +426,7 @@ async fn recovery_contract(postgres_url: Option<String>) {
                 }
             }),
         );
-    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures");
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tests/fixtures");
     let tls = crate::native_tls::NativeTlsListener::new(
         listener,
         &fixture.join("hub-hybrid-fleet-server.crt"),

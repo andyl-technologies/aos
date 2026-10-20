@@ -336,7 +336,7 @@ impl Fixture {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let fixtures =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures");
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tests/fixtures");
         let tls = crate::native_tls::NativeTlsListener::new(
             listener,
             &fixtures.join("hub-hybrid-fleet-server.crt"),

@@ -373,7 +373,7 @@ async fn run_connected(cross_binding: bool) {
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../pkgs/tools/aos-hub-external-copy-connected-e2e.mjs")
+                .join("../../../pkgs/tools/aos-hub-external-copy-connected-e2e.mjs")
         });
     let log = std::fs::OpenOptions::new()
         .create_new(true)
@@ -386,7 +386,7 @@ async fn run_connected(cross_binding: bool) {
             .arg(&root)
             .arg(std::env::var("AOS_COPY_DIST").unwrap())
             .arg(workerd)
-            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures"))
+            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tests/fixtures"))
             .stdout(log.try_clone().unwrap())
             .stdin(Stdio::piped())
             .stderr(log)
@@ -431,7 +431,7 @@ async fn run_connected(cross_binding: bool) {
     // pins the tracked CA and resolves that certificate host to its listener.
     let ca = std::fs::read(
         Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/hub-hybrid-fleet-s3-ca.crt"),
+            .join("../../../tests/fixtures/hub-hybrid-fleet-s3-ca.crt"),
     )
     .unwrap();
     let relay = ready["relayAddress"].as_str().unwrap().parse().unwrap();

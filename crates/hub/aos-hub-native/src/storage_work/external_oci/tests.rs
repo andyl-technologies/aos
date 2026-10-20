@@ -367,7 +367,7 @@ async fn actual_external_oci_blob_config_manifest_index_tag_and_cold_replay() {
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../pkgs/tools/aos-hub-external-oci-connected-e2e.mjs")
+                .join("../../../pkgs/tools/aos-hub-external-oci-connected-e2e.mjs")
         });
     let mut process = Process(
         Command::new(node)
@@ -375,7 +375,7 @@ async fn actual_external_oci_blob_config_manifest_index_tag_and_cold_replay() {
             .arg(&root)
             .arg(std::env::var("AOS_OCI_DIST").unwrap())
             .arg(workerd)
-            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures"))
+            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tests/fixtures"))
             .stdin(Stdio::piped())
             .stdout(log.try_clone().unwrap())
             .stderr(log)
@@ -399,7 +399,7 @@ async fn actual_external_oci_blob_config_manifest_index_tag_and_cold_replay() {
     let relay = ready["relayAddress"].as_str().unwrap().parse().unwrap();
     let ca = std::fs::read(
         Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/hub-hybrid-fleet-s3-ca.crt"),
+            .join("../../../tests/fixtures/hub-hybrid-fleet-s3-ca.crt"),
     )
     .unwrap();
     let http = reqwest::Client::builder()

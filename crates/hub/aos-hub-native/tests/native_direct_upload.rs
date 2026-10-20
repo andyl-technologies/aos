@@ -258,7 +258,7 @@ impl Drop for Fixture {
 async fn fixture() -> Fixture {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    let files = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures");
+    let files = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tests/fixtures");
     let tls = aos_hub_native::native_tls::NativeTlsListener::new(
         listener,
         &files.join("hub-hybrid-fleet-s3.crt"),

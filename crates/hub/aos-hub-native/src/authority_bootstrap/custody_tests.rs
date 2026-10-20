@@ -162,7 +162,7 @@ pub(super) async fn custody_client(
             (StatusCode::OK, [(STORAGE_WORK_SIGNATURE_HEADER, signature)], reply.body)
         }
     }));
-    let files = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures");
+    let files = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tests/fixtures");
     let tls = aos_hub_native::native_tls::NativeTlsListener::new(
         listener,
         &files.join("hub-hybrid-fleet-server.crt"),

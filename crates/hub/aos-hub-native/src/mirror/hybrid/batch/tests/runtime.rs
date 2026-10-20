@@ -196,8 +196,8 @@ async fn connected_runtime(gc_only: bool) {
         .as_object_mut()
         .unwrap()
         .extend(super::runtime_membership::sources());
-    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures");
-    let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../tests/fixtures");
+    let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
     let worker_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let worker_port = worker_listener.local_addr().unwrap().port();
     drop(worker_listener);

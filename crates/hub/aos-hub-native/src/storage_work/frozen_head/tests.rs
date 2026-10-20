@@ -497,7 +497,7 @@ async fn worker(
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    let files = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures");
+    let files = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tests/fixtures");
     let tls = crate::native_tls::NativeTlsListener::new(
         listener,
         &files.join("hub-hybrid-fleet-server.crt"),
