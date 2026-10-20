@@ -57,7 +57,7 @@ while IFS= read -r socket_case; do
       [ "$privilege_fields" -eq 1 ]
       printf "%s\n" "SOCKET_UNIT_IDENTITY uid=841 gid=845 groups=none caps=zero nnp=1"
       exec "$@"
-    ' socket-unit "$image/bin/terrane_fs" --exact "$socket_case" --nocapture \
+    ' socket-unit "$image/bin/terrane_linux" --exact "$socket_case" --nocapture \
     > "$unit_root/result.log" 2>&1; then
     cat "$unit_root/result.log"
     exit 1
