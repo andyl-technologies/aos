@@ -9177,9 +9177,10 @@ all-target compilation, strict Clippy, both focused inventory tests and the
 formatter pair pass. All three isolated strict profiles and private
 documentation pass in 97.289 seconds. Image and archive preparation pass in
 239.298 and 132.287 seconds, with all 5,108 image inputs and 72 selectors
-independently verified. The preparation controller actually terminates with
-success; mandatory application compilation continues. Its native phase
-additionally waits for actual collection of the
+independently verified. Mandatory application compilation also passes with
+exactly 183 artifacts from 59 packages in 2,068.172 seconds, independently
+matched to Cargo metadata. Both preparation controllers actually terminate
+successfully. Its native phase additionally waits for actual collection of the
 `62bfede7fd` native controller; no runtime or complete task pass is claimed.
 
 The older shared-directory aggregate at `86fb63e127` actually terminates with
