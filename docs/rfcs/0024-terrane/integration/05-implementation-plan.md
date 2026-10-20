@@ -9112,10 +9112,24 @@ All 64 previous selectors remain, with four added; the image binds seven
 helpers and 61 domains with a finite 488 MiB project budget within the unchanged
 512 MiB disk image. Local all-target compilation, strict Clippy and formatting
 pass. All three isolated strict profiles and private documentation also pass
-in 107.337 seconds. Source-bound image/archive preparation and mandatory
-application compilation continue. Native execution remains unstarted until
-the combined Surface/module aggregate actually terminates; this preparation
-does not extend its serialization barrier. No new native or task pass is claimed.
+in 107.337 seconds. Source-bound image and archive preparation pass in 254.944
+and 144.174 seconds; independent image verification matches all 5,107 inputs.
+Mandatory application compilation continues. Native execution remains
+unstarted until the combined Surface/module aggregate actually terminates;
+this preparation does not extend its serialization barrier. No new native
+or task pass is claimed.
+
+Fixture-only follow-up `66d87caadd` supersedes the unstarted pack native phase.
+Review of the pinned Linux 7.2.3 source identifies ext4's `EXDEV` refusal for
+a foreign-project rename into an inheriting directory. Explicit root
+administration temporarily clears only the empty destination directory's
+inheritance flag during pre-startup fault injection, then synchronizes and
+verifies restored attributes and original directory custody before either
+role starts. Neither inode's project assignment changes. All original native
+cases and production code remain unchanged. Formatting, crate-graph and unsafe
+checks pass; all three isolated strict profiles and private documentation pass
+in 100.255 seconds. Image and application-target qualification continue;
+native execution and complete task acceptance remain pending.
 
 The older shared-directory aggregate at `86fb63e127` actually terminates with
 failure after 18,940.237 seconds. Nextest reports 2,149 run, 2,141 passed,
