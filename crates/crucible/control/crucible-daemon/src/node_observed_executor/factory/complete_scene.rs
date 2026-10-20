@@ -55,6 +55,20 @@ impl InstalledNodeCatalog {
                 .map_or(0, |original| usize::from(!original.is_reclaimed()))
     }
 
+    #[cfg(feature = "test-support")]
+    pub(crate) fn funded_template_observation_data(
+        &self,
+    ) -> crate::node_observed_executor::FundedTemplateObservation {
+        use crate::node_observed_executor::{FundedTemplateObservation, FundedTemplatePhase};
+        let phase = self
+            .funded_templates
+            .as_ref()
+            .map_or(FundedTemplatePhase::Absent, |original| {
+                original.observed_phase()
+            });
+        FundedTemplateObservation::from_actor(phase, self.complete_scene_world_count())
+    }
+
     pub(crate) fn poll_complete_scene_reclamation(
         &mut self,
         stopping: bool,

@@ -55,6 +55,8 @@ impl NodeObservationService {
         let actor_roots = Arc::clone(&roots);
         let retired = Arc::new(AtomicBool::new(false));
         let actor_retired = Arc::clone(&retired);
+        #[cfg(feature = "test-support")]
+        let (actor_funded_templates, funded_templates) = funded_template_observation::channel();
         let actor_preparations = preparations.clone();
         let actor_repository = Arc::clone(&repository);
         thread::Builder::new()
@@ -81,6 +83,13 @@ impl NodeObservationService {
                 });
                 match catalog {
                     Ok(catalog) => {
+                        #[cfg(feature = "test-support")]
+                        if let Err(error) = actor_funded_templates
+                            .publish(catalog.funded_template_observation_data())
+                        {
+                            let _ = ready_sender.send(Err(error));
+                            return;
+                        }
                         let _ = ready_sender.send(Ok(()));
                         run_actor(
                             catalog,
@@ -105,6 +114,8 @@ impl NodeObservationService {
                                 stopping: actor_stopping,
                                 roots: actor_roots,
                                 retired: actor_retired,
+                                #[cfg(feature = "test-support")]
+                                funded_templates: actor_funded_templates,
                             },
                         );
                     }
@@ -128,6 +139,8 @@ impl NodeObservationService {
             debug,
             preserving_debug,
             root_preparations,
+            #[cfg(feature = "test-support")]
+            funded_templates,
         })
     }
 }

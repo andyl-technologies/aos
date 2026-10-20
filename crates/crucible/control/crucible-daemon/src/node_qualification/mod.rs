@@ -132,3 +132,6 @@ pub(crate) use packet_collection::complete::retained::{
 };
 
 pub use packet_collection::PacketCompleteFreshRestorationInputs;
+
+#[cfg(feature = "test-support")]
+pub use packet_collection::complete::{CompleteSceneFixtureInputs, write_complete_scene_fixture};

@@ -65,3 +65,18 @@ pub use authority::PacketCompleteOriginalSceneSupervisor;
 mod construction_diagnostics;
 
 pub use authority::PacketCompleteFreshRestorationInputs;
+
+#[cfg(any(test, feature = "test-support"))]
+mod fixture;
+#[cfg(any(test, feature = "test-support"))]
+#[path = "complete/tests/configuration.rs"]
+mod fixture_configuration;
+#[cfg(any(test, feature = "test-support"))]
+#[path = "complete/tests/definition.rs"]
+mod fixture_definition;
+#[cfg(any(test, feature = "test-support"))]
+#[path = "complete/tests/host.rs"]
+mod fixture_host;
+
+#[cfg(feature = "test-support")]
+pub use fixture::{CompleteSceneFixtureInputs, write_complete_scene_fixture};

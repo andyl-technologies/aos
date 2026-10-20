@@ -238,3 +238,23 @@ fn refused() -> QualificationError {
 
 #[cfg(test)]
 mod tests;
+
+/// Checks the real closed decoder without installing a Source or namespace.
+///
+/// # Errors
+/// Refuses changed configuration bytes, unsupported complete7 contracts,
+/// invalid file selections or policy rejected by the actual local materializer.
+#[cfg(feature = "test-support")]
+pub(super) fn validate_fixture_manifest_data(
+    pin: &InstalledCompleteSceneManifest,
+) -> Result<(), QualificationError> {
+    match manifest::load_funded(pin)? {
+        manifest::FundedSelection::Configuration(configuration) => {
+            // Validate a genuine local Host and its derived coordinator together.
+            // Neither this local owner nor its process token leaves the checker.
+            let _ = configuration.materialize()?;
+            Ok(())
+        }
+        manifest::FundedSelection::Installation(_, _) => Err(refused()),
+    }
+}

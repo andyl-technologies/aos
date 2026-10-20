@@ -20,7 +20,7 @@ use crucible_engine::node_scheduling::{ExactCeiling, ExecutionPolicy};
 use crucible_node_format::*;
 use serde::Serialize;
 
-use super::id;
+use super::fixture::id;
 
 pub(super) struct Host {
     pub selection: HostSchedulingSelection,

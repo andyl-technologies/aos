@@ -28,16 +28,9 @@ pub(super) const POSITIVE_STARTUP_SETUP_MEMORY_BYTES: u64 = 2 * 1024 * 1024 * 10
 /// and one-short checks replace this allowance with the actual derived peak.
 pub(super) const POSITIVE_HOST_SDK_SETUP_MEMORY_BYTES: u64 = 3 * 1024 * 1024 * 1024;
 
-#[path = "tests/configuration.rs"]
-mod configuration;
-#[path = "tests/definition.rs"]
-mod definition;
-#[path = "tests/host.rs"]
-mod host;
+use super::fixture_configuration as configuration;
 
-fn id(value: &str) -> Id {
-    Id::new(value).unwrap()
-}
+use super::fixture::id;
 
 pub(super) struct Scene {
     world: configuration::World,

@@ -152,6 +152,9 @@ fn pending_status_and_exact_retry_do_not_wait_for_actor_and_full_queue_keeps_ori
         stopping: Arc::new(AtomicBool::new(false)),
         roots: Arc::new(Mutex::new(Default::default())),
         retired: Arc::new(AtomicBool::new(false)),
+        #[cfg(feature = "test-support")]
+        funded_templates:
+            crate::node_observed_executor::service::funded_template_observation::channel().1,
         preparations: None,
         capabilities: capabilities.clone(),
         debug: super::super::debug::DebugLedger::new(blobs.clone(), refs.clone()).unwrap(),

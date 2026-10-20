@@ -117,6 +117,9 @@ impl Fixture {
             stopping: Arc::new(AtomicBool::new(false)),
             roots: Arc::new(Mutex::new(BTreeSet::new())),
             retired: Arc::new(AtomicBool::new(false)),
+            #[cfg(feature = "test-support")]
+            funded_templates:
+                crate::node_observed_executor::service::funded_template_observation::channel().1,
             preparations: None,
             capabilities: CapabilityPreparationLedger::new(blobs.clone(), refs.clone()).unwrap(),
             debug: DebugLedger::new(blobs.clone(), refs.clone()).unwrap(),

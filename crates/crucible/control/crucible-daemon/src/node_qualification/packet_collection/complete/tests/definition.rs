@@ -48,6 +48,75 @@ impl Definition {
         report_startup: bool,
         full_restore: bool,
     ) -> Self {
+        Self::with_declaration_family(
+            executable,
+            model,
+            member,
+            proof_bytes,
+            effect_phases,
+            confirmation,
+            ack,
+            report_startup,
+            full_restore,
+            false,
+        )
+    }
+
+    pub(super) fn with_fixture_family(
+        executable: ContentRef,
+        model: &impl Serialize,
+        member: usize,
+        proof_bytes: Vec<u8>,
+        effect_phases: &[u16],
+        confirmation: Option<
+            crucible_node_transport::reference_packet::service::PacketNative5ConfirmationSelection,
+        >,
+        ack: Option<crucible_node_transport::reference_packet::service::ack_emitter::PacketNative5AckEmitterSelection>,
+        report_startup: bool,
+        full_restore: bool,
+        settled17: bool,
+    ) -> Self {
+        if !settled17 {
+            return Self::with_native_fixture(
+                executable,
+                model,
+                member,
+                proof_bytes,
+                effect_phases,
+                confirmation,
+                ack,
+                report_startup,
+                full_restore,
+            );
+        }
+        Self::with_declaration_family(
+            executable,
+            model,
+            member,
+            proof_bytes,
+            effect_phases,
+            confirmation,
+            ack,
+            report_startup,
+            full_restore,
+            true,
+        )
+    }
+
+    fn with_declaration_family(
+        executable: ContentRef,
+        model: &impl Serialize,
+        member: usize,
+        proof_bytes: Vec<u8>,
+        effect_phases: &[u16],
+        confirmation: Option<
+            crucible_node_transport::reference_packet::service::PacketNative5ConfirmationSelection,
+        >,
+        ack: Option<crucible_node_transport::reference_packet::service::ack_emitter::PacketNative5AckEmitterSelection>,
+        report_startup: bool,
+        full_restore: bool,
+        settled17: bool,
+    ) -> Self {
         let id = |value: &str| match value {
             "packet"
             | "packet-owner"
@@ -58,8 +127,8 @@ impl Definition {
             | "packet-input-epoch"
             | "packet-admission"
             | "packet-transaction"
-            | "packet-gate" => super::id(&format!("{value}-{member}")),
-            _ => super::id(value),
+            | "packet-gate" => super::fixture::id(&format!("{value}-{member}")),
+            _ => super::fixture::id(value),
         };
         let version = 5;
         let installed = true;
@@ -288,7 +357,7 @@ impl Definition {
             };
             let selected = PacketNative5CaptureAllocationSelection::OriginalObserve12;
             let declaration = if full_restore {
-                super::native_roundtrip::restore_declaration(
+                super::fixture::continuation::restore_declaration(
                     &provider,
                     confirmation.as_ref(),
                     ack.as_ref(),
@@ -303,6 +372,11 @@ impl Definition {
                     Some(&selected),
                 )
                 .unwrap()
+            };
+            let declaration = if settled17 {
+                super::fixture::continuation::with_settled17_declaration(declaration)
+            } else {
+                declaration
             };
             (declaration.peer, declaration.restoration)
         } else {

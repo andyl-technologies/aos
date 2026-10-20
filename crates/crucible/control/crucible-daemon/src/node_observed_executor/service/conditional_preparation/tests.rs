@@ -183,6 +183,9 @@ fn pending_status_and_exact_retry_do_not_wait_for_the_owning_actor() {
         stopping: Arc::new(AtomicBool::new(false)),
         roots: Arc::new(Mutex::new(Default::default())),
         retired: Arc::new(AtomicBool::new(false)),
+        #[cfg(feature = "test-support")]
+        funded_templates:
+            crate::node_observed_executor::service::funded_template_observation::channel().1,
         root_preparations: super::super::root_preparation::ledger::RootPreparationLedger::new(
             blobs.clone(),
             refs.clone(),
@@ -590,6 +593,9 @@ fn queued_shutdown_completion_panic_preserves_original_and_reclaims_native_world
                 stopping: Arc::new(AtomicBool::new(true)),
                 roots: Arc::new(Mutex::new(Default::default())),
                 retired: retired.clone(),
+                #[cfg(feature = "test-support")]
+                funded_templates:
+                    crate::node_observed_executor::service::funded_template_observation::channel().0,
             },
         );
 

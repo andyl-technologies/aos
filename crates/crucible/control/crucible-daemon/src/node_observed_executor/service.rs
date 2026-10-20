@@ -20,6 +20,12 @@ pub use debug_preserving::{
     NodePreservingDebugRequest, NodePreservingDebugResumeRequest, NodePreservingDebugState,
 };
 mod complete_scene;
+#[cfg(feature = "test-support")]
+mod funded_template_observation;
+#[cfg(feature = "test-support")]
+pub use funded_template_observation::{
+    FundedTemplateObservation, FundedTemplateObserver, FundedTemplatePhase,
+};
 mod original_claim;
 pub use complete_scene::CompleteSceneServiceFactory;
 mod vendor_installation;
@@ -200,6 +206,8 @@ struct ActorControl {
     stopping: Arc<AtomicBool>,
     roots: Arc<Mutex<BTreeSet<ContentId>>>,
     retired: Arc<AtomicBool>,
+    #[cfg(feature = "test-support")]
+    funded_templates: funded_template_observation::Publisher,
 }
 
 /// Retains GC inventory independently of the service submission handle.
@@ -264,6 +272,8 @@ pub struct NodeObservationService {
     debug: DebugLedger,
     preserving_debug: debug_preserving::Ledger,
     root_preparations: RootPreparationLedger,
+    #[cfg(feature = "test-support")]
+    funded_templates: FundedTemplateObserver,
 }
 
 impl NodeObservationService {
@@ -310,6 +320,13 @@ impl NodeObservationService {
             blobs,
             refs,
         )
+    }
+
+    /// Copies the read-only handle for this actual actor's foundation observations.
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn funded_template_observer(&self) -> FundedTemplateObserver {
+        self.funded_templates.clone()
     }
 
     /// Compiles a portable scenario using this owning daemon's installed catalog.
@@ -467,6 +484,8 @@ fn run_actor(
         stopping,
         roots,
         retired,
+        #[cfg(feature = "test-support")]
+        funded_templates,
     } = control;
     let mut workers: BTreeMap<ExecutionId, ActorWorker> = BTreeMap::new();
     let mut debug_workers: BTreeMap<ExecutionId, DebugWorker> = BTreeMap::new();
@@ -673,6 +692,15 @@ fn run_actor(
             }
         }))
         .is_err()
+        {
+            stopping.store(true, Ordering::Release);
+        }
+        // Publication follows actual command work and the real cleanup poll.
+        // A read-only consumer can never drive or acknowledge these effects.
+        #[cfg(feature = "test-support")]
+        if funded_templates
+            .publish(catalog.funded_template_observation_data())
+            .is_err()
         {
             stopping.store(true, Ordering::Release);
         }

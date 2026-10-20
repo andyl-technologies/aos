@@ -94,3 +94,6 @@ pub use service::{
     RootFirstRefusal, RootGrantedOperation, RootPreparationAction, RootPreparationDiagnostic,
     RootPreparationRecord, RootPreparationRequest, RootPreparationState,
 };
+
+#[cfg(feature = "test-support")]
+pub use service::{FundedTemplateObservation, FundedTemplateObserver, FundedTemplatePhase};

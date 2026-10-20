@@ -19,6 +19,8 @@ pub(in crate::node_observed_executor::factory) struct FundedTemplateCapsule {
     attempted: bool,
     failure: Option<QualificationError>,
     retired: bool,
+    #[cfg(feature = "test-support")]
+    templates_authenticated: bool,
 }
 
 impl FundedTemplateCapsule {
@@ -35,6 +37,8 @@ impl FundedTemplateCapsule {
             attempted: false,
             failure: None,
             retired: false,
+            #[cfg(feature = "test-support")]
+            templates_authenticated: false,
         }
     }
 
@@ -68,7 +72,27 @@ impl FundedTemplateCapsule {
             self.failure = Some(error);
             return Err(refused("funded input preparation is unavailable"));
         }
+        // This test-only observation records the actual completed authenticator,
+        // rather than inferring success from a partially populated output.
+        #[cfg(feature = "test-support")]
+        {
+            self.templates_authenticated = true;
+        }
         Ok(())
+    }
+
+    #[cfg(feature = "test-support")]
+    pub(super) fn observed_phase(&self) -> crate::node_observed_executor::FundedTemplatePhase {
+        use crate::node_observed_executor::FundedTemplatePhase;
+        if self.retired {
+            FundedTemplatePhase::Reclaimed
+        } else if !self.attempted {
+            FundedTemplatePhase::Unattempted
+        } else if self.templates_authenticated {
+            FundedTemplatePhase::TemplatesRetained
+        } else {
+            FundedTemplatePhase::AttemptFailed
+        }
     }
 
     pub(super) fn retire(&mut self) -> Result<(), NodeObservedError> {

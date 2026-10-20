@@ -21,7 +21,7 @@ use crucible_node_transport::reference_packet::{
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use super::{definition::Definition, host::Host, id};
+use super::{fixture::id, fixture_definition::Definition, fixture_host::Host};
 
 pub(super) struct World {
     pub members: [Option<Definition>; 3],
@@ -60,10 +60,12 @@ fn endpoint(member: usize, output: bool) -> Endpoint {
 }
 
 impl World {
+    #[cfg(test)]
     pub(super) fn new(peer: ContentRef, host_executable: ContentRef, proof_bytes: Vec<u8>) -> Self {
         Self::with_effect_phases(peer, host_executable, proof_bytes, &[1, 2])
     }
 
+    #[cfg(test)]
     pub(super) fn with_effect_phases(
         peer: ContentRef,
         host_executable: ContentRef,
@@ -80,6 +82,7 @@ impl World {
         )
     }
 
+    #[cfg(test)]
     pub(super) fn with_native_selection(
         peer: ContentRef,
         host_executable: ContentRef,
@@ -101,6 +104,7 @@ impl World {
         )
     }
 
+    #[cfg(test)]
     pub(super) fn with_report_startup(
         peer: ContentRef,
         host_executable: ContentRef,
@@ -124,6 +128,7 @@ impl World {
         )
     }
 
+    #[cfg(test)]
     pub(super) fn with_native_fixture(
         peer: ContentRef,
         host_executable: ContentRef,
@@ -136,10 +141,63 @@ impl World {
         report_startup: bool,
         full_restore: bool,
     ) -> Self {
+        Self::with_fixture_family(
+            peer,
+            host_executable,
+            proof_bytes,
+            effect_phases,
+            confirmation,
+            ack,
+            report_startup,
+            full_restore,
+            false,
+        )
+    }
+
+    /// Selects complete17 declarations before any participant or world identity.
+    #[cfg(feature = "test-support")]
+    pub(super) fn with_settled17_fixture(
+        peer: ContentRef,
+        host_executable: ContentRef,
+        proof_bytes: Vec<u8>,
+    ) -> Self {
+        use crucible_node_transport::reference_packet::service::{
+            PacketNative5ConfirmationSelection, ack_emitter::PacketNative5AckEmitterSelection,
+        };
+        Self::with_fixture_family(
+            peer,
+            host_executable,
+            proof_bytes,
+            &[1, 2],
+            Some(PacketNative5ConfirmationSelection::AfterProtocolPoll5),
+            Some(PacketNative5AckEmitterSelection::CanonicalSdkBlob5),
+            true,
+            true,
+            true,
+        )
+    }
+
+    fn with_fixture_family(
+        peer: ContentRef,
+        host_executable: ContentRef,
+        proof_bytes: Vec<u8>,
+        effect_phases: &[u16],
+        confirmation: Option<
+            crucible_node_transport::reference_packet::service::PacketNative5ConfirmationSelection,
+        >,
+        ack: Option<crucible_node_transport::reference_packet::service::ack_emitter::PacketNative5AckEmitterSelection>,
+        report_startup: bool,
+        full_restore: bool,
+        settled17: bool,
+    ) -> Self {
         let mut content = BTreeMap::new();
         let proof = canonical::content_ref(&proof_bytes, "application/json").unwrap();
         content.insert(proof.clone(), proof_bytes.clone());
-        let host = Host::new(host_executable, proof.clone());
+        let host = if settled17 {
+            Host::new_restored17(host_executable, proof.clone())
+        } else {
+            Host::new(host_executable, proof.clone())
+        };
         content.extend(host.content.clone());
         let native_routes: [PacketInputConnection; 2] = std::array::from_fn(|index| {
             let latency = u64::from(index == 0);
@@ -202,7 +260,7 @@ impl World {
             },
         ];
         let mut members = [
-            Definition::with_native_fixture(
+            Definition::with_fixture_family(
                 peer.clone(),
                 &producer,
                 0,
@@ -212,8 +270,9 @@ impl World {
                 ack,
                 report_startup,
                 full_restore,
+                settled17,
             ),
-            Definition::with_native_fixture(
+            Definition::with_fixture_family(
                 peer.clone(),
                 &relay,
                 1,
@@ -223,8 +282,9 @@ impl World {
                 ack,
                 report_startup,
                 full_restore,
+                settled17,
             ),
-            Definition::with_native_fixture(
+            Definition::with_fixture_family(
                 peer,
                 &sink,
                 2,
@@ -234,6 +294,7 @@ impl World {
                 ack,
                 report_startup,
                 full_restore,
+                settled17,
             ),
         ];
         for member in &members {

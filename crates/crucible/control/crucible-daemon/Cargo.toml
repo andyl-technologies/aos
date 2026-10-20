@@ -61,3 +61,11 @@ required-features = ["test-support"]
 [[bin]]
 name = "crucible-reference-singleton-collector"
 path = "src/bin/crucible-reference-singleton-collector.rs"
+
+[[example]]
+name = "crucible-complete-scene-fixture"
+required-features = ["test-support"]
+
+[[example]]
+name = "crucible-funded-source-templates-flight"
+required-features = ["test-support"]

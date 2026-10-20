@@ -426,6 +426,19 @@ impl NodeControlDaemon {
         serving
     }
 
+    /// Copies this daemon's read-only actor observation handle for ordinary controls.
+    ///
+    /// Absence means the daemon has already stopped accepting actor operations.
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn funded_template_observer(
+        &self,
+    ) -> Option<crate::node_observed_executor::FundedTemplateObserver> {
+        self.service
+            .as_ref()
+            .map(NodeObservationService::funded_template_observer)
+    }
+
     /// Inventories active and cleanup-only roots under the repository GC fence.
     ///
     /// # Errors

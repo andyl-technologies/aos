@@ -151,6 +151,9 @@ fn queued_status_is_immediate_and_full_queue_preserves_original_unavailable_reco
         stopping: Arc::new(AtomicBool::new(false)),
         roots: Arc::new(Mutex::new(Default::default())),
         retired: Arc::new(AtomicBool::new(false)),
+        #[cfg(feature = "test-support")]
+        funded_templates:
+            crate::node_observed_executor::service::funded_template_observation::channel().1,
         preparations: None,
         debug: super::super::debug::DebugLedger::new(blobs.clone(), refs.clone()).unwrap(),
         preserving_debug: super::super::debug_preserving::Ledger::new(blobs.clone(), refs.clone())
