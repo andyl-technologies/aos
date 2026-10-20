@@ -1,6 +1,6 @@
-From 25185a3bb8967dd399a5cf02257981d4b36c0dec Mon Sep 17 00:00:00 2001
+From 7b2ddb9d9aebbf9bf1488e90cf691f69e48bf34d Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Tue, 20 Oct 2026 07:35:37 +0000
+Date: Tue, 20 Oct 2026 09:56:31 +0000
 Subject: [PATCH] Re-deliver coalesced RR control wakes and claim them before
  idle waits
 
@@ -16,7 +16,7 @@ test-crucible-control-deferred runs the production arm and bridge over one halte
 
 test-crucible-rr-sim-barriers now also extracts the RR wake boundary, the claim settlement and the outer loop's claim statement, and takes the wake state machine from its header. A request is published with its own IDLE or ACTIVE kick while every vCPU is halted and the idle callback provider aborts. The wait returns at IDLE without a callback, and the outer claim acknowledges the request; a runnable vCPU keeps its wake. Without the settlement the wait reaches the idle callback and the outer loop never claims, which the new unsettled-control-claim negative control reproduces.
 
-A published logical ceiling is now an upper bound rather than a stop. The RR loop crossed the final partial instruction to MIN(deadline, ceiling), crediting the gap below the ceiling to the guest, and a stalled node jumped to the ceiling, so guest time depended on where the host split quanta. qemu_plugin_register_sim_shmem_settlement_cb registers a settled-publication callback and a callback that reports the plugin's next exact event: an inbound delivery, a device completion, or a ceiling the host declared exact. The partial-instruction advance now targets only a timer or fault deadline or such an event at or before the ceiling. A dispatch boundary whose next retirement would cross the ceiling, with no event before it, is published as settled through the ceiling QEMU sampled, and the final post-execution ceiling completion defers to the advance while an event is pending. A stalled node advances only to events at or before the ceiling, publishing each one, and otherwise settles at its current clock. A sim node whose plugin dispatches ceilings without registering the callbacks is refused before its first guest instruction, and no fallback treats its ceiling as an exact stop or publishes a plain boundary as settled. The in-tree sim test plugins register the callbacks and declare their own ceilings exact events, so their stops are unchanged. The timer/icount migration section moves to version 6, so streams that may carry credited bias are refused, and the shared-memory ABI headers move to version 32. test-crucible-net-stop-chain stubs the boundary publication. The new test-crucible-rr-bound-ceiling extracts the production advance, stalled-deadline, publication, launch-refusal and predicate bodies; five negative controls restore the old ceiling credits or fallbacks and fail. The new test-crucible-icount-vmstate-version runs the production subsection loader and version gate over the production timer/icount descriptor: version 5 and older streams are refused before any hook runs, and two negative controls that accept them fail.
+A published logical ceiling is now an upper bound rather than a stop. The RR loop crossed the final partial instruction to MIN(deadline, ceiling), crediting the gap below the ceiling to the guest, and a stalled node jumped to the ceiling, so guest time depended on where the host split quanta. qemu_plugin_register_sim_shmem_settlement_cb registers a settled-publication callback and a callback that reports the plugin's next exact event: an inbound delivery, a device completion, or a ceiling the host declared exact. The partial-instruction advance now targets only a timer or fault deadline or such an event at or before the ceiling. A dispatch boundary whose next retirement would cross the ceiling, with no event before it, is published as settled through the ceiling QEMU sampled, and the final post-execution ceiling completion defers to the advance while an event is pending. A stalled node advances only to events at or before the ceiling, publishing each one, and otherwise settles at its current clock. A sim node whose plugin dispatches ceilings without registering the callbacks is refused before its first guest instruction, and no fallback treats its ceiling as an exact stop or publishes a plain boundary as settled. The in-tree sim test plugins register the callbacks and declare their own ceilings exact events, so their stops are unchanged. The timer/icount migration section moves to version 6, so streams that may carry credited bias are refused, and the shared-memory ABI headers move to version 32. test-crucible-net-stop-chain stubs the boundary publication. The new test-crucible-rr-bound-ceiling extracts the production advance, stalled-deadline, publication, launch-refusal and predicate bodies; five negative controls restore the old ceiling credits or fallbacks and fail. Its cases include host ceilings one and 49 ticks ahead of the clock, which leave a zero raw budget: the clock stays at its last retirement and the boundary settles through the ceiling, while a timer inside a one-tick gap is reached before the boundary settles. The new test-crucible-icount-vmstate-version runs the production subsection loader and version gate over the production timer/icount descriptor: version 5 and older streams are refused before any hook runs, and two negative controls that accept them fail.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -188645,10 +188645,10 @@ index 0000000000000000000000000000000000000000..6a18a6e4dcca7ec12163834700cc92a3
 +}
 diff --git a/tests/unit/test-crucible-rr-bound-ceiling.py b/tests/unit/test-crucible-rr-bound-ceiling.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..733a132944dd73de7af688b3791ad2b5eca74773
+index 0000000000000000000000000000000000000000..2c74788b086ba3d90e5f1ccaa7f8bd8d7e2e2d2f
 --- /dev/null
 +++ b/tests/unit/test-crucible-rr-bound-ceiling.py
-@@ -0,0 +1,472 @@
+@@ -0,0 +1,510 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise bounded scheduler ceilings in the production RR Sim bodies.
 +
@@ -188928,6 +188928,42 @@ index 0000000000000000000000000000000000000000..733a132944dd73de7af688b3791ad2b5
 +    printf("PASS a gap of a whole instruction is published without settlement\n");
 +}
 +
++/*
++ * A host ceiling less than one retirement ahead leaves a zero raw budget.
++ * With no event in the gap the clock stays put and the boundary settles.
++ */
++static void check_zero_budget_gaps_settle_in_place(void)
++{
++    static const uint64_t gaps[] = { 1, CRUCIBLE_SIM_TICKS_PER_INSTRUCTION - 1 };
++
++    for (size_t i = 0; i < sizeof(gaps) / sizeof(gaps[0]); i++) {
++        reset(2000000, 2000000 + gaps[i], true);
++        assert(!rr_crucible_sim_advance_to_exact_event(NULL));
++        assert(now_tick == 2000000 && timer_runs == 0);
++        assert(!rr_crucible_sim_gap_event_pending());
++        assert(rr_crucible_sim_settled_through(host_ceiling));
++        rr_crucible_sim_publish_dispatch_boundary(raw_icount);
++        assert(settled_publications == 1 && plain_publications == 0);
++        assert(published_raw == raw_icount && published_tick == 2000000);
++        assert(settled_ceiling_seen == host_ceiling);
++    }
++    printf("PASS zero-budget gaps of 1 and 49 settle at 2000000\n");
++}
++
++static void check_event_in_one_tick_gap_is_reached(void)
++{
++    reset(2000000, 2000001, true);
++    timer_remaining = 1;
++    assert(rr_crucible_sim_gap_event_pending());
++    assert(rr_crucible_sim_advance_to_exact_event(NULL));
++    assert(now_tick == 2000001 && timer_runs == 1);
++    timer_remaining = -1;
++    rr_crucible_sim_publish_dispatch_boundary(raw_icount);
++    assert(settled_publications == 1 && published_tick == 2000001);
++    assert(settled_ceiling_seen == 2000001);
++    printf("PASS a timer in a one-tick gap is reached, then settles\n");
++}
++
 +/* Whether @operation aborts the process, observed from a forked child. */
 +static bool aborts(void (*operation)(void))
 +{
@@ -189023,12 +189059,14 @@ index 0000000000000000000000000000000000000000..733a132944dd73de7af688b3791ad2b5
 +    check_inbound_delivery_in_gap_is_reached();
 +    check_due_plugin_event_does_not_block_settlement();
 +    check_whole_instruction_gap_is_not_settled();
++    check_zero_budget_gaps_settle_in_place();
++    check_event_in_one_tick_gap_is_reached();
 +    check_sim_dispatch_without_bridge_is_refused();
 +    check_generic_qemu_needs_no_bridge();
 +    check_stalled_node_settles_without_moving();
 +    check_stalled_node_reaches_a_deadline_before_the_ceiling();
 +    check_stalled_node_delivers_a_plugin_event_then_settles();
-+    printf("PASS production bounded ceilings: 11 cases\n");
++    printf("PASS production bounded ceilings: 13 cases\n");
 +    return 0;
 +}
 +"""

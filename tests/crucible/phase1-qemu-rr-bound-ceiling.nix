@@ -54,7 +54,10 @@ in
           ${pkgs.python3}/bin/python3 tests/unit/test-crucible-rr-bound-ceiling.py \
             --output-dir "$out/proof" > "$out/production-proof.result"
           cat "$out/production-proof.result"
-          grep -Fxq 'PASS production bounded ceilings: 11 cases' "$out/production-proof.result"
+          grep -Fxq 'PASS production bounded ceilings: 13 cases' "$out/production-proof.result"
+          # A ceiling less than one retirement ahead settles with a zero budget.
+          grep -Fxq 'PASS zero-budget gaps of 1 and 49 settle at 2000000' "$out/production-proof.result"
+          grep -Fxq 'PASS a timer in a one-tick gap is reached, then settles' "$out/production-proof.result"
 
           # Each negative restores one pre-fix ceiling credit or fallback and
           # must fail a compiled assertion, not the build.
