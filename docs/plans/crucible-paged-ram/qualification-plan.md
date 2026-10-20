@@ -81,6 +81,17 @@ trade a faster family for a slower one, raise caps, or disguise failed attempts
 as completed throughput. gem5/KVM profiles require their own comparable
 operating-mode baseline; they cannot replace the current QEMU regression gate.
 
+The current native integration compiles and links all 3,863 build actions, and
+all six selected native unit binaries pass, including seven bounded-thread and
+two CPU-instance subtests. The standalone fixture run remains failing: 16 of 25
+fixtures pass, eight have incomplete emitted callback dependency closure, and the
+mandatory launched capture lifecycle still fails. These results do not qualify
+prepared Source providers, actual CPU pin return, RAM rearm or VM activation.
+Callback dependency repairs must use actual production functions and genuine
+providers; an ordinary monitor reference-count model cannot stand in for CPU
+custody. Preserve the lifecycle failure until the launched path is implemented
+and tested.
+
 Current status: QEMU-SIM implementation qualification and final performance
 parity are in progress. All gem5/KVM live evidence above is unavailable; these
 are specified future profiles and remain disabled.

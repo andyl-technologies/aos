@@ -23,9 +23,10 @@ The native factory now selects the owning transaction. It retains the genuine
 factory facade, verifies the actual Source/Main binding, and installs Target
 before RAM preflight, directory provisioning, workers or child birth. The old
 native permit-only adapter is removed. Component tests keep their explicit
-fixture backend and do not enter the native issuer. QEMU host test targets compile, and its
-library has 1,147 passing tests with four ignored probes on this integration.
-Those controls do not establish native VM activation or performance parity.
+fixture backend and do not enter the native issuer. The latest local default
+QEMU host unit run passed 1,074 tests with three existing ignored probes; eight
+shutdown integration tests also passed. Those controls do not establish native
+VM activation or performance parity.
 
 The joined constructor now publishes its complete assembly in place and retains
 partial scheduler adoptions in the same Main body. Publication refuses without
@@ -290,6 +291,42 @@ process binding. Its original birth as a Target must not silently disable
 nested forks, and its containing Main/native return obligations must remain
 intact through promotion. Complete this together with the independent-family
 issuer rather than treating the first single-family increment as qualification.
+
+## Retained shutdown and candidate handback
+
+The host's [child shutdown continuation](../../../crates/crucible/qemu/crucible-qemu-host/src/node/shutdown_continuation.rs)
+keeps one Cleanup operation, entered ladder, returned wait results and independent
+post history for each actual child. QMP Quit borrows that operation. An observed
+reap remains factual even if its post refuses, and later calls do not repeat
+commands against the same known-reaped child. Logical failure remains visible
+alongside physical return. This implemented process journal does not yet settle
+the complete node's RAM source, controller or staged child services.
+
+A failed debugger candidate now keeps its original constructor, receiver and
+receipt in the lifecycle's existing inline slot. The
+[staged handback](../../../crates/crucible/control/crucible-daemon/src/vm_lifecycle/construction/retained_debug.rs)
+saves an accepted receipt before converting its error shell, then requires actual
+Complete stage, retained post-body and terminal custody. Body cleanup alone cannot
+clear the slot. Completed history moves into the containing post-body's existing
+history field; occupied destinations restore the same incoming value. A later
+containing-first refusal preserves both reports. Existing Source/Main/Target
+queries price the actual containing type sizes before allocation.
+
+The local construction and admission runs passed 59 and 53 tests respectively,
+including seven new ownership/refusal controls and the existing parallel
+constructor controls. Normal Cargo checks passed across workspace targets and
+features. These are component and compilation results. Current native replay
+producers still refuse independent debugger replay, so this handback repair does
+not qualify a successful native replay or introduce its issuer.
+
+Whole-node RAM cleanup remains an implementation dependency. Process reap cannot
+authorize dropping a live RAM source or joining a service that serves another
+child. A staged child service belongs to the Target supervisor even while its
+Stage resides in the Source node; cleanup must retain the actual Target lender.
+Failed Source and Target owners must stay in their existing issued receivers,
+with a separate helper debt where an issued live generation permits one. A kernel
+task ceiling does not bound reaped owners with unfinished RAM services and cannot
+justify allocating a task-sized array of complete nodes.
 
 ## Qualification
 
