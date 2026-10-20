@@ -579,6 +579,16 @@ impl VerifiedToken {
         self.effective.not_after
     }
 
+    /// Reports whether a timestamp satisfies the authenticated time bounds.
+    ///
+    /// The interval includes attenuation bounds, strict time caveats and the
+    /// issuer retirement selected during verification. This checks time only;
+    /// retained tokens still require independent current issuer selection and
+    /// request authorization before use.
+    pub const fn permits_time(&self, now: u64) -> bool {
+        now >= self.effective.not_before && now <= self.effective.not_after
+    }
+
     /// Authorizes every touched root against grants and every added caveat.
     ///
     /// The repository guard must additionally intersect the current ACL; this
@@ -589,8 +599,7 @@ impl VerifiedToken {
     /// grants, mismatched caveats, or missing/ambiguous epoch context.
     pub fn authorize(&self, request: &Request<'_>) -> Result<(), Unauthorized> {
         if !pattern::canonical_reference(request.reference)
-            || request.now > self.effective.not_after
-            || request.now < self.effective.not_before
+            || !self.permits_time(request.now)
             || request
                 .roots
                 .iter()
