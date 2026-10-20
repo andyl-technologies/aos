@@ -61,8 +61,9 @@ pub(super) fn preflight_repairable(inventory: &NativeRecoveryInspection) -> io::
 /// Classifies a genuine candidate while preserving all unresolved observations.
 ///
 /// # Errors
-/// Refuses pending bodies, loose chunks, broken/missing indexes, unsupported key
+/// Refuses pending bodies, loose chunks, mismatching indexes, unsupported key
 /// fields and any issue beyond the sealed witness supplied by actual adoption.
+/// A missing index is repair work, never a completed candidate for adoption.
 pub(super) fn classify(candidate: &NativeRecoveryCandidate) -> io::Result<RecoveryCase> {
     if candidate.pending_observation().is_some() {
         return Err(unresolved("pending recovery body is not yet supported"));
