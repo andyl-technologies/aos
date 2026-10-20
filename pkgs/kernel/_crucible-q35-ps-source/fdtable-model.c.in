@@ -168,11 +168,19 @@ static void *native_allocate(size_t bytes)
 	native_allocations++;
 	if (native_allocations == fail_allocation)
 		return NULL;
-	if (reuse_table_address && bytes == sizeof(reusable_table)) {
-		memset(&reusable_table, 0, sizeof(reusable_table));
-		return &reusable_table;
-	}
 	return calloc(1, bytes);
+}
+
+static struct fdtable *native_allocate_fdtable(void)
+{
+	if (!reuse_table_address)
+		return native_allocate(sizeof(struct fdtable));
+
+	native_allocations++;
+	if (native_allocations == fail_allocation)
+		return NULL;
+	memset(&reusable_table, 0, sizeof(reusable_table));
+	return &reusable_table;
 }
 
 static void native_free(void *value)
@@ -209,7 +217,9 @@ static void bitmap_copy_and_extend(unsigned long *to, const unsigned long *from,
 	}
 }
 
-#define kmalloc_obj(type, flags) native_allocate(sizeof(type))
+/* The selected native kmalloc_obj site allocates exactly a fdtable header. */
+#define kmalloc_obj(type, flags) \
+	_Generic((type *)NULL, struct fdtable *: native_allocate_fdtable)()
 #define kvmalloc_objs(type, count, flags) native_allocate(sizeof(type) * (count))
 #define kvmalloc(bytes, flags) native_allocate(bytes)
 #define kvfree(value) native_free(value)
@@ -761,6 +771,9 @@ static void reused_table_address_gets_a_new_birth(void)
 	reuse_table_address = true;
 	first = alloc_fdtable(128);
 	assert(!IS_ERR(first));
+	assert(first == &reusable_table && native_allocations == 3);
+	assert(first->fd && (void *)first->fd != (void *)first);
+	assert(first->open_fds && (void *)first->open_fds != (void *)first);
 	old = &contexts[0].fdtable_scope.records[0];
 	__free_fdtable(first);
 	assert(old->free_returned);
@@ -768,6 +781,9 @@ static void reused_table_address_gets_a_new_birth(void)
 
 	second = alloc_fdtable(128);
 	assert(second == first);
+	assert(native_allocations == 6);
+	assert(second->fd && (void *)second->fd != (void *)second);
+	assert(second->open_fds && (void *)second->open_fds != (void *)second);
 	next = &contexts[0].fdtable_scope.records[1];
 	assert(second->crucible_origin.record == next);
 	assert(next->generation != old->generation);
