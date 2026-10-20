@@ -24,6 +24,7 @@ struct Configuration {
     identity: ExpectedIdentity,
     limits: OperationalLimits,
 }
+
 #[derive(Debug)]
 enum ArgumentError {
     Missing,
@@ -44,6 +45,7 @@ fn operand(
     }
     arguments.next().ok_or(ArgumentError::Missing)
 }
+
 fn number(value: OsString) -> Result<usize, ArgumentError> {
     let text = value.to_str().ok_or(ArgumentError::Encoding)?;
     let number = text.parse::<usize>().map_err(|_| ArgumentError::Number)?;
@@ -52,11 +54,13 @@ fn number(value: OsString) -> Result<usize, ArgumentError> {
     }
     Ok(number)
 }
+
 fn digest(value: OsString) -> Result<[u8; 32], ArgumentError> {
     let bytes = value.to_str().ok_or(ArgumentError::Encoding)?.as_bytes();
     if bytes.len() != 64 {
         return Err(ArgumentError::Digest);
     }
+
     fn half(byte: u8) -> Result<u8, ArgumentError> {
         match byte {
             b'0'..=b'9' => Ok(byte - b'0'),
@@ -64,12 +68,14 @@ fn digest(value: OsString) -> Result<[u8; 32], ArgumentError> {
             _ => Err(ArgumentError::Digest),
         }
     }
+
     let mut result = [0; 32];
     for (target, pair) in result.iter_mut().zip(bytes.chunks_exact(2)) {
         *target = (half(pair[0])? << 4) | half(pair[1])?;
     }
     Ok(result)
 }
+
 fn configuration(
     mut arguments: impl Iterator<Item = OsString>,
 ) -> Result<Configuration, ArgumentError> {
@@ -96,13 +102,16 @@ fn configuration(
         },
     })
 }
+
 fn main() -> ExitCode {
     let config = match configuration(std::env::args_os()) {
         Ok(config) => config,
         Err(_) => return ExitCode::from(64),
     };
+
     let input = io::stdin();
     let output = io::stdout();
+
     match run_worker(
         &mut input.lock(),
         &mut output.lock(),
@@ -129,11 +138,13 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn closed_arguments_refuse_missing_uppercase_and_trailing_operands() {
         assert!(configuration(["worker"].map(OsString::from).into_iter()).is_err());
         assert!(digest(OsString::from("A".repeat(64))).is_err());
         assert!(number(OsString::from("0")).is_err());
+
         let args = [
             "worker",
             "--worker-digest",
@@ -149,9 +160,12 @@ mod tests {
             "--maximum-diagnostic-bytes",
             "1",
         ];
+
         assert!(configuration(args.map(OsString::from).into_iter()).is_ok());
+
         let mut trailing = args.map(OsString::from).to_vec();
         trailing.push(OsString::from("extra"));
+
         assert!(configuration(trailing.into_iter()).is_err());
     }
 }

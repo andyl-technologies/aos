@@ -35,6 +35,7 @@ use crucible_node_transport::{
 
 const MAGIC: &[u8; 8] = b"CSBIN001";
 pub(crate) const HEADER: usize = 160;
+
 struct LaunchOperands {
     schema_version: u16,
     selection: PacketControlSelection,
@@ -55,6 +56,7 @@ struct LaunchOperands {
     capture_allocation_selection: Option<PacketNative5CaptureAllocationSelection>,
     fresh_restore_allocation_selection: Option<PacketNative5FreshRestoreAllocationSelection>,
 }
+
 record!(LaunchOperands {
     schema_version,
     selection,
@@ -114,6 +116,7 @@ enum Expected {
     Reactive(PacketNative5CoordinatorInstallation),
     Deferred(WorldRefusal),
 }
+
 impl Retire for Expected {
     fn retire(&mut self) {
         match self {
@@ -122,6 +125,7 @@ impl Retire for Expected {
         }
     }
 }
+
 impl Expected {
     fn borrowed(&self) -> ExpectedCoordinator<'_> {
         match self {
@@ -141,6 +145,7 @@ pub(crate) struct Request {
     expected: Owned<Expected>,
     registration: Owned<PacketCompleteAckHostRegistrationPlan>,
 }
+
 impl Request {
     pub(crate) fn derive(
         &self,
@@ -252,6 +257,7 @@ fn json_copy<T: serde::Serialize, W: Write>(
     serde_json::to_writer(out, value)?;
     Ok(())
 }
+
 fn json_optional<T: serde::Serialize, W: Write>(
     value: Option<T>,
     out: &mut Encoder<'_, W>,
@@ -278,6 +284,7 @@ pub(crate) fn world_tag(value: WorldRefusal) -> u8 {
         WorldRefusal::AmbiguousBinding => 6,
     }
 }
+
 fn world_from_tag(value: u8) -> Result<WorldRefusal, CodecError> {
     Ok(match value {
         0 => WorldRefusal::ForeignCreatorProcess,
@@ -290,6 +297,7 @@ fn world_from_tag(value: u8) -> Result<WorldRefusal, CodecError> {
         _ => return Err(ProtocolFault::Edition.into()),
     })
 }
+
 fn write_path<W: Write>(
     path: PacketNative5PathSerializationData,
     out: &mut Encoder<'_, W>,
@@ -302,6 +310,7 @@ fn write_path<W: Write>(
     out.write_all(&[tag])?;
     out.length(length)
 }
+
 fn read_path<R: Read>(
     input: &mut Decoder<R>,
 ) -> Result<PacketNative5PathSerializationData, CodecError> {

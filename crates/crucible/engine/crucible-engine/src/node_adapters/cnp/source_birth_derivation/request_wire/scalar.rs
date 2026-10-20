@@ -28,30 +28,37 @@ macro_rules! integer {
         }
     };
 }
+
 integer!(u8, 1);
 integer!(u16, 2);
 integer!(u64, 8);
+
 impl Retire for U64 {
     fn retire(&mut self) {}
 }
+
 impl Wire for U64 {
     fn encode<'a, W: Write>(&'a self, out: &mut Encoder<'a, W>) -> Result<(), ExportError> {
         out.item()?;
         out.write_all(&self.get().to_be_bytes())?;
         Ok(())
     }
+
     fn decode<R: Read>(input: &mut Decoder<R>) -> Result<Owned<Self>, CodecError> {
         Ok(Owned::new(Self::new(u64::decode(input)?.into_inner())))
     }
 }
+
 impl Retire for String {
     fn retire(&mut self) {}
 }
+
 impl Wire for String {
     fn encode<'a, W: Write>(&'a self, out: &mut Encoder<'a, W>) -> Result<(), ExportError> {
         out.item()?;
         out.raw(self.as_bytes())
     }
+
     fn decode<R: Read>(input: &mut Decoder<R>) -> Result<Owned<Self>, CodecError> {
         input.item()?;
         let bytes = input.raw()?;
@@ -60,14 +67,17 @@ impl Wire for String {
         ))
     }
 }
+
 impl Retire for Id {
     fn retire(&mut self) {}
 }
+
 impl Wire for Id {
     fn encode<'a, W: Write>(&'a self, out: &mut Encoder<'a, W>) -> Result<(), ExportError> {
         out.item()?;
         out.raw(self.as_str().as_bytes())
     }
+
     fn decode<R: Read>(input: &mut Decoder<R>) -> Result<Owned<Self>, CodecError> {
         let text = String::decode(input)?.into_inner();
         Ok(Owned::new(
@@ -75,19 +85,23 @@ impl Wire for Id {
         ))
     }
 }
+
 impl Retire for Bytes {
     fn retire(&mut self) {}
 }
+
 impl Wire for Bytes {
     fn encode<'a, W: Write>(&'a self, out: &mut Encoder<'a, W>) -> Result<(), ExportError> {
         out.item()?;
         out.raw(self.as_slice())
     }
+
     fn decode<R: Read>(input: &mut Decoder<R>) -> Result<Owned<Self>, CodecError> {
         input.item()?;
         Ok(Owned::new(Self::new(input.raw()?)))
     }
 }
+
 impl<T: Wire> Wire for Option<T> {
     fn encode<'a, W: Write>(&'a self, out: &mut Encoder<'a, W>) -> Result<(), ExportError> {
         out.item()?;
@@ -100,6 +114,7 @@ impl<T: Wire> Wire for Option<T> {
         }
         Ok(())
     }
+
     fn decode<R: Read>(input: &mut Decoder<R>) -> Result<Owned<Self>, CodecError> {
         input.item()?;
         let mut tag = [0];
@@ -111,6 +126,7 @@ impl<T: Wire> Wire for Option<T> {
         }
     }
 }
+
 impl<T: Wire> Wire for Vec<T> {
     fn encode<'a, W: Write>(&'a self, out: &mut Encoder<'a, W>) -> Result<(), ExportError> {
         out.item()?;
@@ -123,6 +139,7 @@ impl<T: Wire> Wire for Vec<T> {
         }
         Ok(())
     }
+
     fn decode<R: Read>(input: &mut Decoder<R>) -> Result<Owned<Self>, CodecError> {
         input.item()?;
         let count = input.length()?;
@@ -138,6 +155,7 @@ impl<T: Wire> Wire for Vec<T> {
         Ok(out)
     }
 }
+
 impl<T: Wire> Wire for BTreeMap<String, T> {
     fn encode<'a, W: Write>(&'a self, out: &mut Encoder<'a, W>) -> Result<(), ExportError> {
         out.item()?;
@@ -151,6 +169,7 @@ impl<T: Wire> Wire for BTreeMap<String, T> {
         }
         Ok(())
     }
+
     fn decode<R: Read>(input: &mut Decoder<R>) -> Result<Owned<Self>, CodecError> {
         input.item()?;
         let count = input.length()?;
@@ -173,6 +192,7 @@ impl<T: Wire> Wire for BTreeMap<String, T> {
         Ok(out)
     }
 }
+
 impl Wire for Value {
     fn encode<'a, W: Write>(&'a self, out: &mut Encoder<'a, W>) -> Result<(), ExportError> {
         let limits = StreamLimits {
@@ -190,6 +210,7 @@ impl Wire for Value {
         out.charge(statistics.values)?;
         Ok(())
     }
+
     fn decode<R: Read>(input: &mut Decoder<R>) -> Result<Owned<Self>, CodecError> {
         let limits = StreamLimits {
             maximum_wire_bytes: input.remaining,

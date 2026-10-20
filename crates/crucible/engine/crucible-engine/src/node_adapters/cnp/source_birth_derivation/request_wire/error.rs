@@ -58,26 +58,31 @@ impl fmt::Display for CodecError {
 }
 
 impl std::error::Error for CodecError {}
+
 impl From<io::Error> for CodecError {
     fn from(e: io::Error) -> Self {
         Self::Io(e)
     }
 }
+
 impl From<TryReserveError> for CodecError {
     fn from(e: TryReserveError) -> Self {
         Self::Allocation(e)
     }
 }
+
 impl From<StreamError> for CodecError {
     fn from(e: StreamError) -> Self {
         Self::Literal(e)
     }
 }
+
 impl From<serde_json::Error> for CodecError {
     fn from(e: serde_json::Error) -> Self {
         Self::Json(e)
     }
 }
+
 impl From<ProtocolFault> for CodecError {
     fn from(e: ProtocolFault) -> Self {
         Self::Protocol(e)
@@ -106,6 +111,7 @@ pub enum ExportError {
     /// Identifies a closed operational framing refusal.
     Protocol(ProtocolFault),
 }
+
 impl fmt::Display for ExportError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -116,22 +122,27 @@ impl fmt::Display for ExportError {
         }
     }
 }
+
 impl std::error::Error for ExportError {}
+
 impl From<io::Error> for ExportError {
     fn from(e: io::Error) -> Self {
         Self::Io(e)
     }
 }
+
 impl From<StreamError> for ExportError {
     fn from(e: StreamError) -> Self {
         Self::Literal(e)
     }
 }
+
 impl From<serde_json::Error> for ExportError {
     fn from(e: serde_json::Error) -> Self {
         Self::Json(e)
     }
 }
+
 impl From<ProtocolFault> for ExportError {
     fn from(e: ProtocolFault) -> Self {
         Self::Protocol(e)

@@ -53,6 +53,7 @@ macro_rules! record {
         }
     }
 }
+
 pub(super) use record;
 
 record!(ArtifactIdentity {
@@ -61,6 +62,7 @@ record!(ArtifactIdentity {
     content,
     extensions
 });
+
 record!(BindingCompatibility {
     schema_version,
     node_id,
@@ -76,16 +78,19 @@ record!(BindingCompatibility {
     qualification_refs,
     extensions
 });
+
 record!(ContentRef {
     hash,
     length,
     media_type
 });
+
 record!(Endpoint {
     node_id,
     port_id,
     lane_id
 });
+
 record!(FacetSelection {
     id,
     version,
@@ -93,11 +98,13 @@ record!(FacetSelection {
     guarantees_ref,
     extensions
 });
+
 record!(HashRef {
     algorithm,
     domain,
     digest
 });
+
 record!(ImplementationIdentity {
     schema_version,
     implementation_id,
@@ -106,6 +113,7 @@ record!(ImplementationIdentity {
     formats,
     extensions
 });
+
 record!(LaneDescriptor {
     id,
     direction,
@@ -114,6 +122,7 @@ record!(LaneDescriptor {
     maximum_pending_events,
     extensions
 });
+
 record!(Limits {
     frame_bytes,
     nesting,
@@ -121,6 +130,7 @@ record!(Limits {
     journal_entries,
     blob_chunk_bytes
 });
+
 record!(LiveAuthority {
     schema_version,
     session_id,
@@ -133,16 +143,19 @@ record!(LiveAuthority {
     host_receipt,
     extensions
 });
+
 record!(NodeBinding {
     compatibility,
     authority,
     extensions
 });
+
 record!(NodeBindingRef {
     node_id,
     binding_hash,
     extensions
 });
+
 record!(NodeDescriptor {
     schema_version,
     id,
@@ -153,6 +166,7 @@ record!(NodeDescriptor {
     ports,
     extensions
 });
+
 record!(NodeManifest {
     schema_version,
     profile_id,
@@ -164,6 +178,7 @@ record!(NodeManifest {
     operation_facets,
     extensions
 });
+
 record!(OperatingContract {
     schema_version,
     mode,
@@ -175,6 +190,7 @@ record!(OperatingContract {
     facets,
     extensions
 });
+
 record!(OwnerBinding {
     schema_version,
     owner,
@@ -183,16 +199,19 @@ record!(OwnerBinding {
     ownership_ref,
     extensions
 });
+
 record!(OwnerRef {
     id,
     participant_ids,
     state_domain_ids
 });
+
 record!(PacketConnectedDefinition {
     schema,
     connections,
     output
 });
+
 record!(PacketConnectedHostSelection {
     descriptor,
     binding,
@@ -200,6 +219,7 @@ record!(PacketConnectedHostSelection {
     prepared_token,
     initial_node
 });
+
 record!(PacketControlSelection {
     provider,
     realization,
@@ -211,12 +231,14 @@ record!(PacketControlSelection {
     world,
     admission_receipt
 });
+
 record!(PacketEvent {
     id,
     evaluation,
     completion,
     payload
 });
+
 record!(PacketInputConnection {
     id,
     policy,
@@ -224,12 +246,14 @@ record!(PacketInputConnection {
     consumer,
     delay_ps
 });
+
 record!(PacketNative5CoordinatorInstallation {
     schema,
     participants,
     host,
     template
 });
+
 record!(PacketNative5StorageLimits {
     snapshot_bytes,
     control_snapshot_bytes,
@@ -239,7 +263,9 @@ record!(PacketNative5StorageLimits {
     hello_bytes,
     settlement_bytes
 });
+
 record!(PacketProgramDefinition { schema, events });
+
 record!(PortDescriptor {
     id,
     lanes,
@@ -248,11 +274,13 @@ record!(PortDescriptor {
     configuration_ref,
     extensions
 });
+
 record!(Position {
     time_ps,
     microstep,
     phase
 });
+
 record!(ProviderManifest {
     schema_version,
     provider_id,
@@ -263,6 +291,7 @@ record!(ProviderManifest {
     qualification_refs,
     extensions
 });
+
 record!(RealizationManifest {
     schema_version,
     realization_id,
@@ -273,6 +302,7 @@ record!(RealizationManifest {
     owner_bindings,
     extensions
 });
+
 record!(RealizeRequest {
     realization_id,
     configuration,
@@ -280,6 +310,7 @@ record!(RealizeRequest {
     resource_limits,
     extensions
 });
+
 record!(ResourceLimits {
     cpu_budget_ns,
     memory_bytes,
@@ -291,12 +322,14 @@ record!(ResourceLimits {
     maximum_operations,
     extensions
 });
+
 record!(SchemaRef {
     id,
     version,
     definition,
     extensions
 });
+
 record!(SemanticVersion {
     major,
     minor,
@@ -304,17 +337,21 @@ record!(SemanticVersion {
     prerelease,
     build
 });
+
 record!(ExtensionSelection {
     declaration,
     identifier,
     semantic_version,
     schema_digest
 });
+
 record!(InstalledContent { reference, bytes });
+
 record!(PacketNative5ProtocolMetadataLimits {
     native_before_rows,
     native_after_rows
 });
+
 record!(PacketCompleteAckHostRegistrationPlan {
     connection_id,
     features,
@@ -344,7 +381,9 @@ macro_rules! json_leaf {
         }
     )+}
 }
+
 pub(super) struct Count(pub(super) usize);
+
 impl Write for Count {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         self.0 = self
@@ -353,10 +392,12 @@ impl Write for Count {
             .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidData))?;
         Ok(bytes.len())
     }
+
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
 }
+
 // Exhaustive unit matches reject schema additions before an enum could acquire
 // an arbitrary Value that this JSON-only leaf path cannot encode faithfully.
 macro_rules! unit_leaf_retirement {
@@ -437,6 +478,7 @@ impl Retire for PacketConnectedSourceProgram {
         }
     }
 }
+
 impl Wire for PacketConnectedSourceProgram {
     fn encode<'a, W: Write>(&'a self, out: &mut Encoder<'a, W>) -> Result<(), ExportError> {
         out.item()?;
@@ -452,6 +494,7 @@ impl Wire for PacketConnectedSourceProgram {
         }
         Ok(())
     }
+
     fn decode<R: Read>(input: &mut Decoder<R>) -> Result<Owned<Self>, CodecError> {
         input.item()?;
         let mut tag = [0];

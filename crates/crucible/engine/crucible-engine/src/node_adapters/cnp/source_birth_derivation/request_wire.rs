@@ -14,6 +14,7 @@ mod runner;
 mod scalar;
 #[path = "request_wire/value_clone.rs"]
 mod value_clone;
+
 pub use super::literal_value::LiteralWriteWorkspace as ExportWorkspace;
 pub use error::{CodecError, ExportError, ProtocolFault};
 pub use runner::run_worker;
@@ -140,6 +141,7 @@ pub fn write_request<'a, W: Write>(
 
 trait Wire: Retire + Sized {
     fn encode<'a, W: Write>(&'a self, out: &mut Encoder<'a, W>) -> Result<(), ExportError>;
+
     fn decode<R: Read>(input: &mut Decoder<R>) -> Result<Owned<Self>, CodecError>;
 }
 
@@ -153,6 +155,7 @@ struct Encoder<'a, W> {
     payload: blake3::Hasher,
     complete: blake3::Hasher,
 }
+
 impl<'a, W: Write> Encoder<'a, W> {
     fn new(
         writer: W,
@@ -176,9 +179,11 @@ impl<'a, W: Write> Encoder<'a, W> {
             complete,
         }
     }
+
     fn item(&mut self) -> Result<(), ExportError> {
         self.charge(1)
     }
+
     fn charge(&mut self, count: usize) -> Result<(), ExportError> {
         self.work = self
             .work
@@ -189,12 +194,15 @@ impl<'a, W: Write> Encoder<'a, W> {
         }
         Ok(())
     }
+
     fn remaining_work(&self) -> usize {
         self.maximum_work - self.work
     }
+
     fn remaining_bytes(&self) -> usize {
         self.maximum - self.bytes
     }
+
     fn length(&mut self, n: usize) -> Result<(), ExportError> {
         self.write_all(
             &u64::try_from(n)
@@ -203,12 +211,14 @@ impl<'a, W: Write> Encoder<'a, W> {
         )?;
         Ok(())
     }
+
     fn raw(&mut self, bytes: &[u8]) -> Result<(), ExportError> {
         self.length(bytes.len())?;
         self.write_all(bytes)?;
         Ok(())
     }
 }
+
 impl<W: Write> Write for Encoder<'_, W> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         if bytes.len() > self.remaining_bytes() {
@@ -223,6 +233,7 @@ impl<W: Write> Write for Encoder<'_, W> {
         self.complete.update(&bytes[..n]);
         Ok(n)
     }
+
     fn flush(&mut self) -> io::Result<()> {
         self.writer.flush()
     }
@@ -236,6 +247,7 @@ struct Decoder<R> {
     payload: blake3::Hasher,
     complete: blake3::Hasher,
 }
+
 impl<R: Read> Decoder<R> {
     fn new(reader: R, bytes: usize, limits: OperationalLimits, header: &[u8]) -> Self {
         let mut complete = blake3::Hasher::new_derive_key("crucible.source-birth.input/1");
@@ -249,9 +261,11 @@ impl<R: Read> Decoder<R> {
             complete,
         }
     }
+
     fn item(&mut self) -> Result<(), CodecError> {
         self.charge(1)
     }
+
     fn charge(&mut self, n: usize) -> Result<(), CodecError> {
         self.work = self.work.checked_add(n).ok_or(ProtocolFault::Overflow)?;
         if self.work > self.maximum_work {
@@ -259,14 +273,17 @@ impl<R: Read> Decoder<R> {
         }
         Ok(())
     }
+
     fn remaining_work(&self) -> usize {
         self.maximum_work - self.work
     }
+
     fn length(&mut self) -> Result<usize, CodecError> {
         let mut b = [0; 8];
         self.read_exact(&mut b)?;
         Ok(usize::try_from(u64::from_be_bytes(b)).map_err(|_| ProtocolFault::Overflow)?)
     }
+
     fn raw(&mut self) -> Result<Vec<u8>, CodecError> {
         let n = self.length()?;
         if n > self.remaining {
@@ -279,6 +296,7 @@ impl<R: Read> Decoder<R> {
         Ok(bytes)
     }
 }
+
 impl<R: Read> Read for Decoder<R> {
     fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
         let n = out.len().min(self.remaining);
@@ -295,6 +313,7 @@ impl<R: Read> Read for Decoder<R> {
         Ok(read)
     }
 }
+
 fn read_field<T: Wire, R: Read>(input: &mut Decoder<R>) -> Result<Owned<T>, CodecError> {
     T::decode(input)
 }

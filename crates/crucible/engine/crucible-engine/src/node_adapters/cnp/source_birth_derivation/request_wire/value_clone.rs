@@ -17,10 +17,12 @@ enum Frame<'a> {
         key: Option<String>,
     },
 }
+
 struct State<'a> {
     current: Option<Value>,
     frames: Vec<Frame<'a>>,
 }
+
 impl Drop for State<'_> {
     fn drop(&mut self) {
         self.current.retire();
@@ -36,6 +38,7 @@ impl Drop for State<'_> {
         }
     }
 }
+
 fn text(value: &str) -> Result<String, CodecError> {
     let mut out = String::new();
     out.try_reserve_exact(value.len())?;
@@ -77,6 +80,7 @@ pub(super) fn clone_inside_child<R: Read>(
                 Value::Null => state.current = Some(Value::Null),
             }
         }
+
         if state.current.is_some() {
             let Some(frame) = state.frames.last_mut() else {
                 return Ok(Owned::new(match state.current.take() {
@@ -105,6 +109,7 @@ pub(super) fn clone_inside_child<R: Read>(
                 }
             }
         }
+
         let Some(frame) = state.frames.last_mut() else {
             std::process::abort()
         };
@@ -117,6 +122,7 @@ pub(super) fn clone_inside_child<R: Read>(
                 }
             }
         }
+
         if next.is_none() {
             let frame = match state.frames.pop() {
                 Some(frame) => frame,

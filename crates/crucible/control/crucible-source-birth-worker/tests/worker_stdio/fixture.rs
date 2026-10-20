@@ -14,9 +14,11 @@ use crucible_node_transport::{
 use serde::Serialize;
 use serde_json::Value;
 use serde_json::json;
+
 fn refused() -> ProviderError {
     ProviderError::Correlation("native5 fixture host domain shape")
 }
+
 fn id(name: &str) -> Id {
     Id::new(name).unwrap()
 }

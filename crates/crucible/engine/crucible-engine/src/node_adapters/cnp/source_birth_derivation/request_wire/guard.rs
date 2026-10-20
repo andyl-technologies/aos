@@ -12,22 +12,26 @@ pub(super) trait Retire {
 pub(super) struct Owned<T: Retire> {
     value: Option<T>,
 }
+
 impl<T: Retire> Owned<T> {
     pub(super) fn new(value: T) -> Self {
         Self { value: Some(value) }
     }
+
     pub(super) fn get(&self) -> &T {
         match self.value.as_ref() {
             Some(value) => value,
             None => std::process::abort(),
         }
     }
+
     pub(super) fn get_mut(&mut self) -> &mut T {
         match self.value.as_mut() {
             Some(value) => value,
             None => std::process::abort(),
         }
     }
+
     // Private guards are created occupied and consumed once. All field reads
     // finish before this infallible move is used to assemble an actual DTO.
     pub(super) fn into_inner(mut self) -> T {
@@ -37,6 +41,7 @@ impl<T: Retire> Owned<T> {
         }
     }
 }
+
 impl<T: Retire> Drop for Owned<T> {
     fn drop(&mut self) {
         if let Some(value) = self.value.as_mut() {
@@ -71,11 +76,13 @@ pub(super) fn retire_value(root: &mut Value) {
         }
     }
 }
+
 impl Retire for Value {
     fn retire(&mut self) {
         retire_value(self);
     }
 }
+
 impl<T: Retire> Retire for Vec<T> {
     fn retire(&mut self) {
         for value in self {
@@ -83,6 +90,7 @@ impl<T: Retire> Retire for Vec<T> {
         }
     }
 }
+
 impl<T: Retire> Retire for Option<T> {
     fn retire(&mut self) {
         if let Some(value) = self {
@@ -90,6 +98,7 @@ impl<T: Retire> Retire for Option<T> {
         }
     }
 }
+
 impl<T: Retire> Retire for std::collections::BTreeMap<String, T> {
     fn retire(&mut self) {
         for value in self.values_mut() {

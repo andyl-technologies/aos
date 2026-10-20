@@ -10,6 +10,7 @@ struct Diagnostic {
     truncated: bool,
     allocation: Option<std::collections::TryReserveError>,
 }
+
 impl fmt::Write for Diagnostic {
     fn write_str(&mut self, text: &str) -> fmt::Result {
         let remaining = self.maximum - self.text.len();
@@ -56,11 +57,13 @@ pub fn run_worker<R: Read, W: Write>(
     if limits.maximum_elements == 0 || limits.maximum_diagnostic_bytes == 0 {
         return Err(ProtocolFault::Limit.into());
     }
+
     let request = request::read(reader, limits, expected)?;
     let identity = Identity {
         task_digest: request.context.task_digest,
         input_digest: request.input_digest,
     };
+
     match request.derive(limits) {
         Ok(output) => {
             let header = ResultHeader::success(
@@ -79,10 +82,12 @@ pub fn run_worker<R: Read, W: Write>(
                 truncated: false,
                 allocation: None,
             };
+
             let rendered = fmt::write(&mut diagnostic, format_args!("{}", failure.cause()));
             if let Some(error) = diagnostic.allocation.take() {
                 return Err(error.into());
             }
+
             let (info, text) = if diagnostic.truncated || rendered.is_err() {
                 const LIMIT_REASON: &str = "worker diagnostic exceeds its output allowance";
                 if LIMIT_REASON.len() > limits.maximum_diagnostic_bytes {
@@ -98,6 +103,7 @@ pub fn run_worker<R: Read, W: Write>(
                     diagnostic.text.as_str(),
                 )
             };
+
             let header =
                 ResultHeader::failure(identity, info, text, limits.maximum_diagnostic_bytes)?;
             writer.write_all(&header.encode())?;

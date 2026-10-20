@@ -30,6 +30,7 @@ fn limits() -> OperationalLimits {
         maximum_diagnostic_bytes: 4096,
     }
 }
+
 fn context() -> JobContext {
     // Inert correlations for ordinary executable connectivity, not installed
     // identities or authorization. The real supervisor supplies measured IDs.
@@ -39,6 +40,7 @@ fn context() -> JobContext {
         algorithm_digest: [3; 32],
     }
 }
+
 fn run(bytes: &[u8], selected_worker: [u8; 32]) -> Output {
     let hex = |bytes: [u8; 32]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
     let bounds = limits();
@@ -73,6 +75,7 @@ fn run(bytes: &[u8], selected_worker: [u8; 32]) -> Output {
     }
     child.wait_with_output().unwrap()
 }
+
 fn wire_limits() -> WireLimits {
     WireLimits {
         maximum_frame_bytes: 8 * 1024 * 1024 + 240,
