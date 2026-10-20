@@ -35,7 +35,7 @@ def qualify_registry_runtime_parity(client, native, worker, *, tools, fixture, s
     suffix = "" if run_id is None else "-" + run_id
     native_root = "/var/lib/hub-parity-native" + suffix
     worker_root = "/var/lib/hub-parity-worker" + suffix
-    source_root = "/tmp/hub-parity-source" + suffix
+    source_root = "/var/tmp/hub-parity-source" + suffix
     password = "runtime-parity-root-password"
     email = "runtime-parity-root@example.test"
     seal_key = "2" * 64
@@ -45,7 +45,7 @@ def qualify_registry_runtime_parity(client, native, worker, *, tools, fixture, s
 
     # Exclude the unrelated large web-upload probe. Every signed Git, channel,
     # semantic, and package object remains byte identical to the hybrid corpus.
-    corpus_path = "/tmp/hub-parity-corpus" + suffix + ".tar"
+    corpus_path = "/var/tmp/hub-parity-corpus" + suffix + ".tar"
     corpus_root = "/var/tmp/hybrid-publication-surface" if corpus_fixture is None else corpus_fixture["surfaceRoot"]
     client.succeed(
         f"{tools['tar']} -C {shlex.quote(corpus_root)} --exclude=./web "
@@ -275,7 +275,7 @@ def browser_session_token(machine, origin, email, password, curl):
 def copy_signed_surface(client, destination, corpus_path, corpus_size, corpus_digest, source_root, tools):
     """Copy the frozen fixture in bounded agent messages and verify its hash."""
     coreutils = tools["coreutils"]
-    archive = "/tmp/hub-parity-corpus-copy.tar"
+    archive = "/var/tmp/hub-parity-corpus-copy.tar"
     destination.succeed(f"mkdir -p {source_root}; : > {archive}")
     chunk_size = 48 * 1024
     for offset in range(0, corpus_size, chunk_size):
