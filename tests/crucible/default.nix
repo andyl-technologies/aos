@@ -139,6 +139,10 @@ in rec {
       operationalFlight = ram.normalService;
       attrPath = "checks.crucible.ram.normalServiceFullMeasurements";
     };
+    kernelProgress = import ./ram-kernel-progress.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.ram.kernelProgress";
+    };
     livePaging = import ./ram-live-paging.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.ram.livePaging";

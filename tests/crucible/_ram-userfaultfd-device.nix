@@ -4,12 +4,13 @@ pkgs.mkDerivation {
   pname = "crucible-userfaultfd-device-probe";
   version = "0";
   src = ./ram-userfaultfd-device.c;
+  progressSrc = ./ram-userfaultfd-progress.c;
   buildDeps = [pkgs.coreutils pkgs.linux-headers];
   phases = [
     {
       name = "build";
       script = ''
-        cc -std=c11 -Wall -Wextra -Werror -pthread "$src" -o device-probe
+        cc -std=c11 -Wall -Wextra -Werror -pthread "$src" "$progressSrc" -o device-probe
       '';
     }
     {

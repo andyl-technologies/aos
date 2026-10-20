@@ -90,13 +90,22 @@ pages and cannot be assigned an invented small bound. Selecting a preferred
 fault TID does not stop other runnable actors. Keep fault-service progress
 distinct from guest instruction progress in supervision and measurements.
 
-Before reducing admission, run actual cross-page host instructions with one
-slot, verify bounded refusal despite serviced faults, and repeat with a paid
-progress set that permits retirement. Repeat with competing real threads and
-require acknowledgements issued after the instructions execute. Add concurrent
-load/store/atomic stress, stale WP events, actual pin refusal or bounce-path
-evidence, and failures at preservation/discard/fill/wake. Measure physical
-high-water use, including pins, COW, backing I/O, page tables and reclaim lag.
+The local `checks.crucible.ram.kernelProgress` experiment passed using the real
+Linux 7.2.3 fault path in a disposable VM. One x86-64 `MOVDQU` load spanning two
+registered pages remained incomplete through eight alternating missing faults
+with one populated page. Retaining both pages allowed the exact 16-byte result
+and physical thread join. Two real threads accessing disjoint page pairs each
+remained incomplete through eight alternations; retaining both pairs allowed
+both exact results and joins. The probe checks residency, actual fault TIDs,
+post-instruction notifications and the existing full-kernel missing/WP cases.
+This is host-instruction component evidence, not a universal guest progress
+bound or qualification of a general live-eviction implementation.
+
+Before reducing admission, add concurrent load/store/atomic stress, stale WP
+events, actual pin refusal or bounce-path evidence, and failures at
+preservation/discard/fill/wake. Establish the real access-domain completion
+mechanism and measure physical high-water use, including pins, COW, backing
+I/O, page tables and reclaim lag.
 
 ## Integration order
 

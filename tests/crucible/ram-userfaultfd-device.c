@@ -25,6 +25,9 @@
 #define WRONG_GID 65534
 #define PAGE_BYTES 4096
 
+/* Actual host-instruction component cases borrow the negotiated device fd. */
+int userfaultfd_progress_cases(int descriptor);
+
 static int failed(const char *operation) {
     perror(operation);
     return 1;
@@ -159,7 +162,7 @@ static int device_registration(void) {
         };
         if (ioctl(descriptor, UFFDIO_WRITEPROTECT, &protect) == 0 &&
             kernel_write_fault(descriptor, page, 1) == 0) {
-            result = 0;
+            result = userfaultfd_progress_cases(descriptor);
         }
     }
     munmap(page, PAGE_BYTES);
