@@ -1,12 +1,12 @@
 {
   "format": 1,
-  "target": "terrane-core::format_properties",
+  "target": "terrane-format::format_properties",
   "requirements": [
     "TEST-3",
     "CRATE-4",
     "CRATE-33"
   ],
-  "scope": "Reviewed inventory of public terrane-core pure format APIs exercised by the exact test catalog, with known implemented-but-uncovered and deferred formats listed separately. These tests perform no I/O, workflow, signing, issuance, verification or private-authority construction.",
+  "scope": "Reviewed inventory of public terrane-format pure format APIs exercised by the exact test catalog, with known implemented-but-uncovered and deferred formats listed separately. These tests perform no I/O, workflow, signing, issuance, verification or private-authority construction.",
   "shared_properties": {
     "cbor": "Model roundtrip and identical canonical bytes; every truncated prefix; every nested widened nonminimal header, including boolean/null simple values; indefinite string/container rejection; duplicate/reordered keys for every adjacent pair in each nested map; u64::MAX nested length/count claims; sampled bit flips and 32 deterministic byte-range replacements. Accepted mutations must reencode exactly because they may represent another valid model.",
     "binary": "Model roundtrip, every truncated prefix and canonical reencoding after bit/range mutations; explicit count/extent/reserved/tag failures.",
@@ -1811,297 +1811,297 @@
   "test_catalog": [
     {
       "id": "containers::generated_packs_indexes_and_shards_preserve_models_and_reject_bad_extents",
-      "source": "crates/terrane-core/tests/format_properties/containers.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/containers.rs",
       "seed": "0x187a_ee2d_9873_082d"
     },
     {
       "id": "containers::generated_bundles_verify_content_identity_and_nested_metadata",
-      "source": "crates/terrane-core/tests/format_properties/containers.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/containers.rs",
       "seed": "0x28c6_fed3_e41a_3219"
     },
     {
       "id": "containers::pack_flags_codecs_metadata_kinds_and_bundle_index_alternatives_roundtrip",
-      "source": "crates/terrane-core/tests/format_properties/containers.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/containers.rs",
       "seed": "0x7d8b_84f1_025a_7ce9"
     },
     {
       "id": "content::identity_descriptors_validate_every_registered_domain_and_wire_boundary",
-      "source": "crates/terrane-core/tests/format_properties/content.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/content.rs",
       "seed": "0x41bd_637a_2886_105f"
     },
     {
       "id": "content::canonical_cbor_models_cover_integer_lengths_maps_and_preallocation_limits",
-      "source": "crates/terrane-core/tests/format_properties/content.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/content.rs",
       "seed": "0x118e_2bd1_986a_4413"
     },
     {
       "id": "content::manifests_preserve_order_optional_hashes_and_chunk_size_boundaries",
-      "source": "crates/terrane-core/tests/format_properties/content.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/content.rs",
       "seed": "0x1375_5c99_67e0_33ad"
     },
     {
       "id": "content::entries_nodes_and_properties_cover_all_kinds_and_optional_presence",
-      "source": "crates/terrane-core/tests/format_properties/content.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/content.rs",
       "seed": "0x33f1_57de_2c55_e8a9"
     },
     {
       "id": "content::generated_tree_insertion_orders_match_sorted_model_and_internal_node_bytes",
-      "source": "crates/terrane-core/tests/format_properties/content.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/content.rs",
       "seed": "0xc00a_d927_c531_efd3"
     },
     {
       "id": "content::derived_attribute_values_and_records_cover_every_registered_variant",
-      "source": "crates/terrane-core/tests/format_properties/content.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/content.rs",
       "seed": "0x36cc_8149_7e2a_086d"
     },
     {
       "id": "content::selectors_recipes_and_unverified_token_envelopes_have_unique_canonical_bytes",
-      "source": "crates/terrane-core/tests/format_properties/content.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/content.rs",
       "seed": "0xf23c_9971_1544_bb4d"
     },
     {
       "id": "content::chunk_envelopes_roundtrip_opaque_bodies_and_bound_declared_lengths",
-      "source": "crates/terrane-core/tests/format_properties/content.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/content.rs",
       "seed": "0x943e_cbb1_4325_111a"
     },
     {
       "id": "content::unverified_attenuation_envelopes_cover_all_caveats_and_chain_count_boundaries",
-      "source": "crates/terrane-core/tests/format_properties/content.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/content.rs",
       "seed": "0x899a_257e_bb61_277e"
     },
     {
       "id": "content::index_overlay_and_internal_nodes_cover_context_and_summary_boundaries",
-      "source": "crates/terrane-core/tests/format_properties/content.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/content.rs",
       "seed": "0x90bc_d88a_55f1_d04b"
     },
     {
       "id": "content::token_field_models_cover_all_principal_kinds_verb_bits_and_absent_attenuation_fields",
-      "source": "crates/terrane-core/tests/format_properties/content.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/content.rs",
       "seed": "0x371b_a3de_f17a_cc87"
     },
     {
       "id": "content::derived_function_metadata_and_text_values_preserve_unknown_versions_and_limits",
-      "source": "crates/terrane-core/tests/format_properties/content.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/content.rs",
       "seed": "0x817e_223f_765a_dbba"
     },
     {
       "id": "content::disclosure_target_bindings_normalize_only_typed_signatures_and_retain_metadata",
-      "source": "crates/terrane-core/tests/format_properties/content.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/content.rs",
       "seed": "0xf732_271d_abde_9371"
     },
     {
       "id": "foreign::elf_field_models_cover_both_classes_byte_orders_and_checked_ranges",
-      "source": "crates/terrane-core/tests/format_properties/foreign.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/foreign.rs",
       "seed": "0x80ab_d173_e5d2_479f"
     },
     {
       "id": "foreign::classifier_and_shebang_models_cover_registry_precedence_and_prefix_limits",
-      "source": "crates/terrane-core/tests/format_properties/foreign.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/foreign.rs",
       "seed": "0xa261_33dc_e5b8_471b"
     },
     {
       "id": "foreign::textual_ref_key_and_view_parsers_preserve_independent_target_and_path_models",
-      "source": "crates/terrane-core/tests/format_properties/foreign.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/foreign.rs",
       "seed": "0x43d8_712e_b5c6_1dfa"
     },
     {
       "id": "policy::registered_properties_cover_closed_vocabularies_quantities_and_inheritance_binding",
-      "source": "crates/terrane-core/tests/format_properties/policy.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/policy.rs",
       "seed": "0x77f2_e2d9_3468_129d"
     },
     {
       "id": "policy::property_and_tree_limits_reject_claimed_collection_lengths_and_out_of_range_values",
-      "source": "crates/terrane-core/tests/format_properties/policy.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/policy.rs",
       "seed": null
     },
     {
       "id": "policy::graft_merge_and_empty_overlay_recipe_models_roundtrip_without_trust_verification",
-      "source": "crates/terrane-core/tests/format_properties/policy.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/policy.rs",
       "seed": "0xabe5_3551_4398_cf21"
     },
     {
       "id": "policy::selector_models_cover_every_atom_combinator_preset_and_deep_untrusted_ast",
-      "source": "crates/terrane-core/tests/format_properties/policy.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/policy.rs",
       "seed": "0x809c_7142_aede_3259"
     },
     {
       "id": "policy::recipe_domain_evidence_roundtrips_all_operations_without_authenticating_labels",
-      "source": "crates/terrane-core/tests/format_properties/policy.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/policy.rs",
       "seed": "0xb75a_d1d8_9993_817f"
     },
     {
       "id": "policy::merge_recipe_untrusted_receipt_and_timestamp_fields_reencode_canonically",
-      "source": "crates/terrane-core/tests/format_properties/policy.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/policy.rs",
       "seed": "0x749b_218e_dbae_61cc"
     },
     {
       "id": "publication::publication_models_preserve_binding_selection_pointers_and_transaction_fields",
-      "source": "crates/terrane-core/tests/format_properties/publication.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/publication.rs",
       "seed": "0xf31a_c57d_44a0_9023"
     },
     {
       "id": "publication::retained_evidence_models_preserve_ordered_claims_seed_and_null_fields",
-      "source": "crates/terrane-core/tests/format_properties/publication.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/publication.rs",
       "seed": "0x7134_be25_017c_9872"
     },
     {
       "id": "publication::portable_full_checkpoint_models_require_complete_capabilities_and_retained_history",
-      "source": "crates/terrane-core/tests/format_properties/publication.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/publication.rs",
       "seed": "0x488a_942e_e77b_241b"
     },
     {
       "id": "publication::evidence_control_selectors_and_optional_configuration_fields_preserve_models",
-      "source": "crates/terrane-core/tests/format_properties/publication.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/publication.rs",
       "seed": "0x7e31_558f_bce2_954b"
     },
     {
       "id": "publication::publication_nonempty_sources_changes_and_genesis_fields_have_unique_bytes",
-      "source": "crates/terrane-core/tests/format_properties/publication.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/publication.rs",
       "seed": "0xf26c_177d_960a_ce52"
     },
     {
       "id": "records::commit_ref_reflog_and_annotation_models_preserve_optional_fields",
-      "source": "crates/terrane-core/tests/format_properties/records.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/records.rs",
       "seed": "0xb881_35e2_39a7_f021"
     },
     {
       "id": "records::bucket_capabilities_generations_and_tombstones_preserve_known_empty_inventory",
-      "source": "crates/terrane-core/tests/format_properties/records.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/records.rs",
       "seed": "0xcd31_2b37_f099_c401"
     },
     {
       "id": "records::collector_lease_roots_marks_and_checkpoint_models_cover_empty_and_context_variants",
-      "source": "crates/terrane-core/tests/format_properties/records.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/records.rs",
       "seed": "0xc995_8a60_fd39_45eb"
     },
     {
       "id": "records::creation_journal_models_cover_all_states_and_opaque_identity_boundaries",
-      "source": "crates/terrane-core/tests/format_properties/records.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/records.rs",
       "seed": "0x770d_8841_f256_037b"
     },
     {
       "id": "records::selected_reflogs_and_proof_sensitive_checkpoints_preserve_all_predecessor_forms",
-      "source": "crates/terrane-core/tests/format_properties/records.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/records.rs",
       "seed": "0x091f_221b_c790_537d"
     },
     {
       "id": "records::creation_journal_binding_models_cover_pack_index_trash_and_empty_identity_rejection",
-      "source": "crates/terrane-core/tests/format_properties/records.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/records.rs",
       "seed": "0x1fc8_392a_bb72_dbe5"
     },
     {
       "id": "records::nested_receipt_origins_context_surfaces_and_ref_policy_presence_roundtrip",
-      "source": "crates/terrane-core/tests/format_properties/records.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/records.rs",
       "seed": "0x9d40_b8e2_5173_eebb"
     },
     {
       "id": "records::collector_kind_models_cover_all_registered_tags_and_flag_constraints",
-      "source": "crates/terrane-core/tests/format_properties/records.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/records.rs",
       "seed": "0x8e33_290f_b371_045c"
     },
     {
       "id": "retirement::permanent_authorization_preparation_and_progress_models_preserve_disjoint_cases",
-      "source": "crates/terrane-core/tests/format_properties/retirement.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/retirement.rs",
       "seed": "0x591e_b2a8_7794_fd2b"
     },
     {
       "id": "retirement::permanent_pass_models_cover_observation_handles_states_and_complete_coverage",
-      "source": "crates/terrane-core/tests/format_properties/retirement.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/retirement.rs",
       "seed": "0x129e_9918_35b1_f0a7"
     },
     {
       "id": "retirement::current_and_copied_fence_models_validate_represented_inventory_and_backend",
-      "source": "crates/terrane-core/tests/format_properties/retirement.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/retirement.rs",
       "seed": "0x34b7_ef22_9a03_3147"
     },
     {
       "id": "retirement::local_v1_delete_operations_roundtrip_exact_embedded_authorization_and_all_phases",
-      "source": "crates/terrane-core/tests/format_properties/retirement.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/retirement.rs",
       "seed": "0x92d1_f897_327b_997b"
     },
     {
       "id": "retirement::collection_fences_cover_every_ref_class_selected_payload_and_absent_generation",
-      "source": "crates/terrane-core/tests/format_properties/retirement.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/retirement.rs",
       "seed": "0xc201_557d_022a_ec4b"
     },
     {
       "id": "retirement::permanent_pass_count_handle_and_whole_record_limits_reject_before_claimed_allocation",
-      "source": "crates/terrane-core/tests/format_properties/retirement.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/retirement.rs",
       "seed": "0x8a21_79c5_6134_bb92"
     },
     {
       "id": "contexts::untrusted_context_models_cover_both_versions_and_selected_evidence_boundaries",
-      "source": "crates/terrane-core/tests/format_properties/contexts.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/contexts.rs",
       "seed": "0x6f01_2748_b825_c6a9"
     },
     {
       "id": "contexts::selected_context_schema_rejects_malformed_rows_and_nested_value_encodings",
-      "source": "crates/terrane-core/tests/format_properties/contexts.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/contexts.rs",
       "seed": "0xda7b_0533_a428_19c1"
     },
     {
       "id": "publication::configured_registry_models_bind_exact_historical_and_current_vocabularies",
-      "source": "crates/terrane-core/tests/format_properties/publication.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/publication.rs",
       "seed": "deterministic independent boundary models; no RNG"
     },
     {
       "id": "closed_index::closed_index_bindings_and_recipes_match_independent_models",
-      "source": "crates/terrane-core/tests/format_properties/closed_index.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/closed_index.rs",
       "seed": "0x2349_ba80_d921_770f"
     },
     {
       "id": "closed_index::opaque_index_keys_preserve_canonical_values_objects_and_inclusive_bounds",
-      "source": "crates/terrane-core/tests/format_properties/closed_index.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/closed_index.rs",
       "seed": "0x312a_9c50_ff83_0461"
     },
     {
       "id": "closed_index::closed_index_schemas_refuse_nonlocal_unknown_and_hostile_inputs",
-      "source": "crates/terrane-core/tests/format_properties/closed_index.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/closed_index.rs",
       "seed": "deterministic independent boundary models; no RNG"
     },
     {
       "id": "closed_index::empty_index_nodes_remain_generic_data_in_each_explicit_role",
-      "source": "crates/terrane-core/tests/format_properties/closed_index.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/closed_index.rs",
       "seed": "deterministic independent boundary models; no RNG"
     },
     {
       "id": "common_memo::common_memo_models_preserve_fields_and_distinct_record_identity",
-      "source": "crates/terrane-core/tests/format_properties/common_memo.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/common_memo.rs",
       "seed": "0x3789_423b_afe1_622d"
     },
     {
       "id": "common_memo::common_memo_refuses_independent_schema_and_hostile_length_models",
-      "source": "crates/terrane-core/tests/format_properties/common_memo.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/common_memo.rs",
       "seed": "deterministic independent boundary models; no RNG"
     },
     {
       "id": "closed_index::gap_binding_models_preserve_exact_local_wrapper_and_limits",
-      "source": "crates/terrane-core/tests/format_properties/closed_index.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/closed_index.rs",
       "seed": "0xf207_3556_b8d4_a999"
     },
     {
       "id": "publication::consumed_view_interpretations_preserve_modes_and_registered_context_fields",
-      "source": "crates/terrane-core/tests/format_properties/publication.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/publication.rs",
       "seed": "0x7480_b1c2_3eca_2174"
     },
     {
       "id": "publication::local_gc_reconciliation_models_preserve_registered_fences_and_full_fields",
-      "source": "crates/terrane-core/tests/format_properties/publication.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/publication.rs",
       "seed": "0x0bb5_2c97_3702_f598"
     },
     {
       "id": "policy::graft_embedded_entry_limits_precede_owned_recipe_fields",
-      "source": "crates/terrane-core/tests/format_properties/policy.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/policy.rs",
       "seed": "0x2ade_7cc1_60d2_1559"
     },
     {
       "id": "records::embedded_provenance_tokens_reject_block_and_grant_limits",
-      "source": "crates/terrane-core/tests/format_properties/records.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/records.rs",
       "seed": "0x6492_d180_eb7c_a921"
     },
     {
       "id": "index_carriers::contextual_carrier_models_preserve_roles_shapes_and_property_placement",
-      "source": "crates/terrane-core/tests/format_properties/index_carriers.rs",
+      "source": "crates/terrane/sdk/terrane-format/tests/format_properties/index_carriers.rs",
       "seed": "0x4f31_73a2_50bc_869d"
     }
   ],
@@ -2114,7 +2114,7 @@
         "CRATE-4"
       ],
       "test": "provenance::disclosure::statement::tests::disclosure_statement_models_retain_every_registered_field",
-      "source": "crates/terrane-core/src/provenance/disclosure/statement/tests.rs",
+      "source": "crates/terrane/sdk/terrane-format/src/provenance/disclosure/statement/tests.rs",
       "seed": "0xa791_365d_ef42_08c3",
       "models": "192 ordinary models: inline file/manifest file/directory/symlink; 12 integer boundaries; complete path byte lengths 1/23/255/4096 with valid components; symlink target lengths 0/23/255/4096; all four source/target domain forms; seeded digest and opaque proof-signature bytes",
       "projection_evidence": "Actual private serializer compared with independent registered eight-field projection and prefix; canonical whole-value parsing; all retained proof/source/original/reference/target/content/binding fields are sensitive. Typed proof signature, destination commit identity and mode are omitted by the registered projection; four unsupported entry kinds reject.",
@@ -2128,7 +2128,7 @@
         "CRATE-4"
       ],
       "test": "provenance::trust::encoding::tests::context_models_preserve_versions_presence_and_selected_bytes",
-      "source": "crates/terrane-core/src/provenance/trust/encoding/tests.rs",
+      "source": "crates/terrane/sdk/terrane-format/src/provenance/trust/encoding/tests.rs",
       "seed": "0x409b_715e_a38c_d267",
       "models": "144 ordinary field models each at versions 1/2, for 288 projections; all four presets/domain forms; baseline absent/empty/present with text byte lengths 1/23/24/255/256/4096; 12 integer boundaries; selected rows 1/2/7/32 with complete path byte lengths 1/255/4096",
       "projection_evidence": "Actual private encoder compared with independent slot projection, field-by-field public CBOR parsing and the public untrusted schema validator; sensitivity for every field; selected bytes retained verbatim; empty/nonempty evidence chooses v1/v2.",
@@ -2142,7 +2142,7 @@
         "CRATE-4"
       ],
       "test": "provenance::side_attributes::serialization::tests::selected_evidence_models_preserve_tuple_fields_and_filtered_row_order",
-      "source": "crates/terrane-core/src/provenance/side_attributes/serialization/tests.rs",
+      "source": "crates/terrane/sdk/terrane-format/src/provenance/side_attributes/serialization/tests.rs",
       "seed": "0x892c_14af_7ed0_563b",
       "models": "48 ordinary maps at input row counts 0/1/2/7/24/256; all eight attribute names/values/functions, all eight magic labels, ELF 32/64 and optional interpreter/needed fields, shebang argument absent/one-byte with explicit empty argument encode rejection; path byte lengths 1/23/255/4096 with valid components; all four producer/selected domains; independent producer and carrying-witness commits",
       "projection_evidence": "Actual tuple helper compared with independent nine-slot model; sensitivity for every tuple field and location component; full canonical parsing. Actual selection helper filters both view and domain over the sorted unique BTreeMap input contract; six view/domain selections and three seeded insertion histories preserve independent five-slot row models; public untrusted context validator checks each resulting projection.",
@@ -2156,7 +2156,7 @@
         "CRATE-4"
       ],
       "test": "auth::tests::format_properties::authority_preimages_match_unsigned_models_and_omit_only_signature",
-      "source": "crates/terrane-core/src/auth/tests/format_properties.rs",
+      "source": "crates/terrane/sdk/terrane-format/src/auth/tests/format_properties.rs",
       "seed": "0x13d7_a956_b287_f641",
       "models": "144 ordinary unverified models: 12 integer boundaries crossed with all three principal kinds and all four optional-field patterns; text byte lengths 0/1/23/24/255/256; groups 0/1/23/24/256; grants 1/23/24/256 and all 31 nonzero verb masks; token identifiers, next-keys and signatures all zero/all ff/seeded bytes",
       "projection_evidence": "Independent numeric field projection; exact key12 omission; whole canonical map parsing; every body field and next-key sensitivity; signature-only changes preserve bytes; actual stored Token field-codec roundtrip without issuance or verification",
@@ -2170,7 +2170,7 @@
         "CRATE-4"
       ],
       "test": "auth::tests::format_properties::attenuation_preimages_match_unsigned_models_for_every_caveat_and_presence",
-      "source": "crates/terrane-core/src/auth/tests/format_properties.rs",
+      "source": "crates/terrane/sdk/terrane-format/src/auth/tests/format_properties.rs",
       "seed": "0x57a3_c896_21ef_04bd",
       "models": "192 ordinary unverified models: 12 integer boundaries crossed with all 16 field-presence patterns; all nine caveats in rotated/repeated ordered collections; all eight locality presences and empty/present text; grants 1/23/24/256 and all 31 nonzero verb masks; next-keys/signatures all zero/all ff/seeded bytes",
       "projection_evidence": "Independent numeric field projection; exact key6 omission; whole canonical map parsing; every body field and next-key sensitivity; signature-only changes preserve bytes; actual stored Token field-codec roundtrip without issuance or verification",
@@ -2187,7 +2187,7 @@
     {
       "format": "standalone ruleset/policy object",
       "status": "unimplemented public core byte codec",
-      "detail": "Common derivation Memo now has a public codec and explicit model properties above. Ruleset/policy object identity domain and generic metadata kind9 exist; no public standalone ruleset/policy object codec exists in terrane-core.",
+      "detail": "Common derivation Memo now has a public codec and explicit model properties above. Ruleset/policy object identity domain and generic metadata kind9 exist; no public standalone ruleset/policy object codec exists in terrane-format.",
       "milestone_owner": "B-derive / T-RULE-1; required future format, currently unimplemented"
     },
     {
