@@ -464,6 +464,36 @@ fn reusable_discovery_enforces_explicit_complete_object_minimum() {
 }
 
 #[test]
+fn acknowledged_admission_matches_original_pins_without_renewing_discovery() {
+    let original = capabilities();
+    assert!(
+        original
+            .validate_placements_for(&original.target, &[placement()], 1000)
+            .is_err()
+    );
+    original
+        .validate_admitted_placements_for(&original.target, &[placement()])
+        .unwrap();
+    assert_eq!(original.valid_until.get(), 1000);
+
+    assert!(
+        original
+            .validate_admitted_placements_for(&original.target, &[])
+            .is_err()
+    );
+    assert!(
+        original
+            .validate_admitted_placements_for(
+                &DirectCapabilitiesTarget::Cache {
+                    cache_id: "another-cache".into()
+                },
+                &[placement()],
+            )
+            .is_err()
+    );
+}
+
+#[test]
 fn reusable_owner_discovery_binds_all_original_destination_revisions() {
     let original = capabilities();
     original

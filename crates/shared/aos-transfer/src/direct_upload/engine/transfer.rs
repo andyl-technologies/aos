@@ -151,6 +151,15 @@ pub async fn upload_direct_batch<
         .iter()
         .map(|object| object.intent.client_operation_id.as_str())
         .collect();
+    // Local journal persistence can wait independently of the network. The
+    // original discovery must still be fresh at the first Begin dispatch.
+    let dispatch_now = latest_now()?;
+    for object in &objects {
+        object
+            .discovery
+            .validate_at_for(&helpers::discovery_target(&object.discovery), dispatch_now)
+            .map_err(|_| DirectClientError::Invalid)?;
+    }
     let response = helpers::control(
         control,
         &DirectUploadRequest::BeginBatch(DirectBeginBatch {
@@ -175,10 +184,9 @@ pub async fn upload_direct_batch<
         let session = sessions.swap_remove(index);
         object
             .discovery
-            .validate_placements_for(
+            .validate_admitted_placements_for(
                 &helpers::discovery_target(&object.discovery),
                 &session.placements,
-                latest_now()?,
             )
             .map_err(|_| DirectClientError::Invalid)?;
         if object.placements.is_empty() {

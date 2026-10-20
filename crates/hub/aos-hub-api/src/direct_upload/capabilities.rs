@@ -229,8 +229,28 @@ impl DirectUploadCapabilities {
         placements: &[DirectPlacementRef],
         latest_now: u64,
     ) -> DirectUploadResult<()> {
-        use super::validation::require;
         self.validate_at_for(target, latest_now)?;
+        self.validate_admitted_placements_for(target, placements)
+    }
+
+    /// Matches an acknowledged Begin reply to the original placement pins.
+    ///
+    /// The caller checks discovery freshness before dispatching Begin. An
+    /// authenticated reply can arrive after that cache deadline; matching its
+    /// immutable destinations neither renews discovery nor authorizes a new
+    /// provider capability. Subsequent grants retain their own authorization
+    /// and expiry checks.
+    ///
+    /// # Errors
+    /// Returns an error for malformed discovery, another owner, an incomplete
+    /// destination set, or changed binding, credential, policy or checksum pins.
+    pub fn validate_admitted_placements_for(
+        &self,
+        target: &DirectCapabilitiesTarget,
+        placements: &[DirectPlacementRef],
+    ) -> DirectUploadResult<()> {
+        use super::validation::require;
+        self.validate_for(target)?;
         require(
             self.transfer_mode == DirectAdvertisedTransferMode::DirectRequired
                 && placements.len() == self.profiles.len(),
