@@ -955,7 +955,7 @@ impl Custody {
     /// # Errors
     /// Refuses cold/failed/abandoned writes, another generation or inode, and a
     /// prior synchronized state that does not contain the exact required hold.
-    fn check_synchronized_bootstrap(&self, id: &[u8; 16]) -> io::Result<()> {
+    pub(super) fn check_synchronized_bootstrap(&self, id: &[u8; 16]) -> io::Result<()> {
         let cold = self
             .recovery_cold
             .as_ref()

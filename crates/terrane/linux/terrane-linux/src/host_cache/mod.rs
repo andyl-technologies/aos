@@ -30,9 +30,9 @@ pub use owner::NativePolicyStall;
 #[cfg(feature = "tokio")]
 pub(crate) use owner::{
     AcceptedRecoveryManifestEffect, PublisherCacheRetirementTurn, PublisherCleanupTurn,
-    PublisherResumeTurn, PublisherRunningTurn, RecoveryManifestBodyFailure,
-    RecoveryManifestBodyRetention, RecoveryManifestEffect, RecoveryManifestEffectFailure,
-    RecoveryRetainedManifest,
+    PublisherRecoveryRetirementTurn, PublisherResumeTurn, PublisherRunningTurn,
+    RecoveryManifestBodyFailure, RecoveryManifestBodyRetention, RecoveryManifestEffect,
+    RecoveryManifestEffectFailure, RecoveryRetainedManifest,
 };
 #[cfg(feature = "tokio")]
 pub use owner::{

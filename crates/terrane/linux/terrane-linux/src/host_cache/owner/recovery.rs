@@ -3,8 +3,9 @@
 //! Supported cases preserve cold policy and reconcile empty, inline
 //! and manifest content using actual verified metadata and native bindings.
 //! Unknown names, unhandled private publication state, temporary files,
-//! pending bodies and every unhandled candidate remain non-ready. A receipt
-//! requires real shared/private scans, durable state, synchronized allocation,
+//! unhandled pending bodies and every other unhandled candidate remain non-ready.
+//! Expired, unpinned inline pending inodes can be removed under funded recovery.
+//! A receipt requires real shared/private scans, durable state, synchronized allocation,
 //! fresh authenticated quota charges and the original successful drain epoch.
 //! No Resume or file-bucket readiness is granted by this module.
 
@@ -14,7 +15,7 @@ use super::{
     recovery_inline::{self, AdoptedInline},
     recovery_manifest_state, recovery_manifests,
     recovery_namespace::SharedNamespaceObservation,
-    recovery_state,
+    recovery_pending, recovery_state,
     recovery_state_parent::StateParentObservation,
     retention::{Command, Custody, NativeMetadataOwner, NativeOwnerExecutor},
 };
@@ -323,6 +324,14 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
     // Publisher inventory may need the repaired metadata index to describe a
     // sealed manifest. Only this fresh complete scan can authorize adoption.
     let initial_inventory = inspector.inspect()?;
+    let initial_inventory =
+        if recovery_pending::run(executor, &initial_inventory, &shared, &id, &context)? {
+            // Removal acknowledgements prove only namespace effects. Every later
+            // adoption and completion still uses a fresh exhaustive actual scan.
+            inspector.inspect()?
+        } else {
+            initial_inventory
+        };
     recovery_candidates::preflight(&initial_inventory)?;
     let mut has_manifest = false;
     for candidate in initial_inventory.candidates() {

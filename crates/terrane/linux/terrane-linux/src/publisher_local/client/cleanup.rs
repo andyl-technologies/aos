@@ -4,8 +4,14 @@
 //! response. Unavailable includes uncertain accepted work and invalidates the
 //! session; no failed exchange is retried or treated as rollback.
 
-use super::{BodyIncarnationObservation, Client, Error, PublisherRunningContext, invalidate};
-use crate::{host_cache::PublisherCleanupTurn, publisher_local::wire::Operation};
+use super::{
+    BodyIncarnationObservation, Client, Error, PublisherRecoveryContext, PublisherRunningContext,
+    invalidate,
+};
+use crate::{
+    host_cache::{PublisherCleanupTurn, PublisherRecoveryRetirementTurn},
+    publisher_local::wire::Operation,
+};
 use std::{io, sync::Arc};
 use terrane_sdk::host::cache::HostDomainLocation;
 
@@ -39,6 +45,32 @@ impl AcknowledgedSourceRetirement {
 }
 
 impl Client<HostDomainLocation> {
+    /// Finishes an expired pending inline inode under the funded physical recovery turn.
+    ///
+    /// The publisher reconstructs missing retirement deadlines conservatively
+    /// and checks their actual expiry. Completion grants no adoption or serving
+    /// authority and releases no cache funding or measured quota charge.
+    ///
+    /// # Errors
+    /// Refuses changed physical funding, another original Drain or inode,
+    /// an unexpired interval and failed or uncertain native exchanges.
+    pub(crate) fn finish_recovery_retirement(
+        self: &Arc<Self>,
+        context: &PublisherRecoveryContext<HostDomainLocation>,
+        turn: &mut PublisherRecoveryRetirementTurn<'_>,
+    ) -> Result<(), Error> {
+        let observation = turn.observation(self, context).map_err(Error::Io)?;
+        let mut state = self.lock()?;
+        self.require_recovery_context(&state, context)?;
+        let payload = observation.checked_payload(self, &state, observation.key())?;
+        if let Err(error) = self.exchange_payload(&mut state, Operation::FinishRetirement, payload)
+        {
+            invalidate(&mut state);
+            return Err(error);
+        }
+        Ok(())
+    }
+
     /// Finishes only the original pending inode under its genuine physical turn.
     ///
     /// The publisher enforces its actual retirement grace and inode token.

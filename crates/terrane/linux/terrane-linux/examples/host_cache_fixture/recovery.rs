@@ -10,6 +10,8 @@
 mod indexes;
 #[path = "recovery/inline.rs"]
 mod inline;
+#[path = "recovery/pending.rs"]
+pub(super) mod pending;
 #[path = "recovery/reuse.rs"]
 mod reuse;
 

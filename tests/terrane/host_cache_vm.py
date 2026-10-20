@@ -61,7 +61,7 @@ CASES = [
     "publication-manifest-reuse-bad-whole",
     "consumer-leases", "lease-foreign",
     "source-cleanup", "source-cleanup-early", "source-cleanup-foreign",
-] + [row[0] for row in MANIFEST_CASES] + ["index-recovery", "index-disabled", "index-bound", "index-mismatch"]
+] + [row[0] for row in MANIFEST_CASES] + ["index-recovery", "index-disabled", "index-bound", "index-mismatch", "pending-expired", "pending-unknown"]
 
 LABELS = ["layout-root", "chunks", "objects", "sealed", "staging", "quarantine",
           "pending-delete", "state"]
@@ -829,6 +829,7 @@ def verify_image():
         "admission_cache_vm.py",
         "host_cache_temporaries_vm.py",
         "host_cache_index_recovery_vm.py",
+        "host_cache_pending_recovery_vm.py",
     ]
     require(set(identity["supervisor_helpers"]) == set(helper_names),
             "native supervisor helper inventory changed")
@@ -1026,6 +1027,8 @@ def main():
     manifest_candidates = seed_manifests(uuid)
     index_candidates = runpy.run_path(str(IMAGE / "share/host_cache_index_recovery_vm.py"))[
         "seed"](sys.modules[__name__], uuid)
+    pending_candidates = runpy.run_path(str(IMAGE / "share/host_cache_pending_recovery_vm.py"))[
+        "seed"](sys.modules[__name__], uuid)
     logs = []
     children = []
     try:
@@ -1067,6 +1070,8 @@ def main():
                         "actual publisher namespace ownership changed: " + str(path))
         print("PASS actual configured publisher retains exclusive private namespace ownership", flush=True)
         runpy.run_path(str(IMAGE / "share/host_cache_temporaries_vm.py"))["run"](sys.modules[__name__], uuid)
+        runpy.run_path(str(IMAGE / "share/host_cache_pending_recovery_vm.py"))[
+            "run"](sys.modules[__name__], uuid, pending_candidates)
         # A new physical owner must preserve the first owner's durable hold,
         # synchronize a distinct bootstrap and account both without reusing H.
         old_policy = tomllib.loads((root("empty") / "state/cache/records.toml").read_text())

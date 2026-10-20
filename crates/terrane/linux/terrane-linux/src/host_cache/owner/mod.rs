@@ -22,6 +22,7 @@ mod recovery_inline;
 mod recovery_manifest_state;
 mod recovery_manifests;
 mod recovery_namespace;
+mod recovery_pending;
 mod recovery_residences;
 mod recovery_state;
 mod recovery_state_parent;
@@ -53,6 +54,7 @@ pub use publication::{
     NativeResidentChunkSource, NativeSourceCleanupReport,
 };
 pub use recovery::CompletedRecovery;
+pub(crate) use recovery_pending::PublisherRecoveryRetirementTurn;
 pub use resume_error::NativeResumeError;
 pub(crate) use retention::{
     AcceptedRecoveryManifestEffect, PublisherCacheRetirementTurn, PublisherCleanupTurn,

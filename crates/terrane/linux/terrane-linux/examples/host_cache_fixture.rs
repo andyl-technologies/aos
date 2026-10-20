@@ -89,12 +89,17 @@ fn main() -> std::process::ExitCode {
             "refuse-index-disabled",
             "refuse-index-bound",
             "refuse-index-mismatch",
+            "seed-pending-inline",
+            "refuse-pending-inline",
+            "recover-pending-inline",
         ] {
             println!("host-cache:{selector}");
         }
         return std::process::ExitCode::SUCCESS;
     }
-    let result = if matches!(
+    let result = if mode == "seed-pending-inline" {
+        recovery::pending::seed()
+    } else if matches!(
         mode.as_str(),
         "seed-manifest"
             | "seed-index-recovery"
