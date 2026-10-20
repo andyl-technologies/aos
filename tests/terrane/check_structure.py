@@ -68,12 +68,25 @@ def main():
             else:
                 check("#![forbid(unsafe_code)]" in root, f"unsafe code not forbidden: {name}")
             # Native bindings added after T0 require a deliberate source audit.
-            # These exact reviewed modules bind namespace and confinement ABIs;
-            # any additional unsafe source or edit requires another review.
+            # Exact reviewed files cover quota/namespace UAPIs, verity, retained
+            # descriptors, bounded ancillary custody and checked writer closure.
+            # Any new unsafe source or edit requires another source review.
             audited_bindings = {
+                "host_cache/owner/admission/io.rs": "ecf56c11a5efe9face7ed78d126961a6d78be2a337d50391c5e3278d739d9985",
+                "host_cache/owner/index_io.rs": "7ae0c2fb8c279fbcbc82ba1ec8b0eed0397f252bebc6cac80d72ff31aef730a1",
+                "host_cache/quota.rs": "ec5d74ccd8c5e4225c9dfa8a9a30283b9b3b34ab0fde4489ba7199882a78714b",
+                "host_quota/claim.rs": "a657e81c4d3ebe255a29cd7f99cd632e9a7f9ea3e8396681c9c020900d48af8d",
+                "host_quota/custody.rs": "14d975499b2766284f4d4e2f78433abf692296076ce58f12ee79e0efdbd96b48",
+                "host_quota/guard.rs": "d0b9f99cb13475def9f5482aec416fc68b5beb2410e11435118585154ded3944",
                 "host_quota/namespace.rs": "288636e7b7c86422d0533ad6ddce4929dd1ff83d9285c442d9161185036a7a2b",
-                "quota_confinement.rs": "33b08c1dea03a09001087fc7246ff585c93a9b7925d5726ec614ced1529f0ca2",
+                "host_quota/native.rs": "63d23cfcc0ee38daa738148ff736f08e1c1ff17609fddb5a877626ce579d1be9",
+                "host_quota/socket.rs": "78a16b9580400da66c2876d72ea476684f3a0dc9539d71bacbdecc7c9102c2c3",
+                "host_quota/socket_signal_tests.rs": "c4f041e5cb000943899f5ab4ac6a2b2b47a3d5ba02c6408a5d2f915ee4011cc6",
+                "publisher_io/native.rs": "b4c8f4bdda791ee3a4a24e7400c886b238f4e9c6b08319456c5e867059de40b9",
+                "publisher_local/socket.rs": "d6541c19be7f5c7b666a4dd528874cba9f0d1b793bafe36d287d852381f6212e",
                 "quota_confinement/policy.rs": "ff28f14c265e324bd71aa19fe2f936a79c087b532b012a87d014a852e5a4334d",
+                "quota_confinement.rs": "33b08c1dea03a09001087fc7246ff585c93a9b7925d5726ec614ced1529f0ca2",
+                "verity/mod.rs": "2dde139b9d4a1743741973e5da21a3fd27e46af9e357ee845fd6d07446b01a4e",
             }
             for source in sources:
                 text = source.read_text()
