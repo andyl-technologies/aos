@@ -91,12 +91,42 @@ impl PreparedCompleteRestoration {
                         return Err(error);
                     }
                     self.import18_templates.members[selected].stage = Stage::DerivedBanks;
+                    self.prepare_funded_private_seed(selected)?;
                 }
-                Stage::DerivedBanks => {}
+                Stage::DerivedBanks => {
+                    self.prepare_funded_private_seed(selected)?;
+                }
+                Stage::PrivateSeed => {}
                 _ => return Err(RuntimeError::OutstandingObligations),
             }
         }
         Ok(true)
+    }
+
+    fn prepare_funded_private_seed(&mut self, selected: usize) -> Result<(), RuntimeError> {
+        self.observe_import18_templates_data([
+            0,
+            0,
+            PacketCompleteSemanticSource::native_import18_private_seed_counter_scratch_data(),
+        ])?;
+        // This exact reference was independently pinned and authenticated against
+        // /proc/self/exe before launch creation; the peer is a different artifact.
+        let requested = self.import18_templates.members[selected]
+            .output
+            .completed_data()?
+            .native_import18_private_seed_construction_data(
+                &self.measurements[selected].host,
+                usize::MAX,
+            )?;
+        self.observe_import18_templates_data(requested)?;
+        let result = self.import18_templates.members[selected]
+            .output
+            .completed_unique_data()?
+            .prepare_native_import18_private_seed_into(&self.measurements[selected].host);
+        let observed = self.observe_import18_templates_data([0; 3]);
+        result.and(observed)?;
+        self.import18_templates.members[selected].stage = Stage::PrivateSeed;
+        Ok(())
     }
 
     fn start_funded_derivation_member(&mut self, selected: usize) -> Result<(), RuntimeError> {
@@ -179,6 +209,7 @@ impl PreparedCompleteRestoration {
                 Stage::DerivationExporting
                     | Stage::DerivationRunning
                     | Stage::DerivedBanks
+                    | Stage::PrivateSeed
                     | Stage::DerivationFailed
             ) {
                 let cancelled = member

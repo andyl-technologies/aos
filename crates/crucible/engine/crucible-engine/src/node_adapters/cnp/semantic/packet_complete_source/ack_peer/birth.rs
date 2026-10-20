@@ -530,3 +530,10 @@ mod initial15_normalization;
 
 #[path = "birth/import18_construction.rs"]
 pub(super) mod import18_construction;
+
+#[path = "birth/private_identity.rs"]
+mod private_identity;
+
+#[path = "birth/import18_seed.rs"]
+mod import18_seed;
+pub(in crate::node_adapters::cnp::semantic::packet_complete_source) use import18_seed::OriginalImport18PrivateSeed;

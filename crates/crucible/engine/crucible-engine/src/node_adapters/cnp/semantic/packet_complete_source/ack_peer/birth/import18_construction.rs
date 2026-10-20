@@ -119,6 +119,7 @@ impl NativeImport18PrivateBirthAttempt {
     pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn counter_scratch_data()
     -> usize {
         HOST_EXECUTABLE_STREAM_BYTES
+            + super::private_identity::delegation_controls()
             + private_birth_clone_counter_scratch_data()
             + size_of::<(usize, usize)>() // concrete clone quote local
             + size_of::<Result<(usize, usize), RuntimeError>>()
@@ -204,7 +205,7 @@ impl OriginalAckPeerBirth {
         attempt.private_launch = Some(private_launch.clone());
         attempt.file =
             Some(File::open("/proc/self/exe").map_err(|_| RuntimeError::OwnerUnavailable)?);
-        attempt.revision = Some(read_revision(
+        attempt.revision = Some(super::private_identity::read_revision(
             attempt
                 .file
                 .as_ref()
@@ -265,9 +266,7 @@ impl OriginalAckPeerBirth {
             }
         }
         authenticate_file_identity(owner)?;
-        File::open("/dev/urandom")
-            .and_then(|mut random| random.read_exact(&mut owner.key))
-            .map_err(|_| RuntimeError::OwnerUnavailable)?;
+        super::private_identity::fill_private_key(&mut owner.key)?;
         owner.birth_id =
             blake3::derive_key("source-owned.packet-canonical-ack-birth/5", &owner.key);
         authenticate_file_identity(owner)?;
@@ -278,66 +277,12 @@ impl OriginalAckPeerBirth {
     }
 }
 
-fn read_revision(file: &File) -> Result<HostRevision, RuntimeError> {
-    let metadata = file
-        .metadata()
-        .map_err(|_| RuntimeError::OwnerUnavailable)?;
-    if !metadata.is_file() {
-        return Err(RuntimeError::ForeignAuthority);
-    }
-    Ok(HostRevision {
-        device: metadata.dev(),
-        inode: metadata.ino(),
-        length: metadata.len(),
-        uid: metadata.uid(),
-        mode: metadata.mode(),
-        modified: (metadata.mtime(), metadata.mtime_nsec()),
-        changed: (metadata.ctime(), metadata.ctime_nsec()),
-    })
-}
-
 fn authenticate_file_identity(owner: &OriginalAckPeerBirth) -> Result<(), RuntimeError> {
-    if owner.process != std::process::id() || owner.thread != std::thread::current().id() {
-        return Err(RuntimeError::ForeignAuthority);
-    }
-    let current = File::open("/proc/self/exe").map_err(|_| RuntimeError::OwnerUnavailable)?;
-    if read_revision(&owner.host_file)? != owner.host_revision
-        || read_revision(&current)? != owner.host_revision
-        || owner.host_revision.length != owner.host_executable.length.get()
-    {
-        return Err(RuntimeError::ForeignAuthority);
-    }
-    let domain = b"cnp.blob.v1";
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(b"CNP/1\0");
-    hasher.update(&(domain.len() as u32).to_be_bytes());
-    hasher.update(domain);
-    hasher.update(&owner.host_revision.length.to_be_bytes());
-    let mut scratch = [0u8; HOST_EXECUTABLE_STREAM_BYTES];
-    let mut offset = 0u64;
-    while offset < owner.host_revision.length {
-        let remaining = owner.host_revision.length - offset;
-        let length = usize::try_from(remaining.min(scratch.len() as u64))
-            .map_err(|_| RuntimeError::ResourceLimit)?;
-        owner
-            .host_file
-            .read_exact_at(&mut scratch[..length], offset)
-            .map_err(|_| RuntimeError::OwnerUnavailable)?;
-        hasher.update(&scratch[..length]);
-        offset += length as u64;
-    }
-    let digest = hasher.finalize().to_hex();
-    if owner.host_executable.hash.algorithm != "blake3-256"
-        || owner.host_executable.hash.domain != "cnp.blob.v1"
-        || owner.host_executable.hash.digest != digest.as_str()
-        || owner.host_executable.media_type != "application/octet-stream"
-        || read_revision(&owner.host_file)? != owner.host_revision
-        || read_revision(&current)? != owner.host_revision
-    {
-        return Err(RuntimeError::ForeignAuthority);
-    }
-    if owner.process != std::process::id() || owner.thread != std::thread::current().id() {
-        return Err(RuntimeError::ForeignAuthority);
-    }
-    Ok(())
+    super::private_identity::authenticate_private_file(
+        owner.process,
+        owner.thread,
+        &owner.host_executable,
+        &owner.host_file,
+        &owner.host_revision,
+    )
 }

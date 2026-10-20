@@ -39,6 +39,7 @@ enum Stage {
     DerivationExporting,
     DerivationRunning,
     DerivedBanks,
+    PrivateSeed,
     DerivationFailed,
 }
 

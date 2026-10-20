@@ -14,6 +14,9 @@ use crate::node_adapters::cnp::source_birth_derivation::{
 use crucible_host_resources::LinuxPureWorkerAttemptIdentity;
 use std::ops::Range;
 
+#[path = "derivation/private_seed.rs"]
+mod private_seed;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DerivationStage {
     Exporting,
@@ -30,6 +33,8 @@ pub(in crate::node_adapters::cnp::semantic) struct NativeImport18DerivationState
     private_launch: Option<Id>,
     registration: Option<PacketCompleteAckHostRegistrationPlan>,
     receipt: Option<RequestReceipt>,
+    host_reference: Option<[u8; 32]>,
+    private_seed: Option<birth::OriginalImport18PrivateSeed>,
     job: Option<SourceBirthDerivationJob>,
     banks: Option<[Range<usize>; 2]>,
     stage: DerivationStage,
@@ -79,6 +84,8 @@ impl PacketCompleteSemanticSource {
             private_launch: None,
             registration: None,
             receipt: None,
+            host_reference: None,
+            private_seed: None,
             job: None,
             banks: None,
             stage: DerivationStage::Failed,
@@ -118,6 +125,15 @@ impl PacketCompleteSemanticSource {
         ) {
             Ok(receipt) => {
                 state.receipt = Some(receipt);
+                state.host_reference =
+                    match private_seed::host_reference_identity(&launch.controller_executable) {
+                        Ok(identity) => Some(identity),
+                        Err(error) => {
+                            state.stage = DerivationStage::Failed;
+                            job.refuse_runtime(error);
+                            return Err(RuntimeError::OwnerUnavailable);
+                        }
+                    };
                 state.stage = DerivationStage::Deriving;
                 Ok(())
             }
@@ -300,7 +316,7 @@ impl PacketCompleteSemanticSource {
         Ok(())
     }
 
-    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) const fn isolated_derivation_counter_scratch_data()
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn isolated_derivation_counter_scratch_data()
     -> usize {
         // New association/direct-buffer wrapper headers only. Actual private
         // runtime/authentication remains under its original deployment owner.
@@ -312,6 +328,7 @@ impl PacketCompleteSemanticSource {
             + std::mem::size_of::<usize>() * 2
             + std::mem::size_of::<Result<usize, RuntimeError>>()
             + SourceBirthDerivationJob::deployment_storage_counter_scratch_data()
+            + Self::native_import18_private_seed_counter_scratch_data()
     }
 
     pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn authenticate_isolated_derivation_storage_custody(
@@ -365,6 +382,9 @@ impl PacketCompleteSemanticSource {
         }
         if let Some(job) = &state.job {
             bytes = storage::sum(&[bytes, job.known_direct_backing_data()?])?;
+        }
+        if let Some(seed) = &state.private_seed {
+            bytes = storage::sum(&[bytes, seed.known_backing()?])?;
         }
         if bytes > maximum {
             return Err(RuntimeError::ResourceLimit);
