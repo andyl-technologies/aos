@@ -8798,8 +8798,28 @@ runtime bounds remain unchanged. Its SDK strict profiles, formatter pair,
 crate graph and exact unsafe audit pass. Native strict qualification rejects a
 direct wall-clock call in the new fixture; `2fd26aa7cf` routes that same real
 90-second deadline through the existing `Clock` provider without suppressing
-the lint. The failed receipt is retained and corrected qualification is running;
-this new range witness has no runtime acceptance yet.
+the lint. The failed receipt is retained. Corrected qualification passes all
+three strict Linux profiles and private docs, then the complete native VM in
+447.057 seconds. Independent review matches all 5,097 source inputs, four
+original Cargo executables, 55 selected native unit cases and the original 48
+selectors. The actual manifest-range, held-policy, independent release and
+supervisor grace/funding controls all pass. Owning and complete trunk gates
+remain pending; this component result accepts no T2 task.
+
+HOST-32 implementation `977ebe2108`, under qualification at `8956e89150`, adds startup
+cleanup for the existing generated chunk scratch names. It preflights every
+candidate's grammar, original inode, owner, mode and project before any unlink,
+then checks each actual link-count change and synchronized parent removal.
+Multiple temporary links to the same inode preserve surviving aliases; the
+post-cleanup namespace is observed before any content adoption. The physical
+owner retains the same publisher Drain context across these effects. Its
+formatter pair, crate graph, exact unsafe audit, three strict Linux profiles
+and private docs pass. The Cargo example build and real native controls are
+under qualification. Those controls require malformed-name and symlink refusal
+without deleting valid scratch, plus actual removal of both generated modes
+and multiple original inode links while independently retained descriptors
+preserve the original partial bytes. This is a chunk scratch recovery component;
+complete recovery, readiness and host-task acceptance remain open.
 All five T2 task checkboxes remain open. Encoded eviction, shared-chunk
 re-extraction, complete recovery/readiness and the stopped
 HOST-3/HOST-25/DOM-18 zero-wipe conflict remain outstanding; T3 and branch
