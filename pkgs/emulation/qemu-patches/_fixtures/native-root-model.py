@@ -35,13 +35,17 @@ def implementation(source, case):
 
     declaration_unit = source / "hw/nvram/fw_cfg.c"
     text = declaration_unit.read_text()
+    entry_header = (source / "include/hw/nvram/crucible-fwcfg-entry.h").read_text()
     first = "struct FWCfgEntry {"
     last = "int fw_cfg_crucible_root_firmware_inventory("
+    entry_include = '#include "hw/nvram/crucible-fwcfg-entry.h"\n'
     include = '#include "crucible-whole-fwcfg.inc.c"\n'
     assertion = "G_STATIC_ASSERT(sizeof(FWCfgCrucibleRootInventory) == 104);"
-    if text.count(first) != 1 or text.count(include) != 1 or text.count(assertion) != 1:
+    if (entry_header.count(first) != 1 or text.count(first) != 0 or
+            text.count(entry_include) != 1 or text.count(include) != 1 or
+            text.count(assertion) != 1):
         raise SystemExit("native FW_CFG declaration/include boundary is ambiguous")
-    entry_end = text.find("\n};\n", text.index(first))
+    entry_end = entry_header.find("\n};\n", entry_header.index(first))
     if entry_end < 0:
         raise SystemExit("native FW_CFG entry closing declaration is missing")
 
@@ -60,7 +64,7 @@ def implementation(source, case):
 
     final_function = exact_function(text, last)
     end = text.index(last) + len(final_function)
-    return (text[text.index(first):entry_end + 4] + "\n" + closure +
+    return (entry_header[entry_header.index(first):entry_end + 4] + "\n" + closure +
             text[text.index(assertion):end])
 
 

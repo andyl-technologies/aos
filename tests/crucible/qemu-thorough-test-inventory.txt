@@ -1471,6 +1471,7 @@ unit - qemu:test-crucible-arm-timer-wide-clock
 unit - qemu:test-crucible-cxl-timestamp
 unit - qemu:test-crucible-e1000-fingerprint
 unit - qemu:test-crucible-fdc-fingerprint
+unit - qemu:test-crucible-fwcfg-directory
 unit - qemu:test-crucible-hot-fork-child
 unit - qemu:test-crucible-hot-fork-coordinator
 unit - qemu:test-crucible-hpet-phase

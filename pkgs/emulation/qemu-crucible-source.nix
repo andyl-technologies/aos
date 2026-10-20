@@ -113,7 +113,7 @@ in
     qualification.packageProbe = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
-        "expected" = "The upstream archive, patch series, boundary header, build expression, plugin workspace, and vendor tree are present and nonempty.";
+        "expected" = "The upstream archive, atomic patch descriptor, patch and bundle, boundary header, build expression, plugin workspace, and vendor tree are present and nonempty.";
         "files" = {};
         "input" = "The published corresponding-source manifest for the patched QEMU and Crucible plugin pair.";
         "operation" = "Resolve every manifest-named rebuild input beneath the immutable source root.";
@@ -122,7 +122,7 @@ in
             "argv" = [
               "@python@"
               "-c"
-              "import pathlib\nroot = pathlib.Path(\"@out@/share/aos/qemu-crucible-source\")\nvalues = dict(line.split(\"=\", 1) for line in (root / \"SOURCE-MANIFEST.env\").read_text().splitlines() if \"=\" in line)\nassert values[\"package\"] == \"qemu-crucible-source\"\nfor key in [\"qemu_source_file\", \"qemu_build_expression\", \"shmem_header_file\", \"qemu_patch_license_inventory\", \"plugin_source_root\", \"plugin_cargo_vendor\"]:\n    path = root / values[key]\n    assert path.exists() and (path.is_dir() or path.stat().st_size > 0)\nassert (root / \"patches/_series.nix\").stat().st_size > 0\nprint(\"qemu-crucible-source operation passed\")\n"
+              "import hashlib\nimport pathlib\nroot = pathlib.Path(\"@out@/share/aos/qemu-crucible-source\")\nvalues = dict(line.split(\"=\", 1) for line in (root / \"SOURCE-MANIFEST.env\").read_text().splitlines() if \"=\" in line)\nassert values[\"package\"] == \"qemu-crucible-source\"\nfor key in [\"qemu_source_file\", \"qemu_build_expression\", \"shmem_header_file\", \"qemu_patch_license_inventory\", \"plugin_source_root\", \"plugin_cargo_vendor\"]:\n    path = root / values[key]\n    assert path.exists() and (path.is_dir() or path.stat().st_size > 0)\ndescriptor = root / \"patches/_atomic-patch.nix\"\nassert descriptor.is_file() and descriptor.stat().st_size > 0\nfor file_key, hash_key in [(\"qemu_atomic_patch_file\", \"qemu_atomic_patch_hash\"),\n                           (\"qemu_patch_branch_bundle\", \"qemu_patch_branch_bundle_hash\")]:\n    path = root / values[file_key]\n    assert path.is_file() and path.stat().st_size > 0\n    assert hashlib.sha256(path.read_bytes()).hexdigest() == values[hash_key]\nprint(\"qemu-crucible-source operation passed\")\n"
             ];
             "exit_code" = 0;
             "stderr" = {

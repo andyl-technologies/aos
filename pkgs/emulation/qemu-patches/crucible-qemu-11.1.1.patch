@@ -1,6 +1,6 @@
-From 508d5e7438c78c9d0932228f26798773d7ec2f05 Mon Sep 17 00:00:00 2001
+From 576c687380c02cf64499af730c7ab8cf7762c65e Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Thu, 15 Oct 2026 02:00:00 +0000
+Date: Mon, 19 Oct 2026 23:58:00 +0000
 Subject: [PATCH] Integrate deterministic execution and native effect ownership
 
 Keep small TCG invalidation page-lock sets in four caller-owned sorted
@@ -810,6 +810,15 @@ family compile validates six fixtures and exposes the remaining RR model
 field. Preserve both failures. These two existing Python-only changes do
 not change production execution or create selected authority; complete
 component execution and package/source realization remain required.
+
+Validate whole-q35 FW_CFG file insertion against its original pre-effect
+directory archive before native mutation. Retain exact sorted entry moves,
+payload and callback identities, both tables and live directory backing
+before publication. Share the native comparator with ordinary QEMU unit
+controls, preserve the original entry declaration license, and retain all
+existing source seals and guest-effect refusals. This is insertion-lineage
+source progress; full payload/callback ownership, Ready, execution and exact
+capture/fresh restore remain unqualified.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -72219,10 +72228,10 @@ index 43e3c916f73fa3bda638e170895ec0421fedfeef..da2b831f4822ba0424d76606dc9617b9
      uint32_t    conf_msix_qsize;
 diff --git a/hw/nvram/crucible-whole-fwcfg.inc.c b/hw/nvram/crucible-whole-fwcfg.inc.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..b2818a9875b25caa83814735fd53fc31099b1ee3
+index 0000000000000000000000000000000000000000..b1322f29606e5ec957b16b16bd6df0e8f4d0c148
 --- /dev/null
 +++ b/hw/nvram/crucible-whole-fwcfg.inc.c
-@@ -0,0 +1,1045 @@
+@@ -0,0 +1,1087 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +/* Original finite table allocations and pre-effect native entry history. */
 +
@@ -72255,6 +72264,7 @@ index 0000000000000000000000000000000000000000..b2818a9875b25caa83814735fd53fc31
 +    bool replacement;
 +    bool directory;
 +    bool directory_completed;
++    bool directory_had_files;
 +    bool file_birth;
 +    bool file_published;
 +    bool file_publication_observed;
@@ -72898,11 +72908,30 @@ index 0000000000000000000000000000000000000000..b2818a9875b25caa83814735fd53fc31
 +    event = &whole_fwcfg.events[whole_fwcfg.event_count++];
 +    event->owner = owner;
 +    event->directory = true;
++    event->directory_had_files = owner->files != NULL;
 +    event->directory_extent = extent;
 +    event->before_directory = fwcfg_whole_allocate(extent);
 +    event->after_directory = fwcfg_whole_allocate(extent);
 +    fwcfg_whole_directory_copy(owner, event->before_directory);
 +    return event;
++}
++
++static FWCfgWholeDirectoryView fwcfg_whole_directory_before(
++    const WholeFwEvent *event)
++{
++    size_t table_extent = sizeof(FWCfgEntry) * whole_fwcfg.maximum;
++    size_t order_extent = sizeof(int) * whole_fwcfg.maximum;
++    const uint8_t *body = event->before_directory;
++
++    return (FWCfgWholeDirectoryView) {
++        .entries = { (const FWCfgEntry *)body,
++                     (const FWCfgEntry *)(body + table_extent) },
++        .order = (const int *)(body + 2 * table_extent),
++        .files = event->directory_had_files ?
++            (const FWCfgFiles *)(body + 2 * table_extent + order_extent) : NULL,
++        .maximum = whole_fwcfg.maximum,
++        .slots = event->owner->file_slots,
++    };
 +}
 +
 +static void fwcfg_whole_file_birth(FWCfgState *owner, WholeFwEvent *event,
@@ -72939,6 +72968,13 @@ index 0000000000000000000000000000000000000000..b2818a9875b25caa83814735fd53fc31
 +        .allow_write = !read_only,
 +    };
 +    event->file_source = fwcfg_whole_entry_source(owner, &event->file_entry);
++    FWCfgWholeDirectoryView before = fwcfg_whole_directory_before(event);
++    unsigned insertion;
++
++    if (!fw_cfg_whole_directory_insert_prepared(&before, event->file_name,
++                                                &insertion)) {
++        fwcfg_whole_fault("file insertion has no valid original directory cut");
++    }
 +}
 +
 +static bool fwcfg_whole_file_roots_current(FWCfgState *owner)
@@ -73105,6 +73141,21 @@ index 0000000000000000000000000000000000000000..b2818a9875b25caa83814735fd53fc31
 +        !event->before_directory || !event->after_directory) {
 +        fwcfg_whole_fault("original directory attempt disappeared");
 +    }
++    if (event->file_birth) {
++        FWCfgWholeDirectoryView before = fwcfg_whole_directory_before(event);
++        FWCfgWholeDirectoryView after = {
++            .entries = { owner->entries[0], owner->entries[1] },
++            .order = owner->entry_order,
++            .files = owner->files,
++            .maximum = whole_fwcfg.maximum,
++            .slots = owner->file_slots,
++        };
++
++        if (!fw_cfg_whole_directory_insert_current(&before, &after,
++                event->file_name, &event->file_entry, 0)) {
++            fwcfg_whole_fault("native file move changed an original entry owner");
++        }
++    }
 +    fwcfg_whole_directory_copy(owner, event->after_directory);
 +    event->directory_completed = true;
 +    if (event->file_birth) {
@@ -73269,7 +73320,7 @@ index 0000000000000000000000000000000000000000..b2818a9875b25caa83814735fd53fc31
 +    return -ENOTSUP;
 +}
 diff --git a/hw/nvram/fw_cfg.c b/hw/nvram/fw_cfg.c
-index b057d870c004110fdfbe4b34da55719acbf69c7a..17f1fe8c06a827713a76d6ef6c96ba5914a03a28 100644
+index b057d870c004110fdfbe4b34da55719acbf69c7a..dcceb737ec9a754579e265a4414b5d01078c1b71 100644
 --- a/hw/nvram/fw_cfg.c
 +++ b/hw/nvram/fw_cfg.c
 @@ -23,6 +23,8 @@
@@ -73296,18 +73347,15 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..17f1fe8c06a827713a76d6ef6c96ba59
  
  #define FW_CFG_FILE_SLOTS_DFLT 0x20
  
-@@ -57,6 +64,7 @@
+@@ -57,15 +64,216 @@
  #define FW_CFG_DMA_CTL_WRITE   0x10
  
  #define FW_CFG_DMA_SIGNATURE 0x51454d5520434647ULL /* "QEMU CFG" */
 +#define FW_CFG_CRUCIBLE_SERVICE_MAX_BYTES 4096
- 
- struct FWCfgEntry {
-     uint32_t len;
-@@ -67,6 +75,212 @@ struct FWCfgEntry {
-     FWCfgWriteCallback write_cb;
- };
- 
++
++#include "hw/nvram/crucible-fwcfg-entry.h"
++#include "hw/nvram/crucible-fwcfg-directory.h"
++
 +static void fw_cfg_reset(DeviceState *device);
 +
 +static void fw_cfg_acpi_mr_save(FWCfgState *, const char *, size_t);
@@ -73340,7 +73388,15 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..17f1fe8c06a827713a76d6ef6c96ba59
 +        _exit(125);
 +    }
 +}
-+
+ 
+-struct FWCfgEntry {
+-    uint32_t len;
+-    bool allow_write;
+-    uint8_t *data;
+-    void *callback_opaque;
+-    FWCfgCallback select_cb;
+-    FWCfgWriteCallback write_cb;
+-};
 +static void fw_cfg_crucible_root_hash_u32(GChecksum *checksum, uint32_t value)
 +{
 +    uint32_t encoded = cpu_to_be32(value);
@@ -73513,11 +73569,10 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..17f1fe8c06a827713a76d6ef6c96ba59
 +    *original = crucible_firmware_alias.inventory;
 +    return 0;
 +}
-+
+ 
  /**
   * key_name:
-  *
-@@ -247,11 +461,14 @@ static void fw_cfg_reboot(FWCfgState *s)
+@@ -247,11 +455,14 @@ static void fw_cfg_reboot(FWCfgState *s)
      }
  
      rt_le32 = cpu_to_le32(rt_val);
@@ -73533,7 +73588,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..17f1fe8c06a827713a76d6ef6c96ba59
      /* nothing, write support removed in QEMU v2.4+ */
  }
  
-@@ -269,8 +486,11 @@ static inline uint32_t fw_cfg_max_entry(const FWCfgState *s)
+@@ -269,8 +480,11 @@ static inline uint32_t fw_cfg_max_entry(const FWCfgState *s)
  static int fw_cfg_select(FWCfgState *s, uint16_t key)
  {
      int arch, ret;
@@ -73545,7 +73600,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..17f1fe8c06a827713a76d6ef6c96ba59
      s->cur_offset = 0;
      if ((key & FW_CFG_ENTRY_MASK) >= fw_cfg_max_entry(s)) {
          s->cur_entry = FW_CFG_INVALID;
-@@ -282,7 +502,9 @@ static int fw_cfg_select(FWCfgState *s, uint16_t key)
+@@ -282,7 +496,9 @@ static int fw_cfg_select(FWCfgState *s, uint16_t key)
          arch = !!(key & FW_CFG_ARCH_LOCAL);
          e = &s->entries[arch][key & FW_CFG_ENTRY_MASK];
          if (e->select_cb) {
@@ -73555,7 +73610,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..17f1fe8c06a827713a76d6ef6c96ba59
          }
      }
  
-@@ -293,11 +515,15 @@ static int fw_cfg_select(FWCfgState *s, uint16_t key)
+@@ -293,11 +509,15 @@ static int fw_cfg_select(FWCfgState *s, uint16_t key)
  static uint64_t fw_cfg_data_read(void *opaque, hwaddr addr, unsigned size)
  {
      FWCfgState *s = opaque;
@@ -73574,7 +73629,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..17f1fe8c06a827713a76d6ef6c96ba59
      assert(size > 0 && size <= sizeof(value));
      if (s->cur_entry != FW_CFG_INVALID && e->data && s->cur_offset < e->len) {
          /* The least significant 'size' bytes of the return value are
-@@ -331,6 +557,173 @@ static void fw_cfg_data_mem_write(void *opaque, hwaddr addr,
+@@ -331,6 +551,173 @@ static void fw_cfg_data_mem_write(void *opaque, hwaddr addr,
      } while (i);
  }
  
@@ -73748,7 +73803,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..17f1fe8c06a827713a76d6ef6c96ba59
  static void fw_cfg_dma_transfer(FWCfgState *s)
  {
      dma_addr_t len;
-@@ -340,6 +733,8 @@ static void fw_cfg_dma_transfer(FWCfgState *s)
+@@ -340,6 +727,8 @@ static void fw_cfg_dma_transfer(FWCfgState *s)
      int read = 0, write = 0;
      dma_addr_t dma_addr;
  
@@ -73757,7 +73812,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..17f1fe8c06a827713a76d6ef6c96ba59
      /* Reset the address before the next access */
      dma_addr = s->dma_addr;
      s->dma_addr = 0;
-@@ -355,14 +750,6 @@ static void fw_cfg_dma_transfer(FWCfgState *s)
+@@ -355,14 +744,6 @@ static void fw_cfg_dma_transfer(FWCfgState *s)
      dma.length = be32_to_cpu(dma.length);
      dma.control = be32_to_cpu(dma.control);
  
@@ -73772,7 +73827,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..17f1fe8c06a827713a76d6ef6c96ba59
      if (dma.control & FW_CFG_DMA_CTL_READ) {
          read = 1;
          write = 0;
-@@ -376,6 +763,70 @@ static void fw_cfg_dma_transfer(FWCfgState *s)
+@@ -376,6 +757,70 @@ static void fw_cfg_dma_transfer(FWCfgState *s)
          dma.length = 0;
      }
  
@@ -73843,7 +73898,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..17f1fe8c06a827713a76d6ef6c96ba59
      dma.control = 0;
  
      while (dma.length > 0 && !(dma.control & FW_CFG_DMA_CTL_ERROR)) {
-@@ -450,6 +901,8 @@ static void fw_cfg_dma_mem_write(void *opaque, hwaddr addr,
+@@ -450,6 +895,8 @@ static void fw_cfg_dma_mem_write(void *opaque, hwaddr addr,
  {
      FWCfgState *s = opaque;
  
@@ -73852,7 +73907,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..17f1fe8c06a827713a76d6ef6c96ba59
      if (size == 4) {
          if (addr == 0) {
              /* FWCfgDmaAccess high address */
-@@ -554,8 +1007,18 @@ static const MemoryRegionOps fw_cfg_dma_mem_ops = {
+@@ -554,8 +1001,18 @@ static const MemoryRegionOps fw_cfg_dma_mem_ops = {
  
  static void fw_cfg_reset(DeviceState *d)
  {
@@ -73872,7 +73927,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..17f1fe8c06a827713a76d6ef6c96ba59
      /* we never register a read callback for FW_CFG_SIGNATURE */
      fw_cfg_select(s, FW_CFG_SIGNATURE);
  }
-@@ -622,6 +1085,8 @@ static void fw_cfg_update_mr(FWCfgState *s, uint16_t key, size_t size)
+@@ -622,6 +1079,8 @@ static void fw_cfg_update_mr(FWCfgState *s, uint16_t key, size_t size)
      int arch = !!(key & FW_CFG_ARCH_LOCAL);
      void *ptr;
  
@@ -73881,7 +73936,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..17f1fe8c06a827713a76d6ef6c96ba59
      key &= FW_CFG_ENTRY_MASK;
      assert(key < fw_cfg_max_entry(s));
  
-@@ -636,6 +1101,9 @@ static int fw_cfg_acpi_mr_restore_post_load(void *opaque, int version_id)
+@@ -636,6 +1095,9 @@ static int fw_cfg_acpi_mr_restore_post_load(void *opaque, int version_id)
      FWCfgState *s = opaque;
      int i, index;
  
@@ -73891,7 +73946,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..17f1fe8c06a827713a76d6ef6c96ba59
      assert(s->files);
  
      index = be32_to_cpu(s->files->count);
-@@ -662,6 +1130,171 @@ static const VMStateDescription vmstate_fw_cfg_dma = {
+@@ -662,6 +1124,171 @@ static const VMStateDescription vmstate_fw_cfg_dma = {
      },
  };
  
@@ -74063,7 +74118,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..17f1fe8c06a827713a76d6ef6c96ba59
  static const VMStateDescription vmstate_fw_cfg_acpi_mr = {
      .name = "fw_cfg/acpi_mr",
      .version_id = 1,
-@@ -676,10 +1309,57 @@ static const VMStateDescription vmstate_fw_cfg_acpi_mr = {
+@@ -676,10 +1303,57 @@ static const VMStateDescription vmstate_fw_cfg_acpi_mr = {
      },
  };
  
@@ -74121,7 +74176,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..17f1fe8c06a827713a76d6ef6c96ba59
      .fields = (const VMStateField[]) {
          VMSTATE_UINT16(cur_entry, FWCfgState),
          VMSTATE_UINT16_HACK(cur_offset, FWCfgState, is_version_1),
-@@ -704,9 +1384,12 @@ static void fw_cfg_add_bytes_callback(FWCfgState *s, uint16_t key,
+@@ -704,9 +1378,12 @@ static void fw_cfg_add_bytes_callback(FWCfgState *s, uint16_t key,
  
      key &= FW_CFG_ENTRY_MASK;
  
@@ -74134,7 +74189,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..17f1fe8c06a827713a76d6ef6c96ba59
      s->entries[arch][key].data = data;
      s->entries[arch][key].len = (uint32_t)len;
      s->entries[arch][key].select_cb = select_cb;
-@@ -723,9 +1406,11 @@ static void *fw_cfg_modify_bytes_read(FWCfgState *s, uint16_t key,
+@@ -723,9 +1400,11 @@ static void *fw_cfg_modify_bytes_read(FWCfgState *s, uint16_t key,
  
      key &= FW_CFG_ENTRY_MASK;
  
@@ -74146,7 +74201,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..17f1fe8c06a827713a76d6ef6c96ba59
      ptr = s->entries[arch][key].data;
      s->entries[arch][key].data = data;
      s->entries[arch][key].len = len;
-@@ -736,32 +1421,41 @@ static void *fw_cfg_modify_bytes_read(FWCfgState *s, uint16_t key,
+@@ -736,32 +1415,41 @@ static void *fw_cfg_modify_bytes_read(FWCfgState *s, uint16_t key,
  
  void fw_cfg_add_bytes(FWCfgState *s, uint16_t key, void *data, size_t len)
  {
@@ -74194,7 +74249,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..17f1fe8c06a827713a76d6ef6c96ba59
      *copy = cpu_to_le16(value);
      trace_fw_cfg_add_i16(key, trace_key_name(key), value);
      fw_cfg_add_bytes(s, key, copy, sizeof(value));
-@@ -771,17 +1465,21 @@ void fw_cfg_modify_i16(FWCfgState *s, uint16_t key, uint16_t value)
+@@ -771,17 +1459,21 @@ void fw_cfg_modify_i16(FWCfgState *s, uint16_t key, uint16_t value)
  {
      uint16_t *copy, *old;
  
@@ -74219,7 +74274,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..17f1fe8c06a827713a76d6ef6c96ba59
      *copy = cpu_to_le32(value);
      trace_fw_cfg_add_i32(key, trace_key_name(key), value);
      fw_cfg_add_bytes(s, key, copy, sizeof(value));
-@@ -791,17 +1489,21 @@ void fw_cfg_modify_i32(FWCfgState *s, uint16_t key, uint32_t value)
+@@ -791,17 +1483,21 @@ void fw_cfg_modify_i32(FWCfgState *s, uint16_t key, uint32_t value)
  {
      uint32_t *copy, *old;
  
@@ -74244,7 +74299,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..17f1fe8c06a827713a76d6ef6c96ba59
      *copy = cpu_to_le64(value);
      trace_fw_cfg_add_i64(key, trace_key_name(key), value);
      fw_cfg_add_bytes(s, key, copy, sizeof(value));
-@@ -811,10 +1513,12 @@ void fw_cfg_modify_i64(FWCfgState *s, uint16_t key, uint64_t value)
+@@ -811,10 +1507,12 @@ void fw_cfg_modify_i64(FWCfgState *s, uint16_t key, uint64_t value)
  {
      uint64_t *copy, *old;
  
@@ -74259,7 +74314,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..17f1fe8c06a827713a76d6ef6c96ba59
  }
  
  /*
-@@ -843,10 +1547,17 @@ void fw_cfg_add_file_callback(FWCfgState *s,  const char *filename,
+@@ -843,10 +1541,17 @@ void fw_cfg_add_file_callback(FWCfgState *s,  const char *filename,
      int i, index, count;
      size_t dsize;
      int order = 0;
@@ -74278,7 +74333,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..17f1fe8c06a827713a76d6ef6c96ba59
          fw_cfg_add_bytes(s, FW_CFG_FILE_DIR, s->files, dsize);
      }
  
-@@ -899,6 +1610,7 @@ void fw_cfg_add_file_callback(FWCfgState *s,  const char *filename,
+@@ -899,6 +1604,7 @@ void fw_cfg_add_file_callback(FWCfgState *s,  const char *filename,
  
      s->files->count = cpu_to_be32(count+1);
      fw_cfg_acpi_mr_save(s, filename, len);
@@ -74286,7 +74341,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..17f1fe8c06a827713a76d6ef6c96ba59
  }
  
  void fw_cfg_add_file(FWCfgState *s,  const char *filename,
-@@ -913,16 +1625,23 @@ void *fw_cfg_modify_file(FWCfgState *s, const char *filename,
+@@ -913,16 +1619,23 @@ void *fw_cfg_modify_file(FWCfgState *s, const char *filename,
      int i, index;
      void *ptr = NULL;
  
@@ -74310,7 +74365,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..17f1fe8c06a827713a76d6ef6c96ba59
              return ptr;
          }
      }
-@@ -944,6 +1663,8 @@ bool fw_cfg_add_file_from_generator(FWCfgState *s,
+@@ -944,6 +1657,8 @@ bool fw_cfg_add_file_from_generator(FWCfgState *s,
      Object *obj;
      gsize size;
  
@@ -74319,7 +74374,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..17f1fe8c06a827713a76d6ef6c96ba59
      obj = object_resolve_path_component(parent, part);
      if (!obj) {
          error_setg(errp, "Cannot find object ID '%s'", part);
-@@ -972,19 +1693,26 @@ static void fw_cfg_machine_reset(void *opaque)
+@@ -972,19 +1687,26 @@ static void fw_cfg_machine_reset(void *opaque)
      size_t len;
      char *buf;
  
@@ -74349,7 +74404,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..17f1fe8c06a827713a76d6ef6c96ba59
  }
  
  static const Property fw_cfg_properties[] = {
-@@ -996,13 +1724,16 @@ static void fw_cfg_common_realize(DeviceState *dev, Error **errp)
+@@ -996,13 +1718,16 @@ static void fw_cfg_common_realize(DeviceState *dev, Error **errp)
      FWCfgState *s = FW_CFG(dev);
      MachineState *machine = MACHINE(qdev_get_machine());
      uint32_t version = FW_CFG_VERSION;
@@ -74367,7 +74422,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..17f1fe8c06a827713a76d6ef6c96ba59
      fw_cfg_add_bytes(s, FW_CFG_UUID, &qemu_uuid, 16);
      fw_cfg_add_i16(s, FW_CFG_NOGRAPHIC, (uint16_t)!machine->enable_graphics);
      fw_cfg_add_i16(s, FW_CFG_BOOT_MENU, (uint16_t)(machine->boot_config.has_menu && machine->boot_config.menu));
-@@ -1199,9 +1930,13 @@ static void fw_cfg_file_slots_allocate(FWCfgState *s, Error **errp)
+@@ -1199,9 +1924,13 @@ static void fw_cfg_file_slots_allocate(FWCfgState *s, Error **errp)
          return;
      }
  
@@ -74384,7 +74439,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..17f1fe8c06a827713a76d6ef6c96ba59
  }
  
  static const Property fw_cfg_io_properties[] = {
-@@ -1317,6 +2052,23 @@ static void fw_cfg_register_types(void)
+@@ -1317,6 +2046,23 @@ static void fw_cfg_register_types(void)
      type_register_static(&fw_cfg_info);
      type_register_static(&fw_cfg_io_info);
      type_register_static(&fw_cfg_mem_info);
@@ -94893,6 +94948,216 @@ index eee70bad422d652e9cfa4110d89cadaa5aa6d6f7..4c51330840e0a9b23f33671372069d77
      uint64_t            last_rx_timer_cycles;
      int32_t             locked_mbidx;
      int32_t             smb_target_mbidx;
+diff --git a/include/hw/nvram/crucible-fwcfg-directory.h b/include/hw/nvram/crucible-fwcfg-directory.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..4fde9205e5eaf6d7b452539f933a03eb34bea876
+--- /dev/null
++++ b/include/hw/nvram/crucible-fwcfg-directory.h
+@@ -0,0 +1,148 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++#ifndef HW_NVRAM_CRUCIBLE_FWCFG_DIRECTORY_H
++#define HW_NVRAM_CRUCIBLE_FWCFG_DIRECTORY_H
++
++#include "qemu/bswap.h"
++#include "hw/nvram/crucible-fwcfg-entry.h"
++
++/* Borrows actual native tables or the same pre-effect complete archive. These
++ * pointers remain inside QEMU; this data view grants no source or effect right. */
++typedef struct FWCfgWholeDirectoryView {
++    const FWCfgEntry *entries[2];
++    const int *order;
++    const FWCfgFiles *files;
++    unsigned maximum;
++    unsigned slots;
++} FWCfgWholeDirectoryView;
++
++static inline bool fw_cfg_whole_directory_shape(
++    const FWCfgWholeDirectoryView *view)
++{
++    unsigned count;
++
++    if (!view || !view->entries[0] || !view->entries[1] || !view->order ||
++        !view->slots || view->slots > UINT16_MAX - FW_CFG_FILE_FIRST ||
++        view->maximum != FW_CFG_FILE_FIRST + view->slots) {
++        return false;
++    }
++    count = view->files ? be32_to_cpu(view->files->count) : 0;
++    if (count > view->slots) {
++        return false;
++    }
++    for (unsigned index = 0; index < count; index++) {
++        const FWCfgFile *file = &view->files->f[index];
++        const FWCfgEntry *entry = &view->entries[0][FW_CFG_FILE_FIRST + index];
++
++        if (!memchr(file->name, 0, sizeof(file->name)) || !file->name[0] ||
++            be16_to_cpu(file->select) != FW_CFG_FILE_FIRST + index ||
++            be32_to_cpu(file->size) != entry->len || file->reserved ||
++            (index && strcmp(view->files->f[index - 1].name, file->name) >= 0)) {
++            return false;
++        }
++    }
++    return true;
++}
++
++/* Runs before the insertion starts. The caller already owns the complete
++ * before/after archive; this check never follows a payload or callback pointer. */
++static inline bool fw_cfg_whole_directory_insert_prepared(
++    const FWCfgWholeDirectoryView *before, const char *name,
++    unsigned *insertion)
++{
++    unsigned count, index = 0;
++
++    if (!insertion || !name ||
++        strnlen(name, FW_CFG_MAX_FILE_PATH) == FW_CFG_MAX_FILE_PATH ||
++        !name[0] ||
++        !fw_cfg_whole_directory_shape(before)) {
++        return false;
++    }
++    count = before->files ? be32_to_cpu(before->files->count) : 0;
++    if (count == before->slots) {
++        return false;
++    }
++    while (index < count && strcmp(before->files->f[index].name, name) < 0) {
++        index++;
++    }
++    if (index < count && !strcmp(before->files->f[index].name, name)) {
++        return false;
++    }
++    *insertion = index;
++    return true;
++}
++
++/* Checks the exact sorted native move against the actual pre-effect owner
++ * archive. Equal payload bytes cannot replace an old callback/opaque tuple. */
++static inline bool fw_cfg_whole_directory_insert_current(
++    const FWCfgWholeDirectoryView *before,
++    const FWCfgWholeDirectoryView *after, const char *name,
++    const FWCfgEntry *inserted, int inserted_order)
++{
++    unsigned insertion, count;
++
++    if (!inserted || !fw_cfg_whole_directory_insert_prepared(before, name,
++                                                             &insertion) ||
++        !fw_cfg_whole_directory_shape(after) || !after->files ||
++        after->maximum != before->maximum || after->slots != before->slots) {
++        return false;
++    }
++    count = before->files ? be32_to_cpu(before->files->count) : 0;
++    if (be32_to_cpu(after->files->count) != count + 1 ||
++        strcmp(after->files->f[insertion].name, name) ||
++        after->order[insertion] != inserted_order ||
++        !fw_cfg_whole_entry_equal(
++            &after->entries[0][FW_CFG_FILE_FIRST + insertion], inserted)) {
++        return false;
++    }
++
++    const FWCfgEntry *directory = &after->entries[0][FW_CFG_FILE_DIR];
++
++    /* The archived directory view is a copy, but the live device's directory
++     * entry must still name its actual current allocation on every insertion. */
++    if (directory->data != (const uint8_t *)after->files ||
++        directory->len != sizeof(uint32_t) + sizeof(FWCfgFile) * after->slots ||
++        directory->allow_write || directory->select_cb || directory->write_cb ||
++        directory->callback_opaque) {
++        return false;
++    }
++
++    for (unsigned index = 0; index < count + 1; index++) {
++        unsigned original;
++        const FWCfgFile *file;
++        const FWCfgFile *saved;
++
++        if (index == insertion) {
++            continue;
++        }
++        original = index < insertion ? index : index - 1;
++        file = &after->files->f[index];
++        saved = &before->files->f[original];
++        if (memcmp(file->name, saved->name, sizeof(file->name)) ||
++            file->size != saved->size || file->reserved != saved->reserved ||
++            after->order[index] != before->order[original] ||
++            !fw_cfg_whole_entry_equal(
++                &after->entries[0][FW_CFG_FILE_FIRST + index],
++                &before->entries[0][FW_CFG_FILE_FIRST + original])) {
++            return false;
++        }
++    }
++
++    for (unsigned key = 0; key < before->maximum; key++) {
++        if (!fw_cfg_whole_entry_equal(&after->entries[1][key],
++                                       &before->entries[1][key])) {
++            return false;
++        }
++        if (!(key == FW_CFG_FILE_DIR && !before->files) &&
++            (key < FW_CFG_FILE_FIRST || key >= FW_CFG_FILE_FIRST + count + 1) &&
++            !fw_cfg_whole_entry_equal(&after->entries[0][key],
++                                      &before->entries[0][key])) {
++            return false;
++        }
++        if (key > count && after->order[key] != before->order[key]) {
++            return false;
++        }
++    }
++    return true;
++}
++
++#endif
+diff --git a/include/hw/nvram/crucible-fwcfg-entry.h b/include/hw/nvram/crucible-fwcfg-entry.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..5c62b46df8aaa2c01fb5515155ea5c56a9f4c0a5
+--- /dev/null
++++ b/include/hw/nvram/crucible-fwcfg-entry.h
+@@ -0,0 +1,50 @@
++/*
++ * QEMU Firmware configuration device emulation
++ *
++ * Copyright (c) 2008 Gleb Natapov
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this software and associated documentation files (the "Software"), to deal
++ * in the Software without restriction, including without limitation the rights
++ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++ * copies of the Software, and to permit persons to whom the Software is
++ * furnished to do so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
++ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
++ * THE SOFTWARE.
++ */
++/* SPDX-License-Identifier: MIT */
++#ifndef HW_NVRAM_CRUCIBLE_FWCFG_ENTRY_H
++#define HW_NVRAM_CRUCIBLE_FWCFG_ENTRY_H
++
++#include "hw/nvram/fw_cfg.h"
++
++/* Native FW_CFG state, shared only with the firmware directory validator. */
++struct FWCfgEntry {
++    uint32_t len;
++    bool allow_write;
++    uint8_t *data;
++    void *callback_opaque;
++    FWCfgCallback select_cb;
++    FWCfgWriteCallback write_cb;
++};
++
++static inline bool fw_cfg_whole_entry_equal(const FWCfgEntry *left,
++                                             const FWCfgEntry *right)
++{
++    return left->data == right->data && left->len == right->len &&
++        left->allow_write == right->allow_write &&
++        left->select_cb == right->select_cb &&
++        left->write_cb == right->write_cb &&
++        left->callback_opaque == right->callback_opaque;
++}
++
++#endif
 diff --git a/include/hw/nvram/fw_cfg.h b/include/hw/nvram/fw_cfg.h
 index 20e2c7190e7cab3871cf12dac46ec42b27f49604..314dbcfe9f3c9188996283b9f967c2eeac7903a0 100644
 --- a/include/hw/nvram/fw_cfg.h
@@ -217937,7 +218202,7 @@ index 0000000000000000000000000000000000000000..0134a5e2142edf1fbb6004ce1b513cbc
 +{
 +}
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..8979bad236d6ef89336b85ae2c403213e1bc0e2e 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..f8742806dcedc23aac8754cbe191e9c6046d1d2d 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -125,6 +125,11 @@ if have_block
@@ -217952,7 +218217,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..8979bad236d6ef89336b85ae2c403213
  if have_system
    tests += {
      'ptimer-test': ['ptimer-test-stubs.c', meson.project_source_root() / 'hw/core/ptimer.c'],
-@@ -147,6 +152,37 @@ if have_system
+@@ -147,6 +152,38 @@ if have_system
        genh, qemuutil, qom
      ],
    }
@@ -217966,6 +218231,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..8979bad236d6ef89336b85ae2c403213
 +        meson.project_source_root() / 'hw/i3c/mock-i3c-target.c',
 +        migration, io, qom, hwcore, 'crucible-inactive-device-stubs.c'
 +      ],
++      'test-crucible-fwcfg-directory': [],
 +      'test-crucible-slirp-time': [],
 +      'test-crucible-xtensa-timer': [],
 +      'test-crucible-ahci-fingerprint': [migration, io],
@@ -217990,7 +218256,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..8979bad236d6ef89336b85ae2c403213
    if config_host_data.get('CONFIG_INOTIFY1')
      tests += {'test-util-filemonitor': []}
    endif
-@@ -162,10 +198,10 @@ if have_system
+@@ -162,10 +199,10 @@ if have_system
      endif
  
      tests += {
@@ -218003,7 +218269,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..8979bad236d6ef89336b85ae2c403213
  endif
  
  if have_ga and host_os == 'linux'
-@@ -207,3 +243,650 @@ foreach test_name, extra: tests
+@@ -207,3 +244,650 @@ foreach test_name, extra: tests
         priority: slow_tests.get(test_name, 30),
         suite: ['unit'])
  endforeach
@@ -230150,6 +230416,313 @@ index 0000000000000000000000000000000000000000..8c972db14596c1fc9b9a80e2542bb058
 +    g_test_add_func("/crucible/fdc/mutable-state", test_fdc_mutable_state);
 +    g_test_add_func("/crucible/fdc/unrestorable-state",
 +                    test_fdc_rejects_unrestorable_state);
++    return g_test_run();
++}
+diff --git a/tests/unit/test-crucible-fwcfg-directory.c b/tests/unit/test-crucible-fwcfg-directory.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..96175ac67aff19e0a0e90eab97c25b891199cebe
+--- /dev/null
++++ b/tests/unit/test-crucible-fwcfg-directory.c
+@@ -0,0 +1,301 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/* Exercises the same native owner/permutation validator used by FW_CFG. */
++#include "qemu/osdep.h"
++#include "qemu/cutils.h"
++#include "hw/nvram/crucible-fwcfg-directory.h"
++
++#define TEST_SLOTS 4
++#define TEST_ENTRIES (FW_CFG_FILE_FIRST + TEST_SLOTS)
++
++typedef struct DirectoryBytes {
++    uint32_t count;
++    FWCfgFile files[TEST_SLOTS];
++} DirectoryBytes;
++
++typedef struct DirectoryState {
++    FWCfgEntry entries[2][TEST_ENTRIES];
++    int order[TEST_ENTRIES];
++    DirectoryBytes directory;
++} DirectoryState;
++
++typedef struct Insertion {
++    DirectoryState before;
++    DirectoryState after;
++    FWCfgWholeDirectoryView prior;
++    FWCfgWholeDirectoryView current;
++    FWCfgEntry inserted;
++    uint8_t payloads[TEST_SLOTS][2];
++    char name[FW_CFG_MAX_FILE_PATH];
++    unsigned index;
++    unsigned count;
++} Insertion;
++
++static void select_original(void *opaque)
++{
++    (void)opaque;
++}
++
++static void select_other(void *opaque)
++{
++    (void)opaque;
++}
++
++static void write_original(void *opaque, off_t start, size_t extent)
++{
++    (void)opaque;
++    (void)start;
++    (void)extent;
++}
++
++static FWCfgWholeDirectoryView view(DirectoryState *state, bool has_files)
++{
++    return (FWCfgWholeDirectoryView) {
++        .entries = { state->entries[0], state->entries[1] },
++        .order = state->order,
++        .files = has_files ? (FWCfgFiles *)&state->directory : NULL,
++        .maximum = TEST_ENTRIES,
++        .slots = TEST_SLOTS,
++    };
++}
++
++static void prepare(Insertion *insertion, unsigned count, unsigned index)
++{
++    static const char *const old_names[] = { "bravo", "delta", "foxtrot" };
++    static const char *const new_names[] = { "alpha", "charlie", "echo", "golf" };
++    DirectoryState *before = &insertion->before;
++    DirectoryState *after = &insertion->after;
++
++    memset(insertion, 0, sizeof(*insertion));
++    g_assert_cmpuint(count, <=, G_N_ELEMENTS(old_names));
++    g_assert_cmpuint(index, <=, count);
++    insertion->count = count;
++    insertion->index = index;
++    pstrcpy(insertion->name, sizeof(insertion->name), new_names[index]);
++    before->directory.count = cpu_to_be32(count);
++    for (unsigned slot = 0; slot < count; slot++) {
++        FWCfgEntry *entry = &before->entries[0][FW_CFG_FILE_FIRST + slot];
++        FWCfgFile *file = &before->directory.files[slot];
++
++        *entry = (FWCfgEntry) {
++            .len = 2,
++            .allow_write = slot == 1,
++            .data = insertion->payloads[slot],
++            .select_cb = select_original,
++            .write_cb = write_original,
++            .callback_opaque = &insertion->payloads[slot][1],
++        };
++        file->size = cpu_to_be32(entry->len);
++        file->select = cpu_to_be16(FW_CFG_FILE_FIRST + slot);
++        pstrcpy(file->name, sizeof(file->name), old_names[slot]);
++        before->order[slot] = 17 + slot;
++    }
++    if (count) {
++        before->entries[0][FW_CFG_FILE_DIR] = (FWCfgEntry) {
++            .len = sizeof(after->directory),
++            .data = (uint8_t *)&after->directory,
++        };
++    }
++    before->entries[1][2] = (FWCfgEntry) {
++        .len = 2,
++        .data = insertion->payloads[0],
++        .select_cb = select_original,
++    };
++    before->order[TEST_ENTRIES - 1] = 93;
++    *after = *before;
++    insertion->inserted = (FWCfgEntry) {
++        .len = 2,
++        .data = insertion->payloads[TEST_SLOTS - 1],
++        .select_cb = select_other,
++        .callback_opaque = &insertion->payloads[TEST_SLOTS - 1][1],
++    };
++    insertion->prior = view(before, count != 0);
++    insertion->current = view(after, true);
++}
++
++static void insert_native_rows(Insertion *insertion)
++{
++    DirectoryState *after = &insertion->after;
++    unsigned count = insertion->count;
++    unsigned index = insertion->index;
++
++    /* Uses the native assignment order and selector rebinding. Original rows
++     * carry distinct callback, opaque, payload and order identities. */
++    for (unsigned slot = count; slot > index; slot--) {
++        after->directory.files[slot] = after->directory.files[slot - 1];
++        after->directory.files[slot].select = cpu_to_be16(FW_CFG_FILE_FIRST + slot);
++        after->entries[0][FW_CFG_FILE_FIRST + slot] =
++            after->entries[0][FW_CFG_FILE_FIRST + slot - 1];
++        after->order[slot] = after->order[slot - 1];
++    }
++    FWCfgFile *file = &after->directory.files[index];
++
++    memset(file, 0, sizeof(*file));
++    pstrcpy(file->name, sizeof(file->name), insertion->name);
++    file->size = cpu_to_be32(insertion->inserted.len);
++    file->select = cpu_to_be16(FW_CFG_FILE_FIRST + index);
++    after->entries[0][FW_CFG_FILE_FIRST + index] = insertion->inserted;
++    after->order[index] = 0;
++    after->directory.count = cpu_to_be32(count + 1);
++    if (!count) {
++        after->entries[0][FW_CFG_FILE_DIR] = (FWCfgEntry) {
++            .len = sizeof(after->directory),
++            .data = (uint8_t *)&after->directory,
++        };
++    }
++}
++
++static bool current(Insertion *insertion)
++{
++    return fw_cfg_whole_directory_insert_current(&insertion->prior,
++        &insertion->current, insertion->name, &insertion->inserted, 0);
++}
++
++static void test_all_insertion_positions(void)
++{
++    for (unsigned count = 0; count < TEST_SLOTS; count++) {
++        for (unsigned index = 0; index <= count; index++) {
++            Insertion insertion;
++            unsigned observed = UINT_MAX;
++
++            prepare(&insertion, count, index);
++            g_assert_true(fw_cfg_whole_directory_insert_prepared(
++                &insertion.prior, insertion.name, &observed));
++            g_assert_cmpuint(observed, ==, index);
++
++            insert_native_rows(&insertion);
++
++            g_assert_true(current(&insertion));
++        }
++    }
++}
++
++static void test_original_tuple_and_move_controls(void)
++{
++    for (unsigned mutation = 0; mutation < 14; mutation++) {
++        Insertion insertion;
++
++        prepare(&insertion, 3, 1);
++        insert_native_rows(&insertion);
++        FWCfgEntry *moved = &insertion.after.entries[0][FW_CFG_FILE_FIRST + 2];
++        FWCfgFile *file = &insertion.after.directory.files[2];
++
++        switch (mutation) {
++        case 0:
++            moved->data = insertion.payloads[0];
++            break;
++        case 1:
++            moved->select_cb = select_other;
++            break;
++        case 2:
++            moved->write_cb = NULL;
++            break;
++        case 3:
++            moved->callback_opaque = insertion.payloads[0];
++            break;
++        case 4:
++            moved->allow_write = !moved->allow_write;
++            break;
++        case 5:
++            insertion.after.order[2]++;
++            break;
++        case 6:
++            file->select = cpu_to_be16(FW_CFG_FILE_FIRST + 1);
++            break;
++        case 7:
++            file->reserved = 1;
++            break;
++        case 8:
++            file->name[0] = 'x';
++            break;
++        case 9:
++            insertion.after.entries[1][2].data = insertion.payloads[1];
++            break;
++        case 10:
++            insertion.after.entries[0][3].select_cb = select_other;
++            break;
++        case 11:
++            insertion.after.order[TEST_ENTRIES - 1]++;
++            break;
++        case 12:
++            insertion.after.entries[0][FW_CFG_FILE_FIRST + 1].callback_opaque = NULL;
++            break;
++        case 13:
++            insertion.after.directory.count = cpu_to_be32(3);
++            break;
++        default:
++            g_assert_not_reached();
++        }
++
++        g_assert_false(current(&insertion));
++    }
++}
++
++static void test_prepare_refuses_before_native_move(void)
++{
++    Insertion insertion;
++    DirectoryState unchanged;
++    unsigned observed = UINT_MAX;
++
++    prepare(&insertion, 3, 1);
++    pstrcpy(insertion.name, sizeof(insertion.name), "delta");
++    unchanged = insertion.after;
++
++    g_assert_false(fw_cfg_whole_directory_insert_prepared(
++        &insertion.prior, insertion.name, &observed));
++    g_assert_cmpuint(observed, ==, UINT_MAX);
++    g_assert_cmpmem(&insertion.after, sizeof(unchanged), &unchanged, sizeof(unchanged));
++
++    prepare(&insertion, 3, 1);
++    insert_native_rows(&insertion);
++    insertion.prior = insertion.current;
++    pstrcpy(insertion.name, sizeof(insertion.name), "zulu");
++    observed = UINT_MAX;
++    g_assert_true(fw_cfg_whole_directory_shape(&insertion.prior));
++
++    g_assert_false(fw_cfg_whole_directory_insert_prepared(
++        &insertion.prior, insertion.name, &observed));
++    g_assert_cmpuint(observed, ==, UINT_MAX);
++
++    prepare(&insertion, 3, 1);
++    insertion.before.directory.count = cpu_to_be32(UINT32_MAX);
++    g_assert_false(fw_cfg_whole_directory_insert_prepared(
++        &insertion.prior, insertion.name, &observed));
++}
++
++static void test_directory_alias(void)
++{
++    for (unsigned count = 0; count <= 3; count += 3) {
++        Insertion insertion;
++        DirectoryBytes foreign;
++
++        prepare(&insertion, count, 0);
++        insert_native_rows(&insertion);
++        g_assert_true(current(&insertion));
++
++        insertion.after.entries[0][FW_CFG_FILE_DIR].data =
++            (uint8_t *)&insertion.before.directory;
++        g_assert_false(current(&insertion));
++
++        prepare(&insertion, count, 0);
++        insert_native_rows(&insertion);
++        foreign = insertion.after.directory;
++        insertion.current.files = (const FWCfgFiles *)&foreign;
++        g_assert_cmpmem(&foreign, sizeof(foreign), &insertion.after.directory,
++                        sizeof(insertion.after.directory));
++        g_assert_false(current(&insertion));
++    }
++}
++
++int main(int argc, char **argv)
++{
++    g_test_init(&argc, &argv, NULL);
++    g_test_add_func("/crucible/fwcfg-directory/all-insertion-positions",
++                    test_all_insertion_positions);
++    g_test_add_func("/crucible/fwcfg-directory/original-owner-controls",
++                    test_original_tuple_and_move_controls);
++    g_test_add_func("/crucible/fwcfg-directory/pre-effect-refusal",
++                    test_prepare_refuses_before_native_move);
++    g_test_add_func("/crucible/fwcfg-directory/directory-alias",
++                    test_directory_alias);
 +    return g_test_run();
 +}
 diff --git a/tests/unit/test-crucible-hot-fork-child.c b/tests/unit/test-crucible-hot-fork-child.c

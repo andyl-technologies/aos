@@ -11,6 +11,9 @@ The atomic integration patch creates these QEMU source files:
 | Created file | License | Basis |
 | --- | --- | --- |
 | `accel/tcg/tcg-accel-ops-sim.c` | GPL-2.0-or-later | QEMU default |
+| `include/hw/nvram/crucible-fwcfg-entry.h` | MIT | Preserves the original fw_cfg.c copyright/permission notice and explicit MIT identifier; native FW_CFG entry shape and ownership comparison. |
+| `include/hw/nvram/crucible-fwcfg-directory.h` | GPL-2.0-or-later | Explicit SPDX notice; original native sorted-directory lineage validation. |
+| `tests/unit/test-crucible-fwcfg-directory.c` | GPL-2.0-or-later | Explicit SPDX notice; ordinary unit registration exercises the production validator. |
 | `plugins/whole-preparation.inc.c` | GPL-2.0-or-later | Explicit SPDX notice; original bounded stopped RR preparation. |
 | `stubs/crucible-whole-early.c` | GPL-2.0-or-later | Explicit SPDX notice; refusing non-system arena/constructor providers. |
 | `accel/tcg/crucible-node-preparation.c` | GPL-2.0-or-later | Explicit SPDX identifier |

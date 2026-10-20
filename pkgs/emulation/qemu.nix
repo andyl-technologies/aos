@@ -1722,6 +1722,20 @@ in
               build/tests/unit/test-crucible-rc4030-period --tap
               build/tests/unit/test-crucible-riscv-cpc-clock --tap
               build/tests/unit/test-crucible-mips-gic-migration --tap
+              # Exercise the production directory validator through its native unit.
+              timeout -k 5 60 build/tests/unit/test-crucible-fwcfg-directory --tap \
+                --seed=R02S00000000000000000000000000000000 \
+                > fwcfg-directory-tests.tap
+              cat fwcfg-directory-tests.tap
+              grep -Fxq '1..4' fwcfg-directory-tests.tap
+              test "$(grep -c '^ok [0-9]' fwcfg-directory-tests.tap)" -eq 4
+              if grep -Eq '^not ok|^Bail out!|#[[:space:]]*(SKIP|TODO)([[:space:]]|$)' \
+                fwcfg-directory-tests.tap; then
+                echo 'FW_CFG directory native unit did not complete all controls' >&2
+                exit 1
+              fi
+              cp fwcfg-directory-tests.tap \
+                "$out/share/aos/crucible/fwcfg-directory-tests.tap"
               # Run each isolated hwcore fixture without a case filter.
               for device_fixture in test-crucible-i3c-timer \
                 test-crucible-mos6522-clock test-qdev test-qdev-global-props; do
