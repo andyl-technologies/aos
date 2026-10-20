@@ -8750,10 +8750,12 @@ set equality and the original failed review retained. Its complete native
 filesystem run passes all 126 nonignored cases across 11 binaries. Independent
 review verifies all 5,082 source inputs and the original six privileged cases
 remain separate native-VM obligations; no full task or aggregate is accepted.
-Surface source `7f7e886dd5` passes eight
-focused regressions, all seven strict profiles and the formatter pair, as well
-as its crate graph and exact reviewed unsafe audit; owning-gate qualification
-continues. The module aggregate records three 120-second outer process
+Surface source `7f7e886dd5` passes eight focused regressions, its strict
+profiles, the formatter pair, crate graph and exact reviewed unsafe audit.
+All six owning surface and GC gates subsequently pass. Its quota VM stops at
+the original fs-verity fixture's enable ioctl; no aggregate is reached.
+The corrected 4 KiB fixture is carried into the combined candidate below.
+The module aggregate records three 120-second outer process
 limits in genuine copied/permanent GC recovery cases. Its 88 module assertions
 remain green, but no aggregate or task acceptance is credited. A separate
 current-source SDK test image is building for bounded diagnosis of those three
@@ -8814,8 +8816,10 @@ The corrected `65a2ee3152` native VM subsequently passes in 434.452 seconds.
 Independent review verifies all 67 exact nonignored unit cases, including all
 five filesystem-specific cases and twelve socket cases, all 5,097 inputs and
 the four original Cargo executables. Every prior host lifecycle control and
-48 fixture selectors remain intact. Its required application compilation and
-complete filesystem suite continue. The older `2fd26aa7cf` and `8956e89150`
+48 fixture selectors remain intact. Its required compilation passes with all
+183 artifacts from 59 application packages; its complete ext4 filesystem suite
+passes all 126 nonignored cases, retaining the original six privileged cases.
+The older `2fd26aa7cf` and `8956e89150`
 checkpoints both finish their exact 183-artifact compilation and all 126
 nonignored ext4 filesystem cases, retaining the original six privileged cases.
 Their unstarted duplicate aggregates are explicitly deferred because those
@@ -8845,7 +8849,10 @@ The four owning authentication gates subsequently pass all 21 exact
 nonignored executions, independently checked against their unchanged source
 receipts and immutable inputs. The predecessor baseline also passes all five
 original cases, measuring 13.027, 147.526, 120.704, 102.703 and 108.243 seconds.
-The updated twenty-case image remains under qualification. Maintenance source
+The updated image also passes all twenty exact nonignored cases. Independent
+review verifies all 5,090 source inputs, its actual executable, test profile
+and 1,206-case inventory. These results establish neither a performance
+improvement nor a release aggregate pass. Maintenance source
 `60bfe35963` isolates the five authentication files from the unfinished host
 prototype and adds finite 180-second outer process limits for the three
 measured recovery cases only. Every other parsed nextest setting, case body,
@@ -8854,8 +8861,21 @@ accepts the configuration. Its strict run exposes sixteen unused test-helper
 findings under Tokio without `surface-sdk`. Follow-up `db7fec8fec` applies the
 six already reviewed feature guards matching those helpers' callers, including
 matching conditional diagnostic labels to enum indexes. It introduces no lint
-suppression or production-path change. The corrected isolated maintenance
-source is being requalified before any task merge.
+suppression or production-path change. Its full SDK profile then exposes the
+unused checkout effects whose production caller belongs to T-SURF-1; that
+failure remains recorded. The preceding maintenance source independently
+passes exact compilation of all 181 artifacts from 59 application packages.
+
+Combined source `65d5916d94` supplies the genuine surface caller alongside
+those maintenance fixes and the reviewed quota fixture. Full source review
+covers the 47-file surface diff against the maintenance parent. All six strict
+Clippy profiles, both private documentation builds, formatting, crate graph,
+unsafe audit, core no-std and all four authentication gates pass. Surface
+interface and read-only commit-path gates also pass. Remaining surface, native
+configuration, feature-matrix, application and aggregate qualification continues;
+no task checkbox or milestone freeze advances. Before merging, preserve the
+trunk's renamed format-coverage labels and correct the CLI's stale crate-name
+comment after source-guarded execution finishes.
 
 Shared-directory source `744aa55567` restores its preserved SDK adapter in the
 new layout. Its all-target compilation passes, while local Nextest explicitly
