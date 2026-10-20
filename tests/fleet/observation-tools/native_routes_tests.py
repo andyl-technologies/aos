@@ -266,6 +266,7 @@ class RouteProof(unittest.TestCase):
                     'observe': lambda *_: (manifest, report, codec_error),
                     'unique': lambda rows, key: {key(row): row for row in rows},
                     'index_parity': lambda *_: None, 'inbound_inventory': inbound_inventory,
+                    'outbound_inventory': lambda *_: None,
                     'CLIENT_FIELDS': set(), 'SDK_FIELDS': set(), 'MAX_JSON': 1024 * 1024,
                     'MAX_CORPUS': 512 * 1024 * 1024}
         exec(compile(ast.Module(body=[function], type_ignores=[]), str(path), 'exec'), globals_)

@@ -748,6 +748,7 @@
       [
         pkgs.aos.apr
         workerDist
+        pkgs.aos-hub-worker-dist
         pkgs.coreutils
         pkgs.curl
         pkgs.gawk
@@ -798,7 +799,6 @@
       ++ nextPublication.nativeRoots
       ++ lib.optionals externalDirect [
         pkgs.openssl
-        pkgs.aos-hub-worker-dist
         s3PublicTrust
         workerDist.src
         alternateRevision.source

@@ -150,7 +150,9 @@ class InventoryReader(unittest.TestCase):
         selected['replyOffered'] = synthetic_frame(b'unclassified error')
         paths = ('crates/hub/aos-hub-db/src/application_body_observation/publication.rs',
                  'crates/hub/aos-hub-db/src/application_body_observation.rs',
-                 'crates/hub/aos-hub-service/src/service.rs', 'crates/hub/aos-hub-db/src/db/mod.rs',
+                 'crates/hub/aos-hub-service/src/service.rs',
+                 'crates/hub/aos-hub-service/src/service/operations/registries/configuration_mutations.rs',
+                 'crates/hub/aos-hub-db/src/db/mod.rs',
                  'crates/hub/aos-hub-db/src/db/publication_delivery.rs')
         def synthetic_source(path, maximum):
             self.assertEqual(maximum, inventory.source_leaf_bound(str(path)))
@@ -355,7 +357,13 @@ class SqlProjectionHandoff(unittest.TestCase):
                  'crates/hub/aos-hub-db/src/application_body_observation.rs',
                  'crates/hub/aos-hub-db/src/application_body_observation/rpc.rs',
                  'crates/hub/aos-hub-db/src/db/direct_upload.rs',
-                 'crates/hub/aos-hub-db/src/db/publication_admission.rs')
+                 'crates/hub/aos-hub-db/src/db/publication_admission.rs',
+                 'crates/hub/aos-hub-db/src/application_body_observation/sql_projection/dynamic.rs',
+                 'crates/hub/aos-hub-db/src/direct_upload/service.rs',
+                 'crates/hub/aos-hub-service/src/direct_upload.rs',
+                 'crates/hub/aos-hub-service/src/service.rs',
+                 'crates/hub/aos-hub-service/src/service/operations/registries/configuration_reads.rs',
+                 'crates/hub/aos-hub-service/src/service/operations/registries/configuration_mutations.rs')
         self.operation = {'kind': 'manifest_append_retained_receipt', 'publicationId': 'synthetic-publication',
             'registryId': '1', 'leaseTokenSha256': 'd' * 64, 'manifestDigest': 'e' * 64,
             'chunkIndex': '3', 'chunkDigest': 'f' * 64, 'objectCount': '1',
