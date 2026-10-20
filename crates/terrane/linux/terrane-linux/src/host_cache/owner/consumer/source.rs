@@ -16,7 +16,7 @@ use std::{
     io,
     sync::{Arc, Mutex},
 };
-use terrane_format::identity::Identity;
+use terrane_format::identity::{Identity, TERRANE_V1};
 
 /// Retains one actual immutable backing and its exact durable protection set.
 pub(super) struct ConsumerSource {
@@ -171,6 +171,9 @@ pub(in crate::host_cache::owner) fn storage_bytes(
 ) -> io::Result<usize> {
     let per_job = std::mem::size_of::<ConsumerSource>()
         .checked_add(AdmittedRead::storage_bytes(domain)?)
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<super::view::ReadView>()))
+        // The consumer view owns one additional verified identity clone.
+        .and_then(|bytes| bytes.checked_add(TERRANE_V1.name().len() + TERRANE_V1.digest_len()))
         // The sorted protection set owns two hash strings and their Vec slots.
         .and_then(|bytes| bytes.checked_add(2 * (64 + std::mem::size_of::<String>())))
         .and_then(|bytes| bytes.checked_add(4 * std::mem::size_of::<usize>()))

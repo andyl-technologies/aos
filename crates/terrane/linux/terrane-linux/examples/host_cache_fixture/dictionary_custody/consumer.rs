@@ -7,11 +7,14 @@ use std::{
     path::Path,
     sync::mpsc,
     thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, UNIX_EPOCH},
 };
 use terrane_format::identity::Identity;
 use terrane_linux::host_cache::{NativeConsumerLease, NativeLeaseAccounting, NativeMetadataOwner};
-use terrane_sdk::host::cache::CacheState;
+use terrane_sdk::{
+    host::cache::CacheState,
+    store::{Clock, TokioClock},
+};
 
 /// Grants, reads, renews and releases a real admitted encoded consumer.
 ///
@@ -27,7 +30,8 @@ pub(super) fn run(
     dictionary: &Path,
     dependent: &Path,
 ) -> io::Result<(NativeConsumerLease, NativeLeaseAccounting)> {
-    let expires = SystemTime::now()
+    let expires = TokioClock
+        .now()
         .duration_since(UNIX_EPOCH)
         .map_err(io::Error::other)?
         .as_secs()
