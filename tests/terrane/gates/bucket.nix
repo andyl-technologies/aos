@@ -1,4 +1,4 @@
-{sourceGate, ...}: let
+{bucketSdkGate, ...}: let
   activeOpenTests = [
     "publication::activation::tests::active_open_runs_real_fixed_probes_and_preserves_registered_selection"
     "publication::activation::tests::active_open_refuses_noop_create_probes_despite_unchanged_present_bytes"
@@ -133,7 +133,7 @@
   focusedTests = ''
     run_bucket_test() {
       test_name=$1
-      cargo test --frozen --offline -p terrane-sdk --features tokio --lib -- --list > "$TMPDIR/bucket-tests.txt"
+      "$TERRANE_NATIVE_SDK_TEST_BINARY" --list > "$TMPDIR/bucket-tests.txt"
       python3 - "$TMPDIR/bucket-tests.txt" "$test_name" <<'PYTEST'
     import sys
 
@@ -143,7 +143,18 @@
     if f"{sys.argv[2]}: test" not in names:
         raise SystemExit(f"required bucket test is missing: {sys.argv[2]}")
     PYTEST
-      cargo test --frozen --offline -p terrane-sdk --features tokio --lib "$test_name" -- --exact
+      "$TERRANE_NATIVE_SDK_TEST_BINARY" "$test_name" --exact > "$TMPDIR/bucket-case.txt"
+      python3 - "$TMPDIR/bucket-case.txt" "$test_name" <<'PYTEST'
+    import pathlib
+    import re
+    import sys
+
+    output = pathlib.Path(sys.argv[1]).read_text()
+    print(output, end="")
+    if (f"test {sys.argv[2]} ... ok" not in output.splitlines()
+            or len(re.findall(r"^test result: ok\. 1 passed; 0 failed; 0 ignored;", output, re.M)) != 1):
+        raise SystemExit(f"required bucket test did not execute exactly once: {sys.argv[2]}")
+    PYTEST
     }
 
     run_core_bucket_test() {
@@ -163,7 +174,7 @@
   '';
 
   gate = name: tests:
-    sourceGate name ''
+    bucketSdkGate name ''
       cd crates
       ${focusedTests}
       ${builtins.concatStringsSep "\n" (map (test: "run_bucket_test bucket::${test}") tests)}
@@ -177,7 +188,7 @@ in {
   store-has-batched = gate "store-has-batched" ["content_tests::batched_membership_preserves_order_duplicates_and_virtual_empty_chunk"];
   store-ref-cas = gate "store-ref-cas" ["tests::whole_record_cas_has_one_winner_across_independent_opens" "tests::ref_successors_fence_epoch_home_and_sequence" "selection_tests::candidates_bind_the_complete_proposal_and_predecessor_before_head_cas" "selection_tests::independent_candidates_select_one_history_under_concurrent_cas"];
   store-ref-log-append-once = gate "store-ref-log-append-once" ["version_tests::v2_numbered_logs_require_migration_and_preserve_exact_existing_bytes" "tests::tags_and_reflogs_never_replace_existing_bytes" "tests::missing_reflog_with_committed_horizon_is_corruption" "tests::committed_reflog_must_match_the_complete_ref_record" "tests::live_watch_waits_for_authoritative_ref_publication_and_replays_sequences" "selection_tests::abandoned_candidates_leave_the_same_sequence_available_to_a_new_writer" "selection_tests::selected_candidates_coexist_with_legacy_numbered_files"];
-  store-capability-probe = sourceGate "store-capability-probe" ''
+  store-capability-probe = bucketSdkGate "store-capability-probe" ''
     cd crates
     ${focusedTests}
     run_bucket_test store::native_effect::publication::current_history_inputs::tests::native_token_refusal_preserves_registered_error_kind
@@ -242,7 +253,7 @@ in {
   '';
   store-list-not-authoritative = gate "store-list-not-authoritative" ["fault_tests::stale_directory_listing_cannot_change_content_or_ref_results"];
   store-validates-uploads = gate "store-validates-uploads" ["fault_tests::dictionary_backend_unavailability_preserves_put_and_get_failure_kinds" "requirement_tests::opaque_metadata_callback_verifies_real_chunks_before_every_dedup" "content_tests::configured_schema_validator_rejects_canonical_but_invalid_meta" "content_tests::admission_validates_identity_length_profile_and_independent_dedup_context" "content_tests::dictionaries_are_fetched_by_verified_chunk_identity_before_decode" "container_tests::whole_pack_import_verifies_members_without_admitting_them" "manifest_tests::manifest_admission_rechecks_nonfinal_context_after_inventory_only_import" "manifest_tests::manifest_references_accept_an_honest_nonfinal_boundary_and_verified_lengths"];
-  bucket-key-registry = sourceGate "bucket-key-registry" ''
+  bucket-key-registry = bucketSdkGate "bucket-key-registry" ''
     cd crates
     ${focusedTests}
     run_bucket_test bucket::tests::unknown_keys_are_not_refs_and_symlinks_fail_closed
@@ -276,7 +287,7 @@ in {
     "copy_tests::portable_copy_after_interrupted_source_projection_uses_selected_pointer"
     "copy_tests::portable_copy_cancellation_keeps_actual_activation_exclusion"
   ];
-  bucket-file-atomic-write = sourceGate "bucket-file-atomic-write" ''
+  bucket-file-atomic-write = bucketSdkGate "bucket-file-atomic-write" ''
     cd crates
     ${focusedTests}
     run_bucket_test bucket::fault_tests::unsynced_temporary_write_never_changes_visible_ref

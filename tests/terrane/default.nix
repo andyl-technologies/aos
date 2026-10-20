@@ -149,28 +149,60 @@
       extraBuildDeps = [pkgs.binutils];
     };
   };
+  # File-bucket gates use the original default+Tokio feature selection. Keep
+  # that compilation separate from the no-default-features SDK surface image.
+  bucketSdkTestImage = import ./native-sdk-test-image.nix {
+    variant = "default-tokio";
+    sourceGate = sourceGateWithInputs {
+      runtimeDeps = [pkgs.rust pkgs.rust.dev pkgs.diffutils] ++ (pkgs.rust.runtimeDeps or []);
+      nukeRefsKeep = [pkgs.terrane.src];
+      extraBuildDeps = [pkgs.binutils];
+    };
+  };
   nativeSdkGate = nativeSdkGateWithInputs {};
-  nativeSdkGateWithInputs = inputs: name: script:
+  nativeSdkGateWithInputs = sdkTestGateWithImage {
+    image = nativeSdkTestImage;
+    defaultFeatures = false;
+    requestedFeatures = ["tokio" "surface-sdk"];
+    features = ["send" "std" "surface-sdk" "tokio"];
+  };
+  bucketSdkGate = sdkTestGateWithImage {
+    image = bucketSdkTestImage;
+    defaultFeatures = true;
+    requestedFeatures = ["tokio"];
+    features = ["default" "send" "std" "tokio"];
+  } {};
+  sdkTestGateWithImage = {
+    image,
+    defaultFeatures,
+    requestedFeatures,
+    features,
+  }: inputs: name: script:
     sourceGateWithInputs inputs name ''
-      python3 - ${nativeSdkTestImage}/share/identity.json "$src" <<'PY'
+      python3 - ${image}/share/identity.json "$src" ${lib.escapeShellArg (builtins.toJSON {
+        default_features = defaultFeatures;
+        requested_features = requestedFeatures;
+        inherit features;
+      })} <<'PY'
       import json
       import pathlib
       import sys
 
       identity = json.loads(pathlib.Path(sys.argv[1]).read_text())
+      expected = json.loads(sys.argv[3])
       profile = identity.get("profile", {})
       if (identity.get("schema_version") != 1
               or identity.get("source") != sys.argv[2]
               or identity.get("cargo_profile") != "test"
-              or identity.get("default_features") is not False
-              or identity.get("requested_features") != ["tokio", "surface-sdk"]
-              or identity.get("features") != ["send", "std", "surface-sdk", "tokio"]
+              or identity.get("default_features") is not expected["default_features"]
+              or identity.get("requested_features") != expected["requested_features"]
+              or identity.get("features") != expected["features"]
               or profile.get("test") is not True
               or profile.get("opt_level") != "s"
               or profile.get("debuginfo") != 0):
           raise SystemExit("native SDK test image source, feature or profile mismatch")
       PY
-      export TERRANE_NATIVE_SDK_TEST_BINARY="${nativeSdkTestImage}/bin/terrane-native-sdk-tests"
+      export TERRANE_NATIVE_SDK_TEST_BINARY="${image}/bin/terrane-native-sdk-tests"
       ${script}
     '';
 
@@ -300,6 +332,7 @@
           // lib.optionalAttrs (builtins.elem file ["algebra.nix" "properties.nix" "cdc.nix" "gc.nix" "index.nix" "surfaces.nix" "shared-dir.nix" "host-cache.nix" "host-publish.nix"]) {inherit nativeSdkGate;}
           // lib.optionalAttrs (file == "gc.nix") {inherit localTwoPhaseGc;}
           // lib.optionalAttrs (builtins.elem file ["host-publish.nix" "surfaces.nix"]) {inherit sourceGateWithInputs;}
+          // lib.optionalAttrs (file == "bucket.nix") {inherit bucketSdkGate;}
           // lib.optionalAttrs (file == "host-publish.nix") {inherit publisherLocalProof hostCacheProof;}
         );
         duplicates = builtins.filter (name: builtins.hasAttr name accumulated) (builtins.attrNames added);
@@ -366,6 +399,7 @@ in {
   module-eval = import ./module-eval.nix {inherit pkgs lib mkSystem;};
   gates = aggregate // registeredGates;
   activeGates = implementedGates;
+  integration.bucket-sdk-test-image = bucketSdkTestImage;
   integration.local-workflow-ext4 = localWorkflow;
   integration.local-sdk-checkout = localSdkCheckout;
   integration.local-cli-workflow = localCliWorkflow;

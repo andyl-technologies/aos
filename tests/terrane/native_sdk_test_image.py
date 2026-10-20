@@ -3,6 +3,8 @@
 Cargo discovery supplies the actual executable and launch environment. ELF
 inspection retains only reachable runtime libraries, leaving compiler plugins
 behind. Every gate must still discover and execute its own required cases.
+Closed surface-SDK and default-Tokio variants retain their distinct original
+feature selections; importing shared ELF helpers does not select a variant.
 """
 
 from collections import deque
@@ -15,6 +17,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tomllib
 
 
@@ -25,14 +28,29 @@ CARGO_FLAGS = [
 ]
 
 
+def image_configuration(variant):
+    """Selects one closed feature contract without changing imported helpers."""
+    if variant == "surface-sdk":
+        return {"default_features": False,
+                "requested_features": ["tokio", "surface-sdk"],
+                "features": FEATURES, "cargo_flags": CARGO_FLAGS}
+    if variant == "default-tokio":
+        return {"default_features": True, "requested_features": ["tokio"],
+                "features": ["default", "send", "std", "tokio"],
+                "cargo_flags": ["--frozen", "--offline", "-p", "terrane-sdk",
+                                "--features", "tokio", "--lib"]}
+    raise SystemExit(f"unknown native SDK test image variant: {variant}")
+
+
 def require(condition, message):
     """Stops publication when an image invariant is not established."""
     if not condition:
         raise SystemExit(message)
 
 
-def selected_artifact(workspace, target_dir, temporary):
+def selected_artifact(workspace, target_dir, temporary, expected_features=None):
     """Binds exactly one real library-test artifact to its source and profile."""
+    expected_features = FEATURES if expected_features is None else expected_features
     records = [json.loads(line) for line in
                (temporary / "native-sdk-build.jsonl").read_text().splitlines()]
     candidates = [record for record in records
@@ -52,7 +70,7 @@ def selected_artifact(workspace, target_dir, temporary):
     manifest = tomllib.loads((workspace / "Cargo.toml").read_text())
     require(artifact["target"]["kind"] == ["lib"]
             and pathlib.Path(artifact["target"]["src_path"]) == workspace / "terrane/sdk/terrane-sdk/src/lib.rs"
-            and sorted(artifact.get("features", [])) == FEATURES
+            and sorted(artifact.get("features", [])) == expected_features
             and profile.get("opt_level") == "s" and profile.get("debuginfo") == 0
             and manifest.get("profile", {}).get("test", {}) == {"debug": 0, "opt-level": "s"}
             and selected[0]["name"] == "terrane-sdk"
@@ -88,8 +106,10 @@ def allowed_directory(value, target_dir):
     return path
 
 
-def cargo_discovery(executable, target_dir, temporary, target_libraries, workspace):
+def cargo_discovery(executable, target_dir, temporary, target_libraries, workspace,
+                    cargo_flags=None):
     """Captures one genuine Cargo launch while executing only libtest --list."""
+    cargo_flags = CARGO_FLAGS if cargo_flags is None else cargo_flags
     capture = temporary / "native-sdk-cargo-library-path.txt"
     cwd_capture = temporary / "native-sdk-cargo-working-directory.txt"
     runner = temporary / "native-sdk-discovery-runner"
@@ -108,7 +128,7 @@ def cargo_discovery(executable, target_dir, temporary, target_libraries, workspa
     triple = target_libraries.parent.name.upper().replace("-", "_")
     environment[f"CARGO_TARGET_{triple}_RUNNER"] = str(runner)
     with (temporary / "native-sdk-cargo-discovery.log").open("w") as log:
-        subprocess.run(["cargo", "test", *CARGO_FLAGS, "--", "--list"],
+        subprocess.run(["cargo", "test", *cargo_flags, "--", "--list"],
                        env=environment, stdout=log, stderr=subprocess.STDOUT, check=True)
     require(capture.is_file(), "Cargo discovery did not invoke the bound test runner")
     captured = capture.read_text()
@@ -203,8 +223,10 @@ def runtime_closure(executable, directories, target_dir):
 
 
 def install_image(artifact, executable, source, output, hashes, libraries,
-                  store_directories, working_directory, temporary):
+                  store_directories, working_directory, temporary, configuration=None):
     """Publishes immutable executable, runtime closure, and binding metadata."""
+    if configuration is None:
+        configuration = image_configuration("surface-sdk")
     for name in ["bin", "libexec", "lib", "share"]:
         (output / name).mkdir()
     comparison = shutil.which("cmp")
@@ -237,8 +259,9 @@ def install_image(artifact, executable, source, output, hashes, libraries,
     runner.write_text(wrapper)
     runner.chmod(0o755)
     identity = {"schema_version": 1, "source": str(source), "cargo_profile": "test",
-                "default_features": False, "requested_features": ["tokio", "surface-sdk"],
-                "features": FEATURES, "profile": artifact["profile"],
+                "default_features": configuration["default_features"],
+                "requested_features": configuration["requested_features"],
+                "features": configuration["features"], "profile": artifact["profile"],
                 "package_id": artifact["package_id"], "input_sha256": hashes,
                 "runtime_library_path": library_path,
                 "working_directory": working_directory,
@@ -254,22 +277,27 @@ def install_image(artifact, executable, source, output, hashes, libraries,
 
 def main():
     """Validates discovery and installs one native SDK test image."""
+    require(len(sys.argv) in (1, 2), "expected at most one native SDK image variant")
+    variant = sys.argv[1] if len(sys.argv) == 2 else "surface-sdk"
+    configuration = image_configuration(variant)
     workspace = pathlib.Path.cwd()
     target_dir = pathlib.Path(os.environ["CARGO_TARGET_DIR"])
     output = pathlib.Path(os.environ["out"])
     temporary = pathlib.Path(os.environ["TMPDIR"])
     source = pathlib.Path(os.environ["src"])
-    artifact, executable = selected_artifact(workspace, target_dir, temporary)
+    artifact, executable = selected_artifact(
+        workspace, target_dir, temporary, configuration["features"])
     hashes = source_hashes(workspace, source)
     target_libraries = pathlib.Path((temporary / "native-sdk-target-libdir.txt").read_text().strip())
     require(target_libraries.is_dir() and target_libraries.is_relative_to("/nix/store"),
             "Rust target libraries are not immutable store inputs")
     directories, working_directory = cargo_discovery(
-        executable, target_dir, temporary, target_libraries, workspace)
+        executable, target_dir, temporary, target_libraries, workspace,
+        configuration["cargo_flags"])
     libraries, store_directories = runtime_closure(executable, directories, target_dir)
     require(hashes == source_hashes(workspace, source), "Cargo discovery changed source inputs")
     install_image(artifact, executable, source, output, hashes, libraries,
-                  store_directories, working_directory, temporary)
+                  store_directories, working_directory, temporary, configuration)
 
 
 if __name__ == "__main__":
