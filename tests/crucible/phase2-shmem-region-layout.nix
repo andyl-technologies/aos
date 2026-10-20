@@ -90,7 +90,7 @@
       }
       {
         label = "ABI version";
-        needle = "pub const ABI_VERSION: u32 = 30;";
+        needle = "pub const ABI_VERSION: u32 = 32;";
       }
       {
         label = "physical slot capacity";
