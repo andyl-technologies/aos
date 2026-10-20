@@ -98,7 +98,7 @@ fn live_block_wait_queues_and_commits_the_device_deadline() {
 }
 
 #[test]
-fn live_block_wait_stops_at_scheduler_ceiling_before_device_deadline() {
+fn live_block_wait_parks_below_a_ceiling_before_the_device_deadline() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 20, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
@@ -110,14 +110,14 @@ fn live_block_wait_stops_at_scheduler_ceiling_before_device_deadline() {
     TEST_CLOCK_DEADLINE_PS.set(-1);
     LAST_QUEUED_ADVANCE_TICK.set(-1);
 
-    state.on_block_wait(1).unwrap_or_else(|error| {
-        panic!("device wait should queue the authorized boundary: {error}")
-    });
-    assert_eq!(LAST_QUEUED_ADVANCE_TICK.get(), 20);
     state
-        .complete_idle_advance(TimeAdvanceCompletion::from_qemu(0, 20))
-        .unwrap_or_else(|error| panic!("scheduler boundary should commit: {error}"));
-    assert_eq!(slot.snapshot().current_icount, 20);
+        .on_block_wait(1)
+        .unwrap_or_else(|error| panic!("device wait beyond the ceiling should park: {error}"));
+
+    // The ceiling bounds the node; it is not a stop to advance to (SCHED-12).
+    assert_eq!(LAST_QUEUED_ADVANCE_TICK.get(), -1);
+    assert!(!state.idle_advance_is_pending());
+    assert_eq!(slot.snapshot().current_icount, 0);
     assert_eq!(slot.device_completion_deadline_tick(), 50);
 }
 

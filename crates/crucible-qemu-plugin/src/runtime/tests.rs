@@ -1341,6 +1341,7 @@ fn live_vcpu_time_slice_registers_idle_resume_and_normal_loop_completion() {
                 register_vcpu_idle_resume: Some(capture_vcpu_idle_resume_registration),
                 register_control_boundary: Some(capture_control_boundary_registration),
                 register_sim_shmem_dispatch: Some(capture_sim_dispatch_registration),
+                register_sim_shmem_settlement: Some(support::test_register_sim_shmem_settlement),
                 register_time_advance_cb: Some(capture_time_advance_completion_registration),
                 register_net_tx: Some(capture_network_tx_registration),
                 net_inject: Some(live_network_inject_ok),

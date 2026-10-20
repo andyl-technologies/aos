@@ -31,16 +31,17 @@ use crate::{
     QEMU_PLUGIN_REGISTER_BLK_CB_SYMBOL, QEMU_PLUGIN_REGISTER_BLK_EVENT_CB_SYMBOL,
     QEMU_PLUGIN_REGISTER_BLK_WAIT_CB_SYMBOL, QEMU_PLUGIN_REGISTER_CONTROL_BOUNDARY_CB_SYMBOL,
     QEMU_PLUGIN_REGISTER_NET_TX_CB_SYMBOL, QEMU_PLUGIN_REGISTER_SIM_SHMEM_DISPATCH_CB_SYMBOL,
+    QEMU_PLUGIN_REGISTER_SIM_SHMEM_SETTLEMENT_CB_SYMBOL,
     QEMU_PLUGIN_REGISTER_TIME_ADVANCE_CB_SYMBOL, QEMU_PLUGIN_REGISTER_VCPU_IDLE_RESUME_CB_SYMBOL,
     QEMU_PLUGIN_REGISTER_VCPU_INIT_CB_SYMBOL, QemuAdvanceTimeTicksFn, QemuCanonicalNetworkRx,
     QemuClockDeadlineFn, QemuForceVcpuExitFn, QemuIcountRawFn, QemuIdleWakeWait,
     QemuIdleWakeWaitStatus, QemuPluginExecutionModel, QemuPluginId, QemuPluginNetInjectFn,
     QemuPluginTargetArchitecture, QemuRegisterBlkCbFn, QemuRegisterBlkEventCbFn,
     QemuRegisterBlkWaitCbFn, QemuRegisterControlBoundaryCbFn, QemuRegisterNetTxCbFn,
-    QemuRegisterNinePCbFn, QemuRegisterSimShmemDispatchCbFn, QemuRegisterTimeAdvanceCbFn,
-    QemuRegisterVcpuIdleResumeCbFn, QemuRegisterVcpuInitCbFn, QueuedIdleAdvance,
-    QueuedIdleAdvanceError, RoundRobinError, SchedulerCeiling, TimeAdvanceCompletion,
-    VcpuHaltTracker, compute_idle_wake_plan,
+    QemuRegisterNinePCbFn, QemuRegisterSimShmemDispatchCbFn, QemuRegisterSimShmemSettlementCbFn,
+    QemuRegisterTimeAdvanceCbFn, QemuRegisterVcpuIdleResumeCbFn, QemuRegisterVcpuInitCbFn,
+    QueuedIdleAdvance, QueuedIdleAdvanceError, RoundRobinError, SchedulerCeiling,
+    TimeAdvanceCompletion, VcpuHaltTracker, compute_idle_wake_plan,
 };
 
 use super::{
@@ -72,6 +73,7 @@ mod network_inbound;
 mod network_output_stop;
 mod preemption;
 mod resume;
+mod settlement;
 pub(crate) mod time_ownership_witness;
 pub use devices::LiveDeviceCallbackError;
 use devices::LiveDeviceCallbackState;
@@ -100,6 +102,7 @@ pub(crate) struct LiveVcpuTimeCallbackCapabilities {
     pub(crate) register_vcpu_idle_resume: Option<QemuRegisterVcpuIdleResumeCbFn>,
     pub(crate) register_control_boundary: Option<QemuRegisterControlBoundaryCbFn>,
     pub(crate) register_sim_shmem_dispatch: Option<QemuRegisterSimShmemDispatchCbFn>,
+    pub(crate) register_sim_shmem_settlement: Option<QemuRegisterSimShmemSettlementCbFn>,
     pub(crate) register_time_advance_cb: Option<QemuRegisterTimeAdvanceCbFn>,
     pub(crate) arm_virtual_timer_witness: Option<crate::QemuArmVirtualTimerWitnessFn>,
     pub(crate) query_virtual_timer_witness: Option<crate::QemuQueryVirtualTimerWitnessFn>,
@@ -257,6 +260,13 @@ impl LiveVcpuTimeCallbackRegistrar {
                 symbol: QEMU_PLUGIN_REGISTER_SIM_SHMEM_DISPATCH_CB_SYMBOL,
             },
         )?;
+        // Shared-memory ABI 32 publishes ceilings as bounds. A QEMU without the
+        // settlement bridge would still credit them, so it is refused here.
+        let register_sim_shmem_settlement = self.capabilities.register_sim_shmem_settlement.ok_or(
+            LiveVcpuTimeCallbackError::CapabilityUnavailable {
+                symbol: QEMU_PLUGIN_REGISTER_SIM_SHMEM_SETTLEMENT_CB_SYMBOL,
+            },
+        )?;
         let register_time_advance_cb = self.capabilities.register_time_advance_cb.ok_or(
             LiveVcpuTimeCallbackError::CapabilityUnavailable {
                 symbol: QEMU_PLUGIN_REGISTER_TIME_ADVANCE_CB_SYMBOL,
@@ -316,6 +326,7 @@ impl LiveVcpuTimeCallbackRegistrar {
             register_vcpu_idle_resume,
             register_control_boundary,
             register_sim_shmem_dispatch,
+            register_sim_shmem_settlement,
             register_time_advance_cb,
             register_net_tx,
             network_rx,
@@ -404,6 +415,11 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
             Some(crucible_qemu_plugin_live_publish_icount_cb),
             Some(crucible_qemu_plugin_live_max_advance_icount_cb),
             Some(crucible_qemu_plugin_live_logical_ceiling_cb),
+            callback_state.cast(),
+        );
+        (capabilities.register_sim_shmem_settlement)(
+            Some(settlement::crucible_qemu_plugin_live_publish_settled_cb),
+            Some(settlement::crucible_qemu_plugin_live_exact_event_tick_cb),
             callback_state.cast(),
         );
         let completion_status = (capabilities.register_time_advance_cb)(
@@ -510,6 +526,7 @@ struct RequiredLiveVcpuTimeCapabilities {
     register_vcpu_idle_resume: QemuRegisterVcpuIdleResumeCbFn,
     register_control_boundary: QemuRegisterControlBoundaryCbFn,
     register_sim_shmem_dispatch: QemuRegisterSimShmemDispatchCbFn,
+    register_sim_shmem_settlement: QemuRegisterSimShmemSettlementCbFn,
     register_time_advance_cb: QemuRegisterTimeAdvanceCbFn,
     register_net_tx: QemuRegisterNetTxCbFn,
     network_rx: QemuCanonicalNetworkRx,
@@ -1198,7 +1215,7 @@ impl LiveVcpuTimeCallbackState {
         desired_wake_icount: u64,
     ) -> Result<u64, LiveVcpuTimeCallbackError> {
         let (ceiling_icount, stop_condition) = self.scheduler_advance()?;
-        if stop_condition != AdvanceStopCondition::Ceiling {
+        if !stop_condition.authorizes_ceiling() {
             return Err(LiveVcpuTimeCallbackError::IdleHotLoop {
                 source: IdleHotLoopError::WakeNotAuthorized {
                     desired_wake_icount,
@@ -1713,7 +1730,7 @@ impl LiveVcpuTimeCallbackState {
                         source: IdleHotLoopError::AdvanceStopCondition { source },
                     }
                 })?;
-            if stop_condition == AdvanceStopCondition::Ceiling {
+            if stop_condition.authorizes_ceiling() {
                 if let Some(network) = self.network.as_ref() {
                     let inbound = network.inbound.inbound();
                     PluginInboundFrames::reject_already_passed_ring_heads(
@@ -1735,6 +1752,14 @@ impl LiveVcpuTimeCallbackState {
                     return Ok(IdleSchedulerWaitDisposition::AdvanceTo(
                         request.plan().desired_wake_icount(),
                     ));
+                }
+                // A bare ceiling only bounds settlement (RFC-0010 SCHED-12); the
+                // node stays parked. An exact-event ceiling is itself an event
+                // the node must reach, so it is the one ceiling that wakes.
+                if stop_condition == AdvanceStopCondition::ExactEvent
+                    && ceiling_icount > request.plan().current_icount()
+                {
+                    return Ok(IdleSchedulerWaitDisposition::AdvanceTo(ceiling_icount));
                 }
             }
 
@@ -1789,6 +1814,18 @@ impl LiveVcpuTimeCallbackState {
         checkpoint_handoff: bool,
         boundary: &'static str,
     ) -> Result<(), LiveVcpuTimeCallbackError> {
+        self.publish_boundary_icount(raw_icount, checkpoint_handoff, boundary, None)
+    }
+
+    /// Publishes one exact boundary, with QEMU's settlement of `settled_ceiling`
+    /// when the sim loop attested that nothing remains before that ceiling.
+    fn publish_boundary_icount(
+        &self,
+        raw_icount: u64,
+        checkpoint_handoff: bool,
+        boundary: &'static str,
+        settled_ceiling: Option<u64>,
+    ) -> Result<(), LiveVcpuTimeCallbackError> {
         if self.publish_pause_for_boundary(raw_icount, checkpoint_handoff, false, None, boundary)? {
             return Ok(());
         }
@@ -1818,8 +1855,16 @@ impl LiveVcpuTimeCallbackState {
         }
         let passed_delivery_floor_icount = self.last_icount.load(Ordering::Acquire);
         self.inject_due_network_inbound(current_icount, passed_delivery_floor_icount)?;
-        PluginShmemOrdering::publish_reached_icount(self.slot.get(), current_icount)
-            .map_err(|source| LiveVcpuTimeCallbackError::PublishIcount { source })?;
+        match settled_ceiling {
+            Some(settled_ceiling) => PluginShmemOrdering::publish_settled_icount(
+                self.slot.get(),
+                current_icount,
+                settled_ceiling,
+            )
+            .map(|_recorded| ()),
+            None => PluginShmemOrdering::publish_reached_icount(self.slot.get(), current_icount),
+        }
+        .map_err(|source| LiveVcpuTimeCallbackError::PublishIcount { source })?;
         self.last_raw_icount.store(raw_icount, Ordering::Release);
         self.last_icount.store(current_icount, Ordering::Release);
         Ok(())

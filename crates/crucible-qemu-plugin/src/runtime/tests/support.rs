@@ -263,6 +263,7 @@ pub(super) const fn test_capabilities() -> LiveInstallCapabilities {
         register_vcpu_idle_resume: Some(test_register_vcpu_idle_resume),
         register_control_boundary: Some(test_register_control_boundary),
         register_sim_shmem_dispatch: Some(test_register_sim_shmem_dispatch),
+        register_sim_shmem_settlement: Some(test_register_sim_shmem_settlement),
         register_net_tx: Some(test_register_net_tx),
         net_inject: Some(test_net_inject),
         register_block: Some(test_register_block),
@@ -511,6 +512,17 @@ extern "C" fn test_register_sim_shmem_dispatch(
     _logical_ceiling_callback: Option<crate::QemuSimShmemLogicalCeilingCbFn>,
     _userdata: *mut std::ffi::c_void,
 ) {
+}
+
+/// Accepts the settlement registration, which must carry both callbacks.
+pub(super) extern "C" fn test_register_sim_shmem_settlement(
+    publish_settled: Option<crate::QemuSimShmemPublishSettledCbFn>,
+    exact_event: Option<crate::QemuSimShmemExactEventCbFn>,
+    userdata: *mut std::ffi::c_void,
+) {
+    assert!(publish_settled.is_some());
+    assert!(exact_event.is_some());
+    assert!(!userdata.is_null());
 }
 
 extern "C" fn test_register_net_tx(

@@ -42,7 +42,8 @@ fn idle_loop_computes_wake_from_timer_inbound_and_ceiling() {
     assert_eq!(inbound_wins.cause(), IdleWakeCause::InboundFrame);
     assert!(inbound_wins.requires_scheduler_wait());
 
-    let ceiling_wins = match compute_idle_wake_plan(
+    // The ceiling bounds the node but never wakes it (RFC-0010 SCHED-28).
+    let parked = match compute_idle_wake_plan(
         10,
         ExactDeadlineReport::NoArmedTimer,
         None,
@@ -51,10 +52,12 @@ fn idle_loop_computes_wake_from_timer_inbound_and_ceiling() {
         None,
     ) {
         Ok(plan) => plan,
-        Err(error) => panic!("ceiling wake plan should compute: {error}"),
+        Err(error) => panic!("parked wake plan should compute: {error}"),
     };
-    assert_eq!(ceiling_wins.desired_wake_icount(), 64);
-    assert_eq!(ceiling_wins.cause(), IdleWakeCause::SchedulerCeiling);
+    assert_eq!(parked.desired_wake_icount(), IDLE_WAKE_NONE);
+    assert!(parked.parks_without_wake());
+    assert!(parked.requires_scheduler_wait());
+    assert_eq!(parked.cause(), IdleWakeCause::SchedulerCeiling);
 }
 
 /// A published device-I/O completion deadline pulls the wake down to the
@@ -115,10 +118,10 @@ fn idle_loop_device_completion_merges_with_timer_by_min() {
     assert_eq!(device_first.cause(), IdleWakeCause::DeviceIoCompletion);
 }
 
-/// A zero (retracted) completion deadline leaves the node frozen to the
-/// ceiling with timer deadlines held, the pre-fix device-I/O behavior.
+/// A zero (retracted) completion deadline holds timer deadlines and parks the
+/// node without a wake; the ceiling is never a target.
 #[test]
-fn idle_loop_retracted_device_completion_freezes_to_ceiling() {
+fn idle_loop_retracted_device_completion_parks_without_wake() {
     let plan = match compute_idle_wake_plan(
         10,
         ExactDeadlineReport::Armed { deadline_ps: 40 },
@@ -132,7 +135,7 @@ fn idle_loop_retracted_device_completion_freezes_to_ceiling() {
     };
     assert_eq!(plan.timer_deadline_icount(), Some(40));
     assert_eq!(plan.device_completion_deadline_tick(), None);
-    assert_eq!(plan.desired_wake_icount(), 1_000);
+    assert_eq!(plan.desired_wake_icount(), IDLE_WAKE_NONE);
     assert_eq!(plan.cause(), IdleWakeCause::DeviceIoFreeze);
 }
 
@@ -201,9 +204,9 @@ fn idle_loop_device_io_freeze_suppresses_timer_deadline_until_scheduler_wake() {
 
     assert_eq!(request.plan().timer_deadline_icount(), Some(20));
     assert!(request.plan().device_io_holding_ticks());
-    assert_eq!(request.plan().desired_wake_icount(), 50);
+    assert_eq!(request.plan().desired_wake_icount(), IDLE_WAKE_NONE);
     assert_eq!(request.plan().cause(), IdleWakeCause::DeviceIoFreeze);
-    assert_eq!(slot.snapshot().idle_wake_icount, 50);
+    assert_eq!(slot.snapshot().idle_wake_icount, IDLE_WAKE_NONE);
 }
 
 #[test]
@@ -233,7 +236,7 @@ fn idle_loop_device_io_freeze_uses_pending_counter_when_flag_is_stale() {
 
     assert_eq!(request.plan().timer_deadline_icount(), Some(20));
     assert!(request.plan().device_io_holding_ticks());
-    assert_eq!(request.plan().desired_wake_icount(), 50);
+    assert_eq!(request.plan().desired_wake_icount(), IDLE_WAKE_NONE);
     assert_eq!(request.plan().cause(), IdleWakeCause::DeviceIoFreeze);
 }
 

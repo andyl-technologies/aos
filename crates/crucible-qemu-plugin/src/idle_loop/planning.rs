@@ -7,9 +7,14 @@ use super::*;
 ///
 /// The timer deadline lives in QEMU's virtual-clock domain. The device
 /// completion and inbound deadlines already use aggregate icount units. While
-/// device I/O holds without a completion deadline, timers are suppressed and
-/// the node freezes at the scheduler ceiling. Otherwise the earliest deadline
-/// wins, with ties resolved in device, timer, inbound order.
+/// device I/O holds without a completion deadline, timers are suppressed.
+/// Otherwise the earliest deadline wins, with ties resolved in device, timer,
+/// inbound order.
+///
+/// The scheduler ceiling is an upper bound, never a wake (RFC-0010 SCHED-12,
+/// SCHED-28). With no real wake, the plan publishes [`IDLE_WAKE_NONE`]: the
+/// node parks at its current icount and the host settles it through each
+/// ceiling without moving its clock.
 ///
 /// # Errors
 ///
@@ -66,13 +71,13 @@ pub fn compute_idle_wake_plan(
         IdleWakeCause::InboundFrame,
     );
 
-    let (desired_wake_icount, cause) = earliest.unwrap_or_else(|| {
-        if device_io_holding_ticks {
-            (ceiling.icount(), IdleWakeCause::DeviceIoFreeze)
-        } else {
-            (ceiling.icount(), IdleWakeCause::SchedulerCeiling)
-        }
-    });
+    // The ceiling is never a fallback target: a node without a real wake parks.
+    let parked_cause = if device_io_holding_ticks {
+        IdleWakeCause::DeviceIoFreeze
+    } else {
+        IdleWakeCause::SchedulerCeiling
+    };
+    let (desired_wake_icount, cause) = earliest.unwrap_or((IDLE_WAKE_NONE, parked_cause));
 
     Ok(IdleWakePlan {
         current_icount,

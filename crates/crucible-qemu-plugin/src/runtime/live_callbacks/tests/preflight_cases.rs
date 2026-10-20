@@ -29,6 +29,7 @@ fn live_registrar_preflight_names_each_missing_capability() {
             register_vcpu_idle_resume: Some(test_register_vcpu_idle_resume),
             register_control_boundary: Some(test_register_control_boundary),
             register_sim_shmem_dispatch: Some(test_register_sim_dispatch),
+            register_sim_shmem_settlement: Some(test_register_sim_settlement),
             register_time_advance_cb: Some(test_register_time_advance_cb),
             register_net_tx: Some(test_register_net_tx),
             net_inject: Some(test_net_inject),
@@ -70,6 +71,7 @@ fn live_registrar_preflight_names_each_missing_capability() {
             register_vcpu_idle_resume: Some(test_register_vcpu_idle_resume),
             register_control_boundary: Some(test_register_control_boundary),
             register_sim_shmem_dispatch: Some(test_register_sim_dispatch),
+            register_sim_shmem_settlement: Some(test_register_sim_settlement),
             register_time_advance_cb: Some(test_register_time_advance_cb),
             register_net_tx: Some(test_register_net_tx),
             net_inject: Some(test_net_inject),
@@ -127,6 +129,7 @@ fn live_registrar_preflight_names_each_missing_capability() {
             register_vcpu_idle_resume: Some(test_register_vcpu_idle_resume),
             register_control_boundary: Some(test_register_control_boundary),
             register_sim_shmem_dispatch: None,
+            register_sim_shmem_settlement: Some(test_register_sim_settlement),
             register_time_advance_cb: Some(test_register_time_advance_cb),
             register_net_tx: Some(test_register_net_tx),
             net_inject: Some(test_net_inject),
@@ -166,6 +169,7 @@ fn live_registrar_preflight_names_each_missing_capability() {
             register_vcpu_idle_resume: Some(test_register_vcpu_idle_resume),
             register_control_boundary: Some(test_register_control_boundary),
             register_sim_shmem_dispatch: Some(test_register_sim_dispatch),
+            register_sim_shmem_settlement: Some(test_register_sim_settlement),
             register_time_advance_cb: None,
             register_net_tx: Some(test_register_net_tx),
             net_inject: Some(test_net_inject),
@@ -205,6 +209,7 @@ fn live_registrar_preflight_names_each_missing_capability() {
             register_vcpu_idle_resume: Some(test_register_vcpu_idle_resume),
             register_control_boundary: Some(test_register_control_boundary),
             register_sim_shmem_dispatch: Some(test_register_sim_dispatch),
+            register_sim_shmem_settlement: Some(test_register_sim_settlement),
             register_time_advance_cb: Some(test_register_time_advance_cb),
             register_net_tx: Some(test_register_net_tx),
             net_inject: Some(test_net_inject),
@@ -222,6 +227,47 @@ fn live_registrar_preflight_names_each_missing_capability() {
         Err(OwnedCallbackRegistrationError::LiveVcpuTime {
             source: LiveVcpuTimeCallbackError::CapabilityUnavailable {
                 symbol: QEMU_PLUGIN_REGISTER_BLK_WAIT_CB_SYMBOL,
+            },
+        })
+    ));
+
+    // ABI 32 ceilings are bounds; a QEMU that would credit them is refused.
+    let missing_settlement = LiveVcpuTimeCallbackRegistrar::new(
+        1,
+        execution_model,
+        crate::QemuPluginTargetArchitecture::X86_64,
+        LiveVcpuTimeCallbackCapabilities {
+            icount_raw: test_icount_raw,
+            force_vcpu_exit: test_force_vcpu_exit,
+            idle_wake_wait: QemuIdleWakeWait::test_stub(test_wait_idle_wake),
+            request_vmstop: test_request_vmstop,
+            inject_preemption: Some(super::super::test_support::accept_preemption),
+            clock_deadline_ps: Some(test_clock_deadline_ps),
+            advance_time_ticks: Some(test_queue_idle_advance),
+            arm_virtual_timer_witness: Some(super::super::test_support::arm_timer_witness),
+            query_virtual_timer_witness: Some(super::super::test_support::query_timer_witness),
+            register_vcpu_init: Some(test_register_vcpu_init),
+            register_vcpu_idle_resume: Some(test_register_vcpu_idle_resume),
+            register_control_boundary: Some(test_register_control_boundary),
+            register_sim_shmem_dispatch: Some(test_register_sim_dispatch),
+            register_sim_shmem_settlement: None,
+            register_time_advance_cb: Some(test_register_time_advance_cb),
+            register_net_tx: Some(test_register_net_tx),
+            net_inject: Some(test_net_inject),
+            register_block: Some(test_register_block),
+            register_block_event: Some(test_register_block_event),
+            register_block_wait: Some(test_register_block_wait),
+            register_ninep: Some(test_register_ninep),
+            register_accelerator: Some(test_register_accelerator),
+            fault_commands: crate::fault_command::QemuFaultCommandApis::test_stub(),
+            request_shutdown: test_request_shutdown,
+        },
+    );
+    assert!(matches!(
+        missing_settlement.preflight(&args),
+        Err(OwnedCallbackRegistrationError::LiveVcpuTime {
+            source: LiveVcpuTimeCallbackError::CapabilityUnavailable {
+                symbol: QEMU_PLUGIN_REGISTER_SIM_SHMEM_SETTLEMENT_CB_SYMBOL,
             },
         })
     ));

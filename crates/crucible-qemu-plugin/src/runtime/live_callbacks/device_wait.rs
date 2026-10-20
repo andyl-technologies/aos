@@ -64,10 +64,21 @@ impl LiveVcpuTimeCallbackState {
             )
             .map_err(|source| LiveVcpuTimeCallbackError::IdleHotLoop { source })?;
             // A block coroutine can park before the vCPU gets another opportunity
-            // to query `max_advance_icount`. Advance only to the currently authorized
-            // scheduler boundary when the device completion lies in a later quantum;
-            // the host wake after publishing that later ceiling re-fires this hook.
-            let target_icount = plan.desired_wake_icount().min(ceiling_icount);
+            // to query `max_advance_icount`. A wake beyond the current ceiling
+            // leaves the clock where it is: the ceiling is a bound, not a target
+            // (RFC-0010 SCHED-12). The idle path settles the parked node, and the
+            // host wake after publishing a later ceiling re-fires this hook.
+            let target_icount = plan.desired_wake_icount();
+            if target_icount > ceiling_icount {
+                self.device_wait_witness.emit(
+                    observation,
+                    "beyond-ceiling",
+                    (None, Some(target_icount), None),
+                    (None, None),
+                    "retry",
+                );
+                return Ok(());
+            }
             if target_icount <= current_icount {
                 self.device_wait_witness.emit(
                     observation,

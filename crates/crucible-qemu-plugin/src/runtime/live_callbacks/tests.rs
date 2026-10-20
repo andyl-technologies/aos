@@ -24,6 +24,7 @@ mod network_custody;
 mod network_output;
 mod preemption;
 mod preflight_cases;
+mod settlement;
 
 pub(super) extern "C" fn test_icount_raw() -> u64 {
     TEST_ICOUNT_RAW_READS.set(TEST_ICOUNT_RAW_READS.get() + 1);
@@ -1072,7 +1073,8 @@ fn live_idle_callback_queues_then_commits_only_from_normal_loop_completion() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 10, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
-    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
+    // Only an exact-event ceiling wakes a node that has no wake of its own.
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::ExactEvent)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     let state = test_live_state(46, 1, 0, &slot)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
@@ -1111,11 +1113,13 @@ fn live_idle_callback_parks_when_an_advance_still_owns_the_qemu_barrier() {
     state
         .on_vcpu_init(0)
         .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
-    TEST_CLOCK_DEADLINE_PS.set(-1);
+    // The timer gives the halted node a real wake at the ceiling.
+    TEST_CLOCK_DEADLINE_PS.set(10);
     TEST_QUEUED_ADVANCE_STATUS.set(-libc::EBUSY);
 
     let result = state.on_vcpu_idle(0, 0);
     TEST_QUEUED_ADVANCE_STATUS.set(0);
+    TEST_CLOCK_DEADLINE_PS.set(-1);
 
     result.unwrap_or_else(|error| panic!("busy QEMU barrier should defer the idle vCPU: {error}"));
     assert!(

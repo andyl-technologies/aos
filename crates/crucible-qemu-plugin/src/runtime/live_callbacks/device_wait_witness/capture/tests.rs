@@ -158,7 +158,8 @@ fn genuine_idle_callback_drops_full_or_closed_fifo_without_changing_original_adv
         let slot = NodeSlot::new(KIND_VM);
         let ceiling = authorize_advance_ceiling(0, 10, None)
             .unwrap_or_else(|error| panic!("ceiling: {error}"));
-        slot.publish_scheduler_advance(ceiling, AdvanceStopCondition::Ceiling)
+        // The exact-event ceiling is the halted node's only wake.
+        slot.publish_scheduler_advance(ceiling, AdvanceStopCondition::ExactEvent)
             .unwrap_or_else(|error| panic!("publication: {error}"));
         let mut state =
             test_live_state(48, 1, 0, &slot).unwrap_or_else(|error| panic!("state: {error}"));
@@ -175,7 +176,10 @@ fn genuine_idle_callback_drops_full_or_closed_fifo_without_changing_original_adv
         assert_eq!(state.on_vcpu_idle(0, 0), Ok(()));
         assert!(state.idle_advance_is_pending());
         assert_eq!(slot.snapshot().current_icount, 0);
-        assert_eq!(slot.snapshot().idle_wake_icount, 10);
+        assert_eq!(
+            slot.snapshot().idle_wake_icount,
+            crucible_shmem::IDLE_WAKE_NONE
+        );
         assert_eq!(flags(&original, libc::F_GETFL), original_flags);
     }
 }

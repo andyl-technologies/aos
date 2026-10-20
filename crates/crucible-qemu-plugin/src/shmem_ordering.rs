@@ -89,6 +89,26 @@ impl PluginShmemOrdering {
         slot.publish_reached_icount(reached_icount)
     }
 
+    /// Publishes the reached icount together with QEMU's settlement attestation.
+    ///
+    /// `settled_ceiling` is the logical ceiling QEMU sampled when it found no
+    /// retirement and no exact event between the reached icount and that
+    /// ceiling (RFC-0010 SCHED-12). The slot records the settlement only while
+    /// the live advance still names that ceiling; a stale attestation publishes
+    /// the clock alone and returns `false`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NodeSlotError`] when the reached icount exceeds the scheduler
+    /// ceiling or the published stop condition is not a current-ABI encoding.
+    pub fn publish_settled_icount(
+        slot: &NodeSlot,
+        reached_icount: u64,
+        settled_ceiling: u64,
+    ) -> Result<bool, NodeSlotError> {
+        slot.publish_settled_icount(reached_icount, settled_ceiling)
+    }
+
     /// Publishes the validated native timer callback record before its logical wake.
     pub fn publish_virtual_timer_witness(
         slot: &NodeSlot,
