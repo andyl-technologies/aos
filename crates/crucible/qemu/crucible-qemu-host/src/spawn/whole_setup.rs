@@ -407,38 +407,38 @@ fn invalid(reason: &'static str) -> QemuSpawnError {
 }
 
 #[cfg(test)]
-// crucible-lint: allow panic-shortcut -- Lost fixture descriptor custody is a test failure.
-#[allow(clippy::unwrap_used)]
-pub(super) fn unqualified_custody_fixture() -> QemuEarlyWholeSetup {
+pub(super) fn unqualified_custody_fixture()
+-> Result<QemuEarlyWholeSetup, Box<dyn std::error::Error>> {
     // This fixture owns real sealed protocol bytes and descriptor copies. It
     // installs no QEMU constructor and can issue no native source capability.
     let body = b"unqualified whole-launch ownership fixture".to_vec();
-    let plan = crate::host_setup::sealed_plugin_setup_plan_fd(&body).unwrap();
-    let child_plan = duplicate_cloexec_fd(plan.as_raw_fd(), "fixture child setup fd").unwrap();
-    QemuEarlyWholeSetup {
+    let plan = crate::host_setup::sealed_plugin_setup_plan_fd(&body)?;
+    let child_plan = duplicate_cloexec_fd(plan.as_raw_fd(), "fixture child setup fd")?;
+    Ok(QemuEarlyWholeSetup {
         plan: Some(plan),
         body: body.into_boxed_slice(),
         images: [None, None, None, None],
         child_plan,
         child_images: [None, None, None, None],
-    }
+    })
 }
 
 #[cfg(test)]
-// crucible-lint: allow panic-shortcut -- Exact fixture descriptor identities are test assertions.
-#[allow(clippy::unwrap_used)]
-pub(super) fn unqualified_image_custody_fixture() -> QemuEarlyWholeSetup {
-    let mut fixture = unqualified_custody_fixture();
+pub(super) fn unqualified_image_custody_fixture()
+-> Result<QemuEarlyWholeSetup, Box<dyn std::error::Error>> {
+    let mut fixture = unqualified_custody_fixture()?;
     for (index, label) in [b"kernel".as_slice(), b"initrd", b"firmware", b"entropy"]
         .into_iter()
         .enumerate()
     {
-        let image = crate::host_setup::sealed_plugin_setup_plan_fd(label).unwrap();
-        fixture.child_images[index] =
-            Some(duplicate_cloexec_fd(image.as_raw_fd(), "fixture child image fd").unwrap());
+        let image = crate::host_setup::sealed_plugin_setup_plan_fd(label)?;
+        fixture.child_images[index] = Some(duplicate_cloexec_fd(
+            image.as_raw_fd(),
+            "fixture child image fd",
+        )?);
         fixture.images[index] = Some(image);
     }
-    fixture
+    Ok(fixture)
 }
 
 #[cfg(test)]
@@ -449,22 +449,24 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+    use std::error::Error;
     use std::os::unix::fs::FileExt;
 
     #[test]
-    fn sealed_image_keeps_complete_original_bytes_and_refuses_mutation() {
+    fn sealed_image_keeps_complete_original_bytes_and_refuses_mutation()
+    -> Result<(), Box<dyn Error>> {
         let bytes = b"complete original source image\0including binary tail\xff";
-        let mut source = tempfile::NamedTempFile::new().unwrap();
-        source.write_all(bytes).unwrap();
-        let path = source.path().to_str().unwrap();
+        let mut source = tempfile::NamedTempFile::new()?;
+        source.write_all(bytes)?;
+        let path = source.path().to_str().ok_or("fixture path is not UTF-8")?;
         let expected: [u8; 32] = Sha256::digest(bytes).into();
 
-        let descriptor = sealed_image(path, bytes.len() as u64, expected).unwrap();
+        let descriptor = sealed_image(path, bytes.len() as u64, expected)?;
         let image = File::from(descriptor);
         let mut actual = vec![0; bytes.len()];
-        image.read_exact_at(&mut actual, 0).unwrap();
+        image.read_exact_at(&mut actual, 0)?;
         assert_eq!(actual, bytes);
-        assert_eq!(image.metadata().unwrap().len(), bytes.len() as u64);
+        assert_eq!(image.metadata()?.len(), bytes.len() as u64);
         let seals = unsafe {
             // SAFETY: The live descriptor is queried without changing ownership.
             libc::fcntl(image.as_raw_fd(), libc::F_GET_SEALS)
@@ -478,20 +480,23 @@ mod tests {
             Some(libc::EPERM)
         );
         assert!(image.set_len(0).is_err());
+        Ok(())
     }
 
     #[test]
-    fn changed_extent_or_full_source_commitment_refuses_before_descriptor_handoff() {
+    fn changed_extent_or_full_source_commitment_refuses_before_descriptor_handoff()
+    -> Result<(), Box<dyn Error>> {
         let bytes = b"original kernel source bytes";
-        let mut source = tempfile::NamedTempFile::new().unwrap();
-        source.write_all(bytes).unwrap();
+        let mut source = tempfile::NamedTempFile::new()?;
+        source.write_all(bytes)?;
         let expected: [u8; 32] = Sha256::digest(bytes).into();
-        let path = source.path().to_str().unwrap();
+        let path = source.path().to_str().ok_or("fixture path is not UTF-8")?;
 
         assert!(sealed_image(path, bytes.len() as u64 + 1, expected).is_err());
         let mut changed = expected;
         changed[31] ^= 1;
         assert!(sealed_image(path, bytes.len() as u64, changed).is_err());
-        assert_eq!(std::fs::read(source.path()).unwrap(), bytes);
+        assert_eq!(std::fs::read(source.path())?, bytes);
+        Ok(())
     }
 }

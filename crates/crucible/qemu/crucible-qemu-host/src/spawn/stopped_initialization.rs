@@ -199,37 +199,34 @@ fn refusal(error: impl Into<io::Error>) -> QemuSpawnError {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "OS fixture setup and assertions must fail the test directly"
-)]
 mod tests {
     use super::*;
     use rustix::pipe::{PipeFlags, pipe_with};
+    use std::error::Error;
     use std::process::{Command, Stdio};
     use std::time::Duration;
 
     const AOS_BASH: &str = "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15/bin/bash";
 
-    fn helper(script: &str) -> (StoppedInitializationOutput, QemuNodeChild) {
+    fn helper(
+        script: &str,
+    ) -> Result<(StoppedInitializationOutput, QemuNodeChild), Box<dyn Error>> {
         helper_for::<128>(script)
     }
 
     fn helper_for<const RECORD_BYTES: usize>(
         script: &str,
-    ) -> (StoppedInitializationOutput<RECORD_BYTES>, QemuNodeChild) {
-        let (reader, writer) = pipe_with(PipeFlags::CLOEXEC | PipeFlags::NONBLOCK).unwrap();
-        let stdout = writer.try_clone().unwrap();
-        let mut output =
-            StoppedInitializationOutput::<RECORD_BYTES>::new([reader, writer]).unwrap();
-        output.prepare_capture().unwrap();
+    ) -> Result<(StoppedInitializationOutput<RECORD_BYTES>, QemuNodeChild), Box<dyn Error>> {
+        let (reader, writer) = pipe_with(PipeFlags::CLOEXEC | PipeFlags::NONBLOCK)?;
+        let stdout = writer.try_clone()?;
+        let mut output = StoppedInitializationOutput::<RECORD_BYTES>::new([reader, writer])?;
+        output.prepare_capture()?;
         let child = Command::new(AOS_BASH)
             .env_clear()
             .args(["-c", script])
             .stdout(Stdio::from(stdout))
-            .spawn()
-            .unwrap();
-        (output, QemuNodeChild::new(child))
+            .spawn()?;
+        Ok((output, QemuNodeChild::new(child)))
     }
 
     fn watchdog_ns() -> i128 {
@@ -252,76 +249,83 @@ mod tests {
     }
 
     #[test]
-    fn original_pipe_record_requires_exact_reap_and_does_not_repeat_io() {
-        let (mut output, mut child) = helper("printf '%0128d' 0");
-        let record = finish(&mut output, &mut child).unwrap();
+    fn original_pipe_record_requires_exact_reap_and_does_not_repeat_io()
+    -> Result<(), Box<dyn Error>> {
+        let (mut output, mut child) = helper("printf '%0128d' 0")?;
+        let record = finish(&mut output, &mut child)?;
         assert!(child.reaped());
         assert_eq!(record.len(), 128);
         let attempts = output.attempts;
-        assert_eq!(output.poll(&mut child).unwrap(), Some(record));
+        assert_eq!(output.poll(&mut child)?, Some(record));
         assert_eq!(output.attempts, attempts);
+        Ok(())
     }
 
     #[test]
-    fn partial_and_overflow_original_histories_stay_refused() {
+    fn partial_and_overflow_original_histories_stay_refused() -> Result<(), Box<dyn Error>> {
         for (script, expected) in [("printf x", 1), ("printf '%0129d' 0", 129)] {
-            let (mut output, mut child) = helper(script);
+            let (mut output, mut child) = helper(script)?;
             assert!(finish(&mut output, &mut child).is_err());
             assert_eq!(output.filled, expected);
             let attempts = output.attempts;
             assert!(output.poll(&mut child).is_err());
             assert_eq!(output.attempts, attempts);
             let deadline = watchdog_ns() + 5_000_000_000;
-            while !child.reaped() && child.try_wait_natural_exit().unwrap().is_none() {
+            while !child.reaped() && child.try_wait_natural_exit()?.is_none() {
                 assert!(watchdog_ns() < deadline, "original helper must be reaped");
                 std::thread::sleep(Duration::from_millis(5));
             }
             assert!(child.reaped());
         }
+        Ok(())
     }
 
     #[test]
-    fn failed_native_exit_cannot_qualify_complete_output() {
-        let (mut output, mut child) = helper("printf '%0128d' 0; exit 125");
+    fn failed_native_exit_cannot_qualify_complete_output() -> Result<(), Box<dyn Error>> {
+        let (mut output, mut child) = helper("printf '%0128d' 0; exit 125")?;
         assert!(finish(&mut output, &mut child).is_err());
         assert!(child.reaped());
         assert_eq!(output.filled, 128);
+        Ok(())
     }
 
     #[test]
-    fn blocking_original_pipe_is_refused_before_child_creation() {
-        let (reader, writer) = pipe_with(PipeFlags::CLOEXEC).unwrap();
+    fn blocking_original_pipe_is_refused_before_child_creation() -> Result<(), Box<dyn Error>> {
+        let (reader, writer) = pipe_with(PipeFlags::CLOEXEC)?;
         assert!(StoppedInitializationOutput::<128>::new([reader, writer]).is_err());
+        Ok(())
     }
 
     #[test]
-    fn rr_record_reserves_extra_capacity_and_waits_for_original_tail() {
+    fn rr_record_reserves_extra_capacity_and_waits_for_original_tail() -> Result<(), Box<dyn Error>>
+    {
         let (mut output, mut child) = helper_for::<192>(
             "printf '%0128d' 0; /nix/store/6i9yb0a1q1k9qx8l3xb4xr25kf8cg4p5-coreutils-9.11/bin/sleep 0.1; printf '%064d' 0",
-        );
-        let capacity = rustix::pipe::fcntl_getpipe_size(&output.reader).unwrap();
+        )?;
+        let capacity = rustix::pipe::fcntl_getpipe_size(&output.reader)?;
         assert_eq!(output.required_backing_bytes(), capacity as u64 + 193);
         assert_eq!(output.bytes.len(), 193);
 
         let deadline = watchdog_ns() + 5_000_000_000;
         while output.filled < 128 {
-            assert_eq!(output.poll(&mut child).unwrap(), None);
+            assert_eq!(output.poll(&mut child)?, None);
             assert!(watchdog_ns() < deadline);
             std::thread::sleep(Duration::from_millis(1));
         }
         assert!(!output.complete);
-        let record = finish(&mut output, &mut child).unwrap();
+        let record = finish(&mut output, &mut child)?;
         assert!(child.reaped());
         assert_eq!(record.len(), 192);
         let attempts = output.attempts;
-        assert_eq!(output.poll(&mut child).unwrap(), Some(record));
+        assert_eq!(output.poll(&mut child)?, Some(record));
         assert_eq!(output.attempts, attempts);
+        Ok(())
     }
 
     #[test]
-    fn rr_profile_refuses_old_record_extent_and_preserves_overflow() {
+    fn rr_profile_refuses_old_record_extent_and_preserves_overflow() -> Result<(), Box<dyn Error>> {
         for (script, expected) in [("printf '%0128d' 0", 128), ("printf '%0193d' 0", 193)] {
-            let (mut output, mut child) = helper_for::<192>(script);
+            let (mut output, mut child) = helper_for::<192>(script)?;
             assert!(finish(&mut output, &mut child).is_err());
             assert_eq!(output.filled, expected);
             let attempts = output.attempts;
@@ -329,11 +333,12 @@ mod tests {
             assert_eq!(output.attempts, attempts);
 
             let deadline = watchdog_ns() + 5_000_000_000;
-            while !child.reaped() && child.try_wait_natural_exit().unwrap().is_none() {
+            while !child.reaped() && child.try_wait_natural_exit()?.is_none() {
                 assert!(watchdog_ns() < deadline);
                 std::thread::sleep(Duration::from_millis(5));
             }
             assert!(child.reaped());
         }
+        Ok(())
     }
 }

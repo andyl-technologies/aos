@@ -1,10 +1,9 @@
 //! Actual process and descriptor retention; no installed QEMU or native Ready claim.
 
 // crucible-lint: allow panic-shortcut -- Lost original custody is a test failure.
-#![allow(clippy::unwrap_used)]
-
 use std::cell::RefCell;
-use std::io::{Read, Write};
+use std::error::Error;
+use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
@@ -64,41 +63,37 @@ fn profile() -> StagedControlProfile {
 #[test]
 // Host time bounds only this real helper's reap; it never enters modeled state.
 #[allow(clippy::disallowed_methods)]
-fn dropping_partial_original_launch_transfers_same_child_mapping_descriptor_and_journal() {
+fn dropping_partial_original_launch_transfers_same_child_mapping_descriptor_and_journal()
+-> Result<(), Box<dyn Error>> {
     let config = RegionConfig::new(1, 1);
-    let allocation = RegionAllocation::new(config).unwrap();
-    let (resources, child_resources) =
-        create_spawn_resources(allocation.layout().region_size).unwrap();
+    let allocation = RegionAllocation::new(config)?;
+    let (resources, child_resources) = create_spawn_resources(allocation.layout().region_size)?;
     let mut peer = UnixStream::from(child_resources.control_socket);
-    let mapping = PreparedWholeMapping::new(resources.shmem_fd.as_fd(), config).unwrap();
+    let mapping = PreparedWholeMapping::new(resources.shmem_fd.as_fd(), config)?;
     let mapping_address = mapping.owner.mapping().mapping_start();
-    let mut constructor = super::super::whole_setup::unqualified_custody_fixture();
+    let mut constructor = super::super::whole_setup::unqualified_custody_fixture()?;
     let mut initial = NativeStagedControlTransport::new_for_setup(
         UnixStream::from(resources.control_socket),
         profile(),
-    )
-    .unwrap();
+    )?;
     let originals = [
         resources.shmem_fd,
         resources.wake_fd,
-        constructor.take_original_plan().unwrap(),
+        constructor.take_original_plan()?,
     ];
     let raw = originals.each_ref().map(AsRawFd::as_raw_fd);
-    initial
-        .prepare(
-            HostHandshakeConfig {
-                proto_version: CONTROL_PROTOCOL_VERSION,
-                abi_version: ABI_VERSION,
-                slot_index: 0,
-                node_count: allocation.layout().node_count,
-            },
-            mapping.byte_length,
-            originals,
-        )
-        .unwrap();
-    peer.write_all(&[0, 0, 0, 9, crucible_qemu_protocol::TAG_HELLO])
-        .unwrap();
-    assert!(!initial.poll().unwrap());
+    initial.prepare(
+        HostHandshakeConfig {
+            proto_version: CONTROL_PROTOCOL_VERSION,
+            abi_version: ABI_VERSION,
+            slot_index: 0,
+            node_count: allocation.layout().node_count,
+        },
+        mapping.byte_length,
+        originals,
+    )?;
+    peer.write_all(&[0, 0, 0, 9, crucible_qemu_protocol::TAG_HELLO])?;
+    assert!(!initial.poll()?);
 
     // The AOS Cargo shell supplies this source-built bash. Its real child blocks
     // on its original stdin; it represents process custody, never a QEMU source.
@@ -107,8 +102,7 @@ fn dropping_partial_original_launch_transfers_same_child_mapping_descriptor_and_
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
+        .spawn()?;
     let child = QemuNodeChild::new(child);
     let process = child.process_id();
     let slot = Rc::new(RefCell::new(None));
@@ -136,7 +130,9 @@ fn dropping_partial_original_launch_transfers_same_child_mapping_descriptor_and_
     drop(launch);
 
     let mut retained = slot.borrow_mut();
-    let original = retained.as_mut().unwrap();
+    let original = retained
+        .as_mut()
+        .ok_or("original launch custody was not retained")?;
     assert_eq!(std::ptr::from_ref(original.as_ref()), original_address);
     assert_eq!(original.process_id(), Some(process));
     assert_eq!(
@@ -144,19 +140,26 @@ fn dropping_partial_original_launch_transfers_same_child_mapping_descriptor_and_
         mapping_address
     );
     assert!(original.mapping.owner.ordinary_mapping_mut().is_err());
-    let initial = original.initial.as_ref().unwrap();
-    assert_eq!(initial.descriptors().unwrap().map(|fd| fd.as_raw_fd()), raw);
+    let initial = original
+        .initial
+        .as_ref()
+        .ok_or("original setup transport was not retained")?;
+    assert_eq!(initial.descriptors()?.map(|fd| fd.as_raw_fd()), raw);
     assert!(original.refused);
     assert!(original.staged.is_none());
 
     // Positively reap only this test-owned process. Its original protocol/mapping
     // remains in the mailbox; reaping creates no native retirement permission.
-    let child = original.child.as_mut().unwrap();
+    let child = original
+        .child
+        .as_mut()
+        .ok_or("original child was not retained")?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !child.poll_force_kill_and_reap_failed_helper().unwrap() {
+    while !child.poll_force_kill_and_reap_failed_helper()? {
         assert!(std::time::Instant::now() < deadline);
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
+    Ok(())
 }
 
 struct LockedMailbox {
@@ -177,41 +180,43 @@ impl QemuWholeLaunchCustodySlot for LockedMailbox {
     }
 
     fn retain(self: Box<Self>, original: Box<QemuWholeLaunchCustody>) {
-        let _guard = self.gate.lock().unwrap();
+        let guard = self.gate.lock();
+        assert!(
+            guard.is_ok(),
+            "fixture mailbox mutex must remain unpoisoned"
+        );
         *self.retained.borrow_mut() = Some(original);
+        drop(guard);
     }
 }
 
 #[test]
 #[ignore = "runs alone because it forks with an intentionally locked parent mailbox"]
-fn inherited_launch_drop_skips_parent_locked_mailbox_and_dontfork_mapping() {
+fn inherited_launch_drop_skips_parent_locked_mailbox_and_dontfork_mapping()
+-> Result<(), Box<dyn Error>> {
     let config = RegionConfig::new(1, 1);
-    let allocation = RegionAllocation::new(config).unwrap();
-    let (resources, child_resources) =
-        create_spawn_resources(allocation.layout().region_size).unwrap();
-    let mapping = PreparedWholeMapping::new(resources.shmem_fd.as_fd(), config).unwrap();
-    let mut constructor = super::super::whole_setup::unqualified_custody_fixture();
+    let allocation = RegionAllocation::new(config)?;
+    let (resources, child_resources) = create_spawn_resources(allocation.layout().region_size)?;
+    let mapping = PreparedWholeMapping::new(resources.shmem_fd.as_fd(), config)?;
+    let mut constructor = super::super::whole_setup::unqualified_custody_fixture()?;
     let mut initial = NativeStagedControlTransport::new_for_setup(
         UnixStream::from(resources.control_socket),
         profile(),
-    )
-    .unwrap();
-    initial
-        .prepare(
-            HostHandshakeConfig {
-                proto_version: CONTROL_PROTOCOL_VERSION,
-                abi_version: ABI_VERSION,
-                slot_index: 0,
-                node_count: allocation.layout().node_count,
-            },
-            mapping.byte_length,
-            [
-                resources.shmem_fd,
-                resources.wake_fd,
-                constructor.take_original_plan().unwrap(),
-            ],
-        )
-        .unwrap();
+    )?;
+    initial.prepare(
+        HostHandshakeConfig {
+            proto_version: CONTROL_PROTOCOL_VERSION,
+            abi_version: ABI_VERSION,
+            slot_index: 0,
+            node_count: allocation.layout().node_count,
+        },
+        mapping.byte_length,
+        [
+            resources.shmem_fd,
+            resources.wake_fd,
+            constructor.take_original_plan()?,
+        ],
+    )?;
     let gate = Arc::new(Mutex::new(()));
     let mailbox = Rc::new(RefCell::new(None));
     let launch = QemuOriginalWholeLaunch {
@@ -239,17 +244,18 @@ fn inherited_launch_drop_skips_parent_locked_mailbox_and_dontfork_mapping() {
     let (locked_tx, locked_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
     let locked_mailbox = Arc::clone(&gate);
-    let holder = std::thread::spawn(move || {
-        let guard = locked_mailbox.lock().unwrap();
-        locked_tx.send(()).unwrap();
-        release_rx.recv().unwrap();
+    let holder = std::thread::spawn(move || -> io::Result<()> {
+        let guard = locked_mailbox
+            .lock()
+            .map_err(|_| io::Error::other("fixture mailbox mutex is poisoned"))?;
+        locked_tx.send(()).map_err(io::Error::other)?;
+        release_rx.recv().map_err(io::Error::other)?;
         drop(guard);
+        Ok(())
     });
-    locked_rx.recv().unwrap();
-    let (mut parent_notice, child_notice) = UnixStream::pair().unwrap();
-    parent_notice
-        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-        .unwrap();
+    locked_rx.recv()?;
+    let (mut parent_notice, child_notice) = UnixStream::pair()?;
+    parent_notice.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
 
     // SAFETY: The child only executes the PID-first drop guard, a raw write and
     // _exit. It must not access the absent mapping or any inherited owner lock.
@@ -267,8 +273,8 @@ fn inherited_launch_drop_skips_parent_locked_mailbox_and_dontfork_mapping() {
 
     let mut notice = [0_u8];
     let child_completed = forked > 0 && parent_notice.read_exact(&mut notice).is_ok();
-    release_tx.send(()).unwrap();
-    holder.join().unwrap();
+    let release_result = release_tx.send(());
+    let holder_result = holder.join();
     let mut status = 0;
     if forked > 0 {
         if !child_completed {
@@ -280,6 +286,9 @@ fn inherited_launch_drop_skips_parent_locked_mailbox_and_dontfork_mapping() {
         // either signalled completion or was killed after the bounded wait.
         assert_eq!(unsafe { libc::waitpid(forked, &mut status, 0) }, forked);
     }
+    // Propagate fixture coordination errors after the exact child is reaped.
+    release_result?;
+    holder_result.map_err(|_| io::Error::other("fixture mailbox thread panicked"))??;
     assert!(forked > 0, "actual fork must succeed");
     assert!(child_completed, "child drop blocked on inherited custody");
     assert_eq!(notice, [1]);
@@ -291,22 +300,24 @@ fn inherited_launch_drop_skips_parent_locked_mailbox_and_dontfork_mapping() {
     drop(launch);
     assert!(mailbox.borrow().is_some());
     drop(child_resources);
+    Ok(())
 }
 
 #[test]
-fn selected_descriptor_pins_survive_actual_exec_with_same_complete_backings() {
-    let constructor = super::super::whole_setup::unqualified_image_custody_fixture();
+fn selected_descriptor_pins_survive_actual_exec_with_same_complete_backings()
+-> Result<(), Box<dyn Error>> {
+    let constructor = super::super::whole_setup::unqualified_image_custody_fixture()?;
     let pins = constructor.child_descriptor_pins();
     let identities = || {
         constructor
             .original_descriptors()
             .map(|descriptor| {
-                let stat = rustix::fs::fstat(descriptor).unwrap();
-                format!("{}:{}:{}", stat.st_dev, stat.st_ino, stat.st_size)
+                let stat = rustix::fs::fstat(descriptor)?;
+                Ok(format!("{}:{}:{}", stat.st_dev, stat.st_ino, stat.st_size))
             })
-            .collect::<Vec<_>>()
+            .collect::<Result<Vec<_>, rustix::io::Errno>>()
     };
-    let expected = identities();
+    let expected = identities()?;
     let mut command = Command::new("bash");
     command.args([
         "-c",
@@ -317,15 +328,15 @@ fn selected_descriptor_pins_survive_actual_exec_with_same_complete_backings() {
     unsafe {
         command.pre_exec(move || super::super::whole_setup::install_child_descriptor_pins(pins));
     }
-    let output = command.output().unwrap();
+    let output = command.output()?;
     assert!(output.status.success());
-    let observed: Vec<_> = String::from_utf8(output.stdout)
-        .unwrap()
+    let observed: Vec<_> = String::from_utf8(output.stdout)?
         .lines()
         .map(str::to_owned)
         .collect();
     assert_eq!(observed, expected);
-    assert_eq!(identities(), expected);
+    assert_eq!(identities()?, expected);
+    Ok(())
 }
 
 struct UnqualifiedAdmittingMailbox(Rc<RefCell<Option<Box<QemuWholeLaunchCustody>>>>);
@@ -347,7 +358,8 @@ impl QemuWholeLaunchCustodySlot for UnqualifiedAdmittingMailbox {
 }
 
 #[test]
-fn complete_constructor_history_refuses_before_missing_images_or_child_effects() {
+fn complete_constructor_history_refuses_before_missing_images_or_child_effects()
+-> Result<(), Box<dyn Error>> {
     use crate::{
         DeterministicLaunchProfile, LivePluginGuestArchitecture, QemuLaunchArtifact,
         QemuLaunchCommandBuilder, QemuLaunchPluginConfig, QemuVmLaunchConfig,
@@ -357,16 +369,16 @@ fn complete_constructor_history_refuses_before_missing_images_or_child_effects()
 
     let portable = PluginSetupPlan::decode(include_bytes!(
         "../../../../protocol/crucible-qemu-protocol/src/whole_control/testdata/host-setup-launch2-complete.bin"
-    ))
-    .unwrap();
-    let selection = portable.whole_constructor().unwrap();
+    ))?;
+    let selection = portable
+        .whole_constructor()
+        .ok_or("complete fixture constructor is absent")?;
     let mut offered = selection.profile().clone();
     offered.compute.deadline_monotonic_ns = u64::MAX;
     offered.compute.provider_history_byte_limit =
-        NativeStagedControlTransport::required_setup_backing_bytes(&offered).unwrap() as u64;
+        NativeStagedControlTransport::required_setup_backing_bytes(&offered)? as u64;
     let roles: Vec<_> = selection.roles().collect();
-    let selection =
-        WholeConstructorSelection::new2(offered, &selection.launch2().unwrap(), &roles).unwrap();
+    let selection = WholeConstructorSelection::new2(offered, &selection.launch2()?, &roles)?;
     let vm = QemuVmLaunchConfig::new(
         "vm-a",
         QemuLaunchArtifact::new(
@@ -391,24 +403,22 @@ fn complete_constructor_history_refuses_before_missing_images_or_child_effects()
     .with_fault_target_node("vm-a")
     .with_whole_constructor(selection);
     let command = QemuLaunchCommandBuilder::new_for_live_gate(
-        DeterministicLaunchProfile::conservative_default().unwrap(),
+        DeterministicLaunchProfile::conservative_default()?,
         vm,
         "/nix/store/11111111111111111111111111111111-unqualified-missing-qemu/bin/qemu-system-x86_64",
         plugin,
         LivePluginGuestArchitecture::X86_64,
     )
-    .build()
-    .unwrap();
-    let directory = tempfile::tempdir().unwrap();
-    std::fs::write(directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME), b"").unwrap();
+    .build()?;
+    let directory = tempfile::tempdir()?;
+    std::fs::write(directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME), b"")?;
     std::fs::write(
         directory.path().join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
         b"provisioned",
-    )
-    .unwrap();
+    )?;
     let contract = QemuChildProcessContract::from_unvalidated_test_descriptors(
-        std::fs::File::open("/dev/null").unwrap().into(),
-        std::fs::File::open("/dev/null").unwrap().into(),
+        std::fs::File::open("/dev/null")?.into(),
+        std::fs::File::open("/dev/null")?.into(),
         u32::MAX,
         u64::MAX,
         u64::MAX,
@@ -417,8 +427,7 @@ fn complete_constructor_history_refuses_before_missing_images_or_child_effects()
         command.resource_requirements(),
         directory.path(),
         &contract,
-    )
-    .unwrap();
+    )?;
     let mailbox = Rc::new(RefCell::new(None));
 
     let result = spawn_selected_qemu_child_in_directory_guarded(
@@ -438,7 +447,8 @@ fn complete_constructor_history_refuses_before_missing_images_or_child_effects()
     }
     assert!(mailbox.borrow().is_none());
     assert_eq!(
-        std::fs::read(directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME)).unwrap(),
+        std::fs::read(directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME))?,
         b""
     );
+    Ok(())
 }
