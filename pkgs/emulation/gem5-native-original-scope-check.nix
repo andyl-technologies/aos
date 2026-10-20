@@ -91,8 +91,17 @@ in
           cp arm-walker-source-state.d arm-walker-source-state-methods.source.json \
             "$out/share/gem5/checks/"
 
+          # A counter-only real native callback leaves its cached value stale
+          # at a nonzero tick, so accidental observer normalization is visible.
+          ${foundation}/bin/gem5 --listener-mode=off --outdir=counter-observation \
+            ${./_gem5/system-counter-observation-check.py} \
+            > counter-observation.log 2>&1
+          cat counter-observation.log
+          grep '"schema":"crucible.gem5.system-counter-observation-mechanism.v1"' \
+            counter-observation.log > "$out/share/gem5/checks/counter-observation.json"
+
           ${python3-3_12}/bin/python3 ${diagnosticGuest} diagnostic-fixed-loop.elf
-          for mode in owned unknown-bus changed-clock foreign-helper unarmed; do
+          for mode in owned unknown-bus changed-clock foreign-helper unarmed counter-owned counter-pending counter-invalid-table; do
             status=0
             ${foundation}/bin/gem5 --listener-mode=off --outdir="native-scope-$mode" \
               ${nativeCheck} diagnostic-fixed-loop.elf "$mode" \
@@ -121,7 +130,7 @@ in
     ];
 
     meta = {
-      description = "Runs all five source-bound native diagnostic graph controls without granting source issuance, restore adoption or node readiness";
+      description = "Runs eight source-bound native diagnostic graph controls including real stopped counter callbacks without granting source issuance, restore adoption or node readiness";
       license = "MIT";
     };
   }

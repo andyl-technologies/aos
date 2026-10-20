@@ -246,3 +246,27 @@ The MIT `_gem5/x86-linux-native-boot-compare.py` control compares the retained
 raw console bytes, native UART birth digests and final tick/event counts from
 two fresh invocations of that same fixed boot. It establishes only the recorded
 workload observation, not general timing accuracy, capture or restoration.
+
+
+## Concrete no-listener ARM system counter
+
+`native-system-counter-source-state.patch` modifies existing
+`src/dev/arm/generic_timer.{cc,hh}` and `src/dev/arm/GenericTimer.py` under their
+original BSD-3-Clause-compatible Arm notices, which remain intact. It also
+updates the existing BSD-3-Clause `src/sim/crucible_native_scope.cc` diagnostic
+profile identity. No native source file is added. The complete patched files,
+this patch, invoked recipe, host controls and license inventory remain in the
+matching gem5 corresponding-source output.
+
+The existing MIT `native-original-scope-check.py` and
+`native-original-scope-evidence.py` controls add actual concrete counter,
+pending native frequency callback and invalid-table cases. Their existing
+mandatory check binds the matching native executable and source archive.
+The new MIT `system-counter-observation-check.py` source control advances a
+counter-only native mechanism to a stale cached value and compares repeated
+observations before and after the real frequency-change callback.
+The partial typed producer reads cached fields without updating the counter.
+The native graph visitor rejects every listener and bounds the frequency table
+and its native capacity. Complete allocator/backing-resource custody, nested
+timer/listener/pin ownership, source issuance, early restore adoption, full-system
+CPU/device qualification and common readiness remain separate and refused.

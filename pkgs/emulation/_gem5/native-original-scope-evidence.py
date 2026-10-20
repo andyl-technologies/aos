@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Binds five actual controls to the installed ELF and complete source archive."""
+"""Binds eight actual controls to the installed ELF and complete source archive."""
 
 import hashlib
 import json
@@ -43,6 +43,8 @@ if (digest(invoked_check)["sha256"] != digest(check)["sha256"] or
         digest(invoked_guest)["sha256"] != digest(guest)["sha256"] or
         digest(Path(__file__))["sha256"] != digest(controls / "native-original-scope-evidence.py")["sha256"] or
         digest(source / "patches/native-original-scope-and-diagnostic-atomic-owners.patch")["sha256"] != record["patchSha256"] or
+        digest(source / "patches/native-system-counter-source-state.patch")["sha256"] != record["counterStatePatchSha256"] or
+        digest(controls / "system-counter-observation-check.py")["sha256"] != record["counterObservationCheckSha256"] or
         digest(check)["sha256"] != record["checkSha256"] or
         digest(guest)["sha256"] != record["guestSourceSha256"] or
         digest(check_recipe)["sha256"] != record["diagnosticCheckRecipeSha256"] or
@@ -50,7 +52,8 @@ if (digest(invoked_check)["sha256"] != digest(check)["sha256"] or
         digest(recipes / "gem5-native-original-scope-foundation.nix")["sha256"] != record["recipeSha256"]):
     raise ValueError("Installed ELF source controls and recipes differ")
 
-modes = ("owned", "unknown-bus", "changed-clock", "foreign-helper", "unarmed")
+modes = ("owned", "unknown-bus", "changed-clock", "foreign-helper", "unarmed",
+         "counter-owned", "counter-pending", "counter-invalid-table")
 results = []
 for mode in modes:
     log = Path(f"native-scope-{mode}.log")
@@ -59,15 +62,30 @@ for mode in modes:
     if len(body) > 65536:
         raise ValueError("Native diagnostic log exceeds the fixed extent")
     records = []
+    counter_records = []
     for line in body.splitlines():
         if line.startswith(b'{"'):
             value = json.loads(line)
             if value.get("schema") == "crucible.gem5.diagnostic-original-native-ownership.v1":
                 records.append(value)
+            if value.get("schema") == "crucible.gem5.diagnostic-system-counter-source.v1":
+                counter_records.append(value)
+    if len(counter_records) != int(mode.startswith("counter-")):
+        raise ValueError("Actual counter producer evidence is absent or duplicated")
+    if counter_records:
+        counter = counter_records[0]
+        if counter["mode"] != mode or any(counter[field] for field in (
+                "source_cut_qualified", "listener_closure_qualified",
+                "native_backing_qualified", "restore_qualified")):
+            raise ValueError("Counter producer evidence changes scope or authority")
+        if counter["native_position"] != {
+                "tick": "0", "ordinal": "0", "tick_ordinal": "0", "active": False}:
+            raise ValueError("Counter inspection serviced or advanced native work")
     if len(records) != 1 or records[0]["mode"] != mode:
         raise ValueError("Native control result is absent, duplicated or mismatched")
     value = records[0]
-    expected_walk = mode in ("owned", "foreign-helper", "unarmed")
+    expected_walk = mode in ("owned", "foreign-helper", "unarmed",
+                             "counter-owned", "counter-pending")
     if bool(value["ownership"][0]) != expected_walk:
         raise ValueError("Actual diagnostic ownership differs from the selected control")
     if any(value[field] for field in (
@@ -80,7 +98,15 @@ for mode in modes:
     if status_body != expected_status:
         raise ValueError("Original native process status differs")
     results.append({"mode": mode, "exit_status": int(status_body),
-                    "result": value, "log": digest(log)})
+                    "result": value, "log": digest(log),
+                    "counter_observation": counter_records[0] if counter_records else None})
+
+counter_observation = bounded_json(output.parent / "counter-observation.json")
+if (counter_observation.get("schema") != "crucible.gem5.system-counter-observation-mechanism.v1" or
+        any(counter_observation[field] for field in (
+            "source_cut_qualified", "listener_closure_qualified", "native_backing_qualified",
+            "restore_qualified", "linux_qualified", "common_ready_qualified"))):
+    raise ValueError("Actual stale-counter mechanism result changes authority")
 
 binding = {
     "schema": "crucible.gem5.mandatory-native-diagnostic-source-binding.v1",
@@ -97,6 +123,7 @@ binding = {
     "evidence_writer": digest(controls / "native-original-scope-evidence.py"),
     "native_profile_source": record,
     "controls": results,
+    "counter_observation_mechanism": counter_observation,
     "native_source_issuer_qualified": False,
     "native_restore_qualified": False,
     "common_ready_qualified": False,

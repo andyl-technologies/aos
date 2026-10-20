@@ -4,6 +4,7 @@
   tableGeometryPatch = ./gem5-patches/native-selected-table-geometry.patch;
   lruBirthPatch = ./gem5-patches/native-lru-constructor-provenance.patch;
   walkerStatePatch = ./gem5-patches/native-arm-walker-source-state.patch;
+  counterStatePatch = ./gem5-patches/native-system-counter-source-state.patch;
   nativeCheck = ./_gem5/native-original-scope-check.py;
   diagnosticGuest = ./_gem5/native-diagnostic-guest.py;
   record = builtins.toFile "gem5-native-original-scope-source.json" (builtins.toJSON {
@@ -12,7 +13,12 @@
     patchSha256 = builtins.hashFile "sha256" nativePatch;
     lruBirthPatchSha256 = builtins.hashFile "sha256" lruBirthPatch;
     walkerStatePatchSha256 = builtins.hashFile "sha256" walkerStatePatch;
-    diagnosticProfileVersion = 3;
+    counterStatePatchSha256 = builtins.hashFile "sha256" counterStatePatch;
+    counterObservationCheckSha256 = builtins.hashFile "sha256" ./_gem5/system-counter-observation-check.py;
+    diagnosticProfileVersion = 4;
+    maximumCounterFrequencyEntries = 1004;
+    maximumCounterFrequencyCapacityEntries = 2008;
+    supportedCounterListeners = 0;
     fixedTableEntrySlots = 1280;
     tableGeometryPatchSha256 = builtins.hashFile "sha256" tableGeometryPatch;
     tableBankCheckSha256 = builtins.hashFile "sha256" ./_gem5/selected-table-banks-check.cc;
@@ -36,7 +42,7 @@
   });
 in
   gem5-closed-block-foundation.overrideAttrs (previous: {
-    nativePatchFiles = previous.nativePatchFiles ++ [nativePatch lruBirthPatch tableGeometryPatch walkerStatePatch];
+    nativePatchFiles = previous.nativePatchFiles ++ [nativePatch lruBirthPatch tableGeometryPatch walkerStatePatch counterStatePatch];
     pname = "gem5-native-original-scope-foundation";
     phases =
       map (phase:
@@ -51,6 +57,7 @@ in
                 patch --fuzz=0 -p1 < ${lruBirthPatch}
                 patch --fuzz=0 -p1 < ${tableGeometryPatch}
                 patch --fuzz=0 -p1 < ${walkerStatePatch}
+                patch --fuzz=0 -p1 < ${counterStatePatch}
               '';
           }
         else phase)
@@ -67,6 +74,7 @@ in
             cp ${lruBirthPatch} "$out/share/gem5/native-original-scope-source/lru-births.patch"
             cp ${tableGeometryPatch} "$out/share/gem5/native-original-scope-source/table-geometry.patch"
             cp ${walkerStatePatch} "$out/share/gem5/native-original-scope-source/walker-state.patch"
+            cp ${counterStatePatch} "$out/share/gem5/native-original-scope-source/counter-state.patch"
             cp ${nativeCheck} "$out/share/gem5/native-original-scope-source/native-check.py"
             cp ${diagnosticGuest} "$out/share/gem5/native-original-scope-source/guest-source.py"
             cp ${./gem5-native-original-scope-foundation.nix} "$out/share/gem5/native-original-scope-source/recipe.nix"

@@ -23,12 +23,14 @@ from m5.objects import (
     SrcClockDomain,
     System,
     SystemXBar,
+    SystemCounter,
     VoltageDomain,
 )
 
 
 if len(sys.argv) != 3 or sys.argv[2] not in (
-    "owned", "unknown-bus", "changed-clock", "foreign-helper", "unarmed"
+    "owned", "unknown-bus", "changed-clock", "foreign-helper", "unarmed",
+    "counter-owned", "counter-pending", "counter-invalid-table"
 ):
     raise ValueError("expected diagnostic fixed-loop ELF and native control mode")
 
@@ -37,13 +39,15 @@ mode = sys.argv[2]
 source_stat = Path("/proc/self/stat").read_text()
 generation = int(source_stat.rsplit(") ", 1)[1].split()[19])
 profile = native_event.crucibleDiagnosticOriginalProfile()
-# Profile v3 binds both fixed constructor and table banks before object births.
+# Profile v4 adds the bounded concrete counter with no listener dependencies.
 # Ordinary heap/control-block closure and execution authority remain separate.
 selected_profile_bytes = (
-    b'crucible.gem5.diagnostic.arm-atomic-loop.lru-table-banks.v3\x00'
+    b'crucible.gem5.diagnostic.arm-atomic-loop.counter-empty-listeners.v4\x00'
     b'objects=256;edges=4096;callbacks=256;ports=256;tables=16;'
     b'table-entries=1280;lru-constructor-births=1472;'
-    b'arm-tlb-entries=64,64,1280,32,32;clock-period-ps=1000;runtime=refused'
+    b'arm-tlb-entries=64,64,1280,32,32;clock-period-ps=1000;'
+    b'counter-frequency-entries=1004;counter-capacity-entries=2008;'
+    b'counter-listeners=0;runtime=refused'
 )
 assert bytes(profile) == hashlib.sha256(selected_profile_bytes).digest()
 scope = hashlib.sha256(b"diagnostic-original-scope-v1").digest()
@@ -88,14 +92,52 @@ system.workload = SEWorkload.init_compatible(program)
 system.workload.remote_gdb_port = 0
 system.cpu.createThreads()
 system.block = CrucibleClosedScriptBlock()
+if mode.startswith("counter-"):
+    frequencies = [1000000000, 0 if mode == "counter-invalid-table" else 500000000]
+    system.counter = SystemCounter(freqs=frequencies)
 root = Root(full_system=False, system=system)
 m5.instantiate()
+if mode == "counter-pending":
+    # This is the actual native hardware frequency-change path. Its tick-zero
+    # event remains queued under the exclusive zero boundary below.
+    system.counter.freqUpdateSchedule(1)
+
+
+def counter_inventory():
+    """Reads the existing partial selected-object producer without normalizing it."""
+    inventory = m5.crucibleDeviceStateInventory(["system.counter"])
+    assert inventory["complete"] is False
+    assert len(inventory["objects"]) == 1
+    record = inventory["objects"][0]
+    assert record["name"] == "system.counter" and record["state_complete"] is False
+    fields = record["modeled_fields"]
+    assert fields["counter.cached_value"] == "0"
+    assert fields["counter.update_tick"] == "0"
+    assert fields["counter.frequency"] == "1000000000"
+    assert fields["counter.period"] == "1000"
+    assert fields["counter.listener_count"] == "0"
+    assert fields["counter.frequency_table_entries"] == "3"
+    assert int(fields["counter.frequency_table_capacity_entries"]) <= 2008
+    scheduled = mode == "counter-pending"
+    assert fields["counter.next_frequency_entry"] == str(int(scheduled))
+    assert fields["counter.frequency_event_scheduled"] == str(int(scheduled))
+    events = [event for event in inventory["events"]
+              if event["event_alias"] == fields["counter.frequency_event"]]
+    assert len(events) == int(scheduled)
+    if scheduled:
+        assert fields["counter.frequency_event_tick"] == "0"
+        assert events[0]["tick"] == "0"
+    else:
+        assert "counter.frequency_event_tick" not in fields
+    return inventory
+
 
 # Startup establishes the original CPU/member callbacks but the exclusive
 # zero boundary services none. There is no drain, capture, or guest effect.
 boundary = m5.simulateUntilBoundary(0, 1)
 assert boundary.processedEvents == 0
 before = m5.crucibleEventPosition()
+counter_before = counter_inventory() if mode.startswith("counter-") else None
 inspection = native_event.crucibleInspectDiagnosticOriginalOwnership()
 after = m5.crucibleEventPosition()
 # Retain the actual native refusal code and graph counts before an assertion
@@ -108,7 +150,24 @@ print(json.dumps({
     "queue_after": dict(after),
 }, sort_keys=True, separators=(",", ":")), flush=True)
 assert before == after
-assert inspection[0] == (mode in ("owned", "foreign-helper", "unarmed"))
+assert inspection[0] == (mode in (
+    "owned", "foreign-helper", "unarmed", "counter-owned", "counter-pending"
+))
+if counter_before is not None:
+    assert counter_before == counter_inventory()
+    assert m5.crucibleEventPosition() == after
+    # Both the original event member and raw cached state survive observation.
+    # This is no source-cut, listener, backing-resource or restore certificate.
+    print(json.dumps({
+        "schema": "crucible.gem5.diagnostic-system-counter-source.v1",
+        "mode": mode,
+        "native_position": dict(after),
+        "counter": counter_before,
+        "source_cut_qualified": False,
+        "listener_closure_qualified": False,
+        "native_backing_qualified": False,
+        "restore_qualified": False,
+    }, sort_keys=True, separators=(",", ":")), flush=True)
 
 if mode == "foreign-helper":
     child = os.fork()
