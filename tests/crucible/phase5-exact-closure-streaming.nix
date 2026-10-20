@@ -98,13 +98,13 @@ in
           }
 
           run_exact_lib_test \
-            crucible-api \
+            crucible-daemon \
             vm_lifecycle::checkpoint_store::tests::portable_closure_inventory_streams_only_authenticated_manifest_objects
           run_exact_lib_test \
-            crucible-api \
+            crucible-daemon \
             vm_lifecycle::checkpoint_store::tests::file_artifact_stream_authenticates_sparse_file_contents
           run_exact_lib_test \
-            crucible-api \
+            crucible-daemon \
             vm_lifecycle::checkpoint_store::tests::chunked_artifact_stream_recreates_sparse_zero_extents
           run_exact_lib_test \
             crucible-campaign \

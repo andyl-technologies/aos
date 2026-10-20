@@ -16,7 +16,7 @@
 #     inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 #     ...
 #     failures =
-#       failuresFor "crates/crucible/src/lib.rs" source [
+#       failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" source [
 #         {
 #           label = "DAG store put";
 #           needle = "fn put(&self, bytes: &[u8])";

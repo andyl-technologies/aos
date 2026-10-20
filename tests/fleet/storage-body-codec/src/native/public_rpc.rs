@@ -2,8 +2,8 @@
 
 use super::Capture;
 use anyhow::{ensure, Result};
-use aos_proto_types::direct_upload::*;
-use aos_proto_types::*;
+use aos_hub_api::direct_upload::*;
+use aos_hub_api::*;
 use serde::{de::DeserializeOwned, Serialize};
 
 /// Requires every retained byte to be emitted by the selected production DTO.
@@ -47,16 +47,15 @@ fn publication(reply: &RegistryPublication) -> Result<()> {
 }
 
 fn object_path(path: &str) -> Result<()> {
-    use aos_hub_core::service::{
-        MAX_REGISTRY_PUBLICATION_PATH_BYTES, MAX_REGISTRY_PUBLICATION_PATH_COMPONENTS,
-    };
+    use aos_hub_service::service::MAX_REGISTRY_PUBLICATION_PATH_BYTES;
+    use aos_hub_service::service::MAX_REGISTRY_PUBLICATION_PATH_COMPONENTS;
     ensure!(
-        aos_hub_core::keymap::is_machine_path(path)
+        aos_hub_model::keymap::is_machine_path(path)
             && path.len() <= MAX_REGISTRY_PUBLICATION_PATH_BYTES
             && path.split('/').count() <= MAX_REGISTRY_PUBLICATION_PATH_COMPONENTS,
         "publication path is not bounded machine metadata"
     );
-    aos_hub_core::url_guard::validate_http_surface_path(path)?;
+    aos_hub_model::url_guard::validate_http_surface_path(path)?;
     Ok(())
 }
 
@@ -126,7 +125,7 @@ pub(super) fn classify(capture: &Capture, request: &[u8], response: &[u8]) -> Re
                     && original.registry.len() <= 512
                     && original.object_count > 0
                     && original.object_count as usize
-                        <= aos_hub_core::service::MAX_REGISTRY_PUBLICATION_OBJECTS
+                        <= aos_hub_service::service::MAX_REGISTRY_PUBLICATION_OBJECTS
                     && valid_direct_digest(&original.manifest_digest)
                     && reply.manifest_digest == original.manifest_digest
                     && reply.object_count == original.object_count

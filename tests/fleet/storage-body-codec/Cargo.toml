@@ -11,11 +11,13 @@ default = []
 native-bodies = []
 
 [dependencies]
-aos-doc-model = { path = "../../../crates/aos-doc-model" }
-aos-proto-types = { path = "../../../crates/aos-proto-types" }
-aos-hub = { path = "../../../crates/aos-hub", features = ["test-support"] }
-aos-hub-core = { path = "../../../crates/aos-hub-core" }
-aos-oci-types = { path = "../../../crates/aos-oci-types" }
+aos-hub-db = { path = "../../../crates/hub/aos-hub-db" }
+aos-hub-model = { path = "../../../crates/hub/aos-hub-model" }
+aos-module-docs = { path = "../../../crates/aos/modules/aos-module-docs" }
+aos-hub-api = { path = "../../../crates/hub/aos-hub-api" }
+aos-hub-native = { path = "../../../crates/hub/aos-hub-native", features = ["test-support"] }
+aos-hub-service = { path = "../../../crates/hub/aos-hub-service" }
+aos-oci-types = { path = "../../../crates/shared/aos-oci-types" }
 anyhow = "1"
 base64 = "0.22"
 hex = "0.4"

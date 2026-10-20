@@ -136,10 +136,16 @@ fn inspect(manifest: Manifest) -> Result<Vec<Observation>> {
 fn main() {
     let result = (|| -> Result<()> {
         let args: Vec<_> = std::env::args_os().collect();
-        if args.get(1).is_some_and(|argument| argument == "native-bodies") {
+        if args
+            .get(1)
+            .is_some_and(|argument| argument == "native-bodies")
+        {
             #[cfg(feature = "native-bodies")]
             {
-                ensure!(args.len() == 3, "expected one private native selection file");
+                ensure!(
+                    args.len() == 3,
+                    "expected one private native selection file"
+                );
                 return native::run_manifest(std::path::Path::new(&args[2]));
             }
             #[cfg(not(feature = "native-bodies"))]

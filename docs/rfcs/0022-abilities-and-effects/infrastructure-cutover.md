@@ -181,7 +181,7 @@ scenario source while adopting an inactive baseline. The descriptor, deployment
 inputs, and admission catalog retain the same roots; custody does not execute
 that source.
 
-`aos-package::native_deployment::evaluate_input` replays a descriptor without
+`aos_package_manager::native_deployment::evaluate_input` replays a descriptor without
 building payloads or applying effects. It temporarily roots the descriptor and
 its sources, checks the library NAR identity, invokes the restricted evaluator,
 and returns a checked desired deployment. The caller supplies a staging directory,
@@ -248,7 +248,7 @@ and the selected implementation; documentation changes do not trigger updates.
 When multiple packages extend shared domain configuration, its manager derives
 the resulting effects and owns their lifecycle.
 
-`aos-ability-plan::module_graph` checks hashes, native option type projections,
+`aos_module_format::graph` checks hashes, native option type projections,
 references, composition exports, ordering, and bound handlers. Arbitrary Nix
 predicates without a portable validator cannot cross this boundary. The original
 JSON representation is retained for stable hashing and replay. Declared sets
@@ -296,7 +296,7 @@ the first root-slot write.
 
 ## Package generations
 
-`aos-package::deployment::transaction::Transactions` coordinates a generation
+`aos_package_manager::deployment::transaction::Transactions` coordinates a generation
 journal with the effect journal. It prepares the exact document before dispatch
 and commits after the selected execution policy finishes. `Installation`
 receipts retain checked installation results and explicitly pending startup

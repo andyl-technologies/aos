@@ -1012,6 +1012,18 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       == null
       || !(inheritedArtifacts ? passthru.cargoArtifactContract)
       || inheritedArtifacts.passthru.cargoArtifactContract == cargoArtifactContract;
+    incompatibleArtifactFields =
+      if inheritedArtifacts == null || !(inheritedArtifacts ? passthru.cargoArtifactContract)
+      then []
+      else let
+        inheritedContract = inheritedArtifacts.passthru.cargoArtifactContract;
+        fields = lib.unique (builtins.attrNames inheritedContract ++ builtins.attrNames cargoArtifactContract);
+      in
+        builtins.filter (field:
+          !(builtins.hasAttr field inheritedContract)
+          || !(builtins.hasAttr field cargoArtifactContract)
+          || inheritedContract.${field} != cargoArtifactContract.${field})
+        fields;
     # Extract cargo-specific attrs for the phase generator
     cargoArgs =
       builtins.intersectAttrs (builtins.listToAttrs (
@@ -1035,7 +1047,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     restArgs = removeAttrs args cargoSpecificAttrs;
   in
     if !artifactsCompatible
-    then throw "mkCargoPackage (${args.pname or args.name or "unnamed"}): cargoArtifacts compatibility contract does not match the consumer"
+    then throw "mkCargoPackage (${args.pname or args.name or "unnamed"}): cargoArtifacts compatibility contract does not match the consumer (differing fields: ${builtins.concatStringsSep ", " incompatibleArtifactFields})"
     else
       addBuilderOverrides mkCargoPackage args (
         mkDerivation (

@@ -8,14 +8,14 @@
   contract = native.passthru.cargoArtifactContract;
   vendor = builtins.elemAt native.passthru.evidenceSources 1;
   inputs = [
-    "crates/aos-hub/src/bin/aos-hub-provider-readback.rs"
-    "crates/aos-hub/src/provider_readback/mod.rs"
-    "crates/aos-hub/src/provider_readback/config.rs"
-    "crates/aos-hub/src/provider_readback/journal.rs"
-    "crates/aos-hub/src/provider_readback/transport.rs"
-    "crates/aos-hub/src/provider_readback/tests.rs"
-    "crates/aos-hub-core/src/sigv4.rs"
-    "crates/aos-hub-core/src/sigv4/provider_readback.rs"
+    "crates/hub/aos-hub-native/src/bin/aos-hub-provider-readback.rs"
+    "crates/hub/aos-hub-native/src/provider_readback/mod.rs"
+    "crates/hub/aos-hub-native/src/provider_readback/config.rs"
+    "crates/hub/aos-hub-native/src/provider_readback/journal.rs"
+    "crates/hub/aos-hub-native/src/provider_readback/transport.rs"
+    "crates/hub/aos-hub-native/src/provider_readback/tests.rs"
+    "crates/hub/aos-hub-service/src/sigv4.rs"
+    "crates/hub/aos-hub-service/src/sigv4/provider_readback.rs"
   ];
   sourceSha256 = builtins.hashString "sha256" (
     builtins.concatStringsSep "" (map (path: builtins.readFile (source + "/" + path)) inputs)
@@ -29,8 +29,8 @@ in
     cargoWorkspaceMembers = import ./_hub-retained-workspace.nix source;
     cargoDeps = vendor;
     cargoEnv = contract.cargoEnv // {AOS_PROVIDER_READBACK_SOURCE_SHA256 = sourceSha256;};
-    cargoFlags = "--package aos-hub --bin aos-hub-provider-readback";
-    cargoTestFlags = "--package aos-hub --bin aos-hub-provider-readback";
+    cargoFlags = "--package aos-hub-native --bin aos-hub-provider-readback";
+    cargoTestFlags = "--package aos-hub-native --bin aos-hub-provider-readback";
     buildDeps = [pkgs.perl pkgs.pkg-config pkgs.openssl pkgs.sqlite pkgs.protobuf];
     runtimeDeps = [pkgs.openssl pkgs.sqlite pkgs.zlib];
     doCheck = true;

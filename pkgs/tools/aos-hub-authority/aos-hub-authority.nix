@@ -83,7 +83,7 @@
       cargoRoot = "crates";
     };
     cargoRoot = "crates";
-    cargoFlags = "-p aos-hub --bin aos-hub-authority";
+    cargoFlags = "-p aos-hub-native --bin aos-hub-authority";
     buildDeps = [buildPerl buildPkgConfig openssl sqlite buildProtobuf aos-hub-console-dist];
     runtimeDeps = [openssl sqlite zlib];
   };
@@ -127,7 +127,7 @@ in
 
     # Retained authority state belongs to this separate private process.
     # The ordinary Hub/egress executables remain in the ordinary Hub package.
-    cargoFlags = "-p aos-hub --bin aos-hub-authority";
+    cargoFlags = "-p aos-hub-native --bin aos-hub-authority";
 
     inherit cargoDeps cargoArtifacts cargoEnv cargoArtifactContract;
     cargoRoot = "crates";

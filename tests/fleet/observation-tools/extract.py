@@ -96,7 +96,7 @@ def manifest_expression(source):
 
 def extract(runtime, output, provenance, contract):
     runtime, output = Path(runtime), Path(output)
-    handler_path = runtime / 'crates/aos-hub-core/src/web/console/handlers.rs'
+    handler_path = runtime / 'crates/hub/aos-hub-service/src/web/console/handlers.rs'
     handler = handler_path.read_bytes()
     template, expression = browser_expression(handler.decode())
     selected = provenance['browserSource']
@@ -107,7 +107,7 @@ def extract(runtime, output, provenance, contract):
                       ('CSS', 'consoleCssSha256')]:
         if sha(Path(contract['cargoEnv']['AOS_HUB_CONSOLE_' + name]).read_bytes()) != selected[key]:
             raise ValueError('Selected Native console artifact differs')
-    manifest_path = runtime / 'crates/aos-hub-core/src/service/publication_manifest.rs'
+    manifest_path = runtime / 'crates/hub/aos-hub-service/src/service/publication_manifest.rs'
     manifest = manifest_path.read_bytes()
     function = manifest_expression(manifest.decode())
     output.mkdir(parents=True, exist_ok=True)
@@ -117,7 +117,7 @@ def extract(runtime, output, provenance, contract):
               'templateSha256': sha(template), 'sourceExpressionSha256': sha(expression)}
     (output / 'browser/template-source.json').write_text(json.dumps(record, indent=2) + '\n')
     imports = ('//! Exact source-extracted production manifest-page serializer.\n\n'
-               'use aos_hub_core::service::RpcError;\nuse aos_proto_types as pb;\n'
+               'use aos_hub_service::service::RpcError;\nuse aos_proto_types as pb;\n'
                'use sha2::{Digest as _, Sha256};\n\n')
     forwarding = ('\n\npub(super) fn digest(objects: &[pb::RegistryPublicationObjectInput]) '
                   '-> Result<String, RpcError> {\n    registry_publication_manifest_chunk_digest(objects)\n}\n')

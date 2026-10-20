@@ -19,13 +19,11 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{ensure, Result};
-use aos_hub_core::{
-    storage_authority::external_object::copy::{
-        control::{ExternalCopyReply, ExternalCopyRequest, MAX_EXTERNAL_COPY_CONTROL_BYTES},
-        session::CopyPhase,
-    },
-    storage_work::StorageWorkKey,
-};
+use aos_hub_db::storage_authority::external_object::copy::control::ExternalCopyReply;
+use aos_hub_db::storage_authority::external_object::copy::control::ExternalCopyRequest;
+use aos_hub_db::storage_authority::external_object::copy::control::MAX_EXTERNAL_COPY_CONTROL_BYTES;
+use aos_hub_db::storage_authority::external_object::copy::session::CopyPhase;
+use aos_hub_db::storage_work::StorageWorkKey;
 use serde::{Deserialize, Serialize};
 
 use super::files::{self, BodyFile};

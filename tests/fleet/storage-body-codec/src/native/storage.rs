@@ -3,7 +3,8 @@
 use super::{Capture, Observation};
 use crate::{files, Case};
 use anyhow::{ensure, Result};
-use aos_hub_core::storage_work::{StorageWorkPlan, StorageWorkResult};
+use aos_hub_db::storage_work::StorageWorkPlan;
+use aos_hub_db::storage_work::StorageWorkResult;
 
 pub(super) fn classify(
     capture: &Capture,
@@ -88,7 +89,7 @@ pub(super) fn classify(
         }));
     } else {
         ensure!(
-            capture.procedure == aos_hub_core::storage_work::STORAGE_WORK_PATH
+            capture.procedure == aos_hub_db::storage_work::STORAGE_WORK_PATH
                 && capture.status == 200,
             "unsupported ordinary storage reply"
         );
@@ -130,21 +131,20 @@ fn clone_file(reference: &files::BodyFile) -> files::BodyFile {
 
 fn canonical_control(path: &str, request: &[u8], response: &[u8], status: u16) -> Result<()> {
     use super::public_rpc::exact;
-    use aos_hub_core::{
-        direct_upload::{
-            DirectAuthorityLookup, DirectAuthorityLookupReply, DirectFinalGuardLookup,
-            DirectFinalGuardReply, DirectStorageCapabilitiesReply,
-            DirectStorageCapabilitiesRequest, DIRECT_AUTHORITY_LOOKUP_PATH,
-            DIRECT_FINAL_GUARD_PATH,
-        },
-        storage_work::{
-            binding_custody::{
-                StorageBindingAdoptionReply, StorageBindingAdoptionRequest,
-                STORAGE_BINDING_ADOPTION_PATH,
-            },
-            StorageCapabilities, STORAGE_CAPABILITIES_CHALLENGE, STORAGE_CAPABILITIES_PATH,
-        },
-    };
+    use aos_hub_db::direct_upload::DirectAuthorityLookup;
+    use aos_hub_db::direct_upload::DirectAuthorityLookupReply;
+    use aos_hub_db::direct_upload::DirectFinalGuardLookup;
+    use aos_hub_db::direct_upload::DirectFinalGuardReply;
+    use aos_hub_db::direct_upload::DirectStorageCapabilitiesReply;
+    use aos_hub_db::direct_upload::DirectStorageCapabilitiesRequest;
+    use aos_hub_db::direct_upload::DIRECT_AUTHORITY_LOOKUP_PATH;
+    use aos_hub_db::direct_upload::DIRECT_FINAL_GUARD_PATH;
+    use aos_hub_db::storage_work::binding_custody::StorageBindingAdoptionReply;
+    use aos_hub_db::storage_work::binding_custody::StorageBindingAdoptionRequest;
+    use aos_hub_db::storage_work::binding_custody::STORAGE_BINDING_ADOPTION_PATH;
+    use aos_hub_db::storage_work::StorageCapabilities;
+    use aos_hub_db::storage_work::STORAGE_CAPABILITIES_CHALLENGE;
+    use aos_hub_db::storage_work::STORAGE_CAPABILITIES_PATH;
 
     match path {
         DIRECT_AUTHORITY_LOOKUP_PATH => {

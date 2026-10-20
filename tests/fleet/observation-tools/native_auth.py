@@ -29,7 +29,7 @@ def digest(raw):
 
 def native_handler_source_sha256(source):
     """Match the selected producer's known frame-tap source formula."""
-    handler = Path(source) / 'crates/aos-hub/src'
+    handler = Path(source) / 'crates/hub/aos-hub-native/src'
     observation = (handler / 'server/hybrid_observation.rs').read_bytes()
     expected = (b'digest.update(include_bytes!("../server.rs"));',
                 b'digest.update(include_bytes!("hybrid_observation.rs"));')
@@ -310,7 +310,7 @@ def assess(selected, manifest):
         raise ValueError("Selected runtime differs from manifest")
     expected_sources = {
         "nativeHandlerSourceSha256": native_handler_source_sha256(SOURCE),
-        "checkedContextSourceSha256": digest((SOURCE / "crates/aos-hub-core/src/hybrid_ingress/observation.rs").read_bytes()),
+        "checkedContextSourceSha256": digest((SOURCE / "crates/hub/aos-hub-db/src/hybrid_ingress/observation.rs").read_bytes()),
     }
     if (selected["runtimeCodecRevision"] != PACKAGE["runtime"]["runtimeCodecRevision"]
             or selected["sourceDigest"] != PACKAGE["runtime"]["workerSourceDigest"]

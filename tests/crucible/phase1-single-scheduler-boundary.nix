@@ -2,13 +2,14 @@
   pkgs,
   lib,
 }: let
+  inherit (import ./_workspace-packages.nix {inherit lib;}) packageDir packageNames cruciblePackages;
   cratesDir = ../../crates;
-  engineLib = builtins.readFile (cratesDir + "/crucible/src/lib.rs");
+  engineLib = builtins.readFile (packageDir "crucible-engine" + "/src/lib.rs");
   model = import ./_crucible-model-source.nix {inherit lib;};
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
-  apiSource = sourceFor "crucible-api";
-  sessionManifest = builtins.fromTOML (builtins.readFile (cratesDir + "/crucible-session/Cargo.toml"));
+  lifecycleSource = sourceFor "crucible-daemon";
+  sessionManifest = builtins.fromTOML (builtins.readFile (packageDir "crucible-session" + "/Cargo.toml"));
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix;
 
@@ -27,22 +28,25 @@
         else []
     ) (builtins.attrNames entries);
 
-  sourceFor = package: let
-    srcDir = cratesDir + "/${package}/src";
-    paths =
-      if builtins.pathExists srcDir
-      then rustFilesUnder srcDir
-      else [];
-  in
-    builtins.concatStringsSep "\n" (map builtins.readFile paths);
+  sourceFor = package:
+    if package == "crucible-cli"
+    then import ./_cli-production-source.nix {inherit lib;}
+    else let
+      srcDir = packageDir package + "/src";
+      paths =
+        if builtins.pathExists srcDir
+        then rustFilesUnder srcDir
+        else [];
+    in
+      builtins.concatStringsSep "\n" (map builtins.readFile paths);
 
   lowerPackages = [
-    "crucible-sim"
-    "crucible-assert"
-    "crucible-shmem"
-    "crucible-protocol"
+    "crucible-determinism"
+    "crucible-test-support"
+    "crucible-qemu-shmem"
+    "crucible-qemu-protocol"
     "crucible-device"
-    "crucible-qemu"
+    "crucible-qemu-host"
     "crucible-qemu-plugin"
     "crucible-guest"
     "crucible-cli"
@@ -66,7 +70,7 @@
     lowerPackages;
 
   sessionDependsOnEngine =
-    sessionManifest ? dependencies && sessionManifest.dependencies ? crucible;
+    sessionManifest ? dependencies && sessionManifest.dependencies ? crucible-engine;
 
   failures =
     lib.optionals (!(hasInfix "pub mod scheduler;" engineLib)) [
@@ -93,11 +97,11 @@
     ++ lib.optionals (!sessionDependsOnEngine) [
       "crucible-session: must depend on crucible to drive the L3 boundary"
     ]
-    ++ lib.optionals (hasInfix "pub trait QuantumLoop" apiSource) [
-      "crucible-api: must consume, not redefine, the L3 QuantumLoop boundary"
+    ++ lib.optionals (hasInfix "pub trait QuantumLoop" lifecycleSource) [
+      "crucible-daemon: must consume, not redefine, the L3 QuantumLoop boundary"
     ]
-    ++ lib.optionals (!(hasInfix "impl QuantumLoop for ProductionVmLifecycleLoop" apiSource)) [
-      "crucible-api: production VM lifecycle must adapt to the L3 QuantumLoop boundary"
+    ++ lib.optionals (!(hasInfix "impl QuantumLoop for ProductionVmLifecycleLoop" lifecycleSource)) [
+      "crucible-daemon: production VM lifecycle must adapt to the L3 QuantumLoop boundary"
     ]
     ++ lowerPackageFailures;
 in
@@ -121,8 +125,8 @@ in
             PASS
             check=checks.crucible.phase1.singleSchedulerBoundary
             tasks=T-ARCH-5
-            rust_test=crucible-harness::single_scheduler_boundary
-            engine_boundary=crucible::scheduler::QuantumLoop
+            rust_test=crucible_test_support::single_scheduler_boundary
+            engine_boundary=crucible_engine::scheduler::QuantumLoop
             session_driver=crucible_session::SessionDriver
             RESULT
           '';

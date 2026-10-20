@@ -8,51 +8,51 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
-  pluginArgs = builtins.readFile ../../crates/crucible-qemu-plugin/src/args.rs;
+  pluginLib = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs;
+  pluginArgs = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/args.rs;
   pluginCoverage = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/coverage.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/coverage.rs;
   };
   pluginCoverageTests = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/coverage/tests.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/coverage/tests.rs;
   };
   liveCoverageGate = builtins.readFile ./phase6-basic-block-coverage.nix;
   coverageAbiModel = builtins.readFile ./phase2-plugin-coverage-abi.c;
   qemuCoveragePatch = builtins.readFile ../../pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.patch;
-  pluginRegistration = builtins.readFile ../../crates/crucible-qemu-plugin/src/registration.rs;
+  pluginRegistration = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/registration.rs;
   pluginRegistrationTests = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/registration/tests.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/registration/tests.rs;
   };
-  pluginRuntime = builtins.readFile ../../crates/crucible-qemu-plugin/src/runtime.rs;
+  pluginRuntime = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/runtime.rs;
   pluginRuntimeTests = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/runtime/tests.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/runtime/tests.rs;
   };
   shmemLib = builtins.concatStringsSep "\n" [
     (import ./_crucible-shmem-source.nix {inherit lib;})
-    (builtins.readFile ../../crates/crucible-shmem/src/shmem/ring_coverage.rs)
+    (builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/ring_coverage.rs)
   ];
-  shmemSpscTest = builtins.readFile ../../crates/crucible-shmem/tests/gate_layer1_injection.rs;
+  shmemSpscTest = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/tests/gate_layer1_injection.rs;
   mappedSetupRegion = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-shmem/src/mapped_setup_region.rs;
+    entry = ../../crates/crucible/protocol/crucible-qemu-shmem/src/mapped_setup_region.rs;
   };
-  qemuMappedQuantum = builtins.readFile ../../crates/crucible-qemu/src/mapped_quantum.rs;
+  qemuMappedQuantum = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/src/mapped_quantum.rs;
   qemuNode = builtins.concatStringsSep "\n" [
     (import ./_rust-module-source.nix {
       inherit lib;
-      entry = ../../crates/crucible-qemu/src/node.rs;
+      entry = ../../crates/crucible/qemu/crucible-qemu-host/src/node.rs;
     })
     (import ./_rust-module-source.nix {
       inherit lib;
-      entry = ../../crates/crucible-qemu/src/node_tests.rs;
+      entry = ../../crates/crucible/qemu/crucible-qemu-host/src/node_tests.rs;
     })
   ];
-  mappedQuantumTest = builtins.readFile ../../crates/crucible-qemu/tests/mapped_quantum.rs;
-  backendBoundary = builtins.readFile ../../crates/crucible/src/backend.rs;
+  mappedQuantumTest = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/tests/mapped_quantum.rs;
+  backendBoundary = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/backend.rs;
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   session = import ./_crucible-session-source.nix {inherit lib;};
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
@@ -91,20 +91,20 @@
     lib.concatMap (
       api:
         lib.optionals (hasInfix api pluginCoverage) [
-          "crates/crucible-qemu-plugin/src/coverage.rs: forbidden host-time, entropy, lock, allocation, or diagnostic-I/O API in coverage callback path: `${api}`"
+          "crates/crucible/qemu/crucible-qemu-plugin/src/coverage.rs: forbidden host-time, entropy, lock, allocation, or diagnostic-I/O API in coverage callback path: `${api}`"
         ]
     )
     forbiddenCallbackApis;
 
   mutatingIcountFailure = lib.optionals (hasInfix "state.apis.icount_raw" pluginCoverage) [
-    "crates/crucible-qemu-plugin/src/coverage.rs: execution callback must not call the state-mutating raw-icount API"
+    "crates/crucible/qemu/crucible-qemu-plugin/src/coverage.rs: execution callback must not call the state-mutating raw-icount API"
   ];
 
   misleadingTestEvidenceFailures =
     lib.concatMap (
       needle:
         lib.optionals (hasInfix needle pluginCoverage) [
-          "crates/crucible-qemu-plugin/src/coverage.rs: callback stub evidence must use callback-model or ABI-model naming, not `${needle}`"
+          "crates/crucible/qemu/crucible-qemu-plugin/src/coverage.rs: callback stub evidence must use callback-model or ABI-model naming, not `${needle}`"
         ]
     ) [
       "fn live_test_"
@@ -157,7 +157,7 @@
         needle = "Coverage MUST feed the search and fuzzer as feedback only";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs" pluginLib [
       {
         label = "coverage module exported";
         needle = "pub mod coverage;";
@@ -215,7 +215,7 @@
         needle = "QEMU_PLUGIN_REGISTER_FLUSH_CB_SYMBOL";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem split modules" shmemLib [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem split modules" shmemLib [
       {
         label = "coverage transport ABI version";
         needle = "pub const ABI_VERSION: u32 = 30;";
@@ -233,19 +233,19 @@
         needle = "pub fn enqueue_coverage(";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/src/mapped_setup_region.rs" mappedSetupRegion [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/src/mapped_setup_region.rs" mappedSetupRegion [
       {
         label = "validated per-VM mapped coverage ring";
         needle = "pub fn coverage_ring_mut(";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/runtime.rs" pluginRuntime [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/runtime.rs" pluginRuntime [
       {
         label = "plugin runtime binds the mapped coverage producer";
         needle = "LiveCoverageShmemProducer::from_raw_parts";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/mapped_quantum.rs" qemuMappedQuantum [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/mapped_quantum.rs" qemuMappedQuantum [
       {
         label = "host quantum-boundary coverage drain";
         needle = "fn drain_coverage_at_quantum_boundary(";
@@ -255,7 +255,7 @@
         needle = "fn drain_observable_events(&mut self)";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/node.rs" qemuNode [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/node.rs" qemuNode [
       {
         label = "coverage-enabled unified event-log API";
         needle = "pub fn advance_to_ceiling_with_event_log(";
@@ -269,13 +269,13 @@
         needle = "qemu_node_generic_backend_drains_coverage_without_a_local_side_record";
       }
     ]
-    ++ failuresFor "crates/crucible/src/backend.rs" backendBoundary [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/backend.rs" backendBoundary [
       {
         label = "generic backend observation drain hook";
         needle = "fn drain_observable_events(&mut self)";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "backend observations atomically appended to canonical scheduler log";
         needle = "append_backend_observations_at_boundary(observations, outcome.frontier)";
@@ -285,7 +285,7 @@
         needle = "entries.extend(loop_result?)";
       }
     ]
-    ++ failuresFor "crates/crucible-session/src/lib.rs" session [
+    ++ failuresFor "crates/crucible/control/crucible-session/src/lib.rs" session [
       {
         label = "session actor publishes canonical backend coverage";
         needle = "actor_publishes_backend_coverage_from_the_canonical_event_log";
@@ -299,7 +299,7 @@
         needle = "engine_rejects_non_dense_final_shutdown_entries";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/tests/mapped_quantum.rs" mappedQuantumTest [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/tests/mapped_quantum.rs" mappedQuantumTest [
       {
         label = "mapped plugin-to-host unified event-log test";
         needle = "mapped_quantum_drains_coverage_into_the_unified_event_log";
@@ -309,7 +309,7 @@
         needle = "mapped_quantum_rejects_duplicate_novelty_and_future_icount_loudly";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/args.rs" pluginArgs [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/args.rs" pluginArgs [
       {
         label = "coverage launch argument key";
         needle = "PLUGIN_ARG_COVERAGE";
@@ -323,7 +323,7 @@
         needle = "pub const fn coverage(&self) -> PluginSwitch";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/coverage split modules" pluginCoverage [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/coverage split modules" pluginCoverage [
       {
         label = "coverage state";
         needle = "pub struct PluginCoverage";
@@ -461,7 +461,7 @@
         needle = "CallbackWhileDisabled";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/coverage/tests.rs" pluginCoverageTests [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/coverage/tests.rs" pluginCoverageTests [
       {
         label = "callback ABI model test";
         needle = "coverage_callback_abi_model_captures_block_pc_length_and_exact_entry_icount";
@@ -503,7 +503,7 @@
         needle = "coverage_exec_callback_rejects_wrong_map_size_before_recording";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/tests/gate_layer1_injection.rs" shmemSpscTest [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/tests/gate_layer1_injection.rs" shmemSpscTest [
       {
         label = "fixed cardinality coverage queue full/FIFO proof";
         needle = "assert_coverage_ring_fifo_and_fails_loud_at_fixed_capacity";
@@ -581,7 +581,7 @@
         needle = "model_committed = INT64_MAX;";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/registration.rs" pluginRegistration [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/registration.rs" pluginRegistration [
       {
         label = "registration consumes parsed coverage switch";
         needle = "PluginCoverage::with_default_map(args.coverage())";
@@ -607,7 +607,7 @@
         needle = "register_basic_block_coverage(plugin_id, args.slot(), callback, apis)";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/registration/tests.rs" pluginRegistrationTests [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/registration/tests.rs" pluginRegistrationTests [
       {
         label = "registration off coverage test";
         needle = "registration_coverage_off_installs_no_callback_without_capability";
@@ -621,7 +621,7 @@
         needle = "registration_coverage_on_builds_basic_block_callback_token";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/runtime.rs" pluginRuntime [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/runtime.rs" pluginRuntime [
       {
         label = "pinned runtime owns optional coverage callbacks";
         needle = "coverage: Option<LiveBasicBlockCoverage>";
@@ -631,7 +631,7 @@
         needle = "fn register_basic_block_coverage(";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/runtime/tests.rs" pluginRuntimeTests [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/runtime/tests.rs" pluginRuntimeTests [
       {
         label = "install ownership callback model test";
         needle = "install_coverage_on_owns_callback_model_registration";
@@ -655,7 +655,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.glib
         pkgs.glib.dev
         pkgs.pkg-config
@@ -805,7 +808,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-plugin-coverage-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible-shmem \
+              -p crucible-qemu-shmem \
               --test gate_abi_conformance \
               -- --test-threads=1
             cargo test \
@@ -813,7 +816,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-plugin-coverage-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible-qemu \
+              -p crucible-qemu-host \
               --test mapped_quantum \
               -- --test-threads=1
             cargo test \

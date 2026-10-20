@@ -385,7 +385,7 @@ def run_managed_terminal_cleanup_window(native,worker,client,tools,prepared,proc
         'ordinal':original['original']['ordinal'],'expectedOriginalSha256':original['originalSha256']}
     sql_module = managed_fixture_module(tools['managedCleanupSql'], 'terminal_current_sql')
     gc_sql = managed_fixture_module(tools['managedGcSql'], 'terminal_sql_transaction')
-    canonical_source = tools['commonSourceStorePath'] + '/crates/aos-hub/src/storage_work/oci_cleanup.rs'
+    canonical_source = tools['commonSourceStorePath'] + '/crates/hub/aos-hub-native/src/storage_work/oci_cleanup.rs'
     canonical_source_body = read_direct_guest_file(native, tools['python'], canonical_source, 128 * 1024)
     sql_snapshots = {}
     def current_sql(label):

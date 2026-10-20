@@ -13,7 +13,7 @@
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   controlClientGate = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-api/tests/gate_control_client.rs;
+    entry = ../../crates/crucible/control/crucible-control-client/tests/gate_control_client.rs;
   };
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -36,7 +36,7 @@
         needle = "admits concurrent";
       }
     ]
-    ++ failuresFor "crates/crucible-api/tests/gate_control_client.rs" controlClientGate [
+    ++ failuresFor "crates/crucible/control/crucible-control-client/tests/gate_control_client.rs" controlClientGate [
       {
         label = "production HTTP/2 multi-client test";
         needle = "production_http2_lifecycle_server_admits_concurrent_watch_and_query_clients";
@@ -128,7 +128,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-cli-serve-multi-client-target" \
-              -p crucible-api \
+              -p crucible-control-api \
               production_http2_lifecycle_server_admits_concurrent_watch_and_query_clients \
               -- --test-threads=1
           '';

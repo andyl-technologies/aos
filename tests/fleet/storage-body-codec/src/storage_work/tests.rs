@@ -1,10 +1,13 @@
 //! Exact retained GC metadata correlation through the production validator.
 
-use aos_hub_core::mirror_inspection::{
-    MirrorPackProjection, MirrorPackRange, MirrorPackSelection, MirrorPackSource,
-    MirrorPackTreeProjection, MirrorPackTreeQuery, MirrorPackedObject,
-};
-use aos_hub_core::storage_work::StorageObjectIdentity;
+use aos_hub_db::mirror_inspection::MirrorPackProjection;
+use aos_hub_db::mirror_inspection::MirrorPackRange;
+use aos_hub_db::mirror_inspection::MirrorPackSelection;
+use aos_hub_db::mirror_inspection::MirrorPackSource;
+use aos_hub_db::mirror_inspection::MirrorPackTreeProjection;
+use aos_hub_db::mirror_inspection::MirrorPackTreeQuery;
+use aos_hub_db::mirror_inspection::MirrorPackedObject;
+use aos_hub_db::storage_work::StorageObjectIdentity;
 use sha2::{Digest as _, Sha256};
 
 use super::*;
@@ -243,7 +246,7 @@ fn genuine_document_content_uses_its_operation_bound_and_signed_identity() {
         "abilities": {}
     });
     let body = serde_json::to_vec(&document).unwrap();
-    aos_doc_model::runtime::RuntimeDocument::from_json(&body).unwrap();
+    aos_module_docs::runtime::RuntimeDocument::from_json(&body).unwrap();
     result.outcome = StorageWorkOutcome::DocumentationContent {
         document_base64: STANDARD.encode(&body),
     };
@@ -265,7 +268,7 @@ fn genuine_document_content_uses_its_operation_bound_and_signed_identity() {
     result.source_bytes = (body.len() + 256) as u64;
     let request = serde_json::to_vec(&plan).unwrap();
     let reply = serde_json::to_vec(&result).unwrap();
-    assert!(reply.len() > aos_hub_core::storage_work::MAX_RESULT_BYTES);
+    assert!(reply.len() > aos_hub_db::storage_work::MAX_RESULT_BYTES);
     let (_, _, payload) = decode_transport(&request, &reply, "fixture", 200).unwrap();
     assert_eq!(payload.selected_data_bytes, body.len().to_string());
 
@@ -291,14 +294,14 @@ fn genuine_document_content_uses_its_operation_bound_and_signed_identity() {
 
 fn stored_pack_fixture() -> (StorageWorkPlan, StorageWorkResult) {
     let manifest: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../../../crates/aos-registry-surface/src/pack_index/fixtures/manifest.json"
+        "../../../../../crates/aos/registry/aos-registry-format/src/pack_index/fixtures/manifest.json"
     ))
     .unwrap();
     let pack = include_bytes!(
-        "../../../../../crates/aos-registry-surface/src/pack_index/fixtures/ofs.pack"
+        "../../../../../crates/aos/registry/aos-registry-format/src/pack_index/fixtures/ofs.pack"
     );
     let index = include_bytes!(
-        "../../../../../crates/aos-registry-surface/src/pack_index/fixtures/ofs.idx"
+        "../../../../../crates/aos/registry/aos-registry-format/src/pack_index/fixtures/ofs.idx"
     );
     let index_path = manifest["ofs"]["path"].as_str().unwrap().to_owned();
     let pack_path = index_path.strip_suffix(".idx").unwrap().to_owned() + ".pack";
@@ -417,7 +420,7 @@ fn stored_tree_fixture() -> (StorageWorkPlan, StorageWorkResult) {
     };
     projection.objects.clear();
     let manifest: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../../../crates/aos-registry-surface/src/pack_index/fixtures/manifest.json"
+        "../../../../../crates/aos/registry/aos-registry-format/src/pack_index/fixtures/manifest.json"
     ))
     .unwrap();
     let tree_oid = manifest["objects"]["tree"]["oid"]
@@ -442,7 +445,7 @@ fn stored_tree_fixture() -> (StorageWorkPlan, StorageWorkResult) {
         cursor: None,
         protected_profile_digest: "c".repeat(64),
     };
-    let page = aos_hub_core::tree_projection::project_tree(
+    let page = aos_hub_db::tree_projection::project_tree(
         &tree_oid,
         &tree,
         &query.names,
@@ -530,7 +533,7 @@ fn stored_tree_verified_absence_and_typed_upstream_pack_counts_are_distinct() {
         panic!("stored pack fixture operation");
     };
     upstream_plan.operation = StorageWorkOperation::InspectMirrorPack {
-        inspection: aos_hub_core::mirror_inspection::MirrorPackInspection {
+        inspection: aos_hub_db::mirror_inspection::MirrorPackInspection {
             registry_id: 1,
             registry_resource_version: 1,
             mirror_resource_version: 1,
@@ -559,17 +562,18 @@ fn stored_tree_verified_absence_and_typed_upstream_pack_counts_are_distinct() {
 
 #[test]
 fn mirror_tree_inventory_counts_exact_page_and_keeps_verified_absence_distinct() {
-    use aos_hub_core::mirror_tree_inventory::{
-        project_pages, MirrorTreeInventoryCommitment, MirrorTreeInventoryProjection,
-        MirrorTreeInventoryQuery, MirrorTreeInventorySource,
-    };
+    use aos_hub_db::mirror_tree_inventory::project_pages;
+    use aos_hub_db::mirror_tree_inventory::MirrorTreeInventoryCommitment;
+    use aos_hub_db::mirror_tree_inventory::MirrorTreeInventoryProjection;
+    use aos_hub_db::mirror_tree_inventory::MirrorTreeInventoryQuery;
+    use aos_hub_db::mirror_tree_inventory::MirrorTreeInventorySource;
 
     let (mut plan, mut result) = stored_tree_fixture();
     let StorageWorkOutcome::GitPackTreeProjection { projection: stored } = result.outcome else {
         panic!("stored tree fixture outcome");
     };
     let manifest: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../../../crates/aos-registry-surface/src/pack_index/fixtures/manifest.json"
+        "../../../../../crates/aos/registry/aos-registry-format/src/pack_index/fixtures/manifest.json"
     ))
     .unwrap();
     let mut tree = Vec::new();
@@ -585,7 +589,7 @@ fn mirror_tree_inventory_counts_exact_page_and_keeps_verified_absence_distinct()
     }
     let query = MirrorTreeInventoryQuery {
         source: MirrorTreeInventorySource::Pack {
-            inspection: aos_hub_core::mirror_inspection::MirrorPackInspection {
+            inspection: aos_hub_db::mirror_inspection::MirrorPackInspection {
                 registry_id: 1,
                 registry_resource_version: 2,
                 mirror_resource_version: 3,
@@ -656,11 +660,13 @@ fn mirror_tree_inventory_counts_exact_page_and_keeps_verified_absence_distinct()
 
 #[test]
 fn guarded_stored_pair_counts_content_only_after_both_closures_validate() {
-    use aos_hub_core::storage_authority::{
-        control::StorageAuthorityObjectScope, external_object::copy::source::CopySourceClosure,
-        lease::LeaseInteger, GuardIncarnation, PhysicalStorageAuthorityId, StorageGuardStamp,
-    };
-    use aos_hub_core::storage_work::protected_inspection::ProtectedInspectionSource;
+    use aos_hub_db::storage_authority::control::StorageAuthorityObjectScope;
+    use aos_hub_db::storage_authority::external_object::copy::source::CopySourceClosure;
+    use aos_hub_db::storage_authority::lease::LeaseInteger;
+    use aos_hub_db::storage_authority::GuardIncarnation;
+    use aos_hub_db::storage_authority::PhysicalStorageAuthorityId;
+    use aos_hub_db::storage_authority::StorageGuardStamp;
+    use aos_hub_db::storage_work::protected_inspection::ProtectedInspectionSource;
 
     let (plan, mut result) = stored_pack_fixture();
     let StorageWorkOutcome::GitPackProjection { projection } = &mut result.outcome else {

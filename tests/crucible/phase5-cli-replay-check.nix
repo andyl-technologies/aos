@@ -14,15 +14,15 @@
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = import ./_cli-source.nix {inherit lib;};
   liveReplayContract =
-    builtins.readFile ../../crates/crucible-cli/src/cli/artifact/live_qemu.rs
-    + builtins.readFile ../../crates/crucible-cli/src/cli/artifact/live_qemu/tests.rs;
+    builtins.readFile ../../crates/crucible/control/crucible-cli/src/cli/artifact/live_qemu.rs
+    + builtins.readFile ../../crates/crucible/control/crucible-cli/src/cli/artifact/live_qemu/tests.rs;
   artifactCapture = builtins.concatStringsSep "\n" (map builtins.readFile [
-    ../../crates/crucible-cli/src/cli/artifact_capture.rs
-    ../../crates/crucible-cli/src/cli/artifact_capture_test.rs
+    ../../crates/crucible/control/crucible-cli/src/cli/artifact_capture.rs
+    ../../crates/crucible/control/crucible-cli/src/cli/artifact_capture_test.rs
   ]);
-  cliMachineReadable = builtins.readFile ../../crates/crucible-cli/tests/machine_readable.rs;
-  cliE2e = builtins.readFile ../../crates/crucible-cli/tests/gate_e2e_determinism.rs;
-  campaignProcessTest = builtins.readFile ../../crates/crucible-cli/tests/campaign_process.rs;
+  cliMachineReadable = builtins.readFile ../../crates/crucible/control/crucible-cli/tests/machine_readable.rs;
+  cliE2e = builtins.readFile ../../crates/crucible/control/crucible-cli/tests/gate_e2e_determinism.rs;
+  campaignProcessTest = builtins.readFile ../../crates/crucible/control/crucible-cli/tests/campaign_process.rs;
   packagedCampaignVm = builtins.readFile ./phase4-packaged-campaign-vm.nix;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -77,7 +77,7 @@
         needle = "target-validation JSONL coverage with replay records plus `final_outcome`";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
+    ++ failuresFor "crates/crucible/control/crucible-cli/src/main.rs" cliMain [
       {
         label = "replay check flag";
         needle = "check: Option<PathBuf>";
@@ -307,7 +307,7 @@
         needle = "cli_replay_bisect_accepts_identical_artifacts";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/src/cli/artifact/live_qemu.rs" liveReplayContract [
+    ++ failuresFor "crates/crucible/control/crucible-cli/src/cli/artifact/live_qemu.rs" liveReplayContract [
       {
         label = "closed live replay producer matrix";
         needle = "live_qemu_replay_contract_accepts_every_closed_producer";
@@ -345,7 +345,7 @@
         needle = "RunExecutionOwner::Session";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/src/cli/artifact_capture.rs" artifactCapture [
+    ++ failuresFor "crates/crucible/control/crucible-cli/src/cli/artifact_capture.rs" artifactCapture [
       {
         label = "terminal all-node capture selection regression";
         needle = "terminal_fingerprint_capture_selects_the_last_epoch_after_multiple_quanta";
@@ -363,13 +363,13 @@
         needle = "batch_campaign_capture_uses_its_distinct_terminal_boundary";
       }
     ]
-    ++ forbiddenFor "crates/crucible-cli/src/cli/artifact_capture.rs" artifactCapture [
+    ++ forbiddenFor "crates/crucible/control/crucible-cli/src/cli/artifact_capture.rs" artifactCapture [
       {
         label = "synthesized campaign terminal snapshot";
         needle = "campaign-owned terminal outcome";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/tests/machine_readable.rs" cliMachineReadable [
+    ++ failuresFor "crates/crucible/control/crucible-cli/tests/machine_readable.rs" cliMachineReadable [
       {
         label = "process replay check JSONL regression";
         needle = "cli_exit_machine_readable_replay_check_jsonl_reports_final_outcome";
@@ -415,7 +415,7 @@
         needle = "assert!(!stdout.contains(\"crucible: replay --to\"));";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/tests/gate_e2e_determinism.rs" cliE2e [
+    ++ failuresFor "crates/crucible/control/crucible-cli/tests/gate_e2e_determinism.rs" cliE2e [
       {
         label = "machine-independent replay profile test";
         needle = "e2e_artifact_component_replays_across_modeled_machine_profiles";
@@ -445,7 +445,7 @@
         needle = "assert_eq!(reproduced.artifact_digest, baseline.artifact_digest);";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/tests/campaign_process.rs" campaignProcessTest [
+    ++ failuresFor "crates/crucible/control/crucible-cli/tests/campaign_process.rs" campaignProcessTest [
       {
         label = "packaged interactive artifact capture and replay";
         needle = "interactive_session_captures_and_replays_exact_live_artifact";

@@ -147,15 +147,15 @@ class RevisionFaultTests(unittest.TestCase):
             current = Path(directory) / "current"
             alternate = Path(directory) / "alternate"
             names = {
-                "crates/aos-hub-worker/src/direct_upload/provider_capacity/policy.rs": "unchanged policy",
-                "crates/aos-hub-worker/src/external_object/config.rs": "unchanged configuration",
-                "crates/aos-hub-worker/src/external_object/copy/config.rs": "unchanged copy schema",
-                "crates/aos-hub-worker/src/hybrid_binding.rs": "unchanged binding lookup",
-                "crates/aos-hub-worker/src/hybrid.rs": "async fn execute_storage_work(\nunchanged MAC\n    let operation_kind = 'metadata';",
-                "crates/aos-hub-worker/src/external_object/inspection/runtime.rs": (
+                "crates/hub/aos-hub-worker/src/direct_upload/provider_capacity/policy.rs": "unchanged policy",
+                "crates/hub/aos-hub-worker/src/external_object/config.rs": "unchanged configuration",
+                "crates/hub/aos-hub-worker/src/external_object/copy/config.rs": "unchanged copy schema",
+                "crates/hub/aos-hub-worker/src/hybrid_binding.rs": "unchanged binding lookup",
+                "crates/hub/aos-hub-worker/src/hybrid.rs": "async fn execute_storage_work(\nunchanged MAC\n    let operation_kind = 'metadata';",
+                "crates/hub/aos-hub-worker/src/external_object/inspection/runtime.rs": (
                     "pub(crate) async fn execute(\nunchanged configuration\n    let domain = 'current';\n"
                     "unchanged source contract and capacity guard\n    let fresh = 'reader current';"),
-                "crates/aos-hub-worker/src/lib.rs": "unchanged crate body\n",
+                "crates/hub/aos-hub-worker/src/lib.rs": "unchanged crate body\n",
             }
             suffix = "\n// This source snapshot belongs to the fleet revision-refusal fixture.\n"
             for name, body in names.items():
@@ -164,12 +164,12 @@ class RevisionFaultTests(unittest.TestCase):
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_text(body + (suffix if root == alternate and name.endswith("/lib.rs") else ""))
             faults.require_revision_source_abi(current, alternate, "comment-only-source-revision")
-            path = alternate / "crates/aos-hub-worker/src/hybrid.rs"
+            path = alternate / "crates/hub/aos-hub-worker/src/hybrid.rs"
             path.write_text(path.read_text().replace("unchanged MAC", "different MAC"))
             with self.assertRaisesRegex(ValueError, "pre-dispatch"):
                 faults.require_revision_source_abi(current, alternate, "retained-source-revision")
-            path.write_text((current / "crates/aos-hub-worker/src/hybrid.rs").read_text())
-            path = alternate / "crates/aos-hub-worker/src/external_object/inspection/runtime.rs"
+            path.write_text((current / "crates/hub/aos-hub-worker/src/hybrid.rs").read_text())
+            path = alternate / "crates/hub/aos-hub-worker/src/external_object/inspection/runtime.rs"
             path.write_text(path.read_text().replace("unchanged source contract and capacity guard",
                 "old versioned semantic mode unsupported"))
             with self.assertRaisesRegex(ValueError, "authentication/configuration ABI"):

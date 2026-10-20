@@ -129,12 +129,12 @@ def direct_constructor_sha256():
     """Commit the same finite compiled constructor inputs as the Native sender."""
     value = hashlib.sha256(b"aos.native.direct-control-constructor.v1\0")
     for name in (
-            "crates/aos-hub/src/direct_upload/authority/transport.rs",
-            "crates/aos-hub/src/direct_upload/authority/transport/observation.rs",
-            "crates/aos-hub-core/src/direct_upload/capabilities_wire.rs",
-            "crates/aos-hub-core/src/direct_upload/authority_lookup.rs",
-            "crates/aos-hub-core/src/direct_upload/final_guard.rs",
-            "crates/aos-hub-core/src/direct_upload/wire.rs"):
+            "crates/hub/aos-hub-native/src/direct_upload/authority/transport.rs",
+            "crates/hub/aos-hub-native/src/direct_upload/authority/transport/observation.rs",
+            "crates/hub/aos-hub-db/src/direct_upload/capabilities_wire.rs",
+            "crates/hub/aos-hub-db/src/direct_upload/authority_lookup.rs",
+            "crates/hub/aos-hub-db/src/direct_upload/final_guard.rs",
+            "crates/hub/aos-hub-db/src/direct_upload/wire.rs"):
         raw = PACKAGE_READER["installed_bytes"](SOURCE / name, MAX_JSON)
         encoded = name.encode()
         value.update(len(encoded).to_bytes(8, "big"))

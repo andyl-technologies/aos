@@ -14,10 +14,10 @@
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
   libRs = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/src/lib.rs;
+    entry = ../../crates/crucible/engine/crucible-engine/src/lib.rs;
   };
-  guidedTest = builtins.readFile ../../crates/crucible/tests/gate_guided_adaptive_exploration.rs;
-  guidanceLintTest = builtins.readFile ../../crates/crucible-harness/tests/support/harness_lint/guidance.rs;
+  guidedTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/gate_guided_adaptive_exploration.rs;
+  guidanceLintTest = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/support/harness_lint/guidance.rs;
 
   taskList = builtins.concatStringsSep "," taskIds;
   openTaskList = builtins.concatStringsSep "," openTaskIds;
@@ -203,7 +203,7 @@
           }
           {
             label = "adaptive campaign source coverage";
-            needle = "crucible/src/model/adaptive_campaign.rs";
+            needle = "crucible/engine/crucible-engine/src/model/adaptive_campaign.rs";
           }
         ];
       };
@@ -337,11 +337,11 @@
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/22-advanced-features.md" advancedDoc taskSpec.docNeedles
-    ++ failuresFor "crates/crucible/src/model.rs" temporalGraph taskSpec.modelNeedles
-    ++ failuresFor "crates/crucible/src/lib.rs" libRs taskSpec.libNeedles
-    ++ failuresFor "crates/crucible/tests/gate_guided_adaptive_exploration.rs" guidedTest taskSpec.testNeedles
-    ++ failuresFor "crates/crucible-harness/tests/support/harness_lint/guidance.rs" guidanceLintTest (taskSpec.harnessNeedles or [])
-    ++ forbiddenFailuresFor "crates/crucible/tests/gate_guided_adaptive_exploration.rs" guidedTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" temporalGraph taskSpec.modelNeedles
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" libRs taskSpec.libNeedles
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/gate_guided_adaptive_exploration.rs" guidedTest taskSpec.testNeedles
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/tests/support/harness_lint/guidance.rs" guidanceLintTest (taskSpec.harnessNeedles or [])
+    ++ forbiddenFailuresFor "crates/crucible/engine/crucible-engine/tests/gate_guided_adaptive_exploration.rs" guidedTest [
       {
         label = "ignored red placeholder";
         needle = "#[ignore";
@@ -360,7 +360,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
@@ -408,7 +411,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-guided-adaptive-exploration-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --test gate_guided_adaptive_exploration \
               ${taskSpec.testFilter} \
               -- --test-threads=1
@@ -418,7 +421,7 @@ in
                 --offline \
                 --target-dir "$TMPDIR/crucible-guided-adaptive-exploration-target" \
                 --manifest-path crates/Cargo.toml \
-                -p crucible-harness \
+                -p crucible-test-support \
                 --test harness_lint \
                 guidance \
                 -- --test-threads=1

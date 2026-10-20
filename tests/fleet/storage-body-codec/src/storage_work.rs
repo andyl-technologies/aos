@@ -10,9 +10,11 @@
 //! ```
 
 use anyhow::{ensure, Context as _, Result};
-use aos_hub_core::storage_work::{
-    StorageWorkOperation, StorageWorkOutcome, StorageWorkPlan, StorageWorkResult, MAX_PLAN_BYTES,
-};
+use aos_hub_db::storage_work::StorageWorkOperation;
+use aos_hub_db::storage_work::StorageWorkOutcome;
+use aos_hub_db::storage_work::StorageWorkPlan;
+use aos_hub_db::storage_work::StorageWorkResult;
+use aos_hub_db::storage_work::MAX_PLAN_BYTES;
 
 use crate::Payload;
 
@@ -72,7 +74,7 @@ pub(super) fn decode_transport(
         serde_json::to_vec(&result)? == reply,
         "storage work reply is noncanonical"
     );
-    aos_hub::storage_work::validate_result_for_test(&plan, &result)?;
+    aos_hub_native::storage_work::validate_result_for_test(&plan, &result)?;
 
     match &result.outcome {
         StorageWorkOutcome::OciRange { content_base64, .. } => {
@@ -130,7 +132,7 @@ pub(super) fn decode_transport(
             payload.selected_data_bytes = validated_base64_bytes(content_base64)?.to_string();
         }
         StorageWorkOutcome::MirrorLiveMetadataBatch { items } => {
-            use aos_hub_core::storage_work::live_metadata_batch::LiveMetadataOutcome;
+            use aos_hub_db::storage_work::live_metadata_batch::LiveMetadataOutcome;
 
             payload.selected_data_bytes = sum_lengths(items.iter().filter_map(|item| {
                 if let LiveMetadataOutcome::Found { content_base64, .. } = &item.outcome {

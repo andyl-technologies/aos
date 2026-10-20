@@ -51,8 +51,8 @@
     };
     cargoRoot = "crates";
     cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-ebpf-net-policy-provider --bin aos-ebpf-net-policy-provider"
-      "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-ebpf-net-policy-provider"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-activation-bpf-network --bin aos-ebpf-net-policy-provider"
+      "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-activation-bpf-network"
     ];
     preBuild = staticBuildSetup;
     buildDeps = [patchelf];
@@ -94,8 +94,8 @@ in
     inherit version cargoDeps cargoArtifacts cargoArtifactContract;
     cargoRoot = "crates";
     cargoNextest = true;
-    cargoFlags = "-p aos-ebpf-net-policy-provider --bin aos-ebpf-net-policy-provider";
-    cargoTestFlags = "-p aos-ebpf-net-policy-provider";
+    cargoFlags = "-p aos-activation-bpf-network --bin aos-ebpf-net-policy-provider";
+    cargoTestFlags = "-p aos-activation-bpf-network";
     doCheck = true;
     module = ./_aos-ebpf-net-policy;
 

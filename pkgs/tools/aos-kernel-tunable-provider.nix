@@ -45,8 +45,8 @@
     };
     cargoRoot = "crates";
     cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-kernel-tunable-provider --bin aos-kernel-tunable-provider"
-      "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-kernel-tunable-provider"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-activation-sysctl --bin aos-kernel-tunable-provider"
+      "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-activation-sysctl"
     ];
     preBuild = staticBuildSetup;
     buildDeps = [patchelf];
@@ -79,8 +79,8 @@ in
     inherit version cargoDeps cargoArtifacts cargoArtifactContract;
     cargoRoot = "crates";
     cargoNextest = true;
-    cargoFlags = "-p aos-kernel-tunable-provider --bin aos-kernel-tunable-provider";
-    cargoTestFlags = "-p aos-kernel-tunable-provider";
+    cargoFlags = "-p aos-activation-sysctl --bin aos-kernel-tunable-provider";
+    cargoTestFlags = "-p aos-activation-sysctl";
     doCheck = true;
     buildDeps = [patchelf];
     runtimeDeps = [];

@@ -51,8 +51,8 @@
     };
     cargoRoot = "crates";
     cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-ebpf-lsm-provider --bin aos-ebpf-lsm-provider"
-      "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-ebpf-lsm-provider"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-activation-bpf-lsm --bin aos-ebpf-lsm-provider"
+      "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-activation-bpf-lsm"
     ];
     preBuild = staticBuildSetup;
     buildDeps = [patchelf];
@@ -94,8 +94,8 @@ in
     inherit version cargoDeps cargoArtifacts cargoArtifactContract;
     cargoRoot = "crates";
     cargoNextest = true;
-    cargoFlags = "-p aos-ebpf-lsm-provider --bin aos-ebpf-lsm-provider";
-    cargoTestFlags = "-p aos-ebpf-lsm-provider";
+    cargoFlags = "-p aos-activation-bpf-lsm --bin aos-ebpf-lsm-provider";
+    cargoTestFlags = "-p aos-activation-bpf-lsm";
     doCheck = true;
     module = ./_aos-ebpf-lsm-policy;
 

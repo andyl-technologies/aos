@@ -13,9 +13,8 @@
 //! ```
 
 use anyhow::{ensure, Result};
-use aos_hub_core::storage_authority::external_object::copy::control::{
-    ExternalCopyRequest, MAX_EXTERNAL_COPY_CONTROL_BYTES,
-};
+use aos_hub_db::storage_authority::external_object::copy::control::ExternalCopyRequest;
+use aos_hub_db::storage_authority::external_object::copy::control::MAX_EXTERNAL_COPY_CONTROL_BYTES;
 use serde::{Deserialize, Serialize};
 
 use super::files::{self, BodyFile};
@@ -108,13 +107,13 @@ pub(super) fn inspect(selection: Selection) -> Result<Observation> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aos_hub_core::storage_authority::external_object::copy::control::{CopyClaim, CopyControl};
-    use aos_hub_core::storage_authority::{
-        external_object::copy::ExternalCopyOriginal, lease::LeaseInteger,
-    };
-    use aos_hub_core::storage_work::{
-        StorageCredentialSelector, StorageWorkOperation, StorageWorkPlan,
-    };
+    use aos_hub_db::storage_authority::external_object::copy::control::CopyClaim;
+    use aos_hub_db::storage_authority::external_object::copy::control::CopyControl;
+    use aos_hub_db::storage_authority::external_object::copy::ExternalCopyOriginal;
+    use aos_hub_db::storage_authority::lease::LeaseInteger;
+    use aos_hub_db::storage_work::StorageCredentialSelector;
+    use aos_hub_db::storage_work::StorageWorkOperation;
+    use aos_hub_db::storage_work::StorageWorkPlan;
 
     #[test]
     fn canonical_pending_request_shares_fingerprint_and_refuses_malformed_or_foreign() {

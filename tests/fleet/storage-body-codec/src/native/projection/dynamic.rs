@@ -19,9 +19,10 @@
 use super::{positive_reader_version, AdmissionRow, Capture, ReaderOriginal};
 use crate::files;
 use anyhow::{ensure, Result};
-use aos_hub_core::application_body_observation::{image, EncodedImage};
-use aos_hub_core::direct_upload::*;
-use aos_proto_types::{GetRegistryPublicationRequest, RegistryPublication};
+use aos_hub_api::{GetRegistryPublicationRequest, RegistryPublication};
+use aos_hub_db::application_body_observation::image;
+use aos_hub_db::application_body_observation::EncodedImage;
+use aos_hub_db::direct_upload::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};

@@ -72,8 +72,8 @@ class ManagedGcHelperTests(unittest.TestCase):
         source = Path(__file__).resolve().parents[2]
         connection = sqlite3.connect(":memory:")
         try:
-            connection.executescript((source / "crates/aos-hub-core/src/db/schema.sql").read_text())
-            connection.executescript((source / "crates/aos-hub-core/src/db/002-r2-gc-incarnation.sql").read_text())
+            connection.executescript((source / "crates/hub/aos-hub-db/src/db/schema.sql").read_text())
+            connection.executescript((source / "crates/hub/aos-hub-db/src/db/002-r2-gc-incarnation.sql").read_text())
             for query in (helper.managed_capability_sql(1), helper.action_evidence_sql("real-run-id")):
                 self.assertEqual(connection.execute(query).fetchall(), [])
                 self.assertIn("LIMIT", query)

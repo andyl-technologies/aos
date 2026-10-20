@@ -24,7 +24,7 @@ durable journal and optional conformance control keys. Native and the Worker
 must share the ingress, storage-work and guard keys for their respective roles.
 
 Store the R2 profile in the closed JSON format documented in
-[`HybridDirectUploadDeployConfig`](../../../crates/aos-hub/src/cloudflare/direct_upload.rs).
+[`HybridDirectUploadDeployConfig`](../../../crates/hub/aos-hub-native/src/cloudflare/direct_upload.rs).
 Its credential generation and public secret version reference identify the
 persistent pair. Install a fixed `bounded_utc` clock policy with a conservative
 uncertainty below thirty seconds. `clockQualification` is the stable commitment
@@ -154,7 +154,7 @@ qualify disabled public access. A substring check cannot certify absence of
 partial leaks or exclusive physical writers.
 
 An independent reviewer accepts the full
-[`DirectWorkerQualificationArtifact`](../../../crates/aos-hub-core/src/direct_upload/worker_qualification.rs).
+[`DirectWorkerQualificationArtifact`](../../../crates/hub/aos-hub-db/src/direct_upload/worker_qualification.rs).
 The artifact binds the discovered complete managed credential fingerprint, every
 external protected profile selected, clock uncertainty, runtime ceilings, both
 queues, SDK observations, report commitments and original validity cutoff.

@@ -8,9 +8,9 @@
 }: let
   variantSource = pkgs.runCommand "hub-fleet-alternate-worker-source" {} ''
     cp -R ${worker.src}/. "$out"
-    chmod u+w "$out/crates/aos-hub-worker/src/lib.rs"
+    chmod u+w "$out/crates/hub/aos-hub-worker/src/lib.rs"
     printf '\n%s\n' '// This source snapshot belongs to the fleet revision-refusal fixture.' \
-      >> "$out/crates/aos-hub-worker/src/lib.rs"
+      >> "$out/crates/hub/aos-hub-worker/src/lib.rs"
   '';
   originalDigest = builtins.hashString "sha256" (toString worker.src);
   variantDigest = builtins.hashString "sha256" (toString variantSource);

@@ -1,0 +1,20 @@
+[package]
+name = "aos-activation"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+aos-core.workspace = true
+anyhow = { workspace = true }
+aos-module-format.workspace = true
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+rustix = { workspace = true, features = ["net", "event"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

@@ -13,26 +13,26 @@ in
       name = "native-content-address";
       sqliteRequired = true;
       cargoBuildCommands = [
-        "test --frozen --offline --no-run -p crucible --test predicate_dsl --test gate_content_address"
-        "test --frozen --offline --no-run -p crucible-sim --test gate_content_address"
+        "test --frozen --offline --no-run -p crucible-engine --test predicate_dsl --test gate_content_address"
+        "test --frozen --offline --no-run -p crucible-determinism --test gate_content_address"
       ];
       installedTests = [
         {
           targetName = "predicate_dsl";
           targetKind = "test";
-          crateDir = "crucible";
+          crateDir = "crucible-engine";
           destination = "crucible-predicate-dsl";
         }
         {
           targetName = "gate_content_address";
           targetKind = "test";
-          crateDir = "crucible";
+          crateDir = "crucible-engine";
           destination = "crucible-gate-content-address";
         }
         {
           targetName = "gate_content_address";
           targetKind = "test";
-          crateDir = "crucible-sim";
+          crateDir = "crucible-determinism";
           destination = "crucible-sim-gate-content-address";
         }
       ];

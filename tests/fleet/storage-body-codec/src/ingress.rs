@@ -5,16 +5,15 @@
 
 use crate::{files, Case, Payload};
 use anyhow::{ensure, Result};
-use aos_hub_core::{
-    delivery::{
-        classify_capability, DeliveryCapability, DeliverySurfaceKind, RouteAdvertisementPath,
-    },
-    hybrid_ingress::{
-        decode_hybrid_ingress_observation, HybridOciChunkCompletionRequest,
-        HybridOciManifestPreflight,
-    },
-    oci::{parse_oci_path, OciRequest},
-};
+use aos_hub_db::hybrid_ingress::decode_hybrid_ingress_observation;
+use aos_hub_db::hybrid_ingress::HybridOciChunkCompletionRequest;
+use aos_hub_db::hybrid_ingress::HybridOciManifestPreflight;
+use aos_hub_model::delivery::classify_capability;
+use aos_hub_model::delivery::DeliveryCapability;
+use aos_hub_model::delivery::DeliverySurfaceKind;
+use aos_hub_model::delivery::RouteAdvertisementPath;
+use aos_hub_service::oci::parse_oci_path;
+use aos_hub_service::oci::OciRequest;
 use aos_oci_types::DistributionErrorEnvelope;
 
 pub(super) fn decode(
@@ -131,20 +130,20 @@ pub(super) fn decode(
     );
     match relative {
         "-/api/packages" => {
-            closed_serialized::<Vec<aos_proto_types::PackageSummary>>(reply)?;
+            closed_serialized::<Vec<aos_hub_api::PackageSummary>>(reply)?;
         }
         "-/api/channels" => {
-            closed_serialized::<Vec<aos_proto_types::Channel>>(reply)?;
+            closed_serialized::<Vec<aos_hub_api::Channel>>(reply)?;
         }
         "-/api/releases" => {
-            closed_serialized::<Vec<aos_proto_types::Release>>(reply)?;
+            closed_serialized::<Vec<aos_hub_api::Release>>(reply)?;
         }
         selected if selected.starts_with("-/api/packages/") => {
-            closed_serialized::<aos_proto_types::Package>(reply)?;
+            closed_serialized::<aos_hub_api::Package>(reply)?;
         }
         selected if selected.starts_with("-/api/v1/documentation/") => {
             let digest = selected.trim_start_matches("-/api/v1/documentation/");
-            aos_doc_model::runtime::RuntimeDocument::from_json(reply)?;
+            aos_module_docs::runtime::RuntimeDocument::from_json(reply)?;
             ensure!(
                 format!("sha256:{}", files::digest(reply)) == digest,
                 "canonical document identity differs"

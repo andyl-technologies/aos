@@ -29,7 +29,7 @@ class ContextTests(unittest.TestCase):
         source = wrapper.SOURCE
         self.sources = {
             "nativeHandlerSourceSha256": wrapper.native_handler_source_sha256(source),
-            "checkedContextSourceSha256": wrapper.digest((source / "crates/aos-hub-core/src/hybrid_ingress/observation.rs").read_bytes()),
+            "checkedContextSourceSha256": wrapper.digest((source / "crates/hub/aos-hub-db/src/hybrid_ingress/observation.rs").read_bytes()),
         }
         build_record = json.loads(wrapper.PACKAGE_READER["installed_bytes"](
             ROOT.parent.parent / "helper-build-provenance.json"))

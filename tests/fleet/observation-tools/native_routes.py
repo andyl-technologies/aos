@@ -13,10 +13,10 @@ import re
 
 MAX_CAPTURES = 4096
 MAX_RECEIPTS = 262144
-RPC_SOURCES = ('crates/aos-hub-core/src/application_body_observation.rs',
-               'crates/aos-hub-core/src/application_body_observation/rpc.rs',
-               'crates/aos-hub-core/src/connect.rs')
-BROWSER_SOURCE = 'crates/aos-hub-core/src/web/console/handlers.rs'
+RPC_SOURCES = ('crates/hub/aos-hub-db/src/application_body_observation.rs',
+               'crates/hub/aos-hub-db/src/application_body_observation/rpc.rs',
+               'crates/hub/aos-hub-service/src/connect.rs')
+BROWSER_SOURCE = 'crates/hub/aos-hub-service/src/web/console/handlers.rs'
 ROUTES = {
     ('GET', '/-/instance'): (
         'authenticated_instance_app_shell_html', 'authenticated_management_app',

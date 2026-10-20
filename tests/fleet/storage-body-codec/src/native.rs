@@ -214,21 +214,21 @@ fn inspect(selection: Selection) -> Result<(Vec<Observation>, usize)> {
                     && capture.storage_work_selection.is_none(),
                 "publication phase capture selection differs"
             );
-            let original: aos_proto_types::CommitRegistryPublicationRequest =
+            let original: aos_hub_api::CommitRegistryPublicationRequest =
                 public_rpc::exact(&request)?;
             let raw = files::read(reference, &mut selected_bytes)?;
             ensure!(
                 raw.len() <= 16 * 1024,
                 "publication phase summary exceeds bound"
             );
-            let summary: aos_hub_core::application_body_observation::publication::Summary =
+            let summary: aos_hub_db::application_body_observation::publication::Summary =
                 serde_json::from_slice(&raw)?;
             ensure!(
                 summary.encoded().as_deref() == Some(raw.as_slice()),
                 "noncanonical publication summary"
             );
             summary.validate_original(&original)?;
-            use aos_hub_core::application_body_observation::publication::TerminalOutcome;
+            use aos_hub_db::application_body_observation::publication::TerminalOutcome;
             ensure!(
                 match summary.terminal_outcome() {
                     TerminalOutcome::ReturnedSuccess => capture.status == 200,
@@ -254,7 +254,7 @@ fn inspect(selection: Selection) -> Result<(Vec<Observation>, usize)> {
                 &mut observation,
             )?;
         } else if capture.procedure
-            == aos_hub_core::storage_authority::lease::control::ISSUER_CONTROL_PATH
+            == aos_hub_db::storage_authority::lease::control::ISSUER_CONTROL_PATH
         {
             issuer(
                 &capture,
@@ -295,7 +295,8 @@ fn issuer(
     response: &[u8],
     verifier: Option<&IssuerVerifier>,
 ) -> Result<()> {
-    use aos_hub_core::storage_authority::lease::{control, EpochLeaseVerifier};
+    use aos_hub_db::storage_authority::lease::control;
+    use aos_hub_db::storage_authority::lease::EpochLeaseVerifier;
     ensure!(
         capture.method == "POST"
             && capture.phase.is_none()

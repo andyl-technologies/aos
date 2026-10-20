@@ -93,7 +93,7 @@ def policy_bytes(policy):
 
 def producer(source, read_source):
     """Require the selected source's exact two-file producer and Policy order."""
-    source = Path(source) / 'crates/aos-hub/src/server'
+    source = Path(source) / 'crates/hub/aos-hub-native/src/server'
     body = read_source(source / 'body_inventory.rs', 1024 * 1024)
     expected = b'''struct Policy {
     version: u8,
@@ -269,7 +269,7 @@ def validate(messages, policy, selected_producer, parse_json):
 def source_leaf_bound(path):
     """Allow only the two named existing giant producer source files."""
     return (2 * 1024 * 1024 if path in (
-        'crates/aos-hub-core/src/service.rs', 'crates/aos-hub-core/src/db/mod.rs')
+        'crates/hub/aos-hub-service/src/service.rs', 'crates/hub/aos-hub-db/src/db/mod.rs')
         else 1024 * 1024)
 
 
@@ -371,10 +371,12 @@ def publication_phases(member, children, source, read_source, report=None, manif
         raise ValueError('Publication summary exceeds source bound')
     closed(summary, {'version', 'producerSha256', 'publicationId', 'request',
         'sourceBeforeUnixNanos', 'sourceAfterUnixNanos', 'sourceElapsedNanos', 'terminalOutcome', 'phases'})
-    paths = ('crates/aos-hub-core/src/application_body_observation/publication.rs',
-             'crates/aos-hub-core/src/application_body_observation.rs',
-             'crates/aos-hub-core/src/service.rs', 'crates/aos-hub-core/src/db/mod.rs',
-             'crates/aos-hub-core/src/db/publication_delivery.rs')
+    paths = ('crates/hub/aos-hub-db/src/application_body_observation/publication.rs',
+             'crates/hub/aos-hub-db/src/application_body_observation.rs',
+             'crates/hub/aos-hub-service/src/service.rs',
+             'crates/hub/aos-hub-service/src/service/operations/registries/configuration_mutations.rs',
+             'crates/hub/aos-hub-db/src/db/mod.rs',
+             'crates/hub/aos-hub-db/src/db/publication_delivery.rs')
     actual_source = sha(b''.join(read_source(Path(source) / name, source_leaf_bound(name)) for name in paths))
     if (type(summary['version']) is not int or summary['version'] != 1
             or summary['producerSha256'] != actual_source
@@ -510,14 +512,17 @@ def sql_child(member, children, source, read_source):
     projection = child['projection']
     closed(projection, {'version', 'producerSha256', 'checkpoints'})
     paths = (
-        'crates/aos-hub-core/src/application_body_observation/sql_projection.rs',
-        'crates/aos-hub-core/src/application_body_observation.rs',
-        'crates/aos-hub-core/src/application_body_observation/rpc.rs',
-        'crates/aos-hub-core/src/db/direct_upload.rs',
-        'crates/aos-hub-core/src/db/publication_admission.rs',
-        'crates/aos-hub-core/src/application_body_observation/sql_projection/dynamic.rs',
-        'crates/aos-hub-core/src/direct_upload/service.rs',
-        'crates/aos-hub-core/src/service.rs',
+        'crates/hub/aos-hub-db/src/application_body_observation/sql_projection.rs',
+        'crates/hub/aos-hub-db/src/application_body_observation.rs',
+        'crates/hub/aos-hub-db/src/application_body_observation/rpc.rs',
+        'crates/hub/aos-hub-db/src/db/direct_upload.rs',
+        'crates/hub/aos-hub-db/src/db/publication_admission.rs',
+        'crates/hub/aos-hub-db/src/application_body_observation/sql_projection/dynamic.rs',
+        'crates/hub/aos-hub-db/src/direct_upload/service.rs',
+        'crates/hub/aos-hub-service/src/direct_upload.rs',
+        'crates/hub/aos-hub-service/src/service.rs',
+        'crates/hub/aos-hub-service/src/service/operations/registries/configuration_reads.rs',
+        'crates/hub/aos-hub-service/src/service/operations/registries/configuration_mutations.rs',
     )
     actual_source = sha(b''.join(read_source(Path(source) / path, source_leaf_bound(path)) for path in paths))
     if (type(projection['version']) is not int or projection['version'] != 1
@@ -766,11 +771,11 @@ def source_asset(member, source, read_source):
             or value['constructor'] != 'embedded_static_asset'
             or value['requiredProjection'] != 'exact_installed_console_asset_names_and_bytes'):
         return None
-    directory = Path(source) / 'crates/aos-hub-core/src/web'
+    directory = Path(source) / 'crates/hub/aos-hub-service/src/web'
     code = read_source(directory / 'assets.rs', 1024 * 1024)
     if value['constructorSourceSha256'] != sha(code):
         return None
-    routes = read_source(Path(source) / 'crates/aos-hub-core/src/connect.rs', 1024 * 1024)
+    routes = read_source(Path(source) / 'crates/hub/aos-hub-service/src/connect.rs', 1024 * 1024)
     for path, (constant, kind, macro, relative, handler) in ASSETS.items():
         if member['pathSha256'] != sha(path.encode()):
             continue
@@ -849,17 +854,17 @@ def codec_projection(member, report, manifest, authentication, source, read_sour
     if value['reply'] != {'byteSize': row['response']['byteSize'], 'sha256': row['response']['sha256']}:
         raise ValueError('Inventory constructor reply image differs')
     if projection['kind'] == 'publication_manifest_append':
-        files = ('crates/aos-hub-core/src/application_body_observation.rs',
-                 'crates/aos-hub-core/src/application_body_observation/rpc.rs',
-                 'crates/aos-hub-core/src/connect.rs')
+        files = ('crates/hub/aos-hub-db/src/application_body_observation.rs',
+                 'crates/hub/aos-hub-db/src/application_body_observation/rpc.rs',
+                 'crates/hub/aos-hub-service/src/connect.rs')
         constructor, phase = 'publication_manifest_append', None
     elif projection['kind'] == 'publication_get':
-        files = ('crates/aos-hub-core/src/application_body_observation.rs',
-                 'crates/aos-hub-core/src/application_body_observation/rpc.rs',
-                 'crates/aos-hub-core/src/connect.rs')
+        files = ('crates/hub/aos-hub-db/src/application_body_observation.rs',
+                 'crates/hub/aos-hub-db/src/application_body_observation/rpc.rs',
+                 'crates/hub/aos-hub-service/src/connect.rs')
         constructor, phase = 'publication_get', None
     elif projection['kind'] in ('direct_logical_admission', 'direct_authorize', 'direct_commit'):
-        files = ('crates/aos-hub/src/direct_upload/mod.rs',)
+        files = ('crates/hub/aos-hub-native/src/direct_upload/mod.rs',)
         constructor, phase = 'direct_logical_validated', {
             'direct_logical_admission': 'admission', 'direct_authorize': 'authorize',
             'direct_commit': 'commit'}[projection['kind']]

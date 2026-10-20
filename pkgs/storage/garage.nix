@@ -2,7 +2,7 @@
 ##!
 ##! Pure-Rust, single-binary, embedded storage (LMDB/sqlite via
 ##! bundled-libs) — which is what makes it the right S3 fixture for AOS
-##! tests: `aos`/`apr`'s s3:// cache backend (crates/aos-net/src/
+##! tests: `aos`/`apr`'s s3:// cache backend (crates/shared/aos-transfer/src/
 ##! protocol/s3.rs) needs a real SigV4 endpoint to be exercised against,
 ##! and garage provides one with no external services. See the
 ##! origin-upload-s3 test in pkgs/tools/aos/_tests.nix.

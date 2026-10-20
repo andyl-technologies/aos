@@ -18,7 +18,9 @@
   tpm2-tools,
   util-linux,
 }: let
-  source = ../../crates/aos-boot-preparations;
+  # These entry points freeze the complete selected boot-tool closure with
+  # env!, so the standalone target is deliberately compiled outside Cargo.
+  source = ../../crates/aos/boot/aos-boot-runtime/standalone;
   packageRuntime = aos.packageRuntime;
 in
   mkDerivation {
@@ -76,8 +78,8 @@ in
           export AOS_BOOT_CONFIGURATION=${packageRuntime}/bin/aos-boot-configuration
           export AOS_CONFIGURATION_BOOT=${aos-configuration-lower}/bin/aos-configuration-boot
 
-          rustc --edition=2024 ${source}/src/main.rs -o aos-boot-preparations
-          rustc --edition=2024 --test ${source}/src/main.rs -o aos-boot-preparations-tests
+          rustc --edition=2024 --crate-name aos_initrd_preparation ${source}/initrd_preparation.rs -o aos-boot-preparations
+          rustc --edition=2024 --crate-name aos_initrd_preparation --test ${source}/initrd_preparation.rs -o aos-boot-preparations-tests
           ./aos-boot-preparations-tests
         '';
       }

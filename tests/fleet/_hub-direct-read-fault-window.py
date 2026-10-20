@@ -47,13 +47,13 @@ def require_revision_source_abi(current_source, alternate_source, purpose):
     current = Path(current_source)
     alternate = Path(alternate_source)
     files = (
-        "crates/aos-hub-worker/src/direct_upload/provider_capacity/policy.rs",
-        "crates/aos-hub-worker/src/external_object/config.rs",
-        "crates/aos-hub-worker/src/external_object/copy/config.rs",
-        "crates/aos-hub-worker/src/hybrid_binding.rs",
+        "crates/hub/aos-hub-worker/src/direct_upload/provider_capacity/policy.rs",
+        "crates/hub/aos-hub-worker/src/external_object/config.rs",
+        "crates/hub/aos-hub-worker/src/external_object/copy/config.rs",
+        "crates/hub/aos-hub-worker/src/hybrid_binding.rs",
         # The source-contract and current-reader checks after domain selection
         # must not turn an old unsupported-mode refusal into revision evidence.
-        "crates/aos-hub-worker/src/external_object/inspection/runtime.rs",
+        "crates/hub/aos-hub-worker/src/external_object/inspection/runtime.rs",
     )
     digests = {}
     for name in files:
@@ -63,8 +63,8 @@ def require_revision_source_abi(current_source, alternate_source, purpose):
             raise ValueError("Alternate revision changes the authentication/configuration ABI")
         digests[name] = hashlib.sha256(original).hexdigest()
     for name, start, end in (
-            ("crates/aos-hub-worker/src/hybrid.rs", "async fn execute_storage_work(", "    let operation_kind ="),
-            ("crates/aos-hub-worker/src/external_object/inspection/runtime.rs",
+            ("crates/hub/aos-hub-worker/src/hybrid.rs", "async fn execute_storage_work(", "    let operation_kind ="),
+            ("crates/hub/aos-hub-worker/src/external_object/inspection/runtime.rs",
                 "pub(crate) async fn execute(", "    let fresh =")):
         def prefix(root):
             text = (root / name).read_text()
@@ -95,7 +95,7 @@ def require_revision_source_abi(current_source, alternate_source, purpose):
                     raise ValueError("Comment revision changed a source link")
                 continue
             expected = original.read_bytes()
-            if name == "crates/aos-hub-worker/src/lib.rs":
+            if name == "crates/hub/aos-hub-worker/src/lib.rs":
                 expected += suffix
             if candidate.read_bytes() != expected or bool(original.stat().st_mode & 0o111) != bool(candidate.stat().st_mode & 0o111):
                 raise ValueError("Comment revision changed another source body or mode")

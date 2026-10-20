@@ -83,7 +83,7 @@ def policy_bytes(value):
 
 def producer(source, read_source):
     """Recompute the actual include-bytes roster, rather than trust selection."""
-    source = Path(source) / 'crates/aos-hub/src'
+    source = Path(source) / 'crates/hub/aos-hub-native/src'
     images = {name: read_source(source / name, 1024 * 1024) for name in SOURCES}
     module = images['outbound_inventory.rs']
     macro = b'''hash.update($path.as_bytes());

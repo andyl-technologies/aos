@@ -29,10 +29,8 @@ mod dynamic;
 use super::{public_rpc::exact, Capture};
 use crate::files::{self, BodyFile};
 use anyhow::{ensure, Result};
-use aos_hub_core::direct_upload::*;
-use aos_proto_types::{
-    AppendRegistryPublicationManifestRequest, RegistryPublicationManifestSession,
-};
+use aos_hub_api::{AppendRegistryPublicationManifestRequest, RegistryPublicationManifestSession};
+use aos_hub_db::direct_upload::*;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -127,8 +125,8 @@ enum ReaderOriginal {
     },
     Admission {
         session_id: String,
-        admission: aos_hub_core::application_body_observation::EncodedImage,
-        owner: aos_hub_core::application_body_observation::EncodedImage,
+        admission: aos_hub_db::application_body_observation::EncodedImage,
+        owner: aos_hub_db::application_body_observation::EncodedImage,
         owner_scope_sha256: String,
         reader_status_resource_version: String,
         reader_state: String,
@@ -249,8 +247,8 @@ fn reader_originals(kind: &str, sql: &[u8]) -> Result<Option<Vec<ReaderOriginal>
         let owner = serde_json::to_vec(&("publication", None::<i64>, None::<&str>))?;
         rows.push(ReaderOriginal::Admission {
             session_id: row.session_id,
-            admission: aos_hub_core::application_body_observation::image(&admission),
-            owner: aos_hub_core::application_body_observation::image(&owner),
+            admission: aos_hub_db::application_body_observation::image(&admission),
+            owner: aos_hub_db::application_body_observation::image(&owner),
             owner_scope_sha256: files::digest(scope.as_bytes()),
             reader_status_resource_version: version,
             reader_state: row.state,

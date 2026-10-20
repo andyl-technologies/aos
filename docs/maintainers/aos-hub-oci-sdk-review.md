@@ -73,7 +73,7 @@ configured namespace string cannot replace those observations.
 ## Prepare and review exact bytes
 
 `OciSdkReviewSelection` is a closed JSON contract documented by the source in
-`crates/aos-hub/src/oci_sdk_review/selection.rs`. Relative file locators resolve
+`crates/hub/aos-hub-native/src/oci_sdk_review/selection.rs`. Relative file locators resolve
 beside the selection. Every retained document is selected by exact SHA-256;
 inputs/keys/outputs require private file and ancestor custody. Use a trusted
 private working directory with relative evidence paths when an execution

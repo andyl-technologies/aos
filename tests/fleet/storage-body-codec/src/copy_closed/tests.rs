@@ -1,16 +1,15 @@
 //! Controlled shared-MAC tests; no installed key or provider authority.
 
 use super::*;
-use aos_hub_core::storage_authority::{
-    external_object::copy::{
-        control::{CopyClaim, CopyControl, CopyProgress},
-        CopySourceObject, ExternalCopyOriginal,
-    },
-    lease::LeaseInteger,
-};
-use aos_hub_core::storage_work::{
-    StorageCredentialSelector, StorageWorkOperation, StorageWorkPlan,
-};
+use aos_hub_db::storage_authority::external_object::copy::control::CopyClaim;
+use aos_hub_db::storage_authority::external_object::copy::control::CopyControl;
+use aos_hub_db::storage_authority::external_object::copy::control::CopyProgress;
+use aos_hub_db::storage_authority::external_object::copy::CopySourceObject;
+use aos_hub_db::storage_authority::external_object::copy::ExternalCopyOriginal;
+use aos_hub_db::storage_authority::lease::LeaseInteger;
+use aos_hub_db::storage_work::StorageCredentialSelector;
+use aos_hub_db::storage_work::StorageWorkOperation;
+use aos_hub_db::storage_work::StorageWorkPlan;
 use std::io::Write as _;
 use std::{
     fs,

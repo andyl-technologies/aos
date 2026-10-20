@@ -81,7 +81,7 @@ in
             --offline \
             --target-dir "$target" \
             --manifest-path crates/Cargo.toml \
-            -p crucible-cas \
+            -p crucible-store \
             --test gate_campaign_store_composition \
             -- --test-threads=1
           cargo test \
@@ -179,7 +179,7 @@ in
             content_store::tests::packed::packed_store_graph_is_admitted_and_requires_an_isolated_persistent_root \
             content_store::s3::tests::behavior::graph_binds_exact_endpoint_capability_and_canonical_configuration
           do
-            run_exact_lib_test crucible-cas "$cas_test"
+            run_exact_lib_test crucible-store "$cas_test"
           done
 
           # Fault-hook tests are compiled only with the explicit recovery
@@ -191,13 +191,13 @@ in
             recovery_listing=$(cargo test \
               --frozen --offline --target-dir "$target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible-cas --features destructive-recovery-faults \
+              -p crucible-store --features destructive-recovery-faults \
               --lib "$recovery_test" -- --list)
             printf '%s\n' "$recovery_listing" | grep -Fqx "$recovery_test: test"
             cargo test \
               --frozen --offline --target-dir "$target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible-cas --features destructive-recovery-faults \
+              -p crucible-store --features destructive-recovery-faults \
               --lib "$recovery_test" -- --exact --test-threads=1
           done
 

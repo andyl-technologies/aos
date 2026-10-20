@@ -348,7 +348,7 @@ return.
 
 ### Indexer integration
 
-Today `aos_hub_core::indexer` consumes `SurfaceFetch`, whose `fetch` and
+Today `aos_hub_service::indexer` consumes `SurfaceFetch`, whose `fetch` and
 `fetch_bounded` methods return bytes. `ObjectReader::preload_bundles` can read
 an aggregate bundle or up to 256 shard bundles before a walk. Simply placing
 an HTTP implementation of `SurfaceFetch` between Native and R2 would send

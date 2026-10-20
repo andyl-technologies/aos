@@ -52,7 +52,7 @@ they cannot attribute unrelated overlapping dispatches to the selected object.
 Write a closed version-one selection JSON. Every selected file is an explicit
 `{"path":"relative-or-absolute-path","sha256":"actual-lowercase-file-hash"}`.
 Relative paths resolve beside the selection file. The public Rust schema is
-[`DirectReviewSelection`](../../../crates/aos-hub/src/direct_upload_review/selection.rs).
+[`DirectReviewSelection`](../../../crates/hub/aos-hub-native/src/direct_upload_review/selection.rs).
 It contains:
 
 - Exact execution kind, reviewer identity, deployment/origin, compiled source,
@@ -92,7 +92,7 @@ conformance and enabled isolated qualification. A known selected-namespace guard
 bypass prevents a zero-writer acceptance. Account token totals and a partial
 binding inventory do not establish this assessment.
 The public capture interfaces are documented in
-[privacy.rs](../../../crates/aos-hub/src/direct_upload_review/privacy.rs).
+[privacy.rs](../../../crates/hub/aos-hub-native/src/direct_upload_review/privacy.rs).
 
 ## Review, then sign the exact candidate
 

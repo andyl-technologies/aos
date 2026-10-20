@@ -10,7 +10,7 @@ extends them.
 Because the eval is a pure function of its inputs (`host.nix`, the installed
 set's config modules, registry-pinned inputs), it runs identically off-host
 (CI) and on-host. The command mirrors the existing `dry_run` reconcile plumbing
-(`crates/aos-package/src/desired.rs:90`, `config_artifact.rs:51`
+(`crates/aos/packages/aos-package-manager/src/desired.rs:90`, `config_artifact.rs:51`
 `preflight_desired_config`):
 
 ```text
@@ -48,7 +48,7 @@ manifest diff (gen-7 → candidate)
 
 The `--json` form extends the existing planned-status envelope (`desired.rs:214`)
 with `etc_diff`, `resource_changes`, `fetch_plan` (closure delta vs the local store,
-enumerated by `aos-cache/src/discover.rs:18`), and `resolution_trace`.
+enumerated by `aos/packages/aos-nix-cache/src/discover.rs:18`), and `resolution_trace`.
 
 **Off-host CI preflight.** A `checks.config-eval` derivation
 (`default.nix` `checks` rec) evaluates the same expression with

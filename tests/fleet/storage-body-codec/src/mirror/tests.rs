@@ -3,22 +3,26 @@
 //! These pure fixtures prove intrinsic decoding, not MAC authentication, current
 //! configuration, provider execution or a successful business Mirror workflow.
 
-use aos_hub_core::{
-    hybrid_ingress::live::{HybridLiveDeliveryClass, HybridLiveDeliveryTarget},
-    mirror_guard::{
-        batch::{MirrorGuardBatchItem, MirrorGuardBatchRefusal, MirrorGuardBatchResult},
-        MirrorGuardIssuer,
-    },
-    mirror_work::{
-        digest, MirrorOriginal, MirrorProgress, MirrorStep, MirrorVerification,
-        MirrorVerifiedObject,
-    },
-    storage_work::{
-        live_metadata_batch::{self, LiveMetadataObservation, LiveMetadataOutcome},
-        StorageObjectIdentity, StorageWorkOutcome, StorageWorkPlan, StorageWorkResult,
-        STORAGE_WORK_PATH,
-    },
-};
+use aos_hub_db::hybrid_ingress::live::HybridLiveDeliveryClass;
+use aos_hub_db::hybrid_ingress::live::HybridLiveDeliveryTarget;
+use aos_hub_db::mirror_guard::batch::MirrorGuardBatchItem;
+use aos_hub_db::mirror_guard::batch::MirrorGuardBatchRefusal;
+use aos_hub_db::mirror_guard::batch::MirrorGuardBatchResult;
+use aos_hub_db::mirror_guard::MirrorGuardIssuer;
+use aos_hub_db::mirror_work::digest;
+use aos_hub_db::mirror_work::MirrorOriginal;
+use aos_hub_db::mirror_work::MirrorProgress;
+use aos_hub_db::mirror_work::MirrorStep;
+use aos_hub_db::mirror_work::MirrorVerification;
+use aos_hub_db::mirror_work::MirrorVerifiedObject;
+use aos_hub_db::storage_work::live_metadata_batch;
+use aos_hub_db::storage_work::live_metadata_batch::LiveMetadataObservation;
+use aos_hub_db::storage_work::live_metadata_batch::LiveMetadataOutcome;
+use aos_hub_db::storage_work::StorageObjectIdentity;
+use aos_hub_db::storage_work::StorageWorkOutcome;
+use aos_hub_db::storage_work::StorageWorkPlan;
+use aos_hub_db::storage_work::StorageWorkResult;
+use aos_hub_db::storage_work::STORAGE_WORK_PATH;
 
 use super::*;
 use crate::{classify, files, storage_work, Case};
@@ -52,7 +56,7 @@ fn original(path: &str) -> MirrorOriginal {
 }
 
 fn progress(original: &MirrorOriginal) -> MirrorProgress {
-    let part = aos_hub_core::mirror_work::MirrorPart {
+    let part = aos_hub_db::mirror_work::MirrorPart {
         part_number: 1,
         size: 3,
         sha256: files::digest(b"abc"),
@@ -204,7 +208,9 @@ fn exact_transfer_original_progress_and_effect_cost_refuse_substitutions() {
 
 #[test]
 fn effect_batch_keeps_exact_original_order_and_known_source_cost() {
-    use aos_hub_core::mirror_batch::{MirrorBatchItem, MirrorBatchOutcome, MirrorBatchResult};
+    use aos_hub_db::mirror_batch::MirrorBatchItem;
+    use aos_hub_db::mirror_batch::MirrorBatchOutcome;
+    use aos_hub_db::mirror_batch::MirrorBatchResult;
 
     let originals = [original("first.json"), original("second.json")];
     let items = originals

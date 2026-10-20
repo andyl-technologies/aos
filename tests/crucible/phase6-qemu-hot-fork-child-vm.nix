@@ -37,7 +37,7 @@
           sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" > .cargo/config.toml
           cargo build --frozen --offline --release \
             --manifest-path crates/Cargo.toml --target-dir "$TMPDIR/target" \
-            -p crucible-qemu --example crucible-qemu-live-hot-fork-child
+            -p crucible-qemu-host --example crucible-qemu-live-hot-fork-child
           mkdir -p "$out/bin"
           cp "$TMPDIR/target/release/examples/crucible-qemu-live-hot-fork-child" "$out/bin/"
         '';

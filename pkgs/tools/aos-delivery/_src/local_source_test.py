@@ -39,7 +39,7 @@ class LocalSourceTests(unittest.TestCase):
         self.git("config", "user.name", "Source fixture")
         self.git("config", "user.email", "fixture@example.test")
         self.git("remote", "add", "origin", "https://github.com/" + artifact.REPOSITORY)
-        source = self.repo / "crates/aos-proto/src/proto/aos/hub/source.proto"
+        source = self.repo / "crates/aos/packages/aos-build-api/src/proto/aos/hub/source.proto"
         source.parent.mkdir(parents=True)
         source.write_text("fixture source\n")
         self.git("add", ".")
@@ -70,7 +70,7 @@ class LocalSourceTests(unittest.TestCase):
         with self.assertRaises(DeliveryError):
             local_source.prove("a" * 40, artifact.REPOSITORY)
 
-        source = Path("crates/aos-proto/src/proto/aos/hub/source.proto")
+        source = Path("crates/aos/packages/aos-build-api/src/proto/aos/hub/source.proto")
         source.write_text("changed\n")
         with self.assertRaises(DeliveryError):
             self.proof()
@@ -154,7 +154,7 @@ class LocalSourceTests(unittest.TestCase):
 
     def test_subdirectory_proof_checks_hidden_flags_across_repository(self):
         proof = self.proof()
-        source = "crates/aos-proto/src/proto/aos/hub/source.proto"
+        source = "crates/aos/packages/aos-build-api/src/proto/aos/hub/source.proto"
         subtree = self.repo / "empty-subtree"
         subtree.mkdir()
         with contextlib.chdir(subtree):

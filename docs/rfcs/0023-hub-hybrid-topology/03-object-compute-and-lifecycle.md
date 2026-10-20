@@ -74,7 +74,7 @@ registry manifests, select channel partitions, inspect OCI manifests and
 descriptors, parse narinfo, compute bounded inventory pages, and verify large
 objects by streaming their bytes from the provider. Parsers and validators
 that exist in `aos-registry-surface`, `aos-oci-types`, and
-`aos_hub_core::indexer` should be extracted into shared, deterministic
+`aos_hub_service::indexer` should be extracted into shared, deterministic
 functions rather than reimplemented in Worker request handlers. For a
 schema-specific filter, the request names admitted fields and operators; the
 result contains only requested fields and their observed source identity.

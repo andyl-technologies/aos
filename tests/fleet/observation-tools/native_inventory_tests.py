@@ -134,11 +134,11 @@ class InventoryReader(unittest.TestCase):
         self.assertIsNone(inventory.source_asset(result['members'][0], SOURCE, source_bytes))
 
     def test_source_bound_allowance_is_exactly_two_named_giant_modules(self):
-        allowed = ('crates/aos-hub-core/src/service.rs', 'crates/aos-hub-core/src/db/mod.rs')
+        allowed = ('crates/hub/aos-hub-service/src/service.rs', 'crates/hub/aos-hub-db/src/db/mod.rs')
         for name in allowed:
             self.assertEqual(inventory.source_leaf_bound(name), 2 * 1024 * 1024)
-        for name in ('service.rs', 'db/mod.rs', 'crates/aos-hub-core/src/db/direct_upload.rs',
-                     'crates/aos-hub-core/src/service.rs/foreign'):
+        for name in ('service.rs', 'db/mod.rs', 'crates/hub/aos-hub-db/src/db/direct_upload.rs',
+                     'crates/hub/aos-hub-service/src/service.rs/foreign'):
             self.assertEqual(inventory.source_leaf_bound(name), 1024 * 1024)
 
     def test_partial_publication_child_keeps_error_facts_without_metadata_or_sql_claims(self):
@@ -148,10 +148,10 @@ class InventoryReader(unittest.TestCase):
         request = b'{"publicationId":"synthetic-publication"}'
         selected['requestConsumed'] = synthetic_frame(request)
         selected['replyOffered'] = synthetic_frame(b'unclassified error')
-        paths = ('crates/aos-hub-core/src/application_body_observation/publication.rs',
-                 'crates/aos-hub-core/src/application_body_observation.rs',
-                 'crates/aos-hub-core/src/service.rs', 'crates/aos-hub-core/src/db/mod.rs',
-                 'crates/aos-hub-core/src/db/publication_delivery.rs')
+        paths = ('crates/hub/aos-hub-db/src/application_body_observation/publication.rs',
+                 'crates/hub/aos-hub-db/src/application_body_observation.rs',
+                 'crates/hub/aos-hub-service/src/service.rs', 'crates/hub/aos-hub-db/src/db/mod.rs',
+                 'crates/hub/aos-hub-db/src/db/publication_delivery.rs')
         def synthetic_source(path, maximum):
             self.assertEqual(maximum, inventory.source_leaf_bound(str(path)))
             return str(path).encode()
@@ -242,9 +242,9 @@ class ImmutableCodecHandoff(unittest.TestCase):
         self.member['replyOffered'] = synthetic_frame(b'synthetic reply image')
         path = '/aos.hub.v1.PublishService/AppendRegistryPublicationManifest'
         self.member['pathSha256'] = inventory.sha(path.encode())
-        files = ('crates/aos-hub-core/src/application_body_observation.rs',
-                 'crates/aos-hub-core/src/application_body_observation/rpc.rs',
-                 'crates/aos-hub-core/src/connect.rs')
+        files = ('crates/hub/aos-hub-db/src/application_body_observation.rs',
+                 'crates/hub/aos-hub-db/src/application_body_observation/rpc.rs',
+                 'crates/hub/aos-hub-service/src/connect.rs')
         self.member['typedEvidence'] = {
             'constructor': 'publication_manifest_append',
             'constructorSourceSha256': inventory.sha(b''.join(source_bytes(SOURCE / name, 1024 * 1024)
@@ -351,11 +351,11 @@ class SqlProjectionHandoff(unittest.TestCase):
             'reply': {'byteSize': '12', 'sha256': inventory.sha(b'unclassified')},
             'requiredProjection': 'bounded_original_and_current_sql_projection',
         }
-        paths = ('crates/aos-hub-core/src/application_body_observation/sql_projection.rs',
-                 'crates/aos-hub-core/src/application_body_observation.rs',
-                 'crates/aos-hub-core/src/application_body_observation/rpc.rs',
-                 'crates/aos-hub-core/src/db/direct_upload.rs',
-                 'crates/aos-hub-core/src/db/publication_admission.rs')
+        paths = ('crates/hub/aos-hub-db/src/application_body_observation/sql_projection.rs',
+                 'crates/hub/aos-hub-db/src/application_body_observation.rs',
+                 'crates/hub/aos-hub-db/src/application_body_observation/rpc.rs',
+                 'crates/hub/aos-hub-db/src/db/direct_upload.rs',
+                 'crates/hub/aos-hub-db/src/db/publication_admission.rs')
         self.operation = {'kind': 'manifest_append_retained_receipt', 'publicationId': 'synthetic-publication',
             'registryId': '1', 'leaseTokenSha256': 'd' * 64, 'manifestDigest': 'e' * 64,
             'chunkIndex': '3', 'chunkDigest': 'f' * 64, 'objectCount': '1',

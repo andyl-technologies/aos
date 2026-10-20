@@ -4,7 +4,7 @@
   mkCargoPackage,
   mkCargoArtifacts,
   mkCargoDummySource,
-  fetchCargoVendor,
+  aosWorkspaceVendor,
   glib,
   pkg-config,
   qemu-crucible,
@@ -12,12 +12,8 @@
 }: let
   version = "0.1.0";
   src = import ../tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = fetchCargoVendor {
-    inherit src;
-    name = "crucible-vendor-${version}";
-    sourceRoot = "source/crates";
-    hash = import ../tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = aosWorkspaceVendor;
+  cargoWorkspaceMembers = import ../tools/crucible/_workspace.nix {inherit lib;};
   cargoArtifactContract = {
     family = "crucible-gpl-qemu-plugin-release-and-test";
     nativeInputs = map toString [glib glib.dev glib.tools pkg-config qemu-crucible sqlite];
@@ -26,7 +22,7 @@
   cargoEnv = {LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";};
   cargoArtifacts = mkCargoArtifacts {
     pname = "crucible-qemu-plugin-artifacts";
-    inherit version cargoDeps cargoArtifactContract cargoEnv;
+    inherit version cargoDeps cargoWorkspaceMembers cargoArtifactContract cargoEnv;
     src = mkCargoDummySource {
       srcRoot = ../../crates;
       name = "crucible-qemu-plugin-dummy-source";
@@ -43,8 +39,19 @@
 in
   mkCargoPackage {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
       target = [];
       role = "build-input";
     };
@@ -101,7 +108,7 @@ in
 
     inherit version src;
 
-    inherit cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
+    inherit cargoDeps cargoWorkspaceMembers cargoArtifacts cargoArtifactContract cargoEnv;
     cargoRoot = "crates";
     cargoNextest = true;
 
@@ -134,7 +141,7 @@ in
             qemu_plugin_api_version=''${qemu_plugin_api_version%;}
             ;;
         esac
-      done < crucible-qemu-plugin/src/abi.rs
+      done < crucible/qemu/crucible-qemu-plugin/src/abi.rs
       test -n "$qemu_plugin_api_version"
 
       shmem_abi_version=
@@ -145,7 +152,7 @@ in
             shmem_abi_version=''${shmem_abi_version%;}
             ;;
         esac
-      done < crucible-shmem/src/lib.rs
+      done < crucible/protocol/crucible-qemu-shmem/src/lib.rs
       test -n "$shmem_abi_version"
 
       shmem_header="${qemu-crucible}/include/aos/crucible/crucible_shmem_abi.h"
@@ -218,7 +225,7 @@ in
             qemu_plugin_api_version=''${qemu_plugin_api_version%;}
             ;;
         esac
-      done < crucible-qemu-plugin/src/abi.rs
+      done < crucible/qemu/crucible-qemu-plugin/src/abi.rs
       test -n "$qemu_plugin_api_version"
 
       shmem_abi_version=
@@ -229,7 +236,7 @@ in
             shmem_abi_version=''${shmem_abi_version%;}
             ;;
         esac
-      done < crucible-shmem/src/lib.rs
+      done < crucible/protocol/crucible-qemu-shmem/src/lib.rs
       test -n "$shmem_abi_version"
 
       mkdir -p "$out/nix-support"
@@ -261,7 +268,7 @@ in
       cat > "$out/share/licenses/crucible-qemu-plugin/COMPONENT" <<'LICENSE_SCOPE'
       crucible-qemu-plugin is an in-process QEMU adapter.
       SPDX-License-Identifier: GPL-2.0-only
-      crucible-protocol and crucible-shmem are used under their MIT option.
+      crucible-qemu-protocol and crucible-qemu-shmem are used under their MIT option.
       LICENSE_SCOPE
     '';
 

@@ -11,7 +11,7 @@ Rust/Cargo and the ordinary package's native libraries, protobuf and console
 inputs. It builds only the Native library test target:
 
 ```text
-cargo test --release --frozen --offline --no-run -p aos-hub --lib \
+cargo test --release --frozen --offline --no-run -p aos-hub-native --lib \
   --features postgres,required-live-dialects -j$NIX_BUILD_CORES
 ```
 

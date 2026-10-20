@@ -6,7 +6,7 @@
   selector = "storage_work::external_oci::tests::fleet::pack_memory::actual_pack_memory_native_consumer";
   externalOciSelector = "storage_work::external_oci::tests::fleet::actual_external_oci_fleet_origin";
   externalOciSetupSelector = "storage_work::external_oci::tests::fleet_setup::actual_external_oci_fleet_setup";
-  cargoCommand = "test --release --frozen --offline --no-run -p aos-hub --lib --features postgres,required-live-dialects -j$NIX_BUILD_CORES";
+  cargoCommand = "test --release --frozen --offline --no-run -p aos-hub-native --lib --features postgres,required-live-dialects -j$NIX_BUILD_CORES";
 in
   assert pkgs.stdenv.hostPlatform.isLinux && !pkgs.stdenv.isCross;
     pkgs.mkCargoPackage {
@@ -18,9 +18,9 @@ in
       cargoDeps = builtins.elemAt native.passthru.evidenceSources 1;
       # Native library tests import the pure Worker ledger and its regressions.
       postConfigure = ''
-        mkdir -p aos-hub-worker/src
-        cp ${worker.src}/crates/aos-hub-worker/src/hybrid_authority_state.rs aos-hub-worker/src/
-        cp -r ${worker.src}/crates/aos-hub-worker/src/hybrid_authority_state aos-hub-worker/src/
+        mkdir -p hub/aos-hub-worker/src
+        cp ${worker.src}/crates/hub/aos-hub-worker/src/hybrid_authority_state.rs hub/aos-hub-worker/src/
+        cp -r ${worker.src}/crates/hub/aos-hub-worker/src/hybrid_authority_state hub/aos-hub-worker/src/
       '';
       cargoBuildCommands = [cargoCommand];
       cargoEnv = {
@@ -52,7 +52,7 @@ in
         selected="$NIX_BUILD_TOP/managed-cleanup-test-executables"
         jq -r '
           select(.reason == "compiler-artifact"
-            and .target.name == "aos_hub"
+            and .target.name == "aos_hub_native"
             and .target.kind == ["lib"]
             and .profile.test == true)
           | .executable // empty

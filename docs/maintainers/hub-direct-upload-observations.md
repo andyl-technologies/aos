@@ -2,7 +2,7 @@
 
 Worker console lines beginning with `direct_upload_observation ` contain one
 closed JSON event. The schema lives in
-`crates/aos-hub-worker/src/direct_upload/observation.rs`. Events describe actual
+`crates/hub/aos-hub-worker/src/direct_upload/observation.rs`. Events describe actual
 runtime boundaries; they do not authorize publication or qualify a deployment.
 
 ## Correlation and privacy

@@ -234,17 +234,18 @@ fn refused_completion_needs_its_fixed_body_and_bounded_closed_error() {
 
 #[test]
 fn legacy_capability_observation_preserves_shared_bundle_and_operation_checks() {
-    use aos_hub_core::storage_work::{
-        StorageCapabilities, MAX_RESULT_BYTES, MAX_VERIFY_SOURCE_BYTES,
-        STORAGE_CAPABILITIES_CHALLENGE, STORAGE_CAPABILITIES_PATH,
-    };
+    use aos_hub_db::storage_work::StorageCapabilities;
+    use aos_hub_db::storage_work::MAX_RESULT_BYTES;
+    use aos_hub_db::storage_work::MAX_VERIFY_SOURCE_BYTES;
+    use aos_hub_db::storage_work::STORAGE_CAPABILITIES_CHALLENGE;
+    use aos_hub_db::storage_work::STORAGE_CAPABILITIES_PATH;
 
     let fixture = Fixture::new();
     let capabilities = StorageCapabilities {
         version: 1,
         deployment_id: "fixture".into(),
         binding_kind: "deployment_r2".into(),
-        console_asset_version: Some(aos_hub_core::web::assets::asset_version().into()),
+        console_asset_version: Some(aos_hub_service::web::assets::asset_version().into()),
         r2_gc_incarnation_v1: true,
         operations: [
             "head",
@@ -298,7 +299,11 @@ fn legacy_capability_observation_preserves_shared_bundle_and_operation_checks() 
     let mut substituted = capabilities.clone();
     substituted.console_asset_version = Some("foreign-bundle".into());
     assert!(inspect(build(&serde_json::to_vec(&substituted).unwrap())).is_err());
-    for missing in ["head", "verify_prepared_git_index_v1", "put_prepared_control_v1"] {
+    for missing in [
+        "head",
+        "verify_prepared_git_index_v1",
+        "put_prepared_control_v1",
+    ] {
         substituted = capabilities.clone();
         substituted.operations.retain(|kind| kind != missing);
         assert!(inspect(build(&serde_json::to_vec(&substituted).unwrap())).is_err());
@@ -307,7 +312,8 @@ fn legacy_capability_observation_preserves_shared_bundle_and_operation_checks() 
 
 #[test]
 fn capability_refusal_counts_exact_source_owned_control_text_without_acceptance() {
-    use aos_hub_core::storage_work::{STORAGE_CAPABILITIES_CHALLENGE, STORAGE_CAPABILITIES_PATH};
+    use aos_hub_db::storage_work::STORAGE_CAPABILITIES_CHALLENGE;
+    use aos_hub_db::storage_work::STORAGE_CAPABILITIES_PATH;
 
     let fixture = Fixture::new();
     let build = |reply: &[u8]| {

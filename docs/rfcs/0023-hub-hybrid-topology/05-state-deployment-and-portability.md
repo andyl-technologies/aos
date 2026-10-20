@@ -28,8 +28,8 @@ stable external credentials shared by every Native replica. Hybrid startup
 must reject an absent key rather than generate one under an ephemeral root:
 sealed SQL secrets and authenticated sessions must survive a revision change.
 
-The existing [`Backend`](../../../crates/aos-hub-core/src/backend/mod.rs)
-and [`Database::connect`](../../../crates/aos-hub-core/src/db/mod.rs) already
+The existing [`Backend`](../../../crates/hub/aos-hub-db/src/backend/mod.rs)
+and [`Database::connect`](../../../crates/hub/aos-hub-db/src/db/mod.rs) already
 support PostgreSQL behind a feature. The Native `serve`, `index`, `init`, and
 administrative commands currently open `hub.db` directly, however, and the
 Native server provisions a local filesystem default binding at startup. Hybrid
@@ -198,7 +198,7 @@ A portable snapshot is desirable but is a **later phase of this RFC**, not a
 prerequisite for the first staging hybrid deployment. Provider-native SQLite
 PITR or PostgreSQL backups remain useful for in-place recovery; neither alone
 is a topology-independent Hub export. The current
-[`export_org`](../../../crates/aos-hub/src/export.rs) covers an organization
+[`export_org`](../../../crates/hub/aos-hub-native/src/export.rs) covers an organization
 and copyable registry surfaces, not a complete Hub instance.
 
 The intended operator interface is a versioned `aos-hub snapshot export`,

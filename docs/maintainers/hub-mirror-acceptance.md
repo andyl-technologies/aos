@@ -6,7 +6,7 @@ journals, final-key reservation, Native acknowledgement archive and private
 stage cleanup require their own actual measurements. Direct SDK qualification
 does not cover these producer operations.
 
-The public contract is `aos_hub_core::mirror_acceptance`. The Worker checks
+The public contract is `aos_hub_db::mirror_acceptance`. The Worker checks
 `MirrorAcceptanceArtifact` before a production effect, after independently
 loading direct acceptance and resolving the actual full managed profile.
 Missing acceptance, an unfamiliar purpose, a different build or profile,

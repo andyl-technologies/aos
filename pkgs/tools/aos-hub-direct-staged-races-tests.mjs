@@ -148,7 +148,7 @@ await fs.writeFile(token, 'synthetic-private-app-session', { mode: 0o600 });
 const sourceRef = async file => ({ file, sha256: sha(await fs.readFile(file)) });
 const reportHelperSource = await sourceRef(path.join(productionRoot, 'pkgs/tools/aos-hub-direct-qualification.mjs'));
 const protoSources = await Promise.all(['model.rs', 'validation.rs', 'batch.rs'].map(name => sourceRef(
-  path.join(productionRoot, 'crates/aos-proto-types/src/direct_upload', name))));
+  path.join(productionRoot, 'crates/hub/aos-hub-api/src/direct_upload', name))));
 const capabilityValue = (target, providerOrigin) => ({ target, deploymentId: 'synthetic-deployment',
   principalId: '88'.repeat(32), version: 1, capability: 'aos.direct.multipart.v1', transferMode: 'direct_required',
   configGeneration: '2', validUntil: String(Math.floor(Date.now() / 1000) + 90), maximumControlBytes: 262144,

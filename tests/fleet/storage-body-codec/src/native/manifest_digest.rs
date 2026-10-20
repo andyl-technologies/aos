@@ -1,7 +1,7 @@
 //! Exact source-extracted production manifest-page serializer.
 
-use aos_hub_core::service::RpcError;
-use aos_proto_types as pb;
+use aos_hub_api as pb;
+use aos_hub_service::service::RpcError;
 use sha2::{Digest as _, Sha256};
 
 fn registry_publication_manifest_chunk_digest(

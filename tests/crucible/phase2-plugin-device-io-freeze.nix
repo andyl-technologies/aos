@@ -8,25 +8,25 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
+  pluginLib = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs;
   pluginDeviceIo = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/device_io.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/device_io.rs;
   };
   pluginDeviceIoContract =
     pluginDeviceIo
-    + builtins.readFile ../../crates/crucible-qemu-plugin/src/device_io_test.rs;
+    + builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/device_io_test.rs;
   pluginIdleLoop = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/idle_loop.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/idle_loop.rs;
   };
   pluginIdleLoopContract = pluginIdleLoop;
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   shmemSources = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-shmem/src/shmem/frame_node.rs;
+    entry = ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/frame_node.rs;
   };
-  shmemNodeSlotTests = builtins.readFile ../../crates/crucible-shmem/tests/multi_vcpu_node_slot.rs;
+  shmemNodeSlotTests = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/tests/multi_vcpu_node_slot.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -51,11 +51,11 @@
 
   hotPathSources = [
     {
-      label = "crates/crucible-qemu-plugin/src/device_io.rs";
+      label = "crates/crucible/qemu/crucible-qemu-plugin/src/device_io.rs";
       content = pluginDeviceIo;
     }
     {
-      label = "crates/crucible-qemu-plugin/src/idle_loop module";
+      label = "crates/crucible/qemu/crucible-qemu-plugin/src/idle_loop module";
       content = pluginIdleLoop;
     }
   ];
@@ -88,7 +88,7 @@
         needle = "cleared on burst-done";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs" pluginLib [
       {
         label = "device I/O module exported";
         needle = "pub mod device_io;";
@@ -106,7 +106,7 @@
         needle = "DeviceIoFreezeError";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/device_io module and tests" pluginDeviceIoContract [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/device_io module and tests" pluginDeviceIoContract [
       {
         label = "freeze state type";
         needle = "pub struct PluginDeviceIoFreeze";
@@ -200,7 +200,7 @@
         needle = "device_io_foreign_token_with_target_pending_is_fail_loud";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/idle_loop module" pluginIdleLoopContract [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/idle_loop module" pluginIdleLoopContract [
       {
         label = "idle plan carries device I/O hold";
         needle = "device_io_holding_ticks";
@@ -230,7 +230,7 @@
         needle = "idle_loop_device_io_freeze_uses_pending_counter_when_flag_is_stale";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/src/shmem/frame_node module" shmemSources [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/frame_node module" shmemSources [
       {
         label = "mark device I/O active";
         needle = "pub fn mark_device_io_active";
@@ -252,7 +252,7 @@
         needle = "pub fn wake_for_device_io_release";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/tests/multi_vcpu_node_slot.rs" shmemNodeSlotTests [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/tests/multi_vcpu_node_slot.rs" shmemNodeSlotTests [
       {
         label = "node slot device I/O publication test";
         needle = "node_slot_publishes_device_io_active_flag";
@@ -274,7 +274,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.rust
         pkgs.sed
       ];
@@ -341,7 +344,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-plugin-device-io-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible-shmem \
+              -p crucible-qemu-shmem \
               node_slot_publishes_device_io_active_flag \
               -- --test-threads=1
           '';

@@ -1,7 +1,8 @@
 //! Real production codec positives and refusal boundaries for the observer.
 
 use super::*;
-use aos_hub_core::{direct_upload::*, storage_work::*};
+use aos_hub_db::direct_upload::*;
+use aos_hub_db::storage_work::*;
 use std::{fs, os::unix::fs::PermissionsExt as _};
 
 pub(super) fn reference(raw: &[u8], label: &str) -> BodyFile {
@@ -54,9 +55,10 @@ fn selection(captures: Vec<Capture>) -> Selection {
 
 #[test]
 fn publication_phase_decoder_accepts_partial_error_without_classifying_the_reply() {
-    use aos_hub_core::application_body_observation::{image, publication::Summary};
+    use aos_hub_db::application_body_observation::image;
+    use aos_hub_db::application_body_observation::publication::Summary;
     use sha2::{Digest as _, Sha256};
-    let original = aos_proto_types::CommitRegistryPublicationRequest {
+    let original = aos_hub_api::CommitRegistryPublicationRequest {
         publication_id: "original-publication".into(),
     };
     let request = serde_json::to_vec(&original).unwrap();
@@ -64,17 +66,17 @@ fn publication_phase_decoder_accepts_partial_error_without_classifying_the_reply
     let mut producer = Sha256::new();
     for (name, bound) in [
         (
-            "crates/aos-hub-core/src/application_body_observation/publication.rs",
+            "crates/hub/aos-hub-db/src/application_body_observation/publication.rs",
             1024 * 1024,
         ),
         (
-            "crates/aos-hub-core/src/application_body_observation.rs",
+            "crates/hub/aos-hub-db/src/application_body_observation.rs",
             1024 * 1024,
         ),
-        ("crates/aos-hub-core/src/service.rs", 2 * 1024 * 1024),
-        ("crates/aos-hub-core/src/db/mod.rs", 2 * 1024 * 1024),
+        ("crates/hub/aos-hub-service/src/service.rs", 2 * 1024 * 1024),
+        ("crates/hub/aos-hub-db/src/db/mod.rs", 2 * 1024 * 1024),
         (
-            "crates/aos-hub-core/src/db/publication_delivery.rs",
+            "crates/hub/aos-hub-db/src/db/publication_delivery.rs",
             1024 * 1024,
         ),
     ] {
@@ -112,7 +114,7 @@ fn publication_phase_decoder_accepts_partial_error_without_classifying_the_reply
     assert_eq!(projected["sqlReaderAuthority"], "not_checked");
     assert!(observed[0].immutable_projection.is_none());
 
-    let foreign = aos_proto_types::CommitRegistryPublicationRequest {
+    let foreign = aos_hub_api::CommitRegistryPublicationRequest {
         publication_id: "foreign-publication".into(),
     };
     let mut selected = capture(
@@ -131,7 +133,7 @@ fn publication_phase_decoder_accepts_partial_error_without_classifying_the_reply
 
 #[test]
 fn canonical_public_manifest_is_correlated_and_unknown_bytes_refuse() {
-    use aos_proto_types::*;
+    use aos_hub_api::*;
     let original = BeginRegistryPublicationManifestRequest {
         registry: "registry".into(),
         generation: "generation".into(),
@@ -350,11 +352,14 @@ fn exact_shell_matches_current_assets_and_rejects_escape_or_trailing_substitutio
         ("support_url", ""),
         ("app_version", env!("NATIVE_APP_VERSION")),
         ("container_gc_enabled", "false"),
-        ("asset_version", aos_hub_core::web::assets::asset_version()),
-        ("css", &aos_hub_core::web::assets::console_css_name()),
+        (
+            "asset_version",
+            aos_hub_service::web::assets::asset_version(),
+        ),
+        ("css", &aos_hub_service::web::assets::console_css_name()),
         (
             "bootstrap",
-            &aos_hub_core::web::assets::console_bootstrap_name(),
+            &aos_hub_service::web::assets::console_bootstrap_name(),
         ),
     ] {
         shell = shell.replace(&format!("{{{name}}}"), value);

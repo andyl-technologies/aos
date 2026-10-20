@@ -42,7 +42,7 @@ DNS, trust anchors, store). Two candidate mechanisms are rejected:
 **Recommendation:** the graph compiler **writes unit files to
 `/run/systemd/system/`, calls `daemon-reload`, then starts `aos-config.target`**
 — exactly the capability set the `aos-systemd` client already exposes
-(`crates/aos-systemd/src/client.rs`: `start_unit`/`reload`(=daemon-reload)/
+(`crates/shared/aos-systemd-client/src/client.rs`: `start_unit`/`reload`(=daemon-reload)/
 `reset_failed_unit`/`list_units_by_patterns`). `/run/systemd/system` outranks
 `/etc` and `/usr`, is tmpfs (wiped every boot, re-derived from gen-0 + the
 manifest), and is **not** part of the composefs `/etc` overlay — so orchestration
@@ -253,7 +253,7 @@ re-eval for same-ABI rollback.
   `aos-install-packages.service` (`:385-406`) with `aos-eval.service`
   (best-effort, hardened scope) + `aos-graph-compile.service` + `aos-activate.service`;
   keep `aos-preset.service` `After=aos-activate.service`.
-- **`crates/aos-package/`** — the graph compiler: a new module (sibling to
+- **`crates/aos/packages/aos-package-manager/`** — the graph compiler: a new module (sibling to
   `exposed_units.rs`/`config_artifact.rs`) that consumes `manifest.json` +
   `graph.json`, writes `/run/systemd/system/` instance dropins + `.wants`, and
   drives the chain via the existing `aos-systemd` client. New `apm` subverbs

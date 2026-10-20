@@ -11,10 +11,10 @@ pub(super) fn source() -> Value {
     serde_json::json!({
         "handlerSourceSha256": env!("NATIVE_BROWSER_HANDLER_SHA256"),
         "templateSha256": files::digest(TEMPLATE.as_bytes()),
-        "assetVersion": aos_hub_core::web::assets::asset_version(),
-        "consoleJsSha256": files::digest(aos_hub_core::web::assets::CONSOLE_JS),
-        "consoleWasmSha256": files::digest(aos_hub_core::web::assets::CONSOLE_WASM),
-        "consoleCssSha256": files::digest(aos_hub_core::web::assets::CONSOLE_CSS),
+        "assetVersion": aos_hub_service::web::assets::asset_version(),
+        "consoleJsSha256": files::digest(aos_hub_service::web::assets::CONSOLE_JS),
+        "consoleWasmSha256": files::digest(aos_hub_service::web::assets::CONSOLE_WASM),
+        "consoleCssSha256": files::digest(aos_hub_service::web::assets::CONSOLE_CSS),
     })
 }
 
@@ -87,11 +87,11 @@ pub(super) fn classify(capture: &Capture, request: &[u8], response: &[u8]) -> Re
         "browser title does not match brand"
     );
     ensure!(
-        values.get("asset_version") == Some(&aos_hub_core::web::assets::asset_version())
+        values.get("asset_version") == Some(&aos_hub_service::web::assets::asset_version())
             && values.get("css").copied()
-                == Some(aos_hub_core::web::assets::console_css_name().as_str())
+                == Some(aos_hub_service::web::assets::console_css_name().as_str())
             && values.get("bootstrap").copied()
-                == Some(aos_hub_core::web::assets::console_bootstrap_name().as_str())
+                == Some(aos_hub_service::web::assets::console_bootstrap_name().as_str())
             && values.get("app_version").copied() == Some(env!("NATIVE_APP_VERSION")),
         "browser installed asset identity differs"
     );

@@ -186,18 +186,18 @@ the storage-compute chapter.
 
 The main implementation seams in the current tree are:
 
-- `crates/aos-hub-worker/src/lib.rs`: split the Worker entry into explicit
+- `crates/hub/aos-hub-worker/src/lib.rs`: split the Worker entry into explicit
   Worker-only and hybrid dispatch. Reuse its route classification and safe
   public-cache rules where they apply; hybrid control requests go to Native
   instead of a request-execution Durable Object.
-- `crates/aos-hub/src/server.rs`: keep the shared service/router and add a
+- `crates/hub/aos-hub-native/src/server.rs`: keep the shared service/router and add a
   verified hybrid ingress context. Configure hybrid storage and coordination
   ports without weakening native-only operation.
-- `crates/aos-hub/src/main.rs`: configure hybrid serving with PostgreSQL,
+- `crates/hub/aos-hub-native/src/main.rs`: configure hybrid serving with PostgreSQL,
   stable service identities, a private Native origin, and matching Worker
   console capabilities before opening the Native listener. Keep native-only
   SQLite configuration separate.
-- `crates/aos-hub-core/src/backend/sqlx.rs`: use its PostgreSQL backend as
+- `crates/hub/aos-hub-db/src/backend/sqlx.rs`: use its PostgreSQL backend as
   the SQL starting point, then qualify migrations and transaction semantics
   against PostgreSQL in the complete Hub service.
 

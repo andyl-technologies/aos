@@ -2,9 +2,10 @@
   pkgs,
   lib,
 }: let
+  inherit (import ./_workspace-packages.nix {inherit lib;}) packageDir packageNames cruciblePackages;
   cratesDir = ../../crates;
 
-  readManifest = package: builtins.fromTOML (builtins.readFile (cratesDir + "/${package}/Cargo.toml"));
+  readManifest = package: builtins.fromTOML (builtins.readFile (packageDir package + "/Cargo.toml"));
 
   workspaceManifest = builtins.fromTOML (builtins.readFile (cratesDir + "/Cargo.toml"));
   workspaceDependencies =
@@ -48,27 +49,27 @@
   in
     direct ++ target;
 
-  allowedEntrypoints = ["crucible-api" "crucible-session" "crucible-daemon"];
+  allowedEntrypoints = ["crucible-control-api" "crucible-control-client" "crucible-control-server" "crucible-session" "crucible-daemon"];
   # RFC-0020 04a: the daemon owns the sole-writer actor and the local
   # executor, so it hosts the engine directly like the session actor.
-  engineHosts = ["crucible-session" "crucible-daemon"];
+  engineHosts = ["crucible-session" "crucible-control-server" "crucible-daemon"];
   # Crates below the engine: data models, stores, protocols, and QEMU
   # process control. Depending on one of them reaches no engine.
   substrateCrates = [
-    "crucible-assert"
+    "crucible-test-support"
     "crucible-campaign"
-    "crucible-cas"
-    "crucible-debug-gateway"
+    "crucible-store"
+    "crucible-qemu-debug-gateway"
     "crucible-device"
     "crucible-guest"
-    "crucible-harness"
-    "crucible-linux-resource"
-    "crucible-protocol"
-    "crucible-qemu"
+    "crucible-test-support"
+    "aos-linux-project-quota"
+    "crucible-qemu-protocol"
+    "crucible-qemu-host"
     "crucible-qemu-plugin"
-    "crucible-s3-store"
-    "crucible-shmem"
-    "crucible-sim"
+    "crucible-store-s3"
+    "crucible-qemu-shmem"
+    "crucible-determinism"
   ];
 
   findingsFor = workspaceDeps: manifests: packages:
@@ -78,7 +79,7 @@
       in
         lib.concatMap (
           dependency:
-            if dependency.package == "crucible" && !(builtins.elem package engineHosts)
+            if dependency.package == "crucible-engine" && !(builtins.elem package engineHosts)
             then [
               "${package} has direct dependency `${dependency.name}` on the engine crate in ${dependency.scope}"
             ]
@@ -86,8 +87,9 @@
               lib.hasPrefix "crucible-" dependency.package
               && !(builtins.elem dependency.package allowedEntrypoints)
               && !(builtins.elem dependency.package substrateCrates)
+              && !(dependency.package == "crucible-engine" && builtins.elem package engineHosts)
             then [
-              "${package} may reach the engine only through crucible-api/crucible-session, found `${dependency.package}`"
+              "${package} may reach the engine only through the control/session crates, found `${dependency.package}`"
             ]
             else []
         )
@@ -109,7 +111,7 @@
     findings = findingsFor workspaceDependencies {
       crucible-cli = {
         dependencies.engine = {
-          package = "crucible";
+          package = "crucible-engine";
         };
       };
     } ["crucible-cli"];
@@ -124,7 +126,7 @@
     findings = findingsFor workspaceDependencies {
       crucible-cli = {
         target."cfg(unix)".dependencies.engine = {
-          package = "crucible";
+          package = "crucible-engine";
         };
       };
     } ["crucible-cli"];
@@ -139,7 +141,7 @@
     findings = findingsFor (workspaceDependencies
       // {
         engine = {
-          package = "crucible";
+          package = "crucible-engine";
         };
       }) {
       crucible-cli = {
@@ -157,7 +159,7 @@
     findings = findingsFor workspaceDependencies {
       crucible-daemon = {
         dependencies = {
-          crucible-api = {};
+          crucible-control-api = {};
           session.package = "crucible-session";
         };
       };
@@ -197,7 +199,7 @@ in
             check=checks.crucible.phase1.controlPlaneBoundary
             gate=gate:control-responsive
             tasks=T-CRATE-9
-            rust_test=crucible-harness::control_plane_boundary
+            rust_test=crucible_test_support::control_plane_boundary
             RESULT
           '';
         }

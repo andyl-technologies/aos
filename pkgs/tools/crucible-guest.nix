@@ -5,7 +5,7 @@
   mkCargoPackage,
   mkCargoArtifacts,
   mkCargoDummySource,
-  fetchCargoVendor,
+  aosWorkspaceVendor,
   patchelf,
   glibc,
   sqliteStatic,
@@ -28,12 +28,8 @@
   guestLinkDeps = lib.optional stdenv.isCross sqliteStatic;
 
   src = import ./crucible/_source.nix {inherit lib;};
-  cargoDeps = fetchCargoVendor {
-    inherit src;
-    name = "crucible-guest-vendor-${version}";
-    sourceRoot = "source/crates";
-    hash = import ./crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = aosWorkspaceVendor;
+  cargoWorkspaceMembers = import ./crucible/_workspace.nix {inherit lib;};
   targetTriple =
     {
       "x86_64-linux" = "x86_64-unknown-linux-gnu";
@@ -79,7 +75,7 @@
   };
   cargoArtifacts = mkCargoArtifacts {
     pname = "crucible-static-guest-artifacts";
-    inherit version cargoDeps cargoArtifactContract cargoEnv;
+    inherit version cargoDeps cargoWorkspaceMembers cargoArtifactContract cargoEnv;
     src = mkCargoDummySource {
       srcRoot = ../../crates;
       name = "crucible-static-guest-dummy-source";
@@ -97,8 +93,19 @@
 in
   mkCargoPackage {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -155,7 +162,7 @@ in
 
     inherit version src;
 
-    inherit cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
+    inherit cargoDeps cargoWorkspaceMembers cargoArtifacts cargoArtifactContract cargoEnv;
     cargoRoot = "crates";
     cargoNextest = true;
 
@@ -190,7 +197,7 @@ in
 
       doorbell_instruction_abi_version=$(sed -n \
         's/^pub const WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION: u16 = \([0-9][0-9]*\);$/\1/p' \
-        crucible-protocol/src/doorbell_abi.rs)
+        crucible/protocol/crucible-qemu-protocol/src/doorbell_abi.rs)
       test -n "$doorbell_instruction_abi_version"
 
       mkdir -p "$out/nix-support"

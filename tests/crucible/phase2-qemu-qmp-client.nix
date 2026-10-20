@@ -7,13 +7,13 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  qemuCargo = builtins.readFile ../../crates/crucible-qemu/Cargo.toml;
-  qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
+  qemuCargo = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/Cargo.toml;
+  qemuLib = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/src/lib.rs;
   qmpSurface = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu/src/qmp.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-host/src/qmp.rs;
   };
-  qmpTest = builtins.readFile ../../crates/crucible-qemu/tests/qmp.rs;
+  qmpTest = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/tests/qmp.rs;
   qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -32,13 +32,13 @@
         needle = "Production checkpoints MUST capture and restore complete\n  version-nine state";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/Cargo.toml" qemuCargo [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/Cargo.toml" qemuCargo [
       {
         label = "serde_json dependency";
         needle = "serde_json = { workspace = true }";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/lib.rs" qemuLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/lib.rs" qemuLib [
       {
         label = "qmp module";
         needle = "mod qmp;";
@@ -52,7 +52,7 @@
         needle = "QmpJobPollPolicy";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/qmp*.rs" qmpSurface [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/qmp*.rs" qmpSurface [
       {
         label = "typed client";
         needle = "pub struct QmpClient";
@@ -147,10 +147,10 @@
       }
       {
         label = "checkpoint model import";
-        needle = "use crucible::{Checkpoint, ContentHash}";
+        needle = "use crucible_engine::{Checkpoint, ContentHash}";
       }
     ]
-    ++ forbiddenFor "crates/crucible-qemu/src/qmp*.rs" qmpSurface [
+    ++ forbiddenFor "crates/crucible/qemu/crucible-qemu-host/src/qmp*.rs" qmpSurface [
       {
         label = "public arbitrary execute path";
         needle = "pub fn " + "execute";
@@ -172,7 +172,7 @@
         needle = "QMP_SNAPSHOT_" + "LOAD_COMMAND";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/tests/qmp.rs" qmpTest [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/tests/qmp.rs" qmpTest [
       {
         label = "connect negotiation test";
         needle = "qmp_connect_reads_greeting_and_negotiates_capabilities";
@@ -201,7 +201,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.rust
         pkgs.sed
       ];
@@ -244,7 +247,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-qemu-qmp-client-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible-qemu \
+              -p crucible-qemu-host \
               --test qmp \
               -- --test-threads=1
           '';
@@ -260,7 +263,7 @@ in
             tasks=${taskList}
             check_scope=task-level
             related_gates=gate:control-responsive,gate:replay-oracle,gate:content-address
-            rust_test=crucible-qemu::qmp
+            rust_test=crucible_qemu_host::qmp
             commands=qmp_capabilities,snapshot-save,crucible-checkpoint-restore,snapshot-delete,query-jobs,crucible-hot-fork-plugin-barrier,crucible-hot-fork-rcu-barrier,crucible-hot-fork-async-worker-barrier,crucible-hot-fork-block-barrier,crucible-hot-fork-template,crucible-hot-fork-private-rings,query-crucible-hot-fork-plugin-resource-inventory,quit
             client_api=connect-with-policies-and-typed-bounded-commands
             capabilities=oob-required

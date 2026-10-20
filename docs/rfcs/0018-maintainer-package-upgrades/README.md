@@ -172,8 +172,8 @@ update dossier helps reviewers decide whether to merge; the release flow
 independently resolves, rebuilds, qualifies, and publishes the merged source.
 
 Canonical JSON, digest, bounded-decoding, and primitive contract types are
-shared with `aos-release` through one small pure contract crate. `aos-maintain`
-owns only update-specific policy and state. This preserves RFC-0017's
+shared with `aos-release-format` through portable `aos-core` primitives.
+`aos-package-maintenance` owns only update-specific policy and state. This preserves RFC-0017's
 requirement for one implementation of common contract primitives; see its
 [code architecture](../0017-canonical-hub-publishing/07-code-architecture-and-delivery-plan.md).
 

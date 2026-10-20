@@ -96,7 +96,7 @@ class NativeSourceFormula(unittest.TestCase):
         selected = namespace['native_handler_source_sha256']
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            handler = root / 'crates/aos-hub/src'
+            handler = root / 'crates/hub/aos-hub-native/src'
             (handler / 'server').mkdir(parents=True)
             (handler / 'server.rs').write_bytes(b'synthetic handler')
             observation = handler / 'server/hybrid_observation.rs'

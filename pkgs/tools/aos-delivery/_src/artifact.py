@@ -359,7 +359,7 @@ def build_bundle(args):
             "declarationDigest": digest(declaration),
             "configurationDigest": source_proof["archiveDigest"] if source_proof else archive_digest(args.source_sha),
             "apiSchemaDigest": (local_source.archive_digest if source_proof else archive_digest)(
-                args.source_sha, "crates/aos-proto/src/proto/aos/hub"
+                args.source_sha, "crates/aos/packages/aos-build-api/src/proto/aos/hub"
             ),
             "images": {COMPONENT: {"image": image, "attestations": descriptors}},
         }

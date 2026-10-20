@@ -74,8 +74,8 @@ class InventoryGcPrerequisiteTests(unittest.TestCase):
         source = Path(__file__).resolve().parents[2]
         connection = sqlite3.connect(":memory:")
         try:
-            connection.executescript((source / "crates/aos-hub-core/src/db/schema.sql").read_text())
-            connection.executescript((source / "crates/aos-hub-core/src/db/002-r2-gc-incarnation.sql").read_text())
+            connection.executescript((source / "crates/hub/aos-hub-db/src/db/schema.sql").read_text())
+            connection.executescript((source / "crates/hub/aos-hub-db/src/db/002-r2-gc-incarnation.sql").read_text())
             self.assertEqual(connection.execute(helper.current_inventory_sql(1, 2)).fetchall(), [])
         finally:
             connection.close()

@@ -15,6 +15,8 @@ crates/target/
 # Nix build results
 result
 result-*
+# This source module is unrelated to Nix result symlinks.
+!/crates/crucible/control/crucible-daemon/src/executor_worker/result/
 
 # Direnv
 .direnv/
@@ -31,6 +33,8 @@ result-*
 
 # crucible CLI default runtime store (main.rs --store default_value)
 .crucible/
+/crates/crucible/control/crucible-daemon/run-state/
 
 # Dev hub state (aos-hub `serve --dev`): local db + seeded bucket.
 /crates/.aos-hub/
+/crates/hub/aos-hub-native/.aos-hub/

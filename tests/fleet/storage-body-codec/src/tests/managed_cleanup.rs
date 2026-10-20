@@ -1,13 +1,11 @@
 //! The cleanup body partition is distinct from real transport authentication.
 
-use aos_hub_core::{
-    mirror_guard::MirrorGuardIssuer,
-    oci_cleanup::{
-        ManagedOciCleanupOriginal, ManagedOciCleanupReply, ManagedOciCleanupRequest,
-        MANAGED_OCI_CLEANUP_PATH,
-    },
-    storage_work::StorageObjectIdentity,
-};
+use aos_hub_db::mirror_guard::MirrorGuardIssuer;
+use aos_hub_db::oci_cleanup::ManagedOciCleanupOriginal;
+use aos_hub_db::oci_cleanup::ManagedOciCleanupReply;
+use aos_hub_db::oci_cleanup::ManagedOciCleanupRequest;
+use aos_hub_db::oci_cleanup::MANAGED_OCI_CLEANUP_PATH;
+use aos_hub_db::storage_work::StorageObjectIdentity;
 
 use super::*;
 

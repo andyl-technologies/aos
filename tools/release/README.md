@@ -12,4 +12,4 @@ normal publication API. Preserve previously published signed tags.
 
 This utility validates NAR token encodings, not the complete registry schema.
 Registry producers should use `NarBytes::from_hash` and the shared serializer
-in `aos-registry-surface`, which already emit the canonical representation.
+in `aos-registry-format`, which already emit the canonical representation.

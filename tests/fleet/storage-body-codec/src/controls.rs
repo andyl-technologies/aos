@@ -5,21 +5,23 @@
 
 use crate::{files, Case};
 use anyhow::{ensure, Result};
-use aos_hub_core::{
-    direct_upload::{
-        DirectAuthorityLookup, DirectAuthorityLookupReply, DirectFinalGuardLookup,
-        DirectFinalGuardReply, DirectStorageCapabilitiesReply, DirectStorageCapabilitiesRequest,
-        DIRECT_AUTHORITY_LOOKUP_PATH, DIRECT_FINAL_GUARD_PATH, MAX_DIRECT_CAPABILITY_BYTES,
-        MAX_DIRECT_CONTROL_BYTES,
-    },
-    storage_work::{
-        binding_custody::{
-            StorageBindingAdoptionReply, StorageBindingAdoptionRequest, MAX_BINDING_CUSTODY_BYTES,
-            STORAGE_BINDING_ADOPTION_PATH,
-        },
-        StorageCapabilities, STORAGE_CAPABILITIES_CHALLENGE, STORAGE_CAPABILITIES_PATH,
-    },
-};
+use aos_hub_db::direct_upload::DirectAuthorityLookup;
+use aos_hub_db::direct_upload::DirectAuthorityLookupReply;
+use aos_hub_db::direct_upload::DirectFinalGuardLookup;
+use aos_hub_db::direct_upload::DirectFinalGuardReply;
+use aos_hub_db::direct_upload::DirectStorageCapabilitiesReply;
+use aos_hub_db::direct_upload::DirectStorageCapabilitiesRequest;
+use aos_hub_db::direct_upload::DIRECT_AUTHORITY_LOOKUP_PATH;
+use aos_hub_db::direct_upload::DIRECT_FINAL_GUARD_PATH;
+use aos_hub_db::direct_upload::MAX_DIRECT_CAPABILITY_BYTES;
+use aos_hub_db::direct_upload::MAX_DIRECT_CONTROL_BYTES;
+use aos_hub_db::storage_work::binding_custody::StorageBindingAdoptionReply;
+use aos_hub_db::storage_work::binding_custody::StorageBindingAdoptionRequest;
+use aos_hub_db::storage_work::binding_custody::MAX_BINDING_CUSTODY_BYTES;
+use aos_hub_db::storage_work::binding_custody::STORAGE_BINDING_ADOPTION_PATH;
+use aos_hub_db::storage_work::StorageCapabilities;
+use aos_hub_db::storage_work::STORAGE_CAPABILITIES_CHALLENGE;
+use aos_hub_db::storage_work::STORAGE_CAPABILITIES_PATH;
 
 pub(super) fn supports(path: &str) -> bool {
     matches!(
@@ -128,7 +130,7 @@ pub(super) fn decode(
         STORAGE_CAPABILITIES_PATH if request == STORAGE_CAPABILITIES_CHALLENGE => {
             ensure!(reply.len() <= 4096, "legacy capability bound differs");
             let response: StorageCapabilities = serde_json::from_slice(reply)?;
-            aos_hub::storage_work::validate_capabilities_for_test(deployment, &response)?;
+            aos_hub_native::storage_work::validate_capabilities_for_test(deployment, &response)?;
             ("legacy_storage_capabilities", files::digest(request))
         }
         STORAGE_CAPABILITIES_PATH => {

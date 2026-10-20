@@ -4,23 +4,22 @@
 //! a compact MAC, authorize a current actor or infer where provider work ran.
 
 use anyhow::{ensure, Result};
-use aos_hub_core::{
-    hybrid_ingress::{
-        decode_hybrid_ingress_observation, HybridOciChunkAdmission,
-        HybridOciChunkCompletionRequest, HybridOciManifestAdmission, HybridOciManifestPreflight,
-        HYBRID_OCI_FINAL_AUTHORIZATION_PHASE,
-    },
-    oci::{
-        decode_hybrid_oci_upload_control_observation, parse_oci_path,
-        HybridOciUploadControlObservation, OciRequest,
-    },
-    oci_projection::{guard::decode_oci_projection_observation, OciDocumentProjection},
-    storage_authority::external_object::copy::{
-        control::EXTERNAL_COPY_PATH,
-        metadata::EXTERNAL_COPY_METADATA_PATH,
-        observation::{decode_copy_control_observation, decode_copy_metadata_observation},
-    },
-};
+use aos_hub_db::hybrid_ingress::decode_hybrid_ingress_observation;
+use aos_hub_db::hybrid_ingress::HybridOciChunkAdmission;
+use aos_hub_db::hybrid_ingress::HybridOciChunkCompletionRequest;
+use aos_hub_db::hybrid_ingress::HybridOciManifestAdmission;
+use aos_hub_db::hybrid_ingress::HybridOciManifestPreflight;
+use aos_hub_db::hybrid_ingress::HYBRID_OCI_FINAL_AUTHORIZATION_PHASE;
+use aos_hub_db::oci_projection::guard::decode_oci_projection_observation;
+use aos_hub_db::oci_projection::OciDocumentProjection;
+use aos_hub_db::storage_authority::external_object::copy::control::EXTERNAL_COPY_PATH;
+use aos_hub_db::storage_authority::external_object::copy::metadata::EXTERNAL_COPY_METADATA_PATH;
+use aos_hub_db::storage_authority::external_object::copy::observation::decode_copy_control_observation;
+use aos_hub_db::storage_authority::external_object::copy::observation::decode_copy_metadata_observation;
+use aos_hub_service::oci::decode_hybrid_oci_upload_control_observation;
+use aos_hub_service::oci::parse_oci_path;
+use aos_hub_service::oci::HybridOciUploadControlObservation;
+use aos_hub_service::oci::OciRequest;
 use aos_oci_types::{Annotations, Descriptor, MediaType, Sha256Digest};
 use serde::de::DeserializeOwned;
 
@@ -54,7 +53,7 @@ pub(super) fn classify(
                 request.plan.plan_id,
             )
         }
-        aos_hub_core::storage_work::STORAGE_WORK_PATH => {
+        aos_hub_db::storage_work::STORAGE_WORK_PATH => {
             ensure!(
                 case.method == "POST"
                     && case.phase.is_none()
@@ -80,18 +79,18 @@ pub(super) fn classify(
             control_case(case)?;
             crate::mirror::decode_guard(path, request, reply, source_digest, deployment)?
         }
-        aos_hub_core::storage_authority::external_object::oci::control::EXTERNAL_OCI_PATH => {
+        aos_hub_db::storage_authority::external_object::oci::control::EXTERNAL_OCI_PATH => {
             control_case(case)?;
-            let (request, _) = aos_hub_core::storage_authority::external_object::oci::observation::decode_external_oci_control_observation(request, reply, deployment)?;
+            let (request, _) = aos_hub_db::storage_authority::external_object::oci::observation::decode_external_oci_control_observation(request, reply, deployment)?;
             (
                 "external_oci_control",
                 "external_oci_control_metadata",
                 request.nonce,
             )
         }
-        aos_hub_core::storage_authority::external_object::oci::source::OCI_SOURCE_PATH => {
+        aos_hub_db::storage_authority::external_object::oci::source::OCI_SOURCE_PATH => {
             control_case(case)?;
-            let (request, _) = aos_hub_core::storage_authority::external_object::oci::observation::decode_external_oci_source_observation(request, reply, deployment)?;
+            let (request, _) = aos_hub_db::storage_authority::external_object::oci::observation::decode_external_oci_source_observation(request, reply, deployment)?;
             ensure!(
                 request.issuer.source_digest == source_digest,
                 "source implementation differs"
@@ -102,9 +101,9 @@ pub(super) fn classify(
                 request.nonce,
             )
         }
-        aos_hub_core::storage_authority::external_object::oci::cleanup::OCI_CLEANUP_PATH => {
+        aos_hub_db::storage_authority::external_object::oci::cleanup::OCI_CLEANUP_PATH => {
             control_case(case)?;
-            let (request, _) = aos_hub_core::storage_authority::external_object::oci::observation::decode_external_oci_cleanup_observation(request, reply, deployment)?;
+            let (request, _) = aos_hub_db::storage_authority::external_object::oci::observation::decode_external_oci_cleanup_observation(request, reply, deployment)?;
             ensure!(
                 request.issuer.source_digest == source_digest,
                 "cleanup implementation differs"
@@ -115,10 +114,10 @@ pub(super) fn classify(
                 request.nonce,
             )
         }
-        aos_hub_core::oci_cleanup::MANAGED_OCI_CLEANUP_PATH => {
+        aos_hub_db::oci_cleanup::MANAGED_OCI_CLEANUP_PATH => {
             control_case(case)?;
             let (request, _) =
-                aos_hub_core::oci_cleanup::observation::decode_managed_oci_cleanup_observation(
+                aos_hub_db::oci_cleanup::observation::decode_managed_oci_cleanup_observation(
                     request, reply, deployment,
                 )?;
             ensure!(
@@ -131,7 +130,7 @@ pub(super) fn classify(
                 request.nonce,
             )
         }
-        aos_hub_core::oci_projection::guard::OCI_PROJECTION_PATH => {
+        aos_hub_db::oci_projection::guard::OCI_PROJECTION_PATH => {
             control_case(case)?;
             let (request, reply) = decode_oci_projection_observation(request, reply, deployment)?;
             ensure!(

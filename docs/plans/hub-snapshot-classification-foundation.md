@@ -7,7 +7,7 @@ state, authenticate an artifact, fetch secrets, copy objects, or activate a Hub.
 
 ## Schema contract
 
-`crates/aos-hub-core/src/snapshot/schema-v3.tsv` explicitly covers all 267 tables
+`crates/hub/aos-hub-db/src/snapshot/schema-v3.tsv` explicitly covers all 267 tables
 and 2,586 columns of the current Native SQLite production initializer: the 266
 application tables and the separately synthesized `schema_version` ledger.
 Each row names a table disposition, column, storage class, nullability,

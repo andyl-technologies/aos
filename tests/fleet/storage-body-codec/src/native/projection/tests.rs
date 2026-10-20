@@ -2,8 +2,9 @@
 
 use super::*;
 use crate::native::{Bodies, Capture};
-use aos_hub_core::db::{DirectSqlOwner, DirectUploadSessionRecord};
-use aos_proto_types::RegistryPublicationObjectInput;
+use aos_hub_api::RegistryPublicationObjectInput;
+use aos_hub_db::db::DirectSqlOwner;
+use aos_hub_db::db::DirectUploadSessionRecord;
 
 fn capture(path: &str, phase: Option<&str>) -> Capture {
     fn unused() -> BodyFile {
@@ -503,10 +504,10 @@ fn dynamic_original(
 
 #[test]
 fn dynamic_get_uses_actual_proto_original_and_separates_later_reader_state() {
-    let original = aos_proto_types::GetRegistryPublicationRequest {
+    let original = aos_hub_api::GetRegistryPublicationRequest {
         publication_id: "a".repeat(32),
     };
-    let reply = aos_proto_types::RegistryPublication {
+    let reply = aos_hub_api::RegistryPublication {
         publication_id: original.publication_id.clone(),
         registry: "registry".into(),
         ordinal: 1,

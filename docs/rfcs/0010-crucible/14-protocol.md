@@ -1,7 +1,7 @@
 # 14 — IPC control protocol (host ↔ plugin)
 
 This file specifies the **out-of-band control protocol** between the host
-executor (`crucible-qemu`) and the in-VM plugin (`crucible-qemu-plugin`,
+executor (`crucible-qemu-host`) and the in-VM plugin (`crucible-qemu-plugin`,
 [`12-qemu-plugin.md`](12-qemu-plugin.md)). It is a small, framed, request/reply
 channel over a Unix socket pair, used for exactly three jobs: the **handshake**,
 the **setup** (handing the plugin its shared-memory region, its node slot, and
@@ -389,7 +389,7 @@ the *order* and the *guarantee*.
 ## 6. Codec
 
 The codec is a small, pure, dependency-free encoder/decoder (one per direction)
-that lives in `crucible-protocol`. "Pure" here means: no global state, no
+that lives in `crucible-qemu-protocol`. "Pure" here means: no global state, no
 I/O inside encode/decode (frame read/write is a thin separate layer), and total
 on all inputs — every byte string either decodes to a message or returns a typed
 error.
@@ -457,7 +457,7 @@ The control channel is determinism-neutral by construction.
 - [x] **T-PROTO-1** Define the frame format (`[u32 BE length][u8 tag][payload]`),
   the `MAX_FRAME_SIZE = 64` bound, and the closed tag registry (Hello `0xF0`,
   HelloAck `0xF1`, Setup `0x01`, SetupAck `0x02`, Quit `0x12`) in
-  `crucible-protocol`. — satisfies [PROTO-5], [PROTO-6], [PROTO-7]; spec §3.
+  `crucible-qemu-protocol`. — satisfies [PROTO-5], [PROTO-6], [PROTO-7]; spec §3.
 - [x] **T-PROTO-2** Implement the pure `encode`/`decode` codec for `PluginMsg`
   and `HostMsg` with typed errors (empty, unknown tag, short/long payload,
   oversize length) and the frame read/write helpers (truncated prefix/payload

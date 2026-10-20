@@ -80,7 +80,7 @@
       cargoRoot = "crates";
     };
     cargoRoot = "crates";
-    cargoFlags = "-p aos-hub --features postgres --bin aos-hub --bin aos-hub-egress --bin aos-hub-authority --bin aos-hub-authority-bootstrap --bin aos-hub-direct-review --bin aos-hub-provider-conformance";
+    cargoFlags = "-p aos-hub-native --features postgres --bin aos-hub --bin aos-hub-egress --bin aos-hub-authority --bin aos-hub-authority-bootstrap --bin aos-hub-direct-review --bin aos-hub-provider-conformance";
     buildDeps = [buildPerl buildPkgConfig openssl sqlite buildProtobuf aos-hub-console-dist];
     runtimeDeps = [openssl sqlite zlib];
   };
@@ -175,7 +175,7 @@ in
     # Build the control plane, fixed egress and retained authority operator tools.
     # PostgreSQL is the strongly-consistent shared nonce store for replicated
     # aos-hub-egress deployments. SQLite remains available for a singleton.
-    cargoFlags = "-p aos-hub --features postgres --bin aos-hub --bin aos-hub-egress --bin aos-hub-authority --bin aos-hub-authority-bootstrap --bin aos-hub-direct-review --bin aos-hub-provider-conformance";
+    cargoFlags = "-p aos-hub-native --features postgres --bin aos-hub --bin aos-hub-egress --bin aos-hub-authority --bin aos-hub-authority-bootstrap --bin aos-hub-direct-review --bin aos-hub-provider-conformance";
 
     inherit cargoDeps cargoArtifacts cargoEnv cargoArtifactContract;
     cargoRoot = "crates";

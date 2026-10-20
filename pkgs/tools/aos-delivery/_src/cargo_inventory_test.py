@@ -29,7 +29,7 @@ def record(package_id, kind="lib", name="example", test=False):
 
 def messages():
     records = [
-        record("path+file://./source/crates/aos-hub#0.1.0", "bin", "aos-hub"),
+        record("path+file://./source/crates/hub/aos-hub-native#0.1.0", "bin", "aos-hub"),
         record("registry+https://github.com/rust-lang/crates.io-index#tokio@1.45.0"),
         record("registry+https://github.com/rust-lang/crates.io-index#syn@2.0.0", "proc-macro"),
         record("registry+https://github.com/rust-lang/crates.io-index#serde@1.0.0", test=True),

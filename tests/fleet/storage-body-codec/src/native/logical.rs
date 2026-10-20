@@ -2,10 +2,11 @@
 
 use super::Capture;
 use anyhow::{ensure, Result};
-use aos_hub_core::direct_upload::{
-    decode_direct_control, encode_direct_control, DirectLogicalReplyEnvelope,
-    DirectLogicalRequestEnvelope, MAX_DIRECT_CONTROL_BYTES,
-};
+use aos_hub_db::direct_upload::decode_direct_control;
+use aos_hub_db::direct_upload::encode_direct_control;
+use aos_hub_db::direct_upload::DirectLogicalReplyEnvelope;
+use aos_hub_db::direct_upload::DirectLogicalRequestEnvelope;
+use aos_hub_db::direct_upload::MAX_DIRECT_CONTROL_BYTES;
 
 pub(super) fn classify(capture: &Capture, request: &[u8], response: &[u8]) -> Result<String> {
     ensure!(

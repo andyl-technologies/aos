@@ -14,6 +14,7 @@
   taskList = builtins.concatStringsSep "," taskIds;
   openTaskList = builtins.concatStringsSep "," openTaskIds;
   runtimeInputs = [
+    pkgs.sqlite
     pkgs.coreutils
     pkgs.grep
     pkgs.qemu-crucible
@@ -65,7 +66,7 @@
           --offline \
           --target-dir "$TMPDIR/live-block-realization-target" \
           --manifest-path crates/Cargo.toml \
-          -p crucible-qemu \
+          -p crucible-qemu-host \
           --example crucible-qemu-live-block-realization
 
         run_dir="$TMPDIR/live-block-realization-run"
@@ -111,6 +112,8 @@
     pname = "crucible-phase2-qemu-live-block-realization";
     version = "0";
     src = crucibleSrc;
+    runtimeDeps = [pkgs.sqlite];
+
     buildDeps = runtimeInputs;
     TASK_IDS = taskList;
     OPEN_TASK_IDS = openTaskList;

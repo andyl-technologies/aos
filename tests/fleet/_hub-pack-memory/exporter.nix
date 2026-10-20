@@ -11,7 +11,7 @@ in
       cargoRoot = "crates";
       cargoWorkspaceMembers = import ../_hub-retained-workspace.nix native.src;
       cargoDeps = builtins.elemAt evidence 1;
-      cargoFlags = "-p aos-registry-surface --example pack_memory_fixture";
+      cargoFlags = "-p aos-registry-format --example pack_memory_fixture";
       buildDeps = [pkgs.perl pkgs.pkg-config];
       installBins = false;
       doCheck = false;

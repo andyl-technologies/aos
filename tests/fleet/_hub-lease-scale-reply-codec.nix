@@ -4,7 +4,7 @@
   native = pkgs.aos-hub;
   sources = native.passthru.evidenceSources;
   source = native.src;
-  example = source + "/crates/aos-hub-core/examples/lease_scale_observe.rs";
+  example = source + "/crates/hub/aos-hub-service/examples/lease_scale_observe.rs";
   lock = source + "/crates/Cargo.lock";
   contract = native.passthru.cargoArtifactContract;
 in
@@ -18,8 +18,8 @@ in
       cargoWorkspaceMembers = import ./_hub-retained-workspace.nix source;
       cargoDeps = builtins.elemAt sources 1;
       cargoEnv = contract.cargoEnv;
-      cargoFlags = "-p aos-hub-core --example lease_scale_observe";
-      cargoTestFlags = "-p aos-hub-core --example lease_scale_observe";
+      cargoFlags = "-p aos-hub-service --example lease_scale_observe";
+      cargoTestFlags = "-p aos-hub-service --example lease_scale_observe";
       buildDeps = [pkgs.perl pkgs.pkg-config pkgs.openssl pkgs.sqlite pkgs.protobuf];
       runtimeDeps = [pkgs.openssl pkgs.sqlite pkgs.zlib];
       doCheck = true;

@@ -7,7 +7,9 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use aos_hub_core::hybrid_ingress::{body_sha256, HybridIngressAssertion, HybridIngressKey};
+use aos_hub_db::hybrid_ingress::body_sha256;
+use aos_hub_db::hybrid_ingress::HybridIngressAssertion;
+use aos_hub_db::hybrid_ingress::HybridIngressKey;
 
 use super::*;
 
@@ -236,11 +238,10 @@ fn changed_or_nonprivate_body_files_and_raw_blob_mismatch_refuse() {
 
 #[test]
 fn stored_projection_uses_shared_original_incarnation_and_source_correlation() {
-    use aos_hub_core::{
-        mirror_guard::MirrorGuardIssuer,
-        oci_projection::{guard::*, OciDocumentProjection},
-        storage_work::StorageObjectIdentity,
-    };
+    use aos_hub_db::mirror_guard::MirrorGuardIssuer;
+    use aos_hub_db::oci_projection::guard::*;
+    use aos_hub_db::oci_projection::OciDocumentProjection;
+    use aos_hub_db::storage_work::StorageObjectIdentity;
     use aos_oci_types::{Annotations, Descriptor, MediaType, Sha256Digest};
 
     let fixture = Fixture::new();
@@ -259,7 +260,7 @@ fn stored_projection_uses_shared_original_incarnation_and_source_correlation() {
         version: 1,
         deployment_id: "fixture".into(),
         protected_profile_digest: "c".repeat(64),
-        source: aos_hub_core::oci_projection::OciProjectionSource::Managed,
+        source: aos_hub_db::oci_projection::OciProjectionSource::Managed,
         issuer: MirrorGuardIssuer {
             source_digest: "b".repeat(64),
             script_version: "fixture-script".into(),

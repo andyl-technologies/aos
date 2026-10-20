@@ -468,7 +468,7 @@ def client_observer(selected, tool):
     source = hashlib.sha256()
     for name in ("provider.rs", "provider_observation.rs"):
         source.update(immutable_bytes(str(Path(context["runtimeSource"]) /
-                         "crates/aos-net/src/direct_upload" / name), 1024 * 1024))
+                         "crates/shared/aos-transfer/src/direct_upload" / name), 1024 * 1024))
     if source.hexdigest() != selected["sourceSha256"] or context["producerSha256"]["client"] != source.hexdigest():
         raise ValueError("Observer compiled source commitment differs")
     return {**selected, "executable": executable, "runtimeSource": context["runtimeSource"]}

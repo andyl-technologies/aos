@@ -24,11 +24,11 @@ CASES = {
 }
 SOURCE_FILES = (
     "tests/fleet/_hub-mirror-pack-gc.py",
-    "crates/aos-hub/src/mirror/hybrid/batch/tests.rs",
-    "crates/aos-hub/src/mirror/hybrid/batch/tests/runtime.rs",
-    "crates/aos-hub/src/mirror/hybrid/batch/tests/runtime_gc.rs",
-    "crates/aos-hub/src/mirror/hybrid/batch/tests/runtime_purposes.rs",
-    "crates/aos-hub/src/mirror/hybrid/batch/tests/runtime_membership.rs",
+    "crates/hub/aos-hub-native/src/mirror/hybrid/batch/tests.rs",
+    "crates/hub/aos-hub-native/src/mirror/hybrid/batch/tests/runtime.rs",
+    "crates/hub/aos-hub-native/src/mirror/hybrid/batch/tests/runtime_gc.rs",
+    "crates/hub/aos-hub-native/src/mirror/hybrid/batch/tests/runtime_purposes.rs",
+    "crates/hub/aos-hub-native/src/mirror/hybrid/batch/tests/runtime_membership.rs",
     "pkgs/tools/aos-hub-mirror-runtime-e2e.mjs",
     "pkgs/tools/aos-hub-mirror-runtime-worker.mjs",
     "pkgs/tools/aos-hub-mirror-runtime-guard-state.mjs",
@@ -36,10 +36,10 @@ SOURCE_FILES = (
     "pkgs/tools/aos-hub-mirror-r2-fixture.mjs",
 )
 OVERLAY_FILES = {
-    "crates/aos-hub/src/mirror/hybrid/batch/tests.rs",
-    "crates/aos-hub/src/mirror/hybrid/batch/tests/runtime.rs",
-    "crates/aos-hub/src/mirror/hybrid/batch/tests/runtime_gc.rs",
-    "crates/aos-hub/src/mirror/hybrid/batch/tests/runtime_purposes.rs",
+    "crates/hub/aos-hub-native/src/mirror/hybrid/batch/tests.rs",
+    "crates/hub/aos-hub-native/src/mirror/hybrid/batch/tests/runtime.rs",
+    "crates/hub/aos-hub-native/src/mirror/hybrid/batch/tests/runtime_gc.rs",
+    "crates/hub/aos-hub-native/src/mirror/hybrid/batch/tests/runtime_purposes.rs",
     "pkgs/tools/aos-hub-mirror-runtime-e2e.mjs",
     "pkgs/tools/aos-hub-mirror-runtime-worker.mjs",
     "pkgs/tools/aos-hub-mirror-runtime-guard-state.mjs",
