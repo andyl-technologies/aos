@@ -823,7 +823,13 @@ def verify_image():
             "installed VM supervisor differs from immutable source")
     require(pathlib.Path(__file__).read_bytes() == supervisor_source.read_bytes(),
             "executed VM supervisor differs from source")
-    helper_names = ["manifest_publication_vm.py", "source_cleanup_vm.py", "admission_cache_vm.py", "host_cache_temporaries_vm.py"]
+    helper_names = [
+        "manifest_publication_vm.py",
+        "source_cleanup_vm.py",
+        "admission_cache_vm.py",
+        "host_cache_temporaries_vm.py",
+        "host_cache_index_recovery_vm.py",
+    ]
     require(set(identity["supervisor_helpers"]) == set(helper_names),
             "native supervisor helper inventory changed")
     for helper_name in helper_names:
