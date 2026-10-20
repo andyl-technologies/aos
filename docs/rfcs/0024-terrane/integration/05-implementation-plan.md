@@ -8728,10 +8728,21 @@ restores the relocated upstream executor module and copied test-template paths,
 then passes the complete Rust/Nix formatter pair. Its required application
 compilation passes with all 181 test artifacts from 59 application packages
 independently matched to Cargo metadata; this is compilation, not execution.
-Its full implemented-trunk aggregate remains running. The migrated module
-source `f3390be8fb` passes all 88 declarative assertions and the formatter pair;
-its own full aggregate also remains running. Neither aggregate is credited
-before completion.
+Its full implemented-trunk aggregate finishes with 1,929 passes, two failures
+and two process timeouts across all 1,933 cases, with no skips. The migrated
+module source `f3390be8fb` passes all 88 declarative assertions and the formatter
+pair; its aggregate finishes with 1,929 passes, one failure and three process
+timeouts across the same 1,933 cases, with no skips. Neither aggregate passes.
+All four failed `d8a32a97df` cases subsequently pass individually through its
+retained original release test binary in a protected AOS-only Nix sandbox:
+existing-binding backfill in 12.047 seconds, late-authority index recovery in
+67.284 seconds, independent disclosure authority in 64.812 seconds, and genuine
+candidate-slot publication in 3.059 seconds. All original 120-second outer
+process limits, case bodies and operating deadlines remain unchanged. The
+executable is independently bound to its Cargo test fingerprint, all 4,887
+tracked crate inputs in both the retained build and immutable source, and its
+1,154-case inventory. These are focused libtest diagnostics; the failed
+aggregates remain failed and their causes are not established.
 
 The encoded consumer component at `2c86ea4e3a` passes the complete native VM
 witness: 55 selected restricted-identity unit cases and 48 actual fixture
@@ -8884,9 +8895,13 @@ Source `57d01528ea` preserves current trunk history and the canonical
 Combined source `d4af629791` then merges the preserved module branch into that
 reviewed surface configuration. All six module files are independently reviewed;
 all 88 declarative assertions, formatting, crate graph, unsafe audit, six strict
-Clippy profiles and both private documentation builds pass. Native and application
-qualification continues. Unstarted duplicate long checks on predecessor sources
-are explicitly deferred without execution or pass credit. The final combined
+Clippy profiles and both private documentation builds pass. Native quota
+confinement and the configured SDK image, eleven actual unit cases, and ext4
+example/CLI success and late-denial controls pass. Independent review verifies
+all 23 image payload files, 4,907 source inputs and three Cargo artifacts.
+Required application compilation passes with exactly 181 artifacts from 59
+packages. Unstarted duplicate long checks on predecessor sources are explicitly
+deferred without execution or pass credit. The final combined
 source must run the full implemented aggregate, including the feature matrix
 and long GC gate. That aggregate is serialized after older native suites and
 the recovery component checks finish; workloads and operating clocks are unchanged.
@@ -8976,9 +8991,13 @@ crate graph, unsafe audit, all three strict Linux profiles, private docs, the
 Cargo example build and native quota confinement pass. The narrow Cargo shell
 lacks nextest; its failed invocation executes no tests, and a retry using the
 existing AOS-built executable passes the local directory-incarnation case.
-The raw-filename case retains its mandatory ext4 execution. Complete native
-recovery, application and filesystem qualification remains pending. No frozen
-format, store trait, dependency, kernel confinement or stopped wipe policy changes.
+The native ext4 VM passes in 427.294 seconds, including that raw-filename case
+and all 67 selected native unit cases. Independent review verifies 5,098 source
+inputs, four original Cargo executables, four installed helpers, all 48 fixture
+selectors, and both the original chunk and new detached-index cleanup controls.
+Required application and complete filesystem qualification continue; complete
+recovery and readiness remain open. No frozen format, store trait, dependency,
+kernel confinement or stopped wipe policy changes.
 
 All five T2 task checkboxes remain open. Encoded eviction, shared-chunk
 re-extraction, complete recovery/readiness and the stopped
