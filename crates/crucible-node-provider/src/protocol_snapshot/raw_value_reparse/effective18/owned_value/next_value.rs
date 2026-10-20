@@ -37,6 +37,7 @@ pub(crate) use response_shape::owning::{
 pub(crate) use response_shape::{
     NativeImport18ResponseShapeCutsData, NativeImport18ResponseShapeCutsPreludeData,
     NativeImport18ResponseValueCutData, NativeImport18ResponseValueCutLocationData,
+    NativeImport18ShapeValidateAttemptData, NativeImport18ShapeValidateCensusData,
 };
 pub(crate) use storage::{
     NativeImport18NextValuePassConstructionData, NativeImport18NextValuePrewalkData,

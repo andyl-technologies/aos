@@ -703,3 +703,6 @@ impl PacketConnectedSemanticSource {
             .transpose()
     }
 }
+
+#[path = "packet_connected_source/complete_template.rs"]
+mod complete_template;

@@ -51,7 +51,7 @@ pub enum RequestOrigin {
     Provider,
 }
 
-/// Selects a baseline CNP/1 operation with a separately validated body schema.
+/// Selects a baseline or explicitly negotiated profile-specific operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Method {
@@ -63,6 +63,11 @@ pub enum Method {
     Realize,
     /// Installs the host-authenticated realized binding.
     Admit,
+    /// Authenticates the negotiated import18 bootstrap without realizing a model.
+    ///
+    /// The exact versioned feature, dedicated Source/native bootstrap owner and
+    /// profile body decoder are required. Ordinary method dispatch refuses it.
+    NativeImport18Bootstrap,
     /// Arms owner readiness while withholding execution.
     Activate,
     /// Retains an original admitted input batch.

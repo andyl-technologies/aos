@@ -41,6 +41,14 @@ pub use runtime_construction::{
 };
 
 pub use native_startup::{
+    CompleteOriginalNativeImport18StartupAdmission, OriginalNativeImport18StartupMemberScope,
+    OriginalNativeImport18StartupScope,
+};
+pub(crate) use native_startup::{
+    OriginalNativeImport18StartupMember, OriginalNativeImport18StartupQuote,
+};
+
+pub use native_startup::{
     CompleteOriginalNativeInvocationAdmission, CompleteOriginalNativeStartupAdmission,
     CompleteOriginalRestoredSuffixStartupAdmission, OriginalNativeStartupMemberScope,
     OriginalNativeStartupPolicy, OriginalNativeStartupScope, OriginalNativeStartupStorage,
@@ -265,6 +273,43 @@ pub trait ConformanceAdmissionAuthority: AdmissionEvidence {
         &self,
         _: &ConformancePlanEvidence<'_>,
         _: &OriginalNativeHostStartupMemberScope<'_>,
+    ) -> Result<(), crate::node_contract::RuntimeError> {
+        Err(crate::node_contract::RuntimeError::UnsupportedFacet)
+    }
+
+    /// Selects the distinct installed import18 startup allocation action.
+    ///
+    /// # Errors
+    /// Defaults to refusal; legacy native/report members cannot substitute it.
+    fn original_native_import18_startup_policy(
+        &self,
+        _: &ConformancePlanEvidence,
+        _: &OriginalNativeImport18StartupScope<'_>,
+    ) -> Result<OriginalNativeStartupPolicy, crate::node_contract::RuntimeError> {
+        Err(crate::node_contract::RuntimeError::UnsupportedFacet)
+    }
+
+    /// Observes the same registered holder, import18 Sources and launch owners.
+    ///
+    /// # Errors
+    /// Defaults to refusal for unsupported, foreign or unpriced actual owners.
+    fn authenticate_original_native_import18_startup(
+        &self,
+        _: &ConformancePlanEvidence,
+        _: &OriginalNativeImport18StartupScope<'_>,
+        _: &OriginalNativeStartupPolicy,
+    ) -> Result<OriginalNativeStartupStorage, crate::node_contract::RuntimeError> {
+        Err(crate::node_contract::RuntimeError::UnsupportedFacet)
+    }
+
+    /// Rechecks the actual privately issued import18 allocation member.
+    ///
+    /// # Errors
+    /// Defaults to refusal for unsupported, revoked or foreign member owners.
+    fn authenticate_original_native_import18_startup_member(
+        &self,
+        _: &ConformancePlanEvidence,
+        _: &OriginalNativeImport18StartupMemberScope<'_>,
     ) -> Result<(), crate::node_contract::RuntimeError> {
         Err(crate::node_contract::RuntimeError::UnsupportedFacet)
     }

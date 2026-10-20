@@ -27,6 +27,8 @@ mod encode;
 mod geometry;
 #[path = "edition18_tokens/index.rs"]
 mod index;
+#[path = "edition18_tokens/partials.rs"]
+mod partials;
 #[path = "edition18_tokens/read.rs"]
 mod read;
 #[path = "edition18_tokens/walk.rs"]
@@ -46,6 +48,7 @@ pub(crate) use encode::{
 pub(crate) use geometry::{
     decode_counter_scratch_data, encode_counter_scratch_data, read_counter_scratch_data,
 };
+pub(crate) use partials::LiteralValue18TokenAttemptPartialData;
 pub(crate) use read::{LiteralValue18ReadQuote, quote_read_data, read_into_data};
 
 use crate::node_contract::{NodeRuntime, RuntimeError};

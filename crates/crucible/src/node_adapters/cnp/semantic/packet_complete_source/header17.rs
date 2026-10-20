@@ -79,6 +79,7 @@ impl PacketCompleteSemanticSource {
     /// Names fixed header/projection and checked serialization views.
     pub(super) fn settled17_header_counter_scratch_data() -> usize {
         size_of::<SourceHeader17<'static>>()
+            + size_of::<&Option<Box<ack_peer::NativeImport18BirthConstruction>>>()
             + size_of::<&SourceHeader17<'static>>()
             + size_of::<BoundSelection17<'static, ()>>()
             + size_of::<BirthBanks17<'static>>()
@@ -156,6 +157,15 @@ impl Serialize for SourceHeader17<'_> {
         if header_cells_data(self.source) != self.cells {
             return Err(S::Error::custom("Source header cell changed"));
         }
+        if self.source.native_import18_birth_construction.is_some()
+            || self.source.native_import18_phase_bank_attempted.get()
+            || self.source.native_import18_declaration.is_some()
+            || self.source.original_coordinator_policy18.is_some()
+        {
+            return Err(S::Error::custom(
+                "import18 Source requires its distinct history envelope",
+            ));
+        }
         let PacketCompleteSemanticSource {
             original,
             process: _,
@@ -167,6 +177,7 @@ impl Serialize for SourceHeader17<'_> {
             ack_emitter_selection,
             ack_peer_birth: _,
             ack_birth_attempted,
+            native_import18_birth_construction: _,
             ack_peer_association: _,
             restored_suffix_attempted: _,
             ack_codec_metadata_extent,
@@ -182,8 +193,15 @@ impl Serialize for SourceHeader17<'_> {
             registry_retention_attempted: _,
             registry_retention_failed: _,
             complete_bytes_launch_reserved: _,
+            native_import18_declaration: _,
+            native_import18_phase_bank_attempted: _,
+            native_import18_phase_bank: _,
+            native_import18_bank_attempted: _,
+            native_import18_bank_reservation: _,
+            native_import18_recipe: _,
             invocation_snapshot_declaration: _,
             original_coordinator_policy17,
+            original_coordinator_policy18: _,
         } = self.source;
         let mut fields = serializer.serialize_struct("SourceOuterHeader17", 19)?;
         fields.serialize_field("schema", "source-private.source-restored-settled-header/17")?;

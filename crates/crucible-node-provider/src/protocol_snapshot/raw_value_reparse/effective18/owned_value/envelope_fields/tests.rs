@@ -267,3 +267,47 @@ fn body_and_extensions_are_structural_maps_without_a_root_value_pass() {
         assert!(owner.completed_cut_data(&raw, field, 0, &foreign).is_err());
     }
 }
+
+#[test]
+fn method_mirror_matches_the_complete_selected_protocol_enum() {
+    let methods = [
+        ("hello", Method::Hello),
+        ("discover", Method::Discover),
+        ("realize", Method::Realize),
+        ("admit", Method::Admit),
+        ("native_import18_bootstrap", Method::NativeImport18Bootstrap),
+        ("activate", Method::Activate),
+        ("input", Method::Input),
+        ("observe", Method::Observe),
+        ("begin", Method::Begin),
+        ("poll", Method::Poll),
+        ("cancel", Method::Cancel),
+        ("quantum_close", Method::QuantumClose),
+        ("world_activate", Method::WorldActivate),
+        ("abort", Method::Abort),
+        ("retire", Method::Retire),
+        ("blob_begin", Method::BlobBegin),
+        ("blob_chunk", Method::BlobChunk),
+        ("blob_finish", Method::BlobFinish),
+        ("release", Method::Release),
+        ("operation_update", Method::OperationUpdate),
+        ("observation_ready", Method::ObservationReady),
+        ("provider_fault", Method::ProviderFault),
+    ];
+
+    for (name, expected) in methods {
+        let value = Value::String(name.to_owned());
+        let decoded: Method = serde_json::from_value(value.clone()).unwrap();
+
+        assert_eq!(method_data(&value).unwrap(), expected);
+        assert_eq!(decoded, expected);
+        assert_eq!(serde_json::to_value(expected).unwrap(), value);
+    }
+
+    assert!(
+        method_data(&Value::String(
+            "native_import18_bootstrap_unknown".to_owned()
+        ))
+        .is_err()
+    );
+}

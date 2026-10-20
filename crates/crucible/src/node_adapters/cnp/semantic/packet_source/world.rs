@@ -363,3 +363,25 @@ impl PacketWorldSourceScope {
         }
     }
 }
+
+impl PacketWorldSourceScope {
+    pub(super) fn complete_template_constructor_transient_data() -> usize {
+        // Actual world return, coordinator Clone return/Box input, and saved
+        // activation Clone return are named independently of retained backing.
+        std::mem::size_of::<Result<Self, RuntimeError>>()
+            + std::mem::size_of::<PacketNative5CoordinatorInstallation>()
+            + std::mem::size_of::<SavedRuntimeActivation>()
+    }
+
+    /// Copies already validated complete-world correlation, without a live grant.
+    pub(super) fn cloned_complete_template_data(&self) -> Result<Self, RuntimeError> {
+        let InstalledCoordinator::Complete(coordinator) = &self.coordinator else {
+            return Err(RuntimeError::UnsupportedFacet);
+        };
+        Ok(Self {
+            coordinator: InstalledCoordinator::Complete(Box::new(coordinator.as_ref().clone())),
+            local: self.local,
+            activation: self.activation.clone(),
+        })
+    }
+}

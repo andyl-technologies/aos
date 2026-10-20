@@ -116,3 +116,32 @@ pub(crate) use controller::{
 pub use controller::{
     OriginalObservationReceiveStorageData, OriginalRestoredObservation17AssignmentStorageData,
 };
+
+pub use controller::{
+    OriginalNativeImport18Bootstrap,
+    OriginalNativeImport18BootstrapConstructionData,
+    OriginalNativeImport18BootstrapHistoryData,
+    OriginalNativeImport18BootstrapRowHistoryData,
+    OriginalNativeImport18Assignment,
+    OriginalNativeImport18AssignmentStorageData,
+    OriginalNativeImport18AssignmentHistoryView,
+    OriginalNativeImport18HostRegistrationView,
+    OriginalNativeImport18InputUploadProspectiveStorageData,
+    OriginalNativeImport18InputUploadStorageData,
+    OriginalNativeImport18ReceiveConstructionData,
+};
+
+pub use controller::{
+    OriginalNativeImport18PartialHistoryData,
+    OriginalNativeImport18PreparePartialData,
+    OriginalNativeImport18EnvelopePartialData,
+    OriginalNativeImport18RawPartialData,
+    OriginalNativeImport18ReceivedPartialData,
+    OriginalNativeImport18UploadBankPartialData,
+    OriginalNativeImport18UploadOwnerPartialData,
+    OriginalNativeImport18UploadFramePartialData,
+    OriginalNativeImport18FrontierPartialData,
+};
+
+
+pub use controller::OriginalNativeImport18AssignmentRowHistoryData;

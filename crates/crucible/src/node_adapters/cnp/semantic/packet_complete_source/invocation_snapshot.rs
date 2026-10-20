@@ -47,6 +47,9 @@ impl PacketCompleteSemanticSource {
     /// missing, duplicate or changed full definition in either immutable roster.
     pub fn bind_original_invocation_snapshot_declaration(&mut self) -> Result<(), RuntimeError> {
         self.storage_origin_with_error::<RuntimeError>()?;
+        if self.native_import18_declaration.is_some() {
+            return Err(RuntimeError::UnsupportedFacet);
+        }
         if self.invocation_snapshot_declaration.is_some() {
             return Err(RuntimeError::DuplicateOperation);
         }
@@ -341,3 +344,8 @@ mod restored_settled_recapture;
 mod coordinator_policy17;
 
 pub(super) use coordinator_policy17::CoordinatorPolicy17;
+
+#[path = "invocation_snapshot/coordinator_policy18.rs"]
+mod coordinator_policy18;
+
+pub(super) use coordinator_policy18::CoordinatorPolicy18;

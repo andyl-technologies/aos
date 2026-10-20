@@ -59,7 +59,10 @@ mod capture_transcript;
 
 #[path = "packet_complete_source/protocol_metadata.rs"]
 mod protocol_metadata;
-pub use capture_banks::{PacketCompleteCaptureBankFacts, PacketCompleteCaptureBankLimits};
+pub use capture_banks::{
+    OriginalImport18CaptureBankConstructionData, PacketCompleteCaptureBankFacts,
+    PacketCompleteCaptureBankLimits,
+};
 
 pub use witness::{PacketCompleteNativeRecord, PacketCompleteNativeWitness};
 
@@ -76,8 +79,9 @@ mod ack_peer;
 #[path = "packet_complete_source/world_admission.rs"]
 mod world_admission;
 pub use ack_peer::{
-    PacketCompleteAckHostRegistrationPlan, PacketCompleteAckPeerBootFrame,
-    PacketCompleteAckPeerBootMaterial, PacketCompleteNativeRestoredSuffixStartupWire,
+    NativeImport18BirthConstructionQuote, PacketCompleteAckHostRegistrationPlan,
+    PacketCompleteAckPeerBootFrame, PacketCompleteAckPeerBootMaterial,
+    PacketCompleteNativeImport18StartupWire, PacketCompleteNativeRestoredSuffixStartupWire,
     PacketCompleteNativeStartupWire, PacketCompleteOriginalHostSdk,
     PacketCompleteRestorePreparation,
 };
@@ -111,6 +115,7 @@ pub struct PacketCompleteSemanticSource {
     ack_emitter_selection: Option<Option<crucible_node_provider::reference_packet::service::ack_emitter::PacketNative5AckEmitterSelection>>,
     ack_peer_birth: std::cell::RefCell<Option<ack_peer::OriginalAckPeerBirth>>,
     ack_birth_attempted: bool,
+    native_import18_birth_construction: Option<Box<ack_peer::NativeImport18BirthConstruction>>,
     ack_peer_association: std::cell::RefCell<Option<ack_peer::OriginalAckPeerAssociation>>,
     // Source-local once fence precedes every suffix custody/evidence loan.
     restored_suffix_attempted: std::cell::Cell<bool>,
@@ -127,8 +132,15 @@ pub struct PacketCompleteSemanticSource {
     registry_retention_attempted: std::cell::Cell<bool>,
     registry_retention_failed: std::cell::Cell<bool>,
     complete_bytes_launch_reserved: std::cell::Cell<bool>,
+    native_import18_declaration: Option<ack_peer::Import18Declaration>,
+    native_import18_phase_bank_attempted: std::cell::Cell<bool>,
+    native_import18_phase_bank: std::cell::RefCell<Option<Box<import18_phase_bank::NativeImport18SourcePhaseBank>>>,
+    native_import18_bank_attempted: std::cell::Cell<bool>,
+    native_import18_bank_reservation: std::cell::RefCell<Option<Box<capture_banks::Import18CaptureBankReservation>>>,
+    native_import18_recipe: std::cell::RefCell<ack_peer::Import18RecipeOwner>,
     invocation_snapshot_declaration: Option<invocation_snapshot::Declaration>,
     original_coordinator_policy17: Option<invocation_snapshot::CoordinatorPolicy17>,
+    original_coordinator_policy18: Option<invocation_snapshot::CoordinatorPolicy18>,
 }
 
 impl PacketCompleteSemanticSource {
@@ -160,6 +172,7 @@ impl PacketCompleteSemanticSource {
             ack_emitter_selection: None,
             ack_peer_birth: std::cell::RefCell::new(None),
             ack_birth_attempted: false,
+            native_import18_birth_construction: None,
             ack_peer_association: std::cell::RefCell::new(None),
             restored_suffix_attempted: std::cell::Cell::new(false),
             ack_codec_metadata_extent: None,
@@ -173,8 +186,15 @@ impl PacketCompleteSemanticSource {
             registry_retention_attempted: std::cell::Cell::new(false),
             registry_retention_failed: std::cell::Cell::new(false),
             complete_bytes_launch_reserved: std::cell::Cell::new(false),
+            native_import18_declaration: None,
+            native_import18_phase_bank_attempted: std::cell::Cell::new(false),
+            native_import18_phase_bank: std::cell::RefCell::new(None),
+            native_import18_bank_attempted: std::cell::Cell::new(false),
+            native_import18_bank_reservation: std::cell::RefCell::new(None),
+            native_import18_recipe: std::cell::RefCell::new(ack_peer::Import18RecipeOwner::empty()),
             invocation_snapshot_declaration: None,
             original_coordinator_policy17: None,
+            original_coordinator_policy18: None,
             complete_restore_selection: None,
             restore_input_emitter_selection: None,
         })
@@ -208,6 +228,7 @@ impl PacketCompleteSemanticSource {
             ack_emitter_selection: None,
             ack_peer_birth: std::cell::RefCell::new(None),
             ack_birth_attempted: false,
+            native_import18_birth_construction: None,
             ack_peer_association: std::cell::RefCell::new(None),
             restored_suffix_attempted: std::cell::Cell::new(false),
             ack_codec_metadata_extent: None,
@@ -221,8 +242,15 @@ impl PacketCompleteSemanticSource {
             registry_retention_attempted: std::cell::Cell::new(false),
             registry_retention_failed: std::cell::Cell::new(false),
             complete_bytes_launch_reserved: std::cell::Cell::new(false),
+            native_import18_declaration: None,
+            native_import18_phase_bank_attempted: std::cell::Cell::new(false),
+            native_import18_phase_bank: std::cell::RefCell::new(None),
+            native_import18_bank_attempted: std::cell::Cell::new(false),
+            native_import18_bank_reservation: std::cell::RefCell::new(None),
+            native_import18_recipe: std::cell::RefCell::new(ack_peer::Import18RecipeOwner::empty()),
             invocation_snapshot_declaration: None,
             original_coordinator_policy17: None,
+            original_coordinator_policy18: None,
             complete_restore_selection: None,
             restore_input_emitter_selection: None,
         })
@@ -306,6 +334,9 @@ impl PacketCompleteSemanticSource {
     /// It certifies no compiler/recursive frames, allocator or kernel resources.
     pub fn retained_requested_storage_precredit_scratch_data() -> usize {
         Self::original_report_startup_observer_scratch_data()
+            + Self::native_import18_birth_construction_counter_scratch_data()
+            + Self::original_import18_capture_bank_counter_scratch_data()
+            + import18_phase_bank::retained_counter_scratch_data()
             + ack_peer::OriginalAckPeerAssociation::reserved_suffix_counter_scratch_data()
             + NodeRuntime::capture_opaque_owner_observer_scratch_data()
             + CnpSemanticSourceRead::retained_requested_storage_precredit_scratch_data()
@@ -1452,3 +1483,13 @@ impl PacketCompleteSemanticSource {
 
 #[path = "packet_complete_source/oracle_body_storage.rs"]
 mod oracle_body_storage;
+
+#[path = "packet_complete_source/template18.rs"]
+mod template18;
+pub use template18::{
+    OriginalNativeSourceTemplate18Attempt, OriginalNativeSourceTemplate18ConstructionData,
+};
+
+#[path = "packet_complete_source/import18_phase_bank.rs"]
+mod import18_phase_bank;
+pub use import18_phase_bank::OriginalNativeImport18SourcePhaseBankConstructionData;

@@ -1710,3 +1710,6 @@ pub mod raw_value_reparse;
 
 /// Names pinned serde decoder controls without decoding or granting authority.
 pub mod serde_decode_layout;
+
+#[path = "protocol_snapshot/retained_reservation.rs"]
+mod retained_reservation;

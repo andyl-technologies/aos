@@ -858,3 +858,6 @@ pub(crate) const fn original_frames_iterator_counter_scratch_data() -> usize {
     std::mem::size_of::<std::slice::Iter<'static, Slot>>()
         + std::mem::size_of::<&OriginalFrameReservation>()
 }
+
+#[path = "original_frames/retained_reservation.rs"]
+mod retained_reservation;

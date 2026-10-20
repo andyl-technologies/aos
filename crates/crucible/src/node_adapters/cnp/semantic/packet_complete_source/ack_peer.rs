@@ -16,10 +16,22 @@ use crucible_node_provider::reference_packet::service::{
     confirmation::native_after_confirmation_schema,
 };
 
+#[path = "ack_peer/import18_declaration.rs"]
+mod import18_declaration;
+pub(super) use import18_declaration::Import18Declaration;
+
+#[path = "ack_peer/import18_recipe.rs"]
+mod import18_recipe;
+pub(super) use import18_recipe::Import18RecipeOwner;
+
 #[path = "ack_peer/association.rs"]
 mod association;
 #[path = "ack_peer/birth.rs"]
 mod birth;
+#[path = "ack_peer/import18_prebirth.rs"]
+mod import18_prebirth;
+pub use import18_prebirth::NativeImport18BirthConstructionQuote;
+pub(super) use import18_prebirth::NativeImport18BirthConstruction;
 #[path = "ack_peer/frame.rs"]
 mod frame;
 pub(super) use association::OriginalAckPeerAssociation;
@@ -27,7 +39,7 @@ pub use association::PacketCompleteRestorePreparation;
 pub(super) use birth::OriginalAckPeerBirth;
 pub use birth::{
     PacketCompleteAckPeerBootMaterial, PacketCompleteNativeRestoredSuffixStartupWire,
-    PacketCompleteNativeStartupWire, PacketCompleteOriginalHostSdk,
+    PacketCompleteNativeImport18StartupWire, PacketCompleteNativeStartupWire, PacketCompleteOriginalHostSdk,
 };
 pub use frame::PacketCompleteAckPeerBootFrame;
 
@@ -665,6 +677,8 @@ impl PacketCompleteSemanticSource {
         &self,
     ) -> Result<PacketCompleteAckPeerBootMaterial<'_>, OperationFailure> {
         self.ensure_origin()?;
+        self.is_original_native_import18_declaration_data()
+            .map_err(unknown)?;
         let slot = self
             .ack_peer_birth
             .try_borrow()

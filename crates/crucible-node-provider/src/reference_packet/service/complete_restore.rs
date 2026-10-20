@@ -34,6 +34,11 @@ mod contract;
 mod crypto;
 pub mod transfer;
 
+/// Defines distinct signed Native17 import DATA without installing an owner.
+pub mod import17;
+/// Names successor complete-state identities without installing a reader or producer.
+pub mod restored_settled18;
+
 /// Defines the separately signed restoration activation contract and DATA.
 pub mod activation;
 
@@ -446,3 +451,6 @@ pub(crate) use restored_record::native_restored_record_contract_storage_data;
 pub mod settled_recapture;
 
 pub(crate) use input_emitter::canonical_restore_inputs_contract_storage_data;
+
+/// Defines the explicit successor import DATA without widening import17.
+pub mod import18;

@@ -40,7 +40,23 @@ impl PacketCompleteSemanticSource {
         maximum: usize,
     ) -> Result<usize, E> {
         self.storage_origin_with_error::<E>()?;
-        let mut bytes = 0usize;
+        let mut bytes =
+            self.original_import18_capture_bank_partial_storage_data_with_error::<E>(maximum)?;
+        bytes = sum_with_error::<E, _>(
+            [
+                bytes,
+                self.native_import18_phase_bank_storage_with_error::<E>(maximum)?,
+            ],
+            maximum,
+        )?;
+        bytes = sum_with_error::<E, _>(
+            [
+                bytes,
+                self.native_import18_birth_construction_retained_storage_data(maximum)
+                    .map_err(E::runtime)?,
+            ],
+            maximum,
+        )?;
         if let Some((source, registration)) = &self.ack_birth_input_banks {
             bytes = sum_with_error::<E, _>(
                 [bytes, source.capacity(), registration.capacity()],

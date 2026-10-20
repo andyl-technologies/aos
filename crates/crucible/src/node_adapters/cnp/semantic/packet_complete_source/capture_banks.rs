@@ -362,6 +362,11 @@ impl PacketCompleteSemanticSource {
         admitted_bytes: usize,
     ) -> Result<(), OperationFailure> {
         self.ensure_origin()?;
+        if self.native_import18_bank_attempted.get() {
+            return Err(refused(
+                "import18 bank construction cannot renew through a legacy reservation",
+            ));
+        }
         if matches!(
             self.selected_capture_profile()?,
             PacketNative5CaptureProfile::OwnedProtocol11 { .. }
@@ -616,3 +621,11 @@ impl PacketCompleteSemanticSource {
         Ok(())
     }
 }
+
+#[path = "capture_banks/import18_reservation.rs"]
+mod import18_reservation;
+pub use import18_reservation::OriginalImport18CaptureBankConstructionData;
+pub(super) use import18_reservation::{
+    Import18CaptureBankHistoryData, Import18CaptureBankOwnerHistoryData,
+    Import18CaptureBankReservation,
+};

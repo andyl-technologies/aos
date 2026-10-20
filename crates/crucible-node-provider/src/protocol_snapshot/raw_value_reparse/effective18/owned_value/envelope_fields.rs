@@ -808,6 +808,7 @@ fn method_data(input: &Value) -> Result<Method, ProviderError> {
         "discover" => Method::Discover,
         "realize" => Method::Realize,
         "admit" => Method::Admit,
+        "native_import18_bootstrap" => Method::NativeImport18Bootstrap,
         "activate" => Method::Activate,
         "input" => Method::Input,
         "observe" => Method::Observe,

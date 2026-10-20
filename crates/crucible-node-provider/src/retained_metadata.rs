@@ -64,6 +64,9 @@ pub struct RetainedProtocolMetadataFacts {
 pub(crate) struct MetadataObserver<'a> {
     facts: RetainedProtocolMetadataFacts,
     json_depth: usize,
+    json_depth_limit: usize,
+    scoped_work: native_import18_json_profile::ScopedWorkAccounting,
+    native_import18_capsule: Option<&'a crate::client::OriginalNativeImport18Assignment>,
     ordinary_bytes_formatter: OrdinaryBytesFormatterDemandData,
     records: Option<&'a mut MetadataRecordBank>,
     aliases: Option<&'a mut aliases::MetadataAliasBank>,
@@ -74,6 +77,9 @@ impl<'a> MetadataObserver<'a> {
         Self {
             facts: RetainedProtocolMetadataFacts::default(),
             json_depth: 0,
+            json_depth_limit: 64,
+            scoped_work: native_import18_json_profile::ScopedWorkAccounting::new(),
+            native_import18_capsule: None,
             ordinary_bytes_formatter: OrdinaryBytesFormatterDemandData::default(),
             records: None,
             aliases: None,
@@ -86,6 +92,9 @@ impl<'a> MetadataObserver<'a> {
         Self {
             facts: RetainedProtocolMetadataFacts::default(),
             json_depth: 0,
+            json_depth_limit: 64,
+            scoped_work: native_import18_json_profile::ScopedWorkAccounting::new(),
+            native_import18_capsule: None,
             ordinary_bytes_formatter: OrdinaryBytesFormatterDemandData::default(),
             records: Some(records),
             aliases: None,
@@ -101,6 +110,9 @@ impl<'a> MetadataObserver<'a> {
         Self {
             facts: RetainedProtocolMetadataFacts::default(),
             json_depth: 0,
+            json_depth_limit: 64,
+            scoped_work: native_import18_json_profile::ScopedWorkAccounting::new(),
+            native_import18_capsule: None,
             ordinary_bytes_formatter: OrdinaryBytesFormatterDemandData::default(),
             records: Some(records),
             aliases: Some(aliases),
@@ -132,9 +144,7 @@ impl<'a> MetadataObserver<'a> {
         alignment: usize,
     ) -> Result<(), ProviderError> {
         add(&mut self.facts.capacity_records, 1)?;
-        if self.facts.capacity_records > 131_072 {
-            return Err(overflow());
-        }
+        self.charge_native_import18_metadata_work_data(false)?;
         if let Some(records) = &mut self.records {
             records.append(MetadataCapacityRecord {
                 kind,
@@ -160,11 +170,7 @@ impl<'a> MetadataObserver<'a> {
         value: &T,
     ) -> Result<(), ProviderError> {
         add(&mut self.facts.observed_nodes, 1)?;
-        if self.facts.observed_nodes > 131_072 {
-            return Err(ProviderError::ResourceExhausted(
-                "retained metadata traversal rows",
-            ));
-        }
+        self.charge_native_import18_metadata_work_data(true)?;
         value.observe_metadata(self)
     }
 
@@ -313,7 +319,7 @@ impl<T: ObserveMetadata> ObserveMetadata for BTreeSet<T> {
 
 impl ObserveMetadata for Value {
     fn observe_metadata(&self, observer: &mut MetadataObserver) -> Result<(), ProviderError> {
-        if observer.json_depth >= 64 {
+        if observer.json_depth >= observer.json_depth_limit {
             return Err(ProviderError::ResourceExhausted(
                 "retained metadata JSON depth",
             ));
@@ -374,22 +380,6 @@ impl ObserveMetadata for serde_json::Map<String, Value> {
 }
 
 inline_only!(crate::envelope::MessageKind, crate::envelope::Method);
-fields!(
-    crate::envelope::Envelope,
-    protocol,
-    message,
-    session_id,
-    incarnation_id,
-    node_id,
-    execution_owner_id,
-    capture_owner_id,
-    request_id,
-    operation_id,
-    sequence,
-    method,
-    body,
-    extensions
-);
 fields!(crate::client::ClientOriginal, request, identity, response);
 
 fields!(ArtifactIdentity, id, role, content, extensions);
@@ -788,7 +778,7 @@ mod complete_source;
 pub use complete_source::{
     RetainedCompleteSourceDefinition, RetainedCompleteSourceMetadata,
     observe_retained_native_coordinator, observe_retained_native_launch,
-    retained_native_launch_counter_scratch_data,
+    retained_native_coordinator_counter_scratch_data, retained_native_launch_counter_scratch_data,
 };
 
 mod native_record;
@@ -919,3 +909,8 @@ pub use native_oracle_geometry::{
     original_native_oracle_value_decode_storage_data,
     original_native_oracle_value_reference_matches_data,
 };
+
+// Expanded SDK18 partials keep an independently admitted, occurrence-derived
+// profile. Ordinary observers retain their original64 activation limit.
+mod native_import18_json_profile;
+pub(crate) use native_import18_json_profile::NativeImport18JsonMetadataProfileData;

@@ -62,6 +62,11 @@ impl ClientSession {
                 ReceivedBody::Request(body) => {
                     self.receive_transfer(custody, frame.envelope, *body)?;
                 }
+                ReceivedBody::NativeImport18Bootstrap(_) => {
+                    return Err(crate::ProviderError::Conflict(
+                        "bootstrap18 requires its distinct current owner",
+                    ));
+                }
                 ReceivedBody::Notification(_) => return Err(refused()),
             }
         }

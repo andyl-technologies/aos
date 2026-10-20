@@ -1455,3 +1455,6 @@ impl PacketSemanticSource {
             .map_err(|_| crate::node_contract::RuntimeError::InvalidReceipt)
     }
 }
+
+#[path = "packet_source/complete_template.rs"]
+mod complete_template;

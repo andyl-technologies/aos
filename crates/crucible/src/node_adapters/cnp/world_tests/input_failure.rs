@@ -33,6 +33,11 @@ impl BodySchemaVerifier for InputTranscript {
             .as_ref()
             .ok_or(ProviderError::Correlation("actual input request ID absent"))?;
         match body {
+            ReceivedBody::NativeImport18Bootstrap(_) => {
+                return Err(ProviderError::Correlation(
+                    "bootstrap18 requires its distinct current owner",
+                ));
+            }
             ReceivedBody::Request(_) => {
                 let mut requests = self.requests.borrow_mut();
                 assert!(requests.len() < 6 || requests.contains_key(request_id));

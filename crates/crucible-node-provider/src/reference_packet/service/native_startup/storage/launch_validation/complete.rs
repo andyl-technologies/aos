@@ -85,12 +85,15 @@ impl PacketNative5SourceLaunch {
         // top-level call and each later sequential immutable-policy check.
         // The policy's decoded coordinator stays live during those checks and
         // therefore has a separate backing term below.
-        let coordinator_work = original_native_coordinator_decode_storage_data(
+        let coordinator = coordinator_decode::construction_storage_data(
             self.initial_coordinator.bytes.as_slice(),
             maximum,
         )?;
-        let connected_backing =
-            coordinator_decode::backing(self.initial_coordinator.bytes.as_slice(), maximum)?;
+        let coordinator_work = coordinator.transient;
+        let connected_backing = coordinator.retained;
+        // Static prewalk controls are already in the defining counter. Nested
+        // reset parsers have an input-dependent extra S admitted with this row.
+        let scratch = sum(&[scratch, coordinator.additional_scratch], maximum)?;
         let selection_backing = metadata_backing(&self.selection)?;
 
         // Provider/realization validators construct sorted-key clones and

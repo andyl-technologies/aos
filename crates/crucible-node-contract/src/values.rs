@@ -14,6 +14,9 @@ use crate::{ContractError, Validate, invalid};
 /// Limits each portable array independently of frame and admission ceilings.
 pub const MAX_ARRAY_ELEMENTS: usize = 65_536;
 
+/// Limits the validated ASCII byte length of each [`Id`].
+pub const MAX_ID_BYTES: usize = 128;
+
 /// Identifies a semantic node, owner, operation, or other named contract object.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize)]
 #[serde(transparent)]
@@ -38,19 +41,23 @@ impl Id {
     /// Returns the original backing and validation error for the same invalid
     /// identifiers rejected by [`Self::new`].
     pub fn try_from_owned(value: String) -> Result<Self, (String, ContractError)> {
-        let mut bytes = value.bytes();
-        if value.len() > 128
-            || !bytes
-                .next()
-                .is_some_and(|byte| byte.is_ascii_alphanumeric())
-            || !bytes.all(|byte| byte.is_ascii_alphanumeric() || b"._:/-".contains(&byte))
-        {
+        if !Self::is_valid_str(&value) {
             return Err((
                 value,
                 invalid("id", "expected 1–128 bounded ASCII identifier bytes"),
             ));
         }
         Ok(Self(value))
+    }
+
+    /// Checks the defining ASCII grammar without allocating an identifier or diagnostic.
+    pub fn is_valid_str(value: &str) -> bool {
+        let mut bytes = value.bytes();
+        value.len() <= MAX_ID_BYTES
+            && bytes
+                .next()
+                .is_some_and(|byte| byte.is_ascii_alphanumeric())
+            && bytes.all(|byte| byte.is_ascii_alphanumeric() || b"._:/-".contains(&byte))
     }
 
     /// Returns the allocated byte capacity of the owned identifier string.

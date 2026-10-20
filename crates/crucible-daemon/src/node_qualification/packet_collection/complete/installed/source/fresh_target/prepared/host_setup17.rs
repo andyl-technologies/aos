@@ -34,6 +34,8 @@ impl PreparedCompleteRestoration {
     ) -> Result<(), RuntimeError> {
         let Self {
             selected,
+            import18_selection: _,
+            import18_templates,
             measurements,
             content,
             launches,
@@ -48,6 +50,7 @@ impl PreparedCompleteRestoration {
             code_graph,
             prebirth,
             restored_prebirth_archive,
+            restored_prebirth_slot_row: _,
             restored_prebirth_attempt,
             restored_prebirth_source,
             prebirth_attempted: _,
@@ -56,6 +59,7 @@ impl PreparedCompleteRestoration {
         } = self;
         counter.add(size_of::<Option<Self>>()).map_err(limit)?;
         selected.charge_host_setup17_data(counter)?;
+        import18_templates.charge_retained_data(counter)?;
         counter.charge(measurements).map_err(limit)?;
         if counter.rc(content).map_err(limit)? {
             counter.charge(content.as_ref()).map_err(limit)?;
@@ -161,20 +165,21 @@ impl PreparedCompleteRestoration {
                 )
                 .map_err(limit)?;
         }
-        if let Some(attempt) = restored_prebirth_attempt {
-            let whole = attempt.retained_requested_storage_data()?;
-            let children = whole
-                .checked_sub(size_of_val(attempt))
-                .ok_or(RuntimeError::ResourceLimit)?;
-            counter.add(children).map_err(limit)?;
-        }
+        restored_load_slot::charge_retained_data(restored_prebirth_attempt, counter)?;
         Ok(())
     }
 
     pub(in crate::node_qualification::packet_collection::complete::installed::source::fresh_target) fn host_setup17_counter_scratch_data()
     -> Result<usize, RuntimeError> {
+        let slot_scratch = match restored_load_slot::FIXED_CALLER_SCRATCH {
+            Some(bytes) => bytes,
+            None => return Err(RuntimeError::UnsupportedFacet),
+        };
         let terms = [
+            slot_scratch,
             retained_native_launch_counter_scratch_data(),
+            import18_templates::Templates::retained_counter_scratch_data(),
+            restored_load_slot::RETAINED_COUNTER_SCRATCH,
             PacketCompleteSemanticSource::retained_requested_storage_precredit_scratch_data(),
             CollectingCompleteRestorationSource::original_host17_preconstruction_counter_scratch_data(),
             PacketCompleteArchiveCodeFactory::retained_requested_storage_scratch_bytes()
@@ -223,7 +228,12 @@ pub(super) fn assert_actual_setup_census_data(owner: &mut PreparedCompleteRestor
     assert!(maximum > 0);
     assert!(owner.prebirth.is_none());
     assert!(owner.restored_prebirth_archive.is_none());
+    assert!(owner.restored_prebirth_slot_row.is_none());
     assert!(owner.restored_prebirth_attempt.is_none());
+    assert!(
+        size_of::<PreparedCompleteRestoration>()
+            < size_of::<Option<CompleteRestoredSettledSourceLoadAttempt>>()
+    );
     assert!(owner.restored_prebirth_source.is_none());
     let loan = HostSource17SetupBorrow::prepared_data(owner);
     loan.authenticate_target_data(&owner.selected.host, &owner.selected.resources)

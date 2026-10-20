@@ -69,6 +69,27 @@ pub fn original_json_value_storage_extent_data(
     let bytes = maximum_encoded_bytes;
     let values = add(add(bytes, 1)? / 2, 1)?;
     let members = add(bytes / 5, 1)?;
+    original_json_value_storage_population_data(values, members, bytes)
+}
+
+/// Applies the same defining layouts to separately established JSON events.
+///
+/// `values` includes object-key strings and every value/container, `members`
+/// counts object entries, and `text` bounds total decoded key/string UTF8 bytes.
+/// Callers must derive these occurrence bounds before allocating; these scalar
+/// facts do not authenticate a body, actual parser profile or constructor grant.
+/// The arithmetic and requested layouts match the encoded-extent producer.
+///
+/// # Errors
+/// Refuses an empty population, unsupported compiled tree layout or overflow.
+pub(crate) fn original_json_value_storage_population_data(
+    values: usize,
+    members: usize,
+    text: usize,
+) -> Result<OriginalJsonValueStorageExtentData, ProviderError> {
+    if values == 0 || members > values {
+        return Err(exhausted());
+    }
     let value_node =
         super::map_node_bytes_for::<String, serde_json::Value>().map_err(|_| exhausted())?;
     let sort_node = super::map_node_bytes_for::<Vec<u16>, (&str, &serde_json::Value)>()
@@ -79,7 +100,7 @@ pub fn original_json_value_storage_extent_data(
     // nonzero minimum per bank. Empty decoded maps allocate no fresh BTree root;
     // at most one leaf/internal requested node per entry is needed, doubled here
     // to cover roots and conservative insertion growth independently.
-    let strings = add(mul(8, bytes)?, mul(32, values)?)?;
+    let strings = add(mul(8, text)?, mul(32, values)?)?;
     let arrays = mul(mul(8, values)?, std::mem::size_of::<serde_json::Value>())?;
     let maps = mul(mul(2, members)?, value_node)?;
     let dom = sum(&[
@@ -93,9 +114,9 @@ pub fn original_json_value_storage_extent_data(
     // output fits 20. Its formatter owns a distinct 132-byte workspace, charged
     // below independently of output width. Strings expand by at most six bytes
     // per decoded UTF-8 byte.
-    let encoded = add(mul(6, bytes)?, mul(36, values)?)?;
-    let quoted_strings = add(mul(24, bytes)?, mul(264, values)?)?;
-    let utf16 = add(mul(8, bytes)?, mul(16, members)?)?;
+    let encoded = add(mul(6, text)?, mul(36, values)?)?;
+    let quoted_strings = add(mul(24, text)?, mul(264, values)?)?;
+    let utf16 = add(mul(8, text)?, mul(16, members)?)?;
     // On the selected 64-bit std layout, one full B=6 sort node is wider
     // than five input entries. One node per member covers the final BTree;
     // the second covers cumulative input-Vec growth (four entries/member)
@@ -115,7 +136,7 @@ pub fn original_json_value_storage_extent_data(
     let result = OriginalJsonValueStorageExtentData {
         maximum_value_nodes: values,
         maximum_object_members: members,
-        maximum_decoded_string_bytes: bytes,
+        maximum_decoded_string_bytes: text,
         value_dom_requested_bytes: dom,
         canonical_work_requested_bytes: canonical_work,
         canonical_output_requested_bytes: output,

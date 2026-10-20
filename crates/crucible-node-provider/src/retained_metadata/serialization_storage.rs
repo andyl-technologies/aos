@@ -7,6 +7,7 @@
 
 #[path = "serialization_storage/json_extent.rs"]
 mod json_extent;
+pub(crate) use json_extent::original_json_value_storage_population_data;
 pub use json_extent::{
     OriginalJsonValueStorageExtentData, original_json_value_storage_extent_counter_scratch_data,
     original_json_value_storage_extent_data,
@@ -1047,6 +1048,8 @@ pub(crate) fn original_serialization_frame_counter_scratch_data() -> usize {
         + size_of::<Result<usize, Excess>>()
         + size_of::<Option<usize>>()
         + size_of::<&str>()
+        // U64's checked UTF-8 maps its result into this actual serializer error.
+        + size_of::<Result<&'static str, Excess>>()
         + size_of::<std::str::Bytes<'static>>()
         + size_of::<Option<u8>>()
         + size_of::<u8>()

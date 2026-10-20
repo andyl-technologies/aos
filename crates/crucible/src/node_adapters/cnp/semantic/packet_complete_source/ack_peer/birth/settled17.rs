@@ -36,6 +36,9 @@ impl OriginalAckPeerBirth {
         &self,
         source: &PacketCompleteSemanticSource,
     ) -> Result<(), RuntimeError> {
+        if self.native_import18.is_some() {
+            return Err(RuntimeError::UnsupportedFacet);
+        }
         self.ensure_origin()
             .map_err(|_| RuntimeError::ForeignAuthority)?;
         source.storage_origin_with_error::<RuntimeError>()?;

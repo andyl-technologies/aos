@@ -689,6 +689,11 @@ impl ClientSession {
                 ReceivedBody::Request(body) => {
                     self.receive_transfer(custody, frame.envelope, *body)?
                 }
+                ReceivedBody::NativeImport18Bootstrap(_) => {
+                    return Err(crate::ProviderError::Conflict(
+                        "bootstrap18 requires its distinct current owner",
+                    ));
+                }
                 ReceivedBody::Notification(_) => {
                     return Err(ProviderError::Correlation(
                         "assigned Admit notification unsupported",
@@ -1447,6 +1452,11 @@ impl ClientSession {
                 ReceivedBody::Request(body) => {
                     self.receive_transfer(custody, frame.envelope, *body)?
                 }
+                ReceivedBody::NativeImport18Bootstrap(_) => {
+                    return Err(crate::ProviderError::Conflict(
+                        "bootstrap18 requires its distinct current owner",
+                    ));
+                }
                 ReceivedBody::Notification(_) => {
                     return Err(ProviderError::Correlation("unsupported CNP notification"));
                 }
@@ -1683,6 +1693,11 @@ impl ClientSession {
                 ReceivedBody::Request(body) => {
                     self.receive_transfer(custody, frame.envelope, *body)?
                 }
+                ReceivedBody::NativeImport18Bootstrap(_) => {
+                    return Err(crate::ProviderError::Conflict(
+                        "bootstrap18 requires its distinct current owner",
+                    ));
+                }
                 ReceivedBody::Notification(_) => {
                     return Err(ProviderError::Correlation(
                         "assigned complete restore notification unsupported",
@@ -1743,6 +1758,11 @@ impl ClientSession {
                 }
                 ReceivedBody::Request(body) => {
                     self.receive_transfer(custody, frame.envelope, *body)?
+                }
+                ReceivedBody::NativeImport18Bootstrap(_) => {
+                    return Err(crate::ProviderError::Conflict(
+                        "bootstrap18 requires its distinct current owner",
+                    ));
                 }
                 ReceivedBody::Notification(_) => {
                     return Err(ProviderError::Correlation(
@@ -1821,6 +1841,11 @@ impl ClientSession {
                         }
                     }
                     self.receive_transfer(custody, frame.envelope, *body)?
+                }
+                ReceivedBody::NativeImport18Bootstrap(_) => {
+                    return Err(crate::ProviderError::Conflict(
+                        "bootstrap18 requires its distinct current owner",
+                    ));
                 }
                 ReceivedBody::Notification(_) => {
                     return Err(ProviderError::Correlation(
@@ -1993,3 +2018,6 @@ mod settled_association;
 #[path = "session/settled_history.rs"]
 mod settled_history;
 pub(in crate::client) use settled_history::SessionSettledHistoryData;
+
+#[path="session/native_import18.rs"]
+mod native_import18;

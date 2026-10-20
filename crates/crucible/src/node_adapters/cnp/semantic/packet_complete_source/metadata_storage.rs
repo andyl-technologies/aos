@@ -178,3 +178,49 @@ mod tests {
         }
     }
 }
+
+impl PacketCompleteSemanticSource {
+    /// Names the actual precredit metadata-to-layout conversion controls.
+    ///
+    /// The fixed declaration covers the payload fold, checked tree geometry and
+    /// shared-header geometry called by the defining precredit converter. It
+    /// does not infer these views from a larger archive or typed-owner header.
+    /// Parser/serializer work and compiler frames remain separate obligations.
+    pub(crate) fn retained_metadata_conversion_counter_scratch_data() -> usize {
+        use std::alloc::{Layout, LayoutError};
+        use std::mem::size_of;
+
+        // Conversion maximum, payload, trees, retained and headers; the fold
+        // receives its accumulator and each actual array element by value.
+        type ConversionLocals = (usize, usize, usize, usize, usize);
+        type PayloadFold = (usize, usize);
+        // protocol_tree_storage receives five independent input scalars and
+        // computes alignment, padding, node and bytes under the pinned layout.
+        type TreeArguments = (usize, usize, usize, usize, usize);
+        type TreeLocals = (usize, usize, usize, usize);
+        // protocol_shared_header_storage receives views/alignment/maximum and
+        // computes aligned header and bytes independently of payload ownership.
+        type SharedArguments = (usize, usize, usize);
+        type SharedLocals = (usize, usize, usize);
+
+        // The public precredit wrapper and each NodeRuntime layout facade
+        // forward distinct borrowed/scalar arguments into the defining helper.
+        size_of::<(&RetainedProtocolMetadataFacts, usize)>()
+            + size_of::<&RetainedProtocolMetadataFacts>()
+            + size_of::<[usize; 4]>()
+            + size_of::<std::array::IntoIter<usize, 4>>()
+            + size_of::<ConversionLocals>()
+            + size_of::<PayloadFold>()
+            + size_of::<TreeArguments>()
+            + size_of::<TreeArguments>()
+            + size_of::<TreeLocals>()
+            + size_of::<SharedArguments>()
+            + size_of::<SharedArguments>()
+            + size_of::<SharedLocals>()
+            + size_of::<Layout>()
+            + size_of::<Result<Layout, LayoutError>>()
+            + size_of::<Result<usize, RuntimeError>>()
+            + size_of::<Option<usize>>()
+            + size_of::<&usize>()
+    }
+}

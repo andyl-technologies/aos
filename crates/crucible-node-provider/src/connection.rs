@@ -222,6 +222,8 @@ pub trait BodySchemaVerifier {
 /// Contains a structurally validated baseline body without effect authority.
 #[derive(Debug)]
 pub enum ReceivedBody {
+    /// Retains profile-specific bootstrap DATA only in its dedicated actual owner.
+    NativeImport18Bootstrap(Box<crate::reference_packet::service::complete_restore::import18::bootstrap_ack::PacketNativeImport18BootstrapReceivedBody>),
     /// Retains a closed request for later host/native admission.
     Request(Box<RequestBody>),
     /// Retains a response validated against the original request's method.
@@ -671,6 +673,11 @@ impl<S: ProviderStream> Connection<S> {
         envelope: &Envelope,
         incoming: bool,
     ) -> Result<ReceivedBody, ProviderError> {
+        if envelope.method == Method::NativeImport18Bootstrap {
+            return Err(ProviderError::Conflict(
+                "bootstrap18 requires dedicated current service ownership",
+            ));
+        }
         envelope.validate()?;
         if envelope.method == Method::Hello
             || envelope.session_id.0.as_ref() != Some(self.authority.session_id())
@@ -1163,3 +1170,9 @@ mod capture17_receive;
 pub(crate) use capture17_receive::native_capture17_receive_counter_scratch_data;
 
 pub(crate) use exchange::original_native17_publication_literal_counter_scratch_data;
+
+#[path="connection/native_import18.rs"]
+pub(crate) mod native_import18;
+#[path = "connection/native_import18_provider.rs"]
+mod native_import18_provider;
+pub(crate) use native_import18_provider::NativeImport18ConnectionIdentity;

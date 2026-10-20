@@ -139,6 +139,13 @@ impl RestoredSettledNative17Limits {
     pub const fn maximum_nodes_data(&self) -> usize {
         self.nodes
     }
+
+    /// Returns the independently admitted ceiling retained by this exact reader.
+    ///
+    /// This DATA loan grants no allocation or native restoration permission.
+    pub const fn maximum_requested_bytes_data(&self) -> usize {
+        self.maximum_requested_bytes
+    }
 }
 
 /// Lends an immutable fullref/body pair from actual retained verified content.

@@ -890,3 +890,6 @@ pub(crate) use owned_value::{
     NativeImport18OwnedValuePassAttemptData, NativeImport18OwnedValuePassConstructionData,
     NativeImport18OwnedValuePassKindData, NativeImport18OwnedValuePassViewData,
 };
+
+#[path = "effective18/materialize_value.rs"]
+pub(crate) mod materialize_value;

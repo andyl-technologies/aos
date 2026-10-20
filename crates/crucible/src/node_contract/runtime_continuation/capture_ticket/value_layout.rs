@@ -10,6 +10,10 @@ use std::ptr::NonNull;
 
 use serde_json::Value;
 
+/// Defines unselected Clone control layouts for the pinned map implementation.
+#[path = "value_layout/clone_controls.rs"]
+pub(super) mod clone_controls;
+
 // Field values are never initialized or dereferenced. The mirrors exist solely
 // to reproduce requested Layout sizes, including the compiler's actual padding.
 #[allow(dead_code)]

@@ -209,6 +209,11 @@ pub fn decode_request(
     body: &Map<String, Value>,
 ) -> Result<RequestBody, ProviderError> {
     Ok(match method {
+        Method::NativeImport18Bootstrap => {
+            return Err(ProviderError::Conflict(
+                "native_import18_bootstrap requires its actual selected profile owner",
+            ));
+        }
         Method::Hello => RequestBody::Hello(object(body)?),
         Method::Discover => RequestBody::Discover(object(body)?),
         Method::Realize => RequestBody::Realize(object(body)?),

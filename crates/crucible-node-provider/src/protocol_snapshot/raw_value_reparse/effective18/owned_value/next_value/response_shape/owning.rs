@@ -391,6 +391,135 @@ impl NativeImport18OwningResponseAttemptData {
             .ok_or_else(invalid)
     }
 
+    // Reprojects only schema-complete immutable headers; no Value pass occurs.
+    pub(super) fn shape_header_data(
+        &self,
+    ) -> Result<super::shape_validate::HeaderInput<'_>, ProviderError> {
+        use super::shape_validate::{ErrorInput, ErrorScalar, HeaderInput};
+        if self.failed || !self.finished {
+            return Err(invalid());
+        }
+        let envelope = self.envelope.as_ref().ok_or_else(invalid)?;
+        let source = OwnedSource {
+            envelope,
+            banks: &self.banks,
+        };
+        let body = envelope.body_data()?;
+        let operation = body
+            .keys()
+            .position(|name| name == "operation_state")
+            .ok_or_else(invalid)?;
+        let operation = schedule::operation_data(source.value_data(Route {
+            body: operation,
+            path: [None; 2],
+        })?)?;
+        let status = self.schedule.status_data()?;
+        let error = if status == schedule::Status::Error {
+            let member = body
+                .keys()
+                .position(|name| name == "error")
+                .ok_or_else(invalid)?;
+            let value = source.value_data(Route {
+                body: member,
+                path: [None; 2],
+            })?;
+            let order = match value.kind_data()? {
+                NativeImport18FirstFlatKindData::Object(_) => [
+                    ErrorScalar::Code,
+                    ErrorScalar::Effect,
+                    ErrorScalar::Message,
+                    ErrorScalar::Retryable,
+                ],
+                NativeImport18FirstFlatKindData::Array(_) => [
+                    ErrorScalar::Code,
+                    ErrorScalar::Message,
+                    ErrorScalar::Effect,
+                    ErrorScalar::Retryable,
+                ],
+                _ => return Err(invalid()),
+            };
+            let NativeImport18FirstFlatKindData::String(code) =
+                error_field_data(value, "code", 0)?.kind_data()?
+            else {
+                return Err(invalid());
+            };
+            let NativeImport18FirstFlatKindData::String(message) =
+                error_field_data(value, "message", 1)?.kind_data()?
+            else {
+                return Err(invalid());
+            };
+            let effect = schedule::effect_data(error_field_data(value, "effect", 2)?)?;
+            let NativeImport18FirstFlatKindData::Bool(retryable) =
+                error_field_data(value, "retryable", 3)?.kind_data()?
+            else {
+                return Err(invalid());
+            };
+            Some(ErrorInput {
+                code,
+                message,
+                effect,
+                retryable,
+                order,
+            })
+        } else {
+            None
+        };
+        Ok(HeaderInput {
+            status,
+            operation,
+            error,
+        })
+    }
+
+    // Names these actual projection/find/enum controls independently of cuts.
+    pub(super) fn shape_header_counter_data() -> usize {
+        use super::shape_validate::{ErrorInput, ErrorScalar, HeaderInput};
+        size_of::<&Self>() * 2
+            + size_of::<OwnedSource<'static>>()
+            + size_of::<&OwnedSource<'static>>()
+            + size_of::<HeaderInput<'static>>() * 2
+            + size_of::<Result<HeaderInput<'static>, ProviderError>>()
+            + size_of::<ErrorInput<'static>>()
+            + size_of::<Option<ErrorInput<'static>>>()
+            + size_of::<[ErrorScalar; 4]>() * 2
+            + size_of::<NativeImport18FirstFlatViewData<'static>>() * 4
+            + size_of::<Result<NativeImport18FirstFlatViewData<'static>, ProviderError>>() * 4
+            + size_of::<NativeImport18FirstFlatKindData<'static>>() * 6
+            + size_of::<Result<NativeImport18FirstFlatKindData<'static>, ProviderError>>() * 6
+            + size_of::<NativeImport18FirstFlatObjectData<'static>>()
+            + size_of::<&mut NativeImport18FirstFlatObjectData<'static>>()
+            + size_of::<NativeImport18FirstFlatArrayData<'static>>()
+            + size_of::<&mut NativeImport18FirstFlatArrayData<'static>>()
+            + size_of::<Option<(&str, NativeImport18FirstFlatViewData<'static>)>>()
+            + size_of::<(&str, NativeImport18FirstFlatViewData<'static>)>()
+            + size_of::<&(&str, NativeImport18FirstFlatViewData<'static>)>()
+            + size_of::<Option<NativeImport18FirstFlatViewData<'static>>>()
+            + size_of::<serde_json::map::Keys<'static>>() * 2
+            + size_of::<&mut serde_json::map::Keys<'static>>() * 2
+            + size_of::<Result<usize, ProviderError>>() * 2
+            + size_of::<&&str>()
+            + size_of::<&String>() * 2
+            + size_of::<Option<usize>>() * 2
+            + size_of::<&serde_json::Map<String, Value>>()
+            + size_of::<Result<&serde_json::Map<String, Value>, ProviderError>>()
+            + size_of::<&NativeImport18OwningEnvelopeAttemptData>()
+            + size_of::<Option<&NativeImport18OwningEnvelopeAttemptData>>()
+            + size_of::<Result<&NativeImport18OwningEnvelopeAttemptData, ProviderError>>()
+            + size_of::<&[BankSlot]>()
+            + size_of::<schedule::Status>()
+            + size_of::<Result<schedule::Status, ProviderError>>()
+            + size_of::<crate::bodies::OperationState>()
+            + size_of::<Result<crate::bodies::OperationState, ProviderError>>()
+            + size_of::<crate::bodies::EffectCertainty>()
+            + size_of::<Result<crate::bodies::EffectCertainty, ProviderError>>()
+            + size_of::<Route>() * 2
+            + size_of::<[Option<usize>; 2]>() * 2
+            + size_of::<usize>() * 8
+            + size_of::<&str>() * 5
+            + size_of::<bool>()
+            + schedule::counter_data()
+    }
+
     /// Borrows the actual immutable received frame after success or refusal.
     ///
     /// # Errors
@@ -533,4 +662,21 @@ fn selection_row_data(
         };
     }
     bank.response_row_data(value, maximum)
+}
+
+fn error_field_data<'a>(
+    value: NativeImport18FirstFlatViewData<'a>,
+    name: &str,
+    position: usize,
+) -> Result<NativeImport18FirstFlatViewData<'a>, ProviderError> {
+    match value.kind_data()? {
+        NativeImport18FirstFlatKindData::Object(mut fields) => fields
+            .find(|(key, _)| *key == name)
+            .map(|(_, value)| value)
+            .ok_or_else(invalid),
+        NativeImport18FirstFlatKindData::Array(mut fields) => {
+            fields.nth(position).ok_or_else(invalid)
+        }
+        _ => Err(invalid()),
+    }
 }

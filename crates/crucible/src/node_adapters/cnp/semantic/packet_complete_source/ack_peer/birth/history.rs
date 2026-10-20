@@ -137,6 +137,7 @@ impl Serialize for SourceBirthIdentityHistory<'_> {
             // whole birth. This identity component neither serializes nor drops them.
             report_startup: _,
             native_startup: _,
+            native_import18: _,
             native_host_finalization: _,
             host_startup: _,
         } = self.original;

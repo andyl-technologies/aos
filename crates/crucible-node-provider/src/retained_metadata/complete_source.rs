@@ -6,8 +6,11 @@
 //! tree/shared-header geometry remain separate simultaneous admission terms.
 
 use super::*;
+
+mod coordinator_counter;
 use crate::reference_packet::connected::{PacketConnectedDefinition, PacketInputConnection};
 use crate::reference_packet::{PacketEvent, PacketProgramDefinition};
+pub use coordinator_counter::retained_native_coordinator_counter_scratch_data;
 
 /// Borrows the actual one native program family retained by a Source.
 pub enum RetainedCompleteSourceDefinition<'a> {
@@ -437,3 +440,6 @@ mod tests {
         assert_eq!(facts.tree_containers, 0);
     }
 }
+
+#[path = "complete_source/counter.rs"]
+mod counter;

@@ -78,6 +78,11 @@ impl Serialize for DecodedBodyView<'_> {
                 body.result.as_ref().map(MethodResultView),
             )
                 .serialize(serializer),
+            ReceivedBody::NativeImport18Bootstrap(_) => {
+                return Err(serde::ser::Error::custom(
+                    "bootstrap18 requires its distinct history grammar",
+                ));
+            }
             ReceivedBody::Notification(body) => ("Notification", body).serialize(serializer),
         }
     }
@@ -475,5 +480,16 @@ impl ReceivedFrame {
     /// Borrows raw envelope and independent typed cache as retained history.
     pub(crate) fn borrowed_settled17_data(&self) -> impl Serialize + '_ {
         (&self.envelope, DecodedBodyView(&self.body))
+    }
+}
+impl ReceivedFrame {
+    /// Names the actual existing raw/typed borrowed serializer controls.
+    pub(crate) fn borrowed_settled17_counter_scratch_data() -> usize {
+        std::mem::size_of::<(&Envelope, DecodedBodyView<'static>)>()
+            + std::mem::size_of::<RequestView<'static>>()
+            + std::mem::size_of::<MethodResultView<'static>>()
+            + std::mem::size_of::<Option<MethodResultView<'static>>>()
+            + std::mem::size_of::<&crate::bodies::NotificationBody>()
+            + std::mem::size_of::<&crate::bodies::ResponseShape>()
     }
 }

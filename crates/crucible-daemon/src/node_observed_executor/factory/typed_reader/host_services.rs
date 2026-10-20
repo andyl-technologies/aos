@@ -211,6 +211,7 @@ fn validate_extensions(
     body: &ReceivedBody,
 ) -> Result<(), ProviderError> {
     let extensions: &Extensions = match body {
+        ReceivedBody::NativeImport18Bootstrap(_) => return Err(refused()),
         ReceivedBody::Request(request) => match request.as_ref() {
             RequestBody::Input(value) => {
                 definition.input_inventory_reference(&value.extensions)?;

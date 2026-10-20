@@ -36,7 +36,7 @@ mod native_wire;
 mod report_startup;
 pub use native_wire::{
     PacketCompleteNativeRestoredSettledStartupWire, PacketCompleteNativeRestoredSuffixStartupWire,
-    PacketCompleteNativeStartupWire,
+    PacketCompleteNativeImport18StartupWire, PacketCompleteNativeStartupWire,
 };
 
 /// Borrows one original source-owned private boot material transfer.
@@ -67,6 +67,7 @@ pub(in crate::node_adapters::cnp::semantic::packet_complete_source) struct Origi
     report_startup_required: bool,
     report_startup: Option<report_startup::OriginalReportStartupFinalization>,
     native_startup: Option<native_startup::OriginalNativeStartupFinalization>,
+    native_import18: Option<native_startup::OriginalNativeImport18Finalization>,
     // The link is inline and weak. Its one shared allocation is precharged by
     // Core before all three links are attached; members keep that owner alive.
     native_host_finalization: Option<crate::node_admission::OriginalHostFinalizationSource>,
@@ -116,6 +117,16 @@ impl HostRevision {
 }
 
 impl OriginalAckPeerBirth {
+    // This grants only a borrowed immutable Id. The original Birth remains
+    // shared-loaned and unstarted throughout the caller's identity calculation.
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source::ack_peer) fn import18_private_launch_data(
+        &self,
+    ) -> Result<&Id, crate::node_contract::RuntimeError> {
+        self.authenticate_unstarted_storage_phase_with_error::<crate::node_contract::RuntimeError>(
+        )?;
+        Ok(&self.private_launch)
+    }
+
     pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn authenticate_unstarted_storage_phase(
         &self,
     ) -> Result<(), OperationFailure> {
@@ -189,6 +200,7 @@ impl OriginalAckPeerBirth {
             report_startup_required,
             report_startup: None,
             native_startup: None,
+            native_import18: None,
             native_host_finalization: None,
             host_startup: std::cell::RefCell::new(None),
         });
@@ -456,6 +468,11 @@ impl OriginalAckPeerBirth {
                     .map(|state| state.retained_storage_data_with_error::<E>(maximum))
                     .transpose()?
                     .unwrap_or(0),
+                self.native_import18
+                    .as_ref()
+                    .map(|state| state.retained_storage_data_with_error::<E>(maximum))
+                    .transpose()?
+                    .unwrap_or(0),
             ],
             maximum,
         )
@@ -510,3 +527,6 @@ mod settled17;
 
 #[path = "birth/initial15_normalization.rs"]
 mod initial15_normalization;
+
+#[path = "birth/import18_construction.rs"]
+pub(super) mod import18_construction;

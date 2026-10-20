@@ -65,6 +65,11 @@ impl BodySchemaVerifier for SchemaVerifier {
                 | bodies::ResponseShape::Completed { extensions, .. }
                 | bodies::ResponseShape::Error { extensions, .. } => extensions,
             },
+            ReceivedBody::NativeImport18Bootstrap(_) => {
+                return Err(crate::ProviderError::Conflict(
+                    "bootstrap18 requires its distinct current owner",
+                ));
+            }
             ReceivedBody::Notification(notification) => &notification.extensions,
         };
         if let (Some(definition), ReceivedBody::Request(request)) = (&self.reader, body)

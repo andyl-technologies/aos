@@ -6,6 +6,7 @@
 
 use super::*;
 
+mod expanded;
 mod typed_backing;
 use crate::protocol_snapshot::owned11::{
     OriginalOwned11Fields as Fields, original_owned11_plain_string as plain_string,
@@ -18,6 +19,55 @@ use crate::retained_metadata::serialization_storage::{
     OriginalSerializationStorageData, OriginalSerializationStorageProjection as Projection,
 };
 use crucible_node_contract::*;
+pub(super) use expanded::construction_storage_data;
+
+impl PacketNative5CoordinatorInstallation {
+    /// Quotes retained DTO and complete temporary decode/validation demand.
+    ///
+    /// Returns `[retained, transient, counter_scratch]` from the actual canonical
+    /// input, including potential reserved-Value reparses and subsequent typed,
+    /// clone, canonical and diagnostic work. It never parses or validates the
+    /// installation. The caller first admits the defining fixed counter, then
+    /// independently admits all returned axes beside every still-live owner
+    /// before calling the unchanged decoder. The actual local selection and its
+    /// counting-serializer formatter are independently retained and funded by
+    /// the caller: the decoder checks their extent before membership equality.
+    /// The row grants no native rights.
+    ///
+    /// # Errors
+    /// Refuses unsupported raw framing, zero/oversized input, arithmetic or
+    /// compiled-layout failure, or complete requested demand above `maximum`.
+    pub fn decode_construction_storage_data(
+        bytes: &[u8],
+        maximum: usize,
+    ) -> Result<[usize; 3], ProviderError> {
+        let actual = construction_storage_data(bytes, maximum)?;
+        let scratch = sum(
+            &[
+                Self::decode_construction_counter_scratch_data(),
+                actual.additional_scratch,
+            ],
+            maximum,
+        )?;
+        sum(&[actual.retained, actual.transient, scratch], maximum)?;
+        Ok([actual.retained, actual.transient, scratch])
+    }
+
+    /// Names direct decode-quote and actual retained-coordinator observer views.
+    ///
+    /// The caller admits this before the borrowed raw-marker scan or retained
+    /// census. Input-dependent reparse controls are returned by the complete
+    /// quote and admitted before decoding; neither quantity is heap permission.
+    pub fn decode_construction_counter_scratch_data() -> usize {
+        counter_scratch_data()
+            + decoded::counter_scratch_data()
+            + crate::retained_metadata::retained_native_coordinator_counter_scratch_data()
+            + size_of::<[usize; 3]>()
+            + size_of::<Result<[usize; 3], ProviderError>>()
+            + size_of::<&[u8]>()
+            + size_of::<usize>()
+    }
+}
 
 // These are the actual nested portable DTO/Vec element classes of this closed
 // coordinator. Extensions are String/Value maps, not Control grant caches.
@@ -437,7 +487,9 @@ pub(super) fn quote(bytes: &[u8], maximum: usize) -> Result<usize, ProviderError
 pub(super) fn counter_scratch_data() -> usize {
     // Actual compiled type census, raw field/array cursors, live quote totals,
     // borrowed result references and nested collection/projection observers.
-    typed_backing::counter_scratch_data()
+    expanded::counter_scratch_data()
+        + crate::reference_packet::coordinator::PacketConnectedCoordinatorInstallation::borrowed_validation_counter_scratch_data()
+        + typed_backing::counter_scratch_data()
         + crate::reference_packet::coordinator::packet_native5_coordinator_installation_counter_scratch_data()
         + size_of::<[usize; 29]>()
         + size_of::<[usize; 13]>()

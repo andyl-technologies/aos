@@ -626,6 +626,86 @@ impl crate::node_contract::NodeRuntime {
         value_layout::map_node_bytes_for::<K, V>()
     }
 
+    /// Defines source-pinned allocator envelopes without runtime evaluation.
+    ///
+    /// The four slots bound the actual fat allocation Result, thin-pointer
+    /// Result, its residual and ControlFlow branch used by Box allocation.
+    /// This associated const is evaluated by the compiler, including all field
+    /// and alignment arithmetic. None refuses unsupported geometry or overflow.
+    /// It supplies no allocator residency, allocation authority or private ABI.
+    pub const CAPTURE_GLOBAL_ALLOCATION_LAYOUT_DATA: Option<[usize; 4]> =
+        value_layout::clone_controls::GLOBAL_ALLOCATION_LAYOUT_DATA;
+
+    /// Names actual fixed controls for closed installation Clone layout queries.
+    pub(crate) fn capture_installation_clone_counter_scratch_data() -> usize {
+        value_layout::clone_controls::map_clone_constructor_counter_scratch_data()
+            + value_layout::clone_controls::sequence_clone_counter_scratch_data()
+            + size_of::<value_layout::clone_controls::MapCloneControlStorageData>()
+            + size_of::<
+                Result<value_layout::clone_controls::MapCloneControlStorageData, RuntimeError>,
+            >()
+            + size_of::<(usize, usize)>()
+            + size_of::<Result<(usize, usize), RuntimeError>>()
+    }
+
+    /// Defines map/node construction and traversal windows for installation JSON.
+    ///
+    /// Actual key/value Clone constructors and backing are composed by the
+    /// closed immutable installation walk. This DATA grants no clone authority.
+    ///
+    /// # Errors
+    /// Refuses incompatible pinned geometry, overflow or whole-row exhaustion.
+    pub(crate) fn capture_installation_map_clone_storage_data(
+        initialized_len: usize,
+        maximum: usize,
+    ) -> Result<(usize, usize), RuntimeError> {
+        let row = value_layout::clone_controls::map_clone_constructor_storage_data::<
+            String,
+            serde_json::Value,
+        >(initialized_len, maximum)?;
+        Ok((
+            row.transient_return_bytes,
+            row.declared_counter_scratch_bytes,
+        ))
+    }
+
+    /// Names the sequence quote controls before a closed byte-copy clone walk.
+    ///
+    /// The sequence producer checks its existing locked layout profile. This
+    /// supplies its actual fixed query/return controls without a map Clone row.
+    pub(crate) fn capture_installation_sequence_clone_counter_scratch_data() -> usize {
+        value_layout::clone_controls::sequence_clone_counter_scratch_data()
+            + size_of::<value_layout::clone_controls::MapCloneControlStorageData>()
+            + size_of::<
+                Result<value_layout::clone_controls::MapCloneControlStorageData, RuntimeError>,
+            >()
+            + size_of::<(usize, usize)>()
+            + size_of::<Result<(usize, usize), RuntimeError>>()
+    }
+
+    /// Defines typed Vec/slice construction windows for a closed child family.
+    ///
+    /// The real installation caller selects byte-copy only for audited derived
+    /// Copy types; it separately visits all nontrivial child Clone constructors.
+    ///
+    /// # Errors
+    /// Refuses incompatible pinned geometry, overflow or whole-row exhaustion.
+    pub(crate) fn capture_installation_sequence_clone_storage_data<T: 'static>(
+        initialized_len: usize,
+        trivial_elements: bool,
+        maximum: usize,
+    ) -> Result<(usize, usize), RuntimeError> {
+        let row = value_layout::clone_controls::sequence_clone_storage_data::<T>(
+            initialized_len,
+            trivial_elements,
+            maximum,
+        )?;
+        Ok((
+            row.transient_return_bytes,
+            row.declared_counter_scratch_bytes,
+        ))
+    }
+
     /// Bounds actual protocol tree nodes under the pinned compiler layout.
     ///
     /// Inputs come from the same borrowed typed metadata walk. The caller adds

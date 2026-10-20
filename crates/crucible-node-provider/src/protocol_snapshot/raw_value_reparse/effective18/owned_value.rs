@@ -41,6 +41,7 @@ pub(crate) use next_value::{
     NativeImport18OwningResponseAttemptData, NativeImport18OwningResponseCensusData,
     NativeImport18ResponseShapeCutsData, NativeImport18ResponseShapeCutsPreludeData,
     NativeImport18ResponseValueCutData, NativeImport18ResponseValueCutLocationData,
+    NativeImport18ShapeValidateAttemptData, NativeImport18ShapeValidateCensusData,
 };
 
 mod owning_first;

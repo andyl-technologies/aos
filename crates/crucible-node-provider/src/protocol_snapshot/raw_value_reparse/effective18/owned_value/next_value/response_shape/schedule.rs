@@ -42,7 +42,7 @@ impl Route {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Status {
+pub(super) enum Status {
     Accepted,
     Completed,
     Error,
@@ -120,6 +120,13 @@ impl Schedule {
         });
         self.failed = false;
         Ok(())
+    }
+
+    pub(super) fn status_data(&self) -> Result<Status, ProviderError> {
+        if self.failed || !self.finished {
+            return Err(invalid());
+        }
+        self.status.ok_or_else(invalid)
     }
 
     pub(super) const fn state_data(&self) -> (bool, bool, bool) {
@@ -337,7 +344,7 @@ fn unit_variant_data(value: Flat<'_>) -> Result<&str, ProviderError> {
     }
 }
 
-fn operation_data(value: Flat<'_>) -> Result<OperationState, ProviderError> {
+pub(super) fn operation_data(value: Flat<'_>) -> Result<OperationState, ProviderError> {
     Ok(match unit_variant_data(value)? {
         "not_started" => OperationState::NotStarted,
         "running" => OperationState::Running,
@@ -347,7 +354,7 @@ fn operation_data(value: Flat<'_>) -> Result<OperationState, ProviderError> {
     })
 }
 
-fn effect_data(value: Flat<'_>) -> Result<EffectCertainty, ProviderError> {
+pub(super) fn effect_data(value: Flat<'_>) -> Result<EffectCertainty, ProviderError> {
     Ok(match unit_variant_data(value)? {
         "not_started" => EffectCertainty::NotStarted,
         "in_progress" => EffectCertainty::InProgress,

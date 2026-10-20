@@ -505,3 +505,6 @@ impl NativeWorldFactory for PacketCompleteArchiveCodeFactory {
             .authenticate_original_complete_archive_code(scope, self, &graph)
     }
 }
+
+#[path = "archive_code/template18.rs"]
+mod template18;

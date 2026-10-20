@@ -13,6 +13,9 @@
 //! older editions omit the field entirely.
 
 mod mechanism;
+#[path = "manifest/import18.rs"]
+mod import18;
+pub(super) use import18::load_import18;
 mod retained_setup17;
 pub(super) use mechanism::CompleteMechanism;
 
@@ -163,6 +166,19 @@ pub(super) fn validate_pin(path: &Path, expected: &ContentRef) -> Result<(), Qua
 }
 
 pub(super) fn load(pin: &InstalledCompleteSceneManifest) -> Result<Manifest, QualificationError> {
+    let value = read_pinned_value(pin)?;
+    mechanism::authenticate_edition_data(&value)?;
+    let selected: Manifest =
+        serde_json::from_value(value).map_err(crucible_node_contract::ContractError::from)?;
+    validate_declaration(&selected)?;
+    Ok(selected)
+}
+
+// Both explicit installation editions retain the same bounded, immutable file
+// proof. Their closed envelope parsers remain separate after this DATA read.
+fn read_pinned_value(
+    pin: &InstalledCompleteSceneManifest,
+) -> Result<serde_json::Value, QualificationError> {
     validate_pin(&pin.path, &pin.expected)?;
     let mut file = OpenOptions::new()
         .read(true)
@@ -204,11 +220,7 @@ pub(super) fn load(pin: &InstalledCompleteSceneManifest) -> Result<Manifest, Qua
     if canonical::canonical_json(&value)? != bytes {
         return Err(refused());
     }
-    mechanism::authenticate_edition_data(&value)?;
-    let selected: Manifest =
-        serde_json::from_value(value).map_err(crucible_node_contract::ContractError::from)?;
-    validate_declaration(&selected)?;
-    Ok(selected)
+    Ok(value)
 }
 
 fn validate_declaration(selected: &Manifest) -> Result<(), QualificationError> {

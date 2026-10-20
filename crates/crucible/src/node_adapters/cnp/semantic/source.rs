@@ -860,3 +860,10 @@ pub trait CnpSemanticSource {
         outputs: &[Id],
     ) -> Result<crate::node_scheduling::InputPayload, OperationFailure>;
 }
+
+#[path = "source/complete_template.rs"]
+mod complete_template;
+
+pub(in crate::node_adapters::cnp::semantic) use complete_template::{
+    private_birth_clone_construction_data, private_birth_clone_counter_scratch_data,
+};

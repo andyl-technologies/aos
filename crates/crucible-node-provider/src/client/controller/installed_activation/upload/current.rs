@@ -108,6 +108,11 @@ impl Serialize for BodyData<'_> {
                     .map_err(serde::ser::Error::custom)?,
             )
                 .serialize(serializer),
+            ReceivedBody::NativeImport18Bootstrap(_) => {
+                return Err(serde::ser::Error::custom(
+                    "bootstrap18 requires its distinct history grammar",
+                ));
+            }
             ReceivedBody::Notification(value) => ("notification", value).serialize(serializer),
         }
     }
@@ -142,6 +147,11 @@ fn observe_body(
             observer.boxed_value(value.as_ref())?;
             crate::retained_metadata::historical_response_body_data(value)?
                 .observe_retained_metadata_data(observer)
+        }
+        ReceivedBody::NativeImport18Bootstrap(_) => {
+            return Err(crate::ProviderError::Conflict(
+                "bootstrap18 requires its distinct current owner",
+            ));
         }
         ReceivedBody::Notification(value) => {
             observer.boxed_value(value.as_ref())?;

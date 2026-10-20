@@ -18,6 +18,10 @@ use crucible_node_provider::reference_packet::service::{
 };
 use std::io::Write;
 
+#[path = "native_wire/import18.rs"]
+mod import18;
+pub use import18::PacketCompleteNativeImport18StartupWire;
+
 /// Owns one original native startup wire sequence and every partial write.
 ///
 /// The bytes contain the original private key and must never be logged.
@@ -129,6 +133,9 @@ impl PacketCompleteAckPeerBootMaterial<'_> {
         &self,
     ) -> Result<&'static str, OperationFailure> {
         self.authenticate_startup_member()?;
+        if self.original.native_import18.is_some() {
+            return Err(refused("import18 requires its distinct private boot writer"));
+        }
         if let Some(state) = &self.original.native_startup {
             if state
                 .original_invocation_data()
@@ -291,6 +298,123 @@ impl PacketCompleteAckPeerBootMaterial<'_> {
             return Err(refused("native startup member incomplete"));
         }
         let maximum = finalization.member.host_launch_requested_bytes;
+        let mut artifacts = self
+            .source
+            .installation()
+            .provider
+            .implementation
+            .artifacts
+            .iter()
+            .filter(|artifact| artifact.role.as_str() == "executable");
+        if artifacts
+            .next()
+            .is_none_or(|artifact| artifact.content != *executable)
+            || artifacts.next().is_some()
+        {
+            return Err(refused(
+                "native startup executable differs from original Source",
+            ));
+        }
+        let unbound = match &self.source.original {
+            super::super::super::CompletePacketOriginal::Producer(source) => {
+                source.complete_preparation_unbound()?
+            }
+            super::super::super::CompletePacketOriginal::Reactive(source) => {
+                source.complete_preparation_unbound()?
+            }
+        };
+        if !unbound
+            || self
+                .source
+                .preconstruction
+                .try_borrow()
+                .map_err(|_| refused("native startup preconstruction busy"))?
+                .is_some()
+        {
+            return Err(refused("native startup already associated"));
+        }
+        {
+            let association = self
+                .source
+                .ack_peer_association
+                .try_borrow()
+                .map_err(|_| refused("native startup association already borrowed"))?;
+            association
+                .as_ref()
+                .ok_or_else(|| refused("native startup reserved association absent"))?
+                .authenticate_reserved_prebirth_data()?;
+        }
+        let slot_ref = slot
+            .as_ref()
+            .ok_or_else(|| refused("native startup original slot absent"))?;
+        let future =
+            CnpSemanticLaunchReservation::quote_unlaunched_retained_storage_precredit_data(
+                directory,
+                executable,
+                slot_ref.as_ref(),
+                maximum,
+            )
+            .map_err(|_| refused("native startup reservation quote refused"))?;
+        let (retained, transient, scratch) =
+            CnpSemanticLaunchReservation::quote_original_native_startup_acquisition_storage_data(
+                executable, maximum,
+            )
+            .map_err(|_| refused("native startup acquisition quote refused"))?;
+        future
+            .checked_add(retained)
+            .and_then(|bytes| bytes.checked_add(transient))
+            .and_then(|bytes| bytes.checked_add(scratch))
+            .filter(|bytes| *bytes <= maximum)
+            .ok_or_else(|| refused("native startup host admission exceeded"))?;
+        self.authenticate_original()?;
+        if self.source.complete_bytes_launch_reserved.replace(true) {
+            return Err(refused("native startup Source launch already spent"));
+        }
+        let original_slot = slot
+            .take()
+            .ok_or_else(|| refused("native startup original slot disappeared"))?;
+        *completed = Some(
+            CnpSemanticLaunchReservation::reserve_original_native_startup(
+                directory.to_path_buf(),
+                executable.clone(),
+                original_slot,
+            ),
+        );
+        self.original
+            .bind_original_host_sdk_launch_data(
+                completed
+                    .as_ref()
+                    .ok_or_else(|| refused("native startup custody absent"))?,
+            )
+            .map_err(|_| refused("original host SDK launch identity refused"))?;
+        let actual = completed
+            .as_ref()
+            .ok_or_else(|| refused("native startup custody absent"))?
+            .unlaunched_retained_requested_storage_precredit_data(maximum)
+            .and_then(|report| report.complete_requested_bytes_precredit_data())
+            .map_err(|_| refused("native startup custody observation refused"))?;
+        if actual > future {
+            return Err(refused("native startup custody capacity widened"));
+        }
+        self.authenticate_original()
+    }
+
+    // The import18 caller obtains its maximum only from its genuine installed
+    // member. This private allocation path creates no member or credit.
+    fn reserve_native_launch_with_original_member_data(
+        &self,
+        directory: &std::path::Path,
+        executable: &crucible_node_contract::ContentRef,
+        slot: &mut Option<Box<dyn crate::node_adapters::cnp::CnpSemanticProcessSlot>>,
+        completed: &mut Option<crate::node_adapters::cnp::CnpSemanticLaunchReservation>,
+        maximum: usize,
+    ) -> Result<(), OperationFailure> {
+        use crate::node_adapters::cnp::CnpSemanticLaunchReservation;
+        self.authenticate_startup_member()?;
+        self.original.ensure_origin()?;
+        if completed.is_some() {
+            return Err(refused("native startup reservation slot occupied"));
+        }
         let mut artifacts = self
             .source
             .installation()

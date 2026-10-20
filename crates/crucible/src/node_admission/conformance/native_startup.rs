@@ -880,3 +880,14 @@ mod settled17;
 
 pub use invocation::CompleteOriginalRestoredSettledStartupAdmission;
 pub(crate) use invocation::OriginalRestoredSettledStartupMember;
+
+// Import18 has its own member and installed-authority hooks. Legacy members
+// never select this path from their edition or serialized allocation rows.
+mod import18;
+pub use import18::{
+    CompleteOriginalNativeImport18StartupAdmission, OriginalNativeImport18StartupMemberScope,
+    OriginalNativeImport18StartupScope,
+};
+pub(crate) use import18::{
+    OriginalNativeImport18StartupMember, OriginalNativeImport18StartupQuote,
+};

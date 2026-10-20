@@ -9,6 +9,12 @@
 #[path = "prepared/host_setup17.rs"]
 mod host_setup17;
 
+#[path = "prepared/import18_templates.rs"]
+mod import18_templates;
+
+#[path = "prepared/restored_load_slot.rs"]
+mod restored_load_slot;
+
 use super::*;
 use crate::node_qualification::packet_collection::complete::PacketCompleteArchiveCodeFactory;
 use crucible::node_adapters::cnp::PacketCompleteEffectReceiverReader;
@@ -39,6 +45,8 @@ pub(super) struct CodeOwners {
 #[must_use = "retain prepared code owners and partial tickets through target installation"]
 pub struct PreparedCompleteRestoration {
     selected: Manifest,
+    import18_selection: Option<import18_templates::Import18Selection>,
+    import18_templates: import18_templates::Templates,
     measurements: [PacketFixtureMeasurements; 3],
     content: Rc<BTreeMap<ContentRef, Vec<u8>>>,
     launches: [PacketNative5SourceLaunch; 3],
@@ -54,7 +62,8 @@ pub struct PreparedCompleteRestoration {
     prebirth: Option<Rc<RefCell<PacketCompleteRestorationPrebirth>>>,
     restored_prebirth_source: Option<CollectingCompleteRestorationSource>,
     restored_prebirth_archive: Option<NativeArchiveRecord>,
-    restored_prebirth_attempt: Option<CompleteRestoredSettledSourceLoadAttempt>,
+    restored_prebirth_slot_row: Option<restored_load_slot::ConstructionData>,
+    restored_prebirth_attempt: Option<Box<Option<CompleteRestoredSettledSourceLoadAttempt>>>,
     prebirth_attempted: bool,
     prebirth_completed: bool,
     installation_attempted: bool,
@@ -82,7 +91,42 @@ impl PreparedCompleteRestoration {
             return Err(refused());
         }
 
-        let mut selected = super::super::super::manifest::load(&manifest)?;
+        let selected = super::super::super::manifest::load(&manifest)?;
+        Self::prepare_selected_into(selected, None, directory, limits, output)
+    }
+
+    /// Prepares explicit import18 code and its distinct retained fresh Sources.
+    ///
+    /// The installation/8 envelope is required. Its complete7 baseline supplies
+    /// immutable code declarations only; each fresh Source checks the same full
+    /// Launch5 before binding the new mechanism or reserving capture banks.
+    /// No Birth, archive ticket, recipe, native model or readiness is issued.
+    /// Later prebirth and installation stages must retain these exact attempts.
+    ///
+    /// # Errors
+    /// Refuses occupied output, a legacy/unknown envelope, incompatible full18
+    /// declarations, code admission, construction or the unchanged memory cap.
+    /// Partial setup and every started Source attempt remain in `output`.
+    pub fn prepare_import18_into(
+        manifest: InstalledCompleteSceneManifest,
+        directory: PathBuf,
+        limits: NativeArchiveLimits,
+        output: &mut Option<Self>,
+    ) -> Result<(), QualificationError> {
+        if output.is_some() {
+            return Err(refused());
+        }
+        let (selected, selection) = super::super::super::manifest::load_import18(&manifest)?;
+        Self::prepare_selected_into(selected, Some(selection), directory, limits, output)
+    }
+
+    fn prepare_selected_into(
+        mut selected: Manifest,
+        import18_selection: Option<import18_templates::Import18Selection>,
+        directory: PathBuf,
+        limits: NativeArchiveLimits,
+        output: &mut Option<Self>,
+    ) -> Result<(), QualificationError> {
         if !matches!(
             selected.schema.as_str(),
             "crucible.complete-scene.installation/6" | "crucible.complete-scene.installation/7"
@@ -181,6 +225,8 @@ impl PreparedCompleteRestoration {
         namespace.retained = true;
         *output = Some(Self {
             selected,
+            import18_selection,
+            import18_templates: import18_templates::Templates::empty(),
             measurements,
             content,
             launches,
@@ -199,6 +245,7 @@ impl PreparedCompleteRestoration {
             prebirth: None,
             restored_prebirth_source: None,
             restored_prebirth_archive: None,
+            restored_prebirth_slot_row: None,
             restored_prebirth_attempt: None,
             prebirth_attempted: false,
             prebirth_completed: false,
@@ -206,7 +253,13 @@ impl PreparedCompleteRestoration {
         });
 
         let prepared = output.as_mut().ok_or_else(refused)?;
-        prepared.admit_code_graph(limits)
+        prepared.admit_code_graph(limits)?;
+        if prepared.import18_selection.is_some() {
+            prepared
+                .prepare_import18_templates_data()
+                .map_err(|_| refused())?;
+        }
+        Ok(())
     }
 
     fn admit_code_graph(&mut self, limits: NativeArchiveLimits) -> Result<(), QualificationError> {
@@ -265,7 +318,11 @@ impl PreparedCompleteRestoration {
         limits: HostSchedulingContinuationLimits,
         output: &mut Option<Rc<RefCell<PacketCompleteRestorationPrebirth>>>,
     ) -> Result<(), QualificationError> {
-        if output.is_some() || self.prebirth_attempted || self.installation_attempted {
+        if output.is_some()
+            || self.import18_selection.is_some()
+            || self.prebirth_attempted
+            || self.installation_attempted
+        {
             return Err(refused());
         }
         // This is family routing only. The distinct loader must still validate
@@ -311,19 +368,29 @@ impl PreparedCompleteRestoration {
         self.prebirth_attempted = true;
         self.restored_prebirth_archive = Some(archive);
 
-        // Observe the whole real setup before the Source loader allocates any
-        // decoder/output. The original archive is already retained in this owner;
-        // a failed admission cannot discard it or renew this attempt.
-        let maximum =
-            usize::try_from(self.selected.resources.memory_bytes.get()).map_err(|_| refused())?;
-        let scratch = HostSource17SetupBorrow::counter_scratch_data().map_err(|_| refused())?;
-        let mut counter = super::super::super::super::retained::Counter::new(
-            maximum.checked_sub(scratch).ok_or_else(refused)?,
-        );
-        HostSource17SetupBorrow::prepared_data(self)
-            .charge_data(&mut counter, None)
-            .map_err(|_| refused())?;
-        let additional = counter.bytes().checked_add(scratch).ok_or_else(refused)?;
+        // This associated const item contains the complete fixed row. Its
+        // field/layout arithmetic has no runtime query to admit retroactively.
+        let demand = match restored_load_slot::CONSTRUCTION_AXES {
+            Some(axes) => axes,
+            None => return Err(refused()),
+        };
+        // The defining Host counter independently names the fixed caller and
+        // allocation/release controls. Whole-Prepared admission precedes even
+        // the runtime row initializer, then the same row/output remain retained.
+        self.observe_restored_load_slot_data(demand)?;
+        self.restored_prebirth_slot_row =
+            Some(restored_load_slot::ConstructionData::new_data().map_err(|_| refused())?);
+        let result = self
+            .restored_prebirth_slot_row
+            .as_mut()
+            .ok_or_else(refused)?
+            .allocate_into_data(demand, &mut self.restored_prebirth_attempt);
+        let observed = self.observe_restored_load_slot_data([0; 3]);
+        result.map_err(|_| refused())?;
+
+        // The actual empty destination now belongs to this same Prepared. Its
+        // full backing is counted before the unchanged Source loader is called.
+        let additional = observed?;
         let graph = Rc::clone(self.code_graph.as_ref().ok_or_else(refused)?);
         let factory = Rc::clone(&self.code_factory);
         let result = factory.prepare_restored_settled_restoration_prebirth_into(
@@ -331,7 +398,9 @@ impl PreparedCompleteRestoration {
             &mut self.restored_prebirth_archive,
             limits,
             additional,
-            &mut self.restored_prebirth_attempt,
+            self.restored_prebirth_attempt
+                .as_deref_mut()
+                .ok_or_else(refused)?,
             &mut self.restored_prebirth_source,
             &mut self.prebirth,
         );
@@ -345,6 +414,29 @@ impl PreparedCompleteRestoration {
         }
         self.prebirth_completed = true;
         Ok(())
+    }
+
+    fn observe_restored_load_slot_data(
+        &self,
+        demand: [usize; 3],
+    ) -> Result<usize, QualificationError> {
+        let maximum =
+            usize::try_from(self.selected.resources.memory_bytes.get()).map_err(|_| refused())?;
+        let scratch = HostSource17SetupBorrow::counter_scratch_data().map_err(|_| refused())?;
+        let mut counter = super::super::super::super::retained::Counter::new(
+            maximum.checked_sub(scratch).ok_or_else(refused)?,
+        );
+        HostSource17SetupBorrow::prepared_data(self)
+            .charge_data(&mut counter, None)
+            .map_err(|_| refused())?;
+        let retained = counter.bytes().checked_add(scratch).ok_or_else(refused)?;
+        for axis in demand {
+            retained
+                .checked_add(axis)
+                .filter(|bytes| *bytes <= maximum)
+                .ok_or_else(refused)?;
+        }
+        Ok(retained)
     }
 
     /// Installs distinct fresh Sources around the exact retained code selection.
@@ -365,7 +457,8 @@ impl PreparedCompleteRestoration {
             return Err(refused());
         }
         let owner = prepared.as_mut().ok_or_else(refused)?;
-        if owner.installation_attempted
+        if owner.import18_selection.is_some()
+            || owner.installation_attempted
             || !owner.prebirth_completed
             || !owner
                 .prebirth
@@ -638,6 +731,21 @@ mod tests {
         assert!(!owner.installation_attempted);
         assert!(owner.prebirth.is_none());
         super::host_setup17::assert_actual_setup_census_data(owner);
+        super::import18_templates::assert_actual_code_custody_data(owner);
+        // The unchanged legacy loader cannot enter the distinct installation/8
+        // API, and refusal creates no target namespace or retained output.
+        let mut wrong_edition = None;
+        assert!(
+            PreparedCompleteRestoration::prepare_import18_into(
+                manifest.clone(),
+                parent.path().join("wrong-import18"),
+                limits,
+                &mut wrong_edition,
+            )
+            .is_err()
+        );
+        assert!(wrong_edition.is_none());
+        assert!(!parent.path().join("wrong-import18").exists());
         let [mut first, second, third] = duplicate_launch_data(&owner.launches).unwrap();
         assert_eq!(
             encoded(&[&first, &second, &third]).unwrap(),

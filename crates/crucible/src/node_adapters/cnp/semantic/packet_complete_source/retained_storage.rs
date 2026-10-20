@@ -14,6 +14,7 @@ use std::rc::Rc;
 enum PrebirthStoragePurpose {
     Code,
     ReportStartup,
+    TemplateConstruction,
 }
 
 /// Reports actual retained Source component layouts and unresolved read owners.
@@ -163,6 +164,24 @@ impl PacketCompleteSemanticSource {
                 {
                     return Err(E::refused(
                         "archive code Source has attempted private birth",
+                    ));
+                }
+            }
+            PrebirthStoragePurpose::TemplateConstruction => {
+                // A template output remains owned by its once attempt during
+                // declaration/bank binding and worker initialization. A spent
+                // flag alone cannot stand in for its actual retained worker.
+                self.authenticate_template18_worker_storage_custody_data()
+                    .map_err(E::runtime)?;
+                if birth.is_some()
+                    || self
+                        .ack_peer_association
+                        .try_borrow()
+                        .map_err(E::unknown)?
+                        .is_some()
+                {
+                    return Err(E::refused(
+                        "template construction has entered private birth or association",
                     ));
                 }
             }
@@ -443,6 +462,77 @@ impl PacketCompleteSemanticSource {
             PrebirthStoragePurpose::Code,
             maximum,
         )
+    }
+
+    /// Counts a still attempt-owned template before private Birth or native work.
+    ///
+    /// This purpose covers cold outputs and same-Source initialized or failed
+    /// construction workers. It never retries a failed live or Code observation.
+    ///
+    /// # Errors
+    /// Refuses foreign or busy custody, missing spent workers, later-phase
+    /// owners, unsupported component backing, overflow or the supplied bound.
+    pub(super) fn original_template18_construction_retained_storage_data(
+        self: &Rc<Self>,
+        maximum: usize,
+    ) -> Result<usize, crate::node_contract::RuntimeError> {
+        self.original_prebirth_storage_data_with_error::<crate::node_contract::RuntimeError>(
+            PrebirthStoragePurpose::TemplateConstruction,
+            maximum,
+        )
+    }
+
+    /// Names the prebirth walk and the distinct template-purpose/lineage controls.
+    pub(super) fn original_template18_storage_counter_scratch_data() -> usize {
+        use crate::node_contract::RuntimeError;
+        use std::{
+            cell::{BorrowError, Ref, RefCell},
+            mem::{size_of, size_of_val},
+        };
+        fn cell_controls<T: 'static>() -> usize {
+            // Each concrete try_borrow/map_err/is_some loan below keeps its
+            // actual typed receiver, guard and both Result forms distinct.
+            size_of::<&RefCell<Option<T>>>()
+                + size_of::<&Option<T>>()
+                + size_of::<Ref<'static, Option<T>>>()
+                + size_of::<Result<Ref<'static, Option<T>>, BorrowError>>()
+                + size_of::<Result<Ref<'static, Option<T>>, RuntimeError>>()
+        }
+        let controls = [
+            // Outer observer and shared prebirth walk receivers/arguments.
+            size_of::<&Rc<Self>>() * 2,
+            size_of::<PrebirthStoragePurpose>() * 2,
+            size_of::<usize>() * 10, // two maximum arguments, seven component sums and total
+            size_of::<[usize; 7]>(),
+            size_of::<std::array::IntoIter<usize, 7>>(),
+            size_of::<Result<usize, RuntimeError>>() * 3,
+            // Authentication re-runs after the component walk. These are peak
+            // controls for one invocation, not a cumulative invocation count.
+            size_of::<&Self>(),
+            size_of::<PrebirthStoragePurpose>(),
+            size_of::<bool>(),
+            cell_controls::<ack_peer::OriginalAckPeerBirth>(),
+            cell_controls::<ack_peer::OriginalAckPeerAssociation>(),
+            cell_controls::<preconstruction::OriginalCompletePreconstruction>(),
+            cell_controls::<crucible_node_provider::handshake::OriginalExtensionRegistryOwner>(),
+            cell_controls::<capture_banks::PacketCompleteCaptureBanks>(),
+            // The genuine underlying unbound test borrows the actual native
+            // slot; a busy slot refuses before any component census begins.
+            cell_controls::<CnpSemanticSourceRead>(),
+            size_of::<Result<bool, BorrowError>>(),
+            size_of::<Result<bool, RuntimeError>>(),
+            size_of::<&CompletePacketOriginal>(),
+            size_of::<&Box<PacketSemanticSource>>(),
+            size_of::<&PacketSemanticSource>(),
+            size_of::<&Box<PacketConnectedSemanticSource>>(),
+            size_of::<&PacketConnectedSemanticSource>(),
+            size_of::<Result<(), RuntimeError>>() * 3,
+        ];
+        Self::retained_requested_storage_precredit_scratch_data()
+            .saturating_add(Self::template18_worker_storage_custody_counter_scratch_data())
+            .saturating_add(controls.iter().copied().fold(0usize, usize::saturating_add))
+            .saturating_add(size_of_val(&controls))
+            .saturating_add(size_of_val(&controls.into_iter()))
     }
 
     /// Observes actual ready and unstarted private-birth owners with raw failures.

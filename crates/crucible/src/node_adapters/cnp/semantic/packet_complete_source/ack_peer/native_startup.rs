@@ -38,6 +38,10 @@ use std::{
     rc::Rc,
 };
 
+#[path = "native_startup/import18.rs"]
+mod import18;
+pub(super) use import18::OriginalNativeImport18Finalization;
+
 #[path = "native_startup/capture_construction.rs"]
 mod capture_construction;
 
@@ -759,6 +763,22 @@ impl OriginalAckPeerBirth {
         &self,
         source: &PacketCompleteSemanticSource,
     ) -> Result<(), OperationFailure> {
+        let import18 = source.is_original_native_import18_declaration_data()
+            .map_err(|_| refused("import18 declaration unavailable"))?;
+        if import18 {
+            if self.native_startup.is_some() || self.failed {
+                return Err(refused("import18 cannot use a legacy startup member"));
+            }
+            let state = self.native_import18.as_ref()
+                .ok_or_else(|| refused("import18 startup member absent"))?;
+            if !state.complete {
+                return Err(refused("import18 startup member incomplete"));
+            }
+            state.member.authenticate_boot_ready(source)
+                .map_err(|_| refused("import18 original member expired"))?;
+        } else if self.native_import18.is_some() {
+            return Err(refused("import18 member has another declaration"));
+        }
         // The link exists on every roster birth before any member is issued.
         // Incomplete, aborted or abandoned admissions therefore block aliases
         // even when this Source has not yet installed native_startup state.

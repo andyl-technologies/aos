@@ -8,7 +8,11 @@ use super::*;
 pub(in super::super) mod canonical;
 pub(super) mod owning;
 mod schedule;
+mod shape_validate;
 use schedule::{Route, Schedule, Source};
+pub(crate) use shape_validate::{
+    NativeImport18ShapeValidateAttemptData, NativeImport18ShapeValidateCensusData,
+};
 
 /// Names the actual structural Value field being normalized once.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

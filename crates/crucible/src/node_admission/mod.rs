@@ -562,3 +562,12 @@ pub use conformance::{OriginalRestoredCaptureClaim, OriginalRestoredCaptureReque
 pub(crate) use conformance::{
     OriginalRestoredCaptureImportedOwnerInputs, OriginalRestoredCaptureSigningInputs,
 };
+
+// Import18 startup exposes its distinct installed scope and private member.
+pub use conformance::{
+    CompleteOriginalNativeImport18StartupAdmission, OriginalNativeImport18StartupMemberScope,
+    OriginalNativeImport18StartupScope,
+};
+pub(crate) use conformance::{
+    OriginalNativeImport18StartupMember, OriginalNativeImport18StartupQuote,
+};

@@ -439,6 +439,11 @@ impl Native17Build for HistoricalReceivedBody17 {
                 }
                 Ok(())
             }
+            ReceivedBody::NativeImport18Bootstrap(_) => {
+                return Err(crate::ProviderError::Conflict(
+                    "bootstrap18 requires its distinct current owner",
+                ));
+            }
             ReceivedBody::Notification(v) => {
                 o.boxed_value(v.as_ref())?;
                 NotificationBody::observe_output_data(v, o)
@@ -544,6 +549,11 @@ impl Native17Build for HistoricalReceivedFrame17 {
                 }
                 Ok(())
             }
+            ReceivedBody::NativeImport18Bootstrap(_) => {
+                return Err(crate::ProviderError::Conflict(
+                    "bootstrap18 requires its distinct current owner",
+                ));
+            }
             ReceivedBody::Notification(v) => {
                 o.boxed_value(v.as_ref())?;
                 NotificationBody::observe_output_data(v, o)
@@ -560,4 +570,114 @@ pub(crate) fn current_settled17_builder_counter_scratch_data() -> usize {
         + size_of::<ByteBank17ReadAttempt<HistoricalReversedByteBank17>>()
         + size_of::<Inline17ReadAttempt<HistoricalDigest17>>()
         + size_of::<Inline17ReadAttempt<HistoricalThread17>>()
+}
+
+#[path = "retained17/native_import18_response.rs"]
+mod native_import18_response;
+
+impl ReceivedFrame {
+    /// Observes the actual raw envelope and every retained typed terminal cache.
+    ///
+    /// This shared DATA visitor also counts refused Request/Notification frames.
+    /// It neither decodes nor certifies a successful upload or connection phase.
+    ///
+    /// # Errors
+    /// Refuses exhausted metadata bookkeeping or checked layout arithmetic.
+    pub(crate) fn observe_native_import17_upload_data(
+        &self,
+        observer: &mut MetadataObserver<'_>,
+    ) -> Result<(), ProviderError> {
+        crate::envelope::Envelope::observe_output_data(&self.envelope, observer)?;
+        match &self.body {
+            ReceivedBody::NativeImport18Bootstrap(_) => {
+                return Err(crate::ProviderError::Conflict(
+                    "bootstrap18 requires its distinct current owner",
+                ));
+            }
+            ReceivedBody::Request(body) => {
+                observer.boxed_value(body.as_ref())?;
+                observe_request(body, observer)
+            }
+            ReceivedBody::Response(body) => {
+                observer.boxed_value(body.as_ref())?;
+                ResponseShape::observe_output_data(&body.shape, observer)?;
+                if let Some(result) = &body.result {
+                    observe_result(result, observer)?;
+                }
+                Ok(())
+            }
+            ReceivedBody::Notification(body) => {
+                observer.boxed_value(body.as_ref())?;
+                NotificationBody::observe_output_data(body, observer)
+            }
+        }
+    }
+
+    /// Names the direct borrowed controls of the shared retained-cache observer.
+    pub(crate) fn native_import17_upload_counter_scratch_data() -> usize {
+        size_of::<&Self>()
+            + size_of::<(&crate::envelope::Envelope, &ReceivedBody)>()
+            + size_of::<&RequestBody>()
+            + size_of::<&ResponseBody>()
+            + size_of::<&NotificationBody>()
+            + size_of::<Option<&MethodResult>>()
+            + size_of::<&MethodResult>()
+            + size_of::<&mut MetadataObserver<'static>>()
+            + size_of::<Result<(), ProviderError>>()
+    }
+}
+
+#[cfg(test)]
+mod native_import17_upload_tests {
+    use super::*;
+    use crucible_node_contract::{Id, U64};
+    use serde_json::Value;
+
+    #[test]
+    fn unexpected_notification_keeps_independent_raw_and_typed_backing() {
+        let id = || crate::envelope::Nullable(Some(Id::new("history/scope").unwrap()));
+        let mut raw = String::with_capacity(211);
+        raw.push_str("raw envelope history");
+        let raw_capacity = raw.capacity();
+        let mut typed = String::with_capacity(137);
+        typed.push_str("independent typed notification cache");
+        let typed_capacity = typed.capacity();
+        let mut body = serde_json::Map::new();
+        body.insert("raw".into(), Value::String(raw));
+        let mut details = serde_json::Map::new();
+        details.insert("cache".into(), Value::String(typed));
+        let frame = ReceivedFrame {
+            envelope: crate::envelope::Envelope {
+                protocol: "CNP/1".into(),
+                message: crate::envelope::MessageKind::Event,
+                session_id: id(),
+                incarnation_id: id(),
+                node_id: crate::envelope::Nullable(None),
+                execution_owner_id: crate::envelope::Nullable(None),
+                capture_owner_id: crate::envelope::Nullable(None),
+                operation_id: crate::envelope::Nullable(None),
+                request_id: crate::envelope::Nullable(None),
+                sequence: U64::new(9),
+                method: crate::envelope::Method::Poll,
+                body,
+                extensions: Default::default(),
+            },
+            body: ReceivedBody::Notification(Box::new(NotificationBody {
+                operation_state: OperationState::Completed,
+                last_observation_sequence: U64::new(8),
+                details,
+                extensions: Default::default(),
+            })),
+        };
+        let mut observer = MetadataObserver::new();
+
+        frame
+            .observe_native_import17_upload_data(&mut observer)
+            .unwrap();
+        let facts = observer.finish();
+
+        assert!(facts.string_capacity_bytes >= raw_capacity + typed_capacity);
+        assert_eq!(facts.boxed_value_bytes, size_of::<NotificationBody>());
+        assert!(matches!(frame.body, ReceivedBody::Notification(_)));
+    }
 }
