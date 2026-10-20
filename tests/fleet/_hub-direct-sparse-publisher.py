@@ -400,10 +400,11 @@ def _read_checkpoint(connection, sources):
 
 
 @contextlib.contextmanager
-def _checkpoint_snapshot(path, sources, retain_file=None):
+def _checkpoint_snapshot(path, sources, retain_file=None, *, recover=False):
     """Keep the committed journal snapshot locked until the caller finishes."""
     metadata = _private_path(path)
-    connection = sqlite3.connect(Path(path).as_uri() + "?mode=ro", uri=True, timeout=0.2)
+    mode = 'rw' if recover else 'ro'
+    connection = sqlite3.connect(Path(path).as_uri() + "?mode=" + mode, uri=True, timeout=0.2)
     try:
         connection.execute("PRAGMA query_only=ON")
         if connection.execute("PRAGMA journal_mode").fetchone()[0].lower() != 'delete':
@@ -440,9 +441,9 @@ def _checkpoint_snapshot(path, sources, retain_file=None):
         connection.close()
 
 
-def _snapshot(path, sources, retain_file=None):
+def _snapshot(path, sources, retain_file=None, *, recover=False):
     """Read and retain a committed journal without extending its read lock."""
-    with _checkpoint_snapshot(path, sources, retain_file) as document:
+    with _checkpoint_snapshot(path, sources, retain_file, recover=recover) as document:
         return document
 
 
@@ -688,7 +689,11 @@ def probe_direct_changed_source(client, tools, process, signed, source, token):
         output_root = root / 'changed-source'
         output_root.mkdir(mode=0o700, exist_ok=False)
         journal = Path(selected['signed']['publisherHome']) / 'direct-upload.sqlite'
-        before = [_snapshot(path, [source]) for path in (journal, Path(str(journal) + '.admission'))]
+        # The exact SIGKILL and reaped-child checks above authorize SQLite's
+        # ordinary rollback of any unfinished transaction. Establish the
+        # committed baseline before testing a mutation-free source refusal.
+        before = [_snapshot(path, [source], recover=True)
+            for path in (journal, Path(str(journal) + '.admission'))]
         started = time.time_ns()
         with os.fdopen(descriptor, 'r+b') as original:
             metadata = os.fstat(original.fileno())

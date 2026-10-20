@@ -247,6 +247,47 @@ class ContinuityFences(unittest.TestCase):
 
             self.assertIsNone(outcome)
 
+    def test_reaped_writer_crash_recovers_before_the_readonly_refusal_baseline(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'checkpoint.sqlite'
+            with sqlite3.connect(path) as connection:
+                connection.execute('CREATE TABLE receipts(marker TEXT, payload BLOB)')
+                connection.executemany('INSERT INTO receipts VALUES(?, ?)',
+                    [('committed', b'x' * 2048)] * 1000)
+
+            # Force uncommitted pages out of a tiny cache, then exit without
+            # SQLite cleanup. The real rollback journal must remain recoverable.
+            crash = '''
+import os, sqlite3, sys
+connection = sqlite3.connect(sys.argv[1])
+connection.execute('PRAGMA cache_size=5')
+connection.execute('BEGIN IMMEDIATE')
+connection.execute("UPDATE receipts SET marker='unfinished', payload=randomblob(2048)")
+os._exit(0)
+'''
+            subprocess.run([sys.executable, '-c', crash, str(path)], check=True,
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            self.assertTrue(Path(str(path) + '-journal').exists())
+
+            def read_checkpoint(connection, _sources):
+                with self.assertRaisesRegex(sqlite3.OperationalError, 'readonly'):
+                    connection.execute("UPDATE receipts SET marker='forbidden'")
+                return {'committed': connection.execute(
+                    "SELECT count(*) FROM receipts WHERE marker='committed'").fetchone()[0]}
+
+            with patch.object(sparse, '_private_path', lambda selected: selected.stat()), \
+                 patch.object(sparse, '_read_checkpoint', read_checkpoint):
+                with self.assertRaisesRegex(sqlite3.OperationalError, 'readonly'):
+                    sparse._snapshot(path, [])
+
+                baseline = sparse._snapshot(path, [], recover=True)
+                after = sparse._snapshot(path, [])
+
+            self.assertEqual(baseline['committed'], 1000)
+            self.assertEqual(after['committed'], 1000)
+            self.assertEqual(baseline['journalSha256'], after['journalSha256'])
+            self.assertFalse(Path(str(path) + '-journal').exists())
+
     def test_child_discovery_pins_a_real_process_without_proc_children(self):
         arguments = [sys.executable, '-c', 'import sys; sys.stdin.read()']
         child = subprocess.Popen(arguments, stdin=subprocess.PIPE)
