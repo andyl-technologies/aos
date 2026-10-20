@@ -46,8 +46,8 @@ pub(crate) struct PendingCurrentReadCheck {
 struct CurrentTokenInputs {
     clock: NativeEffectClock,
     keys: Vec<IssuerKey>,
-    token: Vec<u8>,
-    subject: String,
+    token: auth::VerifiedToken,
+    issuer_public_key: [u8; 32],
     reference: String,
     verb: Verb,
     paired_check: Option<crate::selected_bridge::OwnedFinalCheck>,
@@ -69,6 +69,9 @@ impl PendingCurrentReadCheck {
         let now = guard.now(reference, verb)?;
         let verified =
             auth::verify(token, &guard.keys, now).map_err(|_| denied(reference, verb))?;
+        let issuer_public_key = active_issuer(&guard.keys, &verified, now)
+            .ok_or_else(|| denied(reference, verb))?
+            .public_key;
         let clock = guard
             .clock
             .retain_native_clock()
@@ -77,8 +80,8 @@ impl PendingCurrentReadCheck {
             inputs: Arc::new(CurrentTokenInputs {
                 clock,
                 keys: guard.keys.clone(),
-                token: token.to_vec(),
-                subject: verified.authority().subject.clone(),
+                token: verified,
+                issuer_public_key,
                 reference: reference.to_owned(),
                 verb,
                 paired_check: None,
@@ -100,11 +103,16 @@ impl PendingCurrentReadCheck {
         self.recheck()
     }
 
-    /// Reauthenticates the exact token with actual configured keys at fresh time.
+    /// Rechecks immutable authenticated claims against fresh time and issuer selection.
+    ///
+    /// The original full signature and attenuation verification belongs to this
+    /// invocation's capture. Its private immutable value cannot acquire another
+    /// subject or claim. Each read still reselects the unique active issuer and
+    /// checks all authenticated time bounds, including after a clock rollback.
     ///
     /// # Errors
-    /// Rejects unavailable time, retired or ambiguous issuer rows, invalid token
-    /// signatures, expiry and a changed authenticated principal.
+    /// Rejects unavailable time, retired or ambiguous issuer rows, a changed
+    /// issuer key, expiry or a not-yet-valid authenticated interval.
     pub(crate) fn recheck(&self) -> Result<(), StoreFailure> {
         let inputs = &self.inputs;
         if let Some(check) = &inputs.paired_check {
@@ -117,8 +125,8 @@ impl PendingCurrentReadCheck {
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_err(|_| refuse())?
             .as_secs();
-        let verified = auth::verify(&inputs.token, &inputs.keys, now).map_err(|_| refuse())?;
-        if verified.authority().subject != inputs.subject {
+        let issuer = active_issuer(&inputs.keys, &inputs.token, now).ok_or_else(refuse)?;
+        if issuer.public_key != inputs.issuer_public_key || !inputs.token.permits_time(now) {
             return Err(refuse());
         }
         if let Some(check) = &inputs.paired_check {
@@ -235,6 +243,23 @@ impl PendingCurrentReadCheck {
     ) -> Result<Self, StoreFailure> {
         Self::capture(guard, reference, token, verb)
     }
+}
+
+// Match the verifier's selection at this sample, rather than reusing a previously
+// selected row: clock rollback can reactivate an otherwise retired duplicate.
+fn active_issuer<'keys>(
+    keys: &'keys [IssuerKey],
+    token: &auth::VerifiedToken,
+    now: u64,
+) -> Option<&'keys IssuerKey> {
+    let authority = token.authority();
+    let mut active = keys.iter().filter(|key| {
+        key.issuer == authority.issuer
+            && key.key_id == authority.key_id
+            && key.retirement.is_none_or(|retirement| now < retirement)
+    });
+    let issuer = active.next()?;
+    active.next().is_none().then_some(issuer)
 }
 
 /// Binds one current-history walk to its actual whole ref and held observation.

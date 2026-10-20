@@ -666,6 +666,36 @@ fn auth_verify_pure_effective_expiry_intersects_strict_time_and_retirement() {
 }
 
 #[test]
+fn authenticated_time_bounds_match_fresh_verification() {
+    let mut authority = authority();
+    authority.not_before = Some(90);
+    authority.not_after = 110;
+    let token = Token::issue(authority, &issuer_secret(), delegate_public())
+        .expect("valid signed authority")
+        .attenuate(
+            Attenuation {
+                caveats: vec![Caveat::After(98), Caveat::Before(103)],
+                ..Attenuation::default()
+            },
+            &delegate_secret(),
+            delegate_public(),
+        )
+        .expect("valid narrowing time caveats");
+    let mut keys = keys();
+    keys[0].retirement = Some(102);
+    let verified = token.verify(&keys, 100).expect("valid capture time");
+
+    for now in [0, 89, 90, 98, 99, 100, 101, 102, 103, 110, u64::MAX] {
+        assert_eq!(
+            verified.permits_time(now),
+            token.verify(&keys, now).is_ok(),
+            "current time {now}"
+        );
+    }
+    assert_eq!(verified.not_after(), 101);
+}
+
+#[test]
 fn auth_verify_pure_registered_chain_and_grant_limits() {
     let mut chain = token();
     for _ in 1..16 {

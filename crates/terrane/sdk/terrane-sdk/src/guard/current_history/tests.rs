@@ -17,6 +17,12 @@ use terrane_format::identity::{IdentityKind, TERRANE_V1};
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 const REFERENCE: &str = "refs/heads/_/main";
 
+// The actual shared native fixture registers this RFC 8032 signing key.
+const SECRET: [u8; 32] = [
+    0x9d, 0x61, 0xb1, 0x9d, 0xef, 0xfd, 0x5a, 0x60, 0xba, 0x84, 0x4a, 0xf4, 0x92, 0xec, 0x2c, 0xc4,
+    0x44, 0x49, 0xc5, 0x69, 0x7b, 0x32, 0x69, 0x19, 0x70, 0x3b, 0xac, 0x03, 0x1c, 0xae, 0x7f, 0x60,
+];
+
 async fn published() -> Result<(NativeFixture<TokioLocalFs>, RefRecord), Box<dyn std::error::Error>>
 {
     let repository = fixture().await;
@@ -28,6 +34,80 @@ async fn published() -> Result<(NativeFixture<TokioLocalFs>, RefRecord), Box<dyn
         )
         .await?;
     Ok((repository, head))
+}
+
+#[tokio::test]
+async fn native_current_authentication_matches_full_verification_across_time_bounds() -> TestResult
+{
+    let repository = fixture().await;
+    let clock = crate::store::TestClock::new(100);
+    let keys = repository.guard().keys().to_vec();
+    let mut authority = auth::verify(&token(), &keys, 100)?.authority().clone();
+    authority.not_before = Some(90);
+    authority.not_after = 110;
+    let capability = Token::issue(authority, &SECRET, keys[0].public_key)?
+        .attenuate(
+            auth::Attenuation {
+                caveats: vec![auth::Caveat::After(98), auth::Caveat::Before(103)],
+                ..auth::Attenuation::default()
+            },
+            &SECRET,
+            keys[0].public_key,
+        )?
+        .encode();
+    let guard = Guard::new(
+        repository.store().clone(),
+        clock.clone(),
+        keys.clone(),
+        repository.guard().config().clone(),
+    );
+    let current = PendingCurrentReadCheck::capture(&guard, REFERENCE, &capability, Verb::Read)?;
+
+    for wall in [89, 90, 98, 99, 100, 101, 102, 103, 110, 100] {
+        clock.set(wall, 0);
+        assert_eq!(
+            current.recheck().is_ok(),
+            auth::verify(&capability, &keys, wall).is_ok(),
+            "current wall time {wall}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_current_authentication_matches_issuer_retirement_and_duplicate_rollback()
+-> TestResult {
+    let repository = fixture().await;
+    let clock = crate::store::TestClock::new(100);
+    let capability = token();
+    let original = repository.guard().keys().to_vec();
+    let mut retiring = original.clone();
+    retiring[0].retirement = Some(101);
+    let mut duplicate = original[0].clone();
+    duplicate.retirement = Some(99);
+    let mut duplicated = original;
+    duplicated.push(duplicate);
+
+    for keys in [retiring, duplicated] {
+        clock.set(100, 0);
+        let guard = Guard::new(
+            repository.store().clone(),
+            clock.clone(),
+            keys.clone(),
+            repository.guard().config().clone(),
+        );
+        let current = PendingCurrentReadCheck::capture(&guard, REFERENCE, &capability, Verb::Read)?;
+
+        for wall in [100, 101, 102, 100, 99, 98, 100] {
+            clock.set(wall, 0);
+            assert_eq!(
+                current.recheck().is_ok(),
+                auth::verify(&capability, &keys, wall).is_ok(),
+                "current issuer selection at {wall}"
+            );
+        }
+    }
+    Ok(())
 }
 
 #[tokio::test]
