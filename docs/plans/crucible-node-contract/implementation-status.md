@@ -11,46 +11,59 @@ specific stage; they are not cumulative coverage of the latest source.
 
 ## Latest checkpoint
 
-An independently reviewed immutable-member lookup supplier now describes the
-allocation-free `Map<String, Value>::contains_key(&String)` path, including its
-actual iterator, pointer, comparison and terminal-control operands. Its guarded
-backing model excludes the alternative ordered-map representation. All five
-new controls and the complete node-format population pass: 53 tests with
-ordinary JSON and 53 with raw values, with the existing benchmark still
-ignored. The ordinary parser and canonical writer remain unchanged. This
-DATA-only component grants no retained-parser, Source18 or native permission.
+The workspace at `cb1f6ae448` includes the merge of `origin/master`
+(`68851a3bf1`, merge `f83ea82651`), the reference-provider vendor and source-filter
+refresh, safe callback-layout measurements, strict-parser cursor extraction,
+owned identifier refusals and the ordinary Prepared observer projection. The
+split node-format, transport, host-resource and control API owners preserve
+executable names and wire identities.
 
-The concrete counting-writer failure component now prices the original IO
-error constructor, its Serde conversion and their release operands before the
-Source quote proceeds. It preserves the writer message, error mapping,
-failed-prefix custody and admission order. All six focused controls pass, as
-does eleven-crate all-feature/all-target checking in 1 minute 37 seconds.
-This component does not connect the remaining Source18 funding, serializer,
-validation or native-startup paths; broader regressions remain pending.
+An independent audit of the complete five-library run records **5,562 passed,
+zero failed, 211 existing ignores and zero filtered tests**, including all nine
+new controls. The existing Daemon preparation fixture also executes the new
+projected-versus-original census and retained registration assertions. Separate
+node-format default and raw-value configurations each pass 60 tests; eight
+focused transport controls pass. Eleven-crate all-feature/all-target checking
+and the refreshed unsafe-fence and engineering-hygiene checks pass. These
+results cover their recorded source and configurations; earlier feature,
+artifact, layer and specification checks remain historical evidence.
 
-The workspace integrates `origin/master` at `68851a3bf1` using the reorganized
-80-package layout. The node schema and transport are now `crucible-node-format`
-and `crucible-node-transport`; native read-lease custody lives in
-`crucible-host-resources`, separate from generic project quotas. Lifecycle
-adapters follow the split control API owners. Executable names and wire
-identities are preserved.
+The cursor writes its numeric state directly through short input/state loans;
+the identifier refusal retains the original owned string and typed cause; the
+observer follows exhaustive actual fields through one shared Counter. These
+changes preserve ordinary parser/error order and actual failed-owner custody.
+They do not supply the retained strict attempt, dynamic constructors,
+authentication join, partial census or iterative retirement needed for the
+later Source18 path. They grant no Initial, Recipe or native permission.
 
-The merged layout passes eleven-crate all-feature/all-target checking, 61
-node-format and host-resource tests, the same 48 node-format controls with raw
-JSON values, 39 Rust architecture controls and four engineering-hygiene
-controls. All six registered Nix architecture/hygiene checks pass. Formatting
-covers 2,543 edited Rust candidates and 26 edited Nix files, with independent
-Rust review and exact before/after parsed Nix expressions. The shared vendor
-staging hash is remeasured against the merged lockfile; its registry pins remain
-unchanged. Broader library regressions and mandatory application-target
-compilation still need refresh after this workspace integration.
+The mandatory production application-target gate passes for `cb1f6ae448`: 180
+test executables across 58 application roots, including 71 integration targets.
+Final compilation takes 10 minutes 14 seconds after prerequisites. Its 10,575
+captured files and all 80 workspace manifests match that commit; shared vendor
+and lockfile checks agree. This gate compiles tests without executing them.
 
-Strict harness lint remains unqualified: its five failing tests report 615
-emissions traced to existing pre-merge source and unchanged policies. These
-include unannotated allowances, host-time use in test leaves and operational
-path restrictions. The integration changes no scanner, adds no ignored test
-and does not claim those implementation debts are resolved. Earlier test and
-native results below remain scoped to their recorded pre-migration sources.
+Strict harness lint remains unqualified: 21 tests pass and five fail, with
+zero ignored tests. Its 599 diagnostic emissions retain the existing source
+findings after ten stringly-error and six bare-unsafe findings disappear. One
+private compile-time standard-IO layout alias carries a reviewed explanation
+under the existing line-local policy. Scanner, rules, source selection,
+ignored-test population and limits remain unchanged in these refreshes.
+
+The registered kernel source check's third run passes all 39 legacy controls
+and eight configured native-object checks, then fails in the FD source-consuming
+control. Bounded failure diagnostics and a separate legacy check are committed;
+the fourth run has not executed. FD ordinary controls, four FD native objects,
+full kernel/source-companion builds and native qualification remain pending.
+Constructor coverage stays `0x001` of required `0x7ff`, with no FD-table or
+startup capability issued. QEMU and gem5 native execution, matched performance
+and full preservation remain unqualified.
+
+A separately reviewed gem5 change inspects the actual callback target and
+original SystemCounter owner without copying or invoking the callable. Five
+new adverse controls join the eight existing modes. The thirteen-mode native
+check has not run for this change; no additional native capability is issued.
+
+## Earlier construction and qualification checkpoints
 
 The Source18 construction path now retains an explicit installation selection
 through separate code and fresh Sources, prospective admission, capture-bank
@@ -102,7 +115,7 @@ ten-file change adds owning structural Envelope fields and a separately admitted
 canonical-body check. The following thirteen-file change adds the movable
 response cursor around the same schema schedule. These components remain disconnected from
 the live Source18 route; they grant no Initial, Recipe or native permission.
-The current production application-target build passes for `33303283c4`,
+The earlier production application-target build passes for `33303283c4`,
 including these receive components. It compiles tests without executing them.
 
 `23f0513b98` adds the guarded flat literal-state codec. It preserves literal
@@ -115,20 +128,20 @@ preserves its first error, and uses the existing initial graph precredit walk.
 | Check | Latest recorded scope and result |
 | --- | --- |
 | Source18 functional libraries (`060f025eef`) | Core 2,013/33 ignored, Daemon 1,511/162, Provider 1,676/15 and Contract twelve/one: 5,212 passed, zero failures, 211 existing ignores, no filtering. Core takes 8.68 seconds, Daemon 364.06 seconds and Provider 11.91 seconds. |
-| Current Provider configurations | Each separate complete suite passes 1,676 tests with zero failures and fifteen existing ignores: ordinary Serde JSON in 12.05 seconds and raw values in 11.60 seconds. All twenty new materializer controls pass in both. |
-| Current stack regression | The exact previous-overflow fixture passes on the default stack in 261.38 seconds. All five new allocation/custody controls also pass in the complete Daemon suite. |
+| Earlier Provider configurations | Each separate complete suite passes 1,676 tests with zero failures and fifteen existing ignores: ordinary Serde JSON in 12.05 seconds and raw values in 11.60 seconds. All twenty new materializer controls pass in both. |
+| Earlier stack regression | The exact previous-overflow fixture passes on the default stack in 261.38 seconds. All five new allocation/custody controls also pass in the complete Daemon suite. |
 | SDK receive formatting | The raw custody, owning-first, owning-next, ten-file owning-Envelope and thirteen-file response-cursor cohorts pass. The two Envelope test-assertion corrections also pass. |
 | Prior SDK integration checking | Six-crate all-feature/all-target checking passes in 1 minute 41 seconds after owning-Envelope, and in 1 minute 47 seconds after owning-next. The earlier owning-first/debug-label checkpoint passes in 1 minute 51 seconds. |
 | Neutral debug diagnostics | Four files pass formatting. The existing Core invalid-endpoint/unknown-node control and three Session debug-runtime transaction controls pass. Only backend-neutral diagnostic labels and the matching existing expectation change. |
 | SDK receive controls | All 74 targeted controls pass with ordinary Serde JSON in 0.02 seconds, including ten new owning-response controls. Both complete suites also execute all 74 controls. |
 | Prior SDK Provider regression | Each complete suite passes 1,570 tests with zero failures and fifteen existing ignores: 11.91 seconds for ordinary Serde JSON and 11.69 seconds with raw values enabled. |
 | Prior runtime checking | The thirteen-file runtime accounting correction passes six-crate all-feature/all-target checking in 1 minute 28 seconds and targeted formatting. |
-| Current application-target compilation | Passes for `33303283c4`: 167 fresh test artifacts across 48 application packages, including 69 integration targets, in 11 minutes 41 seconds after prerequisites. All 7,990 captured source files and modes match that commit. This gate executes no tests. |
+| Earlier application-target compilation | Passes for `33303283c4`: 167 fresh test artifacts across 48 application packages, including 69 integration targets, in 11 minutes 41 seconds after prerequisites. All 7,990 captured source files and modes match that commit. This gate executes no tests. |
 | Runtime correction library checkpoint | All four unfiltered libraries pass: Core 1,967, Daemon 1,504, Provider 1,496 and Contract twelve, totaling 4,979 with zero failures. Existing ignores remain 33/162/15/1. Ten focused Host attachment controls also pass, including both new accounting controls. |
 | Prior runtime test compilation | Standard four-library compilation passes in 4 minutes 2 seconds. Assertions, overflow checks and default stack remain enabled. |
 | Earlier startup/reclamation pair | Baseline reaches the fifteen-minute limit during inactive-runtime construction; optimized construction finishes, then its recheck refuses after 641.39 seconds. Normal retirement and child reclamation pass. |
-| Current startup/reclamation control | Native79 passes in 655.45 seconds with refreshed current-source helpers and the standard default-stack, fifteen-minute control. All three runtime rechecks, attached actor, exact/one-byte-short whole-holder census, destination assertions, retirement and child reclamation complete. Full native preservation remains unqualified. |
-| Kernel FD source application | The complete 43-stage chain applies with exact identities, zero fuzz and no offsets. Its final catalog contains 182 source roles totaling 5,151,009 bytes. The first registered check stops at FD fixture discovery after its legacy controls pass; explicit fixture inputs are corrected, and FD execution remains pending. |
+| Earlier startup/reclamation control | Native79 passes in 655.45 seconds with its recorded source helpers and the standard default-stack, fifteen-minute control. All three runtime rechecks, attached actor, exact/one-byte-short whole-holder census, destination assertions, retirement and child reclamation complete. Full native preservation remains unqualified. |
+| Kernel FD source application | The complete 43-stage chain applies with exact identities, zero fuzz and no offsets. Its final catalog contains 182 source roles totaling 5,151,009 bytes. The third registered check passes 39 legacy controls and eight configured objects, then compiles the FD model and receives an unexpected nonzero result. Ordinary FD controls and the four FD native objects are not reached. Bounded failure diagnostics and a separate mandatory legacy dependency are committed; their rerun remains pending. |
 | QEMU FW_CFG insertion lineage | Source and signed-artifact review and package evaluation pass. The registered license ledger passes with 296 created files and matching entries. The configured test inventory passes with 1,576 tests and executes none. Compilation, native controls, regeneration and full license-boundary qualification remain pending. |
 | gem5 SystemCounter observation | Source review and package evaluation pass for the bounded cached-state producer and registered counter controls. Compilation and native execution remain pending. Listener, callback backing, full-system timer ownership, capture and fresh restore remain unqualified. |
 | Real-host KVM preparation | The existing exact stopped-VM test passes: one passed, zero failed, 884 filtered, in 0.04 seconds. Standard test compilation passes in 4 minutes 52 seconds. It creates no vCPU or guest execution and does not qualify the controller profile. |
@@ -145,11 +158,12 @@ the existing controls and resource limits remain intact.
 The complete source-application derivation passes, and its installed catalog
 matches the exact selected native source chain. This result includes no C
 compilation, patched-kernel execution, image/module linking or matching-source
-release qualification. The first registered check passes its eight original
-configured-object checks and PIC/EOI/deferred-queue controls, then stops before
-FD compilation because two separate Nix-store inputs were treated as siblings.
-Both FD consumers now receive the exact fixture input explicitly. The refreshed
-registered check remains pending. Constructor coverage remains `0x001` of required `0x7ff`; this checkpoint grants no FD-table,
+release qualification. The third registered check passes eight configured legacy
+objects and 39 PIC, EOI and deferred-queue controls, then compiles the FD model
+and receives an unexpected nonzero result. Ordinary FD controls and four FD
+native objects are not reached. Bounded original-output diagnostics and a
+mandatory independent legacy dependency are committed; their rerun remains
+pending. Constructor coverage remains `0x001` of required `0x7ff`; this checkpoint grants no FD-table,
 CREATE, RUN or readiness capability.
 
 The QEMU FW_CFG directory mechanism observes original entries, payload and
