@@ -9012,9 +9012,24 @@ An existing mismatching index is never overwritten. Four actual ext4 cases cover
 a missing-index rebuild and refusals for disabled repair, an exceeded index-size
 limit and an existing mismatch; all original 48 selectors and 67 native unit
 cases remain, with eight new selectors. Cargo all-target checks and the formatter
-pair pass. Isolated strict profiles, native runtime, complete filesystem and
-required application qualification are running. This is recovery work in
-progress; no task checkbox advances.
+pair pass. Required application compilation at that source passes with exactly
+183 artifacts from 59 packages, independently matched to Cargo metadata.
+The first native VM stops before tests at a stale exact helper inventory;
+`048b63f71c` includes the fifth source-bound helper without weakening checks.
+Its VM reaches the new missing-index case and fails because publisher inventory
+needs that index to describe a sealed manifest, while repair still waits for
+complete inventory. Neither failed run is credited as native qualification.
+
+Source `4dc294b0a4` breaks that dependency with bounded readonly shared-pack
+verification before publisher inventory. Every write still requires actual
+publisher-reported pending absence, the original Drain context and synchronized
+source funding. The complete candidate classifier and manifest closure are
+restored byte for byte to their original strict implementations; a fresh complete
+inventory remains mandatory before adoption or Resume. The publisher ownership
+verifier additionally binds both added recovery helpers. Local all-target strict
+Clippy and formatting pass; fresh isolated strict profiles, native runtime,
+complete filesystem, owning publisher gates and required application compilation
+are running. This is recovery work in progress; no task checkbox advances.
 
 All five T2 task checkboxes remain open. Encoded eviction, shared-chunk
 re-extraction, complete recovery/readiness and the stopped
