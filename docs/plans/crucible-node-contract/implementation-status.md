@@ -12,6 +12,60 @@ specific stage; they are not cumulative coverage of the latest source.
 
 ## Latest checkpoint
 
+The branch includes the master merge and schema/owner corrections through
+`f7b0d801af`. The target-discovery correction in `e8df62e9ef` classifies library
+targets from Cargo manifests and source presence. Its strict harness run passes
+26 tests and retains five known failures. Its independently audited application
+target capture compiles 180 test executables across 58 packages and executes no
+tests; that capture predates the deployment foundation.
+
+The deployment foundation in `752c428f54` adds an explicit before-actors
+operational deployment: one nonrenewable whole-parent CPU/address-space/descriptor
+envelope,
+same-original process-scoped leases, and an actor-owned installed mechanism and
+namespace. Selected template preparation checks actual known component demand
+against that installed envelope and retains failed output. This does not turn
+partial known-byte observation into complete allocator accounting. Even after
+successful template preparation, the actor command returns `Refused`; this
+foundation starts no worker job and issues no accepted Source result, Initial,
+Recipe or Ready state. Later configuration changes are outside this checkpoint.
+
+For the foundation's captured inputs, the complete default Daemon suite passes
+**1,814 tests, zero failures and 163 existing ignores**, with zero filtered, in
+278.85 seconds. All six registered architecture checks pass, as do 35
+HostResources tests. The registered L2 control executes all four dedicated-process
+modes: same-original thread handoff/drop, retained birth refusal, stricter inherited
+ceilings across exec, and sticky revocation after soft-limit restoration. Its
+launcher limits remain unchanged. These controls do not prove forked-owner
+transfer, forced partial kernel-update failure, resource exhaustion or Source
+acceptance. Twelve selected crates, including the CLI, pass all-feature/all-target
+checking in 2 minutes 21 seconds; this is compilation, not test execution. The
+focused CLI parser control passes with 363 tests filtered: it accepts the
+operational-policy flag and refuses authority/bank-stage flags. That tests
+argument parsing, not installed CLI execution.
+
+The initial full default Engine run reports **2,039 passed, one failed and 33
+existing ignores**, with zero filtering. Its peer-close failure-retention control
+passes alone using the same binary. After a separate test-only explicit-shutdown
+and retained-alias correction, the full default rerun passes **2,040 tests, zero
+failures and 33 existing ignores**, with zero filtering, in 4.72 seconds. Both
+full runs use automatic default thread selection. This establishes the corrected
+fixture result without proving the failed run's precise descriptor-inheritance
+cause. That separate fixture correction is committed in `065f8815d1`.
+
+The mandatory application-target gate passes for its immutable foundation capture:
+**180 newly compiled test executables across 58 full Cargo package IDs**,
+including 71 integration targets across 15 of those packages. Final target
+compilation takes 10 minutes 8 seconds after separate prerequisites. Independent
+audit verifies all 10,666 captured files and 81 manifests. This gate executes no
+tests and emits no Crucible unit-test executable; CLI and Daemon sources are
+captured but their packages are outside its compiler selection. The capture
+excludes the later fixture correction, configuration, producer and observer
+changes; no runtime or latest whole-tree qualification follows.
+
+The earlier worker and mechanism checkpoints below retain their own captured
+source and configuration scopes.
+
 The private derivation-worker foundation is committed in `3aca144b23`, with
 separate presentation changes in `628a575a8a`. It adds closed request/result
 streams, the Engine-only worker process, its measured source-built package recipe,
@@ -60,7 +114,7 @@ unprovided. Module comments in `00d4929c4b` and the private-function cleanup in
 `f4921f9a25` have source-only body-preservation evidence, not separate runtime
 qualification.
 
-The mandatory application-target gate now passes for its captured composite:
+The earlier application-target gate passes for its captured composite:
 180 compiler-reported test executables across 58 Rust packages and 58 application
 roots, including 71 integration targets. Final target compilation takes
 10 minutes 15 seconds after separate prerequisites. Independent audit binds
@@ -187,7 +241,7 @@ Final compilation takes 10 minutes 14 seconds after prerequisites. Its 10,575
 captured files and all 80 workspace manifests match that commit; shared vendor
 and lockfile checks agree. This gate compiles tests without executing them.
 
-The fresh post-native11 strict harness refresh remains failing: 21 tests pass
+An earlier post-native11 strict harness refresh remains failing: 21 tests pass
 and five fail, with zero ignored or filtered tests out of 26, in 16.47 seconds.
 No new diagnostic-emission total is claimed. An earlier checkpoint recorded
 599 diagnostic emissions after ten stringly-error and six bare-unsafe findings
