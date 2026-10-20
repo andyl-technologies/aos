@@ -7,7 +7,7 @@
 use std::fmt::{self, Write as _};
 
 use crucible::{
-    AdvanceOutcome, Configuration, Decision, Icount, SIM_TICKS_PER_INSTRUCTION, ScenarioDefForm,
+    AdvanceOutcome, Configuration, Decision, Icount, PreemptionDecision, ScenarioDefForm,
     SingleSchedulerCheckpoint,
 };
 use crucible_api::ProductionEventLogSegments;
@@ -18,7 +18,8 @@ use crucible_protocol::selectable_catalog_plan::{
 };
 use crucible_qemu::{
     QemuBakedGenesisSnapshot, QemuReplayOracleMatch, QemuReplayOracleThinObservation,
-    QemuReplayValidationExecutor, QemuVmRealizationError, QemuVmReplayRequest, QemuVmSnapshot,
+    QemuReplayOracleUnsupportedEffect, QemuReplayValidationExecutor, QemuVmRealizationError,
+    QemuVmReplayRequest, QemuVmSnapshot,
 };
 
 use crate::QemuAttemptProcessResourceGuard;
@@ -346,6 +347,20 @@ trait GuardedReplayPhysicalNode {
         input: crucible::BackendInput,
         delivery_icount: Icount,
     ) -> Result<Self::Observation, QemuVmRealizationError>;
+
+    /// Arms a recorded local preemption for the run ending at `decision.at`.
+    fn arm_preemption(
+        &mut self,
+        state: Self::Observation,
+        decision: &PreemptionDecision,
+    ) -> Result<Self::Observation, QemuVmRealizationError>;
+
+    /// Confirms the node stands at `decision.at` with the preemption taken.
+    fn confirm_preemption(
+        &mut self,
+        state: &Self::Observation,
+        decision: &PreemptionDecision,
+    ) -> Result<(), QemuVmRealizationError>;
 }
 
 struct ReplayPhysicalAdvance<T> {
@@ -424,22 +439,116 @@ impl<G: QemuAttemptProcessResourceGuard> GuardedReplayPhysicalNode
             .enqueue_materialized_replay_input(state, input, delivery_icount);
         self.observe_realization(result)
     }
+
+    fn arm_preemption(
+        &mut self,
+        state: Self::Observation,
+        decision: &PreemptionDecision,
+    ) -> Result<Self::Observation, QemuVmRealizationError> {
+        self.guard.check_operational_boundary()?;
+        let result = self
+            .executor
+            .arm_materialized_replay_preemption(state, decision);
+        self.observe_realization(result)
+    }
+
+    fn confirm_preemption(
+        &mut self,
+        state: &Self::Observation,
+        decision: &PreemptionDecision,
+    ) -> Result<(), QemuVmRealizationError> {
+        self.guard.check_operational_boundary()?;
+        let result = self
+            .executor
+            .confirm_materialized_replay_preemption(state, decision);
+        self.observe_realization(result)
+    }
 }
 
+/// Replays one recorded decision that carries no local guest-choice reply.
+///
+/// A preemption on this node changes guest execution, so it is reproduced
+/// physically at its recorded counter. Every other such decision (delivery
+/// order, RNG draw, override, or a decision owned by another node) changes
+/// only the model: its physical consequences reach this node as logged inputs
+/// already queued at their counters. The thin node therefore stays where it
+/// is. In particular, a halted thin node that would settle below any ceiling
+/// needs no motion here.
 fn replay_one_nonselection_decision_boundary<T: GuardedReplayPhysicalNode>(
     node: &mut T,
     state: T::Observation,
     target_icount: Icount,
     decision: &Decision,
 ) -> Result<T::Observation, QemuVmRealizationError> {
-    if matches!(decision, Decision::DeliveryOrder(_)) {
-        // Input delivery and its ordering record are one scheduler boundary.
-        // Retiring another instruction could cross the next stamped input.
-        reject_unrecorded_local_request(node)?;
-        Ok(state)
-    } else {
-        replay_one_nonselection_boundary(node, state, target_icount)
+    match decision {
+        Decision::Preemption(preemption) if &preemption.node == node.node() => {
+            replay_local_preemption(node, state, target_icount, preemption)
+        }
+        Decision::Preemption(_)
+        | Decision::DeliveryOrder(_)
+        | Decision::RngDraw(_)
+        | Decision::Override(_)
+        | Decision::Selection(_) => {
+            reject_unrecorded_local_request(node)?;
+            Ok(state)
+        }
     }
+}
+
+/// Stops the thin node exactly at a recorded preemption and applies it there.
+///
+/// `preemption.at` is the node-local physical counter the live RUN stopped at
+/// (the scheduler plans it as the RUN's target counter). Replay arms the same
+/// scheduler preemption command the live RUN published, then takes bounded
+/// steps whose ceilings never pass that counter. Patched QEMU treats the
+/// commanded counter as an exact event, so a running guest stops there and a
+/// halted guest's clock moves there. Arriving anywhere else, or leaving the
+/// command unapplied, refuses replay.
+fn replay_local_preemption<T: GuardedReplayPhysicalNode>(
+    node: &mut T,
+    state: T::Observation,
+    target_icount: Icount,
+    preemption: &PreemptionDecision,
+) -> Result<T::Observation, QemuVmRealizationError> {
+    reject_unrecorded_local_request(node)?;
+    let at = Icount {
+        retired: preemption.at.ticks,
+    };
+    let current = node.current_icount(&state)?;
+    if at <= current {
+        return Err(QemuVmRealizationError::ReplayOracleUnsupported {
+            node: node.node().name.clone(),
+            effect: QemuReplayOracleUnsupportedEffect::PreemptionNotAhead {
+                at: at.retired,
+                current: current.retired,
+            },
+        });
+    }
+    if at > target_icount {
+        return Err(invalid_replay_selection(
+            "recorded preemption lies past the exact target count",
+        ));
+    }
+
+    let mut state = node.arm_preemption(state, preemption)?;
+    let mut progress = ReplayPhysicalProgress::new(current);
+    while node.current_icount(&state)? != at {
+        // A guest request before the commanded counter was never recorded.
+        reject_unrecorded_local_request(node)?;
+        // The progress cursor refuses once its frontier reaches `at` without
+        // the node arriving there, so a settled miss cannot loop.
+        let ceiling = progress.next_ceiling(at)?;
+        let advance = node.advance_to_ceiling(state, ceiling)?;
+        state = advance.state;
+        progress.observe(
+            node.current_icount(&state)?,
+            ceiling,
+            advance.outcome,
+            advance.idle_deadline,
+        )?;
+    }
+    node.confirm_preemption(&state, preemption)?;
+    Ok(state)
 }
 
 fn replay_one_local_guest_choice<T: GuardedReplayPhysicalNode>(
@@ -479,42 +588,6 @@ fn replay_one_local_guest_choice<T: GuardedReplayPhysicalNode>(
             advance.idle_deadline,
         )?;
     }
-}
-
-fn replay_one_nonselection_boundary<T: GuardedReplayPhysicalNode>(
-    node: &mut T,
-    state: T::Observation,
-    target_icount: Icount,
-) -> Result<T::Observation, QemuVmRealizationError> {
-    reject_unrecorded_local_request(node)?;
-    let at = node.current_icount(&state)?;
-    // Physical replay carries picosecond coordinates. A one-tick hop would
-    // not retire the intended instruction.
-    let next_tick_ps = at
-        .retired
-        .checked_add(SIM_TICKS_PER_INSTRUCTION)
-        .ok_or_else(|| invalid_replay_selection("non-selection replay count overflowed"))?;
-    if next_tick_ps > target_icount.retired {
-        return Err(invalid_replay_selection(
-            "non-selection replay would cross the exact target count",
-        ));
-    }
-
-    let state = node
-        .advance_to_ceiling(
-            state,
-            Icount {
-                retired: next_tick_ps,
-            },
-        )?
-        .state;
-    if node.current_icount(&state)?.retired != next_tick_ps {
-        return Err(invalid_replay_selection(
-            "non-selection replay paused before its one-instruction boundary",
-        ));
-    }
-    reject_unrecorded_local_request(node)?;
-    Ok(state)
 }
 
 // This cursor only chooses the next bounded QEMU ceiling. It never changes

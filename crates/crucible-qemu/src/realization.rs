@@ -623,6 +623,58 @@ pub enum QemuVmRealizationError {
         /// Node and bounded component counts and digests for both continuations.
         detail: Box<str>,
     },
+    /// Guarded replay cannot physically reproduce a recorded effect.
+    ///
+    /// The oracle refuses before certifying any checkpoint whose recorded
+    /// history it would not reproduce, so this is a typed decline rather than
+    /// a mismatch.
+    #[error("guarded replay of `{node}` cannot reproduce a recorded effect: {effect}")]
+    ReplayOracleUnsupported {
+        /// Replayed node whose oracle refused.
+        node: String,
+        /// Recorded effect that has no physical replay.
+        effect: QemuReplayOracleUnsupportedEffect,
+    },
+}
+
+/// A recorded effect that guarded replay cannot reproduce on its thin node.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
+pub enum QemuReplayOracleUnsupportedEffect {
+    /// A signal-driven fault effect acted on VM-side state.
+    ///
+    /// Network effects act in the scheduler's link model and reach a VM only
+    /// as logged inputs, which replay reproduces. Storage and node effects run
+    /// as QEMU-side fault commands, which replay does not issue.
+    #[error(
+        "{} fault observation at event {sequence} targets {}",
+        .kind.as_str(),
+        .target.map_or("no named object", crucible::model::FaultTargetKind::as_str)
+    )]
+    VmFaultEffect {
+        /// Event-log sequence of the observation.
+        sequence: u64,
+        /// Observation class.
+        kind: crucible::model::FaultObservationKind,
+        /// Target kind, when the observation names one.
+        target: Option<crucible::model::FaultTargetKind>,
+    },
+    /// A trigger action started or stopped the replayed node.
+    #[error("trigger action at event {sequence} changes the replayed node's lifecycle")]
+    NodeLifecycleAction {
+        /// Event-log sequence of the action.
+        sequence: u64,
+    },
+    /// A recorded preemption's counter is not ahead of the thin replay node.
+    ///
+    /// A thin step needs a ceiling past its current counter, so a preemption
+    /// at or behind it has no exact replay boundary.
+    #[error("preemption at counter {at} is not ahead of thin replay counter {current}")]
+    PreemptionNotAhead {
+        /// Recorded physical preemption counter.
+        at: u64,
+        /// Thin replay counter when the preemption was reached.
+        current: u64,
+    },
 }
 
 impl PartialEq for QemuVmRealizationError {

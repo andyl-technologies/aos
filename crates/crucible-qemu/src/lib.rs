@@ -317,7 +317,8 @@ pub use quantum::{
 };
 pub use realization::{
     QemuBakedGenesisSnapshot, QemuReplayOracleEvidence, QemuReplayOracleMatch,
-    QemuVmRealizationError, QemuVmReplayRequest, QemuVmSnapshot, QemuVmSnapshotCodecError,
+    QemuReplayOracleUnsupportedEffect, QemuVmRealizationError, QemuVmReplayRequest, QemuVmSnapshot,
+    QemuVmSnapshotCodecError,
 };
 #[cfg(target_os = "linux")]
 pub(crate) use realization::{QemuHotForkTemplateIdentity, QemuHotForkTemplatePreparer};

@@ -2729,6 +2729,53 @@ impl SimulationBackend for QemuNode {
 }
 
 impl QemuNode {
+    /// Publishes one scheduler preemption for the RUN that ends at `ceiling`.
+    ///
+    /// The authorization window opens at the node's last observed counter and
+    /// closes at `ceiling`. The plugin admits the command once a published
+    /// RUN ceiling reaches `ceiling`; patched QEMU then treats `decision.at`
+    /// as an exact event, stopping a running guest there and moving a halted
+    /// guest's clock to it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when `decision.at` lies outside that window or
+    /// the shared-memory mailbox refuses the command.
+    pub(crate) fn publish_scheduler_preemption(
+        &mut self,
+        decision: &crucible::PreemptionDecision,
+        ceiling: Icount,
+    ) -> Result<(), BackendError> {
+        let command =
+            scheduler_preemption_command(decision, self.last_observed_time.ticks, ceiling.retired)?;
+        self.channels
+            .shmem_hot_path
+            .publish_preemption_command(command)
+            .map_err(|source| {
+                BackendError::from(QemuNodeError::from_channel(
+                    QemuNodeChannelPlane::ShmemHotPath,
+                    source,
+                ))
+            })
+    }
+
+    /// Reports whether a published preemption still awaits plugin admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when the node slot cannot be read.
+    pub(crate) fn scheduler_preemption_pending(&mut self) -> Result<bool, BackendError> {
+        self.channels
+            .shmem_hot_path
+            .preemption_command_pending()
+            .map_err(|source| {
+                BackendError::from(QemuNodeError::from_channel(
+                    QemuNodeChannelPlane::ShmemHotPath,
+                    source,
+                ))
+            })
+    }
+
     /// Advances toward `ceiling` under the scheduler's stop condition.
     ///
     /// A [`crucible::RunCeilingStop::Bound`] ceiling may settle with the
@@ -2749,18 +2796,8 @@ impl QemuNode {
         let icount_ceiling = Icount {
             retired: ceiling.ticks,
         };
-        if let Some(decision) = self.pending_preemption.as_ref() {
-            let command = scheduler_preemption_command(
-                decision,
-                self.last_observed_time.ticks,
-                icount_ceiling.retired,
-            )?;
-            self.channels
-                .shmem_hot_path
-                .publish_preemption_command(command)
-                .map_err(|source| {
-                    QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
-                })?;
+        if let Some(decision) = self.pending_preemption.clone() {
+            self.publish_scheduler_preemption(&decision, icount_ceiling)?;
             self.pending_preemption = None;
         }
         let stop_condition = match stop {

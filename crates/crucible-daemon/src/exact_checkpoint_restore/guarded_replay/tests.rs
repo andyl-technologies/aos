@@ -18,6 +18,7 @@ use crucible_campaign::{
 use crucible_protocol::SelectionRequest;
 
 mod contract_context;
+mod preemption;
 
 struct ScriptedPhysicalReplay {
     node: NodeId,
@@ -26,6 +27,18 @@ struct ScriptedPhysicalReplay {
     replies: Vec<SelectionReply>,
     advances: Vec<Icount>,
     inputs: Vec<(Icount, Vec<u8>)>,
+    preemption: ScriptedPreemption,
+}
+
+/// Models patched QEMU's exact preemption event and a halted guest.
+#[derive(Default)]
+struct ScriptedPreemption {
+    /// Commanded counter armed for a later run.
+    armed: Option<Icount>,
+    /// Counters at which QEMU applied an armed command.
+    applied: Vec<Icount>,
+    /// A halted guest settles below every ceiling without moving its clock.
+    halted: bool,
 }
 
 impl GuardedReplayPhysicalNode for ScriptedPhysicalReplay {
@@ -53,6 +66,24 @@ impl GuardedReplayPhysicalNode for ScriptedPhysicalReplay {
             ));
         }
         self.advances.push(ceiling);
+        if let Some(at) = self.preemption.armed.filter(|at| *at <= ceiling) {
+            // The commanded counter is an exact event: a running guest stops
+            // there and a halted guest's clock moves there.
+            self.preemption.armed = None;
+            self.preemption.applied.push(at);
+            return Ok(ReplayPhysicalAdvance {
+                state: at,
+                outcome: AdvanceOutcome::ReachedHorizon,
+                idle_deadline: None,
+            });
+        }
+        if self.preemption.halted {
+            return Ok(ReplayPhysicalAdvance {
+                state,
+                outcome: AdvanceOutcome::ReachedHorizon,
+                idle_deadline: None,
+            });
+        }
         if let Some(request) = self.upcoming.front() {
             let paused = request.trap_tick_ps().saturating_add(50);
             if paused <= ceiling.retired {
@@ -104,6 +135,39 @@ impl GuardedReplayPhysicalNode for ScriptedPhysicalReplay {
         }
         self.inputs.push((delivery_icount, input.payload));
         Ok(state)
+    }
+
+    fn arm_preemption(
+        &mut self,
+        state: Self::Observation,
+        decision: &PreemptionDecision,
+    ) -> Result<Self::Observation, QemuVmRealizationError> {
+        let at = Icount {
+            retired: decision.at.ticks,
+        };
+        if decision.node != self.node || at <= state || self.preemption.armed.is_some() {
+            return Err(invalid_replay_selection(
+                "scripted preemption is not ahead of the node",
+            ));
+        }
+        self.preemption.armed = Some(at);
+        Ok(state)
+    }
+
+    fn confirm_preemption(
+        &mut self,
+        state: &Self::Observation,
+        decision: &PreemptionDecision,
+    ) -> Result<(), QemuVmRealizationError> {
+        let at = Icount {
+            retired: decision.at.ticks,
+        };
+        if *state != at || self.preemption.applied.last() != Some(&at) {
+            return Err(invalid_replay_selection(
+                "scripted preemption was not applied at its counter",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -164,6 +228,22 @@ impl GuardedReplayPhysicalNode for TickCalibratedReplay {
     ) -> Result<Self::Observation, QemuVmRealizationError> {
         self.physical.enqueue_input(state, input, delivery_icount)
     }
+
+    fn arm_preemption(
+        &mut self,
+        state: Self::Observation,
+        decision: &PreemptionDecision,
+    ) -> Result<Self::Observation, QemuVmRealizationError> {
+        self.physical.arm_preemption(state, decision)
+    }
+
+    fn confirm_preemption(
+        &mut self,
+        state: &Self::Observation,
+        decision: &PreemptionDecision,
+    ) -> Result<(), QemuVmRealizationError> {
+        self.physical.confirm_preemption(state, decision)
+    }
 }
 
 fn empty_physical_replay() -> ScriptedPhysicalReplay {
@@ -176,6 +256,7 @@ fn empty_physical_replay() -> ScriptedPhysicalReplay {
         replies: Vec::new(),
         advances: Vec::new(),
         inputs: Vec::new(),
+        preemption: ScriptedPreemption::default(),
     }
 }
 
@@ -205,9 +286,17 @@ fn nonselection_instruction_steps_preserve_source_clock_calibration()
 
     reference.advance_to_ceiling(initial, target)?;
     let mut state = initial;
-    for _ in 0..5 {
-        state = replay_one_nonselection_boundary(&mut partitioned, state, target)?;
+    for value in 0..5 {
+        let decision = Decision::RngDraw(RngDecision {
+            stream: RngStreamId::from_name("model-only"),
+            value,
+        });
+        state =
+            replay_one_nonselection_decision_boundary(&mut partitioned, state, target, &decision)?;
     }
+    // Model-only decisions never move the thin node.
+    assert_eq!(state, initial);
+    assert!(partitioned.physical.advances.is_empty());
     partitioned.advance_to_ceiling(state, target)?;
 
     assert_eq!(reference.raw_instructions, 5_825_568_439);
@@ -215,21 +304,6 @@ fn nonselection_instruction_steps_preserve_source_clock_calibration()
     assert_eq!(partitioned.raw_instructions, reference.raw_instructions);
     assert_eq!(partitioned.bias_ps, reference.bias_ps);
     Ok(())
-}
-
-#[test]
-fn nonselection_instruction_step_rejects_overflow_and_target_crossing() {
-    for (at_ps, target_ps) in [(100, 149), (u64::MAX - 25, u64::MAX)] {
-        let mut replay = empty_physical_replay();
-        let result = replay_one_nonselection_boundary(
-            &mut replay,
-            Icount { retired: at_ps },
-            Icount { retired: target_ps },
-        );
-
-        assert!(result.is_err());
-        assert!(replay.advances.is_empty());
-    }
 }
 
 fn replay_choice_fixture()
@@ -296,9 +370,9 @@ fn replay_choice_fixture()
 #[test]
 fn delivery_order_keeps_interleaved_inputs_at_their_physical_counts()
 -> Result<(), Box<dyn std::error::Error>> {
-    let first_delivery_ps = SIM_TICKS_PER_INSTRUCTION;
-    let second_delivery_ps = 2 * SIM_TICKS_PER_INSTRUCTION;
-    let target_ps = 3 * SIM_TICKS_PER_INSTRUCTION;
+    let first_delivery_ps = crucible::SIM_TICKS_PER_INSTRUCTION;
+    let second_delivery_ps = 2 * crucible::SIM_TICKS_PER_INSTRUCTION;
+    let target_ps = 3 * crucible::SIM_TICKS_PER_INSTRUCTION;
     let node = NodeId {
         name: String::from("receiver"),
     };
@@ -309,6 +383,7 @@ fn delivery_order_keeps_interleaved_inputs_at_their_physical_counts()
         replies: Vec::new(),
         advances: Vec::new(),
         inputs: Vec::new(),
+        preemption: ScriptedPreemption::default(),
     };
     let first = BackendInput {
         node: node.clone(),
@@ -327,7 +402,7 @@ fn delivery_order_keeps_interleaved_inputs_at_their_physical_counts()
     let preemption = Decision::Preemption(PreemptionDecision {
         node,
         at: crucible::SimInstant {
-            ticks: first_delivery_ps,
+            ticks: second_delivery_ps,
         },
         kind: PreemptionKind::InterruptAt {
             target_vcpu: VcpuId { index: 0 },
@@ -358,6 +433,12 @@ fn delivery_order_keeps_interleaved_inputs_at_their_physical_counts()
         &preemption,
     )?;
     assert_eq!(state.retired, second_delivery_ps);
+    assert_eq!(
+        replay.preemption.applied,
+        vec![Icount {
+            retired: second_delivery_ps,
+        }]
+    );
     let state = replay.enqueue_input(
         state,
         second,
@@ -449,14 +530,20 @@ fn guarded_replay_reaches_two_recorded_guest_choices_and_rejects_drift()
         replies: Vec::new(),
         advances: Vec::new(),
         inputs: Vec::new(),
+        preemption: ScriptedPreemption::default(),
     };
 
-    let after_rng_icount = replay_one_nonselection_boundary(
+    let rng_decision = Decision::RngDraw(RngDecision {
+        stream: RngStreamId::from_name("before-guest-choice"),
+        value: 7,
+    });
+    let after_rng_icount = replay_one_nonselection_decision_boundary(
         &mut replay,
         Icount { retired: 0 },
         Icount { retired: 5_000 },
+        &rng_decision,
     )?;
-    assert_eq!(after_rng_icount.retired, SIM_TICKS_PER_INSTRUCTION);
+    assert_eq!(after_rng_icount.retired, 0);
     let after_first_icount = replay_one_local_guest_choice(
         &mut replay,
         after_rng_icount,
@@ -474,7 +561,7 @@ fn guarded_replay_reaches_two_recorded_guest_choices_and_rejects_drift()
         &second_record,
     )?;
     assert_eq!(after_second_icount.retired, 4_100);
-    assert_eq!(replay.advances.len(), 3);
+    assert_eq!(replay.advances.len(), 2);
     assert_eq!(replay.replies.len(), 2);
     assert_eq!(replay.replies[0].sequence(), 1);
     assert_eq!(replay.replies[1].sequence(), 2);
@@ -497,6 +584,7 @@ fn guarded_replay_reaches_two_recorded_guest_choices_and_rejects_drift()
         replies: Vec::new(),
         advances: Vec::new(),
         inputs: Vec::new(),
+        preemption: ScriptedPreemption::default(),
     };
     assert!(
         replay_one_local_guest_choice(
@@ -518,6 +606,7 @@ fn guarded_replay_reaches_two_recorded_guest_choices_and_rejects_drift()
         replies: Vec::new(),
         advances: Vec::new(),
         inputs: Vec::new(),
+        preemption: ScriptedPreemption::default(),
     };
     assert!(
         replay_one_local_guest_choice(
@@ -539,12 +628,14 @@ fn guarded_replay_reaches_two_recorded_guest_choices_and_rejects_drift()
         replies: Vec::new(),
         advances: Vec::new(),
         inputs: Vec::new(),
+        preemption: ScriptedPreemption::default(),
     };
     assert!(
-        replay_one_nonselection_boundary(
+        replay_one_nonselection_decision_boundary(
             &mut extra_replay,
             Icount { retired: 0 },
             Icount { retired: 5_000 },
+            &rng_decision,
         )
         .is_err()
     );
@@ -888,6 +979,7 @@ fn runnable_replay_keeps_ring_drain_cap_and_rejects_unrecorded_choice()
         replies: Vec::new(),
         advances: Vec::new(),
         inputs: Vec::new(),
+        preemption: ScriptedPreemption::default(),
     };
     let mut progress = ReplayPhysicalProgress::new(Icount { retired: 0 });
     let first = progress.next_ceiling(Icount {

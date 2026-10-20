@@ -241,7 +241,8 @@ fn classify_realization_failure(error: &QemuVmRealizationError) -> PromotionFail
         | QemuVmRealizationError::Executor { .. }
         | QemuVmRealizationError::InvalidCheckpoint { .. }
         | QemuVmRealizationError::InvalidAncestor { .. }
-        | QemuVmRealizationError::ReplayOracleMismatch { .. } => PromotionFailureClass::Terminal,
+        | QemuVmRealizationError::ReplayOracleMismatch { .. }
+        | QemuVmRealizationError::ReplayOracleUnsupported { .. } => PromotionFailureClass::Terminal,
     }
 }
 

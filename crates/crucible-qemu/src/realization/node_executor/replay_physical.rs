@@ -177,6 +177,128 @@ impl QemuReplayValidationExecutor {
         })
     }
 
+    /// Arms one recorded preemption on the thin replay node.
+    ///
+    /// `decision.at` is the node-local physical counter at which the live run
+    /// applied the preemption. The command authorizes the window from the thin
+    /// node's current counter through `decision.at`; bounded steps up to that
+    /// counter then let patched QEMU apply it exactly there, as in the live RUN.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the observation is stale, the preemption belongs
+    /// to another node, its counter is not ahead of the thin node, or the
+    /// shared-memory mailbox refuses the command.
+    pub fn arm_materialized_replay_preemption(
+        &mut self,
+        thin: QemuReplayOracleThinObservation,
+        decision: &crucible::PreemptionDecision,
+    ) -> Result<QemuReplayOracleThinObservation, QemuVmRealizationError> {
+        self.measure_replay(ReplayPhase::ModelDecision, |executor| {
+            executor.arm_materialized_replay_preemption_untimed(thin, decision)
+        })
+    }
+
+    fn arm_materialized_replay_preemption_untimed(
+        &mut self,
+        thin: QemuReplayOracleThinObservation,
+        decision: &crucible::PreemptionDecision,
+    ) -> Result<QemuReplayOracleThinObservation, QemuVmRealizationError> {
+        self.validate_observation(
+            &thin.authority,
+            thin.generation,
+            self.thin_observation_generation,
+            "thin replay observation",
+        )?;
+        self.validate_active_replay_runtime(&thin.runtime)?;
+        let current = replay_node_icount(&thin.runtime, &self.node)?;
+        if decision.node != self.node {
+            return Err(QemuVmRealizationError::InvalidCheckpoint {
+                role: "guarded replay preemption",
+                message: String::from("preemption belongs to another node"),
+            });
+        }
+        if decision.at.ticks <= current.retired {
+            return Err(QemuVmRealizationError::ReplayOracleUnsupported {
+                node: self.node.name.clone(),
+                effect: crate::QemuReplayOracleUnsupportedEffect::PreemptionNotAhead {
+                    at: decision.at.ticks,
+                    current: current.retired,
+                },
+            });
+        }
+
+        let node = self
+            .active_node
+            .as_mut()
+            .ok_or_else(|| QemuVmRealizationError::Executor {
+                operation: "arm guarded replay preemption",
+                message: String::from("no QEMU replay node is active"),
+            })?;
+        node.publish_scheduler_preemption(
+            decision,
+            Icount {
+                retired: decision.at.ticks,
+            },
+        )
+        .map_err(|source| node_backend_error("arm guarded replay preemption", source))?;
+
+        let generation = self.issue_observation_generation()?;
+        self.thin_observation_generation = Some(generation);
+        Ok(QemuReplayOracleThinObservation {
+            runtime: thin.runtime,
+            authority: Arc::clone(&self.authority),
+            generation,
+        })
+    }
+
+    /// Confirms that QEMU took an armed preemption at its recorded counter.
+    ///
+    /// The thin node must stand exactly at `decision.at`, and the plugin must
+    /// have handed the command to patched QEMU, which acknowledges only an
+    /// accepted exact-counter injection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the observation is stale, the thin node stands
+    /// elsewhere, or the command is still waiting in the mailbox.
+    pub fn confirm_materialized_replay_preemption(
+        &mut self,
+        thin: &QemuReplayOracleThinObservation,
+        decision: &crucible::PreemptionDecision,
+    ) -> Result<(), QemuVmRealizationError> {
+        self.validate_observation(
+            &thin.authority,
+            thin.generation,
+            self.thin_observation_generation,
+            "thin replay observation",
+        )?;
+        self.validate_active_replay_runtime(&thin.runtime)?;
+        let current = replay_node_icount(&thin.runtime, &self.node)?;
+        let node = self
+            .active_node
+            .as_mut()
+            .ok_or_else(|| QemuVmRealizationError::Executor {
+                operation: "confirm guarded replay preemption",
+                message: String::from("no QEMU replay node is active"),
+            })?;
+        let pending = node
+            .scheduler_preemption_pending()
+            .map_err(|source| node_backend_error("confirm guarded replay preemption", source))?;
+        if current.retired != decision.at.ticks || pending {
+            return Err(QemuVmRealizationError::InvalidCheckpoint {
+                role: "guarded replay preemption",
+                message: format!(
+                    "thin replay stands at {} with the command {} instead of at {} with it applied",
+                    current.retired,
+                    if pending { "pending" } else { "taken" },
+                    decision.at.ticks
+                ),
+            });
+        }
+        Ok(())
+    }
+
     /// Advances thin replay toward a checkpoint ceiling without changing its schedule.
     ///
     /// The caller bounds `ceiling` by the exact checkpoint and charges the

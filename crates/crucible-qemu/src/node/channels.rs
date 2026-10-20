@@ -304,6 +304,24 @@ pub trait QemuShmemHotPathChannel: Send {
         command: SchedulerPreemptionCommand,
     ) -> Result<(), QemuNodeChannelError>;
 
+    /// Reports whether a published preemption still awaits plugin admission.
+    ///
+    /// The plugin acknowledges a command only after patched QEMU accepted
+    /// its exact-counter injection, so `false` after publication means QEMU
+    /// owns the command. A channel without a readable mailbox refuses rather
+    /// than report an admission it cannot observe.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the node slot cannot be read or
+    /// the channel has no preemption mailbox.
+    fn preemption_command_pending(&mut self) -> Result<bool, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "preemption_command_pending",
+            "channel cannot observe the preemption mailbox",
+        ))
+    }
+
     /// Publishes one authenticated fault command at a scheduler boundary.
     ///
     /// # Errors

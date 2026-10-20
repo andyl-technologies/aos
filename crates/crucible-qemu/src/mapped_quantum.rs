@@ -945,6 +945,11 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
             .map_err(|source| source.into_channel_error("publish_preemption_command"))
     }
 
+    fn preemption_command_pending(&mut self) -> Result<bool, QemuNodeChannelError> {
+        QemuMappedQuantumShmemHotPath::preemption_command_pending(self)
+            .map_err(|source| source.into_channel_error("preemption_command_pending"))
+    }
+
     fn enqueue_fault_command(
         &mut self,
         header: crucible_shmem::FaultCommandHeaderV1,

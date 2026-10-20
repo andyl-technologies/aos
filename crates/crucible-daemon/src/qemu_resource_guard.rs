@@ -742,7 +742,8 @@ fn attempt_operational_error(
         | QemuVmRealizationError::Executor { .. }
         | QemuVmRealizationError::InvalidCheckpoint { .. }
         | QemuVmRealizationError::InvalidAncestor { .. }
-        | QemuVmRealizationError::ReplayOracleMismatch { .. } => {
+        | QemuVmRealizationError::ReplayOracleMismatch { .. }
+        | QemuVmRealizationError::ReplayOracleUnsupported { .. } => {
             SchedulerOperationalFailureClass::Terminal
         }
     };

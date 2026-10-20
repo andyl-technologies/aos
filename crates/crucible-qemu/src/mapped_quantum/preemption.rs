@@ -27,6 +27,19 @@ impl QemuMappedQuantumShmemHotPath {
             .map_err(|source| QemuMappedQuantumShmemHotPathError::PreemptionMailbox { source })
     }
 
+    /// Reports whether the live plugin has not yet admitted the published command.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuMappedQuantumShmemHotPathError`] when the configured slot
+    /// is absent.
+    pub fn preemption_command_pending(&self) -> Result<bool, QemuMappedQuantumShmemHotPathError> {
+        self.region
+            .node_slot(self.config.vm_slot)
+            .map(|slot| slot.has_pending_preemption_command())
+            .map_err(|source| QemuMappedQuantumShmemHotPathError::RegionAccess { source })
+    }
+
     /// Returns the latest preemption sequence acknowledged by the live plugin.
     ///
     /// # Errors

@@ -151,6 +151,10 @@ impl QemuShmemHotPathChannel for QemuQuantumShmemHotPath<'_> {
             })
     }
 
+    fn preemption_command_pending(&mut self) -> Result<bool, QemuNodeChannelError> {
+        Ok(self.view.node_slot.has_pending_preemption_command())
+    }
+
     fn enqueue_fault_command(
         &mut self,
         _header: crucible_shmem::FaultCommandHeaderV1,
