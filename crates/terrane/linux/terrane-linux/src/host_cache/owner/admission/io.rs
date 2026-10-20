@@ -101,6 +101,35 @@ pub(super) struct PendingFile {
 }
 
 impl PendingFile {
+    /// Retains the original completed canonical stamp without reading payload bytes.
+    ///
+    /// # Errors
+    /// Refuses incomplete writer closure, changed original inode/project metadata
+    /// or a canonical name that no longer identifies the retained descriptor.
+    pub(super) fn read_stamp(&self, owner: &Custody) -> io::Result<FileStamp> {
+        if !self.published || self.writer.is_some() || self.closed.is_none() {
+            return Err(io::Error::other(
+                "admitted reader lacks completed canonical custody",
+            ));
+        }
+        self.parent.recheck(owner)?;
+        let reader = self
+            .readonly
+            .as_ref()
+            .ok_or_else(|| io::Error::other("admission reader absent"))?;
+        let named = open_regular_at(&self.parent.file, &self.canonical)?;
+        same_inode(reader, &named)?;
+        check(owner, reader, InodePhase::Closed)?;
+        let stamp = self
+            .canonical_stamp
+            .as_ref()
+            .ok_or_else(|| io::Error::other("canonical admission stamp absent"))?;
+        stamp.check(reader)?;
+        stamp.check(&named)?;
+        self.parent.recheck(owner)?;
+        Ok(stamp.clone())
+    }
+
     /// Checks retained completion after actual transfer descriptors have closed.
     ///
     /// # Errors
@@ -489,7 +518,8 @@ impl From<&std::fs::Metadata> for MetadataStamp {
 }
 
 /// Retains actual kernel project assignment with the observed file incarnation.
-struct FileStamp {
+#[derive(Clone)]
+pub(super) struct FileStamp {
     metadata: MetadataStamp,
     project: NativeProject,
 }
@@ -510,7 +540,11 @@ impl FileStamp {
         })
     }
 
-    fn check(&self, file: &File) -> io::Result<()> {
+    /// Checks this original observation against an actual retained read handle.
+    ///
+    /// # Errors
+    /// Refuses changed inode metadata or native project assignment.
+    pub(super) fn check(&self, file: &File) -> io::Result<()> {
         let current = Self::capture(file)?;
         if self.metadata != current.metadata || self.project != current.project {
             return Err(io::Error::other("retained admission file metadata changed"));

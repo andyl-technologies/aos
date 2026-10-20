@@ -217,6 +217,9 @@ def run_dictionary_custody(driver, uuid):
                            "PASS genuine encoded consumer reads and renews original body and dictionary concurrently under stalled policy, then revokes with distinct durable release protection") == 1,
                        "encoded consumer lost independent body/dictionary protection or actual allocation")
         retained_holds = [row for row in holds if row["id"] != consumer_owner.split(":", 1)[1]]
+        dependent_path = next(path for path in (root / "chunks").rglob("*") if path.name == dependent_digest + ".2")
+        initial_metadata = dependent_path.stat()
+        original_stamp = (initial_metadata.st_ctime_ns, initial_metadata.st_mtime_ns)
         driver.require(len(canonical) == 2 and digest != dependent_digest
                        and {path.rsplit("/", 1)[-1] for path in canonical}
                        == {digest + ".0", dependent_digest + ".2"}
@@ -254,7 +257,16 @@ def run_dictionary_custody(driver, uuid):
         control("after-grace")
         lines.until("READY actual dictionary remains protected after producer grace",
                     timeout=15)
+        before_rewrite = snapshot.read_bytes()
         control("finish")
+        lines.until("PASS actual same-bytes rewrite retains original inode and plaintext but refuses a fresh encoded grant at the original admission stamp without policy mutation",
+                    timeout=15)
+        changed = dependent_path.stat()
+        driver.require(files(root / "chunks") == canonical
+                       and (changed.st_ctime_ns, changed.st_mtime_ns) != original_stamp
+                       and snapshot.read_bytes() == before_rewrite,
+                       "same-bytes rewrite did not independently preserve original inode, bytes and policy while changing metadata")
+        print("PASS independent observer verifies unchanged original encoded bytes/inodes, changed timestamps and zero policy effects for the refused fresh grant", flush=True)
         lines.until("PASS actual original dictionary and admitted dependent retain dependency protection and refuse dictionary retirement through actual grace; no Ready",
                     timeout=15)
         output, error = process.communicate(timeout=10)

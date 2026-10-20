@@ -164,7 +164,7 @@ pub(super) fn run(
         owner,
         runtime,
         inputs,
-        dependent_identity,
+        dependent_identity.clone(),
         &data.first,
         &dictionary_path,
         &dependent_path,
@@ -218,6 +218,14 @@ pub(super) fn run(
 
     emit("READY actual dictionary remains protected after producer grace")?;
     control("finish")?;
+    encoded_consumer::reject_rewritten(
+        owner,
+        runtime,
+        inputs,
+        dependent_identity,
+        &dependent_path,
+        &encoded,
+    )?;
     emit(
         "PASS actual original dictionary and admitted dependent retain dependency protection and refuse dictionary retirement through actual grace; no Ready",
     )

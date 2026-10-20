@@ -5,7 +5,7 @@
 //! handles to their original inodes. Reads use only immutable handles and native
 //! root checks, without admission-job or embedded-state locks.
 
-use super::{AdmissionJob, Input, state};
+use super::{AdmissionJob, Input, io as native, state};
 use crate::{
     host_cache::owner::{
         publication::residence::check_snapshot,
@@ -37,6 +37,7 @@ struct Member {
     identity: Identity,
     length: usize,
     inode: (u64, u64, u64),
+    stamp: native::FileStamp,
     uid: u32,
     gid: u32,
 }
@@ -268,6 +269,7 @@ impl AdmittedRead {
                 .iter()
                 .find(|member| member.identity == *identity && member.length == length)
                 .ok_or_else(|| invalid("admitted read lost original member binding"))?;
+            member.stamp.check(file)?;
             let metadata = file.metadata()?;
             if member.inode.0 != self.layout.directory_binding("layout-root")?.0
                 || (metadata.dev(), metadata.ino(), metadata.len()) != member.inode
@@ -308,6 +310,7 @@ fn member(
     let Input::Chunk { descriptor, .. } = &job.input else {
         return Err(invalid("admitted read member is not a chunk"));
     };
+    let stamp = job.files[0].read_stamp(owner)?;
     let file = job.files[0]
         .readonly
         .as_ref()
@@ -320,6 +323,7 @@ fn member(
             .map_err(io::Error::other)?,
         length: usize::try_from(descriptor.size()).map_err(io::Error::other)?,
         inode: (metadata.dev(), metadata.ino(), metadata.len()),
+        stamp,
         uid: owner.preparation.config.content_uid,
         gid: owner.preparation.config.content_gid,
     })

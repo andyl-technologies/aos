@@ -156,3 +156,69 @@ fn check_policy(policy: &CacheState, lease: &NativeConsumerLease, expires: u64) 
     }
     Ok(())
 }
+
+/// Refuses a fresh grant after a same-bytes rewrite changes the original stamp.
+///
+/// # Errors
+/// Refuses an unchanged timestamp, different bytes/inode, a grant accepted from
+/// changed original metadata, policy mutation on refusal or unusable custody.
+pub(super) fn reject_rewritten(
+    owner: &NativeMetadataOwner,
+    runtime: &tokio::runtime::Runtime,
+    inputs: &Inputs,
+    identity: Identity,
+    path: &Path,
+    encoded: &[u8],
+) -> io::Result<()> {
+    use std::io::Write;
+
+    let policy = inputs.root.join("state/cache/records.toml");
+    let original_policy = fs::read(&policy)?;
+    let mut writer = fs::OpenOptions::new().write(true).open(path)?;
+    let before = writer.metadata()?;
+    writer.write_all(encoded)?;
+    writer.sync_all()?;
+    let after = writer.metadata()?;
+    drop(writer);
+    if (before.dev(), before.ino(), before.len()) != (after.dev(), after.ino(), after.len())
+        || (
+            before.ctime(),
+            before.ctime_nsec(),
+            before.mtime(),
+            before.mtime_nsec(),
+        ) == (
+            after.ctime(),
+            after.ctime_nsec(),
+            after.mtime(),
+            after.mtime_nsec(),
+        )
+        || fs::read(path)? != encoded
+    {
+        return Err(invalid(
+            "same-bytes rewrite did not change only original admission metadata",
+        ));
+    }
+
+    let expires = TokioClock
+        .now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(io::Error::other)?
+        .as_secs()
+        .checked_add(90)
+        .ok_or_else(|| invalid("rewritten source deadline overflow"))?;
+    let error = runtime
+        .block_on(owner.pin_resident_chunk(identity, expires))
+        .err()
+        .ok_or_else(|| invalid("rewritten original admission received a fresh grant"))?;
+    if error.to_string() != "retained admission file metadata changed"
+        || fs::read(policy)? != original_policy
+    {
+        return Err(io::Error::other(format!(
+            "rewritten admission refused outside its original stamp check or changed policy: {error:?}"
+        )));
+    }
+    runtime.block_on(owner.sweep_consumer_leases())?;
+    super::emit(
+        "PASS actual same-bytes rewrite retains original inode and plaintext but refuses a fresh encoded grant at the original admission stamp without policy mutation",
+    )
+}
