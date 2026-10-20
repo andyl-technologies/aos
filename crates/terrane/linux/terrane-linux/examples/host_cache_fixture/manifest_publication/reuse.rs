@@ -3,6 +3,9 @@
 //! Both objects, original admissions, metadata pairs and retired inodes come
 //! from the real native owner. No source descriptor or residence is fabricated.
 
+#[path = "reuse/shared.rs"]
+mod shared;
+
 use super::*;
 
 /// Publishes two actual manifests sharing a repeated nonfinal chunk.
@@ -156,6 +159,7 @@ pub(super) fn run(
             ));
         }
     }
+    shared::run(owner, runtime, inputs, &first, &second)?;
     emit(
         "PASS actual manifest reassembly reused pinned sealed ranges, retained original residences and retired only its new standalone source; no Ready",
     )

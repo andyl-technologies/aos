@@ -483,7 +483,11 @@ def reuse_case(driver, publisher, uuid, suffix):
         expected_result = ("PASS actual resident reassembly rejected the wrong whole hash, retained anonymous output and preserved original backing, ranges and sources; no Ready"
                            if suffix else
                            "PASS actual manifest reassembly reused pinned sealed ranges, retained original residences and retired only its new standalone source; no Ready")
-        driver.require(process.returncode == 0 and output.decode().splitlines() == [expected_result],
+        expected_lines = [expected_result] if suffix else [
+            "PASS native shared-directory manifest ranges, original residences, held-policy reads and independent release revocation",
+            expected_result,
+        ]
+        driver.require(process.returncode == 0 and output.decode().splitlines() == expected_lines,
                        "missing exact actual range reuse result: " + case)
         driver.require((first.stat().st_dev, first.stat().st_ino, first.read_bytes()) == first_identity,
                        "second assembly replaced or changed its original backing")
@@ -522,6 +526,26 @@ def reuse_case(driver, publisher, uuid, suffix):
         driver.require(sorted(state["residences"], key=lambda row: row["chunk"]) == sorted(expected_rows, key=lambda row: row["chunk"])
                        and list((root / "chunks").glob("*/*")) == [],
                        "reuse moved an original range or left a duplicate standalone source")
+        # The three actual grants protect backing objects, including two
+        # different ranges in the first inode. Release preserves those promises
+        # through real grace; shared-directory clones create no extra grants.
+        grace_leases = [row for row in state["leases"] if row["owner"].startswith("consumer-grace:")]
+        grace_pins = [row for row in state["pins"] if row["owner"].startswith("consumer-grace:")]
+        driver.require(len(grace_leases) == len(grace_pins) == 3
+                       and len({row["owner"] for row in grace_leases}) == 3
+                       and sorted(row["hash"] for row in grace_pins)
+                           == sorted([first.name, first.name, second.name])
+                       and not any(row["owner"].startswith("consumer:") for row in state["leases"]),
+                       "shared manifest ranges lack independent original backing protection")
+        for lease in grace_leases:
+            token = lease["owner"].removeprefix("consumer-grace:")
+            driver.require(len(token) == 32 and all(character in "0123456789abcdef" for character in token)
+                           and lease["expires"] > int(time.time())
+                           and len([row for row in grace_pins
+                                    if row["owner"] == lease["owner"] and row["expires"] == lease["expires"]]) == 1
+                           and state["reservations"].count({"id": token, "owner": driver.owner(case),
+                                                           "bytes": 262144}) == 1,
+                           "shared manifest release lost its actual grace or distinct future funding")
         retired = root / "pending-delete" / new_hash
         driver.require((retired.stat().st_dev, retired.stat().st_ino, retired.read_bytes())
                        == (new_stat.st_dev, new_stat.st_ino, new_content)
