@@ -195,6 +195,11 @@ async fn immutable_only_adapter_does_not_complete_prior_pointer_sessions() {
 }
 
 #[tokio::test]
+async fn ordinary_adapter_commits_content_before_requesting_pointer_admission() {
+    exercise_retained_completions(Invocation::OrdinaryPublication).await;
+}
+
+#[tokio::test]
 async fn closed_options_refuse_retained_completions_before_transfer() {
     exercise_retained_completions(Invocation::ClosedOptions).await;
 }
@@ -202,6 +207,7 @@ async fn closed_options_refuse_retained_completions_before_transfer() {
 #[derive(Clone, Copy)]
 enum Invocation {
     AdmittedAdapter,
+    OrdinaryPublication,
     ClosedOptions,
 }
 
@@ -305,7 +311,12 @@ async fn exercise_retained_completions(invocation: Invocation) {
     .await
     .unwrap();
     let mut originals = Vec::new();
-    for object in &publication.objects {
+    let retain_pointers = !matches!(invocation, Invocation::OrdinaryPublication);
+    for object in publication
+        .objects
+        .iter()
+        .filter(|object| retain_pointers || object.kind == "immutable")
+    {
         originals.push((
             object.kind.clone(),
             retain_completion(
@@ -319,7 +330,10 @@ async fn exercise_retained_completions(invocation: Invocation) {
         ));
     }
     drop(store);
-    assert!(originals.iter().any(|(kind, _)| kind == "mutable_pointer"));
+    assert_eq!(
+        originals.iter().any(|(kind, _)| kind == "mutable_pointer"),
+        retain_pointers
+    );
     let (_, (content_original, content_status)) = originals
         .iter()
         .find(|(kind, _)| kind == "immutable")
@@ -350,6 +364,25 @@ async fn exercise_retained_completions(invocation: Invocation) {
                 ..content_status
             },
         );
+        if matches!(invocation, Invocation::OrdinaryPublication) {
+            let (mut stream, route, bytes) = request(&listener);
+            assert!(route.starts_with("POST /aos.hub.v1.DirectUploadService/BeginBatch "));
+            let begin: DirectBeginBatch = decode_direct_control(&bytes).unwrap();
+            assert_eq!(begin.items.len(), 1);
+            assert!(
+                begin
+                    .items
+                    .iter()
+                    .all(|item| { item.dependency_phase == DirectDependencyPhase::Visibility })
+            );
+            // Stop before provider effects with a non-authentication refusal;
+            // credential renewal is exercised by separate client tests.
+            stream
+                .write_all(
+                    b"HTTP/1.1 409 Conflict\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .unwrap();
+        }
         (listener, Some(batch))
     });
     let prepared = aos_hub_client::PreparedDirectPublication {
@@ -360,7 +393,7 @@ async fn exercise_retained_completions(invocation: Invocation) {
     let objects = prepared.publication.objects.iter().collect::<Vec<_>>();
 
     match invocation {
-        Invocation::AdmittedAdapter => {
+        Invocation::AdmittedAdapter | Invocation::OrdinaryPublication => {
             // Absolute ancestor admission intentionally refuses foreign sandbox
             // roots. Exercise the adapter with real reopened final-file custody;
             // the production entry still performs full options admission first.
@@ -375,18 +408,24 @@ async fn exercise_retained_completions(invocation: Invocation) {
             )
             .await
             .unwrap();
-            assert!(
-                upload_with_coordinator(
-                    coordinator,
-                    &prepared,
-                    &pinned.root,
-                    &pinned.request.objects,
-                    &objects,
-                    true
-                )
-                .await
-                .unwrap()
-            );
+            let result = upload_with_coordinator(
+                coordinator,
+                &prepared,
+                &pinned.root,
+                &pinned.request.objects,
+                &objects,
+                matches!(invocation, Invocation::AdmittedAdapter),
+            )
+            .await;
+            if matches!(invocation, Invocation::OrdinaryPublication) {
+                let error = result.unwrap_err();
+                assert_eq!(
+                    error.downcast_ref::<aos_transfer::direct_upload::DirectClientError>(),
+                    Some(&aos_transfer::direct_upload::DirectClientError::Blocked)
+                );
+            } else {
+                assert!(result.unwrap());
+            }
             let (_, batch) = worker.join().unwrap();
             assert_eq!(batch.unwrap().items, vec![expected_original]);
         }

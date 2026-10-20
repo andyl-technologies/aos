@@ -82,72 +82,91 @@ async fn upload_with_coordinator(
         );
     }
 
-    let mut pending = objects
-        .iter()
-        .copied()
-        .filter(|object| !object.verified && (!immutable_only || object.kind != "mutable_pointer"))
-        .peekable();
+    let has_pending_pointers = !immutable_only
+        && objects
+            .iter()
+            .any(|object| !object.verified && object.kind == "mutable_pointer");
     let mut staged = false;
-    while pending.peek().is_some() {
-        let mut files = Vec::new();
-        let mut budget = SourceWaveBudget::default();
-        while let Some(object) = pending.peek().copied() {
-            let byte_size = u64::try_from(object.byte_size)
-                .context("publication direct object size is invalid")?;
-            // Large descriptors do not retain whole-file body buffers. Reserve
-            // the actual fixed-width part catalogue and descriptor count.
-            if !budget.reserve(byte_size, coordinator.part_size())? {
-                break;
-            }
-            let input = declared
-                .get(object.path.as_str())
-                .copied()
-                .context("publication response introduced an undeclared direct object")?;
-            anyhow::ensure!(
-                input.sha256 == object.sha256
-                    && input.byte_size == object.byte_size
-                    && input.kind == object.kind
-                    && input.media_type == object.media_type,
-                "publication response changed a declared direct object"
-            );
-            let path = input.path.clone();
-            let source_root = root.try_clone()?;
-            let file =
-                tokio::task::spawn_blocking(move || open_publication_object(&source_root, &path))
-                    .await
-                    .context("publication source worker failed")??;
-            let source =
-                AdmittedSource::admit(file, byte_size, &object.sha256, coordinator.part_size())
-                    .await?;
-            files.push(DirectStageFile {
-                target: DirectUploadTarget::PublicationObject {
-                    publication_id: publication_id.to_owned(),
-                    surface_object_id: WireInteger::new(
-                        u64::try_from(object.object_id)
-                            .context("publication direct object ID is invalid")?,
-                    ),
-                    path: object.path.clone(),
-                },
-                source,
-                phase: if object.kind == "immutable" {
-                    DirectDependencyPhase::Content
-                } else {
-                    DirectDependencyPhase::Visibility
-                },
-            });
-            pending.next();
+    for mutable_pointers in [false, true] {
+        if mutable_pointers && !has_pending_pointers {
+            continue;
         }
-        coordinator.stage(files).await?;
-        staged = true;
-    }
-    if staged {
-        if immutable_only {
+
+        let mut pending = objects
+            .iter()
+            .copied()
+            .filter(|object| {
+                !object.verified && (object.kind == "mutable_pointer") == mutable_pointers
+            })
+            .peekable();
+        let mut staged_class = false;
+
+        while pending.peek().is_some() {
+            let mut files = Vec::new();
+            let mut budget = SourceWaveBudget::default();
+            while let Some(object) = pending.peek().copied() {
+                let byte_size = u64::try_from(object.byte_size)
+                    .context("publication direct object size is invalid")?;
+                // Large descriptors do not retain whole-file body buffers. Reserve
+                // the actual fixed-width part catalogue and descriptor count.
+                if !budget.reserve(byte_size, coordinator.part_size())? {
+                    break;
+                }
+                let input = declared
+                    .get(object.path.as_str())
+                    .copied()
+                    .context("publication response introduced an undeclared direct object")?;
+                anyhow::ensure!(
+                    input.sha256 == object.sha256
+                        && input.byte_size == object.byte_size
+                        && input.kind == object.kind
+                        && input.media_type == object.media_type,
+                    "publication response changed a declared direct object"
+                );
+                let path = input.path.clone();
+                let source_root = root.try_clone()?;
+                let file = tokio::task::spawn_blocking(move || {
+                    open_publication_object(&source_root, &path)
+                })
+                .await
+                .context("publication source worker failed")??;
+                let source =
+                    AdmittedSource::admit(file, byte_size, &object.sha256, coordinator.part_size())
+                        .await?;
+                files.push(DirectStageFile {
+                    target: DirectUploadTarget::PublicationObject {
+                        publication_id: publication_id.to_owned(),
+                        surface_object_id: WireInteger::new(
+                            u64::try_from(object.object_id)
+                                .context("publication direct object ID is invalid")?,
+                        ),
+                        path: object.path.clone(),
+                    },
+                    source,
+                    phase: if object.kind == "immutable" {
+                        DirectDependencyPhase::Content
+                    } else {
+                        DirectDependencyPhase::Visibility
+                    },
+                });
+                pending.next();
+            }
+            coordinator.stage(files).await?;
+            staged = true;
+            staged_class = true;
+        }
+
+        if staged_class && !mutable_pointers && (immutable_only || has_pending_pointers) {
+            // Native admits pointers only after every immutable dependency is
+            // committed. Stage verification alone cannot open that phase.
             coordinator
                 .finish_staged_content(Duration::from_secs(3600))
                 .await?;
-        } else {
-            coordinator.finish(Duration::from_secs(3600)).await?;
         }
+    }
+
+    if staged && !immutable_only {
+        coordinator.finish(Duration::from_secs(3600)).await?;
     }
     Ok(true)
 }
