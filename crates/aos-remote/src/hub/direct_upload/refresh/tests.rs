@@ -69,11 +69,24 @@ fn server(
     replies: Vec<(u16, Vec<u8>)>,
 ) -> (String, mpsc::Receiver<Vec<u8>>, thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());
     let (tx, rx) = mpsc::channel();
     let worker = thread::spawn(move || {
         for (status, reply) in replies {
-            let (mut stream, _) = listener.accept().unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            let (mut stream, _) = loop {
+                match listener.accept() {
+                    Ok(connection) => break connection,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        if std::time::Instant::now() >= deadline {
+                            return;
+                        }
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("accepting fixture request: {error}"),
+                }
+            };
             stream
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .unwrap();
@@ -103,6 +116,81 @@ fn server(
         }
     });
     (origin, rx, worker)
+}
+
+#[tokio::test]
+async fn discovery_unavailability_retries_identical_target_and_authorization() {
+    let expected = capabilities(now() + 600);
+    let (origin, requests, worker) = server(vec![
+        (503, b"private error body".to_vec()),
+        (200, encode_direct_control(&expected).unwrap()),
+    ]);
+    let hub = HubClient::connect_with_token(&origin, "owned-discovery-bearer").unwrap();
+
+    let result = DirectHubControl::new(&hub)
+        .unwrap()
+        .capabilities(&expected.target)
+        .await;
+    worker.join().unwrap();
+    let captured: Vec<_> = requests.into_iter().collect();
+
+    assert_eq!(result.unwrap(), expected);
+    assert_eq!(captured.len(), 2);
+    assert_eq!(captured[0], captured[1]);
+    let request = std::str::from_utf8(&captured[0]).unwrap();
+    assert!(request.starts_with("POST /aos.hub.v1.DirectUploadService/GetCapabilities "));
+    assert!(
+        request
+            .to_ascii_lowercase()
+            .contains("authorization: bearer owned-discovery-bearer")
+    );
+}
+
+#[tokio::test]
+async fn discovery_unavailability_stops_after_three_attempts() {
+    let expected = capabilities(now() + 600);
+    let mut replies = vec![(503, b"private error body".to_vec()); 3];
+    replies.push((200, encode_direct_control(&expected).unwrap()));
+    let (origin, requests, worker) = server(replies);
+    let hub = HubClient::connect_with_token(&origin, "owned-discovery-bearer").unwrap();
+
+    let result = DirectHubControl::new(&hub)
+        .unwrap()
+        .capabilities(&expected.target)
+        .await;
+    worker.join().unwrap();
+    let captured: Vec<_> = requests.into_iter().collect();
+
+    assert_eq!(result, Err(DirectClientError::ControlUnavailable));
+    assert_eq!(captured.len(), 3);
+    assert!(captured.windows(2).all(|pair| pair[0] == pair[1]));
+}
+
+#[tokio::test]
+async fn discovery_authorization_refusals_and_malformed_replies_are_not_retried() {
+    let expected = capabilities(now() + 600);
+    for (status, body, error) in [
+        (401, b"private denial".to_vec(), DirectClientError::Denied),
+        (403, b"private denial".to_vec(), DirectClientError::Denied),
+        (409, b"private refusal".to_vec(), DirectClientError::Blocked),
+        (
+            200,
+            b"{\"unexpected\":true}".to_vec(),
+            DirectClientError::Invalid,
+        ),
+    ] {
+        let (origin, requests, worker) = server(vec![(status, body)]);
+        let hub = HubClient::connect_with_token(&origin, "owned-discovery-bearer").unwrap();
+
+        let result = DirectHubControl::new(&hub)
+            .unwrap()
+            .capabilities(&expected.target)
+            .await;
+        worker.join().unwrap();
+
+        assert_eq!(result, Err(error));
+        assert_eq!(requests.into_iter().count(), 1);
+    }
 }
 
 #[tokio::test]

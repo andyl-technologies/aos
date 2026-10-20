@@ -50,6 +50,8 @@ use serde::{Serialize, de::DeserializeOwned};
 
 use super::HubClient;
 
+const CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Authenticated bounded Hub controls that never send application file bytes.
 #[derive(Clone)]
 pub struct DirectHubControl {
@@ -116,7 +118,7 @@ impl DirectHubControl {
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(30))
+            .timeout(CONTROL_TIMEOUT)
             .build()
             .map_err(|_| DirectClientError::ControlUnavailable)?;
         Ok(Self {
@@ -165,7 +167,23 @@ impl DirectHubControl {
         let request = DirectGetCapabilities {
             target: target.clone(),
         };
-        let response: DirectUploadCapabilities = self.call("GetCapabilities", &request).await?;
+        // Discovery is a read-only query. All attempts retain the same target
+        // and bearer and share the original control deadline.
+        let response: DirectUploadCapabilities = tokio::time::timeout(CONTROL_TIMEOUT, async {
+            let mut retries = 0;
+            loop {
+                let result = self.call("GetCapabilities", &request).await;
+                match result {
+                    Err(DirectClientError::ControlUnavailable) if retries < 2 => {
+                        retries += 1;
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                    result => return result,
+                }
+            }
+        })
+        .await
+        .map_err(|_| DirectClientError::ControlUnavailable)??;
         response
             .validate_for(target)
             .map_err(|_| DirectClientError::Invalid)?;
