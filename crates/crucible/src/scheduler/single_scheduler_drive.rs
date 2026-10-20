@@ -17,7 +17,20 @@ impl SingleScheduler {
             })
     }
 
-    pub(super) fn node_current_time(
+    /// Returns the node's settled scheduler time.
+    ///
+    /// Planning, the frontier, rendezvous and caps use this time. It may lie
+    /// beyond the node's actual clock after a bounded RUN settled through a
+    /// ceiling that no retirement could reach.
+    pub(super) fn node_scheduler_time(
+        &self,
+        node: &RuntimeSchedulerNode,
+    ) -> Result<SimInstant, SchedulerError> {
+        self.node_time_for_counter(node, node.settled)
+    }
+
+    /// Returns the node's actual clock: its last retirement or exact event.
+    pub(super) fn node_physical_time(
         &self,
         node: &RuntimeSchedulerNode,
     ) -> Result<SimInstant, SchedulerError> {
@@ -74,7 +87,7 @@ impl SingleScheduler {
         sequence: u64,
     ) -> Result<SharedTimelineKey, SchedulerError> {
         Ok(SharedTimelineKey {
-            virtual_time: self.node_current_time(node)?,
+            virtual_time: self.node_scheduler_time(node)?,
             node: node.id.clone(),
             sequence,
         })
@@ -384,22 +397,27 @@ impl SingleScheduler {
                 continue;
             }
 
-            let current_time = self.node_current_time(node)?;
-            if current_time != virtual_time {
+            // RFC-0010 SCHED-14: a node satisfies the rendezvous once it is
+            // settled through it with its actual clock at or below it. The
+            // record keeps that actual clock.
+            let settled_time = self.node_scheduler_time(node)?;
+            let actual_time = self.node_physical_time(node)?;
+            if settled_time != virtual_time || actual_time > virtual_time {
                 return Err(SchedulerError::BoundaryViolation {
                     message: format!(
-                        "scheduler {:?} rendezvous requires zero skew for {}:{:?}: current={} rendezvous={}",
+                        "scheduler {:?} rendezvous requires zero skew for {}:{:?}: settled={} actual={} rendezvous={}",
                         purpose,
                         node.id.node.name,
                         node.id.kind,
-                        current_time.ticks,
+                        settled_time.ticks,
+                        actual_time.ticks,
                         virtual_time.ticks
                     ),
                 });
             }
             nodes.push(SchedulerRendezvousNode {
                 node: node.id.clone(),
-                virtual_time: current_time,
+                virtual_time: actual_time,
             });
         }
 
@@ -447,7 +465,7 @@ impl SingleScheduler {
             };
             if has_finite_projection {
                 saw_time_limited_state = true;
-                let current_time = self.node_current_time(node)?;
+                let current_time = self.node_scheduler_time(node)?;
                 if current_time < self.time_limit {
                     return Ok(false);
                 }
@@ -527,7 +545,9 @@ impl SingleScheduler {
             }
         };
 
-        Ok(target_counter > node.counter)
+        // A RUN must settle strictly beyond the node's settled time; that
+        // keeps the settled frontier strictly increasing (SCHED-12 liveness).
+        Ok(target_counter > node.settled)
     }
 
     pub(super) fn advance_plan_draft(
@@ -546,7 +566,10 @@ impl SingleScheduler {
                 self.node_counter_for_time_ceil(selected_runtime_node, candidate.target_time)?
             }
         };
+        // The RUN starts from the node's actual clock, but planning bounds
+        // are relative to its settled scheduler time.
         let current_time = self.node_time_for_counter(selected_runtime_node, before)?;
+        let settled_time = self.node_scheduler_time(selected_runtime_node)?;
         let projected_target = self.node_time_for_counter(selected_runtime_node, target_counter)?;
         let ticks_per_counter_tick = NodeCounter { ticks: 1 }.to_virtual().ticks;
         let projection = SchedulerIcountProjection {
@@ -570,8 +593,8 @@ impl SingleScheduler {
             ));
         }
         if candidate.icount_rounding == SchedulerIcountRounding::ConservativeFloor
-            && target_counter == before
-            && current_time < candidate.target_time
+            && target_counter <= selected_runtime_node.settled
+            && settled_time < candidate.target_time
         {
             return Err(scheduler_unrepresentable_advance_error(
                 &selected_node,
@@ -580,7 +603,7 @@ impl SingleScheduler {
         }
         if projected_target > candidate.target_time {
             if let NetworkLookahead::Finite(duration) = selected_runtime_node.network_lookahead {
-                let network_target = current_time + duration;
+                let network_target = settled_time + duration;
                 if network_target > candidate.target_time && projected_target > network_target {
                     return Err(scheduler_ceiling_overshoot_error(
                         &selected_node,
@@ -667,7 +690,7 @@ impl SingleScheduler {
         rendezvous_cap: Option<SimInstant>,
         topology_activation_cap: Option<SimInstant>,
     ) -> Result<Option<AdvanceCandidate>, SchedulerError> {
-        let current_time = self.node_current_time(node)?;
+        let current_time = self.node_scheduler_time(node)?;
         let EffectiveHorizonProjection::Finite {
             target_time,
             quiescent_horizon,
@@ -778,7 +801,7 @@ impl SingleScheduler {
         &self,
         node: &RuntimeSchedulerNode,
     ) -> Result<SchedulerEffectiveClock, SchedulerError> {
-        let current_time = self.node_current_time(node)?;
+        let current_time = self.node_scheduler_time(node)?;
         let (effective_time, source) = match self.effective_node_activity(node) {
             SchedulerNodeActivity::Idle => match self.idle_wake_time(node)? {
                 Some(wake_time) if wake_time > current_time => {
@@ -1307,7 +1330,7 @@ impl SingleScheduler {
                 continue;
             }
 
-            let current_time = self.node_current_time(node)?;
+            let current_time = self.node_scheduler_time(node)?;
             if current_time > activation_time {
                 return Err(SchedulerError::BoundaryViolation {
                     message: format!(
@@ -1453,7 +1476,9 @@ impl SingleScheduler {
 
         let mut outcomes = Vec::with_capacity(ordered_runs.len());
         for (index, (_, _, run)) in ordered_runs.into_iter().enumerate() {
-            let reached = run.plan.ceiling.max_advance_icount;
+            // The authoritative model reaches every tick exactly, so its RUN
+            // lands on and settles its published ceiling.
+            let report = HostRunReport::exact(run.plan.ceiling.max_advance_icount);
             let applied_preemptions = run
                 .preemptions
                 .iter()
@@ -1461,7 +1486,7 @@ impl SingleScheduler {
                 .collect::<Vec<_>>();
             outcomes.push(staged.commit_prepared_host_run(
                 run,
-                reached,
+                report,
                 &applied_preemptions,
                 if index == 0 {
                     std::mem::take(&mut boundary_events)
@@ -1481,27 +1506,40 @@ impl SingleScheduler {
     }
 
     /// Commits one physically completed host RUN before later RUNs can emit.
+    ///
+    /// A settled RUN keeps its published ceiling as its scheduler endpoint
+    /// while the node adopts the actual clock it reported (RFC-0010 TIME-30:
+    /// the reached event is settlement through the ceiling). An earlier
+    /// authenticated stop ends the RUN at that stop.
     pub(super) fn commit_prepared_host_run(
         &mut self,
         mut run: PreparedHostRun,
-        reached: u64,
+        report: HostRunReport,
         applied_preemptions: &[PreemptionDecision],
         mut boundary_events: Vec<ScheduledEvent>,
         control_applications: Vec<SchedulerControlApplication>,
     ) -> Result<QuantumOutcome, SchedulerError> {
-        if reached < run.plan.before.ticks || reached > run.plan.ceiling.max_advance_icount {
+        let HostRunReport {
+            reached,
+            settled_through,
+            idle_parked,
+        } = report;
+        let ceiling = run.plan.ceiling.max_advance_icount;
+        if reached < run.plan.before.ticks
+            || reached > ceiling
+            || (settled_through != reached && settled_through != ceiling)
+        {
             return Err(SchedulerError::BoundaryViolation {
                 message: format!(
-                    "host RUN for `{}` reached {} outside published window {}..={}",
+                    "host RUN for `{}` reached {} settled through {} outside published window {}..={}",
                     run.plan.node.node.name,
                     reached,
+                    settled_through,
                     run.plan.before.ticks,
-                    run.plan.ceiling.max_advance_icount,
+                    ceiling,
                 ),
             });
         }
-        let reached_time = self
-            .node_time_for_counter(&self.nodes[run.plan.index], NodeCounter { ticks: reached })?;
         if applied_preemptions
             .iter()
             .enumerate()
@@ -1522,21 +1560,32 @@ impl SingleScheduler {
         }
         run.preemptions
             .retain(|preemption| applied_preemptions.contains(&preemption.decision));
-        if reached != run.plan.target_counter {
+        if settled_through != run.plan.target_counter {
+            let settled_time = self.node_time_for_counter(
+                &self.nodes[run.plan.index],
+                NodeCounter {
+                    ticks: settled_through,
+                },
+            )?;
             run.plan.subdivision =
-                self.planned_run_subdivision(&run.plan.node, run.plan.before, reached)?;
-            run.plan.target_counter = reached;
-            run.plan.projected_target_time = reached_time;
+                self.planned_run_subdivision(&run.plan.node, run.plan.before, settled_through)?;
+            run.plan.target_counter = settled_through;
+            run.plan.projected_target_time = settled_time;
         }
 
         let selected_node = run.plan.node.clone();
         let before = run.plan.before;
-        let (after, after_time, yielded_before_advance) =
-            self.advance_node_after_yield(&run.plan)?;
+        let settled_before = self.nodes[run.plan.index].settled;
+        let endpoint = self.advance_node_after_yield(&run.plan, NodeCounter { ticks: reached })?;
+        self.nodes[run.plan.index].idle_parked = idle_parked && endpoint.actual < endpoint.settled;
+        let after_time = endpoint.settled_time;
+        // RESOLVE at the settled endpoint. Settlement proved no native exact
+        // event inside the gap; scheduler-delivered inputs due there reach
+        // the node through its inbound transport at their exact tick.
         let frame_deliveries =
             resolve_due_scheduled_events(&mut self.pending_events, &selected_node, after_time)?;
         let (device_events, mut device_decisions) =
-            self.resolve_device_completions(&selected_node, after.ticks)?;
+            self.resolve_device_completions(&selected_node, endpoint.settled.ticks)?;
         boundary_events.extend(
             self.settled_fixed_input_events
                 .iter()
@@ -1569,9 +1618,11 @@ impl SingleScheduler {
         self.last_advance = Some(NodeAdvance {
             node: selected_node.clone(),
             before,
-            after,
+            after: endpoint.actual,
+            settled_before,
+            settled_after: endpoint.settled,
             ceiling: run.plan.ceiling.clone(),
-            yielded_before_advance,
+            yielded_before_advance: endpoint.yielded_before_advance,
         });
         self.yield_to_control_inbox();
         self.commit_control_applications(control_applications);
@@ -1686,9 +1737,17 @@ impl SingleScheduler {
 
         let selected_node = plan.node.clone();
         let before = plan.before;
+        let settled_before = self.nodes[plan.index].settled;
         let preemptions =
             self.planned_preemptions_for_run(&selected_node, before, &plan.ceiling)?;
-        let (after, after_time, yielded_before_advance) = self.advance_node_after_yield(&plan)?;
+        // The authoritative model lands exactly on its published ceiling.
+        let endpoint = self.advance_node_after_yield(
+            &plan,
+            NodeCounter {
+                ticks: plan.target_counter,
+            },
+        )?;
+        let after_time = endpoint.settled_time;
         // RESOLVE phase: collect due events for the node that just advanced.
         let frame_deliveries =
             resolve_due_scheduled_events(&mut self.pending_events, &selected_node, after_time)?;
@@ -1698,7 +1757,7 @@ impl SingleScheduler {
         // minting their sequence from the owned counter on the LIVE RESOLVE path
         // ([SCHED-18]), and append the fault decisions they drew ([SCHED-30]).
         let (device_events, device_decisions) =
-            self.resolve_device_completions(&selected_node, after.ticks)?;
+            self.resolve_device_completions(&selected_node, endpoint.settled.ticks)?;
         // Order (frame ++ device) deliveries by the section 8.6 key, keeping the
         // control events prefixed exactly as the no-device path does ([SCHED-33]).
         resolved_events.extend(merge_node_deliveries(frame_deliveries, device_events));
@@ -1727,9 +1786,11 @@ impl SingleScheduler {
         self.last_advance = Some(NodeAdvance {
             node: selected_node.clone(),
             before,
-            after,
+            after: endpoint.actual,
+            settled_before,
+            settled_after: endpoint.settled,
             ceiling: plan.ceiling.clone(),
-            yielded_before_advance,
+            yielded_before_advance: endpoint.yielded_before_advance,
         });
         // STEP yield phase: expose the control inbox before the next PICK.
         self.yield_to_control_inbox();
@@ -1989,10 +2050,18 @@ impl SingleScheduler {
         position.draws = position.draws.saturating_add(1);
     }
 
+    /// Commits one RUN endpoint after the scheduler lock is released.
+    ///
+    /// `plan.target_counter` is the settled endpoint: the ceiling of a settled
+    /// RUN, or the stop of an earlier authenticated pause. `reached` is the
+    /// node's actual clock, at or below that endpoint. The node adopts both;
+    /// every scheduler consequence (exact-local clearing, quiescence and the
+    /// returned time) uses the settled endpoint.
     pub(super) fn advance_node_after_yield(
         &mut self,
         plan: &AdvancePlan,
-    ) -> Result<(NodeCounter, SimInstant, bool), SchedulerError> {
+        reached: NodeCounter,
+    ) -> Result<AdvancedNodeEndpoint, SchedulerError> {
         if self.lock_held {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from("scheduler lock spans node advance"),
@@ -2000,24 +2069,35 @@ impl SingleScheduler {
         }
         if plan.target_counter < plan.before.ticks
             || plan.target_counter > plan.ceiling.max_advance_icount
+            || reached < plan.before
+            || reached.ticks > plan.target_counter
         {
             return Err(SchedulerError::BoundaryViolation {
                 message: format!(
-                    "RUN endpoint for {}:{:?} is outside its published window: before={} reached={} ceiling={}",
+                    "RUN endpoint for {}:{:?} is outside its published window: before={} reached={} settled={} ceiling={}",
                     plan.node.node.name,
                     plan.node.kind,
                     plan.before.ticks,
+                    reached.ticks,
                     plan.target_counter,
                     plan.ceiling.max_advance_icount
                 ),
             });
         }
 
-        let after = NodeCounter {
+        let settled_endpoint = NodeCounter {
             ticks: plan.target_counter,
         };
-        self.nodes[plan.index].counter = after;
-        let after_time = self.node_time_for_counter(&self.nodes[plan.index], after)?;
+        self.reject_native_event_inside_settled_gap(plan, reached, settled_endpoint)?;
+        let node = &mut self.nodes[plan.index];
+        node.counter = reached;
+        // A host commit re-derives this from its physical stop afterwards.
+        node.idle_parked = false;
+        // An earlier pause can stop at a clock the node had already settled
+        // past; settlement never moves backwards.
+        node.settled = node.settled.max(settled_endpoint);
+        let settled = node.settled;
+        let after_time = self.node_time_for_counter(&self.nodes[plan.index], settled)?;
         if self.nodes[plan.index]
             .exact_local_event
             .virtual_time()
@@ -2050,7 +2130,59 @@ impl SingleScheduler {
             }
         }
 
-        Ok((after, after_time, true))
+        Ok(AdvancedNodeEndpoint {
+            actual: reached,
+            settled,
+            settled_time: after_time,
+            yielded_before_advance: true,
+        })
+    }
+
+    /// Refuses a settled gap that skips a backend-native exact deadline.
+    ///
+    /// A backend settles `(reached, settled]` only after proving that no
+    /// retirement and no exact event lies inside it (TIME-4). A native timer
+    /// the scheduler knows inside that gap therefore means the backend skipped
+    /// an exact event. Scheduler-delivered inputs are not native: they are
+    /// resolved at the settled endpoint and reach the node through its
+    /// inbound transport at their exact tick.
+    fn reject_native_event_inside_settled_gap(
+        &self,
+        plan: &AdvancePlan,
+        reached: NodeCounter,
+        settled: NodeCounter,
+    ) -> Result<(), SchedulerError> {
+        if reached >= settled {
+            return Ok(());
+        }
+        let node = &self.nodes[plan.index];
+        let reached_time = self.node_time_for_counter(node, reached)?;
+        let settled_time = self.node_time_for_counter(node, settled)?;
+        let native_timer = match node.exact_local_event {
+            ExactLocalEvent::TimerDeadline { virtual_time } => Some(virtual_time),
+            _ => None,
+        };
+        let skipped = native_timer
+            .into_iter()
+            .chain(
+                node.vcpu_idle_states
+                    .iter()
+                    .filter_map(|state| state.next_deadline),
+            )
+            .find(|deadline| *deadline > reached_time && *deadline <= settled_time);
+        if let Some(deadline) = skipped {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "settled RUN for {}:{:?} skipped native deadline {} inside ({}, {}]",
+                    plan.node.node.name,
+                    plan.node.kind,
+                    deadline.ticks,
+                    reached_time.ticks,
+                    settled_time.ticks
+                ),
+            });
+        }
+        Ok(())
     }
 
     pub(super) fn stalled_active_node(&self) -> Option<&RuntimeSchedulerNode> {

@@ -139,7 +139,7 @@ crucible.execution.signal-trace-manifest|crates/crucible/src/model/fault_signal/
 crucible.execution.signal-trace-chunk|crates/crucible/src/model/fault_signal/trace.rs|magic|CHUNK_MAGIC
 crucible.execution.failure-triage-replay-evidence|crates/crucible/src/model/failure/replay_evidence.rs|number|FAILURE_TRIAGE_REPLAY_EVIDENCE_SCHEMA_VERSION
 crucible.execution.host-assertion-continuation|crates/crucible/src/trigger/assertions.rs|magic|HOST_ASSERTION_CHECKPOINT_MAGIC
-crucible.execution.single-scheduler-continuation|crates/crucible/src/scheduler/checkpoint.rs|magic|crucible.single-scheduler-continuation.v10
+crucible.execution.single-scheduler-continuation|crates/crucible/src/scheduler/checkpoint.rs|magic|crucible.single-scheduler-continuation.v11
 crucible.execution.device-scheduling-subnode|crates/crucible/src/device_subnode/checkpoint.rs|magic|crucible.device-scheduling-subnode.v3
 crucible.execution.scenario-selectable-component|crates/crucible/src/model/scenario_selectables.rs|number|SCENARIO_SELECTABLE_VERSION
 crucible.execution.fault-adapter-checkpoint|crates/crucible/src/model/fault_signal/adapter_runtime.rs|number|ADAPTER_CHECKPOINT_VERSION

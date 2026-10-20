@@ -149,7 +149,7 @@ fn foreign_controller_and_changed_world_refuse_the_original_owner() {
     assert!(fork.is_retained());
     assert!(fork.current(&scheduler, &prepared).is_err());
     assert!(fork.prepare(&scheduler, observation).is_err());
-    scheduler.nodes[0].counter = NodeCounter { ticks: 1 };
+    scheduler.nodes[0].set_exact_clock(NodeCounter { ticks: 1 });
     assert!(controller.current(&scheduler, &prepared).is_err());
     assert!(controller.is_retained());
 }

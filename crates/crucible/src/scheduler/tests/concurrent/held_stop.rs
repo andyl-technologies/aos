@@ -150,6 +150,7 @@ impl ConcurrentSimulationBackend for GuestStopBackend {
                     },
                 };
                 completed.step.reached = pause;
+                completed.step.settled_through = pause;
                 completed.step.physical_stop = cause;
                 completed
                     .step

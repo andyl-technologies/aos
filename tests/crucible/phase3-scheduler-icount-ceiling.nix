@@ -78,7 +78,7 @@
       }
       {
         label = "RUN plan rejects positive zero-progress windows";
-        needle = "&& target_counter == before";
+        needle = "&& target_counter <= selected_runtime_node.settled";
       }
       {
         label = "equal-target selection requires representable progress";

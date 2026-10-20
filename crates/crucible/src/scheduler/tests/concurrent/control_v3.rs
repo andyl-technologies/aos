@@ -396,7 +396,7 @@ fn control_v3_strict_delivery_cap_uses_shared_time_and_rebased_counter_floor() {
             .iter_mut()
             .find(|runtime| runtime.id.node.name == node)
             .expect("fixture node exists");
-        runtime.counter = NodeCounter { ticks: raw };
+        runtime.set_exact_clock(NodeCounter { ticks: raw });
         runtime.time_mapping = NodeTimeMapping {
             anchor_counter: runtime.counter,
             anchor_time: SimInstant { ticks: logical },

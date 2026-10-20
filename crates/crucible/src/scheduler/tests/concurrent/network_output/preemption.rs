@@ -37,7 +37,13 @@ fn retained_future_command_survives_a_new_control_cap_without_authorizing_a_repl
     assert_eq!(first.authorized_preemption_horizon, 100);
     assert!(first.preemptions.is_empty());
     scheduler
-        .commit_prepared_host_run(first.clone(), 30, &[], Vec::new(), Vec::new())
+        .commit_prepared_host_run(
+            first.clone(),
+            HostRunReport::exact(30),
+            &[],
+            Vec::new(),
+            Vec::new(),
+        )
         .unwrap_or_else(|error| panic!("catch-up should commit at30: {error}"));
     scheduler
         .set_signal_fault_wakeup(Some(40))
@@ -63,7 +69,13 @@ fn retained_future_command_survives_a_new_control_cap_without_authorizing_a_repl
     assert_eq!(capped.authorized_preemption_horizon, 100);
     assert!(capped.preemptions.is_empty());
     scheduler
-        .commit_prepared_host_run(capped.clone(), 40, &[], Vec::new(), Vec::new())
+        .commit_prepared_host_run(
+            capped.clone(),
+            HostRunReport::exact(40),
+            &[],
+            Vec::new(),
+            Vec::new(),
+        )
         .unwrap_or_else(|error| panic!("control cap should commit at40: {error}"));
     assert_eq!(
         scheduler.preemption_requests.as_slice(),
@@ -89,7 +101,7 @@ fn retained_future_command_survives_a_new_control_cap_without_authorizing_a_repl
     scheduler
         .commit_prepared_host_run(
             resumed,
-            80,
+            HostRunReport::exact(80),
             std::slice::from_ref(&command),
             Vec::new(),
             Vec::new(),

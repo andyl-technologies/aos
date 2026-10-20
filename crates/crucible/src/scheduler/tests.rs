@@ -41,6 +41,8 @@ mod production_backend;
 mod run_admission;
 #[path = "tests/sealed_event_log.rs"]
 mod sealed_event_log;
+#[path = "tests/settled_bounds.rs"]
+mod settled_bounds;
 
 #[test]
 fn pending_network_boundary_release_settles_before_a_far_quantum() {

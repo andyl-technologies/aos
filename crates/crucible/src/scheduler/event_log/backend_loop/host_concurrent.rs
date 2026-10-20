@@ -353,6 +353,8 @@ where
             }
             // Physical completion order and registration order are not PICK
             // order. Release equal-time evidence by canonical node identity.
+            // A completed RUN publishes at its settled endpoint, the scheduler
+            // time it adopts; an output stop settles exactly where it stopped.
             let next = held_runs
                 .iter()
                 .map(|(node, held)| {
@@ -360,7 +362,7 @@ where
                         .backend_network_output_time(
                             node,
                             Icount {
-                                retired: held.completed.step.reached.ticks,
+                                retired: held.completed.step.settled_through.ticks,
                             },
                         )
                         .map(|at| (at, node.clone()))
@@ -396,7 +398,7 @@ where
                     continue;
                 }
                 let current = staged_scheduler
-                    .node_current_time(&staged_scheduler.nodes[index])
+                    .node_scheduler_time(&staged_scheduler.nodes[index])
                     .map_err(|error| self.poison_continuation(error))?;
                 if current.ticks >= next_time.ticks {
                     continue;
@@ -481,13 +483,17 @@ where
                     continue;
                 }
                 let current = staged_scheduler
-                    .node_current_time(runtime)
+                    .node_scheduler_time(runtime)
                     .map_err(|error| self.poison_continuation(error))?;
                 let before = runtime.counter;
+                let settled = runtime.settled;
                 if current.ticks < next_time.ticks {
                     refresh_held_host_run_boundary(&mut staged_scheduler, &initial_topology)
                         .map_err(|error| self.poison_continuation(error))?;
-                    let run = if before.ticks < original.plan.target_counter {
+                    // Only an earlier authenticated stop leaves part of the
+                    // original RUN unsettled. A settled RUN whose clock stopped
+                    // below its ceiling has no remainder to republish.
+                    let run = if settled.ticks < original.plan.target_counter {
                         Some(
                             staged_scheduler
                                 .prepare_host_run_continuation(original, before)
@@ -707,6 +713,7 @@ where
                 }));
             }
             let reached = completed.step.reached.ticks;
+            let report = HostRunReport::from_step(&completed.step);
             let stop_kind = HeldHostStopKind::from_physical_stop(completed.step.physical_stop);
             let stop_node = run.plan.node.clone();
             let stop_index = run.plan.index;
@@ -731,7 +738,7 @@ where
             let outcome = staged_scheduler
                 .commit_prepared_host_run(
                     run,
-                    reached,
+                    report,
                     &completed.step.applied_preemptions,
                     if published.is_empty() {
                         std::mem::take(&mut boundary_events)

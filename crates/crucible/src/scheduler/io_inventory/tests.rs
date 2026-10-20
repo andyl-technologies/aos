@@ -290,7 +290,7 @@ fn pending_origin_ledger_survives_repeated_restore_and_rejects_prior_schema() {
     let (mut scheduler, queue, pipeline) = fixture();
     ok(scheduler.import_initial_io_inventory(observation(&scheduler, &queue, &pipeline)));
     let bytes = ok(ok(scheduler.checkpoint()).canonical_bytes());
-    let current = b"crucible.single-scheduler-continuation.v10\0";
+    let current = b"crucible.single-scheduler-continuation.v11\0";
     assert!(bytes.starts_with(current));
 
     for _ in 0..2 {
@@ -300,7 +300,7 @@ fn pending_origin_ledger_survives_repeated_restore_and_rejects_prior_schema() {
         ok(restored.import_initial_io_inventory(observation(&restored, &queue, &pipeline)));
         assert_eq!(restored.pending_events, scheduler.pending_events);
     }
-    for version in ["4", "5", "6", "7", "8", "9"] {
+    for version in ["4", "5", "6", "7", "8", "9", "10"] {
         let retired = [
             format!("crucible.single-scheduler-continuation.v{version}\0").as_bytes(),
             &bytes[current.len()..],
@@ -678,7 +678,13 @@ fn published_fixed_input_history_is_committed_once_by_the_later_semantic_run() {
     ));
     let run = prepared.runs[0].clone();
     let reached = run.plan.target_counter;
-    let outcome = ok(scheduler.commit_prepared_host_run(run, reached, &[], Vec::new(), Vec::new()));
+    let outcome = ok(scheduler.commit_prepared_host_run(
+        run,
+        HostRunReport::exact(reached),
+        &[],
+        Vec::new(),
+        Vec::new(),
+    ));
 
     assert_eq!(outcome.resolved_events, settled);
     assert!(scheduler.settled_fixed_input_events.is_empty());

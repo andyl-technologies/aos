@@ -270,7 +270,7 @@ fn run_seed(seed: u64, coverage: &mut Coverage) {
         if choice < 45 {
             let completions = draw_completions(&mut rng, &reference, source_node, tick);
             let before = scheduler.imported_io.clone();
-            scheduler.nodes[0].counter = NodeCounter { ticks: tick };
+            scheduler.nodes[0].set_exact_clock(NodeCounter { ticks: tick });
             let accepted = scheduler
                 .import_initial_io_inventory(inventories.at(tick, completions.clone()))
                 .is_ok();
@@ -322,11 +322,11 @@ fn run_seed(seed: u64, coverage: &mut Coverage) {
             // A regressed stopped tick is refused even when it replays nothing.
             let regressed = tick - 1 - rng.below(tick);
             let before = scheduler.imported_io.clone();
-            scheduler.nodes[0].counter = NodeCounter { ticks: regressed };
+            scheduler.nodes[0].set_exact_clock(NodeCounter { ticks: regressed });
             let refused = scheduler
                 .import_initial_io_inventory(inventories.at(regressed, Vec::new()))
                 .is_err();
-            scheduler.nodes[0].counter = NodeCounter { ticks: tick };
+            scheduler.nodes[0].set_exact_clock(NodeCounter { ticks: tick });
 
             let expected = !reference.import(regressed, &[]);
             assert_eq!(refused, expected, "seed {seed} step {step} regression");
@@ -380,7 +380,7 @@ fn deliver_and_publish(
         src_node: inventories.source_node(),
         seq,
     };
-    scheduler.nodes[0].counter = NodeCounter { ticks: tick };
+    scheduler.nodes[0].set_exact_clock(NodeCounter { ticks: tick });
     ok(scheduler.import_initial_io_inventory(inventories.at(tick, vec![reply(physical, vec![7])])));
 
     let index = scheduler
@@ -428,12 +428,12 @@ fn pruned_delivery_cannot_return_through_a_regressed_observation() {
     assert!(ledger(&scheduler).is_some_and(|ledger| ledger.get(&pruned).is_none()));
 
     let before = scheduler.imported_io.clone();
-    scheduler.nodes[0].counter = NodeCounter { ticks: 0 };
+    scheduler.nodes[0].set_exact_clock(NodeCounter { ticks: 0 });
     let replay = inventories.at(0, vec![reply(pruned, vec![7])]);
     assert!(scheduler.import_initial_io_inventory(replay).is_err());
     assert_eq!(scheduler.imported_io, before);
 
-    scheduler.nodes[0].counter = NodeCounter { ticks: 20 };
+    scheduler.nodes[0].set_exact_clock(NodeCounter { ticks: 20 });
     let Err(SchedulerError::BoundaryViolation { message }) =
         scheduler.record_imported_io_publication(&first)
     else {
@@ -456,7 +456,7 @@ fn restored_ledger_refuses_a_published_delivery_below_the_floor() {
     // floor past the published delivery without that import is non-canonical.
     // The published reply also leaves the queue, so only the retained ledger
     // entry contradicts the floor.
-    scheduler.nodes[0].counter = NodeCounter { ticks: 10 };
+    scheduler.nodes[0].set_exact_clock(NodeCounter { ticks: 10 });
     if let Some(node) = scheduler.imported_io.get_mut(&id(NODE)) {
         node.observed = NodeCounter { ticks: 10 };
         node.queues

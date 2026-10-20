@@ -137,7 +137,13 @@ fn catchup_cap_preserves_natural_command_horizon_and_committed_prefix_remints() 
     let original = first.admission.clone();
 
     scheduler
-        .commit_prepared_host_run(first.clone(), 10, &[], Vec::new(), Vec::new())
+        .commit_prepared_host_run(
+            first.clone(),
+            HostRunReport::exact(10),
+            &[],
+            Vec::new(),
+            Vec::new(),
+        )
         .expect("model physical receipt commits");
     let next = scheduler
         .prepare_host_catchup_run_after(&first, SimInstant { ticks: 20 })

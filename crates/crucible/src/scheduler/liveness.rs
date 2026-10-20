@@ -89,7 +89,9 @@ pub fn check_scheduler_liveness(
 
         match &scheduler.last_advance {
             Some(advance) => {
-                if advance.after <= advance.before {
+                // Progress is settled scheduler time: a bounded RUN may retire
+                // nothing yet still settle its node through a later ceiling.
+                if advance.settled_after <= advance.settled_before {
                     return Err(SchedulerLivenessError::Livelock {
                         quantum: scheduler.quanta().saturating_sub(1),
                         node: advance.node.clone(),
@@ -138,7 +140,18 @@ pub fn check_scheduler_liveness(
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct RuntimeSchedulerNode {
     pub(super) id: SchedulerNodeId,
+    // The node's actual clock: its last retirement or exact time-only event.
     pub(super) counter: NodeCounter,
+    // Scheduler time, never below `counter`. A RUN ceiling is an upper bound
+    // (RFC-0010 SCHED-12): the backend may stop below it and attest that no
+    // retirement or exact event remains in `(counter, settled]`. The frontier,
+    // rendezvous, batching and every scheduler cap read this value.
+    pub(super) settled: NodeCounter,
+    // The last completed RUN parked an idle node below its settled ceiling.
+    // Its next output is not before `settled`, so lookahead may use that
+    // ceiling as the producer clock (SCHED-28); a runnable producer is held
+    // to its actual clock.
+    pub(super) idle_parked: bool,
     pub(super) time_mapping: NodeTimeMapping,
     // Original scenario visibility survives later backend-counter rebases.
     pub(super) ready_point_mapping: NodeTimeMapping,
@@ -165,11 +178,23 @@ impl RuntimeSchedulerNode {
     }
 }
 
+#[cfg(test)]
+impl RuntimeSchedulerNode {
+    /// Places the node exactly at `counter`, settled through that clock.
+    pub(super) fn set_exact_clock(&mut self, counter: NodeCounter) {
+        self.counter = counter;
+        self.settled = counter;
+        self.idle_parked = false;
+    }
+}
+
 impl From<SchedulerScenarioNode> for RuntimeSchedulerNode {
     fn from(node: SchedulerScenarioNode) -> Self {
         Self {
             id: node.id,
             counter: node.counter,
+            settled: node.counter,
+            idle_parked: false,
             time_mapping: NodeTimeMapping::default(),
             ready_point_mapping: NodeTimeMapping::default(),
             last_checkpoint: None,
@@ -384,7 +409,52 @@ pub(super) struct NodeAdvance {
     pub(super) node: SchedulerNodeId,
     pub(super) before: NodeCounter,
     pub(super) after: NodeCounter,
+    pub(super) settled_before: NodeCounter,
+    pub(super) settled_after: NodeCounter,
     pub(super) ceiling: SchedulerRunCeilingPublication,
+    pub(super) yielded_before_advance: bool,
+}
+
+/// Physical endpoint of one completed host RUN, in node counter ticks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct HostRunReport {
+    // The node's actual clock when the backend returned control.
+    pub(super) reached: u64,
+    // The published ceiling for a settled RUN, otherwise `reached`.
+    pub(super) settled_through: u64,
+    // The backend parked an idle node below its settled ceiling.
+    pub(super) idle_parked: bool,
+}
+
+impl HostRunReport {
+    /// Reports a RUN whose clock stopped exactly at its settled endpoint.
+    pub(super) const fn exact(tick: u64) -> Self {
+        Self {
+            reached: tick,
+            settled_through: tick,
+            idle_parked: false,
+        }
+    }
+
+    /// Projects a completed backend observation onto node counter ticks.
+    pub(super) fn from_step(step: &crate::StepObservation) -> Self {
+        Self {
+            reached: step.reached.ticks,
+            settled_through: step.settled_through.ticks,
+            idle_parked: step.physical_stop == crate::BackendPhysicalStop::Idle,
+        }
+    }
+}
+
+/// Node state adopted by one committed RUN endpoint.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct AdvancedNodeEndpoint {
+    // The node's actual clock after the RUN.
+    pub(super) actual: NodeCounter,
+    // The node's settled scheduler counter after the RUN.
+    pub(super) settled: NodeCounter,
+    // Scheduler time of `settled`; RESOLVE and EMIT use this boundary.
+    pub(super) settled_time: SimInstant,
     pub(super) yielded_before_advance: bool,
 }
 
@@ -444,10 +514,12 @@ pub(super) fn frontier_for(
         if inactive && previous_frontier.is_some() {
             continue;
         }
+        // The frontier is the minimum settled time: a node stopped below its
+        // settled ceiling holds no unresolved work before that ceiling.
         let virtual_time = if node.id.kind == SchedulingNodeKind::Vm {
-            node.time_mapping.logical_time(node.counter)?
+            node.time_mapping.logical_time(node.settled)?
         } else {
-            node.counter.to_virtual()
+            node.settled.to_virtual()
         };
         let minimum = if inactive {
             &mut initial_inactive

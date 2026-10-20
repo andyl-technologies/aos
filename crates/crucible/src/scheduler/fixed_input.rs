@@ -119,7 +119,7 @@ impl SingleScheduler {
                     "fixed input targets a different scheduler node kind",
                 ));
             }
-            let now = self.node_time_for_counter(node, node.counter)?;
+            let now = self.node_scheduler_time(node)?;
             if event.key.virtual_time().ticks < now.ticks {
                 return Err(fixed_input_error(
                     "fixed input contains a past unresolved delivery",

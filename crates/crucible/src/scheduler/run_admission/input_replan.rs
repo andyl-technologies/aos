@@ -50,6 +50,8 @@ impl SingleScheduler {
             // mapping or configuration is advanced by the physical report.
             let mut projection = self.clone();
             projection.nodes[run.plan.index].counter = reached;
+            let projected_settled = projection.nodes[run.plan.index].settled.max(reached);
+            projection.nodes[run.plan.index].settled = projected_settled;
             let projected_node = &projection.nodes[run.plan.index];
             let candidate = projection
                 .advance_candidate(

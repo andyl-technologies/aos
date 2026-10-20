@@ -9,7 +9,8 @@ mod event_log_continuation;
 pub use event_log_continuation::CheckpointEventLogEntries;
 use event_log_continuation::{EventLogWire, restore_event_log};
 
-const MAGIC: &[u8] = b"crucible.single-scheduler-continuation.v10\0";
+// v11 retains each node's settled scheduler counter beside its actual clock.
+const MAGIC: &[u8] = b"crucible.single-scheduler-continuation.v11\0";
 /// Maximum canonical byte length of one complete single-scheduler continuation.
 pub const MAX_SINGLE_SCHEDULER_CHECKPOINT_BYTES: usize =
     MAX_SINGLE_SCHEDULER_CHECKPOINT_PAYLOAD_BYTES + MAGIC.len();
@@ -67,6 +68,9 @@ struct SingleSchedulerWire {
 struct RuntimeNodeWire {
     id: SchedulerNodeId,
     counter: u64,
+    // Settled scheduler counter; never below `counter`.
+    settled: u64,
+    idle_parked: bool,
     time_mapping: NodeTimeMapping,
     ready_point_mapping: NodeTimeMapping,
     last_checkpoint: Option<SchedulerNodeCheckpoint>,
@@ -210,6 +214,8 @@ impl From<&RuntimeSchedulerNode> for RuntimeNodeWire {
         Self {
             id: node.id.clone(),
             counter: node.counter.ticks,
+            settled: node.settled.ticks,
+            idle_parked: node.idle_parked,
             time_mapping: node.time_mapping,
             ready_point_mapping: node.ready_point_mapping,
             last_checkpoint: node.last_checkpoint.clone(),
@@ -363,6 +369,7 @@ impl SingleSchedulerCheckpoint {
             retained.id.node == *node && retained.id.kind == SchedulingNodeKind::Vm
         })?;
         (retained.counter == retained.time_mapping.anchor_counter.ticks
+            && retained.settled == retained.counter
             && retained.time_mapping.anchor_time == SimInstant::EPOCH)
             .then_some(NodeCounter {
                 ticks: retained.counter,
@@ -651,6 +658,9 @@ impl SingleSchedulerCheckpoint {
 fn validate_wire(wire: &SingleSchedulerWire) -> Result<(), SingleSchedulerCheckpointError> {
     if wire.quantum_budget == 0
         || wire.nodes.windows(2).any(|pair| pair[0].id >= pair[1].id)
+        || wire.nodes.iter().any(|node| {
+            node.settled < node.counter || (node.idle_parked && node.settled == node.counter)
+        })
         || wire
             .device_state
             .windows(2)
@@ -751,6 +761,10 @@ fn restore_nodes(
         node.counter = NodeCounter {
             ticks: restored.counter,
         };
+        node.settled = NodeCounter {
+            ticks: restored.settled,
+        };
+        node.idle_parked = restored.idle_parked;
         node.time_mapping = restored.time_mapping;
         node.last_checkpoint = restored.last_checkpoint.clone();
         node.activity = restored.activity;
@@ -937,5 +951,91 @@ mod epoch_ready_point_tests {
             None,
         );
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod settled_counter_tests {
+    use super::*;
+
+    fn pair() -> SingleScheduler {
+        let nodes = ["a", "b"]
+            .into_iter()
+            .map(|name| SchedulerScenarioNode {
+                id: SchedulerNodeId {
+                    node: NodeId {
+                        name: String::from(name),
+                    },
+                    kind: SchedulingNodeKind::Vm,
+                },
+                counter: NodeCounter { ticks: 0 },
+                activity: SchedulerNodeActivity::Runnable,
+                network_lookahead: NetworkLookahead::Infinite,
+                exact_local_event: ExactLocalEvent::NoArmedTimer,
+            })
+            .collect();
+        SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
+            "settled-counter-checkpoint",
+            8,
+            SimInstant { ticks: 1_000 },
+            nodes,
+            Vec::new(),
+        ))
+        .unwrap_or_else(|error| panic!("checkpoint fixture: {error}"))
+    }
+
+    #[test]
+    fn continuation_retains_settled_time_beside_the_actual_clock() {
+        let mut scheduler = pair();
+        scheduler.nodes[0].counter = NodeCounter { ticks: 61 };
+        scheduler.nodes[0].settled = NodeCounter { ticks: 100 };
+        scheduler.nodes[0].idle_parked = true;
+        scheduler.nodes[1].counter = NodeCounter { ticks: 100 };
+        scheduler.nodes[1].settled = NodeCounter { ticks: 100 };
+        let bytes = scheduler
+            .checkpoint()
+            .and_then(|checkpoint| checkpoint.canonical_bytes())
+            .unwrap_or_else(|error| panic!("capture: {error}"));
+
+        let mut restored = pair();
+        SingleSchedulerCheckpoint::from_canonical_bytes(&bytes)
+            .and_then(|checkpoint| checkpoint.restore_into(&mut restored))
+            .unwrap_or_else(|error| panic!("restore: {error}"));
+
+        assert_eq!(restored.nodes[0].counter, NodeCounter { ticks: 61 });
+        assert_eq!(restored.nodes[0].settled, NodeCounter { ticks: 100 });
+        assert!(restored.nodes[0].idle_parked);
+        assert!(!restored.nodes[1].idle_parked);
+    }
+
+    #[test]
+    fn continuation_refuses_settled_time_behind_the_actual_clock() {
+        let scheduler = pair();
+        let mut checkpoint = scheduler
+            .checkpoint()
+            .unwrap_or_else(|error| panic!("capture: {error}"));
+        checkpoint.wire.nodes[0].counter = 101;
+        checkpoint.wire.nodes[0].settled = 100;
+        let bytes = checkpoint
+            .canonical_bytes()
+            .unwrap_or_else(|error| panic!("encode: {error}"));
+
+        assert_eq!(
+            SingleSchedulerCheckpoint::from_canonical_bytes(&bytes),
+            Err(SingleSchedulerCheckpointError::State)
+        );
+
+        // An idle park always leaves a gap between its clock and settlement.
+        let mut parked = scheduler
+            .checkpoint()
+            .unwrap_or_else(|error| panic!("capture: {error}"));
+        parked.wire.nodes[0].idle_parked = true;
+        let bytes = parked
+            .canonical_bytes()
+            .unwrap_or_else(|error| panic!("encode: {error}"));
+        assert_eq!(
+            SingleSchedulerCheckpoint::from_canonical_bytes(&bytes),
+            Err(SingleSchedulerCheckpointError::State)
+        );
     }
 }

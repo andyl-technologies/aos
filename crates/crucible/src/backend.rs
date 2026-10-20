@@ -29,10 +29,12 @@ pub enum BackendDispatchContract {
     /// admission. The concrete adapter still validates its negotiated versions.
     /// The installed backend retains and services its real queues. Scheduler
     /// admissions bind actor planning only and do not grant native Source
-    /// authority. Each completed RUN ends at its published bounded ceiling or
-    /// an authenticated earlier physical stop. Incoming producer lookahead
-    /// bounds completed ceilings strictly before possible delivery; windows
-    /// without a positive representable safe tick are refused.
+    /// authority. A published ceiling is an upper bound (RFC-0010 SCHED-12):
+    /// each completed RUN either attests settlement through that ceiling, with
+    /// its actual clock at or below it, or ends at an authenticated earlier
+    /// physical stop. Incoming producer lookahead bounds completed ceilings
+    /// strictly before possible delivery; windows without a positive
+    /// representable safe tick are refused.
     BoundedControl,
 }
 
@@ -615,18 +617,33 @@ impl BackendPhysicalStop {
 }
 
 /// Observation returned by [`SimulationBackend::step_to`].
+///
+/// A ceiling is an upper bound, not a landing point (RFC-0010 SCHED-12). A
+/// backend stops at its last retirement at or below the ceiling unless an
+/// exact event inside the remaining gap permits a time-only advance to that
+/// event (TIME-4). Settlement is therefore attested separately from the
+/// node's clock: [`Self::settled_through`] names the tick through which the
+/// backend proved that no retirement and no exact event remains, and
+/// [`Self::reached`] is the node's actual clock, never beyond that tick.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StepObservation {
     /// Scheduler-supplied ceiling requested by the control plane.
     pub requested_ceiling: VirtualTime,
-    /// Scheduler-safe frontier established before returning control.
+    /// Actual node clock when the backend returned control.
     ///
-    /// This normally equals the backend's physical instruction count. A
-    /// backend that parks earlier because it has a proven exact wake strictly
-    /// beyond the requested ceiling may report that ceiling while retaining the
-    /// physical park point in [`AdvanceOutcome::Paused`]. A guest selectable or
-    /// campaign marker always reports its authenticated physical pause tick.
+    /// This is the tick of the node's last retirement or exact time-only
+    /// event. A settled step may report a clock below its ceiling; a guest
+    /// selectable or campaign marker always reports its authenticated
+    /// physical pause tick.
     pub reached: VirtualTime,
+    /// Tick through which this step is attested settled.
+    ///
+    /// A settled step reports its requested ceiling: the backend proved that
+    /// its next retirement and every exact event lie strictly beyond it, so
+    /// the scheduler may adopt the ceiling as the node's scheduler time while
+    /// the node's clock stays at [`Self::reached`]. Any other step reports
+    /// [`Self::reached`] here and attests nothing beyond its own stop.
+    pub settled_through: VirtualTime,
     /// Low-level backend advancement result.
     pub outcome: AdvanceOutcome,
     /// Independently authenticated physical reason for returning control.
@@ -637,6 +654,11 @@ pub struct StepObservation {
 
 impl StepObservation {
     /// Builds an observation from a requested ceiling and low-level outcome.
+    ///
+    /// [`AdvanceOutcome::ReachedHorizon`] reports a node that landed exactly
+    /// on its ceiling and is settled through it. A pause attests only its own
+    /// stop tick. Use [`Self::settled_below_ceiling`] for a node whose clock
+    /// stopped below a settled ceiling.
     #[must_use]
     pub const fn from_advance_outcome(ceiling: VirtualTime, outcome: AdvanceOutcome) -> Self {
         let reached = match outcome {
@@ -650,10 +672,50 @@ impl StepObservation {
         Self {
             requested_ceiling: ceiling,
             reached,
+            settled_through: reached,
             outcome,
             physical_stop,
             applied_preemptions: Vec::new(),
         }
+    }
+
+    /// Builds a settled observation whose node clock stopped at `reached`.
+    ///
+    /// The backend attests that no retirement and no exact event lies in
+    /// `(reached, ceiling]`. The step completes its horizon, so its outcome is
+    /// [`AdvanceOutcome::ReachedHorizon`] and its physical stop is
+    /// [`BackendPhysicalStop::Horizon`] even when `reached` is below
+    /// `ceiling`.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use crucible::{StepObservation, VirtualTime};
+    ///
+    /// let step = StepObservation::settled_below_ceiling(
+    ///     VirtualTime { ticks: 1_000 },
+    ///     VirtualTime { ticks: 951 },
+    /// );
+    /// assert_eq!(step.settled_through.ticks, 1_000);
+    /// assert_eq!(step.reached.ticks, 951);
+    /// assert!(step.is_settled());
+    /// ```
+    #[must_use]
+    pub const fn settled_below_ceiling(ceiling: VirtualTime, reached: VirtualTime) -> Self {
+        Self {
+            requested_ceiling: ceiling,
+            reached,
+            settled_through: ceiling,
+            outcome: AdvanceOutcome::ReachedHorizon,
+            physical_stop: BackendPhysicalStop::Horizon,
+            applied_preemptions: Vec::new(),
+        }
+    }
+
+    /// Reports whether this step attests settlement through its ceiling.
+    #[must_use]
+    pub const fn is_settled(&self) -> bool {
+        self.settled_through.ticks == self.requested_ceiling.ticks
     }
 }
 

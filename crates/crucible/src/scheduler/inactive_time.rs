@@ -28,7 +28,7 @@ impl SingleScheduler {
             {
                 continue;
             }
-            let mut time = self.node_current_time(node)?.ticks;
+            let mut time = self.node_scheduler_time(node)?.ticks;
             if matches!(
                 node.activity,
                 SchedulerNodeActivity::Halted | SchedulerNodeActivity::Done
@@ -101,7 +101,7 @@ impl SingleScheduler {
         let delta = self
             .frontier
             .ticks
-            .saturating_sub(self.node_current_time(node)?.ticks);
+            .saturating_sub(self.node_scheduler_time(node)?.ticks);
         check_native_deadline_shift(node, delta, "reactivating")?;
         Ok(delta)
     }
@@ -135,8 +135,10 @@ impl SingleScheduler {
     pub(super) fn reanchor_node_to_frontier(&mut self, index: usize, delta: u64) {
         let frontier = self.frontier.ticks;
         let node = &mut self.nodes[index];
+        // Anchor the settled point: scheduler time joins the frontier and the
+        // actual clock keeps its settled gap below it.
         node.time_mapping = NodeTimeMapping {
-            anchor_counter: node.counter,
+            anchor_counter: node.settled,
             anchor_time: SimInstant { ticks: frontier },
         };
         if let ExactLocalEvent::TimerDeadline { virtual_time } = &mut node.exact_local_event {

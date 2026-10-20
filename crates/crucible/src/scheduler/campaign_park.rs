@@ -87,7 +87,7 @@ impl SingleScheduler {
         let mut parks = Vec::new();
         for (index, node) in self.nodes.iter().enumerate() {
             if node.campaign_parked {
-                parks.push((index, self.node_current_time(node)?));
+                parks.push((index, self.node_scheduler_time(node)?));
             }
         }
         let live = self.nodes.iter().any(|node| !node.scheduling_inactive());

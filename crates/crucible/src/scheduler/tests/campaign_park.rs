@@ -25,7 +25,7 @@ fn logical_time(scheduler: &SingleScheduler, name: &str) -> u64 {
         .find(|node| node.id.node.name == name)
         .unwrap_or_else(|| panic!("test node `{name}` should exist"));
     scheduler
-        .node_current_time(node)
+        .node_scheduler_time(node)
         .unwrap_or_else(|error| panic!("test node time should project: {error}"))
         .ticks
 }

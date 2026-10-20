@@ -261,7 +261,7 @@ crucible.failure-triage.cluster-report	1	crucible::model::failure::reporting	cli
 crucible.failure-triage.cluster-report-set	1	crucible::model::failure::reporting	cli-output	gate:campaign-replay
 crucible.execution.host-assertion-continuation	3	crucible::trigger::assertions	checkpoint	gate:campaign-replay
 crucible.execution.host-fault-action-state	3	crucible::model::fault_signal::host_action_sink::checkpoint_codec	checkpoint	gate:campaign-replay
-crucible.execution.single-scheduler-continuation	10	crucible::scheduler::checkpoint	checkpoint	gate:campaign-replay
+crucible.execution.single-scheduler-continuation	11	crucible::scheduler::checkpoint	checkpoint	gate:campaign-replay
 crucible.executor.production-checkpoint-manifest	4	crucible-daemon::exact_checkpoint_store::production	exact-manifest	gate:exact-closure-streaming
 crucible.executor.production-promotion-evidence	1	crucible-daemon::exact_checkpoint_store::production	observation	gate:exact-closure-streaming
 crucible.executor.production-replay-oracle	1	crucible-daemon::exact_checkpoint_store::production	trace	gate:campaign-replay

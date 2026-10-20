@@ -425,12 +425,12 @@ impl SingleScheduler {
         Ok(checkpoint)
     }
 
-    /// Returns the scheduler-owned logical time for one VM node.
+    /// Returns the scheduler-owned settled logical time for one VM node.
     ///
     /// Production lifecycle replay compares this authoritative clock rather than
-    /// a QEMU process's current physical counter. A VM may pause below an
-    /// authorized ceiling while the scheduler safely advances its logical clock
-    /// to that ceiling, so those values are intentionally not interchangeable.
+    /// a QEMU process's current physical counter. A ceiling is an upper bound:
+    /// a VM may stop below it while settlement advances its scheduler time to
+    /// that ceiling, so those values are intentionally not interchangeable.
     ///
     /// # Errors
     ///
@@ -439,17 +439,17 @@ impl SingleScheduler {
     /// counter cannot be projected.
     pub fn scheduler_time_for_node(&self, node: &NodeId) -> Result<VirtualTime, SchedulerError> {
         let index = self.vm_node_index(node)?;
-        let instant = self.node_current_time(&self.nodes[index])?;
+        let instant = self.node_scheduler_time(&self.nodes[index])?;
         Ok(VirtualTime {
             ticks: instant.ticks,
         })
     }
 
-    /// Returns the scheduler-owned counter for one VM node.
+    /// Returns the scheduler-owned actual counter for one VM node.
     ///
     /// The counter survives backend retirement and retains its generation's
-    /// origin. It is not interchangeable with logical time or a live backend's
-    /// observed counter: the scheduler may have authorized a later ceiling.
+    /// origin. It is the node's last committed clock, not its settled
+    /// scheduler time: the node may be settled through a later ceiling.
     ///
     /// # Errors
     ///
@@ -564,8 +564,20 @@ impl SingleScheduler {
         counter: NodeCounter,
     ) -> Result<(), SchedulerError> {
         let index = self.vm_node_index(node)?;
-        let anchor_time = self.node_current_time(&self.nodes[index])?;
+        // The replacement counter names the node's actual clock. Its settled
+        // gap carries over unchanged, so scheduler time is preserved too.
+        let anchor_time = self.node_physical_time(&self.nodes[index])?;
+        let settled_gap = self.nodes[index].settled.ticks - self.nodes[index].counter.ticks;
+        let settled = counter.ticks.checked_add(settled_gap).ok_or_else(|| {
+            SchedulerError::BoundaryViolation {
+                message: format!(
+                    "rebased counter for `{}` overflows its settled scheduler time",
+                    node.name
+                ),
+            }
+        })?;
         self.nodes[index].counter = counter;
+        self.nodes[index].settled = NodeCounter { ticks: settled };
         self.nodes[index].time_mapping.anchor_counter = counter;
         self.nodes[index].time_mapping.anchor_time = anchor_time;
         Ok(())

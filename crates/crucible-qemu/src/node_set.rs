@@ -1822,6 +1822,9 @@ fn parked_selectable_step(
         reached: VirtualTime {
             ticks: boundary_tick_ps,
         },
+        settled_through: VirtualTime {
+            ticks: boundary_tick_ps,
+        },
         outcome: crucible::AdvanceOutcome::Paused {
             at: Icount {
                 retired: boundary_tick_ps,
@@ -2051,6 +2054,9 @@ impl QemuNodeSet {
                 reached: VirtualTime {
                     ticks: parked.physical_icount.retired,
                 },
+                settled_through: VirtualTime {
+                    ticks: parked.physical_icount.retired,
+                },
                 outcome: crucible::AdvanceOutcome::Paused {
                     at: parked.physical_icount,
                 },
@@ -2084,6 +2090,7 @@ impl QemuNodeSet {
                         // VMStop prevents more guest execution. Return to the
                         // modeled driver so it can select and enqueue a reply.
                         observation.reached = VirtualTime { ticks: at.retired };
+                        observation.settled_through = observation.reached;
                         observation.physical_stop = BackendPhysicalStop::GuestSelectable;
                         return Ok(observation);
                     }
@@ -2111,6 +2118,7 @@ impl QemuNodeSet {
                     UnprovenCampaignMarker::Refuse,
                 )? {
                     observation.reached = VirtualTime { ticks: at.retired };
+                    observation.settled_through = observation.reached;
                     observation.physical_stop = BackendPhysicalStop::CampaignMarker;
                     return Ok(observation);
                 }
@@ -2144,6 +2152,7 @@ impl QemuNodeSet {
                 && deadline.retired > ceiling.ticks
             {
                 observation.reached = ceiling;
+                observation.settled_through = ceiling;
                 observation.physical_stop = BackendPhysicalStop::Idle;
                 return Ok(observation);
             }

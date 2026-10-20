@@ -293,7 +293,7 @@ impl SingleScheduler {
                 if !matches!(
                     self.effective_node_activity(node),
                     SchedulerNodeActivity::Halted | SchedulerNodeActivity::Done
-                ) && self.node_current_time(node)?.ticks > wakeup.ticks
+                ) && self.node_scheduler_time(node)?.ticks > wakeup.ticks
                 {
                     return Err(SchedulerError::BoundaryViolation {
                         message: format!(

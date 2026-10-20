@@ -1117,7 +1117,11 @@ pub enum SchedulerRendezvousPurpose {
 pub struct SchedulerRendezvousNode {
     /// The scheduler graph node participating in the rendezvous.
     pub node: SchedulerNodeId,
-    /// The exact virtual time observed for the node.
+    /// The node's actual clock, at or below the rendezvous time.
+    ///
+    /// The node is settled through the rendezvous time (RFC-0010 SCHED-14);
+    /// a bounded RUN may have stopped its clock at its last retirement below
+    /// that time.
     pub virtual_time: SimInstant,
 }
 

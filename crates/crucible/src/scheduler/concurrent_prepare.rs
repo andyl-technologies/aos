@@ -25,7 +25,7 @@ pub struct SchedulerConcurrentRunSet {
 pub struct SchedulerConcurrentRunCandidate {
     /// Scheduler node selected by PICK for this concurrent round.
     pub node: SchedulerNodeId,
-    /// Node-local virtual time before RUN.
+    /// Settled node-local scheduler time before RUN.
     pub current_time: SimInstant,
     /// Conservative lookahead-bounded virtual time for this RUN.
     pub target_time: SimInstant,
@@ -383,9 +383,11 @@ impl SingleScheduler {
         };
         let candidate = self.prepare_host_candidate_for_contract(candidate, dispatch_contract)?;
         let draft = self.advance_plan_draft(&candidate)?;
+        // A completed catch-up ends at its settled endpoint; the node's clock
+        // may have stopped below it.
         if let Some(previous) = previous
             && (previous.plan.node != draft.node
-                || previous.plan.target_counter != draft.before.ticks)
+                || previous.plan.target_counter != node.settled.ticks)
         {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from("completed catch-up authorization changed node or counter"),
@@ -399,7 +401,7 @@ impl SingleScheduler {
         } else {
             self.node_counter_for_time_floor(node, target_time)?.ticks
         };
-        if target_counter <= draft.before.ticks {
+        if target_counter <= node.settled.ticks {
             return Err(SchedulerError::BoundaryViolation {
                 message: format!(
                     "producer `{}` cannot represent causal catch-up at {}",
@@ -621,7 +623,7 @@ impl SingleScheduler {
             let node = &next.nodes[plan.index];
             let window = next.advance_window(
                 node,
-                next.node_time_for_counter(node, plan.before)?,
+                next.node_scheduler_time(node)?,
                 next.shared_rendezvous_cap()?,
                 next.pending_topology_activation_cap()?,
             )?;
@@ -680,7 +682,15 @@ impl SingleScheduler {
                 .ok_or_else(|| SchedulerError::BoundaryViolation {
                     message: String::from("control 3 incoming edge lost its actual producer"),
                 })?;
-            let mut producer_time = self.node_current_time(producer)?.ticks;
+            // A runnable producer may still emit at its actual clock, so
+            // lookahead starts there. An idle-parked producer settled its
+            // ceiling without a pending emission; its next output is not
+            // before that ceiling (SCHED-28).
+            let mut producer_time = if producer.idle_parked {
+                self.node_scheduler_time(producer)?.ticks
+            } else {
+                self.node_physical_time(producer)?.ticks
+            };
             if producer.campaign_parked {
                 // A parked producer emits nothing until its all-VM join, which
                 // anchors it at or beyond the live frontier. Its frozen clock
@@ -694,6 +704,9 @@ impl SingleScheduler {
                 })?;
             // Control 3 completes physical ceilings; it cannot retain a native
             // Source dispatch stop at an inclusive possible-delivery boundary.
+            // `earliest_delivery - 1` is a bound, never a landing target: the
+            // node stops at its last retirement strictly before the delivery
+            // and settles through this tick (SCHED-12).
             let strict_tick = earliest_delivery.checked_sub(1).ok_or_else(|| {
                 SchedulerError::BoundaryViolation {
                     message: String::from("control 3 has no strictly safe delivery tick"),
@@ -732,8 +745,7 @@ impl SingleScheduler {
         // once the common frontier is restored.
         if let Some(candidate) = candidates.first() {
             let draft = self.advance_plan_draft(candidate)?;
-            let current_time =
-                self.node_time_for_counter(&self.nodes[draft.index], draft.before)?;
+            let current_time = self.node_scheduler_time(&self.nodes[draft.index])?;
             if current_time != frontier {
                 selected.push(SchedulerConcurrentRunCandidate {
                     node: draft.node,
@@ -752,8 +764,7 @@ impl SingleScheduler {
                 break;
             }
             let draft = self.advance_plan_draft(candidate)?;
-            let current_time =
-                self.node_time_for_counter(&self.nodes[draft.index], draft.before)?;
+            let current_time = self.node_scheduler_time(&self.nodes[draft.index])?;
             if current_time != frontier {
                 continue;
             }

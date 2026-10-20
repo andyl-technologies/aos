@@ -90,14 +90,19 @@ impl RetainedRunContext {
 /// histories, imported deliveries, or event log.
 pub(super) struct HeldCommitBefore {
     context: RetainedRunContext,
-    counters: Vec<NodeCounter>,
+    // Each node's actual and settled counters.
+    counters: Vec<(NodeCounter, NodeCounter)>,
 }
 
 impl HeldCommitBefore {
     pub(super) fn capture(scheduler: &SingleScheduler) -> Self {
         Self {
             context: RetainedRunContext::capture(scheduler),
-            counters: scheduler.nodes.iter().map(|node| node.counter).collect(),
+            counters: scheduler
+                .nodes
+                .iter()
+                .map(|node| (node.counter, node.settled))
+                .collect(),
         }
     }
 }
@@ -204,10 +209,11 @@ impl HeldRunLineage {
                 .iter()
                 .zip(&before_counters)
                 .zip(&after.nodes)
-                .any(|(((id, time_mapping), counter), after)| {
+                .any(|(((id, time_mapping), counters), after)| {
                     *id != after.id
                         || *time_mapping != after.time_mapping
-                        || (id.node != *affected_node && *counter != after.counter)
+                        || (id.node != *affected_node
+                            && *counters != (after.counter, after.settled))
                 })
             || before
                 .preemption_requests
@@ -529,7 +535,7 @@ mod tests {
         // scheduler STEP and its immutable configuration/prefix are exercised.
         prepared
             .next
-            .commit_prepared_host_run(peer, 40, &[], Vec::new(), Vec::new())
+            .commit_prepared_host_run(peer, HostRunReport::exact(40), &[], Vec::new(), Vec::new())
             .unwrap_or_else(|error| panic!("actual canonical peer STEP: {error}"));
         lineage
             .extend_commit(
@@ -881,7 +887,8 @@ mod tests {
                 .all(|(before, after)| {
                     before.id == after.id
                         && before.time_mapping == after.time_mapping
-                        && (before.id.node == *affected_node || before.counter == after.counter)
+                        && (before.id.node == *affected_node
+                            || (before.counter == after.counter && before.settled == after.settled))
                 })
             && before
                 .preemption_requests

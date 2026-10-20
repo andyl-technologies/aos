@@ -111,7 +111,7 @@
       }
       {
         label = "RUN after yield";
-        needle = "self.advance_node_after_yield(&plan)?";
+        needle = "let endpoint = self.advance_node_after_yield(";
       }
       {
         label = "RESOLVE due events";
