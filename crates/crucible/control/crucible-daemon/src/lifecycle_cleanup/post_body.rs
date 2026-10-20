@@ -69,6 +69,11 @@ impl ProductionVmConstructionPostBody {
         }
     }
 
+    /// Observes the actual terminal owner without creating return authority.
+    pub(crate) fn has_terminal_custody(&self) -> bool {
+        self.terminal.is_some()
+    }
+
     /// Moves the original loan; it does not issue or enter Cleanup.
     pub(crate) fn world(
         loan: AuthenticatedNativeWorldCleanupLoan,

@@ -1168,7 +1168,7 @@ pub struct ProductionVmLifecycleLoop {
     debug_gateway_teardown_required: bool,
     indeterminate_debug_candidate: Option<Box<ProductionVmLifecycleLoop>>,
     // A failed replay stays reachable before its diagnostic is rendered.
-    retained_debug_construction: std::sync::Mutex<Option<ProductionVmConstructionFailure>>,
+    retained_debug_construction: std::sync::Mutex<Option<construction::RetainedDebugConstruction>>,
     // The same before-effects Box follows success until whole-owner retirement.
     construction_custody: LifecycleConstructionCustody,
     debug_runtime_evidence: Vec<ProductionVmDebugRuntimeEvidence>,

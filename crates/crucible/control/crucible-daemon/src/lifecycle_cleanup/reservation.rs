@@ -650,6 +650,26 @@ impl LifecycleCleanupHandle {
             report_reference: false,
         })
     }
+
+    /// Creates a genuinely unavailable receipt for negative handback controls.
+    ///
+    /// Its absent queue cannot complete a role or retain terminal custody.
+    pub(crate) fn unavailable_handoff_for_test() -> Box<
+        dyn ProductionVmCleanupHandoff<
+                Failure = crate::ProductionVmConstructionCleanupError,
+                PostBody = crate::ProductionVmConstructionPostBody,
+            >,
+    > {
+        Box::new(CleanupReservation {
+            queue: Weak::new(),
+            index: usize::MAX,
+            epoch: 0,
+            observed: ProductionVmCleanupStage::BodyRetained,
+            first_failure: None,
+            terminal_history: None,
+            report_reference: false,
+        })
+    }
 }
 
 /// Selects the original Main role without issuing Service or World authority.

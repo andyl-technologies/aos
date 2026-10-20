@@ -7,6 +7,8 @@
 
 use super::*;
 mod custody;
+mod retained_debug;
+pub(super) use retained_debug::RetainedDebugConstruction;
 #[cfg(target_os = "linux")]
 mod returned;
 #[cfg(target_os = "linux")]

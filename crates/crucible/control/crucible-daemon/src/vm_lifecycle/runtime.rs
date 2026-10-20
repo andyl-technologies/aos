@@ -814,7 +814,7 @@ impl ProductionVmLifecycleLoop {
         ) {
             Ok(replay) => replay,
             Err(failure) => {
-                *retained = Some(failure);
+                *retained = Some(construction::RetainedDebugConstruction::new(failure));
                 // Publish the actual owner before constructing a diagnostic.
                 return Err(SchedulerError::BoundaryViolation {
                     message: format!(
@@ -977,10 +977,29 @@ impl ProductionVmLifecycleLoop {
                 message: String::from("debug construction custody is poisoned"),
             }
         })?;
-        if let Some(failure) = retained.as_ref() {
-            failure.retry_cleanup()?;
+        if let Some(construction) = retained.as_mut() {
+            construction.retry()?;
         }
-        *retained = None;
+        Ok(())
+    }
+
+    /// Moves completed candidate history into the containing carrier's paid tail.
+    ///
+    /// # Errors
+    /// Retains the candidate when its slot is poisoned, cleanup is incomplete,
+    /// or the destination already holds independent history.
+    pub(super) fn transfer_retained_debug_construction(
+        &mut self,
+        destination: &mut Option<crate::ProductionVmConstructionPostBody>,
+    ) -> Result<(), ProductionVmConstructionCleanupError> {
+        let retained = self
+            .retained_debug_construction
+            .get_mut()
+            .map_err(|_| ProductionVmConstructionCleanupError::Poisoned)?;
+        if let Some(construction) = retained.as_mut() {
+            construction.transfer_history(destination)?;
+            *retained = None;
+        }
         Ok(())
     }
 

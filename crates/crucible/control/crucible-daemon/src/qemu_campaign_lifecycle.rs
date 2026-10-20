@@ -254,6 +254,54 @@ enum SourceInstallationFirst {
 }
 
 impl SourceCleanupHistory {
+    /// Moves a completed constructor's original report and terminal receipt.
+    ///
+    /// Every fallible observation borrows the existing slots. Refusal leaves
+    /// both values there; only actual complete terminal custody permits the
+    /// final infallible move into this history's existing inline fields.
+    ///
+    /// # Errors
+    /// Preserves both slots unless the original receipt establishes complete
+    /// cleanup and retains its actual terminal body.
+    pub(crate) fn take_returned_constructor(
+        first: &mut Option<LifecycleApiError>,
+        receipt: &mut Option<SourceCleanupReceipt>,
+    ) -> Result<Self, &'static str> {
+        if first.is_none() {
+            return Err("construction return has no original first cause");
+        }
+        let Some(handoff) = receipt.as_mut() else {
+            return Err("construction return has no original cleanup receipt");
+        };
+        if !matches!(
+            handoff.stage(),
+            Ok(crucible_control_api::ProductionVmCleanupStage::Complete)
+        ) {
+            return Err("construction return has not completed its original role");
+        }
+        if !handoff.retain_post_body()
+            || !handoff
+                .retained_post_body()
+                .is_some_and(crate::ProductionVmConstructionPostBody::has_terminal_custody)
+        {
+            return Err("construction return retains its actual terminal obligations");
+        }
+
+        let Some(original_first) = first.take() else {
+            return Err("construction return lost its original first cause");
+        };
+        let Some(original_receipt) = receipt.take() else {
+            *first = Some(original_first);
+            return Err("construction return lost its original cleanup receipt");
+        };
+        Ok(Self {
+            first: Some(SourceInstallationFirst::Api(original_first)),
+            cleanup: None,
+            cleanup_post: None,
+            terminal_receipt: Some(SourceCleanupHandoff::new(original_receipt)),
+        })
+    }
+
     /// Borrows the actual cleanup cause independently of the constructor error.
     ///
     /// The primary error source remains the original constructor refusal when

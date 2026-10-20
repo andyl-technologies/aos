@@ -40,6 +40,10 @@ impl crucible_control_api::ProductionVmCleanupOwner for ProductionVmConstruction
                 };
                 self.post_body = body;
             }
+            let phase = self.phase.get_mut().map_err(|_| Self::Failure::Poisoned)?;
+            if let Phase::Complete(lifecycle) = phase {
+                lifecycle.transfer_retained_debug_construction(&mut self.post_body)?;
+            }
             if self.first.is_some() && self.post_body.is_none() {
                 self.post_body = Some(crate::ProductionVmConstructionPostBody::history_only());
             }
@@ -70,3 +74,6 @@ impl crucible_control_api::ProductionVmCleanupOwner for ProductionVmConstruction
         ProductionVmConstructionCustody::retry_cleanup(self)
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests;
