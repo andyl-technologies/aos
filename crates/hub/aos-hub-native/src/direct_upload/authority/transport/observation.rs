@@ -183,27 +183,27 @@ fn constructor_source_sha256() -> String {
     digest.update(b"aos.native.direct-control-constructor.v1\0");
     let sources: [(&str, &[u8]); 6] = [
         (
-            "crates/aos-hub/src/direct_upload/authority/transport.rs",
+            "crates/hub/aos-hub-native/src/direct_upload/authority/transport.rs",
             include_bytes!("../transport.rs"),
         ),
         (
-            "crates/aos-hub/src/direct_upload/authority/transport/observation.rs",
+            "crates/hub/aos-hub-native/src/direct_upload/authority/transport/observation.rs",
             include_bytes!("observation.rs"),
         ),
         (
-            "crates/aos-hub-core/src/direct_upload/capabilities_wire.rs",
+            "crates/hub/aos-hub-db/src/direct_upload/capabilities_wire.rs",
             include_bytes!("../../../../../aos-hub-db/src/direct_upload/capabilities_wire.rs"),
         ),
         (
-            "crates/aos-hub-core/src/direct_upload/authority_lookup.rs",
+            "crates/hub/aos-hub-db/src/direct_upload/authority_lookup.rs",
             include_bytes!("../../../../../aos-hub-db/src/direct_upload/authority_lookup.rs"),
         ),
         (
-            "crates/aos-hub-core/src/direct_upload/final_guard.rs",
+            "crates/hub/aos-hub-db/src/direct_upload/final_guard.rs",
             include_bytes!("../../../../../aos-hub-db/src/direct_upload/final_guard.rs"),
         ),
         (
-            "crates/aos-hub-core/src/direct_upload/wire.rs",
+            "crates/hub/aos-hub-db/src/direct_upload/wire.rs",
             include_bytes!("../../../../../aos-hub-db/src/direct_upload/wire.rs"),
         ),
     ];
