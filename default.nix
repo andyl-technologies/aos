@@ -1652,7 +1652,10 @@ in rec {
   # Checks hierarchy — module checks come from systems, everything else
   # stays at the top level.
   checks = rec {
-    terrane = import ./tests/terrane {inherit pkgs lib mkSystem;};
+    terrane = import ./tests/terrane {
+      inherit pkgs lib;
+      mkSystem = mkFixtureSystem;
+    };
     bootstrap.kotlin-java = import ./pkgs/toolchain/_kotlin-bootstrap-2011.nix {
       inherit (buildPackages) mkDerivation;
       inherit (lib) fetchgit fetchurl;
