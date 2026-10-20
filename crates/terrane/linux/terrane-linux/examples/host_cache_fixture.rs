@@ -97,12 +97,18 @@ fn main() -> std::process::ExitCode {
             "seed-pending-dictionary",
             "refuse-pending-chunk",
             "recover-pending-chunk",
+            "seed-pending-pack",
+            "refuse-pending-pack",
+            "recover-pending-pack",
+            "refuse-pending-pack-foreign",
         ] {
             println!("host-cache:{selector}");
         }
         return std::process::ExitCode::SUCCESS;
     }
-    let result = if mode == "seed-pending-inline" {
+    let result = if mode == "seed-pending-pack" {
+        recovery::pending_packs::seed()
+    } else if mode == "seed-pending-inline" {
         recovery::pending::seed()
     } else if matches!(
         mode.as_str(),

@@ -119,7 +119,14 @@ pub(crate) fn run(
     runtime: &tokio::runtime::Runtime,
     inputs: &Inputs,
 ) -> io::Result<()> {
-    require_domain(inputs)?;
+    if matches!(
+        mode,
+        "refuse-pending-pack" | "recover-pending-pack" | "refuse-pending-pack-foreign"
+    ) {
+        super::pending_packs::require_domain(inputs)?;
+    } else {
+        require_domain(inputs)?;
+    }
     let load = || {
         runtime
             .block_on(CacheState::load(
@@ -149,15 +156,26 @@ pub(crate) fn run(
     {
         return Err(invalid("pending recovery changed original policy holds"));
     }
-    if matches!(mode, "refuse-pending-inline" | "refuse-pending-chunk") {
+    if matches!(
+        mode,
+        "refuse-pending-inline"
+            | "refuse-pending-chunk"
+            | "refuse-pending-pack"
+            | "refuse-pending-pack-foreign"
+    ) {
         let error = result
             .err()
             .ok_or_else(|| invalid("unexpired pending inode was removed"))?;
+        let expected = if mode == "refuse-pending-pack-foreign" {
+            ResultCode::Invalid
+        } else {
+            ResultCode::Unavailable
+        };
         if !matches!(
             error
                 .get_ref()
                 .and_then(|error| error.downcast_ref::<PublisherError>()),
-            Some(PublisherError::Remote(ResultCode::Unavailable))
+            Some(PublisherError::Remote(code)) if *code == expected
         ) {
             return Err(io::Error::other(format!(
                 "unexpected pending refusal: {error}"
@@ -172,7 +190,15 @@ pub(crate) fn run(
         if retry.kind() != io::ErrorKind::WouldBlock || fs::read(path)? != bytes {
             return Err(invalid("pending refusal lost faulted bootstrap custody"));
         }
-        if mode == "refuse-pending-chunk" {
+        if mode == "refuse-pending-pack-foreign" {
+            println!(
+                "PASS actual foreign-project pending pack refused before namespace mutation; original bootstrap holds retained; no Resume"
+            );
+        } else if mode == "refuse-pending-pack" {
+            println!(
+                "PASS actual unexpired pending pack unit refused; original bootstrap holds retained; no Resume"
+            );
+        } else if mode == "refuse-pending-chunk" {
             println!(
                 "PASS actual unexpired encoded pending inode refused; original bootstrap holds retained; no Resume"
             );
@@ -183,7 +209,10 @@ pub(crate) fn run(
         }
         return Ok(());
     }
-    if !matches!(mode, "recover-pending-inline" | "recover-pending-chunk") {
+    if !matches!(
+        mode,
+        "recover-pending-inline" | "recover-pending-chunk" | "recover-pending-pack"
+    ) {
         return Err(invalid("unknown pending recovery selector"));
     }
     let completed = result?;
@@ -199,7 +228,11 @@ pub(crate) fn run(
     runtime
         .block_on(owner.resume_recovered(completed))
         .map_err(io::Error::other)?;
-    if mode == "recover-pending-chunk" {
+    if mode == "recover-pending-pack" {
+        println!(
+            "PASS actual expired pending pack unit removed before completed recovery and acknowledged Resume; original holds retained; no Ready"
+        );
+    } else if mode == "recover-pending-chunk" {
         println!(
             "PASS actual expired encoded pending inode removed before completed recovery and acknowledged Resume; original holds retained; no Ready"
         );

@@ -49,6 +49,9 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
             | "recover-pending-inline"
             | "refuse-pending-chunk"
             | "recover-pending-chunk"
+            | "refuse-pending-pack"
+            | "recover-pending-pack"
+            | "refuse-pending-pack-foreign"
             | "refuse-manifest"
             | "refuse-unsealed-manifest"
             | "refuse-unsealed-writable-manifest"
@@ -111,7 +114,10 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
         "refuse-pending-inline"
         | "recover-pending-inline"
         | "refuse-pending-chunk"
-        | "recover-pending-chunk" => {
+        | "recover-pending-chunk"
+        | "refuse-pending-pack"
+        | "recover-pending-pack"
+        | "refuse-pending-pack-foreign" => {
             super::recovery::pending::run(mode, &owner, &runtime, &inputs)?;
         }
         "dictionary-custody" => {

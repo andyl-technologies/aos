@@ -12,6 +12,8 @@ mod indexes;
 mod inline;
 #[path = "recovery/pending.rs"]
 pub(super) mod pending;
+#[path = "recovery/pending_packs.rs"]
+pub(super) mod pending_packs;
 #[path = "recovery/reuse.rs"]
 mod reuse;
 

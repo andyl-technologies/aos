@@ -61,7 +61,7 @@ CASES = [
     "publication-manifest-reuse-bad-whole",
     "consumer-leases", "lease-foreign",
     "source-cleanup", "source-cleanup-early", "source-cleanup-foreign",
-] + [row[0] for row in MANIFEST_CASES] + ["index-recovery", "index-disabled", "index-bound", "index-mismatch", "pending-expired", "pending-unknown", "pending-raw-expired", "pending-raw-unknown", "pending-zstd-expired", "pending-zstd-unknown", "pending-dictionary-expired", "pending-dictionary-unknown"]
+] + [row[0] for row in MANIFEST_CASES] + ["index-recovery", "index-disabled", "index-bound", "index-mismatch", "pending-expired", "pending-unknown", "pending-raw-expired", "pending-raw-unknown", "pending-zstd-expired", "pending-zstd-unknown", "pending-dictionary-expired", "pending-dictionary-unknown", "pending-pack-expired", "pending-pack-unknown", "pending-pack-split-pack", "pending-pack-split-index", "pending-pack-orphan-index", "pending-pack-orphan-pack", "pending-pack-foreign"]
 
 LABELS = ["layout-root", "chunks", "objects", "sealed", "staging", "quarantine",
           "pending-delete", "state"]
@@ -830,6 +830,7 @@ def verify_image():
         "host_cache_temporaries_vm.py",
         "host_cache_index_recovery_vm.py",
         "host_cache_pending_recovery_vm.py",
+        "host_cache_pending_packs_vm.py",
     ]
     require(set(identity["supervisor_helpers"]) == set(helper_names),
             "native supervisor helper inventory changed")
@@ -1029,6 +1030,8 @@ def main():
         "seed"](sys.modules[__name__], uuid)
     pending_candidates = runpy.run_path(str(IMAGE / "share/host_cache_pending_recovery_vm.py"))[
         "seed"](sys.modules[__name__], uuid)
+    pending_packs = runpy.run_path(str(IMAGE / "share/host_cache_pending_packs_vm.py"))[
+        "seed"](sys.modules[__name__], uuid)
     logs = []
     children = []
     try:
@@ -1070,8 +1073,12 @@ def main():
                         "actual publisher namespace ownership changed: " + str(path))
         print("PASS actual configured publisher retains exclusive private namespace ownership", flush=True)
         runpy.run_path(str(IMAGE / "share/host_cache_temporaries_vm.py"))["run"](sys.modules[__name__], uuid)
-        runpy.run_path(str(IMAGE / "share/host_cache_pending_recovery_vm.py"))[
-            "run"](sys.modules[__name__], uuid, pending_candidates)
+        def pending_chunk_cases():
+            runpy.run_path(str(IMAGE / "share/host_cache_pending_recovery_vm.py"))[
+                "run"](sys.modules[__name__], uuid, pending_candidates)
+
+        runpy.run_path(str(IMAGE / "share/host_cache_pending_packs_vm.py"))[
+            "run"](sys.modules[__name__], uuid, pending_packs, pending_chunk_cases)
         # A new physical owner must preserve the first owner's durable hold,
         # synchronize a distinct bootstrap and account both without reusing H.
         old_policy = tomllib.loads((root("empty") / "state/cache/records.toml").read_text())
