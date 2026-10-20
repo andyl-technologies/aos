@@ -386,7 +386,7 @@ crucible.shmem.node-event-envelope	1	crucible-qemu-plugin::fault_command::event_
 crucible.shmem.node-fault-evidence	1	crucible-shmem::fault_node	process-protocol-message	gate:abi-conformance
 crucible.shmem.node-fault-payload	1	crucible-shmem::fault_node	process-protocol-message	gate:abi-conformance
 crucible.shmem.node-fault-policy-json	1	crucible-shmem::fault_node	process-protocol-message	gate:abi-conformance
-crucible.shmem.region	31	crucible-shmem::region	process-protocol-message	gate:abi-conformance
+crucible.shmem.region	32	crucible-shmem::region	process-protocol-message	gate:abi-conformance
 crucible.whitebox-doorbell.frame	3	crucible-protocol::doorbell_frame	process-protocol-message	gate:abi-conformance
 crucible.whitebox-doorbell.instruction	4	crucible-protocol::doorbell_abi	process-protocol-message	gate:abi-conformance
 

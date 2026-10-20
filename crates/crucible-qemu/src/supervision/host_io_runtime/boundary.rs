@@ -222,16 +222,17 @@ pub(super) fn bounded_poll_attempts(timeout: Duration, poll_interval: Duration) 
 /// both make an idle guest runnable. A snapshot from before QEMU consumes that
 /// wake no longer proves that the guest remains parked before its ceiling, so an
 /// early-idle pause requires a later stable plugin publication. A node already
-/// at its ceiling remains complete, however: the wake cannot authorize it to
-/// advance farther, and requiring another publication would deadlock with QEMU
-/// waiting for a strictly later ceiling.
+/// at its ceiling, or settled through it, remains complete, however: the wake
+/// cannot authorize it to advance farther, and requiring another publication
+/// would deadlock with QEMU waiting for a strictly later ceiling.
 pub(super) fn classify_after_host_wake(
     idle: &crate::QemuNodeIdleState,
     ceiling: u64,
     stop_condition: crate::QemuQuantumStopCondition,
+    settled: bool,
     device_wake_unacknowledged: bool,
 ) -> QuantumBoundary {
-    let boundary = classify_quantum_boundary(idle, ceiling, stop_condition);
+    let boundary = classify_quantum_boundary(idle, ceiling, stop_condition, settled);
     if device_wake_unacknowledged && matches!(boundary, QuantumBoundary::Paused { .. }) {
         return QuantumBoundary::Pending;
     }
@@ -246,13 +247,20 @@ pub(super) fn classify_after_scheduler_and_host_wake(
     idle: &crate::QemuNodeIdleState,
     ceiling: u64,
     stop_condition: crate::QemuQuantumStopCondition,
+    settled: bool,
     scheduler_input_unobserved: bool,
     device_wake_unacknowledged: bool,
 ) -> QuantumBoundary {
     if scheduler_input_unobserved {
         QuantumBoundary::Pending
     } else {
-        classify_after_host_wake(idle, ceiling, stop_condition, device_wake_unacknowledged)
+        classify_after_host_wake(
+            idle,
+            ceiling,
+            stop_condition,
+            settled,
+            device_wake_unacknowledged,
+        )
     }
 }
 

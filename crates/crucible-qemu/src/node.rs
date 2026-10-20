@@ -2021,7 +2021,8 @@ impl QemuNode {
             }),
         }?;
         let advance = output_boundary.map_or(advance, |at| AdvanceOutcome::Paused { at });
-        self.last_observed_time = virtual_time_from_advance_outcome(ceiling, advance);
+        self.last_observed_time =
+            virtual_time_from_advance_outcome(ceiling, advance, self.last_step_final_state);
         // crucible-lint: allow host-nondeterminism-state -- this opt-in diagnostic reads an already published boundary and changes no scheduler state.
         if std::env::var_os("CRUCIBLE_PHASE4_CLOCK_TRACE").is_some()
             && let Ok(calibration) = self.logical_time_calibration()
@@ -2658,14 +2659,39 @@ impl SimulationBackend for QemuNode {
         let outcome = self
             .finish_advance_report(icount_ceiling, report)
             .map_err(BackendError::from)?;
-        let mut observation = StepObservation::from_advance_outcome(ceiling, outcome);
-        if let Some(sequence) = self
+        // A reached horizon attests settlement through the ceiling; the node's
+        // clock is its last retirement or exact event at or below it
+        // (RFC-0010 SCHED-12).
+        let mut observation = match outcome {
+            AdvanceOutcome::ReachedHorizon => {
+                StepObservation::settled_below_ceiling(ceiling, self.last_observed_time)
+            }
+            AdvanceOutcome::Paused { .. } => {
+                StepObservation::from_advance_outcome(ceiling, outcome)
+            }
+        };
+        let output_stop = if let Some(sequence) = self
             .last_step_completed_boundary
             .and_then(crate::QemuCompletedQuantumBoundary::console_output_sequence)
         {
-            observation.physical_stop = BackendPhysicalStop::ConsoleOutput { sequence };
+            Some(BackendPhysicalStop::ConsoleOutput { sequence })
         } else if emitted_network_output {
-            observation.physical_stop = BackendPhysicalStop::NetworkOutput;
+            Some(BackendPhysicalStop::NetworkOutput)
+        } else {
+            None
+        };
+        if let Some(stop) = output_stop {
+            observation.physical_stop = stop;
+            if observation.reached < ceiling {
+                // An output batch is evidence at its own stop only. It never
+                // carries settlement through the rest of the ceiling.
+                observation.settled_through = observation.reached;
+                observation.outcome = AdvanceOutcome::Paused {
+                    at: Icount {
+                        retired: observation.reached.ticks,
+                    },
+                };
+            }
         }
         Ok(observation)
     }
@@ -2847,13 +2873,21 @@ fn scheduler_preemption_command(
     })
 }
 
-const fn virtual_time_from_advance_outcome(
+/// Returns the node clock after one completed advance.
+///
+/// A reached horizon may have settled below its ceiling, so the clock is the
+/// final published icount whenever the completed report carries one. Only a
+/// report without a final state falls back to the ceiling.
+fn virtual_time_from_advance_outcome(
     ceiling: Icount,
     outcome: AdvanceOutcome,
+    final_state: Option<QemuNodeIdleState>,
 ) -> VirtualTime {
     match outcome {
         AdvanceOutcome::ReachedHorizon => VirtualTime {
-            ticks: ceiling.retired,
+            ticks: final_state.map_or(ceiling.retired, |state| {
+                state.current_icount.retired.min(ceiling.retired)
+            }),
         },
         AdvanceOutcome::Paused { at } => VirtualTime { ticks: at.retired },
     }

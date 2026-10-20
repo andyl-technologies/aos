@@ -37,6 +37,7 @@ fn network_output_stops_at_its_frame_coordinate_before_idle_frontier_promotion()
                 },
             },
             next_deadline: Some(REQUESTED_CEILING + 1),
+            frames: 2,
         },
     )?;
 
@@ -120,6 +121,7 @@ fn retained_http_frame_and_later_physical_pause_remain_a_boundary_refusal()
                 },
             },
             next_deadline: Some(REQUESTED_CEILING + 1),
+            frames: 2,
         },
     )?;
 
@@ -157,6 +159,7 @@ fn network_output_source_checkpoint_resume_releases_the_retained_native_stop()
                     at: Icount { retired: 11 },
                 },
                 next_deadline: Some(20),
+                frames: 2,
             }),
             ..ScriptedNodeOptions::default()
         },

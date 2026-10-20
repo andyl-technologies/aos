@@ -544,6 +544,7 @@ impl QemuLiveHostIoRuntime {
                     &idle,
                     snapshot.max_advance_icount,
                     self.advance_stop_condition,
+                    snapshot.settles_current_advance(),
                     scheduler_input_unobserved,
                     wake_unacknowledged,
                 )

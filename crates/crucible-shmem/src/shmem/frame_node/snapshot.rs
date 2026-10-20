@@ -39,8 +39,33 @@ pub struct NodeSlotSnapshot {
     pub logical_time_restore_request: u32,
     /// Plugin-published logical-time restore acknowledgement generation.
     pub logical_time_restore_ack: u32,
+    /// Ceiling through which the node last attested settlement.
+    pub settled_ceiling_tick: u64,
+    /// Advance publication sequence that the settlement record covers.
+    pub settled_publication_sequence: u64,
     /// Most recent plugin-validated actual virtual-timer callback witness.
     pub virtual_timer_witness: Option<VirtualTimerFireWitness>,
+}
+
+impl NodeSlotSnapshot {
+    /// Reports whether the node settled through `ceiling` for one advance.
+    ///
+    /// Settlement (RFC-0010 SCHED-12) means no retirement and no exact event
+    /// lies in `(current_icount, ceiling]`. It is attested per advance
+    /// publication, so `sequence` must name the advance that published
+    /// `ceiling`; a record left from an earlier advance never matches.
+    #[must_use]
+    pub const fn settles(&self, ceiling: u64, sequence: u64) -> bool {
+        self.settled_publication_sequence == sequence
+            && self.settled_ceiling_tick == ceiling
+            && self.current_icount <= ceiling
+    }
+
+    /// Reports whether the node settled through this snapshot's own advance.
+    #[must_use]
+    pub const fn settles_current_advance(&self) -> bool {
+        self.settles(self.max_advance_icount, self.advance_publication_sequence)
+    }
 }
 
 /// Exact native evidence for one completed `QEMU_CLOCK_VIRTUAL` callback.

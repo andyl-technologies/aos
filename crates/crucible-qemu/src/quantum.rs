@@ -298,6 +298,11 @@ pub struct QemuPendingQuantum {
     pub completion_fence: Option<QemuAdvanceCompletionFence>,
     stop_condition: QemuQuantumStopCondition,
     advance_publication_sequence: u64,
+    /// Advance publication that installed [`Self::ceiling`].
+    ///
+    /// A settlement record must name this sequence to complete the quantum
+    /// below its ceiling (RFC-0010 SCHED-12).
+    settlement_sequence: u64,
     operation_start: usize,
     inbound_consumption: QemuInboundConsumptionBaseline,
 }
@@ -527,6 +532,16 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
             earliest_delivery,
         )
         .map_err(|source| QemuQuantumError::Lookahead { source })?;
+        // A ceiling is only an upper bound. When an inbound delivery caps it,
+        // the delivery is an exact event the node must reach (TIME-4), so the
+        // capped ceiling is published as one.
+        let published_stop = if stop_condition == QemuQuantumStopCondition::Ceiling
+            && earliest_delivery == Some(effective_ceiling)
+        {
+            QemuQuantumStopCondition::ExactEvent
+        } else {
+            stop_condition
+        };
 
         self.record(QemuQuantumOperation::StoreSchedulerCeiling);
         self.record(QemuQuantumOperation::FutexWake);
@@ -534,9 +549,21 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
             self.config.router_slot,
             &[],
             ceiling,
-            stop_condition,
+            published_stop,
             "publish scheduler inbox and ceiling",
         )?;
+        // The host is the only advance writer, so the sequence now in the slot
+        // names the publication above. Read only the advance seqlock: the
+        // woken plugin may already be publishing node fields.
+        let settlement_sequence = self
+            .view
+            .node_slot
+            .load_scheduler_advance_publication()
+            .map_err(|source| QemuQuantumError::NodeSlot {
+                operation: "read published scheduler advance",
+                source,
+            })?
+            .sequence();
 
         // A console RUN must distinguish its first native report from the
         // preceding stopped report, including ordinary ceiling quanta.
@@ -564,6 +591,7 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
             }),
             stop_condition,
             advance_publication_sequence: initial_snapshot.advance_publication_sequence,
+            settlement_sequence,
             operation_start,
             inbound_consumption,
         })
@@ -610,10 +638,18 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
                 retired: final_snapshot.idle_wake_icount,
             });
         }
+        // The settlement record survives the host's post-quantum clamp, which
+        // republishes the ceiling at the reached icount under a new sequence.
+        // An inbound regrant may instead republish the same ceiling while the
+        // quantum is pending; settlement of that publication counts as well.
+        let settled = final_snapshot.settles(pending.ceiling.retired, pending.settlement_sequence)
+            || (final_snapshot.max_advance_icount == pending.ceiling.retired
+                && final_snapshot.settles_current_advance());
         let boundary = classify_quantum_boundary(
             &final_state,
             pending.ceiling.retired,
             pending.stop_condition,
+            settled,
         );
         let stale_next_idle_boundary = pending.stop_condition
             == QemuQuantumStopCondition::NextAuthenticatedIdle
@@ -636,16 +672,23 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         let inbound_frames_consumed =
             self.observe_inbound_consumption(pending, final_state.current_icount.retired)?;
         let emitted_frames = self.drain_emitted_outbound()?;
+        let settled_horizon = settled && pending.ceiling == pending.requested_horizon;
         let outcome = if (matches!(boundary, QuantumBoundary::Paused { .. })
             && pending.stop_condition == QemuQuantumStopCondition::NextAuthenticatedIdle)
             || (completed_clamp
+                && !settled_horizon
                 && final_state.current_icount.retired < pending.requested_horizon.retired)
         {
             AdvanceOutcome::Paused {
                 at: final_state.current_icount,
             }
         } else {
-            quantum_outcome(pending.requested_horizon, pending.ceiling, final_state)?
+            quantum_outcome(
+                pending.requested_horizon,
+                pending.ceiling,
+                final_state,
+                settled,
+            )?
         };
         let operations = self.operation_log[pending.operation_start..].to_vec();
         assert_qemu_quantum_hot_path_is_shmem_only(&operations)?;

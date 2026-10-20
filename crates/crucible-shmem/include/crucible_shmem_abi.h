@@ -16,12 +16,14 @@
 #define CRUCIBLE_SHMEM_STATIC_ASSERT(COND, MSG) _Static_assert((COND), MSG)
 
 #define CRUCIBLE_SHMEM_REGION_MAGIC UINT64_C(0x314d485343555243)
-#define CRUCIBLE_SHMEM_ABI_VERSION 31u
+#define CRUCIBLE_SHMEM_ABI_VERSION 32u
 #define CRUCIBLE_SHMEM_NATIVE_CONSOLE_SEGMENT_BYTES 525184u
 #define CRUCIBLE_SHMEM_TICKS_PER_NS 1000u
 #define CRUCIBLE_SHMEM_TICKS_PER_INSTRUCTION 50u
 #define CRUCIBLE_SHMEM_ADVANCE_STOP_CONDITION_CEILING 0u
 #define CRUCIBLE_SHMEM_ADVANCE_STOP_CONDITION_NEXT_AUTHENTICATED_IDLE 1u
+#define CRUCIBLE_SHMEM_ADVANCE_STOP_CONDITION_EXACT_EVENT 2u
+#define CRUCIBLE_SHMEM_IDLE_WAKE_NONE UINT64_C(0xffffffffffffffff)
 #define CRUCIBLE_SHMEM_MAX_FRAME_DATA 4608u
 #define CRUCIBLE_SHMEM_DEFAULT_QUEUE_CAPACITY 64u
 #define CRUCIBLE_SHMEM_COVERAGE_QUEUE_CAPACITY 65536u
@@ -118,7 +120,9 @@
 #define CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_COMPLETED_OFFSET 200u
 #define CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_RESERVED_OFFSET 204u
 #define CRUCIBLE_SHMEM_NODE_SLOT_ADVANCE_PUBLICATION_SEQUENCE_OFFSET 208u
-#define CRUCIBLE_SHMEM_NODE_SLOT_PAD4_OFFSET 216u
+#define CRUCIBLE_SHMEM_NODE_SLOT_SETTLED_CEILING_TICK_OFFSET 216u
+#define CRUCIBLE_SHMEM_NODE_SLOT_SETTLED_PUBLICATION_SEQUENCE_OFFSET 224u
+#define CRUCIBLE_SHMEM_NODE_SLOT_PAD4_OFFSET 232u
 
 #define CRUCIBLE_SHMEM_RING_HEADER_SIZE 128u
 #define CRUCIBLE_SHMEM_RING_HEADER_ALIGN 128u
@@ -260,7 +264,9 @@ typedef struct CRUCIBLE_SHMEM_ALIGNED(128) crucible_shmem_node_slot {
     _Atomic uint32_t timer_witness_completed;
     _Atomic uint32_t timer_witness_reserved;
     _Atomic uint64_t advance_publication_sequence;
-    uint8_t pad4[40];
+    _Atomic uint64_t settled_ceiling_tick;
+    _Atomic uint64_t settled_publication_sequence;
+    uint8_t pad4[24];
 } crucible_shmem_node_slot;
 
 CRUCIBLE_SHMEM_STATIC_ASSERT(sizeof(crucible_shmem_node_slot) == CRUCIBLE_SHMEM_NODE_SLOT_SIZE, "crucible_shmem_node_slot size");
@@ -303,6 +309,8 @@ CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, timer_witness_fi
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, timer_witness_completed) == CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_COMPLETED_OFFSET, "crucible_shmem_node_slot.timer_witness_completed offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, timer_witness_reserved) == CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_RESERVED_OFFSET, "crucible_shmem_node_slot.timer_witness_reserved offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, advance_publication_sequence) == CRUCIBLE_SHMEM_NODE_SLOT_ADVANCE_PUBLICATION_SEQUENCE_OFFSET, "crucible_shmem_node_slot.advance_publication_sequence offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, settled_ceiling_tick) == CRUCIBLE_SHMEM_NODE_SLOT_SETTLED_CEILING_TICK_OFFSET, "crucible_shmem_node_slot.settled_ceiling_tick offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, settled_publication_sequence) == CRUCIBLE_SHMEM_NODE_SLOT_SETTLED_PUBLICATION_SEQUENCE_OFFSET, "crucible_shmem_node_slot.settled_publication_sequence offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, pad4) == CRUCIBLE_SHMEM_NODE_SLOT_PAD4_OFFSET, "crucible_shmem_node_slot.pad4 offset");
 
 typedef struct CRUCIBLE_SHMEM_ALIGNED(128) crucible_shmem_ring_header {

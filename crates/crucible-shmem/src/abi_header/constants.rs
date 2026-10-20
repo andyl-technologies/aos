@@ -27,6 +27,12 @@ pub(super) fn emit_constants(out: &mut String) {
         "CRUCIBLE_SHMEM_ADVANCE_STOP_CONDITION_NEXT_AUTHENTICATED_IDLE",
         ADVANCE_STOP_CONDITION_NEXT_AUTHENTICATED_IDLE,
     );
+    emit_define_u8(
+        out,
+        "CRUCIBLE_SHMEM_ADVANCE_STOP_CONDITION_EXACT_EVENT",
+        ADVANCE_STOP_CONDITION_EXACT_EVENT,
+    );
+    emit_define_u64_hex(out, "CRUCIBLE_SHMEM_IDLE_WAKE_NONE", IDLE_WAKE_NONE);
     emit_define_usize(out, "CRUCIBLE_SHMEM_MAX_FRAME_DATA", MAX_FRAME_DATA);
     emit_define_u32(
         out,
@@ -297,6 +303,14 @@ pub(super) fn emit_constants(out: &mut String) {
             (
                 "ADVANCE_PUBLICATION_SEQUENCE",
                 NODE_SLOT_ADVANCE_PUBLICATION_SEQUENCE_OFFSET,
+            ),
+            (
+                "SETTLED_CEILING_TICK",
+                NODE_SLOT_SETTLED_CEILING_TICK_OFFSET,
+            ),
+            (
+                "SETTLED_PUBLICATION_SEQUENCE",
+                NODE_SLOT_SETTLED_PUBLICATION_SEQUENCE_OFFSET,
             ),
             ("PAD4", NODE_SLOT_PAD4_OFFSET),
         ],

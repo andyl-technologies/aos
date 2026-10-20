@@ -42,7 +42,9 @@ pub(super) fn emit_node_slot(out: &mut String) {
     out.push_str("    _Atomic uint32_t timer_witness_completed;\n");
     out.push_str("    _Atomic uint32_t timer_witness_reserved;\n");
     out.push_str("    _Atomic uint64_t advance_publication_sequence;\n");
-    out.push_str("    uint8_t pad4[40];\n");
+    out.push_str("    _Atomic uint64_t settled_ceiling_tick;\n");
+    out.push_str("    _Atomic uint64_t settled_publication_sequence;\n");
+    out.push_str("    uint8_t pad4[24];\n");
     out.push_str("} crucible_shmem_node_slot;\n\n");
 
     emit_static_asserts(
@@ -123,6 +125,11 @@ pub(super) fn emit_node_slot(out: &mut String) {
             (
                 "advance_publication_sequence",
                 "ADVANCE_PUBLICATION_SEQUENCE",
+            ),
+            ("settled_ceiling_tick", "SETTLED_CEILING_TICK"),
+            (
+                "settled_publication_sequence",
+                "SETTLED_PUBLICATION_SEQUENCE",
             ),
             ("pad4", "PAD4"),
         ],

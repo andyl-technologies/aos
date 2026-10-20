@@ -281,14 +281,26 @@ fn unacknowledged_device_wake_invalidates_an_idle_snapshot() {
     };
 
     assert_eq!(
-        classify_after_host_wake(&idle, 100, crate::QemuQuantumStopCondition::Ceiling, false,),
+        classify_after_host_wake(
+            &idle,
+            100,
+            crate::QemuQuantumStopCondition::Ceiling,
+            false,
+            false
+        ),
         QuantumBoundary::Paused {
             at: 40,
             deadline: 200,
         }
     );
     assert_eq!(
-        classify_after_host_wake(&idle, 100, crate::QemuQuantumStopCondition::Ceiling, true,),
+        classify_after_host_wake(
+            &idle,
+            100,
+            crate::QemuQuantumStopCondition::Ceiling,
+            false,
+            true
+        ),
         QuantumBoundary::Pending
     );
 }
@@ -301,8 +313,43 @@ fn unacknowledged_device_wake_preserves_a_reached_boundary() {
     };
 
     assert_eq!(
-        classify_after_host_wake(&idle, 100, crate::QemuQuantumStopCondition::Ceiling, true,),
+        classify_after_host_wake(
+            &idle,
+            100,
+            crate::QemuQuantumStopCondition::Ceiling,
+            false,
+            true
+        ),
         QuantumBoundary::Reached { icount: 100 }
+    );
+}
+
+#[test]
+fn settlement_completes_a_node_stopped_below_its_ceiling_despite_a_device_wake() {
+    let idle = crate::QemuNodeIdleState {
+        current_icount: crucible::Icount { retired: 951 },
+        next_deadline: None,
+    };
+
+    assert_eq!(
+        classify_after_host_wake(
+            &idle,
+            1_000,
+            crate::QemuQuantumStopCondition::Ceiling,
+            true,
+            true
+        ),
+        QuantumBoundary::Reached { icount: 951 }
+    );
+    assert_eq!(
+        classify_after_host_wake(
+            &idle,
+            1_000,
+            crate::QemuQuantumStopCondition::Ceiling,
+            false,
+            false
+        ),
+        QuantumBoundary::Pending
     );
 }
 
@@ -318,6 +365,7 @@ fn stale_scheduler_publication_cannot_complete_next_idle_advance() {
             &idle,
             1_000_000,
             crate::QemuQuantumStopCondition::NextAuthenticatedIdle,
+            false,
             true,
             false,
         ),
@@ -328,6 +376,7 @@ fn stale_scheduler_publication_cannot_complete_next_idle_advance() {
             &idle,
             1_000_000,
             crate::QemuQuantumStopCondition::NextAuthenticatedIdle,
+            false,
             false,
             false,
         ),

@@ -130,12 +130,20 @@ pub(super) fn qemu_scheduler_node(node: &NodeId, kind: SchedulingNodeKind) -> Sc
     }
 }
 
+/// Maps a completed quantum's final state to its scheduler outcome.
+///
+/// `settled` reports a settlement record for the published ceiling. A node
+/// settled through the requested horizon reached it even when its clock
+/// stopped at an earlier last retirement (RFC-0010 SCHED-12).
 pub(super) fn quantum_outcome(
     requested_horizon: Icount,
     published_ceiling: Icount,
     final_state: QemuNodeIdleState,
+    settled: bool,
 ) -> Result<AdvanceOutcome, QemuQuantumError> {
-    if final_state.current_icount.retired >= requested_horizon.retired {
+    if final_state.current_icount.retired >= requested_horizon.retired
+        || (settled && published_ceiling == requested_horizon)
+    {
         return Ok(AdvanceOutcome::ReachedHorizon);
     }
     if (published_ceiling.retired < requested_horizon.retired

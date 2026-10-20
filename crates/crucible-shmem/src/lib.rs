@@ -87,7 +87,9 @@
 //! 200     4     timer_witness_completed
 //! 204     4     timer_witness_reserved
 //! 208     8     advance_publication_sequence
-//! 216     40    alignment padding
+//! 216     8     settled_ceiling_tick
+//! 224     8     settled_publication_sequence
+//! 232     24    alignment padding
 //! ```
 //!
 //! SPSC ring header wire layout:
@@ -206,8 +208,13 @@ pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b"CRUCSHM1");
 /// publication. Version 30 binds selectable marker and reply coordinates to
 /// picosecond ticks; raw retirement remains in the versioned pending payload.
 /// Version 31 adds per-VM native-console storage and a paired host-control
-/// publication claim. The generated C view and golden vectors pin every offset.
-pub const ABI_VERSION: u32 = 31;
+/// publication claim. Version 32 makes published ceilings upper bounds
+/// (RFC-0010 SCHED-12): the node slot records the ceiling and advance
+/// publication through which the node attests settlement, the exact-event stop
+/// condition marks a ceiling the node must arrive at, and halted nodes without
+/// a wake publish [`IDLE_WAKE_NONE`]. The generated C view and golden vectors
+/// pin every offset.
+pub const ABI_VERSION: u32 = 32;
 const _: () = assert!(ABI_VERSION == include!("abi_version.in"));
 /// Fixed number of simulation ticks in one QEMU virtual nanosecond.
 pub const TICKS_PER_NS: u64 = 1_000;

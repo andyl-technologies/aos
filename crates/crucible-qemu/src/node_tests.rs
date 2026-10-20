@@ -51,6 +51,8 @@ mod scripted_qmp;
 mod selectable_node_set;
 #[path = "node/tests/sequence_restore.rs"]
 mod sequence_restore;
+#[path = "node/tests/settled_steps.rs"]
+mod settled_steps;
 #[path = "node/tests/shutdown_and_preemption.rs"]
 mod shutdown_and_preemption;
 
@@ -646,7 +648,8 @@ impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
         stop_condition: crate::QemuQuantumStopCondition,
     ) -> Result<QemuNodePendingQuantum, QemuNodeChannelError> {
         self.log.lock().unwrap().push(match stop_condition {
-            crate::QemuQuantumStopCondition::Ceiling => {
+            crate::QemuQuantumStopCondition::Ceiling
+            | crate::QemuQuantumStopCondition::ExactEvent => {
                 ChannelCall::ShmemStart(horizon.icount.retired)
             }
             crate::QemuQuantumStopCondition::NextAuthenticatedIdle => {
@@ -679,7 +682,8 @@ impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
             self.teardown_coverage.lock().unwrap().extend(events);
         }
         let (mut outcome, mut final_state) = match pending.stop_condition {
-            crate::QemuQuantumStopCondition::Ceiling => (
+            crate::QemuQuantumStopCondition::Ceiling
+            | crate::QemuQuantumStopCondition::ExactEvent => (
                 AdvanceOutcome::ReachedHorizon,
                 QemuNodeIdleState {
                     current_icount: Icount { retired: horizon },
@@ -705,7 +709,7 @@ impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
                 },
                 next_deadline: output.next_deadline.map(|retired| Icount { retired }),
             };
-            emitted_frames = (0..2)
+            emitted_frames = (0..output.frames)
                 .map(|sequence| QemuNodeEmittedFrame {
                     source: node_id("vm-a"),
                     destination: node_id("vm-b"),
@@ -2151,6 +2155,7 @@ struct ScriptedNetworkOutput {
     stopped_tick: u64,
     outcome: AdvanceOutcome,
     next_deadline: Option<u64>,
+    frames: u64,
 }
 
 fn scripted_node_with_options(

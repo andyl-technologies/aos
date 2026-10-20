@@ -13,15 +13,32 @@ pub const STATUS_DONE: u8 = 2;
 pub const ADVANCE_STOP_CONDITION_CEILING: u8 = 0;
 /// Scheduler advances until the next authenticated all-vCPU idle publication.
 pub const ADVANCE_STOP_CONDITION_NEXT_AUTHENTICATED_IDLE: u8 = 1;
+/// Scheduler advances until its ceiling, which is itself an exact event.
+pub const ADVANCE_STOP_CONDITION_EXACT_EVENT: u8 = 2;
+
+/// Idle wake published by a node that has no local wake source.
+///
+/// A halted node with no timer, input, or device completion parks at its
+/// physical point instead of advancing its clock to the scheduler ceiling
+/// (RFC-0010 SCHED-12). The host treats this value like any wake beyond the
+/// ceiling and settles the node through that ceiling.
+pub const IDLE_WAKE_NONE: u64 = u64::MAX;
 
 /// Selects the boundary that completes one scheduler advance.
+///
+/// A ceiling is an upper bound (RFC-0010 SCHED-12): the node stops at its last
+/// retirement at or below it unless an exact event lies in the remaining gap.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum AdvanceStopCondition {
-    /// Completes at the ceiling or an idle park that cannot reach it.
+    /// Completes when the node settles through the ceiling, or at an idle park
+    /// that cannot reach it. The ceiling itself is not a landing target.
     #[default]
     Ceiling,
     /// Publishes the next all-vCPU idle state without authorizing its deadline.
     NextAuthenticatedIdle,
+    /// Completes like [`Self::Ceiling`], but the ceiling is a modeled exact
+    /// event: the node must arrive at it, by a time-only advance if needed.
+    ExactEvent,
 }
 
 impl AdvanceStopCondition {
@@ -31,7 +48,17 @@ impl AdvanceStopCondition {
         match self {
             Self::Ceiling => ADVANCE_STOP_CONDITION_CEILING,
             Self::NextAuthenticatedIdle => ADVANCE_STOP_CONDITION_NEXT_AUTHENTICATED_IDLE,
+            Self::ExactEvent => ADVANCE_STOP_CONDITION_EXACT_EVENT,
         }
+    }
+
+    /// Reports whether this condition authorizes time up to its ceiling.
+    ///
+    /// Both bounded conditions let an idle node advance to a wake at or below
+    /// the ceiling. Only the next-idle probe withholds that authorization.
+    #[must_use]
+    pub const fn authorizes_ceiling(self) -> bool {
+        matches!(self, Self::Ceiling | Self::ExactEvent)
     }
 
     /// Decodes the current one-byte shared-memory encoding.
@@ -44,6 +71,7 @@ impl AdvanceStopCondition {
         match encoded {
             ADVANCE_STOP_CONDITION_CEILING => Ok(Self::Ceiling),
             ADVANCE_STOP_CONDITION_NEXT_AUTHENTICATED_IDLE => Ok(Self::NextAuthenticatedIdle),
+            ADVANCE_STOP_CONDITION_EXACT_EVENT => Ok(Self::ExactEvent),
             _ => Err(NodeSlotError::InvalidAdvanceStopCondition { encoded }),
         }
     }
@@ -109,7 +137,9 @@ pub struct NodeSlot {
     pub(crate) timer_witness_completed: AtomicU32,
     pub(crate) timer_witness_reserved: AtomicU32,
     pub(crate) advance_publication_sequence: AtomicU64,
-    pub(crate) _pad4: [u8; 40],
+    pub(crate) settled_ceiling_tick: AtomicU64,
+    pub(crate) settled_publication_sequence: AtomicU64,
+    pub(crate) _pad4: [u8; 24],
 }
 
 impl Clone for NodeSlot {
@@ -201,7 +231,11 @@ impl Clone for NodeSlot {
                 self.timer_witness_reserved.load(Ordering::Acquire),
             ),
             advance_publication_sequence: AtomicU64::new(advance_publication_sequence),
-            _pad4: [0; 40],
+            settled_ceiling_tick: AtomicU64::new(self.settled_ceiling_tick.load(Ordering::Acquire)),
+            settled_publication_sequence: AtomicU64::new(
+                self.settled_publication_sequence.load(Ordering::Acquire),
+            ),
+            _pad4: [0; 24],
         }
     }
 }
@@ -313,6 +347,12 @@ pub const NODE_SLOT_TIMER_WITNESS_RESERVED_OFFSET: usize =
 /// Byte offset of the scheduler advance-publication sequence.
 pub const NODE_SLOT_ADVANCE_PUBLICATION_SEQUENCE_OFFSET: usize =
     core::mem::offset_of!(NodeSlot, advance_publication_sequence);
+/// Byte offset of the ceiling through which the node last attested settlement.
+pub const NODE_SLOT_SETTLED_CEILING_TICK_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, settled_ceiling_tick);
+/// Byte offset of the advance publication sequence that settlement covers.
+pub const NODE_SLOT_SETTLED_PUBLICATION_SEQUENCE_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, settled_publication_sequence);
 /// Byte offset of the remaining forward-compatible bytes.
 pub const NODE_SLOT_PAD4_OFFSET: usize = core::mem::offset_of!(NodeSlot, _pad4);
 /// Wire size of one [`NodeSlot`].
@@ -358,6 +398,8 @@ const _: () = assert!(NODE_SLOT_TIMER_WITNESS_FIRED_RAW_ICOUNT_OFFSET == 192);
 const _: () = assert!(NODE_SLOT_TIMER_WITNESS_COMPLETED_OFFSET == 200);
 const _: () = assert!(NODE_SLOT_TIMER_WITNESS_RESERVED_OFFSET == 204);
 const _: () = assert!(NODE_SLOT_ADVANCE_PUBLICATION_SEQUENCE_OFFSET == 208);
-const _: () = assert!(NODE_SLOT_PAD4_OFFSET == 216);
+const _: () = assert!(NODE_SLOT_SETTLED_CEILING_TICK_OFFSET == 216);
+const _: () = assert!(NODE_SLOT_SETTLED_PUBLICATION_SEQUENCE_OFFSET == 224);
+const _: () = assert!(NODE_SLOT_PAD4_OFFSET == 232);
 const _: () = assert!(NODE_SLOT_SIZE == 256);
 const _: () = assert!(NODE_SLOT_ALIGN == 128);

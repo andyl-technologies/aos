@@ -52,7 +52,9 @@ impl NodeSlot {
             timer_witness_completed: AtomicU32::new(0),
             timer_witness_reserved: AtomicU32::new(0),
             advance_publication_sequence: AtomicU64::new(0),
-            _pad4: [0; 40],
+            settled_ceiling_tick: AtomicU64::new(0),
+            settled_publication_sequence: AtomicU64::new(0),
+            _pad4: [0; 24],
         }
     }
 
@@ -331,6 +333,52 @@ impl NodeSlot {
         Ok(())
     }
 
+    /// Publishes a reached icount that settles the node through its ceiling.
+    ///
+    /// QEMU calls this when the node's next retirement would exceed the
+    /// published ceiling and no exact event lies in `(reached, ceiling]`
+    /// (RFC-0010 SCHED-12). The node's clock stays at `reached_icount`, which
+    /// may be below the ceiling. The record names the advance publication it
+    /// settles, so a record left from an earlier quantum never matches a later
+    /// one.
+    ///
+    /// `settled_ceiling` is the ceiling QEMU sampled. If the host replaced it
+    /// since, the settlement is stale: the reached icount is still published,
+    /// but no settlement is recorded and this returns `false`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NodeSlotError::NodeAdvancePastCeiling`] when the reached
+    /// icount exceeds the published ceiling, or an advance-stop decoding error.
+    pub fn publish_settled_icount(
+        &self,
+        reached_icount: u64,
+        settled_ceiling: u64,
+    ) -> Result<bool, NodeSlotError> {
+        let advance = self.load_scheduler_advance_publication()?;
+        if reached_icount > advance.ceiling() {
+            return Err(NodeSlotError::NodeAdvancePastCeiling {
+                next_icount: reached_icount,
+                max_advance_icount: advance.ceiling(),
+            });
+        }
+        let settles = advance.ceiling() == settled_ceiling && advance.stop().authorizes_ceiling();
+
+        let current_ns = icount_to_virtual_ns(reached_icount);
+        let writer = BoundaryWriter::enter(&self.publish_gen);
+        self.current_icount.store(reached_icount, Ordering::Release);
+        self.current_ns.store(current_ns, Ordering::Release);
+        if settles {
+            self.settled_ceiling_tick
+                .store(advance.ceiling(), Ordering::Release);
+            self.settled_publication_sequence
+                .store(advance.sequence(), Ordering::Release);
+        }
+        self.status.store(STATUS_RUNNING, Ordering::Release);
+        drop(writer);
+        Ok(settles)
+    }
+
     /// Publishes that the node is idle and prepares the futex wait precondition.
     ///
     /// # Errors
@@ -420,8 +468,9 @@ impl NodeSlot {
 
     /// Republishes the exact coordinate observed by a QEMU control callback.
     ///
-    /// At the scheduler ceiling, the callback publishes an exact idle boundary:
-    /// the vCPU has yielded, the ceiling prevents another dispatch, and QEMU has
+    /// At the scheduler ceiling, or after the node settled through the current
+    /// advance below it, the callback publishes an exact idle boundary: the
+    /// vCPU has yielded, the ceiling prevents another dispatch, and QEMU has
     /// already run the preceding device bottom halves. An existing idle
     /// publication retains its future wake deadline so the scheduler can still
     /// classify an early pause against the original quantum horizon. A
@@ -482,12 +531,19 @@ impl NodeSlot {
             .map_err(NodeBoundaryPublicationError::Slot)?;
         let current_ns = icount_to_virtual_ns(reached_icount);
         let was_idle = self.status.load(Ordering::Acquire) == STATUS_IDLE;
+        // A settlement record for this very advance proves that no retirement
+        // or exact event remains before the ceiling, just like landing on it.
+        let settled = self.settled_publication_sequence.load(Ordering::Acquire)
+            == advance.sequence()
+            && self.settled_ceiling_tick.load(Ordering::Acquire) == max_advance_icount
+            && self.current_icount.load(Ordering::Acquire) == reached_icount;
         let writer = BoundaryWriter::enter(&self.publish_gen);
         self.current_icount.store(reached_icount, Ordering::Release);
         self.current_ns.store(current_ns, Ordering::Release);
         self.logical_time_raw_icount
             .store(raw_icount, Ordering::Release);
-        if reached_icount == max_advance_icount && stop_condition == AdvanceStopCondition::Ceiling {
+        if (reached_icount == max_advance_icount || settled) && stop_condition.authorizes_ceiling()
+        {
             if !was_idle {
                 self.idle_wake_icount
                     .store(reached_icount, Ordering::Release);
@@ -662,6 +718,8 @@ impl NodeSlot {
             logical_time_restore_target: self.logical_time_restore_target.load(Ordering::Acquire),
             logical_time_restore_request: self.logical_time_restore_request.load(Ordering::Acquire),
             logical_time_restore_ack: self.logical_time_restore_ack.load(Ordering::Acquire),
+            settled_ceiling_tick: self.settled_ceiling_tick.load(Ordering::Acquire),
+            settled_publication_sequence: self.settled_publication_sequence.load(Ordering::Acquire),
             virtual_timer_witness: match self.timer_witness_generation.load(Ordering::Acquire) {
                 0 => None,
                 generation => Some(VirtualTimerFireWitness {
@@ -1135,7 +1193,7 @@ impl NodeSlot {
                 self.max_advance_icount
                     .store(max_advance_icount, Ordering::Release);
             }
-            AdvanceStopCondition::Ceiling => {
+            AdvanceStopCondition::Ceiling | AdvanceStopCondition::ExactEvent => {
                 // A peer that observes the cleared mode must first observe the
                 // clamp or replacement ceiling that bounds renewed execution.
                 self.max_advance_icount
@@ -1174,10 +1232,12 @@ impl NodeSlot {
     }
 
     pub(super) fn is_runnable_after_idle_publish(&self) -> bool {
-        let Ok((max_advance_icount, AdvanceStopCondition::Ceiling)) = self.load_scheduler_advance()
-        else {
+        let Ok((max_advance_icount, stop_condition)) = self.load_scheduler_advance() else {
             return false;
         };
+        if !stop_condition.authorizes_ceiling() {
+            return false;
+        }
         let status = self.status.load(Ordering::Acquire);
         let idle_wake_icount = self.idle_wake_icount.load(Ordering::Acquire);
         status != STATUS_IDLE || max_advance_icount >= idle_wake_icount

@@ -30,7 +30,7 @@ pub use snapshots::*;
 use thiserror::Error;
 
 /// Required shared-memory ABI for native-console admission.
-pub const NATIVE_CONSOLE_REQUIRED_SHMEM_ABI: u32 = 31;
+pub const NATIVE_CONSOLE_REQUIRED_SHMEM_ABI: u32 = 32;
 /// Required control-protocol version for native-console admission.
 pub const NATIVE_CONSOLE_REQUIRED_CONTROL_VERSION: u32 = 4;
 /// Required composite setup schema for native-console admission.

@@ -1838,9 +1838,10 @@ fn parked_selectable_step(
 impl SimulationBackend for QemuNodeSet {
     fn dispatch_contract(&self) -> crucible::BackendDispatchContract {
         // This adapter requires its exact protocol/ABI pairing, not the
-        // unimplemented native Source admission contract.
+        // unimplemented native Source admission contract. ABI 32 carries the
+        // settlement record behind bounded ceilings (RFC-0010 SCHED-12).
         const _: () = assert!(crucible_protocol::CONTROL_PROTOCOL_VERSION == 4);
-        const _: () = assert!(crucible_shmem::ABI_VERSION == 31);
+        const _: () = assert!(crucible_shmem::ABI_VERSION == 32);
         crucible::BackendDispatchContract::BoundedControl
     }
 
@@ -2144,14 +2145,23 @@ impl QemuNodeSet {
                     return Ok(observation);
                 }
             }
-            if observation.physical_stop.is_output() || observation.reached == ceiling {
+            // A settled step completes its ceiling even when the node's clock
+            // stopped at an earlier last retirement (RFC-0010 SCHED-12).
+            if observation.physical_stop.is_output()
+                || observation.reached == ceiling
+                || observation.is_settled()
+            {
                 return Ok(observation);
             }
-            if let crucible::AdvanceOutcome::Paused { .. } = observation.outcome
+            if let crucible::AdvanceOutcome::Paused { at } = observation.outcome
                 && let Some(deadline) = final_state.and_then(|state| state.next_deadline)
                 && deadline.retired > ceiling.ticks
             {
-                observation.reached = ceiling;
+                // The idle node parks at its physical point; its next wake is
+                // beyond the ceiling, so it is settled through the ceiling
+                // without advancing its clock there (SCHED-28 as bounded by
+                // SCHED-12).
+                observation.reached = VirtualTime { ticks: at.retired };
                 observation.settled_through = ceiling;
                 observation.physical_stop = BackendPhysicalStop::Idle;
                 return Ok(observation);

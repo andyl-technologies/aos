@@ -107,7 +107,7 @@ fn qemu_quantum_start_uses_ordered_scheduler_wake_handoff() {
             "self.config.router_slot,",
             "&[],",
             "ceiling,",
-            "stop_condition,",
+            "published_stop,",
             "\"publish scheduler inbox and ceiling\",",
         ],
         "QEMU start_quantum must publish RUN through the ordered inbox/ceiling/wake helper",
@@ -289,6 +289,86 @@ fn qemu_quantum_reports_idle_before_horizon() {
     assert_eq!(slot.snapshot().idle_wake_icount, 12);
 }
 
+#[test]
+fn qemu_quantum_completes_a_settled_horizon_below_its_ceiling() {
+    let slot = NodeSlot::default();
+    let inbound_ring = RingHeader::new();
+    let outbound_ring = RingHeader::new();
+    let mut inbound_entries = frame_entries(8);
+    let mut outbound_entries = frame_entries(8);
+    let mut hot_path = hot_path(
+        &slot,
+        &inbound_ring,
+        &mut inbound_entries,
+        &outbound_ring,
+        &mut outbound_entries,
+    );
+
+    let pending = hot_path
+        .start_quantum(horizon(1_000), crate::QemuQuantumStopCondition::Ceiling)
+        .unwrap_or_else(|error| panic!("quantum start should publish ceiling: {error}"));
+    assert_eq!(
+        slot.load_scheduler_advance(),
+        Ok((1_000, crate::QemuQuantumStopCondition::Ceiling))
+    );
+
+    // An unsettled report below the bound is still pending.
+    slot.publish_reached_icount(951)
+        .unwrap_or_else(|error| panic!("plugin report should publish: {error}"));
+    let pending = match hot_path.poll_quantum(&pending) {
+        Err(QemuQuantumError::PluginReportNotPublished { .. }) => pending,
+        other => panic!("an unsettled report below the ceiling must stay pending: {other:?}"),
+    };
+
+    // QEMU attests that the next retirement and every exact event lie beyond
+    // the ceiling; the clock stays at the last retirement (RFC-0010 SCHED-12).
+    assert_eq!(slot.publish_settled_icount(951, 1_000), Ok(true));
+    let report = hot_path
+        .finish_quantum(pending)
+        .unwrap_or_else(|error| panic!("settled quantum should finish: {error}"));
+
+    assert_eq!(report.ceiling, icount(1_000));
+    assert_eq!(report.final_state.current_icount, icount(951));
+    assert_eq!(report.outcome, AdvanceOutcome::ReachedHorizon);
+}
+
+#[test]
+fn qemu_quantum_ignores_a_settlement_left_by_an_earlier_advance() {
+    let slot = NodeSlot::default();
+    let inbound_ring = RingHeader::new();
+    let outbound_ring = RingHeader::new();
+    let mut inbound_entries = frame_entries(8);
+    let mut outbound_entries = frame_entries(8);
+    let mut hot_path = hot_path(
+        &slot,
+        &inbound_ring,
+        &mut inbound_entries,
+        &outbound_ring,
+        &mut outbound_entries,
+    );
+
+    let first = hot_path
+        .start_quantum(horizon(1_000), crate::QemuQuantumStopCondition::Ceiling)
+        .unwrap_or_else(|error| panic!("first quantum should start: {error}"));
+    assert_eq!(slot.publish_settled_icount(951, 1_000), Ok(true));
+    hot_path
+        .finish_quantum(first)
+        .unwrap_or_else(|error| panic!("first quantum should settle: {error}"));
+
+    // Reissuing the same bound is a new advance; the old record cannot
+    // complete it.
+    let second = hot_path
+        .start_quantum(horizon(1_000), crate::QemuQuantumStopCondition::Ceiling)
+        .unwrap_or_else(|error| panic!("second quantum should start: {error}"));
+    assert!(matches!(
+        hot_path.poll_quantum(&second),
+        Err(QemuQuantumError::PluginReportNotPublished {
+            current_icount: 951,
+            ceiling: 1_000,
+        })
+    ));
+}
+
 #[path = "tests/retained_inbound.rs"]
 mod retained_inbound;
 #[test]
@@ -320,6 +400,11 @@ fn qemu_quantum_caps_horizon_at_next_possible_frame_delivery() {
     };
     assert_eq!(pending.requested_horizon, icount(6));
     assert_eq!(pending.ceiling, icount(5));
+    // The delivery that caps the ceiling is an exact event the node must reach.
+    assert_eq!(
+        slot.load_scheduler_advance(),
+        Ok((5, crate::QemuQuantumStopCondition::ExactEvent))
+    );
     assert_eq!(
         pending.completion_fence,
         Some(QemuAdvanceCompletionFence {
