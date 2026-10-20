@@ -244,7 +244,7 @@ pub(super) async fn submit<A>(
     let Some(commands) = owner.commands.as_ref() else {
         return Err(NativeAdmissionHandoffError::Unsubmitted {
             error: io::Error::new(io::ErrorKind::BrokenPipe, "admission cache owner stopped"),
-            admission,
+            admission: Box::new(admission),
         });
     };
     if let Err(error) = commands.try_send(Command::CacheAdmission { resource, response }) {
@@ -256,7 +256,10 @@ pub(super) async fn submit<A>(
                 io::Error::new(io::ErrorKind::BrokenPipe, "admission cache owner stopped")
             }
         };
-        return Err(NativeAdmissionHandoffError::Unsubmitted { error, admission });
+        return Err(NativeAdmissionHandoffError::Unsubmitted {
+            error,
+            admission: Box::new(admission),
+        });
     }
     drop(admission);
     receive

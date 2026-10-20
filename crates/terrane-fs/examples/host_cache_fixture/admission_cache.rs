@@ -338,7 +338,7 @@ fn refuse_full_queue(
         Poll::Ready(Err(NativeAdmissionHandoffError::Unsubmitted { error, admission }))
             if error.kind() == io::ErrorKind::WouldBlock =>
         {
-            admission
+            *admission
         }
         _ => return Err(invalid("full encoded queue lost original retry admission")),
     };

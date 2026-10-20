@@ -9,7 +9,7 @@ pub enum NativeAdmissionHandoffError<A> {
         /// Explains the queue or stopped-owner refusal.
         error: io::Error,
         /// Retains the genuine completed admission for retry.
-        admission: A,
+        admission: Box<A>,
     },
     /// Reports accepted work whose resources remain with the physical owner.
     Accepted(io::Error),
