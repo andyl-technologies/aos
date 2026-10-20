@@ -815,6 +815,62 @@ fn inbound_wake_inside_parked_ceiling_resumes_runnable_cap()
 }
 
 #[test]
+fn settled_replay_step_moves_the_frontier_through_a_ceiling_it_stopped_below()
+-> Result<(), Box<dyn std::error::Error>> {
+    let target = Icount {
+        retired: 100_000_000,
+    };
+    let mut progress = ReplayPhysicalProgress::new(Icount { retired: 0 });
+    let ceiling = progress.next_ceiling(target)?;
+    let last_retirement = Icount {
+        retired: ceiling.retired - 49,
+    };
+
+    // QEMU settled through the ceiling but its last retirement lies below it.
+    progress.observe(
+        last_retirement,
+        ceiling,
+        AdvanceOutcome::ReachedHorizon,
+        None,
+    )?;
+
+    assert_eq!(
+        progress.next_ceiling(target)?,
+        Icount {
+            retired: 2 * ceiling.retired
+        }
+    );
+    let next = progress.next_ceiling(target)?;
+    assert!(
+        progress
+            .observe(
+                Icount {
+                    retired: last_retirement.retired - 1,
+                },
+                next,
+                AdvanceOutcome::ReachedHorizon,
+                None,
+            )
+            .is_err(),
+        "the physical count must not regress below the last retirement"
+    );
+    assert!(
+        progress
+            .observe(
+                Icount {
+                    retired: next.retired + 1,
+                },
+                next,
+                AdvanceOutcome::ReachedHorizon,
+                None,
+            )
+            .is_err(),
+        "a settled step must never cross its ceiling"
+    );
+    Ok(())
+}
+
+#[test]
 fn runnable_replay_keeps_ring_drain_cap_and_rejects_unrecorded_choice()
 -> Result<(), Box<dyn std::error::Error>> {
     let (_, node, _) = replay_choice_fixture()?;

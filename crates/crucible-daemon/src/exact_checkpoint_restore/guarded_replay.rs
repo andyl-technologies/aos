@@ -577,12 +577,11 @@ impl ReplayPhysicalProgress {
                 "QEMU physical count regressed or crossed the bounded replay ceiling",
             ));
         }
+        // A reached horizon attests settlement through the ceiling (RFC-0010
+        // SCHED-12): the physical count stops at the last retirement at or
+        // below the ceiling and may remain short of it.
+        let settled = matches!(outcome, AdvanceOutcome::ReachedHorizon);
         match outcome {
-            AdvanceOutcome::ReachedHorizon if at != ceiling => {
-                return Err(invalid_replay_selection(
-                    "QEMU reported a reached replay ceiling before its physical count",
-                ));
-            }
             AdvanceOutcome::Paused { at: paused } if paused != at => {
                 return Err(invalid_replay_selection(
                     "QEMU pause count differs from the physical replay count",
@@ -598,7 +597,7 @@ impl ReplayPhysicalProgress {
         };
         self.parked_until = confirmed_parked_deadline;
 
-        if at == ceiling {
+        if at == ceiling || settled {
             self.scheduler_frontier = ceiling;
             self.stalled_reissues = 0;
         } else if confirmed_parked_deadline.is_some() {

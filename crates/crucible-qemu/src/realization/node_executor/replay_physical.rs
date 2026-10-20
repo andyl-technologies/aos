@@ -259,27 +259,8 @@ impl QemuReplayValidationExecutor {
                 .then_some(state.next_deadline)
                 .flatten()
         });
-        if current_icount.retired > ceiling.retired {
-            return Err(QemuVmRealizationError::Executor {
-                operation: "advance guarded replay to physical boundary",
-                message: String::from("QEMU exceeded the authenticated replay ceiling"),
-            });
-        }
-        match outcome {
-            AdvanceOutcome::ReachedHorizon if current_icount != ceiling => {
-                return Err(QemuVmRealizationError::Executor {
-                    operation: "advance guarded replay to physical boundary",
-                    message: String::from("QEMU reported the ceiling without reaching it"),
-                });
-            }
-            AdvanceOutcome::Paused { at } if at != current_icount => {
-                return Err(QemuVmRealizationError::Executor {
-                    operation: "advance guarded replay to physical boundary",
-                    message: String::from("QEMU pause count differs from the live node count"),
-                });
-            }
-            _ => {}
-        }
+        validate_replay_advance(current_icount, ceiling, &outcome)?;
+
         // The opaque observation keeps its last sampled identity while the
         // physical count, event-log offset, and generation bind this step.
         // The oracle takes a fresh full fingerprint at the final comparison.
@@ -373,6 +354,32 @@ impl QemuReplayValidationExecutor {
     }
 }
 
+/// Checks one bounded replay step against the live node count.
+///
+/// A reached horizon attests settlement through the ceiling (RFC-0010
+/// SCHED-12). The live count is the last retirement at or below the ceiling,
+/// so it may stop short of it; only crossing the ceiling is refused.
+fn validate_replay_advance(
+    current_icount: Icount,
+    ceiling: Icount,
+    outcome: &AdvanceOutcome,
+) -> Result<(), QemuVmRealizationError> {
+    let refusal = |message: &str| QemuVmRealizationError::Executor {
+        operation: "advance guarded replay to physical boundary",
+        message: String::from(message),
+    };
+
+    if current_icount.retired > ceiling.retired {
+        return Err(refusal("QEMU exceeded the authenticated replay ceiling"));
+    }
+    match outcome {
+        AdvanceOutcome::Paused { at } if *at != current_icount => {
+            Err(refusal("QEMU pause count differs from the live node count"))
+        }
+        _ => Ok(()),
+    }
+}
+
 fn replay_node_icount(
     runtime: &RuntimeState,
     node: &NodeId,
@@ -429,5 +436,37 @@ mod tests {
             .is_err()
         );
         Ok(())
+    }
+
+    #[test]
+    fn settled_replay_step_may_stop_below_its_ceiling() {
+        let ceiling = Icount { retired: 1_000 };
+        let below = Icount { retired: 951 };
+
+        assert!(validate_replay_advance(below, ceiling, &AdvanceOutcome::ReachedHorizon).is_ok());
+        assert!(validate_replay_advance(ceiling, ceiling, &AdvanceOutcome::ReachedHorizon).is_ok());
+        assert!(
+            validate_replay_advance(
+                Icount { retired: 1_001 },
+                ceiling,
+                &AdvanceOutcome::ReachedHorizon,
+            )
+            .is_err(),
+            "a settled step must never cross its ceiling"
+        );
+        assert!(
+            validate_replay_advance(below, ceiling, &AdvanceOutcome::Paused { at: below }).is_ok()
+        );
+        assert!(
+            validate_replay_advance(
+                below,
+                ceiling,
+                &AdvanceOutcome::Paused {
+                    at: Icount { retired: 900 },
+                },
+            )
+            .is_err(),
+            "a pause must report the live count"
+        );
     }
 }

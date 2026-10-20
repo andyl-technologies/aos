@@ -344,7 +344,11 @@ struct ProductionVmDebugRuntimeEvidence {
     configuration: ContentHash,
     event_log: EventLogOffset,
     scheduler: SchedulerState,
+    /// Each node's actual backend clock: its last retirement or exact event.
     node_icounts: BTreeMap<NodeId, Icount>,
+    /// Each node's settled scheduler time. Under RFC-0010 SCHED-12 a node may
+    /// be settled through a ceiling its actual clock stopped below, so these
+    /// are compared with scheduler time, never with `node_icounts`.
     node_times: BTreeMap<NodeId, VirtualTime>,
     fingerprints: BTreeMap<NodeId, FingerprintSample>,
     graph_runtimes: Vec<RuntimeState>,
@@ -355,7 +359,10 @@ struct ProductionVmDebugRuntimeEvidence {
 struct ProductionVmExactCheckpointTarget {
     configuration: Arc<Configuration>,
     immutable_backing: ContentHash,
+    /// Actual node clock captured with the snapshot.
     counter: u64,
+    /// Settled scheduler time of the boundary. The node's actual clock may
+    /// have stopped at a retirement below it (RFC-0010 SCHED-12).
     scheduler_time: VirtualTime,
     snapshot: ExactSnapshotHandle,
     materialization: ProductionVmExactCheckpointMaterialization,
@@ -926,6 +933,7 @@ fn validate_exact_checkpoint_artifact(
 #[derive(Clone, Debug)]
 struct ProductionVmRecordedControl {
     configuration: Configuration,
+    /// Settled scheduler time of each node when the control was recorded.
     node_times: BTreeMap<NodeId, VirtualTime>,
     control: Vec<ControlOperation>,
 }
