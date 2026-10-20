@@ -725,6 +725,15 @@ where
         self.vmstate.quit().map(|_complete| ())
     }
 
+    fn quit_under_original(
+        &mut self,
+        original: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.vmstate
+            .quit_under_original(original)
+            .map(|_complete| ())
+    }
+
     fn retire_process_scoped_endpoints_after_reap(&mut self) {
         self.vmstate.retire_process_scoped_endpoints_after_reap();
     }

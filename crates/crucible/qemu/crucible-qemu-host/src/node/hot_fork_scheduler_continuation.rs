@@ -333,6 +333,7 @@ impl QemuHotForkSchedulerNodeContinuation {
             _hot_fork_scheduler_authority: Some(authority),
             lifecycle_state: QemuNodeLifecycleState::Running,
             shutdown_policy,
+            child_shutdown: shutdown_continuation::ChildShutdown::new(),
             async_policy,
             crash_detector,
             host_io_runtime,

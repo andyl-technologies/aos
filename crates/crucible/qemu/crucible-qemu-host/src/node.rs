@@ -19,7 +19,7 @@ use crate::async_driver::run_bounded_qemu_node_step_with_start_hook;
 use crate::console_observation::QemuConsoleObservationSpool;
 use crate::shutdown::{
     QemuChildWait, QemuReap, QemuShutdownPolicy, QemuShutdownReport, QemuShutdownRung,
-    QemuShutdownTarget, QemuShutdownTargetError, shutdown_qemu_child, signal_child, wait_child,
+    QemuShutdownTarget, QemuShutdownTargetError, signal_child, wait_child,
 };
 use crate::supervision::HostSupervisionDeadline;
 use crate::{
@@ -789,6 +789,7 @@ pub struct QemuNode {
     _hot_fork_scheduler_authority: Option<QemuHotForkInstalledNodeAuthority>,
     lifecycle_state: QemuNodeLifecycleState,
     shutdown_policy: QemuShutdownPolicy,
+    child_shutdown: shutdown_continuation::ChildShutdown,
     async_policy: QemuAsyncDriverPolicy,
     crash_detector: QemuCrashDetector,
     host_io_runtime: Box<dyn QemuHostIoRuntime>,
@@ -968,6 +969,7 @@ impl QemuNode {
             _hot_fork_scheduler_authority: None,
             lifecycle_state: QemuNodeLifecycleState::Running,
             shutdown_policy,
+            child_shutdown: shutdown_continuation::ChildShutdown::new(),
             async_policy,
             crash_detector,
             host_io_runtime: Box::new(host_io_runtime),
@@ -2050,6 +2052,7 @@ impl QemuNode {
         ceiling: Icount,
         stop_condition: crate::QemuQuantumStopCondition,
     ) -> Result<crate::QemuAsyncNodeStepReport, QemuNodeError> {
+        self.shutdown_health()?;
         if self.reset_resume_is_pending() {
             return Err(QemuNodeError::checkpoint(
                 "reset requires its original-bound idle and fresh capture",
@@ -2093,6 +2096,7 @@ impl QemuNode {
             channels: &mut self.channels,
             lifecycle_state: &mut self.lifecycle_state,
             shutdown_policy: self.shutdown_policy,
+            child_shutdown: &mut self.child_shutdown,
             supervisor: self.host_io_runtime.host_operation_supervisor().cloned(),
             stop_condition,
         };
@@ -2161,6 +2165,7 @@ impl QemuNode {
             channels: &mut self.channels,
             lifecycle_state: &mut self.lifecycle_state,
             shutdown_policy: self.shutdown_policy,
+            child_shutdown: &mut self.child_shutdown,
             supervisor: self.host_io_runtime.host_operation_supervisor().cloned(),
             stop_condition,
         };
@@ -2690,7 +2695,10 @@ impl QemuNode {
     ///
     /// The runner uses plugin IPC `Quit`, QMP `quit`, `SIGTERM`, `SIGKILL`, and
     /// reap in that order. Polite channel failures are recorded by the shutdown
-    /// report and do not prevent signal escalation or reap.
+    /// report and do not prevent signal escalation or reap. A later call may
+    /// finish factual closure after an earlier delivered failure; it never
+    /// renews the original operation. [`Self::shutdown_health`] preserves that
+    /// failure independently of physical closure.
     ///
     /// # Errors
     ///
@@ -2702,6 +2710,17 @@ impl QemuNode {
             return Err(QemuNodeError::CoverageEventLogRequired);
         }
         self.shutdown_child_after_coverage_drain()
+    }
+
+    /// Reports permanent failure of this child's retained cleanup invocation.
+    ///
+    /// Physical shutdown may finish after reporting an earlier refusal. This
+    /// query preserves its logical health independently of that factual close.
+    ///
+    /// # Errors
+    /// Returns the saved rung, Original or completion/post failure.
+    pub fn shutdown_health(&self) -> Result<(), QemuNodeError> {
+        self.child_shutdown.health()
     }
 
     /// Drains final coverage into `event_log`, then runs shutdown escalation.
@@ -2720,12 +2739,12 @@ impl QemuNode {
     }
 
     fn shutdown_child_after_coverage_drain(&mut self) -> Result<QemuShutdownReport, QemuNodeError> {
-        let report = shutdown_node_child(
+        let report = self.child_shutdown.close(
             &mut self.child,
             &mut self.channels,
             &mut self.lifecycle_state,
             self.shutdown_policy,
-            self.host_io_runtime.host_operation_supervisor().cloned(),
+            self.host_io_runtime.host_operation_supervisor(),
         )?;
         self.finish_host_ram_cleanup()?;
         Ok(report)
@@ -2744,11 +2763,17 @@ impl QemuNode {
         let status = self
             .crash_detector
             .bounded_await_timeout(source.operation, timeout);
-        let shutdown = self.shutdown_child()?;
-        Err(QemuNodeError::Crashed {
-            status: Box::new(status),
-            shutdown: Box::new(shutdown),
-        })
+        match self.shutdown_child() {
+            Ok(shutdown) => Err(QemuNodeError::Crashed {
+                status: Box::new(status),
+                shutdown: Box::new(shutdown),
+            }),
+            Err(shutdown) => Err(QemuNodeError::ShutdownAfterChannelFailure {
+                first: source,
+                status,
+                shutdown: Box::new(shutdown),
+            }),
+        }
     }
 }
 
@@ -2765,57 +2790,88 @@ struct QemuNodeShutdownTarget<'a> {
     qmp_machine_control: &'a mut dyn QemuQmpMachineControlChannel,
     supervisor: Option<&'a crucible_host_resources::host_supervision::HostOperationSupervisor>,
     guard: Option<&'a crucible_host_resources::host_supervision::HostOperationGuard>,
+    observations: &'a mut [(
+        Option<crucible_host_resources::host_supervision::HostSupervisionError>,
+        Option<crucible_host_resources::host_supervision::HostSupervisionError>,
+    ); 5],
+    // Entry, ladder, completion, observation and ten rung refusals: <=14.
+    history_version: &'a mut u8,
 }
 
 pub(crate) mod operational_health;
 mod shutdown_budget;
+mod shutdown_continuation;
+
+/// Measures only the new inline shutdown control in its existing node body.
+pub(crate) fn child_shutdown_control_extent() -> Option<u64> {
+    u64::try_from(std::mem::size_of::<shutdown_continuation::ChildShutdown>()).ok()
+}
 
 impl QemuShutdownTarget for QemuNodeShutdownTarget<'_> {
+    fn child_reaped(&self) -> bool {
+        self.child.reaped()
+    }
+
     fn send_control_quit(&mut self) -> Result<(), QemuShutdownTargetError> {
-        if let Some(guard) = self.guard {
-            return self
+        self.under_original(QemuShutdownRung::ControlQuit, |target| {
+            if let Some(guard) = target.guard {
+                return target
+                    .plugin_control
+                    .send_quit_supervised(guard)
+                    .map_err(channel_error_to_shutdown_error);
+            }
+            target
                 .plugin_control
-                .send_quit_supervised(guard)
-                .map_err(channel_error_to_shutdown_error);
-        }
-        self.plugin_control
-            .send_quit()
-            .map_err(channel_error_to_shutdown_error)
+                .send_quit()
+                .map_err(channel_error_to_shutdown_error)
+        })
     }
 
     fn send_qmp_quit(&mut self) -> Result<(), QemuShutdownTargetError> {
-        self.qmp_machine_control
-            .quit()
+        self.under_original(QemuShutdownRung::QmpQuit, |target| {
+            match target.guard {
+                Some(original) => target.qmp_machine_control.quit_under_original(original),
+                None => target.qmp_machine_control.quit(),
+            }
             .map_err(channel_error_to_shutdown_error)
+        })
     }
 
     fn send_sigterm(&mut self) -> Result<(), QemuShutdownTargetError> {
-        self.child.send_sigterm()
+        self.under_original(QemuShutdownRung::Sigterm, |target| {
+            target.child.send_sigterm()
+        })
     }
 
     fn send_sigkill(&mut self) -> Result<(), QemuShutdownTargetError> {
-        self.child.send_sigkill()
+        self.under_original(QemuShutdownRung::Sigkill, |target| {
+            target.child.send_sigkill()
+        })
     }
 
-    fn wait_for_exit(
+    fn wait_for_exit_observed(
         &mut self,
         rung: QemuShutdownRung,
         timeout: Duration,
-    ) -> Result<QemuChildWait, QemuShutdownTargetError> {
-        if self.guard.is_some() {
-            self.wait_for_live_exit()
-        } else {
-            self.child.wait_for_exit(rung, timeout)
-        }
+    ) -> (Option<QemuChildWait>, Result<(), QemuShutdownTargetError>) {
+        self.under_original_observed(rung, |target| {
+            if target.guard.is_some() {
+                target.wait_for_live_exit()
+            } else {
+                target.child.wait_for_exit(rung, timeout)
+            }
+        })
     }
 
     fn reap(&mut self, timeout: Duration) -> Result<QemuReap, QemuShutdownTargetError> {
-        if self.guard.is_none() {
-            return self.child.reap(timeout);
-        }
-        self.wait_for_live_exit().map(|state| match state {
-            QemuChildWait::Exited => QemuReap::Reaped,
-            QemuChildWait::StillRunning => QemuReap::StillAlive,
+        self.under_original(QemuShutdownRung::Reap, |target| {
+            if target.guard.is_none() {
+                return target.child.reap(timeout);
+            }
+            target.wait_for_live_exit().map(|state| match state {
+                QemuChildWait::Exited => QemuReap::Reaped,
+                QemuChildWait::StillRunning => QemuReap::StillAlive,
+            })
         })
     }
 }

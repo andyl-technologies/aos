@@ -14,6 +14,9 @@ use std::time::Duration;
 use crucible_qemu_protocol::{HostMsg, control_encode_host_msg, write_control_frame};
 use thiserror::Error;
 
+mod continuation;
+pub(crate) use continuation::QemuShutdownProgress;
+
 /// Ordered shutdown rungs for one QEMU child.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QemuShutdownRung {
@@ -92,7 +95,10 @@ pub struct QemuShutdownAttempt {
     pub rung: QemuShutdownRung,
     /// Bounded wait associated with the rung.
     pub wait: Duration,
-    /// Child state observed after the rung's wait.
+    /// Returned child state, conservatively `StillRunning` if no state returned.
+    ///
+    /// A failed wait is retained separately in the report's failures; this
+    /// conservative value is never evidence of an actual running or reaped child.
     pub child: QemuChildWait,
 }
 
@@ -149,6 +155,14 @@ pub enum QemuShutdownError {
         rung: QemuShutdownRung,
         /// Underlying target error.
         source: QemuShutdownTargetError,
+        /// Actual preceding rung outputs, including independent failures.
+        report: QemuShutdownReport,
+    },
+    /// A prior target invocation did not return a known disposition.
+    #[error("shutdown rung {rung:?} has an uncertain entered disposition")]
+    Uncertain {
+        /// Rung whose invocation remains unacknowledged.
+        rung: QemuShutdownRung,
     },
     /// The child remained live after `SIGKILL` and the reap deadline.
     #[error("QEMU child remained live after shutdown escalation")]
@@ -160,6 +174,14 @@ pub enum QemuShutdownError {
 
 /// Target controlled by the QEMU shutdown escalation runner.
 pub trait QemuShutdownTarget {
+    /// Reports an already-known reap of this target's actual owned child.
+    ///
+    /// This factual observation grants no operation or successful post. The
+    /// default supplies no proof; owning adapters may expose their real flag.
+    fn child_reaped(&self) -> bool {
+        false
+    }
+
     /// Sends the Crucible control-socket `Quit` frame.
     ///
     /// # Errors
@@ -189,17 +211,21 @@ pub trait QemuShutdownTarget {
     /// Returns [`QemuShutdownTargetError`] when signal delivery fails.
     fn send_sigkill(&mut self) -> Result<(), QemuShutdownTargetError>;
 
-    /// Waits up to `timeout` for the child to exit.
+    /// Waits up to `timeout`, preserving the child disposition and status.
+    ///
+    /// A present output records only a value returned by this wait. It remains
+    /// available when an independent postcheck refuses; physical exit does not
+    /// imply a successful operation status.
     ///
     /// # Errors
     ///
-    /// Returns [`QemuShutdownTargetError`] when the child state cannot be
-    /// queried.
-    fn wait_for_exit(
+    /// The status returns [`QemuShutdownTargetError`] when waiting or its
+    /// independent postcheck fails. An absent output supplies no child fact.
+    fn wait_for_exit_observed(
         &mut self,
         rung: QemuShutdownRung,
         timeout: Duration,
-    ) -> Result<QemuChildWait, QemuShutdownTargetError>;
+    ) -> (Option<QemuChildWait>, Result<(), QemuShutdownTargetError>);
 
     /// Reaps the child or confirms an earlier wait already reaped it.
     ///
@@ -224,53 +250,8 @@ pub fn shutdown_qemu_child<T>(
 where
     T: QemuShutdownTarget,
 {
-    let mut report = QemuShutdownReport {
-        attempts: Vec::new(),
-        failures: Vec::new(),
-        reaped: false,
-        leaked: false,
-    };
-
-    for (rung, wait) in [
-        (QemuShutdownRung::ControlQuit, policy.control_quit_wait),
-        (QemuShutdownRung::QmpQuit, policy.qmp_quit_wait),
-        (QemuShutdownRung::Sigterm, policy.sigterm_wait),
-        (QemuShutdownRung::Sigkill, policy.sigkill_wait),
-    ] {
-        if let Err(source) = execute_shutdown_rung(target, rung) {
-            report.failures.push(QemuShutdownFailure { rung, source });
-            continue;
-        }
-        let child = match target.wait_for_exit(rung, wait) {
-            Ok(child) => child,
-            Err(source) => {
-                report.failures.push(QemuShutdownFailure { rung, source });
-                QemuChildWait::StillRunning
-            }
-        };
-        report
-            .attempts
-            .push(QemuShutdownAttempt { rung, wait, child });
-        if child == QemuChildWait::Exited {
-            break;
-        }
-    }
-
-    match target
-        .reap(policy.reap_wait)
-        .map_err(|source| QemuShutdownError::Target {
-            rung: QemuShutdownRung::Reap,
-            source,
-        })? {
-        QemuReap::Reaped => {
-            report.reaped = true;
-            Ok(report)
-        }
-        QemuReap::StillAlive => {
-            report.leaked = true;
-            Err(QemuShutdownError::LeakedChild { report })
-        }
-    }
+    let mut progress = QemuShutdownProgress::new();
+    progress.run(target, policy)
 }
 
 /// Unix process adapter for the QEMU shutdown target.
@@ -309,6 +290,10 @@ where
     C: Write,
     Q: Write,
 {
+    fn child_reaped(&self) -> bool {
+        self.reaped
+    }
+
     fn send_control_quit(&mut self) -> Result<(), QemuShutdownTargetError> {
         send_control_quit_frame(&mut self.control)
     }
@@ -325,16 +310,19 @@ where
         signal_child(self.child.id(), libc::SIGKILL, "send SIGKILL")
     }
 
-    fn wait_for_exit(
+    fn wait_for_exit_observed(
         &mut self,
         _rung: QemuShutdownRung,
         timeout: Duration,
-    ) -> Result<QemuChildWait, QemuShutdownTargetError> {
-        let state = wait_child(&mut self.child, timeout)?;
+    ) -> (Option<QemuChildWait>, Result<(), QemuShutdownTargetError>) {
+        let state = match wait_child(&mut self.child, timeout) {
+            Ok(state) => state,
+            Err(first) => return (None, Err(first)),
+        };
         if state == QemuChildWait::Exited {
             self.reaped = true;
         }
-        Ok(state)
+        (Some(state), Ok(()))
     }
 
     fn reap(&mut self, timeout: Duration) -> Result<QemuReap, QemuShutdownTargetError> {

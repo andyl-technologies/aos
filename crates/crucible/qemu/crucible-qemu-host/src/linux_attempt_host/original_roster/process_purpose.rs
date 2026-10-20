@@ -1021,6 +1021,7 @@ fn startup_and_transport_extent() -> Result<u64, InstalledProcessPurposeError> {
         .and_then(|bytes| {
             bytes.checked_add(u64::try_from(std::mem::size_of::<crate::QemuNodeChild>()).ok()?)
         })
+        .and_then(|bytes| bytes.checked_add(crate::node::child_shutdown_control_extent()?))
         .ok_or(InstalledProcessPurposeError::Capacity)
 }
 

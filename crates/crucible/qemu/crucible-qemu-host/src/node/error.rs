@@ -157,6 +157,32 @@ pub enum QemuNodeError {
         #[source]
         source: crate::QemuAsyncDriverHealthError,
     },
+    /// A timed-out channel failed before its independent physical shutdown.
+    #[error("{first}; crash status={status:?}; shutdown refusal: {shutdown}")]
+    ShutdownAfterChannelFailure {
+        /// Actual initiating channel error, preserved before cleanup.
+        first: QemuNodeChannelError,
+        /// Original crash classification before cleanup was attempted.
+        status: QemuNodeRunStatus,
+        /// Independently retained physical cleanup failure.
+        shutdown: Box<QemuNodeError>,
+    },
+    /// Child cleanup retains its actual live-check and completion observations.
+    #[error(
+        "child cleanup Original refused: begin={begin:?}; phases={observations:?}; completion={completion:?}; report={report:?}"
+    )]
+    ShutdownOriginal {
+        /// One-time cleanup entry refusal, if entry did not succeed.
+        begin: Option<HostSupervisionError>,
+        /// First precheck and independent post for each ordered shutdown rung.
+        observations: [(Option<HostSupervisionError>, Option<HostSupervisionError>); 5],
+        /// Whether the actual completion effect occurred before its post.
+        completion_effect: bool,
+        /// Same operation's independent completion/post result.
+        completion: Option<HostSupervisionError>,
+        /// Actual rung outputs retained before their statuses were interpreted.
+        report: QemuShutdownReport,
+    },
     /// The owned-child shutdown ladder failed.
     #[error("owned QEMU child shutdown failed: {source}")]
     Shutdown {
@@ -367,6 +393,40 @@ impl QemuNodeError {
 impl From<QemuNodeError> for BackendError {
     fn from(error: QemuNodeError) -> Self {
         let error = match error {
+            error @ QemuNodeError::ShutdownOriginal { .. } => {
+                let QemuNodeError::ShutdownOriginal {
+                    begin,
+                    observations,
+                    completion,
+                    ..
+                } = &error
+                else {
+                    return Self::Rejected {
+                        message: error.to_string(),
+                    };
+                };
+                let source = begin
+                    .or_else(|| {
+                        observations
+                            .iter()
+                            .find_map(|(before, after)| before.or(*after))
+                    })
+                    .or(*completion);
+                if let Some(source) = source {
+                    return Self::RetainedOperationalFailure {
+                        kind: operational_failure_kind(source),
+                        source: BackendOperationalCause::new(error),
+                    };
+                }
+                error
+            }
+            error @ (QemuNodeError::Shutdown { .. }
+            | QemuNodeError::ShutdownAfterChannelFailure { .. }) => {
+                return Self::RetainedOperationalFailure {
+                    kind: BackendOperationalFailureKind::Unavailable,
+                    source: BackendOperationalCause::new(error),
+                };
+            }
             QemuNodeError::AsyncDriver {
                 source: QemuAsyncDriverError::OperationalHealth(source),
             }

@@ -1483,6 +1483,20 @@ pub(crate) trait QemuQmpMachineControlChannel: Send {
     /// Returns [`QemuNodeChannelError`] when QMP cannot send the quit command.
     fn quit(&mut self) -> Result<(), QemuNodeChannelError>;
 
+    /// Requests termination under the caller's existing cleanup Original.
+    ///
+    /// # Errors
+    /// Refuses a transport without a same-Original bounded QMP exchange.
+    fn quit_under_original(
+        &mut self,
+        _original: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<(), QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "QMP quit",
+            "same cleanup Original transport unavailable",
+        ))
+    }
+
     /// Releases the process-scoped guest activation endpoint after proven reap.
     ///
     /// Implementations that do not retain a guest activation endpoint may use

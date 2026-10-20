@@ -727,6 +727,20 @@ where
         self.send_command(QmpCommand::Quit)
     }
 
+    /// Requests termination without creating another cleanup operation.
+    ///
+    /// # Errors
+    /// Returns the actual transport, response or same-Original refusal.
+    pub(crate) fn quit_under_original(
+        &mut self,
+        original: &HostOperationGuard,
+    ) -> Result<QmpCommandComplete, QmpError> {
+        let response = self.exchange_under(QmpCommand::Quit, original)?;
+        Ok(QmpCommandComplete {
+            command: response.command,
+        })
+    }
+
     /// Imports one Unix descriptor into QEMU under an exact bounded name.
     ///
     /// The JSON command and `SCM_RIGHTS` descriptor are sent as one QMP stream
@@ -1207,7 +1221,15 @@ where
             self.stream.get_mut().poison_qmp_stream();
         }
         let response = result?;
-        if let Err(error) = deadline.complete(kind.wire_name()) {
+        // A nested Quit is one child-cleanup phase, not completion of that
+        // operation's required work. The child owner records progress only
+        // after actual reap; the borrowed exchange still checks its raw post.
+        let post = if kind == QmpCommandKind::Quit {
+            deadline.remaining(kind.wire_name()).map(|_| ())
+        } else {
+            deadline.complete(kind.wire_name())
+        };
+        if let Err(error) = post {
             #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
             if kind == QmpCommandKind::SelectableReset {
                 self.poisoned = true;

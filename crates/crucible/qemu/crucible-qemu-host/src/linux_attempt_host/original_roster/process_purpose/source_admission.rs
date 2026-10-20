@@ -327,6 +327,7 @@ pub(in crate::linux_attempt_host) fn source_host_peak()
         .and_then(|bytes| bytes.checked_add(std::mem::size_of::<InstalledSourceState>() as u64))
         .and_then(|bytes| bytes.checked_add(supervisor_extent))
         .and_then(|bytes| bytes.checked_add(std::mem::size_of::<crate::QemuNodeChild>() as u64))
+        .and_then(|bytes| bytes.checked_add(crate::node::child_shutdown_control_extent()?))
         .and_then(|bytes| bytes.checked_add(std::mem::size_of::<crate::QemuSpawnError>() as u64))
         .ok_or(InstalledProcessPurposeError::Capacity)?;
     let qmp_extent = crate::QemuQmpExactSnapshotControlChannel::<

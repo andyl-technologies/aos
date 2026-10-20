@@ -472,6 +472,7 @@ fn qemu_node_retains_process_endpoints_when_reap_fails() -> Result<(), Box<dyn E
     // externally parented process that remains alive through every rung.
     assert!(node.shutdown_child()?.reaped);
     node.child = QemuNodeProcessControl::external(Box::new(UnreapableExternalProcessControl));
+    node.child_shutdown = shutdown_continuation::ChildShutdown::new();
     log.lock().unwrap().clear();
 
     let error = node
@@ -503,6 +504,7 @@ fn bounded_scheduler_preemption_rejects_externally_owned_process() -> Result<(),
     )?;
     assert!(node.shutdown_child()?.reaped);
     node.child = QemuNodeProcessControl::external(Box::new(UnreapableExternalProcessControl));
+    node.child_shutdown = shutdown_continuation::ChildShutdown::new();
 
     let evidence = crate::BoundedSchedulerPreemptionEvidence::default();
     node.enable_bounded_scheduler_preemption(evidence.claim()?);
@@ -563,13 +565,14 @@ fn managed_reset_unsupported_node_has_zero_channel_effects() -> Result<(), Box<d
     let original = Arc::new(supervisor.begin(HostOperationClass::Preparation)?);
     let before = recorded(&log);
 
-    let pending = crucible_qemu_protocol::selectable_catalog_plan::SelectablePlanPendingRequest::new(
-        crucible_qemu_protocol::SelectionRequest::new(3, "flight.ready", "w001", None, 97)?,
-        9,
-        11,
-        0,
-        0x7000,
-    );
+    let pending =
+        crucible_qemu_protocol::selectable_catalog_plan::SelectablePlanPendingRequest::new(
+            crucible_qemu_protocol::SelectionRequest::new(3, "flight.ready", "w001", None, 97)?,
+            9,
+            11,
+            0,
+            0x7000,
+        );
     let result = node.reset_selectable_under_original(&pending, &original);
 
     assert!(matches!(

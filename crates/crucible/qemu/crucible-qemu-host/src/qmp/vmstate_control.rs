@@ -1179,4 +1179,17 @@ where
     pub fn quit(&mut self) -> Result<QmpCommandComplete, QemuNodeChannelError> {
         self.client.quit().map_err(QemuNodeChannelError::from)
     }
+
+    /// Uses the same cleanup Original through the complete quit exchange.
+    ///
+    /// # Errors
+    /// Returns the actual transport, response or same-Original refusal.
+    pub(crate) fn quit_under_original(
+        &mut self,
+        original: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<QmpCommandComplete, QemuNodeChannelError> {
+        self.client
+            .quit_under_original(original)
+            .map_err(QemuNodeChannelError::from)
+    }
 }

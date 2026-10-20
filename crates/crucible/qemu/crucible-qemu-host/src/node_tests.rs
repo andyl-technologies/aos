@@ -2175,6 +2175,14 @@ fn scripted_hot_fork_capture_node(
     Ok(node)
 }
 
+/// Builds the existing owned-child fixture for bounded continuation controls.
+///
+/// # Errors
+/// Returns the actual fixture process or channel construction failure.
+pub(super) fn shutdown_continuation_fixture() -> Result<QemuNode, Box<dyn Error>> {
+    scripted_node(shared_log(), false, false, false)
+}
+
 fn scripted_node(
     log: SharedLog,
     fail_plugin_quit: bool,

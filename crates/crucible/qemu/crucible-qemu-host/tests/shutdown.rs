@@ -334,16 +334,17 @@ impl QemuShutdownTarget for ScriptedTarget {
         self.record_action(QemuShutdownRung::Sigkill)
     }
 
-    fn wait_for_exit(
+    fn wait_for_exit_observed(
         &mut self,
         rung: QemuShutdownRung,
         timeout: Duration,
-    ) -> Result<QemuChildWait, QemuShutdownTargetError> {
+    ) -> (Option<QemuChildWait>, Result<(), QemuShutdownTargetError>) {
         self.waits.push((rung, timeout));
-        Ok(self
+        let output = self
             .wait_results
             .pop_front()
-            .unwrap_or(QemuChildWait::StillRunning))
+            .unwrap_or(QemuChildWait::StillRunning);
+        (Some(output), Ok(()))
     }
 
     fn reap(&mut self, timeout: Duration) -> Result<QemuReap, QemuShutdownTargetError> {

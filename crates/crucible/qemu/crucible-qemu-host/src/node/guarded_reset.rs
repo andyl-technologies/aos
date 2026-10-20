@@ -173,6 +173,7 @@ impl QemuNode {
         ceiling: Icount,
         original: &crucible_host_resources::host_supervision::HostOperationGuard,
     ) -> Result<crate::QemuAsyncNodeStepReport, QemuNodeError> {
+        self.shutdown_health()?;
         let mut target = QemuNodeAsyncStepTarget {
             #[cfg(any(test, feature = "test-support"))]
             block_completion_observer: self.block_completion_observer.clone(),
@@ -183,6 +184,7 @@ impl QemuNode {
             channels: &mut self.channels,
             lifecycle_state: &mut self.lifecycle_state,
             shutdown_policy: self.shutdown_policy,
+            child_shutdown: &mut self.child_shutdown,
             supervisor: self.host_io_runtime.host_operation_supervisor().cloned(),
             stop_condition: crate::QemuQuantumStopCondition::NextAuthenticatedIdle,
         };

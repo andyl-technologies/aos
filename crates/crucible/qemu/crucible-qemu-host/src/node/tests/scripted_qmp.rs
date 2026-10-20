@@ -964,6 +964,16 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
         Ok(())
     }
 
+    fn quit_under_original(
+        &mut self,
+        original: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<(), QemuNodeChannelError> {
+        original
+            .wait_slice()
+            .map_err(|source| QemuNodeChannelError::new("QMP quit", source.to_string()))?;
+        self.quit()
+    }
+
     fn retire_process_scoped_endpoints_after_reap(&mut self) {
         if self.track_process_endpoint_retirement {
             self.log
