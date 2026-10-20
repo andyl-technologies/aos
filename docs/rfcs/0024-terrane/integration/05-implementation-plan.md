@@ -9263,10 +9263,29 @@ retries only after original last-descriptor closure. All previous controls,
 remain; only the overall guest allowance grows from 780 to 870 seconds for
 the two additional real grace windows. Formatting, graph and unsafe checks
 pass on the committed source. Three Linux lint profiles, SDK all-target lint
-and both private documentation builds pass in 168.428 seconds; image/archive
-and application qualification continue. Native execution follows actual
-collection and review of the read-promotion predecessor. This component does
-not qualify lower-tier fallback, full HOST-19, NativeReady or a complete task.
+and both private documentation builds pass in 168.428 seconds. Image and archive
+preparation pass in 255.624 and 152.050 seconds; independent review verifies all
+5,117 image inputs, four Cargo executables, 73 selectors, eight helpers and all
+5,105 archive inputs. All 129 predecessor cases and six privileged ignores
+remain unchanged. The preparation controller actually terminates successfully;
+local all-target native-fixture Clippy also passes after the shared target lock
+clears. Required application-target compilation continues. Native execution
+follows actual collection and review of the read-promotion predecessor. This
+component does not qualify lower-tier fallback, full HOST-19, NativeReady or a
+complete task.
+
+Gate-compilation continuation `17793dcad2` shares the original default-Tokio
+SDK test executable across the eighteen file-bucket gates. The separate
+no-default-feature SDK surface image retains its original feature selection.
+Both variants bind actual Cargo artifacts, test profiles, source inputs,
+runtime libraries and package working directories. Each gate still executes
+in its own protected namespace; selected SDK cases must each pass exactly
+once. Nix evaluation confirms all 286 original invocations, including 283 SDK
+cases and three Format cases, keep their names, order and umasks. All Rust,
+manifest, lock and dependency bytes remain unchanged. Formatting, registry,
+graph and unsafe checks pass; both image variants and runtime cases are under
+qualification. Existing guarded sources and native qualification order remain
+preserved, and no task checkbox advances.
 
 The older shared-directory aggregate at `86fb63e127` actually terminates with
 failure after 18,940.237 seconds. Nextest reports 2,149 run, 2,141 passed,
