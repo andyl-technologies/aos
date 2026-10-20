@@ -1910,10 +1910,11 @@ in
                           str(source_root / f"tests/unit/test-crucible-{name}.py"),
                           "--output-dir", str(source_root / f"{name}-proof"),
                       ]
-                      if name == "settle-prepark":
+                      if name in ("settle-prepark", "control-deferred"):
                           fixture_command = [
                               sys.executable,
-                              "${../../tests/crucible/settle-prepark-native.py}",
+                              "${../../tests/crucible/control-boundary-native.py}",
+                              "--fixture", name,
                               "--source-root", str(source_root),
                               "--build-root", entry["directory"],
                               "--output-dir", str(source_root / f"{name}-proof"),

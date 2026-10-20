@@ -1,23 +1,24 @@
-From bc75333383c5d64014b2d91044e370b45aaf2d95 Mon Sep 17 00:00:00 2001
+From a6bd0cc8571ad77bc4a08a7d684b84536a879878 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] crucible: retain deferred-control component object
+Subject: [PATCH] crucible: isolate deferred-control component symbols
 
-Retain the complete Crucible integration and all existing RAM metadata,
-settle-prepark and deferred-control behavior on the sole pinned QEMU base.
-Change only the deferred-control emitter's compile/link tail; preserve
-production, providers, APIs, ABI, licenses, limits and support policy.
+Retain the complete Crucible integration on the sole pinned QEMU base.
+Change only the deferred-control component namespace; preserve all other
+source blobs, modes, production providers, APIs, ABI, licenses, configured
+limits and experimental support policy.
 
-Compile the generated component into a retained control-deferred.o with
-the same configured compiler prefix, then consume that actual object in
-the existing utility-source link order. Record both checked command
-arrays. Preserve link-only arguments, checked failures and the runtime
-command, along with every input pin, assertion and causal mutation.
+Map the 124 observed component definitions except main to fixed private
+names before the first component include. Keep all 28 observed undefined
+provider names unmapped, including object_unref and notifier_list_notify.
+Apply the namespace only to the component translation unit so independently
+compiled QOM and utility providers retain their genuine symbols.
 
-The retained final-link input supports object inventory during the next
-normal native check without another opaque extraction. Actual object_unref
-provider closure, symbol ownership, genuine QOM linkage and component
-runtime qualification remain pending. No provider is substituted here.
+Preserve every existing production selection, input pin, opaque composition,
+assertion, causal mutation and retained-object compile/link/runtime command.
+The actual owning runner must still verify resulting symbols, types,
+relocations, genuine QOM/support linkage and positive/exact-mutant runtime
+behavior. Source metadata review does not qualify those obligations.
 
 No selected Source or CPU activation, genuine Main/Original admission,
 positive physical CPU-pin return, RCU, launched lifecycle or performance
@@ -253033,10 +253034,10 @@ index 0000000000000000000000000000000000000000..962b0dba612e5ea5407517d6188d2189
 +    main()
 diff --git a/tests/unit/test-crucible-control-deferred.py b/tests/unit/test-crucible-control-deferred.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..f9e0991a7553e9bc2fdd8d991a0a0f5e457c7f2b
+index 0000000000000000000000000000000000000000..c02621389553d5a21441e915ef8a49ccb4ddd5ff
 --- /dev/null
 +++ b/tests/unit/test-crucible-control-deferred.py
-@@ -0,0 +1,506 @@
+@@ -0,0 +1,767 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise control ownership across production TX stop and advance settlement.
 +
@@ -253096,6 +253097,266 @@ index 0000000000000000000000000000000000000000..f9e0991a7553e9bc2fdd8d991a0a0f5e
 +        sources[name] = data.decode()
 +    return sources
 +
++
++# Keep the actual component's external definitions separate from linked QEMU
++# support. This block precedes all headers so declarations and inlines use the
++# same private names. Undefined providers and independently compiled utilities
++# retain their genuine symbols.
++COMPONENT_NAMESPACE = r"""
++#define aio_bh_schedule_oneshot_full \
++    control_deferred_component_aio_bh_schedule_oneshot_full
++#define aio_set_fd_handler \
++    control_deferred_component_aio_set_fd_handler
++#define bdrv_drain_all \
++    control_deferred_component_bdrv_drain_all
++#define bdrv_flush_all \
++    control_deferred_component_bdrv_flush_all
++#define bql_lock_impl \
++    control_deferred_component_bql_lock_impl
++#define bql_locked \
++    control_deferred_component_bql_locked
++#define bql_unlock \
++    control_deferred_component_bql_unlock
++#define cpu_exit \
++    control_deferred_component_cpu_exit
++#define cpu_stop_current \
++    control_deferred_component_cpu_stop_current
++#define cpus_queue \
++    control_deferred_component_cpus_queue
++#define current_cpu \
++    control_deferred_component_current_cpu
++#define error_printf \
++    control_deferred_component_error_printf
++#define error_report \
++    control_deferred_component_error_report
++#define icount_advance_virtual_time_to_tick \
++    control_deferred_component_icount_advance_virtual_time_to_tick
++#define iov_size \
++    control_deferred_component_iov_size
++#define iov_to_buf_full \
++    control_deferred_component_iov_to_buf_full
++#define pause_all_vcpus \
++    control_deferred_component_pause_all_vcpus
++#define plugin \
++    control_deferred_component_plugin
++#define qapi_event_send_stop \
++    control_deferred_component_qapi_event_send_stop
++
++#define qemu_bh_new_full \
++    control_deferred_component_qemu_bh_new_full
++#define qemu_bh_schedule \
++    control_deferred_component_qemu_bh_schedule
++#define qemu_clock_notify \
++    control_deferred_component_qemu_clock_notify
++#define qemu_clock_run_timers \
++    control_deferred_component_qemu_clock_run_timers
++#define qemu_cond_broadcast \
++    control_deferred_component_qemu_cond_broadcast
++#define qemu_cond_timedwait_bql \
++    control_deferred_component_qemu_cond_timedwait_bql
++#define qemu_cond_wait_bql \
++    control_deferred_component_qemu_cond_wait_bql
++#define qemu_cpu_is_self \
++    control_deferred_component_qemu_cpu_is_self
++#define qemu_cpu_kick \
++    control_deferred_component_qemu_cpu_kick
++
++#define qemu_crucible_checkpoint_main_loop_current \
++    control_deferred_component_qemu_crucible_checkpoint_main_loop_current
++#define qemu_crucible_checkpoint_pager_binding_current \
++    control_deferred_component_qemu_crucible_checkpoint_pager_binding_current
++#define qemu_crucible_checkpoint_paused_reap_v1 \
++    control_deferred_component_qemu_crucible_checkpoint_paused_reap_v1
++#define qemu_crucible_checkpoint_stop_admission_current_v1 \
++    control_deferred_component_qemu_crucible_checkpoint_stop_admission_current_v1
++#define qemu_crucible_checkpoint_stop_admitted_v1 \
++    control_deferred_component_qemu_crucible_checkpoint_stop_admitted_v1
++#define qemu_crucible_checkpoint_stop_completed_v1 \
++    control_deferred_component_qemu_crucible_checkpoint_stop_completed_v1
++#define qemu_crucible_checkpoint_stop_intent_control_v1 \
++    control_deferred_component_qemu_crucible_checkpoint_stop_intent_control_v1
++#define qemu_crucible_checkpoint_storage_current_v1 \
++    control_deferred_component_qemu_crucible_checkpoint_storage_current_v1
++#define qemu_crucible_cold_stop_competing_stop \
++    control_deferred_component_qemu_crucible_cold_stop_competing_stop
++#define qemu_crucible_cold_stop_receipt_valid \
++    control_deferred_component_qemu_crucible_cold_stop_receipt_valid
++#define qemu_crucible_cold_stop_transaction_active \
++    control_deferred_component_qemu_crucible_cold_stop_transaction_active
++#define qemu_crucible_fingerprint_main_execution_enroll_v1 \
++    control_deferred_component_qemu_crucible_fingerprint_main_execution_enroll_v1
++#define qemu_crucible_selected_process_id \
++    control_deferred_component_qemu_crucible_selected_process_id
++#define qemu_crucible_source_control_invocation_current_v1 \
++    control_deferred_component_qemu_crucible_source_control_invocation_current_v1
++#define qemu_crucible_startup_source_fingerprint_enrollment_required_v1 \
++    control_deferred_component_qemu_crucible_startup_source_fingerprint_enrollment_required_v1
++#define qemu_crucible_startup_source_native_dispatch_hint_v1 \
++    control_deferred_component_qemu_crucible_startup_source_native_dispatch_hint_v1
++#define qemu_crucible_startup_source_native_selection_v1 \
++    control_deferred_component_qemu_crucible_startup_source_native_selection_v1
++#define qemu_crucible_startup_source_watcher_borrow_v1 \
++    control_deferred_component_qemu_crucible_startup_source_watcher_borrow_v1
++#define qemu_crucible_startup_source_watcher_current_v1 \
++    control_deferred_component_qemu_crucible_startup_source_watcher_current_v1
++#define qemu_crucible_startup_source_watcher_prebirth_current_v1 \
++    control_deferred_component_qemu_crucible_startup_source_watcher_prebirth_current_v1
++
++#define qemu_force_shutdown_requested \
++    control_deferred_component_qemu_force_shutdown_requested
++#define qemu_get_aio_context \
++    control_deferred_component_qemu_get_aio_context
++#define qemu_in_coroutine \
++    control_deferred_component_qemu_in_coroutine
++#define qemu_in_main_thread \
++    control_deferred_component_qemu_in_main_thread
++#define qemu_in_vcpu_thread \
++    control_deferred_component_qemu_in_vcpu_thread
++#define qemu_mutex_destroy \
++    control_deferred_component_qemu_mutex_destroy
++#define qemu_mutex_init \
++    control_deferred_component_qemu_mutex_init
++#define qemu_mutex_lock_func \
++    control_deferred_component_qemu_mutex_lock_func
++#define qemu_mutex_lock_impl \
++    control_deferred_component_qemu_mutex_lock_impl
++#define qemu_mutex_unlock_impl \
++    control_deferred_component_qemu_mutex_unlock_impl
++
++#define qemu_plugin_advance_time_ticks \
++    control_deferred_component_qemu_plugin_advance_time_ticks
++#define qemu_plugin_control_boundary_cb \
++    control_deferred_component_qemu_plugin_control_boundary_cb
++#define qemu_plugin_control_boundary_userdata \
++    control_deferred_component_qemu_plugin_control_boundary_userdata
++#define qemu_plugin_crucible_control_boundary_outstanding \
++    control_deferred_component_qemu_plugin_crucible_control_boundary_outstanding
++#define qemu_plugin_crucible_control_drain_settled \
++    control_deferred_component_qemu_plugin_crucible_control_drain_settled
++#define qemu_plugin_crucible_exact_boundary_enter \
++    control_deferred_component_qemu_plugin_crucible_exact_boundary_enter
++#define qemu_plugin_crucible_exact_boundary_leave \
++    control_deferred_component_qemu_plugin_crucible_exact_boundary_leave
++#define qemu_plugin_crucible_native_control_descriptor_observe_v1 \
++    control_deferred_component_qemu_plugin_crucible_native_control_descriptor_observe_v1
++#define qemu_plugin_crucible_native_enter_v1 \
++    control_deferred_component_qemu_plugin_crucible_native_enter_v1
++#define qemu_plugin_crucible_native_exit_v1 \
++    control_deferred_component_qemu_plugin_crucible_native_exit_v1
++#define qemu_plugin_crucible_native_group_member_count_v1 \
++    control_deferred_component_qemu_plugin_crucible_native_group_member_count_v1
++#define qemu_plugin_crucible_native_group_use_begin_v1 \
++    control_deferred_component_qemu_plugin_crucible_native_group_use_begin_v1
++#define qemu_plugin_crucible_native_group_use_end_v1 \
++    control_deferred_component_qemu_plugin_crucible_native_group_use_end_v1
++#define qemu_plugin_crucible_native_idle_resume_descriptor_observe_v1 \
++    control_deferred_component_qemu_plugin_crucible_native_idle_resume_descriptor_observe_v1
++#define qemu_plugin_crucible_native_mask_v1 \
++    control_deferred_component_qemu_plugin_crucible_native_mask_v1
++#define qemu_plugin_crucible_native_net_tx_descriptor_observe_v1 \
++    control_deferred_component_qemu_plugin_crucible_native_net_tx_descriptor_observe_v1
++#define qemu_plugin_crucible_native_time_advance_descriptor_observe_v1 \
++    control_deferred_component_qemu_plugin_crucible_native_time_advance_descriptor_observe_v1
++#define qemu_plugin_crucible_rr_control_boundary_acknowledge \
++    control_deferred_component_qemu_plugin_crucible_rr_control_boundary_acknowledge
++#define qemu_plugin_crucible_rr_control_boundary_cancel \
++    control_deferred_component_qemu_plugin_crucible_rr_control_boundary_cancel
++#define qemu_plugin_crucible_rr_control_boundary_defer \
++    control_deferred_component_qemu_plugin_crucible_rr_control_boundary_defer
++#define qemu_plugin_crucible_rr_control_boundary_pending \
++    control_deferred_component_qemu_plugin_crucible_rr_control_boundary_pending
++#define qemu_plugin_crucible_single_threaded_rr \
++    control_deferred_component_qemu_plugin_crucible_single_threaded_rr
++#define qemu_plugin_crucible_source_control_stop_intent_admitted_v1 \
++    control_deferred_component_qemu_plugin_crucible_source_control_stop_intent_admitted_v1
++#define qemu_plugin_crucible_source_control_stop_intent_borrow_v1 \
++    control_deferred_component_qemu_plugin_crucible_source_control_stop_intent_borrow_v1
++#define qemu_plugin_crucible_source_control_stop_intent_current_v1 \
++    control_deferred_component_qemu_plugin_crucible_source_control_stop_intent_current_v1
++#define qemu_plugin_crucible_source_control_stop_intent_stopped_v1 \
++    control_deferred_component_qemu_plugin_crucible_source_control_stop_intent_stopped_v1
++#define qemu_plugin_crucible_startup_source_retained \
++    control_deferred_component_qemu_plugin_crucible_startup_source_retained
++#define qemu_plugin_crucible_vmstop_admission_pending \
++    control_deferred_component_qemu_plugin_crucible_vmstop_admission_pending
++#define qemu_plugin_crucible_vmstop_admit_internal \
++    control_deferred_component_qemu_plugin_crucible_vmstop_admit_internal
++#define qemu_plugin_crucible_vmstop_cold_begin \
++    control_deferred_component_qemu_plugin_crucible_vmstop_cold_begin
++#define qemu_plugin_crucible_vmstop_cold_origin \
++    control_deferred_component_qemu_plugin_crucible_vmstop_cold_origin
++#define qemu_plugin_crucible_vmstop_flush_status \
++    control_deferred_component_qemu_plugin_crucible_vmstop_flush_status
++#define qemu_plugin_crucible_vmstop_generation \
++    control_deferred_component_qemu_plugin_crucible_vmstop_generation
++#define qemu_plugin_crucible_vmstop_pending \
++    control_deferred_component_qemu_plugin_crucible_vmstop_pending
++#define qemu_plugin_crucible_vmstop_quiesced \
++    control_deferred_component_qemu_plugin_crucible_vmstop_quiesced
++#define qemu_plugin_crucible_vmstop_request_complete \
++    control_deferred_component_qemu_plugin_crucible_vmstop_request_complete
++#define qemu_plugin_crucible_vmstop_request_stopped \
++    control_deferred_component_qemu_plugin_crucible_vmstop_request_stopped
++#define qemu_plugin_crucible_vmstop_resume_consume \
++    control_deferred_component_qemu_plugin_crucible_vmstop_resume_consume
++#define qemu_plugin_crucible_wake_watcher_current_v1 \
++    control_deferred_component_qemu_plugin_crucible_wake_watcher_current_v1
++#define qemu_plugin_fire_control_boundary_cb \
++    control_deferred_component_qemu_plugin_fire_control_boundary_cb
++#define qemu_plugin_fire_vcpu_resume_cb \
++    control_deferred_component_qemu_plugin_fire_vcpu_resume_cb
++#define qemu_plugin_icount_raw \
++    control_deferred_component_qemu_plugin_icount_raw
++#define qemu_plugin_request_vmstop \
++    control_deferred_component_qemu_plugin_request_vmstop
++#define qemu_plugin_time_advance_is_pending \
++    control_deferred_component_qemu_plugin_time_advance_is_pending
++#define qemu_plugin_time_advance_settle_at_rr_idle \
++    control_deferred_component_qemu_plugin_time_advance_settle_at_rr_idle
++#define qemu_plugin_time_advance_settle_is_pending \
++    control_deferred_component_qemu_plugin_time_advance_settle_is_pending
++#define qemu_plugin_vcpu_idle_resume_idle_cb \
++    control_deferred_component_qemu_plugin_vcpu_idle_resume_idle_cb
++#define qemu_plugin_vcpu_idle_resume_resume_cb \
++    control_deferred_component_qemu_plugin_vcpu_idle_resume_resume_cb
++#define qemu_plugin_vcpu_idle_resume_userdata \
++    control_deferred_component_qemu_plugin_vcpu_idle_resume_userdata
++
++#define qemu_rec_mutex_lock_func \
++    control_deferred_component_qemu_rec_mutex_lock_func
++#define qemu_rec_mutex_lock_impl \
++    control_deferred_component_qemu_rec_mutex_lock_impl
++#define qemu_rec_mutex_unlock_impl \
++    control_deferred_component_qemu_rec_mutex_unlock_impl
++#define qemu_sendv_packet_async \
++    control_deferred_component_qemu_sendv_packet_async
++#define qemu_system_shutdown_request \
++    control_deferred_component_qemu_system_shutdown_request
++#define qemu_system_vmstop_request \
++    control_deferred_component_qemu_system_vmstop_request
++#define qemu_system_vmstop_request_prepare \
++    control_deferred_component_qemu_system_vmstop_request_prepare
++#define qemu_thread_get_self \
++    control_deferred_component_qemu_thread_get_self
++#define qemu_thread_is_self \
++    control_deferred_component_qemu_thread_is_self
++#define run_on_cpu \
++    control_deferred_component_run_on_cpu
++#define runstate_check \
++    control_deferred_component_runstate_check
++#define runstate_get \
++    control_deferred_component_runstate_get
++#define runstate_is_running \
++    control_deferred_component_runstate_is_running
++#define runstate_set \
++    control_deferred_component_runstate_set
++#define vm_state_notify \
++    control_deferred_component_vm_state_notify
++#define vm_stop \
++    control_deferred_component_vm_stop
++#define warn_report \
++    control_deferred_component_warn_report
++"""
 +
 +EXTRA = r"""
 +#include <fcntl.h>
@@ -253517,7 +253778,8 @@ index 0000000000000000000000000000000000000000..f9e0991a7553e9bc2fdd8d991a0a0f5e
 +    qemu_plugin_crucible_rr_control_boundary_cancel();
 +}"""
 +        bodies = bodies.replace(body, changed)
-+    generated.write_text(prelude + EXTRA + bodies + support + CHECKS)
++    generated.write_text(
++        COMPONENT_NAMESPACE + prelude + EXTRA + bodies + support + CHECKS)
 +    component_object = arguments.output_dir / "control-deferred.o"
 +    binary = arguments.output_dir / "control-deferred"
 +    compiler = [os.environ.get("CC", "cc"),
