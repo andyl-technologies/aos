@@ -8707,7 +8707,11 @@ the merge. No T2 task is accepted by importing upstream changes.
 Integration checks: Cargo metadata, all five renamed packages' all-target
 compilation, crate graph, the reviewed native unsafe-binding audit, the Nix
 registry-complete gate and complete gate listing pass. All 638 external upstream
-dependency versions and checksums remain unchanged. The combined lockfile's
+dependency versions and checksums remain unchanged. The format-property
+coverage catalog now names `terrane-format` and its relocated source paths;
+all 64 source references resolve to 15 existing files. Inverse mapping preserves
+the complete original catalog, including requirements, entries and ordering.
+The combined lockfile's
 measured shared vendor hash is updated to
 `sha256-GoGnyiyY6gp+gaIlunRCPeTvo58B2D/m7o7mUp/skDA=`. The required
 workspace Rust formatter encounters upstream's declared but absent
@@ -8790,7 +8794,12 @@ over the shared repeated chunk and two nonzero tails of two actual sealed
 manifests. It checks policy-held reads and independent release revocation;
 the supervisor additionally requires the original backing hashes, three real
 grace promises and separate future holds. Original cases, selectors and
-runtime bounds remain unchanged; this new witness is under qualification.
+runtime bounds remain unchanged. Its SDK strict profiles, formatter pair,
+crate graph and exact unsafe audit pass. Native strict qualification rejects a
+direct wall-clock call in the new fixture; `2fd26aa7cf` routes that same real
+90-second deadline through the existing `Clock` provider without suppressing
+the lint. The failed receipt is retained and corrected qualification is running;
+this new range witness has no runtime acceptance yet.
 All five T2 task checkboxes remain open. Encoded eviction, shared-chunk
 re-extraction, complete recovery/readiness and the stopped
 HOST-3/HOST-25/DOM-18 zero-wipe conflict remain outstanding; T3 and branch
