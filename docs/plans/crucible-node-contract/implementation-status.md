@@ -73,6 +73,26 @@ original SystemCounter owner without copying or invoking the callable. Five
 new adverse controls join the eight existing modes. The thirteen-mode native
 check has not run for this change; no additional native capability is issued.
 
+The cleanup extraction at `9559fe3526` moves bounded, descriptor-relative
+private-directory removal into HostResources; QEMU keeps its existing storage
+error mapping. Traversal is iterative, authenticates directory identity and
+unlinks symlinks without following them. The caller still excludes writers and
+retains the original root and quota through partial failure; this helper proves
+neither process reap nor permission to release those resources. All 20
+HostResources unit tests and eleven selected QEMU storage tests pass with zero
+failures or ignores. Six registered layer, specification, artifact, feature,
+unsafe-fence and engineering-hygiene checks also pass for this checkpoint.
+
+The registered native-prefix check at the `0e9d17fd99` checkpoint passes both
+selected cases, with zero failures or ignores. The original 350ps control
+returns PartialPrefix after exhausting its allowance; the exclusive 151ps case
+returns Completed. Both assert their original command/ACK association, and
+each reaps its original owned child before reporting success. These are two packaged native
+prefix results, not common Ready, operation-turnover, complete retirement,
+capture, full-profile or performance qualification. Their captured source
+predates the eighteen later worker projection and codec successor changes;
+those changes receive no execution result from this run.
+
 ## Earlier construction and qualification checkpoints
 
 The Source18 construction path now retains an explicit installation selection
