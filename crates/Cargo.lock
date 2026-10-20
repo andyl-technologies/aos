@@ -2955,6 +2955,8 @@ name = "crucible-host-resources"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "rustix 1.1.4",
+ "tempfile",
  "thiserror 2.0.18",
 ]
 
@@ -3004,6 +3006,7 @@ dependencies = [
  "ciborium",
  "crucible-device",
  "crucible-engine",
+ "crucible-host-resources",
  "crucible-node-format",
  "crucible-qemu-protocol",
  "crucible-qemu-shmem",

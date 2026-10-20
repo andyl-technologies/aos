@@ -14,7 +14,7 @@
       package = "crucible-host-resources";
       root = "src/lib.rs";
       specFiles = [];
-      nodeSpecFiles = ["01" "02" "05" "08"];
+      nodeSpecFiles = ["01" "02" "05" "06" "08"];
       section6 = false;
     }
     {

@@ -13,6 +13,7 @@ test-support = ["crucible-engine/test-double"]
 workspace = true
 
 [dependencies]
+crucible-host-resources = { workspace = true }
 crucible-node-format = { workspace = true }
 blake3 = { workspace = true }
 crucible-engine = { path = "../../engine/crucible-engine" }

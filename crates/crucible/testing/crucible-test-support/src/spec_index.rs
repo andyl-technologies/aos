@@ -25,7 +25,7 @@ pub const CRATE_SPEC_INDEX: &[CrateSpecIndexEntry] = &[
         package: "crucible-host-resources",
         root: "src/lib.rs",
         spec_files: &[],
-        supplemental_spec: Some("RFC-0025 files 01, 02, 05, 08"),
+        supplemental_spec: Some("RFC-0025 files 01, 02, 05, 06, 08"),
         section_6_row: false,
     },
     CrateSpecIndexEntry {
