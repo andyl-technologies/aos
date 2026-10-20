@@ -1,42 +1,45 @@
-From 652fbfb40f97c912eecd2fd9b18b79f9ebd491c6 Mon Sep 17 00:00:00 2001
+From d55cfbd8f71af6eee1666335640030e4f8de7a16 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] tests/unit: retain real CPU receipt geometry wrappers
+Subject: [PATCH] crucible: retain native metadata admission custody
 
-Retain the complete reviewed Crucible source, including bounded worker and
-factual CPU custody, typed pause return, readiness and physical-end journals,
-cached-writer declarations, Source closure, selector and pipeline/OpenRISC
-changes. Preserve all existing assertions, bounds, licenses and runtime gates.
+Retain the complete reviewed Crucible source, including the native
+fingerprint pipeline, required worker lifetimes, bounded registry enrollment,
+factual CPU custody, typed physical return and existing selector, Source
+extraction and OpenRISC changes. Preserve upstream attributes and per-file
+licenses. Keep the pinned upstream base as this checkpoint's sole parent.
 
-The actual startup-source unit linker reported missing CPU receipt bytes and
-alignment wrappers from its extracted cpu_allocation_identity_locked body.
-Select exactly those two existing realization definitions through the storage
-getter tuple. Each delegates to the already linked real QOM producer using
-sizeof or _Alignof the genuine private receipt. No copied layout, constant,
-weak provider or admission substitute is introduced.
+Publish each actual native metadata receipt before its independent post.
+Retain raw operation and post results separately, including an owned pre or
+debit refusal. Prepay canonical Source allocation cells in the actual fixed
+floor, then move custody only after real allocation and complete conserving
+transfer. Keep worker residual and stack debits on their actual inline owners,
+and retain dirty bitmap process lifetime independently of header retirement.
 
-Refresh the primary helper's five incoming pins and the changed preexec-purpose
-helper's incoming pin. Existing Source inputs, roots, selected bodies and
-Meson dependency sets remain unchanged. SDK, production code and licensing
-remain byte-identical; only the two literal wrapper selections and six pins
-change. Package exactly the reviewed tree with pinned upstream as sole parent.
+Corroborate the published native creator before module publication; require
+module publication and actual BQL for runtime state. Preserve the genuine
+entered construction Original before Setup fallback, including pre-module
+Boot construction. Authenticate retained custody before return identity and
+actual creator TID before any phase mutation, then retain real QemuThread and
+complete-transfer checks. Do not add task credit, caps, clocks or providers.
 
-This source correction has not been generated, compiled, linked or executed
-here. The reported actual startup-unit LINK failure remains an execution gap;
-no complete link or test pass is claimed. The earlier bounded-thread correction
-compiled in the integrating check, which supplies no broader qualification.
+Preserve the typed bounded-thread pause-end assertions and the genuine CPU
+allocation receipt geometry wrappers in the storage extraction tuple. Refresh
+all six known extractor hash maps and actual Source Meson dependencies. Keep
+public SDK80 and physical ABI unchanged. Added negative and overlap component
+controls use actual pthread and allocation effects under disclosed fixtures;
+none issues launched Source or provider authority.
 
-This is WIP local source integrity, not provider, runtime, lifecycle,
-activation, production or performance qualification. Earlier Source-unit
-evidence reached 118 PASS before incomplete genuine reserve_v7 role/provider
-rosters refused with EINVAL. Those assertions and failure remain. Genuine
-roles, matched providers, funding, task custody, census, allocator/TLS/TSD and
-selected positive CPU custody remain unjoined.
+This checkpoint has not been generated, built, linked or tested here. It is
+local source integrity only, with no runtime, provider, accounting, activation,
+fork or lifecycle qualification. Genuine role/module/provider enrollment,
+allocator/TLS/TSD/census and real construction/RR/Receiving overlap remain
+required. Retirement local-copy receipt loss is a required next cohort.
 
-The mandatory genuine launched capture lifecycle still fails explicitly.
-Actual cursor/refusal, Original/post, rearm, sticky failure and physical
-cleanup obligations remain; component controls cannot satisfy those gates.
-No support, preinit, activation, child reconstruction or fork grant is issued.
+Preserve the incomplete required-role fixture refusal and the mandatory
+launched capture lifecycle failure. Actual Original/post, rearm, cursor/refusal,
+logical ACK, sticky failure and retained physical cleanup obligations remain.
+No assertion, failure, support or preinit gate is waived by this checkpoint.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -73048,10 +73051,10 @@ index 0000000000000000000000000000000000000000..cbd838fd1869464a864c6accf040fee2
 +#endif /* QEMU_CRUCIBLE_IDLE_WAIT_H */
 diff --git a/include/qemu/crucible-metadata-partition.h b/include/qemu/crucible-metadata-partition.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..498d54da637e2c6aaf7a067ba1aa3ae282f9c2d5
+index 0000000000000000000000000000000000000000..762627790e5c704b80db7728388113e123a30e20
 --- /dev/null
 +++ b/include/qemu/crucible-metadata-partition.h
-@@ -0,0 +1,373 @@
+@@ -0,0 +1,413 @@
 +/*
 + * Process-private fixed metadata partition accounting
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -73094,6 +73097,46 @@ index 0000000000000000000000000000000000000000..498d54da637e2c6aaf7a067ba1aa3ae2
 +    uint64_t bytes;
 +    bool held;
 +} QemuCrucibleMetadataCharge;
++
++/* The owner exists before either observation. A negative post cannot hide a
++ * completed debit, and an unattempted post is not reported as a healthy one. */
++typedef struct QemuCrucibleMetadataAdmission {
++    QemuCrucibleMetadataCharge charge;
++    int first_status;
++    int post_status;
++    bool post_attempted;
++} QemuCrucibleMetadataAdmission;
++
++/* This loan names embedded Source custody, never a stack-local charge or an
++ * allocation grant. Only the matched, exclusively entered constructor moves
++ * its receipt after the actual allocation has returned. */
++typedef struct QemuCrucibleMetadataBirth QemuCrucibleMetadataBirth;
++typedef struct QemuCrucibleMetadataBirthLoan {
++    QemuCrucibleMetadataBirth *owner;
++    QemuCrucibleMetadataAdmission *admission;
++} QemuCrucibleMetadataBirthLoan;
++
++/* Pure physical custody move in a prevalidated constructor. No ledger spend,
++ * temporal observation, allocator or callback occurs between these stores.
++ * A destination may accumulate only successful, actual bitmap allocations. */
++static inline void crucible_metadata_admission_transfer(
++    QemuCrucibleMetadataAdmission *source,
++    QemuCrucibleMetadataAdmission *destination, uint64_t bytes)
++{
++    assert(source && destination && source != destination);
++    assert(!source->first_status && !source->post_status &&
++           source->post_attempted && source->charge.held && bytes &&
++           bytes <= source->charge.bytes);
++    assert(!destination->first_status && !destination->post_status &&
++           destination->charge.bytes <= UINT64_MAX - bytes &&
++           (destination->charge.held || !destination->charge.bytes));
++
++    destination->charge.bytes += bytes;
++    destination->charge.held = true;
++    destination->post_attempted = true;
++    source->charge.bytes -= bytes;
++    source->charge.held = source->charge.bytes != 0;
++}
 +
 +static inline int crucible_metadata_partition_status(
 +    QemuCrucibleMetadataPartition *partition, int status)
@@ -73895,10 +73938,10 @@ index 0000000000000000000000000000000000000000..47877e4ac5900a76e47fb5cc82e64b18
 +#endif
 diff --git a/include/qemu/crucible-paged-ram.h b/include/qemu/crucible-paged-ram.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..e3cec9d4f0ae62f2f4e7d79a4fea5800a428abfd
+index 0000000000000000000000000000000000000000..b8ba5f989857e70321ed005b1149562b70fe20f8
 --- /dev/null
 +++ b/include/qemu/crucible-paged-ram.h
-@@ -0,0 +1,114 @@
+@@ -0,0 +1,120 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +#ifndef QEMU_CRUCIBLE_PAGED_RAM_H
 +#define QEMU_CRUCIBLE_PAGED_RAM_H
@@ -73930,6 +73973,7 @@ index 0000000000000000000000000000000000000000..e3cec9d4f0ae62f2f4e7d79a4fea5800
 +int qemu_crucible_ram_physical_listener_inventory(uint64_t *count, Error **errp);
 +uint64_t qemu_crucible_ram_physical_listener_generation(void);
 +int qemu_crucible_ram_dirty_rearm_metadata_bytes(uint64_t *bytes);
++uint64_t qemu_crucible_ram_dirty_metadata_storage_bytes(void);
 +
 +/* Core ownership survives independent system/plugin linking. Only a retained
 + * native physical receipt may publish the irreversible seal. */
@@ -73960,8 +74004,11 @@ index 0000000000000000000000000000000000000000..e3cec9d4f0ae62f2f4e7d79a4fea5800
 +int qemu_crucible_ram_logical_debt_retirement_gate_v1(RAMBlock *block);
 +void qemu_crucible_ram_native_metadata_allocated(uint64_t bytes);
 +void qemu_crucible_ram_native_metadata_released(uint64_t bytes);
-+int qemu_crucible_ram_native_metadata_admit(
-+    uint64_t bytes, QemuCrucibleMetadataCharge *charge);
++uint64_t qemu_crucible_ram_metadata_fixed_storage_bytes(void);
++int qemu_crucible_ram_dirty_metadata_birth_begin(
++    uint64_t bytes, QemuCrucibleMetadataBirthLoan *out);
++int qemu_crucible_ram_metadata_birth_finish(
++    QemuCrucibleMetadataBirthLoan *loan);
 +void qemu_crucible_ram_native_metadata_retire(
 +    QemuCrucibleMetadataCharge *charge);
 +int qemu_crucible_ram_seal_admission(Error **errp);
@@ -74005,8 +74052,10 @@ index 0000000000000000000000000000000000000000..e3cec9d4f0ae62f2f4e7d79a4fea5800
 +    RAMBlock *block, uint64_t offset, size_t length) { return false; }
 +static inline void qemu_crucible_ram_native_metadata_allocated(uint64_t bytes) { }
 +static inline void qemu_crucible_ram_native_metadata_released(uint64_t bytes) { }
-+static inline int qemu_crucible_ram_native_metadata_admit(
-+    uint64_t bytes, QemuCrucibleMetadataCharge *charge) { return 0; }
++static inline int qemu_crucible_ram_dirty_metadata_birth_begin(
++    uint64_t bytes, QemuCrucibleMetadataBirthLoan *out) { return 0; }
++static inline int qemu_crucible_ram_metadata_birth_finish(
++    QemuCrucibleMetadataBirthLoan *loan) { return 0; }
 +static inline void qemu_crucible_ram_native_metadata_retire(
 +    QemuCrucibleMetadataCharge *charge) { }
 +static inline int qemu_crucible_ram_seal_admission(Error **errp) { return 0; }
@@ -80612,7 +80661,7 @@ index 129f6b8757dd9ee4d10aec2265e9e4e3e869bd7b..60d1939844c8c1ee0b310323759d6d8e
  
  #endif
 diff --git a/include/system/ramlist.h b/include/system/ramlist.h
-index c7f388f487d7057665c5fd03e723ea4c62c0daed..322946590efcc5c93930991ea808447ad82d0768 100644
+index c7f388f487d7057665c5fd03e723ea4c62c0daed..11086dcf905102bf08a493ef161ff75752445d55 100644
 --- a/include/system/ramlist.h
 +++ b/include/system/ramlist.h
 @@ -5,6 +5,7 @@
@@ -80629,11 +80678,19 @@ index c7f388f487d7057665c5fd03e723ea4c62c0daed..322946590efcc5c93930991ea808447a
      struct rcu_head rcu;
 +    size_t allocation_bytes;
 +    unsigned int client;
-+    QemuCrucibleMetadataCharge metadata_charge;
++    QemuCrucibleMetadataAdmission metadata_admission;
      unsigned long *blocks[];
  } DirtyMemoryBlocks;
  
-@@ -52,6 +56,10 @@ typedef struct RAMList {
+@@ -46,12 +50,18 @@ typedef struct RAMList {
+     /* RCU-enabled, writes protected by the ramlist lock. */
+     QLIST_HEAD(, RAMBlock) blocks;
+     DirtyMemoryBlocks *dirty_memory[DIRTY_MEMORY_NUM];
++    /* Actual non-shrinking bitmap storage survives every RCU header return. */
++    QemuCrucibleMetadataAdmission dirty_bitmap_admission;
+     unsigned int num_dirty_blocks;
+     uint32_t version;
+     QLIST_HEAD(, RAMBlockNotifier) ramblock_notifiers;
  } RAMList;
  extern RAMList ram_list;
  
@@ -80644,7 +80701,7 @@ index c7f388f487d7057665c5fd03e723ea4c62c0daed..322946590efcc5c93930991ea808447a
  /* Should be holding either ram_list.mutex, or the RCU lock. */
  #define  INTERNAL_RAMBLOCK_FOREACH(block)  \
      QLIST_FOREACH_RCU(block, &ram_list.blocks, next)
-@@ -75,6 +83,15 @@ typedef int (RAMBlockIterFunc)(RAMBlock *rb, void *opaque);
+@@ -75,6 +85,15 @@ typedef int (RAMBlockIterFunc)(RAMBlock *rb, void *opaque);
  
  int qemu_ram_foreach_block(RAMBlockIterFunc func, void *opaque);
  
@@ -152251,10 +152308,10 @@ index 0000000000000000000000000000000000000000..4e8588aecbba8a6193893134d7cc0c25
 +}
 diff --git a/plugins/crucible-paged-ram.c b/plugins/crucible-paged-ram.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..2f171b1b4145cb35cd896e3a2ad12a77c126d7bf
+index 0000000000000000000000000000000000000000..4fb1729a8dc5403f71adeab06a9e3787faea98d3
 --- /dev/null
 +++ b/plugins/crucible-paged-ram.c
-@@ -0,0 +1,7251 @@
+@@ -0,0 +1,7305 @@
 +/*
 + * Logical RAM observation and host paging ownership.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -152317,16 +152374,25 @@ index 0000000000000000000000000000000000000000..2f171b1b4145cb35cd896e3a2ad12a77
 +    uint64_t fingerprint_physical_start;
 +    uint64_t fingerprint_physical_end;
 +    ram_addr_t fingerprint_ram_offset;
-+    QemuCrucibleMetadataCharge metadata_charge;
++    QemuCrucibleMetadataAdmission metadata_admission;
 +} CrucibleRamRegion;
 +
-+/* One retained admission and one nonrecursive temporary observation array
-+ * coexist. Their existing BQL/capture/observation exclusions protect rows. */
++/* The existing retained and temporary arrays keep their ref/unref exclusions.
++ * An atomic construction claim also excludes reuse while array is still NULL,
++ * including a refused post whose actual receipt remains in Source custody. */
 +typedef struct CrucibleRamInventoryOwner {
 +    GPtrArray *array;
-+    QemuCrucibleMetadataCharge charge;
++    QemuCrucibleMetadataAdmission admission;
 +    uint32_t references;
++    unsigned state;
 +} CrucibleRamInventoryOwner;
++
++enum CrucibleRamInventoryState {
++    RAM_INVENTORY_FREE,
++    RAM_INVENTORY_CONSTRUCTING,
++    RAM_INVENTORY_LIVE,
++    RAM_INVENTORY_RETAINED,
++};
 +
 +static CrucibleRamInventoryOwner inventory_owners[2];
 +
@@ -153407,10 +153473,22 @@ index 0000000000000000000000000000000000000000..2f171b1b4145cb35cd896e3a2ad12a77
 +    }
 +}
 +
-+int qemu_crucible_ram_native_metadata_admit(
-+    uint64_t bytes, QemuCrucibleMetadataCharge *charge)
++uint64_t qemu_crucible_ram_metadata_fixed_storage_bytes(void)
 +{
-+    return qemu_crucible_startup_source_native_metadata_admit(bytes, charge);
++    return sizeof(inventory_owners) +
++        qemu_crucible_ram_dirty_metadata_storage_bytes();
++}
++
++int qemu_crucible_ram_dirty_metadata_birth_begin(
++    uint64_t bytes, QemuCrucibleMetadataBirthLoan *out)
++{
++    return qemu_crucible_startup_source_ram_dirty_birth_begin(bytes, out);
++}
++
++int qemu_crucible_ram_metadata_birth_finish(
++    QemuCrucibleMetadataBirthLoan *loan)
++{
++    return qemu_crucible_startup_source_ram_metadata_birth_finish(loan);
 +}
 +
 +void qemu_crucible_ram_native_metadata_retire(
@@ -154945,7 +155023,7 @@ index 0000000000000000000000000000000000000000..2f171b1b4145cb35cd896e3a2ad12a77
 +static void region_free(gpointer pointer)
 +{
 +    CrucibleRamRegion *region = pointer;
-+    QemuCrucibleMetadataCharge charge = region->metadata_charge;
++    QemuCrucibleMetadataCharge charge = region->metadata_admission.charge;
 +
 +    memory_region_unref(region->block->mr);
 +    g_free(region);
@@ -154954,36 +155032,53 @@ index 0000000000000000000000000000000000000000..2f171b1b4145cb35cd896e3a2ad12a77
 +
 +static int region_inventory_new(GPtrArray **result)
 +{
-+    QemuCrucibleMetadataCharge charge = { 0 };
++    QemuCrucibleMetadataBirthLoan birth = { 0 };
 +    CrucibleRamInventoryOwner *owner = NULL;
 +    GPtrArray *array;
++    size_t row;
 +    int status;
 +
-+    status = qemu_crucible_startup_source_inventory_metadata_admit(&charge);
++    if (!qemu_crucible_startup_source_control_metadata_bytes()) {
++        status = qemu_crucible_startup_source_native_metadata_check();
++        if (!status) {
++            *result = g_ptr_array_new_with_free_func(region_free);
++        }
++        return status;
++    }
++    status = qemu_crucible_startup_source_native_metadata_preentry();
 +    if (status) {
 +        return status;
 +    }
-+    /* The ordinary path keeps the upstream container and its ownership. */
-+    if (!charge.held) {
-+        *result = g_ptr_array_new_with_free_func(region_free);
-+        return 0;
-+    }
-+    for (size_t index = 0; index < G_N_ELEMENTS(inventory_owners); index++) {
-+        if (!inventory_owners[index].array) {
-+            owner = &inventory_owners[index];
++    for (row = 0; row < G_N_ELEMENTS(inventory_owners); row++) {
++        if (qatomic_cmpxchg(&inventory_owners[row].state, RAM_INVENTORY_FREE,
++                           RAM_INVENTORY_CONSTRUCTING) == RAM_INVENTORY_FREE) {
++            owner = &inventory_owners[row];
 +            break;
 +        }
 +    }
 +    if (!owner) {
-+        /* No allocation began. Accounting uncertainty still retains the debit. */
-+        qemu_crucible_ram_native_metadata_retire(&charge);
 +        return -EBUSY;
 +    }
-+    /* The matched request must include GLib's configured container geometry.
-+     * Reserving all 4096 slots prevents later unchecked pointer-array growth. */
++    status = qemu_crucible_startup_source_ram_inventory_birth_begin(row, &birth);
++    if (status) {
++        qatomic_store_release(&owner->state, RAM_INVENTORY_RETAINED);
++        return status;
++    }
++    /* Source already owns the full configured container request and post.
++     * Reserving 4096 slots prevents unchecked later pointer-array growth. */
 +    array = g_ptr_array_sized_new(4096);
 +    g_ptr_array_set_free_func(array, region_free);
-+    *owner = (CrucibleRamInventoryOwner) { array, charge, 1 };
++    owner->array = array;
++    owner->references = 1;
++    crucible_metadata_admission_transfer(birth.admission, &owner->admission,
++                                         birth.admission->charge.bytes);
++    qatomic_store_release(&owner->state, RAM_INVENTORY_LIVE);
++    status = qemu_crucible_startup_source_ram_metadata_birth_finish(&birth);
++    if (status) {
++        /* The actual allocation and receipt remain on this occupied row. */
++        qatomic_store_release(&owner->state, RAM_INVENTORY_RETAINED);
++        return status;
++    }
 +    *result = array;
 +    return 0;
 +}
@@ -154998,7 +155093,8 @@ index 0000000000000000000000000000000000000000..2f171b1b4145cb35cd896e3a2ad12a77
 +    for (size_t index = 0; index < G_N_ELEMENTS(inventory_owners); index++) {
 +        CrucibleRamInventoryOwner *owner = &inventory_owners[index];
 +
-+        if (owner->array == array) {
++        if (qatomic_load_acquire(&owner->state) == RAM_INVENTORY_LIVE &&
++            owner->array == array) {
 +            if (owner->references == UINT32_MAX) {
 +                return -EOVERFLOW;
 +            }
@@ -155023,14 +155119,18 @@ index 0000000000000000000000000000000000000000..2f171b1b4145cb35cd896e3a2ad12a77
 +    for (size_t index = 0; index < G_N_ELEMENTS(inventory_owners); index++) {
 +        CrucibleRamInventoryOwner *owner = &inventory_owners[index];
 +
-+        if (owner->array == array) {
++        if (qatomic_load_acquire(&owner->state) == RAM_INVENTORY_LIVE &&
++            owner->array == array) {
 +            if (--owner->references == 0) {
-+                QemuCrucibleMetadataCharge charge = owner->charge;
++                QemuCrucibleMetadataCharge charge = owner->admission.charge;
 +
 +                /* Keep the row occupied through its actual finalizers. */
 +                g_ptr_array_unref(array);
-+                *owner = (CrucibleRamInventoryOwner) { 0 };
++                owner->array = NULL;
++                owner->references = 0;
++                owner->admission = (QemuCrucibleMetadataAdmission) { 0 };
 +                qemu_crucible_ram_native_metadata_retire(&charge);
++                qatomic_store_release(&owner->state, RAM_INVENTORY_FREE);
 +            } else {
 +                g_ptr_array_unref(array);
 +            }
@@ -155043,7 +155143,7 @@ index 0000000000000000000000000000000000000000..2f171b1b4145cb35cd896e3a2ad12a77
 +/* These refusal paths precede memory_region_ref, unlike region_free. */
 +static void region_unpublished_free(CrucibleRamRegion *region)
 +{
-+    QemuCrucibleMetadataCharge charge = region->metadata_charge;
++    QemuCrucibleMetadataCharge charge = region->metadata_admission.charge;
 +
 +    g_free(region);
 +    qemu_crucible_ram_native_metadata_retire(&charge);
@@ -155072,7 +155172,7 @@ index 0000000000000000000000000000000000000000..2f171b1b4145cb35cd896e3a2ad12a77
 +    GPtrArray *regions = opaque;
 +    CrucibleRamRegion *region;
 +    size_t id_length;
-+    QemuCrucibleMetadataCharge charge = { 0 };
++    QemuCrucibleMetadataBirthLoan birth = { 0 };
 +    int admission_status;
 +
 +    if (!region_has_logical_ram_backing(block)) {
@@ -155094,13 +155194,22 @@ index 0000000000000000000000000000000000000000..2f171b1b4145cb35cd896e3a2ad12a77
 +        (uint64_t)(regions->len + 1) * sizeof(*region) > metadata_budget) {
 +        return -ENOSPC;
 +    }
-+    admission_status = qemu_crucible_ram_native_metadata_admit(
-+        sizeof(*region), &charge);
++    admission_status = qemu_crucible_startup_source_ram_region_birth_begin(
++        sizeof(*region), &birth);
 +    if (admission_status) {
 +        return admission_status;
 +    }
 +    region = g_new0(CrucibleRamRegion, 1);
-+    region->metadata_charge = charge;
++    if (birth.owner) {
++        crucible_metadata_admission_transfer(birth.admission,
++            &region->metadata_admission, sizeof(*region));
++        admission_status =
++            qemu_crucible_startup_source_ram_metadata_birth_finish(&birth);
++        if (admission_status) {
++            region_unpublished_free(region);
++            return admission_status;
++        }
++    }
 +    region->block = block;
 +    region->fingerprint_ram_offset = block->offset;
 +    if (!admission_regions && !qemu_crucible_ram_paging_requested()) {
@@ -155258,13 +155367,13 @@ index 0000000000000000000000000000000000000000..2f171b1b4145cb35cd896e3a2ad12a77
 +    }
 +    if (sizeof(diagnostic_failure) + sizeof(owner_diagnostics) +
 +        sizeof(owner_diagnostic_stops) + sizeof(capture_owner_token) +
-+        sizeof(inventory_owners) + sizeof(checkpoint_native_fence) +
++        sizeof(checkpoint_native_fence) +
 +        sizeof(checkpoint_native_fence_cut) > UINT64_MAX - native_floor) {
 +        status = -EOVERFLOW;
 +    } else {
 +        native_floor += sizeof(diagnostic_failure) + sizeof(owner_diagnostics) +
 +            sizeof(owner_diagnostic_stops) + sizeof(capture_owner_token) +
-+            sizeof(inventory_owners) + sizeof(checkpoint_native_fence) +
++            sizeof(checkpoint_native_fence) +
 +            sizeof(checkpoint_native_fence_cut);
 +    }
 +    if (status) {
@@ -156099,7 +156208,8 @@ index 0000000000000000000000000000000000000000..2f171b1b4145cb35cd896e3a2ad12a77
 +    for (size_t index = 0; index < G_N_ELEMENTS(inventory_owners); index++) {
 +        CrucibleRamInventoryOwner *owner = &inventory_owners[index];
 +
-+        if (owner->array == capture_regions && owner->references > 1) {
++        if (qatomic_load_acquire(&owner->state) == RAM_INVENTORY_LIVE &&
++            owner->array == capture_regions && owner->references > 1) {
 +            retained_inventory = true;
 +            break;
 +        }
@@ -157130,7 +157240,8 @@ index 0000000000000000000000000000000000000000..2f171b1b4145cb35cd896e3a2ad12a77
 +    for (size_t index = 0; index < G_N_ELEMENTS(inventory_owners); index++) {
 +        const CrucibleRamInventoryOwner *owner = &inventory_owners[index];
 +
-+        if (owner->array == loan->regions && owner->charge.held &&
++        if (qatomic_load_acquire(&owner->state) == RAM_INVENTORY_LIVE &&
++            owner->array == loan->regions && owner->admission.charge.held &&
 +            owner->references >= 2) {
 +            inventory_held = true;
 +            break;
@@ -157157,7 +157268,7 @@ index 0000000000000000000000000000000000000000..2f171b1b4145cb35cd896e3a2ad12a77
 +                    break;
 +                }
 +            }
-+            if (!live || !region->metadata_charge.held || !begin ||
++            if (!live || !region->metadata_admission.charge.held || !begin ||
 +                !region->admitted_resident_region ||
 +                live->mr != region->admitted_resident_region ||
 +                !region_has_logical_ram_backing(live) ||
@@ -170652,10 +170763,10 @@ index 0000000000000000000000000000000000000000..f33911c6d93010f8c345aa392c9b7974
 +}
 diff --git a/plugins/crucible-startup-source.c b/plugins/crucible-startup-source.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..51b28bf45dcc3e4795c7d60ee39ef02e54037196
+index 0000000000000000000000000000000000000000..07462ac18c42dd1410e302dad8bf5c3a10170987
 --- /dev/null
 +++ b/plugins/crucible-startup-source.c
-@@ -0,0 +1,7595 @@
+@@ -0,0 +1,7839 @@
 +/*
 + * Original installer startup source custody
 + *
@@ -170671,6 +170782,7 @@ index 0000000000000000000000000000000000000000..51b28bf45dcc3e4795c7d60ee39ef02e
 +#include "hw/core/cpu.h"
 +#include "qom/object.h"
 +#include "qemu/crucible-preexec-setup.h"
++#include "qemu/crucible-paged-ram.h"
 +#include "chardev/char-socket.h"
 +#include "monitor/monitor-internal.h"
 +#include "crucible-startup-source.h"
@@ -170845,6 +170957,7 @@ index 0000000000000000000000000000000000000000..51b28bf45dcc3e4795c7d60ee39ef02e
 +    uint64_t watcher = qemu_plugin_crucible_wake_watcher_storage_bytes_v1();
 +    uint64_t execution = qemu_crucible_fingerprint_main_execution_storage_bytes_v1();
 +    uint64_t park_requests = qemu_crucible_native_park_request_static_extent();
++    uint64_t ram_metadata = qemu_crucible_ram_metadata_fixed_storage_bytes();
 +    const uint64_t descriptor_storage[] = {
 +        qemu_thread_bounded_registry_fixed_storage_bytes(),
 +        qemu_plugin_crucible_native_shmem_dispatch_descriptor_storage_bytes_v1(),
@@ -170885,6 +170998,10 @@ index 0000000000000000000000000000000000000000..51b28bf45dcc3e4795c7d60ee39ef02e
 +        return UINT64_MAX;
 +    }
 +    fixed += park_requests;
++    if (!ram_metadata || ram_metadata > UINT64_MAX - fixed) {
++        return UINT64_MAX;
++    }
++    fixed += ram_metadata;
 +    /* Idle/resume already belongs to control_stop. The retained bounded-record
 +     * head and these seven provider association arrays are separate physical
 +     * declarations; embedded groups, receipts and members belong to Source. */
@@ -170930,6 +171047,7 @@ index 0000000000000000000000000000000000000000..51b28bf45dcc3e4795c7d60ee39ef02e
 +        return status;
 +    }
 +    startup_source.owner_process = borrowed.process_id;
++    startup_source.preexec_owner_thread = borrowed.thread_id;
 +    startup_source.preexec_purpose_owner = owner;
 +    startup_source.process_contract_owner = borrowed.contract;
 +    startup_source.incarnation_purpose_owner = borrowed.incarnation;
@@ -171119,6 +171237,8 @@ index 0000000000000000000000000000000000000000..51b28bf45dcc3e4795c7d60ee39ef02e
 +
 +#ifdef CONFIG_LINUX
 +static int startup_process_purpose_live(void);
++static int checkpoint_inventory_metadata_identity(
++    QemuCrucibleCheckpointInventoryMetadataBorrow *borrow);
 +#endif
 +
 +static bool startup_invocation(qemu_plugin_id_t id)
@@ -171143,13 +171263,44 @@ index 0000000000000000000000000000000000000000..51b28bf45dcc3e4795c7d60ee39ef02e
 +    return startup_source.first_negative_status;
 +}
 +
++/* Only the supported native implementation supplies a unique live task ID.
++ * This corroborates an existing actor; it never issues allocation authority. */
++static int native_metadata_thread_id(void)
++{
++#ifdef CONFIG_LINUX
++    int tid = qemu_get_thread_id();
++
++    return tid > 0 ? tid : 0;
++#else
++    return 0;
++#endif
++}
++
++/* The caller has acquired retained custody. These fields precede that
++ * publication; saved/install/operation state is deliberately not inspected. */
++static bool native_metadata_raw_creator(void)
++{
++    return !qatomic_load_acquire(&startup_source.module_custody_published) &&
++        qatomic_load_acquire(&startup_source.process_purpose_complete) &&
++        startup_source.preexec_purpose_owner &&
++        startup_source.preexec_owner_thread > 0 &&
++        native_metadata_thread_id() == startup_source.preexec_owner_thread;
++}
++
 +void qemu_crucible_startup_source_owner_init(void)
 +{
 +    if (qatomic_load_acquire(&startup_source.owner_initialized)) {
 +        return;
 +    }
++    if (qemu_plugin_crucible_startup_source_retained()) {
++        if (getpid() != startup_source.owner_process ||
++            !native_metadata_raw_creator()) {
++            return;
++        }
++    } else {
++        startup_source.owner_process = getpid();
++    }
 +    qemu_thread_get_self(&startup_source.owner_thread);
-+    startup_source.owner_process = getpid();
 +    qatomic_store_release(&startup_source.owner_initialized, true);
 +}
 +
@@ -171261,11 +171412,18 @@ index 0000000000000000000000000000000000000000..51b28bf45dcc3e4795c7d60ee39ef02e
 +uint64_t qemu_crucible_startup_source_metadata_bytes(void)
 +{
 +    uint64_t extent;
++    uint64_t ram_metadata;
 +
 +    if (!qemu_plugin_crucible_startup_source_retained()) {
 +        return 0;
 +    }
 +    extent = sizeof(startup_source);
++    ram_metadata = qemu_crucible_ram_metadata_fixed_storage_bytes();
++
++    if (!ram_metadata || ram_metadata > UINT64_MAX - extent) {
++        return UINT64_MAX;
++    }
++    extent += ram_metadata;
 +    if (!qatomic_load_acquire(&startup_source.process_purpose_complete)) {
 +        return extent;
 +    }
@@ -171294,8 +171452,8 @@ index 0000000000000000000000000000000000000000..51b28bf45dcc3e4795c7d60ee39ef02e
 +        extent += construction;
 +    }
 +    for (size_t index = 0; index < 3; index++) {
-+        uint64_t loader = startup_source.loader_charges[index].held ?
-+            startup_source.loader_charges[index].bytes : 0;
++        uint64_t loader = startup_source.loader_admissions[index].charge.held ?
++            startup_source.loader_admissions[index].charge.bytes : 0;
 +
 +        if (loader > UINT64_MAX - extent) {
 +            return UINT64_MAX;
@@ -171365,6 +171523,8 @@ index 0000000000000000000000000000000000000000..51b28bf45dcc3e4795c7d60ee39ef02e
 +
 +int qemu_crucible_startup_source_native_metadata_check(void)
 +{
++    bool raw_creator;
++    bool runtime_actor;
 +    int status;
 +
 +    if (!qemu_plugin_crucible_startup_source_retained()) {
@@ -171379,11 +171539,26 @@ index 0000000000000000000000000000000000000000..51b28bf45dcc3e4795c7d60ee39ef02e
 +        return status;
 +    }
 +#endif
++    /* No selected operation exists before the controller publication. Read
++     * its immutable extent only after the matching acquire in other callers. */
++    if (!qatomic_load_acquire(
++            &startup_source.metadata_partition.controller_retained)) {
++        return 0;
++    }
++    /* Actor exclusion precedes Original selection. The raw creator can own
++     * pre-module construction; its identity must not select Setup first. */
++    raw_creator = native_metadata_raw_creator();
++    runtime_actor =
++        qatomic_load_acquire(&startup_source.module_custody_published) &&
++        bql_locked();
++    if (!raw_creator && !runtime_actor) {
++        return -EPERM;
++    }
 +#ifdef CONFIG_LINUX
 +    QemuCrucibleCheckpointInventoryMetadataBorrow *inventory =
 +        &startup_source.checkpoint_inventory_metadata;
 +
-+    if (qemu_in_main_thread() && bql_locked() && !current_cpu &&
++    if (runtime_actor && qemu_in_main_thread() && !current_cpu &&
 +        !qemu_in_coroutine() && inventory->held) {
 +        /* Only the actual native region-inventory pin call can select this
 +         * borrower. ENOENT is its definite outside-phase observation, never an
@@ -171400,36 +171575,31 @@ index 0000000000000000000000000000000000000000..51b28bf45dcc3e4795c7d60ee39ef02e
 +    }
 +    /* Runtime inventory/resources use the genuinely entered operation on the
 +     * SAME ledger. Completed installing Setup is never replayed as its clock. */
-+    if (standing_construction_operation_identity()) {
++    if (bql_locked() && standing_construction_operation_identity()) {
 +        status = qemu_crucible_startup_source_observation_construction_current_v1(
 +            &startup_source.standing.construction);
 +        return status ? status : crucible_metadata_partition_admission_status(
 +            &startup_source.metadata_partition);
 +    }
-+    if (standing_operation_identity(&startup_source.standing.operation)) {
++    if (runtime_actor &&
++        standing_operation_identity(&startup_source.standing.operation)) {
 +        status = standing_operation_current(&startup_source.standing.operation);
 +        return status ? status : crucible_metadata_partition_admission_status(
 +            &startup_source.metadata_partition);
 +    }
 +#endif
-+#if defined(CONFIG_LINUX) && defined(__x86_64__) && !defined(__ILP32__)
-+    if (qatomic_load_acquire(&startup_source.process_purpose_complete) &&
-+        !startup_source.acquisition_attempted) {
++    /* With no BQL the raw creator touched no mutable operation fields. With
++     * BQL, any genuine entered construction already returned its own result. */
++    if (raw_creator) {
 +        int saved = crucible_metadata_partition_admission_status(
 +            &startup_source.metadata_partition);
 +
 +        return saved ? saved : qemu_crucible_preexec_purpose_check_v3(
 +            startup_source.preexec_purpose_owner);
 +    }
-+#endif
-+    /* Before D is retained there is no containing N/loader purpose enforced
-+     * or issued here. Those earlier allocations need their own genuine issuer. */
-+    if (!qatomic_load_acquire(
-+            &startup_source.metadata_partition.controller_retained)) {
-+        return 0;
-+    }
-+    if (!bql_locked() ||
-+        !startup_invocation(startup_source.saved.plugin_id)) {
++    /* Only runtime_actor reaches saved: module publication and BQL preceded
++     * every runtime probe, and neither replaces actual installer identity. */
++    if (!startup_invocation(startup_source.saved.plugin_id)) {
 +        return -EPERM;
 +    }
 +    /* The completed installer original cannot issue later dynamic work.
@@ -171463,37 +171633,244 @@ index 0000000000000000000000000000000000000000..51b28bf45dcc3e4795c7d60ee39ef02e
 +    return 0;
 +}
 +
-+int qemu_crucible_startup_source_native_metadata_admit(
-+    uint64_t bytes, QemuCrucibleMetadataCharge *charge)
++/* Identity corroboration only. This neither observes an Original nor admits
++ * a debit: the owned pre/post checks still authenticate the actual operation.
++ * In particular, BQL/Main alone does not replace the real inventory holder. */
++int qemu_crucible_startup_source_native_metadata_preentry(void)
 +{
-+    QemuCrucibleMetadataCharge tentative = { 0 };
-+    int status = qemu_crucible_startup_source_native_metadata_check();
-+
-+    if (status) {
-+        return status;
++    if (!qemu_plugin_crucible_startup_source_retained() ||
++        getpid() != startup_source.owner_process) {
++        return -EPERM;
 +    }
-+    /* Existing callers initialize charge to zero. This ordinary return leaves
-+     * it untouched and does not construct a retained allocation loan. */
-+    if (!qemu_crucible_startup_source_control_metadata_bytes()) {
++    if (native_metadata_raw_creator()) {
 +        return 0;
 +    }
-+    if (!charge || charge->held) {
-+        return startup_failure(-EINVAL);
++    if (!qatomic_load_acquire(&startup_source.module_custody_published) ||
++        !bql_locked()) {
++        return -EPERM;
 +    }
-+    status = crucible_metadata_native_admit(
-+        &startup_source.metadata_partition, bytes, &tentative);
-+    if (status) {
-+        return startup_failure(status);
++    if (startup_invocation(startup_source.saved.plugin_id)) {
++        return 0;
 +    }
-+    status = qemu_crucible_startup_source_native_metadata_check();
++#ifdef CONFIG_LINUX
++    if (standing_construction_operation_identity() ||
++        standing_operation_identity(&startup_source.standing.operation)) {
++        return 0;
++    }
++    if (startup_source.checkpoint_inventory_metadata.held &&
++        !checkpoint_inventory_metadata_identity(
++            &startup_source.checkpoint_inventory_metadata)) {
++        return 0;
++    }
++#endif
++    return -EPERM;
++}
++
++/* The actual owner is already claimed. Observe the post independently even
++ * after an initial refusal; publish the first failure only after saving both. */
++static int native_metadata_admit_owned(
++    uint64_t bytes, QemuCrucibleMetadataAdmission *admission, int first)
++{
++    int pre = qemu_crucible_startup_source_native_metadata_check();
++
++    if (!first) {
++        first = pre;
++    }
++    if (!first) {
++        first = crucible_metadata_native_admit(
++            &startup_source.metadata_partition, bytes, &admission->charge);
++    }
++    admission->first_status = first;
++    admission->post_attempted = true;
++    admission->post_status =
++        qemu_crucible_startup_source_native_metadata_check();
++    crucible_metadata_partition_record_post(
++        &startup_source.metadata_partition, admission->post_status);
++    if (first) {
++        startup_failure(first);
++    }
++    return first ? first : admission->post_status;
++}
++
++int qemu_crucible_startup_source_native_metadata_admit(
++    uint64_t bytes, QemuCrucibleMetadataAdmission *admission)
++{
++    int identity;
++
++    if (!qemu_crucible_startup_source_control_metadata_bytes()) {
++        /* Preserve ordinary caller storage and the existing initial check. */
++        return qemu_crucible_startup_source_native_metadata_check();
++    }
++    identity = qemu_crucible_startup_source_native_metadata_preentry();
++
++    if (identity) {
++        return identity;
++    }
++    if (!bytes || !admission) {
++        return -EINVAL;
++    }
++    if (admission->charge.held || admission->charge.bytes ||
++        admission->first_status || admission->post_status ||
++        admission->post_attempted) {
++        return -EALREADY;
++    }
++    return native_metadata_admit_owned(bytes, admission, 0);
++}
++
++enum NativeMetadataBirthState {
++    NATIVE_METADATA_BIRTH_FREE,
++    NATIVE_METADATA_BIRTH_CLAIMING,
++    NATIVE_METADATA_BIRTH_ACTIVE,
++    NATIVE_METADATA_BIRTH_FINISHING,
++    NATIVE_METADATA_BIRTH_RETAINED,
++};
++
++static bool native_metadata_birth_identity(QemuCrucibleMetadataBirth *birth)
++{
++    return birth == &startup_source.inventory_birth[0] ||
++        birth == &startup_source.inventory_birth[1] ||
++        birth == &startup_source.region_birth ||
++        birth == &startup_source.dirty_birth;
++}
++
++static int native_metadata_birth_begin(QemuCrucibleMetadataBirth *birth,
++                                      uint64_t bytes, int first,
++                                      QemuCrucibleMetadataBirthLoan *out)
++{
++    int status;
++    int creator_tid;
++
++    if (!qemu_crucible_startup_source_control_metadata_bytes()) {
++        return qemu_crucible_startup_source_native_metadata_check();
++    }
++    status = qemu_crucible_startup_source_native_metadata_preentry();
 +    if (status) {
-+        /* A failed postcheck retains the debit even though no caller allocation
-+         * may begin. Neither a missing output nor retry reopens the residual. */
-+        crucible_metadata_partition_record_post(
-+            &startup_source.metadata_partition, status);
 +        return status;
 +    }
-+    *charge = tentative;
++    if (!out || out->owner || out->admission) {
++        return -EINVAL;
++    }
++    creator_tid = native_metadata_thread_id();
++    if (!creator_tid) {
++        return -ENOTSUP;
++    }
++    if (qatomic_cmpxchg(&birth->state, NATIVE_METADATA_BIRTH_FREE,
++                       NATIVE_METADATA_BIRTH_CLAIMING) !=
++        NATIVE_METADATA_BIRTH_FREE) {
++        /* No new bracket or debit began; preserve the incumbent owner. */
++        return -EBUSY;
++    }
++    qemu_thread_get_self(&birth->creator);
++    qatomic_store_release(&birth->creator_tid, creator_tid);
++    birth->requested_bytes = bytes;
++    *out = (QemuCrucibleMetadataBirthLoan) { birth, &birth->admission };
++    status = native_metadata_admit_owned(bytes, &birth->admission, first);
++    if (!status && (!birth->admission.charge.held ||
++                    birth->admission.charge.bytes != bytes)) {
++        status = -EPROTO;
++    }
++    birth->transfer_status = status;
++    qatomic_store_release(&birth->state, status ?
++        NATIVE_METADATA_BIRTH_RETAINED : NATIVE_METADATA_BIRTH_ACTIVE);
++    return status;
++}
++
++int qemu_crucible_startup_source_ram_inventory_birth_begin(
++    unsigned row, QemuCrucibleMetadataBirthLoan *out)
++{
++    QemuCrucibleMetadataPartition *partition =
++        &startup_source.metadata_partition;
++    int first = 0;
++
++    if (row >= G_N_ELEMENTS(startup_source.inventory_birth)) {
++        return -EINVAL;
++    }
++    if (!qatomic_load_acquire(&partition->published) ||
++        !partition->inventory_request_extent) {
++#ifdef ENOKEY
++        first = -ENOKEY;
++#else
++        first = -ENOTSUP;
++#endif
++    }
++    return native_metadata_birth_begin(&startup_source.inventory_birth[row],
++        partition->inventory_request_extent, first, out);
++}
++
++int qemu_crucible_startup_source_ram_region_birth_begin(
++    uint64_t bytes, QemuCrucibleMetadataBirthLoan *out)
++{
++    if (!bytes) {
++        return -EINVAL;
++    }
++    return native_metadata_birth_begin(&startup_source.region_birth,
++                                        bytes, 0, out);
++}
++
++int qemu_crucible_startup_source_ram_dirty_birth_begin(
++    uint64_t bytes, QemuCrucibleMetadataBirthLoan *out)
++{
++    if (!bytes) {
++        return -EINVAL;
++    }
++    return native_metadata_birth_begin(&startup_source.dirty_birth,
++                                        bytes, 0, out);
++}
++
++int qemu_crucible_startup_source_ram_metadata_birth_finish(
++    QemuCrucibleMetadataBirthLoan *loan)
++{
++    QemuCrucibleMetadataBirth *birth;
++    int creator_tid;
++    int status;
++
++    /* Acquire identity publication independently of caller pthread history.
++     * This is retained physical custody, with no Original/live-time gate. */
++    if (!qemu_plugin_crucible_startup_source_retained() ||
++        !loan || !native_metadata_birth_identity(loan->owner) ||
++        loan->admission != &loan->owner->admission ||
++        getpid() != startup_source.owner_process) {
++        return -EPERM;
++    }
++    birth = loan->owner;
++    /* Reject a foreign actor before any phase mutation or plain creator read.
++     * The exact QemuThread check remains mandatory after phase acquisition. */
++    creator_tid = native_metadata_thread_id();
++    if (!creator_tid ||
++        creator_tid != qatomic_load_acquire(&birth->creator_tid)) {
++        return -EPERM;
++    }
++    if (qatomic_cmpxchg(&birth->state, NATIVE_METADATA_BIRTH_ACTIVE,
++                       NATIVE_METADATA_BIRTH_FINISHING) !=
++        NATIVE_METADATA_BIRTH_ACTIVE) {
++        return -EBUSY;
++    }
++    /* Only the authenticated creator can own this transition. The phase
++     * protects its plain identity and receipt through complete transfer. */
++    if (!qemu_thread_is_self(&birth->creator)) {
++        qatomic_store_release(&birth->state, NATIVE_METADATA_BIRTH_ACTIVE);
++        return -EPERM;
++    }
++    status = birth->admission.first_status ? birth->admission.first_status :
++        birth->admission.post_status;
++    if (!status && (!birth->admission.post_attempted ||
++                    birth->admission.charge.held ||
++                    birth->admission.charge.bytes)) {
++        status = -EBUSY;
++    }
++    birth->finish_status = status;
++    if (status) {
++        qatomic_store_release(&birth->state, NATIVE_METADATA_BIRTH_RETAINED);
++        return status;
++    }
++    /* Every requested byte now resides on actual allocated destinations.
++     * Clearing this loan changes no ledger balance or allocator history. */
++    birth->admission = (QemuCrucibleMetadataAdmission) { 0 };
++    birth->requested_bytes = 0;
++    birth->transfer_status = 0;
++    qatomic_store_release(&birth->creator_tid, 0);
++    *loan = (QemuCrucibleMetadataBirthLoan) { 0 };
++    qatomic_store_release(&birth->state, NATIVE_METADATA_BIRTH_FREE);
 +    return 0;
 +}
 +
@@ -171589,31 +171966,6 @@ index 0000000000000000000000000000000000000000..51b28bf45dcc3e4795c7d60ee39ef02e
 +            &startup_source.metadata_partition, status);
 +    }
 +    return status;
-+}
-+
-+int qemu_crucible_startup_source_inventory_metadata_admit(
-+    QemuCrucibleMetadataCharge *charge)
-+{
-+    int status = qemu_crucible_startup_source_native_metadata_check();
-+
-+    if (status) {
-+        return status;
-+    }
-+    if (!qemu_crucible_startup_source_control_metadata_bytes()) {
-+        return 0;
-+    }
-+    /* GLib's private container and fixed-capacity request extent must be
-+     * source-qualified by the actual containing purpose, not guessed here. */
-+    if (!qatomic_load_acquire(&startup_source.metadata_partition.published) ||
-+        !startup_source.metadata_partition.inventory_request_extent) {
-+#ifdef CONFIG_LINUX
-+        return -ENOKEY;
-+#else
-+        return -ENOTSUP;
-+#endif
-+    }
-+    return qemu_crucible_startup_source_native_metadata_admit(
-+        startup_source.metadata_partition.inventory_request_extent, charge);
 +}
 +
 +#ifdef CONFIG_LINUX
@@ -172985,7 +173337,7 @@ index 0000000000000000000000000000000000000000..51b28bf45dcc3e4795c7d60ee39ef02e
 +    }
 +#if defined(CONFIG_LINUX) && defined(__x86_64__) && !defined(__ILP32__)
 +    QemuCruciblePreexecSourceBorrow borrowed;
-+    QemuCrucibleMetadataCharge *charge;
++    QemuCrucibleMetadataAdmission *admission;
 +    size_t length;
 +    int status;
 +
@@ -173007,11 +173359,8 @@ index 0000000000000000000000000000000000000000..51b28bf45dcc3e4795c7d60ee39ef02e
 +        memcmp(path, borrowed.plugin_path, length + 1)) {
 +        return startup_failure(-ESTALE);
 +    }
-+    charge = &startup_source.loader_charges[role];
-+    if (charge->held) {
-+        return startup_failure(-EALREADY);
-+    }
-+    status = qemu_crucible_startup_source_native_metadata_admit(bytes, charge);
++    admission = &startup_source.loader_admissions[role];
++    status = qemu_crucible_startup_source_native_metadata_admit(bytes, admission);
 +    if (status) {
 +        return status;
 +    }
@@ -174153,8 +174502,13 @@ index 0000000000000000000000000000000000000000..51b28bf45dcc3e4795c7d60ee39ef02e
 +int qemu_crucible_startup_source_observation_construction_operation_end_v1(
 +    QemuCrucibleObservationConstructionBinding *binding)
 +{
-+    int status = qemu_crucible_startup_source_observation_construction_identity_v1(binding);
++    int status;
 +
++    /* The real VL frame holds BQL through both entry and physical return. */
++    if (!bql_locked()) {
++        return -EPERM;
++    }
++    status = qemu_crucible_startup_source_observation_construction_identity_v1(binding);
 +    if (status || !standing_construction_operation_identity() ||
 +        !binding->operation.post_recorded) {
 +        return status ? status : -EPERM;
@@ -174404,7 +174758,8 @@ index 0000000000000000000000000000000000000000..51b28bf45dcc3e4795c7d60ee39ef02e
 +    struct QemuCrucibleFingerprintOperation *operation;
 +    int status;
 +
-+    if (!owner || !standing_operation_return_identity(*owner)) {
++    /* Both real Root routes and deferred Main cleanup hold BQL. */
++    if (!bql_locked() || !owner || !standing_operation_return_identity(*owner)) {
 +        return -EPERM;
 +    }
 +    operation = *owner;
@@ -178253,10 +178608,10 @@ index 0000000000000000000000000000000000000000..51b28bf45dcc3e4795c7d60ee39ef02e
 +#include "crucible-parent-park-metadata.inc.h"
 diff --git a/plugins/crucible-startup-source.h b/plugins/crucible-startup-source.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..9edaa5d2fbe4f27c7a9dd6e8b0475f75aa11b690
+index 0000000000000000000000000000000000000000..e14df42825b4dc6c3eb6bfd5851a7e78480c59bd
 --- /dev/null
 +++ b/plugins/crucible-startup-source.h
-@@ -0,0 +1,2303 @@
+@@ -0,0 +1,2344 @@
 +/*
 + * Fixed process-private control for the original installer startup source
 + *
@@ -180012,6 +180367,20 @@ index 0000000000000000000000000000000000000000..9edaa5d2fbe4f27c7a9dd6e8b0475f75
 +    bool returned;
 +};
 +
++/* One actual allocation site owns each cell. Atomic phases exclude admission
++ * before any debit, and keep a refused bracket until process containment.
++ * Only a successful, complete physical transfer makes a cell reusable. */
++struct QemuCrucibleMetadataBirth {
++    QemuThread creator;
++    uint64_t requested_bytes;
++    QemuCrucibleMetadataAdmission admission;
++    unsigned state;
++    int transfer_status;
++    int finish_status;
++    /* Atomic real claimant identity; rejects foreign phase/creator access. */
++    int creator_tid;
++};
++
 +typedef struct QemuCrucibleStartupSourceControl {
 +    QemuCrucibleOriginalStartupWireRecord original;
 +    QemuCrucibleStartupInstallerBinding current;
@@ -180128,9 +180497,14 @@ index 0000000000000000000000000000000000000000..9edaa5d2fbe4f27c7a9dd6e8b0475f75
 +    QemuCrucibleSetupHandshakeOwner setup_handshake;
 +    QemuCrucibleSetupSlotOwner setup_slot;
 +    uint64_t preexec_native_extent;
++    /* Corroborates the exact already-issued preexec creator before a claim. */
++    int64_t preexec_owner_thread;
 +    uint64_t control_device;
 +    uint64_t control_inode;
-+    QemuCrucibleMetadataCharge loader_charges[3];
++    QemuCrucibleMetadataAdmission loader_admissions[3];
++    QemuCrucibleMetadataBirth inventory_birth[2];
++    QemuCrucibleMetadataBirth region_birth;
++    QemuCrucibleMetadataBirth dirty_birth;
 +    QemuCrucibleMonitorPurpose monitor_purpose;
 +    QemuCrucibleQmpAllocationLedger qmp_allocations;
 +    QemuCrucibleCheckpointStoragePurpose checkpoint_storage;
@@ -180261,6 +180635,9 @@ index 0000000000000000000000000000000000000000..9edaa5d2fbe4f27c7a9dd6e8b0475f75
 +    QemuCrucibleObservationConstructionBinding *binding);
 +int qemu_crucible_startup_source_observation_construction_post_v1(
 +    QemuCrucibleObservationConstructionBinding *binding, int first_status);
++/* The actual VL frame retains BQL through identity-only physical return.
++ * Runtime fingerprint operation enter/post/end likewise retain BQL through
++ * actual RR Root observation or deferred Main cleanup, including failures. */
 +int qemu_crucible_startup_source_observation_construction_operation_end_v1(
 +    QemuCrucibleObservationConstructionBinding *binding);
 +
@@ -180341,15 +180718,34 @@ index 0000000000000000000000000000000000000000..9edaa5d2fbe4f27c7a9dd6e8b0475f75
 +uint64_t qemu_crucible_startup_source_control_metadata_bytes(void);
 +int qemu_crucible_startup_source_metadata_partition_status(void);
 +int qemu_crucible_startup_source_native_metadata_check(void);
++/* Used by the real inventory row claim before it mutates constructor state.
++ * Identity only; every selected debit still requires its owned pre AND post.
++ * Runtime actors acquire module publication and hold actual BQL before mutable
++ * Source probes. The exact preexec creator is accepted only pre-publication.
++ * This identity check selects no Original: the owned native check preserves
++ * entered inventory/construction/Root priority before raw Setup fallback. */
++int qemu_crucible_startup_source_native_metadata_preentry(void);
 +int qemu_crucible_startup_source_native_metadata_admit(
-+    uint64_t bytes, QemuCrucibleMetadataCharge *charge);
++    uint64_t bytes, QemuCrucibleMetadataAdmission *admission);
++/* Initial identity/argument refusals preserve the output. Once claimed, the
++ * canonical cell and output survive both the first operation and its post.
++ * Success exclusively lends the same receipt through actual allocation/move. */
++int qemu_crucible_startup_source_ram_inventory_birth_begin(
++    unsigned row, QemuCrucibleMetadataBirthLoan *out);
++int qemu_crucible_startup_source_ram_region_birth_begin(
++    uint64_t bytes, QemuCrucibleMetadataBirthLoan *out);
++int qemu_crucible_startup_source_ram_dirty_birth_begin(
++    uint64_t bytes, QemuCrucibleMetadataBirthLoan *out);
++/* Acquires retained identity publication; a foreign live task cannot change
++ * phase. The real creator must still prove QemuThread and complete transfer.
++ * No Original expiry/current operation is required to return this loan. */
++int qemu_crucible_startup_source_ram_metadata_birth_finish(
++    QemuCrucibleMetadataBirthLoan *loan);
 +/* Internal calculation only; publication still requires the shared retained
 + * reservation cut. The caller initializes ordinary allowance beforehand. */
 +int qemu_crucible_startup_source_inventory_allowance_limit_v2(
 +    uint64_t original_total, uint64_t native_report, uint64_t *allowance);
 +int qemu_crucible_startup_source_inventory_allowance_reserve(uint64_t bytes);
-+int qemu_crucible_startup_source_inventory_metadata_admit(
-+    QemuCrucibleMetadataCharge *charge);
 +void qemu_crucible_startup_source_native_metadata_retire(
 +    QemuCrucibleMetadataCharge *charge);
 +/* Internal mechanism only. The observed extent is not a holder constructor.
@@ -191451,7 +191847,7 @@ index f8e17dcf1ce91d8aefb8d82cafd3196a4fd9edf6..f24121d2d3c66f1436ba73c976a7bd76
      return true;
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..94f5167ad88618e5df2a709d8ba98460671d1752
+index 0000000000000000000000000000000000000000..aad419e4bd55badf0149cd3d4112a6491cfd56bd
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,87 @@
@@ -191479,7 +191875,7 @@ index 0000000000000000000000000000000000000000..94f5167ad88618e5df2a709d8ba98460
 +    'include/plugins/qemu-plugin.h':
 +        'bf8b9db5f3f9205ca246d9367b889a77c0df9ef0ceeb7ae73e5eda630898bdc7',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '7f164821979539e429388fe616ba6ece061dd28eebb0c51eb16ebf253118b102',
++        'feaf1af6dd02237ba495254fbb8d66b426dd6328ceaab65bd77d8e587440ef47',
 +}
 +
 +PURPOSE_FUNCTIONS = (
@@ -209406,7 +209802,7 @@ index cd3193d170b2b5759cb34e4087a6d0ebfa805287..5a3be174e1b8903d863da20fa81cee9c
 +  system_ss.add(files('crucible-native-park-request.c'))
  endif
 diff --git a/system/physmem.c b/system/physmem.c
-index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240e51d3825 100644
+index c21ea929153e5b67efa47432b1db0993e2690f9c..8b43cc7a913c9c874eda3597a1df2115cd90a8ba 100644
 --- a/system/physmem.c
 +++ b/system/physmem.c
 @@ -48,6 +48,7 @@
@@ -209906,13 +210302,18 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
      physical_memory_set_dirty_range(block->offset, block->used_length,
                                          DIRTY_CLIENTS_ALL);
      memory_region_set_size(block->mr, unaligned_size);
-@@ -2105,17 +2463,53 @@ void qemu_ram_msync(RAMBlock *block, ram_addr_t start, ram_addr_t length)
+@@ -2105,17 +2463,64 @@ void qemu_ram_msync(RAMBlock *block, ram_addr_t start, ram_addr_t length)
      }
  }
  
++uint64_t qemu_crucible_ram_dirty_metadata_storage_bytes(void)
++{
++    return sizeof(ram_list.dirty_bitmap_admission);
++}
++
 +static void dirty_memory_blocks_free(DirtyMemoryBlocks *blocks)
 +{
-+    QemuCrucibleMetadataCharge charge = blocks->metadata_charge;
++    QemuCrucibleMetadataCharge charge = blocks->metadata_admission.charge;
 +
 +    if (blocks->client == DIRTY_MEMORY_CRUCIBLE_RAM || charge.held) {
 +        qemu_crucible_ram_native_metadata_released(blocks->allocation_bytes + 32);
@@ -209933,7 +210334,8 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
 +    uint64_t bitmap_bytes;
 +    uint64_t client_bytes;
 +    uint64_t batch_bytes;
-+    QemuCrucibleMetadataCharge charge = { 0 };
++    QemuCrucibleMetadataBirthLoan birth = { 0 };
++    uint64_t bitmap_batch;
 +    int status;
  
      /* Only need to extend if block count increased */
@@ -209956,39 +210358,50 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
 +        return -EOVERFLOW;
 +    }
 +    batch_bytes = client_bytes * DIRTY_MEMORY_NUM;
-+    status = qemu_crucible_ram_native_metadata_admit(batch_bytes, &charge);
++    bitmap_batch = (client_bytes - header_bytes) * DIRTY_MEMORY_NUM;
++    if (bitmap_batch > UINT64_MAX -
++        ram_list.dirty_bitmap_admission.charge.bytes) {
++        return -EOVERFLOW;
++    }
++    status = qemu_crucible_ram_dirty_metadata_birth_begin(batch_bytes, &birth);
 +    if (status) {
 +        return status;
      }
  
      for (i = 0; i < DIRTY_MEMORY_NUM; i++) {
-@@ -2126,6 +2520,21 @@ static void dirty_memory_extend(ram_addr_t new_ram_size)
+@@ -2126,6 +2531,21 @@ static void dirty_memory_extend(ram_addr_t new_ram_size)
          old_blocks = qatomic_rcu_read(&ram_list.dirty_memory[i]);
          new_blocks = g_malloc(sizeof(*new_blocks) +
                                sizeof(new_blocks->blocks[0]) * new_num_blocks);
 +        new_blocks->allocation_bytes = sizeof(*new_blocks) +
 +            sizeof(new_blocks->blocks[0]) * new_num_blocks;
 +        new_blocks->client = i;
-+        new_blocks->metadata_charge = (QemuCrucibleMetadataCharge) { 0 };
-+        /* Every client header retires at its actual RCU free. New bitmap
-+         * storage survives replacement and stays charged until exit. */
-+        if (charge.held) {
-+            new_blocks->metadata_charge =
-+                (QemuCrucibleMetadataCharge) { header_bytes, true };
++        new_blocks->metadata_admission = (QemuCrucibleMetadataAdmission) { 0 };
++        /* Only this actual header extent moves from the Source batch. Its
++         * receipt precedes reporting, bitmap allocation and RCU publication. */
++        if (birth.owner) {
++            crucible_metadata_admission_transfer(birth.admission,
++                &new_blocks->metadata_admission, header_bytes);
 +        }
 +        /* The selected N report includes every admitted dirty client. The
 +         * historical +32 floor is conservative, not allocator-header proof. */
-+        if (i == DIRTY_MEMORY_CRUCIBLE_RAM || charge.held) {
++        if (i == DIRTY_MEMORY_CRUCIBLE_RAM || birth.owner) {
 +            qemu_crucible_ram_native_metadata_allocated(new_blocks->allocation_bytes + 32);
 +        }
  
          if (old_num_blocks) {
              memcpy(new_blocks->blocks, old_blocks->blocks,
-@@ -2134,16 +2543,21 @@ static void dirty_memory_extend(ram_addr_t new_ram_size)
+@@ -2134,16 +2554,27 @@ static void dirty_memory_extend(ram_addr_t new_ram_size)
  
          for (j = old_num_blocks; j < new_num_blocks; j++) {
              new_blocks->blocks[j] = bitmap_new(DIRTY_MEMORY_BLOCK_SIZE);
-+            if (i == DIRTY_MEMORY_CRUCIBLE_RAM || charge.held) {
++            if (birth.owner) {
++                /* Old bitmap pointers were copied without another debit.
++                 * These actual new allocations remain charged until exit. */
++                crucible_metadata_admission_transfer(birth.admission,
++                    &ram_list.dirty_bitmap_admission, bitmap_bytes);
++            }
++            if (i == DIRTY_MEMORY_CRUCIBLE_RAM || birth.owner) {
 +                qemu_crucible_ram_native_metadata_allocated(
 +                    BITS_TO_LONGS(DIRTY_MEMORY_BLOCK_SIZE) * sizeof(unsigned long) + 32);
 +            }
@@ -210003,11 +210416,11 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
      }
  
      ram_list.num_dirty_blocks = new_num_blocks;
-+    return 0;
++    return birth.owner ? qemu_crucible_ram_metadata_birth_finish(&birth) : 0;
  }
  
  static void ram_block_add(RAMBlock *new_block, Error **errp)
-@@ -2155,6 +2569,9 @@ static void ram_block_add(RAMBlock *new_block, Error **errp)
+@@ -2155,6 +2586,9 @@ static void ram_block_add(RAMBlock *new_block, Error **errp)
      bool free_on_error = false;
      ram_addr_t ram_size;
      Error *err = NULL;
@@ -210017,7 +210430,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
  
      qemu_mutex_lock_ramlist();
      new_block->offset = find_ram_offset(new_block->max_length);
-@@ -2242,7 +2659,13 @@ static void ram_block_add(RAMBlock *new_block, Error **errp)
+@@ -2242,7 +2676,13 @@ static void ram_block_add(RAMBlock *new_block, Error **errp)
      }
  
      ram_size = (new_block->offset + new_block->max_length) >> TARGET_PAGE_BITS;
@@ -210032,7 +210445,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
      /* Keep the list sorted from biggest to smallest block.  Unlike QTAILQ,
       * QLIST (which has an RCU-friendly variant) does not have insertion at
       * tail, so save the last element in last_block.
-@@ -2264,6 +2687,7 @@ static void ram_block_add(RAMBlock *new_block, Error **errp)
+@@ -2264,6 +2704,7 @@ static void ram_block_add(RAMBlock *new_block, Error **errp)
  
      /* Write list before version */
      qatomic_store_release(&ram_list.version, ram_list.version + 1);
@@ -210040,7 +210453,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
      qemu_mutex_unlock_ramlist();
  
      physical_memory_set_dirty_range(new_block->offset,
-@@ -2597,15 +3021,21 @@ void qemu_ram_free(RAMBlock *block)
+@@ -2597,15 +3038,21 @@ void qemu_ram_free(RAMBlock *block)
          return;
      }
  
@@ -210062,7 +210475,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
      qatomic_set(&ram_list.mru_block, NULL);
      /* Write list before version */
      qatomic_store_release(&ram_list.version, ram_list.version + 1);
-@@ -2614,6 +3044,14 @@ void qemu_ram_free(RAMBlock *block)
+@@ -2614,6 +3061,14 @@ void qemu_ram_free(RAMBlock *block)
      qemu_mutex_unlock_ramlist();
  }
  
@@ -210077,7 +210490,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
  #ifndef _WIN32
  /* Simply remap the given VM memory location from start to start+length */
  static int qemu_ram_remap_mmap(RAMBlock *block, uint64_t start, size_t length)
-@@ -2647,6 +3085,7 @@ static int qemu_ram_remap_mmap(RAMBlock *block, uint64_t start, size_t length)
+@@ -2647,6 +3102,7 @@ static int qemu_ram_remap_mmap(RAMBlock *block, uint64_t start, size_t length)
   */
  void qemu_ram_remap(ram_addr_t addr)
  {
@@ -210085,7 +210498,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
      RAMBlock *block;
      uint64_t offset;
      void *vaddr;
-@@ -2665,7 +3104,8 @@ void qemu_ram_remap(ram_addr_t addr)
+@@ -2665,7 +3121,8 @@ void qemu_ram_remap(ram_addr_t addr)
              } else if (xen_enabled()) {
                  abort();
              } else {
@@ -210095,7 +210508,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
                      /*
                       * Fall back to using mmap() only for anonymous mapping,
                       * as if a backing file is associated we may not be able
-@@ -2678,7 +3118,11 @@ void qemu_ram_remap(ram_addr_t addr)
+@@ -2678,7 +3135,11 @@ void qemu_ram_remap(ram_addr_t addr)
                                       block->fd_offset, page_size);
                          exit(1);
                      }
@@ -210108,7 +210521,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
                          error_report("Could not remap RAM %s:%" PRIx64 " +%zx",
                                       block->idstr, offset, page_size);
                          exit(1);
-@@ -2688,6 +3132,13 @@ void qemu_ram_remap(ram_addr_t addr)
+@@ -2688,6 +3149,13 @@ void qemu_ram_remap(ram_addr_t addr)
                  qemu_ram_setup_dump(vaddr, page_size);
              }
  
@@ -210122,7 +210535,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
              break;
          }
      }
-@@ -3123,6 +3574,8 @@ static void invalidate_and_set_dirty(MemoryRegion *mr, hwaddr addr,
+@@ -3123,6 +3591,8 @@ static void invalidate_and_set_dirty(MemoryRegion *mr, hwaddr addr,
                                       hwaddr length)
  {
      uint8_t dirty_log_mask = memory_region_get_dirty_log_mask(mr);
@@ -210131,7 +210544,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
      ram_addr_t ramaddr = memory_region_get_ram_addr(mr);
  
      /* We know we're only called for RAM MemoryRegions */
-@@ -3137,6 +3590,11 @@ static void invalidate_and_set_dirty(MemoryRegion *mr, hwaddr addr,
+@@ -3137,6 +3607,11 @@ static void invalidate_and_set_dirty(MemoryRegion *mr, hwaddr addr,
          dirty_log_mask =
              physical_memory_range_includes_clean(addr, length, dirty_log_mask);
      }
@@ -210143,7 +210556,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
      if (dirty_log_mask & (1 << DIRTY_MEMORY_CODE)) {
          assert(tcg_enabled());
          tb_invalidate_phys_range(NULL, addr, addr + length - 1);
-@@ -3145,6 +3603,44 @@ static void invalidate_and_set_dirty(MemoryRegion *mr, hwaddr addr,
+@@ -3145,6 +3620,44 @@ static void invalidate_and_set_dirty(MemoryRegion *mr, hwaddr addr,
      physical_memory_set_dirty_range(addr, length, dirty_log_mask);
  }
  
@@ -210188,7 +210601,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
  void memory_region_flush_rom_device(MemoryRegion *mr, hwaddr addr, hwaddr size)
  {
      /*
-@@ -3227,10 +3723,11 @@ static bool flatview_access_allowed(MemoryRegion *mr, MemTxAttrs attrs,
+@@ -3227,10 +3740,11 @@ static bool flatview_access_allowed(MemoryRegion *mr, MemTxAttrs attrs,
      return false;
  }
  
@@ -210202,7 +210615,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
  {
      if (!flatview_access_allowed(mr, attrs, mr_addr, *l)) {
          return MEMTX_ACCESS_ERROR;
-@@ -3270,26 +3767,72 @@ static MemTxResult flatview_write_continue_step(MemTxAttrs attrs,
+@@ -3270,26 +3784,72 @@ static MemTxResult flatview_write_continue_step(MemTxAttrs attrs,
          uint8_t *ram_ptr = qemu_ram_ptr_length(mr->ram_block, mr_addr, l,
                                                 false, true);
  
@@ -210280,7 +210693,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
  
          len -= l;
          buf += l;
-@@ -3300,7 +3843,8 @@ static MemTxResult flatview_write_continue(FlatView *fv, hwaddr addr,
+@@ -3300,7 +3860,8 @@ static MemTxResult flatview_write_continue(FlatView *fv, hwaddr addr,
          }
  
          l = len;
@@ -210290,7 +210703,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
      }
  
      return result;
-@@ -3312,21 +3856,24 @@ static MemTxResult flatview_write(FlatView *fv, hwaddr addr, MemTxAttrs attrs,
+@@ -3312,21 +3873,24 @@ static MemTxResult flatview_write(FlatView *fv, hwaddr addr, MemTxAttrs attrs,
  {
      hwaddr l;
      hwaddr mr_addr;
@@ -210318,7 +210731,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
  {
      if (!flatview_access_allowed(mr, attrs, mr_addr, *l)) {
          return MEMTX_ACCESS_ERROR;
-@@ -3365,6 +3912,26 @@ static MemTxResult flatview_read_continue_step(MemTxAttrs attrs, uint8_t *buf,
+@@ -3365,6 +3929,26 @@ static MemTxResult flatview_read_continue_step(MemTxAttrs attrs, uint8_t *buf,
  
          memcpy(buf, ram_ptr, *l);
  
@@ -210345,7 +210758,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
          return MEMTX_OK;
      }
  }
-@@ -3377,10 +3944,18 @@ MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr,
+@@ -3377,10 +3961,18 @@ MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr,
  {
      MemTxResult result = MEMTX_OK;
      uint8_t *buf = ptr;
@@ -210365,7 +210778,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
  
          len -= l;
          buf += l;
-@@ -3391,7 +3966,8 @@ MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr,
+@@ -3391,7 +3983,8 @@ MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr,
          }
  
          l = len;
@@ -210375,7 +210788,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
      }
  
      return result;
-@@ -3403,10 +3979,12 @@ static MemTxResult flatview_read(FlatView *fv, hwaddr addr,
+@@ -3403,10 +3996,12 @@ static MemTxResult flatview_read(FlatView *fv, hwaddr addr,
  {
      hwaddr l;
      hwaddr mr_addr;
@@ -210389,7 +210802,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
      if (!flatview_access_allowed(mr, attrs, mr_addr, l)) {
          return MEMTX_ACCESS_ERROR;
      }
-@@ -3456,6 +4034,73 @@ MemTxResult address_space_rw(const AddressSpace *as, hwaddr addr,
+@@ -3456,6 +4051,73 @@ MemTxResult address_space_rw(const AddressSpace *as, hwaddr addr,
      }
  }
  
@@ -210463,7 +210876,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
  MemTxResult address_space_set(const AddressSpace *as, hwaddr addr,
                                uint8_t c, hwaddr len, MemTxAttrs attrs)
  {
-@@ -3488,7 +4133,7 @@ void physical_memory_write(hwaddr addr, const void *buf, hwaddr len)
+@@ -3488,7 +4150,7 @@ void physical_memory_write(hwaddr addr, const void *buf, hwaddr len)
  }
  
  /* used for ROM loading : can write in RAM and ROM */
@@ -210472,7 +210885,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
                                      MemTxAttrs attrs,
                                      const void *buf, hwaddr len)
  {
-@@ -3513,6 +4158,18 @@ MemTxResult address_space_write_rom(AddressSpace *as, hwaddr addr,
+@@ -3513,6 +4175,18 @@ MemTxResult address_space_write_rom(AddressSpace *as, hwaddr addr,
      return MEMTX_OK;
  }
  
@@ -210491,7 +210904,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
  void address_space_flush_icache_range(AddressSpace *as,
                                        hwaddr addr, hwaddr len)
  {
-@@ -3555,6 +4212,12 @@ typedef struct {
+@@ -3555,6 +4229,12 @@ typedef struct {
      MemoryRegion *mr;
      hwaddr addr;
      size_t len;
@@ -210504,7 +210917,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
      uint8_t buffer[];
  } BounceBuffer;
  
-@@ -3702,11 +4365,12 @@ flatview_extend_translation(FlatView *fv, hwaddr addr,
+@@ -3702,11 +4382,12 @@ flatview_extend_translation(FlatView *fv, hwaddr addr,
   * Use address_space_register_map_client() to know when retrying the map
   * operation is likely to succeed.
   */
@@ -210519,7 +210932,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
  {
      hwaddr len = *plen;
      hwaddr l, xlat;
-@@ -3724,7 +4388,9 @@ void *address_space_map(AddressSpace *as,
+@@ -3724,7 +4405,9 @@ void *address_space_map(AddressSpace *as,
      fv = address_space_to_flatview(as);
      mr = flatview_translate(fv, addr, &xlat, &l, is_write, attrs);
  
@@ -210530,7 +210943,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
          size_t used = qatomic_read(&as->bounce_buffer_size);
          for (;;) {
              hwaddr alloc = MIN(as->max_bounce_buffer_size - used, l);
-@@ -3749,13 +4415,52 @@ void *address_space_map(AddressSpace *as,
+@@ -3749,13 +4432,52 @@ void *address_space_map(AddressSpace *as,
          bounce->mr = mr;
          bounce->addr = addr;
          bounce->len = l;
@@ -210587,7 +211000,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
          return bounce->buffer;
      }
  
-@@ -3763,7 +4468,38 @@ void *address_space_map(AddressSpace *as,
+@@ -3763,7 +4485,38 @@ void *address_space_map(AddressSpace *as,
      *plen = flatview_extend_translation(fv, addr, len, mr, xlat,
                                          l, is_write, attrs);
      fuzz_dma_read_cb(addr, *plen, mr);
@@ -210627,7 +211040,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
  }
  
  /* Unmaps a memory region previously mapped by address_space_map().
-@@ -3778,6 +4514,7 @@ void address_space_unmap(AddressSpace *as, void *buffer, hwaddr len,
+@@ -3778,6 +4531,7 @@ void address_space_unmap(AddressSpace *as, void *buffer, hwaddr len,
  
      mr = memory_region_from_host(buffer, &addr1);
      if (mr != NULL) {
@@ -210635,7 +211048,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
          if (is_write) {
              invalidate_and_set_dirty(mr, addr1, access_len);
          }
-@@ -3785,6 +4522,11 @@ void address_space_unmap(AddressSpace *as, void *buffer, hwaddr len,
+@@ -3785,6 +4539,11 @@ void address_space_unmap(AddressSpace *as, void *buffer, hwaddr len,
              xen_invalidate_map_cache_entry(buffer);
          }
          memory_region_unref(mr);
@@ -210647,7 +211060,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
          return;
      }
  
-@@ -3792,11 +4534,54 @@ void address_space_unmap(AddressSpace *as, void *buffer, hwaddr len,
+@@ -3792,11 +4551,54 @@ void address_space_unmap(AddressSpace *as, void *buffer, hwaddr len,
      BounceBuffer *bounce = container_of(buffer, BounceBuffer, buffer);
      assert(bounce->magic == BOUNCE_BUFFER_MAGIC);
  
@@ -210704,7 +211117,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
      qatomic_sub(&as->bounce_buffer_size, bounce->len);
      bounce->magic = ~BOUNCE_BUFFER_MAGIC;
      memory_region_unref(bounce->mr);
-@@ -3826,7 +4611,7 @@ void physical_memory_unmap(void *buffer, hwaddr len,
+@@ -3826,7 +4628,7 @@ void physical_memory_unmap(void *buffer, hwaddr len,
  #define RCU_READ_UNLOCK(...)     rcu_read_unlock()
  #include "memory_ldst.c.inc"
  
@@ -210713,7 +211126,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
                                   const AddressSpace *as,
                                   hwaddr addr,
                                   hwaddr len,
-@@ -3839,6 +4624,10 @@ int64_t address_space_cache_init(MemoryRegionCache *cache,
+@@ -3839,6 +4641,10 @@ int64_t address_space_cache_init(MemoryRegionCache *cache,
  
      assert(len > 0);
  
@@ -210724,7 +211137,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
      l = len;
      cache->fv = address_space_get_flatview(as);
      d = flatview_to_dispatch(cache->fv);
-@@ -3863,24 +4652,102 @@ int64_t address_space_cache_init(MemoryRegionCache *cache,
+@@ -3863,24 +4669,102 @@ int64_t address_space_cache_init(MemoryRegionCache *cache,
          l = flatview_extend_translation(cache->fv, addr, len, mr,
                                          cache->xlat, l, is_write,
                                          MEMTXATTRS_UNSPECIFIED);
@@ -210829,7 +211242,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
      }
  }
  
-@@ -3890,6 +4757,13 @@ void address_space_cache_destroy(MemoryRegionCache *cache)
+@@ -3890,6 +4774,13 @@ void address_space_cache_destroy(MemoryRegionCache *cache)
          return;
      }
  
@@ -210843,7 +211256,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
      if (xen_map_cache_enabled()) {
          xen_invalidate_map_cache_entry(cache->ptr);
      }
-@@ -3941,8 +4815,8 @@ static MemTxResult address_space_write_continue_cached(MemTxAttrs attrs,
+@@ -3941,8 +4832,8 @@ static MemTxResult address_space_write_continue_cached(MemTxAttrs attrs,
      const uint8_t *buf = ptr;
  
      for (;;) {
@@ -210854,7 +211267,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
  
          len -= l;
          buf += l;
-@@ -3968,7 +4842,8 @@ static MemTxResult address_space_read_continue_cached(MemTxAttrs attrs,
+@@ -3968,7 +4859,8 @@ static MemTxResult address_space_read_continue_cached(MemTxAttrs attrs,
      uint8_t *buf = ptr;
  
      for (;;) {
@@ -210864,7 +211277,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
          len -= l;
          buf += l;
          mr_addr += l;
-@@ -4070,6 +4945,36 @@ int cpu_memory_rw_debug(CPUState *cpu, vaddr addr,
+@@ -4070,6 +4962,36 @@ int cpu_memory_rw_debug(CPUState *cpu, vaddr addr,
      return 0;
  }
  
@@ -210901,7 +211314,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
  int qemu_ram_foreach_block(RAMBlockIterFunc func, void *opaque)
  {
      RAMBlock *block;
-@@ -4085,30 +4990,65 @@ int qemu_ram_foreach_block(RAMBlockIterFunc func, void *opaque)
+@@ -4085,30 +5007,65 @@ int qemu_ram_foreach_block(RAMBlockIterFunc func, void *opaque)
      return ret;
  }
  
@@ -210978,7 +211391,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
              goto err;
          }
  
-@@ -4133,7 +5073,7 @@ int ram_block_discard_shared_range(RAMBlock *rb, uint64_t offset, size_t length)
+@@ -4133,7 +5090,7 @@ int ram_block_discard_shared_range(RAMBlock *rb, uint64_t offset, size_t length)
               */
              if (rb->flags & RAM_READONLY_FD) {
                  error_report("%s: Discarding RAM with readonly files is not"
@@ -210987,7 +211400,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
                  goto err;
  
              }
-@@ -4152,22 +5092,26 @@ int ram_block_discard_shared_range(RAMBlock *rb, uint64_t offset, size_t length)
+@@ -4152,22 +5109,26 @@ int ram_block_discard_shared_range(RAMBlock *rb, uint64_t offset, size_t length)
                                   " in private file mappings is possibly"
                                   " dangerous, because it will modify the"
                                   " underlying file and will affect other"
@@ -211017,7 +211430,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
                           rb->idstr, offset, rb->fd_offset, length, ret);
              goto err;
  #endif
-@@ -4179,6 +5123,10 @@ int ram_block_discard_shared_range(RAMBlock *rb, uint64_t offset, size_t length)
+@@ -4179,6 +5140,10 @@ int ram_block_discard_shared_range(RAMBlock *rb, uint64_t offset, size_t length)
               * fallocate'd away).
               */
  #if defined(CONFIG_MADVISE)
@@ -211028,7 +211441,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
              if (qemu_ram_is_shared(rb) && rb->fd < 0) {
                  ret = madvise(host_startaddr, length, QEMU_MADV_REMOVE);
              } else {
-@@ -4188,13 +5136,13 @@ int ram_block_discard_shared_range(RAMBlock *rb, uint64_t offset, size_t length)
+@@ -4188,13 +5153,13 @@ int ram_block_discard_shared_range(RAMBlock *rb, uint64_t offset, size_t length)
                  ret = -errno;
                  error_report("%s: Failed to discard range "
                               "%s:%" PRIx64 " +%zx (%d)",
@@ -211044,7 +211457,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
              goto err;
  #endif
          }
-@@ -4203,18 +5151,34 @@ int ram_block_discard_shared_range(RAMBlock *rb, uint64_t offset, size_t length)
+@@ -4203,18 +5168,34 @@ int ram_block_discard_shared_range(RAMBlock *rb, uint64_t offset, size_t length)
                                               ret);
      } else {
          error_report("%s: Overrun block '%s' (%" PRIu64 "/%zx/" RAM_ADDR_FMT")",
@@ -211082,7 +211495,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
      if (ret) {
          return ret;
      }
-@@ -4226,6 +5190,13 @@ int ram_block_discard_range(RAMBlock *rb, uint64_t offset, size_t length)
+@@ -4226,6 +5207,13 @@ int ram_block_discard_range(RAMBlock *rb, uint64_t offset, size_t length)
      return ret;
  }
  
@@ -211096,7 +211509,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..ad00012b3fa7cef2bb6e4ad86bfc1240
  int ram_block_discard_guest_memfd_range(RAMBlock *rb, uint64_t offset,
                                          size_t length)
  {
-@@ -4492,3 +5463,51 @@ void ram_block_del_cpr_blocker(RAMBlock *rb)
+@@ -4492,3 +5480,51 @@ void ram_block_del_cpr_blocker(RAMBlock *rb)
  {
      migrate_del_blocker(&rb->cpr_blocker);
  }
@@ -233585,10 +233998,10 @@ index 0000000000000000000000000000000000000000..c4faa376c01509f12f8ce6aaa72bbc69
 +    )]
 diff --git a/tests/unit/crucible-startup-source-fixture.inc.h b/tests/unit/crucible-startup-source-fixture.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..2a5eca5ea595a3ed07c06e6670f926d4a38ae5e9
+index 0000000000000000000000000000000000000000..b52442faa3ff99529c1d30a48578adc86cf652b9
 --- /dev/null
 +++ b/tests/unit/crucible-startup-source-fixture.inc.h
-@@ -0,0 +1,785 @@
+@@ -0,0 +1,804 @@
 +/*
 + * Actual-body controls for original installer startup source
 + *
@@ -233626,11 +234039,6 @@ index 0000000000000000000000000000000000000000..2a5eca5ea595a3ed07c06e6670f926d4
 +#else
 +    return false;
 +#endif
-+}
-+
-+static bool fixture_bql_locked(void)
-+{
-+    return fixture_bql;
 +}
 +
 +/* Lifecycle mode and VMState registration are disclosed effectful seams. */
@@ -233722,6 +234130,27 @@ index 0000000000000000000000000000000000000000..2a5eca5ea595a3ed07c06e6670f926d4
 +static SourceFixture fixture;
 +static bool fixture_workspace_requested;
 +static bool fixture_ram_endpoint_requested;
++
++/* The disclosed fixture lock belongs to its real thread. Foreign pthreads
++ * must not inherit BQL from a process-wide boolean; this is no VM/RR model. */
++static bool fixture_bql_locked(void)
++{
++    return fixture_bql && qemu_thread_is_self(&fixture.thread);
++}
++
++/* Observe real identity access without replacing its outcome. Publication of
++ * this target precedes pthread creation; the only shared writer is atomic. */
++static QemuThread *fixture_birth_creator_target;
++static unsigned fixture_foreign_creator_reads;
++
++static bool fixture_source_thread_is_self(QemuThread *thread)
++{
++    if (thread == fixture_birth_creator_target &&
++        !qemu_thread_is_self(&fixture.thread)) {
++        qatomic_inc(&fixture_foreign_creator_reads);
++    }
++    return qemu_thread_is_self(thread);
++}
 +
 +int qemu_crucible_preexec_purpose_check_v3(QemuCruciblePreexecPurposeOwner *owner)
 +{
@@ -233929,7 +234358,9 @@ index 0000000000000000000000000000000000000000..2a5eca5ea595a3ed07c06e6670f926d4
 +#define qemu_crucible_machine_construction_frame_current_v1 fixture_machine_current_unavailable
 +#define monitor_qmp_connection_watch_valid fixture_park_connection_watch_unavailable
 +#define qemu_crucible_received_cancellation_observe_v1 fixture_park_cancellation_observe_unavailable
++#define qemu_thread_is_self fixture_source_thread_is_self
 +#include "crucible-startup-source-body.inc.h"
++#undef qemu_thread_is_self
 +#undef tcg_flush_jmp_cache
 +#undef tb_flush__exclusive_or_serial
 +#undef qemu_cpu_schedule_owned_work
@@ -234372,6 +234803,7 @@ index 0000000000000000000000000000000000000000..2a5eca5ea595a3ed07c06e6670f926d4
 +    g_assert_cmpuint(startup_source.purpose_inode, ==, plan.st_ino);
 +    g_assert_cmpuint(qemu_crucible_startup_source_metadata_bytes(), ==,
 +        sizeof(QemuCrucibleStartupSourceControl) +
++        qemu_crucible_ram_metadata_fixed_storage_bytes() +
 +        startup_source.standing.construction_storage.fixed_charge.bytes);
 +}
 diff --git a/tests/unit/crucible-timer-stream.h b/tests/unit/crucible-timer-stream.h
@@ -235028,7 +235460,7 @@ index 0000000000000000000000000000000000000000..2617c754aa1ea8587f6eaabe5a8bdf68
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..90edde07fbaf25ab39056f4b11fd93c1ffcd102e
+index 0000000000000000000000000000000000000000..79d9e1006c57341deeba2cbfdcc779fc4b717909
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
 @@ -0,0 +1,100 @@
@@ -235046,7 +235478,7 @@ index 0000000000000000000000000000000000000000..90edde07fbaf25ab39056f4b11fd93c1
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '7f164821979539e429388fe616ba6ece061dd28eebb0c51eb16ebf253118b102',
++        'feaf1af6dd02237ba495254fbb8d66b426dd6328ceaab65bd77d8e587440ef47',
 +}
 +
 +FUNCTIONS = (
@@ -235134,7 +235566,7 @@ index 0000000000000000000000000000000000000000..90edde07fbaf25ab39056f4b11fd93c1
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..a373b39b08aa68829f0451e240a553a91d91d6a9
+index 0000000000000000000000000000000000000000..4bb7a4d6d6a67d51a9e5e5a4bbd1bf7bd0e7e8ba
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
 @@ -0,0 +1,241 @@
@@ -235155,9 +235587,9 @@ index 0000000000000000000000000000000000000000..a373b39b08aa68829f0451e240a553a9
 +    'plugins/crucible-checkpoint-finalizer.inc.h':
 +        '6616d8f61ceaa17d668033d824d0fd6dc37ff4fafe76fc7665582a80447c7303',
 +    'plugins/crucible-startup-source.c':
-+        '41c09fe1c1f0eb8d750e1722802d6cf8f5134e86ded2ec1dd5f9128dde805a07',
++        '69a4576543ca13239807518914b846e2916fa2eb078fbfca75daad3d1a5ed3e3',
 +    'plugins/crucible-startup-source.h':
-+        '8fe0c76b7008fb7bf08fd35ea89b4afc56d38115ae3d15213d31f4297568c9ae',
++        'bbb3c1cea97fa8231261bf0e612645bf5705af54595d1cfdd89fde679ae414b3',
 +    'include/plugins/qemu-plugin.h':
 +        'bf8b9db5f3f9205ca246d9367b889a77c0df9ef0ceeb7ae73e5eda630898bdc7',
 +    'system/crucible-hot-fork-coordinator.c':
@@ -235165,7 +235597,7 @@ index 0000000000000000000000000000000000000000..a373b39b08aa68829f0451e240a553a9
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '7f164821979539e429388fe616ba6ece061dd28eebb0c51eb16ebf253118b102',
++        'feaf1af6dd02237ba495254fbb8d66b426dd6328ceaab65bd77d8e587440ef47',
 +}
 +
 +FUNCTIONS = (
@@ -235381,7 +235813,7 @@ index 0000000000000000000000000000000000000000..a373b39b08aa68829f0451e240a553a9
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..a0d0b389074a5880d3b9409f46dfdf3cccf4100a
+index 0000000000000000000000000000000000000000..13122969885a2177bbc12d322ede077039aec6fe
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -235405,7 +235837,7 @@ index 0000000000000000000000000000000000000000..a0d0b389074a5880d3b9409f46dfdf3c
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '7f164821979539e429388fe616ba6ece061dd28eebb0c51eb16ebf253118b102',
++        'feaf1af6dd02237ba495254fbb8d66b426dd6328ceaab65bd77d8e587440ef47',
 +}
 +
 +FUNCTIONS = (
@@ -235499,7 +235931,7 @@ index 0000000000000000000000000000000000000000..a0d0b389074a5880d3b9409f46dfdf3c
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..7f37ade2ea78de45da3afaf55d54d8504901e552
+index 0000000000000000000000000000000000000000..fde6c3cdf0f41b2405f39c9130d0982930bbc731
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
 @@ -0,0 +1,173 @@
@@ -235540,15 +235972,15 @@ index 0000000000000000000000000000000000000000..7f37ade2ea78de45da3afaf55d54d850
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '7f164821979539e429388fe616ba6ece061dd28eebb0c51eb16ebf253118b102',
++        'feaf1af6dd02237ba495254fbb8d66b426dd6328ceaab65bd77d8e587440ef47',
 +    'scripts/extract-crucible-preexec-purpose.py':
-+        '6add5379d254488cd27043dbc959156021ed1cc55f91378b6d3592a235de9ef6',
++        '290f03480ec83e87fc9254b17e1b589dbb1be461e10a90045c2e213d93873df4',
 +    'meson.build':
 +        '7eef2c0d1494dfdeed66f56c77f092382cd63d3fd5ad7c0b7c7ac85ca599e39e',
 +    'tests/unit/test-crucible-preexec-setup.c':
 +        'd26871f569f6be81b3b6189a373f2937b4b2e705a5f06c93120a6a18e0416a6c',
 +    'tests/unit/meson.build':
-+        '9c3a0f6d1ad7c207640c4e0d87b8530c806810a7dc2cebcae2b4b829362f5cd5',
++        '74ab1b254573a06362fc8093aa8d416073abf4b19b62ed15603c406262faeb5b',
 +}
 +
 +PRIVATE_INCLUDES = ('family', 'contract', 'artifact', 'ram', 'workspace')
@@ -235678,10 +236110,10 @@ index 0000000000000000000000000000000000000000..7f37ade2ea78de45da3afaf55d54d850
 +        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..040455be7fe01d08212e01d36752fcd2f2ba7f79
+index 0000000000000000000000000000000000000000..a710569273048f4cd23980889c7004ea4f3e2723
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
-@@ -0,0 +1,936 @@
+@@ -0,0 +1,960 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Extract literal startup integration control cuts, never an issuer fixture."""
 +
@@ -235691,6 +236123,10 @@ index 0000000000000000000000000000000000000000..040455be7fe01d08212e01d36752fcd2
 +from pathlib import Path
 +
 +SOURCE_HASHES = {
++    'util/oslib-posix.c':
++        '04c5696686ee58dbd402f0ed31845de3dec234c38b7aa97ec98506356adc9789',
++    'include/qemu/osdep.h':
++        'b0fd70a4fff2de70aca226e8bd1cf4c53903b3ea9d761cff1b1455730e773b34',
 +    'block/block-backend.c':
 +        '08727bce2190460a743d8fabf8a239839784e6ebdd0a534f35f70a963dc1a25b',
 +    'block/graph-lock.c':
@@ -235742,11 +236178,19 @@ index 0000000000000000000000000000000000000000..040455be7fe01d08212e01d36752fcd2
 +    'plugins/crucible-setup-mapping.inc.h':
 +        '873455344e7aace6607c1426cc573ad68ea7701770756b6fd51eba0670fc10b4',
 +    'tests/unit/test-crucible-startup-source.c':
-+        '3ffe86ddebbbd387f1adbcb6e74b0ddc02a41a95635ed9e9f69f3d0fd8e26d80',
++        '536338db1ee6fe07d13ad0377de7ac62de5c6b354355954baa148877a9d667ca',
 +    'tests/unit/crucible-startup-source-fixture.inc.h':
-+        '5a709cd4af1b16b0f1990d9fcb17a200b1755d62e9be080309e7f069f78153d7',
++        'ac476eec5d57d7ddc867410ed3c96953ab01889c1b5582cf825f9ad6fcf09942',
++    'system/physmem.c':
++        'e4777b5676c4ea91a1abdaf48bf9fb8890effdb6bb580a6332edce363b9bb727',
++    'include/system/ramlist.h':
++        '56acad224369577641907f9ce98edfcc868e7976a6dcf815767c028a7fd30464',
++    'include/system/ram_addr.h':
++        '519c6bc464edc7a03a0f90bc2a7a7da3b56f44533979c800ae9791b66f718441',
++    'tests/unit/test-crucible-startup-source-layout.c':
++        'e296f4f9b45988254e501b8d7a970a5b54ec23ebf5466e688df90465ef6feceb',
 +    'include/qemu/crucible-metadata-partition.h':
-+        '62dd96cf5bb1594dd3e42360459b409573cecd5d196f355f72edffa2250ee95a',
++        'c4b8b1c81ac623646e936898f51152e8403d7a1ffc563231d4d9df074cc06be2',
 +    'plugins/api-system.c':
 +        'e11ca8dbafc56856bc47b5c672660b0a92656a785fbd845e5e9d6cffdda47cbd',
 +    'plugins/crucible-fault-lifecycle.c':
@@ -235756,15 +236200,15 @@ index 0000000000000000000000000000000000000000..040455be7fe01d08212e01d36752fcd2
 +    'plugins/loader.c':
 +        'ee5bb6da8d25638e197eb03de2e9d5de344eae52f77f8a0143513124bed9f502',
 +    'plugins/crucible-paged-ram.c':
-+        'a218593dbb1149e9efc8572f0c95ef2cd490dcd4a1d7b0de6866663cc0a111d2',
++        '36c77a07736c2a28673c4de2ef7712b71401193c7db2e9a0ba98f4d8eae19825',
 +    'monitor/qmp-cmds.c':
 +        '0b2c2b17f0a87bdf5d70ebae885e07b1c00d2a6944b58ed105f5ca1e5d2c6649',
 +    'system/crucible-hot-fork-coordinator.c':
 +        'c782e9f0e3410ea7fcaea903772a5bdf799225c0e4cb340f39656d5f6657909c',
 +    'plugins/crucible-startup-source.c':
-+        '41c09fe1c1f0eb8d750e1722802d6cf8f5134e86ded2ec1dd5f9128dde805a07',
++        '69a4576543ca13239807518914b846e2916fa2eb078fbfca75daad3d1a5ed3e3',
 +    'plugins/crucible-startup-source.h':
-+        '8fe0c76b7008fb7bf08fd35ea89b4afc56d38115ae3d15213d31f4297568c9ae',
++        'bbb3c1cea97fa8231261bf0e612645bf5705af54595d1cfdd89fde679ae414b3',
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'include/qemu/crucible-device-workspace.h':
@@ -235850,7 +236294,7 @@ index 0000000000000000000000000000000000000000..040455be7fe01d08212e01d36752fcd2
 +    'include/qemu/crucible-process-purpose.h':
 +        '9d1ef70162bb666a8e98c865b71d3a10973f058ddf968ffcf7f2f2408fb9fd7c',
 +    'include/qemu/crucible-paged-ram.h':
-+        'b494cc6b7158fd4b98d237e3b6238ddb259a09f5e8de3f18686cbbdb8b4b3eaa',
++        '08a5088f66bcd7ee86f8a7ba11691370876ac77ed2c9ec7672a3b27b98e0178f',
 +    'include/qom/object.h':
 +        'ea0d72424e90257e7560bba241ae6beba1dc3fa3608ba05af9a21e67c9ee37f3',
 +    'qobject/json-writer.c':
@@ -235989,7 +236433,12 @@ index 0000000000000000000000000000000000000000..040455be7fe01d08212e01d36752fcd2
 +    "qemu_crucible_startup_source_install_leave",
 +    "qemu_crucible_startup_source_inventory_allowance_limit_v2",
 +    "qemu_crucible_startup_source_inventory_allowance_reserve",
-+    "qemu_crucible_startup_source_inventory_metadata_admit",
++    # Admission controls exercise real canonical Source cells and receipts,
++    # with the same disclosed arithmetic inputs; they issue no launch grant.
++    "qemu_crucible_startup_source_ram_inventory_birth_begin",
++    "qemu_crucible_startup_source_ram_region_birth_begin",
++    "qemu_crucible_startup_source_ram_dirty_birth_begin",
++    "qemu_crucible_startup_source_ram_metadata_birth_finish",
 +    "qemu_crucible_startup_source_metadata_bytes",
 +    "qemu_crucible_startup_source_metadata_partition_status",
 +    "qemu_crucible_startup_source_native_metadata_admit",
@@ -236337,6 +236786,7 @@ index 0000000000000000000000000000000000000000..040455be7fe01d08212e01d36752fcd2
 +              '#include "qemu/crucible-hot-fork-async.h"',
 +              '#include "system/block-backend-global-state.h"',
 +              '#include "qemu/crucible-paged-ram.h"',
++              '#include "system/ramlist.h"',
 +              '#include "plugins/crucible-startup-source.h"',
 +              '#include "plugins/crucible-checkpoint-receiving.h"',
 +              '#include "plugins/crucible-control-stop.h"',
@@ -236346,6 +236796,9 @@ index 0000000000000000000000000000000000000000..040455be7fe01d08212e01d36752fcd2
 +              '#include "system/crucible-ram-quiescence.h"',
 +              '#include "monitor/monitor-internal.h"']
 +    blocks = (
++        ("plugins/crucible-paged-ram.c",
++         "typedef struct CrucibleRamInventoryOwner {",
++         "static int arena_placement_authority("),
 +        ("system/crucible-native-park-request.c",
 +         "struct QemuCrucibleNativeParkCapture {",
 +         "static bool native_park_output_overlap("),
@@ -236416,7 +236869,10 @@ index 0000000000000000000000000000000000000000..040455be7fe01d08212e01d36752fcd2
 +    getters = {
 +        "system/crucible-native-park-request.c": ("qemu_crucible_native_park_request_static_extent",),
 +        "plugins/crucible-checkpoint-receiving.c": ("qemu_crucible_checkpoint_owner_bytes",),
-+        "plugins/crucible-paged-ram.c": ("qemu_crucible_checkpoint_candidate_capture_storage_bytes_v1",),
++        "plugins/crucible-paged-ram.c": (
++            "qemu_crucible_checkpoint_candidate_capture_storage_bytes_v1",
++            "qemu_crucible_ram_metadata_fixed_storage_bytes"),
++        "system/physmem.c": ("qemu_crucible_ram_dirty_metadata_storage_bytes",),
 +        "plugins/crucible-control-stop.inc.h": ("qemu_plugin_crucible_control_stop_storage_bytes_v1",),
 +        "plugins/api-system.c": ("qemu_plugin_crucible_wake_watcher_storage_bytes_v1",
 +                                 "qemu_plugin_crucible_wake_watcher_storage_alignment_v1"),
@@ -236717,7 +237173,7 @@ index 0000000000000000000000000000000000000000..228f5bfb67fb64768c9806c3617cc308
 +if __name__ == "__main__":
 +    main()
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..21853dd1705de2655551e359f62cd6a0f8640fed 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..a44be3b575ae09e5b5bc9b925cac606b39e04671 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -21,6 +21,8 @@ tests = {
@@ -236792,7 +237248,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..21853dd1705de2655551e359f62cd6a0
  foreach test_name, extra: tests
    src = [test_name + '.c']
    deps = [qemuutil]
-@@ -207,3 +251,1156 @@ foreach test_name, extra: tests
+@@ -207,3 +251,1162 @@ foreach test_name, extra: tests
         priority: slow_tests.get(test_name, 30),
         suite: ['unit'])
  endforeach
@@ -237528,7 +237984,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..21853dd1705de2655551e359f62cd6a0
 +endif
 +
 +# Literal exercised Source/Native closure and owning storage declarations.
-+# Prepared inputs are modeled; all 135 existing scenarios retain real events/time/custody.
++# Prepared inputs are modeled; scenarios retain real events/time/custody.
 +if have_system and get_option('plugins') and host_os == 'linux'
 +  startup_source_control_slices = custom_target(
 +    'crucible-startup-source-controls',
@@ -237545,6 +238001,8 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..21853dd1705de2655551e359f62cd6a0
 +                        '../../include/block/graph-lock.h',
 +                        '../../util/async.c',
 +                        '../../util/rcu.c',
++                        '../../include/qemu/osdep.h',
++                        '../../util/oslib-posix.c',
 +                        '../../include/qemu/crucible-hot-fork-plugin.h',
 +                        '../../plugins/crucible-ram-owner-diagnostic.c',
 +                        '../../system/crucible-ram-quiescence.c',
@@ -237568,6 +238026,10 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..21853dd1705de2655551e359f62cd6a0
 +                        'test-crucible-startup-source.c',
 +                        'crucible-startup-source-fixture.inc.h',
 +                        '../../include/qemu/crucible-metadata-partition.h',
++                        '../../include/system/ramlist.h',
++                        '../../include/system/ram_addr.h',
++                        'test-crucible-startup-source-layout.c',
++                        '../../system/physmem.c',
 +                        '../../plugins/api-system.c',
 +                        '../../plugins/crucible-fault-lifecycle.c',
 +                        '../../plugins/core.c',
@@ -284415,10 +284877,10 @@ index 0000000000000000000000000000000000000000..99c5e4e0e5e6c2b1687a34c93c5d3c2d
 +}
 diff --git a/tests/unit/test-crucible-startup-source-layout.c b/tests/unit/test-crucible-startup-source-layout.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..2d6095e07373bad053241cac032344a2303a381d
+index 0000000000000000000000000000000000000000..34db2d29d785a62038c9930f3f43a293e0980197
 --- /dev/null
 +++ b/tests/unit/test-crucible-startup-source-layout.c
-@@ -0,0 +1,127 @@
+@@ -0,0 +1,149 @@
 +/*
 + * Actual-declaration layout report for fixed installer startup control
 + *
@@ -284427,6 +284889,7 @@ index 0000000000000000000000000000000000000000..2d6095e07373bad053241cac032344a2
 +
 +#include "qemu/osdep.h"
 +#include "plugins/crucible-startup-source.h"
++#include "system/ramlist.h"
 +
 +/* Only layout metadata is printed; no source state or pointers are emitted. */
 +typedef struct LayoutField {
@@ -284483,6 +284946,11 @@ index 0000000000000000000000000000000000000000..2d6095e07373bad053241cac032344a2
 +    CONTROL_FIELD(checkpoint_pager_userdata),
 +    CONTROL_FIELD(checkpoint_pager_attempted),
 +    CONTROL_FIELD(checkpoint_pager_registered),
++    CONTROL_FIELD(preexec_owner_thread),
++    CONTROL_FIELD(loader_admissions),
++    CONTROL_FIELD(inventory_birth),
++    CONTROL_FIELD(region_birth),
++    CONTROL_FIELD(dirty_birth),
 +    CONTROL_FIELD(metadata_partition),
 +    CONTROL_FIELD(metadata_partition.total),
 +    CONTROL_FIELD(metadata_partition.native_extent),
@@ -284524,6 +284992,22 @@ index 0000000000000000000000000000000000000000..2d6095e07373bad053241cac032344a2
 +           sizeof(QemuCrucibleMetadataCharge));
 +    printf("  \"charge_alignment\": %zu,\n",
 +           _Alignof(QemuCrucibleMetadataCharge));
++    printf("  \"admission_bytes\": %zu,\n",
++           sizeof(QemuCrucibleMetadataAdmission));
++    printf("  \"birth_bytes\": %zu,\n",
++           sizeof(QemuCrucibleMetadataBirth));
++    printf("  \"birth_loan_bytes\": %zu,\n",
++           sizeof(QemuCrucibleMetadataBirthLoan));
++    printf("  \"birth_creator_tid_bytes\": %zu,\n",
++           sizeof(((QemuCrucibleMetadataBirth *)0)->creator_tid));
++    printf("  \"birth_creator_tid_offset\": %zu,\n",
++           offsetof(QemuCrucibleMetadataBirth, creator_tid));
++    printf("  \"dirty_header_bytes\": %zu,\n", sizeof(DirtyMemoryBlocks));
++    printf("  \"ram_list_bytes\": %zu,\n", sizeof(RAMList));
++    printf("  \"bitmap_receipt_bytes\": %zu,\n",
++           sizeof(((RAMList *)0)->dirty_bitmap_admission));
++    printf("  \"bitmap_receipt_offset\": %zu,\n",
++           offsetof(RAMList, dirty_bitmap_admission));
 +    printf("  \"checkpoint_invocation_bytes\": %zu,\n",
 +           sizeof(struct qemu_plugin_crucible_checkpoint_pager_invocation));
 +    printf("  \"checkpoint_invocation_alignment\": %zu,\n",
@@ -284548,10 +285032,10 @@ index 0000000000000000000000000000000000000000..2d6095e07373bad053241cac032344a2
 +}
 diff --git a/tests/unit/test-crucible-startup-source.c b/tests/unit/test-crucible-startup-source.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..199a68685cfbb10375d42f0d2fb0fa6374c3dcd5
+index 0000000000000000000000000000000000000000..d5480b722efed406e0baf9d06a19e2eec251e7de
 --- /dev/null
 +++ b/tests/unit/test-crucible-startup-source.c
-@@ -0,0 +1,4718 @@
+@@ -0,0 +1,5147 @@
 +/*
 + * Actual Source lifecycle, accounting and registration controls.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -285280,7 +285764,8 @@ index 0000000000000000000000000000000000000000..199a68685cfbb10375d42f0d2fb0fa63
 +    g_assert_cmpuint(metadata_budget, ==, fixture.total);
 +    g_assert_cmpint(probe_floor(&floor), ==, 0);
 +    g_assert_cmpuint(floor, ==,
-+                    320 + sizeof(QemuCrucibleStartupSourceControl));
++                    320 + sizeof(QemuCrucibleStartupSourceControl) +
++                    qemu_crucible_ram_metadata_fixed_storage_bytes());
 +    g_assert_cmpint(probe_floor(&overflow), ==, -EOVERFLOW);
 +    g_assert_cmpuint(overflow, ==, UINT64_MAX);
 +
@@ -285430,7 +285915,8 @@ index 0000000000000000000000000000000000000000..199a68685cfbb10375d42f0d2fb0fa63
 +    g_assert_cmpmem(park_userdata, sizeof(park_userdata),
 +                    userdata_before, sizeof(userdata_before));
 +    g_assert_cmpint(probe_floor(&floor), ==, 0);
-+    g_assert_cmpuint(floor, ==, 320 + sizeof(startup_source));
++    g_assert_cmpuint(floor, ==, 320 + sizeof(startup_source) +
++                    qemu_crucible_ram_metadata_fixed_storage_bytes());
 +    g_assert_false(startup_source.birth_closed);
 +    g_assert_false(startup_source.registration_completed);
 +    assert_retained();
@@ -285985,7 +286471,7 @@ index 0000000000000000000000000000000000000000..199a68685cfbb10375d42f0d2fb0fa63
 +
 +static void scenario_control_healthy(void)
 +{
-+    QemuCrucibleMetadataCharge charge = { 0 };
++    QemuCrucibleMetadataAdmission charge = { 0 };
 +    uint64_t output = UINT64_MAX;
 +    uint64_t expected = 960;
 +    uint64_t rust_output = UINT64_MAX;
@@ -286002,7 +286488,7 @@ index 0000000000000000000000000000000000000000..199a68685cfbb10375d42f0d2fb0fa63
 +                    ==, fixture.total);
 +    g_assert_cmpint(qemu_crucible_startup_source_native_metadata_admit(
 +        32, &charge), ==, 0);
-+    g_assert_true(charge.held);
++    g_assert_true(charge.charge.held);
 +    g_assert_cmpuint(startup_source.metadata_partition.native_live, ==, 32);
 +    /* The report remains N. A grant excludes D once; the ordinary same-epoch
 +     * repeat refuses and does not refill this still-held allocation charge. */
@@ -286027,8 +286513,8 @@ index 0000000000000000000000000000000000000000..199a68685cfbb10375d42f0d2fb0fa63
 +    g_assert_cmpuint(startup_source.metadata_partition.native_live, ==, 32);
 +    g_assert_cmpuint(startup_source.metadata_partition.controller_extent,
 +                    ==, expected);
-+    qemu_crucible_startup_source_native_metadata_retire(&charge);
-+    g_assert_false(charge.held);
++    qemu_crucible_startup_source_native_metadata_retire(&charge.charge);
++    g_assert_false(charge.charge.held);
 +    g_assert_cmpuint(startup_source.metadata_partition.native_live, ==, 0);
 +    g_assert_cmpint(qemu_plugin_crucible_startup_source_registration_complete_v1(
 +        fixture.ctx.id, 0), ==, 0);
@@ -286045,9 +286531,12 @@ index 0000000000000000000000000000000000000000..199a68685cfbb10375d42f0d2fb0fa63
 +
 +static void scenario_control_inactive(void)
 +{
-+    QemuCrucibleMetadataCharge charge = { 17, false };
-+    QemuCrucibleMetadataCharge before = charge;
++    QemuCrucibleMetadataAdmission charge = { .charge = { 17, false } };
++    QemuCrucibleMetadataBirthLoan birth = { .owner = (void *)17 };
++    QemuCrucibleMetadataBirthLoan birth_before = birth;
++    QemuCrucibleMetadataAdmission before;
 +
++    memcpy(&before, &charge, sizeof(before));
 +    g_assert_cmpint(qemu_crucible_startup_source_native_metadata_admit(
 +        32, &charge), ==, 0);
 +    g_assert_cmpmem(&charge, sizeof(charge), &before, sizeof(before));
@@ -286056,9 +286545,10 @@ index 0000000000000000000000000000000000000000..199a68685cfbb10375d42f0d2fb0fa63
 +    fixture_bql = false;
 +    g_assert_cmpint(qemu_crucible_startup_source_native_metadata_admit(
 +        32, &charge), ==, 0);
-+    g_assert_cmpint(qemu_crucible_startup_source_inventory_metadata_admit(
-+        &charge), ==, 0);
++    g_assert_cmpint(qemu_crucible_startup_source_ram_inventory_birth_begin(
++        0, &birth), ==, 0);
 +    g_assert_cmpmem(&charge, sizeof(charge), &before, sizeof(before));
++    g_assert_cmpmem(&birth, sizeof(birth), &birth_before, sizeof(birth_before));
 +    g_assert_cmpuint(startup_source.metadata_partition.native_live, ==, 0);
 +    g_assert_cmpuint(qemu_crucible_startup_source_control_metadata_bytes(), ==, 0);
 +}
@@ -286247,7 +286737,8 @@ index 0000000000000000000000000000000000000000..199a68685cfbb10375d42f0d2fb0fa63
 +    child = fork();
 +    g_assert_cmpint(child, >=, 0);
 +    if (child == 0) {
-+        QemuCrucibleMetadataCharge charge = { 0 };
++        QemuCrucibleMetadataAdmission charge = { 0 };
++        QemuCrucibleMetadataBirthLoan birth = { 0 };
 +
 +        output = UINT64_MAX;
 +        g_assert_cmpint(qemu_crucible_startup_source_reserve_control_metadata_v1(
@@ -286255,8 +286746,13 @@ index 0000000000000000000000000000000000000000..199a68685cfbb10375d42f0d2fb0fa63
 +        g_assert_cmpuint(output, ==, UINT64_MAX);
 +        g_assert_cmpint(qemu_crucible_startup_source_native_metadata_admit(
 +            32, &charge), ==, -EPERM);
-+        g_assert_false(charge.held);
-+        g_assert_cmpuint(charge.bytes, ==, 0);
++        g_assert_false(charge.charge.held);
++        g_assert_cmpuint(charge.charge.bytes, ==, 0);
++        g_assert_false(charge.post_attempted);
++        g_assert_cmpint(qemu_crucible_startup_source_ram_region_birth_begin(
++                           32, &birth), ==, -EPERM);
++        g_assert_null(birth.owner);
++        g_assert_null(birth.admission);
 +        _exit(0);
 +    }
 +    g_assert_cmpint(waitpid(child, &status, 0), ==, child);
@@ -286286,9 +286782,348 @@ index 0000000000000000000000000000000000000000..199a68685cfbb10375d42f0d2fb0fa63
 +    admission.topology_generation = topology_generation;
 +}
 +
++/* These controls keep the disclosed four-slot arithmetic recipe. They execute
++ * canonical Source custody, real event/pthread/allocator effects and physical
++ * receipt moves; they do not enroll a launched module or qualify RAM actors. */
++static void scenario_native_admission_receipt_post(void)
++{
++    QemuCrucibleMetadataAdmission observation = { 0 };
++
++    fixture_inventory_purpose();
++    signal_on_metadata_close = metadata_close_calls + 2;
++    g_assert_cmpint(qemu_crucible_startup_source_native_metadata_admit(
++                       32, &observation), ==, -ECANCELED);
++    g_assert_true(observation.charge.held);
++    g_assert_cmpuint(observation.charge.bytes, ==, 32);
++    g_assert_cmpint(observation.first_status, ==, 0);
++    g_assert_true(observation.post_attempted);
++    g_assert_cmpint(observation.post_status, ==, -ECANCELED);
++    g_assert_cmpuint(startup_source.metadata_partition.native_live, ==, 32);
++}
++
++static void scenario_native_birth_post_custody(void)
++{
++    QemuCrucibleMetadataBirthLoan birth = { 0 }, repeat = { 0 };
++    QemuCrucibleMetadataAdmission saved;
++
++    fixture_inventory_purpose();
++    signal_on_metadata_close = metadata_close_calls + 2;
++    g_assert_cmpint(qemu_crucible_startup_source_ram_region_birth_begin(
++                       32, &birth), ==, -ECANCELED);
++    g_assert_true(birth.owner == &startup_source.region_birth);
++    g_assert_true(birth.admission == &startup_source.region_birth.admission);
++    g_assert_true(birth.admission->charge.held);
++    g_assert_cmpuint(birth.admission->charge.bytes, ==, 32);
++    g_assert_cmpint(birth.admission->first_status, ==, 0);
++    g_assert_true(birth.admission->post_attempted);
++    g_assert_cmpint(birth.admission->post_status, ==, -ECANCELED);
++    g_assert_cmpuint(startup_source.metadata_partition.native_live, ==, 32);
++
++    memcpy(&saved, birth.admission, sizeof(saved));
++    g_assert_cmpint(qemu_crucible_startup_source_ram_region_birth_begin(
++                       32, &repeat), ==, -EBUSY);
++    g_assert_null(repeat.owner);
++    g_assert_null(repeat.admission);
++    g_assert_cmpmem(birth.admission, sizeof(saved), &saved, sizeof(saved));
++    g_assert_cmpuint(startup_source.metadata_partition.native_live, ==, 32);
++}
++
++static void scenario_native_birth_first_post(void)
++{
++    QemuCrucibleMetadataBirthLoan birth = { 0 };
++    uint64_t unavailable;
++
++    fixture_inventory_purpose();
++    unavailable = startup_source.metadata_partition.native_extent -
++        startup_source.metadata_partition.fixed_native_extent + 1;
++    signal_on_metadata_close = metadata_close_calls + 2;
++    g_assert_cmpint(qemu_crucible_startup_source_ram_dirty_birth_begin(
++                       unavailable, &birth), ==, -ENOSPC);
++    g_assert_cmpint(birth.admission->first_status, ==, -ENOSPC);
++    g_assert_true(birth.admission->post_attempted);
++    g_assert_cmpint(birth.admission->post_status, ==, -ECANCELED);
++    g_assert_false(birth.admission->charge.held);
++    g_assert_cmpuint(birth.admission->charge.bytes, ==, 0);
++    g_assert_cmpuint(startup_source.metadata_partition.native_live, ==, 0);
++    /* A post may already have installed Source's global sticky observation.
++     * The owner's earlier debit refusal and return priority remain distinct. */
++    g_assert_cmpint(startup_source.first_negative_status, ==, -ECANCELED);
++    g_assert_cmpint(startup_source.metadata_partition.post_status, ==, -ECANCELED);
++}
++
++static void scenario_native_birth_busy_post(void)
++{
++    QemuCrucibleMetadataBirthLoan birth = { 0 };
++
++    fixture_inventory_purpose();
++    g_assert_true(crucible_metadata_partition_enter(
++        &startup_source.metadata_partition));
++    signal_on_metadata_close = metadata_close_calls + 2;
++    g_assert_cmpint(qemu_crucible_startup_source_ram_dirty_birth_begin(
++                       32, &birth), ==, -EAGAIN);
++    g_assert_cmpint(birth.admission->first_status, ==, -EAGAIN);
++    g_assert_true(birth.admission->post_attempted);
++    g_assert_cmpint(birth.admission->post_status, ==, -ECANCELED);
++    g_assert_false(birth.admission->charge.held);
++    g_assert_cmpuint(startup_source.metadata_partition.native_live, ==, 0);
++    crucible_metadata_partition_leave(&startup_source.metadata_partition);
++}
++
++static void scenario_native_birth_pre_refusal_post(void)
++{
++    QemuCrucibleMetadataBirthLoan birth = { 0 };
++
++    fixture_inventory_purpose();
++    fixture_signal();
++    g_assert_cmpint(qemu_crucible_startup_source_ram_region_birth_begin(
++                       32, &birth), ==, -ECANCELED);
++    g_assert_cmpint(birth.admission->first_status, ==, -ECANCELED);
++    g_assert_true(birth.admission->post_attempted);
++    g_assert_cmpint(birth.admission->post_status, ==, -ECANCELED);
++    g_assert_false(birth.admission->charge.held);
++    g_assert_cmpuint(startup_source.metadata_partition.native_live, ==, 0);
++}
++
++static void *native_birth_foreign_begin(void *opaque)
++{
++    QemuCrucibleMetadataBirthLoan birth = { 0 };
++    QemuCrucibleMetadataAdmission observation = { 0 }, before;
++
++    memcpy(&before, &observation, sizeof(before));
++    g_assert_false(fixture_bql_locked());
++    g_assert_cmpint(qemu_crucible_startup_source_ram_region_birth_begin(
++                       32, &birth), ==, -EPERM);
++    g_assert_null(birth.owner);
++    g_assert_null(birth.admission);
++    g_assert_cmpint(qemu_crucible_startup_source_native_metadata_admit(
++                       32, &observation), ==, -EPERM);
++    g_assert_cmpmem(&observation, sizeof(observation), &before, sizeof(before));
++    return NULL;
++}
++
++static void scenario_native_birth_foreign_preentry(void)
++{
++    QemuCrucibleMetadataBirth before;
++    QemuThread thread;
++    unsigned closes;
++
++    fixture_inventory_purpose();
++    memcpy(&before, &startup_source.region_birth, sizeof(before));
++    closes = metadata_close_calls;
++    qemu_thread_create(&thread, "metadata-foreign", native_birth_foreign_begin,
++                       NULL, QEMU_THREAD_JOINABLE);
++    qemu_thread_join(&thread);
++    g_assert_cmpmem(&startup_source.region_birth, sizeof(before),
++                    &before, sizeof(before));
++    g_assert_cmpuint(metadata_close_calls, ==, closes);
++    g_assert_cmpuint(startup_source.metadata_partition.native_live, ==, 0);
++    g_assert_cmpint(startup_source.first_negative_status, ==, 0);
++}
++
++static void *native_birth_foreign_finish(void *opaque)
++{
++    QemuCrucibleMetadataBirthLoan loan = *(QemuCrucibleMetadataBirthLoan *)opaque;
++    QemuCrucibleMetadataBirthLoan before = loan;
++
++    g_assert_cmpint(qemu_crucible_startup_source_ram_metadata_birth_finish(
++                       &loan), ==, -EPERM);
++    g_assert_cmpmem(&loan, sizeof(loan), &before, sizeof(before));
++    return NULL;
++}
++
++static void scenario_native_birth_actual_allocation(void)
++{
++    QemuCrucibleMetadataBirthLoan birth = { 0 };
++    QemuCrucibleMetadataBirth before;
++    QemuCrucibleMetadataAdmission *allocation;
++    QemuCrucibleMetadataCharge returned;
++    QemuThread foreign;
++
++    fixture_inventory_purpose();
++    g_assert_cmpint(qemu_crucible_startup_source_ram_region_birth_begin(
++                       sizeof(*allocation), &birth), ==, 0);
++    memcpy(&before, birth.owner, sizeof(before));
++    qemu_thread_create(&foreign, "metadata-return", native_birth_foreign_finish,
++                       &birth, QEMU_THREAD_JOINABLE);
++    qemu_thread_join(&foreign);
++    g_assert_cmpmem(birth.owner, sizeof(before), &before, sizeof(before));
++
++    allocation = g_new0(QemuCrucibleMetadataAdmission, 1);
++    crucible_metadata_admission_transfer(birth.admission, allocation,
++                                         sizeof(*allocation));
++    g_assert_true(allocation->charge.held);
++    g_assert_false(birth.admission->charge.held);
++    g_assert_cmpuint(startup_source.metadata_partition.native_live,
++                    ==, sizeof(*allocation));
++    g_assert_cmpint(qemu_crucible_startup_source_ram_metadata_birth_finish(
++                       &birth), ==, 0);
++    g_assert_null(birth.owner);
++    g_assert_null(birth.admission);
++
++    returned = allocation->charge;
++    g_free(allocation);
++    qemu_crucible_startup_source_native_metadata_retire(&returned);
++    g_assert_false(returned.held);
++    g_assert_cmpuint(startup_source.metadata_partition.native_live, ==, 0);
++}
++
++typedef struct NativeMetadataOverlap {
++    QemuCrucibleMetadataBirthLoan loan;
++    QemuSemaphore first_refusal;
++    bool done;
++    unsigned attempts;
++} NativeMetadataOverlap;
++
++static void *native_birth_overlap_finish(void *opaque)
++{
++    NativeMetadataOverlap *overlap = opaque;
++    QemuCrucibleMetadataBirthLoan before;
++
++    memcpy(&before, &overlap->loan, sizeof(before));
++    do {
++        g_assert_cmpint(qemu_crucible_startup_source_ram_metadata_birth_finish(
++                           &overlap->loan), ==, -EPERM);
++        g_assert_cmpmem(&overlap->loan, sizeof(before), &before, sizeof(before));
++        if (!overlap->attempts++) {
++            qemu_sem_post(&overlap->first_refusal);
++        }
++    } while (!qatomic_load_acquire(&overlap->done));
++    return NULL;
++}
++
++static void scenario_native_birth_overlap_finish(void)
++{
++    QemuCrucibleMetadataBirthLoan birth = { 0 };
++    QemuCrucibleMetadataAdmission *allocation;
++    QemuCrucibleMetadataCharge returned;
++    NativeMetadataOverlap overlap = { 0 };
++    QemuThread foreign;
++
++    fixture_inventory_purpose();
++    g_assert_cmpint(qemu_crucible_startup_source_ram_region_birth_begin(
++                       sizeof(*allocation), &birth), ==, 0);
++    overlap.loan = birth;
++    fixture_birth_creator_target = &birth.owner->creator;
++    qemu_sem_init(&overlap.first_refusal, 0);
++    qemu_thread_create(&foreign, "metadata-overlap", native_birth_overlap_finish,
++                       &overlap, QEMU_THREAD_JOINABLE);
++    qemu_sem_wait(&overlap.first_refusal);
++    g_assert_cmpuint(qatomic_read(&fixture_foreign_creator_reads), ==, 0);
++
++    /* The real creator allocates, moves and returns while the foreign actor
++     * keeps attempting the same canonical cell through its own loan copy. */
++    allocation = g_new0(QemuCrucibleMetadataAdmission, 1);
++    crucible_metadata_admission_transfer(birth.admission, allocation,
++                                         sizeof(*allocation));
++    g_assert_cmpint(qemu_crucible_startup_source_ram_metadata_birth_finish(
++                       &birth), ==, 0);
++    qatomic_store_release(&overlap.done, true);
++    qemu_thread_join(&foreign);
++    qemu_sem_destroy(&overlap.first_refusal);
++    g_assert_cmpuint(overlap.attempts, >, 0);
++    g_assert_cmpuint(qatomic_read(&fixture_foreign_creator_reads), ==, 0);
++    g_assert_null(birth.owner);
++    g_assert_null(birth.admission);
++    g_assert_true(allocation->charge.held);
++    g_assert_cmpuint(allocation->charge.bytes, ==, sizeof(*allocation));
++    g_assert_cmpuint(startup_source.metadata_partition.native_live,
++                    ==, sizeof(*allocation));
++
++    returned = allocation->charge;
++    g_free(allocation);
++    qemu_crucible_startup_source_native_metadata_retire(&returned);
++    g_assert_false(returned.held);
++    g_assert_cmpuint(startup_source.metadata_partition.native_live, ==, 0);
++}
++
++static void *native_birth_overlap_preentry(void *opaque)
++{
++    NativeMetadataOverlap *overlap = opaque;
++
++    do {
++        g_assert_false(fixture_bql_locked());
++        native_birth_foreign_begin(NULL);
++        if (!overlap->attempts++) {
++            qemu_sem_post(&overlap->first_refusal);
++        }
++    } while (!qatomic_load_acquire(&overlap->done));
++    return NULL;
++}
++
++static void scenario_native_birth_incomplete_transfer(void)
++{
++    QemuCrucibleMetadataBirthLoan birth = { 0 }, repeat = { 0 };
++
++    fixture_inventory_purpose();
++    g_assert_cmpint(qemu_crucible_startup_source_ram_region_birth_begin(
++                       32, &birth), ==, 0);
++    g_assert_cmpint(qemu_crucible_startup_source_ram_metadata_birth_finish(
++                       &birth), ==, -EBUSY);
++    g_assert_cmpint(birth.owner->finish_status, ==, -EBUSY);
++    g_assert_true(birth.admission->charge.held);
++    g_assert_cmpuint(birth.admission->charge.bytes, ==, 32);
++    g_assert_cmpint(qemu_crucible_startup_source_ram_region_birth_begin(
++                       32, &repeat), ==, -EBUSY);
++    g_assert_null(repeat.owner);
++    g_assert_cmpuint(startup_source.metadata_partition.native_live, ==, 32);
++}
++
++static void scenario_native_birth_split_allocations(void)
++{
++    QemuCrucibleMetadataBirthLoan birth = { 0 };
++    QemuCrucibleMetadataAdmission *first, *second;
++    QemuCrucibleMetadataAdmission bitmap_receipt = { 0 };
++    QemuCrucibleMetadataCharge returned;
++    unsigned long *bitmap;
++    const uint64_t bitmap_bytes = BITS_TO_LONGS(64) * sizeof(unsigned long);
++    const uint64_t bytes = 2 * sizeof(*first) + bitmap_bytes;
++
++    fixture_inventory_purpose();
++    g_assert_cmpint(qemu_crucible_startup_source_ram_dirty_birth_begin(
++                       bytes, &birth), ==, 0);
++    first = g_new0(QemuCrucibleMetadataAdmission, 1);
++    crucible_metadata_admission_transfer(birth.admission, first, sizeof(*first));
++    bitmap = bitmap_new(64);
++    crucible_metadata_admission_transfer(birth.admission, &bitmap_receipt,
++                                         bitmap_bytes);
++    second = g_new0(QemuCrucibleMetadataAdmission, 1);
++    crucible_metadata_admission_transfer(birth.admission, second, sizeof(*second));
++    g_assert_cmpuint(first->charge.bytes + second->charge.bytes +
++                    bitmap_receipt.charge.bytes, ==, bytes);
++    g_assert_cmpint(qemu_crucible_startup_source_ram_metadata_birth_finish(
++                       &birth), ==, 0);
++
++    returned = first->charge;
++    g_free(first);
++    qemu_crucible_startup_source_native_metadata_retire(&returned);
++    returned = second->charge;
++    g_free(second);
++    qemu_crucible_startup_source_native_metadata_retire(&returned);
++    g_assert_cmpuint(startup_source.metadata_partition.native_live, ==, bitmap_bytes);
++    g_assert_true(bitmap_receipt.charge.held);
++    bitmap_set(bitmap, 0, 1);
++    g_assert_true(test_bit(0, bitmap));
++    /* This allocated bitmap and its receipt stay held until this subprocess
++     * returns. No RCU execution or production RAMList lifetime is modeled. */
++}
++
++static void scenario_native_inventory_missing_extent(void)
++{
++    QemuCrucibleMetadataBirthLoan birth = { 0 };
++
++    fixture_inventory_purpose();
++    g_assert_cmpint(qemu_crucible_startup_source_ram_inventory_birth_begin(
++                       0, &birth), ==, -ENOKEY);
++    g_assert_true(birth.owner == &startup_source.inventory_birth[0]);
++    g_assert_cmpint(birth.admission->first_status, ==, -ENOKEY);
++    g_assert_true(birth.admission->post_attempted);
++    g_assert_false(birth.admission->charge.held);
++    g_assert_cmpuint(startup_source.metadata_partition.native_live, ==, 0);
++}
++
 +static void scenario_inventory_boundary(void)
 +{
-+    QemuCrucibleMetadataCharge first = { 0 }, second = { 0 }, sentinel = { 0 };
++    QemuCrucibleMetadataAdmission first = { 0 }, second = { 0 }, sentinel = { 0 };
 +    uint64_t output = UINT64_MAX;
 +    uint64_t allowance;
 +
@@ -286309,12 +287144,12 @@ index 0000000000000000000000000000000000000000..199a68685cfbb10375d42f0d2fb0fa63
 +    g_assert_cmpuint(startup_source.metadata_partition.native_live, ==, 64);
 +    g_assert_cmpint(qemu_crucible_startup_source_native_metadata_admit(
 +        1, &sentinel), ==, -ENOSPC);
-+    g_assert_false(sentinel.held);
-+    g_assert_cmpuint(sentinel.bytes, ==, 0);
++    g_assert_false(sentinel.charge.held);
++    g_assert_cmpuint(sentinel.charge.bytes, ==, 0);
 +    g_assert_cmpuint(startup_source.metadata_partition.inventory_allowance,
 +                    ==, allowance);
-+    qemu_crucible_startup_source_native_metadata_retire(&first);
-+    qemu_crucible_startup_source_native_metadata_retire(&second);
++    qemu_crucible_startup_source_native_metadata_retire(&first.charge);
++    qemu_crucible_startup_source_native_metadata_retire(&second.charge);
 +    g_assert_cmpuint(startup_source.metadata_partition.native_live, ==, 0);
 +    g_assert_cmpuint(startup_source.metadata_partition.inventory_allowance,
 +                    ==, allowance);
@@ -286324,7 +287159,7 @@ index 0000000000000000000000000000000000000000..199a68685cfbb10375d42f0d2fb0fa63
 +
 +static void scenario_inventory_overlap(void)
 +{
-+    QemuCrucibleMetadataCharge charge = { 0 };
++    QemuCrucibleMetadataAdmission charge = { 0 };
 +    uint64_t output = UINT64_MAX;
 +
 +    fixture_inventory_purpose();
@@ -286338,8 +287173,8 @@ index 0000000000000000000000000000000000000000..199a68685cfbb10375d42f0d2fb0fa63
 +    g_assert_false(admission_grant_applied);
 +    g_assert_false(startup_source.metadata_partition.inventory_allowance_retained);
 +    g_assert_cmpuint(startup_source.metadata_partition.native_live, ==, 32);
-+    qemu_crucible_startup_source_native_metadata_retire(&charge);
-+    g_assert_false(charge.held);
++    qemu_crucible_startup_source_native_metadata_retire(&charge.charge);
++    g_assert_false(charge.charge.held);
 +}
 +
 +static void scenario_inventory_post_cancel(void)
@@ -286371,7 +287206,7 @@ index 0000000000000000000000000000000000000000..199a68685cfbb10375d42f0d2fb0fa63
 +
 +static void scenario_inventory_post_retire(void)
 +{
-+    QemuCrucibleMetadataCharge charge = { 0 }, sentinel = { 0 };
++    QemuCrucibleMetadataAdmission charge = { 0 }, sentinel = { 0 };
 +    uint64_t output = UINT64_MAX;
 +
 +    fixture_inventory_purpose();
@@ -286383,13 +287218,13 @@ index 0000000000000000000000000000000000000000..199a68685cfbb10375d42f0d2fb0fa63
 +        topology_generation, fixture.total, &output), ==, 0);
 +    /* Explicit lost-accounting branch: no physical free is asserted here. */
 +    startup_source.metadata_partition.native_live = 15;
-+    qemu_crucible_startup_source_native_metadata_retire(&charge);
-+    g_assert_true(charge.held);
++    qemu_crucible_startup_source_native_metadata_retire(&charge.charge);
++    g_assert_true(charge.charge.held);
 +    g_assert_cmpint(startup_source.metadata_partition.post_status, ==, -EOVERFLOW);
 +    g_assert_cmpint(qemu_crucible_startup_source_native_metadata_admit(
 +        1, &sentinel), ==, -EOVERFLOW);
-+    g_assert_false(sentinel.held);
-+    g_assert_cmpuint(sentinel.bytes, ==, 0);
++    g_assert_false(sentinel.charge.held);
++    g_assert_cmpuint(sentinel.charge.bytes, ==, 0);
 +    g_assert_cmpuint(startup_source.metadata_partition.native_live, ==, 15);
 +    g_assert_true(startup_source.metadata_partition.inventory_allowance_retained);
 +}
@@ -286573,7 +287408,8 @@ index 0000000000000000000000000000000000000000..199a68685cfbb10375d42f0d2fb0fa63
 +    g_assert_cmpmem(checkpoint_userdata, sizeof(checkpoint_userdata),
 +                    userdata_before, sizeof(userdata_before));
 +    g_assert_cmpint(probe_floor(&floor), ==, 0);
-+    g_assert_cmpuint(floor, ==, 320 + sizeof(startup_source));
++    g_assert_cmpuint(floor, ==, 320 + sizeof(startup_source) +
++                    qemu_crucible_ram_metadata_fixed_storage_bytes());
 +    g_assert_false(startup_source.parent_park_registered);
 +    g_assert_false(startup_source.birth_closed);
 +    assert_checkpoint_lifetime();
@@ -287016,7 +287852,7 @@ index 0000000000000000000000000000000000000000..199a68685cfbb10375d42f0d2fb0fa63
 +{
 +    QemuCrucibleStartupControlPurpose *purpose = NULL;
 +    QemuCrucibleStartupControlPurpose *sentinel;
-+    QemuCrucibleMetadataCharge charge = { 0 };
++    QemuCrucibleMetadataAdmission charge = { 0 };
 +    uint64_t allowance = UINT64_MAX;
 +    uint64_t control_extent = 784;
 +
@@ -287054,8 +287890,8 @@ index 0000000000000000000000000000000000000000..199a68685cfbb10375d42f0d2fb0fa63
 +                       topology_generation, fixture.total, &allowance), ==,
 +                    -EPERM);
 +    g_assert_cmpuint(allowance, ==, UINT64_MAX);
-+    qemu_crucible_startup_source_native_metadata_retire(&charge);
-+    g_assert_false(charge.held);
++    qemu_crucible_startup_source_native_metadata_retire(&charge.charge);
++    g_assert_false(charge.charge.held);
 +    g_assert_cmpuint(startup_source.metadata_partition.inventory_allowance,
 +                    >, 0);
 +    sentinel = purpose;
@@ -287248,8 +288084,8 @@ index 0000000000000000000000000000000000000000..199a68685cfbb10375d42f0d2fb0fa63
 +{
 +    QemuCrucibleMetadataPartition short_partition;
 +    QemuCrucibleStartupControlPurpose *purpose = NULL;
-+    QemuCrucibleMetadataCharge charge = { 0 };
-+    QemuCrucibleMetadataCharge refused = { 0 };
++    QemuCrucibleMetadataAdmission charge = { 0 };
++    QemuCrucibleMetadataAdmission refused = { 0 };
 +    uint64_t available;
 +
 +    fixture_prepare(0, false);
@@ -287275,11 +288111,11 @@ index 0000000000000000000000000000000000000000..199a68685cfbb10375d42f0d2fb0fa63
 +                       available, &charge), ==, 0);
 +    g_assert_cmpint(qemu_crucible_startup_source_native_metadata_admit(
 +                       1, &refused), ==, -ENOSPC);
-+    g_assert_false(refused.held);
++    g_assert_false(refused.charge.held);
 +    g_assert_cmpuint(startup_source.metadata_partition.native_live, ==,
 +                    available);
-+    qemu_crucible_startup_source_native_metadata_retire(&charge);
-+    g_assert_false(charge.held);
++    qemu_crucible_startup_source_native_metadata_retire(&charge.charge);
++    g_assert_false(charge.charge.held);
 +    g_assert_cmpuint(startup_source.metadata_partition.controller_extent, ==,
 +                    784);
 +}
@@ -287287,7 +288123,7 @@ index 0000000000000000000000000000000000000000..199a68685cfbb10375d42f0d2fb0fa63
 +static void scenario_seven_closed(void)
 +{
 +    QemuCrucibleStartupControlPurpose *purpose = NULL;
-+    QemuCrucibleMetadataCharge charge = { 0 };
++    QemuCrucibleMetadataAdmission charge = { 0 };
 +    uint64_t allowance = UINT64_MAX;
 +
 +    fixture_prepare(0, false);
@@ -287304,7 +288140,7 @@ index 0000000000000000000000000000000000000000..199a68685cfbb10375d42f0d2fb0fa63
 +    g_assert_cmpuint(allowance, ==, UINT64_MAX);
 +    g_assert_cmpint(qemu_crucible_startup_source_native_metadata_admit(
 +                       1, &charge), ==, -EALREADY);
-+    g_assert_false(charge.held);
++    g_assert_false(charge.charge.held);
 +    g_assert_true(purpose->held);
 +    g_assert_cmpuint(startup_source.metadata_partition.controller_extent, ==,
 +                    784);
@@ -288624,6 +289460,57 @@ index 0000000000000000000000000000000000000000..199a68685cfbb10375d42f0d2fb0fa63
 +    g_assert_null(qemu_crucible_startup_source_native_selection_v1());
 +}
 +
++static void scenario_native_preexec_foreign_preentry(void)
++{
++    QemuCrucibleMetadataBirth before;
++    QemuThread foreign;
++    unsigned checks;
++
++    fixture_prepare(0, false);
++    fixture_clear_source();
++    g_assert_cmpint(qemu_crucible_startup_source_preexec_publish_v3(
++                       &modeled_preexec_owner), ==, 0);
++    g_assert_cmpint(startup_source.preexec_owner_thread, ==,
++                    qemu_get_thread_id());
++    memcpy(&before, &startup_source.region_birth, sizeof(before));
++    checks = fixture.purpose_checks;
++    qemu_thread_create(&foreign, "metadata-preexec", native_birth_foreign_begin,
++                       NULL, QEMU_THREAD_JOINABLE);
++    qemu_thread_join(&foreign);
++    g_assert_cmpmem(&startup_source.region_birth, sizeof(before),
++                    &before, sizeof(before));
++    g_assert_cmpuint(fixture.purpose_checks, ==, checks);
++    g_assert_cmpint(startup_source.first_negative_status, ==, 0);
++}
++
++static void scenario_native_preentry_publication_overlap(void)
++{
++    NativeMetadataOverlap overlap = { 0 };
++    QemuCrucibleMetadataBirth before;
++    QemuThread foreign;
++
++    fixture_prepare(0, false);
++    fixture_clear_source();
++    g_assert_cmpint(qemu_crucible_startup_source_preexec_publish_v3(
++                       &modeled_preexec_owner), ==, 0);
++    memcpy(&before, &startup_source.region_birth, sizeof(before));
++    qemu_sem_init(&overlap.first_refusal, 0);
++    qemu_thread_create(&foreign, "metadata-publish", native_birth_overlap_preentry,
++                       &overlap, QEMU_THREAD_JOINABLE);
++    qemu_sem_wait(&overlap.first_refusal);
++
++    /* Actual Source acquisition publishes saved while the foreign thread
++     * attempts admission. Prepared-family inputs remain disclosed fixtures. */
++    g_assert_cmpint(fixture_acquire(), ==, 0);
++    qatomic_store_release(&overlap.done, true);
++    qemu_thread_join(&foreign);
++    qemu_sem_destroy(&overlap.first_refusal);
++    g_assert_cmpuint(overlap.attempts, >, 0);
++    g_assert_cmpmem(&startup_source.region_birth, sizeof(before),
++                    &before, sizeof(before));
++    g_assert_cmpint(startup_source.first_negative_status, ==, 0);
++}
++
 +static void scenario_constructor_workspace_refusal(void)
 +{
 +    fixture_prepare(0, false);
@@ -289002,6 +289889,19 @@ index 0000000000000000000000000000000000000000..199a68685cfbb10375d42f0d2fb0fa63
 +SOURCE_SCENARIO(control_geometry)
 +
 +SOURCE_SCENARIO(control_process)
++SOURCE_SCENARIO(native_admission_receipt_post)
++SOURCE_SCENARIO(native_birth_post_custody)
++SOURCE_SCENARIO(native_birth_first_post)
++SOURCE_SCENARIO(native_birth_busy_post)
++SOURCE_SCENARIO(native_preexec_foreign_preentry)
++SOURCE_SCENARIO(native_birth_pre_refusal_post)
++SOURCE_SCENARIO(native_birth_foreign_preentry)
++SOURCE_SCENARIO(native_birth_overlap_finish)
++SOURCE_SCENARIO(native_preentry_publication_overlap)
++SOURCE_SCENARIO(native_birth_actual_allocation)
++SOURCE_SCENARIO(native_birth_incomplete_transfer)
++SOURCE_SCENARIO(native_birth_split_allocations)
++SOURCE_SCENARIO(native_inventory_missing_extent)
 +SOURCE_SCENARIO(inventory_boundary)
 +SOURCE_SCENARIO(inventory_overlap)
 +SOURCE_SCENARIO(inventory_post_cancel)
@@ -289176,6 +290076,19 @@ index 0000000000000000000000000000000000000000..199a68685cfbb10375d42f0d2fb0fa63
 +    REGISTER_SCENARIO(control_unissued);
 +    REGISTER_SCENARIO(control_geometry);
 +    REGISTER_SCENARIO(control_process);
++    REGISTER_SCENARIO(native_admission_receipt_post);
++    REGISTER_SCENARIO(native_birth_post_custody);
++    REGISTER_SCENARIO(native_birth_first_post);
++    REGISTER_SCENARIO(native_birth_busy_post);
++    REGISTER_SCENARIO(native_preexec_foreign_preentry);
++    REGISTER_SCENARIO(native_birth_pre_refusal_post);
++    REGISTER_SCENARIO(native_birth_foreign_preentry);
++    REGISTER_SCENARIO(native_birth_overlap_finish);
++    REGISTER_SCENARIO(native_preentry_publication_overlap);
++    REGISTER_SCENARIO(native_birth_actual_allocation);
++    REGISTER_SCENARIO(native_birth_incomplete_transfer);
++    REGISTER_SCENARIO(native_birth_split_allocations);
++    REGISTER_SCENARIO(native_inventory_missing_extent);
 +    REGISTER_SCENARIO(inventory_boundary);
 +    REGISTER_SCENARIO(inventory_overlap);
 +    REGISTER_SCENARIO(inventory_post_cancel);
