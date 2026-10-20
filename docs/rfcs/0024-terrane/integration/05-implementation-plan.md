@@ -9691,8 +9691,12 @@ Resumed qualification:
   holds unchanged at 1,573,265 bytes and unrelated consumers still readable.
   Strict Core checks pass in 174.714 seconds for the `std` library and native
   and SDK all-target profiles. The owning publisher gate passes in 523.646
-  seconds; required application compilation and the complete filesystem suite
-  remain pending.
+  seconds. Required application compilation passes in 2,613.228 seconds;
+  independent review matches all 128 test artifacts across the 29 declared
+  packages, including mixed library kinds. The complete filesystem suite also
+  passes all 126 nonignored cases in the ext4 guest. Independent review verifies
+  every expected case, the archive digest, all 3,506 source inputs and the same
+  six privileged exclusions. These component results do not accept a host task.
   The ten-stage local qualification also finishes successfully on unchanged
   source: both direct builds, all 36 selected cases, all three strict filesystem
   profiles, all three strict Core profiles and the formatter pair pass.
@@ -9731,11 +9735,21 @@ Resumed qualification:
   `0ebdcaf571` captures and preserves the exact original bootstrap and metadata
   reservations and metadata pins, retains native failure output and removes a
   duplicate actor-log print. Production behavior is unchanged from the boxed
-  receipt successor. Native and local qualification are running against this
-  frozen source. The original failure remains retained; a diagnostic using its
-  exact original executable and assertions drains the missing error bytes.
-  This prerequisite supplies no encoded eviction or shared-chunk extraction
-  qualification.
+  receipt successor. Both builds, all 36 selected cases, all three strict
+  filesystem profiles, all three strict Core profiles and formatting pass on
+  unchanged source. Native qualification passes in 636.980 seconds, including
+  all 55 selected filesystem cases and the existing eviction controls.
+  Independent review verifies all 3,516 image inputs, four original Cargo ELFs,
+  three installed supervisor helpers and each exact handoff event. Two original
+  source retirements complete; final project usage is 950,272 bytes and future
+  holds are 524,288 bytes for the original bootstrap and reconstruction metadata.
+  The owning publisher gate, required application compilation and full
+  filesystem requalification remain pending on this source. The retained-original
+  diagnostic reproduces the final fixture funding assertion with its original
+  executable and deadlines; independent review verifies all 3,516 inputs and
+  four original ELFs. An initial diagnostic wrapper import-path failure is
+  preserved separately. This prerequisite supplies no encoded eviction or
+  shared-chunk extraction qualification.
   Shared-chunk extraction, standalone and pack cache ownership, admission
   integration, complete recovery and NativeReady remain pending.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
