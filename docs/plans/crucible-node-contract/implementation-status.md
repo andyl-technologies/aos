@@ -46,7 +46,7 @@ preserves its first error, and uses the existing initial graph precredit walk.
 | Earlier startup/reclamation pair | Baseline reaches the fifteen-minute limit during inactive-runtime construction; optimized construction finishes, then its recheck refuses after 641.39 seconds. Normal retirement and child reclamation pass. |
 | Current startup/reclamation control | Native78 passes in 678.05 seconds, including inactive-runtime recheck, the attached actor, exact/one-byte-short whole-holder census, destination assertions, retirement and child reclamation. Full native preservation remains unqualified. |
 | Kernel FD source application | The complete 43-stage chain applies with exact identities, zero fuzz and no offsets. Its final catalog contains 182 source roles totaling 5,151,009 bytes. The first registered check stops at FD fixture discovery after its legacy controls pass; explicit fixture inputs are corrected, and FD execution remains pending. |
-| QEMU FW_CFG insertion lineage | Source and signed-artifact review pass, and the updated package evaluates. The registered patch-license ledger passes with 296 created files, zero deleted files and 296 ledger entries. Compilation, native controls, regeneration, inventory and full license-boundary qualification remain pending. |
+| QEMU FW_CFG insertion lineage | Source and signed-artifact review and package evaluation pass. The registered license ledger passes with 296 created files and matching entries. The configured test inventory passes with 1,576 tests and executes none. Compilation, native controls, regeneration and full license-boundary qualification remain pending. |
 | gem5 SystemCounter observation | Source review and package evaluation pass for the bounded cached-state producer and registered counter controls. Compilation and native execution remain pending. Listener, callback backing, full-system timer ownership, capture and fresh restore remain unqualified. |
 | Real-host KVM preparation | The existing exact stopped-VM test passes: one passed, zero failed, 884 filtered, in 0.04 seconds. Standard test compilation passes in 4 minutes 52 seconds. It creates no vCPU or guest execution and does not qualify the controller profile. |
 | Outstanding qualification | The current-source application-target refresh, full preservation, strict lint, ABI and license gates remain pending. |
@@ -82,8 +82,11 @@ Source review and package evaluation establish no native execution result.
 The registered patch-license ledger passes with 296 created files, zero deleted
 files and 296 ledger entries. This check validates patch additions against the
 license inventory; it does not compile QEMU or qualify the full process boundary.
-The registered package build, unit execution, configured inventory, patch
-regeneration and remaining licensing checks remain pending. Full FW_CFG payload/callback
+The registered configured-test inventory also passes with 1,576 tests and no
+test execution. Its first run identified two existing service tests missing
+from the checked-in list; both registrations now appear alongside every prior
+entry. The registered package build, unit execution, patch regeneration and
+remaining licensing checks remain pending. Full FW_CFG payload/callback
 ownership, ROM closure, Ready admission and exact capture/fresh restore remain
 unqualified.
 
