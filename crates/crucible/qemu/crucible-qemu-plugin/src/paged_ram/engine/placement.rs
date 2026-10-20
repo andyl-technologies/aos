@@ -67,7 +67,7 @@ impl PausedPagingOwner {
         completed_work: Arc<AtomicU64>,
     ) -> Result<(), RamError> {
         if self.preparing.swap(true, Ordering::AcqRel) {
-            return Err(RamError::Native {
+            return Err(RamError::PlacementDeferred {
                 operation: "arena transition already preparing",
                 status: -libc::EBUSY,
             });
@@ -88,7 +88,7 @@ impl PausedPagingOwner {
             if service.source.is_some() {
                 // A prepared restore owns this inactive source-backed service
                 // until commit or abort. Policy placement must wait for that cut.
-                return Err(RamError::Native {
+                return Err(RamError::PlacementDeferred {
                     operation: "prepared restore excludes resident activation",
                     status: -libc::EBUSY,
                 });
@@ -175,7 +175,7 @@ impl PausedPagingOwner {
         completed_work: Arc<AtomicU64>,
     ) -> Result<(), RamError> {
         if self.preparing.load(Ordering::Acquire) {
-            return Err(RamError::Native {
+            return Err(RamError::PlacementDeferred {
                 operation: "page preparation excludes physical reclaim",
                 status: -libc::EBUSY,
             });
@@ -199,7 +199,7 @@ impl PausedPagingOwner {
             ));
         }
         if !service.activated.load(Ordering::Acquire) {
-            return Err(RamError::Native {
+            return Err(RamError::PlacementDeferred {
                 operation: "inactive paging arenas exclude reclaim",
                 status: -libc::EBUSY,
             });
@@ -265,20 +265,47 @@ impl PhysicalPlacement<'_> {
             ),
         };
         self.operation = Some(operation.clone());
+        let service = self.service.clone();
+        let journal = service.capture_work.placement_dispatch()?;
+        self.check_budget()?;
+        journal.reset()?;
         loop {
             self.check_budget()?;
+            journal.callback_entered.store(false, Ordering::Release);
+            journal.callback_returned.store(false, Ordering::Release);
+            journal.runner_returned.store(false, Ordering::Release);
+            journal.runner_entered.store(true, Ordering::Release);
             let status = (self.service.native.run)(physical_placement, (self as *mut Self).cast());
+            journal.runner_status.store(status, Ordering::Release);
+            journal.runner_returned.store(true, Ordering::Release);
+            journal.record_first_negative(status);
             if status == 0 {
+                if !journal.callback_returned.load(Ordering::Acquire)
+                    || journal.callback_status.load(Ordering::Acquire) != 0
+                    || !journal.action_completed.load(Ordering::Acquire)
+                {
+                    self.service.failed.store(true, Ordering::Release);
+                    return Err(RamError::Invariant("placement runner omitted completed callback"));
+                }
                 break;
             }
-            if self.token == 0
-                && matches!(status, value if value == -libc::EAGAIN || value == -libc::EBUSY)
-            {
+            if journal.retry_before_action(status, self.token) {
                 if !complete_here {
-                    return Err(self.error.take().unwrap_or(RamError::Native {
+                    // No RAM action/end was admitted. Scheduling retains the
+                    // same Original; only this pre-entry dispatch has returned.
+                    journal.settled.store(true, Ordering::Release);
+                    let first = self.error.take().unwrap_or(RamError::Native {
                         operation: "paused placement requires mainloop progress",
                         status,
-                    }));
+                    });
+                    return Err(match first {
+                        RamError::Native { operation, status }
+                            if status == -libc::EAGAIN || status == -libc::EBUSY =>
+                        {
+                            RamError::PlacementDeferred { operation, status }
+                        }
+                        first => first,
+                    });
                 }
                 self.error = None;
                 let slice = operation
@@ -288,10 +315,18 @@ impl PhysicalPlacement<'_> {
                 continue;
             }
             self.service.failed.store(true, Ordering::Release);
-            return Err(self.error.take().unwrap_or(RamError::Native {
+            let first = self.error.take().unwrap_or(RamError::Native {
                 operation: "physical placement dispatch",
                 status,
-            }));
+            });
+            // Scheduling's outer refusal route must see the same no-replay
+            // disposition. Preserve the native first cause and raw status.
+            return Err(match first {
+                RamError::Native { operation, status } => {
+                    RamError::PlacementNotRetryable { operation, status }
+                }
+                first => first,
+            });
         }
         self.check_budget()?;
         if complete_here {
@@ -307,17 +342,41 @@ impl PhysicalPlacement<'_> {
                 .map_err(|_| "resident observation publication unavailable")? =
                 self.resident_observation;
         }
+        journal.settled.store(true, Ordering::Release);
         Ok(())
     }
 
-    fn run(&mut self) -> Result<(), RamError> {
+    fn run(
+        &mut self,
+        action: &service::capture_work::physical_end::PhysicalActionAdmission<'_>,
+    ) -> Result<(), RamError> {
         self.check_budget()?;
         let mut locks = self.prepare_locks()?;
-        let result = self.run_with_locks(&mut locks);
+        let result = self.run_with_locks(&mut locks, action);
+        if let Err(error) = &result {
+            let retry = match (error, self.service.capture_work.placement_dispatch()) {
+                (RamError::Native { status, .. }, Ok(journal)) => {
+                    journal.retry_before_action(*status, self.token)
+                }
+                _ => false,
+            };
+            if !retry {
+                self.service.lifetime.failed(error.clone());
+                if self.token != 0 {
+                    if let Err(post) = self
+                        .service
+                        .capture_work
+                        .retain_physical_action_failure(self.token, error)
+                    {
+                        self.service.lifetime.cleanup_failed(post);
+                    }
+                }
+            }
+        }
         if result.is_err() && self.token != 0 && locks.is_some() {
-            // The failed certificate still owns this exact verification FD.
-            // Retain it instead of allowing numeric descriptor reuse under a
-            // physical hold whose cleanup can no longer be established.
+            // End may have partially returned physical borrowers. Retain the
+            // exact verification FD and cleanup identity until independent
+            // disposition is known; a signed failure does not prove exclusion.
             match self.owner.retained_lock_transition.try_lock() {
                 Ok(mut retained) if retained.is_none() => *retained = locks.take(),
                 _ => std::mem::forget(locks.take()),
@@ -329,18 +388,24 @@ impl PhysicalPlacement<'_> {
     fn run_with_locks(
         &mut self,
         locks: &mut Option<super::strict_placement::LockTransition>,
+        action: &service::capture_work::physical_end::PhysicalActionAdmission<'_>,
     ) -> Result<(), RamError> {
         let native = self.service.native;
-        let status = (native.begin)(self.generation, &mut self.token);
+        let service = self.service.clone();
+        let journal = service.capture_work.placement_dispatch()?;
+        let born = self
+            .service
+            .capture_work
+            .begin_physical(&service, self.generation, action)?;
+        self.token = born.token;
+        let status = born.status;
         if status != 0 || self.token == 0 {
             return Err(RamError::Native {
                 operation: "physical placement exclusion",
                 status,
             });
         }
-        self.service
-            .retained_token
-            .store(self.token, Ordering::Release);
+        self.check_budget()?;
         let status = (native.validate)(self.token, self.generation);
         if status != 0 {
             return Err(RamError::Native {
@@ -398,30 +463,44 @@ impl PhysicalPlacement<'_> {
             self.apply_placement(locks)?;
         }
         self.check_budget()?;
-        let status = (native.end)(self.token);
-        if status != 0 {
-            return Err(RamError::Native {
-                operation: "physical placement release",
-                status,
-            });
+        let ended = self.service.capture_work.end_physical(native, self.token)?;
+        let token = self.token;
+        // Only the actual producer's return_complete consumes identity. The
+        // signed end and observer results remain separately owned in the body.
+        if ended.returned {
+            self.token = 0;
+            self.service.retained_token.store(0, Ordering::Release);
         }
-        self.token = 0;
-        self.service.retained_token.store(0, Ordering::Release);
+        if let Some(error) = ended.failure.as_ref() {
+            self.service.failed.store(true, Ordering::Release);
+            self.service.lifetime.failed(error.clone());
+        }
+        let gate_return = if ended.returned {
+            self.service.capture_work.return_gate_after_end(token)
+        } else {
+            Ok(())
+        };
+        if let Some(error) = ended.failure {
+            return Err(error);
+        }
+        gate_return?;
+        journal.action_completed.store(true, Ordering::Release);
         Ok(())
     }
 
     pub(super) fn reclaim_pages(&mut self) -> Result<(), RamError> {
-        let mut scratch = [0_u8; PAGE_BYTES];
-        self.reclaim_pages_with_scratch(&mut scratch)?;
-        // Reuse the existing admitted page scratch only after preservation and
-        // prefetch have finished. The same original/certificate still owns it.
-        self.resident_observation = Some(self.sample_residency(&mut scratch)?);
-        Ok(())
+        let service = self.service.clone();
+        let mut work = service.capture_work.placement_work(self)?;
+        self.reclaim_pages_with_work(&mut work)?;
+        // The same prepaid scratch is exclusive through this journal/sample.
+        // A retained journal forbids reuse even after its actor has returned.
+        self.resident_observation = Some(self.sample_residency(work.idle_scratch()?)?);
+        work.return_at_boundary()
     }
 
-    fn reclaim_pages_with_scratch(
+    fn reclaim_pages_with_work(
         &mut self,
-        scratch: &mut [u8; PAGE_BYTES],
+        work: &mut service::capture_work::FaultWork,
     ) -> Result<(), RamError> {
         let mut resident = self
             .service
@@ -433,7 +512,7 @@ impl PhysicalPlacement<'_> {
             .count() as u64
             * PAGE_BYTES as u64;
         if self.prefetch && resident < self.target {
-            self.prefetch_pages(&mut resident, scratch)?;
+            self.prefetch_pages(&mut resident, work.idle_scratch()?)?;
         }
         let removable = resident.saturating_sub(self.target);
         let quota = resident
@@ -463,84 +542,8 @@ impl PhysicalPlacement<'_> {
                 if !state.resident {
                     continue;
                 }
-                let address = arena.native.host_address + page as u64 * PAGE_BYTES as u64;
-                let mut writeback = None;
-                // Version one has never admitted a write: the retained original
-                // authenticated source is already a complete preservation lease.
-                let record = if state.version == 1
-                    && state.preserved.is_none()
-                    && self.service.source.is_some()
-                {
-                    None
-                } else {
-                    Some(
-                        match state
-                            .preserved
-                            .filter(|record| record.page_version() == state.version)
-                        {
-                            Some(record) => record,
-                            None => {
-                                let operation = self
-                                    .service
-                                    .operations
-                                    .begin(SourceOperationClass::Writeback)?;
-                                pace_writeback(operation.as_ref(), self.writeback_rate)?;
-                                // SAFETY: the retained physical certificate excludes all
-                                // writers and the selected page is still resident.
-                                unsafe {
-                                    std::ptr::copy_nonoverlapping(
-                                        address as *const u8,
-                                        scratch.as_mut_ptr(),
-                                        PAGE_BYTES,
-                                    )
-                                };
-                                let record = self
-                                    .service
-                                    .spill
-                                    .try_lock()
-                                    .map_err(|_| "spill authority unavailable")?
-                                    .preserve(scratch, PAGE_BYTES as u32, state.version)
-                                    .map_err(|error| self.owner.writeback_failure(error.into()))?;
-                                count_completed(&self.service.counters.preserved_writes)?;
-                                operation.wait_slice()?;
-                                writeback = Some(operation);
-                                record
-                            }
-                        },
-                    )
-                };
-                self.check_budget()?;
-                // Publication precedes physical removal. The actor can recover
-                // exact authenticated bytes even if removal subsequently fails.
-                {
-                    let mut states = self
-                        .service
-                        .states
-                        .try_lock()
-                        .map_err(|_| "paging state unavailable")?;
-                    let current = states.get_mut(coordinate).ok_or("reclaim page absent")?;
-                    if current.version != state.version || !current.resident {
-                        return Err(RamError::Invariant(
-                            "page changed under physical certificate",
-                        ));
-                    }
-                    current.preserved = record;
-                    current.writable = false;
-                    current.resident = false;
-                }
-                // SAFETY: the original logical version has been reread and
-                // authenticated on reserved disk; registration remains owned.
-                if unsafe { libc::madvise(address as *mut c_void, PAGE_BYTES, libc::MADV_DONTNEED) }
-                    != 0
-                {
-                    return Err(io::Error::last_os_error().into());
-                }
-                count_completed(&self.service.counters.physical_discards)?;
-                if let Some(operation) = writeback {
-                    operation.complete()?;
-                }
+                work.evict_at_boundary(self, arena, page, coordinate, state)?;
                 resident -= PAGE_BYTES as u64;
-                self.progress_work()?;
             }
         }
         Ok(())
@@ -679,13 +682,26 @@ extern "C" fn physical_placement(opaque: *mut c_void) -> c_int {
     // SAFETY: the synchronous native runner lends this exclusive context until
     // completion and never publishes its process-private pointer.
     let placement = unsafe { &mut *opaque.cast::<PhysicalPlacement<'_>>() };
-    match placement.run() {
+    let service = placement.service.clone();
+    let journal = match service.capture_work.placement_dispatch() {
+        Ok(journal) => journal,
+        Err(error) => {
+            placement.error = Some(error);
+            return -libc::EIO;
+        }
+    };
+    journal.callback_entered.store(true, Ordering::Release);
+    let action = service.capture_work.admit_physical_action();
+    let result = match action.as_ref() {
+        Ok(action) => placement.run(action),
+        Err(error) => Err(error.clone()),
+    };
+    let mut status = match result {
         Ok(()) => 0,
         Err(error) => {
             let retry = match &error {
                 RamError::Native { status, .. }
-                    if placement.token == 0
-                        && (*status == -libc::EAGAIN || *status == -libc::EBUSY) =>
+                    if journal.retry_before_action(*status, placement.token) =>
                 {
                     Some(*status)
                 }
@@ -700,7 +716,23 @@ extern "C" fn physical_placement(opaque: *mut c_void) -> c_int {
             placement.error = Some(error);
             retry.unwrap_or(-libc::EIO)
         }
+    };
+    journal.callback_status.store(status, Ordering::Release);
+    journal.record_first_negative(status);
+    if let Ok(action) = action {
+        if let Err(post) = action.finish() {
+            service.failed.store(true, Ordering::Release);
+            service.lifetime.cleanup_failed(post.clone());
+            if placement.error.is_none() {
+                placement.error = Some(post);
+            }
+            status = -libc::EIO;
+            journal.callback_status.store(status, Ordering::Release);
+        }
     }
+    journal.callback_returned.store(true, Ordering::Release);
+    journal.record_first_negative(status);
+    status
 }
 
 #[cfg(test)]

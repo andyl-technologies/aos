@@ -43,6 +43,12 @@ pub(crate) enum PluginLiveBoundaryError {
 /// An error produced while building or publishing the live plugin runtime.
 #[derive(Debug, Error)]
 pub enum PluginRuntimeInstallError {
+    /// The actual native required worker birth, readiness or handoff refused.
+    #[error("required native workers refused: {source}")]
+    RequiredWorkers {
+        /// Genuine role or Original failure; independent journals remain retained.
+        source: RequiredWorkerError,
+    },
     /// The original installing Source refused before owning plan decode.
     #[error("original installing Source refused: {source}")]
     StartupSource {
@@ -66,18 +72,6 @@ pub enum PluginRuntimeInstallError {
     TeardownSlot {
         /// Underlying mapped-region access error.
         source: crucible_qemu_shmem::MappedSetupRegionAccessError,
-    },
-    /// The lifecycle control worker thread could not be started.
-    #[error("spawning plugin run-control worker failed: {source}")]
-    ControlWorkerSpawn {
-        /// Underlying host thread-creation error.
-        source: std::io::Error,
-    },
-    /// The sole teardown worker thread could not be started.
-    #[error("spawning plugin teardown worker failed: {source}")]
-    TeardownWorkerSpawn {
-        /// Underlying host thread-creation error.
-        source: std::io::Error,
     },
     /// A typed registration step failed.
     #[error("live plugin registration failed: {source}")]

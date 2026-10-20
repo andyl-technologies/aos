@@ -55,6 +55,8 @@ extern "C" fn reserve(
     claim: *mut *mut CommandClaim,
     child_claim: *mut *mut CallbackChildClaim,
     worker_claim: *mut *mut WorkerClaim,
+    run_claim: *mut *mut RunClaim,
+    teardown_claim: *mut *mut TeardownClaim,
 ) -> i32 {
     CUTS.with_borrow_mut(|cuts| {
         cuts.calls.push("reserve");
@@ -67,6 +69,8 @@ extern "C" fn reserve(
                 output.write(std::ptr::without_provenance_mut(1));
                 claim.write(std::ptr::without_provenance_mut(2));
                 child_claim.write(std::ptr::without_provenance_mut(3));
+                run_claim.write(std::ptr::without_provenance_mut(5));
+                teardown_claim.write(std::ptr::without_provenance_mut(6));
                 if cuts
                     .requests
                     .as_ref()
@@ -123,12 +127,14 @@ fn complete_configured_span_is_checked_before_the_caller_can_allocate() {
         assert_ne!(owner.runtime_reservation.purpose_address, 0);
         assert_ne!(owner.runtime_reservation.command_claim_address, 0);
         assert_ne!(owner.runtime_reservation.callback_child_claim_address, 0);
+        assert_ne!(owner.runtime_reservation.run_claim_address, 0);
+        assert_ne!(owner.runtime_reservation.teardown_claim_address, 0);
         CUTS.with_borrow(|cuts| {
             assert_eq!(cuts.calls, ["reserve", "check"]);
             let requests = cuts.requests.as_ref().unwrap();
             let configured = layouts();
             assert_eq!(requests.len(), configured.layouts().len());
-            assert_eq!(requests.len(), 11);
+            assert_eq!(requests.len(), 13);
             for (request, layout) in requests.iter().zip(configured.layouts()) {
                 assert_eq!(request.extent_bytes, layout.size() as u64);
                 assert_eq!(request.alignment_bytes, layout.align() as u64);
@@ -152,6 +158,8 @@ fn failed_reserve_retains_attempt_and_original_first_cause_without_a_holder() {
         assert_eq!(owner.runtime_reservation.purpose_address, 0);
         assert_eq!(owner.runtime_reservation.command_claim_address, 0);
         assert_eq!(owner.runtime_reservation.callback_child_claim_address, 0);
+        assert_eq!(owner.runtime_reservation.run_claim_address, 0);
+        assert_eq!(owner.runtime_reservation.teardown_claim_address, 0);
 
         CUTS.with_borrow_mut(|cuts| cuts.reserve_status = 0);
         assert_eq!(
@@ -178,6 +186,8 @@ fn failed_prebirth_check_retains_genuine_holder_and_forbids_another_debit() {
         assert_ne!(owner.runtime_reservation.purpose_address, 0);
         assert_ne!(owner.runtime_reservation.command_claim_address, 0);
         assert_ne!(owner.runtime_reservation.callback_child_claim_address, 0);
+        assert_ne!(owner.runtime_reservation.run_claim_address, 0);
+        assert_ne!(owner.runtime_reservation.teardown_claim_address, 0);
 
         CUTS.with_borrow_mut(|cuts| cuts.check_status = 0);
         assert_eq!(
@@ -339,6 +349,8 @@ fn missing_fixed_control_custody_refuses_before_runtime_reservation() {
         assert_eq!(owner.runtime_reservation.purpose_address, 0);
         assert_eq!(owner.runtime_reservation.command_claim_address, 0);
         assert_eq!(owner.runtime_reservation.callback_child_claim_address, 0);
+        assert_eq!(owner.runtime_reservation.run_claim_address, 0);
+        assert_eq!(owner.runtime_reservation.teardown_claim_address, 0);
         CUTS.with_borrow(|cuts| {
             assert!(cuts.calls.is_empty());
             assert!(cuts.requests.is_none());
@@ -365,6 +377,8 @@ fn born_negative_reserve_retains_output_before_refusal_and_never_retries() {
         assert_ne!(owner.runtime_reservation.purpose_address, 0);
         assert_ne!(owner.runtime_reservation.command_claim_address, 0);
         assert_ne!(owner.runtime_reservation.callback_child_claim_address, 0);
+        assert_ne!(owner.runtime_reservation.run_claim_address, 0);
+        assert_ne!(owner.runtime_reservation.teardown_claim_address, 0);
         assert_eq!(owner.first_status.load(Ordering::Acquire), -libc::ENOMEM);
         CUTS.with_borrow(|cuts| assert_eq!(cuts.calls, ["reserve"]));
         CUTS.with_borrow_mut(|cuts| cuts.reserve_status = 0);
@@ -408,6 +422,8 @@ fn absent_and_unrepresentable_spans_refuse_before_native_effects() {
         assert_eq!(owner.runtime_reservation.purpose_address, 0);
         assert_eq!(owner.runtime_reservation.command_claim_address, 0);
         assert_eq!(owner.runtime_reservation.callback_child_claim_address, 0);
+        assert_eq!(owner.runtime_reservation.run_claim_address, 0);
+        assert_eq!(owner.runtime_reservation.teardown_claim_address, 0);
         CUTS.with_borrow(|cuts| assert!(cuts.calls.is_empty()));
     });
 }
@@ -423,7 +439,7 @@ fn optional_control_is_an_actual_row_not_an_empty_serialized_placeholder() {
 
         CUTS.with_borrow(|cuts| {
             let requests = cuts.requests.as_ref().unwrap();
-            assert_eq!(requests.len(), 12);
+            assert_eq!(requests.len(), 14);
             assert_eq!(
                 requests.iter().filter(|request| request.role == 1).count(),
                 1
@@ -448,6 +464,13 @@ fn optional_control_is_an_actual_row_not_an_empty_serialized_placeholder() {
                 requests[crate::runtime::prebirth::WORKER_CONTROL_ALLOCATION].role,
                 3
             );
+            for (index, role) in [
+                (crate::runtime::prebirth::RUN_CONTROL_ALLOCATION, 4),
+                (crate::runtime::prebirth::TEARDOWN_CONTROL_ALLOCATION, 5),
+            ] {
+                assert_eq!(requests[index].role, role);
+                assert_eq!(requests.iter().filter(|row| row.role == role).count(), 1);
+            }
             assert_ne!(owner.runtime_reservation.worker_claim_address, 0);
             assert!(requests.iter().all(|request| request.reserved == 0));
             assert!(
@@ -460,8 +483,9 @@ fn optional_control_is_an_actual_row_not_an_empty_serialized_placeholder() {
                 configured.layouts()[6].size() as u64
             );
             assert_eq!(
-                requests[11].extent_bytes,
-                configured.layouts()[11].size() as u64
+                requests[crate::runtime::prebirth::WORKER_CONTROL_ALLOCATION].extent_bytes,
+                configured.layouts()[crate::runtime::prebirth::WORKER_CONTROL_ALLOCATION].size()
+                    as u64
             );
         });
     });

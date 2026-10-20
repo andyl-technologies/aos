@@ -72,6 +72,7 @@ fn worker_error_and_panic_keep_their_cause_and_independent_cleanup_post() {
             let result = join_stopped_worker(
                 &worker,
                 &operation,
+                None,
                 |error| {
                     assert!(matches!(
                         worker.try_lock(),
@@ -90,7 +91,10 @@ fn worker_error_and_panic_keep_their_cause_and_independent_cleanup_post() {
                 },
             );
 
-            assert_eq!(result, Err(expected.clone()));
+            assert_eq!(result.result, Err(expected.clone()));
+            assert!(result.physical_returned);
+            assert_eq!(result.join, Some(Err(expected.clone())));
+            assert!(result.pre.as_ref().is_some_and(Result::is_ok));
             assert_eq!(worker_failure.borrow().as_ref(), Some(&expected));
             assert_eq!(operation.checked.load(Ordering::SeqCst), 1);
             let cleanup_failure = cleanup_failure.into_inner();

@@ -26,6 +26,28 @@ pub enum RamError {
         operation: &'static str,
         status: i32,
     },
+    /// A placement refusal issued before any RAM action or physical-end attempt.
+    ///
+    /// Only this explicit disposition permits the existing scheduling owner to
+    /// defer the same Original. Ordinary native errnos carry no retry receipt.
+    #[error("RAM placement {operation} deferred before action ({status})")]
+    PlacementDeferred {
+        /// Names the actual pre-entry check or native dispatch refusal.
+        operation: &'static str,
+        /// Retains its signed refusal status without issuing new authority.
+        status: i32,
+    },
+    /// A native placement failure whose saved call history forbids rescheduling.
+    ///
+    /// The original operation and signed status remain intact. In particular,
+    /// late EBUSY/EAGAIN after actual end cannot become a pre-entry refusal.
+    #[error("native RAM placement {operation} failed ({status}); replay refused")]
+    PlacementNotRetryable {
+        /// Names the original native operation that supplied the first cause.
+        operation: &'static str,
+        /// Retains its original signed native status, including retry errnos.
+        status: i32,
+    },
     /// Fallible Rust allocation failed before publication or mutation.
     #[error("RAM allocation failed: {0}")]
     Allocation(#[source] Arc<TryReserveError>),
@@ -106,6 +128,26 @@ impl PartialEq for RamError {
                     status: left_status,
                 },
                 Self::Native {
+                    operation: right,
+                    status: right_status,
+                },
+            ) => left == right && left_status == right_status,
+            (
+                Self::PlacementDeferred {
+                    operation: left,
+                    status: left_status,
+                },
+                Self::PlacementDeferred {
+                    operation: right,
+                    status: right_status,
+                },
+            ) => left == right && left_status == right_status,
+            (
+                Self::PlacementNotRetryable {
+                    operation: left,
+                    status: left_status,
+                },
+                Self::PlacementNotRetryable {
                     operation: right,
                     status: right_status,
                 },

@@ -171,6 +171,7 @@ in
 
       cat > "$TMPDIR/crucible-qemu-plugin-header-probe.c" <<'EOF'
       #include <stdint.h>
+      #include <stddef.h>
       #include <aos/crucible/crucible_shmem_abi.h>
       #include <qemu-plugin.h>
 
@@ -185,6 +186,39 @@ in
       #if CRUCIBLE_SHMEM_ABI_VERSION != CRUCIBLE_EXPECTED_SHMEM_ABI_VERSION
       #error "qemu-crucible generated shmem header ABI does not match the Rust plugin"
       #endif
+
+      /* These scalars match the process-private Rust repr(C) receipt. */
+      _Static_assert(QEMU_PLUGIN_CRUCIBLE_RAM_END_STAGE_COUNT == 7,
+                     "native physical-end stage count changed");
+      _Static_assert(sizeof(struct qemu_plugin_crucible_ram_release_step_v1) == 56,
+                     "native physical-end step extent changed");
+      _Static_assert(sizeof(struct qemu_plugin_crucible_ram_physical_end_v2) == 472,
+                     "native physical-end receipt extent changed");
+      _Static_assert(offsetof(struct qemu_plugin_crucible_ram_release_step_v1,
+                              post_status) == 20,
+                     "native physical-end post status moved");
+      _Static_assert(offsetof(struct qemu_plugin_crucible_ram_release_step_v1,
+                              post_entered) == 36,
+                     "native physical-end post entry moved");
+      _Static_assert(offsetof(struct qemu_plugin_crucible_ram_release_step_v1,
+                              uncertain) == 52,
+                     "native physical-end uncertainty moved");
+      _Static_assert(offsetof(struct qemu_plugin_crucible_ram_physical_end_v2,
+                              token) == 8,
+                     "native physical-end identity moved");
+      _Static_assert(offsetof(struct qemu_plugin_crucible_ram_physical_end_v2,
+                              return_complete) == 76,
+                     "native physical-end return fact moved");
+      _Static_assert(offsetof(struct qemu_plugin_crucible_ram_physical_end_v2,
+                              stage) == 80,
+                     "native physical-end stage array moved");
+
+      int (*crucible_probe_physical_end)(uint64_t,
+          struct qemu_plugin_crucible_ram_physical_end_v2 *) =
+          qemu_plugin_crucible_ram_physical_end_v2;
+      int (*crucible_probe_physical_end_observe)(uint64_t,
+          struct qemu_plugin_crucible_ram_physical_end_v2 *) =
+          qemu_plugin_crucible_ram_physical_end_observe_v1;
 
       int (*crucible_probe_read_vcpu_regs)(unsigned int, uint8_t *, size_t,
                                            size_t *, uint64_t *) =

@@ -9,6 +9,9 @@ use std::alloc::Layout;
 use std::ffi::c_void;
 
 use super::{InstallerStartupSource, StartupSourceError};
+use crate::runtime::required_workers::abi::{
+    Material as RequiredMaterial, RunClaim, TeardownClaim,
+};
 
 /// Names the retained opaque Native Runtime containing owner.
 #[repr(C)]
@@ -57,6 +60,8 @@ const ROLE_ORDINARY: u32 = 0;
 const ROLE_COMMAND_BRIDGE: u32 = 1;
 const ROLE_CALLBACK_CHILD: u32 = 2;
 const ROLE_WORKER_CONTROL: u32 = 3;
+const ROLE_RUN_WORKER_CONTROL: u32 = 4;
+const ROLE_TEARDOWN_WORKER_CONTROL: u32 = 5;
 
 type Reserve = extern "C" fn(
     u64,
@@ -66,14 +71,18 @@ type Reserve = extern "C" fn(
     *mut *mut CommandClaim,
     *mut *mut CallbackChildClaim,
     *mut *mut WorkerClaim,
+    *mut *mut RunClaim,
+    *mut *mut TeardownClaim,
 ) -> i32;
+type ReturnUnborn =
+    extern "C" fn(u64, *mut RuntimePurpose, *mut RunClaim, *mut TeardownClaim) -> i32;
 type Check = extern "C" fn(u64, *mut RuntimePurpose) -> i32;
 type Interrupt = extern "C" fn(u64, *mut RuntimePurpose, i32) -> i32;
 type ObserveInterrupt = extern "C" fn(u64, *mut RuntimePurpose, *mut InterruptStatus) -> i32;
 
 /// Authenticated facts from the native owner's single terminal interruption.
 #[repr(C)]
-#[derive(Default)]
+#[derive(Clone, Copy, Debug, Default)]
 struct InterruptStatus {
     schema_version: u32,
     struct_size: u32,
@@ -83,6 +92,73 @@ struct InterruptStatus {
     first_status: i32,
     post_status: i32,
     reserved: u32,
+}
+
+/// Retains the actual same-runtime interruption entry without owning a new FD.
+#[derive(Clone, Copy)]
+pub(crate) struct RuntimeInterrupt {
+    id: u64,
+    purpose: usize,
+    interrupt: Interrupt,
+    observe: ObserveInterrupt,
+}
+
+/// Preserves the actual syscall journal beside both independent signed returns.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RuntimeInterruptReceipt {
+    initiating_status: i32,
+    observation_status: i32,
+    journal: InterruptStatus,
+}
+
+impl RuntimeInterruptReceipt {
+    /// Reports the independent initiating health result without changing facts.
+    pub(crate) const fn initiating_status(&self) -> i32 {
+        self.initiating_status
+    }
+
+    /// Authenticates the copied disposition without equating health with return.
+    ///
+    /// # Errors
+    /// Refuses a failed observer or malformed exact native journal.
+    pub(crate) fn interrupted(&self) -> Result<bool, StartupSourceError> {
+        if self.observation_status != 0 {
+            return Err(StartupSourceError::NativeStatus {
+                status: self.observation_status,
+            });
+        }
+        let status = &self.journal;
+        if status.schema_version != 2
+            || status.struct_size as usize != size_of::<InterruptStatus>()
+            || status.reserved != 0
+            || status.attempted > 1
+            || (status.result == 0 && status.saved_errno != 0)
+        {
+            return Err(StartupSourceError::Ownership {
+                reason: "runtime interruption journal shape differs",
+            });
+        }
+        Ok(status.attempted == 1 && status.result == 0)
+    }
+}
+
+impl RuntimeInterrupt {
+    /// Requests only the authentic creator-thread terminal cut and saves all outputs.
+    pub(crate) fn request(self) -> RuntimeInterruptReceipt {
+        let initiating_status = (self.interrupt)(
+            self.id,
+            self.purpose as *mut RuntimePurpose,
+            -libc::ECANCELED,
+        );
+        let mut journal = InterruptStatus::default();
+        let observation_status =
+            (self.observe)(self.id, self.purpose as *mut RuntimePurpose, &mut journal);
+        RuntimeInterruptReceipt {
+            initiating_status,
+            observation_status,
+            journal,
+        }
+    }
 }
 
 /// Retains a native-owned purpose inline in the same installing Source.
@@ -96,6 +172,11 @@ pub(super) struct RuntimeReservation {
     command_claim_address: usize,
     callback_child_claim_address: usize,
     worker_claim_address: usize,
+    run_claim_address: usize,
+    teardown_claim_address: usize,
+    return_unborn: Option<ReturnUnborn>,
+    unborn_first_status: Option<i32>,
+    unborn_last_status: Option<i32>,
     check: Option<Check>,
     interrupt: Option<Interrupt>,
     observe_interrupt: Option<ObserveInterrupt>,
@@ -125,7 +206,8 @@ impl InstallerStartupSource {
                 super::test_support::check_runtime,
             );
         }
-        let (reserve, check, interrupt, observe_interrupt) = resolve()?;
+        let (reserve, check, interrupt, observe_interrupt, return_unborn) = resolve()?;
+        self.runtime_reservation.return_unborn = Some(return_unborn);
         self.runtime_reservation.interrupt = Some(interrupt);
         self.runtime_reservation.observe_interrupt = Some(observe_interrupt);
         self.reserve_runtime_allocations_using(configured.layouts(), reserve, check)
@@ -184,6 +266,10 @@ impl InstallerStartupSource {
                     ROLE_COMMAND_BRIDGE
                 } else if index == crate::runtime::prebirth::CALLBACK_CHILD_ALLOCATION {
                     ROLE_CALLBACK_CHILD
+                } else if index == crate::runtime::prebirth::RUN_CONTROL_ALLOCATION {
+                    ROLE_RUN_WORKER_CONTROL
+                } else if index == crate::runtime::prebirth::TEARDOWN_CONTROL_ALLOCATION {
+                    ROLE_TEARDOWN_WORKER_CONTROL
                 } else if index == crate::runtime::prebirth::WORKER_CONTROL_ALLOCATION {
                     ROLE_WORKER_CONTROL
                 } else {
@@ -214,6 +300,8 @@ impl InstallerStartupSource {
         let mut claim = std::ptr::null_mut();
         let mut child_claim = std::ptr::null_mut();
         let mut worker_claim = std::ptr::null_mut();
+        let mut run_claim = std::ptr::null_mut();
+        let mut teardown_claim = std::ptr::null_mut();
         let result = reserve(
             self.plugin_id,
             requests.as_ptr(),
@@ -222,9 +310,11 @@ impl InstallerStartupSource {
             &mut claim,
             &mut child_claim,
             &mut worker_claim,
+            &mut run_claim,
+            &mut teardown_claim,
         );
         if !purpose.is_null() {
-            // V6 publishes the real Source-owned holder and separate claims before debit, allocator
+            // V7 publishes the real Source-owned holder and separate claims before debit, allocator
             // and independent post failures. Save it before the signed result.
             self.runtime_reservation.purpose_address = purpose as usize;
         }
@@ -237,10 +327,23 @@ impl InstallerStartupSource {
         if !worker_claim.is_null() {
             self.runtime_reservation.worker_claim_address = worker_claim as usize;
         }
+        if !run_claim.is_null() {
+            self.runtime_reservation.run_claim_address = run_claim as usize;
+        }
+        if !teardown_claim.is_null() {
+            self.runtime_reservation.teardown_claim_address = teardown_claim as usize;
+        }
+        if result != 0 {
+            // Actual excluded-creator rollback cannot erase the reserve cause.
+            // All five early claims already live in the same retained Source.
+            self.return_unborn_required_workers();
+        }
         self.accept_status(result)?;
         if purpose.is_null()
             || claim.is_null()
             || child_claim.is_null()
+            || run_claim.is_null()
+            || teardown_claim.is_null()
             || (layouts.len() > crate::runtime::prebirth::WORKER_CONTROL_ALLOCATION)
                 != !worker_claim.is_null()
         {
@@ -291,6 +394,51 @@ impl InstallerStartupSource {
             self.runtime_reservation.purpose_address as *mut RuntimePurpose,
             self.runtime_reservation.callback_child_claim_address as *mut CallbackChildClaim,
         ))
+    }
+
+    /// Lends both separately issued required-role claims before creator entry.
+    ///
+    /// # Errors
+    /// Refuses missing retained claims or the original installing admission.
+    pub(crate) fn required_worker_material(&self) -> Result<RequiredMaterial, StartupSourceError> {
+        self.check_runtime_installation()?;
+        let state = &self.runtime_reservation;
+        if state.run_claim_address == 0 || state.teardown_claim_address == 0 {
+            return Err(StartupSourceError::Ownership {
+                reason: "required worker claims are absent",
+            });
+        }
+        Ok(RequiredMaterial {
+            id: self.plugin_id,
+            runtime: state.purpose_address as *mut RuntimePurpose,
+            run: state.run_claim_address as *mut RunClaim,
+            teardown: state.teardown_claim_address as *mut TeardownClaim,
+        })
+    }
+
+    /// Returns only actual excluded-creator reservations under the same installer.
+    pub(crate) fn return_unborn_required_workers(&mut self) -> i32 {
+        let state = &mut self.runtime_reservation;
+        let result = match state.return_unborn {
+            Some(return_unborn)
+                if state.purpose_address != 0
+                    && state.run_claim_address != 0
+                    && state.teardown_claim_address != 0 =>
+            {
+                return_unborn(
+                    self.plugin_id,
+                    state.purpose_address as *mut RuntimePurpose,
+                    state.run_claim_address as *mut RunClaim,
+                    state.teardown_claim_address as *mut TeardownClaim,
+                )
+            }
+            _ => -libc::ENOKEY,
+        };
+        state.unborn_last_status = Some(result);
+        if result != 0 {
+            state.unborn_first_status.get_or_insert(result);
+        }
+        result
     }
 
     /// Borrows the actual once-issued optional worker claim before creation.
@@ -377,42 +525,32 @@ impl InstallerStartupSource {
                 })?;
             return Ok(true);
         }
+        self.runtime_interrupt_handle()?.request().interrupted()
+    }
+
+    /// Projects the same retained terminal owner for a native worker's close callback.
+    ///
+    /// # Errors
+    /// Refuses missing actual runtime custody or its matched interruption methods.
+    pub(crate) fn runtime_interrupt_handle(&self) -> Result<RuntimeInterrupt, StartupSourceError> {
         let reservation = &self.runtime_reservation;
         if reservation.purpose_address == 0 {
             return Err(StartupSourceError::Ownership {
                 reason: "runtime interruption holder is absent",
             });
         }
-        let interrupt = reservation.interrupt.ok_or(StartupSourceError::Ownership {
-            reason: "runtime interruption entry point is absent",
-        })?;
-        let observe = reservation
-            .observe_interrupt
-            .ok_or(StartupSourceError::Ownership {
-                reason: "runtime interruption observer is absent",
-            })?;
-        let purpose = reservation.purpose_address as *mut RuntimePurpose;
-        // The initiating signed cause is returned even when shutdown succeeds.
-        // Observe the authentic journal after every return, including negatives.
-        let _initiating_cause = interrupt(self.plugin_id, purpose, -libc::ECANCELED);
-        let mut status = InterruptStatus::default();
-        let observation = observe(self.plugin_id, purpose, &mut status);
-        if observation != 0 {
-            return Err(StartupSourceError::NativeStatus {
-                status: observation,
-            });
-        }
-        if status.schema_version != 2
-            || status.struct_size as usize != size_of::<InterruptStatus>()
-            || status.reserved != 0
-            || status.attempted > 1
-            || (status.result == 0 && status.saved_errno != 0)
-        {
-            return Err(StartupSourceError::Ownership {
-                reason: "runtime interruption journal shape differs",
-            });
-        }
-        Ok(status.attempted == 1 && status.result == 0)
+        Ok(RuntimeInterrupt {
+            id: self.plugin_id,
+            purpose: reservation.purpose_address,
+            interrupt: reservation.interrupt.ok_or(StartupSourceError::Ownership {
+                reason: "runtime interruption entry point is absent",
+            })?,
+            observe: reservation
+                .observe_interrupt
+                .ok_or(StartupSourceError::Ownership {
+                    reason: "runtime interruption observer is absent",
+                })?,
+        })
     }
 
     /// Rechecks the same retained Source-owned storage without querying a clock.
@@ -440,7 +578,8 @@ impl InstallerStartupSource {
     }
 }
 
-fn resolve() -> Result<(Reserve, Check, Interrupt, ObserveInterrupt), StartupSourceError> {
+fn resolve()
+-> Result<(Reserve, Check, Interrupt, ObserveInterrupt, ReturnUnborn), StartupSourceError> {
     macro_rules! resolve {
         ($name:literal, $signature:ty) => {{
             // SAFETY: the literal symbol belongs to the frozen GPL-private SDK.
@@ -458,7 +597,7 @@ fn resolve() -> Result<(Reserve, Check, Interrupt, ObserveInterrupt), StartupSou
         }};
     }
     Ok((
-        resolve!(c"qemu_plugin_crucible_startup_runtime_reserve_v6", Reserve),
+        resolve!(c"qemu_plugin_crucible_startup_runtime_reserve_v7", Reserve),
         resolve!(c"qemu_plugin_crucible_startup_runtime_check_v3", Check),
         resolve!(
             c"qemu_plugin_crucible_startup_runtime_interrupt_v2",
@@ -467,6 +606,10 @@ fn resolve() -> Result<(Reserve, Check, Interrupt, ObserveInterrupt), StartupSou
         resolve!(
             c"qemu_plugin_crucible_startup_runtime_interrupt_observe_v2",
             ObserveInterrupt
+        ),
+        resolve!(
+            c"qemu_plugin_crucible_required_workers_unborn_return_v1",
+            ReturnUnborn
         ),
     ))
 }

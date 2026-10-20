@@ -21,7 +21,7 @@ use super::{
 };
 
 /// Bounds the closed initial roster, including its optional worker control.
-pub(crate) const MAX_RUNTIME_ALLOCATIONS: usize = 12;
+pub(crate) const MAX_RUNTIME_ALLOCATIONS: usize = 14;
 
 /// Identifies the actual typed callback-child birth in the closed roster.
 pub(crate) const CALLBACK_CHILD_ALLOCATION: usize = 4;
@@ -29,8 +29,14 @@ pub(crate) const CALLBACK_CHILD_ALLOCATION: usize = 4;
 /// Identifies the actual typed Bridge birth in this closed before-birth roster.
 pub(crate) const COMMAND_BRIDGE_ALLOCATION: usize = 5;
 
+/// Identifies the required actual full shared RUN control allocation.
+pub(crate) const RUN_CONTROL_ALLOCATION: usize = 11;
+
+/// Identifies the required actual full shared teardown control allocation.
+pub(crate) const TEARDOWN_CONTROL_ALLOCATION: usize = 12;
+
 /// Identifies the optional actual full shared worker-control allocation.
-pub(crate) const WORKER_CONTROL_ALLOCATION: usize = 11;
+pub(crate) const WORKER_CONTROL_ALLOCATION: usize = 13;
 
 /// Retains the configured request span without allocating its own container.
 pub(crate) struct RuntimeAllocationRequests {
@@ -68,6 +74,8 @@ impl RuntimeAllocationRequests {
             shared_layout::<ControlCallbackWitness>()?,
             shared_layout::<SelectableVmstopHandoff>()?,
             shared_layout::<AtomicU64>()?,
+            super::required_workers::control_layout()?,
+            super::required_workers::control_layout()?,
             if fingerprint {
                 configured_fingerprint_worker_control_layout()?
             } else {
@@ -76,7 +84,7 @@ impl RuntimeAllocationRequests {
         ];
         Ok(Self {
             layouts,
-            count: if fingerprint { 12 } else { 11 },
+            count: if fingerprint { 14 } else { 13 },
         })
     }
 
@@ -130,14 +138,16 @@ mod tests {
         let sampled = RuntimeAllocationRequests::configured(1, true)
             .unwrap_or_else(|error| panic!("sampled layouts should be representable: {error}"));
 
-        assert_eq!(resident.layouts().len(), 11);
+        assert_eq!(resident.layouts().len(), 13);
         assert_eq!(sampled.layouts().len(), MAX_RUNTIME_ALLOCATIONS);
-        assert_eq!(resident.layouts(), &sampled.layouts()[..11]);
+        assert_eq!(resident.layouts(), &sampled.layouts()[..13]);
         assert_eq!(
             sampled.layouts()[0],
             Layout::new::<OwnedCallbackRuntimeState>()
         );
-        assert!(sampled.layouts()[11].size() > size_of::<std::sync::Arc<()>>());
+        assert!(
+            sampled.layouts()[WORKER_CONTROL_ALLOCATION].size() > size_of::<std::sync::Arc<()>>()
+        );
     }
 
     #[test]
@@ -153,7 +163,19 @@ mod tests {
                 4 * one.layouts()[index].size()
             );
         }
-        for index in [0, 1, 2, 3, 4, 5, 8, 9, 10] {
+        for index in [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            8,
+            9,
+            10,
+            RUN_CONTROL_ALLOCATION,
+            TEARDOWN_CONTROL_ALLOCATION,
+        ] {
             assert_eq!(one.layouts()[index], four.layouts()[index]);
         }
         assert!(RuntimeAllocationRequests::configured(0, false).is_err());

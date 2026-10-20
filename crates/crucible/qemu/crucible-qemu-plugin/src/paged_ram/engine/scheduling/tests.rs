@@ -119,3 +119,57 @@ fn completion_and_publication_precede_actual_receipt_release() {
     assert!(queued.is_none());
     assert_eq!(counts.dropped.load(Ordering::SeqCst), 1);
 }
+
+#[test]
+fn late_busy_or_again_preserves_the_first_error_without_rescheduling() {
+    // This exercises the actual outer routing/queue-return helpers. It issues
+    // no Source operation, native callback, physical-end receipt or authority.
+    for status in [-libc::EBUSY, -libc::EAGAIN] {
+        let queue = Mutex::new(PlacementQueue {
+            dispatching: true,
+            ..PlacementQueue::default()
+        });
+        for first in [
+            RamError::PlacementNotRetryable {
+                operation: "physical placement dispatch",
+                status,
+            },
+            RamError::Native {
+                operation: "paging worker registration",
+                status,
+            },
+        ] {
+            queue.lock().unwrap().dispatching = true;
+            let calls = AtomicUsize::new(0);
+
+            let work = route_placement_refusal(first.clone(), || {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            });
+            let result = finish_placement_dispatch(&queue, work);
+
+            assert_eq!(result, Err(first));
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+            assert!(!queue.lock().unwrap().dispatching);
+        }
+    }
+}
+
+#[test]
+fn pre_entry_busy_or_again_still_routes_to_the_same_retry_owner() {
+    for status in [-libc::EBUSY, -libc::EAGAIN] {
+        let calls = AtomicUsize::new(0);
+        let first = RamError::PlacementDeferred {
+            operation: "physical placement exclusion",
+            status,
+        };
+
+        let result = route_placement_refusal(first, || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        });
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+}

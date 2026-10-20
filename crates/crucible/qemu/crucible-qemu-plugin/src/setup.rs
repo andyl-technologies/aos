@@ -274,6 +274,24 @@ impl PluginSetupCompletion {
         self.original_startup()?.callback_child_material()
     }
 
+    /// Borrows both real required-role claims under the same installing Source.
+    ///
+    /// # Errors
+    /// Refuses missing Source, claims or installing admission.
+    pub(crate) fn required_worker_material(
+        &self,
+    ) -> Result<crate::runtime::required_workers::abi::Material, crate::StartupSourceError> {
+        self.original_startup()?.required_worker_material()
+    }
+
+    /// Attempts actual excluded-creator rollback without completing any worker.
+    pub(crate) fn return_unborn_required_workers(&mut self) -> i32 {
+        match self.startup_source.as_mut() {
+            Some(source) => source.return_unborn_required_workers(),
+            None => -libc::ENOKEY,
+        }
+    }
+
     /// Borrows the genuine optional worker claim from the same installing Source.
     ///
     /// # Errors
@@ -289,6 +307,17 @@ impl PluginSetupCompletion {
         crate::StartupSourceError,
     > {
         self.original_startup()?.fingerprint_worker_material()
+    }
+
+    /// Projects the same terminal endpoint owner before a native worker is born.
+    ///
+    /// # Errors
+    /// Refuses absent actual Source/runtime custody or the matched terminal SDK.
+    pub(crate) fn runtime_interrupt_handle(
+        &self,
+    ) -> Result<crate::startup_source::runtime_purpose::RuntimeInterrupt, crate::StartupSourceError>
+    {
+        self.original_startup()?.runtime_interrupt_handle()
     }
 
     /// Rechecks retained runtime allocation custody without temporal admission.

@@ -130,6 +130,8 @@ impl ModelSetup {
 
 static CONTROL_MODEL_TOKEN: u8 = 1;
 static RUNTIME_MODEL_TOKEN: u8 = 2;
+static RUN_MODEL_TOKEN: u8 = 3;
+static TEARDOWN_MODEL_TOKEN: u8 = 4;
 
 pub(super) extern "C" fn reserve_control(
     _: u64,
@@ -170,6 +172,8 @@ pub(super) extern "C" fn reserve_runtime(
     claim: *mut *mut super::runtime_purpose::CommandClaim,
     child_claim: *mut *mut super::runtime_purpose::CallbackChildClaim,
     worker_claim: *mut *mut super::runtime_purpose::WorkerClaim,
+    run_claim: *mut *mut crate::runtime::required_workers::abi::RunClaim,
+    teardown_claim: *mut *mut crate::runtime::required_workers::abi::TeardownClaim,
 ) -> i32 {
     assert!(
         !requests.is_null()
@@ -177,6 +181,8 @@ pub(super) extern "C" fn reserve_runtime(
             && !claim.is_null()
             && !child_claim.is_null()
             && !worker_claim.is_null()
+            && !run_claim.is_null()
+            && !teardown_claim.is_null()
     );
     assert!(count > 0 && count <= crate::runtime::prebirth::MAX_RUNTIME_ALLOCATIONS);
     // SAFETY: the same adapter supplies the full initialized configured span.
@@ -195,6 +201,14 @@ pub(super) extern "C" fn reserve_runtime(
         requests.iter().filter(|request| request.role == 2).count(),
         1
     );
+    assert_eq!(
+        requests.iter().filter(|request| request.role == 4).count(),
+        1
+    );
+    assert_eq!(
+        requests.iter().filter(|request| request.role == 5).count(),
+        1
+    );
     assert!(requests.iter().all(|request| request.reserved == 0));
     // SAFETY: outputs are live; these explicit model tokens never construct
     // Native containing authority or a production physical command allocation.
@@ -202,6 +216,9 @@ pub(super) extern "C" fn reserve_runtime(
         output.write(std::ptr::from_ref(&RUNTIME_MODEL_TOKEN).cast_mut().cast());
         claim.write(std::ptr::from_ref(&RUNTIME_MODEL_TOKEN).cast_mut().cast());
         child_claim.write(std::ptr::from_ref(&CONTROL_MODEL_TOKEN).cast_mut().cast());
+        // These metadata-only fixture tokens never enter a native creator.
+        run_claim.write(std::ptr::from_ref(&RUN_MODEL_TOKEN).cast_mut().cast());
+        teardown_claim.write(std::ptr::from_ref(&TEARDOWN_MODEL_TOKEN).cast_mut().cast());
         if requests.iter().any(|request| request.role == 3) {
             worker_claim.write(std::ptr::from_ref(&CONTROL_MODEL_TOKEN).cast_mut().cast());
         }

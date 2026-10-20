@@ -70,6 +70,7 @@ impl ParentWorkerHoldError {
 #[derive(Debug)]
 struct WorkerQuiescenceState {
     held: bool,
+    run_control_started: bool,
     parent_hold_owned: bool,
     parked_mask: u64,
     pending_mask: u64,
@@ -96,6 +97,7 @@ impl LiveWorkerQuiescence {
             worker_mask,
             state: Mutex::new(WorkerQuiescenceState {
                 held: false,
+                run_control_started: false,
                 parent_hold_owned: false,
                 parked_mask: 0,
                 pending_mask: 0,
@@ -107,6 +109,32 @@ impl LiveWorkerQuiescence {
             }),
             released: Condvar::new(),
         })
+    }
+
+    /// Releases teardown sequencing only from the entered RUN stream consumer.
+    /// This records an actual local phase; it grants no Source operation.
+    pub(super) fn run_control_started(&self) {
+        let mut state = self.lock_state();
+        state.run_control_started = true;
+        self.released.notify_all();
+    }
+
+    /// Keeps the established teardown consumer parked until RUN or actual close.
+    pub(super) fn wait_run_control_started(&self, closing: &std::sync::atomic::AtomicBool) -> bool {
+        let mut state = self.lock_state();
+        while !state.run_control_started && !closing.load(std::sync::atomic::Ordering::Acquire) {
+            state = match self.released.wait(state) {
+                Ok(state) => state,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+        }
+        state.run_control_started && !closing.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Wakes the same sequencing wait without fabricating a RUN transition.
+    pub(super) fn wake_startup_close(&self) {
+        let _state = self.lock_state();
+        self.released.notify_all();
     }
 
     pub(super) const fn worker_mask(&self) -> u64 {
@@ -207,6 +235,7 @@ impl LiveWorkerQuiescence {
 
         state.process_id = process_id;
         state.thread_ids = [0; 3];
+        state.run_control_started = false;
         state.parked_mask = 0;
         state.pending_mask = 0;
         state.active_mask = 0;
@@ -409,6 +438,88 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    #[test]
+    fn queued_teardown_waits_for_actual_run_entry_before_consuming() {
+        use crate::runtime::LiveRuntimeTeardownTrigger;
+        use crate::runtime::teardown_latch::{LiveRuntimeTeardownRouter, TriggerPublisher};
+        use std::sync::atomic::AtomicBool;
+
+        let workers = LiveWorkerQuiescence::new(WORKER_REQUIRED);
+        let (router, consumer) = LiveRuntimeTeardownRouter::owned();
+        router
+            .publish(LiveRuntimeTeardownTrigger::RunControlFault {
+                diagnostic: String::from("already selected before RUN"),
+            })
+            .unwrap();
+        let (established, established_rx) = mpsc::channel();
+        let (received, received_rx) = mpsc::channel();
+        let worker_state = Arc::clone(&workers);
+        let worker = thread::spawn(move || {
+            let idle = worker_state.idle(WORKER_TEARDOWN);
+            established.send(()).unwrap();
+            assert!(worker_state.wait_run_control_started(&AtomicBool::new(false)));
+            let trigger = consumer.receive().unwrap();
+            let _operation = idle.received().enter();
+            received.send(trigger).unwrap();
+        });
+
+        established_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(matches!(
+            received_rx.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+        let before = workers.snapshot();
+        assert_eq!(before.parked_mask, WORKER_TEARDOWN);
+        assert_eq!(before.pending_mask, 0);
+        assert_eq!(before.operations_in_flight, 0);
+
+        workers.run_control_started();
+        let trigger = received_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(
+            matches!(trigger, LiveRuntimeTeardownTrigger::RunControlFault {
+            diagnostic
+        } if diagnostic == "already selected before RUN")
+        );
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn close_before_run_wakes_wait_without_consuming_the_queued_trigger() {
+        use crate::runtime::LiveRuntimeTeardownTrigger;
+        use crate::runtime::teardown_latch::{LiveRuntimeTeardownRouter, TriggerPublisher};
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let workers = LiveWorkerQuiescence::new(WORKER_REQUIRED);
+        let closing = Arc::new(AtomicBool::new(false));
+        let (router, consumer) = LiveRuntimeTeardownRouter::owned();
+        router
+            .publish(LiveRuntimeTeardownTrigger::RunControlFault {
+                diagnostic: String::from("retained canceled-before-handoff cause"),
+            })
+            .unwrap();
+        let (established, established_rx) = mpsc::channel();
+        let (returned, returned_rx) = mpsc::channel();
+        let worker_state = Arc::clone(&workers);
+        let worker_closing = Arc::clone(&closing);
+        let worker = thread::spawn(move || {
+            let _idle = worker_state.idle(WORKER_TEARDOWN);
+            established.send(()).unwrap();
+            let entered = worker_state.wait_run_control_started(&worker_closing);
+            assert!(returned.send((entered, consumer)).is_ok());
+        });
+
+        established_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        closing.store(true, Ordering::Release);
+        workers.wake_startup_close();
+        let (entered, consumer) = returned_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(!entered);
+        worker.join().unwrap();
+        assert!(!workers.lock_state().run_control_started);
+        assert!(matches!(consumer.receive().unwrap(),
+            LiveRuntimeTeardownTrigger::RunControlFault { diagnostic }
+            if diagnostic == "retained canceled-before-handoff cause"));
+    }
 
     #[test]
     fn parent_hold_owns_release_and_refuses_worker_birth_or_reset() {

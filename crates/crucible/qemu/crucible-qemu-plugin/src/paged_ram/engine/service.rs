@@ -190,6 +190,7 @@ impl FaultService {
 
     pub(super) fn stop_for_fork(&self) -> Result<(), RamError> {
         self.stop_and_join()?;
+        self.capture_work.check_settled()?;
         if self.failed.load(Ordering::Acquire) {
             return Err(RamError::Invariant("paging worker failed during fork hold"));
         }
@@ -197,24 +198,57 @@ impl FaultService {
     }
 
     fn stop_and_join(&self) -> Result<(), RamError> {
+        // Admission precedes the Original. A concurrent creator holds this same
+        // paid slot; refusal cannot acquire an operation or reach worker join.
+        // Pre-Original contention is only a refused cleanup attempt. It must
+        // not poison a healthy entered placement or stop its actual end.
+        let mut admission = self.capture_work.admit_physical_cleanup()?;
         let operation = match self.operations.begin(SourceOperationClass::Cleanup) {
             Ok(operation) => operation,
             Err(error) => {
                 let error = RamError::from(error);
+                admission.retain_failure(&error);
                 self.retain_cleanup_failure(&error);
                 return Err(error);
             }
         };
         self.stop.store(true, Ordering::Release);
-        join_stopped_worker(
+        // Reconcile only the retained identity, using this existing Cleanup
+        // Original. The callback cannot renew exclusion or replay an end/RAM
+        // action. Unknown physical return retains the real worker before join.
+        let first = if admission.token.is_some() {
+            let outcome = admission.observe_retained_end(self.native, operation.as_ref());
+            if let Some(error) = outcome.failure.as_ref() {
+                self.retain_cleanup_failure(error);
+            }
+            if !outcome.returned {
+                return Err(outcome.failure.unwrap_or(RamError::Invariant(
+                    "physical cleanup identity remains retained",
+                )));
+            }
+            self.retained_token.store(0, Ordering::Release);
+            outcome.failure
+        } else {
+            // A returned canonical slot is authoritative for this cached
+            // identity too; a zero scalar alone never admitted this branch.
+            self.retained_token.store(0, Ordering::Release);
+            admission.first.clone()
+        };
+        let joined = join_stopped_worker(
             &self.worker,
             operation.as_ref(),
+            first.as_ref(),
             |error| {
                 self.failed.store(true, Ordering::Release);
                 self.lifetime.failed(error.clone());
             },
             |error| self.retain_cleanup_failure(error),
-        )
+        );
+        let admission_return = admission.settle_after_join(&joined);
+        if let Err(error) = &admission_return {
+            self.retain_cleanup_failure(error);
+        }
+        joined.result.and(admission_return)
     }
 
     fn retain_cleanup_failure(&self, error: &RamError) {
@@ -259,7 +293,9 @@ impl FaultService {
             loop {
                 // The body owns a consumed event before operation admission and
                 // retains its actual scratch/claim on every unresolved return.
-                let mut work = self.capture_work.try_lock()?;
+                let Some(mut work) = self.capture_work.try_lock_for_fault()? else {
+                    break;
+                };
                 if self.capture_work.acknowledge_pause_at_boundary(&work)? {
                     break;
                 }
@@ -393,7 +429,52 @@ impl FaultService {
                 "fault accessor identity or flags are invalid",
             ));
         }
-        if fault.write_protected {
+        // A queued WP event can outlive a paused-boundary discard. FaultWork
+        // serializes both paths, so reconcile absence with the same PageIn
+        // Original and COPY_WP. Wake this stale event with WP retained: any
+        // still-pending writer must fault against the current installed PTE.
+        let resident = self
+            .states
+            .lock()
+            .map_err(|_| "paging state ownership uncertain")?
+            .get(coordinate)
+            .ok_or("fault coordinate absent")?
+            .resident;
+        if !resident {
+            // The consumed fault already owns its PageIn Original. The backing
+            // exchange reports one authenticated unit without completing it;
+            // ioctl, page publication and wake still belong to the same fault.
+            let valid = self.read_page_source(arena, page_index, coordinate, operation, scratch)?;
+            // A terminal request accepted while backing I/O was pending refuses
+            // installation after the original read returns, retaining UFFD.
+            self.lifetime.poll()?;
+            if valid as usize != PAGE_BYTES {
+                return Err(RamError::Invariant(
+                    "source page length differs from admitted host mapping",
+                ));
+            }
+            operation.wait_slice().map_err(RamError::from)?;
+            self.check_placement_dependency()?;
+            self.registration
+                .populate(address, scratch)
+                .map_err(RamError::from)?;
+            {
+                let mut states = self
+                    .states
+                    .lock()
+                    .map_err(|_| "paging state ownership uncertain")?;
+                let state = states.get_mut(coordinate).ok_or("fault coordinate absent")?;
+                state.resident = true;
+                state.writable = false;
+            }
+            count_completed(&self.counters.missing_installs)?;
+            if fault.write {
+                count_completed(&self.counters.successful_missing_write_installs)?;
+            } else {
+                count_completed(&self.counters.successful_missing_read_installs)?;
+            }
+        }
+        if fault.write_protected && resident {
             let mut states = self
                 .states
                 .lock()
@@ -430,51 +511,6 @@ impl FaultService {
                 state.writable = true;
                 count_completed(&self.counters.write_transitions)?;
             }
-        } else {
-            let resident = self
-                .states
-                .lock()
-                .map_err(|_| "paging state ownership uncertain")?
-                .get(coordinate)
-                .ok_or("fault coordinate absent")?
-                .resident;
-            if resident {
-                // A prior service of another queued accessor already installed
-                // this page; no removal is admitted while this service is active.
-                self.check_placement_dependency()?;
-                operation.wait_slice().map_err(RamError::from)?;
-                self.registration.wake(address).map_err(RamError::from)?;
-                return Ok(());
-            }
-            // The consumed fault already owns its PageIn Original. The backing
-            // exchange reports one authenticated unit without completing it;
-            // ioctl, page publication and wake still belong to the same fault.
-            let valid = self.read_page_source(arena, page_index, coordinate, operation, scratch)?;
-            // A terminal request accepted while backing I/O was pending refuses
-            // installation after the original read returns, retaining UFFD.
-            self.lifetime.poll()?;
-            if valid as usize != PAGE_BYTES {
-                return Err(RamError::Invariant(
-                    "source page length differs from admitted host mapping",
-                ));
-            }
-            operation.wait_slice().map_err(RamError::from)?;
-            self.check_placement_dependency()?;
-            self.registration
-                .populate(address, scratch)
-                .map_err(RamError::from)?;
-            self.states
-                .lock()
-                .map_err(|_| "paging state ownership uncertain")?
-                .get_mut(coordinate)
-                .ok_or("fault coordinate absent")?
-                .resident = true;
-            count_completed(&self.counters.missing_installs)?;
-            if fault.write {
-                count_completed(&self.counters.successful_missing_write_installs)?;
-            } else {
-                count_completed(&self.counters.successful_missing_read_installs)?;
-            }
         }
         operation.wait_slice().map_err(RamError::from)?;
         self.check_placement_dependency()?;
@@ -509,41 +545,66 @@ fn wait_for_worker_return(
     }
 }
 
+/// Saves actual handle/pre/post return independently of an earlier logical cause.
+pub(in crate::paged_ram::engine) struct WorkerJoinDisposition {
+    result: Result<(), RamError>,
+    pre: Option<Result<(), RamError>>,
+    join: Option<Result<(), RamError>>,
+    physical_returned: bool,
+    post: Option<Result<(), RamError>>,
+}
+
 fn join_stopped_worker(
     worker: &Mutex<Option<JoinHandle<Result<(), RamError>>>>,
     operation: &dyn SourceOperation,
+    first: Option<&RamError>,
     retain_worker_failure: impl FnOnce(&RamError),
-    retain_cleanup_failure: impl FnOnce(&RamError),
-) -> Result<(), RamError> {
-    let mut worker = match worker.try_lock() {
-        Ok(worker) => worker,
+    mut retain_cleanup_failure: impl FnMut(&RamError),
+) -> WorkerJoinDisposition {
+    // A successful guard stays live through the actual join and independent
+    // post. Even slot/pre refusal must post the already-owned Cleanup Original.
+    let mut slot = worker.try_lock();
+    let mut pre = None;
+    let mut join = None;
+    let mut physical_returned = false;
+    let action = match &mut slot {
         Err(_) => {
             let error = RamError::Invariant("paging worker owner unavailable");
             retain_cleanup_failure(&error);
-            return Err(error);
+            Err(error)
+        }
+        Ok(worker) => {
+            let wait = wait_for_worker_return(worker.as_ref(), operation);
+            pre = Some(wait.clone());
+            match wait {
+                Err(error) => {
+                    retain_cleanup_failure(&error);
+                    Err(error)
+                }
+                Ok(()) => {
+                    let joined = match worker.take() {
+                        Some(worker) => worker
+                            .join()
+                            .map_err(|_| {
+                                RamError::Invariant("paging worker panicked during shutdown")
+                            })
+                            .and_then(std::convert::identity),
+                        None => Ok(()),
+                    };
+                    // Every actual join return includes physical retirement,
+                    // even panic/actor failure. None was observed under the
+                    // actual exclusive owner; it issues no native return fact.
+                    physical_returned = true;
+                    join = Some(joined.clone());
+                    if let Err(error) = &joined {
+                        retain_worker_failure(error);
+                    }
+                    joined
+                }
+            }
         }
     };
-    // The actor never locks this slot. Keep it exclusive until the actual join
-    // and Cleanup post complete, so empty cannot expose a half-finished stop.
-    if let Err(error) = wait_for_worker_return(worker.as_ref(), operation) {
-        retain_cleanup_failure(&error);
-        return Err(error);
-    }
-
-    let joined = match worker.take() {
-        Some(worker) => worker
-            .join()
-            .map_err(|_| RamError::Invariant("paging worker panicked during shutdown"))
-            .and_then(std::convert::identity),
-        None => Ok(()),
-    };
-    if let Err(error) = &joined {
-        retain_worker_failure(error);
-    }
-
-    // A failed actor still needs the independent Cleanup deadline check. Do
-    // not commit successful operation accounting for its failed disposition.
-    let post = if joined.is_ok() {
+    let post = if action.is_ok() && first.is_none() {
         operation.complete()
     } else {
         operation.wait_slice().map(|_| ())
@@ -552,7 +613,17 @@ fn join_stopped_worker(
     if let Err(error) = &post {
         retain_cleanup_failure(error);
     }
-    joined.and(post)
+    let settlement = action.and(post.clone());
+    WorkerJoinDisposition {
+        result: match first {
+            Some(error) => Err(error.clone()),
+            None => settlement,
+        },
+        pre,
+        join,
+        physical_returned,
+        post: Some(post),
+    }
 }
 
 pub(super) extern "C" fn operational_rearm(generation: u64) -> c_int {
@@ -850,12 +921,13 @@ mod worker_join_tests {
             checked: AtomicUsize::new(0),
         };
 
-        let result = join_stopped_worker(&worker, &operation, |_| {}, |_| {});
+        let result = join_stopped_worker(&worker, &operation, None, |_| {}, |_| {}).result;
 
         assert!(
             matches!(result, Err(RamError::Io(error)) if error.raw_os_error() == Some(libc::ETIMEDOUT))
         );
-        assert_eq!(operation.checked.load(Ordering::SeqCst), 1);
+        // Refused pre and its independent owned post are both actual checks.
+        assert_eq!(operation.checked.load(Ordering::SeqCst), 2);
         assert!(worker.lock().unwrap().is_none());
     }
 
@@ -874,12 +946,13 @@ mod worker_join_tests {
                 checked: AtomicUsize::new(0),
             };
 
-            let result = join_stopped_worker(&worker, &operation, |_| {}, |_| {});
+            let result = join_stopped_worker(&worker, &operation, None, |_| {}, |_| {}).result;
 
             assert!(
                 matches!(result, Err(RamError::Io(error)) if error.raw_os_error() == Some(libc::ETIMEDOUT))
             );
-            assert_eq!(operation.checked.load(Ordering::SeqCst), allowed + 1);
+            // The bounded wait refusal also needs one independent post.
+            assert_eq!(operation.checked.load(Ordering::SeqCst), allowed + 2);
             assert_eq!(
                 worker.lock().unwrap().as_ref().unwrap().thread().id(),
                 identity
@@ -939,22 +1012,57 @@ mod worker_join_tests {
             };
             let failure_retained = Cell::new(false);
 
-            let result = join_stopped_worker(&worker, &operation, |_| {}, |error| {
-                assert!(matches!(
-                    worker.try_lock(),
-                    Err(std::sync::TryLockError::WouldBlock)
-                ));
-                assert!(
-                    matches!(error, RamError::Io(error) if error.raw_os_error() == Some(libc::ECANCELED))
-                );
-                failure_retained.set(true);
-            });
+            let result = join_stopped_worker(
+                &worker,
+                &operation,
+                None,
+                |_| {},
+                |error| {
+                    assert!(matches!(
+                        worker.try_lock(),
+                        Err(std::sync::TryLockError::WouldBlock)
+                    ));
+                    assert!(
+                        matches!(error, RamError::Io(error) if error.raw_os_error() == Some(libc::ECANCELED))
+                    );
+                    failure_retained.set(true);
+                },
+            ).result;
 
             assert_eq!(result.is_err(), refuse);
             assert_eq!(failure_retained.get(), refuse);
             assert_eq!(operation.completed.load(Ordering::SeqCst), 1);
             assert!(worker.try_lock().unwrap().is_none());
         }
+    }
+
+    #[test]
+    fn prior_observation_failure_keeps_its_cause_and_checks_independent_cleanup_post() {
+        let worker = Mutex::new(None);
+        let operation = CleanupSlices {
+            allowed: 1,
+            checked: AtomicUsize::new(0),
+        };
+        let first = RamError::Io(Arc::new(io::Error::from_raw_os_error(libc::EIO)));
+        let post_retained = Cell::new(false);
+
+        let result = join_stopped_worker(
+            &worker,
+            &operation,
+            Some(&first),
+            |_| {},
+            |error| {
+                assert!(
+                    matches!(error, RamError::Io(error) if error.raw_os_error() == Some(libc::ETIMEDOUT))
+                );
+                post_retained.set(true);
+            },
+        ).result;
+
+        assert_eq!(result.unwrap_err(), first);
+        assert_eq!(operation.checked.load(Ordering::SeqCst), 2);
+        assert!(post_retained.get());
+        assert!(worker.lock().unwrap().is_none());
     }
 }
 

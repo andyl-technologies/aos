@@ -31,6 +31,11 @@ mod device_workspace;
 mod hot_fork;
 pub(crate) mod live_callbacks;
 mod live_whitebox;
+pub(crate) mod required_workers;
+pub use required_workers::{
+    CleanupError as RequiredWorkerCleanupError, Error as RequiredWorkerError,
+    Failure as RequiredWorkerFailure,
+};
 #[cfg(not(test))]
 mod native_worker;
 mod parent_park;
@@ -383,6 +388,8 @@ pub(crate) struct OwnedCallbackRuntimeState {
     workspace_mapping: workspace_mapping::WorkspaceMapping,
     #[cfg(not(test))]
     fingerprint_worker_owner: live_callbacks::SourceWorkerOwner,
+    #[cfg(not(test))]
+    required_workers: required_workers::RequiredWorkers,
     original_userdata_retained: AtomicBool,
     owner_process: u32,
     workspace_disarmed: bool,
@@ -446,6 +453,8 @@ impl OwnedCallbackRuntimeState {
             workspace_mapping: workspace_mapping::WorkspaceMapping::new(),
             #[cfg(not(test))]
             fingerprint_worker_owner: live_callbacks::SourceWorkerOwner::new(),
+            #[cfg(not(test))]
+            required_workers: required_workers::RequiredWorkers::new(),
             original_userdata_retained: AtomicBool::new(false),
             owner_process: std::process::id(),
             workspace_disarmed: false,
@@ -1313,6 +1322,13 @@ impl Drop for RequiredOwnedCallbacksRegistered {
         // independently requires actual detach and all reader/snapshot returns;
         // refusal keeps the same holder and entire Runtime/child allocation.
         let state = unsafe { self.state.as_mut().get_unchecked_mut() };
+        #[cfg(not(test))]
+        {
+            let result = state.required_workers.identity_return(&mut state.setup);
+            if result.is_err() && !state.required_workers.identities_returned() {
+                return;
+            }
+        }
         if state.registration_groups.close_spans().is_err() {
             return;
         }
@@ -1421,13 +1437,48 @@ impl RequiredOwnedCallbacksRegistered {
     }
 
     #[cfg(not(test))]
-    fn check_original_startup(&self) -> Result<(), crate::ram_error::RamError> {
-        self.state
-            .as_ref()
-            .get_ref()
+    fn create_required_workers(&mut self) -> Result<(), PluginRuntimeInstallError> {
+        // SAFETY: the state remains pinned; only disjoint inline keepers change.
+        let state = unsafe { self.state.as_mut().get_unchecked_mut() };
+        let child = state
+            .registration_owner
+            .native_projection()
+            .map_err(|source| PluginRuntimeInstallError::OwnedCallbacks {
+                source: OwnedCallbackRegistrationError::LiveVcpuTime { source },
+            })?;
+        state
+            .required_workers
+            .create(&state.setup, child, &state.workers, &state.teardown_router)
+            .map_err(|source| PluginRuntimeInstallError::RequiredWorkers { source })?;
+        state
+            .required_workers
+            .wait_ready(&state.setup)
+            .map_err(|source| PluginRuntimeInstallError::RequiredWorkers { source })
+    }
+
+    #[cfg(not(test))]
+    fn handoff_run_control(
+        &mut self,
+        stream: &mut Option<ControlLifecycleStream<SetupControlSocket>>,
+    ) -> Result<(), PluginRuntimeInstallError> {
+        // SAFETY: the actual paid Runtime and canonical fields do not move.
+        let state = unsafe { self.state.as_mut().get_unchecked_mut() };
+        state
             .setup
             .check_original_startup()
-            .map_err(crate::startup_source::InstallerStartupSource::retained_ram_error)
+            .map_err(|source| PluginRuntimeInstallError::StartupSource { source })?;
+        let result = state.required_workers.handoff(stream);
+        let post = state.setup.check_original_startup();
+        state.required_workers.record_handoff_post(&post);
+        result.map_err(|source| PluginRuntimeInstallError::RequiredWorkers { source })?;
+        post.map_err(|source| PluginRuntimeInstallError::StartupSource { source })
+    }
+
+    #[cfg(not(test))]
+    fn retire_required_workers(&mut self) -> Result<(), RequiredWorkerCleanupError> {
+        // SAFETY: physical return changes no pinned callback body address.
+        let state = unsafe { self.state.as_mut().get_unchecked_mut() };
+        state.required_workers.identity_return(&mut state.setup)
     }
 
     #[cfg(not(test))]
@@ -1588,7 +1639,7 @@ impl RequiredOwnedCallbacksRegistered {
         self.state.as_ref().get_ref().coverage.is_some()
     }
 
-    #[cfg(unix)]
+    #[cfg(all(unix, test))]
     fn control_teardown_handle(
         &self,
         slot_index: u32,
@@ -1688,18 +1739,26 @@ impl LiveControlTeardownHandle {
 }
 
 #[cfg(unix)]
-fn read_run_control_trigger<S: std::io::Read + std::io::Write>(
-    mut control: ControlLifecycleStream<S>,
+fn read_run_control_trigger_retaining<S: std::io::Read + std::io::Write>(
+    control: &mut ControlLifecycleStream<S>,
+    retain_error: impl FnOnce(crate::PluginTeardownError) -> String,
 ) -> LiveRuntimeTeardownTrigger {
-    match PluginHostQuit::read_from_run_control(&mut control) {
+    match PluginHostQuit::read_from_run_control(control) {
         Ok(host_quit) => LiveRuntimeTeardownTrigger::HostQuit(host_quit),
         Err(error) => LiveRuntimeTeardownTrigger::RunControlFault {
-            diagnostic: error.to_string(),
+            diagnostic: retain_error(error),
         },
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, test))]
+fn read_run_control_trigger<S: std::io::Read + std::io::Write>(
+    mut control: ControlLifecycleStream<S>,
+) -> LiveRuntimeTeardownTrigger {
+    read_run_control_trigger_retaining(&mut control, |error| error.to_string())
+}
+
+#[cfg(all(unix, test))]
 fn run_control_reader<S: std::io::Read + std::io::Write>(
     control: ControlLifecycleStream<S>,
     teardown_sender: impl TriggerPublisher,
@@ -1717,7 +1776,7 @@ fn run_control_reader<S: std::io::Read + std::io::Write>(
     teardown_sender.publish(trigger).is_ok()
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, test))]
 fn run_teardown_worker(
     teardown_receiver: impl TriggerConsumer,
     teardown_handle: LiveControlTeardownHandle,
@@ -1743,11 +1802,11 @@ fn run_teardown_worker(
 }
 
 #[cfg(unix)]
-fn complete_live_teardown(
-    trigger: LiveRuntimeTeardownTrigger,
-    teardown_handle: LiveControlTeardownHandle,
+fn perform_live_teardown(
+    trigger: &LiveRuntimeTeardownTrigger,
+    teardown_handle: &LiveControlTeardownHandle,
     request_shutdown: QemuRequestShutdownFn,
-) {
+) -> Result<(), crate::PluginTeardownError> {
     let slot = teardown_handle.quiesce();
     let teardown_class = match &trigger {
         LiveRuntimeTeardownTrigger::HostQuit(_) => "host-quit",
@@ -1768,16 +1827,25 @@ fn complete_live_teardown(
     };
     let result = match trigger {
         LiveRuntimeTeardownTrigger::HostQuit(host_quit) => {
-            teardown.teardown_after_host_quit(host_quit, slot, &mut shutdown)
+            teardown.teardown_after_host_quit(*host_quit, slot, &mut shutdown)
         }
         LiveRuntimeTeardownTrigger::SharedShutdown(shutdown_requested) => {
-            teardown.teardown_after_shutdown_requested(shutdown_requested, slot, &mut shutdown)
+            teardown.teardown_after_shutdown_requested(*shutdown_requested, slot, &mut shutdown)
         }
         LiveRuntimeTeardownTrigger::RunControlFault { .. } => {
             teardown.teardown_after_run_control_fault(slot, &mut shutdown)
         }
     };
-    if let Err(error) = result {
+    result.map(|_| ())
+}
+
+#[cfg(test)]
+fn complete_live_teardown(
+    trigger: LiveRuntimeTeardownTrigger,
+    teardown_handle: LiveControlTeardownHandle,
+    request_shutdown: QemuRequestShutdownFn,
+) {
+    if let Err(error) = perform_live_teardown(&trigger, &teardown_handle, request_shutdown) {
         emit_control_worker_diagnostic(&format!("control teardown failed: {error}"));
         std::process::abort();
     }
@@ -1815,17 +1883,6 @@ fn emit_control_worker_diagnostic(message: &str) {
     use std::io::Write as _;
 
     let _write_result = writeln!(std::io::stderr().lock(), "crucible-qemu-plugin: {message}");
-}
-
-#[cfg(unix)]
-fn run_runtime_thread_fail_loud<F>(role: &'static str, task: F)
-where
-    F: FnOnce(),
-{
-    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(task)).is_err() {
-        emit_control_worker_diagnostic(&format!("{role} panicked; aborting QEMU process"));
-        std::process::abort();
-    }
 }
 
 /// QEMU functions needed by the live registration sequence.
@@ -2111,10 +2168,18 @@ impl CallbackStateRetention {
 
 impl Drop for CallbackStateRetention {
     fn drop(&mut self) {
-        if let Some(state) = self.registering.take() {
+        if let Some(mut state) = self.registering.take() {
+            #[cfg(not(test))]
+            {
+                // SAFETY: the same retained Runtime remains pinned through rollback.
+                let state = unsafe { state.as_mut().get_unchecked_mut() };
+                let _rollback = state.required_workers.identity_return(&mut state.setup);
+            }
             std::mem::forget(state);
         }
-        if let Some(registered) = self.registered.take() {
+        if let Some(mut registered) = self.registered.take() {
+            #[cfg(not(test))]
+            let _rollback = registered.retire_required_workers();
             std::mem::forget(registered);
         }
     }
@@ -2201,21 +2266,13 @@ struct RuntimeResources {
     _retained_control: Option<ControlLifecycleStream<SetupControlSocket>>,
     #[cfg(test)]
     _retained_teardown_receiver: Option<mpsc::Receiver<LiveRuntimeTeardownTrigger>>,
-    control_reader: Option<std::thread::JoinHandle<()>>,
-    teardown_worker: Option<std::thread::JoinHandle<()>>,
     _time_control: PluginTimeControlOwnership,
     _callbacks: RequiredOwnedCallbacksRegistered,
     _boot_release: BootBarrierRelease,
     _ready: PluginRegistrationReady,
 }
 
-impl RuntimeResources {
-    fn join_finished_workers(&mut self) {
-        join_finished_worker(&mut self.control_reader);
-        join_finished_worker(&mut self.teardown_worker);
-    }
-}
-
+#[cfg(test)]
 fn join_finished_worker(worker: &mut Option<std::thread::JoinHandle<()>>) {
     // Socket interruption permits a return, but a held barrier can still park
     // the same worker. Observe its actual completion before any blocking join.
@@ -2232,9 +2289,9 @@ impl Drop for PluginRuntimeOwner {
     fn drop(&mut self) {
         // This calls the native creating-thread cut on the SAME holder.
         // Expiry/refusal never authorizes shutdown of Rust's borrowed view.
-        if self.resources._callbacks.setup().interrupt_runtime_reader() == Ok(true) {
-            self.resources.join_finished_workers();
-        }
+        let _interruption = self.resources._callbacks.setup().interrupt_runtime_reader();
+        #[cfg(not(test))]
+        let _required_return = self.resources._callbacks.retire_required_workers();
         // ManuallyDrop retains parked/unreturned workers, mappings, callbacks
         // and native-purpose custody. Completed joins do not retire them.
     }
@@ -2532,6 +2589,18 @@ where
     let mut acknowledgement_state = PostRegistrationAckState::Pending;
     let post_registration = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut retained = CallbackStateRetention::new(callback_state);
+        #[cfg(not(test))]
+        {
+            let mut pinned = retained.registering_mut()?;
+            // SAFETY: construction only fills the prepaid inline input holder.
+            let state = unsafe { pinned.as_mut().get_unchecked_mut() };
+            let handle = state
+                .control_teardown_handle(state.process_generation)
+                .map_err(|source| PluginRuntimeInstallError::TeardownSlot { source })?;
+            state
+                .required_workers
+                .prepare(teardown_receiver, handle, state.request_shutdown);
+        }
         // Retain the born pinned Runtime before its independent installing postcut.
         retained
             .registering_mut()?
@@ -2701,6 +2770,14 @@ where
                 &mut acknowledgement_state,
             ));
         }
+        #[cfg(not(test))]
+        if let Err(error) = retained.registered_mut()?.create_required_workers() {
+            return Err(fail_post_registration_before_ready_ack_lifecycle(
+                &mut control_stream,
+                error,
+                &mut acknowledgement_state,
+            ));
+        }
         acknowledgement_state = PostRegistrationAckState::ReadyAttempted;
         let setup_ack = {
             let mut setup_writer = PluginSetupWriter(&mut control_stream);
@@ -2748,52 +2825,11 @@ where
             #[cfg(not(test))]
             let mut callbacks_registered = callbacks_registered;
             #[cfg(not(test))]
-            let (control_reader, teardown_worker) = {
-                let teardown_handle =
-                    match callbacks_registered.control_teardown_handle(args.slot()) {
-                        Ok(handle) => handle,
-                        Err(error) => fatal_policy.terminate(error),
-                    };
-                let request_shutdown = capabilities.request_shutdown;
-                let teardown_workers = callbacks_registered.worker_quiescence();
-                if let Err(source) = callbacks_registered.check_original_startup() {
-                    fatal_policy
-                        .terminate(PluginRuntimeInstallError::WorkerIdentityAdmission { source });
+            {
+                let mut stream = Some(control_stream);
+                if let Err(error) = callbacks_registered.handoff_run_control(&mut stream) {
+                    fatal_policy.terminate(error);
                 }
-                let teardown_worker = match std::thread::Builder::new()
-                    .name(String::from("crucible-teardown"))
-                    .spawn(move || {
-                        run_runtime_thread_fail_loud("teardown worker", || {
-                            run_teardown_worker(
-                                teardown_receiver,
-                                teardown_handle,
-                                request_shutdown,
-                                teardown_workers,
-                            );
-                        });
-                    }) {
-                    Ok(worker) => worker,
-                    Err(source) => fatal_policy
-                        .terminate(PluginRuntimeInstallError::TeardownWorkerSpawn { source }),
-                };
-                let reader_sender = Arc::clone(&teardown_router);
-                let control_workers = callbacks_registered.worker_quiescence();
-                if let Err(source) = callbacks_registered.check_original_startup() {
-                    fatal_policy
-                        .terminate(PluginRuntimeInstallError::WorkerIdentityAdmission { source });
-                }
-                let control_reader = match std::thread::Builder::new()
-                    .name(String::from("crucible-run-control"))
-                    .spawn(move || {
-                        run_runtime_thread_fail_loud("RUN control reader", || {
-                            let _delivered =
-                                run_control_reader(control_stream, reader_sender, control_workers);
-                        });
-                    }) {
-                    Ok(reader) => reader,
-                    Err(source) => fatal_policy
-                        .terminate(PluginRuntimeInstallError::ControlWorkerSpawn { source }),
-                };
                 let workers = callbacks_registered.worker_quiescence();
                 if let Err(source) = workers
                     .wait_initial_ready(|| callbacks_registered.original_startup_slice())
@@ -2802,11 +2838,9 @@ where
                     fatal_policy
                         .terminate(PluginRuntimeInstallError::WorkerIdentityAdmission { source });
                 }
-                (Some(control_reader), Some(teardown_worker))
-            };
+            }
             #[cfg(test)]
-            let (retained_control, control_reader, teardown_worker) =
-                (Some(control_stream), None, None);
+            let retained_control = Some(control_stream);
             let resources = RuntimeResources {
                 plugin_id,
                 args,
@@ -2814,8 +2848,6 @@ where
                 _retained_control: retained_control,
                 #[cfg(test)]
                 _retained_teardown_receiver: Some(teardown_receiver),
-                control_reader,
-                teardown_worker,
                 _time_control: time_control,
                 _callbacks: callbacks_registered,
                 _boot_release: boot_release,

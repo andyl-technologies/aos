@@ -26,6 +26,8 @@ The atomic integration patch creates these QEMU source files:
 | `plugins/crucible-device-workspace.c` | GPL-2.0-or-later | Explicit SPDX identifier; bounded wire and sealed descriptor decoding |
 | `plugins/crucible-device-workspace.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier; Source-owned physical workspace mapping custody |
 | `plugins/crucible-fingerprint-worker.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier; Source-owned worker, material and physical byte custody |
+| `plugins/crucible-plugin-worker.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier; shared native worker physical lifetime |
+| `plugins/crucible-required-workers.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier; required RUN and teardown worker ownership |
 | `plugins/crucible-startup-source.c` | GPL-2.0-or-later | Explicit SPDX identifier; original installer deadline, cancellation, and retained custody |
 | `plugins/crucible-startup-source.h` | GPL-2.0-or-later | Explicit SPDX identifier; private native startup control declarations |
 | `tests/unit/extract-crucible-startup-source-controls.py` | GPL-2.0-or-later | Explicit SPDX identifier; literal production-body control extraction |
@@ -96,8 +98,9 @@ The atomic integration patch creates these QEMU source files:
 | `tests/unit/test-crucible-ram-worker-inventory.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-placement-registration.py` | GPL-2.0-or-later | Explicit SPDX identifier; post-grant placement/write registrar production-body component checks |
 | `tests/unit/test-crucible-aio-retirement.c` | GPL-2.0-or-later | Explicit SPDX identifier |
-| `tests/unit/test-crucible-dirty-iterator.c` | GPL-2.0-or-later | Explicit SPDX identifier; extracted bitmap and capture component fixture |
-| `tests/unit/test-crucible-dirty-iterator.py` | GPL-2.0-or-later | Explicit SPDX identifier; production-body extraction and differential proof |
+| `tests/unit/crucible-dirty-iterator.rst` | GPL-2.0-or-later | Explicit SPDX identifier; mandatory launched capture lifecycle integration requirements |
+| `tests/unit/test-crucible-dirty-selector.c` | GPL-2.0-or-later | Explicit SPDX identifier; literal bitmap and coordinate selector component fixture |
+| `tests/unit/test-crucible-dirty-iterator.py` | GPL-2.0-or-later | Explicit SPDX identifier; literal selector differential proof and mandatory lifecycle qualification gate |
 | `tests/unit/crucible-net-stop-support.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/crucible-timer-stream.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-net-output-stop.py` | GPL-2.0-or-later | Explicit SPDX identifier |

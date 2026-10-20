@@ -45,6 +45,7 @@ use page_versions::PageStates;
 mod service;
 pub(crate) use fork::{ChildArenaConfiguration, ChildPagingCustody, PreparedChildArenas};
 use service::{FaultService, operational_read, operational_rearm, root_scratch_read};
+use service::capture_work::physical_end::{NativePhysicalEnd, PhysicalActionAdmission};
 
 use super::restore::{
     PreparedRestoreMapping, PreparedRestoreSource, RestoreMappingOwner, RestorePageSource,
@@ -73,7 +74,7 @@ type PhysicalCallback = extern "C" fn(*mut c_void) -> c_int;
 type PhysicalRun = extern "C" fn(PhysicalCallback, *mut c_void) -> c_int;
 type PhysicalBegin = extern "C" fn(u64, *mut u64) -> c_int;
 type PhysicalValidate = extern "C" fn(u64, u64) -> c_int;
-type PhysicalEnd = extern "C" fn(u64) -> c_int;
+type PhysicalEnd = extern "C" fn(u64, *mut NativePhysicalEnd) -> c_int;
 type PinTopology = extern "C" fn(u64, u64) -> c_int;
 type MarkWrite = extern "C" fn(u64, u32, u64) -> c_int;
 type ReadWriteGeneration = extern "C" fn(u64, u64, *mut u64) -> c_int;
@@ -106,6 +107,7 @@ struct NativeOperations {
     begin: PhysicalBegin,
     validate: PhysicalValidate,
     end: PhysicalEnd,
+    end_observe: PhysicalEnd,
     pin: PinTopology,
     mark_write: MarkWrite,
     write_generation: ReadWriteGeneration,
@@ -131,7 +133,10 @@ impl NativeOperations {
                     b"qemu_plugin_crucible_ram_physical_validate_v1\0",
                 )?),
                 end: std::mem::transmute::<*mut c_void, PhysicalEnd>(symbol(
-                    b"qemu_plugin_crucible_ram_physical_end_v1\0",
+                    b"qemu_plugin_crucible_ram_physical_end_v2\0",
+                )?),
+                end_observe: std::mem::transmute::<*mut c_void, PhysicalEnd>(symbol(
+                    b"qemu_plugin_crucible_ram_physical_end_observe_v1\0",
                 )?),
                 pin: std::mem::transmute::<*mut c_void, PinTopology>(symbol(
                     b"qemu_plugin_crucible_ram_pin_topology_v1\0",
@@ -824,23 +829,116 @@ extern "C" fn physical_preflight(opaque: *mut c_void) -> c_int {
     // SAFETY: synchronous mainloop dispatch borrows this exclusive stack value
     // until the call returns; neither native mailbox nor callback retains it.
     let preflight = unsafe { &mut *opaque.cast::<PhysicalPreflight>() };
-    let status = (preflight.native.begin)(preflight.generation, &mut preflight.token);
+    let service = preflight.service.clone();
+    let action = match service.capture_work.admit_physical_action() {
+        Ok(action) => action,
+        Err(error) => {
+            preflight.error = Some(error);
+            return -libc::EIO;
+        }
+    };
+    let status = physical_preflight_action(preflight, &action);
+    if status != 0 && preflight.error.is_none() {
+        preflight.error = Some(RamError::Native {
+            operation: "physical RAM preflight",
+            status,
+        });
+    }
+    if let Err(post) = action.finish() {
+        service.lifetime.cleanup_failed(post.clone());
+        service.failed.store(true, Ordering::Release);
+        if preflight.error.is_none() {
+            preflight.error = Some(post);
+        }
+        return -libc::EIO;
+    }
+    status
+}
+
+fn physical_preflight_action(
+    preflight: &mut PhysicalPreflight,
+    action: &PhysicalActionAdmission<'_>,
+) -> c_int {
+    let born = match preflight.service.capture_work.begin_physical(
+        &preflight.service,
+        preflight.generation,
+        action,
+    ) {
+        Ok(born) => born,
+        Err(error) => {
+            preflight.error = Some(error);
+            return -libc::EIO;
+        }
+    };
+    preflight.token = born.token;
+    let status = born.status;
     if status != 0 {
         return status;
     }
     if preflight.token == 0 {
         return -libc::EIO;
     }
-    let validation = PreparedArenas::restore_pinned_pages(&preflight.service, true);
-    let status = (preflight.native.end)(preflight.token);
-    if status == 0 {
-        preflight.token = 0;
+    if preflight.service.stop.load(Ordering::Acquire)
+        || preflight.service.failed.load(Ordering::Acquire)
+    {
+        let first = RamError::Invariant("physical preflight service stopped during birth");
+        preflight.service.lifetime.failed(first.clone());
+        if let Err(post) = preflight
+            .service
+            .capture_work
+            .retain_physical_action_failure(preflight.token, &first)
+        {
+            preflight.service.lifetime.cleanup_failed(post);
+        }
+        preflight.error = Some(first);
+        return -libc::EIO;
     }
+    let validation = PreparedArenas::restore_pinned_pages(&preflight.service, true);
+    if let Err(error) = &validation {
+        preflight.service.lifetime.failed(error.clone());
+        if let Err(post) = preflight
+            .service
+            .capture_work
+            .retain_physical_action_failure(preflight.token, error)
+        {
+            preflight.service.lifetime.cleanup_failed(post);
+        }
+    }
+    let ended = preflight
+        .service
+        .capture_work
+        .end_physical(preflight.native, preflight.token);
+    let (failure, gate_return) = match ended {
+        Ok(ended) => {
+            let token = preflight.token;
+            if ended.returned {
+                preflight.token = 0;
+                preflight.service.retained_token.store(0, Ordering::Release);
+            }
+            let gate = if ended.returned {
+                preflight.service.capture_work.return_gate_after_end(token)
+            } else {
+                Ok(())
+            };
+            (ended.failure, gate)
+        }
+        Err(error) => (Some(error), Ok(())),
+    };
+    // Validation's initiating cause remains primary; both native outputs/posts
+    // are already retained independently before either later error is read.
     if let Err(error) = validation {
         preflight.error = Some(error);
         return -libc::EIO;
     }
-    status
+    if let Some(error) = failure {
+        preflight.error = Some(error);
+        return -libc::EIO;
+    }
+    if let Err(error) = gate_return {
+        preflight.error = Some(error);
+        return -libc::EIO;
+    }
+    0
 }
 
 struct PreparationAdmission<'a>(&'a AtomicBool);
@@ -863,15 +961,25 @@ struct PreparedArenas {
 }
 
 impl PreparedArenas {
-    fn commit_on_main_loop(&mut self) -> Result<(), RamError> {
+    fn commit_on_main_loop(
+        &mut self,
+        action: &PhysicalActionAdmission<'_>,
+    ) -> Result<(), RamError> {
         if self.destructive || self.completed {
             return Err(RamError::Invariant(
                 "arena transition already entered commit",
             ));
         }
+        self.service.capture_work.require_end_ready()?;
         self.destructive = true;
         let cache = self.cache.as_mut().ok_or("arena identity receipt absent")?;
-        let status = (self.native.begin)(cache.topology_generation, &mut self.token);
+        let born = self.service.capture_work.begin_physical(
+            &self.service,
+            cache.topology_generation,
+            action,
+        )?;
+        self.token = born.token;
+        let status = born.status;
         if status != 0 || self.token == 0 {
             self.service.failed.store(true, Ordering::Release);
             return Err(RamError::Native {
@@ -880,7 +988,10 @@ impl PreparedArenas {
             });
         }
         let status = (self.native.validate)(self.token, cache.topology_generation);
-        if status != 0 || self.service.failed.load(Ordering::Acquire) {
+        if status != 0
+            || self.service.failed.load(Ordering::Acquire)
+            || self.service.stop.load(Ordering::Acquire)
+        {
             self.service.failed.store(true, Ordering::Release);
             return Err(RamError::Native {
                 operation: "post-reset physical RAM authority invalid",
@@ -977,15 +1088,28 @@ impl PreparedArenas {
             });
         }
         self.service.activated.store(true, Ordering::Release);
-        let status = (self.native.end)(self.token);
-        if status != 0 {
-            self.service.failed.store(true, Ordering::Release);
-            return Err(RamError::Native {
-                operation: "physical RAM authority release failed",
-                status,
-            });
+        let ended = self
+            .service
+            .capture_work
+            .end_physical(self.native, self.token)?;
+        let token = self.token;
+        if ended.returned {
+            self.token = 0;
+            self.service.retained_token.store(0, Ordering::Release);
         }
-        self.token = 0;
+        if let Some(error) = ended.failure.as_ref() {
+            self.service.failed.store(true, Ordering::Release);
+            self.service.lifetime.failed(error.clone());
+        }
+        let gate_return = if ended.returned {
+            self.service.capture_work.return_gate_after_end(token)
+        } else {
+            Ok(())
+        };
+        if let Some(error) = ended.failure {
+            return Err(error);
+        }
+        gate_return?;
         self.completed = true;
         Ok(())
     }
@@ -1035,10 +1159,35 @@ extern "C" fn physical_commit(opaque: *mut c_void) -> c_int {
     // SAFETY: the native synchronous runner borrows the exclusive prepared
     // receipt until completion and never publishes this GPL-private pointer.
     let prepared = unsafe { &mut *opaque.cast::<PreparedArenas>() };
-    match prepared.commit_on_main_loop() {
+    let service = prepared.service.clone();
+    let action = match service.capture_work.admit_physical_action() {
+        Ok(action) => action,
+        Err(error) => {
+            prepared.commit_error = Some(error);
+            return -libc::EIO;
+        }
+    };
+    let result = prepared.commit_on_main_loop(&action);
+    if let Err(error) = &result {
+        service.failed.store(true, Ordering::Release);
+        service.lifetime.failed(error.clone());
+        if prepared.token != 0 {
+            if let Err(post) = service
+                .capture_work
+                .retain_physical_action_failure(prepared.token, error)
+            {
+                service.lifetime.cleanup_failed(post);
+            }
+        }
+    }
+    let post = action.finish();
+    if let Err(error) = &post {
+        service.failed.store(true, Ordering::Release);
+        service.lifetime.cleanup_failed(error.clone());
+    }
+    match result.and(post) {
         Ok(()) => 0,
         Err(error) => {
-            prepared.service.failed.store(true, Ordering::Release);
             prepared.commit_error = Some(error);
             -libc::EIO
         }

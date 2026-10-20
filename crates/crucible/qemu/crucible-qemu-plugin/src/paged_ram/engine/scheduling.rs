@@ -185,9 +185,7 @@ impl PausedPagingOwner {
             .activate_resident_with_operation(Some(operation.clone()), completed_work.clone())
             .and_then(|()| self.reclaim_with_operation(Some(operation.clone()), completed_work));
         if let Err(error) = placement {
-            if matches!(&error, RamError::Native { status, .. }
-                if *status == -libc::EAGAIN || *status == -libc::EBUSY)
-            {
+            return route_placement_refusal(error, || {
                 let (schedule, _) = native_scheduler()?;
                 let queued = self
                     .queued_operation
@@ -202,12 +200,11 @@ impl PausedPagingOwner {
                 if status == 0 {
                     return Ok(());
                 }
-                return Err(RamError::Native {
+                Err(RamError::Native {
                     operation: "retry paused placement",
                     status,
-                });
-            }
-            return Err(error);
+                })
+            });
         }
         operation.wait_slice()?;
 
@@ -217,6 +214,22 @@ impl PausedPagingOwner {
             .map_err(|_| RamError::Invariant("placement queue unavailable"))?;
         queued.finish_receipt(generation, || self.complete_placement_receipt(generation))?;
         Ok(())
+    }
+}
+
+// Only an explicit pre-entry disposition can defer the same queued Original.
+// A raw Native errno or PlacementNotRetryable can name late/uncertain effects;
+// preserve that initiating cause without calling the scheduler again.
+fn route_placement_refusal(
+    error: RamError,
+    retry: impl FnOnce() -> Result<(), RamError>,
+) -> Result<(), RamError> {
+    if matches!(&error, RamError::PlacementDeferred { status, .. }
+        if *status == -libc::EAGAIN || *status == -libc::EBUSY)
+    {
+        retry()
+    } else {
+        Err(error)
     }
 }
 
