@@ -232,6 +232,7 @@ async fn apr_cache_generate_cli_supports_apm_install_upgrade_and_execution() -> 
         ],
     )?;
     let registry_dir = registry_dir(&maintainer_home, registry_name);
+    configure_fixture_registry_signer(&maintainer_home, registry_name, &release_key)?;
     configure_fixture_git_identity(&registry_dir)?;
     fs::create_dir_all(registry_dir.join("packages/f"))?;
     fs::write(
@@ -634,16 +635,7 @@ async fn apr_release_store_path_publishes_signed_cache_channel_and_installs() ->
         ],
     )?;
     let registry_dir = registry_dir(&maintainer_home, registry_name);
-    let config_dir = maintainer_home.join(".config/apm/registries.d");
-    fs::create_dir_all(&config_dir)?;
-    fs::write(
-        config_dir.join(format!("{registry_name}.toml")),
-        format!(
-            "[registry]\nname = \"{registry_name}\"\nurl = \"file://{}\"\n\n[registry.signing_keys]\ninitial = \"{}\"\n",
-            registry_dir.display(),
-            key_path.display(),
-        ),
-    )?;
+    configure_fixture_registry_signer(&maintainer_home, registry_name, &key_path)?;
 
     let upload_dir = tmp.path().join("release-origin-upload");
     let cache_server = StaticHttpServer::spawn(upload_dir.clone()).await?;
@@ -1628,6 +1620,21 @@ fn run_aos_package_json_with_env(
     );
     serde_json::from_slice(&output.stdout)
         .with_context(|| format!("parsing apm {action} JSON from stdout"))
+}
+
+fn configure_fixture_registry_signer(home: &Path, registry_name: &str, key_path: &Path) -> Result<()> {
+    let registry_dir = registry_dir(home, registry_name);
+    let config_dir = home.join(".config/apm/registries.d");
+    fs::create_dir_all(&config_dir)?;
+    fs::write(
+        config_dir.join(format!("{registry_name}.toml")),
+        format!(
+            "[registry]\nname = \"{registry_name}\"\nurl = \"file://{}\"\n\n[registry.signing_keys]\ninitial = \"{}\"\n",
+            registry_dir.display(),
+            key_path.display(),
+        ),
+    )?;
+    Ok(())
 }
 
 fn configure_fixture_git_identity(registry: &Path) -> Result<()> {
