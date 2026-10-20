@@ -279,16 +279,20 @@ def copy_signed_surface(client, destination, corpus_path, corpus_size, corpus_di
     coreutils = tools["coreutils"]
     archive = "/var/tmp/hub-parity-corpus-copy.tar"
     destination.succeed(f"mkdir -p {source_root}; : > {archive}")
-    chunk_size = 48 * 1024
+    # Keep base64 on the framed agent connection: mirroring these bytes onto
+    # the guest serial console throttles the copy. Encoded 1 MiB chunks remain
+    # well below the agent's 16 MiB request and response bounds.
+    private = "# Private fixture input: command contents and output are not logged.\n"
+    chunk_size = 1024 * 1024
     for offset in range(0, corpus_size, chunk_size):
         encoded = client.succeed(
-            f"{coreutils}/dd if={corpus_path} bs={chunk_size} skip={offset // chunk_size} count=1 status=none "
+            private + f"{coreutils}/dd if={corpus_path} bs={chunk_size} skip={offset // chunk_size} count=1 status=none "
             f"| {coreutils}/base64 -w0",
             timeout=60,
         ).strip()
         assert len(base64.b64decode(encoded)) == min(chunk_size, corpus_size - offset)
         destination.succeed(
-            f"printf '%s' {shlex.quote(encoded)} | {coreutils}/base64 -d >> {archive}",
+            private + f"printf '%s' {shlex.quote(encoded)} | {coreutils}/base64 -d >> {archive}",
             timeout=60,
         )
     observed_digest = destination.succeed(f"{coreutils}/sha256sum {archive}").split()[0]
