@@ -3,9 +3,18 @@
 //! The code Source stays retained independently. Only validated immutable
 //! installation/model/coordinator DATA are cloned; all live, once, input,
 //! transfer, registry and native state starts empty in the fresh Source. No
-//! launch or admission authority follows from equal declarations.
+//! launch or admission authority follows from equal declarations. Selected
+//! templates additionally retain the same preexisting sealed deployment owner;
+//! their complete census and all worker/job/native routes remain unresolved.
 
 use super::*;
+use crate::node_adapters::cnp::source_birth_derivation::installation::VerifiedSourceBirthMechanism;
+
+#[path = "template18/mechanism.rs"]
+mod mechanism;
+pub use mechanism::OriginalNativeSourceTemplate18MechanismQuote;
+
+pub(super) const MECHANISM_GATE_CONTROLS: usize = mechanism::GATE_CONTROLS;
 use crate::node_contract::RuntimeError;
 use crucible_node_transport::reference_packet::PacketProgramDefinition;
 use std::{
@@ -17,6 +26,7 @@ use std::{
 #[derive(Clone, Copy)]
 pub struct OriginalNativeSourceTemplate18ConstructionData {
     template: *const PacketCompleteSemanticSource,
+    mechanism: Option<*const VerifiedSourceBirthMechanism>,
     process: u32,
     thread: std::thread::ThreadId,
     retained: usize,
@@ -53,7 +63,8 @@ impl OriginalNativeSourceTemplate18Attempt {
     /// actual Birth, native or association custody requires its later observer.
     ///
     /// # Errors
-    /// Refuses foreign, borrowed or unsupported output custody, layout overflow,
+    /// Refuses foreign, borrowed or unsupported output custody, selected
+    /// isolated deployment custody until its complete owner join, layout overflow,
     /// or actual retained output exceeding `maximum`.
     pub fn retained_requested_storage_data(&self, maximum: usize) -> Result<usize, RuntimeError> {
         let Some(source) = self.output.as_ref() else {
@@ -135,7 +146,8 @@ impl OriginalNativeSourceTemplate18Attempt {
 impl PacketCompleteSemanticSource {
     fn authenticate_template18_data(&self) -> Result<(), RuntimeError> {
         self.storage_origin_with_error::<RuntimeError>()?;
-        if self.native_import18_phase_bank_attempted.get()
+        if self.native_import18_derivation_mechanism.is_some()
+            || self.native_import18_phase_bank_attempted.get()
             || self.native_import18_bank_attempted.get()
             || self.ack_birth_attempted
             || self.native_import18_birth_construction.is_some()
@@ -254,6 +266,7 @@ impl PacketCompleteSemanticSource {
         self.authenticate_template18_data()?;
         Ok(OriginalNativeSourceTemplate18ConstructionData {
             template: Rc::as_ptr(self),
+            mechanism: None,
             process: self.process,
             thread: self.thread,
             retained,
@@ -277,6 +290,15 @@ impl PacketCompleteSemanticSource {
         row: &OriginalNativeSourceTemplate18ConstructionData,
         output: &mut OriginalNativeSourceTemplate18Attempt,
     ) -> Result<(), RuntimeError> {
+        self.native_source_template18_inner_into(row, None, output)
+    }
+
+    fn native_source_template18_inner_into(
+        self: &Rc<Self>,
+        row: &OriginalNativeSourceTemplate18ConstructionData,
+        mechanism: Option<&Rc<VerifiedSourceBirthMechanism>>,
+        output: &mut OriginalNativeSourceTemplate18Attempt,
+    ) -> Result<(), RuntimeError> {
         if output.started || output.output.is_some() {
             return Err(RuntimeError::DuplicateOperation);
         }
@@ -286,9 +308,16 @@ impl PacketCompleteSemanticSource {
         if row.template != Rc::as_ptr(self)
             || row.process != self.process
             || row.thread != self.thread
+            || row.mechanism != mechanism.map(Rc::as_ptr)
         {
             return Err(RuntimeError::ForeignAuthority);
         }
+        if let Some(mechanism) = mechanism {
+            mechanism.authenticate_current()?;
+        }
+        // Retain the same installed owner before constructing any fresh Source.
+        // Its original supervisor and executable guards remain live on refusal.
+        let retained_mechanism = mechanism.cloned();
         let installation = self.installation().cloned_complete_template_data();
         let original = match &self.original {
             CompletePacketOriginal::Producer(source) => CompletePacketOriginal::Producer(Box::new(
@@ -298,7 +327,11 @@ impl PacketCompleteSemanticSource {
                 source.cloned_complete_template_data(installation)?,
             )),
         };
-        output.output = Some(Rc::new(Self::empty_template18_data(original)));
+        let mut fresh = Self::empty_template18_data(original);
+        // Rc::clone allocates no mechanism payload. Retain the same sealed
+        // deployment owner before output publication or lineage effects.
+        fresh.native_import18_derivation_mechanism = retained_mechanism;
+        output.output = Some(Rc::new(fresh));
         let fresh = Rc::get_mut(
             output
                 .output
@@ -496,7 +529,8 @@ impl PacketCompleteSemanticSource {
         ];
         // The terms array and its consumed iterator are separate actual controls.
         let own = controls.iter().copied().fold(0usize, usize::saturating_add);
-        own.saturating_add(size_of_val(&controls))
+        own.saturating_add(mechanism::BRIDGE_CONTROLS)
+            .saturating_add(size_of_val(&controls))
             .saturating_add(size_of_val(&controls.into_iter()))
             .saturating_add(
                 crucible_node_transport::retained_metadata::original_metadata_observer_layout_bytes(
@@ -558,6 +592,7 @@ impl PacketCompleteSemanticSource {
             ack_peer_birth: std::cell::RefCell::new(None),
             ack_birth_attempted: false,
             native_import18_birth_construction: None,
+            native_import18_derivation_mechanism: None,
             ack_peer_association: std::cell::RefCell::new(None),
             restored_suffix_attempted: std::cell::Cell::new(false),
             ack_codec_metadata_extent: None,
@@ -701,6 +736,7 @@ mod tests {
             assert!(fresh.native_import18_bank_reservation.borrow().is_none());
             assert!(fresh.native_import18_declaration.is_none());
             assert!(fresh.native_import18_birth_construction.is_none());
+            assert!(fresh.native_import18_derivation_mechanism.is_none());
             assert!(fresh.original_coordinator_policy18.is_none());
             assert!(fresh.capture_banks.borrow().is_none());
             assert!(fresh.ack_peer_birth.borrow().is_none());

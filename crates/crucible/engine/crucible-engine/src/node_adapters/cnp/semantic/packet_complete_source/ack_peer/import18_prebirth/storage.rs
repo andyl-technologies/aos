@@ -403,7 +403,8 @@ pub(super) fn counter_scratch_data() -> usize {
         + size_of::<(&String, &Value)>()
         + size_of::<Value>()
         + size_of::<Result<Value, serde_json::Error>>();
-    controls
+    crate::node_adapters::cnp::semantic::packet_complete_source::template18::MECHANISM_GATE_CONTROLS
+        + controls
         + 65 * value_frame
         + 128 * serializer_frame
         + size_of::<&mut NativeImport18BirthConstruction>()

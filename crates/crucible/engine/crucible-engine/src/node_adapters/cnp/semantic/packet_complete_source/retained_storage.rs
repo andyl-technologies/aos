@@ -120,6 +120,13 @@ impl PacketCompleteSemanticSource {
         // Creator checks precede all interior loans. A dropped reservation
         // cannot erase its spent launch flag and reopen the pre-Child phase.
         self.storage_origin_with_error::<E>()?;
+        // The shared deployment's opaque L2 custody has no complete Source
+        // observer yet. Preserve that gap instead of counting it as absent.
+        if self.native_import18_derivation_mechanism.is_some() {
+            return Err(E::refused(
+                "isolated Source deployment census is not joined",
+            ));
+        }
         if self.complete_bytes_launch_reserved.get()
             || self.registry_retention_attempted.get()
             || self.registry_retention_failed.get()
@@ -328,6 +335,14 @@ impl PacketCompleteSemanticSource {
         holders: usize,
         maximum: usize,
     ) -> Result<PacketCompleteSourceRetainedStorage, E> {
+        self.storage_origin_with_error::<E>()?;
+        // The shared deployment's opaque L2 custody has no complete Source
+        // observer yet. Preserve that gap instead of counting it as absent.
+        if self.native_import18_derivation_mechanism.is_some() {
+            return Err(E::refused(
+                "isolated Source deployment census is not joined",
+            ));
+        }
         let installation =
             self.original_complete_installation_storage_data_with_error::<E>(maximum)?;
         let boot_association =

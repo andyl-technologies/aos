@@ -116,6 +116,11 @@ pub struct PacketCompleteSemanticSource {
     ack_peer_birth: std::cell::RefCell<Option<ack_peer::OriginalAckPeerBirth>>,
     ack_birth_attempted: bool,
     native_import18_birth_construction: Option<Box<ack_peer::NativeImport18BirthConstruction>>,
+    // Selected templates retain the actual deployment owner, not copied hashes.
+    // No job or accepted-bank authority is supplied by this shared handle.
+    native_import18_derivation_mechanism: Option<
+        std::rc::Rc<crate::node_adapters::cnp::source_birth_derivation::installation::VerifiedSourceBirthMechanism>,
+    >,
     ack_peer_association: std::cell::RefCell<Option<ack_peer::OriginalAckPeerAssociation>>,
     // Source-local once fence precedes every suffix custody/evidence loan.
     restored_suffix_attempted: std::cell::Cell<bool>,
@@ -225,6 +230,7 @@ impl PacketCompleteSemanticSource {
     /// It certifies no compiler/recursive frames, allocator or kernel resources.
     pub fn retained_requested_storage_precredit_scratch_data() -> usize {
         Self::original_report_startup_observer_scratch_data()
+            + template18::MECHANISM_GATE_CONTROLS
             + Self::native_import18_birth_construction_counter_scratch_data()
             + Self::original_import18_capture_bank_counter_scratch_data()
             + import18_phase_bank::retained_counter_scratch_data()
@@ -258,6 +264,11 @@ impl PacketCompleteSemanticSource {
         }
         if self.thread != std::thread::current().id() {
             return Err(refused("complete source belongs to another creator thread"));
+        }
+        // The selected worker route has no ordinary/native fallback. Its
+        // future private job join must authenticate this same mechanism.
+        if self.native_import18_derivation_mechanism.is_some() {
+            return Err(refused("isolated Source derivation is not joined"));
         }
         Ok(())
     }
@@ -1379,6 +1390,7 @@ mod oracle_body_storage;
 mod template18;
 pub use template18::{
     OriginalNativeSourceTemplate18Attempt, OriginalNativeSourceTemplate18ConstructionData,
+    OriginalNativeSourceTemplate18MechanismQuote,
 };
 
 #[path = "packet_complete_source/import18_phase_bank.rs"]

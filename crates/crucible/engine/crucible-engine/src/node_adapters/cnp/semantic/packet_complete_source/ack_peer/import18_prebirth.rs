@@ -283,6 +283,9 @@ impl PacketCompleteSemanticSource {
         launch: &PacketNative5SourceLaunch,
         maximum: usize,
     ) -> Result<[usize; 3], RuntimeError> {
+        if self.native_import18_derivation_mechanism.is_some() {
+            return Err(RuntimeError::UnsupportedFacet);
+        }
         self.import18_birth_owner_data(launch, Stage::Initialized)?;
         let (transient, scratch) = launch
             .validation_construction_projection_storage_data()
@@ -307,6 +310,9 @@ impl PacketCompleteSemanticSource {
         launch: &PacketNative5SourceLaunch,
         maximum: usize,
     ) -> Result<NativeImport18BirthConstructionQuote, RuntimeError> {
+        if self.native_import18_derivation_mechanism.is_some() {
+            return Err(RuntimeError::UnsupportedFacet);
+        }
         let owner = self.import18_birth_owner_data(launch, Stage::Initialized)?;
         let (transient, scratch) = launch
             .validation_construction_storage_data(maximum)
@@ -335,6 +341,9 @@ impl PacketCompleteSemanticSource {
         launch: &PacketNative5SourceLaunch,
         quote: &NativeImport18BirthConstructionQuote,
     ) -> Result<(), RuntimeError> {
+        if self.native_import18_derivation_mechanism.is_some() {
+            return Err(RuntimeError::UnsupportedFacet);
+        }
         self.start_import18_birth_stage_data(launch, quote, Stage::Initialized, Stage::Validating)?;
         launch
             .validate()

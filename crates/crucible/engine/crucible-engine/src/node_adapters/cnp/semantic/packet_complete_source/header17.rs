@@ -37,6 +37,9 @@ impl PacketCompleteSemanticSource {
         aliases: &'a RefCell<OriginalRestoredOwnerCapacityAliases>,
     ) -> Result<SourceHeader17<'a>, RuntimeError> {
         self.storage_origin_with_error::<RuntimeError>()?;
+        if self.native_import18_derivation_mechanism.is_some() {
+            return Err(RuntimeError::UnsupportedFacet);
+        }
         Ok(SourceHeader17 {
             source: self,
             aliases,
@@ -78,7 +81,8 @@ impl PacketCompleteSemanticSource {
 
     /// Names fixed header/projection and checked serialization views.
     pub(super) fn settled17_header_counter_scratch_data() -> usize {
-        size_of::<SourceHeader17<'static>>()
+        template18::MECHANISM_GATE_CONTROLS
+            + size_of::<SourceHeader17<'static>>()
             + size_of::<&Option<Box<ack_peer::NativeImport18BirthConstruction>>>()
             + size_of::<&SourceHeader17<'static>>()
             + size_of::<BoundSelection17<'static, ()>>()
@@ -157,7 +161,8 @@ impl Serialize for SourceHeader17<'_> {
         if header_cells_data(self.source) != self.cells {
             return Err(S::Error::custom("Source header cell changed"));
         }
-        if self.source.native_import18_birth_construction.is_some()
+        if self.source.native_import18_derivation_mechanism.is_some()
+            || self.source.native_import18_birth_construction.is_some()
             || self.source.native_import18_phase_bank_attempted.get()
             || self.source.native_import18_declaration.is_some()
             || self.source.original_coordinator_policy18.is_some()
@@ -178,6 +183,7 @@ impl Serialize for SourceHeader17<'_> {
             ack_peer_birth: _,
             ack_birth_attempted,
             native_import18_birth_construction: _,
+            native_import18_derivation_mechanism: _,
             ack_peer_association: _,
             restored_suffix_attempted: _,
             ack_codec_metadata_extent,
