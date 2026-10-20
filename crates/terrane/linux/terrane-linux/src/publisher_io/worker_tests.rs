@@ -14,7 +14,8 @@ use std::time::Duration;
 use terrane_format::chunking::ChunkProfile;
 use terrane_format::identity::{Descriptor, IdentityKind, TERRANE_V1};
 use terrane_sdk::host::publication::{
-    FsPublicationState, PublicationClaim, PublicationRecipe, PublicationState, Publisher,
+    AdoptionFailure, FsPublicationState, PublicationClaim, PublicationRecipe, PublicationState,
+    Publisher,
 };
 use terrane_sdk::store::TokioLocalFs;
 
@@ -881,15 +882,74 @@ fn prepared_roots_defer_staging_effects_and_retain_actual_exclusion(
         );
         fs::write(&record, conflicting.as_bytes()).unwrap();
         File::open(&record).unwrap().sync_all().unwrap();
-        assert!(
-            worker
-                .execute(context.clone(), NativeOperation::Inventory { cursor: None })
-                .await
-                .is_err()
+        let digest: String = expected
+            .descriptor()
+            .digest()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let canonical = paths[0].join(&digest[..2]).join(&digest);
+        let retained = File::open(&canonical).unwrap();
+        let inode = retained.metadata().unwrap();
+        let measurement = crate::verity::measure(&retained).unwrap();
+        let plaintext = fs::read(&canonical).unwrap();
+
+        let result = worker
+            .execute(context.clone(), NativeOperation::Inventory { cursor: None })
+            .await
+            .unwrap();
+        let NativeCommandResult::Inventory { keys, next_cursor } = result else {
+            panic!("conflicting inventory cannot grant a body or binding")
+        };
+        assert_eq!(
+            keys,
+            vec![NativeBodyKey::Sealed {
+                descriptor: expected.descriptor().clone()
+            }]
         );
+        assert!(next_cursor.is_none());
         assert_eq!(fs::read(&record).unwrap(), conflicting.as_bytes());
-        fs::write(&record, &original).unwrap();
-        File::open(&record).unwrap().sync_all().unwrap();
+        assert_eq!(fs::metadata(&canonical).unwrap().ino(), inode.ino());
+        assert_eq!(fs::read(&canonical).unwrap(), plaintext);
+
+        let error = worker
+            .execute(
+                context.clone(),
+                NativeOperation::Adopt {
+                    claim: expected.clone(),
+                },
+            )
+            .await
+            .err()
+            .unwrap();
+        assert!(matches!(
+            error
+                .get_ref()
+                .and_then(|cause| cause.downcast_ref::<AdoptionFailure>()),
+            Some(AdoptionFailure::RecordedBindingMismatch)
+        ));
+        assert!(!canonical.exists());
+        assert!(!record.exists());
+        let quarantine = root.join("quarantine").join(&digest);
+        let actual = fs::metadata(&quarantine).unwrap();
+        assert_eq!((actual.dev(), actual.ino()), (inode.dev(), inode.ino()));
+        assert_eq!(fs::read(&quarantine).unwrap(), plaintext);
+        assert_eq!(crate::verity::measure(&retained).unwrap(), measurement);
+
+        // A fresh ordinary publication restores a genuine valid record for the
+        // remaining malformed/orphan inventory controls; no old binding is copied.
+        worker
+            .execute(context.clone(), NativeOperation::Resume)
+            .await
+            .unwrap();
+        worker
+            .publish(expected.clone(), source(root))
+            .await
+            .unwrap();
+        worker
+            .execute(context.clone(), NativeOperation::Drain)
+            .await
+            .unwrap();
         for name in [
             "retirement-unknown.toml".to_owned(),
             ".binding-incomplete".to_owned(),

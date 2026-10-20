@@ -5,7 +5,9 @@
 //! remain checked metadata without supplying a body, pin or current deadline.
 //! Unknown, orphaned binding and incomplete state stays unresolved, without
 //! deletion or replacement. Manifest claims keep their actual verified metadata
-//! pack/index and native custody through finish.
+//! pack/index and native custody through finish. A well-formed conflicting
+//! binding remains an unchanged candidate for funded adoption to quarantine;
+//! names-only inventory never grants binding or serving authority.
 
 use super::*;
 use std::os::unix::fs::MetadataExt;
@@ -188,7 +190,8 @@ impl StateInventory {
     ///
     /// # Errors
     /// Rejects changed sources/custody, invalid content, malformed state, seal
-    /// conflict and exhausted retained-metadata budgets.
+    /// changes and exhausted retained-metadata budgets. A well-formed recorded
+    /// measurement mismatch remains subject to independent funded adoption.
     pub(super) async fn reconcile(
         &mut self,
         inventory: &NativeInventory,
@@ -251,16 +254,16 @@ impl StateInventory {
         }
         let retained_bytes = retain_source_budget(self.retained_bytes, claim)?;
         Self::recheck_record(&self.directory, inventory, record)?;
-        let recorded = state
+        // Parse the exact retained record against the independently reconstructed
+        // claim. Inventory returns keys only: rejecting a well-formed measurement
+        // conflict here would prevent funded adoption from quarantining the actual
+        // inode under HOST-7. Adoption still compares the original stored binding
+        // with the kernel measurement before any backing descriptor can escape.
+        let _recorded = state
             .binding(claim)
             .await?
             .ok_or_else(|| invalid("retained publication binding disappeared"))?;
         Self::recheck_record(&self.directory, inventory, record)?;
-        if recorded != measured {
-            return Err(invalid(
-                "publication-state binding contradicts actual kernel seal",
-            ));
-        }
         let body = Body {
             parent: parent.try_clone()?,
             name: name.to_owned(),

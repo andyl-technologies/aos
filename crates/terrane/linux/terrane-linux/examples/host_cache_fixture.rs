@@ -101,6 +101,8 @@ fn main() -> std::process::ExitCode {
             "refuse-pending-pack",
             "recover-pending-pack",
             "refuse-pending-pack-foreign",
+            "seed-conflicting-binding",
+            "refuse-conflicting-binding",
         ] {
             println!("host-cache:{selector}");
         }
@@ -129,6 +131,7 @@ fn main() -> std::process::ExitCode {
             | "seed-writable-manifest"
             | "seed-mixed-manifest"
             | "seed-mixed-bad-manifest"
+            | "seed-conflicting-binding"
     ) {
         recovery::seed(&mode)
     } else if matches!(

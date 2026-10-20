@@ -356,6 +356,8 @@ def main():
         "refuse-pending-pack",
         "recover-pending-pack",
         "refuse-pending-pack-foreign",
+        "seed-conflicting-binding",
+        "refuse-conflicting-binding",
     ]]
     shared.require(listed == expected, "cache fixture exact selector inventory mismatch")
     unit_elf = output / "bin" / UNIT_NAME

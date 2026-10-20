@@ -28,12 +28,15 @@ use std::{
 };
 use terrane_format::{
     chunking::ChunkProfile,
-    identity::{IdentityKind, TERRANE_V1},
+    identity::{Descriptor, IdentityKind, TERRANE_V1},
     manifest::{ChunkRef, Manifest},
 };
 use terrane_linux::{host_cache::NativeMetadataOwner, host_quota::NativeProject};
 use terrane_sdk::{
-    host::cache::CacheState,
+    host::{
+        cache::CacheState,
+        publication::{FsPublicationState, PublicationClaim, PublicationRecipe},
+    },
     pack::{EntryKind, PackClass, PackId, PackWriter},
     store::TokioLocalFs,
 };
@@ -54,6 +57,7 @@ enum FixtureCase {
     WritableVerified,
     MixedVerified,
     MixedMismatch,
+    BindingConflict,
 }
 
 impl FixtureCase {
@@ -73,6 +77,7 @@ impl FixtureCase {
             "seed-writable-manifest" | "recover-writable-manifest" => Ok(Self::WritableVerified),
             "seed-mixed-manifest" | "recover-mixed-manifest" => Ok(Self::MixedVerified),
             "seed-mixed-bad-manifest" | "refuse-mixed-manifest" => Ok(Self::MixedMismatch),
+            "seed-conflicting-binding" | "refuse-conflicting-binding" => Ok(Self::BindingConflict),
             _ => Err(invalid("unknown manifest fixture selector")),
         }
     }
@@ -91,6 +96,7 @@ impl FixtureCase {
             Self::WritableVerified => "tenant:manifest-sealed-writable",
             Self::MixedVerified => "tenant:manifest-mixed",
             Self::MixedMismatch => "tenant:manifest-mixed-mismatch",
+            Self::BindingConflict => "tenant:manifest-binding-conflict",
         }
     }
 
@@ -101,6 +107,7 @@ impl FixtureCase {
             Self::WritableUnsealed => "unsealed writable manifest",
             Self::Truncated => "truncated manifest",
             Self::MixedMismatch => "mixed manifest mismatch",
+            Self::BindingConflict => "conflicting manifest binding",
             Self::Verified | Self::WritableVerified | Self::MixedVerified | Self::MissingIndex => {
                 "valid manifest"
             }
@@ -265,6 +272,9 @@ pub(super) fn seed(mode: &str) -> io::Result<()> {
     }
     retained.sync_all()?;
     File::open(&sealed_parent)?.sync_all()?;
+    if case == FixtureCase::BindingConflict {
+        seed_conflicting_binding(&inputs, &fixture, &retained)?;
+    }
     if case.mixed() {
         let hash = inline_hash()?;
         let parent = inputs.root.join("sealed").join(&hash[..2]);
@@ -302,6 +312,46 @@ fn require_seed_capabilities() -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+fn seed_conflicting_binding(inputs: &Inputs, fixture: &Fixture, sealed: &File) -> io::Result<()> {
+    // This is explicit pre-startup corruption, never a verified publication
+    // receipt. Keep the actual kernel measurement and object identity distinct.
+    let mut measured = terrane_linux::verity::measure(sealed)?;
+    let first = measured
+        .digest
+        .first_mut()
+        .ok_or_else(|| invalid("seeded seal has no digest"))?;
+    *first ^= 1;
+    let identity = TERRANE_V1
+        .calculate(IdentityKind::Manifest, &fixture.manifest)
+        .map_err(io::Error::other)?;
+    let claim = PublicationClaim::new(
+        inputs.domain.clone(),
+        PublicationRecipe::Manifest {
+            object: Descriptor::from_identity(&TERRANE_V1, &identity, &fixture.manifest)
+                .map_err(io::Error::other)?,
+            canonical_manifest: fixture.manifest.clone(),
+        },
+        &ChunkProfile::cdc_1m([0; 32]),
+    )?;
+    let state = FsPublicationState::new(TokioLocalFs, inputs.root.join("state/publication"));
+    let bytes = format!(
+        "version = 1\ndomain = {:?}\ndescriptor = {:?}\nverity_algorithm = {}\nverity_digest = {:?}\n",
+        inputs.domain,
+        claim.descriptor().encode(),
+        measured.algorithm,
+        measured.digest,
+    );
+    write(
+        inputs,
+        &state.binding_record_path(&claim),
+        bytes.as_bytes(),
+        841,
+        841,
+        0o600,
+    )?;
+    File::open(inputs.root.join("state/publication"))?.sync_all()
 }
 
 fn directory(path: &Path, uid: u32, gid: u32, mode: u32) -> io::Result<()> {
