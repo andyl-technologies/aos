@@ -72,7 +72,7 @@ def main():
             # descriptors, bounded ancillary custody and checked writer closure.
             # Any new unsafe source or edit requires another source review.
             audited_bindings = {
-                "host_cache/owner/admission/io.rs": "ecf56c11a5efe9face7ed78d126961a6d78be2a337d50391c5e3278d739d9985",
+                "host_cache/owner/admission/io.rs": "2731dd5ccbaf9d9270f265f1bd3320d744a51a3d17dbe8e37fb392c944170fde",
                 "host_cache/owner/index_io.rs": "7ae0c2fb8c279fbcbc82ba1ec8b0eed0397f252bebc6cac80d72ff31aef730a1",
                 "host_cache/quota.rs": "ec5d74ccd8c5e4225c9dfa8a9a30283b9b3b34ab0fde4489ba7199882a78714b",
                 "host_quota/claim.rs": "a657e81c4d3ebe255a29cd7f99cd632e9a7f9ea3e8396681c9c020900d48af8d",
