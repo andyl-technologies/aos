@@ -19,6 +19,7 @@ use std::mem::{align_of, size_of};
 mod admit;
 mod coordinator_decode;
 mod decoded;
+mod fixed_layout;
 mod hello;
 mod initial;
 mod launch_decode;
@@ -139,6 +140,7 @@ pub fn original_native_birth_startup_counter_scratch_data() -> usize {
         + retained_overlap::counter_scratch_data()
         + coordinator_decode::counter_scratch_data()
         + decoded::counter_scratch_data()
+        + fixed_layout::counter_scratch_data()
         + launch_validation_counter_scratch_data()
         + super::super::Native5Policy::CONSTRUCTION_ADAPTER_SCRATCH_DATA
         // Exact lower restore-input aggregate initializer and owned callee input.
@@ -535,23 +537,16 @@ fn birth_storage_with_source(
     let private = source_shape;
     let lifecycle = initial::project(launch, maximum)?;
     let definitions = schemas::project(launch, maximum)?;
-    let shared_headers =
-        super::super::server::complete::birth::original_native_birth_shared_layout_bytes()?;
-    let phase_headers =
-        super::super::server::complete::birth::original_native_birth_phase_layout_bytes()?;
-    let context_banks = sum(
-        &super::super::ack_emitter::ORIGINAL_ACK_CONTEXT_BANK_BYTES,
-        maximum,
-    )?;
+    let fixed_layout = fixed_layout::project(maximum)?;
     let retained = sum(
         &[
             fixed_banks,
             retained_copies,
             lifecycle.retained,
             definitions.retained_reference_children,
-            shared_headers,
-            phase_headers,
-            context_banks,
+            fixed_layout.shared_headers_bytes,
+            fixed_layout.phase_headers_bytes,
+            fixed_layout.context_bank_bytes,
         ],
         maximum,
     )?;

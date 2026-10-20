@@ -273,7 +273,7 @@ where
         let mut fields = Fields::array(input)?;
         let mut previous = None;
         let mut consumed = 0usize;
-        while let Some(field) = fields.next()? {
+        while let Some(field) = fields.next_value()? {
             let text = plain_string(field)?;
             if previous.is_some_and(|previous| previous >= text) {
                 return Err(invalid());
@@ -313,7 +313,7 @@ where
         }
         let mut fields = Fields::array(input)?;
         let mut previous = None;
-        while let Some(field) = fields.next()? {
+        while let Some(field) = fields.next_value()? {
             let text = plain_string(field)?;
             if previous.is_some_and(|previous| previous >= text) || attempt.children.len() == count
             {

@@ -92,17 +92,17 @@ pub(crate) fn read_shared_current_boot_lineage17_data<'body, 'rows>(
 
     let mut normalized = Fields::array(normalized_raw)?;
     let normalized_fields = [
-        loan(normalized.next()?.ok_or_else(invalid)?, ledger)?,
-        loan(normalized.next()?.ok_or_else(invalid)?, ledger)?,
-        loan(normalized.next()?.ok_or_else(invalid)?, ledger)?,
-        loan(normalized.next()?.ok_or_else(invalid)?, ledger)?,
-        loan(normalized.next()?.ok_or_else(invalid)?, ledger)?,
+        loan(normalized.next_value()?.ok_or_else(invalid)?, ledger)?,
+        loan(normalized.next_value()?.ok_or_else(invalid)?, ledger)?,
+        loan(normalized.next_value()?.ok_or_else(invalid)?, ledger)?,
+        loan(normalized.next_value()?.ok_or_else(invalid)?, ledger)?,
+        loan(normalized.next_value()?.ok_or_else(invalid)?, ledger)?,
     ];
     normalized.finish()?;
 
     let mut banks = Fields::array(banks_raw)?;
     for _ in 0..5 {
-        discard::<HistoricalByteBank17>(banks.next()?.ok_or_else(invalid)?, ledger)?;
+        discard::<HistoricalByteBank17>(banks.next_value()?.ok_or_else(invalid)?, ledger)?;
     }
     banks.finish()?;
 

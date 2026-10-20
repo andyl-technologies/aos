@@ -138,7 +138,7 @@ pub(crate) fn selected_extensions(
         let mut borrowed = Fields::array(selected)?;
         let mut actual = 0usize;
         let original_rows = ledger.rows.clone();
-        while let Some(item) = borrowed.next()? {
+        while let Some(item) = borrowed.next_value()? {
             actual += 1;
             if actual > count {
                 return Err(invalid());
@@ -170,7 +170,7 @@ pub(crate) fn selected_extensions(
             if target_children {
                 ledger.rows = original_rows;
                 let mut items = Fields::array(selected)?;
-                while let Some(item) = items.next()? {
+                while let Some(item) = items.next_value()? {
                     ledger.read::<ExtensionSelection>(item, false)?;
                 }
                 ledger.rows = after_rows;
@@ -192,7 +192,7 @@ pub(crate) fn selected_extensions(
                 }
                 ledger.rows = original_rows;
                 let mut items = Fields::array(selected)?;
-                while let Some(item) = items.next()? {
+                while let Some(item) = items.next_value()? {
                     values.push(
                         ledger
                             .read::<ExtensionSelection>(item, true)?
@@ -325,7 +325,7 @@ impl HistoricalType for HistoricalWireSchema {
 }
 
 pub(crate) fn next<'a>(fields: &mut Fields<'a>) -> Result<&'a [u8], ProviderError> {
-    fields.next()?.ok_or_else(invalid)
+    fields.next_value()?.ok_or_else(invalid)
 }
 
 pub(crate) fn tag(fields: &mut Fields<'_>, expected: &str) -> Result<(), ProviderError> {

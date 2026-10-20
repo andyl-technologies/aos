@@ -1,8 +1,7 @@
 //! Binds the explicit canonical restore-input family without changing old views.
 
 use super::super::complete_restore::{
-    PACKET_CANONICAL_RESTORE_INPUTS_FEATURE, PacketNative5CompleteRestoreSelection,
-    PacketNative5RestoreInputEmitterSelection, canonical_restore_inputs_schema,
+    PACKET_CANONICAL_RESTORE_INPUTS_FEATURE, PacketNative5RestoreInputEmitterSelection,
 };
 use super::*;
 

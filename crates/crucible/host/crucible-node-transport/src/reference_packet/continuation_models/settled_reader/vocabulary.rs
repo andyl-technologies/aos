@@ -228,8 +228,8 @@ impl<A: HistoricalType, B: HistoricalType> HistoricalType for (A, B) {
         build: bool,
     ) -> Result<Option<Self>, ProviderError> {
         let mut fields = Fields::array(input)?;
-        let a = ledger.read::<A>(fields.next()?.ok_or_else(invalid)?, build)?;
-        let b = ledger.read::<B>(fields.next()?.ok_or_else(invalid)?, build)?;
+        let a = ledger.read::<A>(fields.next_value()?.ok_or_else(invalid)?, build)?;
+        let b = ledger.read::<B>(fields.next_value()?.ok_or_else(invalid)?, build)?;
         fields.finish()?;
         if !build {
             return Ok(None);

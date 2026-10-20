@@ -66,8 +66,8 @@ impl<'a> ConnectionSettledHistory17StructuralPlan<'a> {
         let responses = fields.named("restore_responses")?;
         let mut array = Fields::array(responses)?;
         let restore_responses = [
-            optional(array.next()?.ok_or_else(invalid)?),
-            optional(array.next()?.ok_or_else(invalid)?),
+            optional(array.next_value()?.ok_or_else(invalid)?),
+            optional(array.next_value()?.ok_or_else(invalid)?),
         ];
         array.finish()?;
         let native = match plain(fields.named("role")?)? {

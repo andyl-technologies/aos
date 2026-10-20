@@ -241,8 +241,8 @@ fn escaped_content_order_and_duplicate_keys_refuse_without_temporary_owners() {
     }
     let content_bytes = content_bytes.unwrap();
     let mut rows = Fields::array(content_bytes).unwrap();
-    let first = std::str::from_utf8(rows.next().unwrap().unwrap()).unwrap();
-    let second = std::str::from_utf8(rows.next().unwrap().unwrap()).unwrap();
+    let first = std::str::from_utf8(rows.next_value().unwrap().unwrap()).unwrap();
+    let second = std::str::from_utf8(rows.next_value().unwrap().unwrap()).unwrap();
     rows.finish().unwrap();
     for changed_content in [format!("[{second},{first}]"), format!("[{first},{first}]")] {
         let changed = std::str::from_utf8(&captured.input).unwrap().replace(

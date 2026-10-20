@@ -63,7 +63,7 @@ impl<'input, 'scratch> ValidatedRestoredSettledNative17Aliases<'input, 'scratch>
         let mut fields = Fields::array(input)?;
         let mut rows = 0usize;
         let mut groups = 0usize;
-        while let Some(field) = fields.next()? {
+        while let Some(field) = fields.next_value()? {
             let (kind, group) = row(field)?;
             rows = rows.checked_add(1).ok_or_else(invalid)?;
             if rows > maximum_rows || group > groups {
@@ -207,7 +207,7 @@ impl RestoredSettledNative17AliasViews<'_, '_> {
             if self.failed || self.remaining == 0 || layout == 0 {
                 return Err(invalid());
             }
-            let field = self.fields.next()?.ok_or_else(invalid)?;
+            let field = self.fields.next_value()?.ok_or_else(invalid)?;
             let (kind, group) = row(field)?;
             if kind != MetadataSharedKind::NativeBoot || group != expected_group {
                 return Err(invalid());
@@ -239,7 +239,7 @@ impl RestoredSettledNative17AliasViews<'_, '_> {
     }
 
     fn begin_row(&mut self, kind: MetadataSharedKind) -> Result<usize, ProviderError> {
-        let field = self.fields.next()?.ok_or_else(invalid)?;
+        let field = self.fields.next_value()?.ok_or_else(invalid)?;
         let (stored_kind, group) = row(field)?;
         if stored_kind != kind || self.remaining == 0 {
             return Err(invalid());
@@ -355,7 +355,7 @@ impl RestoredSettledNative17AliasViews<'_, '_> {
     pub fn finish(mut self) -> Result<(), ProviderError> {
         if self.failed
             || self.remaining != 0
-            || self.fields.next()?.is_some()
+            || self.fields.next_value()?.is_some()
             || self.summaries.iter().any(|summary| summary.in_progress)
         {
             return Err(invalid());
@@ -379,7 +379,7 @@ pub(crate) fn read_alias_row17_data(
 
 fn row(input: &[u8]) -> Result<(MetadataSharedKind, usize), ProviderError> {
     let mut fields = Fields::array(input)?;
-    let kind = match plain_string(fields.next()?.ok_or_else(invalid)?)? {
+    let kind = match plain_string(fields.next_value()?.ok_or_else(invalid)?)? {
         "historical-import-policy" => MetadataSharedKind::HistoricalImportPolicy,
         "historical-import-boot" => MetadataSharedKind::HistoricalImportBoot,
         "historical-import-frames" => MetadataSharedKind::HistoricalImportFrames,
@@ -426,7 +426,7 @@ fn row(input: &[u8]) -> Result<(MetadataSharedKind, usize), ProviderError> {
         _ => return Err(invalid()),
     };
     let group =
-        crate::protocol_snapshot::owned11::typed::unsigned(fields.next()?.ok_or_else(invalid)?)?;
+        crate::protocol_snapshot::owned11::typed::unsigned(fields.next_value()?.ok_or_else(invalid)?)?;
     fields.finish()?;
     Ok((kind, usize::try_from(group).map_err(|_| invalid())?))
 }

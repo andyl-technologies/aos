@@ -14,6 +14,8 @@ use crate::retained_metadata::serialization_storage::{
 };
 use std::mem::size_of;
 
+mod layout;
+
 /// Contains only the three separately checked publication demand axes.
 pub(crate) struct PacketNativeFreshPublicationStartupStorageData {
     pub(crate) retained_growth_bytes: usize,
@@ -58,29 +60,30 @@ pub(crate) fn original_fresh_report_startup_publication_data(
         64,
         "source-owned.packet-connected-inventory/4".len(),
     ])?;
+    let fixed = layout::project();
     let retained = sum(&[
-        super::super::fresh_restore::original_fresh_report_owner_layout_data(),
+        layout::owner_bytes_data(),
         // The real owner retains both the raw query Envelope and the decoded
         // Observe request. Ordinary planner containment clones are additional.
         mul(2, shapes.original.dom_and_canonical_scratch_bytes)?,
         shapes.query_typed_requested_bytes,
-        size_of::<ReceivedFrame>(),
-        size_of::<RequestBody>(),
+        fixed.received_frame_bytes,
+        fixed.request_body_bytes,
         shapes.report_typed_requested_bytes,
         shapes.receipt_typed_requested_bytes,
         PACKET_NATIVE_REPORT_STARTUP_RAW_CAPACITY,
         inventory.maximum_encoded_bytes,
         shapes.terminal.dom_and_canonical_scratch_bytes,
-        size_of::<ObserveResult>(),
-        size_of::<super::super::super::control::PacketControlReply>(),
-        size_of::<(ContentRef, Vec<u8>)>(),
+        fixed.observe_result_bytes,
+        fixed.control_reply_bytes,
+        fixed.content_slot_bytes,
         PACKET_NATIVE_REPORT_STARTUP_RAW_CAPACITY,
         mul(2, inventory_hash_children)?,
         mul(3, reference_children)?,
         prefix.exchange.requested_bytes()?,
         prefix.source_owner_requested_bytes,
     ])?;
-    let scratch = original_fresh_report_startup_publication_counter_scratch_data();
+    let scratch = layout::counter_output_data();
     let initial_receive = crate::connection::original_report_query_receive_storage_data(
         launch,
         crate::reference_packet::service::report_startup::PacketNativeReportStartupPurpose::FreshCompletedAdmit13,
@@ -137,6 +140,7 @@ pub(crate) fn original_fresh_report_startup_publication_counter_scratch_data() -
         size_of::<std::slice::Iter<'static, usize>>(),
         size_of::<std::slice::Iter<'static, crate::reference_packet::PacketEvent>>(),
         size_of::<[u8; 20]>(),
+        layout::counter_scratch_data(),
     ];
     terms
         .iter()

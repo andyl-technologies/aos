@@ -11,9 +11,11 @@
 
 use super::wire::original_native_invocation_launch_identity_data;
 use super::*;
+use crucible_source_birth_data::profile::reference_packet::service::native_startup::invocation_geometry::{
+    InvocationConstructionGeometry, InvocationConstructionShape,
+};
 use crate::retained_metadata::serialization_storage::{
     OriginalSerializationStorageData, OriginalSerializationStorageProjection as Projection,
-    original_json_value_storage_extent_data,
 };
 
 /// Separates the additional owners of the new strict private invocation edition.
@@ -21,45 +23,46 @@ use crate::retained_metadata::serialization_storage::{
 /// The unchanged baseline remains mandatory. This DATA cannot issue a grant,
 /// replace that baseline or relax any original absolute bank/frame ceiling.
 pub struct PacketNativeInvocationConstructionStorageData {
-    native_retained: usize,
-    native_transient: usize,
-    private_retained: usize,
-    private_transient: usize,
-    source_finalization: usize,
-    wire_growth: usize,
-    maximum_boot: usize,
+    geometry: InvocationConstructionGeometry,
     launch: super::wire::PacketNativeInvocationLaunchIdentityData,
 }
 
 impl PacketNativeInvocationConstructionStorageData {
     /// Returns the additional persistent native owners.
     pub const fn native_retained_requested_bytes(&self) -> usize {
-        self.native_retained
+        self.geometry.native_retained_requested_bytes()
     }
+
     /// Returns the additional simultaneous native construction phase.
     pub const fn native_transient_requested_bytes(&self) -> usize {
-        self.native_transient
+        self.geometry.native_transient_requested_bytes()
     }
+
     /// Returns the additional persistent private bootstrap owners.
     pub const fn private_retained_requested_bytes(&self) -> usize {
-        self.private_retained
+        self.geometry.private_retained_requested_bytes()
     }
+
     /// Returns the additional simultaneous private parsing/construction phase.
     pub const fn private_transient_requested_bytes(&self) -> usize {
-        self.private_transient
+        self.geometry.private_transient_requested_bytes()
     }
+
     /// Returns Source-owned finalization/writer owner and work credit.
     pub const fn source_finalization_requested_bytes(&self) -> usize {
-        self.source_finalization
+        self.geometry.source_finalization_requested_bytes()
     }
+
     /// Returns the additional separately retained Source wire-bank capacity.
     pub const fn wire_growth_requested_bytes(&self) -> usize {
-        self.wire_growth
+        self.geometry.wire_growth_requested_bytes()
     }
+
     /// Returns the new closed boot-frame bound under the original 512 KiB ceiling.
     pub const fn maximum_private_boot_body_bytes(&self) -> usize {
-        self.maximum_boot
+        self.geometry.maximum_private_boot_body_bytes()
     }
+
     /// Copies the exact streamed launch6 identity, including the unchanged launch5 bank.
     pub const fn launch_identity_data(
         &self,
@@ -68,42 +71,7 @@ impl PacketNativeInvocationConstructionStorageData {
     }
 }
 
-fn total(parts: &[usize], maximum: usize) -> Result<usize, ProviderError> {
-    parts.iter().try_fold(0usize, |sum, n| {
-        sum.checked_add(*n)
-            .filter(|n| *n <= maximum)
-            .ok_or_else(invalid)
-    })
-}
-
-fn field(
-    purpose: &PacketNativeInvocationPurposeData,
-    maximum: usize,
-) -> Result<OriginalSerializationStorageData, ProviderError> {
-    let mut p = Projection::new(maximum)?;
-    p.add_object()?;
-    p.add_field("invocation")?;
-    p.add_value(purpose)?;
-    p.finish(maximum)
-}
-
-fn wrapper(
-    purpose: &PacketNativeInvocationPurposeData,
-    maximum: usize,
-) -> Result<OriginalSerializationStorageData, ProviderError> {
-    let mut p = Projection::new(maximum)?;
-    p.add_object()?;
-    p.add_field("schema_version")?;
-    p.add_value(&6u16)?;
-    p.add_field("invocation")?;
-    p.add_value(purpose)?;
-    // Existing full launch5 ownership is charged by the baseline. This extra
-    // null charges its new wrapper value slot without replacing that owner.
-    p.add_field("launch")?;
-    p.add_value(&())?;
-    p.finish(maximum)
-}
-
+#[cfg(test)]
 // The old baseline serialized its actual row values. Enlarging those rows can
 // increase every quoted decimal, so count the entire replacement field with all
 // three rows at their full U64 width. This also dominates the nullable None case
@@ -146,104 +114,16 @@ pub fn original_native_invocation_construction_storage_data(
     old_maximum_boot_bytes: usize,
     maximum: usize,
 ) -> Result<PacketNativeInvocationConstructionStorageData, ProviderError> {
-    let field = field(purpose, maximum)?;
-    let wrapper = wrapper(purpose, maximum)?;
-    let rows = allocation_rows(maximum)?;
+    let shape = InvocationConstructionShape::new(purpose, maximum)?;
     let launch = original_native_invocation_launch_identity_data(purpose, canonical_launch5)?;
-    let encoded_growth = launch
-        .encoded_bytes
-        .checked_sub(canonical_launch5.len())
-        .ok_or_else(invalid)?;
-    let maximum_boot = total(
-        &[
-            old_maximum_boot_bytes,
-            field.maximum_encoded_bytes,
-            rows.maximum_encoded_bytes,
-        ],
+    let geometry = shape.finish(
+        canonical_launch5.len(),
+        launch.encoded_bytes,
+        old_maximum_boot_bytes,
+        std::mem::size_of::<super::super::PacketNative6InvocationLaunch>(),
         maximum,
     )?;
-    if maximum_boot > 512 * 1024 || launch.encoded_bytes > 1024 * 1024 {
-        return Err(invalid());
-    }
-    let old_parser = original_json_value_storage_extent_data(
-        canonical_launch5.len().max(old_maximum_boot_bytes),
-    )?;
-    let new_parser =
-        original_json_value_storage_extent_data(launch.encoded_bytes.max(maximum_boot))?;
-    let parser_growth = new_parser
-        .canonical_pass_requested_bytes()?
-        .checked_sub(old_parser.canonical_pass_requested_bytes()?)
-        .ok_or_else(invalid)?;
-    let purpose_tree = field.requested_total()?;
-    let wrapper_tree = wrapper.requested_total()?;
-    let row_tree = rows.requested_total()?;
-    let source_tree = total(&[purpose_tree, row_tree], maximum)?;
-    let typed_wrapper = std::mem::size_of::<super::super::PacketNative6InvocationLaunch>();
-    let native_retained = total(
-        &[
-            source_tree,                // bootstrap bootValue.source_birth
-            source_tree,                // NativeAckBoot.data.source_birth
-            source_tree,                // normalized association.source_binding
-            source_tree,                // normalized policy.source_binding
-            wrapper_tree,               // original independent launchValue wrapper
-            encoded_growth,             // NativeAckBoot retained original launch_body
-            rows.maximum_encoded_bytes, // independently retained canonical Source body
-            typed_wrapper,              // conservative independent first typed launch6 owner
-        ],
-        maximum,
-    )?;
-    let private_retained = total(
-        &[
-            wrapper_tree,   // retained private launchValue wrapper
-            source_tree,    // retained private bootValue Source child
-            encoded_growth, // private launch_bytes bank
-            typed_wrapper,  // conservative independent first typed launch6 owner
-        ],
-        maximum,
-    )?;
-    let native_transient = total(
-        &[
-            source_tree,   // independently constructed expected Source binding
-            wrapper_tree,  // later independent Value launch decode and validation
-            typed_wrapper, // second typed decode while the first may remain retained
-            std::mem::size_of::<PacketNativeInvocationPurposeData>(),
-        ],
-        maximum,
-    )?;
-    let private_transient = total(
-        &[
-            parser_growth,
-            wrapper_tree,
-            source_tree,
-            typed_wrapper, // second typed conversion beside the retained first owner
-            std::mem::size_of::<PacketNativeInvocationPurposeData>(),
-        ],
-        maximum,
-    )?;
-    let source_finalization = total(
-        &[
-            purpose_tree,               // new invocation Value moved into the retained full body
-            purpose_tree,               // independent invocation addition/encoding work
-            row_tree,                   // enlarged NativeAdditions allocation child
-            row_tree,                   // independent finalizer parsed Source allocation child
-            row_tree,                   // independent wire boot-frame Source allocation clone
-            rows.maximum_encoded_bytes, // finalizer replacement raw encoding work
-            rows.maximum_encoded_bytes, // independent wire boot-frame raw encoding work
-            wrapper_tree,               // Source wrapper encoding and closed wire preparation work
-            encoded_growth,             // separately retained wrapper bank in Source wire holder
-        ],
-        maximum,
-    )?;
-    Ok(PacketNativeInvocationConstructionStorageData {
-        native_retained,
-        native_transient,
-        private_retained,
-        private_transient,
-        source_finalization,
-        wire_growth: encoded_growth,
-        maximum_boot,
-        launch,
-    })
+    Ok(PacketNativeInvocationConstructionStorageData { geometry, launch })
 }
 
 pub(super) const fn counter_scratch_data() -> usize {
@@ -254,6 +134,7 @@ pub(super) const fn counter_scratch_data() -> usize {
         + std::mem::size_of::<[usize; 10]>()
         + 2 * std::mem::size_of::<[&str; 3]>()
         + crate::retained_metadata::serialization_storage::original_json_value_storage_extent_counter_scratch_data()
+        + crucible_source_birth_data::profile::reference_packet::service::native_startup::invocation_geometry::adapter_counter_scratch_data::<PacketNativeInvocationPurposeData>()
 }
 
 #[cfg(test)]
@@ -264,10 +145,7 @@ mod tests {
 
     #[test]
     fn actual_closed_purpose_tree_and_added_wrapper_fit_named_owner_phases() {
-        let purpose = PacketNativeInvocationPurposeData {
-            target: super::super::tests::target(),
-            purpose: Purpose::Original,
-        };
+        let purpose = super::super::tests::original().unwrap();
         let value = json!({"invocation":purpose});
         let mut observer = MetadataObserver::new();
         observer.observe(&value).unwrap();
@@ -331,3 +209,11 @@ mod tests {
         assert!(allocation_rows(1).is_err());
     }
 }
+
+#[cfg(test)]
+#[path = "storage/original.rs"]
+mod original;
+
+#[cfg(test)]
+#[path = "storage/geometry_tests.rs"]
+mod geometry_tests;

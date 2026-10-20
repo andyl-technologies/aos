@@ -44,7 +44,7 @@ pub(crate) fn authenticate_borrowed_settled_capture17_custody_data<'a>(
     let mut pin_ids = [0u64; 2048];
     let mut active = [0usize; 2];
     let mut retired = [0usize; 2];
-    while let Some(record) = cursor.next()? {
+    while let Some(record) = cursor.next_value()? {
         let key = item(record, 0)?;
         if item(key, 1)? != session || item(key, 2)? != incarnation {
             return Err(invalid());
@@ -76,7 +76,7 @@ pub(crate) fn authenticate_borrowed_settled_capture17_custody_data<'a>(
             return Err(invalid());
         }
         let mut pin_cursor = Fields::array(pins)?;
-        while let Some(pin) = pin_cursor.next()? {
+        while let Some(pin) = pin_cursor.next_value()? {
             let id = quoted(item(pin, 0)?)?;
             if id == 0
                 || id >= next_pin
@@ -110,7 +110,7 @@ pub(crate) fn authenticate_borrowed_settled_capture17_custody_data<'a>(
             authenticate_content(content, bytes)?;
             let mut boundaries = Fields::array(chunks)?;
             let mut end = 0usize;
-            while let Some(chunk) = boundaries.next()? {
+            while let Some(chunk) = boundaries.next_value()? {
                 let offset = quantity(item(chunk, 0)?)?;
                 let extent = quantity(item(chunk, 1)?)?;
                 if offset != end || extent == 0 || extent > maximum_chunk {
@@ -143,7 +143,7 @@ pub(crate) fn authenticate_borrowed_settled_capture17_custody_data<'a>(
         return Err(invalid());
     }
     let mut cursor = Fields::array(wrappers)?;
-    while let Some(wrapper) = cursor.next()? {
+    while let Some(wrapper) = cursor.next_value()? {
         if !boolean(field(wrapper, "settled")?)? {
             return Err(invalid());
         }
@@ -151,7 +151,7 @@ pub(crate) fn authenticate_borrowed_settled_capture17_custody_data<'a>(
         let id = quoted(field(wrapper, "pin")?)?;
         let mut entries = Fields::array(records)?;
         let mut found = None;
-        while let Some(record) = entries.next()? {
+        while let Some(record) = entries.next_value()? {
             if item(record, 0)? == key {
                 found = Some(record);
                 break;
@@ -160,7 +160,7 @@ pub(crate) fn authenticate_borrowed_settled_capture17_custody_data<'a>(
         let record = found.ok_or_else(invalid)?;
         let mut pins = Fields::array(item(record, 9)?)?;
         let mut found = None;
-        while let Some(pin) = pins.next()? {
+        while let Some(pin) = pins.next_value()? {
             if quoted(item(pin, 0)?)? == id {
                 found = Some(pin);
                 break;

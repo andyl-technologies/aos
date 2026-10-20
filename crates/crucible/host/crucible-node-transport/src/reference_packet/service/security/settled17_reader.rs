@@ -40,7 +40,7 @@ pub(crate) fn read_current_native17_supervisor_root_data(
         .read::<usize>(fields.named("incidents_capacity")?, true)?
         .ok_or_else(invalid)?;
     let mut incidents = Fields::array(fields.named("incidents")?)?;
-    if incidents.next()?.is_some() {
+    if incidents.next_value()?.is_some() {
         return Err(ProviderError::Correlation(
             "native17 retained supervisor incident unsupported",
         ));
@@ -49,7 +49,7 @@ pub(crate) fn read_current_native17_supervisor_root_data(
         .read::<usize>(fields.named("quarantines_capacity")?, true)?
         .ok_or_else(invalid)?;
     let mut quarantines = Fields::array(fields.named("quarantines")?)?;
-    if quarantines.next()?.is_some() {
+    if quarantines.next_value()?.is_some() {
         return Err(ProviderError::Correlation(
             "native17 retained Blob quarantine unsupported",
         ));

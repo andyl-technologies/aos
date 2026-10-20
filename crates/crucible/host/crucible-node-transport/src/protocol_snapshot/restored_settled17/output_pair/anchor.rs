@@ -31,7 +31,7 @@ pub(super) fn capture(expected: &CaptureArguments, input: &[u8]) -> Result<(), P
     )?;
     let mut ids = Fields::array(field(input, "participant_ids")?)?;
     for id in &expected.participant_ids {
-        text(ids.next()?.ok_or_else(invalid)?, id.as_str())?;
+        text(ids.next_value()?.ok_or_else(invalid)?, id.as_str())?;
     }
     ids.finish()
 }

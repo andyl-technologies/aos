@@ -15,6 +15,7 @@ use crate::retained_metadata::{MetadataObserver, RetainedProtocolMetadataFacts};
 use crucible_node_format::{ContentRef, Id};
 use std::mem::size_of;
 
+mod layout;
 mod observe;
 mod raw_record;
 mod schema_generation;
@@ -207,12 +208,13 @@ fn original(
         shapes.wrapper.maximum_encoded_bytes,
         PACKET_NATIVE_REPORT_STARTUP_RAW_CAPACITY,
     ])?;
+    let layout = layout::project();
     let cache_bytes = sum(&[
         raw,
         shapes.wrapper.maximum_encoded_bytes,
         PACKET_NATIVE_REPORT_STARTUP_RAW_CAPACITY,
         shapes.terminal.dom_and_canonical_scratch_bytes,
-        mul(3, size_of::<(ContentRef, Vec<u8>)>())?,
+        mul(3, layout.content_entry_bytes)?,
     ])?;
     let reference_children = |media: &str| {
         sum(&[
@@ -227,9 +229,9 @@ fn original(
         reference_children(PACKET_NATIVE_CAPTURE_ALLOCATION_MEDIA)?,
     ])?;
     let completed_owner = sum(&[
-        crate::reference_packet::endpoint::original_capture_report_owner_layout_data(),
+        layout::capture_owner_bytes_data(),
         shapes.original.dom_and_canonical_scratch_bytes,
-        size_of::<PacketNativeCaptureAllocationReport>(),
+        layout.capture_report_bytes,
         shapes.report.dom_and_canonical_scratch_bytes,
         PACKET_NATIVE_REPORT_STARTUP_RAW_CAPACITY,
         reference_children(PACKET_NATIVE_CAPTURE_ALLOCATION_MEDIA)?,
@@ -263,7 +265,7 @@ fn original(
         completed_owner,
         new_tree_backing,
         // Independent policy definition refs belong to this publication class.
-        mul(2, size_of::<ContentRef>())?,
+        mul(2, layout.content_ref_bytes)?,
         mul(2, reference_children("application/json")?)?,
     ])?;
     let encoding = sum(&[
@@ -285,16 +287,16 @@ fn original(
         // The receipt constructor owns a complete original clone and independent
         // scope strings. Charging its full DOM shape plus actual typed header
         // dominates those scalar children without manufacturing a receipt DTO.
-        size_of::<crate::reference_packet::control::ProducedOriginalObserveReceipt>(),
+        layout.produced_receipt_bytes,
         128, // Id::new grammar bound of the independently retained activation witness.
         shapes.receipt.dom_and_canonical_scratch_bytes,
-        size_of::<crucible_node_format::ObservationBatch>(),
-        size_of::<crate::bodies::ObserveResult>(),
+        layout.observation_batch_bytes,
+        layout.observe_result_bytes,
         shapes.terminal.dom_and_canonical_scratch_bytes,
         // Each of the four new content references is independently generated,
         // verified and cloned into a content key/evidence/typed wrapper owner.
         mul(4, content_references)?,
-        size_of::<blake3::Hasher>(),
+        layout.hasher_bytes,
     ])?;
     // ACK receipt starts only after the actual transform/dispatch/prepare
     // stack returns. The returned typed Observe query survives through publish;
@@ -312,7 +314,7 @@ fn original(
         // Original/containment remain funded above; the returned typed Box and
         // Observe children are explicitly carried in encoding, not maxed away.
         maximum_simultaneous_transient_bytes: initial_receive.max(encoding).max(acknowledgement),
-        declared_counter_scratch_bytes: original_report_startup_counter_scratch_data(),
+        declared_counter_scratch_bytes: layout::counter_output_data(),
     })
 }
 
@@ -400,8 +402,8 @@ fn authenticate_tuple(
 /// traversal frames and physical allocator overhead remain separate obligations.
 pub fn original_report_startup_counter_scratch_data() -> usize {
     let result = schema_generation::requested_data().and_then(|schemas| {
-        let terms: [usize; 47] = [
-            size_of::<[usize; 47]>(),
+        let terms: [usize; 48] = [
+            size_of::<[usize; 48]>(),
             size_of::<&[usize]>(),
             size_of::<std::slice::Iter<'static, usize>>(),
             size_of::<Result<usize, ProviderError>>(),
@@ -451,6 +453,7 @@ pub fn original_report_startup_counter_scratch_data() -> usize {
             crate::connection::NativeCaptureSdkStateQuote::requested_scratch_bytes(),
             crate::protocol_snapshot::owned11::correspondence::closed_envelope_comparison_scratch_data(),
             size_of::<[u8; 20]>(),
+            layout::counter_scratch_data(),
         ];
         sum(&terms)
     });

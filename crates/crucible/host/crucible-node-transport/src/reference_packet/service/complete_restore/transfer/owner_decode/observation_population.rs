@@ -122,7 +122,7 @@ fn population_from_control(
     let state = field(model, "state")?;
     let mut outputs = Fields::array(field(state, "outputs")?)?;
     let mut initialized_outputs = 0usize;
-    while outputs.next()?.is_some() {
+    while outputs.next_value()?.is_some() {
         initialized_outputs = sum(&[initialized_outputs, 1])?;
     }
     outputs.finish()?;
@@ -146,7 +146,7 @@ fn population_from_control(
             align_of::<Value>(),
         )?,
     )?
-    .strings;
+    .string_backing_bytes_data();
     Ok(PacketCompleteRestoreModelOutputPopulationData {
         initialized_outputs,
         publication_slots,

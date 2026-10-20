@@ -62,9 +62,9 @@ pub(super) fn read_shared<'body, 'rows>(
     let evidence = fields.named("gate_evidence")?;
     if evidence != b"null" {
         let mut evidence = Fields::array(evidence)?;
-        discard::<ContentRef>(evidence.next()?.ok_or_else(invalid)?, ledger)?;
-        let body = evidence.next()?.ok_or_else(invalid)?;
-        let capacity = usize::try_from(unsigned(evidence.next()?.ok_or_else(invalid)?)?)
+        discard::<ContentRef>(evidence.next_value()?.ok_or_else(invalid)?, ledger)?;
+        let body = evidence.next_value()?.ok_or_else(invalid)?;
+        let capacity = usize::try_from(unsigned(evidence.next_value()?.ok_or_else(invalid)?)?)
             .map_err(|_| invalid())?;
         evidence.finish()?;
         if read_byte_bank_parts17(body, capacity, ledger, false)?.is_some() {

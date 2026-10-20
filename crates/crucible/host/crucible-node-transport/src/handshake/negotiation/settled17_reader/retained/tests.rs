@@ -59,8 +59,8 @@ fn later_selected_child_error_keeps_prior_children_and_authority_fields()
         }
     }
     let mut array = Fields::array(extensions.ok_or_else(invalid)?)?;
-    array.next()?.ok_or_else(invalid)?;
-    let second = array.next()?.ok_or_else(invalid)?;
+    array.next_value()?.ok_or_else(invalid)?;
+    let second = array.next_value()?.ok_or_else(invalid)?;
     let mut child = Fields::object(second)?;
     let mut digest = None;
     while let Some((name, body)) = child.pair()? {

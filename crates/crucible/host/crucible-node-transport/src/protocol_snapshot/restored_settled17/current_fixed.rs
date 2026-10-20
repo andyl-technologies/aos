@@ -78,7 +78,7 @@ pub(crate) fn fixed_usizes17<const N: usize>(
     let mut fields = Fields::array(input)?;
     let mut output = [0; N];
     for value in &mut output {
-        let decoded = ledger.read::<usize>(fields.next()?.ok_or_else(invalid)?, build)?;
+        let decoded = ledger.read::<usize>(fields.next_value()?.ok_or_else(invalid)?, build)?;
         if let Some(decoded) = decoded {
             *value = decoded;
         }

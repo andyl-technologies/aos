@@ -301,8 +301,8 @@ impl HistoricalType for CurrentProgram17Data {
         build: bool,
     ) -> Result<Option<Self>, ProviderError> {
         let mut fields = Fields::array(input)?;
-        let kind = plain_string(fields.next()?.ok_or_else(invalid)?)?;
-        let data = fields.next()?.ok_or_else(invalid)?;
+        let kind = plain_string(fields.next_value()?.ok_or_else(invalid)?)?;
+        let data = fields.next_value()?.ok_or_else(invalid)?;
         fields.finish()?;
         if kind == "restoration-in-progress" {
             if data != b"null" {

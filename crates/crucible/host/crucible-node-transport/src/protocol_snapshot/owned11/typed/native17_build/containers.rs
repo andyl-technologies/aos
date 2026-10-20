@@ -128,7 +128,7 @@ impl<T: Native17Build> Default for Native17VectorAttempt<T> {
 fn count_data(input: &[u8]) -> Result<usize, ProviderError> {
     let mut fields = Fields::array(input)?;
     let mut count = 0usize;
-    while fields.next()?.is_some() {
+    while fields.next_value()?.is_some() {
         count = count.checked_add(1).ok_or_else(credit)?;
     }
     Ok(count)
@@ -220,7 +220,7 @@ pub(crate) fn preflight_vector_payload17_data<T: Native17Build>(
     }
     ledger.native17_target_vector_data::<T::Attempt>(count)?;
     let mut fields = Fields::array(input)?;
-    while let Some(field) = fields.next()? {
+    while let Some(field) = fields.next_value()? {
         T::preflight_data(field, ledger)?;
     }
     Ok(())
@@ -263,7 +263,7 @@ pub(crate) fn read_vector_payload17_into_data<T: Native17Build>(
         return Err(credit());
     }
     let mut fields = Fields::array(input)?;
-    while let Some(field) = fields.next()? {
+    while let Some(field) = fields.next_value()? {
         if attempt.children.len() == count || attempt.output.len() == capacity {
             return Err(invalid());
         }

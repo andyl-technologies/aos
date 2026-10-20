@@ -187,7 +187,7 @@ impl<'a> PacketNativeOwned11EndpointPlan<'a> {
             }
             let mut entries = Fields::array(fields[index])?;
             let mut count = 0u64;
-            while entries.next()?.is_some() {
+            while entries.next_value()?.is_some() {
                 count = count.checked_add(1).ok_or_else(invalid)?;
                 if count > capacity {
                     return Err(invalid());
@@ -341,7 +341,7 @@ impl<'a> PacketNativeBeforeProtocolPlan<'a> {
 }
 
 fn required<'a>(fields: &mut Fields<'a>) -> Result<&'a [u8], ProviderError> {
-    fields.next()?.ok_or_else(invalid)
+    fields.next_value()?.ok_or_else(invalid)
 }
 
 fn blob_reference(input: &[u8], length: usize) -> Result<(&[u8], &str), ProviderError> {

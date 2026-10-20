@@ -547,7 +547,7 @@ fn reserve_exact<T>(values: &mut Vec<T>, capacity: usize) -> Result<(), Provider
 fn count_alias_rows(input: &[u8], maximum: usize) -> Result<usize, ProviderError> {
     let mut fields = Fields::array(input)?;
     let mut count = 0usize;
-    while fields.next()?.is_some() {
+    while fields.next_value()?.is_some() {
         count = count.checked_add(1).ok_or_else(invalid)?;
         if count > maximum {
             return Err(invalid());

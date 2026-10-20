@@ -226,7 +226,7 @@ impl HistoricalType for HistoricalFreshCommitments17 {
         let mut values = [[0; 32]; 5];
         for value in &mut values {
             let digest =
-                ledger.read::<HistoricalDigest17>(fields.next()?.ok_or_else(invalid)?, build)?;
+                ledger.read::<HistoricalDigest17>(fields.next_value()?.ok_or_else(invalid)?, build)?;
             if build {
                 *value = digest.ok_or_else(invalid)?.0;
             }
@@ -268,11 +268,11 @@ impl HistoricalType for HistoricalFreshBanks17 {
     ) -> Result<Option<Self>, ProviderError> {
         let mut fields = Fields::array(input)?;
         let first = ledger.read::<crate::protocol_snapshot::ProtocolSnapshotAllocationFacts>(
-            fields.next()?.ok_or_else(invalid)?,
+            fields.next_value()?.ok_or_else(invalid)?,
             build,
         )?;
         let second = ledger.read::<crate::protocol_snapshot::ProtocolSnapshotAllocationFacts>(
-            fields.next()?.ok_or_else(invalid)?,
+            fields.next_value()?.ok_or_else(invalid)?,
             build,
         )?;
         fields.finish()?;

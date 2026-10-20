@@ -20,3 +20,5 @@ pub mod envelope;
 pub mod requested_storage;
 /// Shares the actual serializer projection without metadata custody.
 pub mod serialization_storage;
+
+pub(crate) mod launch_projection;

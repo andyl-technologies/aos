@@ -74,13 +74,13 @@ impl CurrentOriginals17ReadAttempt {
         let mut rows = Fields::array(input)?;
         let mut previous = None;
         let mut actual = 0usize;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = rows.next_value()? {
             actual = actual
                 .checked_add(1)
                 .filter(|count_so_far| *count_so_far <= count)
                 .ok_or_else(invalid)?;
             let mut fields = Fields::array(row)?;
-            let id = fields.next()?.ok_or_else(invalid)?;
+            let id = fields.next_value()?.ok_or_else(invalid)?;
             let text = plain_string(id)?;
             if previous.is_some_and(|previous| previous >= text) {
                 return Err(invalid());
@@ -91,19 +91,19 @@ impl CurrentOriginals17ReadAttempt {
             } else {
                 Id::preflight_data(id, ledger)?;
             }
-            let hash = fields.next()?.ok_or_else(invalid)?;
+            let hash = fields.next_value()?.ok_or_else(invalid)?;
             if build {
                 HashRef::read_into_data(hash, ledger, &mut self.pending.hash)?;
             } else {
                 HashRef::preflight_data(hash, ledger)?;
             }
-            let body = fields.next()?.ok_or_else(invalid)?;
+            let body = fields.next_value()?.ok_or_else(invalid)?;
             if build {
                 Map::<String, Value>::read_into_data(body, ledger, &mut self.pending.body)?;
             } else {
                 Map::<String, Value>::preflight_data(body, ledger)?;
             }
-            let evidence = fields.next()?.ok_or_else(invalid)?;
+            let evidence = fields.next_value()?.ok_or_else(invalid)?;
             if build {
                 Vec::<(ContentRef, Vec<u8>)>::read_into_data(
                     evidence,
@@ -217,13 +217,13 @@ impl CurrentContent17ReadAttempt {
         let mut rows = Fields::array(input)?;
         let mut previous = None;
         let mut actual = 0usize;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = rows.next_value()? {
             actual = actual
                 .checked_add(1)
                 .filter(|count_so_far| *count_so_far <= count)
                 .ok_or_else(invalid)?;
             let mut fields = Fields::array(row)?;
-            let reference = fields.next()?.ok_or_else(invalid)?;
+            let reference = fields.next_value()?.ok_or_else(invalid)?;
             let key = ContentKey::read(reference)?;
             if let Some(previous) = previous {
                 if key.compare(previous)? != Ordering::Greater {
@@ -236,7 +236,7 @@ impl CurrentContent17ReadAttempt {
             } else {
                 ContentRef::preflight_data(reference, ledger)?;
             }
-            let bytes = fields.next()?.ok_or_else(invalid)?;
+            let bytes = fields.next_value()?.ok_or_else(invalid)?;
             if build {
                 Vec::<u8>::read_into_data(bytes, ledger, &mut self.pending.bytes)?;
             } else {

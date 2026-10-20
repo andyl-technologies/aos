@@ -317,7 +317,7 @@ fn vector(
     let mut items = Fields::array(bytes)?;
     let mut count = 0usize;
     let mut nested = 0usize;
-    while let Some(item) = items.next()? {
+    while let Some(item) = items.next_value()? {
         count = count.checked_add(1).ok_or_else(refused)?;
         nested = sum(&[nested, walk(item, record, depth + 1, maximum)?], maximum)?;
     }

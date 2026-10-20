@@ -55,26 +55,26 @@ impl HistoricalType for HistoricalMetadataFacts17 {
     ) -> Result<Option<Self>, ProviderError> {
         let mut fields = Fields::array(input)?;
         let string_capacity_bytes =
-            ledger.read::<usize>(fields.next()?.ok_or_else(invalid)?, build)?;
-        let string_banks = ledger.read::<usize>(fields.next()?.ok_or_else(invalid)?, build)?;
+            ledger.read::<usize>(fields.next_value()?.ok_or_else(invalid)?, build)?;
+        let string_banks = ledger.read::<usize>(fields.next_value()?.ok_or_else(invalid)?, build)?;
         let vector_capacity_bytes =
-            ledger.read::<usize>(fields.next()?.ok_or_else(invalid)?, build)?;
-        let vector_banks = ledger.read::<usize>(fields.next()?.ok_or_else(invalid)?, build)?;
-        let boxed_value_bytes = ledger.read::<usize>(fields.next()?.ok_or_else(invalid)?, build)?;
+            ledger.read::<usize>(fields.next_value()?.ok_or_else(invalid)?, build)?;
+        let vector_banks = ledger.read::<usize>(fields.next_value()?.ok_or_else(invalid)?, build)?;
+        let boxed_value_bytes = ledger.read::<usize>(fields.next_value()?.ok_or_else(invalid)?, build)?;
         let shared_value_bytes =
-            ledger.read::<usize>(fields.next()?.ok_or_else(invalid)?, build)?;
+            ledger.read::<usize>(fields.next_value()?.ok_or_else(invalid)?, build)?;
         let shared_backing_views =
-            ledger.read::<usize>(fields.next()?.ok_or_else(invalid)?, build)?;
-        let tree_containers = ledger.read::<usize>(fields.next()?.ok_or_else(invalid)?, build)?;
-        let tree_entries = ledger.read::<usize>(fields.next()?.ok_or_else(invalid)?, build)?;
+            ledger.read::<usize>(fields.next_value()?.ok_or_else(invalid)?, build)?;
+        let tree_containers = ledger.read::<usize>(fields.next_value()?.ok_or_else(invalid)?, build)?;
+        let tree_entries = ledger.read::<usize>(fields.next_value()?.ok_or_else(invalid)?, build)?;
         let maximum_tree_key_value_bytes =
-            ledger.read::<usize>(fields.next()?.ok_or_else(invalid)?, build)?;
+            ledger.read::<usize>(fields.next_value()?.ok_or_else(invalid)?, build)?;
         let maximum_tree_entry_alignment =
-            ledger.read::<usize>(fields.next()?.ok_or_else(invalid)?, build)?;
+            ledger.read::<usize>(fields.next_value()?.ok_or_else(invalid)?, build)?;
         let maximum_shared_value_alignment =
-            ledger.read::<usize>(fields.next()?.ok_or_else(invalid)?, build)?;
-        let observed_nodes = ledger.read::<usize>(fields.next()?.ok_or_else(invalid)?, build)?;
-        let capacity_records = ledger.read::<usize>(fields.next()?.ok_or_else(invalid)?, build)?;
+            ledger.read::<usize>(fields.next_value()?.ok_or_else(invalid)?, build)?;
+        let observed_nodes = ledger.read::<usize>(fields.next_value()?.ok_or_else(invalid)?, build)?;
+        let capacity_records = ledger.read::<usize>(fields.next_value()?.ok_or_else(invalid)?, build)?;
         fields.finish()?;
         if !build {
             return Ok(None);

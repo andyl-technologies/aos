@@ -40,7 +40,7 @@ impl<'a> NativeIdentity17Plan<'a> {
         let mut digest = Fields::array(fields.named("literal_digest")?)?;
         let mut literal_digest = [0u8; 32];
         for byte in &mut literal_digest {
-            *byte = u8::try_from(unsigned(digest.next()?.ok_or_else(invalid)?)?)
+            *byte = u8::try_from(unsigned(digest.next_value()?.ok_or_else(invalid)?)?)
                 .map_err(|_| invalid())?;
         }
         digest.finish()?;

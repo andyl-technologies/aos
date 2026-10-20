@@ -187,7 +187,7 @@ fn conservative_backing(bytes: &[u8], maximum: usize) -> Result<usize, ProviderE
     .value_backing;
     let mut peers = Fields::array(field(bytes, "participants")?)?;
     let mut count = 0usize;
-    while let Some(peer) = peers.next()? {
+    while let Some(peer) = peers.next_value()? {
         count = count.checked_add(1).ok_or_else(refused)?;
         retained = sum(
             &[
@@ -345,7 +345,7 @@ fn host_configuration_storage(
 ) -> Result<usize, ProviderError> {
     let mut items = Fields::array(domains)?;
     let mut count = 0usize;
-    while items.next()?.is_some() {
+    while items.next_value()?.is_some() {
         count = count.checked_add(1).ok_or_else(refused)?;
     }
     items.finish()?;
@@ -425,7 +425,7 @@ pub(super) fn quote(bytes: &[u8], maximum: usize) -> Result<usize, ProviderError
     // Value parser/container-rebuild quote for the whole raw input above.
     let mut peers = Fields::array(participants)?;
     let mut count = 0usize;
-    while let Some(peer) = peers.next()? {
+    while let Some(peer) = peers.next_value()? {
         count = count.checked_add(1).ok_or_else(refused)?;
         total = sum(&[total, typed(peer, maximum)?], maximum)?;
         // validate_roster holds independent OwnerBinding clones and creates
@@ -441,7 +441,7 @@ pub(super) fn quote(bytes: &[u8], maximum: usize) -> Result<usize, ProviderError
             maximum,
         )?;
         let mut owners = Fields::array(field(realized, "owners")?)?;
-        while let Some(owner) = owners.next()? {
+        while let Some(owner) = owners.next_value()? {
             total = sum(
                 &[
                     total,
@@ -499,7 +499,7 @@ pub(super) fn quote(bytes: &[u8], maximum: usize) -> Result<usize, ProviderError
     )?;
     let mut nodes = Fields::array(field(template, "nodes")?)?;
     let mut node_count = 0usize;
-    while let Some(node) = nodes.next()? {
+    while let Some(node) = nodes.next_value()? {
         node_count = node_count.checked_add(1).ok_or_else(refused)?;
         total = sum(
             &[total, typed(field(node, "guarantees")?, maximum)?],

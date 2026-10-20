@@ -88,7 +88,7 @@ pub(super) fn fixed_usizes<const N: usize>(
     let mut fields = Fields::array(input)?;
     let mut output = [0; N];
     for value in &mut output {
-        *value = scalar(fields.next()?.ok_or_else(invalid)?, ledger)?;
+        *value = scalar(fields.next_value()?.ok_or_else(invalid)?, ledger)?;
     }
     fields.finish()?;
     Ok(output)
@@ -119,7 +119,7 @@ fn native_vector<T: HistoricalType>(
         }
     }
     let mut length = 0usize;
-    while let Some(raw) = fields.next()? {
+    while let Some(raw) = fields.next_value()? {
         length = length.checked_add(1).ok_or_else(invalid)?;
         if length > capacity {
             return Err(invalid());
@@ -133,9 +133,9 @@ fn native_vector<T: HistoricalType>(
 
 fn bank_length(input: &[u8], ledger: &mut Ledger<'_, '_, '_>) -> Result<usize, ProviderError> {
     let mut bank = Fields::array(input)?;
-    let mut bytes = Fields::array(bank.next()?.ok_or_else(invalid)?)?;
-    let compact = bytes.next()?.ok_or_else(invalid)?;
-    let capacity = scalar(bytes.next()?.ok_or_else(invalid)?, ledger)?;
+    let mut bytes = Fields::array(bank.next_value()?.ok_or_else(invalid)?)?;
+    let compact = bytes.next_value()?.ok_or_else(invalid)?;
+    let capacity = scalar(bytes.next_value()?.ok_or_else(invalid)?, ledger)?;
     bytes.finish()?;
     Ok(
         crate::protocol_snapshot::compact_bytes::ValidatedCompactBytes::validate(
@@ -155,16 +155,16 @@ impl HistoricalType for HistoricalInputBank17 {
     ) -> Result<Option<Self>, ProviderError> {
         let mut fields = Fields::array(input)?;
         let bytes = ledger
-            .read::<HistoricalReversedByteBank17>(fields.next()?.ok_or_else(invalid)?, build)?;
-        let mut transfer_fields = Fields::array(fields.next()?.ok_or_else(invalid)?)?;
+            .read::<HistoricalReversedByteBank17>(fields.next_value()?.ok_or_else(invalid)?, build)?;
+        let mut transfer_fields = Fields::array(fields.next_value()?.ok_or_else(invalid)?)?;
         let mut transfer = [0; 128];
         for byte in &mut transfer {
-            *byte = scalar(transfer_fields.next()?.ok_or_else(invalid)?, ledger)?;
+            *byte = scalar(transfer_fields.next_value()?.ok_or_else(invalid)?, ledger)?;
         }
         transfer_fields.finish()?;
-        let transfer_length = scalar(fields.next()?.ok_or_else(invalid)?, ledger)?;
-        let begun = scalar(fields.next()?.ok_or_else(invalid)?, ledger)?;
-        let finished = scalar(fields.next()?.ok_or_else(invalid)?, ledger)?;
+        let transfer_length = scalar(fields.next_value()?.ok_or_else(invalid)?, ledger)?;
+        let begun = scalar(fields.next_value()?.ok_or_else(invalid)?, ledger)?;
+        let finished = scalar(fields.next_value()?.ok_or_else(invalid)?, ledger)?;
         fields.finish()?;
         if transfer_length > transfer.len() {
             return Err(invalid());
@@ -207,30 +207,30 @@ impl HistoricalType for HistoricalDecoderSummary17 {
         build: bool,
     ) -> Result<Option<Self>, ProviderError> {
         let mut fields = Fields::array(input)?;
-        let kind_tag: Option<u8> = scalar(fields.next()?.ok_or_else(invalid)?, ledger)?;
+        let kind_tag: Option<u8> = scalar(fields.next_value()?.ok_or_else(invalid)?, ledger)?;
         // This explicit17 DATA projection appends tags for newer shared kinds;
         // it does not participate in the old11 alias-row admission grammar.
         if kind_tag.is_some_and(|tag| tag > 34) {
             return Err(invalid());
         }
-        let layout = scalar(fields.next()?.ok_or_else(invalid)?, ledger)?;
-        let raw_digest = fields.next()?.ok_or_else(invalid)?;
+        let layout = scalar(fields.next_value()?.ok_or_else(invalid)?, ledger)?;
+        let raw_digest = fields.next_value()?.ok_or_else(invalid)?;
         let view_digest = if raw_digest == b"null" {
             None
         } else {
             Some(FixedArray32Field17::read(raw_digest, ledger, true)?.ok_or_else(invalid)?)
         };
-        let in_progress = scalar(fields.next()?.ok_or_else(invalid)?, ledger)?;
-        let edge = fields.next()?.ok_or_else(invalid)?;
+        let in_progress = scalar(fields.next_value()?.ok_or_else(invalid)?, ledger)?;
+        let edge = fields.next_value()?.ok_or_else(invalid)?;
         let content_edge = if edge == b"null" {
             None
         } else {
             let mut edge = Fields::array(edge)?;
-            let tag: u8 = scalar(edge.next()?.ok_or_else(invalid)?, ledger)?;
+            let tag: u8 = scalar(edge.next_value()?.ok_or_else(invalid)?, ledger)?;
             if tag > 1 {
                 return Err(invalid());
             }
-            let index = scalar(edge.next()?.ok_or_else(invalid)?, ledger)?;
+            let index = scalar(edge.next_value()?.ok_or_else(invalid)?, ledger)?;
             edge.finish()?;
             Some((tag, index))
         };
@@ -266,7 +266,7 @@ impl HistoricalType for HistoricalRestoreInputCustody17 {
         let mut banks = [const { None }; 6];
         let mut bank_lengths = [0; 6];
         for (bank, length) in banks.iter_mut().zip(&mut bank_lengths) {
-            let raw = bank_fields.next()?.ok_or_else(invalid)?;
+            let raw = bank_fields.next_value()?.ok_or_else(invalid)?;
             *length = bank_length(raw, ledger)?;
             *bank = ledger.read::<HistoricalInputBank17>(raw, build)?;
         }
@@ -274,7 +274,7 @@ impl HistoricalType for HistoricalRestoreInputCustody17 {
         let layouts = OriginalCompleteRestoreInputCustody::current17_element_layouts_data();
         let raw_chunks = fields.named("chunks")?;
         let mut checked_chunks = Fields::array(raw_chunks)?;
-        while let Some(raw) = checked_chunks.next()? {
+        while let Some(raw) = checked_chunks.next_value()? {
             let [input, offset, length] = fixed_usizes(raw, ledger)?;
             if input >= 6
                 || length == 0

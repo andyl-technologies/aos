@@ -388,7 +388,7 @@ fn read_normalized17(
     let mut fields = Fields::array(input)?;
     let mut values: [Option<Option<Value>>; 5] = std::array::from_fn(|_| None);
     for value in &mut values {
-        *value = ledger.read::<Option<Value>>(fields.next()?.ok_or_else(invalid)?, build)?;
+        *value = ledger.read::<Option<Value>>(fields.next_value()?.ok_or_else(invalid)?, build)?;
     }
     fields.finish()?;
     if !build {
@@ -412,7 +412,7 @@ fn read_banks17(
     let mut values: [Option<Vec<u8>>; 5] = std::array::from_fn(|_| None);
     for value in &mut values {
         *value = ledger
-            .read::<HistoricalByteBank17>(fields.next()?.ok_or_else(invalid)?, build)?
+            .read::<HistoricalByteBank17>(fields.next_value()?.ok_or_else(invalid)?, build)?
             .map(|bank| bank.0);
     }
     fields.finish()?;

@@ -61,11 +61,11 @@ fn read_policy(
     let selection = ledger.read::<PacketControlSelection>(fields.named("selection")?, build)?;
     let mut coordinator = Fields::array(fields.named("coordinator")?)?;
     let coordinator_reference =
-        ledger.read::<ContentRef>(coordinator.next()?.ok_or_else(invalid)?, build)?;
-    let capacity = usize::try_from(unsigned(coordinator.next()?.ok_or_else(invalid)?)?)
+        ledger.read::<ContentRef>(coordinator.next_value()?.ok_or_else(invalid)?, build)?;
+    let capacity = usize::try_from(unsigned(coordinator.next_value()?.ok_or_else(invalid)?)?)
         .map_err(|_| invalid())?;
     let coordinator_bytes = read_byte_bank_parts17(
-        coordinator.next()?.ok_or_else(invalid)?,
+        coordinator.next_value()?.ok_or_else(invalid)?,
         capacity,
         ledger,
         build,
@@ -168,7 +168,7 @@ macro_rules! fixed_references {
         impl HistoricalType for [ContentRef; $count] {
             fn read(input: &[u8], ledger: &mut Ledger<'_, '_, '_>, build: bool) -> Result<Option<Self>, ProviderError> {
                 let mut fields = Fields::array(input)?;
-                $(let $name = ledger.read::<ContentRef>(fields.next()?.ok_or_else(invalid)?, build)?;)+
+                $(let $name = ledger.read::<ContentRef>(fields.next_value()?.ok_or_else(invalid)?, build)?;)+
                 fields.finish()?;
                 if !build { return Ok(None); }
                 Ok(Some([$($name.ok_or_else(invalid)?),+]))

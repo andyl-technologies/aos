@@ -71,7 +71,7 @@ impl Native17Build for HistoricalFreshReply17 {
             return Err(exhausted());
         }
         let mut sequence = Fields::array(evidence_input)?;
-        while let Some(raw) = sequence.next()? {
+        while let Some(raw) = sequence.next_value()? {
             if attempt.children.len() == count {
                 return Err(invalid());
             }
@@ -79,7 +79,7 @@ impl Native17Build for HistoricalFreshReply17 {
             let child = attempt.children.last_mut().ok_or_else(invalid)?;
             let mut pair = Fields::array(raw)?;
             ContentRef::read_into_data(
-                pair.next()?.ok_or_else(invalid)?,
+                pair.next_value()?.ok_or_else(invalid)?,
                 ledger,
                 &mut child.reference_attempt,
             )?;
@@ -87,7 +87,7 @@ impl Native17Build for HistoricalFreshReply17 {
                 ContentRef::take_output_data(&mut child.reference_attempt).ok_or_else(invalid)?,
             );
             HistoricalByteBank17::read_into_data(
-                pair.next()?.ok_or_else(invalid)?,
+                pair.next_value()?.ok_or_else(invalid)?,
                 ledger,
                 &mut child.bytes_attempt,
             )?;
@@ -134,10 +134,10 @@ impl Native17Build for HistoricalFreshReply17 {
         ledger.native17_target_vector_data::<Evidence>(capacity)?;
         ledger.native17_target_vector_data::<EvidenceReadAttempt>(count)?;
         let mut sequence = Fields::array(evidence)?;
-        while let Some(raw) = sequence.next()? {
+        while let Some(raw) = sequence.next_value()? {
             let mut pair = Fields::array(raw)?;
-            ContentRef::preflight_data(pair.next()?.ok_or_else(invalid)?, ledger)?;
-            HistoricalByteBank17::preflight_data(pair.next()?.ok_or_else(invalid)?, ledger)?;
+            ContentRef::preflight_data(pair.next_value()?.ok_or_else(invalid)?, ledger)?;
+            HistoricalByteBank17::preflight_data(pair.next_value()?.ok_or_else(invalid)?, ledger)?;
             pair.finish()?;
         }
         sequence.finish()?;
@@ -191,7 +191,7 @@ impl Native17Build for HistoricalFreshReply17 {
 fn evidence_count(input: &[u8]) -> Result<usize, ProviderError> {
     let mut fields = Fields::array(input)?;
     let mut count = 0usize;
-    while fields.next()?.is_some() {
+    while fields.next_value()?.is_some() {
         count = count.checked_add(1).ok_or_else(invalid)?;
     }
     fields.finish()?;

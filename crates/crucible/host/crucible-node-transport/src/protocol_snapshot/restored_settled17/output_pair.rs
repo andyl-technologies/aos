@@ -352,7 +352,7 @@ fn field<'a>(input: &'a [u8], name: &str) -> Result<&'a [u8], ProviderError> {
 fn action(boot: &[u8], index: usize) -> Result<&[u8], ProviderError> {
     let mut f = Fields::array(field(field(boot, "settled_reserve")?, "attempts")?)?;
     for ordinal in 0..=index {
-        let value = f.next()?.ok_or_else(invalid)?;
+        let value = f.next_value()?.ok_or_else(invalid)?;
         if ordinal == index {
             return Ok(value);
         }

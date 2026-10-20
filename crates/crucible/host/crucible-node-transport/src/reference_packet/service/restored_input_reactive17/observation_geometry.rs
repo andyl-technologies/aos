@@ -654,14 +654,14 @@ fn retained_json_value(
             let count = {
                 let mut fields = Fields::array(input)?;
                 let mut count = 0usize;
-                while fields.next()?.is_some() {
+                while fields.next_value()?.is_some() {
                     count = count.checked_add(1).ok_or_else(exhausted)?;
                 }
                 count
             };
             out.add_array_extent(count)?;
             let mut fields = Fields::array(input)?;
-            while let Some(value) = fields.next()? {
+            while let Some(value) = fields.next_value()? {
                 retained_json_value(out, value, depth + 1)?;
             }
             Ok(())

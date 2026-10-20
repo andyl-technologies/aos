@@ -26,3 +26,12 @@ pub mod host_definition;
 pub mod serialization;
 
 pub use errors::{ProviderError, RuntimeError};
+
+/// Shares actual native decoded occurrence geometry with projected data producers.
+pub mod decoded_occurrences;
+
+/// Borrows original literal spans through the shared fixed-stack framing cursor.
+pub mod borrowed_literal;
+
+/// Shares the original generic selected decoder phase and occurrence banks.
+pub mod selected_decode;

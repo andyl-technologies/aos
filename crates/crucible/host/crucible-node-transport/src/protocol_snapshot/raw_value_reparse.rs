@@ -320,7 +320,7 @@ impl<'a> RawFrame<'a> {
                 }
                 Ok(Some(item))
             }
-            Self::Array(fields) => fields.next(),
+            Self::Array(fields) => fields.next_value(),
         }
     }
 

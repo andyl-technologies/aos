@@ -1,7 +1,7 @@
 //! Reads the defining fixed invocation DATA without a temporary JSON owner.
 
 use super::*;
-use crate::protocol_snapshot::owned11::typed::{Fields, plain_string};
+use crate::borrowed_literal::{OrderedFields as Fields, plain_string};
 
 impl PacketNativeInvocationPurposeData {
     /// Reads exact emitted fields into the existing allocation-free DATA type.
@@ -9,7 +9,7 @@ impl PacketNativeInvocationPurposeData {
     /// # Errors
     /// Refuses unknown/reordered fields, invalid bounded identifiers, hashes,
     /// source/target owner disagreement or zero original owner generation.
-    pub(crate) fn read_settled17_data(input: &[u8]) -> Result<Self, ProviderError> {
+    pub fn read_settled17_data(input: &[u8]) -> Result<Self, ProviderError> {
         let mut fields = Fields::object(input)?;
         if plain_string(fields.named("schema")?)? != SCHEMA {
             return Err(invalid());
@@ -19,7 +19,7 @@ impl PacketNativeInvocationPurposeData {
         let target = read_target(fields.named("target")?)?;
         fields.finish()?;
         let purpose = match purpose {
-            "original_execution" if source == b"null" => Purpose::Original,
+            "original_execution" if source == b"null" => None,
             "restoration_target" => {
                 let mut fields = Fields::object(source)?;
                 let runtime = read_reference(fields.named("runtime")?)?;
@@ -29,7 +29,7 @@ impl PacketNativeInvocationPurposeData {
                 if owner != target.owner {
                     return Err(invalid());
                 }
-                Purpose::Restoration(SourceData {
+                Some(SourceData {
                     runtime,
                     native_state,
                     owner,

@@ -152,7 +152,7 @@ impl ChunksReadAttempt {
         let mut fields = Fields::array(input)?;
         let mut actual = 0usize;
         let mut previous = None;
-        while let Some(item) = fields.next()? {
+        while let Some(item) = fields.next_value()? {
             actual = actual
                 .checked_add(1)
                 .filter(|actual| *actual <= count)
@@ -190,7 +190,7 @@ impl ChunksReadAttempt {
         let mut fields = Fields::array(input)?;
         let mut actual = 0usize;
         let mut previous = None;
-        while let Some(item) = fields.next()? {
+        while let Some(item) = fields.next_value()? {
             actual = actual
                 .checked_add(1)
                 .filter(|actual| *actual <= count)

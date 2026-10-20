@@ -59,7 +59,7 @@ impl SelectedExtensions17ReadAttempt {
                 return Err(capacity());
             }
             let mut fields = Fields::array(input)?;
-            while let Some(item) = fields.next()? {
+            while let Some(item) = fields.next_value()? {
                 if self.children.len() == count {
                     return Err(invalid());
                 }
@@ -183,7 +183,7 @@ fn validate_children(
     let result = (|| {
         let mut fields = Fields::array(input)?;
         let mut actual = 0usize;
-        while let Some(item) = fields.next()? {
+        while let Some(item) = fields.next_value()? {
             actual = actual
                 .checked_add(1)
                 .filter(|actual| *actual <= count)

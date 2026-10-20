@@ -27,8 +27,7 @@ use crucible_node_format::U64;
 use serde::{Deserialize, Serialize};
 
 /// Names the closed native baseline/pre-MAC allowance grammar.
-pub const PACKET_NATIVE_STARTUP_ALLOCATION_SCHEMA: &str =
-    "source-owned.packet-native-startup-allocation/14";
+pub use crucible_source_birth_data::profile::reference_packet::service::native_startup::PACKET_NATIVE_STARTUP_ALLOCATION_SCHEMA;
 
 /// Names the distinct Source binding required by the resource-admitted path.
 pub const PACKET_NATIVE_STARTUP_SOURCE_BINDING_SCHEMA: &str =

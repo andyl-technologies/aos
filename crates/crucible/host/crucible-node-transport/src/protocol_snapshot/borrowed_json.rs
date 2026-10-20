@@ -49,7 +49,7 @@ impl<'a> BorrowedJsonFields<'a> {
     /// Refuses malformed separators, empty elements, unbalanced or truncated
     /// nested spans, or nesting beyond the defining fixed scanner stack.
     pub fn next(&mut self) -> Result<Option<&'a [u8]>, ProviderError> {
-        self.fields.next()
+        self.fields.next_value()
     }
 
     /// Advances to an exactly named field in the defining object's order.

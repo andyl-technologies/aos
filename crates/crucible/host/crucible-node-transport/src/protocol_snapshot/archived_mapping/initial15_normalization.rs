@@ -368,14 +368,14 @@ fn project_array(
 ) -> Result<(), ProviderError> {
     let mut fields = Fields::array(input)?;
     let mut count = 0usize;
-    while fields.next()?.is_some() {
+    while fields.next_value()?.is_some() {
         count = count.checked_add(1).ok_or_else(exhausted)?;
     }
     fields.finish()?;
     projection.add_array_extent(count)?;
 
     let mut fields = Fields::array(input)?;
-    while let Some(value) = fields.next()? {
+    while let Some(value) = fields.next_value()? {
         element(projection, value)?;
     }
     fields.finish()

@@ -74,8 +74,8 @@ impl Native17Build for CurrentProgram17Data {
 
 fn restoration_only(input: &[u8]) -> Result<bool, ProviderError> {
     let mut fields = Fields::array(input)?;
-    let kind = plain_string(fields.next()?.ok_or_else(invalid)?)?;
-    let body = fields.next()?.ok_or_else(invalid)?;
+    let kind = plain_string(fields.next_value()?.ok_or_else(invalid)?)?;
+    let body = fields.next_value()?.ok_or_else(invalid)?;
     fields.finish()?;
     if kind == "restoration-in-progress" {
         if body != b"null" {

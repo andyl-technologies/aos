@@ -32,10 +32,10 @@ impl Import17 for HistoricalNativeSupervisorBanks {
     ) -> Result<Option<Self::Data>, crate::ProviderError> {
         let mut f = Fields::array(input)?;
         let incidents = l
-            .read::<usize>(f.next()?.ok_or_else(invalid)?, true)?
+            .read::<usize>(f.next_value()?.ok_or_else(invalid)?, true)?
             .ok_or_else(invalid)?;
         let blobs = l
-            .read::<usize>(f.next()?.ok_or_else(invalid)?, true)?
+            .read::<usize>(f.next_value()?.ok_or_else(invalid)?, true)?
             .ok_or_else(invalid)?;
         f.finish()?;
         if l.row_aligned(

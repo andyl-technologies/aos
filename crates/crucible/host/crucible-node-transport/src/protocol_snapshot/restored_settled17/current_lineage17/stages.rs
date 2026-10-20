@@ -216,8 +216,8 @@ fn upload<'body, 'rows>(
         None
     } else {
         let mut pair = Fields::array(raw)?;
-        let offset = scalar::<usize>(pair.next()?.ok_or_else(invalid)?, ledger)?;
-        let complete = scalar::<bool>(pair.next()?.ok_or_else(invalid)?, ledger)?;
+        let offset = scalar::<usize>(pair.next_value()?.ok_or_else(invalid)?, ledger)?;
+        let complete = scalar::<bool>(pair.next_value()?.ok_or_else(invalid)?, ledger)?;
         pair.finish()?;
         Some((offset, complete))
     };
@@ -313,14 +313,14 @@ pub(super) fn read<'body, 'rows>(
     )?;
     let mut slots = Fields::array(f.named("activation")?)?;
     let activation = [
-        activation(slots.next()?.ok_or_else(invalid)?, ledger)?,
-        activation(slots.next()?.ok_or_else(invalid)?, ledger)?,
+        activation(slots.next_value()?.ok_or_else(invalid)?, ledger)?,
+        activation(slots.next_value()?.ok_or_else(invalid)?, ledger)?,
     ];
     slots.finish()?;
     let mut slots = Fields::array(f.named("uploads")?)?;
     let uploads = [
-        upload(slots.next()?.ok_or_else(invalid)?, ledger)?,
-        upload(slots.next()?.ok_or_else(invalid)?, ledger)?,
+        upload(slots.next_value()?.ok_or_else(invalid)?, ledger)?,
+        upload(slots.next_value()?.ok_or_else(invalid)?, ledger)?,
     ];
     slots.finish()?;
     let first_observation = observation(f.named("first_observation")?, ledger)?;

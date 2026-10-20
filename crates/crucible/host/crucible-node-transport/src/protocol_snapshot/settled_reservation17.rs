@@ -434,7 +434,7 @@ fn read_alias_bank_data(
     let mut count = 0usize;
     let mut groups = 0usize;
     let mut work = 0usize;
-    while let Some(row) = cursor.next()? {
+    while let Some(row) = cursor.next_value()? {
         if count >= maximum || count >= capacity {
             return Err(invalid());
         }
@@ -456,7 +456,7 @@ fn read_alias_bank_data(
     cursor.finish()?;
     let mut cursor = Fields::array(lookup)?;
     let mut count = 0usize;
-    while let Some(kind) = cursor.next()? {
+    while let Some(kind) = cursor.next_value()? {
         alias_kind(kind)?;
         if count >= groups || first_group_kind_data(rows, count, &mut work)? != plain_string(kind)?
         {
@@ -482,7 +482,7 @@ fn first_group_kind_data<'a>(
     work: &mut usize,
 ) -> Result<&'a str, ProviderError> {
     let mut rows = Fields::array(input)?;
-    while let Some(row) = rows.next()? {
+    while let Some(row) = rows.next_value()? {
         *work = work.checked_add(1).ok_or_else(invalid)?;
         if *work > 64 * 1024 * 1024 {
             return Err(invalid());
@@ -568,5 +568,5 @@ fn boolean(input: &[u8]) -> Result<bool, ProviderError> {
     }
 }
 fn next<'a>(fields: &mut Fields<'a>) -> Result<&'a [u8], ProviderError> {
-    fields.next()?.ok_or_else(invalid)
+    fields.next_value()?.ok_or_else(invalid)
 }

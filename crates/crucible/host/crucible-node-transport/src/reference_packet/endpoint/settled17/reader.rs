@@ -142,7 +142,7 @@ fn read_endpoint17_inner_data(
     let mut pins = reserve::<HistoricalOperationPin17>(spans.pins_capacity, build)?;
     let mut cursor = Fields::array(spans.pins)?;
     let mut pin_count = 0usize;
-    while let Some(pin) = cursor.next()? {
+    while let Some(pin) = cursor.next_value()? {
         pin_count = next_count(pin_count, spans.pins_capacity)?;
         let (pin, group) = read_native17_operation_pin_data(pin, spans.uploads, ledger, build)?;
         if group != upload_groups.ledger {
@@ -164,7 +164,7 @@ fn read_endpoint17_inner_data(
     let mut record_count = 0usize;
     let mut records_with_actor = 0usize;
     let mut record_actor_frames = None;
-    while let Some(record) = cursor.next()? {
+    while let Some(record) = cursor.next_value()? {
         record_count = next_count(record_count, spans.records_capacity)?;
         let (record, groups) =
             HistoricalExchangeRecord17::read_settled17_fields_data(record, ledger, build)?;
@@ -664,7 +664,7 @@ impl HistoricalType for CurrentEndpoint17Data {
 }
 
 fn next<'a>(fields: &mut Fields<'a>) -> Result<&'a [u8], ProviderError> {
-    fields.next()?.ok_or_else(invalid)
+    fields.next_value()?.ok_or_else(invalid)
 }
 fn exact(input: &[u8], expected: &str) -> Result<(), ProviderError> {
     if plain_string(input)? != expected {

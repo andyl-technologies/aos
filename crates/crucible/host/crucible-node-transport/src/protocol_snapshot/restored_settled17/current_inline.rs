@@ -70,7 +70,7 @@ impl CurrentField17 for FixedArray32Field17 {
         let mut bytes = [0; 32];
         for byte in &mut bytes {
             let value = ledger
-                .read::<u8>(fields.next()?.ok_or_else(invalid)?, true)?
+                .read::<u8>(fields.next_value()?.ok_or_else(invalid)?, true)?
                 .ok_or_else(invalid)?;
             *byte = value;
         }

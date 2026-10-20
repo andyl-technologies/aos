@@ -52,9 +52,9 @@ impl<T: Import17> Import17 for Vec<T> {
     ) -> Result<Option<Self::Data>, ProviderError> {
         let mut tuple = Fields::array(input)?;
         let explicit = l
-            .read::<usize>(tuple.next()?.ok_or_else(invalid)?, true)?
+            .read::<usize>(tuple.next_value()?.ok_or_else(invalid)?, true)?
             .ok_or_else(invalid)?;
-        let raw = tuple.next()?.ok_or_else(invalid)?;
+        let raw = tuple.next_value()?.ok_or_else(invalid)?;
         tuple.finish()?;
         let capacity =
             l.row_aligned(MetadataRecordKind::Vector, size_of::<T>(), align_of::<T>())?;
@@ -75,7 +75,7 @@ impl<T: Import17> Import17 for Vec<T> {
         }
         let mut fields = Fields::array(raw)?;
         let mut length = 0usize;
-        while let Some(raw) = fields.next()? {
+        while let Some(raw) = fields.next_value()? {
             length = length.checked_add(1).ok_or_else(invalid)?;
             if length > capacity {
                 return Err(invalid());
@@ -120,7 +120,7 @@ impl<T: Import17, const N: usize> Import17 for [T; N] {
         let mut fields = Fields::array(input)?;
         let mut values: [Option<T::Data>; N] = std::array::from_fn(|_| None);
         for v in &mut values {
-            *v = T::read_current(fields.next()?.ok_or_else(invalid)?, l, build)?;
+            *v = T::read_current(fields.next_value()?.ok_or_else(invalid)?, l, build)?;
         }
         fields.finish()?;
         if !build {
@@ -150,8 +150,8 @@ impl<A: Import17, B: Import17> Import17 for (A, B) {
         build: bool,
     ) -> Result<Option<Self::Data>, ProviderError> {
         let mut f = Fields::array(input)?;
-        let a = A::read_current(f.next()?.ok_or_else(invalid)?, l, build)?;
-        let b = B::read_current(f.next()?.ok_or_else(invalid)?, l, build)?;
+        let a = A::read_current(f.next_value()?.ok_or_else(invalid)?, l, build)?;
+        let b = B::read_current(f.next_value()?.ok_or_else(invalid)?, l, build)?;
         f.finish()?;
         if !build {
             return Ok(None);
@@ -216,7 +216,7 @@ impl Import17 for Arc<[crucible_node_format::ExtensionSelection]> {
         }
         let mut f = Fields::array(input)?;
         let mut length = 0usize;
-        while let Some(raw) = f.next()? {
+        while let Some(raw) = f.next_value()? {
             length = length.checked_add(1).ok_or_else(invalid)?;
             if length > count {
                 return Err(invalid());
@@ -284,14 +284,14 @@ impl<K: ImportKey17, V: Import17> Import17 for BTreeMap<K, V> {
         let mut fields = Fields::array(input)?;
         let mut length = 0usize;
         let mut previous = None;
-        while let Some(raw) = fields.next()? {
+        while let Some(raw) = fields.next_value()? {
             length = length.checked_add(1).ok_or_else(invalid)?;
             if length > count {
                 return Err(invalid());
             }
             let mut pair = Fields::array(raw)?;
-            let key = pair.next()?.ok_or_else(invalid)?;
-            let value = pair.next()?.ok_or_else(invalid)?;
+            let key = pair.next_value()?.ok_or_else(invalid)?;
+            let value = pair.next_value()?.ok_or_else(invalid)?;
             pair.finish()?;
             if let Some(prior) = previous {
                 if K::compare_encoded(prior, key)? != std::cmp::Ordering::Less {
@@ -350,7 +350,7 @@ impl<T: ImportKey17> Import17 for BTreeSet<T> {
         let mut f = Fields::array(input)?;
         let mut length = 0usize;
         let mut prior = None;
-        while let Some(raw) = f.next()? {
+        while let Some(raw) = f.next_value()? {
             length = length.checked_add(1).ok_or_else(invalid)?;
             if length > count {
                 return Err(invalid());

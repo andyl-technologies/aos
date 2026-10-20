@@ -75,23 +75,23 @@ pub(super) fn authenticate(
 
     let mut banks = Fields::array(field(output, "banks")?)?;
     bank(
-        banks.next()?.ok_or_else(invalid)?,
+        banks.next_value()?.ok_or_else(invalid)?,
         &confirmation.native_snapshot_ref,
         None,
     )?;
     bank(
-        banks.next()?.ok_or_else(invalid)?,
+        banks.next_value()?.ok_or_else(invalid)?,
         &confirmation.native_control_ref,
         Some(snapshot.control_bytes()),
     )?;
-    let before_bank = banks.next()?.ok_or_else(invalid)?;
+    let before_bank = banks.next_value()?.ok_or_else(invalid)?;
     before(before_bank, snapshot, before_body)?;
     bank(
-        banks.next()?.ok_or_else(invalid)?,
+        banks.next_value()?.ok_or_else(invalid)?,
         &confirmation.native_anchor_ref,
         Some(anchor_raw),
     )?;
-    let _ = banks.next()?.ok_or_else(invalid)?;
+    let _ = banks.next_value()?.ok_or_else(invalid)?;
     banks.finish()
 }
 
@@ -159,9 +159,9 @@ fn before(
 
 fn compact(input: &[u8]) -> Result<ValidatedCompactBytes<'_>, ProviderError> {
     let mut f = Fields::array(input)?;
-    let raw = f.next()?.ok_or_else(invalid)?;
+    let raw = f.next_value()?.ok_or_else(invalid)?;
     let capacity =
-        usize::try_from(unsigned(f.next()?.ok_or_else(invalid)?)?).map_err(|_| invalid())?;
+        usize::try_from(unsigned(f.next_value()?.ok_or_else(invalid)?)?).map_err(|_| invalid())?;
     f.finish()?;
     ValidatedCompactBytes::validate(raw, raw.len(), capacity)
 }

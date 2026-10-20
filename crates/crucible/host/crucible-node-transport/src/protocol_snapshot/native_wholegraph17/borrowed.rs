@@ -502,7 +502,7 @@ fn capture_original(input: &[u8]) -> Result<Option<&[u8]>, ProviderError> {
     let current = usize::try_from(unsigned(current)?).map_err(|_| invalid())?;
     let mut attempts = Fields::array(field(reserve, "attempts")?)?;
     let mut index = 0usize;
-    while let Some(attempt) = attempts.next()? {
+    while let Some(attempt) = attempts.next_value()? {
         if index == current {
             let selected = field(attempt, "selected")?;
             if selected == b"null" {

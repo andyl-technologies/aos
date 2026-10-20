@@ -1,7 +1,7 @@
 //! Keeps the independent saved full-launch validator above the shared DATA code.
 
 use super::*;
-use crate::reference_packet::{Native5Policy, service};
+use crate::reference_packet::service;
 #[path = "validation/original.rs"]
 mod original;
 

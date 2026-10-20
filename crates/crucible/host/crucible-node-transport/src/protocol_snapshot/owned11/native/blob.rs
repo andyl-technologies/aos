@@ -194,7 +194,7 @@ fn chunks(
     let mut actual = 0usize;
     let mut previous = None;
     let mut result = BTreeMap::new();
-    while let Some(item) = fields.next()? {
+    while let Some(item) = fields.next_value()? {
         actual = actual
             .checked_add(1)
             .filter(|n| *n <= count)
@@ -239,7 +239,7 @@ fn pins(
     let mut actual = 0usize;
     let mut previous = None;
     let mut result = BTreeMap::new();
-    while let Some(item) = fields.next()? {
+    while let Some(item) = fields.next_value()? {
         actual = actual
             .checked_add(1)
             .filter(|n| *n <= count)
@@ -314,7 +314,7 @@ pub(super) fn read_ledger(
     let mut actual = 0usize;
     let mut previous = None;
     let mut result = BTreeMap::new();
-    while let Some(item) = records.next()? {
+    while let Some(item) = records.next_value()? {
         actual = actual
             .checked_add(1)
             .filter(|n| *n <= count)

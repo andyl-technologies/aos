@@ -45,8 +45,8 @@ pub(crate) fn read_settled_model17_data(
     build: bool,
 ) -> Result<Option<PacketSettledModel17Data>, ProviderError> {
     let mut array = Fields::array(input)?;
-    let kind = plain_string(array.next()?.ok_or_else(invalid)?)?;
-    let body = array.next()?.ok_or_else(invalid)?;
+    let kind = plain_string(array.next_value()?.ok_or_else(invalid)?)?;
+    let body = array.next_value()?.ok_or_else(invalid)?;
     array.finish()?;
     let state = match kind {
         "producer" => read_producer(body, ledger, build)?.map(CurrentModel::Producer),

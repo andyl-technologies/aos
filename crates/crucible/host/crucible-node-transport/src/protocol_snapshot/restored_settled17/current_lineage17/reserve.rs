@@ -152,7 +152,7 @@ pub(super) fn read<'body, 'rows>(
     let mut current_value = None;
     let mut attempt_count = 0usize;
     let mut attempts_fields = Fields::array(attempts)?;
-    while let Some(raw) = attempts_fields.next()? {
+    while let Some(raw) = attempts_fields.next_value()? {
         let index = attempt_count;
         attempt_count = attempt_count.checked_add(1).ok_or_else(invalid)?;
         if attempt_count > capacity

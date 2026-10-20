@@ -297,7 +297,7 @@ impl<C: BuildCurrentField17> BuildCurrentField17 for Vector17<C> {
         l.native17_target_vector_data::<C::Attempt>(cap)?;
         let mut f = Fields::array(input)?;
         let mut n = 0usize;
-        while let Some(raw) = f.next()? {
+        while let Some(raw) = f.next_value()? {
             n = n.checked_add(1).ok_or_else(invalid)?;
             if n > cap {
                 return Err(invalid());
@@ -334,7 +334,7 @@ impl<C: BuildCurrentField17> BuildCurrentField17 for Vector17<C> {
                 return Err(invalid());
             }
             let mut f = Fields::array(input)?;
-            while let Some(raw) = f.next()? {
+            while let Some(raw) = f.next_value()? {
                 if a.values.len() == cap {
                     return Err(invalid());
                 }

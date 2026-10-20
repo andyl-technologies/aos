@@ -289,12 +289,12 @@ impl Initial15NativeImportGeometryAttempt {
 
 fn aliases_data(input: &[u8]) -> Result<&[u8], ProviderError> {
     let mut fields = Fields::array(input)?;
-    if plain_string(fields.next()?.ok_or_else(invalid)?)? != "source-private.cnp-protocol/11" {
+    if plain_string(fields.next_value()?.ok_or_else(invalid)?)? != "source-private.cnp-protocol/11" {
         return Err(invalid());
     }
-    fields.next()?.ok_or_else(invalid)?;
-    fields.next()?.ok_or_else(invalid)?;
-    let aliases = fields.next()?.ok_or_else(invalid)?;
+    fields.next_value()?.ok_or_else(invalid)?;
+    fields.next_value()?.ok_or_else(invalid)?;
+    let aliases = fields.next_value()?.ok_or_else(invalid)?;
     fields.finish()?;
     Ok(aliases)
 }

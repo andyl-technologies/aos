@@ -91,13 +91,13 @@ fn aliases_layout(
 }
 fn capacity_record(raw: &[u8]) -> Result<(), ProviderError> {
     let mut fields = Fields::array(raw)?;
-    let kind = plain_string(fields.next()?.ok_or_else(invalid)?)?;
+    let kind = plain_string(fields.next_value()?.ok_or_else(invalid)?)?;
     if !matches!(kind, "string" | "vector" | "tree" | "shared" | "boxed") {
         return Err(invalid());
     }
-    let extent = number(fields.next()?.ok_or_else(invalid)?)?;
-    let element = number(fields.next()?.ok_or_else(invalid)?)?;
-    let alignment = number(fields.next()?.ok_or_else(invalid)?)?;
+    let extent = number(fields.next_value()?.ok_or_else(invalid)?)?;
+    let element = number(fields.next_value()?.ok_or_else(invalid)?)?;
+    let alignment = number(fields.next_value()?.ok_or_else(invalid)?)?;
     fields.finish()?;
     if !alignment.is_power_of_two()
         || alignment > isize::MAX as usize
@@ -126,9 +126,9 @@ fn retained_recorder(raw: &[u8], ledger: &mut Ledger<'_, '_, '_>) -> Result<(), 
     f.finish()?;
     if records != b"null" {
         let mut record = Fields::array(records)?;
-        let maximum = number(record.next()?.ok_or_else(invalid)?)?;
-        let capacity = number(record.next()?.ok_or_else(invalid)?)?;
-        let mut rows = Fields::array(record.next()?.ok_or_else(invalid)?)?;
+        let maximum = number(record.next_value()?.ok_or_else(invalid)?)?;
+        let capacity = number(record.next_value()?.ok_or_else(invalid)?)?;
+        let mut rows = Fields::array(record.next_value()?.ok_or_else(invalid)?)?;
         record.finish()?;
         if maximum == 0
             || maximum > 131072
@@ -142,7 +142,7 @@ fn retained_recorder(raw: &[u8], ledger: &mut Ledger<'_, '_, '_>) -> Result<(), 
             return Err(invalid());
         }
         let mut length = 0usize;
-        while let Some(raw) = rows.next()? {
+        while let Some(raw) = rows.next_value()? {
             length = length.checked_add(1).ok_or_else(invalid)?;
             if length > maximum {
                 return Err(invalid());
@@ -153,16 +153,16 @@ fn retained_recorder(raw: &[u8], ledger: &mut Ledger<'_, '_, '_>) -> Result<(), 
     }
     if aliases != b"null" {
         let mut alias = Fields::array(aliases)?;
-        let facts = alias_facts(alias.next()?.ok_or_else(invalid)?, ledger)?;
-        let initialized = number(alias.next()?.ok_or_else(invalid)?)?;
-        let mut rows = Fields::array(alias.next()?.ok_or_else(invalid)?)?;
+        let facts = alias_facts(alias.next_value()?.ok_or_else(invalid)?, ledger)?;
+        let initialized = number(alias.next_value()?.ok_or_else(invalid)?)?;
+        let mut rows = Fields::array(alias.next_value()?.ok_or_else(invalid)?)?;
         alias.finish()?;
         aliases_layout(&facts, ledger)?;
         if initialized > facts.lookup_capacity || initialized > facts.retained_rows {
             return Err(invalid());
         }
         let mut length = 0usize;
-        while let Some(raw) = rows.next()? {
+        while let Some(raw) = rows.next_value()? {
             length = length.checked_add(1).ok_or_else(invalid)?;
             if length > facts.maximum_rows {
                 return Err(invalid());
@@ -239,8 +239,8 @@ fn active_recorder(
 }
 fn pair(raw: &[u8]) -> Result<(&str, &[u8]), ProviderError> {
     let mut f = Fields::array(raw)?;
-    let kind = plain_string(f.next()?.ok_or_else(invalid)?)?;
-    let body = f.next()?.ok_or_else(invalid)?;
+    let kind = plain_string(f.next_value()?.ok_or_else(invalid)?)?;
+    let body = f.next_value()?.ok_or_else(invalid)?;
     f.finish()?;
     Ok((kind, body))
 }
@@ -264,26 +264,26 @@ pub(super) fn read<'body>(
     };
     let mut banks_fields = Fields::array(f.named("banks")?)?;
     let banks = [
-        banks_fields.next()?.ok_or_else(invalid)?,
-        banks_fields.next()?.ok_or_else(invalid)?,
-        banks_fields.next()?.ok_or_else(invalid)?,
-        banks_fields.next()?.ok_or_else(invalid)?,
-        banks_fields.next()?.ok_or_else(invalid)?,
+        banks_fields.next_value()?.ok_or_else(invalid)?,
+        banks_fields.next_value()?.ok_or_else(invalid)?,
+        banks_fields.next_value()?.ok_or_else(invalid)?,
+        banks_fields.next_value()?.ok_or_else(invalid)?,
+        banks_fields.next_value()?.ok_or_else(invalid)?,
     ];
     banks_fields.finish()?;
     let mut limits_fields = Fields::array(f.named("limits")?)?;
     let limits = [
-        number(limits_fields.next()?.ok_or_else(invalid)?)?,
-        number(limits_fields.next()?.ok_or_else(invalid)?)?,
-        number(limits_fields.next()?.ok_or_else(invalid)?)?,
-        number(limits_fields.next()?.ok_or_else(invalid)?)?,
-        number(limits_fields.next()?.ok_or_else(invalid)?)?,
+        number(limits_fields.next_value()?.ok_or_else(invalid)?)?,
+        number(limits_fields.next_value()?.ok_or_else(invalid)?)?,
+        number(limits_fields.next_value()?.ok_or_else(invalid)?)?,
+        number(limits_fields.next_value()?.ok_or_else(invalid)?)?,
+        number(limits_fields.next_value()?.ok_or_else(invalid)?)?,
     ];
     limits_fields.finish()?;
     let mut recorders_fields = Fields::array(f.named("recorders")?)?;
     let recorders = [
-        recorders_fields.next()?.ok_or_else(invalid)?,
-        recorders_fields.next()?.ok_or_else(invalid)?,
+        recorders_fields.next_value()?.ok_or_else(invalid)?,
+        recorders_fields.next_value()?.ok_or_else(invalid)?,
     ];
     recorders_fields.finish()?;
     let reserved = truth(f.named("reserved")?)?;

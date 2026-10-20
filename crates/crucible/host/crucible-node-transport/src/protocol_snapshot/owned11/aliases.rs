@@ -51,7 +51,7 @@ impl<'input, 'scratch> ValidatedHistoricalAliases<'input, 'scratch> {
         let mut fields = Fields::array(input)?;
         let mut rows = 0usize;
         let mut groups = 0usize;
-        while let Some(field) = fields.next()? {
+        while let Some(field) = fields.next_value()? {
             let (kind, group) = row(field)?;
             rows = rows.checked_add(1).ok_or_else(invalid)?;
             if rows > maximum_rows || group > groups {
@@ -130,7 +130,7 @@ impl HistoricalAliasViews<'_, '_> {
     }
 
     pub(crate) fn begin(&mut self, kind: MetadataSharedKind) -> Result<usize, ProviderError> {
-        let field = self.fields.next()?.ok_or_else(invalid)?;
+        let field = self.fields.next_value()?.ok_or_else(invalid)?;
         let (stored_kind, group) = row(field)?;
         if stored_kind != kind || self.remaining == 0 {
             return Err(invalid());
@@ -215,7 +215,7 @@ impl HistoricalAliasViews<'_, '_> {
     /// whose observed view failed validation after consuming its roster row.
     pub fn finish(mut self) -> Result<(), ProviderError> {
         if self.remaining != 0
-            || self.fields.next()?.is_some()
+            || self.fields.next_value()?.is_some()
             || self.summaries.iter().any(|summary| summary.in_progress)
         {
             return Err(invalid());
@@ -239,7 +239,7 @@ pub(crate) fn required_summary_entries_data(
     let mut fields = Fields::array(input)?;
     let mut rows = 0usize;
     let mut groups = 0usize;
-    while let Some(field) = fields.next()? {
+    while let Some(field) = fields.next_value()? {
         let (_, group) = row(field)?;
         rows = rows.checked_add(1).ok_or_else(invalid)?;
         if rows > maximum_rows || group > groups {
@@ -280,7 +280,7 @@ pub(crate) fn borrowed_validation_counter_scratch_data() -> usize {
 
 fn row(input: &[u8]) -> Result<(MetadataSharedKind, usize), ProviderError> {
     let mut fields = Fields::array(input)?;
-    let kind = match plain_string(fields.next()?.ok_or_else(invalid)?)? {
+    let kind = match plain_string(fields.next_value()?.ok_or_else(invalid)?)? {
         "protocol-owner" => MetadataSharedKind::ProtocolOwner,
         "registrar-epoch" => MetadataSharedKind::RegistrarEpoch,
         "registrar-gate" => MetadataSharedKind::RegistrarGate,
@@ -301,7 +301,7 @@ fn row(input: &[u8]) -> Result<(MetadataSharedKind, usize), ProviderError> {
         "archived-mapping" => MetadataSharedKind::ArchivedMapping,
         _ => return Err(invalid()),
     };
-    let group = super::typed::unsigned(fields.next()?.ok_or_else(invalid)?)?;
+    let group = super::typed::unsigned(fields.next_value()?.ok_or_else(invalid)?)?;
     fields.finish()?;
     Ok((kind, usize::try_from(group).map_err(|_| invalid())?))
 }

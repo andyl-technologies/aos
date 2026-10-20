@@ -100,7 +100,7 @@ pub(crate) struct BorrowedCurrentCaptureUpload17<'body, 'rows> {
 }
 
 fn next<'a>(fields: &mut Fields<'a>) -> Result<&'a [u8], ProviderError> {
-    fields.next()?.ok_or_else(invalid)
+    fields.next_value()?.ok_or_else(invalid)
 }
 
 fn marker(input: &[u8], expected: &str) -> Result<(), ProviderError> {

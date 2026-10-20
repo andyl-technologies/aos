@@ -260,10 +260,10 @@ fn read_gate_evidence17(
         return Ok(build.then_some(None));
     }
     let mut fields = Fields::array(input)?;
-    let reference = ledger.read::<ContentRef>(fields.next()?.ok_or_else(invalid)?, build)?;
-    let raw = fields.next()?.ok_or_else(invalid)?;
+    let reference = ledger.read::<ContentRef>(fields.next_value()?.ok_or_else(invalid)?, build)?;
+    let raw = fields.next_value()?.ok_or_else(invalid)?;
     let capacity =
-        usize::try_from(unsigned(fields.next()?.ok_or_else(invalid)?)?).map_err(|_| invalid())?;
+        usize::try_from(unsigned(fields.next_value()?.ok_or_else(invalid)?)?).map_err(|_| invalid())?;
     fields.finish()?;
     let body = read_byte_bank_parts17(raw, capacity, ledger, build)?;
     if !build {

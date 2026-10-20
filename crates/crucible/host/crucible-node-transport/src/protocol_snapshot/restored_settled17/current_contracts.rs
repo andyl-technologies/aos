@@ -196,7 +196,7 @@ impl<C: CurrentField17> CurrentField17 for Vector17<C> {
             }
         }
         let mut length = 0usize;
-        while let Some(raw) = fields.next()? {
+        while let Some(raw) = fields.next_value()? {
             length = length.checked_add(1).ok_or_else(invalid)?;
             if length > capacity {
                 return Err(invalid());

@@ -317,8 +317,8 @@ impl Native17Build for PacketSettledModel17Data {
         }
         attempt.started = true;
         let mut fields = Fields::array(input)?;
-        let kind = plain_string(fields.next()?.ok_or_else(invalid)?)?;
-        let body = fields.next()?.ok_or_else(invalid)?;
+        let kind = plain_string(fields.next_value()?.ok_or_else(invalid)?)?;
+        let body = fields.next_value()?.ok_or_else(invalid)?;
         let state = match kind {
             "producer" => {
                 attempt.producer.read_fields_into_data(body, ledger, true)?;
@@ -339,8 +339,8 @@ impl Native17Build for PacketSettledModel17Data {
 
     fn preflight_data(input: &[u8], ledger: &mut Ledger<'_, '_, '_>) -> Result<(), ProviderError> {
         let mut fields = Fields::array(input)?;
-        let kind = plain_string(fields.next()?.ok_or_else(invalid)?)?;
-        let body = fields.next()?.ok_or_else(invalid)?;
+        let kind = plain_string(fields.next_value()?.ok_or_else(invalid)?)?;
+        let body = fields.next_value()?.ok_or_else(invalid)?;
         match kind {
             "producer" => ProducerModel17ReadAttempt::preflight_fields_data(body, ledger, true)?,
             "reactive" => ReactiveModel17ReadAttempt::preflight_fields_data(body, ledger, true)?,

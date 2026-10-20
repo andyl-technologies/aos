@@ -315,8 +315,8 @@ fn read_progress17(
         return Ok(build.then_some(None));
     }
     let mut pair = Fields::array(input)?;
-    let offset = ledger.read::<usize>(pair.next()?.ok_or_else(invalid)?, build)?;
-    let complete = ledger.read::<bool>(pair.next()?.ok_or_else(invalid)?, build)?;
+    let offset = ledger.read::<usize>(pair.next_value()?.ok_or_else(invalid)?, build)?;
+    let complete = ledger.read::<bool>(pair.next_value()?.ok_or_else(invalid)?, build)?;
     pair.finish()?;
     if !build {
         return Ok(None);
@@ -399,7 +399,7 @@ fn read_slots17<T: HistoricalType>(
     let mut fields = Fields::array(input)?;
     let mut output = [None, None];
     for slot in &mut output {
-        let raw = fields.next()?.ok_or_else(invalid)?;
+        let raw = fields.next_value()?.ok_or_else(invalid)?;
         if raw != b"null" {
             *slot = read_shared17::<T>(raw, ledger, build, kind, layout)?;
         }

@@ -114,14 +114,14 @@ impl HistoricalExchangeRecord17 {
         ledger.native17_target_vector_data::<Vec<u8>>(canonical_capacity)?;
         let mut canonical = reserve_data::<Vec<u8>>(canonical_capacity, build)?;
         let mut canonical_count = 0usize;
-        while let Some(item) = cursor.next()? {
+        while let Some(item) = cursor.next_value()? {
             canonical_count = canonical_count.checked_add(1).ok_or_else(invalid)?;
             if canonical_count > canonical_capacity {
                 return Err(invalid());
             }
             let mut bank = Fields::array(item)?;
-            let bytes = bank.next()?.ok_or_else(invalid)?;
-            let capacity = quantity(bank.next()?.ok_or_else(invalid)?)?;
+            let bytes = bank.next_value()?.ok_or_else(invalid)?;
+            let capacity = quantity(bank.next_value()?.ok_or_else(invalid)?)?;
             bank.finish()?;
             expect_vector_data::<u8>(ledger, capacity)?;
             let (_, value) = read_items_data::<u8>(bytes, ledger, capacity, build)?;
@@ -274,7 +274,7 @@ fn read_items_data<T: HistoricalType>(
     let mut values = reserve_data(capacity, build)?;
     let mut cursor = Fields::array(input)?;
     let mut count = 0usize;
-    while let Some(item) = cursor.next()? {
+    while let Some(item) = cursor.next_value()? {
         count = count.checked_add(1).ok_or_else(invalid)?;
         if count > capacity {
             return Err(invalid());

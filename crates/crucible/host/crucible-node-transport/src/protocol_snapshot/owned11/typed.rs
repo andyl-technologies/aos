@@ -392,7 +392,7 @@ impl<T: HistoricalType> HistoricalType for Vec<T> {
             }
         }
         let mut count = 0usize;
-        while let Some(field) = cursor.next()? {
+        while let Some(field) = cursor.next_value()? {
             count = count.checked_add(1).ok_or_else(invalid)?;
             if count > capacity {
                 return Err(invalid());
@@ -588,7 +588,7 @@ impl HistoricalType for BTreeSet<String> {
         let mut result = BTreeSet::new();
         let mut count = 0usize;
         let mut previous = None;
-        while let Some(field) = fields.next()? {
+        while let Some(field) = fields.next_value()? {
             // Selected source extension identifiers are unescaped bounded ASCII.
             let text = plain_string(field)?;
             if previous.is_some_and(|prior| prior >= text) {
@@ -636,7 +636,7 @@ impl HistoricalType for BTreeSet<Id> {
         let mut result = BTreeSet::new();
         let mut count = 0usize;
         let mut previous = None;
-        while let Some(field) = fields.next()? {
+        while let Some(field) = fields.next_value()? {
             // Selected source extension identifiers are unescaped bounded ASCII.
             let text = plain_string(field)?;
             if previous.is_some_and(|prior| prior >= text) {
@@ -659,155 +659,9 @@ impl HistoricalType for BTreeSet<Id> {
     }
 }
 
-type BorrowedFieldPair<'a> = (&'a [u8], &'a [u8]);
-
-pub(crate) struct Fields<'a> {
-    input: &'a [u8],
-    position: usize,
-    closing: u8,
-    first: bool,
-}
-
-const FIELD_SPAN_STACK_BYTES: usize = 128;
-
-impl<'a> Fields<'a> {
-    pub(crate) fn counter_scratch_data() -> usize {
-        use std::mem::size_of;
-        size_of::<Self>()
-            + FIELD_SPAN_STACK_BYTES
-            + size_of::<Result<Option<&[u8]>, ProviderError>>()
-            + size_of::<Result<Option<BorrowedFieldPair<'static>>, ProviderError>>()
-            + size_of::<Result<&[u8], ProviderError>>()
-            + size_of::<Result<&str, ProviderError>>()
-            + size_of::<Result<(), ProviderError>>()
-            + size_of::<usize>() * 2
-            + size_of::<u8>()
-            + size_of::<bool>() * 2
-    }
-
-    pub(crate) fn array(input: &'a [u8]) -> Result<Self, ProviderError> {
-        Self::new(input, b'[', b']')
-    }
-    pub(crate) fn object(input: &'a [u8]) -> Result<Self, ProviderError> {
-        Self::new(input, b'{', b'}')
-    }
-
-    fn new(input: &'a [u8], opening: u8, closing: u8) -> Result<Self, ProviderError> {
-        if input.first() != Some(&opening) || input.last() != Some(&closing) {
-            return Err(invalid());
-        }
-        Ok(Self {
-            input,
-            position: 1,
-            closing,
-            first: true,
-        })
-    }
-
-    pub(crate) fn next(&mut self) -> Result<Option<&'a [u8]>, ProviderError> {
-        if self.input.get(self.position) == Some(&self.closing) {
-            if self.position + 1 != self.input.len() {
-                return Err(invalid());
-            }
-            return Ok(None);
-        }
-        if !self.first {
-            self.require(b',')?;
-        }
-        self.first = false;
-        Ok(Some(self.span()?))
-    }
-
-    pub(crate) fn pair(&mut self) -> Result<Option<BorrowedFieldPair<'a>>, ProviderError> {
-        let Some(key) = self.next()? else {
-            return Ok(None);
-        };
-        self.require(b':')?;
-        Ok(Some((key, self.span()?)))
-    }
-
-    pub(crate) fn named(&mut self, name: &str) -> Result<&'a [u8], ProviderError> {
-        let (key, value) = self.pair()?.ok_or_else(invalid)?;
-        if plain_string(key)? != name {
-            return Err(invalid());
-        }
-        Ok(value)
-    }
-
-    pub(crate) fn finish(&mut self) -> Result<(), ProviderError> {
-        if self.next()?.is_some() {
-            return Err(invalid());
-        }
-        Ok(())
-    }
-
-    fn require(&mut self, byte: u8) -> Result<(), ProviderError> {
-        if self.input.get(self.position) != Some(&byte) {
-            return Err(invalid());
-        }
-        self.position += 1;
-        Ok(())
-    }
-
-    fn span(&mut self) -> Result<&'a [u8], ProviderError> {
-        let start = self.position;
-        let mut stack = [0u8; FIELD_SPAN_STACK_BYTES];
-        let mut depth = 0usize;
-        let mut string = false;
-        let mut escaped = false;
-        while let Some(byte) = self.input.get(self.position).copied() {
-            if !string && depth == 0 && (byte == b',' || byte == b':' || byte == self.closing) {
-                break;
-            }
-            self.position += 1;
-            if string {
-                if escaped {
-                    escaped = false;
-                } else if byte == b'\\' {
-                    escaped = true;
-                } else if byte == b'"' {
-                    string = false;
-                }
-                continue;
-            }
-            match byte {
-                b'"' => string = true,
-                b'[' | b'{' => {
-                    if depth == stack.len() {
-                        return Err(invalid());
-                    }
-                    stack[depth] = if byte == b'[' { b']' } else { b'}' };
-                    depth += 1;
-                }
-                b']' | b'}' => {
-                    if depth == 0 || stack[depth - 1] != byte {
-                        return Err(invalid());
-                    }
-                    depth -= 1;
-                }
-                _ => {}
-            }
-        }
-        if self.position == start || string || depth != 0 {
-            return Err(invalid());
-        }
-        Ok(&self.input[start..self.position])
-    }
-}
-
-pub(crate) fn plain_string(input: &[u8]) -> Result<&str, ProviderError> {
-    if input.len() < 2 || input.first() != Some(&b'"') || input.last() != Some(&b'"') {
-        return Err(invalid());
-    }
-    let text = &input[1..input.len() - 1];
-    if text
-        .iter()
-        .any(|byte| *byte < 32 || matches!(*byte, b'"' | b'\\'))
-    {
-        return Err(invalid());
-    }
-    std::str::from_utf8(text).map_err(|_| invalid())
-}
+pub(crate) use crucible_source_birth_data::borrowed_literal::{
+    OrderedFields as Fields, plain_string,
+};
 
 pub(crate) fn unsigned(input: &[u8]) -> Result<u64, ProviderError> {
     if input.is_empty() || (input.len() > 1 && input[0] == b'0') {

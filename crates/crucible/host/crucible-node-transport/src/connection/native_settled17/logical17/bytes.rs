@@ -35,7 +35,7 @@ pub(crate) fn field<'a>(input: &'a [u8], name: &str) -> Result<&'a [u8], Provide
 }
 
 pub(crate) fn next<'a>(fields: &mut Fields<'a>) -> Result<&'a [u8], ProviderError> {
-    fields.next()?.ok_or_else(invalid)
+    fields.next_value()?.ok_or_else(invalid)
 }
 
 pub(crate) fn quantity(input: &[u8]) -> Result<usize, ProviderError> {
@@ -57,7 +57,7 @@ pub(crate) fn boolean(input: &[u8]) -> Result<bool, ProviderError> {
 pub(crate) fn count(input: &[u8]) -> Result<usize, ProviderError> {
     let mut fields = Fields::array(input)?;
     let mut count = 0usize;
-    while fields.next()?.is_some() {
+    while fields.next_value()?.is_some() {
         count = count.checked_add(1).ok_or_else(invalid)?;
     }
     fields.finish()?;
@@ -221,7 +221,7 @@ impl<'a> Bytes17<'a> {
     pub(crate) fn array(encoded: &'a [u8]) -> Result<Self, ProviderError> {
         let length = count(encoded)?;
         let mut fields = Fields::array(encoded)?;
-        while let Some(byte) = fields.next()? {
+        while let Some(byte) = fields.next_value()? {
             u8::try_from(unsigned(byte)?).map_err(|_| invalid())?;
         }
         fields.finish()?;
@@ -299,7 +299,7 @@ impl<'a> Bytes17<'a> {
     pub(crate) fn update_hash(self, hasher: &mut blake3::Hasher) -> Result<(), ProviderError> {
         if let Self::Array { encoded, .. } = self {
             let mut fields = Fields::array(encoded)?;
-            while let Some(byte) = fields.next()? {
+            while let Some(byte) = fields.next_value()? {
                 hasher.update(&[u8::try_from(unsigned(byte)?).map_err(|_| invalid())?]);
             }
             return fields.finish();
@@ -328,7 +328,7 @@ impl<'a> Bytes17<'a> {
         if let Self::Array { encoded, .. } = self {
             let mut fields = Fields::array(encoded)?;
             let mut sink = ExactBytes17::new(other)?;
-            while let Some(byte) = fields.next()? {
+            while let Some(byte) = fields.next_value()? {
                 sink.write_all(&[u8::try_from(unsigned(byte)?).map_err(|_| invalid())?])?;
             }
             fields.finish()?;
@@ -501,7 +501,7 @@ fn canonical(
             output.write_all(b"[")?;
             let mut fields = Fields::array(input)?;
             let mut count = 0usize;
-            while let Some(value) = fields.next()? {
+            while let Some(value) = fields.next_value()? {
                 if count != 0 {
                     output.write_all(b",")?;
                 }

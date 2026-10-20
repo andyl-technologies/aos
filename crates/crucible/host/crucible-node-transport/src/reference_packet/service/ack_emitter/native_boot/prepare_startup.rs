@@ -15,6 +15,9 @@ use std::mem::{align_of, size_of};
 #[path = "prepare_startup_shapes.rs"]
 mod shapes;
 
+#[path = "prepare_startup/layout.rs"]
+mod layout;
+
 /// Describes the prospective owners of the closed fixed Prepare phase.
 ///
 /// Original transport banks and actual baseline native roots are already
@@ -176,39 +179,33 @@ pub fn original_native_prepare_startup_storage_data(
     // clone. Selected extension definitions, epoch and gate are shared Arc
     // payloads, not independently cloned schema/registrar allocations.
     let authority_clone_bytes = mul(2, one_authority)?;
-    let attempt_shared = sum(&[
-        size_of::<RefCell<NativeCompleteRestorePrepareAttempt>>(),
-        crate::retained_metadata::requested_storage::shared_header_storage_data(
-            1,
-            align_of::<RefCell<NativeCompleteRestorePrepareAttempt>>(),
-        )?,
-    ])?;
+    let layout = layout::project()?;
     let descriptor_children = mul(6, sum(&["blake3-256".len(), "cnp.blob.v1".len(), 64, 128])?)?;
     let guard_backing = crate::retained_metadata::requested_storage::tree_storage_data(
         2,
         2,
-        size_of::<Id>() + size_of::<Envelope>(),
-        align_of::<Id>().max(align_of::<Envelope>()),
+        size_of::<Id>() + layout.envelope_bytes,
+        align_of::<Id>().max(layout.envelope_alignment),
     )?;
     let retained = sum(&[
-        attempt_shared,
+        layout.attempt_shared_bytes,
         // The selected Fresh endpoint retains the actual incoming frame beside
         // the independent guard/issuer clones through successful Prepare handoff.
         // Counting its inline header again is conservative if already reserved
         // in the enclosing Rc attempt. No literal-bank capacity is added here.
         original.value_dom_requested_bytes,
         body.value_dom_requested_bytes,
-        size_of::<crate::connection::ReceivedFrame>(),
-        size_of::<crate::bodies::RequestBody>(),
+        layout.received_frame_bytes,
+        layout.request_body_bytes,
         // VerifiedPrepare's inline Option is already in the actual endpoint
         // header. The temporary scope/header lives in the counter window.
         MAXIMUM_COMPLETE_RESTORE_TRANSFER_RECEIPT_BYTES,
         // The correlation guard and the retained attempt own independent clones.
         mul(2, original.value_dom_requested_bytes)?,
-        2 * size_of::<Envelope>(),
+        2 * layout.envelope_bytes,
         guard_backing,
         3 * 128, // Actual guard keys and the independent literal-identity ID.
-        Connection::<crate::client::DeadlineStream>::original_prepare_response_owner_layout_data(),
+        layout::response_owner_bytes_data(),
         // The fixed response canonical bank is independent of the already
         // reserved original literal bank. The real builder also enforces raw R.
         add(
@@ -220,15 +217,15 @@ pub fn original_native_prepare_startup_storage_data(
         // and receipt survive publication. Input-custody/model banks are NOT
         // part of this fixed protocol row and require their separate action.
         mul(2, response.value_dom_requested_bytes)?,
-        size_of::<crate::bodies::PrepareRestoreResult>(),
+        layout.prepare_result_bytes,
         receipt.value_dom_requested_bytes,
-        size_of::<PacketCompleteRestorePrepareReceipt>(),
+        layout.prepare_receipt_bytes,
         request.value_dom_requested_bytes,
-        size_of::<PacketCompleteRestorePrepareRequest>(),
+        layout.prepare_request_bytes,
         proof.value_dom_requested_bytes,
-        size_of::<PacketCompleteRestoreTransferProof>(),
+        layout.transfer_proof_bytes,
         context.value_dom_requested_bytes,
-        size_of::<PacketCompleteRestorePrepareContext>(),
+        layout.prepare_context_bytes,
         MAXIMUM_COMPLETE_RESTORE_TRANSFER_CONTEXT_BYTES,
         32,
         launch_decode, // The separately retained Realize clone is a subset.
@@ -245,7 +242,7 @@ pub fn original_native_prepare_startup_storage_data(
         body.value_dom_requested_bytes,
         launch_decode,
         MAXIMUM_COMPLETE_RESTORE_TRANSFER_REQUEST_BYTES,
-        2 * size_of::<ContentRef>(),
+        2 * layout.content_ref_bytes,
         descriptor_children,
     ])?;
     let receive = mul(2, frame.value_dom_requested_bytes)?;
@@ -286,8 +283,8 @@ pub fn original_native_prepare_startup_storage_data(
     // Arbitrary supervisor callback allocation is outside this SDK data row.
     let containment = sum(&[
         original.value_dom_requested_bytes,
-        4 * size_of::<Envelope>(),
-        size_of::<crate::connection::ConnectionIncident>(),
+        4 * layout.envelope_bytes,
+        layout.connection_incident_bytes,
         3 * 128,
     ])?;
     let errors = add(containment, mul(2, frame.canonical_output_requested_bytes)?)?;
@@ -308,7 +305,7 @@ pub fn original_native_prepare_startup_storage_data(
     let result = PacketNativePrepareStartupStorageData {
         retained_growth_bytes: retained,
         maximum_simultaneous_transient_bytes: transient,
-        declared_counter_scratch_bytes: original_native_prepare_startup_counter_scratch_data(),
+        declared_counter_scratch_bytes: layout::counter_output_data(),
         authority_clone_bytes,
         maximum_features,
         maximum_original_bytes: shapes.original_bytes,
@@ -334,6 +331,7 @@ pub fn original_native_prepare_startup_counter_scratch_data() -> usize {
         super::prepare_bindings::declared_counter_scratch_data(),
         crate::reference_packet::service::complete_restore::transfer::complete_restore_fresh_prepare_digest_counter_scratch_data(),
         ConnectionAuthority::independent_clone_counter_scratch_data(),
+        layout::counter_scratch_data(),
         8 * size_of::<OriginalJsonValueStorageExtentData>(),
         size_of::<shapes::PrepareStartupShapes>(),
         size_of::<

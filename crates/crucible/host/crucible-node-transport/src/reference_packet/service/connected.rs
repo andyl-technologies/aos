@@ -10,8 +10,7 @@ use crucible_node_format::*;
 use serde::{Deserialize, Serialize};
 
 use super::super::{
-    PacketProgramDefinition, connected::PacketConnectedDefinition, control::PacketControlSelection,
-    coordinator::PacketConnectedCoordinatorInstallation,
+    control::PacketControlSelection, coordinator::PacketConnectedCoordinatorInstallation,
 };
 use crate::{ProviderError, handshake::Limits, reference_service::InstalledContent};
 

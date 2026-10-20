@@ -17,10 +17,10 @@ impl<A: Native17Build, B: Native17Build> Native17Build for (A, B) {
 
     fn preflight_data(input: &[u8], ledger: &mut Ledger<'_, '_, '_>) -> Result<(), ProviderError> {
         let mut fields = Fields::array(input)?;
-        let first_raw = fields.next()?.ok_or_else(invalid)?;
+        let first_raw = fields.next_value()?.ok_or_else(invalid)?;
         Native17ChildSlot::<A::Attempt>::preflight_data(ledger)?;
         A::preflight_data(first_raw, ledger)?;
-        let second_raw = fields.next()?.ok_or_else(invalid)?;
+        let second_raw = fields.next_value()?.ok_or_else(invalid)?;
         Native17ChildSlot::<B::Attempt>::preflight_data(ledger)?;
         B::preflight_data(second_raw, ledger)?;
         fields.finish()
@@ -38,7 +38,7 @@ impl<A: Native17Build, B: Native17Build> Native17Build for (A, B) {
         }
         let mut fields = Fields::array(input)?;
         let first = &mut attempt.fields.head;
-        let first_raw = fields.next()?.ok_or_else(invalid)?;
+        let first_raw = fields.next_value()?.ok_or_else(invalid)?;
         let first_child = first.child.begin_data(ledger)?;
         A::read_into_data(first_raw, ledger, first_child)?;
         first.output = A::take_output_data(first_child);
@@ -46,7 +46,7 @@ impl<A: Native17Build, B: Native17Build> Native17Build for (A, B) {
             return Err(invalid());
         }
         let second = &mut attempt.fields.tail.head;
-        let second_raw = fields.next()?.ok_or_else(invalid)?;
+        let second_raw = fields.next_value()?.ok_or_else(invalid)?;
         let second_child = second.child.begin_data(ledger)?;
         B::read_into_data(second_raw, ledger, second_child)?;
         second.output = B::take_output_data(second_child);

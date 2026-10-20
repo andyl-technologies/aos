@@ -111,7 +111,7 @@ impl Native17Build for HistoricalNativeBlobLedger {
         }
         let mut records = Fields::array(next(&mut fields)?)?;
         let mut previous = None;
-        while let Some(item) = records.next()? {
+        while let Some(item) = records.next_value()? {
             if attempt.children.len() == count {
                 return Err(invalid());
             }
@@ -204,7 +204,7 @@ impl HistoricalNativeBlobLedger {
         let mut records = Fields::array(next(&mut fields)?)?;
         let mut actual = 0usize;
         let mut previous = None;
-        while let Some(item) = records.next()? {
+        while let Some(item) = records.next_value()? {
             actual = actual
                 .checked_add(1)
                 .filter(|actual| *actual <= count)

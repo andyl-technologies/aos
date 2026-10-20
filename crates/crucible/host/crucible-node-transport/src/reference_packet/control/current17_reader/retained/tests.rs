@@ -191,12 +191,12 @@ fn target_refusal_keeps_prior_content_rows_and_the_current_reference() -> Result
         )?;
         preflight.native17_target_tree_data::<ContentRef, Vec<u8>>(count)?;
         let mut entries = Fields::array(&input)?;
-        let mut first = Fields::array(entries.next()?.ok_or_else(invalid)?)?;
-        ContentRef::preflight_data(first.next()?.ok_or_else(invalid)?, &mut preflight)?;
-        Vec::<u8>::preflight_data(first.next()?.ok_or_else(invalid)?, &mut preflight)?;
+        let mut first = Fields::array(entries.next_value()?.ok_or_else(invalid)?)?;
+        ContentRef::preflight_data(first.next_value()?.ok_or_else(invalid)?, &mut preflight)?;
+        Vec::<u8>::preflight_data(first.next_value()?.ok_or_else(invalid)?, &mut preflight)?;
         first.finish()?;
-        let mut second = Fields::array(entries.next()?.ok_or_else(invalid)?)?;
-        ContentRef::preflight_data(second.next()?.ok_or_else(invalid)?, &mut preflight)?;
+        let mut second = Fields::array(entries.next_value()?.ok_or_else(invalid)?)?;
+        ContentRef::preflight_data(second.next_value()?.ok_or_else(invalid)?, &mut preflight)?;
         let source_position = preflight.rows.encoded_position();
         (preflight.finish_native17_targets_data()?, source_position)
     };

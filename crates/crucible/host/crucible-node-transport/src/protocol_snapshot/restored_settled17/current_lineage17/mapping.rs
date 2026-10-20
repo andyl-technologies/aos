@@ -24,8 +24,8 @@ fn parts<'a>(
 ) -> Result<(usize, &'a [u8]), ProviderError> {
     let mut f = Fields::array(input)?;
     let capacity =
-        usize::try_from(unsigned(f.next()?.ok_or_else(invalid)?)?).map_err(|_| invalid())?;
-    let raw = f.next()?.ok_or_else(invalid)?;
+        usize::try_from(unsigned(f.next_value()?.ok_or_else(invalid)?)?).map_err(|_| invalid())?;
+    let raw = f.next_value()?.ok_or_else(invalid)?;
     f.finish()?;
     if ledger.row_aligned(MetadataRecordKind::Vector, 1, 1)? != capacity
         || capacity > ledger.limits.maximum_owned_backing_bytes
@@ -38,7 +38,7 @@ fn parts<'a>(
 fn bytes(input: &[u8], capacity: usize) -> Result<(), ProviderError> {
     let mut f = Fields::array(input)?;
     let mut length = 0usize;
-    while let Some(raw) = f.next()? {
+    while let Some(raw) = f.next_value()? {
         length = length.checked_add(1).ok_or_else(invalid)?;
         if length > capacity || unsigned(raw)? > u64::from(u8::MAX) {
             return Err(invalid());
@@ -103,7 +103,7 @@ impl Native17Build for NativeMappingNormalization17 {
         }
 
         let mut f = Fields::array(raw)?;
-        while let Some(raw) = f.next()? {
+        while let Some(raw) = f.next_value()? {
             if attempt.bytes.len() >= capacity {
                 return Err(invalid());
             }

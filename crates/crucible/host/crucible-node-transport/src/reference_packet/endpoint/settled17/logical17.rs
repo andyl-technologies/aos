@@ -253,7 +253,7 @@ pub(crate) fn borrow_native17_endpoint_logical_data<'a>(
     let records = field(input, "records")?;
     let record_count = count(records)?;
     let mut journal = Fields::array(records)?;
-    while let Some(record) = journal.next()? {
+    while let Some(record) = journal.next_value()? {
         records::BorrowedExchange17::read(record, connection.frames)?;
     }
     journal.finish()?;

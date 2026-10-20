@@ -166,7 +166,7 @@ fn value(
             let mut fields = Fields::array(bytes)?;
             for original in values {
                 value(
-                    fields.next()?.ok_or_else(invalid)?,
+                    fields.next_value()?.ok_or_else(invalid)?,
                     original,
                     depth + 1,
                     work,
