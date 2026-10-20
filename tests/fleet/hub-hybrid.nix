@@ -866,7 +866,9 @@ in {
         bootMode = "image";
         hostStoreMount = true;
         hostAliases = ["aos-origin.fleet.test"];
-        imageDiskMiB = 16384;
+        # Native-only parity retains the finalized OCI graph, upload chunks,
+        # multipart assembly, and immutable readback snapshots together.
+        imageDiskMiB = 32768;
         memoryMiB = 4096;
         varProvisioning = "repart";
       };
