@@ -8995,9 +8995,26 @@ The native ext4 VM passes in 427.294 seconds, including that raw-filename case
 and all 67 selected native unit cases. Independent review verifies 5,098 source
 inputs, four original Cargo executables, four installed helpers, all 48 fixture
 selectors, and both the original chunk and new detached-index cleanup controls.
-Required application and complete filesystem qualification continue; complete
-recovery and readiness remain open. No frozen format, store trait, dependency,
-kernel confinement or stopped wipe policy changes.
+Required application compilation passes with all 183 artifacts from 59 packages
+independently matched to Cargo metadata. The complete ext4 filesystem suite
+passes all 126 nonignored cases; the six original privileged ignores remain
+unchanged. All component qualification clients are terminal and independently
+reviewed. Complete recovery and readiness remain open. No frozen format, store
+trait, dependency, kernel confinement or stopped wipe policy changes.
+
+Startup-index source `26c33579ad` adds bounded repair before sealed adoption.
+It uses the original synchronized bootstrap and publisher Drain context,
+durably pins and funds the verified pack, invokes the existing no-replace
+writer, and removes only its own repair funding after native verification,
+fresh project accounting and a closing synchronized bootstrap. A fresh exhaustive
+inventory and shared-namespace observation supply subsequent adoption evidence.
+An existing mismatching index is never overwritten. Four actual ext4 cases cover
+a missing-index rebuild and refusals for disabled repair, an exceeded index-size
+limit and an existing mismatch; all original 48 selectors and 67 native unit
+cases remain, with eight new selectors. Cargo all-target checks and the formatter
+pair pass. Isolated strict profiles, native runtime, complete filesystem and
+required application qualification are running. This is recovery work in
+progress; no task checkbox advances.
 
 All five T2 task checkboxes remain open. Encoded eviction, shared-chunk
 re-extraction, complete recovery/readiness and the stopped
