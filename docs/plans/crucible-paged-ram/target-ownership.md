@@ -309,5 +309,9 @@ Run component controls, complete default/private test-target compilation and
 local runtime suites, then the installed genuine-Main native flights. A Cargo
 test executable does not become Main through an in-process fixture. Qualify RAM
 identity, isolation, lazy paging, descendant recovery and wall-clock/CPU parity
-on real guests before claiming completion. Keep the final current-source
-packaged all-application test-target build and required boundary gates.
+on real guests before claiming completion. Compile all current workspace unit
+and integration targets with normal Cargo builds, run the relevant local suites,
+and retain the required boundary gates. A packaged Rust application build is not
+a prerequisite for implementation or Rust validation. Native QEMU changes still
+require the actual C build and native checks; installed genuine-Main flights
+remain separate runtime qualification.

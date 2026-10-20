@@ -20,6 +20,11 @@ profiles, with no implemented or qualified capability claimed here. All tests
 and benchmarks used for this work run locally, with remote builders disabled.
 No passing source, format, or component test fills an unexecuted deployment gate.
 
+Normal Cargo builds and tests validate Rust work, including workspace unit and
+integration targets. Packaged application builds do not block implementation.
+Native C builds, process-boundary checks and genuine launched-VM qualification
+remain required for the behavior they exercise.
+
 The related simulation-node contract is a proposed design reviewed at
 [revision 9f5015bd](https://github.com/andyl-technologies/aos/blob/9f5015bd5a1813b6c9383f64a81d763882f094c2/docs/rfcs/0025-crucible-node-contract/README.md).
 Those pinned coordinates support this plan's terminology; they do not claim
