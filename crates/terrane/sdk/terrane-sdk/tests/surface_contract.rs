@@ -111,7 +111,9 @@ fn exposures_preserve_order_and_reject_partial_configuration() {
         ] {
             assert!(matches!(
                 Config::parse(&configured),
-                Err(terrane_sdk::config::ConfigError::Invalid("unknown view policy"))
+                Err(terrane_sdk::config::ConfigError::Invalid(
+                    "unknown view policy"
+                ))
             ));
         }
     }
@@ -165,8 +167,8 @@ fn metadata_schema_checks_root_types_properties_and_forbidden_paths() {
 
 #[test]
 fn schemas_check_entry_kinds_attributes_root_and_forbidden_matches() {
-    use terrane_sdk::surface::SchemaEntryKind;
     use terrane_format::tree_format::{Attribute, Entry, EntryKind, encode_entry};
+    use terrane_sdk::surface::SchemaEntryKind;
 
     let entry = Entry {
         kind: EntryKind::Directory { mode: 0o700 },

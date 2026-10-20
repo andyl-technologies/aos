@@ -25,6 +25,11 @@ use std::{
     time::Duration,
 };
 
+use terrane_format::{
+    auth::{Attenuation, Authority, Grant, Token, Verbs, public_key_from_secret},
+    refs::{CommitSource, Locality, PrincipalKind},
+};
+use terrane_linux::configured_sdk::{self, FailureKind};
 use terrane_sdk::{
     config::Config,
     ref_advance::CommitTiming,
@@ -36,11 +41,6 @@ use terrane_sdk::{
     store::{LocalFs, TokioClock, TokioLocalFs},
     surface::{ExposureState, ReaderMode, SchemaState},
 };
-use terrane_format::{
-    auth::{Attenuation, Authority, Grant, Token, Verbs, public_key_from_secret},
-    refs::{CommitSource, Locality, PrincipalKind},
-};
-use terrane_linux::configured_sdk::{self, FailureKind};
 
 type FixtureResult<T> = Result<T, Box<dyn std::error::Error>>;
 

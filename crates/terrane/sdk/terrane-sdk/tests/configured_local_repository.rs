@@ -9,6 +9,7 @@
 mod fixture;
 
 use fixture::{Fixture, MAIN, OLD, TestResult};
+use terrane_format::auth::{Attenuation, Grant, Token, Verbs};
 use terrane_sdk::{
     config::{Config, local_repository::LocalOpenError},
     repository::Error,
@@ -16,7 +17,6 @@ use terrane_sdk::{
     store::{LocalFs, TokioClock, TokioLocalFs},
     surface::{ExposureState, PreparedExposures, TokenResolver},
 };
-use terrane_format::auth::{Attenuation, Grant, Token, Verbs};
 
 struct ExplicitFileToken;
 
@@ -238,12 +238,12 @@ async fn configured_local_reopen_requires_original_trust_and_validated_timing() 
 
 #[tokio::test]
 async fn configured_local_reopen_preserves_signed_current_acl_denial() -> TestResult {
-    use terrane_sdk::{repository::PreparedTree, surface::View};
     use terrane_format::{
         cbor,
         tree_builder::Tree,
         tree_format::{Property, TreeUse},
     };
+    use terrane_sdk::{repository::PreparedTree, surface::View};
 
     let fixture = Fixture::new().await?;
     let previous = fixture.commit_bytes(OLD).await?;

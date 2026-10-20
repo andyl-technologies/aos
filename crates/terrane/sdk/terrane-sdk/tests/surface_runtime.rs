@@ -141,12 +141,12 @@ async fn schema_refusal_precedes_sdk_directory_creation() -> TestResult {
 
 #[tokio::test]
 async fn prepared_snapshots_recheck_current_authority_before_startup() -> TestResult {
-    use terrane_sdk::repository::PreparedTree;
     use terrane_format::{
         cbor,
         tree_builder::Tree,
         tree_format::{Property, TreeUse},
     };
+    use terrane_sdk::repository::PreparedTree;
 
     let fixture = Fixture::new().await?;
     let old = fixture.commit_bytes(OLD).await?;
@@ -211,12 +211,12 @@ async fn prepared_snapshots_recheck_current_authority_before_startup() -> TestRe
 #[ignore = "Requires native ext4 xattrs; executed by gate:surface-status"]
 async fn sdk_presents_attribute_ownership_canonical_times_and_filtered_xattrs() -> TestResult {
     use std::os::unix::fs::MetadataExt;
-    use terrane_sdk::repository::PreparedTree;
     use terrane_format::{
         cbor,
         tree_builder::Tree,
         tree_format::{self, Attribute, ExtendedAttribute, LeafItem, Property, TreeUse},
     };
+    use terrane_sdk::repository::PreparedTree;
 
     let fixture = Fixture::new().await?;
     let old = fixture.commit_bytes(OLD).await?;
