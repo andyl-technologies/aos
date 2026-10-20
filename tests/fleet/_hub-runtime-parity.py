@@ -46,7 +46,7 @@ def qualify_registry_runtime_parity(client, native, worker, *, tools, fixture, s
     # Exclude the unrelated large web-upload probe. Every signed Git, channel,
     # semantic, and package object remains byte identical to the hybrid corpus.
     corpus_path = "/tmp/hub-parity-corpus" + suffix + ".tar"
-    corpus_root = "/tmp/hybrid-publication-surface" if corpus_fixture is None else corpus_fixture["surfaceRoot"]
+    corpus_root = "/var/tmp/hybrid-publication-surface" if corpus_fixture is None else corpus_fixture["surfaceRoot"]
     client.succeed(
         f"{tools['tar']} -C {shlex.quote(corpus_root)} --exclude=./web "
         f"-cf {corpus_path} .",
